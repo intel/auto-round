@@ -41,12 +41,18 @@ weights with ``fake`` format):
 * Preset names: ``MXFP4``, ``MXFP8``.
 * ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
 
+**NVFP4** (``auto_round`` or ``llm_compressor`` format):
+
+* Preset name: ``NVFP4``.
+* Uses a fixed global input scale for every quantized layer. The default is
+    ``1.0`` and can be overridden with ``AR_MODEL_FREE_NVFP4_INPUT_SCALE``.
+
 **NVFP4 E5M3** (``auto_round`` or ``fake`` format):
 
 * Preset name: ``NVFP4_E5M3``.
 * ``data_type="nvfp4_v2"``, ``group_size=16``, with high-precision QDQ weights.
 
-Schemes that require special packing (FP8, standard NVFP4, GGUF, INT8_W8A8,
+Schemes that require special packing (FP8, GGUF, INT8_W8A8,
 BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
 ``ValueError``.  Use the standard AutoRound flow for those.
 
@@ -180,6 +186,7 @@ SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
     "W8A16",
     "MXFP4",
     "MXFP8",
+    "NVFP4",
     "NVFP4_E5M3",
     "BF16",
 )
@@ -1015,6 +1022,12 @@ class _ModelFreeCompressorCore:
     def _build_resume_parameters(self) -> dict:
         """Return the effective command inputs that determine shard output."""
         source_dir = self.work_dir if self.is_streaming else self.source_dir
+        default_data_type = (self.default_scheme.get("data_type") or "").lower()
+        has_standard_nvfp4 = is_nv_fp(default_data_type) or any(
+            is_nv_fp((config.get("data_type") or "").lower())
+            for config in self.layer_config.values()
+            if isinstance(config, dict)
+        )
         index_files = sorted(
             filename
             for filename in os.listdir(source_dir)
@@ -1055,6 +1068,7 @@ class _ModelFreeCompressorCore:
             "disable_opt_rtn": self.disable_opt_rtn,
             "model_type": self.model_type,
             "source_quantization_config": self.source_quantization_config,
+            "nvfp4_input_scale": envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE if has_standard_nvfp4 else None,
         }
         return json.loads(json.dumps(parameters, sort_keys=True, default=str))
 
@@ -1637,6 +1651,8 @@ class _ModelFreeCompressorCore:
         if is_mx_fp(data_type):
             bits = self.default_scheme.get("bits", 4)
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
+        elif is_nv_fp(data_type):
+            packing_format = "nvfp4-pack-quantized"
         elif data_type == _NVFP4_E5M3_DATA_TYPE:
             packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
         else:
@@ -1648,6 +1664,11 @@ class _ModelFreeCompressorCore:
                     "2x scale, and 0.5x scale independently for each group. "
                     "Pass --disable_opt_rtn to use plain RTN."
                 )
+        elif is_nv_fp(data_type):
+            logger.info(
+                "NVFP4 model-free quantization uses a fixed global input scale of %s for every quantized layer.",
+                envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE,
+            )
         else:
             logger.info(
                 "Integer WOQ model-free quantization uses plain RTN "
@@ -2069,6 +2090,8 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         if (
             normalized_scheme is not None and is_mx_fp((normalized_scheme.data_type or "").lower())
         ) or self._auto_scheme_family == "mx_fp":
+            _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+        elif normalized_scheme is not None and is_nv_fp((normalized_scheme.data_type or "").lower()):
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif normalized_scheme is not None and (normalized_scheme.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE:
             _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}

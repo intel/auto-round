@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional, Union
 
 import torch
 
+from auto_round import envs
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
@@ -57,6 +58,7 @@ SUPPORTED_PRESET_SCHEMES = (
     "W8A16",
     "MXFP4",
     "MXFP8",
+    "NVFP4",
     "NVFP4_E5M3",
     "BF16",
 )
@@ -1256,6 +1258,66 @@ def _quantize_weight_nvfp4_e5m3(
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
 
+def _quantize_weight_nvfp4(
+    weight: torch.Tensor,
+    layer_name: str,
+    group_size: int = 16,
+    device: str = "cpu",
+) -> dict[str, torch.Tensor]:
+    """Quantize and pack standard NVFP4 with one fixed input scale for every layer."""
+    import math
+
+    from auto_round.data_type.nvfp import calculate_gparam, nv_fp4
+    from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+
+    out_features, in_features = weight.shape
+    if group_size != 16 or in_features % group_size != 0:
+        raise ValueError(
+            f"NVFP4 requires in_features divisible by group_size=16, got {in_features} for '{layer_name}'."
+        )
+    input_global_scale_value = envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE
+    if not math.isfinite(input_global_scale_value) or input_global_scale_value <= 0:
+        raise ValueError(
+            "AR_MODEL_FREE_NVFP4_INPUT_SCALE must be a finite positive float, " f"got {input_global_scale_value!r}."
+        )
+
+    weight_dev = weight.to(device)
+    weight_global_scale = calculate_gparam(weight_dev, group_size=group_size, device=device)
+    _, scale, _ = nv_fp4(weight_dev, bits=4, group_size=group_size, global_scale=weight_global_scale)
+    scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
+    input_global_scale = torch.tensor([input_global_scale_value], dtype=torch.float32, device=device)
+
+    with torch.device("meta"):
+        linear = torch.nn.Linear(in_features, out_features, bias=False, dtype=weight.dtype)
+    linear.weight = torch.nn.Parameter(weight_dev, requires_grad=False)
+    with torch.device("meta"):
+        qlayer = QuantLinear(
+            4,
+            group_size,
+            in_features,
+            out_features,
+            False,
+            data_type="nv_fp",
+            act_bits=4,
+            act_data_type="nv_fp4_with_static_gs",
+        )
+    qlayer.pack(
+        linear,
+        scale,
+        global_scale=weight_global_scale,
+        input_global_scale=input_global_scale,
+        device=device,
+    )
+    out = {
+        f"{layer_name}.weight_packed": qlayer.weight_packed.to("cpu"),
+        f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
+        f"{layer_name}.weight_global_scale": qlayer.weight_global_scale.to("cpu"),
+        f"{layer_name}.input_global_scale": qlayer.input_global_scale.to("cpu"),
+    }
+    del qlayer, linear, weight_dev, scale, weight_global_scale, input_global_scale
+    return out
+
+
 def _quantize_weight_int_fake(
     weight: torch.Tensor,
     layer_name: str,
@@ -1392,6 +1454,21 @@ def _quantize_single_tensor(
             return layer_name, out, layer_name, None
         except Exception as e:
             logger.warning(f"Failed to MXFP-quantize {layer_name}: {e}. Keeping original weight.")
+            return layer_name, {tensor_name: tensor}, None, layer_name
+
+    # ---- Standard NVFP4 path ----
+    if is_nv_fp(data_type):
+        try:
+            out = _quantize_weight_nvfp4(
+                weight=tensor,
+                layer_name=layer_name,
+                group_size=group_size,
+                device=device,
+            )
+            logger.debug(f"Quantized (NVFP4): {layer_name} (bits=4, group_size={group_size})")
+            return layer_name, out, layer_name, None
+        except Exception as e:
+            logger.warning(f"Failed to NVFP4-quantize {layer_name}: {e}. Keeping original weight.")
             return layer_name, {tensor_name: tensor}, None, layer_name
 
     # ---- NVFP4 E5M3 fake-quantization path ----
@@ -2681,6 +2758,18 @@ def _build_mxfp_quantization_config(
             qconfig["format"] = fmt
             qconfig.update(_get_llm_compressor_metadata())
             return qconfig
+        if is_nv_fp(actual_dt):
+            from auto_round.export.export_to_llmcompressor.config import initialize_quantization as _init_q
+
+            qconfig = _init_q(scheme="NVFP4", ignore=ignore)
+            if is_fp_default and scheme_groups:
+                qconfig.config_groups["group_0"].targets = _add_routed_experts_if_moe(
+                    list(quantized_layers), quantized_layers
+                )
+            qconfig = qconfig.to_dict()
+            qconfig["format"] = fmt
+            qconfig.update(_get_llm_compressor_metadata())
+            return qconfig
         from auto_round.export.export_to_llmcompressor.config import initialize_quantization as _init_q
 
         scheme_name = "MXFP4" if actual_bits == 4 else "MXFP8"
@@ -2753,6 +2842,7 @@ def _build_mxfp_autoround_quantization_config(
 
     bits = default_scheme.get("bits", 4)
     group_size = default_scheme.get("group_size", 32)
+    data_type = (default_scheme.get("data_type") or "mx_fp").lower()
     is_fp_default = (bits or 0) >= 16
 
     # For BF16 default + MXFP layer_config overrides, derive the dominant
@@ -2770,11 +2860,11 @@ def _build_mxfp_autoround_quantization_config(
                 continue
             lb = scheme.get("bits")
             ldt = (scheme.get("data_type") or "").lower()
-            if lb and lb < 16 and is_mx_fp(ldt):
-                mxfp_counter[lb] += 1
+            if lb and lb < 16 and (is_mx_fp(ldt) or is_nv_fp(ldt)):
+                mxfp_counter[(lb, ldt)] += 1
         if mxfp_counter:
-            bits, _ = mxfp_counter.most_common(1)[0]
-            group_size = 32
+            (bits, data_type), _ = mxfp_counter.most_common(1)[0]
+            group_size = 16 if is_nv_fp(data_type) else 32
 
     if (bits or 0) < 1 or bits not in _SUPPORTED_MXFP_BITS:
         bits = 4  # safe fallback
@@ -2783,9 +2873,9 @@ def _build_mxfp_autoround_quantization_config(
         "quant_method": "auto-round",
         "packing_format": "auto_round:llm_compressor",
         "bits": bits,
-        "group_size": group_size or 32,
-        "sym": True,  # MXFP is always symmetric
-        "data_type": "mx_fp",
+        "group_size": group_size or (16 if is_nv_fp(data_type) else 32),
+        "sym": True,
+        "data_type": data_type,
         "iters": 0,
         "model_free": True,
         "autoround_version": __version__,
@@ -3087,7 +3177,11 @@ def _build_quantization_config(
             qconfig["format"] = "nvfp4-pack-quantized"
         qconfig.update(_get_llm_compressor_metadata())
         return qconfig
-    if is_mx_fp(data_type) or (is_fp_default and _layer_config_has_mxfp(layer_config)):
+    if (
+        is_mx_fp(data_type)
+        or is_nv_fp(data_type)
+        or (is_fp_default and (_layer_config_has_mxfp(layer_config) or _layer_config_has_nvfp4(layer_config)))
+    ):
         if format in ("auto_round", "auto_round:auto_gptq"):
             return _build_mxfp_autoround_quantization_config(
                 default_scheme=default_scheme,
@@ -3260,6 +3354,26 @@ def _validate_supported_scheme(
             raise ValueError(
                 f"Model-free mode supports MXFP only with group_size=32, "
                 f"but '{scheme_input}' requests group_size={group_size}."
+            )
+        return
+
+    if is_nv_fp(data_type):
+        if isinstance(scheme_input, str) and scheme_input.upper() != "NVFP4":
+            raise ValueError(
+                f"Model-free mode only supports the NVFP preset name 'NVFP4', but got '{scheme_input}'. "
+                f"Supported preset schemes: {list(SUPPORTED_PRESET_SCHEMES)}."
+            )
+        if bits != 4 or scheme_obj.group_size != 16 or act_bits != 4:
+            raise ValueError(
+                f"Model-free NVFP4 requires bits=4, group_size=16, and act_bits=4, "
+                f"but '{scheme_input}' requests bits={bits}, group_size={scheme_obj.group_size}, "
+                f"act_bits={act_bits}."
+            )
+        if not is_nv_fp((scheme_obj.act_data_type or "").lower()) or scheme_obj.act_group_size != 16:
+            raise ValueError(
+                f"Model-free NVFP4 requires an NVFP activation data type and act_group_size=16, "
+                f"but '{scheme_input}' requests act_data_type='{scheme_obj.act_data_type}', "
+                f"act_group_size={scheme_obj.act_group_size}."
             )
         return
 

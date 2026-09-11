@@ -72,6 +72,7 @@ from auto_round.utils.model_free_utils import (
     _PatternMatcher,
     _process_shard,
     _quantize_weight_mxfp,
+    _quantize_weight_nvfp4,
     _quantize_weight_nvfp4_e5m3,
     _validate_auto_scheme_options,
     is_model_free_supported_scheme,
@@ -456,6 +457,57 @@ def test_nvfp4_e5m3_model_free_fake_quantization():
     assert not is_model_free_supported_scheme("NVFP4+")
 
 
+@pytest.mark.parametrize("input_scale", [None, 0.25])
+def test_nvfp4_model_free_uses_fixed_input_scale(monkeypatch, input_scale):
+    if input_scale is None:
+        monkeypatch.delenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", raising=False)
+        expected = 1.0
+    else:
+        monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", str(input_scale))
+        expected = input_scale
+
+    output = _quantize_weight_nvfp4(torch.randn(8, 32), "layer.fc")
+
+    assert set(output) == {
+        "layer.fc.weight_packed",
+        "layer.fc.weight_scale",
+        "layer.fc.weight_global_scale",
+        "layer.fc.input_global_scale",
+    }
+    assert output["layer.fc.weight_packed"].dtype == torch.uint8
+    assert output["layer.fc.weight_scale"].dtype == torch.float8_e4m3fn
+    assert torch.equal(output["layer.fc.input_global_scale"], torch.tensor([expected], dtype=torch.float32))
+    assert is_model_free_supported_scheme("NVFP4")
+
+
+def test_nvfp4_model_free_llm_compressor_config():
+    from auto_round.schemes import PRESET_SCHEMES
+
+    scheme = PRESET_SCHEMES["NVFP4"].to_dict()
+    config = _build_quantization_config(
+        default_scheme=scheme,
+        layer_config={},
+        ignore_patterns=["lm_head"],
+        quantized_layers=["model.layers.0.self_attn.q_proj"],
+        ignored_layers=["lm_head"],
+        format="llm_compressor",
+    )
+
+    group = config["config_groups"]["group_0"]
+    assert config["format"] == "nvfp4-pack-quantized"
+    assert group["weights"]["num_bits"] == 4
+    assert group["weights"]["group_size"] == 16
+    assert group["input_activations"]["num_bits"] == 4
+
+
+@pytest.mark.parametrize("input_scale", ["0", "-1", "nan", "inf"])
+def test_nvfp4_model_free_rejects_invalid_input_scale(monkeypatch, input_scale):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", input_scale)
+
+    with pytest.raises(ValueError, match="finite positive float"):
+        _quantize_weight_nvfp4(torch.randn(8, 32), "layer.fc")
+
+
 def test_int_model_free_fake_quantization():
     shard_path = "int-fake-shard.safetensors"
     weight = torch.randn(8, 32)
@@ -533,6 +585,31 @@ def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
         "act_data_type": "float",
     }
     assert os.path.exists(os.path.join(output_dir, "quantization_config.json"))
+
+
+def test_nvfp4_model_free_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "0.5")
+    prefix = "model.layers.0.self_attn.q_proj"
+    tensors = {
+        f"{prefix}.weight": torch.randn(32, 32),
+        "lm_head.weight": torch.randn(64, 32),
+    }
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+
+    compressor = _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="NVFP4")
+    compressor.run()
+
+    with safe_open(os.path.join(output_dir, "model.safetensors"), framework="pt") as output:
+        assert f"{prefix}.weight_packed" in output.keys()
+        assert f"{prefix}.weight_scale" in output.keys()
+        assert f"{prefix}.weight_global_scale" in output.keys()
+        assert torch.equal(output.get_tensor(f"{prefix}.input_global_scale"), torch.tensor([0.5]))
+        assert "lm_head.weight" in output.keys()
+    quantization_config = _read_qconfig(output_dir)
+    assert quantization_config["packing_format"] == "auto_round:llm_compressor"
+    assert quantization_config["data_type"] == "nv_fp"
+    assert quantization_config["group_size"] == 16
 
 
 def test_nvfp4_e5m3_model_free_llm_compressor(tmp_path):
@@ -1253,12 +1330,11 @@ class TestLLMCompressorMXFPSource:
 
 # Keep representative presets per family to reduce redundant runtime:
 # INT symmetric (2/4/8-bit), mixed override recipe, MXFP, and BF16 passthrough.
-_SUPPORTED = ["W2A16G32", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "BF16"]
+_SUPPORTED = ["W2A16G32", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "NVFP4", "BF16"]
 _UNSUPPORTED = [
     "W3A16",
     "FPW8A16",  # unsupported FP family
     "MXINT4",
-    "NVFP4",  # unsupported MX/NV family
     "FP8_BLOCK",  # unsupported FP8 route
     "INT8_W8A8",
 ]
@@ -1276,7 +1352,7 @@ class TestSchemeValidation:
         full end-to-end tests in ``TestModelFreeQuantize`` / ``TestModelFreeMXFP``)
         to keep this parametrized check fast.
         """
-        if name.startswith("MXFP"):
+        if name.startswith("MXFP") or name == "NVFP4":
             pytest.importorskip("compressed_tensors", reason="test requires compressed-tensors")
 
         core = _ModelFreeCompressorCore(model_name_or_path="unused", output_dir=str(tmp_path), scheme=name)
@@ -1298,7 +1374,7 @@ class TestSchemeValidation:
             assert "model.layers.0.mlp.fc1.weight" in output
         else:
             assert "model.layers.0.mlp.fc1" in quantized
-            if name.startswith("MXFP"):
+            if name.startswith("MXFP") or name == "NVFP4":
                 assert "model.layers.0.mlp.fc1.weight_scale" in output
             else:
                 assert "model.layers.0.mlp.fc1.qweight" in output

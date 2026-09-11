@@ -141,6 +141,16 @@ export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
+### AR_MODEL_FREE_NVFP4_INPUT_SCALE
+- **描述**：在无法使用校准数据的 model-free 模式中，为每个 NVFP4 量化层设置同一个固定的全局输入 scale。该变量仅影响标准 `NVFP4` scheme，不影响 `NVFP4_E5M3`。
+- **默认值**：`1.0`
+- **有效值**：任意有限正浮点数
+- **用途**：在 model-free NVFP4 量化前设置该变量，以覆盖默认输入 scale。
+
+```bash
+export AR_MODEL_FREE_NVFP4_INPUT_SCALE=0.5
+```
+
 ### AR_AUTO_SCHEME_NSAMPLES
 - **描述**：控制 AutoScheme 评分时使用的校准样本数默认值，仅在 `AutoScheme.nsamples` 未显式设置时生效。
 - **默认值**：未设置 → 16

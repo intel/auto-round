@@ -141,6 +141,16 @@ export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
+### AR_MODEL_FREE_NVFP4_INPUT_SCALE
+- **Description**: Sets one fixed global input scale for every NVFP4-quantized layer in model-free mode, where calibration data is unavailable. This only affects the standard `NVFP4` scheme, not `NVFP4_E5M3`.
+- **Default**: `1.0`
+- **Valid Values**: any finite positive float
+- **Usage**: Set this before model-free NVFP4 quantization to override the default input scale.
+
+```bash
+export AR_MODEL_FREE_NVFP4_INPUT_SCALE=0.5
+```
+
 ### AR_AUTO_SCHEME_NSAMPLES
 - **Description**: Controls the default number of calibration samples used by AutoScheme scoring when `AutoScheme.nsamples` is not explicitly set.
 - **Default**: unset → 16
