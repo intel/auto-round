@@ -254,6 +254,13 @@ def tune(args):
     if args.eval_bs is None:
         args.eval_bs = "auto"
 
+    if getattr(args, "num_hidden_layers", None) is not None:
+        # Debug helper: load only the first N decoder layers. Propagated to the
+        # model loader via an env var so every load path picks it up.
+        from auto_round import envs
+
+        envs.set_config(AR_DEBUG_LAYER_NUM=args.num_hidden_layers)
+
     from transformers.utils.versions import require_version
 
     if args.tasks is not None:

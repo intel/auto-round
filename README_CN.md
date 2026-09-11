@@ -35,6 +35,10 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 ## 🆕 最新进展
 
+* [2026/09] 我们将 MoE量化速度提升了 3 倍以上，并显著降低了 RAM 使用量。详细结果请参阅[文档](./docs/moe.md)。请注意，该优化可能会引入一些回归问题或其他问题。
+
+* [2026/09] 现在支持在 CUDA 设备上通过 vLLM 和 Transformers 使用 5/6/7-bit WOQ 模型，感谢 Humming Kernel 的支持。
+
 * [2026/08] 我们实验性地支持**算法组合**（例如 `--algs awq,signround` 或 `--algs hadamard,awq,signround`），以提升精度：[*总览*](./docs/algorithm_combinations_CN.md). 我们欢迎能真正落地的任何算法组合，欢迎提交 PR 或在 Issues 中留言。
 
 * [2026/08] 感谢 Humming Kernel，AutoScheme WOQ 在 vLLM 上的部署已实验性恢复：[*vLLM PR*](https://github.com/vllm-project/vllm/pull/52890)，[*示例模型*](https://huggingface.co/Intel/Qwen3.8-27B-bpw2.8-AutoRound)。注意：共享层需按 vLLM 的融合模式进行配置。
