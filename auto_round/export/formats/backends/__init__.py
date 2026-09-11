@@ -16,6 +16,7 @@ from auto_round.export.formats.backends.autoround import AutoRoundFormat
 from auto_round.export.formats.backends.fake import FakeFormat
 from auto_round.export.formats.backends.fp8 import FP8Format
 from auto_round.export.formats.backends.gguf import GGUFFormat
+from auto_round.export.formats.backends.rrq import RRQFormat
 from auto_round.export.formats.backends.auto_awq import AutoAWQFormat
 from auto_round.export.formats.backends.auto_gptq import AutoGPTQFormat
 from auto_round.export.formats.backends.llm_compressor import LLMCompressorFormat
@@ -29,6 +30,7 @@ __all__ = [
     "FakeFormat",
     "FP8Format",
     "GGUFFormat",
+    "RRQFormat",
     "LLMCompressorFormat",
     "MLXFormat",
     "SVDQuantNunchakuFormat",

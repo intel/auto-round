@@ -13,6 +13,7 @@
 # limitations under the License.
 from auto_round.autoround import AutoRound, AutoRoundAdam, AutoRoundDiffusion, AutoRoundLLM, AutoRoundMLLM
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
+from auto_round.algorithms.quantization.rrq.config import RRQConfig
 from auto_round.algorithms.quantization.sign_round.config import (
     AdamRoundConfig,
     SignRoundConfig,
@@ -41,6 +42,7 @@ __all__ = [
     "QuantizationScheme",
     "RTNConfig",
     "OptimizedRTNConfig",
+    "RRQConfig",
     "SignRoundConfig",
     "AdamRoundConfig",
     "SignRoundV2Config",

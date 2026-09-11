@@ -19,6 +19,7 @@ class AlgRegistryEntry:
     config_factory: Callable[[], object] | None = None
     summary: str = ""
     alias_factories: dict[str, Callable[[], object]] = field(default_factory=dict)
+    hidden: bool = False
 
 
 _ALG_REGISTRY: dict[str, AlgRegistryEntry] = {}
@@ -26,7 +27,7 @@ _ALIAS_TO_NAME: dict[str, str] = {}
 _CONFIG_IMPL_REGISTRY: dict[type, type["BaseAlgorithm"]] = {}
 _builtin_algorithms_registered = False
 _pipeline_members_registered = False
-_BUILTIN_ALGORITHM_ORDER = ("rtn", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
+_BUILTIN_ALGORITHM_ORDER = ("rtn", "rrq", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
 
 
 def _ensure_builtin_algorithms_registered() -> None:
@@ -37,6 +38,7 @@ def _ensure_builtin_algorithms_registered() -> None:
     # imports ordered preserves the help output and default algorithm order.
     for module_name in (
         "auto_round.algorithms.quantization.rtn.config",
+        "auto_round.algorithms.quantization.rrq.config",
         "auto_round.algorithms.quantization.sign_round.config",
         "auto_round.algorithms.transforms.awq.config",
         "auto_round.algorithms.transforms.svdquant.config",
@@ -54,6 +56,7 @@ def _ensure_pipeline_members_registered() -> None:
         return
     for module_name in (
         "auto_round.algorithms.quantization.rtn.quantizer",
+        "auto_round.algorithms.quantization.rrq.quantizer",
         "auto_round.algorithms.quantization.sign_round.quantizer",
         "auto_round.algorithms.quantization.sign_roundv2.quantizer",
         "auto_round.algorithms.quantization.adam_round.adam",
@@ -71,6 +74,7 @@ def register_algorithm(
     config_factory: Callable[[], object] | None = None,
     summary: str = "",
     alias_factories: dict[str, Callable[[], object]] | None = None,
+    hidden: bool = False,
 ) -> None:
     key = name.strip().lower()
     entry = _ALG_REGISTRY.get(key)
@@ -88,6 +92,8 @@ def register_algorithm(
     if alias_factories:
         entry.alias_factories.update({k.strip().lower(): v for k, v in alias_factories.items()})
     entry.aliases = merged_aliases
+    if hidden:
+        entry.hidden = True
 
     _ALIAS_TO_NAME[key] = key
     for alias in merged_aliases:
