@@ -35,6 +35,7 @@ from auto_round.algorithms.transforms.hadamard.inplace.model_config import (
     _resolve,
     infer_mapping_from_model,
 )
+from auto_round.utils.device_manager import get_current_device_manager
 
 # ---------------------------------------------------------------------------
 # Low-level primitives (model-agnostic via RotationMapping)
@@ -406,8 +407,7 @@ def _rotate_weights(
             _rotate_linear_by_Q(lm_head, Q, side="input", compute_device=compute_device)
 
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    get_current_device_manager().empty_cache()
 
     # ---- Per-layer rotation ----
     layers = _resolve(model, mapping.layers_attr)
@@ -639,12 +639,12 @@ def _rotate_weights(
                     had_matrix=_online_had(intermediate_size),
                 )
 
-        # Per-layer cleanup: drop fp64 temporaries and CUDA caching allocator
-        # blocks so peak memory stays at ~1 layer's worth instead of accumulating
-        # across all 32+ decoder layers (was the main cause of 33 GB RAM on 8B).
+        # Per-layer cleanup: drop fp64 temporaries and accelerator caching
+        # allocator blocks so peak memory stays at ~1 layer's worth instead of
+        # accumulating across all 32+ decoder layers (was the main cause of
+        # 33 GB RAM on 8B).
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        get_current_device_manager().empty_cache()
 
 
 # ---------------------------------------------------------------------------
