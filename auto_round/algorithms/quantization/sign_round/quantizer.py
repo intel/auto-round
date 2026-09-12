@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 import torch
 from torch import autocast
 
+from auto_round.algorithms.block_runner import _cat_device_safe
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
@@ -25,8 +26,29 @@ from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import (
     IndexSampler,
     collect_best_params,
+    shard_samplers,
 )
 from auto_round.logger import logger
+
+
+def _tune_phase_line(phases: dict, iters: int) -> str:
+    """Format the per-block tuning phase breakdown for AR_PERF_COUNTERS.
+
+    ``wrap`` = wrapper_block (params init, quant-func resolve + optional
+    per-wrapper torch.compile, SignRoundV2 init-scale search); ``prepare`` =
+    DDP engagement + tuning-param collection + optimizer/scheduler build;
+    ``loop`` = the iteration try/finally (overlaps the tune-ddp line at
+    iters>0); ``tail`` = best-params restore, clear_memory, unwrapping.
+    """
+    return "[perf] tune phases (iters=%d): wrap=%.2fs prepare=%.2fs loop=%.2fs tail=%.2fs" % (
+        iters,
+        phases.get("wrap", 0.0),
+        phases.get("prepare", 0.0),
+        phases.get("loop", 0.0),
+        phases.get("tail", 0.0),
+    )
+
+
 from auto_round.utils import (
     htcore,
     is_hpex_available,
@@ -35,7 +57,7 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
-from auto_round.utils.distributed import setup_ddp_if_needed_
+from auto_round.utils.distributed import is_distributed, setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
 if TYPE_CHECKING:
@@ -368,38 +390,135 @@ class SignRoundQuantizer(BaseQuantizer):
         active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
         nsamples = len(active_inputs) if isinstance(active_inputs, list) else self._count_samples(active_inputs)
 
+        from auto_round import envs as _envs
+        from auto_round.algorithms.quantization.sign_round.data_parallel import expect_pool_local
+
+        replica_group = None
+        mirror_optimizers = []
+        mirror_schedules = []
+        params_per_replica = []
+        _dp_placed = False  # True once pools are distributed across the engaged plan
+
+        import time as _ptime
+
+        from auto_round.algorithms.quantization.sign_round.data_parallel import pre_wrap_shard_candidate
+
+        _defer_wrap_search = pre_wrap_shard_candidate()
+
+        _tp = {}
+        _phase_t0 = _ptime.perf_counter()
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
             self.enable_minmax_tuning,
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            defer_init_search=_defer_wrap_search,
         )
+        _tp["wrap"] = _ptime.perf_counter() - _phase_t0
+        _phase_t0 = _ptime.perf_counter()  # prepare: engagement + params + optimizer
 
-        round_params = []
-        minmax_params = []
-        # Group parameters by their effective lr so that mixed-bit configs
-        # (e.g. a 4-bit model with a few 2-bit layers) use a per-layer lr
-        # derived from each layer's own bit-width.
-        round_lr_groups: dict[float, list] = {}
-        minmax_lr_groups: dict[float, list] = {}
-        for n, m in block.named_modules():
-            if hasattr(m, "orig_layer"):
-                layer_bits = getattr(m.orig_layer, "bits", None)
-                layer_lr = self._config.compute_lr(layer_bits)
-                if layer_lr is None:
-                    layer_lr = self.lr
-                self._maybe_log_low_bit_lr(layer_bits)
-                layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
-                if layer_minmax_lr is None:
-                    layer_minmax_lr = self.minmax_lr
-                for key in m.params.keys():
-                    if "min" in key or "max" in key:
-                        minmax_params.append(m.params[key])
-                        minmax_lr_groups.setdefault(float(layer_minmax_lr), []).append(m.params[key])
-                    else:
-                        round_params.append(m.params[key])
-                        round_lr_groups.setdefault(float(layer_lr), []).append(m.params[key])
+        # shared engagement resolver (also used by the composer's collection
+        # pass). Resolve fresh here: this call runs POST-wrap, so the mirror
+        # pricing sees the wrapper's fp32 value params and the free-VRAM
+        # snapshot is current for THIS block (the composer's pre-wrap
+        # resolution is best-effort for collection sharding only).
+        from auto_round.algorithms.quantization.sign_round.data_parallel import resolve_tune_ddp_plan_
+
+        self._resolved_ddp_plan = None  # drop the composer's pre-wrap plan
+        _plan = resolve_tune_ddp_plan_(self, block, active_inputs, fp_outputs, device)
+        if _plan.enabled and not isinstance(fp_outputs, list):
+            # the composer may have resolved before reference outputs existed;
+            # non-list outputs (diffusion-style) cannot be pool-distributed
+            logger.info("[tune-ddp] declining: reference outputs are not a list")
+            _plan = type(_plan)(1, _plan.devices[:1], _plan.shard_size)
+            self._resolved_ddp_plan = _plan
+        _dp_eligible = _plan.enabled
+        if _dp_eligible:
+            # All-float pinned blocks (a 'bits':16 'data_type':'float' layer_config
+            # pin) carry no tuning parameters: the serial path's empty-params
+            # guard no-ops them, so the parallel lane would only pay mirror
+            # setup + pool distribution for nothing (and the serial early-return
+            # never tears the group down). Decline before mirror setup.
+            from auto_round.algorithms.quantization.sign_round.data_parallel import block_has_tuning_entries
+
+            if not block_has_tuning_entries(block):
+                logger.info("[tune-ddp] declining: no tuning parameters in this block (all-float pinned); serial path")
+                _dp_eligible = False
+        replica_group = None
+        if _dp_eligible:
+            from auto_round.algorithms.quantization.sign_round.data_parallel import (
+                ReplicaGroup,
+                distribute_pool,
+                gather_block_for_mirroring_,
+            )
+
+            # the source block must sit whole on the home device before
+            # mirroring (data-driven multi-GPU may have sharded its leaves)
+            gather_block_for_mirroring_(block, _plan.devices[0])
+            # distributed calibration pool: shard-local tune reads; each
+            # device owns a contiguous 1/world slice of the samples
+            distribute_pool(active_inputs, _plan.devices)
+            distribute_pool(fp_outputs, _plan.devices)
+            _dp_placed = True
+            import time as _ptime
+
+            _t0 = _ptime.perf_counter()
+            replica_group = ReplicaGroup(block, _plan)
+            _ddp_perf = {
+                "build": _ptime.perf_counter() - _t0,
+                "warm": 0.0,
+                "fwd": [],
+                "bwd": [],
+                "exch": [],
+                "step": [],
+            }
+            for note in _plan.notes:
+                logger.info("[tune-ddp] %s", note)
+
+            # mirrors-first: the deferred wrap-time searches run round-robin on
+            # the replicas now that the mirrors exist (before any forward --
+            # the warm-up and the tune loop both need init_scale present)
+            from auto_round.algorithms.quantization.sign_round.data_parallel import (
+                run_deferred_wrap_searches,
+            )
+
+            run_deferred_wrap_searches(block, replica_group)
+        elif _defer_wrap_search:
+            # the resolver declined the parallel lane: fill the deferred
+            # searches serially on the home device (never enter tuning with
+            # init_scale unset)
+            from auto_round.algorithms.quantization.sign_round.data_parallel import (
+                run_deferred_wrap_searches,
+            )
+
+            run_deferred_wrap_searches(block, None)
+
+        def _collect_tuning_params(mod):
+            """Collect (round, minmax) params + per-lr groups from a wrapped block."""
+            r_params, m_params = [], []
+            r_groups: dict[float, list] = {}
+            m_groups: dict[float, list] = {}
+            for _n, m in mod.named_modules():
+                if hasattr(m, "orig_layer"):
+                    layer_bits = getattr(m.orig_layer, "bits", None)
+                    layer_lr = self._config.compute_lr(layer_bits)
+                    if layer_lr is None:
+                        layer_lr = self.lr
+                    self._maybe_log_low_bit_lr(layer_bits)
+                    layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
+                    if layer_minmax_lr is None:
+                        layer_minmax_lr = self.minmax_lr
+                    for key in m.params.keys():
+                        if "min" in key or "max" in key:
+                            m_params.append(m.params[key])
+                            m_groups.setdefault(float(layer_minmax_lr), []).append(m.params[key])
+                        else:
+                            r_params.append(m.params[key])
+                            r_groups.setdefault(float(layer_lr), []).append(m.params[key])
+            return r_params, m_params, r_groups, m_groups
+
+        round_params, minmax_params, round_lr_groups, minmax_lr_groups = _collect_tuning_params(block)
 
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
@@ -473,8 +592,117 @@ class SignRoundQuantizer(BaseQuantizer):
             else None
         )
 
+        # ── Optional single-process data parallelism (AR_TUNE_DDP_WORLD) ─────
+        # (eligibility, plan, mirrors and pool distribution ran before
+        # parameter collection; mirror optimizers + warm-up remain here)
+        _dp_samplers = None
+        if replica_group is not None and _dp_placed and global_batch_size % replica_group.world == 0:
+            _dp_samplers = shard_samplers(nsamples, replica_group.world, global_batch_size // replica_group.world)
+        if _dp_eligible and replica_group is not None:
+            # mirror-side optimizers replicate the home group structure
+            for mirror in replica_group.mirrors:
+                r_ps, m_ps, r_gr, m_gr = _collect_tuning_params(mirror)
+                m_params = [{"params": ps, "lr": torch.tensor(g_lr)} for g_lr, ps in r_gr.items()]
+                if self.enable_minmax_tuning:
+                    m_params += [{"params": ps, "lr": torch.tensor(g_lr)} for g_lr, ps in m_gr.items()]
+                m_opt = self.optimizer(m_params, lr=lr, weight_decay=0, **extra_kwargs)
+                m_sched = (
+                    torch.optim.lr_scheduler.LinearLR(m_opt, start_factor=1.0, end_factor=0.0, total_iters=self.iters)
+                    if self.lr_scheduler is None
+                    else copy.deepcopy(self.lr_scheduler)
+                )
+                mirror_optimizers.append(m_opt)
+                mirror_schedules.append(m_sched)
+            params_per_replica = [
+                r_ps + m_ps if self.enable_minmax_tuning else r_ps
+                for r_ps, m_ps, _r, _m in (_collect_tuning_params(rep) for rep in replica_group.replicas)
+            ]
+            # Warm up every replica SERIALLY in the main thread: torch.compile
+            # materializes its per-device kernels lazily at first call, and
+            # compiling from several worker threads at once races in dynamo.
+            # The warm-up also validates each mirror end-to-end; a failure
+            # ABORTS the run (DDP was explicitly requested -- continuing
+            # serially would silently invalidate the configuration and any
+            # measurement against it). Grads are discarded.
+            try:
+                _t0 = _ptime.perf_counter()
+                _pool_shard = max(1, nsamples // replica_group.world)
+                for r, rep in enumerate(replica_group.replicas):
+                    # warm only one batch's worth (shard_size samples) at the
+                    # head of this replica's pool shard -- warming the whole
+                    # shard would materialize its full activations on the mirror
+                    _warm = list(range(r * _pool_shard, r * _pool_shard + _plan.shard_size))
+                    _dev_r = next(rep.parameters()).device
+                    with torch.cuda.device(_dev_r):
+                        expect_pool_local([fp_outputs[j] for j in _warm], _dev_r, "warmup-ref")
+                        _ref_w = torch.cat([fp_outputs[j].to(_dev_r) for j in _warm], dim=0)
+                        _pred_w = block_fwd.forward(rep, active_inputs, input_others, _warm, _dev_r)
+                        _loss_w = self._get_loss(_pred_w, _ref_w, _warm, mse_loss, _dev_r, valid_token_mask)
+                        _loss_w.backward()
+                _ddp_perf["warm"] = _ptime.perf_counter() - _t0
+                for _opt in [optimizer] + mirror_optimizers:
+                    _opt.zero_grad()
+            except Exception as _warm_err:  # noqa: BLE001 - re-raised with context
+                try:  # fail-visible: tensor-device census + hook inventory per replica
+                    for _ri, _rep in enumerate(replica_group.replicas):
+                        _census: dict = {}
+                        for _on, _pp in _rep.named_parameters():
+                            _census[str(_pp.device)] = _census.get(str(_pp.device), 0) + 1
+                        # hooks survive deepcopy/replicate and are invisible to
+                        # parameter walks; a hook with a baked-in device (e.g. an
+                        # AlignDevicesHook pointing at the primary) moves inputs or
+                        # reloads weights onto the WRONG GPU mid-forward
+                        _hooks: dict = {}
+                        for _mn, _mod in _rep.named_modules():
+                            for _fn in list(getattr(_mod, "_forward_pre_hooks", {}).values()) + list(
+                                getattr(_mod, "_forward_hooks", {}).values()
+                            ):
+                                _t = type(_fn).__name__
+                                _hooks[_t] = _hooks.get(_t, 0) + 1
+                        logger.error(
+                            "[tune-ddp] warm-up failed; replica[%d] param device census: %s; hooks: %s",
+                            _ri,
+                            _census,
+                            _hooks or "none",
+                        )
+                        if _ri == 0:  # fingerprint once: kwargs types/shapes + pool geometry
+                            try:
+
+                                def _fp(v):
+                                    if torch.is_tensor(v):
+                                        return tuple(v.shape)
+                                    if isinstance(v, tuple):
+                                        return "(" + ", ".join(_fp(t) for t in v) + ")"
+                                    if isinstance(v, (list,)):
+                                        return f"list[{len(v)}]"
+                                    return type(v).__name__
+
+                                _pool = len(active_inputs) if isinstance(active_inputs, list) else "dict"
+                                logger.error(
+                                    "[tune-ddp] kwargs fingerprint (pool n=%s, batch=%s): %s",
+                                    _pool,
+                                    getattr(self.calibration_context, "batch_size", "?"),
+                                    {k: _fp(v) for k, v in input_others.items()},
+                                )
+                            except Exception:  # pragma: no cover - diagnostics must not mask
+                                pass
+                except Exception:  # pragma: no cover - diagnostics must not mask
+                    pass
+                replica_group.teardown()
+                raise RuntimeError(
+                    "parallel tuning was requested but the replica warm-up failed -- "
+                    "refusing to continue on the serial path (that would silently "
+                    "invalidate the requested configuration and any measurement "
+                    "against it). Fix the underlying failure or run with "
+                    "--parallel_quantization off."
+                ) from _warm_err
+
+        _tp["prepare"] = _ptime.perf_counter() - _phase_t0
+        _phase_t0 = _ptime.perf_counter()  # loop
         tuning_cache = None
-        # Only opt-in diffusion tuning can enter the CUDA staging path.
+        # Only opt-in diffusion tuning can enter the CUDA staging path (the
+        # data-parallel lane never coexists with it: engagement requires a
+        # multi-device plan, the cache requires a single device).
         cache_budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
         use_tuning_cache = (
             getattr(self.model_context, "is_diffusion", False)
@@ -507,42 +735,109 @@ class SignRoundQuantizer(BaseQuantizer):
                     for n, m in block.named_modules():
                         m.cur_iter = i
                 total_loss = 0
-                global_indices = index_sampler.next_batch()
-                if valid_token_mask:
-                    num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
-                for batch_start in range(0, len(global_indices), batch_size):
-                    indices = global_indices[batch_start : batch_start + batch_size]
-                    staged = tuning_cache.get(indices) if tuning_cache is not None else None
-                    if staged is None:
-                        ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
-                        pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
+                if replica_group is not None:
+                    _world = replica_group.world
+                    if _dp_samplers is not None:
+                        _shards = [s_.next_batch() for s_ in _dp_samplers]
+                        global_indices = [j for sh in _shards for j in sh]
                     else:
-                        ref_output = staged[2]
-                        pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
-                    if loss_device is not None:
-                        pred_output = pred_output.to(loss_device)
-                    if (
-                        block_ctx.block_index == block_ctx.block_cnt - 1
-                        and self.enable_lfq
-                        and input_ids is not None
-                        and self._is_text_decoder_block(block_ctx.block_name)
-                    ):
-                        loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
-                    else:
-                        loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
-                    num_elm = 1 if num_elm <= 0 else num_elm
-                    total_loss += loss.item() / num_elm
+                        global_indices = index_sampler.next_batch()
+                        _shard = len(global_indices) // _world
+                        _shards = [global_indices[r * _shard : (r + 1) * _shard] for r in range(_world)]
+                    if valid_token_mask is not None:
+                        # same global normalization as the serial path (reporting only)
+                        num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+                    _losses = [None] * _world
 
-                    if mid_iter_mem_check:
-                        # clear memory to avoid OOM due to memory fragmentation
-                        clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
+                    _fwd_walls = [0.0] * _world
+                    _bwd_walls = [0.0] * _world
 
-                    self._scale_loss_and_backward(scaler, loss)
+                    def _dp_replica_step(r, shard):
+                        rep = replica_group.replicas[r]
+                        dev_r = next(rep.parameters()).device
+                        with torch.cuda.device(dev_r):
+                            expect_pool_local([fp_outputs[j] for j in shard], dev_r, "ddp-ref")
+                            ref_r = torch.cat([fp_outputs[j].to(dev_r) for j in shard], dim=0)
+                            # always device-local: parking a mirror's output on the
+                            # primary GPU would both mismatch the loss and cost a
+                            # cross-device copy every iteration
+                            _t0 = _ptime.perf_counter()
+                            pred_r = block_fwd.forward(rep, active_inputs, input_others, shard, dev_r)
+                            # the masked loss divides by the shard's ELEMENT count
+                            # (reduction="mean"), which is identical across the
+                            # equal shards -- so the exchange's mean-of-shard-means
+                            # reproduces the serial masked loss exactly
+                            loss_r = self._get_loss(pred_r, ref_r, shard, mse_loss, dev_r, valid_token_mask)
+                            _fwd_walls[r] = _ptime.perf_counter() - _t0
+                            _losses[r] = loss_r.detach()
+                            _t0 = _ptime.perf_counter()
+                            loss_r.backward()
+                            # NB: backward() returns after ENQUEUE; the device
+                            # completion is forced by the loss .item() sum and the
+                            # exchange's grad reads, so a tail of bwd GPU time
+                            # surfaces in the exch wall below
+                            _bwd_walls[r] = _ptime.perf_counter() - _t0
 
-                    if mid_iter_mem_check:
-                        # clear memory to avoid OOM due to memory fragmentation
-                        clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
+                    replica_group.run_threaded([lambda r=r: _dp_replica_step(r, _shards[r]) for r in range(_world)])
+                    _ddp_perf["fwd"].append(max(_fwd_walls))
+                    _ddp_perf["bwd"].append(max(_bwd_walls))
+                    # sync_grads: cross-replica gradient exchange. sign_exchange:
+                    # the update consumes only sign(mean-grad) and weight_decay is
+                    # 0, so exchanging int8 signs after the reduce is
+                    # bitwise-identical across replicas -- but a momentum buffer
+                    # would mix magnitudes back in, so gate on it.
+                    _t0 = _ptime.perf_counter()
+                    replica_group.sync_grads(
+                        params_per_replica,
+                        sign_exchange=self.momentum is None or float(self.momentum) == 0.0,
+                    )
+                    _ddp_perf["exch"].append(_ptime.perf_counter() - _t0)
+                    # report the global-batch mean (mean of equal-size shard
+                    # means == the serial global mean), normalized by the
+                    # valid-element count exactly like the serial path so
+                    # best-iter selection and dynamic_max_gap behave identically
+                    _ne = 1 if num_elm <= 0 else num_elm
+                    total_loss = sum(l.item() for l in _losses if l is not None) / _world / _ne
+
+                else:
+                    global_indices = index_sampler.next_batch()
+                    if valid_token_mask:
+                        num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+                    for batch_start in range(0, len(global_indices), batch_size):
+                        indices = global_indices[batch_start : batch_start + batch_size]
+                        staged = tuning_cache.get(indices) if tuning_cache is not None else None
+                        if staged is None:
+                            ref_output = _cat_device_safe([fp_outputs[i] for i in indices], dim=0).to(loss_device)
+                            pred_output = block_fwd.forward(
+                                block, active_inputs, input_others, indices, _fwd_cache_device
+                            )
+                        else:
+                            ref_output = staged[2]
+                            pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
+                        if loss_device is not None:
+                            pred_output = pred_output.to(loss_device)
+                        if (
+                            block_ctx.block_index == block_ctx.block_cnt - 1
+                            and self.enable_lfq
+                            and input_ids is not None
+                            and self._is_text_decoder_block(block_ctx.block_name)
+                        ):
+                            loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
+                        else:
+                            loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
+                        num_elm = 1 if num_elm <= 0 else num_elm
+                        total_loss += loss.item() / num_elm
+
+                        if mid_iter_mem_check:
+                            # clear memory to avoid OOM due to memory fragmentation
+                            clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
+
+                        self._scale_loss_and_backward(scaler, loss)
+
+                        if mid_iter_mem_check:
+                            # clear memory to avoid OOM due to memory fragmentation
+                            clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
 
                 if i == 0:
                     init_loss = total_loss
@@ -568,12 +863,63 @@ class SignRoundQuantizer(BaseQuantizer):
                 if not self.not_use_best_mse:
                     if 0 < self.dynamic_max_gap <= i - last_best_iter:
                         break
-                sync_gradients()
-                self._step(scaler, optimizer, lr_schedule)
+                if replica_group is not None:
+                    # world-sized callable list (home first) so the persistent
+                    # pool serves the step too instead of falling back to
+                    # per-iteration thread spawn
+                    def _mirror_step(opt, sched):
+                        opt.step()
+                        opt.zero_grad()
+                        sched.step()
+
+                    _t0 = _ptime.perf_counter()
+                    replica_group.run_threaded(
+                        [lambda: self._step(scaler, optimizer, lr_schedule)]
+                        + [
+                            lambda oo=opt, ss=sch: _mirror_step(oo, ss)
+                            for opt, sch in zip(mirror_optimizers, mirror_schedules)
+                        ]
+                    )
+                    _ddp_perf["step"].append(_ptime.perf_counter() - _t0)
+                else:
+                    sync_gradients()
+                    self._step(scaler, optimizer, lr_schedule)
 
         finally:
             if tuning_cache is not None:
                 tuning_cache.close()
+            _tp["loop"] = _ptime.perf_counter() - _phase_t0
+            _phase_t0 = _ptime.perf_counter()  # tail
+            if replica_group is not None:
+                # engagement defines both; serial never enters this branch
+                _t0 = _ptime.perf_counter()
+                replica_group.teardown()
+                _ddp_perf["teardown"] = _ptime.perf_counter() - _t0
+                _phase_t0 = _ptime.perf_counter()  # tail resumes after teardown
+
+        if replica_group is not None and getattr(_envs, "AR_PERF_COUNTERS", False):
+            _fwd, _exch, _step = _ddp_perf["fwd"], _ddp_perf["exch"], _ddp_perf["step"]
+
+            def _ms(x):
+                return f"{1000 * x:.0f}ms"
+
+            _bwd = _ddp_perf["bwd"]
+            logger.info(
+                "[perf] tune-ddp block (%s): mirrors=%s warmup=%s "
+                "fwd=%s/%s bwd=%s/%s exch=%s/%s step=%s/%s teardown=%s (mean/max per iter)",
+                type(block).__name__,
+                _ms(_ddp_perf["build"]),
+                _ms(_ddp_perf["warm"]),
+                _ms(sum(_fwd) / max(len(_fwd), 1)),
+                _ms(max(_fwd)) if _fwd else "n/a",
+                _ms(sum(_bwd) / max(len(_bwd), 1)),
+                _ms(max(_bwd)) if _bwd else "n/a",
+                _ms(sum(_exch) / max(len(_exch), 1)),
+                _ms(max(_exch)) if _exch else "n/a",
+                _ms(sum(_step) / max(len(_step), 1)),
+                _ms(max(_step)) if _step else "n/a",
+                _ms(_ddp_perf.get("teardown", 0.0)),
+            )
 
         last_loss = total_loss
         best_iter = self.iters
@@ -602,6 +948,9 @@ class SignRoundQuantizer(BaseQuantizer):
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
         logger.infoclean(dump_info)
+        _tp["tail"] = _ptime.perf_counter() - _phase_t0
+        if getattr(_envs, "AR_PERF_COUNTERS", False):
+            logger.info(_tune_phase_line(_tp, self.iters))
         return best_params
 
     def quantize_layer_outside_block(

@@ -352,6 +352,86 @@ class AlgorithmComposer:
     def compress_embedding_layer(self):
         return self.block_quantizer.quantize_embedding_layer()
 
+    def _ddp_collection_devices(self, block, fp_inputs):
+        """Mirror devices for sharding the no-grad collection forwards.
+
+        Uses the SAME engagement resolver as the tune (resolve_tune_ddp_plan_,
+        cached on the quantizer) so the collection gates can never diverge from
+        what the tune later engages -- plus two collection-specific gates: the
+        runner must use the plain tensor output layout, and the block class
+        must not be a multi-output registry entry (sharding clears
+        ``last_output_dict``, which those blocks need to feed the next block).
+        Returns None to keep the serial single-GPU collection.
+        """
+        if not isinstance(fp_inputs, list) or not fp_inputs:
+            return None
+        runner_cfg = getattr(self.block_forward, "output_config", None)
+        if runner_cfg and list(runner_cfg) != ["hidden_states"]:
+            return None  # multi-output layouts need the serial last_output_dict path
+        from auto_round.algorithms.block_runner import _BLOCK_OUTPUT_REGISTRY
+
+        if len(_BLOCK_OUTPUT_REGISTRY.get(type(block).__name__, ["hidden_states"])) != 1:
+            return None  # registry multi-output blocks (e.g. GlmMoeDsa) need serial collection
+        try:
+            home = next(block.parameters(), torch.empty(0)).device
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("[tune-ddp] collection sharding declined: cannot resolve the block home device (%s)", e)
+            return None
+        from auto_round.algorithms.quantization.sign_round.data_parallel import resolve_tune_ddp_plan_
+
+        try:
+            plan = resolve_tune_ddp_plan_(self.block_quantizer, block, fp_inputs, None, home, log=False)
+        except RuntimeError:
+            # the resolver raises when a requested world is ineligible
+            # (requirement semantics) -- never swallow that here: silently
+            # continuing with serial collection would invalidate the request
+            raise
+        except Exception as e:  # pragma: no cover - resolver reachability on odd hosts
+            logger.warning("[tune-ddp] collection sharding declined: resolver unreachable (%s)", e)
+            return None
+        return plan.devices if plan.world > 1 else None
+
+    def _collect_forward_timed(self, *args, **kwargs):
+        """_collect_forward with wall accumulation into self.last_collect_wall."""
+        import time as _ctime
+
+        _t0 = _ctime.perf_counter()
+        try:
+            return self._collect_forward(*args, **kwargs)
+        finally:
+            self.last_collect_wall = getattr(self, "last_collect_wall", 0.0) + (_ctime.perf_counter() - _t0)
+
+    def _collect_forward(
+        self, block, inputs, input_others, out_dev=None, allow_shard: bool = True, hook_pass: bool = False
+    ):
+        """Collection forward: sharded across DDP mirrors when eligible.
+
+        ``out_dev`` optionally overrides the runner's output cache device. ``allow_shard=False`` forces the serial path: passes that carry
+        forward hooks (fp-input / q-input stats that cannot be merged)
+        must not shard -- hook writes land on the ephemeral mirror copies
+        and are freed with them, silently dropping that shard's statistics.
+        Mergeable stats (imatrix, act_max) are folded from the mirrors back
+        into the home, so those hook passes may shard.
+
+        ``hook_pass=True`` caps the concurrent shards at 4: forward hooks
+        force dynamo graph breaks, leaving the compiled runner as
+        python-bound eager sections that GIL-convoy under many threads.
+        """
+        if self._coll_devs is None or not allow_shard:
+            return self.block_forward(block, inputs, input_others, cache_device=out_dev)
+        from auto_round.algorithms.quantization.sign_round.data_parallel import sharded_nograd_forward
+
+        return sharded_nograd_forward(
+            self.block_forward,
+            block,
+            inputs,
+            input_others,
+            out_dev,
+            self._coll_devs,
+            merge_stats=True,
+            max_devices=4 if hook_pass else 0,
+        )
+
     # ── Per-block pipeline orchestration ─────────────────────────────────────
 
     def compress_block(
@@ -390,7 +470,19 @@ class AlgorithmComposer:
               ``enable_quanted_input`` is ``False``).
             - *reference_output*: FP reference output collected before optimization.
         """
+        self.last_collect_wall = 0.0
         block_forward_fn = self.block_forward
+        self._coll_devs = self._ddp_collection_devices(block, fp_inputs)
+        if self._coll_devs:
+            # distributed calibration pool: each DDP device owns its sample
+            # shard (matching the tune shards), so shard-local reads never
+            # cross devices; serial consumers use device-safe cats
+            from auto_round.algorithms.quantization.sign_round.data_parallel import distribute_pool
+
+            if isinstance(fp_inputs, list) and fp_inputs:
+                distribute_pool(fp_inputs, self._coll_devs)
+            if isinstance(q_inputs, list) and q_inputs:
+                distribute_pool(q_inputs, self._coll_devs)
 
         # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──────
         with torch.no_grad():
@@ -421,7 +513,14 @@ class AlgorithmComposer:
             with torch.no_grad():
                 quant_hooks = self._get_fp_act_hooks(block)
                 if reference_output is None:
-                    reference_output = block_forward_fn(block, fp_inputs, input_others)
+                    reference_output = self._collect_forward_timed(
+                        block,
+                        fp_inputs,
+                        input_others,
+                        # mergeable stats (imatrix, act_max) are folded from the
+                        # mirrors, so even hook-carrying passes may shard
+                        hook_pass=bool(quant_hooks),
+                    )
                 reference_next_input = getattr(block_forward_fn, "last_output_dict", None) or reference_output
                 for h in quant_hooks:
                     h.remove()
@@ -429,7 +528,12 @@ class AlgorithmComposer:
                 if self.block_quantizer.enable_quanted_input:
                     q_hooks = self._get_q_act_hooks(block)
                     if q_hooks:
-                        block_forward_fn(block, q_inputs if q_inputs is not None else fp_inputs, input_others)
+                        self._collect_forward_timed(
+                            block,
+                            q_inputs if q_inputs is not None else fp_inputs,
+                            input_others,
+                            hook_pass=bool(q_hooks),
+                        )
                         for h in q_hooks:
                             h.remove()
 
@@ -473,7 +577,7 @@ class AlgorithmComposer:
         # ── Step 6: Collect quantized-block outputs for the next block ──────────
         if self.block_quantizer.enable_quanted_input:
             with torch.no_grad():
-                new_q_input = block_forward_fn(block, effective_input, input_others)
+                new_q_input = self._collect_forward_timed(block, effective_input, input_others)
                 new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input
         else:
             new_q_input = None

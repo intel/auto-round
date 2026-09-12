@@ -848,6 +848,36 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 
 There are typically two scenarios that require multi-GPU tuning: one is the calibration phase mainly for lm-head quantization, and the other is quantizing extremely large models (e.g., models larger than 100 GB).
 
+#### Parallel block tuning across GPUs
+When a tuning block fits on a single GPU, `--parallel_quantization` speeds up the tuning loop by using the other
+GPUs in the same process: each GPU holds a mirror of the current block and tunes it on its own calibration shard,
+and gradients are exchanged in-process after every iteration.
+
+~~~bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --parallel_quantization auto
+~~~
+
+- `off` (default) keeps the serial single-GPU loop; `N>=2` pins the replica count.
+- `auto` detects the replica count: the largest power of two not exceeding the visible CUDA devices, reduced
+  further to the devices whose free VRAM fits a block mirror (`world reduced 4 -> 2 by VRAM guard` in the log).
+- A requested parallel world is a requirement, not a preference: if parallel tuning is infeasible (e.g. fewer
+  than two mirror devices fit), the run fails with the blocking reasons instead of silently continuing serial.
+  Blocks with nothing to tune (all-float pinned) still take the serial path.
+- Replicas draw disjoint calibration shards, so the effective batch covers the same data as the serial run and
+  accuracy is preserved.
+- Per-iteration loss lines are reproducible for a fixed mode and seed, but they are not directly comparable between
+  serial and parallel runs: serial draws each iteration's batch from the full calibration pool, while parallel
+  replicas draw from disjoint per-device shards so that every pool read stays device-local. The wrapped starting
+  state is identical (the deterministic per-layer searches are bit-identical), so compare modes at the artifact
+  level (accuracy, KL divergence), where parity holds.
+- `AR_TUNE_DDP_DEVICES` selects specific mirror devices -- see [environment variables](environments.md).
+- What runs in parallel depends on the algorithm family: the block collection passes and the SignRound (V1/V2)
+  tuning loop are always sharded; at `--iters 0` the per-layer RTN/optimized-RTN zero-shot searches shard
+  round-robin across the GPUs; with SignRoundV2 the wrap-time init-scale searches run on the replicas as well
+  (mirrors-first), so every deterministic per-layer search is bit-identical to the serial run. Optimization
+  algorithms that fit calibration data directly -- AWQ activation-aware scaling, GPTQ, and similar -- are not yet
+  adapted to the replica loop and run serial when combined with other tuning.
+
 #### Enable multiple gpus calibration in lm_head quantization
 For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which requires the entire model to reside on 
   the GPU for efficient calibration. If there is no enough VRAM, some layers will fallback to RTN mode
