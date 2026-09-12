@@ -60,3 +60,20 @@ def test_wan_adapter_rejects_non_runtime_projection():
 
     with pytest.raises(ValueError, match="unrecognized Wan SVDQuant source"):
         tuple(adapter.map_modules(_model(), (_source("blocks.0.time_embedder.linear_1"),)))
+
+
+def test_wan_extra_tensors_preserve_declared_fp32_values():
+    model = _model()
+    model._keep_in_fp32_modules = ["time_embedder", "scale_shift_table"]
+    model.time_embedder = torch.nn.Linear(2, 2)
+    model.proj_out = torch.nn.Linear(2, 2)
+    model.register_buffer("scale_shift_table", torch.full((2,), 1.001, dtype=torch.float32))
+    with torch.no_grad():
+        model.time_embedder.weight.fill_(1.001)
+
+    tensors = WanSVDQuantNunchakuAdapter().extra_tensors(model)
+
+    for key in ("time_embedder.weight", "scale_shift_table"):
+        assert tensors[key].dtype == torch.float32
+        torch.testing.assert_close(tensors[key], model.state_dict()[key], rtol=0, atol=0)
+    assert tensors["proj_out.weight"].dtype == torch.bfloat16

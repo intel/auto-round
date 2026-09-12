@@ -104,17 +104,13 @@ class WanSVDQuantNunchakuAdapter:
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError("complete Wan export requires integer num_layers") from exc
             expected = {
-                f"blocks.{index}.{suffix}"
-                for index in range(num_layers)
-                for suffix in WAN_SVDQUANT_TARGET_MODULES
+                f"blocks.{index}.{suffix}" for index in range(num_layers) for suffix in WAN_SVDQUANT_TARGET_MODULES
             }
             actual = {source.name for source in records}
             if actual != expected:
                 missing = sorted(expected - actual)
                 extra = sorted(actual - expected)
-                raise ValueError(
-                    f"complete Wan projection mismatch: missing={missing[:5]}, extra={extra[:5]}"
-                )
+                raise ValueError(f"complete Wan projection mismatch: missing={missing[:5]}, extra={extra[:5]}")
 
         return (
             SVDQuantExportRecord(
@@ -134,14 +130,18 @@ class WanSVDQuantNunchakuAdapter:
     def extra_tensors(self, model: torch.nn.Module) -> Mapping[str, torch.Tensor]:
         from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 
-        quantized_prefixes = tuple(f"{name}." for name, module in model.named_modules() if isinstance(module, SVDQuantLinear))
+        quantized_prefixes = tuple(
+            f"{name}." for name, module in model.named_modules() if isinstance(module, SVDQuantLinear)
+        )
+        fp32_names = getattr(model, "_keep_in_fp32_modules", None) or []
         tensors = {}
         for name, tensor in model.state_dict().items():
             if name.startswith(quantized_prefixes):
                 continue
             value = tensor.detach()
             if value.is_floating_point():
-                value = value.to(torch.bfloat16)
+                dtype = torch.float32 if any(part in name for part in fp32_names) else torch.bfloat16
+                value = value.to(dtype)
             tensors[name] = value.cpu().contiguous()
         return tensors
 

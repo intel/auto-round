@@ -16,6 +16,7 @@ def _types(configs):
 
 def test_split_entry_kwargs_partitions_owned_fields():
     processor = object()
+    pipeline_call_kwargs = {"height": 256, "width": 256, "num_frames": 9, "output_type": "latent"}
 
     grouped = _split_entry_kwargs(
         {
@@ -25,6 +26,7 @@ def test_split_entry_kwargs_partitions_owned_fields():
             "model_free": False,
             "num_inference_steps": 20,
             "calib_num_inference_steps": 8,
+            "pipeline_call_kwargs": pipeline_call_kwargs,
         }
     )
 
@@ -34,6 +36,7 @@ def test_split_entry_kwargs_partitions_owned_fields():
     assert grouped["route"]["model_free"] is False
     assert grouped["diffusion"]["num_inference_steps"] == 20
     assert grouped["diffusion"]["calib_num_inference_steps"] == 8
+    assert grouped["diffusion"]["pipeline_call_kwargs"] == pipeline_call_kwargs
 
 
 def test_split_entry_kwargs_ignores_unknown_fields(monkeypatch):

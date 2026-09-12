@@ -355,6 +355,7 @@ _ENTRY_KWARG_OWNERS = {
     "num_inference_steps": "diffusion",
     "calib_num_inference_steps": "diffusion",
     "generator_seed": "diffusion",
+    "pipeline_call_kwargs": "diffusion",
 }
 
 _SCHEME_FIELDS = set(QuantizationScheme.get_attributes())
