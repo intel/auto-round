@@ -13,7 +13,7 @@
 # limitations under the License.
 import os
 import random
-from typing import Union
+from typing import List, Optional, Union
 
 import torch
 from torch.amp import autocast
@@ -30,6 +30,7 @@ from auto_round.export.formats.backends.gguf import (
     get_layer_config_by_gguf_format,
     gguf_type_fallback,
 )
+from auto_round.logger import logger
 from auto_round.schemes import BackendDataType  # re-exported: qlinear_fp/qlinear_int import it from here
 from auto_round.schemes import (
     QuantizationScheme,
@@ -172,6 +173,47 @@ def block_forward(
                 if param_name not in input_others:
                     input_others[param_name] = val
         positional_inputs = ()
+
+    # DDP-mirror device audit (last line of defense): every tensor kwarg must
+    # sit on the same accelerator device as the block's parameters. A stale
+    # kwarg (e.g. an entry recorded on the primary GPU while the replica
+    # lives elsewhere) silently overrides the staged first-arg inside this
+    # function and crashes cross-device inside the block forward -- serial
+    # runs never notice because every tensor shares one device. Move the
+    # stragglers onto the block's device AND name them (fail-visible).
+    try:
+        _block_dev = next(block.parameters()).device
+    except StopIteration:  # pragma: no cover - param-less blocks
+        _block_dev = device
+
+    def _audit(value, prefix, bad):
+        if torch.is_tensor(value):
+            if value.device.type in ("cuda", "xpu", "hpu") and value.device != _block_dev:
+                bad.append(f"{prefix}:{value.device}")
+        elif isinstance(value, (list, tuple)):
+            for _i, _v in enumerate(value):
+                _audit(_v, f"{prefix}[{_i}]", bad)
+        elif isinstance(value, dict):
+            for _k, _v in value.items():
+                _audit(_v, f"{prefix}.{_k}", bad)
+
+    _bad = []
+    for _k, _v in input_others.items():
+        _audit(_v, str(_k), _bad)
+    if _bad:
+        logger.warning(
+            "[block-forward] device sweep: moving %d stale kwarg tensor(s) onto %s: %s%s",
+            len(_bad),
+            _block_dev,
+            ", ".join(_bad[:8]),
+            " ..." if len(_bad) > 8 else "",
+        )
+        for _k in list(input_others.keys()):
+            if torch.is_tensor(input_others[_k]) and input_others[_k].device.type in ("cuda", "xpu", "hpu"):
+                if input_others[_k].device != _block_dev:
+                    input_others[_k] = input_others[_k].to(_block_dev)
+            elif isinstance(input_others[_k], (list, tuple, dict)):
+                input_others[_k] = to_device(input_others[_k], _block_dev)
 
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
@@ -398,16 +440,23 @@ class IndexSampler:
         indices (List[int]): Shuffled list of indices.
     """
 
-    def __init__(self, nsamples: int, batch_size: int) -> None:
+    def __init__(self, nsamples: int, batch_size: int, indices: Optional[List[int]] = None) -> None:
         """Initializes the sampler.
 
         Args:
             nsamples (int): Total number of samples (must be >= batch_size).
             batch_size (int): Number of indices per batch.
+            indices (list[int], optional): Explicit index pool to shuffle
+                (defaults to ``range(nsamples)``). Used by shard-constrained
+                DDP sampling; ``nsamples`` must equal ``len(indices)``.
 
         Raises:
             ValueError: If batch_size is not in the range (0, nsamples].
         """
+        if indices is None:
+            indices = list(range(nsamples))
+        elif len(indices) != nsamples:
+            raise ValueError(f"indices pool ({len(indices)}) does not match nsamples ({nsamples})")
         if batch_size <= 0 or batch_size > nsamples:
             raise ValueError("batch_size must be > 0 and <= nsamples")
 
@@ -415,7 +464,7 @@ class IndexSampler:
         self.batch_size: int = batch_size
         self.index: int = 0
 
-        self.indices: list[int] = list(range(nsamples))
+        self.indices: list[int] = list(indices)
         random.shuffle(self.indices)
 
     def next_batch(self) -> list[int]:
@@ -434,6 +483,32 @@ class IndexSampler:
         batch = self.indices[self.index : self.index + self.batch_size]
         self.index += self.batch_size
         return batch
+
+
+def shard_samplers(nsamples: int, world: int, batch_per_replica: int) -> Optional[List[IndexSampler]]:
+    """Per-replica index samplers aligned with ``distribute_pool``'s layout.
+
+    The distributed calibration pool gives device r the CONTIGUOUS sample
+    range [r*shard, (r+1)*shard), but a global shuffled sampler draws batches
+    whose pieces live on arbitrary devices -- every tune iteration then pays
+    cross-device copies in each replica's reference/input cat. These samplers
+    draw each replica's per-iteration sub-batch from its OWN shard, so all
+    pool reads stay device-local at any batch size.
+
+    Statistical properties match the global sampler per epoch: every sample
+    is drawn exactly once per shard-epoch, and each iteration's global batch
+    is a uniform random subset (one draw per shard). Returns None when the
+    layout does not apply (single device, indivisible pool, draw larger
+    than the shard) -- callers fall back to the global sampler.
+    """
+    if world < 2 or nsamples % world != 0:
+        return None
+    shard = nsamples // world
+    if batch_per_replica < 1 or batch_per_replica > shard:
+        return None
+    return [
+        IndexSampler(shard, batch_per_replica, indices=list(range(r * shard, (r + 1) * shard))) for r in range(world)
+    ]
 
 
 def _get_quantized_layer_names_outside_blocks(model, layer_config, supported_types, quant_block_list) -> list:
