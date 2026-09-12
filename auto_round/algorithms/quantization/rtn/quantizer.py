@@ -76,6 +76,76 @@ class RTNQuantizer(BaseQuantizer):
         return {}
 
 
+def _shard_rtn_searches(quantizer, block) -> tuple:
+    """Run the per-layer RTN/OptRTN iters=0 searches, sharded across the DDP devices.
+
+    Work-sharding on the engaged plan: layer i's search runs on
+    ``plan.devices[i % world]`` (the layer already moves to its tuning device
+    in the serial path, so this adds no extra weight traffic); the search
+    itself is deterministic given (weight, imatrix), so sharded results are
+    bit-identical to serial. Falls back to the serial single-device loop when
+    no plan is engaged or the world is 1. Returns (total_seconds, n_layers,
+    max_layer_seconds).
+    """
+    import time as _ptime
+
+    from auto_round.utils import set_module as _set_module
+
+    plan = getattr(quantizer, "_resolved_ddp_plan", None)
+    targets = [(n, m) for n, m in block.named_modules() if hasattr(m, "global_name") and check_to_quantized(m)]
+    if plan is None or getattr(plan, "world", 1) < 2 or len(targets) < 2:
+        _tq, _mx = 0.0, 0.0
+        for _n, m in targets:
+            _t0 = _ptime.perf_counter()
+            quantizer._quantize_layer_core(m)
+            _d = _ptime.perf_counter() - _t0
+            _tq += _d
+            _mx = max(_mx, _d)
+        return _tq, len(targets), _mx
+
+    world = plan.world
+    home = plan.devices[0]
+
+    def _one(dev, mod):
+        if dev.type == "cuda":
+            with torch.cuda.device(dev):
+                return quantizer._quantize_layer_core(mod, tuning_device=dev)
+        return quantizer._quantize_layer_core(mod, tuning_device=dev)
+
+    # round-robin: consecutive layers spread across the devices
+    jobs = [(plan.devices[i % world], n, m) for i, (n, m) in enumerate(targets)]
+    results: dict = {}
+
+    def _run(idx):
+        dev, n, m = jobs[idx]
+        results[idx] = _one(dev, m)
+
+    from auto_round.algorithms.quantization.sign_round.data_parallel import run_threaded_spawn
+
+    _t0 = _ptime.perf_counter()
+    run_threaded_spawn([lambda i=i: _run(i) for i in range(len(jobs))])
+    _tq = _ptime.perf_counter() - _t0
+
+    # place results home: back into the block and (when the quantizer carries
+    # the global model) into the model, matching the serial path's placement
+    model = getattr(quantizer, "model", None)
+    for idx, (dev, n, m) in enumerate(jobs):
+        q_layer = results[idx].to(home)
+        _replace_module(block, n, q_layer)
+        if isinstance(model, torch.nn.Module):
+            _set_module(model, q_layer.global_name, q_layer)
+    return _tq, len(targets), _tq / max(len(targets), 1)
+
+
+def _replace_module(block, dotted_name, new_module):
+    """Replace ``block.<dotted_name>`` with ``new_module``."""
+    parts = dotted_name.split(".")
+    parent = block
+    for p in parts[:-1]:
+        parent = getattr(parent, p)
+    setattr(parent, parts[-1], new_module)
+
+
 @register_pipeline_member(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):
 
@@ -142,14 +212,46 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         """
         # Normalize imatrix (cheap elementwise divides), then quantize the
         # block's target modules - same-shape expert projections batched into
-        # single stacked search calls when the search is active
-        targets = []
+        # single stacked search calls when the search is active. With a DDP
+        # plan engaged (world >= 2), the searches run sharded across the
+        # replica devices instead (per-layer round-robin; expert batching is
+        # a serial-lane optimization there).
+        import time as _ptime
+
+        _t0 = _ptime.perf_counter()
+        _n_norm = 0
         for name, m in block.named_modules():
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
-            if hasattr(m, "global_name") and check_to_quantized(m):
-                targets.append(m)
-        self._quantize_targets(targets)
+                _n_norm += 1
+        _tn = _ptime.perf_counter() - _t0
+
+        plan = getattr(self, "_resolved_ddp_plan", None)
+        if plan is not None and getattr(plan, "world", 1) >= 2:
+            _tq, _n, _mx = _shard_rtn_searches(self, block)
+        else:
+            targets = []
+            for name, m in block.named_modules():
+                if hasattr(m, "global_name") and check_to_quantized(m):
+                    targets.append(m)
+            _ts = _ptime.perf_counter()
+            self._quantize_targets(targets)
+            _tq = _ptime.perf_counter() - _ts
+            _n = len(targets)
+            # batched lane: per-layer max is not tracked (stacked searches)
+            _mx = _tq / max(_n, 1)
+        from auto_round import envs as _envs
+
+        if getattr(_envs, "AR_PERF_COUNTERS", False):
+            logger.info(
+                "[perf] rtn phases: norm=%.2fs (n=%d) quant=%.2fs (n=%d, mean=%.0fms max=%.0fms)",
+                _tn,
+                _n_norm,
+                _tq,
+                _n,
+                1000 * _tq / max(_n, 1),
+                1000 * _mx,
+            )
 
     def _split_expert_batches(self, targets: list):
         """Partition same-shape expert projections into batchable groups.

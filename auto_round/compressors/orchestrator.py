@@ -65,6 +65,27 @@ if TYPE_CHECKING:
 
 
 # TODO wenhuach align all the API args
+_GC_PAUSE_ACC = {"t": 0.0, "on": False}
+
+
+def _gc_phase_cb(phase, _info):
+    import time as _gt
+
+    if phase == "start":
+        _GC_PAUSE_ACC["t0"] = _gt.perf_counter()
+    elif phase == "stop" and "t0" in _GC_PAUSE_ACC:
+        _GC_PAUSE_ACC["t"] += _gt.perf_counter() - _GC_PAUSE_ACC["t0"]
+        del _GC_PAUSE_ACC["t0"]
+
+
+def _ensure_gc_probe():
+    import gc
+
+    if not _GC_PAUSE_ACC["on"]:
+        gc.callbacks.append(_gc_phase_cb)
+        _GC_PAUSE_ACC["on"] = True
+
+
 class CompressionOrchestrator(BaseOrchestrator):
 
     def __init__(
@@ -224,7 +245,14 @@ class CompressionOrchestrator(BaseOrchestrator):
             pbar = tqdm(range(0, len(block_names), nblocks))
 
         start_index = resume_state.resume_index if resume_state is not None and nblocks == 1 else 0
+        _prev_iter_end = None
+        _ensure_gc_probe()
+        _gc_prev = 0.0
         for i in range(start_index, len(block_names), nblocks):
+            _iter_t0 = time.perf_counter()
+            _gap = _iter_t0 - _prev_iter_end if _prev_iter_end is not None else 0.0
+            _gc_this = _GC_PAUSE_ACC["t"] - _gc_prev
+            _gc_prev = _GC_PAUSE_ACC["t"]
             if input_others_extra_blocks and block_names[i] in input_others_extra_blocks:
                 input_others = input_others_extra_blocks[block_names[i]]
                 _, input_others = self._preprocess_block_inputs(input_others)
@@ -257,6 +285,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             # `low_cpu_mem_usage` is False -- see the `is_immediate_saving`-adjacent
             # offload call further down), matching upstream's own choice not to cycle
             # blocks for these formats.
+            _perf_t0 = time.perf_counter()
             disk_streaming = getattr(self.model_context, "_disk_stream_index", None) is not None
             if self.compress_context.low_cpu_mem_usage or envs.AR_DISK_STREAM_MODEL or disk_streaming:
                 if nblocks == 1:
@@ -271,6 +300,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, device_manager.device)
 
             m = self.alg_composer.dispatch_block(m, input_ids, input_others)
+            _perf = {"load": time.perf_counter() - _perf_t0}
 
             # ── Pipeline lifecycle: per-block setup ───────────────────────────
             from auto_round.algorithms.composer import BlockContext
@@ -295,6 +325,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             )
 
             # ── Run block pipeline (calibration → quantization → collection) ──
+            _perf_t0 = time.perf_counter()
             new_q_input, reference_output = self.alg_composer.compress_block(
                 m,
                 input_ids,
@@ -303,8 +334,11 @@ class CompressionOrchestrator(BaseOrchestrator):
                 q_inputs=q_input,
                 input_ids=token_ids,
             )
+            _perf["tune"] = time.perf_counter() - _perf_t0
+            _perf["collect"] = getattr(self.alg_composer, "last_collect_wall", 0.0)
 
             # ── Infrastructure: memory management ─────────────────────────────
+            _perf_t0 = time.perf_counter()
             # Mirrors the original q_input-swap + end-of-loop clear_memory semantics:
             # clear the FP input when a quantized input was used, then clear the old
             # q_input (effective_input) before advancing to the next block.
@@ -320,15 +354,19 @@ class CompressionOrchestrator(BaseOrchestrator):
                 clear_memory(input_ids if input_ids is not next_input_ids else None)
 
             q_input = new_q_input
+            _perf["memmgmt"] = time.perf_counter() - _perf_t0
 
             # ── Infrastructure: hook removal, device cleanup, logging ─────────
+            _perf_t0 = time.perf_counter()
             if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                 accelerate.hooks.remove_hook_from_submodules(m)
             mv_module_from_gpu(m)
             clear_memory(device_list=device_manager.device_list)
             memory_monitor.log_summary()
+            _perf["clean"] = time.perf_counter() - _perf_t0
 
             # ── Infrastructure: immediate_pack / shard write ──────────────────
+            _perf_t0 = time.perf_counter()
             if self.compress_context.is_immediate_packing:
                 for _n, _mod in m.named_modules():
                     if hasattr(_mod, "bits") and check_to_quantized(_mod):
@@ -340,9 +378,11 @@ class CompressionOrchestrator(BaseOrchestrator):
                         if module_name is None:
                             continue
                         _immediate_pack(module_name, self.layer_config)
+            _perf["pack"] = time.perf_counter() - _perf_t0
 
             input_ids = next_input_ids
 
+            _perf_t0 = time.perf_counter()
             if self.compress_context.is_immediate_saving:
                 self.shard_writer.write(m, is_finalize=False)
                 # ShardWriter only actually flushes to disk once its
@@ -356,13 +396,16 @@ class CompressionOrchestrator(BaseOrchestrator):
                 # AR_RESUME_DIR is actually set.
                 if resume_state is not None:
                     self.shard_writer._flush_shard()
+            _perf["write"] = time.perf_counter() - _perf_t0
 
+            _off_t0 = time.perf_counter()
             if self.compress_context.low_cpu_mem_usage and not self.compress_context.is_immediate_saving:
                 if nblocks == 1:
                     self._offloader(model, n, overwrite=True)
                 else:
                     for name in names:
                         self._offloader(model, name, overwrite=True)
+            _perf["offload"] = time.perf_counter() - _off_t0
 
             # Record this block as durably done (its quantized weights are
             # either flushed to a shard on disk via ShardWriter, or saved to
@@ -370,6 +413,39 @@ class CompressionOrchestrator(BaseOrchestrator):
             # happened -- so a crash before this point correctly re-does the
             # block on resume instead of skipping it with incomplete/missing
             # output. See auto_round/utils/resume.py.
+            _perf["total"] = time.perf_counter() - _iter_t0
+            _prev_iter_end = _iter_t0 + _perf["total"]
+
+            if envs.AR_PERF_COUNTERS:
+                _known = sum(
+                    _perf.get(k, 0.0)
+                    for k in (
+                        "load",
+                        "tune",
+                        "pack",
+                        "write",
+                        "clean",
+                        "memmgmt",
+                        "offload",
+                    )  # collect lives inside tune
+                )
+                logger.info(
+                    "[perf] block %s: total %.1fs load %.1fs tune %.1fs (collect %.1fs incl.) pack %.1fs "
+                    "write %.1fs clean %.1fs memmgmt %.1fs offload %.1fs other %.1fs gap %.1fs gc %.1fs",
+                    current_block_name,
+                    _perf["total"],
+                    _perf["load"],
+                    _perf["tune"],
+                    _perf["collect"],
+                    _perf["pack"],
+                    _perf["write"],
+                    _perf["clean"],
+                    _perf["memmgmt"],
+                    _perf["offload"],
+                    max(_perf["total"] - _known, 0.0),
+                    _gap,
+                    _gc_this,
+                )
             if resume_state is not None and nblocks == 1:
                 # `input_ids` was already reassigned to `next_input_ids`
                 # above -- it now holds the value the *next* block should use
