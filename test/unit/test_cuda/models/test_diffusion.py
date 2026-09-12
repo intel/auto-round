@@ -63,6 +63,7 @@ class TestAutoRound:
     @require_optimum
     @pytest.mark.parametrize("low_gpu_mem_usage,cache_size", [(False, 0), (True, "auto"), (True, 1e-9)])
     def test_diffusion_tune(self, tiny_flux_model_path, tmp_path, monkeypatch, low_gpu_mem_usage, cache_size):
+        import torch
         from diffusers import AutoPipelineForText2Image
 
         from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
@@ -72,6 +73,16 @@ class TestAutoRound:
 
         def capture_cache(*args, **kwargs):
             cache = create_cache(*args, **kwargs)
+            if cache is not None:
+                get_batch = cache.get
+
+                def check_batch(indices):
+                    batch = get_batch(indices)
+                    if batch is not None:
+                        torch.testing.assert_close(batch, cache._select(indices), check_device=False, rtol=0, atol=0)
+                    return batch
+
+                monkeypatch.setattr(cache, "get", check_batch)
             caches.append(cache)
             return cache
 
@@ -99,7 +110,7 @@ class TestAutoRound:
             pipe,
             tokenizer=None,
             scheme="MXFP4",
-            iters=2,
+            iters=4 if cache_size == "auto" else 2,
             nsamples=1,
             calib_num_inference_steps=2,
             layer_config=layer_config,
@@ -112,7 +123,12 @@ class TestAutoRound:
 
         if cache_size == "auto":
             assert any(cache is not None for cache in caches)
-            assert all(not cache.thread.is_alive() and not cache.slots for cache in caches if cache is not None)
+            assert any(cache is not None and cache.hits > 0 for cache in caches)
+            assert all(
+                not cache.thread.is_alive() and not cache.slots and not cache.resident
+                for cache in caches
+                if cache is not None
+            )
         elif cache_size:
             assert caches and all(cache is None for cache in caches)
         else:

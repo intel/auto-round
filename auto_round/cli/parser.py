@@ -311,6 +311,7 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         type=lambda value: value if value == "auto" else float(value),
         help="Extra GPU buffer budget in GiB for single-CUDA diffusion SignRound prefetch with low_gpu_mem_usage. "
         "Use 'auto' to select a budget after the first tuning iteration; 0 preserves the existing path. "
+        "Remaining budget retains samples on GPU to avoid repeated transfers. "
         "This is not a limit on total GPU memory.",
     )
 

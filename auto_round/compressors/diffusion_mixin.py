@@ -48,6 +48,7 @@ class DiffusionMixin:
         diffusion_tuning_cache_size: Extra persistent GPU buffer budget in GiB for
             single-CUDA SignRound prefetch with low_gpu_mem_usage; 0 disables it.
             "auto" selects a conservative budget after the first tuning iteration.
+            Unused buffer budget retains samples on GPU for reuse within each block.
             Training activations/workspace are not included in this budget.
 
     Design note:
