@@ -200,12 +200,19 @@ class BaseQuantizer(BaseAlgorithm):
         self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
 
     @torch.no_grad()
-    def _quantize_layer_via_rtn(self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None) -> None:
-        """Quantize one layer with RTN (with optional optimized scale/zp search)."""
-        layer_name = layer.global_name
-        layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
-        set_module(self.model, layer_name, layer)
-        tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device
+    def _quantize_layer_core(
+        self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None, tuning_device=None
+    ) -> "torch.nn.Module":
+        """Run the RTN/OptRTN search+quantize for ONE layer, device-agnostic.
+
+        Shared by the serial loop and the sharded iters=0 searches: moves the
+        layer to ``tuning_device`` (per-replica device when sharded), runs the
+        WrapperLinear(iters=0) construction + unwrap (the optimized search
+        happens there), and returns the quantized layer WITHOUT touching the
+        global model -- callers own set_module placement.
+        """
+        if tuning_device is None:
+            tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device
         try:
             if disable_opt_rtn is None:
                 disable_opt_rtn = bool(getattr(self.config, "disable_opt_rtn", False))
@@ -252,6 +259,15 @@ class BaseQuantizer(BaseAlgorithm):
                 layer = layer.unwrapper({})
             except Exception:
                 raise
+        return layer
+
+    @torch.no_grad()
+    def _quantize_layer_via_rtn(self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None) -> None:
+        """Quantize one layer with RTN and place it back into the model (serial)."""
+        layer_name = layer.global_name
+        layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
+        set_module(self.model, layer_name, layer)
+        layer = self._quantize_layer_core(layer, disable_opt_rtn=disable_opt_rtn)
         set_module(self.model, layer_name, layer)
 
     def _compute_valid_token_mask(self, input_ids: list) -> "list | None":

@@ -106,22 +106,58 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
 
         layer = self.orig_layer
         data_type = layer.data_type
-        weight_reshape = self._prepare_init_scale_weight()
-        imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
-
-        self.init_scale = search_optimized_init_scale(
-            weight_reshape, data_type, layer.bits, imatrix, self.q_scale_thresh
-        )
         self.weight_quant_func = get_optimized_quant_func(data_type)
-        if self.init_scale is None or self.weight_quant_func is None:
+        if self.weight_quant_func is None:
             raise ValueError(
                 f"SignRound optimized path does not support data_type={data_type!r}; "
                 "expected a symmetric int / mx / nv type."
             )
-
         self.data_type = data_type
+
+        if self.defer_init_search:
+            # mirrors-first: skip the search here; the data-parallel lane runs
+            # it round-robin on the replicas (run_deferred_init_search) and
+            # broadcasts the result before tuning starts. Serial fallback
+            # (resolver declined) finalizes on the home device instead.
+            # init_scale stays unset until the search/finalize fills it --
+            # readers must use getattr(self, "init_scale", None).
+            self.init_scale = None
+            self._init_search_deferred = True
+            return
+
+        self._run_init_scale_search()
+        self._compile_own_quant_func()
+
+    def _run_init_scale_search(self):
+        """Run the optimized init-scale search (deterministic given weight + imatrix)."""
+        layer = self.orig_layer
+        weight_reshape = self._prepare_init_scale_weight()
+        imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
+        self.init_scale = search_optimized_init_scale(
+            weight_reshape, layer.data_type, layer.bits, imatrix, self.q_scale_thresh
+        )
+        if self.init_scale is None:
+            raise ValueError(
+                f"SignRound optimized path does not support data_type={layer.data_type!r}; "
+                "expected a symmetric int / mx / nv type."
+            )
         if hasattr(layer, "imatrix"):
             del layer.imatrix
+
+    def run_deferred_init_search(self) -> None:
+        self._run_init_scale_search()
+
+    def _finalize_deferred_init(self, val=None) -> None:
+        if getattr(self, "init_scale", None) is None:
+            if val is None:
+                raise ValueError("deferred init-scale search produced no scale")
+            self.init_scale = val
+        if hasattr(self.orig_layer, "imatrix"):
+            del self.orig_layer.imatrix
+        self._compile_own_quant_func()
+        self._init_search_deferred = False
+
+    def _compile_own_quant_func(self) -> None:
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
