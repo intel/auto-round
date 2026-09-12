@@ -141,7 +141,9 @@ class QuantizedKVParameterCache(DynamicCache):
         Returns the sequence length of the cached states.
         A layer index can be optionally passed.
         """
-        if len(self.key_cache) <= layer_idx:
+        # Transformers' newer DynamicCache stores cache state in `layers`, not `key_cache`.
+        layer_idx = 0 if layer_idx is None else layer_idx
+        if len(getattr(self, "key_cache", ())) <= layer_idx:
             return 0
         # since we cannot get the seq_length of each layer directly and
         # rely on `_seen_tokens` which is updated every "layer_idx" == 0,
