@@ -1052,9 +1052,15 @@ def diffusion_load_model(
     if hasattr(pipe, "unet"):
         # Stable Diffusion pipelines (e.g., SD and SDXL) use a UNet denoiser.
         model = pipe.unet
+        model_component_name = "unet"
     else:
         # DiT-based pipelines (e.g., Flux and SD3) use a Transformer denoiser.
         model = pipe.transformer
+        model_component_name = "transformer"
+
+    # Diffusers keeps denoiser checkpoints below the pipeline repository root.
+    # Retain the component name so block-wise offloading can find those files.
+    model._autoround_checkpoint_subfolder = model_component_name
 
     # Attach custom pipeline function for models that need special API calls
     _attach_diffusion_pipeline_fn(pipe)
@@ -1081,6 +1087,7 @@ def diffusion_load_model(
             and comp is not None
             and isinstance(comp, torch.nn.Module)
         ):
+            comp._autoround_checkpoint_subfolder = comp_name
             setattr(
                 comp.config, "save_pretrained", partial(config_save_pretrained, comp.config, "config.json", model=comp)
             )
