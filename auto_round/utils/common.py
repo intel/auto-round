@@ -1261,11 +1261,31 @@ def get_reverse_checkpoint_conversion_mapping(model):
                     seen.add(sig)
                     weight_conversions.append(entry)
 
+    # ``PrefixChange`` transforms (e.g. ``qwen3_5_text``'s
+    # ``PrefixChange(prefix_to_remove="language_model", model_prefix="model")``)
+    # rely on a ``^`` anchor plus a negative look-ahead to add/remove a full
+    # prefix exactly once. The flattened regex applier
+    # (:func:`revert_checkpoint_conversion_mapping`) strips that ``^`` anchor, so
+    # the reverse ``^model\.(?:(?!language_model\.))(.+)$`` -> ``model.language_model.\1``
+    # no longer anchors at the start and instead matches the ``model.`` embedded
+    # inside ``language_model.``, doubling the prefix
+    # (``model.language_model.language_model.layers.*``) and bloating the export.
+    # These prefix changes are handled safely by the scope-aware
+    # :func:`get_reverse_weight_transforms` path, so drop them here.
+    try:
+        from transformers.core_model_loading import PrefixChange
+    except Exception:  # pragma: no cover - transformers < 5 has no such primitive
+        PrefixChange = None
+
     if weight_conversions:
         for weight_conversion in weight_conversions:
+            if PrefixChange is not None and isinstance(weight_conversion, PrefixChange):
+                continue
             try:
                 reverse_conversion_mapping = weight_conversion.reverse_transform()
             except Exception:  # pragma: no cover - not every transform is reversible (e.g. quantized converters)
+                continue
+            if PrefixChange is not None and isinstance(reverse_conversion_mapping, PrefixChange):
                 continue
             for source_pattern in reverse_conversion_mapping.source_patterns:
                 reverse_checkpoint_conversion_mapping[source_pattern] = reverse_conversion_mapping.target_patterns
