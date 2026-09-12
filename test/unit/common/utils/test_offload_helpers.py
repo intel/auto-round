@@ -20,6 +20,7 @@ The full save/reload path requires a real model checkpoint and is covered
 elsewhere.
 """
 
+import json
 import os
 from unittest.mock import patch
 
@@ -299,6 +300,20 @@ class TestResolveModelDir:
         resolve.assert_called_once_with("org/model", revision="commit")
         load_block.assert_called_once_with(str(snapshot), "0", model[0])
 
+    def test_offload_manager_uses_diffusion_component_subfolder(self, tmp_path):
+        """Diffusers block reloads must read from the active pipeline component."""
+        from auto_round.utils.offload import OffloadManager
+
+        component_dir = tmp_path / "transformer_2"
+        component_dir.mkdir()
+        model = nn.Sequential(nn.Linear(2, 2))
+        model._autoround_checkpoint_subfolder = "transformer_2"
+        with patch("auto_round.utils.offload.load_block_from_model_files") as load_block:
+            manager = OffloadManager(mode="clean", model_dir=str(tmp_path))
+            manager.reload(model, "0")
+
+        load_block.assert_called_once_with(str(component_dir), "0", model[0])
+
     def test_offload_manager_does_not_eagerly_resolve_without_revision(self):
         """Revision-less and non-Hugging Face sources retain the legacy lazy path."""
         from auto_round.utils.offload import OffloadManager
@@ -322,3 +337,14 @@ class TestResolveModelDir:
             _resolve_model_dir("org/model", revision="commit")
 
         assert exc_info.value is error
+
+
+class TestBuildWeightMap:
+    def test_custom_diffusers_safetensors_index(self, tmp_path):
+        from auto_round.utils.offload import _build_weight_map
+
+        weight_map = {"blocks.0.weight": "diffusion_pytorch_model-00001-of-00002.safetensors"}
+        index_path = tmp_path / "diffusion_pytorch_model.safetensors.index.json"
+        index_path.write_text(json.dumps({"weight_map": weight_map}))
+
+        assert _build_weight_map(str(tmp_path)) == weight_map
