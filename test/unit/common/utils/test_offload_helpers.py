@@ -299,6 +299,18 @@ class TestResolveModelDir:
         resolve.assert_called_once_with("org/model", revision="commit")
         load_block.assert_called_once_with(str(snapshot), "0", model[0])
 
+    def test_diffusion_component_reload(self, tmp_path):
+        from auto_round.utils.offload import OffloadManager
+
+        component_dir = tmp_path / "transformer"
+        component_dir.mkdir()
+        model = nn.Sequential(nn.Linear(2, 2))
+        model._ar_checkpoint_subfolder = "transformer"
+        with patch("auto_round.utils.offload.load_block_from_model_files") as load_block:
+            OffloadManager(mode="clean", model_dir=str(tmp_path)).reload(model, "0")
+
+        load_block.assert_called_once_with(str(component_dir), "0", model[0])
+
     def test_offload_manager_does_not_eagerly_resolve_without_revision(self):
         """Revision-less and non-Hugging Face sources retain the legacy lazy path."""
         from auto_round.utils.offload import OffloadManager
@@ -322,3 +334,11 @@ class TestResolveModelDir:
             _resolve_model_dir("org/model", revision="commit")
 
         assert exc_info.value is error
+
+    def test_diffusers_weight_index(self, tmp_path):
+        from auto_round.utils.offload import _build_weight_map
+
+        index = tmp_path / "diffusion_pytorch_model.safetensors.index.json"
+        index.write_text('{"weight_map": {"blocks.0.weight": "shard.safetensors"}}')
+
+        assert _build_weight_map(str(tmp_path)) == {"blocks.0.weight": "shard.safetensors"}
