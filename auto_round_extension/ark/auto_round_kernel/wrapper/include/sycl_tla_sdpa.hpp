@@ -385,7 +385,8 @@ struct FMHAConfig {
     constexpr int VTiles = get<1>(TileShapeOutput{}) / get<1>(TileShapePV{});
 
     auto make_dummy_tensor = [&](auto val, auto stride) {
-      return make_tensor(make_gmem_ptr(&val), make_layout(repeat<rank_v<decltype(stride)>>(1), stride));
+      return make_tensor(make_gmem_ptr<decltype(val)>(static_cast<void*>(&val)),
+                         make_layout(repeat<rank_v<decltype(stride)>>(1), stride));
     };
 
     using TensorQ = decltype(make_dummy_tensor(ElementQ{}, StrideQ{}));
@@ -705,13 +706,13 @@ template <bool Causal, bool UseInt8PV, bool WriteBackInt8PV, bool ExecuteInt8PV,
 struct SageConfig {
   static constexpr int SGTileQ = get<0>(shape_div(TileShapeQK{}, shape(SubgroupLayoutQK{})))();
   using MMAOperation =
-      cute::conditional_t<is_void_v<MMAOperation_>, XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, int8_t>, MMAOperation_>;
+      cute::conditional_t<is_void_v<MMAOperation_>,
+                          XE_DPAS_TT<cute::gcd(SGTileQ, 8), int32_t, ElementQ, ElementK>, MMAOperation_>;
   // The PV "float" tiled MMA operates on the output element type. For UseInt8PV the kernel also
   // constructs a separate int8 quantized PV MMA internally, while this float MMA only needs to
   // describe the tile shape used for the accumulator and dequantized path. For the non-int8-PV
   // path, V is consumed directly so we use ElementO (== ElementV) which supports half_t / bfloat16_t.
-  using MMAOperationPV = cute::conditional_t<is_void_v<MMAOperation_>,
-                                             XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementO>, MMAOperation_>;
+  using MMAOperationPV = XE_DPAS_TT<cute::gcd(SGTileQ, 8), float, ElementO>;
   using SubgroupLayoutPV =
       cute::conditional_t<is_void_v<SubgroupLayoutPV_>,
                           decltype(cutlass::fmha::collective::get_sg_layout_pv(SubgroupLayoutQK{})), SubgroupLayoutPV_>;
@@ -738,7 +739,8 @@ struct SageConfig {
     constexpr int VTiles = get<1>(TileShapeOutput{}) / get<1>(TileShapePV{});
 
     auto make_dummy_tensor = [&](auto val, auto stride) {
-      return make_tensor(make_gmem_ptr(&val), make_layout(repeat<rank_v<decltype(stride)>>(1), stride));
+      return make_tensor(make_gmem_ptr<decltype(val)>(static_cast<void*>(&val)),
+                         make_layout(repeat<rank_v<decltype(stride)>>(1), stride));
     };
 
     using TensorQ = decltype(make_dummy_tensor(ElementQ{}, StrideQ{}));
@@ -877,12 +879,20 @@ template <typename ElementQ, typename ElementK, typename ElementV, typename Elem
 inline int launch_sage_prefill_kernel_128(Options const& options) {
   constexpr int PipelineStages = 2;
   constexpr int PipelineStages1 = 2;
-  using ShapeQK = Shape<_256, _64, _32>;
-  using ShapePV = Shape<_256, _32, _64>;
+  using ShapeQK = cute::conditional_t<cute::sizeof_bits_v<ElementQ> == 4,
+                                      Shape<_256, _64, _64>,
+                                      Shape<_256, _64, _32>>;
+  using ShapePV = cute::conditional_t<cute::sizeof_bits_v<ElementQ> == 4,
+                                      Shape<_256, _32, _64>,
+                                      Shape<_256, _32, _64>>;
   using ShapeOut = Shape<_256, _128>;
   using SubgroupLayoutQK = Layout<Shape<_16, _1, _1>>;
-  using ShapeQK1 = Shape<_256, _64, _32>;
-  using ShapePV1 = Shape<_256, _32, _64>;
+  using ShapeQK1 = cute::conditional_t<cute::sizeof_bits_v<ElementQ> == 4,
+                                       Shape<_256, _64, _64>,
+                                       Shape<_256, _64, _32>>;
+  using ShapePV1 = cute::conditional_t<cute::sizeof_bits_v<ElementQ> == 4,
+                                       Shape<_256, _32, _64>,
+                                       Shape<_256, _32, _64>>;
   using ShapeOut1 = Shape<_256, _128>;
   using SubgroupLayoutQK1 = Layout<Shape<_16, _1, _1>>;
   return options.is_causal ? SageConfig<true, UseInt8PV, WriteBackInt8PV, ExecuteInt8PV, ShapeQK, ShapePV, ShapeOut,
@@ -898,7 +908,8 @@ template <typename ElementQ, typename ElementK, typename ElementV, typename Elem
 inline int launch_sage_prefill_kernel_64(Options const& options) {
   constexpr int PipelineStages = 2;
   constexpr int PipelineStages1 = 2;
-  using ShapeQK = Shape<_128, _64, _32>;
+  using ShapeQK = cute::conditional_t<cute::sizeof_bits_v<ElementQ> == 4, Shape<_128, _64, _64>,
+                                      Shape<_128, _64, _32>>;
   using ShapePV = Shape<_128, _32, _64>;
   using ShapeOut = Shape<_128, _64>;
   using SubgroupLayoutQK = Layout<Shape<_8, _1, _1>>;

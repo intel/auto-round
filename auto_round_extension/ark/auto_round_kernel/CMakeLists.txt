@@ -153,6 +153,31 @@ if(ARK_XPU AND ARK_SYCL_TLA)
       CACHE BOOL "DISABLE CUDA")
   FetchContent_MakeAvailable(sycl_tla)
 
+  # INT4 Q*K requires two compatibility patches to the sycl-tla headers.
+  set(_integer_subbyte_header "${CUTLASS_DIR}/include/cutlass/integer_subbyte.h")
+  if(EXISTS "${_integer_subbyte_header}")
+    file(READ "${_integer_subbyte_header}" _integer_subbyte_contents)
+    string(REPLACE "template <int Bits, bool Signed = true>"
+                   "template <int Bits, bool Signed>"
+                   _integer_subbyte_patched_contents "${_integer_subbyte_contents}")
+    if(NOT _integer_subbyte_patched_contents STREQUAL _integer_subbyte_contents)
+      file(WRITE "${_integer_subbyte_header}" "${_integer_subbyte_patched_contents}")
+    endif()
+  endif()
+
+  # Xe 2D block base pointer must be resolved via raw_pointer_cast so the
+  # subbyte (INT4) iterator converts to an address instead of failing.
+  set(_xe_2d_traits_header "${CUTLASS_DIR}/include/cute/atom/copy_traits_xe_2d.hpp")
+  if(EXISTS "${_xe_2d_traits_header}")
+    file(READ "${_xe_2d_traits_header}" _xe_2d_traits_contents)
+    string(REPLACE "base_ptr((uint64_t) &*src.data()),"
+                   "base_ptr(reinterpret_cast<uint64_t>(raw_pointer_cast(&*src.data()))),"
+                   _xe_2d_traits_patched_contents "${_xe_2d_traits_contents}")
+    if(NOT _xe_2d_traits_patched_contents STREQUAL _xe_2d_traits_contents)
+      file(WRITE "${_xe_2d_traits_header}" "${_xe_2d_traits_patched_contents}")
+    endif()
+  endif()
+
   set(_sycl_tla_include_dirs
     ${CUTLASS_DIR}/include
     ${CUTLASS_DIR}/applications
