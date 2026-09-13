@@ -161,7 +161,7 @@ AutoRound 支持多种量化配置：
 
 **MLX 格式(实验性功能)**：面向 Apple Silicon (M1/M2/M3/...)，可直接被 [`mlx-lm`](https://github.com/ml-explore/mlx-lm)（纯文本 LLM）或 [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm)（多模态 VLM）加载推理。
 - 支持 **2、3、4、5、6、8 bits**（其中 5/6 bits 是 MLX 独有，GPTQ/AWQ 没有标准打包格式）。
-- 原生支持 **混合 bit / 混合 group_size**：通过 `layer_config` 或 AutoScheme（如 `--target_bits 3.5 --options "..."`），按层覆盖会写入 `config.json["quantization"]`，
+- 原生支持 **混合 bit / 混合 group_size**：通过 `layer_config` 或 AutoScheme（如 `--schemes "..." --bits 3.5`），按层覆盖会写入 `config.json["quantization"]`，
 - `--format mlx` 导出原生 MLX checkpoint；`--format auto_round:mlx` 则让 HuggingFace `transformers` + AutoRound 加载它（在 Darwin 上 post-init 会把每层重新打包成 MLX 的 `QuantLinear`）。
 - 已经问题: 没有支持嵌入层的量化
 
@@ -481,11 +481,13 @@ AutoScheme 自动生成自适应的混合比特/混合数据类型量化方案�
 - **`--iters 0`**：基于 RTN 的 量化方案，速度快（秒到分钟级）。
 - **`--iters 200`**：调优感知的量化方案，更精确但慢很多。
 
+传入多个 `--schemes` 即启用 AutoScheme；此时 `--bits` 为目标平均 bits。
+
 ~~~bash
 auto_round \
   --model_name  $model_name \
-  --avg_bits 6 \
-  --options "mxfp4,mxfp8" \
+  --schemes "mxfp4,mxfp8" \
+  --bits 6 \
   --ignore_scale_zp_bits \
   --iters 0 \
   --format fake 
@@ -493,17 +495,15 @@ auto_round \
 
 #### API 用法
 ~~~python
-avg_bits= 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("W2A16G64", "W4A16","W8A16"))
-ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, schemes=("W2A16G64", "W4A16","W8A16"), bits=3.0, iters=0, nsamples=1)
 ar.quantize_and_save()
 ~~~
 
 
 #### AutoScheme 超参数说明
-`avg_bits(float)`：模型整体的目标平均 bits；计算时仅计入待量化的层。
+`bits(float)`：模型整体的目标平均 bits；计算时仅计入待量化的层。未提供 `schemes` 时，`bits` 为普通权重量化位宽，必须为整数。
 
-`options(Union[str, list[Union[QuantizationScheme, str]]])`：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。
+`schemes(Union[str, list[Union[QuantizationScheme, str]]])`：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。传入 `schemes` 即启用 AutoScheme。
 
 `ignore_scale_zp_bits(bool)`：仅支持 API 调用场景。用于决定在计算平均 bit 时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
 
@@ -521,30 +521,33 @@ ar.quantize_and_save()
 
 示例代码如下：
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 shared_layers = [
     ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
     ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
     ("fc1", "fc2"),
 ]
-target_bits = 5.0
 model_name = "Qwen/Qwen3-0.6B"
-scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
-ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, schemes=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
 ```
 
 此外，若需为特定的层固定量化方案，可使用 AutoRound API 中的`layer_config`参数，用法示例如下：
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 model_name = "Qwen/Qwen3-8B"
-avg_bits = 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_S"), ignore_scale_zp_bits=True)
 layer_config = {"lm_head": "GGUF:Q6_K"}
 
-ar = AutoRound(model=model_name, scheme=scheme, layer_config=layer_config, iters=0)
+ar = AutoRound(
+    model=model_name,
+    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    bits=3.0,
+    ignore_scale_zp_bits=True,
+    layer_config=layer_config,
+    iters=0,
+)
 ar.quantize_and_save()
 ```
 

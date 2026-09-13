@@ -293,15 +293,20 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 AutoScheme 提供了一种自动生成算法，用于生成 **自适应的混合精度/数据类型** 的量化方案（mixed bits/data type quantization recipes）。关于 AutoScheme 的更多细节可参考[用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)。
 
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 model_name = "Qwen/Qwen3-8B"
-avg_bits = 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_S"), ignore_scale_zp_bits=True)
 layer_config = {"lm_head": "GGUF:Q6_K"}
 
 # 对于非 GGUF 方案，将 iters 改为 200
-ar = AutoRound(model=model_name, scheme=scheme, layer_config=layer_config, iters=0)
+ar = AutoRound(
+    model=model_name,
+    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    bits=3.0,
+    ignore_scale_zp_bits=True,
+    layer_config=layer_config,
+    iters=0,
+)
 ar.quantize_and_save()
 ```
 
@@ -310,8 +315,8 @@ ar.quantize_and_save()
 
 ##### AutoScheme 超参数
 
-- ​**​`avg_bits`​**​  **(float)** ：整个模型的目标平均 bits（平均 bits 的计算仅包含被量化的层）。
-- ​**​`options`​**​  **(str | list[str] | list[QuantizationScheme])** ​：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。
+- ​**​`bits`​**​  **(float)** ：传入 `schemes` 时，为整个模型的目标平均 bits（平均 bits 的计算仅包含被量化的层）。未提供 `schemes` 时，`bits` 为普通权重量化位宽，必须为整数。
+- ​**​`schemes`​**​  **(str | list[str] | list[QuantizationScheme])** ​：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。传入 `schemes` 即启用 AutoScheme。
 - ​**​`ignore_scale_zp_bits`​**​  **(bool)** ​：仅支持 API 调用场景。用于决定在计算平均 bit 时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
 - ​**​`shared_layers`​**​  **(Iterable[Iterable[str]], optional)** ：仅支持 API 调用场景，用于定义多个层的分组，这些层将共享相同的量化配置。
 - ​**​`batch_size`​**​  **(int, optional)** ​：仅支持 API 调用场景。设为 `1` 可以降低显存占用，但同时会增加训练时间。
