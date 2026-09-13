@@ -46,7 +46,7 @@ from auto_round.utils import (
     to_dtype,
 )
 from auto_round.utils.device import parse_available_devices
-from auto_round.utils.device_manager import device_manager
+from auto_round.utils.device_manager import device_manager, get_ar_device
 
 
 @register_calibrator("llm")
@@ -100,7 +100,10 @@ class LLMCalibrator(Calibrator):
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                     dispatch_model(self.model, device_map=self.model.hf_device_map)
                 else:
-                    if str(self.model.device) == "cpu" and (not device_manager.device.startswith("hpu")):
+                    if (
+                        str(self.model.device) == "cpu"
+                        and get_ar_device(device_manager.device).supports_device_map_dispatch
+                    ):
                         no_split_modules = list(getattr(self.model, "_no_split_modules", []))
                         devices = parse_available_devices(device_manager.device_map)
 

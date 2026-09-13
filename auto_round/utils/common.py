@@ -387,7 +387,9 @@ def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
         from auto_round.inference.convert_model import convert_hf_model
 
         model.config.quantization_config = self.compressor.quantization_config
-        target_device = "cuda" if torch.cuda.is_available() else "cpu"
+        from auto_round.utils.device_manager import get_major_device
+
+        target_device = get_major_device()
         model, _ = convert_hf_model(model, target_device=target_device)
         self.run_compressed = True
         return model
