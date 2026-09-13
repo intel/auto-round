@@ -25,6 +25,10 @@
 #include "sycl_tla_common.hpp"
 #endif
 
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+#include "sycl_tla_dense_woq_s4_dpas.hpp"
+#endif
+
 #if ARK_XPU
 #include "sycl_s8_wrapper.hpp"
 #endif
@@ -78,13 +82,15 @@ class XpuWrapper {
     return nblk * p->n * bestla_dtype_bytes(p->scale_type);
   }
 
-  static inline size_t get_packw_size(QuantParam* p) {
+  static inline size_t get_packw_base_size(QuantParam* p) {
     size_t size = get_packw_qsize(p);
     size += get_scale_size(p);
     size += get_zp_size(p);
     size += get_scalext_size(p);
     return size;
   }
+
+  static inline size_t get_packw_size(QuantParam* p) { return get_packw_base_size(p); }
 
   static inline size_t get_scale_offset(QuantParam* p) {
     size_t size = get_packw_qsize(p);
@@ -359,7 +365,7 @@ class XpuWrapper {
   static void unpackq(BTLA_DTYPE outt, int8_t* blob, void* optr, QuantParam* p, sycl::queue* q,
                       size_t blob_count = 0) {
     if (blob_count > 0) {
-      auto expected = get_packw_size(p);
+      auto expected = get_packw_base_size(p);
       if (blob_count < expected) {
         throw std::runtime_error("Corrupt packed weight: blob size (" + std::to_string(blob_count) +
                                  ") less than expected (" + std::to_string(expected) + ")");
@@ -526,9 +532,72 @@ class XpuWrapper {
     }
   }
 
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+  static constexpr size_t kWoqS4DpasMaxM = 128;
+
+  static inline bool woq_s4_dpas_group_size_ok(int group_size) {
+    return dense_woq_s4_dpas::is_supported_group_size(group_size);
+  }
+
+  static inline bool woq_s4_dpas_shape_ok(size_t m, QuantParam* p) {
+    if (m == 0 || m > kWoqS4DpasMaxM) return false;
+    if (m > static_cast<size_t>(std::numeric_limits<int>::max())) return false;
+    if (p->n % 16 != 0 || (p->k & 1) != 0 || p->blocksize <= 0) return false;
+    if (p->k % p->blocksize != 0) return false;
+    return woq_s4_dpas_group_size_ok(p->blocksize);
+  }
+
+  static bool woq_try_s4_dpas(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB,
+                              void* matC, const void* bias, BTLA_DTYPE outt, size_t /*blob_count*/) {
+    if (p->compute_type != BTLA_DTYPE::S8 || p->weight_type != BTLA_DTYPE::S4 ||
+        p->scale_type != BTLA_DTYPE::F16 || outt != BTLA_DTYPE::F16 || p->asym) {
+      return false;
+    }
+    if (env_params::Instance()->woq_dpas_s4 == 0) {
+      return false;
+    }
+    if (!woq_s4_dpas_shape_ok(m, p)) {
+      return false;
+    }
+    using namespace ark::dense_woq_s4_dpas;
+    using ElementA = cute_scalar_t<sycl::half>;
+
+    const auto* activations_ca = reinterpret_cast<const ElementA*>(matA);
+    const auto* scales_ca = reinterpret_cast<const ElementA*>(reinterpret_cast<const int8_t*>(blobB) + get_scale_offset(p));
+    const auto* bias_ca = bias != nullptr ? reinterpret_cast<const ElementA*>(bias) : static_cast<const ElementA*>(nullptr);
+    auto* outputs_ca = reinterpret_cast<ElementA*>(matC);
+    const auto* weights_i4 = reinterpret_cast<const cutlass::int4b_t*>(blobB);
+
+#define ARK_WOQ_DPAS_S4_LAUNCH(policy)                                        \
+    std::fprintf(stdout,                                                        \
+                 "[ARK_WOQ_DPAS_S4] launch:%s m=%zu n=%d k=%d blocksize=%d\n", \
+                 #policy, m, p->n, p->k, p->blocksize);                       \
+    DenseWoqS4GEMMLauncher<'R', 'C', policy>(*q, activations_ca, weights_i4,  \
+                                             scales_ca, bias_ca, outputs_ca,   \
+                                             static_cast<int>(m), p->n, p->k,  \
+                                             p->blocksize, false);
+
+    if (m <= 8) {
+      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_8)
+    } else if (m <= 16) {
+      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_16)
+    } else {
+      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_32)
+    }
+#undef ARK_WOQ_DPAS_S4_LAUNCH
+    return true;
+  }
+#endif
+
   static int woq_gemv(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB, void* matC,
-                      const void* bias, BTLA_DTYPE outt) {
-    if (m > 1) return -2;
+                      const void* bias, BTLA_DTYPE outt, size_t blob_count = 0) {
+    if (m > 1) {
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+      return woq_try_s4_dpas(q, m, p, matA, blobB, matC, bias, outt, blob_count) ? 0 : -1;
+#else
+      return -1;
+#endif
+    }
     using namespace bestla;
     using namespace bestla::sycl_prologue_b;
     auto qptr = (uint8_t*)blobB;
@@ -703,15 +772,15 @@ class XpuWrapper {
   static void woq_gemm(int m, const void* a, const void* b, void* c, const void* bias, BTLA_DTYPE acdt, QuantParam* p,
                        sycl::queue* q, size_t blob_count = 0) {
     if (blob_count > 0) {
-      auto expected = get_packw_size(p);
+      auto expected = get_packw_base_size(p);
       if (blob_count < expected) {
         throw std::runtime_error("Corrupt packed weight: blob size (" + std::to_string(blob_count) +
                                  ") less than expected (" + std::to_string(expected) + ")");
       }
     }
-    auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt);
+    auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt, blob_count);
     if (ret) {
-      
+
       check_compute_type(p);
       if (p->compute_type != BTLA_DTYPE::S8) {
         size_t elesize = bestla::utils::bestla_dtype_bytes(acdt);
