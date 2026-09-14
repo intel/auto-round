@@ -1789,17 +1789,45 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
         )
 
 
+def cast_model_dtype(model: torch.nn.Module, dtype: torch.dtype) -> torch.nn.Module:
+    """Cast a model without rounding its declared FP32 parameters and buffers."""
+    fp32_modules = set()
+    for attribute in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+        names = getattr(model, attribute, None) or []
+        fp32_modules.update([names] if isinstance(names, str) else names)
+    if not fp32_modules:
+        return model.to(dtype)
+
+    # Inspect all aliases before casting so a shared tensor is protected even
+    # when its first name is outside the FP32 modules.
+    protected = set()
+    tensors = list(model.named_parameters(remove_duplicate=False)) + list(model.named_buffers(remove_duplicate=False))
+    for name, tensor in tensors:
+        if any(module_name in name for module_name in fp32_modules):
+            protected.add(id(tensor))
+            if isinstance(tensor, torch.nn.Parameter) and tensor.grad is not None:
+                protected.add(id(tensor.grad))
+
+    def convert(tensor):
+        if not (tensor.is_floating_point() or tensor.is_complex()):
+            return tensor
+        target_dtype = torch.float32 if id(tensor) in protected else dtype
+        return tensor.to(dtype=target_dtype)
+
+    return model._apply(convert)
+
+
 def _to_model_dtype(model, model_dtype):
     if model_dtype is not None:
         try:
             if (model_dtype == "float16" or model_dtype == "fp16") and model.dtype != torch.float16:
-                model = model.to(torch.float16)
+                model = cast_model_dtype(model, torch.float16)
             elif (
                 model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16"
             ) and model.dtype != torch.bfloat16:
-                model = model.to(torch.bfloat16)
-            elif model_dtype == "float32" or model_dtype == "fp32" and model.dtype != torch.bfloat32:
-                model = model.to(torch.float32)
+                model = cast_model_dtype(model, torch.bfloat16)
+            elif model_dtype == "float32" or model_dtype == "fp32":
+                model = cast_model_dtype(model, torch.float32)
         except Exception:
             logger.error("please use more device to fit the device or just use one device")
             exit()

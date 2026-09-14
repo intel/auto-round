@@ -25,7 +25,7 @@ from auto_round.utils.device import (
     get_major_device,
 )
 from auto_round.utils.device_manager import device_manager, is_auto_device_mapping
-from auto_round.utils.model import rename_weights_files
+from auto_round.utils.model import cast_model_dtype, rename_weights_files
 
 
 class DiffusionMixin:
@@ -154,15 +154,7 @@ class DiffusionMixin:
             if not isinstance(component, torch.nn.Module):
                 continue
 
-            fp32_modules = getattr(component, "_keep_in_fp32_modules", None) or []
-            tensors = list(component.named_parameters()) + list(component.named_buffers())
-            for tensor_name, tensor in tensors:
-                if not tensor.is_floating_point():
-                    continue
-                keep_in_fp32 = any(module_name in tensor_name for module_name in fp32_modules)
-                desired_dtype = torch.float32 if keep_in_fp32 else target_dtype
-                if tensor.dtype != desired_dtype:
-                    tensor.data = tensor.data.to(dtype=desired_dtype)
+            cast_model_dtype(component, target_dtype)
 
     def _get_calibrator_kind(self) -> str:
         """Select the diffusion calibration strategy.
