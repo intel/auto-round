@@ -29,7 +29,6 @@ from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 from auto_round.algorithms.transforms.svdquant.residual import (
     ActivationQuantScheme,
     ResidualQuantScheme,
-    SVDRunner,
     compute_svd_factors,
     iterate_residual_decomposition,
 )
@@ -51,6 +50,45 @@ from auto_round.utils.model import map_nested_tensors
 _SCHEME_ATTRS = set(QuantizationScheme.get_attributes())
 _RUNTIME_QUANT_ATTRS = {"scale_dtype", "weight_global_scale", "tuning_device"}
 _MXFP4_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
+
+
+def _init_svd(device):
+    """Probe once and return the SVD callable shared by the whole compressor."""
+    device = torch.device(device)
+    cuda = device.type == "cuda" and torch.version.cuda is not None
+    drivers = ["gesvda", "gesvdj", "gesvd"] if cuda else [None]
+    svd = partial(torch.linalg.svd, driver=drivers.pop(0))
+
+    def run(weight, **kwargs):
+        nonlocal svd
+        matrix = weight.to(device)
+        try:
+            result = svd(matrix, **kwargs)
+        except torch.OutOfMemoryError:
+            raise
+        except RuntimeError as exc:
+            unsupported = any(
+                marker in str(exc).lower()
+                for marker in ("not supported", "not_supported", "not implemented", "only supported")
+            )
+            if not drivers or not (isinstance(exc, torch.linalg.LinAlgError) or unsupported):
+                raise
+            driver = drivers.pop(0)
+            svd = partial(torch.linalg.svd, driver=driver)
+            logger.debug("SVDQuant falling back to SVD driver %s for the remaining run: %s", driver, exc)
+        else:
+            return tuple(tensor.to(weight.device) for tensor in result)
+        # Retry outside the handler to release the failed call's workspace.
+        del matrix
+        return run(weight, **kwargs)
+
+    if cuda:
+        # Check availability without depending on model residency or changing RNG state.
+        probe = torch.tensor([[1.0, 2.0], [3.0, 5.0]], device=device, dtype=torch.float32)
+        run(probe, full_matrices=False)
+        torch.cuda.synchronize(device)
+    logger.info("SVDQuant selected SVD driver %s on %s.", svd.keywords["driver"] or "default", device)
+    return run
 
 
 def _detach_to_cpu(value: Any) -> Any:
@@ -138,7 +176,7 @@ class SVDQuantTransform(BasePreprocessor):
         # One CLI command owns one compressor, including dual-transformer pipelines.
         # Rebinding algorithms for another transformer must reuse its SVD driver.
         if getattr(orchestrator, "_svdquant_svd", None) is None:
-            orchestrator._svdquant_svd = SVDRunner(getattr(orchestrator, "device", "cpu"))
+            orchestrator._svdquant_svd = _init_svd(getattr(orchestrator, "device", "cpu"))
         self._svd = orchestrator._svdquant_svd
         quant_block_list = getattr(orchestrator, "quant_block_list", None) or ()
         self._configured_block_names = tuple(

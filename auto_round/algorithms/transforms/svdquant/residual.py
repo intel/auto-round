@@ -23,12 +23,10 @@ the reference implementation.
 
 import math
 from dataclasses import dataclass
-from functools import partial
 
 import torch
 
 from auto_round.data_type.utils import get_quant_func
-from auto_round.logger import logger
 
 _FIXED_MXFP4_DTYPES = frozenset({"mx_fp4", "mx_fp4e2m1"})
 _MXFP4_ALIASES = frozenset({"mx_fp", *_FIXED_MXFP4_DTYPES})
@@ -165,44 +163,6 @@ def rtn_qdq_residual(weight: torch.Tensor, scheme: ResidualQuantScheme) -> torch
 def rtn_qdq_activation(activation: torch.Tensor, scheme: ActivationQuantScheme) -> torch.Tensor:
     """Apply deployment-compatible dynamic activation quantize-dequantize."""
     return _rtn_qdq_tensor(activation, scheme, tensor_name="activation")
-
-
-class SVDRunner:
-    """Probe the execution device once and share the selected SVD across a compressor."""
-
-    def __init__(self, device):
-        self._device = torch.device(device)
-        cuda = self._device.type == "cuda" and torch.version.cuda is not None
-        self._drivers = ["gesvda", "gesvdj", "gesvd"] if cuda else [None]
-        self._svd = partial(torch.linalg.svd, driver=self._drivers.pop(0))
-        if cuda:
-            # Check availability without depending on model residency or changing RNG state.
-            probe = torch.tensor([[1.0, 2.0], [3.0, 5.0]], device=self._device, dtype=torch.float32)
-            self(probe, full_matrices=False)
-            torch.cuda.synchronize(self._device)
-        logger.info("SVDQuant selected SVD driver %s on %s.", self._svd.keywords["driver"] or "default", self._device)
-
-    def __call__(self, weight, **kwargs):
-        matrix = weight.to(self._device)
-        try:
-            result = self._svd(matrix, **kwargs)
-        except torch.OutOfMemoryError:
-            raise
-        except RuntimeError as exc:
-            unsupported = any(
-                marker in str(exc).lower()
-                for marker in ("not supported", "not_supported", "not implemented", "only supported")
-            )
-            if not self._drivers or not (isinstance(exc, torch.linalg.LinAlgError) or unsupported):
-                raise
-            driver = self._drivers.pop(0)
-            self._svd = partial(torch.linalg.svd, driver=driver)
-            logger.debug("SVDQuant falling back to SVD driver %s for the remaining run: %s", driver, exc)
-        else:
-            return tuple(tensor.to(weight.device) for tensor in result)
-        # Retry outside the handler to release the failed call's workspace.
-        del matrix
-        return self(weight, **kwargs)
 
 
 @torch.inference_mode()
