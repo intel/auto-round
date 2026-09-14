@@ -23,10 +23,12 @@ the reference implementation.
 
 import math
 from dataclasses import dataclass
+from functools import partial
 
 import torch
 
 from auto_round.data_type.utils import get_quant_func
+from auto_round.logger import logger
 
 _FIXED_MXFP4_DTYPES = frozenset({"mx_fp4", "mx_fp4e2m1"})
 _MXFP4_ALIASES = frozenset({"mx_fp", *_FIXED_MXFP4_DTYPES})
@@ -165,8 +167,40 @@ def rtn_qdq_activation(activation: torch.Tensor, scheme: ActivationQuantScheme) 
     return _rtn_qdq_tensor(activation, scheme, tensor_name="activation")
 
 
+class SVDRunner:
+    """Bind an SVD callable on first use and retain it for one quantization run."""
+
+    def __init__(self):
+        self._svd = self._initialize
+        self._drivers = []
+
+    def _initialize(self, weight, **kwargs):
+        # Actual weights may move to the quantization device after prepare_run.
+        self._drivers = ["gesvda", "gesvdj", "gesvd"] if weight.is_cuda and torch.version.cuda else [None]
+        self._svd = partial(torch.linalg.svd, driver=self._drivers.pop(0))
+        return self._svd(weight, **kwargs)
+
+    def __call__(self, weight, **kwargs):
+        try:
+            return self._svd(weight, **kwargs)
+        except torch.OutOfMemoryError:
+            raise
+        except RuntimeError as exc:
+            unsupported = any(
+                marker in str(exc).lower()
+                for marker in ("not supported", "not_supported", "not implemented", "only supported")
+            )
+            if not self._drivers or not (isinstance(exc, torch.linalg.LinAlgError) or unsupported):
+                raise
+            driver = self._drivers.pop(0)
+            self._svd = partial(torch.linalg.svd, driver=driver)
+            logger.debug("SVDQuant falling back to SVD driver %s for the remaining run: %s", driver, exc)
+        # Retry outside the handler to release the failed call's workspace.
+        return self(weight, **kwargs)
+
+
 @torch.inference_mode()
-def compute_svd_factors(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor]:
+def compute_svd_factors(weight: torch.Tensor, rank: int, *, svd=torch.linalg.svd) -> tuple[torch.Tensor, torch.Tensor]:
     """Return shared down/up factors without materializing a dense reconstruction."""
     if weight.ndim != 2:
         raise ValueError(f"SVDQuant expects a two-dimensional weight matrix, got shape={tuple(weight.shape)}.")
@@ -180,16 +214,18 @@ def compute_svd_factors(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, 
         up_weight = torch.empty((out_features, 0), dtype=weight.dtype, device=weight.device)
         return down_weight, up_weight
 
-    u, s, vh = torch.linalg.svd(weight, full_matrices=False)
+    u, s, vh = svd(weight, full_matrices=False)
     down_weight = vh[:rank, :]
     up_weight = u[:, :rank] * s[:rank].reshape(1, -1)
     return down_weight, up_weight
 
 
 @torch.inference_mode()
-def truncated_svd(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def truncated_svd(
+    weight: torch.Tensor, rank: int, *, svd=torch.linalg.svd
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return a rank-limited reconstruction and its shared down/up factors."""
-    down_weight, up_weight = compute_svd_factors(weight, rank)
+    down_weight, up_weight = compute_svd_factors(weight, rank, svd=svd)
     low_rank = torch.zeros_like(weight) if rank == 0 else up_weight @ down_weight
     return low_rank, down_weight, up_weight
 
@@ -204,6 +240,7 @@ def iterate_residual_decomposition(
     early_stop: bool,
     residual_dtype: torch.dtype,
     low_rank_dtype: torch.dtype,
+    svd=torch.linalg.svd,
 ) -> ResidualDecomposition:
     """Select the lowest weight-MSE residual/low-rank candidate after deployment casting."""
     if type(iterations) is not int or iterations < 1:
@@ -216,7 +253,7 @@ def iterate_residual_decomposition(
     best_iteration = None
 
     for iteration in range(1, iterations + 1):
-        low_rank, down, up = truncated_svd(weight - quantized_residual, rank)
+        low_rank, down, up = truncated_svd(weight - quantized_residual, rank, svd=svd)
         if not all(torch.isfinite(tensor).all() for tensor in (low_rank, down, up)):
             break
 
