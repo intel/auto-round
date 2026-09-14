@@ -167,7 +167,7 @@ def rtn_qdq_activation(activation: torch.Tensor, scheme: ActivationQuantScheme) 
 
 @torch.inference_mode()
 def compute_svd_factors(
-    weight: torch.Tensor, rank: int, *, driver: str | None = None, device: torch.device | None = None
+    weight: torch.Tensor, rank: int, *, driver: str | None = None, device: str | torch.device | None = None
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return shared down/up factors without materializing a dense reconstruction."""
     if weight.ndim != 2:
@@ -190,7 +190,7 @@ def compute_svd_factors(
 
 @torch.inference_mode()
 def truncated_svd(
-    weight: torch.Tensor, rank: int, *, driver: str | None = None, device: torch.device | None = None
+    weight: torch.Tensor, rank: int, *, driver: str | None = None, device: str | torch.device | None = None
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return a rank-limited reconstruction and its shared down/up factors."""
     down_weight, up_weight = compute_svd_factors(weight, rank, driver=driver, device=device)
@@ -209,7 +209,7 @@ def iterate_residual_decomposition(
     residual_dtype: torch.dtype,
     low_rank_dtype: torch.dtype,
     driver: str | None = None,
-    device: torch.device | None = None,
+    device: str | torch.device | None = None,
 ) -> ResidualDecomposition:
     """Select the lowest weight-MSE residual/low-rank candidate after deployment casting."""
     if type(iterations) is not int or iterations < 1:

@@ -45,6 +45,7 @@ from auto_round.algorithms.transforms.svdquant.smooth_adapters import SmoothSear
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils.device_manager import device_manager
 from auto_round.utils.model import map_nested_tensors
 
 _SCHEME_ATTRS = set(QuantizationScheme.get_attributes())
@@ -135,7 +136,6 @@ class SVDQuantTransform(BasePreprocessor):
     def __init__(self, config: SVDQuantConfig) -> None:
         super().__init__(config)
         self._svd_driver = None
-        self._svd_device = None
         self._configured_block_names: tuple[str, ...] = ()
         self._block_groups: dict[str, list[SmoothSearchGroup]] = {}
         self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
@@ -158,10 +158,8 @@ class SVDQuantTransform(BasePreprocessor):
         # One CLI command owns one compressor, including dual-transformer pipelines.
         # Rebinding algorithms for another transformer must reuse its SVD driver.
         if not hasattr(orchestrator, "_svdquant_svd_driver"):
-            orchestrator._svdquant_svd_device = torch.device(getattr(orchestrator, "device", "cpu"))
-            orchestrator._svdquant_svd_driver = _select_svd_driver(orchestrator._svdquant_svd_device)
+            orchestrator._svdquant_svd_driver = _select_svd_driver(torch.device(device_manager.device))
         self._svd_driver = orchestrator._svdquant_svd_driver
-        self._svd_device = orchestrator._svdquant_svd_device
         quant_block_list = getattr(orchestrator, "quant_block_list", None) or ()
         self._configured_block_names = tuple(
             block_name for block_group in quant_block_list for block_name in block_group
@@ -424,7 +422,7 @@ class SVDQuantTransform(BasePreprocessor):
         stacked = torch.cat(weights, dim=0)
         output_sizes = [projection.out_features for projection in group.projections]
         rank = min(self.config.rank, *stacked.shape)
-        down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver, device=self._svd_device)
+        down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver, device=device_manager.device)
         low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
         deployed_down = down.to(low_rank_dtype)
         deployed_up = up.to(low_rank_dtype)
@@ -459,7 +457,7 @@ class SVDQuantTransform(BasePreprocessor):
         rank = min(self.config.rank, *stacked.shape)
         low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
         if self.config.residual_iters == 1:
-            down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver, device=self._svd_device)
+            down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver, device=device_manager.device)
             deployed_down = down.to(low_rank_dtype)
             deployed_up = up.to(low_rank_dtype)
             low_rank = deployed_up.float() @ deployed_down.float()
@@ -493,7 +491,7 @@ class SVDQuantTransform(BasePreprocessor):
         activation_scheme = self._group_activation_quant_scheme(group)
         for iteration in range(1, self.config.residual_iters + 1):
             down, up = compute_svd_factors(
-                stacked - quantized_residual, rank, driver=self._svd_driver, device=self._svd_device
+                stacked - quantized_residual, rank, driver=self._svd_driver, device=device_manager.device
             )
             deployed_down = down.to(low_rank_dtype)
             deployed_up = up.to(low_rank_dtype)
@@ -553,7 +551,7 @@ class SVDQuantTransform(BasePreprocessor):
         low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
 
         if self.config.residual_iters == 1:
-            down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver, device=self._svd_device)
+            down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver, device=device_manager.device)
             deployed_down = down.to(low_rank_dtype)
             deployed_up = up.to(low_rank_dtype)
             deployed_low_rank = deployed_up.float() @ deployed_down.float()
@@ -574,7 +572,7 @@ class SVDQuantTransform(BasePreprocessor):
                 residual_dtype=group.projections[0].weight.dtype,
                 low_rank_dtype=low_rank_dtype,
                 driver=self._svd_driver,
-                device=self._svd_device,
+                device=device_manager.device,
             )
             deployed_down = result.down
             deployed_up = result.up
