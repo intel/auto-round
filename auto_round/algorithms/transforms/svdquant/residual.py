@@ -167,7 +167,7 @@ def rtn_qdq_activation(activation: torch.Tensor, scheme: ActivationQuantScheme) 
 
 @torch.inference_mode()
 def compute_svd_factors(
-    weight: torch.Tensor, rank: int, *, driver: str | None = None, device: str | torch.device | None = None
+    weight: torch.Tensor, rank: int, *, driver: str | None = None
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return shared down/up factors without materializing a dense reconstruction."""
     if weight.ndim != 2:
@@ -182,18 +182,18 @@ def compute_svd_factors(
         up_weight = torch.empty((out_features, 0), dtype=weight.dtype, device=weight.device)
         return down_weight, up_weight
 
-    u, s, vh = torch.linalg.svd(weight.to(device=device), full_matrices=False, driver=driver)
+    u, s, vh = torch.linalg.svd(weight, full_matrices=False, driver=driver if weight.is_cuda else None)
     down_weight = vh[:rank, :]
     up_weight = u[:, :rank] * s[:rank].reshape(1, -1)
-    return down_weight.to(weight.device), up_weight.to(weight.device)
+    return down_weight, up_weight
 
 
 @torch.inference_mode()
 def truncated_svd(
-    weight: torch.Tensor, rank: int, *, driver: str | None = None, device: str | torch.device | None = None
+    weight: torch.Tensor, rank: int, *, driver: str | None = None
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return a rank-limited reconstruction and its shared down/up factors."""
-    down_weight, up_weight = compute_svd_factors(weight, rank, driver=driver, device=device)
+    down_weight, up_weight = compute_svd_factors(weight, rank, driver=driver)
     low_rank = torch.zeros_like(weight) if rank == 0 else up_weight @ down_weight
     return low_rank, down_weight, up_weight
 
@@ -209,7 +209,6 @@ def iterate_residual_decomposition(
     residual_dtype: torch.dtype,
     low_rank_dtype: torch.dtype,
     driver: str | None = None,
-    device: str | torch.device | None = None,
 ) -> ResidualDecomposition:
     """Select the lowest weight-MSE residual/low-rank candidate after deployment casting."""
     if type(iterations) is not int or iterations < 1:
@@ -222,7 +221,7 @@ def iterate_residual_decomposition(
     best_iteration = None
 
     for iteration in range(1, iterations + 1):
-        low_rank, down, up = truncated_svd(weight - quantized_residual, rank, driver=driver, device=device)
+        low_rank, down, up = truncated_svd(weight - quantized_residual, rank, driver=driver)
         if not all(torch.isfinite(tensor).all() for tensor in (low_rank, down, up)):
             break
 
