@@ -37,7 +37,6 @@ function setup_environment() {
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export UV_NO_PROGRESS=1
     export UV_SYSTEM_PYTHON=1
-    export MALLOC_ARENA_MAX=8
 
     log_info "Creating log directory: ${LOG_DIR}"
     mkdir -p "${LOG_DIR}"
