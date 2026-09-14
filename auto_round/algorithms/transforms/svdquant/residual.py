@@ -168,21 +168,24 @@ def rtn_qdq_activation(activation: torch.Tensor, scheme: ActivationQuantScheme) 
 
 
 class SVDRunner:
-    """Bind an SVD callable on first use and retain it for one quantization run."""
+    """Probe the execution device once and share the selected SVD across a compressor."""
 
-    def __init__(self):
-        self._svd = self._initialize
-        self._drivers = []
-
-    def _initialize(self, weight, **kwargs):
-        # Actual weights may move to the quantization device after prepare_run.
-        self._drivers = ["gesvda", "gesvdj", "gesvd"] if weight.is_cuda and torch.version.cuda else [None]
+    def __init__(self, device):
+        self._device = torch.device(device)
+        cuda = self._device.type == "cuda" and torch.version.cuda is not None
+        self._drivers = ["gesvda", "gesvdj", "gesvd"] if cuda else [None]
         self._svd = partial(torch.linalg.svd, driver=self._drivers.pop(0))
-        return self._svd(weight, **kwargs)
+        if cuda:
+            # Check availability without depending on model residency or changing RNG state.
+            probe = torch.tensor([[1.0, 2.0], [3.0, 5.0]], device=self._device, dtype=torch.float32)
+            self(probe, full_matrices=False)
+            torch.cuda.synchronize(self._device)
+        logger.info("SVDQuant selected SVD driver %s on %s.", self._svd.keywords["driver"] or "default", self._device)
 
     def __call__(self, weight, **kwargs):
+        matrix = weight.to(self._device)
         try:
-            return self._svd(weight, **kwargs)
+            result = self._svd(matrix, **kwargs)
         except torch.OutOfMemoryError:
             raise
         except RuntimeError as exc:
@@ -195,7 +198,10 @@ class SVDRunner:
             driver = self._drivers.pop(0)
             self._svd = partial(torch.linalg.svd, driver=driver)
             logger.debug("SVDQuant falling back to SVD driver %s for the remaining run: %s", driver, exc)
+        else:
+            return tuple(tensor.to(weight.device) for tensor in result)
         # Retry outside the handler to release the failed call's workspace.
+        del matrix
         return self(weight, **kwargs)
 
 

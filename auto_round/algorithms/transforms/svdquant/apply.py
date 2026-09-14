@@ -115,7 +115,7 @@ class SVDQuantTransform(BasePreprocessor):
 
     def __init__(self, config: SVDQuantConfig) -> None:
         super().__init__(config)
-        self._svd = SVDRunner()
+        self._svd = torch.linalg.svd
         self._configured_block_names: tuple[str, ...] = ()
         self._block_groups: dict[str, list[SmoothSearchGroup]] = {}
         self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
@@ -135,13 +135,17 @@ class SVDQuantTransform(BasePreprocessor):
         nblocks = getattr(orchestrator, "nblocks", 1)
         if nblocks != 1:
             raise ValueError(f"SVDQuant requires nblocks=1, got nblocks={nblocks}.")
+        # One CLI command owns one compressor, including dual-transformer pipelines.
+        # Rebinding algorithms for another transformer must reuse its SVD driver.
+        if getattr(orchestrator, "_svdquant_svd", None) is None:
+            orchestrator._svdquant_svd = SVDRunner(getattr(orchestrator, "device", "cpu"))
+        self._svd = orchestrator._svdquant_svd
         quant_block_list = getattr(orchestrator, "quant_block_list", None) or ()
         self._configured_block_names = tuple(
             block_name for block_group in quant_block_list for block_name in block_group
         )
 
     def prepare_run(self, composer=None) -> None:
-        self._svd = SVDRunner()
         self._block_groups.clear()
         if self.model is None:
             return
