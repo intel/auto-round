@@ -29,8 +29,8 @@ from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 from auto_round.algorithms.transforms.svdquant.residual import (
     ActivationQuantScheme,
     ResidualQuantScheme,
+    compute_svd_factors,
     iterate_residual_decomposition,
-    truncated_svd,
 )
 from auto_round.algorithms.transforms.svdquant.smooth import (
     SmoothCandidate,
@@ -395,7 +395,7 @@ class SVDQuantTransform(BasePreprocessor):
         stacked = torch.cat(weights, dim=0)
         output_sizes = [projection.out_features for projection in group.projections]
         rank = min(self.config.rank, *stacked.shape)
-        _, down, up = truncated_svd(stacked, rank)
+        down, up = compute_svd_factors(stacked, rank)
         low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
         deployed_down = down.to(low_rank_dtype)
         deployed_up = up.to(low_rank_dtype)
@@ -430,7 +430,7 @@ class SVDQuantTransform(BasePreprocessor):
         rank = min(self.config.rank, *stacked.shape)
         low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
         if self.config.residual_iters == 1:
-            _, down, up = truncated_svd(stacked, rank)
+            down, up = compute_svd_factors(stacked, rank)
             deployed_down = down.to(low_rank_dtype)
             deployed_up = up.to(low_rank_dtype)
             low_rank = deployed_up.float() @ deployed_down.float()
@@ -463,7 +463,7 @@ class SVDQuantTransform(BasePreprocessor):
         best_error = float("inf")
         activation_scheme = self._group_activation_quant_scheme(group)
         for iteration in range(1, self.config.residual_iters + 1):
-            _, down, up = truncated_svd(stacked - quantized_residual, rank)
+            down, up = compute_svd_factors(stacked - quantized_residual, rank)
             deployed_down = down.to(low_rank_dtype)
             deployed_up = up.to(low_rank_dtype)
             low_rank = deployed_up.float() @ deployed_down.float()
@@ -522,7 +522,7 @@ class SVDQuantTransform(BasePreprocessor):
         low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
 
         if self.config.residual_iters == 1:
-            _, down, up = truncated_svd(stacked, rank)
+            down, up = compute_svd_factors(stacked, rank)
             deployed_down = down.to(low_rank_dtype)
             deployed_up = up.to(low_rank_dtype)
             deployed_low_rank = deployed_up.float() @ deployed_down.float()

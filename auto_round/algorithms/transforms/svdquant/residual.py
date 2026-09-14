@@ -166,8 +166,8 @@ def rtn_qdq_activation(activation: torch.Tensor, scheme: ActivationQuantScheme) 
 
 
 @torch.inference_mode()
-def truncated_svd(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return a rank-limited reconstruction and its shared down/up factors."""
+def compute_svd_factors(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return shared down/up factors without materializing a dense reconstruction."""
     if weight.ndim != 2:
         raise ValueError(f"SVDQuant expects a two-dimensional weight matrix, got shape={tuple(weight.shape)}.")
     max_rank = min(weight.shape)
@@ -176,15 +176,22 @@ def truncated_svd(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.
 
     out_features, in_features = weight.shape
     if rank == 0:
-        low_rank = torch.zeros_like(weight)
         down_weight = torch.empty((0, in_features), dtype=weight.dtype, device=weight.device)
         up_weight = torch.empty((out_features, 0), dtype=weight.dtype, device=weight.device)
-        return low_rank, down_weight, up_weight
+        return down_weight, up_weight
 
     u, s, vh = torch.linalg.svd(weight, full_matrices=False)
     down_weight = vh[:rank, :]
     up_weight = u[:, :rank] * s[:rank].reshape(1, -1)
-    return up_weight @ down_weight, down_weight, up_weight
+    return down_weight, up_weight
+
+
+@torch.inference_mode()
+def truncated_svd(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return a rank-limited reconstruction and its shared down/up factors."""
+    down_weight, up_weight = compute_svd_factors(weight, rank)
+    low_rank = torch.zeros_like(weight) if rank == 0 else up_weight @ down_weight
+    return low_rank, down_weight, up_weight
 
 
 @torch.inference_mode()
