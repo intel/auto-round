@@ -1,3 +1,6 @@
+# # Copyright (C) 2026 Intel Corporation
+# # SPDX-License-Identifier: Apache-2.0
+
 import importlib
 import os
 import sys
@@ -76,10 +79,7 @@ def _prepare_xpu_kernel_import_path():
             sys.path.insert(0, local_src_str)
         return
 
-    sys.path[:] = [
-        entry for entry in sys.path
-        if not entry or Path(entry).resolve() != local_src
-    ]
+    sys.path[:] = [entry for entry in sys.path if not entry or Path(entry).resolve() != local_src]
 
 
 def _installed_xpu_kernel_extensions():
@@ -88,10 +88,7 @@ def _installed_xpu_kernel_extensions():
     except metadata.PackageNotFoundError:
         return "package metadata not found"
 
-    extensions = sorted(
-        str(file) for file in files
-        if str(file).endswith((".so", ".pyd")) or "_xpu_C" in str(file)
-    )
+    extensions = sorted(str(file) for file in files if str(file).endswith((".so", ".pyd")) or "_xpu_C" in str(file))
     return ", ".join(extensions[:16]) if extensions else "no extension files found"
 
 
@@ -137,9 +134,7 @@ def _ark_case(m, n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE, device=DEVICE):
     bias = torch.randn(1, n, dtype=dtype, device=device)
     zp = torch.Tensor()
 
-    packw = ark.repack_quantized_weight(
-        raw_s8_wei, scales, zp, blocksize, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM
-    )
+    packw = ark.repack_quantized_weight(raw_s8_wei, scales, zp, blocksize, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
     revert_wei_t = ark.unpack_weight(packw, dtype, n, k, blocksize, COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM)
     revert_wei = revert_wei_t.t()
     ref_weight = raw_s8_wei.to(dtype) * scales.repeat_interleave(repeats=blocksize, dim=0)
@@ -197,7 +192,9 @@ def _print_perf(m, batch, warmup, runs, op_name, dur, route=None):
     ops = m * N * K * 2
     memsize = _memory_bytes(m)
     route_text = f", route={route}" if route is not None else ""
-    print(f"\n m={m}, n={N}, k={K}, blocksize={BLOCKSIZE}, batch={batch}, warmup={warmup}, runs={runs}, op={op_name}{route_text}")
+    print(
+        f"\n m={m}, n={N}, k={K}, blocksize={BLOCKSIZE}, batch={batch}, warmup={warmup}, runs={runs}, op={op_name}{route_text}"
+    )
     print(f"[Performance] Time: {dur * 1000:.4f} ms")
     print(f"              GFLOPS: {ops / dur / 1e9:.2f}")
     print(f"              Bandwidth: {memsize / dur / 1e9:.2f} GB/s")
@@ -220,8 +217,17 @@ def run_ark_woqgemm():
         def call(i):
             idx = i % batch
             return ark.woqgemm(
-                activation_set[idx], packw_set[idx], bias, N, K, BLOCKSIZE,
-                COMPUTE_TYPE, WEIGHT_TYPE, SCALE_TYPE, ASYM, out=output_set[idx]
+                activation_set[idx],
+                packw_set[idx],
+                bias,
+                N,
+                K,
+                BLOCKSIZE,
+                COMPUTE_TYPE,
+                WEIGHT_TYPE,
+                SCALE_TYPE,
+                ASYM,
+                out=output_set[idx],
             )
 
         output, dur = _benchmark_loop(call, runs, warmup)
@@ -270,4 +276,3 @@ def run_torch_int4_gemm_w4a16():
 if __name__ == "__main__":
     run_ark_woqgemm()
     run_torch_int4_gemm_w4a16()
-
