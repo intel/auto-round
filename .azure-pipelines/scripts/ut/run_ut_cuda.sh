@@ -24,7 +24,7 @@ function create_conda_env() {
     if conda info --envs | grep -q "^$CONDA_ENV_NAME\s"; then conda remove -n ${CONDA_ENV_NAME} --all -y; fi
     conda create --quiet -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
     source activate ${CONDA_ENV_NAME} > /dev/null 2>&1
-    conda install --quiet -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
+    conda install --quiet -c conda-forge git gxx=13.4 gcc=13.4 gdb sysroot_linux-64 libgcc uv -y
     export LD_PRELOAD=${CONDA_PREFIX}/lib/libstdc++.so.6
 
     # install AutoRound
@@ -132,7 +132,6 @@ function run_unit_test_vlm() {
 
     uv pip install torch==2.14.0 torchvision --index-url https://download.pytorch.org/whl/cu130
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
-    uv pip install flash-attn==2.8.3 --no-build-isolation
     uv pip install -r unit/test_cuda/requirements_vlm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match
