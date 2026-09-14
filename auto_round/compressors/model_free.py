@@ -41,7 +41,7 @@ weights with ``fake`` format):
 * Preset names: ``MXFP4``, ``MXFP8``.
 * ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
 
-**NVFP4** (``auto_round`` or ``llm_compressor`` format):
+**NVFP4** (``auto_round``, ``llm_compressor``, or ``fake`` format):
 
 * Preset name: ``NVFP4``.
 * Uses a fixed global input scale for every quantized layer. The default is
@@ -1496,6 +1496,19 @@ class _ModelFreeCompressorCore:
             self.output_weight_map = {name: "model.safetensors" for name in self.output_weight_map}
             self._write_resume_manifest()
 
+        current_shards = (
+            {"model.safetensors"}
+            if len(set(self.output_weight_map.values())) <= 1
+            else set(self.output_weight_map.values())
+        )
+        for filename in os.listdir(self._quant_output_dir):
+            if filename == "model.safetensors.index.json":
+                if len(current_shards) <= 1:
+                    os.remove(os.path.join(self._quant_output_dir, filename))
+                continue
+            if filename.endswith((".safetensors", ".bin")) and filename not in current_shards:
+                os.remove(os.path.join(self._quant_output_dir, filename))
+
     def _remove_stale_quantization_config_files(self) -> None:
         """Remove source/output quantization metadata before writing the new config."""
         for directory in {self.output_dir, self._quant_output_dir}:
@@ -1531,6 +1544,8 @@ class _ModelFreeCompressorCore:
         self._remove_stale_quantization_config_files()
         _remove_quantization_configs(self.config)
         if self.format == "fake":
+            if quantization_config.get("act_bits", 16) <= 8:
+                self.config["quantization_config"] = quantization_config
             with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
                 json.dump(self.config, f, indent=2)
             return
@@ -1652,7 +1667,7 @@ class _ModelFreeCompressorCore:
             bits = self.default_scheme.get("bits", 4)
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
         elif is_nv_fp(data_type):
-            packing_format = "nvfp4-pack-quantized"
+            packing_format = "fake" if self.format == "fake" else "nvfp4-pack-quantized"
         elif data_type == _NVFP4_E5M3_DATA_TYPE:
             packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
         else:
@@ -1666,7 +1681,8 @@ class _ModelFreeCompressorCore:
                 )
         elif is_nv_fp(data_type):
             logger.info(
-                "NVFP4 model-free quantization uses a fixed global input scale of %s for every quantized layer.",
+                "NVFP4 model-free quantization uses a fixed global input scale of %s "
+                "(AR_MODEL_FREE_NVFP4_INPUT_SCALE) for every quantized layer.",
                 envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE,
             )
         else:
@@ -2092,7 +2108,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         ) or self._auto_scheme_family == "mx_fp":
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif normalized_scheme is not None and is_nv_fp((normalized_scheme.data_type or "").lower()):
-            _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+            _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif normalized_scheme is not None and (normalized_scheme.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE:
             _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):

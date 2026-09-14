@@ -18,7 +18,7 @@ import torch
 
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental.qmodules.base import QModuleBase
-from auto_round.schemes import QuantizationScheme
+from auto_round.schemes import QuantizationScheme, is_nv_fp
 
 __all__ = ["FakeActQuantLinear"]
 
@@ -46,6 +46,8 @@ class FakeActQuantLinear(QModuleBase):
             self.register_parameter("bias", None)
         else:
             self.bias = torch.nn.Parameter(bias, requires_grad=False)
+        if is_nv_fp(config.act_data_type or ""):
+            self.register_buffer("input_global_scale", torch.ones(1, dtype=torch.float32))
 
     @classmethod
     def from_original(cls, config: QuantizationScheme, original_layer: torch.nn.Linear):
@@ -78,6 +80,7 @@ class FakeActQuantLinear(QModuleBase):
             tensor=activation,
             bits=self.config.act_bits,
             group_size=self.config.act_group_size,
+            global_scale=getattr(self, "input_global_scale", None),
         )
         return qdq_activation.to(activation.dtype)
 

@@ -313,3 +313,21 @@ class TestEvalArgumentForwarding:
         assert forwarded_args.num_fewshot == args.num_fewshot
         assert forwarded_args.eval_gen_kwargs == args.eval_gen_kwargs
         assert forwarded_args.fewshot_as_multiturn == args.fewshot_as_multiturn
+
+    def test_model_free_fake_evaluation_normalizes_bare_device_index(self, tmp_path):
+        from auto_round.eval.evaluation import run_model_evaluation
+
+        args = _make_eval_args(device_map="0")
+        autoround = SimpleNamespace()
+        loaded_model = MagicMock()
+
+        with patch("auto_round.utils.model.detect_model_type", return_value="llm"), patch(
+            "auto_round.utils.device_manager.get_device_and_parallelism", return_value=("cuda:0", False)
+        ), patch("transformers.AutoModelForCausalLM.from_pretrained", return_value=loaded_model) as mock_load, patch(
+            "transformers.AutoTokenizer.from_pretrained", return_value=MagicMock()
+        ), patch(
+            "auto_round.eval.evaluation.evaluate_with_model_instance"
+        ):
+            run_model_evaluation(None, None, autoround, str(tmp_path), ["fake"], args)
+
+        assert mock_load.call_args.kwargs["device_map"] == "cuda:0"

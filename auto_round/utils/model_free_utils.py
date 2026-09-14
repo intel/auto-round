@@ -1258,6 +1258,42 @@ def _quantize_weight_nvfp4_e5m3(
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
 
+def _quantize_weight_nvfp4_fake(
+    weight: torch.Tensor,
+    layer_name: str,
+    group_size: int = 16,
+    device: str = "cpu",
+) -> dict[str, torch.Tensor]:
+    """Fake-quantize standard NVFP4 and preserve its static activation scale."""
+    import math
+
+    from auto_round.data_type.nvfp import calculate_gparam, nv_fp4
+
+    _, in_features = weight.shape
+    if group_size != 16 or in_features % group_size != 0:
+        raise ValueError(
+            f"NVFP4 requires in_features divisible by group_size=16, got {in_features} for '{layer_name}'."
+        )
+    input_global_scale_value = envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE
+    if not math.isfinite(input_global_scale_value) or input_global_scale_value <= 0:
+        raise ValueError(
+            "AR_MODEL_FREE_NVFP4_INPUT_SCALE must be a finite positive float, " f"got {input_global_scale_value!r}."
+        )
+
+    weight_dev = weight.to(device)
+    weight_global_scale = calculate_gparam(weight_dev, group_size=group_size, device=device)
+    qdq_weight, _, _ = nv_fp4(
+        weight_dev,
+        bits=4,
+        group_size=group_size,
+        global_scale=weight_global_scale,
+    )
+    return {
+        f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu"),
+        f"{layer_name}.input_global_scale": torch.tensor([input_global_scale_value], dtype=torch.float32),
+    }
+
+
 def _quantize_weight_nvfp4(
     weight: torch.Tensor,
     layer_name: str,
@@ -1459,7 +1495,10 @@ def _quantize_single_tensor(
     # ---- Standard NVFP4 path ----
     if is_nv_fp(data_type):
         try:
-            out = _quantize_weight_nvfp4(
+            quantize_nvfp4 = (
+                _quantize_weight_nvfp4_fake if scheme.get("_output_format") == "fake" else _quantize_weight_nvfp4
+            )
+            out = quantize_nvfp4(
                 weight=tensor,
                 layer_name=layer_name,
                 group_size=group_size,
@@ -2822,6 +2861,7 @@ def _build_mxfp_autoround_quantization_config(
     ignored_layers: list[str],
     layer_config: dict | None = None,
     block_name_to_quantize: Optional[str] = None,
+    format: str = "auto_round",
 ) -> dict:
     """Build an auto-round style quantization_config for MXFP4 / MXFP8.
 
@@ -2871,7 +2911,7 @@ def _build_mxfp_autoround_quantization_config(
 
     qconfig: dict = {
         "quant_method": "auto-round",
-        "packing_format": "auto_round:llm_compressor",
+        "packing_format": "auto_round:fake" if format == "fake" else "auto_round:llm_compressor",
         "bits": bits,
         "group_size": group_size or (16 if is_nv_fp(data_type) else 32),
         "sym": True,
@@ -3182,13 +3222,14 @@ def _build_quantization_config(
         or is_nv_fp(data_type)
         or (is_fp_default and (_layer_config_has_mxfp(layer_config) or _layer_config_has_nvfp4(layer_config)))
     ):
-        if format in ("auto_round", "auto_round:auto_gptq"):
+        if format in ("fake", "auto_round", "auto_round:auto_gptq"):
             return _build_mxfp_autoround_quantization_config(
                 default_scheme=default_scheme,
                 quantized_layers=quantized_layers,
                 ignored_layers=ignored_layers,
                 layer_config=layer_config,
                 block_name_to_quantize=block_name_to_quantize,
+                format=format,
             )
         return _build_mxfp_quantization_config(
             default_scheme=default_scheme,

@@ -74,6 +74,7 @@ from auto_round.utils.model_free_utils import (
     _quantize_weight_mxfp,
     _quantize_weight_nvfp4,
     _quantize_weight_nvfp4_e5m3,
+    _quantize_weight_nvfp4_fake,
     _validate_auto_scheme_options,
     is_model_free_supported_scheme,
 )
@@ -480,6 +481,36 @@ def test_nvfp4_model_free_uses_fixed_input_scale(monkeypatch, input_scale):
     assert is_model_free_supported_scheme("NVFP4")
 
 
+def test_nvfp4_model_free_fake_quantization(monkeypatch):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "0.5")
+    weight = torch.randn(8, 32)
+
+    output = _quantize_weight_nvfp4_fake(weight, "layer.fc")
+
+    assert set(output) == {"layer.fc.weight", "layer.fc.input_global_scale"}
+    assert output["layer.fc.weight"].shape == weight.shape
+    assert output["layer.fc.weight"].dtype == weight.dtype
+    assert not torch.equal(output["layer.fc.weight"], weight)
+    assert torch.equal(output["layer.fc.input_global_scale"], torch.tensor([0.5]))
+
+
+def test_nvfp4_model_free_accepts_fake_format(monkeypatch):
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    compressor = ModelFreeCompressor("unused-model-path", scheme="NVFP4")
+    monkeypatch.setattr(compressor, "run", lambda: compressor.output_dir)
+    monkeypatch.setattr(
+        compressor,
+        "_fallback_to_quantize_and_save",
+        lambda **_kwargs: pytest.fail("NVFP4 fake unexpectedly fell back to the regular flow"),
+    )
+
+    result = compressor.quantize_and_save("fake-output", format="fake")
+
+    assert result == (None, "fake-output")
+    assert compressor.quantized is True
+
+
 def test_nvfp4_model_free_llm_compressor_config():
     from auto_round.schemes import PRESET_SCHEMES
 
@@ -501,11 +532,12 @@ def test_nvfp4_model_free_llm_compressor_config():
 
 
 @pytest.mark.parametrize("input_scale", ["0", "-1", "nan", "inf"])
-def test_nvfp4_model_free_rejects_invalid_input_scale(monkeypatch, input_scale):
+@pytest.mark.parametrize("quantize_func", [_quantize_weight_nvfp4, _quantize_weight_nvfp4_fake])
+def test_nvfp4_model_free_rejects_invalid_input_scale(monkeypatch, input_scale, quantize_func):
     monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", input_scale)
 
     with pytest.raises(ValueError, match="finite positive float"):
-        _quantize_weight_nvfp4(torch.randn(8, 32), "layer.fc")
+        quantize_func(torch.randn(8, 32), "layer.fc")
 
 
 def test_int_model_free_fake_quantization():
@@ -610,6 +642,81 @@ def test_nvfp4_model_free_end_to_end(tmp_path, monkeypatch):
     assert quantization_config["packing_format"] == "auto_round:llm_compressor"
     assert quantization_config["data_type"] == "nv_fp"
     assert quantization_config["group_size"] == 16
+
+
+def test_nvfp4_model_free_fake_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "0.5")
+    prefix = "model.layers.0.self_attn.q_proj"
+    original_weight = torch.randn(32, 32)
+    model_dir = _make_model_dir(
+        tmp_path,
+        _LLAMA_CFG,
+        {f"{prefix}.weight": original_weight, "lm_head.weight": torch.randn(64, 32)},
+    )
+    output_dir = str(tmp_path / "output")
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="NVFP4",
+        format="fake",
+    )
+    compressor.run()
+
+    with safe_open(os.path.join(output_dir, "model.safetensors"), framework="pt") as output:
+        assert f"{prefix}.weight" in output.keys()
+        assert f"{prefix}.weight_packed" not in output.keys()
+        assert f"{prefix}.weight_scale" not in output.keys()
+        assert f"{prefix}.weight_global_scale" not in output.keys()
+        assert torch.equal(output.get_tensor(f"{prefix}.input_global_scale"), torch.tensor([0.5]))
+        assert not torch.equal(output.get_tensor(f"{prefix}.weight"), original_weight)
+        assert "lm_head.weight" in output.keys()
+    assert not os.path.exists(os.path.join(output_dir, "quantization_config.json"))
+    with open(os.path.join(output_dir, "config.json")) as config_file:
+        quantization_config = json.load(config_file)["quantization_config"]
+    assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["bits"] == 4
+    assert quantization_config["group_size"] == 16
+    assert quantization_config["data_type"] == "nv_fp"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["act_data_type"] == "nv_fp4_with_static_gs"
+    assert quantization_config["act_group_size"] == 16
+
+
+def test_model_free_replaces_stale_multishard_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "0.5")
+    prefix = "model.layers.0.self_attn.q_proj"
+    model_dir = _make_model_dir(
+        tmp_path,
+        _LLAMA_CFG,
+        {f"{prefix}.weight": torch.randn(32, 32), "lm_head.weight": torch.randn(64, 32)},
+    )
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir)
+    save_file(
+        {"model.decoder.layers.0.fc1.weight": torch.randn(32, 32)},
+        os.path.join(output_dir, "model-00002.safetensors"),
+    )
+    with open(os.path.join(output_dir, "model.safetensors.index.json"), "w") as index_file:
+        json.dump(
+            {
+                "metadata": {"total_size": 0},
+                "weight_map": {"model.decoder.layers.0.fc1.weight": "model-00002.safetensors"},
+            },
+            index_file,
+        )
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="NVFP4",
+        format="fake",
+    )
+    compressor.run()
+
+    assert os.path.exists(os.path.join(output_dir, "model.safetensors"))
+    assert not os.path.exists(os.path.join(output_dir, "model.safetensors.index.json"))
+    assert not os.path.exists(os.path.join(output_dir, "model-00002.safetensors"))
 
 
 def test_nvfp4_e5m3_model_free_llm_compressor(tmp_path):

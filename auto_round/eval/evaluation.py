@@ -522,7 +522,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
 
                 eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
                 model = AutoModelForCausalLM.from_pretrained(
-                    eval_folder, device_map=args.device_map, torch_dtype=eval_model_dtype
+                    eval_folder, device_map=device_str, torch_dtype=eval_model_dtype
                 )
                 model.eval()
                 if tokenizer is None:

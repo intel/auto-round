@@ -142,7 +142,7 @@ export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
 ### AR_MODEL_FREE_NVFP4_INPUT_SCALE
-- **描述**：在无法使用校准数据的 model-free 模式中，为每个 NVFP4 量化层设置同一个固定的全局输入 scale。该变量仅影响标准 `NVFP4` scheme，不影响 `NVFP4_E5M3`。
+- **描述**：在无法使用校准数据的 model-free 模式中，为每个 NVFP4 量化层设置同一个固定的全局输入 scale。packed 和 fake 输出都会将该值按层保存为 `input_global_scale`。对于 fake 输出，weight 量化元数据仍保存在 `config.json` 中，字段为 `bits: 4` 和 `group_size: 16`；activation 元数据则分别使用 `act_bits` 和 `act_group_size`。该变量仅影响标准 `NVFP4` scheme，不影响 `NVFP4_E5M3`。
 - **默认值**：`1.0`
 - **有效值**：任意有限正浮点数
 - **用途**：在 model-free NVFP4 量化前设置该变量，以覆盖默认输入 scale。

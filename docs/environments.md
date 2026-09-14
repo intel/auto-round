@@ -142,7 +142,7 @@ export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
 ### AR_MODEL_FREE_NVFP4_INPUT_SCALE
-- **Description**: Sets one fixed global input scale for every NVFP4-quantized layer in model-free mode, where calibration data is unavailable. This only affects the standard `NVFP4` scheme, not `NVFP4_E5M3`.
+- **Description**: Sets one fixed global input scale for every NVFP4-quantized layer in model-free mode, where calibration data is unavailable. Packed and fake outputs both save this value per layer as `input_global_scale`. For fake output, weight quantization metadata remains in `config.json` as `bits: 4` and `group_size: 16`; activation metadata is stored separately as `act_bits` and `act_group_size`. This only affects the standard `NVFP4` scheme, not `NVFP4_E5M3`.
 - **Default**: `1.0`
 - **Valid Values**: any finite positive float
 - **Usage**: Set this before model-free NVFP4 quantization to override the default input scale.
