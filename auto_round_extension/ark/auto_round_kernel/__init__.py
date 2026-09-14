@@ -1228,6 +1228,115 @@ def sage(
     return O
 
 
+def sage_s4(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    qscale: torch.Tensor | None = None,
+    kscale: torch.Tensor | None = None,
+    tensor_layout: str = "HND",
+    return_lse: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """Low-level SAGE attention with pre-packed signed INT4 Q/K.
+
+    Q and K must be contiguous ``torch.uint8`` tensors with shapes
+    ``[B, H, S, D // 2]`` in HND layout. Each byte stores two signed INT4
+    values, with the first logical value in the low nibble. V remains a
+    contiguous FP16/BF16 tensor with shape ``[B, H, S, D]``. No quantization
+    is performed by this function.
+    """
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage_s4 is only supported on XPU")
+    if _normalize_tensor_layout(tensor_layout) != "HND":
+        raise ValueError("sage_s4 currently supports only contiguous HND layout")
+    if query.dtype != torch.uint8 or key.dtype != torch.uint8:
+        raise ValueError(f"packed Q/K must have dtype torch.uint8, got Q={query.dtype}, K={key.dtype}")
+    if value.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"sage_s4 expects fp16/bf16 V, got V={value.dtype}")
+    if qscale is None or kscale is None:
+        raise ValueError("qscale and kscale must be provided for sage_s4")
+    if quant_block_size <= 0:
+        raise ValueError(f"quant_block_size must be positive, got {quant_block_size}")
+
+    if query.device != key.device or query.device != value.device:
+        raise ValueError(f"Q/K/V must be on the same device, got Q={query.device}, K={key.device}, V={value.device}")
+    if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
+        raise ValueError("packed Q/K and V must be 4D tensors")
+
+    B, Hq, Sq, packed_D = query.shape
+    Bk, Hkv, Skv, packed_Dk = key.shape
+    Bv, Hkv_v, Skv_v, D = value.shape
+    if Bk != B or Bv != B:
+        raise ValueError("Batch size mismatch between packed Q/K/V")
+    if Hkv_v != Hkv or Skv_v != Skv:
+        raise ValueError("K/V shape mismatch")
+    if packed_Dk != packed_D or D != packed_D * 2:
+        raise ValueError("packed Q/K head dimension must be half the V head dimension")
+    _validate_head_ratio(Hq, Hkv)
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sage_s4")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    q_blocks = (Sq + quant_block_size - 1) // quant_block_size
+    kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
+    expected_qscale = B * Hq * q_blocks
+    expected_kscale = B * Hkv * kv_blocks
+    for scale_tensor, name, expected in (
+        (qscale, "qscale", expected_qscale),
+        (kscale, "kscale", expected_kscale),
+    ):
+        if scale_tensor.device != query.device:
+            raise ValueError(f"{name} must be on the same device as Q")
+        if scale_tensor.dtype != torch.float32:
+            raise ValueError(f"{name} must have dtype torch.float32, got {scale_tensor.dtype}")
+        if not scale_tensor.is_contiguous():
+            raise ValueError(f"{name} must be contiguous")
+        if scale_tensor.numel() != expected:
+            raise ValueError(f"{name} must have {expected} elements, got {scale_tensor.numel()}")
+
+    _validate_canonical_strides(query, "packed Q", tensor_layout)
+    _validate_canonical_strides(key, "packed K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    O = _empty_attention_output(B, Hq, Sq, D, dtype=value.dtype, device=query.device, tensor_layout=tensor_layout)
+    LSE = torch.empty(B, Hq, Sq, dtype=torch.float32, device=query.device) if return_lse else None
+    lib.sage_s4(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        qscale.data_ptr(),
+        kscale.data_ptr(),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        LAYOUT_HND,
+        LSE.data_ptr() if LSE is not None else 0,
+    )
+    if return_lse:
+        assert LSE is not None
+        return O, LSE
+    return O
+
+
 def sage_pvi8(
     query: torch.Tensor,
     key: torch.Tensor,

@@ -274,10 +274,11 @@ class XeSageFwdKernel {
       auto shape_K_cache = make_shape(seq_len_kv_cache, s.head_size_qk, s.num_heads_kv, batch_dim);
       auto shape_V_cache = make_shape(s.head_size_vo, seq_len_kv_cache, s.num_heads_kv, batch_dim);
 
-      auto dcQ = const_cast<ElementQ*>(p.Q + offset_q);
-      auto dcK = const_cast<ElementK*>(p.K + offset_k);
+      auto dcQ = make_gmem_ptr<ElementQ>(static_cast<void*>(const_cast<ElementQ*>(p.Q))) + offset_q;
+      auto dcK = make_gmem_ptr<ElementK>(static_cast<void*>(const_cast<ElementK*>(p.K))) + offset_k;
       auto dcV = const_cast<ElementV*>(p.V + offset_v);
-      auto dcK_cache = const_cast<ElementK*>(p.K_cache + offset_k_cache);
+      auto dcK_cache =
+          make_gmem_ptr<ElementK>(static_cast<void*>(const_cast<ElementK*>(p.K_cache))) + offset_k_cache;
       auto dcV_cache = const_cast<ElementV*>(p.V_cache + offset_v_cache);
       int seq_q_pad = (seq_len_qo + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;
       int seq_kv_pad = (seq_len_kv + params.mainloop.scale_block_size - 1) / params.mainloop.scale_block_size;

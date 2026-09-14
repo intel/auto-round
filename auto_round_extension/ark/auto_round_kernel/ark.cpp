@@ -437,6 +437,45 @@ static void sage(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_
                              (BTLA_DTYPE)o_dtype, (float*)lse);
 }
 
+static void sage_s4(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                    int scale_block_size, torch_ptr qscale, torch_ptr kscale, int o_dtype, int batch,
+                    int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim,
+                    float softmax_scale, bool is_causal, int tensor_layout, torch_ptr lse = 0) {
+  if (tensor_layout != TENSOR_LAYOUT_HND) {
+    throw std::invalid_argument("ark::sage_s4: only contiguous HND packed Q/K is supported");
+  }
+  if (head_dim != 64 && head_dim != 128) {
+    throw std::invalid_argument("ark::sage_s4: only head_dim 64 and 128 are supported");
+  }
+
+  // Q/K pointers address packed bytes, but these strides are in logical INT4 elements.
+  int q_sh = seq_len_q * head_dim;
+  int k_sh = seq_len_kv * head_dim;
+  int q_stride_s = head_dim;
+  int q_stride_d = 1;
+  int q_stride_h = q_sh;
+  int q_stride_b = num_heads_q * q_sh;
+  int k_stride_s = head_dim;
+  int k_stride_d = 1;
+  int k_stride_h = k_sh;
+  int k_stride_b = num_heads_kv * k_sh;
+  int v_stride_d = 1;
+  int v_stride_s = head_dim;
+  int v_stride_h = k_sh;
+  int v_stride_b = num_heads_kv * k_sh;
+  int o_stride_s = head_dim;
+  int o_stride_d = 1;
+  int o_stride_h = q_sh;
+  int o_stride_b = num_heads_q * q_sh;
+
+  ark::sdpa_impl_qks4_pvhalf(
+      (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, scale_block_size,
+      (void*)qscale, (void*)kscale, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
+      k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
+      o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim, softmax_scale,
+      is_causal, (BTLA_DTYPE)o_dtype, (float*)lse);
+}
+
 static void sage_pvi8(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
                       int scale_block_size, torch_ptr qscale, torch_ptr kscale, torch_ptr vscale,
                       int q_dtype, int k_dtype, int o_dtype, int batch, int num_heads_q, int num_heads_kv, int seq_len_q,
@@ -1409,6 +1448,14 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
         pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
         pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
+    // Low-level SAGE INT4 Q/K API: Q/K are two signed INT4 values per byte in contiguous HND storage.
+    m.def("sage_s4", &ark::sage_s4, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
+      pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
+      pybind11::arg("scale_block_size"), pybind11::arg("qscale"), pybind11::arg("kscale"),
+      pybind11::arg("o_dtype"), pybind11::arg("batch"), pybind11::arg("num_heads_q"),
+      pybind11::arg("num_heads_kv"), pybind11::arg("seq_len_q"), pybind11::arg("seq_len_kv"),
+      pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
+      pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
   m.def("sage_sparse", &ark::sage_sparse);
   // Low-level SAGE PVi8 API: input Q/K/V are pre-quantized int8 with qscale/kscale/vscale.
   m.def("sage_pvi8", &ark::sage_pvi8, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
