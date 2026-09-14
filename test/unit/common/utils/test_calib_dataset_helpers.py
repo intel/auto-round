@@ -93,13 +93,14 @@ class TestFineWebEduDataset:
         dataset.map.return_value = dataset
         return dataset
 
-    def test_alias_loads_huggingface_sample_by_default(self, monkeypatch):
+    def test_alias_loads_huggingface_sample_without_modelscope(self, monkeypatch):
         import auto_round.calib_dataset as calib_dataset
 
         dataset = self._streaming_dataset_mock()
         load_dataset = MagicMock(return_value=dataset)
         monkeypatch.setattr(calib_dataset, "load_dataset", load_dataset)
-        monkeypatch.setattr(calib_dataset.envs, "AR_USE_MODELSCOPE", False)
+        monkeypatch.delenv("AR_USE_MODELSCOPE", raising=False)
+        monkeypatch.setitem(sys.modules, "modelscope", None)
 
         result = calib_dataset.get_fineweb_edu_dataset(MagicMock(), 128)
 
@@ -111,6 +112,8 @@ class TestFineWebEduDataset:
         dataset.take.assert_called_once_with(10000)
 
     def test_alias_loads_modelscope_sample_when_enabled(self, monkeypatch):
+        import transformers.utils.versions as transformers_versions
+
         import auto_round.calib_dataset as calib_dataset
 
         dataset = self._streaming_dataset_mock()
@@ -118,7 +121,8 @@ class TestFineWebEduDataset:
         modelscope = types.ModuleType("modelscope")
         modelscope.MsDataset = types.SimpleNamespace(load=load)
         monkeypatch.setitem(sys.modules, "modelscope", modelscope)
-        monkeypatch.setattr(calib_dataset.envs, "AR_USE_MODELSCOPE", True)
+        monkeypatch.setenv("AR_USE_MODELSCOPE", "1")
+        monkeypatch.setattr(transformers_versions, "require_version", MagicMock())
 
         result = calib_dataset.get_fineweb_edu_dataset(MagicMock(), 128)
 
