@@ -24,12 +24,31 @@ namespace dense_woq_s4_dpas {
 using namespace cute;
 
 using ::ark::moe_dpas_s4::cute_scalar_t;
+using ::ark::moe_dpas_s4::dpas_policy_base;
 using ::ark::moe_dpas_s4::dpas_w4a16_policy;
 using ::ark::moe_dpas_s4::dpas_w4a16_policy_m_8;
 using ::ark::moe_dpas_s4::dpas_w4a16_policy_m_16;
 using ::ark::moe_dpas_s4::dpas_w4a16_policy_m_32;
 using ::ark::moe_dpas_s4::make_moe_tensor;
 using ::ark::moe_dpas_s4::xe_gemm_s4_pergroup;
+
+class dpas_w4a16_dense_policy_m_16 : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_16, _128, _32>;
+  using SGLayout = Layout<Shape<_1, _8, _1>, Stride<_8, _1, _0>>;
+};
+
+class dpas_w4a16_dense_policy_m_32 : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_32, _128, _32>;
+  using SGLayout = Layout<Shape<_1, _8, _1>, Stride<_8, _1, _0>>;
+};
+
+class dpas_w4a16_dense_policy_m_64 : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_64, _128, _32>;
+  using SGLayout = Layout<Shape<_2, _8, _1>, Stride<_8, _1, _0>>;
+};
 
 inline constexpr int kMinGroupSize = 32;
 inline constexpr int kMaxGroupSize = 4096;
@@ -72,8 +91,8 @@ CUTE_DEVICE void DenseWoqS4GEMM(const ElementA* Activations,
   auto tile_coord = make_coord(wg_m, wg_n, _, 0);
 
   xe_gemm_s4_pergroup<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD,
-                       GroupSize, true>(A_tensor, B_tensor, Scales, Bias,
-                                        D_tensor, tile_coord, mma);
+                       GroupSize>(A_tensor, B_tensor, Scales, Bias,
+                                  D_tensor, tile_coord, mma);
 }
 
 template <char layoutA, char layoutB, class policy, int GroupSize,

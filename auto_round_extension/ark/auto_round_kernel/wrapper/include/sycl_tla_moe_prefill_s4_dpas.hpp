@@ -22,8 +22,9 @@
 // upcasts to the activation dtype in registers via the same
 // `cute::reorder(tBrB, tCrB)` machinery the INT8 header uses -- the only
 // substantive difference is that CuTe/cutlass-sycl's
-// `NumericArrayConverter<ElementA, cutlass::int4b_t, N>` unpacks 4-bit
-// fields two-per-byte from the loaded fragment. The B-side global load
+// `NumericArrayConverter<ElementA, cutlass::uint4b_t, N>` unpacks unsigned
+// 4-bit fields two-per-byte from the loaded fragment; the mainloop subtracts
+// the implicit zero point of 8 before DPAS. The B-side global load
 // is halved (bytes, not int8 elements) so the mainloop is bandwidth-
 // bound on `E * N * K / 2` instead of `E * N * K`.
 //
@@ -40,7 +41,7 @@
 // per-expert `B_offset` is `expert_id * gemm_n * (gemm_k / 2)` (bytes),
 // and `make_moe_tensor` is invoked with a "K in bytes" extent that
 // CuTe's copy atom translates back into element-space via the element-
-// size deduction on `cutlass::int4b_t`.
+// size deduction on `cutlass::uint4b_t`.
 //
 // The per-group scale layout is unchanged: scales are still
 // `[E, N, K/group_size]` in activation dtype, `group_size % 2 == 0` is
@@ -110,11 +111,9 @@
 // driver lives in a sibling namespace to avoid ODR clashes.
 #include "sycl_tla_moe_prefill_int_dpas.hpp"
 
-// `cutlass::int4b_t` is the storage-narrow signed 4-bit type upstream
-// cutlass / cutlass-sycl uses to trigger the packed-nibble copy /
-// `NumericArrayConverter` code paths. Its `sizeof` is defined as 1 byte
-// (one storage byte holds two elements); CuTe uses the type's
-// `bits_per_element` trait, not `sizeof`, to derive copy/atom strides.
+// `cutlass::uint4b_t` is used for auto-round S4_CLIP storage: BestLA packs
+// values as raw unsigned nibbles and decodes them as `nibble - 8`. CuTe uses
+// the type's `bits_per_element` trait, not `sizeof`, to derive copy strides.
 #include "cutlass/integer_subbyte.h"
 
 namespace ark {
@@ -162,18 +161,15 @@ using ::ark::moe_dpas_fp8::get_atomic_scratch_buffer;
 // Adapted from `moe_dpas_int::xe_gemm_int_pergroup<>`. Structural
 // differences vs. the INT8 per-group mainloop:
 //
-//   * `ElementB` is required to be `cutlass::int4b_t`. The 4-bit-per-
+//   * `ElementB` is required to be `cutlass::uint4b_t`. The 4-bit-per-
 //     element storage triggers CuTe's packed-nibble copy atom and the
-//     `NumericArrayConverter<ElementA, int4b_t, N>` specialisation
-//     inside `reorder(tBrB, tCrB)`, which decodes each byte into two
-//     sign-extended `ElementA` (bf16/fp16) values in-register. Match
-//     for match the encoding produced by `moe_dequant::decode_int4_pair
-//     <Asym=false>` on the auto-round side: byte low nibble decodes to
-//     `q_lo` (K = 2i), byte high nibble to `q_hi` (K = 2i+1), both
-//     sign-extended from [-8, 7].
+//     `NumericArrayConverter<ElementA, uint4b_t, N>` specialisation
+//     inside `reorder(tBrB, tCrB)`. Auto-round / BestLA S4_CLIP stores
+//     q as unsigned nibbles with an implicit zero point of 8, so the
+//     mainloop subtracts 8 from the reordered B fragment before DPAS.
 //   * The B fragment size (`tCrB` / `tBrB`) is unchanged in element
 //     units -- CuTe deduces it from the MMA tile shape and the
-//     `bits_per_element` trait on `int4b_t`, so a `tile_k` of 32 loads
+//     `bits_per_element` trait on `uint4b_t`, so a `tile_k` of 32 loads
 //     16 bytes per SG per k_tile.
 //   * Per-group scale reload cadence is bit-identical to the INT8
 //     per-group path: one global load per SG-owned N-lane per group
@@ -189,7 +185,7 @@ template <class GmemTiledCopyA, class GmemTiledCopyB, class GmemTiledCopyC,
           class TiledMMA, typename ElementS, typename ElementBI>
 CUTE_DEVICE void xe_gemm_s4_pergroup(
     ATensor const& A,   // (M,K)   -- ElementA (bf16/fp16)
-    BTensor const& B,   // (N,K)   -- cutlass::int4b_t (packed nibbles)
+    BTensor const& B,   // (N,K)   -- cutlass::uint4b_t (packed nibbles)
     const ElementS* Scales,
     const ElementBI* Bias,
     DTensor& C,         // (M,N)   -- ElementA
@@ -197,8 +193,8 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
     TiledMMA const& mma) {
   using TA = typename ATensor::element_type;
   using TB = typename BTensor::element_type;
-  static_assert(std::is_same_v<TB, cutlass::int4b_t>,
-                "xe_gemm_s4_pergroup: ElementB must be cutlass::int4b_t (sym only)");
+  static_assert(std::is_same_v<TB, cutlass::uint4b_t>,
+                "xe_gemm_s4_pergroup: ElementB must be cutlass::uint4b_t (BestLA S4_CLIP)");
   static constexpr int group_size = GroupSize;
   static constexpr int sg_local_range = 16;
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -353,15 +349,12 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
       prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
     }
 
-    // `reorder` performs the in-register `int4b_t -> ElementA` unpack
-    // + sign-extend + cast via `cutlass::NumericArrayConverter<
-    // ElementA, cutlass::int4b_t, N>`. Once `tCrB` carries bf16/fp16
-    // values it is compatible with the same DPAS atom used by the FP8
-    // / INT8 per-group paths. See the header preamble open-question
-    // (1) -- if the pinned cutlass-sycl is missing this converter
-    // specialisation this line is where the build fails.
     reorder(tArA, tCrA);
     reorder(tBrB, tCrB);
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < tCrB.size(); ++i) {
+      tCrB(i) = static_cast<TA>(static_cast<float>(tCrB(i)) - 8.0f);
+    }
 
     // HOT MAINLOOP -- MMA accumulates into `tCrC_group`. Per-N scale
     // is applied ONCE at the end of the group in the fold block below.
@@ -408,10 +401,10 @@ CUTE_DEVICE void xe_gemm_s4_pergroup(
 // Persistent scheduler (fork of `moe_dpas_int::MoEGEMM_int<>`).
 //
 // The only substantive difference vs. the INT8 scheduler is the
-// per-expert `B_offset` computation: `int4b_t` storage is 4 bits per
+// per-expert `B_offset` computation: `uint4b_t` storage is 4 bits per
 // element, so `expert_id * gemm_n * gemm_k` elements = `expert_id *
 // gemm_n * gemm_k / 2` bytes. Pointer arithmetic on `ElementB*` (where
-// `sizeof(cutlass::int4b_t) == 1` byte and each byte holds two
+// `sizeof(cutlass::uint4b_t) == 1` byte and each byte holds two
 // elements) means adding `B_offset` in *element* units to the raw
 // pointer would double-count -- so we divide by 2 here (matching the
 // `is_B_4bits` branch in the vllm-xpu-kernels source the INT8 header
@@ -619,7 +612,7 @@ void MoEGEMMLauncher_s4(sycl::queue& stream, const ElementA* activations,
 // Weight layout `[E, N, K/2]` row-major packed uint8_t -- two sym-signed
 // 4-bit fields per byte, matching the auto-round S4_CLIP encoding. On
 // entry the raw uint8_t pointer is reinterpret-cast to
-// `cutlass::int4b_t*` so CuTe's copy atom / `NumericArrayConverter`
+// `cutlass::uint4b_t*` so CuTe's copy atom / `NumericArrayConverter`
 // can decode the packed nibbles directly. `LayoutKindB='C'` at the
 // launcher level so `MoEGEMM_s4<>` XOR-flips to `'R'` inside
 // `make_moe_tensor`, matching the physical `[N, K/2]` row-major
@@ -651,7 +644,7 @@ void moe_prefill_s4_dpas_per_group_dispatch_policy(
   const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
   auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
   const auto* weights_i4 =
-      reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
+      reinterpret_cast<const cutlass::uint4b_t*>(weights_NKp);
 
   // Pooled work-group counter (self-zeroed by the kernel); avoids a
   // malloc_device/free (each a queue sync) on every dispatch call.
@@ -688,12 +681,12 @@ void moe_prefill_s4_dpas_per_group_dispatch(
       reinterpret_cast<const ElementA*>(activations);
   const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
   auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
-  // `cutlass::int4b_t` is a 4-bit-per-element storage type whose sizeof
+  // `cutlass::uint4b_t` is a 4-bit-per-element storage type whose sizeof
   // is 1 (one byte holds two elements). CuTe reads the bit-width from
-  // `sizeof_bits<int4b_t>::value == 4` when computing copy strides, so
+  // `sizeof_bits<uint4b_t>::value == 4` when computing copy strides, so
   // reinterpret-casting the packed uint8_t pointer is safe.
   const auto* weights_i4 =
-      reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
+      reinterpret_cast<const cutlass::uint4b_t*>(weights_NKp);
 
   int A_avg_M = total_tokens / E;
 
@@ -796,7 +789,7 @@ void moe_decode_s4_dpas_per_group_dispatch(
   const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
   auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
   const auto* weights_i4 =
-      reinterpret_cast<const cutlass::int4b_t*>(weights_NKp);
+      reinterpret_cast<const cutlass::uint4b_t*>(weights_NKp);
 
   int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
