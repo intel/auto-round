@@ -540,7 +540,7 @@ class XpuWrapper {
   }
 
   static inline bool woq_s4_dpas_shape_ok(size_t m, QuantParam* p) {
-    if (m == 0 || m > kWoqS4DpasMaxM) return false;
+    if (m <= 1 || m > kWoqS4DpasMaxM) return false;
     if (m > static_cast<size_t>(std::numeric_limits<int>::max())) return false;
     if (p->n % 64 != 0 || (p->k & 1) != 0 || p->blocksize <= 0) return false;
     if (p->k % p->blocksize != 0) return false;
@@ -579,8 +579,12 @@ class XpuWrapper {
                                              static_cast<int>(m), p->n, p->k,  \
                                              p->blocksize, false);
 
-    if (m == 64) {
+    if (m <= 4) {
+      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_4)
+    } else if (m == 64) {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_64)
+    } else if (m == 128) {
+      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_128)
     } else if (m <= 8) {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_8)
     } else if (m <= 16) {
