@@ -84,6 +84,26 @@ class BlockContext:
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
+def _release_pool_inplace(obj):
+    """Release a calibration pool's tensors by mutating its containers in place.
+
+    The pool object is shared with the orchestrator (which holds it as the
+    block's ``input_ids``), so dropping a local reference frees nothing. The
+    containers are the same objects on both sides; setting their entries to
+    None drops the last strong references to the tensors (hooks are removed
+    and the tuning loop reads the q pool, so nothing re-reads this pool).
+    Immutable containers (tuples) are skipped: their tensors stay alive until
+    the block-end release, matching the pre-existing behavior.
+    """
+    if isinstance(obj, list):
+        for i in range(len(obj)):
+            obj[i] = None
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _release_pool_inplace(v)
+    return obj
+
+
 class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
     a list of algorithm config objects and an optional compressor.
@@ -392,6 +412,17 @@ class AlgorithmComposer:
         """
         block_forward_fn = self.block_forward
 
+        # Routed-dispatch shape recorders: fire-once pre-hooks on MoE containers
+        # capture (top_k, routed_rows) from the first NATURAL dispatch during
+        # the forwards below, so the iters>0 activation budget can fall back to
+        # pure arg shapes when config spellings are unknown (arch-agnostic).
+        try:
+            from auto_round.algorithms.quantization.sign_round.quantizer import _ensure_routed_shape_recorders_
+
+            _ensure_routed_shape_recorders_(block)
+        except Exception as e:  # pragma: no cover - diagnostics only
+            logger.debug("[routed-shape] recorder setup skipped (%s)", e)
+
         # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──────
         with torch.no_grad():
             pre_hooks = []
@@ -449,8 +480,20 @@ class AlgorithmComposer:
                 update_block_global_scale_if_needed(block, data_type, group_size)
 
         if q_inputs is not None and fp_inputs is not q_inputs:
-            clear_memory(fp_inputs)
+            # Release the fp pool at its last use (before tuning): the q pool is
+            # the tuning input and the fp pool is already consumed into
+            # reference_output. The release is IN PLACE -- the orchestrator
+            # holds the same container object as its ``input_ids``, so merely
+            # dropping this local reference freed nothing and the pool stayed
+            # resident through the whole tune loop. Freed VRAM here directly
+            # widens the tune-loop's local-pull decision (hot pools on the
+            # compute device when they fit).
+            _release_pool_inplace(fp_inputs)
+            fp_inputs = None
+            clear_memory()
         else:
+            # lanes without a separate q-input pool (first block; quanted-input
+            # disabled) still get the pre-tuning cache clear the base code had
             clear_memory()
         # ── Step 4: quantize_block ──────────────────────────────────────────────
         # When quantized input is available from the previous block, use it;

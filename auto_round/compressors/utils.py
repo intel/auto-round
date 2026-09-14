@@ -30,6 +30,7 @@ from auto_round.export.formats.backends.gguf import (
     get_layer_config_by_gguf_format,
     gguf_type_fallback,
 )
+from auto_round.logger import logger
 from auto_round.schemes import BackendDataType  # re-exported: qlinear_fp/qlinear_int import it from here
 from auto_round.schemes import (
     QuantizationScheme,
@@ -226,6 +227,53 @@ def collect_best_params(block, cache_device="cpu"):
                 for key in m.params.keys():
                     params[n][key] = m.params[key].data.to(cache_device, copy=True)
     return params
+
+
+def collect_best_params_local(block):
+    """Best-params snapshot duplicated on each parameter's own device.
+
+    With a CPU cache device this is not used (host parking is the point of
+    ``low_gpu_mem_usage``). With a non-CPU cache device the historical path
+    copied every parameter to that single device -- concentrating all devices'
+    snapshot bytes on one GPU and paying cross-device copies on every improving
+    iteration. Duplicating each parameter on the device that already hosts it
+    keeps the footprint spread like the weights themselves, removes the
+    cross-device traffic, and makes the unwrap copy-back local. Values and the
+    restore path are unchanged. Falls back to a host snapshot (with a warning)
+    when a local copy fails.
+    """
+    params = {}
+    try:
+        if hasattr(block, "orig_layer"):
+            for key, p_ in block.params.items():
+                params[key] = p_.data.to(p_.data.device, copy=True)
+        else:
+            for n, m in block.named_modules():
+                if hasattr(m, "orig_layer"):
+                    params[n] = {key: p_.data.to(p_.data.device, copy=True) for key, p_ in m.params.items()}
+        return params
+    except RuntimeError as e:
+        logger.warning("[snapshot] local copy failed (%s); parking the snapshot on host", e)
+        return collect_best_params(block, "cpu")
+
+
+def snapshot_best_params(block, cache_device="cpu"):
+    """Collect the best-params snapshot, keeping multi-device blocks on-device.
+
+    A CPU ``cache_device`` (``low_gpu_mem_usage``) keeps the historical host
+    snapshot. A non-CPU ``cache_device`` means VRAM was budgeted for caching;
+    each parameter is then duplicated on its own device instead of gathering
+    every device's copies onto one cache device. Single-device blocks are
+    unaffected either way (the cache device already equals each parameter's
+    device).
+    """
+    try:
+        non_cpu = torch.device(str(cache_device)).type != "cpu"
+    except (ValueError, RuntimeError):
+        non_cpu = False  # unrecognized label: keep the historical path (it will raise as before)
+    if non_cpu:
+        return collect_best_params_local(block)
+    return collect_best_params(block, cache_device)
 
 
 def infer_bits_by_data_type(data_type: str):
@@ -529,7 +577,13 @@ def _get_save_folder_name(format, *args, **kwargs) -> str:
     return compress_context.output_dir
 
 
+PACK_WRAP = {"pre": 0.0, "fmt": 0.0}
+
+
 def immediate_pack(name: str, layer_config: dict):
+    import time as _time
+
+    _t0 = _time.perf_counter()
     from auto_round.context.compress import CompressContext
     from auto_round.context.model import ModelContext
 
@@ -538,6 +592,8 @@ def immediate_pack(name: str, layer_config: dict):
 
     if not compress_context.is_immediate_packing:
         return
+    PACK_WRAP["pre"] += _time.perf_counter() - _t0
+    _t1 = _time.perf_counter()
     compress_context.formats[0].immediate_pack(
         name=name,
         model=model_context.model,
@@ -550,3 +606,4 @@ def immediate_pack(name: str, layer_config: dict):
         image_processor=getattr(model_context, "image_processor", None),
         quant_nontext_module=getattr(model_context, "quant_nontext_module", False),
     )
+    PACK_WRAP["fmt"] += _time.perf_counter() - _t1

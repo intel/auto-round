@@ -200,7 +200,9 @@ class BaseQuantizer(BaseAlgorithm):
         self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
 
     @torch.no_grad()
-    def _quantize_layer_via_rtn(self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None) -> None:
+    def _quantize_layer_via_rtn(
+        self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None, defer_search: bool = False
+    ):
         """Quantize one layer with RTN (with optional optimized scale/zp search)."""
         layer_name = layer.global_name
         layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
@@ -233,8 +235,17 @@ class BaseQuantizer(BaseAlgorithm):
                 disable_opt_rtn=disable_opt_rtn,
                 iters=0,
             )
+            if defer_search:
+                # staged for the batched zero-shot search driver: the wrapper
+                # (with its resolved quant func) is returned without running
+                # the search; the caller finishes via unwrapper({}) or the
+                # batched call + _apply_qdq + set_module
+                return layer
             layer = layer.unwrapper({})
         except torch.OutOfMemoryError:
+            from auto_round.algorithms.quantization.search_dispatch import dump_oom_tensor_census_
+
+            dump_oom_tensor_census_("rtn layer search")
             cuda_error_msg = traceback.format_exc()
             layer = layer.orig_layer if hasattr(layer, "orig_layer") else layer
             try:

@@ -522,6 +522,8 @@ ar.quantize_and_save()
 
 `low_gpu_mem_usage(bool=True)` whether to reduce gpu memory usage at the cost of more time cost
 
+`calibration_data_device (str)` placement of the block calibration data in multi-GPU runs: `auto` (default) | `cpu` | `off` | `1,2` | `cuda:1,cuda:2`. CLI: `--calibration_data_device`.
+
 In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
 
 **MoE expert layers are automatically grouped per block** — all expert projections (gate/up/down across all experts) within the same transformer block are treated as a single entity during DP optimization. This means they share the same quantization scheme and their losses/numel are summed together. No manual `shared_layers` configuration is needed for expert layers.

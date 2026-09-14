@@ -59,6 +59,7 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "nsamples": args.nsamples,
         "batch_size": args.batch_size,
         "low_gpu_mem_usage": args.low_gpu_mem_usage,
+        "calibration_data_device": args.calibration_data_device,
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
         "enable_torch_compile": enable_torch_compile,
@@ -226,6 +227,9 @@ def _print_algorithm_help(argv: list[str]) -> bool:
 
 
 def start(recipe="default", argv=None):
+    from auto_round.utils.oom import install_oom_census_hook
+
+    install_oom_census_hook()  # last-resort tensor census for uncaught CUDA OOMs
     recipe_defaults = RECIPES[recipe]
     argv = list(sys.argv[1:] if argv is None else argv)
     format_was_explicit = any(

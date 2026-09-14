@@ -241,6 +241,56 @@ export AR_DISK_STREAM_MODEL=1
 AR_ALLOW_W8_ASYM=1 python -m auto_round --model ... --scheme W8A16 --asym --format auto_round
 ```
 
+### AR_DISABLE_BATCHED_SEARCH
+- **描述**：禁用批量量化搜索机制：SignRoundV2 的封装期 init-scale 搜索（iters>0）与 iters=0 的 optimized-RTN 搜索都将完全串行（GGUF DQ scale 搜索始终逐模块内联执行）、逐模块地在权重所在设备上执行。批量化将设备/形状/配置相同的模块堆叠为一次调用，逐模块结果比特级一致；设置该变量可回退到串行循环（例如用于调试，或二分定位疑似与批量化相关的差异）。堆叠也会改变瞬态显存占用（见 `AR_SEARCH_BATCH_GB`）。
+- **默认值**：`0`（启用批量化）
+- **有效取值**：`0` / `1`
+- **用法**：批量/并行搜索机制的总开关。
+
+```bash
+AR_DISABLE_BATCHED_SEARCH=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_PERF_COUNTERS
+- **描述**：为每个 block 输出一行 `[perf] tune phases` INFO 日志，包含各调优阶段（wrap / prepare / loop / tail）的耗时，以及循环内部的采样器抽取、最优参数快照、梯度同步 + 优化器步进、剩余时间和串行 forward+loss+backward 时间。用于大型多设备量化运行的性能归因；开销可忽略。
+- **默认值**：`0`（关闭）
+- **有效取值**：`0` / `1`
+- **用法**：在基准测试运行中设置，用于将 block 时间归因到封装搜索或调优循环。
+
+```bash
+AR_PERF_COUNTERS=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_SEARCH_BATCH_GB
+- **描述**：以 GiB（每次批量调用的堆叠 fp32 权重大小）覆盖批量量化搜索的元素预算（默认约 1 GiB，与专家批量搜索使用的固定预算一致）。同时作用于两条 lane：iters=0 的 optimized-RTN 搜索与 iters>0 的封装期 init 搜索（二者共享批次上限）。该搜索受带宽限制，更大的批次通常不会缩短耗时；仅在显存紧张的卡上缩小瞬态占用或实验批次大小时使用。
+- **默认值**：未设置（固定约 1 GiB 预算）
+- **有效取值**：正浮点数（GiB）
+- **用法**：在显存紧张的多设备运行中缩小批次。
+
+```bash
+AR_SEARCH_BATCH_GB=0.5 python -m auto_round --model ... --device_map 0,1
+```
+
+### AR_MOE_EXPERTS_IMPL
+- **描述**：MoE 调优阶段（模型已按专家拆分）使用的前向实现。`auto`（默认）会在第一个 MoE 块之前预测 grouped-GEMM 调优路径的每卡显存占用，当 grouped 调优放不下时（qdq 堆叠保留 + 调优状态与各卡剩余显存比较）整个运行改用 `linear_loop`；决策与各卡数值都会记录到日志。显式取值不会被 `auto` 覆盖。
+- **默认值**：`auto`
+- **可选值**：`auto`、`linear_grouped`、`linear_grouped_sliced`、`linear_loop`
+- **用法**：强制指定调优时的专家前向实现，或保持 `auto` 由显存模型自动选择。
+
+```bash
+AR_MOE_EXPERTS_IMPL=linear_loop python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_DISABLE_MULTIGPU_SEARCH
+- **描述**：让批量搜索批次留在权重所在设备上，不再使用其他 GPU。不设置该变量时，堆叠批次可以在任何有瞬态工作集余量的 CUDA 设备上执行（由带余量的空闲显存探针选择），因为此类搜索只读取自身模块的权重与逐模块统计量——从不读取校准激活。主要受益者是零样本（iters=0）lane：整个 block 位于单 GPU 上时，其余显卡原本空闲。只有 optimized-RTN（iters=0）搜索会这样迁移；iters>0 的封装期搜索批次始终留在权重所在设备。以下情况设为 `1`：机架 GPU 与其他任务共享（空闲显存探针无法看到其他任务的占用）、调试跨设备行为、或 PCIe 传输开销超过搜索收益的主机。当没有设备放得下时，批次留在权重所在设备并依赖逐批次的 OOM 回退。
+- **默认值**：`0`（启用多 GPU 搜索，探针门控）
+- **有效取值**：`0` / `1`
+- **用法**：将搜索流量固定在权重所在设备。
+
+```bash
+AR_DISABLE_MULTIGPU_SEARCH=1 python -m auto_round --model ... --iters 0
+```
+
 ### AR_RESUME_DIR
 - **描述**：设置为目录路径后，逐块调优循环会在每完成一个块后将进度写入该目录，并在针对同一目录的新一次运行中从第一个未完成的块继续——而不是在崩溃或被杀死后从第 0 块重新开始整个调优过程。
 - **默认值**：未设置(不支持断点续跑)
