@@ -27,7 +27,7 @@ _ALIAS_TO_NAME: dict[str, str] = {}
 _CONFIG_IMPL_REGISTRY: dict[type, type["BaseAlgorithm"]] = {}
 _builtin_algorithms_registered = False
 _pipeline_members_registered = False
-_BUILTIN_ALGORITHM_ORDER = ("rtn", "rrq", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
+_BUILTIN_ALGORITHM_ORDER = ("rtn", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
 
 
 def _ensure_builtin_algorithms_registered() -> None:
