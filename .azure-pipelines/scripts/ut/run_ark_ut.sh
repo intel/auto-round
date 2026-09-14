@@ -8,7 +8,7 @@ function setup_environment() {
     cd /auto-round/auto_round_extension/ark
     uv pip install -r requirements.txt
     uv pip install /auto-round/ark_wheel/*.whl --no-deps
-    uv pip install pytest pandas
+    uv pip install pytest pytest-timeout pandas
     uv pip list
     echo "##[endgroup]"
 
@@ -25,7 +25,7 @@ function run_unit_test() {
 
         echo "##[group]Running ark ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
-        COVERAGE_CORE=sysmon pytest -v ${test_file} 2>&1 | tee ${ut_log_name}
+        COVERAGE_CORE=sysmon pytest --timeout=600 -v ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }

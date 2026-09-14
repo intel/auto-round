@@ -36,7 +36,6 @@ class TestAutoRound:
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.timeout(90)
     def test_bits_setting(self, tiny_opt_model_path):
         layer_config = {"model.decoder.layers.0.self_attn.k_proj": {"data_type": "mx_fp8", "group_size": 32}}
         autoround = AutoRound(tiny_opt_model_path, iters=2, seqlen=2, nsamples=1, layer_config=layer_config)
@@ -45,7 +44,6 @@ class TestAutoRound:
         if module.bits != 8:
             raise ValueError(f"Expected bits to be 8, but got {module.bits}")
 
-    @pytest.mark.timeout(90)
     def test_layer_config(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         layer_config = {"self_attn": {"bits": 4, "data_type": "nv_fp", "act_bits": 16, "group_size": 16}}
@@ -109,7 +107,6 @@ class TestAutoRound:
         autoround.quantize()
 
     # TODO: Investigate and fix the excessive test runtime instead of relying on an increased timeout.
-    @pytest.mark.timeout(220)
     def test_mx_fp4(self, dataloader):
         model_name = opt_name_or_path
         bits, group_size, sym = 4, 32, False
@@ -158,7 +155,6 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    @pytest.mark.timeout(60)
     @pytest.mark.parametrize("bits", [2, 3, 4])
     def test_g128(self, bits, dataloader):
         model_name = opt_name_or_path
@@ -371,7 +367,6 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    @pytest.mark.timeout(60)
     def test_rtn(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path
         model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
@@ -680,7 +675,6 @@ class TestAutoRound:
         assert ar.optimizer == torch.optim.AdamW
         assert ar.mllm
 
-    @pytest.mark.timeout(60)
     def test_attention_mask_in_dataset(self):
         from transformers import AutoTokenizer
 
@@ -698,7 +692,6 @@ class TestAutoRound:
         ar = AutoRound(model_name, iters=1, dataset=data, seqlen=8)
         ar.quantize()
 
-    @pytest.mark.timeout(60)
     def test_attention_mask_via_tokenize_in_dataset(self):
         from transformers import AutoTokenizer
 

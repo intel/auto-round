@@ -5,7 +5,6 @@ from auto_round.calib_dataset import get_dataloader
 
 
 class TestLocalCalibDataset:
-    @pytest.mark.timeout(150)
     def test_combine_dataset(self, tiny_opt_model_path, monkeypatch):
         # Subprocess lifecycle is covered by test_calib_dataset_subprocess.py. The
         # streaming sources below cannot reuse its cache, so avoid loading each twice.

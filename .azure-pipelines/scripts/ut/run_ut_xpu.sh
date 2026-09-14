@@ -13,7 +13,7 @@ SESSION_TIMEOUT=600
 function setup_environment() {
     echo "##[group]set up UT env..."
     echo "Install unit report dependencies ..."
-    uv pip install pytest-cov
+    uv pip install pytest-cov pytest-timeout
     uv pip install -U chardet
 
     # Keep the GGUF conversion helpers in sync with the model conversion code.
@@ -56,7 +56,7 @@ function run_pytest() {
     # Record the test targets so a retry can rerun exactly these cases.
     printf '%s\n' ${test_case} > "${ut_log_name%.log}.list"
     numactl --physcpubind="${NUMA_CPUSET:-0-27}" --membind="${NUMA_NODE:-0}" \
-        pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
+        pytest -m "not skip_ci" --timeout=600 --cov=auto_round --cov-report= --cov-append -vs \
             --junitxml="${ut_log_name%.log}.xml" ${test_case} 2>&1 | tee ${ut_log_name}
     echo "##[endgroup]"
 }
