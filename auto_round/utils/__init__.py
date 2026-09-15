@@ -22,10 +22,12 @@ from auto_round.utils.weight_handler import (
     is_quantized_input_module,
 )
 from auto_round.utils.dataset_utils import (
+    CalibDataset,
     auto_detect_text_field,
     auto_detect_text_field_from_sample,
-    extract_text_from_sample,
     build_dataset_spec,
+    extract_text_from_sample,
+    normalize_dataset_spec,
     parse_dataset_spec,
 )
 
