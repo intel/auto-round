@@ -78,8 +78,9 @@ class RotationPreprocessor(BasePreprocessor):
         return self._rotation
 
     @property
-    def wants_layerwise(self) -> bool:
-        """Whether this member's config requests per-block (layer-wise) rotation."""
+    def is_layerwise(self) -> bool:
+        """Whether the config *requests* per-block rotation (intent only; see
+        :attr:`is_layerwise_active` for whether it actually took effect)."""
         return bool(getattr(self.config, "layerwise", False))
 
     @property
@@ -94,13 +95,11 @@ class RotationPreprocessor(BasePreprocessor):
         self,
         model: "torch.nn.Module",
         data_type: str = "mx_fp",
-        layerwise: "bool | None" = None,
     ) -> "torch.nn.Module":
         """Rotate *model* up-front, or prepare layer-wise rotation matrices.
 
-        Whether to rotate per-block is taken from the rotation config's
-        ``layerwise`` field. ``layerwise`` may be passed explicitly to override
-        the config (``None`` means "use the config value").
+        Whether to rotate per-block is taken solely from the rotation config's
+        ``layerwise`` field (via :attr:`is_layerwise`).
 
         For full-model rotation the model is rotated immediately and returned.
         For layer-wise rotation (when the underlying algorithm supports it) only
@@ -111,11 +110,8 @@ class RotationPreprocessor(BasePreprocessor):
         Returns:
             The (possibly mutated) model.
         """
-        if layerwise is None:
-            layerwise = self.wants_layerwise
-
         rotation = self.rotation
-        if layerwise:
+        if self.is_layerwise:
             if rotation.supports_layerwise:
                 logger.info(
                     "[Rotation] Layer-wise mode: preparing R matrices only " "(rotation deferred to per-block hook)."

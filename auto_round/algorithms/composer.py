@@ -647,8 +647,8 @@ class AlgorithmComposer:
         data_type = self._resolve_rotation_data_type()
         logger.info("Applying Hadamard transform to the model.")
         for rotation_member in self._rotation_members:
-            # ``None`` lets the member honour its own config (``layerwise`` field).
-            model = rotation_member.rotate_model(model, data_type=data_type, layerwise=None)
+            # The member honours its own config (``layerwise`` field).
+            model = rotation_member.rotate_model(model, data_type=data_type)
 
         self._rotation_prepared = True
         return model
