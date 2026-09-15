@@ -1186,24 +1186,37 @@ class TestScoreAnchorWeightScoring:
         wrapper.max_act_value = 0
         wrapper._score_qdq_cpu = None
 
-        def _fake_quant(weight, **kwargs):
-            scale = weight.abs().amax().clamp(min=1e-4) / 7.0
-            return ((weight / scale).round().clamp(-7, 7) * scale), scale, None
+        class _State:
+            tunables = {}
 
-        wrapper.weight_quant_func = _fake_quant
+        class _Quantizer:
+            def __init__(self):
+                self.calls = 0
+
+            def qdq(self, weight, state, *, tunables):
+                from auto_round.data_type.base import WeightQuantizationResult
+
+                self.calls += 1
+                scale = weight.abs().amax().clamp(min=1e-4) / 7.0
+                return WeightQuantizationResult((weight / scale).round().clamp(-7, 7) * scale)
+
+        wrapper.params = {}
+        wrapper.weight_state = _State()
+        wrapper.weight_quantizer = _Quantizer()
         layer.weight.requires_grad = True
         return wrapper, layer
 
     def test_qdq_weight_quantizes_once_and_reuses_cache(self):
         wrapper, layer = self._make_wrapper()
         calls = {"n": 0}
-        real_quant = wrapper.weight_quant_func
+        quantizer = wrapper.weight_quantizer
+        original_qdq = quantizer.qdq
 
-        def counting_quant(weight, **kwargs):
+        def counting_qdq(*args, **kwargs):
             calls["n"] += 1
-            return real_quant(weight, **kwargs)
+            return original_qdq(*args, **kwargs)
 
-        wrapper.weight_quant_func = counting_quant
+        quantizer.qdq = counting_qdq
         args = (torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0))
         first, _, _ = wrapper._qdq_weight(*args)
         second, _, _ = wrapper._qdq_weight(*args)
@@ -1382,11 +1395,19 @@ class TestScoreLinearRecompute:
         wrapper.min_scale = torch.tensor(1.0)
         wrapper.max_scale = torch.tensor(1.0)
 
-        def _fake_quant(weight, **kwargs):
-            scale = weight.abs().amax().clamp(min=1e-4) / 7.0
-            return (weight / scale).round().clamp(-7, 7) * scale, scale, None
+        class _State:
+            tunables = {}
 
-        wrapper.weight_quant_func = _fake_quant
+        class _Quantizer:
+            def qdq(self, weight, state, *, tunables):
+                from auto_round.data_type.base import WeightQuantizationResult
+
+                scale = weight.abs().amax().clamp(min=1e-4) / 7.0
+                return WeightQuantizationResult((weight / scale).round().clamp(-7, 7) * scale)
+
+        wrapper.params = {}
+        wrapper.weight_state = _State()
+        wrapper.weight_quantizer = _Quantizer()
         layer.weight.requires_grad = True
         return wrapper, layer
 

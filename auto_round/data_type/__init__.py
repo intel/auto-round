@@ -15,7 +15,7 @@
 import auto_round.data_type.int
 import auto_round.data_type.mxfp
 import auto_round.data_type.fp8
-from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
+from auto_round.data_type.base import QUANT_FUNC_WITH_DTYPE
 import auto_round.data_type.w4fp8
 from auto_round.data_type.utils import (
     get_quant_func,
@@ -24,3 +24,10 @@ from auto_round.data_type.utils import (
 )
 import auto_round.data_type.nvfp
 import auto_round.data_type.gguf
+from auto_round.data_type.base import (
+    DataTypeQuantizer,
+    canonical_data_type,
+    create_activation_quantizer,
+    create_quantizer,
+    create_weight_quantizer,
+)

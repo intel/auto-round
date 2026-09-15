@@ -11,13 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Callable, Union
 
 import torch
 
-from auto_round.data_type.register import register_dtype
+from auto_round.data_type.base import register_dtype, register_quantizer
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
-from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
 from auto_round.export.export_to_gguf.packing import (
     _LARGE_TENSOR_BYTES_THRESHOLD,
     make_q3_quants,
@@ -25,6 +26,15 @@ from auto_round.export.export_to_gguf.packing import (
     make_qx_quants_chunk,
 )
 from auto_round.logger import logger
+
+
+def get_gguf_quant_constants():
+    """Return GGUF block-layout constants without exposing export internals to algorithms."""
+    from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
+
+    return GGML_QUANT_SIZES, QK_K
+
+
 from auto_round.utils import get_reciprocal
 from auto_round.utils.device import clear_memory
 
@@ -486,9 +496,18 @@ def _imatrix_handle_zero(
 
 
 @torch.inference_mode()
-def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None, split_num=1, v=0):
-    super_bits = 4 if bits == 2 else 6
-    super_group_size = 16 if bits == 2 else 8
+def search_gguf_scale_min_asym(
+    tensor,
+    bits=4,
+    scale_dtype=torch.float16,
+    imatrix=None,
+    split_num=1,
+    v=0,
+    super_bits=None,
+    super_group_size=None,
+):
+    super_bits = super_bits if super_bits is not None else 4 if bits == 2 else 6
+    super_group_size = super_group_size if super_group_size is not None else 16 if bits == 2 else 8
 
     quant_weights = None
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
@@ -604,6 +623,9 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
 def quant_tensor_gguf_asym_dq(
     tensor: torch.Tensor,
     bits: int = 4,
+    group_size=None,
+    super_bits=None,
+    super_group_size=None,
     v=0,
     scale_dtype=torch.float16,
     imatrix=None,
@@ -634,7 +656,7 @@ def quant_tensor_gguf_asym_dq(
         raise ValueError(f"bits={bits} not supported by rtn_int_asym_dq")
     orig_dtype = tensor.dtype
     maxq = int(2.0**bits) - 1
-    group_size = 16 if bits == 2 else 32
+    group_size = group_size if group_size is not None else 16 if bits == 2 else 32
     # The RTN-tuning path previously always ran the scale search unchunked (`split_num=1`),
     # unlike the export/packing path (`ggml_quant` in packing.py) which already chunks large
     # tensors. For very large single tensors (e.g. huge vocab embed/output projections),
@@ -665,6 +687,8 @@ def quant_tensor_gguf_asym_dq(
             imatrix,
             split_num=split_num,
             v=v,
+            super_bits=super_bits,
+            super_group_size=super_group_size,
         )
         scale = scale.clone()
         wmin = wmin.clone()
@@ -903,6 +927,9 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num, v=0
 def quant_tensor_gguf_sym_dq(
     tensor,
     bits=3,
+    group_size=16,
+    super_bits=None,
+    super_group_size=16,
     v=0,
     imatrix=None,
     scale=None,
@@ -930,21 +957,15 @@ def quant_tensor_gguf_sym_dq(
         Quantized and de-quantized tensor, scale, zero-point
     """
 
-    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE
-
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
 
     maxq = int(2.0 ** (bits - 1))
-    group_size = 16
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     orig_dtype = tensor.dtype
-    super_bits = 6 if bits == 3 else 8
-    super_group_size = 16
-    ggml_type = f"q{bits}_k"
-    block_size, type_size = GGML_QUANT_SIZES[ggml_type]
+    super_bits = super_bits if super_bits is not None else 6 if bits == 3 else 8
     tensor = tensor.to(torch.float32)
-    n_blocks = tensor.nelement() // block_size
+    n_blocks = tensor.nelement() // (super_group_size * group_size)
     # Chunk the candidate-scale search for very large single tensors (e.g. huge vocab
     # embed/output projections). This search allocates several full-size float32 buffers
     # at once; unchunked, that can need tens of GB for a single tensor and OOM even though
@@ -955,8 +976,7 @@ def quant_tensor_gguf_sym_dq(
     # ordinary attention/FFN weights never needed it and would just get slower for no benefit.
     if split_num == 1 and tensor.nelement() * 4 > _LARGE_TENSOR_BYTES_THRESHOLD:
         split_num = 16
-    # (nb, 16, 16)
-    tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
+    tensor = tensor.reshape(n_blocks, super_group_size, group_size)
     if iter is None:
         iter = 0
     use_cached_params = prev_scale is not None and iter % 10 != 0 and iter != -1
@@ -980,3 +1000,160 @@ def quant_tensor_gguf_sym_dq(
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
 
     return tensor, {"scale": scale, "d_scale": d_scale}, maxq
+
+
+@dataclass
+class _GGUFState:
+    """Persistent GGUF RTN scales and double-quantization payload between QDQ calls."""
+
+    tunables: Mapping[str, torch.Tensor]
+    tensor_min: torch.Tensor | None
+    tensor_max: torch.Tensor | None
+    imatrix: torch.Tensor | float | int | None
+    scale: torch.Tensor | None = None
+    wmin: torch.Tensor | None = None
+    d_scale: torch.Tensor | None = None
+    d_wmin: torch.Tensor | None = None
+    prev_scale: torch.Tensor | None = None
+    prev_wmin: torch.Tensor | None = None
+    prev_d_scale: torch.Tensor | None = None
+    prev_d_wmin: torch.Tensor | None = None
+    iteration: int = 0
+
+
+class _GGUFWeightQuantizer:
+    """Own GGUF double-quant weight QDQ and its export payload."""
+
+    def __init__(self, spec, family="plain", kind=None):
+        self.spec = spec
+        self.family = family
+        self.kind = kind or (
+            "sym" if spec.data_type == "int_sym_dq" else "float_zp" if spec.data_type == "int_asym_float_zp" else "asym"
+        )
+
+    @classmethod
+    def from_spec(cls, spec, tuning_options, canonical=None):
+        """Create the GGUF quantizer; its state selects tuned or RTN behavior."""
+        return cls(spec)
+
+    def create_state(self, weight, *, imatrix=None, tuning_options):
+        self.family = "rtn" if tuning_options.mode.value in ("rtn", "optimized_rtn") else "plain"
+        grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
+        tensor_min = torch.clamp(grouped.amin(dim=-1), max=0)
+        tensor_max = torch.clamp(grouped.amax(dim=-1), min=0)
+        tunables = {}
+        if self.family == "plain" and tuning_options.enable_round_tuning:
+            tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
+        if self.family == "plain" and tuning_options.enable_minmax_tuning:
+            shape = tensor_min.shape
+            tunables["min_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))
+            tunables["max_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))
+        return _GGUFState(tunables, tensor_min, tensor_max, imatrix)
+
+    def qdq(self, weight, state, *, tunables, materialize=False):
+        value = tunables.get("value", 0)
+        min_scale = tunables.get("min_scale", 1.0)
+        max_scale = tunables.get("max_scale", 1.0)
+        if isinstance(min_scale, torch.Tensor):
+            min_scale.data.clamp_(0.0, 1.0)
+        if isinstance(max_scale, torch.Tensor):
+            max_scale.data.clamp_(0.0, 1.0)
+
+        if self.kind == "float_zp" and self.family == "plain":
+            quantized, scale, zero_point = quant_tensor_asym_float_zp(
+                weight,
+                bits=self.spec.bits,
+                group_size=self.spec.group_size,
+                v=value,
+                min_scale=min_scale,
+                max_scale=max_scale,
+                scale_dtype=self.spec.scale_dtype,
+                tensor_min=state.tensor_min,
+                tensor_max=state.tensor_max,
+                q_scale_thresh=self.spec.q_scale_thresh,
+            )
+        elif self.kind == "float_zp":
+            quantized, scale, zero_point = quant_tensor_asym_float_zp_rtn(
+                weight.clone(),
+                bits=self.spec.bits,
+                group_size=self.spec.group_size,
+                scale_dtype=self.spec.scale_dtype,
+                tensor_min=state.tensor_min,
+                tensor_max=state.tensor_max.clone(),
+                q_scale_thresh=self.spec.q_scale_thresh,
+            )
+        elif self.family == "rtn":
+            primitive = quant_tensor_gguf_sym_dq if self.kind == "sym" else quant_tensor_gguf_asym_dq
+            quantized, scale, zero_point = primitive(
+                weight.clone(),
+                bits=self.spec.bits,
+                group_size=self.spec.group_size,
+                super_bits=self.spec.super_bits,
+                super_group_size=self.spec.super_group_size,
+                v=value,
+                scale_dtype=self.spec.scale_dtype,
+                imatrix=state.imatrix,
+                prev_scale=state.prev_scale,
+                prev_wmin=state.prev_wmin,
+                prev_d_scale=state.prev_d_scale,
+                prev_d_wmin=state.prev_d_wmin,
+                iter=state.iteration,
+            )
+            state.scale = scale["scale"]
+            state.d_scale = scale["d_scale"]
+            state.prev_scale = state.scale
+            state.prev_d_scale = state.d_scale
+            if isinstance(zero_point, dict):
+                state.wmin = zero_point["wmin"]
+                state.d_wmin = zero_point["d_wmin"]
+                state.prev_wmin = state.wmin
+                state.prev_d_wmin = state.d_wmin
+            state.iteration += 1
+        else:
+            primitive = quant_tensor_sym_dq if self.kind == "sym" else quant_tensor_asym_dq
+            quantized, scale, zero_point = primitive(
+                weight,
+                bits=self.spec.bits,
+                group_size=self.spec.group_size,
+                v=value,
+                min_scale=min_scale,
+                max_scale=max_scale,
+                scale_dtype=self.spec.scale_dtype,
+                tensor_min=state.tensor_min,
+                tensor_max=state.tensor_max,
+                q_scale_thresh=self.spec.q_scale_thresh,
+                super_bits=self.spec.super_bits,
+                super_group_size=self.spec.super_group_size,
+            )
+
+        from auto_round.data_type.base import WeightQuantizationResult
+
+        return WeightQuantizationResult(quantized, scale if materialize else None, zero_point if materialize else None)
+
+    @staticmethod
+    def apply_result(module, result):
+        if result.scale is None:
+            raise ValueError("GGUF weight result was not materialized")
+        module.weight.data.copy_(result.weight)
+        rows = result.weight.shape[0]
+
+        def set_values(values, primary):
+            for key, value in values.items():
+                name = primary if key == primary else "w_" + key
+                setattr(module, name, (value.reshape(rows, -1) if key == primary else value).cpu())
+
+        if isinstance(result.scale, dict):
+            set_values(result.scale, "scale")
+        else:
+            module.scale = result.scale.reshape(rows, -1).cpu()
+        if isinstance(result.zero_point, dict):
+            set_values(result.zero_point, "zp")
+        elif isinstance(result.zero_point, torch.Tensor):
+            module.zp = result.zero_point.reshape(rows, -1).cpu()
+        else:
+            module.zp = result.zero_point
+
+
+register_quantizer("int_sym_dq")(_GGUFWeightQuantizer)
+register_quantizer("int_asym_dq")(_GGUFWeightQuantizer)
+register_quantizer("int_asym_float_zp")(_GGUFWeightQuantizer)

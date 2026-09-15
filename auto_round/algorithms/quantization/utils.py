@@ -14,8 +14,7 @@
 
 import torch
 
-from auto_round.compressors.utils import check_need_act_calibration, is_nv_fp
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+from auto_round.data_type.base import cache_activation_quantizer
 from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized
 
 
@@ -26,28 +25,15 @@ def register_act_max_hooks(quantizer, model):
             input = input[0]
         if input.numel() == 0:
             return
-        module_act_data_type = getattr(module, "act_data_type", None) or getattr(module, "data_type", None)
-        is_module_act_nv_fp = is_nv_fp(module_act_data_type) if module_act_data_type else quantizer.config.is_act_nv_fp
-        input, _, _ = reshape_pad_tensor_by_group_size(input, quantizer.act_group_size)
-        act_max = torch.max(torch.abs(input), dim=-1).values
-        if not hasattr(module, "act_max") or module.act_max.numel() == 0:
-            module.act_max = act_max
-            if is_module_act_nv_fp:
-                max_val = act_max.max()
-                module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-        else:
-            act_max = act_max.to(module.act_max.device)
-            if is_module_act_nv_fp:
-                max_val = torch.max(act_max.max(), module.act_max.max())
-                module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-            else:
-                module.act_max = torch.max(act_max, module.act_max)
+        activation_quantizer = cache_activation_quantizer(module)
+        if activation_quantizer is not None:
+            module.act_max = activation_quantizer.observe(input, getattr(module, "act_max", None))
 
     hook_handles = []
     if isinstance(model, SUPPORTED_LAYER_TYPES):
         if (
             hasattr(model, "act_dynamic")
-            and check_need_act_calibration(model.act_dynamic, model.act_data_type, model.act_bits)
+            and getattr(cache_activation_quantizer(model), "requires_calibration", False)
             and check_to_quantized(model)
         ):
             hook_handles.append(model.register_forward_hook(get_act_max_hook))
@@ -56,7 +42,7 @@ def register_act_max_hooks(quantizer, model):
     for name, module in model.named_modules():
         if (
             hasattr(module, "act_dynamic")
-            and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
+            and getattr(cache_activation_quantizer(module), "requires_calibration", False)
             and check_to_quantized(module)
         ):
             hook_handles.append(module.register_forward_hook(get_act_max_hook))
@@ -69,7 +55,7 @@ def register_act_max_hooks(quantizer, model):
             act_bits = config.get("act_bits", 16)
             if (
                 config["bits"] <= 8
-                and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
+                and getattr(cache_activation_quantizer(module), "requires_calibration", False)
                 and check_to_quantized(config)
             ):
                 hook_handles.append(module.register_forward_hook(get_act_max_hook))

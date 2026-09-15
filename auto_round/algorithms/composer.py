@@ -42,8 +42,9 @@ from auto_round.algorithms.config_resolver import (
     split_quantization_configs,
 )
 from auto_round.algorithms.utils import _has_nvfp4_layer
+from auto_round.data_type.base import canonical_data_type, prepare_data_type_block
 from auto_round.logger import logger
-from auto_round.utils import clear_memory
+from auto_round.utils import check_to_quantized, clear_memory
 from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
@@ -200,10 +201,6 @@ class AlgorithmComposer:
                     ", ".join(blockers),
                 )
 
-            if _has_nvfp4_layer(orchestrator):
-                can_compile_block_forward = False
-                logger.info("Block-forward torch.compile is disabled because at least one quantized layer uses NVFP4.")
-
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
                 BlockForwardRunner.from_orchestrator(orchestrator, enable_torch_compile=can_compile_block_forward)
@@ -222,31 +219,15 @@ class AlgorithmComposer:
 
         Returns a list of hook handles that the caller must remove when done.
         """
-        from auto_round.compressors.utils import is_nv_fp
-        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
-
-        is_act_nv_fp = getattr(self.block_quantizer.config, "is_act_nv_fp", False)
+        from auto_round.data_type.base import cache_activation_quantizer
 
         def collect_act_max(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
             if input.numel() == 0:
                 return
-            module_act_data_type = getattr(module, "act_data_type", None) or getattr(module, "data_type", None)
-            is_module_act_nv_fp = is_nv_fp(module_act_data_type) if module_act_data_type else is_act_nv_fp
-            input, _, _ = reshape_pad_tensor_by_group_size(input, module.act_group_size)
-            act_max = torch.max(torch.abs(input), dim=-1).values
-            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
-                module.act_max = act_max
-                if is_module_act_nv_fp:
-                    max_val = act_max.max()
-                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-                return
-            act_max = act_max.to(module.act_max.device)
-            if is_module_act_nv_fp:
-                max_val = torch.max(act_max.max(), module.act_max.max())
-                module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-            else:
-                module.act_max = torch.max(act_max, module.act_max)
+            quantizer = cache_activation_quantizer(module)
+            if quantizer is not None:
+                module.act_max = quantizer.observe(input, getattr(module, "act_max", None))
 
         def should_collect(name, module):
             from auto_round.compressors.utils import check_need_act_calibration
@@ -255,8 +236,8 @@ class AlgorithmComposer:
             if isinstance(module, tuple(SUPPORTED_LAYER_TYPES)):
                 return (
                     hasattr(module, "act_dynamic")
-                    and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
                     and check_to_quantized(module)
+                    and bool(getattr(cache_activation_quantizer(module), "requires_calibration", False))
                 )
             if hasattr(module, "bits"):
                 act_dynamic = getattr(module, "act_dynamic", True)
@@ -264,8 +245,8 @@ class AlgorithmComposer:
                 act_bits = getattr(module, "act_bits", 16)
                 return (
                     module.bits <= 8
-                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
                     and check_to_quantized(module)
+                    and bool(getattr(cache_activation_quantizer(module), "requires_calibration", False))
                 )
             return False
 
@@ -307,39 +288,19 @@ class AlgorithmComposer:
             q_inputs: Optional list of quantized input tensors; used instead of
                 ``fp_inputs`` when provided.
         """
-        from auto_round.compressors.utils import is_nv_fp
-        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+        from auto_round.data_type.base import cache_activation_quantizer
 
         target_input = q_inputs or fp_inputs
-        act_group_size = getattr(layer, "act_group_size")
-        if act_group_size is None:
-            act_group_size = layer.group_size
-        act_data_type = getattr(layer, "act_data_type")
-        if act_data_type is None:
-            act_data_type = layer.data_type
-        is_act_nv_fp_flag = is_nv_fp(act_data_type) if act_data_type else False
+        quantizer = cache_activation_quantizer(layer)
+        if quantizer is None:
+            return
 
         for inp in target_input:
             if isinstance(inp, (tuple, list)):
                 inp = inp[0]
             if inp.numel() == 0:
                 continue
-            inp, _, _ = reshape_pad_tensor_by_group_size(inp, act_group_size)
-            act_max = torch.max(torch.abs(inp), dim=-1).values
-
-            if not hasattr(layer, "act_max") or layer.act_max.numel() == 0:
-                layer.act_max = act_max
-                if is_act_nv_fp_flag:
-                    max_val = act_max.max()
-                    layer.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-                continue
-
-            act_max = act_max.to(layer.act_max.device)
-            if is_act_nv_fp_flag:
-                max_val = torch.max(act_max.max(), layer.act_max.max())
-                layer.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-            else:
-                layer.act_max = torch.max(act_max, layer.act_max)
+            layer.act_max = quantizer.observe(inp, getattr(layer, "act_max", None))
 
     def need_quanted_input(self):
         for preprocessor in self.preprocessors:
@@ -440,12 +401,26 @@ class AlgorithmComposer:
             act_data_type = self.scheme.act_data_type if self.scheme else data_type
             if act_data_type is not None or not act_dynamic:
                 from auto_round.compressors.utils import is_nv_fp
-                from auto_round.data_type.utils import update_block_global_scale_if_needed
                 from auto_round.utils import set_amax_for_all_moe_layers
 
                 if is_nv_fp(act_data_type) or not act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
-                update_block_global_scale_if_needed(block, data_type, group_size)
+
+                runtimes_by_datatype = {}
+                for name, module in block.named_modules():
+                    if not check_to_quantized(module):
+                        continue
+                    module_data_type = getattr(module, "data_type", data_type)
+                    try:
+                        canonical_id = canonical_data_type(module_data_type)
+                    except LookupError:
+                        continue
+                    runtimes_by_datatype.setdefault(canonical_id, {})[name] = {
+                        "data_type": module_data_type,
+                        "group_size": getattr(module, "group_size", group_size),
+                    }
+                for canonical_id, runtimes in runtimes_by_datatype.items():
+                    prepare_data_type_block(canonical_id, block, runtimes)
 
         if q_inputs is not None and fp_inputs is not q_inputs:
             clear_memory(fp_inputs)

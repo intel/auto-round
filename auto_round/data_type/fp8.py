@@ -14,7 +14,7 @@
 
 import torch
 
-from auto_round.data_type.register import register_dtype
+from auto_round.data_type.base import register_dtype, register_quantizer
 from auto_round.data_type.utils import (
     float8_e4m3fn_ste,
     float8_e5m2_ste,
@@ -366,3 +366,132 @@ if is_gaudi2():
         qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
         qdq_res = qdq_res.to(orig_dtype)
         return qdq_res, scale, None
+
+
+class _FP8WeightQuantizer:
+    """Select the requested FP8 format and materialize its scale layout."""
+
+    def __init__(self, spec, primitive=None, scale_layout=None):
+        self.spec = spec
+        data_type = spec.data_type.lower()
+        if primitive is None:
+            if data_type in ("fp8_e5m2",):
+                primitive, scale_layout = quant_fp8_e5m2, "row"
+            elif data_type in ("fp8_unit_scale",):
+                primitive, scale_layout = quant_fp8_unit_scale, "scalar"
+            elif data_type in ("fp8_e5m2_unit_scale",):
+                primitive, scale_layout = quant_fp8_e5m2_unit_scale, "scalar"
+            elif data_type == "fp8_gaudi3_sym":
+                primitive, scale_layout = quant_fp8_sym_gaudi3, "row"
+            elif isinstance(spec.group_size, tuple):
+                primitive, scale_layout = quant_block_fp_sym, "block"
+            else:
+                primitive, scale_layout = quant_fp8_sym, "row"
+        self.primitive = primitive
+        self.scale_layout = scale_layout
+
+    @classmethod
+    def from_spec(cls, spec, tuning_options, canonical=None):
+        """Create the FP8 weight quantizer selected by the requested format."""
+        return cls(spec)
+
+    @staticmethod
+    def create_activation(spec):
+        """Create the FP8 activation quantizer for the same format."""
+        return _create_fp8_activation(spec)
+
+    def create_state(self, weight, *, imatrix=None, tuning_options):
+        grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
+        reduction_dims = 2 if self.scale_layout == "block" else 1
+        tunable_shape = grouped.shape[:-reduction_dims]
+        tunables = {}
+        if tuning_options.enable_round_tuning:
+            tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
+        if tuning_options.enable_minmax_tuning:
+            tunables["max_scale"] = torch.nn.Parameter(
+                torch.ones(tunable_shape, device=weight.device, dtype=torch.float32)
+            )
+        return tunables
+
+    def qdq(self, weight, state, *, tunables, materialize=False):
+        quantized, scale, zero_point = self.primitive(
+            weight,
+            bits=self.spec.bits,
+            group_size=self.spec.group_size,
+            v=tunables.get("value", 0),
+            max_scale=tunables.get("max_scale", 1.0),
+        )
+        from auto_round.data_type.base import WeightQuantizationResult
+
+        return WeightQuantizationResult(
+            quantized,
+            scale if materialize else None,
+            zero_point if materialize else None,
+            self.scale_layout if materialize else None,
+        )
+
+    @staticmethod
+    def apply_result(module, result):
+        if result.scale is None:
+            raise ValueError("FP8 weight result was not materialized")
+        scale = result.scale.reshape(result.weight.shape[0], -1) if result.metadata == "row" else result.scale
+        module.weight.data.copy_(result.weight)
+        module.scale = scale.cpu()
+        module.zp = result.zero_point
+
+
+class _FP8ActivationQuantizer:
+    """Apply the matching FP8 primitive to dynamic or calibrated activations."""
+
+    def __init__(self, spec, data_type, primitive, scale_layout):
+        self.spec = spec
+        self.data_type = data_type
+        self.primitive = primitive
+        self.scale_layout = scale_layout
+        self.bits = spec.bits
+        self.group_size = spec.group_size
+        self.requires_calibration = not spec.dynamic
+
+    def observe(self, activation, current):
+        if self.scale_layout == "tensor":
+            maximum = activation.detach().abs().max()
+        else:
+            grouped, _, _ = reshape_pad_tensor_by_group_size(activation, self.spec.group_size)
+            dims = (-2, -1) if self.scale_layout == "block" else -1
+            maximum = grouped.detach().abs().amax(dim=dims)
+        return maximum if current is None else torch.maximum(maximum.to(current), current)
+
+    def qdq_tensor(self, activation, observed_max, min_scale, max_scale):
+        quantized, _, _ = self.primitive(
+            activation,
+            bits=self.bits,
+            group_size=self.group_size,
+            tensor_max=observed_max if self.requires_calibration else None,
+            max_scale=max_scale,
+        )
+        return quantized
+
+    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+        if self.requires_calibration and observed_max is None:
+            raise ValueError(f"{self.data_type} activation requires observed_max")
+        quantized = self.qdq_tensor(activation, observed_max, min_scale, max_scale)
+        return quantized
+
+
+def _create_fp8_activation(spec):
+    """Build an activation quantizer using the same format choice as weights."""
+    if spec.data_type == "fp8_gaudi3_sym":
+        return _FP8ActivationQuantizer(spec, spec.data_type, quant_fp8_sym_gaudi3, "tensor")
+    weight_quantizer = _FP8WeightQuantizer(spec)
+    return _FP8ActivationQuantizer(spec, spec.data_type, weight_quantizer.primitive, weight_quantizer.scale_layout)
+
+
+register_quantizer(
+    "fp8_sym",
+    aliases=("fp", "float", "fp8", "fp8_e4m3", "block_fp8_sym", "block_fp8", "block_fp8_e4m3"),
+)(_FP8WeightQuantizer)
+register_quantizer("fp8_e5m2")(_FP8WeightQuantizer)
+register_quantizer("fp8_unit_scale")(_FP8WeightQuantizer)
+register_quantizer("fp8_e5m2_unit_scale")(_FP8WeightQuantizer)
+if is_gaudi2():
+    register_quantizer("fp8_gaudi3_sym")(_FP8WeightQuantizer)

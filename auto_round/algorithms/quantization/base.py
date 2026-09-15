@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 from auto_round.algorithms.base import BaseAlgorithm
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
+from auto_round.data_type.base import create_quantizer
 from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
@@ -94,53 +94,22 @@ class BaseQuantizer(BaseAlgorithm):
             if not check_to_quantized(module):
                 continue
             is_quantized = True
-            bits = getattr(module, "bits", None)
-            group_size = getattr(module, "group_size", None)
-            sym = getattr(module, "sym", None)
-            data_type = getattr(module, "data_type", None)
             super_bits = getattr(module, "super_bits", None)
             super_group_size = getattr(module, "super_group_size", None)
-            scale_dtype = self.scale_dtype
-            quant_dtype = data_type
-            if quant_dtype not in QUANT_FUNC_WITH_DTYPE:
-                quant_dtype = f"{quant_dtype}_{'sym' if sym else 'asym'}"
-            if not hasattr(self, "iters") or self.iters <= 0:  # pylint: disable=E1101
-                tmp_dtype = "rtn_" + quant_dtype
-                if tmp_dtype in QUANT_FUNC_WITH_DTYPE:
-                    quant_dtype = tmp_dtype
-            quant_func = QUANT_FUNC_WITH_DTYPE[quant_dtype]
             # float32 is used in RTN scale search; avoids caching a bf16 copy.
             weight_dtype = torch.float32 if super_group_size is not None else module.weight.dtype
-            quant_kwargs = {
-                "bits": bits,
-                "group_size": group_size,
-                "super_bits": super_bits,
-                "super_group_size": super_group_size,
-                "scale_dtype": scale_dtype,
-            }
+            quantizer = create_quantizer(module, disable_opt_rtn=True)
             try:
-                weight, scale, zp = quant_func(
-                    module.weight.to(dtype=weight_dtype, device=device_manager.device),
-                    **quant_kwargs,
-                )
+                weight = module.weight.to(dtype=weight_dtype, device=device_manager.device)
+                quantizer.initialize(weight)
+                quantizer.write_back(module, weight)
             except torch.OutOfMemoryError:
-                cuda_error_msg = traceback.format_exc()
-                try:
-                    logger.error(cuda_error_msg)
-                    logger.warning("falling back to CPU")
-                    weight, scale, zp = quant_func(module.weight.to("cpu"), **quant_kwargs)
-                except Exception:
-                    raise
-            module.weight.data.copy_(weight.cpu())
-            for param_name, val in zip(["scale", "zp"], [scale, zp]):
-                if isinstance(val, dict):
-                    for k, v in val.items():
-                        setattr(module, k if k == "scale" else f"w_{k}", v.cpu())
-                elif isinstance(val, torch.Tensor):
-                    setattr(module, param_name, val.cpu())
-                else:
-                    setattr(module, param_name, val)
-            del weight, scale, zp
+                logger.error(traceback.format_exc())
+                logger.warning("falling back to CPU")
+                weight = module.weight.to("cpu")
+                quantizer.initialize(weight)
+                quantizer.write_back(module, weight)
+            del weight, quantizer
             clear_memory()
         return is_quantized
 

@@ -469,9 +469,6 @@ class SignRoundQuantizer(BaseQuantizer):
         )
 
         for i in range(self.iters):
-            if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
-                for n, m in block.named_modules():
-                    m.cur_iter = i
             total_loss = 0
             global_indices = index_sampler.next_batch()
             if valid_token_mask:
