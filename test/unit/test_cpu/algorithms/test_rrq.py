@@ -986,7 +986,7 @@ class TestRRQAccuracy:
         cls.model_name = opt_name_or_path
         cls.tokenizer = AutoTokenizer.from_pretrained(cls.model_name, trust_remote_code=True)
 
-    @pytest.mark.skip_ci(reason="Time-consuming lm_eval accuracy check; covered by nightly")
+    @pytest.mark.skip_ci(reason="Accuracy: time-consuming lm_eval check, covered by nightly")
     @pytest.mark.timeout(300)
     def test_rrq_w2a16_rtn_lmeval(self):
         """RRQ W2A16 (RTN) on OPT-125m: lambada_openai accuracy check.
