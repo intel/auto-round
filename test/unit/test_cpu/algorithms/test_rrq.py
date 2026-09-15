@@ -38,8 +38,8 @@ from auto_round.algorithms.quantization.rrq.config import RRQConfig
 from auto_round.algorithms.quantization.rrq.quantizer import RRQPlaneWrapper, RRQRTNQuantizer, RRQSignRoundQuantizer
 from auto_round.data_type.int import quant_tensor_rtn_sym
 from auto_round.export.export_to_autoround.export_to_rrq import (
-    RRQ_QUANT_METHOD,
     RRQ_PACKING_FORMAT,
+    RRQ_QUANT_METHOD,
     build_rrq_quantization_config,
     save_quantized_rrq,
 )
@@ -585,7 +585,9 @@ class TestRRQSave:
 class TestRRQValidation:
     """Tests for the base/residual config validation in load_rrq_model."""
 
-    def _residual_config(self, bits=2, group_size=128, sym=False, method=RRQ_QUANT_METHOD, packing_format=RRQ_PACKING_FORMAT):
+    def _residual_config(
+        self, bits=2, group_size=128, sym=False, method=RRQ_QUANT_METHOD, packing_format=RRQ_PACKING_FORMAT
+    ):
         return {
             "quantization_config": {
                 "bits": bits,
