@@ -61,8 +61,21 @@ class TestAutoRound:
         autoround.quantize_and_save(tmp_path)
 
     @require_optimum
-    def test_diffusion_tune(self, tiny_flux_model_path, tmp_path):
+    @pytest.mark.parametrize("low_gpu_mem_usage,cache_size", [(False, 0), (True, "auto"), (True, 1e-9)])
+    def test_diffusion_tune(self, tiny_flux_model_path, tmp_path, monkeypatch, low_gpu_mem_usage, cache_size):
         from diffusers import AutoPipelineForText2Image
+
+        from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
+
+        caches = []
+        create_cache = DiffusionTuningCache.create
+
+        def capture_cache(*args, **kwargs):
+            cache = create_cache(*args, **kwargs)
+            caches.append(cache)
+            return cache
+
+        monkeypatch.setattr(DiffusionTuningCache, "create", capture_cache)
 
         ## load the model
         pipe = AutoPipelineForText2Image.from_pretrained(tiny_flux_model_path)
@@ -86,14 +99,24 @@ class TestAutoRound:
             pipe,
             tokenizer=None,
             scheme="MXFP4",
-            iters=1,
+            iters=2,
             nsamples=1,
             calib_num_inference_steps=2,
             layer_config=layer_config,
             dataset="coco2014",
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            diffusion_tuning_cache_size=cache_size,
         )
         # skip model saving since it takes much time
         autoround.quantize_and_save(tmp_path)
+
+        if cache_size == "auto":
+            assert any(cache is not None for cache in caches)
+            assert all(not cache.thread.is_alive() and not cache.slots for cache in caches if cache is not None)
+        elif cache_size:
+            assert caches and all(cache is None for cache in caches)
+        else:
+            assert not caches
 
     @pytest.mark.skip_ci(reason="Architecture: Download large model; Time-consuming")
     def test_diffusion_model_checker(self):

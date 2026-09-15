@@ -218,6 +218,12 @@ def _resolve_model_dir(model_dir: str, revision: Optional[str] = None) -> str:
 def _build_weight_map(model_dir: str) -> dict[str, str]:
     """Build ``{tensor_name: shard_filename}`` from the model directory."""
     index_path = os.path.join(model_dir, "model.safetensors.index.json")
+    if not os.path.exists(index_path) and os.path.isdir(model_dir):
+        custom_indexes = sorted(
+            filename for filename in os.listdir(model_dir) if filename.endswith(".safetensors.index.json")
+        )
+        if custom_indexes:
+            index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(index_path):
         with open(index_path) as f:
             return json.load(f)["weight_map"]
@@ -230,6 +236,10 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
             return {k: "model.safetensors" for k in f.keys()}
 
     bin_index_path = os.path.join(model_dir, "pytorch_model.bin.index.json")
+    if not os.path.exists(bin_index_path) and os.path.isdir(model_dir):
+        custom_indexes = sorted(filename for filename in os.listdir(model_dir) if filename.endswith(".bin.index.json"))
+        if custom_indexes:
+            bin_index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(bin_index_path):
         with open(bin_index_path) as f:
             return json.load(f)["weight_map"]
@@ -241,7 +251,7 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
 
     raise FileNotFoundError(
         f"Could not find model weight files in {model_dir}. "
-        "Expected model.safetensors or pytorch_model.bin (with optional index.json)."
+        "Expected a safetensors or PyTorch .bin checkpoint (with optional index.json)."
     )
 
 
@@ -593,6 +603,13 @@ class OffloadManager:
         module = get_module(model, name)
         if module is None:
             return
+        model_dir = self.model_dir
+        component_subfolder = getattr(model, "_autoround_checkpoint_subfolder", None)
+        if model_dir is not None and component_subfolder:
+            resolved_dir = _resolve_model_dir(model_dir)
+            component_dir = os.path.join(resolved_dir, component_subfolder)
+            if os.path.isdir(component_dir):
+                model_dir = component_dir
         if self.mode == "offload":
             if name not in self._saved:
                 # Before falling back to the
@@ -621,8 +638,8 @@ class OffloadManager:
                 # meta skeleton (AR_DISK_STREAM_MODEL=1) instead of a full CPU
                 # load. There is nothing on the temp dir to load from -- read
                 # straight from the original checkpoint instead.
-                if self.model_dir is not None:
-                    load_block_from_model_files(self.model_dir, name, module)
+                if model_dir is not None:
+                    load_block_from_model_files(model_dir, name, module)
                 return
             self._load_from_disk(name, module)
             if not self.retain_saved_entries:
@@ -631,7 +648,7 @@ class OffloadManager:
             if self.model_dir is None:
                 logger.warning("OffloadManager: model_dir is required for clean mode")
                 return
-            load_block_from_model_files(self.model_dir, name, module)
+            load_block_from_model_files(model_dir, name, module)
 
     # ------------------------------------------------------------------
     # Hook-based transparent offloading

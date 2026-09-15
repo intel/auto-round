@@ -7,6 +7,7 @@ import torch
 import auto_round.utils.device as auto_round_utils
 from auto_round.utils.common import (
     compress_layer_names,
+    get_reverse_checkpoint_conversion_mapping,
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
 )
@@ -108,6 +109,40 @@ def test_revert_checkpoint_conversion_mapping_handles_backreference_patterns():
     converted = revert_checkpoint_conversion_mapping("model.language_model.layers.0.self_attn.q_proj.weight", mapping)
 
     assert converted == "model.layers.0.self_attn.q_proj.weight"
+
+
+def test_get_reverse_checkpoint_conversion_mapping_falls_back_to_central_registry():
+    # Models built from config (AutoRound's meta / disk-stream skeleton) are not
+    # created through ``from_pretrained`` and therefore carry no
+    # ``_weight_conversions``. The reverse map must still be recovered from
+    # transformers' central per-family registry (transformers >= 5.x), otherwise
+    # module-side names such as ``attn_hc.base`` are written to the checkpoint
+    # verbatim and break reload (e.g. vLLM ``KeyError: 'layers.0.attn_hc.base'``).
+    pytest.importorskip("transformers.conversion_mapping")
+    from transformers.conversion_mapping import get_checkpoint_conversion_mapping as _tf_mapping
+
+    if not _tf_mapping("glm5_next"):
+        pytest.skip("installed transformers has no glm5_next conversion mapping")
+
+    model = SimpleNamespace(config=SimpleNamespace(model_type="glm5_next"))
+    reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
+
+    # attn_hc.base -> hc_attn_base is the exact rename that broke vLLM deployment.
+    assert (
+        revert_checkpoint_conversion_mapping("model.language_model.layers.0.attn_hc.base", reverse_mapping)
+        == "model.language_model.layers.0.hc_attn_base"
+    )
+    assert (
+        revert_checkpoint_conversion_mapping("model.language_model.layers.3.ffn_hc.scale", reverse_mapping)
+        == "model.language_model.layers.3.hc_ffn_scale"
+    )
+    # The forget-gate submodule renames must reverse too, to avoid the next KeyError.
+    assert (
+        revert_checkpoint_conversion_mapping(
+            "model.language_model.layers.0.self_attn.forget_gate.A_log", reverse_mapping
+        )
+        == "model.language_model.layers.0.self_attn.A_log"
+    )
 
 
 def test_preserve_original_visual_block_name():
