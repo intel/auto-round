@@ -57,6 +57,49 @@ class BaseQuantizer(BaseAlgorithm):
     def can_compile_block_forward(self):
         return True
 
+    def build_weight_qdq(self, *, weight: torch.Tensor, default_qdq, parameters: dict[str, torch.Tensor]):
+        """Return the per-layer weight QDQ callable used for tuning and export.
+
+        Algorithms that need different QDQ behavior may override this method.
+        The returned callable accepts ``weight`` and keyword ``materialize=False``
+        and returns ``WeightQuantizationResult``. Bind settings in a closure and
+        add trainable tensors to ``parameters`` before returning. This per-layer
+        dictionary is also used by the optimizer and best-parameter restoration.
+        Read its entries at call time; do not replace the dictionary.
+
+        Args:
+            weight: Logical [out_features, in_features] weights on the tuning
+                device, including transposed Conv1D weights. Use only to create
+                parameters with the right shape/device; do not capture this
+                tensor in the returned closure.
+            default_qdq: Datatype function accepting weight, materialize=False,
+                and explicit datatype parameters. This builder binds the current
+                parameter dictionary to that function. Existing weight parameters
+                are datatype-dependent: value is a rounding offset, while
+                min_scale/max_scale adjust clipping bounds where supported.
+            parameters: Per-layer tensors collected for optimization. Add a
+                torch.nn.Parameter to train it; fixed settings belong in the
+                closure. Use distinct names that do not collide with wrapper
+                attributes. Read entries on each call to see restored best values.
+
+        Returns:
+            Callable qdq(weight, *, materialize=False). With materialize=True,
+            its WeightQuantizationResult must contain scale/zero-point/metadata
+            required by the chosen datatype's exporter. Preserve autograd during
+            training.
+
+        To customize, override this method and use ``weight`` to initialize
+        any new entries in ``parameters``. In the returned function, read those
+        entries and transform the input or explicitly pass the datatype options
+        you need. The implementation below is the default binding template.
+        """
+
+        def qdq(weight, *, materialize=False):
+            """Use current parameters during training and restored best values at export."""
+            return default_qdq(weight, materialize=materialize, **parameters)
+
+        return qdq
+
     # ── Calibration hook registration ─────────────────────────────────────────
     def register_fp_input_forward_hooks(self, block: torch.nn.Module) -> list:
         """Register hooks that fire during the reference (FP-input) block forward.
@@ -201,6 +244,7 @@ class BaseQuantizer(BaseAlgorithm):
                 enable_torch_compile=self.compress_context.enable_torch_compile,
                 disable_opt_rtn=disable_opt_rtn,
                 iters=0,
+                weight_qdq_builder=self.build_weight_qdq,
             )
             layer = layer.unwrapper({})
         except torch.OutOfMemoryError:
@@ -217,6 +261,7 @@ class BaseQuantizer(BaseAlgorithm):
                     enable_round_tuning=False,
                     enable_torch_compile=self.compress_context.enable_torch_compile,
                     iters=0,
+                    weight_qdq_builder=self.build_weight_qdq,
                 )
                 layer = layer.unwrapper({})
             except Exception:

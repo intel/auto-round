@@ -84,6 +84,7 @@ class WrapperLinear(torch.nn.Module):
         enable_round_tuning=True,
         enable_torch_compile=True,
         disable_opt_rtn=True,
+        weight_qdq_builder=None,
         **kwargs,
     ):
         """Initializes the WrapperLinear module.
@@ -117,6 +118,21 @@ class WrapperLinear(torch.nn.Module):
         else:
             self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
+
+        def default_qdq(weight, *, materialize=False):
+            """Keep direct wrapper use working when no algorithm supplies a builder."""
+            return self.weight_quantizer.qdq(weight, materialize=materialize, **self.params)
+
+        self.weight_qdq = default_qdq
+        if weight_qdq_builder is not None:
+            weight = getattr(orig_layer, "get_weight", lambda: orig_layer.weight)()
+            if type(orig_layer) == transformers.pytorch_utils.Conv1D:
+                weight = weight.t()
+            self.weight_qdq = weight_qdq_builder(
+                weight=weight.to(self.device), default_qdq=self.weight_quantizer.qdq, parameters=self.params
+            )
+        for name, parameter in self.params.items():
+            setattr(self, name, parameter)
         if cached_activation_quantizer is not None:
             self.orig_layer.__dict__.pop("_ar_activation_quantizer", None)
         if deepspeed_exists:
@@ -216,12 +232,8 @@ class WrapperLinear(torch.nn.Module):
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             weight = weight.t()
 
-        weight_q = self.weight_quantizer.quantize(
-            weight.to(self.device),
-            value=value,
-            min_scale=min_scale,
-            max_scale=max_scale,
-        ).to(weight.dtype)
+        self.params.update(value=value, min_scale=min_scale, max_scale=max_scale)
+        weight_q = self.weight_qdq(weight.to(self.device)).weight.to(weight.dtype)
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             weight_q = weight_q.t()
         return weight_q, None, None
@@ -288,19 +300,24 @@ class WrapperLinear(torch.nn.Module):
         v = best_params.get("value", torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get("max_scale", torch.tensor(1.0)).to(self.device)
+        # Preserve the dictionary captured by QDQ closures and restore all
+        # algorithm parameters, including names unknown to the wrapper.
+        self.params.update({name: value.to(self.device) for name, value in best_params.items()})
+        self.params.update(value=v, min_scale=min_scale, max_scale=max_scale)
 
         if self.orig_layer.weight.device.type == "meta":
             self.orig_layer.to(self.device)
         weight = self.orig_layer.weight
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             weight = weight.t()
-        self.weight_quantizer.write_back(
-            self.orig_layer,
+        result = self.weight_qdq(
             weight.to(self.device),
+            materialize=True,
+        )
+        self.weight_quantizer.apply_result(
+            self.orig_layer,
+            result,
             transpose=type(self.orig_layer) == transformers.pytorch_utils.Conv1D,
-            value=v,
-            min_scale=min_scale,
-            max_scale=max_scale,
         )
         self.orig_layer.weight.grad = None
 

@@ -335,6 +335,71 @@ class TestWrapperLinearDeviceTransfer:
         assert wrapper.device == "cpu"
         assert wrapper.orig_layer is orig_layer
 
+    def test_custom_weight_qdq_is_shared_by_forward_and_write_back(self):
+        """A per-layer algorithm hook controls both tuning and final materialization."""
+        from auto_round.wrapper import WrapperLinear
+
+        orig_layer = torch.nn.Linear(4, 2, bias=False)
+        orig_layer.bits = 4
+        orig_layer.sym = True
+        orig_layer.group_size = 4
+        orig_layer.scale_dtype = torch.float32
+        orig_layer.data_type = "int"
+        orig_layer.act_bits = 16
+        orig_layer.act_data_type = "float"
+        orig_layer.act_sym = True
+        orig_layer.act_dynamic = True
+        orig_layer.act_group_size = -1
+        orig_layer.tuning_device = "cpu"
+        calls = []
+
+        def build_weight_qdq(*, weight, default_qdq, parameters):
+            assert weight.shape == (2, 4)
+            parameters["offset"] = torch.nn.Parameter(weight.new_tensor(0.1))
+
+            def custom_qdq(weight, *, materialize=False):
+                calls.append(materialize)
+                return default_qdq(weight + parameters["offset"], materialize=materialize, **parameters)
+
+            return custom_qdq
+
+        wrapper = WrapperLinear(
+            orig_layer,
+            device="cpu",
+            disable_opt_rtn=True,
+            iters=0,
+            weight_qdq_builder=build_weight_qdq,
+        )
+
+        result, _, _ = wrapper._qdq_weight(wrapper.value, wrapper.min_scale, wrapper.max_scale)
+        result.sum().backward()
+        assert wrapper.params["offset"].grad is not None
+        best = torch.tensor(0.5)
+        wrapper.params["offset"] = best
+        expected = wrapper.weight_qdq(orig_layer.weight, materialize=True).weight.detach().clone()
+        wrapper.params["offset"] = torch.tensor(0.9)
+        wrapper.unwrapper({"offset": best})
+
+        assert calls == [False, True, True]
+        assert torch.equal(orig_layer.weight, expected)
+
+    def test_base_algorithm_uses_datatype_qdq_by_default(self):
+        """Algorithms only override QDQ when they explicitly need custom behavior."""
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+        from auto_round.data_type.base import create_quantizer
+
+        weight = torch.tensor([[1.0, -0.5, 0.25, -0.75]])
+        datatype = create_quantizer(dict(data_type="int", bits=4, group_size=4, sym=True), disable_opt_rtn=True)
+        datatype.initialize(weight)
+        parameters = {"value": torch.tensor(0.0)}
+        qdq = BaseQuantizer.build_weight_qdq(object(), weight=weight, default_qdq=datatype.qdq, parameters=parameters)
+        torch.testing.assert_close(qdq(weight).weight, datatype.qdq(weight, value=0.0).weight)
+        parameters["value"] = torch.tensor(0.75)
+        result = qdq(weight, materialize=True)
+        expected = datatype.qdq(weight, value=0.75, materialize=True)
+        torch.testing.assert_close(result.weight, expected.weight)
+        torch.testing.assert_close(result.scale, expected.scale)
+
     def test_wrapper_linear_forward(self):
         from auto_round.wrapper import WrapperLinear
 

@@ -374,6 +374,7 @@ class SignRoundQuantizer(BaseQuantizer):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            weight_qdq_builder=self.build_weight_qdq,
         )
 
         round_params = []
@@ -663,6 +664,7 @@ class SignRoundQuantizer(BaseQuantizer):
             enable_minmax_tuning=self.enable_minmax_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            weight_qdq_builder=self.build_weight_qdq,
         ).to(device)
         round_params = []
         minmax_params = []
@@ -670,7 +672,7 @@ class SignRoundQuantizer(BaseQuantizer):
             if "min" in key or "max" in key:
                 minmax_params.append(wrapper_linear.params[key])
             else:
-                round_params.append(wrapper_linear.value)
+                round_params.append(wrapper_linear.params[key])
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = f"quantized {layer_name}"
             logger.info(dump_info)

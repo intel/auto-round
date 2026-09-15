@@ -184,22 +184,20 @@ class DataTypeQuantizer:
 
     def quantize(self, weight: torch.Tensor, **parameters) -> torch.Tensor:
         """Return QDQ weights for the current trainable parameter values."""
+        return self.qdq(weight, **parameters).weight
+
+    def qdq(self, weight: torch.Tensor, *, materialize=False, **parameters) -> WeightQuantizationResult:
+        """Run datatype QDQ and optionally include tensors needed for export."""
         self._ensure_initialized()
         return self._implementation.qdq(
             weight,
             self._state,
             tunables={**self.parameters, **parameters},
-        ).weight
-
-    def write_back(self, layer, weight: torch.Tensor, *, transpose=False, **parameters) -> None:
-        """Materialize QDQ payload and store it on an exportable layer."""
-        self._ensure_initialized()
-        result = self._implementation.qdq(
-            weight,
-            self._state,
-            tunables={**self.parameters, **parameters},
-            materialize=True,
+            materialize=materialize,
         )
+
+    def apply_result(self, layer, result: WeightQuantizationResult, *, transpose=False) -> None:
+        """Store an already computed QDQ result on its source layer."""
         logical_rows = result.weight.shape[0]
         if transpose:
             result = WeightQuantizationResult(
@@ -214,6 +212,11 @@ class DataTypeQuantizer:
                 result.logical_rows,
             )
         self._apply_result(layer, result)
+
+    def write_back(self, layer, weight: torch.Tensor, *, transpose=False, **parameters) -> None:
+        """Materialize QDQ payload and store it on an exportable layer."""
+        result = self.qdq(weight, materialize=True, **parameters)
+        self.apply_result(layer, result, transpose=transpose)
 
     def _ensure_initialized(self) -> None:
         """Reject use before a datatype has created its per-layer state."""

@@ -41,6 +41,20 @@ def test_integer_lifecycle_matches_primitive_and_materializes_payload():
     assert torch.equal(actual, expected)
 
 
+def test_qdq_returns_the_same_result_used_for_write_back():
+    """Algorithms can execute QDQ once and hand its materialized result to the datatype."""
+    weight = torch.tensor([[1.0, -0.75, 0.25, -0.5]], dtype=torch.float32)
+    layer = torch.nn.Linear(4, 1, bias=False)
+    quantizer = create_quantizer(_weight_config("int", 4, 4), disable_opt_rtn=True)
+    quantizer.initialize(weight)
+
+    result = quantizer.qdq(weight, materialize=True)
+    quantizer.apply_result(layer, result)
+
+    assert torch.equal(layer.weight, result.weight)
+    assert layer.scale.shape == (1, 1)
+
+
 def test_write_back_keeps_conv1d_scale_indexed_by_output_channels():
     """Conv1D stores a transposed weight, but its scale stays per output channel."""
     weight = torch.tensor([[1.0, -0.75, 0.25, -0.5], [-1.0, 0.75, -0.25, 0.5]], dtype=torch.float32)
