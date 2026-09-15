@@ -67,6 +67,33 @@ class TestGetScaleShape:
             get_scale_shape(weight, group_size=(8,))  # 1D tuple but weight is 2D
 
 
+def test_wrapper_keeps_canonical_dtype_for_optimized_nvfp4_v2():
+    from auto_round.data_type.nvfp import opt_rtn_nvfp4_v2
+    from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+    from auto_round.wrapper import WrapperLinear
+
+    orig_layer = torch.nn.Linear(32, 4, bias=False)
+    orig_layer.bits = 4
+    orig_layer.sym = True
+    orig_layer.group_size = 16
+    orig_layer.data_type = "nvfp4_v2"
+    orig_layer.act_bits = 4
+    orig_layer.act_sym = True
+    orig_layer.act_group_size = 16
+    orig_layer.act_data_type = "nvfp4_v2"
+    orig_layer.act_dynamic = True
+    orig_layer.scale_dtype = torch.float32
+
+    wrapper = WrapperLinear(orig_layer, device="cpu", disable_opt_rtn=False, enable_torch_compile=False, iters=0)
+
+    assert wrapper.weight_quant_func is opt_rtn_nvfp4_v2
+    assert wrapper.data_type == "nvfp4_v2"
+    wrapper.unwrapper({})
+    assert orig_layer.data_type == "nvfp4_v2"
+    exported_layer = QuantLinear(4, 16, 32, 4, False, data_type=orig_layer.data_type, act_bits=4)
+    assert exported_layer.is_nvfp4_e5m3
+
+
 class TestWrapperLayerNorm:
     """Tests for WrapperLayerNorm class."""
 

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+
 import torch
 
 from auto_round.data_type.fp8 import float8_e4m3fn_ste
@@ -313,7 +315,18 @@ def ref_nvfp4_quant_inplace(
     return out.reshape(m, n), scale
 
 
-def search_nvfp4_scale(tensor, bits=4, qw=None):
+def _get_scale_search_candidates(scale_search_min, scale_search_max, step=0.01):
+    if not 0 < scale_search_min <= 1.0 <= scale_search_max:
+        raise ValueError("scale search range must satisfy 0 < min <= 1 <= max")
+
+    search_steps = math.floor((scale_search_max - scale_search_min) / step)
+    candidates = [scale_search_min + index * step for index in range(search_steps + 1)]
+    if not math.isclose(candidates[-1], scale_search_max, rel_tol=0.0, abs_tol=1e-9):
+        candidates.append(scale_search_max)
+    return candidates
+
+
+def search_nvfp4_scale(tensor, bits=4, qw=None, scale_search_min=0.5, scale_search_max=1.51):
     tensor_fp32 = tensor.float()
 
     qdq_t, scale, _ = nv_fp4(
@@ -342,10 +355,8 @@ def search_nvfp4_scale(tensor, bits=4, qw=None):
     # inplace modify
     test_scale = torch.empty_like(scale)
 
-    for scale_value in range(50, 152):
-        tmp_scale = scale_value / 100.0
-
-        if tmp_scale == 1.0:
+    for tmp_scale in _get_scale_search_candidates(scale_search_min, scale_search_max):
+        if math.isclose(tmp_scale, 1.0, rel_tol=0.0, abs_tol=1e-9):
             continue
 
         test_scale.fill_(tmp_scale)
@@ -373,6 +384,89 @@ def search_nvfp4_scale(tensor, bits=4, qw=None):
     return best_scale
 
 
+def search_nvfp4_v2_scale(tensor, bits=4, group_size=16, qw=None, scale_search_min=0.5, scale_search_max=1.51):
+    tensor_fp32 = tensor.float()
+
+    qdq_t, scale, _ = nvfp4_v2(
+        tensor_fp32,
+        bits=bits,
+        group_size=group_size,
+        v=0,
+        max_scale=1.0,
+    )
+
+    diff = torch.empty_like(tensor_fp32)
+    loss = torch.empty_like(tensor_fp32[..., 0])
+
+    diff.copy_(qdq_t)
+    diff.sub_(tensor_fp32)
+    diff.mul_(diff)
+    diff.mul_(qw)
+    loss.copy_(diff.sum(dim=-1))
+
+    best_loss = loss.clone()
+    best_scale = torch.ones_like(scale)
+    test_scale = torch.empty_like(scale)
+
+    for tmp_scale in _get_scale_search_candidates(scale_search_min, scale_search_max):
+        if math.isclose(tmp_scale, 1.0, rel_tol=0.0, abs_tol=1e-9):
+            continue
+
+        test_scale.fill_(tmp_scale)
+        tmp_qdq, _, _ = nvfp4_v2(
+            tensor_fp32,
+            bits=bits,
+            group_size=group_size,
+            v=0,
+            max_scale=test_scale.view(-1),
+        )
+
+        diff.copy_(tmp_qdq)
+        diff.sub_(tensor_fp32)
+        diff.mul_(diff)
+        diff.mul_(qw)
+        loss.copy_(diff.sum(dim=-1))
+
+        mask = loss < best_loss
+        best_loss[mask] = loss[mask]
+        best_scale[mask] = test_scale[mask]
+
+    return best_scale
+
+
+@register_dtype("opt_rtn_nvfp4_v2")
+def opt_rtn_nvfp4_v2(
+    tensor,
+    bits=4,
+    group_size=16,
+    v=0,
+    max_scale=1.0,
+    imatrix=1.0,
+    scale_search_min=0.5,
+    scale_search_max=1.51,
+    **kwargs,
+):
+    assert group_size == 32 or group_size == 16
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if not isinstance(imatrix, torch.Tensor):
+        qw = 1.0
+    else:
+        imatrix = imatrix.reshape(1, -1)
+        imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+        imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
+        imatrix = imatrix.reshape(tensor.shape)
+        imatrix = _imatrix_handle_zero(imatrix, tensor, bits, group_size)
+        qw = imatrix
+
+    init_scale = search_nvfp4_v2_scale(
+        tensor, bits, group_size, qw, scale_search_min=scale_search_min, scale_search_max=scale_search_max
+    )
+    tensor = revert_tensor_by_pad(tensor, orig_shape, pad_len)
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.view(-1).to(tensor.device)
+    return nvfp4_v2(tensor, bits, group_size, v, max_scale=max_scale * init_scale.view(-1))
+
+
 @register_dtype("opt_rtn_nv_fp4")
 def opt_rtn_fast_nvfp4(
     tensor,
@@ -382,6 +476,8 @@ def opt_rtn_fast_nvfp4(
     global_scale=None,
     max_scale=1.0,
     imatrix=1.0,
+    scale_search_min=0.5,
+    scale_search_max=1.51,
     **kwargs,
 ):
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
@@ -395,7 +491,7 @@ def opt_rtn_fast_nvfp4(
         imatrix = _imatrix_handle_zero(imatrix, tensor, bits, group_size)
         qw = imatrix
 
-    init_scale = search_nvfp4_scale(tensor, 4, qw)
+    init_scale = search_nvfp4_scale(tensor, 4, qw, scale_search_min=scale_search_min, scale_search_max=scale_search_max)
     tensor = revert_tensor_by_pad(tensor, orig_shape, pad_len)
     return nv_fp4_rtn(tensor, bits, group_size, v, global_scale, max_scale, init_scale=init_scale)
 

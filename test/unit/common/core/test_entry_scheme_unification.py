@@ -127,3 +127,34 @@ def test_w8a16_symmetric_routes_to_zero_shot():
     cls = _select_rtn_compressor_base_cls(cfg, "W8A16", None, {})
     assert cls is CompressionOrchestrator
     assert cfg.enable_imatrix is False
+
+
+def test_nvfp4_e5m3_default_routes_to_optimized_rtn():
+    cfg = RTNConfig()
+
+    cls = _select_rtn_compressor_base_cls(cfg, "NVFP4_E5M3", "auto_round", {})
+
+    assert cls is CompressionOrchestrator
+    assert cfg.enable_imatrix is True
+    assert isinstance(cfg, OptimizedRTNConfig)
+
+
+def test_nvfp4_e5m3_explicit_enable_routes_to_optimized_rtn():
+    cfg = RTNConfig(enable_opt_rtn=True)
+
+    cls = _select_rtn_compressor_base_cls(cfg, "NVFP4_E5M3", "auto_round", {})
+
+    assert cls is CompressionOrchestrator
+    assert cfg.enable_imatrix is True
+    assert isinstance(cfg, OptimizedRTNConfig)
+
+
+def test_nvfp4_e5m3_explicit_plain_rtn_skips_calibration():
+    cfg = RTNConfig(disable_opt_rtn=True)
+
+    cls = _select_rtn_compressor_base_cls(cfg, "NVFP4_E5M3", "auto_round", {})
+
+    assert cls is CompressionOrchestrator
+    assert cfg.enable_imatrix is False
+    assert isinstance(cfg, RTNConfig)
+    assert not isinstance(cfg, OptimizedRTNConfig)

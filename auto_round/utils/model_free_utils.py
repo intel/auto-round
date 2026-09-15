@@ -40,6 +40,10 @@ from auto_round.utils.common import to_standard_regex
 from auto_round.utils.device import clear_memory, compile_func
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
+_NVFP4_SCALE_MANTISSA_BITS = 3
+_NVFP4_MODEL_FREE_SCALE_SEARCH_MARGIN = 2**-_NVFP4_SCALE_MANTISSA_BITS
+_NVFP4_MODEL_FREE_SCALE_SEARCH_MIN = 1.0 - _NVFP4_MODEL_FREE_SCALE_SEARCH_MARGIN
+_NVFP4_MODEL_FREE_SCALE_SEARCH_MAX = 1.0 + _NVFP4_MODEL_FREE_SCALE_SEARCH_MARGIN
 _BLOCK_NAME_TO_IGNORE = ("shared_expert_gate.", ".gate.", "embed", "conv")
 _SUPPORTED_MXFP_BITS = (4, 8)
 _SUPPORTED_INT_BITS = (2, 4, 8)
@@ -1240,9 +1244,10 @@ def _quantize_weight_nvfp4_e5m3(
     layer_name: str,
     group_size: int = 16,
     device: str = "cpu",
+    disable_opt_rtn: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Fake-quantize a 2D weight tensor to NVFP4 E5M3 and return its high-precision QDQ weight."""
-    from auto_round.data_type.nvfp import nvfp4_v2
+    from auto_round.data_type.nvfp import nvfp4_v2, opt_rtn_nvfp4_v2
 
     out_features, in_features = weight.shape
     if group_size != 16:
@@ -1254,7 +1259,14 @@ def _quantize_weight_nvfp4_e5m3(
         )
 
     weight_dev = weight.to(device)
-    qdq_weight, _, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size)
+    quant_func = nvfp4_v2 if disable_opt_rtn else opt_rtn_nvfp4_v2
+    quant_kwargs = {}
+    if not disable_opt_rtn:
+        quant_kwargs = {
+            "scale_search_min": _NVFP4_MODEL_FREE_SCALE_SEARCH_MIN,
+            "scale_search_max": _NVFP4_MODEL_FREE_SCALE_SEARCH_MAX,
+        }
+    qdq_weight, _, _ = quant_func(weight_dev, bits=4, group_size=group_size, **quant_kwargs)
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
 
@@ -1263,11 +1275,12 @@ def _quantize_weight_nvfp4_fake(
     layer_name: str,
     group_size: int = 16,
     device: str = "cpu",
+    disable_opt_rtn: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Fake-quantize standard NVFP4 and preserve its static activation scale."""
     import math
 
-    from auto_round.data_type.nvfp import calculate_gparam, nv_fp4
+    from auto_round.data_type.nvfp import calculate_gparam, nv_fp4, opt_rtn_fast_nvfp4
 
     _, in_features = weight.shape
     if group_size != 16 or in_features % group_size != 0:
@@ -1282,11 +1295,19 @@ def _quantize_weight_nvfp4_fake(
 
     weight_dev = weight.to(device)
     weight_global_scale = calculate_gparam(weight_dev, group_size=group_size, device=device)
-    qdq_weight, _, _ = nv_fp4(
+    quant_func = nv_fp4 if disable_opt_rtn else opt_rtn_fast_nvfp4
+    quant_kwargs = {}
+    if not disable_opt_rtn:
+        quant_kwargs = {
+            "scale_search_min": _NVFP4_MODEL_FREE_SCALE_SEARCH_MIN,
+            "scale_search_max": _NVFP4_MODEL_FREE_SCALE_SEARCH_MAX,
+        }
+    qdq_weight, _, _ = quant_func(
         weight_dev,
         bits=4,
         group_size=group_size,
         global_scale=weight_global_scale,
+        **quant_kwargs,
     )
     return {
         f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu"),
@@ -1299,11 +1320,12 @@ def _quantize_weight_nvfp4(
     layer_name: str,
     group_size: int = 16,
     device: str = "cpu",
+    disable_opt_rtn: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Quantize and pack standard NVFP4 with one fixed input scale for every layer."""
     import math
 
-    from auto_round.data_type.nvfp import calculate_gparam, nv_fp4
+    from auto_round.data_type.nvfp import calculate_gparam, nv_fp4, opt_rtn_fast_nvfp4
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 
     out_features, in_features = weight.shape
@@ -1319,7 +1341,16 @@ def _quantize_weight_nvfp4(
 
     weight_dev = weight.to(device)
     weight_global_scale = calculate_gparam(weight_dev, group_size=group_size, device=device)
-    _, scale, _ = nv_fp4(weight_dev, bits=4, group_size=group_size, global_scale=weight_global_scale)
+    quant_func = nv_fp4 if disable_opt_rtn else opt_rtn_fast_nvfp4
+    quant_kwargs = {}
+    if not disable_opt_rtn:
+        quant_kwargs = {
+            "scale_search_min": _NVFP4_MODEL_FREE_SCALE_SEARCH_MIN,
+            "scale_search_max": _NVFP4_MODEL_FREE_SCALE_SEARCH_MAX,
+        }
+    _, scale, _ = quant_func(
+        weight_dev, bits=4, group_size=group_size, global_scale=weight_global_scale, **quant_kwargs
+    )
     scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
     input_global_scale = torch.tensor([input_global_scale_value], dtype=torch.float32, device=device)
 
@@ -1382,9 +1413,10 @@ def _pack_weight_nvfp4_e5m3(
     layer_name: str,
     group_size: int = 16,
     device: str = "cpu",
+    disable_opt_rtn: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Pack FP4 E2M1 weights with unsigned E5M3 block scales."""
-    from auto_round.data_type.nvfp import nvfp4_v2
+    from auto_round.data_type.nvfp import nvfp4_v2, opt_rtn_nvfp4_v2
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 
     out_features, in_features = weight.shape
@@ -1393,7 +1425,14 @@ def _pack_weight_nvfp4_e5m3(
             f"NVFP4_E5M3 requires in_features divisible by group_size=16, got {in_features} for '{layer_name}'."
         )
     weight_dev = weight.to(device)
-    _, scale, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size)
+    quant_func = nvfp4_v2 if disable_opt_rtn else opt_rtn_nvfp4_v2
+    quant_kwargs = {}
+    if not disable_opt_rtn:
+        quant_kwargs = {
+            "scale_search_min": _NVFP4_MODEL_FREE_SCALE_SEARCH_MIN,
+            "scale_search_max": _NVFP4_MODEL_FREE_SCALE_SEARCH_MAX,
+        }
+    _, scale, _ = quant_func(weight_dev, bits=4, group_size=group_size, **quant_kwargs)
     # nvfp4_v2 may return a flattened per-group scale layout (e.g. [N, 1]);
     # normalize to [out_features, in_features // group_size] before packing
     # so serialized .weight_scale keeps the expected 2D shape.
@@ -1503,6 +1542,7 @@ def _quantize_single_tensor(
                 layer_name=layer_name,
                 group_size=group_size,
                 device=device,
+                disable_opt_rtn=disable_opt_rtn,
             )
             logger.debug(f"Quantized (NVFP4): {layer_name} (bits=4, group_size={group_size})")
             return layer_name, out, layer_name, None
@@ -1521,6 +1561,7 @@ def _quantize_single_tensor(
                 layer_name=layer_name,
                 group_size=group_size,
                 device=device,
+                disable_opt_rtn=disable_opt_rtn,
             )
             logger.debug(f"Quantized (NVFP4_E5M3): {layer_name} (bits=4, group_size={group_size})")
             return layer_name, out, layer_name, None
@@ -2320,6 +2361,10 @@ def _process_shard(
         # result before loading the next one, so peak RSS stays at ~one layer
         # instead of two.
         del tensor, out_dict
+
+    from auto_round.data_type.utils import update_fused_tensor_global_scales
+
+    update_fused_tensor_global_scales(output_tensors)
 
     # Remove scale_inv tensors that this shard donates to other shards.
     # These tensors have no corresponding weight in this shard; keeping them

@@ -35,11 +35,17 @@ from auto_round.data_type.nvfp import (
     nv_fp4_with_static_gs,
     nvfp4_v2,
     nvfp4_v2_with_global_scale,
+    opt_rtn_nvfp4_v2,
     ref_fp4_quant,
     ref_nvfp4_quant,
     search_nvfp4_scale,
+    search_nvfp4_v2_scale,
 )
-from auto_round.data_type.utils import update_fused_layer_global_scales
+from auto_round.data_type.utils import (
+    get_quant_func,
+    update_fused_layer_global_scales,
+    update_fused_tensor_global_scales,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -189,9 +195,10 @@ class TestFusedLayerGlobalScales:
     def _projection(scale: float) -> nn.Module:
         projection = nn.Module()
         projection.weight_global_scale = torch.tensor([scale])
+        projection.weight_scale = torch.ones(2, 2)
         return projection
 
-    def test_fused_projections_share_minimum_scale_by_default(self, monkeypatch):
+    def test_fused_projections_share_maximum_scale_and_adjust_block_scale(self, monkeypatch):
         monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
         attention = nn.Module()
         attention.q_proj = self._projection(3.0)
@@ -205,9 +212,14 @@ class TestFusedLayerGlobalScales:
         update_fused_layer_global_scales(mlp)
 
         assert all(
-            proj.weight_global_scale.item() == 1.0 for proj in (attention.q_proj, attention.k_proj, attention.v_proj)
+            proj.weight_global_scale.item() == 3.0 for proj in (attention.q_proj, attention.k_proj, attention.v_proj)
         )
-        assert all(proj.weight_global_scale.item() == 0.5 for proj in (mlp.gate_proj, mlp.up_proj))
+        assert torch.equal(attention.q_proj.weight_scale, torch.ones(2, 2))
+        assert torch.equal(attention.k_proj.weight_scale, torch.full((2, 2), 3.0))
+        assert torch.equal(attention.v_proj.weight_scale, torch.full((2, 2), 1.5))
+        assert all(proj.weight_global_scale.item() == 4.0 for proj in (mlp.gate_proj, mlp.up_proj))
+        assert torch.equal(mlp.gate_proj.weight_scale, torch.ones(2, 2))
+        assert torch.equal(mlp.up_proj.weight_scale, torch.full((2, 2), 8.0))
 
     def test_fused_projection_scale_update_can_be_disabled(self, monkeypatch):
         monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "0")
@@ -223,6 +235,22 @@ class TestFusedLayerGlobalScales:
             1.0,
             2.0,
         ]
+
+    def test_model_free_fused_scales_update(self, monkeypatch):
+        monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+        tensors = {}
+        scales = {"q_proj": 3.0, "k_proj": 1.0, "v_proj": 2.0, "gate_proj": 4.0, "up_proj": 0.5}
+        for projection, global_scale in scales.items():
+            prefix = f"model.layers.0.{'self_attn' if projection.endswith('proj') and projection[0] in 'qkv' else 'mlp'}.{projection}"
+            tensors[f"{prefix}.weight_global_scale"] = torch.tensor([global_scale])
+            tensors[f"{prefix}.weight_scale"] = torch.ones(2, 2)
+
+        update_fused_tensor_global_scales(tensors)
+
+        assert tensors["model.layers.0.self_attn.q_proj.weight_global_scale"].item() == 3.0
+        assert torch.equal(tensors["model.layers.0.self_attn.k_proj.weight_scale"], torch.full((2, 2), 3.0))
+        assert tensors["model.layers.0.mlp.gate_proj.weight_global_scale"].item() == 4.0
+        assert torch.equal(tensors["model.layers.0.mlp.up_proj.weight_scale"], torch.full((2, 2), 8.0))
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +330,135 @@ class TestSearchNvfp4Scale:
         tensor = torch.randn(8, 16, dtype=torch.float32)
         with pytest.raises(TypeError):
             search_nvfp4_scale(tensor, qw=None)
+
+    def test_custom_search_range(self):
+        tensor = torch.randn(8, 16, dtype=torch.float32)
+        scales = search_nvfp4_scale(
+            tensor,
+            qw=torch.ones_like(tensor),
+            scale_search_min=1.0,
+            scale_search_max=1.125,
+        )
+
+        assert torch.all(scales >= 1.0)
+        assert torch.all(scales <= 1.125)
+
+    def test_custom_search_includes_exact_upper_bound(self, monkeypatch):
+        import auto_round.data_type.nvfp as nvfp
+
+        original_quant = nvfp.nv_fp4_rtn
+        evaluated_scales = []
+
+        def track_scale(*args, **kwargs):
+            max_scale = kwargs.get("max_scale")
+            if isinstance(max_scale, torch.Tensor):
+                evaluated_scales.append(max_scale[0].item())
+            return original_quant(*args, **kwargs)
+
+        monkeypatch.setattr(nvfp, "nv_fp4_rtn", track_scale)
+        tensor = torch.randn(2, 16, dtype=torch.float32)
+        search_nvfp4_scale(
+            tensor,
+            qw=torch.ones_like(tensor),
+            scale_search_min=1.0,
+            scale_search_max=1.125,
+        )
+
+        assert evaluated_scales[-1] == pytest.approx(1.125)
+
+
+class TestSearchNvfp4V2Scale:
+    @pytest.mark.parametrize("group_size", [16, 32])
+    def test_shape_and_range(self, group_size):
+        tensor = torch.randn(8, group_size, dtype=torch.float32)
+        scales = search_nvfp4_v2_scale(tensor, group_size=group_size, qw=torch.ones_like(tensor))
+
+        assert scales.shape == (8, 1)
+        assert torch.all(scales >= 0.5)
+        assert torch.all(scales <= 1.51)
+
+    def test_weighted_loss_does_not_increase(self):
+        torch.manual_seed(42)
+        tensor = torch.randn(8, 16, dtype=torch.float32)
+        qw = torch.exp(torch.randn_like(tensor))
+        baseline, _, _ = nvfp4_v2(tensor, group_size=16)
+        scales = search_nvfp4_v2_scale(tensor, group_size=16, qw=qw)
+        optimized, _, _ = nvfp4_v2(tensor, group_size=16, max_scale=scales.view(-1))
+
+        baseline_loss = ((baseline - tensor).square() * qw).sum()
+        optimized_loss = ((optimized - tensor).square() * qw).sum()
+        assert optimized_loss <= baseline_loss
+
+    def test_custom_search_range(self):
+        tensor = torch.randn(8, 16, dtype=torch.float32)
+        scales = search_nvfp4_v2_scale(
+            tensor,
+            group_size=16,
+            qw=torch.ones_like(tensor),
+            scale_search_min=0.875,
+            scale_search_max=1.125,
+        )
+
+        assert torch.all(scales >= 0.875)
+        assert torch.all(scales <= 1.125)
+
+    def test_custom_search_includes_exact_upper_bound(self, monkeypatch):
+        import auto_round.data_type.nvfp as nvfp
+
+        original_quant = nvfp.nvfp4_v2
+        evaluated_scales = []
+
+        def track_scale(*args, **kwargs):
+            max_scale = kwargs.get("max_scale")
+            if isinstance(max_scale, torch.Tensor):
+                evaluated_scales.append(max_scale[0].item())
+            return original_quant(*args, **kwargs)
+
+        monkeypatch.setattr(nvfp, "nvfp4_v2", track_scale)
+        tensor = torch.randn(2, 16, dtype=torch.float32)
+        search_nvfp4_v2_scale(
+            tensor,
+            group_size=16,
+            qw=torch.ones_like(tensor),
+            scale_search_min=1.0,
+            scale_search_max=1.125,
+        )
+
+        assert evaluated_scales[-1] == pytest.approx(1.125)
+
+    @pytest.mark.parametrize("bounds", [(0.0, 1.0), (1.01, 1.1), (0.9, 0.99)])
+    def test_invalid_search_range(self, bounds):
+        tensor = torch.randn(2, 16, dtype=torch.float32)
+        with pytest.raises(ValueError, match="0 < min <= 1 <= max"):
+            search_nvfp4_v2_scale(
+                tensor,
+                group_size=16,
+                qw=torch.ones_like(tensor),
+                scale_search_min=bounds[0],
+                scale_search_max=bounds[1],
+            )
+
+
+class TestOptRtnNvfp4V2:
+    def test_registered_dispatch(self):
+        quant_func, data_type = get_quant_func(
+            "nvfp4_v2", bits=4, sym=True, disable_opt_rtn=False, group_size=16, iters=0
+        )
+
+        assert quant_func is opt_rtn_nvfp4_v2
+        assert data_type == "opt_rtn_nvfp4_v2"
+
+    @pytest.mark.parametrize("group_size", [16, 32])
+    def test_quantizes_with_imatrix(self, group_size):
+        tensor = torch.randn(4, group_size * 2, dtype=torch.bfloat16)
+        imatrix = torch.rand(group_size * 2, dtype=torch.float32)
+
+        qdq, scale, zp = opt_rtn_nvfp4_v2(tensor, group_size=group_size, imatrix=imatrix)
+
+        assert qdq.shape == tensor.shape
+        assert qdq.dtype == tensor.dtype
+        assert scale.shape == (tensor.numel() // group_size, 1)
+        assert zp is None
 
 
 # ---------------------------------------------------------------------------

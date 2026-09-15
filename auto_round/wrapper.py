@@ -197,6 +197,8 @@ class WrapperLinear(torch.nn.Module):
             orig_layer.group_size,
             iters=orig_layer.iters,
         )
+        if self.data_type == "opt_rtn_nvfp4_v2":
+            self.data_type = "nvfp4_v2"
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 

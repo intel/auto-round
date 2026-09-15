@@ -181,6 +181,30 @@ def is_gguf_k_target(value: Union[str, "AutoScheme", object]) -> bool:
     return False
 
 
+def _has_optimized_rtn_dtype(data_type: str, bits: int, sym: bool, group_size) -> bool:
+    if not data_type or bits is None:
+        return False
+    from auto_round.data_type.utils import get_quant_func
+
+    optimized_func, optimized_type = get_quant_func(
+        data_type,
+        bits,
+        sym,
+        disable_opt_rtn=False,
+        group_size=group_size,
+        iters=0,
+    )
+    plain_func, plain_type = get_quant_func(
+        data_type,
+        bits,
+        sym,
+        disable_opt_rtn=True,
+        group_size=group_size,
+        iters=0,
+    )
+    return optimized_type != plain_type or optimized_func is not plain_func
+
+
 def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, "QuantizationConfig"]:
     from auto_round.algorithms.config_resolver import split_quantization_configs
     from auto_round.algorithms.quantization.config import QuantizationConfig
@@ -297,6 +321,10 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
             elif data_type == "int" and (bits is None or bits < 8):
                 enable_imatrix = True
             elif is_weight_scheme(scheme):
+                enable_imatrix = True
+            elif data_type == "nvfp4_v2" and _has_optimized_rtn_dtype(
+                data_type, bits, sym, resolved_attrs.get("group_size")
+            ):
                 enable_imatrix = True
 
     act_bits = resolved_attrs.get("act_bits")

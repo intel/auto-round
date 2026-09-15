@@ -69,6 +69,7 @@ from auto_round.utils.model_free_utils import (
     _expand_e8m0_block_scale,
     _handle_mxfp_source_tensors,
     _looks_like_auto_scheme,
+    _pack_weight_nvfp4_e5m3,
     _PatternMatcher,
     _process_shard,
     _quantize_weight_mxfp,
@@ -456,6 +457,36 @@ def test_nvfp4_e5m3_model_free_fake_quantization():
     assert is_model_free_supported_scheme("NVFP4_E5M3")
     assert not is_model_free_supported_scheme("UNVFP4")
     assert not is_model_free_supported_scheme("NVFP4+")
+
+
+@pytest.mark.parametrize(
+    ("quantize_func", "optimized_func", "disable_opt_rtn", "expected_calls"),
+    [
+        (_quantize_weight_nvfp4_e5m3, "opt_rtn_nvfp4_v2", False, 1),
+        (_pack_weight_nvfp4_e5m3, "opt_rtn_nvfp4_v2", False, 1),
+        (_quantize_weight_nvfp4_fake, "opt_rtn_fast_nvfp4", False, 1),
+        (_quantize_weight_nvfp4, "opt_rtn_fast_nvfp4", False, 1),
+        (_quantize_weight_nvfp4_e5m3, "opt_rtn_nvfp4_v2", True, 0),
+        (_pack_weight_nvfp4_e5m3, "opt_rtn_nvfp4_v2", True, 0),
+        (_quantize_weight_nvfp4_fake, "opt_rtn_fast_nvfp4", True, 0),
+        (_quantize_weight_nvfp4, "opt_rtn_fast_nvfp4", True, 0),
+    ],
+)
+def test_model_free_nvfp4_quantization_searches_scale(
+    monkeypatch, quantize_func, optimized_func, disable_opt_rtn, expected_calls
+):
+    import auto_round.data_type.nvfp as nvfp
+
+    original_func = getattr(nvfp, optimized_func)
+    optimized_mock = Mock(wraps=original_func)
+    monkeypatch.setattr(nvfp, optimized_func, optimized_mock)
+
+    quantize_func(torch.randn(8, 32), "layer.fc", group_size=16, disable_opt_rtn=disable_opt_rtn)
+
+    assert optimized_mock.call_count == expected_calls
+    if not disable_opt_rtn:
+        assert optimized_mock.call_args.kwargs["scale_search_min"] == 0.875
+        assert optimized_mock.call_args.kwargs["scale_search_max"] == 1.125
 
 
 @pytest.mark.parametrize("input_scale", [None, 0.25])

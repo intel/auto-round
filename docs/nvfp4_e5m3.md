@@ -90,6 +90,19 @@ compressor = ModelFreeCompressor(
 compressor.run()
 ```
 
+### Optimized RTN
+
+When `--iters 0`, `NVFP4_E5M3` follows the same optimized RTN default as other
+supported data types. Its imatrix-weighted per-block scale search evaluates
+scale coefficients from 0.50 through 1.51, so calibration samples are still
+consumed even though no gradient iterations run. Use `--disable_opt_rtn` to
+force plain RTN.
+
+Model-free `NVFP4` and `NVFP4_E5M3` use the same unweighted per-block search
+for weight quantization. Since model-free quantization has no calibration
+inputs, it uses uniform weights instead of an imatrix. Pass `--disable_opt_rtn`
+to skip this search and use plain RTN.
+
 ### Loading a Quantized Model
 
 ```python
