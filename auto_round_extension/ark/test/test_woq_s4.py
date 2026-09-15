@@ -12,7 +12,7 @@ import auto_round_kernel as ark
 import torch
 from ut_utils import gen_weis8
 
-M_VALUES = [1, 2, 4, 8, 16, 32, 64]
+M_VALUES = [1, 2, 4, 8, 16, 32, 64, 128]
 N = 16384
 K = 4096
 BLOCKSIZE = 32

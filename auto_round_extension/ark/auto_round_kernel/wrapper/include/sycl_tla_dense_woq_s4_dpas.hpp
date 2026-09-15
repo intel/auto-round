@@ -56,6 +56,12 @@ class dpas_w4a16_dense_policy_m_64 : public dpas_policy_base {
   using SGLayout = Layout<Shape<_2, _8, _1>, Stride<_8, _1, _0>>;
 };
 
+class dpas_w4a16_dense_policy_m_128 : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_128, _256, _32>;
+  using SGLayout = Layout<Shape<_4, _8, _1>, Stride<_8, _1, _0>>;
+};
+
 inline constexpr int kMinGroupSize = 32;
 inline constexpr int kMaxGroupSize = 4096;
 

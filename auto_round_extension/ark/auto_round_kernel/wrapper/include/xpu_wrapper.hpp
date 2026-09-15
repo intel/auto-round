@@ -533,7 +533,7 @@ class XpuWrapper {
   }
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
-  static constexpr size_t kWoqS4DpasMaxM = 64;
+  static constexpr size_t kWoqS4DpasMaxM = 128;
 
   static inline bool woq_s4_dpas_group_size_ok(int group_size) {
     return dense_woq_s4_dpas::is_supported_group_size(group_size);
@@ -581,7 +581,7 @@ class XpuWrapper {
 
     if (m <= 4) {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_4)
-    } else if (m <= 8) {
+    }  else if (m <= 8) {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_8)
     } else if (m <= 16) {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_16)
@@ -589,6 +589,8 @@ class XpuWrapper {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_32)
     } else if (m <= 64) {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_64)
+    }else if (m <= 128) {
+      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_128)
     } else {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_32)
     }
