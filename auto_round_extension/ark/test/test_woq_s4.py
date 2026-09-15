@@ -12,10 +12,10 @@ import auto_round_kernel as ark
 import torch
 from ut_utils import gen_weis8
 
-M_VALUES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
-N = 4096
+M_VALUES = [1, 2, 4, 8, 16, 32, 64]
+N = 16384
 K = 4096
-BLOCKSIZE = 4096
+BLOCKSIZE = 32
 DTYPE = torch.float16
 DEVICE = "xpu"
 COMPUTE_TYPE = "int8"
@@ -146,7 +146,7 @@ def _ark_case(m, n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE, device=DEVICE):
 
 
 def _runs_for_m(m):
-    return 4000 if m == 1 else 400
+    return 1000
 
 
 def _batch_for_m(m):

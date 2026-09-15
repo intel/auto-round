@@ -32,12 +32,6 @@ using ::ark::moe_dpas_s4::dpas_w4a16_policy_m_32;
 using ::ark::moe_dpas_s4::make_moe_tensor;
 using ::ark::moe_dpas_s4::xe_gemm_s4_pergroup;
 
-class dpas_w4a16_dense_policy_m_2 : public dpas_policy_base {
- public:
-  using WGTile = Shape<_2, _64, _32>;
-  using SGLayout = Layout<Shape<_1, _4, _1>, Stride<_4, _1, _0>>;
-};
-
 class dpas_w4a16_dense_policy_m_4 : public dpas_policy_base {
  public:
   using WGTile = Shape<_4, _64, _32>;
@@ -60,12 +54,6 @@ class dpas_w4a16_dense_policy_m_64 : public dpas_policy_base {
  public:
   using WGTile = Shape<_64, _128, _32>;
   using SGLayout = Layout<Shape<_2, _8, _1>, Stride<_8, _1, _0>>;
-};
-
-class dpas_w4a16_dense_policy_m_128 : public dpas_policy_base {
- public:
-  using WGTile = Shape<_128, _256, _32>;
-  using SGLayout = Layout<Shape<_4, _8, _1>, Stride<_8, _1, _0>>;
 };
 
 inline constexpr int kMinGroupSize = 32;
