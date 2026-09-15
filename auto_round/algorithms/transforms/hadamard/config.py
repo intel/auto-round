@@ -75,6 +75,10 @@ class RotationConfig(BaseModel, BaseRotationConfig):
     backend: str = Field(default="auto")
     block_size: Optional[int] = Field(default=None)
     hadamard_type: str = Field(default="hadamard")
+    # Layer-wise (block-wise) rotation switch. Hadamard does not yet support
+    # per-block execution, so this is accepted for API parity but falls back to
+    # full-model rotation (see ``RotationPreprocessor.rotate_model``).
+    layerwise: bool = Field(default=False)
 
     # ---- inplace-only ----
     fuse_online_to_weight: Optional[bool] = Field(default=None)

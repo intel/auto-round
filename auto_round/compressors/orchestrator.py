@@ -849,12 +849,12 @@ class CompressionOrchestrator(BaseOrchestrator):
         # guarantee that lifecycle, and rotating here would desync the caller's
         # own reference/teacher outputs (collected on the un-rotated block).
         # Fail loudly instead of producing silently wrong results.
-        if self.layerwise_rotation and self.alg_composer.has_layerwise_rotation:
+        if self.alg_composer.has_layerwise_rotation:
             raise NotImplementedError(
-                "layerwise_rotation=True is not supported through the single-block "
-                "quantize_block() API (e.g. LLM-Compressor). Use the full AutoRound "
-                "quantize() entry point, or disable layerwise_rotation to apply "
-                "full-model rotation up-front."
+                "Layer-wise rotation (rotation config `layerwise=True`) is not supported "
+                "through the single-block quantize_block() API (e.g. LLM-Compressor). Use "
+                "the full AutoRound quantize() entry point, or set `layerwise=False` on the "
+                "rotation config to apply full-model rotation up-front."
             )
 
         # ── Zero-shot (RTN) path: no calibration data needed ──────────────────

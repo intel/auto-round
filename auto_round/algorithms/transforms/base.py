@@ -67,6 +67,13 @@ class BaseRotationConfig:
     #: Human-readable algorithm name, must be unique across all subclasses.
     algorithm: str = "base"
 
+    #: Apply rotation per decoder block (layer-wise), in lock-step with
+    #: AutoRound's block-wise quantization, instead of rotating the whole model
+    #: up-front. Only honoured by rotation algorithms whose
+    #: :attr:`BaseRotation.supports_layerwise` is ``True`` (SpinQuant/QuaRot);
+    #: unsupported algorithms transparently fall back to full-model rotation.
+    layerwise: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Algorithm base
