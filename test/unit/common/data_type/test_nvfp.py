@@ -14,6 +14,7 @@
 """Unit tests for ``auto_round.data_type.nvfp``."""
 
 import math
+import os
 
 import pytest
 import torch
@@ -24,6 +25,9 @@ from auto_round.data_type.nvfp import (
     FLOAT8_E4M3_MAX,
     FLOAT8_E4M3_MIN,
     FLOAT8_UE5M3_MAX,
+    _enumerate_neighbor_scale_coeffs,
+    _neighboring_discrete_scales,
+    _scale_coeffs_from_neighbor_scales,
     calculate_gparam,
     cast_to_fp4,
     cast_to_ue5m3,
@@ -35,11 +39,17 @@ from auto_round.data_type.nvfp import (
     nv_fp4_with_static_gs,
     nvfp4_v2,
     nvfp4_v2_with_global_scale,
+    opt_rtn_nvfp4_v2,
     ref_fp4_quant,
     ref_nvfp4_quant,
     search_nvfp4_scale,
+    search_nvfp4_v2_scale,
 )
-from auto_round.data_type.utils import update_fused_layer_global_scales
+from auto_round.data_type.utils import (
+    get_quant_func,
+    update_fused_layer_global_scales,
+    update_fused_tensor_global_scales,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -189,9 +199,10 @@ class TestFusedLayerGlobalScales:
     def _projection(scale: float) -> nn.Module:
         projection = nn.Module()
         projection.weight_global_scale = torch.tensor([scale])
+        projection.weight_scale = torch.ones(2, 2)
         return projection
 
-    def test_fused_projections_share_minimum_scale_by_default(self, monkeypatch):
+    def test_fused_projections_share_maximum_scale_and_adjust_block_scale(self, monkeypatch):
         monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
         attention = nn.Module()
         attention.q_proj = self._projection(3.0)
@@ -205,9 +216,42 @@ class TestFusedLayerGlobalScales:
         update_fused_layer_global_scales(mlp)
 
         assert all(
+            proj.weight_global_scale.item() == 3.0 for proj in (attention.q_proj, attention.k_proj, attention.v_proj)
+        )
+        assert torch.equal(attention.q_proj.weight_scale, torch.ones(2, 2))
+        assert torch.equal(attention.k_proj.weight_scale, torch.full((2, 2), 3.0))
+        assert torch.equal(attention.v_proj.weight_scale, torch.full((2, 2), 1.5))
+        assert all(proj.weight_global_scale.item() == 4.0 for proj in (mlp.gate_proj, mlp.up_proj))
+        assert torch.equal(mlp.gate_proj.weight_scale, torch.ones(2, 2))
+        assert torch.equal(mlp.up_proj.weight_scale, torch.full((2, 2), 8.0))
+
+    def test_fused_projections_without_block_scales_keep_legacy_minimum(self, monkeypatch):
+        monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+        attention = nn.Module()
+        attention.q_proj = self._projection(3.0)
+        attention.k_proj = self._projection(1.0)
+        attention.v_proj = self._projection(2.0)
+        del attention.q_proj.weight_scale
+        del attention.k_proj.weight_scale
+        del attention.v_proj.weight_scale
+
+        update_fused_layer_global_scales(attention)
+
+        assert all(
             proj.weight_global_scale.item() == 1.0 for proj in (attention.q_proj, attention.k_proj, attention.v_proj)
         )
-        assert all(proj.weight_global_scale.item() == 0.5 for proj in (mlp.gate_proj, mlp.up_proj))
+
+    def test_zero_global_scale_does_not_corrupt_block_scales(self, monkeypatch):
+        monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+        attention = nn.Module()
+        attention.q_proj = self._projection(3.0)
+        attention.k_proj = self._projection(0.0)
+        attention.v_proj = self._projection(2.0)
+
+        update_fused_layer_global_scales(attention)
+
+        assert torch.isfinite(attention.k_proj.weight_scale).all()
+        assert torch.equal(attention.k_proj.weight_scale, torch.ones(2, 2))
 
     def test_fused_projection_scale_update_can_be_disabled(self, monkeypatch):
         monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "0")
@@ -223,6 +267,36 @@ class TestFusedLayerGlobalScales:
             1.0,
             2.0,
         ]
+
+    def test_model_free_fused_scales_update(self, monkeypatch):
+        monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+        tensors = {}
+        scales = {"q_proj": 3.0, "k_proj": 1.0, "v_proj": 2.0, "gate_proj": 4.0, "up_proj": 0.5}
+        for projection, global_scale in scales.items():
+            prefix = f"model.layers.0.{'self_attn' if projection.endswith('proj') and projection[0] in 'qkv' else 'mlp'}.{projection}"
+            tensors[f"{prefix}.weight_global_scale"] = torch.tensor([global_scale])
+            tensors[f"{prefix}.weight_scale"] = torch.ones(2, 2)
+
+        update_fused_tensor_global_scales(tensors)
+
+        assert tensors["model.layers.0.self_attn.q_proj.weight_global_scale"].item() == 3.0
+        assert torch.equal(tensors["model.layers.0.self_attn.k_proj.weight_scale"], torch.full((2, 2), 3.0))
+        assert tensors["model.layers.0.mlp.gate_proj.weight_global_scale"].item() == 4.0
+        assert torch.equal(tensors["model.layers.0.mlp.up_proj.weight_scale"], torch.full((2, 2), 8.0))
+
+    def test_model_free_zero_global_scale_does_not_corrupt_block_scales(self, monkeypatch):
+        monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+        tensors = {}
+        for projection, global_scale in {"q_proj": 3.0, "k_proj": 0.0, "v_proj": 2.0}.items():
+            prefix = f"model.layers.0.self_attn.{projection}"
+            tensors[f"{prefix}.weight_global_scale"] = torch.tensor([global_scale])
+            tensors[f"{prefix}.weight_scale"] = torch.ones(2, 2)
+
+        update_fused_tensor_global_scales(tensors)
+
+        k_scale = tensors["model.layers.0.self_attn.k_proj.weight_scale"]
+        assert torch.isfinite(k_scale).all()
+        assert torch.equal(k_scale, torch.ones(2, 2))
 
 
 # ---------------------------------------------------------------------------
@@ -283,15 +357,21 @@ class TestSearchNvfp4Scale:
     a multiple of 16, so we pass an (8, 16) tensor.
     """
 
-    def test_shape_and_range(self):
+    def test_shape_and_neighbor_window(self, monkeypatch):
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", "8")
         tensor = torch.randn(8, 16, dtype=torch.float32)
         qw = torch.ones_like(tensor)
         scales = search_nvfp4_scale(tensor, qw=qw)
+        _, baseline_scale, _ = nv_fp4(tensor.float(), bits=4, group_size=16, v=0, max_scale=1.0)
+        candidates = {
+            round(v, 6)
+            for coeff in _enumerate_neighbor_scale_coeffs(baseline_scale, signed=True, steps=8)
+            for v in coeff.view(-1).tolist()
+        }
         # The function returns per-row scales (one per row in the 2-D input)
         assert scales.shape == (8, 1)
-        # All scales should be in the searched range [0.5, 1.51]
-        assert torch.all(scales >= 0.5 - 1e-6)
-        assert torch.all(scales <= 1.52 + 1e-6)
+        for value in scales.view(-1).tolist():
+            assert round(value, 6) in candidates or round(value, 6) == 1.0
 
     def test_qw_required(self):
         """``qw`` is not optional in practice — without it the function raises.
@@ -302,6 +382,173 @@ class TestSearchNvfp4Scale:
         tensor = torch.randn(8, 16, dtype=torch.float32)
         with pytest.raises(TypeError):
             search_nvfp4_scale(tensor, qw=None)
+
+    def test_custom_search_range(self):
+        tensor = torch.randn(8, 16, dtype=torch.float32)
+        scales = search_nvfp4_scale(tensor, qw=torch.ones_like(tensor))
+
+        assert torch.isfinite(scales).all()
+
+    def test_only_neighboring_discrete_scales_are_evaluated(self, monkeypatch):
+        import auto_round.data_type.nvfp as nvfp
+
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", "3")
+        original_quant = nvfp.nv_fp4_rtn
+        evaluated_scales = []
+
+        def track_scale(*args, **kwargs):
+            max_scale = kwargs.get("max_scale")
+            if isinstance(max_scale, torch.Tensor):
+                evaluated_scales.append(max_scale[0].item())
+            return original_quant(*args, **kwargs)
+
+        monkeypatch.setattr(nvfp, "nv_fp4_rtn", track_scale)
+        tensor = torch.full((2, 16), 2.0, dtype=torch.float32)
+        global_scale = torch.tensor(6.0, dtype=torch.float32)
+        _, baseline_scale, _ = nvfp.nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=global_scale, max_scale=1.0)
+        expected = {
+            round(v, 6)
+            for coeff in _enumerate_neighbor_scale_coeffs(baseline_scale, signed=True, steps=3)
+            for v in coeff.view(-1).tolist()
+        }
+        search_nvfp4_scale(tensor, qw=torch.ones_like(tensor), global_scale=global_scale)
+
+        assert len(evaluated_scales) <= 2 * int(os.environ["AR_NVFP4_NEIGHBOR_SEARCH_STEPS"])
+        assert set(round(v, 6) for v in evaluated_scales).issubset(expected)
+
+
+class TestSearchNvfp4V2Scale:
+    @pytest.mark.parametrize("group_size", [16, 32])
+    def test_shape_and_neighbor_window(self, group_size, monkeypatch):
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", "8")
+        tensor = torch.randn(8, group_size, dtype=torch.float32)
+        scales = search_nvfp4_v2_scale(tensor, group_size=group_size, qw=torch.ones_like(tensor))
+        _, baseline_scale, _ = nvfp4_v2(tensor, group_size=group_size, max_scale=1.0)
+        candidates = {
+            round(v, 6)
+            for coeff in _enumerate_neighbor_scale_coeffs(baseline_scale, signed=False, steps=8)
+            for v in coeff.view(-1).tolist()
+        }
+
+        assert scales.shape == (8, 1)
+        for value in scales.view(-1).tolist():
+            assert round(value, 6) in candidates or round(value, 6) == 1.0
+
+    def test_weighted_loss_does_not_increase(self):
+        torch.manual_seed(42)
+        tensor = torch.randn(8, 16, dtype=torch.float32)
+        qw = torch.exp(torch.randn_like(tensor))
+        baseline, _, _ = nvfp4_v2(tensor, group_size=16)
+        scales = search_nvfp4_v2_scale(tensor, group_size=16, qw=qw)
+        optimized, _, _ = nvfp4_v2(tensor, group_size=16, max_scale=scales.view(-1))
+
+        baseline_loss = ((baseline - tensor).square() * qw).sum()
+        optimized_loss = ((optimized - tensor).square() * qw).sum()
+        assert optimized_loss <= baseline_loss
+
+    def test_custom_search_range(self):
+        tensor = torch.randn(8, 16, dtype=torch.float32)
+        scales = search_nvfp4_v2_scale(tensor, group_size=16, qw=torch.ones_like(tensor))
+
+        assert torch.isfinite(scales).all()
+
+    def test_only_neighboring_discrete_scales_are_evaluated(self, monkeypatch):
+        import auto_round.data_type.nvfp as nvfp
+
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", "3")
+        original_quant = nvfp.nvfp4_v2
+        evaluated_scales = []
+
+        def track_scale(*args, **kwargs):
+            max_scale = kwargs.get("max_scale")
+            if isinstance(max_scale, torch.Tensor):
+                evaluated_scales.append(max_scale[0].item())
+            return original_quant(*args, **kwargs)
+
+        monkeypatch.setattr(nvfp, "nvfp4_v2", track_scale)
+        tensor = torch.full((2, 16), 2.0, dtype=torch.float32)
+        _, baseline_scale, _ = original_quant(tensor, group_size=16, max_scale=1.0)
+        expected = {
+            round(v, 6)
+            for coeff in _enumerate_neighbor_scale_coeffs(baseline_scale, signed=False, steps=3)
+            for v in coeff.view(-1).tolist()
+        }
+        search_nvfp4_v2_scale(tensor, group_size=16, qw=torch.ones_like(tensor))
+
+        assert len(evaluated_scales) <= 2 * int(os.environ["AR_NVFP4_NEIGHBOR_SEARCH_STEPS"])
+        assert set(round(v, 6) for v in evaluated_scales).issubset(expected)
+
+    @pytest.mark.parametrize("steps", [1, 3])
+    def test_neighbor_steps_control_candidate_coefficients(self, monkeypatch, steps):
+        import auto_round.data_type.nvfp as nvfp
+
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", str(steps))
+        original_quant = nvfp.nvfp4_v2
+        evaluated_scales = []
+
+        def track_scale(*args, **kwargs):
+            max_scale = kwargs.get("max_scale")
+            if isinstance(max_scale, torch.Tensor):
+                evaluated_scales.append(max_scale[0].item())
+            return original_quant(*args, **kwargs)
+
+        monkeypatch.setattr(nvfp, "nvfp4_v2", track_scale)
+        tensor = torch.full((2, 16), 2.0, dtype=torch.float32)
+        _, baseline_scale, _ = original_quant(tensor, group_size=16, max_scale=1.0)
+        candidate_coeffs = [
+            round(v, 6)
+            for coeff in _enumerate_neighbor_scale_coeffs(baseline_scale, signed=False, steps=steps)
+            for v in coeff.view(-1).tolist()
+        ]
+        expected = set(candidate_coeffs)
+        search_nvfp4_v2_scale(tensor, group_size=16, qw=torch.ones_like(tensor))
+
+        assert set(round(v, 6) for v in evaluated_scales) == expected
+
+
+class TestDiscreteScaleNeighbors:
+    def test_e4m3_neighbors_match_expected_example(self):
+        scale = torch.tensor([[2.0]], dtype=torch.float32)
+        prev_scale, next_scale = _neighboring_discrete_scales(scale, signed=True)
+
+        assert prev_scale.item() == pytest.approx(1.875)
+        assert next_scale.item() == pytest.approx(2.25)
+
+    def test_ue5m3_neighbors_match_expected_example(self):
+        scale = torch.tensor([[2.0]], dtype=torch.float32)
+        prev_scale, next_scale = _neighboring_discrete_scales(scale, signed=False)
+
+        assert prev_scale.item() == pytest.approx(1.875)
+        assert next_scale.item() == pytest.approx(2.25)
+
+    @pytest.mark.parametrize("raw_value,expected", [("invalid", 8), ("0", 1), ("-1", 1), ("3", 3)])
+    def test_resolve_neighbor_search_steps(self, monkeypatch, raw_value, expected):
+        import auto_round.data_type.nvfp as nvfp
+
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", raw_value)
+        assert nvfp._resolve_neighbor_search_steps() == expected
+
+
+class TestOptRtnNvfp4V2:
+    def test_registered_dispatch(self):
+        quant_func, data_type = get_quant_func(
+            "nvfp4_v2", bits=4, sym=True, disable_opt_rtn=False, group_size=16, iters=0
+        )
+
+        assert quant_func is opt_rtn_nvfp4_v2
+        assert data_type == "opt_rtn_nvfp4_v2"
+
+    @pytest.mark.parametrize("group_size", [16, 32])
+    def test_quantizes_with_imatrix(self, group_size):
+        tensor = torch.randn(4, group_size * 2, dtype=torch.bfloat16)
+        imatrix = torch.rand(group_size * 2, dtype=torch.float32)
+
+        qdq, scale, zp = opt_rtn_nvfp4_v2(tensor, group_size=group_size, imatrix=imatrix)
+
+        assert qdq.shape == tensor.shape
+        assert qdq.dtype == tensor.dtype
+        assert scale.shape == (tensor.numel() // group_size, 1)
+        assert zp is None
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +642,17 @@ class TestNvFp4WithStaticGs:
         tm = torch.tensor([1.0, 5.0, 0.5])
         q, s, z = nv_fp4_with_static_gs(t, tensor_max=tm)
         assert q.shape == t.shape
+
+    def test_explicit_global_scale(self):
+        t = torch.randn(4, 32, dtype=torch.bfloat16)
+        global_scale = torch.tensor([0.5], dtype=torch.float32)
+
+        q, s, z = nv_fp4_with_static_gs(t, global_scale=global_scale)
+        expected, expected_scale = ref_nvfp4_quant(t.reshape(-1, 16), global_scale, block_size=16)
+
+        assert torch.equal(q, expected.reshape_as(t).to(t.dtype))
+        assert torch.equal(s, expected_scale)
+        assert z is None
 
     def test_empty_tensor(self):
         t = torch.empty(0, 16, dtype=torch.bfloat16)

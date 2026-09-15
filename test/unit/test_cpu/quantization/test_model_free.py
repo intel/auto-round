@@ -19,6 +19,7 @@ Backend-specific model-free behavior is covered by test_model_free_parity.py.
 """
 
 import json
+import logging
 import os
 from unittest.mock import Mock
 
@@ -69,10 +70,13 @@ from auto_round.utils.model_free_utils import (
     _expand_e8m0_block_scale,
     _handle_mxfp_source_tensors,
     _looks_like_auto_scheme,
+    _pack_weight_nvfp4_e5m3,
     _PatternMatcher,
     _process_shard,
     _quantize_weight_mxfp,
+    _quantize_weight_nvfp4,
     _quantize_weight_nvfp4_e5m3,
+    _quantize_weight_nvfp4_fake,
     _validate_auto_scheme_options,
     is_model_free_supported_scheme,
 )
@@ -193,6 +197,18 @@ def test_model_free_entry_preserves_enabled_opt_rtn(tiny_opt_model_path):
 
     assert type(compressor).__name__ == "ModelFreeCompressor"
     assert compressor.disable_opt_rtn is False
+
+
+def test_model_free_reports_opt_rtn_status():
+    core = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+    core.disable_opt_rtn = False
+    core.default_scheme = {"data_type": "nv_fp"}
+    core.layer_config = {}
+    assert core._describe_opt_rtn_status() == "enabled"
+
+    core.disable_opt_rtn = True
+    core.default_scheme = {"data_type": "int"}
+    assert core._describe_opt_rtn_status() == "disabled"
 
 
 @pytest.mark.parametrize("default_enabled", [True, False])
@@ -456,6 +472,187 @@ def test_nvfp4_e5m3_model_free_fake_quantization():
     assert not is_model_free_supported_scheme("NVFP4+")
 
 
+@pytest.mark.parametrize(
+    ("quantize_func", "optimized_func", "disable_opt_rtn", "expected_calls"),
+    [
+        (_quantize_weight_nvfp4_e5m3, "opt_rtn_nvfp4_v2", False, 1),
+        (_pack_weight_nvfp4_e5m3, "opt_rtn_nvfp4_v2", False, 1),
+        (_quantize_weight_nvfp4_fake, "opt_rtn_fast_nvfp4", False, 1),
+        (_quantize_weight_nvfp4, "opt_rtn_fast_nvfp4", False, 1),
+        (_quantize_weight_nvfp4_e5m3, "opt_rtn_nvfp4_v2", True, 0),
+        (_pack_weight_nvfp4_e5m3, "opt_rtn_nvfp4_v2", True, 0),
+        (_quantize_weight_nvfp4_fake, "opt_rtn_fast_nvfp4", True, 0),
+        (_quantize_weight_nvfp4, "opt_rtn_fast_nvfp4", True, 0),
+    ],
+)
+def test_model_free_nvfp4_quantization_searches_scale(
+    monkeypatch, quantize_func, optimized_func, disable_opt_rtn, expected_calls
+):
+    import auto_round.data_type.nvfp as nvfp
+
+    original_func = getattr(nvfp, optimized_func)
+    optimized_mock = Mock(wraps=original_func)
+    monkeypatch.setattr(nvfp, optimized_func, optimized_mock)
+
+    quantize_func(torch.randn(8, 32), "layer.fc", group_size=16, disable_opt_rtn=disable_opt_rtn)
+
+    assert optimized_mock.call_count == expected_calls
+    if not disable_opt_rtn:
+        assert optimized_mock.call_args.kwargs["log_scale_selection_label"] == "layer.fc"
+
+
+@pytest.mark.parametrize(
+    ("quantize_func", "search_func_name"),
+    [
+        (_quantize_weight_nvfp4_e5m3, "search_nvfp4_v2_scale"),
+        (_quantize_weight_nvfp4_fake, "search_nvfp4_scale"),
+        (_quantize_weight_nvfp4, "search_nvfp4_scale"),
+    ],
+)
+def test_model_free_nvfp4_logs_when_non_default_scale_selected(monkeypatch, caplog, quantize_func, search_func_name):
+    import auto_round.data_type.nvfp as nvfp
+    import auto_round.logger as autoround_logger
+
+    selected_scales = torch.ones(16)
+    selected_scales[0] = 1.125
+    monkeypatch.setattr(nvfp, search_func_name, lambda *args, **kwargs: selected_scales.clone())
+    monkeypatch.setattr(autoround_logger.logger, "propagate", True)
+
+    with caplog.at_level(logging.INFO):
+        quantize_func(torch.randn(8, 32), "layer.fc", group_size=16, disable_opt_rtn=False)
+
+    assert "Model-free NVFP4 scale search selected non-1.0 scale(s) for layer.fc" in caplog.text
+    assert "1/16 group(s, 6.25% changed)" in caplog.text
+    assert "distribution=[1.125: 6.25% of all groups]" in caplog.text
+    assert "selected_scale_min=1.125, selected_scale_max=1.125, selected_scale_mean=1.125" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("quantize_func", "search_func_name"),
+    [
+        (_quantize_weight_nvfp4_e5m3, "search_nvfp4_v2_scale"),
+        (_quantize_weight_nvfp4_fake, "search_nvfp4_scale"),
+        (_quantize_weight_nvfp4, "search_nvfp4_scale"),
+    ],
+)
+def test_model_free_nvfp4_does_not_log_when_all_scales_are_default(
+    monkeypatch, caplog, quantize_func, search_func_name
+):
+    import auto_round.data_type.nvfp as nvfp
+    import auto_round.logger as autoround_logger
+
+    monkeypatch.setattr(nvfp, search_func_name, lambda *args, **kwargs: torch.ones(16))
+    monkeypatch.setattr(autoround_logger.logger, "propagate", True)
+
+    with caplog.at_level(logging.INFO):
+        quantize_func(torch.randn(8, 32), "layer.fc", group_size=16, disable_opt_rtn=False)
+
+    assert "Model-free NVFP4 scale search selected non-1.0 scale(s)" not in caplog.text
+
+
+@pytest.mark.parametrize("input_scale", [None, 0.25])
+def test_nvfp4_model_free_uses_fixed_input_scale(monkeypatch, input_scale):
+    if input_scale is None:
+        monkeypatch.delenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", raising=False)
+        expected = 1.0
+    else:
+        monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", str(input_scale))
+        expected = input_scale
+
+    output = _quantize_weight_nvfp4(torch.randn(8, 32), "layer.fc")
+
+    assert set(output) == {
+        "layer.fc.weight_packed",
+        "layer.fc.weight_scale",
+        "layer.fc.weight_global_scale",
+        "layer.fc.input_global_scale",
+    }
+    assert output["layer.fc.weight_packed"].dtype == torch.uint8
+    assert output["layer.fc.weight_scale"].dtype == torch.float8_e4m3fn
+    assert torch.equal(output["layer.fc.input_global_scale"], torch.tensor([expected], dtype=torch.float32))
+    assert is_model_free_supported_scheme("NVFP4")
+
+
+def test_nvfp4_model_free_fake_quantization(monkeypatch):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "0.5")
+    weight = torch.randn(8, 32)
+
+    output = _quantize_weight_nvfp4_fake(weight, "layer.fc")
+
+    assert set(output) == {"layer.fc.weight", "layer.fc.input_global_scale"}
+    assert output["layer.fc.weight"].shape == weight.shape
+    assert output["layer.fc.weight"].dtype == weight.dtype
+    assert not torch.equal(output["layer.fc.weight"], weight)
+    assert torch.equal(output["layer.fc.input_global_scale"], torch.tensor([0.5]))
+
+
+def test_nvfp4_model_free_accepts_fake_format(monkeypatch):
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    compressor = ModelFreeCompressor("unused-model-path", scheme="NVFP4")
+    monkeypatch.setattr(compressor, "run", lambda: compressor.output_dir)
+    monkeypatch.setattr(
+        compressor,
+        "_fallback_to_quantize_and_save",
+        lambda **_kwargs: pytest.fail("NVFP4 fake unexpectedly fell back to the regular flow"),
+    )
+
+    result = compressor.quantize_and_save("fake-output", format="fake")
+
+    assert result == (None, "fake-output")
+    assert compressor.quantized is True
+
+
+def test_nvfp4_model_free_llm_compressor_config():
+    from auto_round.schemes import PRESET_SCHEMES
+
+    scheme = PRESET_SCHEMES["NVFP4"].to_dict()
+    config = _build_quantization_config(
+        default_scheme=scheme,
+        layer_config={},
+        ignore_patterns=["lm_head"],
+        quantized_layers=["model.layers.0.self_attn.q_proj"],
+        ignored_layers=["lm_head"],
+        format="llm_compressor",
+    )
+
+    group = config["config_groups"]["group_0"]
+    assert config["format"] == "nvfp4-pack-quantized"
+    assert group["weights"]["num_bits"] == 4
+    assert group["weights"]["group_size"] == 16
+    assert group["input_activations"]["num_bits"] == 4
+
+
+def test_nvfp4_layer_override_supplies_complete_fake_config():
+    from auto_round.schemes import PRESET_SCHEMES
+
+    config = _build_quantization_config(
+        default_scheme=PRESET_SCHEMES["BF16"].to_dict(),
+        layer_config={"model.layers": PRESET_SCHEMES["NVFP4"].to_dict()},
+        ignore_patterns=[],
+        quantized_layers=["model.layers.0.self_attn.q_proj"],
+        ignored_layers=[],
+        format="fake",
+    )
+
+    assert config["bits"] == 4
+    assert config["group_size"] == 16
+    assert config["data_type"] == "nv_fp"
+    assert config["act_bits"] == 4
+    assert config["act_data_type"] == "nv_fp4_with_static_gs"
+    assert config["act_group_size"] == 16
+    assert config["act_dynamic"] is True
+
+
+@pytest.mark.parametrize("input_scale", ["0", "-1", "nan", "inf"])
+@pytest.mark.parametrize("quantize_func", [_quantize_weight_nvfp4, _quantize_weight_nvfp4_fake])
+def test_nvfp4_model_free_rejects_invalid_input_scale(monkeypatch, input_scale, quantize_func):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", input_scale)
+
+    with pytest.raises(ValueError, match="finite positive float"):
+        quantize_func(torch.randn(8, 32), "layer.fc")
+
+
 def test_int_model_free_fake_quantization():
     shard_path = "int-fake-shard.safetensors"
     weight = torch.randn(8, 32)
@@ -533,6 +730,148 @@ def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
         "act_data_type": "float",
     }
     assert os.path.exists(os.path.join(output_dir, "quantization_config.json"))
+
+
+def test_nvfp4_model_free_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "0.5")
+    prefix = "model.layers.0.self_attn.q_proj"
+    tensors = {
+        f"{prefix}.weight": torch.randn(32, 32),
+        "lm_head.weight": torch.randn(64, 32),
+    }
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+
+    compressor = _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="NVFP4")
+    compressor.run()
+
+    with safe_open(os.path.join(output_dir, "model.safetensors"), framework="pt") as output:
+        assert f"{prefix}.weight_packed" in output.keys()
+        assert f"{prefix}.weight_scale" in output.keys()
+        assert f"{prefix}.weight_global_scale" in output.keys()
+        assert torch.equal(output.get_tensor(f"{prefix}.input_global_scale"), torch.tensor([0.5]))
+        assert "lm_head.weight" in output.keys()
+    quantization_config = _read_qconfig(output_dir)
+    assert quantization_config["packing_format"] == "auto_round:llm_compressor"
+    assert quantization_config["data_type"] == "nv_fp"
+    assert quantization_config["group_size"] == 16
+
+
+def test_nvfp4_model_free_fake_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "0.5")
+    prefix = "model.layers.0.self_attn.q_proj"
+    original_weight = torch.randn(32, 32)
+    model_dir = _make_model_dir(
+        tmp_path,
+        _LLAMA_CFG,
+        {f"{prefix}.weight": original_weight, "lm_head.weight": torch.randn(64, 32)},
+    )
+    output_dir = str(tmp_path / "output")
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="NVFP4",
+        format="fake",
+    )
+    compressor.run()
+
+    with safe_open(os.path.join(output_dir, "model.safetensors"), framework="pt") as output:
+        assert f"{prefix}.weight" in output.keys()
+        assert f"{prefix}.weight_packed" not in output.keys()
+        assert f"{prefix}.weight_scale" not in output.keys()
+        assert f"{prefix}.weight_global_scale" not in output.keys()
+        assert torch.equal(output.get_tensor(f"{prefix}.input_global_scale"), torch.tensor([0.5]))
+        assert not torch.equal(output.get_tensor(f"{prefix}.weight"), original_weight)
+        assert "lm_head.weight" in output.keys()
+    assert not os.path.exists(os.path.join(output_dir, "quantization_config.json"))
+    with open(os.path.join(output_dir, "config.json")) as config_file:
+        quantization_config = json.load(config_file)["quantization_config"]
+    assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["bits"] == 4
+    assert quantization_config["group_size"] == 16
+    assert quantization_config["data_type"] == "nv_fp"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["act_data_type"] == "nv_fp4_with_static_gs"
+    assert quantization_config["act_group_size"] == 16
+
+
+def test_nvfp4_fuses_projection_scales_across_output_shards(tmp_path, monkeypatch):
+    monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    prefix = "model.layers.0.self_attn"
+    shard_names = [
+        "model-00001-of-00003.safetensors",
+        "model-00002-of-00003.safetensors",
+        "model-00003-of-00003.safetensors",
+    ]
+    shard_tensors = [
+        {
+            f"{prefix}.q_proj.weight_global_scale": torch.tensor([3.0]),
+            f"{prefix}.q_proj.weight_scale": torch.ones(2, 2),
+        },
+        {
+            f"{prefix}.k_proj.weight_global_scale": torch.tensor([1.0]),
+            f"{prefix}.v_proj.weight_global_scale": torch.tensor([2.0]),
+            f"{prefix}.v_proj.weight_scale": torch.ones(2, 2),
+        },
+        {f"{prefix}.k_proj.weight_scale": torch.ones(2, 2)},
+    ]
+    weight_map = {}
+    for shard_name, tensors in zip(shard_names, shard_tensors):
+        save_file(tensors, output_dir / shard_name)
+        weight_map.update({name: shard_name for name in tensors})
+
+    compressor = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+    compressor.output_dir = str(output_dir)
+    compressor.is_diffusion_model = False
+    compressor.output_weight_map = weight_map
+    compressor._update_fused_scales_across_shards()
+
+    with safe_open(output_dir / shard_names[0], framework="pt") as shard:
+        assert shard.get_tensor(f"{prefix}.q_proj.weight_global_scale").item() == 3.0
+    with safe_open(output_dir / shard_names[1], framework="pt") as shard:
+        assert shard.get_tensor(f"{prefix}.k_proj.weight_global_scale").item() == 3.0
+        assert torch.equal(shard.get_tensor(f"{prefix}.v_proj.weight_scale"), torch.full((2, 2), 1.5))
+    with safe_open(output_dir / shard_names[2], framework="pt") as shard:
+        assert torch.equal(shard.get_tensor(f"{prefix}.k_proj.weight_scale"), torch.full((2, 2), 3.0))
+
+
+def test_model_free_replaces_stale_multishard_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "0.5")
+    prefix = "model.layers.0.self_attn.q_proj"
+    model_dir = _make_model_dir(
+        tmp_path,
+        _LLAMA_CFG,
+        {f"{prefix}.weight": torch.randn(32, 32), "lm_head.weight": torch.randn(64, 32)},
+    )
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir)
+    save_file(
+        {"model.decoder.layers.0.fc1.weight": torch.randn(32, 32)},
+        os.path.join(output_dir, "model-00002.safetensors"),
+    )
+    with open(os.path.join(output_dir, "model.safetensors.index.json"), "w") as index_file:
+        json.dump(
+            {
+                "metadata": {"total_size": 0},
+                "weight_map": {"model.decoder.layers.0.fc1.weight": "model-00002.safetensors"},
+            },
+            index_file,
+        )
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="NVFP4",
+        format="fake",
+    )
+    compressor.run()
+
+    assert os.path.exists(os.path.join(output_dir, "model.safetensors"))
+    assert not os.path.exists(os.path.join(output_dir, "model.safetensors.index.json"))
+    assert not os.path.exists(os.path.join(output_dir, "model-00002.safetensors"))
 
 
 def test_nvfp4_e5m3_model_free_llm_compressor(tmp_path):
@@ -1253,12 +1592,11 @@ class TestLLMCompressorMXFPSource:
 
 # Keep representative presets per family to reduce redundant runtime:
 # INT symmetric (2/4/8-bit), mixed override recipe, MXFP, and BF16 passthrough.
-_SUPPORTED = ["W2A16G32", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "BF16"]
+_SUPPORTED = ["W2A16G32", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "NVFP4", "BF16"]
 _UNSUPPORTED = [
     "W3A16",
     "FPW8A16",  # unsupported FP family
     "MXINT4",
-    "NVFP4",  # unsupported MX/NV family
     "FP8_BLOCK",  # unsupported FP8 route
     "INT8_W8A8",
 ]
@@ -1276,7 +1614,7 @@ class TestSchemeValidation:
         full end-to-end tests in ``TestModelFreeQuantize`` / ``TestModelFreeMXFP``)
         to keep this parametrized check fast.
         """
-        if name.startswith("MXFP"):
+        if name.startswith("MXFP") or name == "NVFP4":
             pytest.importorskip("compressed_tensors", reason="test requires compressed-tensors")
 
         core = _ModelFreeCompressorCore(model_name_or_path="unused", output_dir=str(tmp_path), scheme=name)
@@ -1298,7 +1636,7 @@ class TestSchemeValidation:
             assert "model.layers.0.mlp.fc1.weight" in output
         else:
             assert "model.layers.0.mlp.fc1" in quantized
-            if name.startswith("MXFP"):
+            if name.startswith("MXFP") or name == "NVFP4":
                 assert "model.layers.0.mlp.fc1.weight_scale" in output
             else:
                 assert "model.layers.0.mlp.fc1.qweight" in output
@@ -1330,6 +1668,32 @@ class TestSchemeValidation:
 
 
 class TestCliAutoRouting:
+    def test_to_autoround_kwargs_preserves_disable_opt_rtn(self):
+        from auto_round.cli.main import _to_autoround_kwargs
+        from auto_round.cli.parser import build_quantize_parser
+
+        args = build_quantize_parser().parse_args(
+            [
+                "--model",
+                "dummy",
+                "--device",
+                "cpu",
+                "--scheme",
+                "NVFP4",
+                "--model_free",
+                "--disable_opt_rtn",
+            ]
+        )
+
+        kwargs = _to_autoround_kwargs(
+            args,
+            low_cpu_mem_usage=True,
+            enable_torch_compile=False,
+            layer_config={},
+        )
+
+        assert kwargs["disable_opt_rtn"] is True
+
     def test_model_free_uses_auto_round_format_by_default(self, monkeypatch):
         from auto_round.cli import main as cli_main
 
@@ -1700,6 +2064,115 @@ class TestResolveShardParallelism:
             index = json.load(f)
         unique_shards = set(index["weight_map"].values())
         assert len(unique_shards) == 7, f"Expected 7 output shards, got {len(unique_shards)}: {unique_shards}"
+
+
+def test_streaming_pipeline_forwards_disable_opt_rtn_to_quant_worker(tmp_path, monkeypatch):
+    """Streaming mode must forward disable_opt_rtn into quant worker tasks."""
+
+    submitted_kwargs = []
+
+    class _ImmediateFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class _FakeProcessPoolExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def submit(self, fn, *args, **kwargs):
+            # Record keyword args passed to _quantize_local_shard_task.
+            submitted_kwargs.append(kwargs)
+            if fn.__name__ == "_quantize_local_shard_task":
+                shard_idx = args[0]
+                shard_name = args[1]
+                return _ImmediateFuture(
+                    (
+                        shard_idx,
+                        shard_name,
+                        kwargs["shard_path"],
+                        "model-00001-of-00001.safetensors",
+                        ["layer.qweight"],
+                        ["layer"],
+                        [],
+                    )
+                )
+            return _ImmediateFuture(None)
+
+        def shutdown(self, wait=False, cancel_futures=True):
+            return None
+
+    class _FakeThreadPoolExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def submit(self, fn, *args, **kwargs):
+            return _ImmediateFuture(fn(*args, **kwargs))
+
+        def shutdown(self, wait=False, cancel_futures=True):
+            return None
+
+    # Force wait() to mark all currently-waiting futures as done immediately.
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free.wait",
+        lambda wait_set, return_when=None: (set(wait_set), set()),
+    )
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free.ThreadPoolExecutor",
+        _FakeThreadPoolExecutor,
+    )
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free.ProcessPoolExecutor",
+        _FakeProcessPoolExecutor,
+    )
+
+    source_shard_path = tmp_path / "source_shard.safetensors"
+    save_file({"layer.weight": torch.randn(8, 8)}, str(source_shard_path))
+
+    core = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+    core.model_name_or_path = "dummy/model"
+    core.work_dir = str(tmp_path)
+    core.source_dir = ""
+    core.is_streaming = True
+    core.device = "cpu"
+    core.default_scheme = _DEFAULT_SCHEME
+    core.layer_config = {}
+    core.ignore_patterns = []
+    core.fp8_block_size = None
+    core.model_type = None
+    core.source_quantization_config = {}
+    core.enable_torch_compile = False
+    core.disable_opt_rtn = True
+    core.shard_names = ["model-00001-of-00001.safetensors"]
+    core.shard_parallelism = 1
+    core.cross_shard_deps = {}
+    core.donor_shard_tensors = {}
+    core._donor_shard_paths = {}
+    core._donor_remaining_recipients = {}
+    core._donor_self_consumed = {}
+    core._resume_processed_shards = {}
+    core.output_dir = str(tmp_path / "output")
+    core.is_diffusion_model = False
+    core.all_quantized_layers = []
+    core.all_ignored_layers = []
+    core.output_weight_map = {}
+    os.makedirs(core._quant_output_dir, exist_ok=True)
+
+    monkeypatch.setattr(core, "_create_shard_progress", lambda _tqdm: None)
+    monkeypatch.setattr(core, "_mark_shard_completed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(core, "_release_donor_dependency", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free._prefetch_shard",
+        lambda *args, **kwargs: str(source_shard_path),
+    )
+
+    core._process_all_shards_streaming_pipeline()
+
+    quant_submissions = [kwargs for kwargs in submitted_kwargs if "shard_path" in kwargs]
+    assert quant_submissions, "No quant worker task was submitted in streaming pipeline"
+    assert quant_submissions[0]["disable_opt_rtn"] is True
 
 
 # ===========================================================================

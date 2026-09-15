@@ -443,6 +443,10 @@ def update_fused_layer_global_scales(
     For MLP layers:
       - gate_proj and up_proj share a single global scale.
 
+    The fused value is the maximum projection global scale. Per-block scales
+    are adjusted by the same ratio so the packed weight values remain
+    unchanged.
+
     Set ``AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0`` to retain per-projection
     global scales. The default keeps scales compatible with vLLM fused kernels.
     """
@@ -481,12 +485,21 @@ def update_fused_layer_global_scales(
         # Move all scales to the same device before stacking
         target_device = scales[0].device
         scales_on_device = [s.to(target_device) for s in scales]
-        global_scale = torch.min(torch.stack(scales_on_device), dim=0).values
+        block_scale_name = f"{base_name}_scale"
+        has_all_block_scales = all(hasattr(proj, block_scale_name) for proj in modules)
+        reduce_func = torch.max if has_all_block_scales else torch.min
+        global_scale = reduce_func(torch.stack(scales_on_device), dim=0).values
 
         for proj in modules:
             if hasattr(proj, global_scale_name):
                 # Move global_scale to the same device as the projection's current scale
                 proj_scale = getattr(proj, global_scale_name)
+                old_scale = proj_scale.to(global_scale.device, dtype=torch.float32)
+                if hasattr(proj, block_scale_name):
+                    block_scale = getattr(proj, block_scale_name)
+                    ratio = torch.where(old_scale != 0, global_scale / old_scale, torch.ones_like(old_scale))
+                    adjusted_block_scale = block_scale.to(torch.float32) * ratio
+                    setattr(proj, block_scale_name, adjusted_block_scale.to(block_scale.dtype))
                 setattr(proj, global_scale_name, global_scale.clone().to(proj_scale.device))
 
     # ---------------- Attention ----------------
@@ -502,6 +515,50 @@ def update_fused_layer_global_scales(
     # ---------------- MoE Expert (w1/w3) ----------------
     if _is_moe_expert_module(submodule):
         _update_global_scales([submodule.w1, submodule.w3])
+
+
+def update_fused_tensor_global_scales(
+    tensors: dict[str, torch.Tensor],
+    base_name: str = "weight",
+):
+    """Update fused NVFP4 scales in a serialized tensor dictionary.
+
+    This is the model-free counterpart of
+    :func:`update_fused_layer_global_scales`, where projection modules are
+    represented by names such as ``...q_proj.weight_global_scale``.
+    """
+    if not envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE:
+        return
+
+    global_suffix = f".{base_name}_global_scale"
+    scale_suffix = f".{base_name}_scale"
+    projection_groups = (("q_proj", "k_proj", "v_proj"), ("gate_proj", "up_proj"), ("w1", "w3"))
+    by_parent: dict[str, dict[str, str]] = {}
+    for key in tensors:
+        if not key.endswith(global_suffix):
+            continue
+        layer_name = key[: -len(global_suffix)]
+        if "." not in layer_name:
+            continue
+        parent, projection = layer_name.rsplit(".", 1)
+        by_parent.setdefault(parent, {})[projection] = layer_name
+
+    for projections in projection_groups:
+        for layers in by_parent.values():
+            if not all(projection in layers for projection in projections):
+                continue
+            global_keys = [f"{layers[projection]}{global_suffix}" for projection in projections]
+            global_scales = [tensors[key].reshape(1).to(torch.float32) for key in global_keys]
+            global_scale = torch.max(torch.stack(global_scales), dim=0).values
+            for projection, global_key in zip(projections, global_keys):
+                layer_name = layers[projection]
+                old_scale = tensors[global_key].reshape(1).to(torch.float32)
+                block_key = f"{layer_name}{scale_suffix}"
+                if block_key in tensors:
+                    block_scale = tensors[block_key]
+                    ratio = torch.where(old_scale != 0, global_scale / old_scale, torch.ones_like(old_scale))
+                    tensors[block_key] = (block_scale.to(torch.float32) * ratio).to(block_scale.dtype)
+                tensors[global_key] = global_scale.to(tensors[global_key].dtype)
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):

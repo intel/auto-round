@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     AR_LOG_LEVEL: str = "INFO"
     AR_USE_MODELSCOPE: bool = "False"
     AR_MODEL_FREE_SHARD_PARALLELISM: Optional[int] = None
+    AR_MODEL_FREE_NVFP4_INPUT_SCALE: float = 1.0
     AUTO_ROUND_CACHE: Optional[str] = None
     AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
     AR_DISABLE_GGUF_MTP_EXPORT: bool = False
@@ -89,6 +90,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # not exceed dynamo's default limit (8) and fall back to eager.
     "AR_DYNAMO_CACHE_SIZE_LIMIT": lambda: int(os.getenv("AR_DYNAMO_CACHE_SIZE_LIMIT", "16")),
     "AR_MODEL_FREE_SHARD_PARALLELISM": lambda: _get_optional_positive_int_env("AR_MODEL_FREE_SHARD_PARALLELISM"),
+    "AR_MODEL_FREE_NVFP4_INPUT_SCALE": lambda: float(os.getenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "1.0")),
     "AUTO_ROUND_CACHE": lambda: os.getenv("AUTO_ROUND_CACHE", None),
     "AUTO_ROUND_GGUF_AUTO_UPDATE": lambda: os.getenv("AUTO_ROUND_GGUF_AUTO_UPDATE", "0").lower()
     in ("1", "true", "yes", "on"),

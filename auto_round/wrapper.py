@@ -197,6 +197,8 @@ class WrapperLinear(torch.nn.Module):
             orig_layer.group_size,
             iters=orig_layer.iters,
         )
+        if self.data_type == "opt_rtn_nvfp4_v2":
+            self.data_type = "nvfp4_v2"
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
@@ -620,6 +622,7 @@ class WrapperWALayer(torch.nn.Module):
                 data_type=self.orig_layer.act_data_type,
                 min_scale=min_scale,
                 max_scale=max_scale,
+                global_scale=getattr(self.orig_layer, "input_global_scale", None),
             )
         else:
             x, _, _ = self.orig_layer.act_quant_func(
@@ -630,6 +633,7 @@ class WrapperWALayer(torch.nn.Module):
                 q_scale_thresh=self.orig_layer.q_scale_thresh,
                 data_type=self.orig_layer.act_data_type,
                 act_max=act_max,
+                global_scale=getattr(self.orig_layer, "input_global_scale", None),
             )
         # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)

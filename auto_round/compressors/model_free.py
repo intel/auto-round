@@ -41,12 +41,18 @@ weights with ``fake`` format):
 * Preset names: ``MXFP4``, ``MXFP8``.
 * ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
 
+**NVFP4** (``auto_round``, ``llm_compressor``, or ``fake`` format):
+
+* Preset name: ``NVFP4``.
+* Uses a fixed global input scale for every quantized layer. The default is
+    ``1.0`` and can be overridden with ``AR_MODEL_FREE_NVFP4_INPUT_SCALE``.
+
 **NVFP4 E5M3** (``auto_round`` or ``fake`` format):
 
 * Preset name: ``NVFP4_E5M3``.
 * ``data_type="nvfp4_v2"``, ``group_size=16``, with high-precision QDQ weights.
 
-Schemes that require special packing (FP8, standard NVFP4, GGUF, INT8_W8A8,
+Schemes that require special packing (FP8, GGUF, INT8_W8A8,
 BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
 ``ValueError``.  Use the standard AutoRound flow for those.
 
@@ -180,6 +186,7 @@ SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
     "W8A16",
     "MXFP4",
     "MXFP8",
+    "NVFP4",
     "NVFP4_E5M3",
     "BF16",
 )
@@ -1015,6 +1022,12 @@ class _ModelFreeCompressorCore:
     def _build_resume_parameters(self) -> dict:
         """Return the effective command inputs that determine shard output."""
         source_dir = self.work_dir if self.is_streaming else self.source_dir
+        default_data_type = (self.default_scheme.get("data_type") or "").lower()
+        has_standard_nvfp4 = is_nv_fp(default_data_type) or any(
+            is_nv_fp((config.get("data_type") or "").lower())
+            for config in self.layer_config.values()
+            if isinstance(config, dict)
+        )
         index_files = sorted(
             filename
             for filename in os.listdir(source_dir)
@@ -1055,6 +1068,7 @@ class _ModelFreeCompressorCore:
             "disable_opt_rtn": self.disable_opt_rtn,
             "model_type": self.model_type,
             "source_quantization_config": self.source_quantization_config,
+            "nvfp4_input_scale": envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE if has_standard_nvfp4 else None,
         }
         return json.loads(json.dumps(parameters, sort_keys=True, default=str))
 
@@ -1432,6 +1446,7 @@ class _ModelFreeCompressorCore:
                                 quant_output_dir=self._quant_output_dir,
                                 total_shards=total_shards,
                                 enable_torch_compile=self.enable_torch_compile,
+                                disable_opt_rtn=self.disable_opt_rtn,
                                 # Keep donor shards alive for recipient hydration.
                                 cleanup_source_shard=not is_donor,
                                 donor_tensors_to_exclude=donor_tensors,
@@ -1482,6 +1497,74 @@ class _ModelFreeCompressorCore:
             self.output_weight_map = {name: "model.safetensors" for name in self.output_weight_map}
             self._write_resume_manifest()
 
+        current_shards = (
+            {"model.safetensors"}
+            if len(set(self.output_weight_map.values())) <= 1
+            else set(self.output_weight_map.values())
+        )
+        for filename in os.listdir(self._quant_output_dir):
+            if filename == "model.safetensors.index.json":
+                if len(current_shards) <= 1:
+                    os.remove(os.path.join(self._quant_output_dir, filename))
+                continue
+            if filename.endswith((".safetensors", ".bin")) and filename not in current_shards:
+                os.remove(os.path.join(self._quant_output_dir, filename))
+
+    def _update_fused_scales_across_shards(self) -> None:
+        """Fuse NVFP4 projection scales after every output shard is available."""
+        global_suffix = ".weight_global_scale"
+        scale_suffix = ".weight_scale"
+        global_names = [name for name in self.output_weight_map if name.endswith(global_suffix)]
+        if not global_names:
+            return
+
+        global_scales = {}
+        layers_by_parent: dict[str, dict[str, str]] = {}
+        for tensor_name in global_names:
+            shard_path = os.path.join(self._quant_output_dir, self.output_weight_map[tensor_name])
+            with safe_open(shard_path, framework="pt") as shard:
+                global_scales[tensor_name] = shard.get_tensor(tensor_name).reshape(1).to(torch.float32)
+            layer_name = tensor_name[: -len(global_suffix)]
+            if "." in layer_name:
+                parent, projection = layer_name.rsplit(".", 1)
+                layers_by_parent.setdefault(parent, {})[projection] = layer_name
+
+        updates_by_shard: dict[str, dict[str, torch.Tensor]] = {}
+        projection_groups = (("q_proj", "k_proj", "v_proj"), ("gate_proj", "up_proj"), ("w1", "w3"))
+        for projections in projection_groups:
+            for layers in layers_by_parent.values():
+                if not all(projection in layers for projection in projections):
+                    continue
+                names = [f"{layers[projection]}{global_suffix}" for projection in projections]
+                fused_scale = torch.max(torch.stack([global_scales[name] for name in names]), dim=0).values
+                for name in names:
+                    old_scale = global_scales[name]
+                    if torch.equal(old_scale, fused_scale):
+                        continue
+                    shard_name = self.output_weight_map[name]
+                    updates = updates_by_shard.setdefault(shard_name, {})
+                    updates[name] = fused_scale
+                    block_name = f"{name[: -len(global_suffix)]}{scale_suffix}"
+                    if block_name in self.output_weight_map:
+                        block_shard_name = self.output_weight_map[block_name]
+                        block_updates = updates_by_shard.setdefault(block_shard_name, {})
+                        block_updates[block_name] = torch.where(
+                            old_scale != 0, fused_scale / old_scale, torch.ones_like(old_scale)
+                        )
+
+        for shard_name, updates in updates_by_shard.items():
+            shard_path = os.path.join(self._quant_output_dir, shard_name)
+            with safe_open(shard_path, framework="pt") as shard:
+                tensors = {name: shard.get_tensor(name) for name in shard.keys()}
+            for tensor_name, value in updates.items():
+                if tensor_name.endswith(global_suffix):
+                    tensors[tensor_name] = value.to(tensors[tensor_name].dtype)
+                else:
+                    tensors[tensor_name] = (tensors[tensor_name].to(torch.float32) * value).to(
+                        tensors[tensor_name].dtype
+                    )
+            _write_output_shard(self._quant_output_dir, shard_name, tensors, self.output_weight_map)
+
     def _remove_stale_quantization_config_files(self) -> None:
         """Remove source/output quantization metadata before writing the new config."""
         for directory in {self.output_dir, self._quant_output_dir}:
@@ -1517,6 +1600,8 @@ class _ModelFreeCompressorCore:
         self._remove_stale_quantization_config_files()
         _remove_quantization_configs(self.config)
         if self.format == "fake":
+            if quantization_config.get("act_bits", 16) <= 8:
+                self.config["quantization_config"] = quantization_config
             with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
                 json.dump(self.config, f, indent=2)
             return
@@ -1593,6 +1678,21 @@ class _ModelFreeCompressorCore:
             f"{compressed_ignored}\n"
         )
 
+    def _describe_opt_rtn_status(self) -> str:
+        """Return the effective opt-RTN state for the current model-free scheme."""
+        if self.disable_opt_rtn:
+            return "disabled"
+
+        data_type = (self.default_scheme.get("data_type") or "int").lower()
+        if (
+            is_mx_fp(data_type)
+            or _layer_config_has_mxfp(self.layer_config)
+            or is_nv_fp(data_type)
+            or data_type == _NVFP4_E5M3_DATA_TYPE
+        ):
+            return "enabled"
+        return "disabled"
+
     # -------------------------------------------------------------------
     # Public entry point
     # -------------------------------------------------------------------
@@ -1637,6 +1737,8 @@ class _ModelFreeCompressorCore:
         if is_mx_fp(data_type):
             bits = self.default_scheme.get("bits", 4)
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
+        elif is_nv_fp(data_type):
+            packing_format = "fake" if self.format == "fake" else "nvfp4-pack-quantized"
         elif data_type == _NVFP4_E5M3_DATA_TYPE:
             packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
         else:
@@ -1648,6 +1750,12 @@ class _ModelFreeCompressorCore:
                     "2x scale, and 0.5x scale independently for each group. "
                     "Pass --disable_opt_rtn to use plain RTN."
                 )
+        elif is_nv_fp(data_type):
+            logger.info(
+                "NVFP4 model-free quantization uses a fixed global input scale of %s "
+                "(AR_MODEL_FREE_NVFP4_INPUT_SCALE) for every quantized layer.",
+                envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE,
+            )
         else:
             logger.info(
                 "Integer WOQ model-free quantization uses plain RTN "
@@ -1658,6 +1766,7 @@ class _ModelFreeCompressorCore:
             f"Model-free quantization: {self.model_name_or_path}\n"
             f"  Scheme: {self.scheme_obj}\n"
             f"  Packing format: {packing_format}\n"
+            f"  Opt-RTN: {self._describe_opt_rtn_status()}\n"
             f"  Output: {self.output_dir}\n"
             f"  Shards: {len(self.shard_names)}\n"
             f"  Shard parallelism: {self.shard_parallelism} ({shard_parallelism_source}, "
@@ -1684,6 +1793,7 @@ class _ModelFreeCompressorCore:
             )
 
         # ---- write outputs ----
+        self._update_fused_scales_across_shards()
         self._write_index()
         self._write_config_files()
         self._copy_metadata_files()
@@ -2070,6 +2180,8 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             normalized_scheme is not None and is_mx_fp((normalized_scheme.data_type or "").lower())
         ) or self._auto_scheme_family == "mx_fp":
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+        elif normalized_scheme is not None and is_nv_fp((normalized_scheme.data_type or "").lower()):
+            _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif normalized_scheme is not None and (normalized_scheme.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE:
             _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):
