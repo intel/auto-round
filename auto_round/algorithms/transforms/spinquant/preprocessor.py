@@ -134,7 +134,9 @@ class SpinQuantConfig(BaseRotationConfig):
 
     def __post_init__(self):
         if self.device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            from auto_round.utils.device_manager import get_major_device
+
+            self.device = get_major_device()
         if self.rotation_size is not None:
             if self.rotation_size <= 0:
                 raise ValueError(f"rotation_size must be positive, got {self.rotation_size}")
@@ -606,8 +608,9 @@ class SpinQuantPreprocessor:
         )
 
         del original_model
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        from auto_round.utils.device_manager import get_current_device_manager
+
+        get_current_device_manager().empty_cache()
 
     def _get_embed_tokens(self) -> Optional[nn.Module]:
         """Get embedding module, supporting both model.embed_tokens and model.model.embed_tokens."""

@@ -1753,10 +1753,21 @@ class TestFakeTritonForHpuExtra:
 class TestDeviceEnvironVariableMappingExtra:
     """Additional ``DEVICE_ENVIRON_VARIABLE_MAPPING`` tests."""
 
-    def test_is_dict(self):
+    def test_is_mapping(self):
+        from collections.abc import Mapping
+
         from auto_round.utils.device import DEVICE_ENVIRON_VARIABLE_MAPPING
 
-        assert isinstance(DEVICE_ENVIRON_VARIABLE_MAPPING, dict)
+        assert isinstance(DEVICE_ENVIRON_VARIABLE_MAPPING, Mapping)
+        assert "cuda" in DEVICE_ENVIRON_VARIABLE_MAPPING
+        assert DEVICE_ENVIRON_VARIABLE_MAPPING["cuda"] == "CUDA_VISIBLE_DEVICES"
+
+    def test_unknown_backend_raises_key_error(self):
+        from auto_round.utils.device import DEVICE_ENVIRON_VARIABLE_MAPPING
+
+        assert "not_a_backend" not in DEVICE_ENVIRON_VARIABLE_MAPPING
+        with pytest.raises(KeyError):
+            DEVICE_ENVIRON_VARIABLE_MAPPING["not_a_backend"]
 
     def test_mapping_values_nonempty(self):
         from auto_round.utils.device import DEVICE_ENVIRON_VARIABLE_MAPPING
