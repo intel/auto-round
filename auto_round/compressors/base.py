@@ -60,6 +60,7 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
     VISION_MM_KEYS,
+    cast_model_dtype,
     compress_layer_names,
     convert_dtype_str2torch,
     extract_block_names_to_str,
@@ -1400,7 +1401,7 @@ class BaseOrchestrator(object):
             logger.warning("force to use bf16 for quantization tuning when enabling activation quantization")
             self.model_context.amp_dtype = torch.bfloat16
             if self.model_context.model.dtype != torch.bfloat16:
-                self.model_context.model = self.model_context.model.to(torch.bfloat16)
+                self.model_context.model = cast_model_dtype(self.model_context.model, torch.bfloat16)
 
         self._resolve_formats()
         self._patch_model()
