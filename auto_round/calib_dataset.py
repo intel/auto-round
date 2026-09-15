@@ -931,7 +931,11 @@ def _get_generic_dataset(
 
     # Apply text extraction
     if field is not None or fields is not None or template is not None:
-        calib_dataset = calib_dataset.map(_extract_text, batched=True, remove_columns=calib_dataset.column_names if hasattr(calib_dataset, 'column_names') else None)
+        calib_dataset = calib_dataset.map(
+            _extract_text,
+            batched=True,
+            remove_columns=calib_dataset.column_names if hasattr(calib_dataset, "column_names") else None,
+        )
 
     # Shuffle and take samples
     if streaming:
@@ -1170,9 +1174,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
             get_dataset = CALIB_DATASETS.get(calib_name)
             if get_dataset is None:
                 # Fallback: use generic loader for any HuggingFace dataset
-                logger.info(
-                    f"Dataset '{name}' not in registry, using generic loader with auto field detection."
-                )
+                logger.info(f"Dataset '{name}' not in registry, using generic loader with auto field detection.")
                 dataset = _get_generic_dataset(
                     tokenizer,
                     seqlen,
