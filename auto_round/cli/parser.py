@@ -37,6 +37,12 @@ class _LegacyAliasAction(argparse.Action):
         logger.warning_once(
             "`%s` is deprecated, please use `%s` instead", option_string, self._CANONICAL_FLAGS[self.dest]
         )
+        current_value = getattr(namespace, self.dest, None)
+        if current_value is not None and current_value != values:
+            parser.error(
+                f"conflicting values for {self._CANONICAL_FLAGS[self.dest]}: "
+                f"{current_value!r} was already provided, but {option_string!r} set {values!r}"
+            )
         setattr(namespace, self.dest, values)
 
 
