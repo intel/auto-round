@@ -41,7 +41,8 @@ Example::
 """
 
 import re
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any, Dict, List, Optional, Union
 
 # ---------------------------------------------------------------------------
@@ -261,10 +262,7 @@ def auto_detect_text_field(dataset, sample_size: int = 10) -> str:
         samples.append(row)
 
     if not samples:
-        raise ValueError(
-            f"Cannot auto-detect text field: dataset is empty. "
-            f"Available columns: {columns}"
-        )
+        raise ValueError(f"Cannot auto-detect text field: dataset is empty. " f"Available columns: {columns}")
 
     best_field = None
     best_avg_len = 0.0
@@ -386,11 +384,14 @@ def extract_text_from_sample(
     """
     # --- Template mode ------------------------------------------------------
     if template is not None:
+
         def _replace(match: re.Match) -> str:
             key = match.group(1)
             if key not in sample:
-                raise KeyError(f"Template references field '{key}' which is not in the sample. "
-                               f"Available fields: {list(sample.keys())}")
+                raise KeyError(
+                    f"Template references field '{key}' which is not in the sample. "
+                    f"Available fields: {list(sample.keys())}"
+                )
             val = sample[key]
             if isinstance(val, (list, tuple)):
                 # Flatten list-of-dicts (e.g. messages) or list-of-strings
@@ -483,13 +484,9 @@ def normalize_dataset_spec(dataset: Union[str, "CalibDataset", list]) -> str:
             elif isinstance(item, str):
                 parts.append(item)
             else:
-                raise TypeError(
-                    f"Dataset list entries must be str or CalibDataset, got {type(item).__name__}"
-                )
+                raise TypeError(f"Dataset list entries must be str or CalibDataset, got {type(item).__name__}")
         return ",".join(parts)
-    raise TypeError(
-        f"dataset must be a str, CalibDataset, or list of str/CalibDataset, got {type(dataset).__name__}"
-    )
+    raise TypeError(f"dataset must be a str, CalibDataset, or list of str/CalibDataset, got {type(dataset).__name__}")
 
 
 # ---------------------------------------------------------------------------# Spec-string building and parsing

@@ -262,7 +262,10 @@ class TestCalibDataset:
             system_prompt="You are helpful.",
             timeout=600,
         )
-        assert spec.to_spec_string() == "my/ds:split=train:num=500:fields=q+a:separator= :apply_chat_template=true:system_prompt=You are helpful.:timeout=600"
+        assert (
+            spec.to_spec_string()
+            == "my/ds:split=train:num=500:fields=q+a:separator= :apply_chat_template=true:system_prompt=You are helpful.:timeout=600"
+        )
 
     def test_from_spec_string(self):
         spec = CalibDataset.from_spec_string("my/ds:split=train:num=100:fields=q+a")
@@ -341,7 +344,9 @@ class TestBuildDatasetSpec:
 
     def test_full_spec(self):
         assert (
-            build_dataset_spec("my/ds", split="train", num=100, fields=["q", "a"], separator=" ", apply_chat_template=True)
+            build_dataset_spec(
+                "my/ds", split="train", num=100, fields=["q", "a"], separator=" ", apply_chat_template=True
+            )
             == "my/ds:split=train:num=100:fields=q+a:separator= :apply_chat_template=true"
         )
 

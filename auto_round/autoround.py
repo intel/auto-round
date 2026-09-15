@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
     from auto_round.compressors.base import BaseCompressor as BaseCompressor
 
+
 def _collect_config_scheme_overrides(config) -> dict:
     """Return the config's explicitly-set scheme fields as a ``{field: value}`` dict.
 
@@ -655,7 +656,7 @@ class _CompressorBuilder(object):
         from auto_round.algorithms.registry import normalize_algorithm_config
         from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
         from auto_round.compressors.utils import check_need_act_calibration
-        from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
+        from auto_round.utils.dataset_utils import CalibDataset
         from auto_round.utils.model import is_model_free_route
 
         # Normalize CalibDataset objects to spec strings
