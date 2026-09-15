@@ -15,7 +15,6 @@ class.  It deliberately contains no quantization math.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -87,26 +86,18 @@ def _quantizer_class(data_type: str) -> type:
         raise LookupError(f"No datatype quantizer registered for {data_type!r}") from error
 
 
-def create_weight_quantizer(data_type: str, spec: "WeightQuantizationSpec", tuning_options: "WeightTuningOptions"):
-    """Create a datatype-owned weight quantizer from a resolved layer request.
-
-    The algorithm supplies only generic request data.  The selected datatype
-    class decides its own tuned, RTN, optimized, or block behavior.
-    """
+def _create_weight_quantizer(data_type: str, spec: "WeightQuantizationSpec"):
+    """Create the implementation owned by ``data_type`` for one weight request."""
     canonical = canonical_data_type(data_type)
     quantizer_class = _quantizer_class(data_type)
     try:
-        return quantizer_class.from_spec(spec, tuning_options, canonical)
+        return quantizer_class.from_spec(spec, canonical)
     except AttributeError as error:
         raise LookupError(f"Datatype {data_type!r} supports activation quantization only") from error
 
 
-def create_activation_quantizer(data_type: str, spec: "ActivationQuantizationSpec"):
-    """Create the activation quantizer owned by ``data_type``.
-
-    Keeping this lookup here prevents wrappers and algorithms from importing
-    individual datatype modules or duplicating format-specific conditionals.
-    """
+def _create_activation_quantizer(data_type: str, spec: "ActivationQuantizationSpec"):
+    """Create the activation implementation owned by ``data_type``."""
     canonical_data_type(data_type)
     try:
         return _quantizer_class(data_type).create_activation(spec)
@@ -120,29 +111,6 @@ def prepare_data_type_block(data_type: str, block, layer_runtimes) -> None:
     prepare = getattr(quantizer_class, "prepare_block", None)
     if prepare is not None:
         prepare(block, layer_runtimes)
-
-
-class WeightExecutionMode(str, Enum):
-    """Existing weight-quantization behaviors selected by algorithm settings."""
-
-    TUNED = "tuned"
-    RTN = "rtn"
-    OPTIMIZED_RTN = "optimized_rtn"
-
-
-@dataclass(frozen=True)
-class WeightTuningOptions:
-    """Algorithm-controlled tuning switches passed to a datatype quantizer.
-
-    ``clip_min`` and ``clip_max`` carry AWQ's precomputed clipping range; they
-    cannot live on the datatype because AWQ owns how those bounds are learned.
-    """
-
-    mode: WeightExecutionMode
-    enable_round_tuning: bool
-    enable_minmax_tuning: bool
-    clip_min: torch.Tensor | None = None
-    clip_max: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -182,13 +150,6 @@ class WeightQuantizationResult:
     metadata: object | None = None
 
 
-def state_tunables(state: object) -> dict[str, torch.Tensor]:
-    """Return a datatype state's trainable tensors using the common convention."""
-    if isinstance(state, dict):
-        return state.get("tunables", state)
-    return state.tunables
-
-
 class DataTypeQuantizer:
     """Run a datatype implementation through initialize, QDQ, and write-back.
 
@@ -197,40 +158,26 @@ class DataTypeQuantizer:
     the sequence and the trainable parameter dictionary.
     """
 
-    def __init__(self, implementation: Any, options: WeightTuningOptions, apply_result):
+    def __init__(self, implementation: Any, mode: str, tune_rounding: bool, tune_minmax: bool, apply_result):
         self._implementation = implementation
-        self._options = options
+        self._mode = mode
+        self._tune_rounding = tune_rounding
+        self._tune_minmax = tune_minmax
         self._apply_result = apply_result
         self._state = None
         self.parameters: dict[str, torch.Tensor] = {}
-
-    @classmethod
-    def for_layer(cls, layer, *, iters=0, disable_opt_rtn=False, tune_rounding=False, tune_minmax=False):
-        """Create the datatype quantizer requested by one resolved layer.
-
-        This is the sole conversion from layer attributes to datatype request
-        objects.  The rest of the codebase calls :func:`create_quantizer`.
-        """
-        if isinstance(layer, Mapping):
-            layer = SimpleNamespace(**{"q_scale_thresh": 1e-5, **layer})
-        spec = _weight_spec(layer)
-        mode = (
-            WeightExecutionMode.TUNED
-            if iters > 0
-            else (WeightExecutionMode.RTN if disable_opt_rtn else WeightExecutionMode.OPTIMIZED_RTN)
-        )
-        options = WeightTuningOptions(mode, tune_rounding, tune_minmax)
-        implementation = create_weight_quantizer(spec.data_type, spec, options)
-        return cls(implementation, options, implementation.apply_result)
 
     def initialize(self, weight: torch.Tensor, *, imatrix=None) -> None:
         """Initialize datatype state and expose its trainable tensors."""
         self._state = self._implementation.create_state(
             weight,
             imatrix=imatrix,
-            tuning_options=self._options,
+            mode=self._mode,
+            tune_rounding=self._tune_rounding,
+            tune_minmax=self._tune_minmax,
         )
-        self.parameters = dict(state_tunables(self._state))
+        tunables = self._state.get("tunables", self._state) if isinstance(self._state, dict) else self._state.tunables
+        self.parameters = dict(tunables)
 
     def quantize(self, weight: torch.Tensor, **parameters) -> torch.Tensor:
         """Return QDQ weights for the current trainable parameter values."""
@@ -289,13 +236,13 @@ def _activation_spec(layer) -> ActivationQuantizationSpec:
 
 def create_quantizer(layer, *, iters=None, disable_opt_rtn=False, tune_rounding=False, tune_minmax=False):
     """Create the datatype-owned weight quantizer for a resolved layer."""
-    return DataTypeQuantizer.for_layer(
-        layer,
-        iters=getattr(layer, "iters", 0) if iters is None else iters,
-        disable_opt_rtn=disable_opt_rtn,
-        tune_rounding=tune_rounding,
-        tune_minmax=tune_minmax,
-    )
+    if isinstance(layer, Mapping):
+        layer = SimpleNamespace(**{"q_scale_thresh": 1e-5, **layer})
+    spec = _weight_spec(layer)
+    iters = getattr(layer, "iters", 0) if iters is None else iters
+    mode = "tuned" if iters > 0 else "rtn" if disable_opt_rtn else "optimized_rtn"
+    implementation = _create_weight_quantizer(spec.data_type, spec)
+    return DataTypeQuantizer(implementation, mode, tune_rounding, tune_minmax, implementation.apply_result)
 
 
 def cache_activation_quantizer(layer):
@@ -304,7 +251,7 @@ def cache_activation_quantizer(layer):
         return None
     if hasattr(layer, "_ar_activation_quantizer"):
         return layer._ar_activation_quantizer
-    quantizer = create_activation_quantizer(layer.act_data_type, _activation_spec(layer))
+    quantizer = _create_activation_quantizer(layer.act_data_type, _activation_spec(layer))
     layer._ar_activation_quantizer = quantizer
     return quantizer
 
@@ -316,7 +263,7 @@ def activation_quantizer_for_layer(layer, *, scale_dtype=None):
         from dataclasses import replace
 
         spec = replace(spec, scale_dtype=scale_dtype)
-    return create_activation_quantizer(layer.act_data_type, spec)
+    return _create_activation_quantizer(layer.act_data_type, spec)
 
 
 def quantize_activation(tensor, config):
@@ -329,4 +276,4 @@ def quantize_activation(tensor, config):
         scale_dtype=tensor.dtype,
         dynamic=True,
     )
-    return create_activation_quantizer(spec.data_type, spec).qdq(tensor)
+    return _create_activation_quantizer(spec.data_type, spec).qdq(tensor)

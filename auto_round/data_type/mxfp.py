@@ -433,7 +433,7 @@ class _MXQuantizer:
         return data_type
 
     @classmethod
-    def from_spec(cls, spec, tuning_options, canonical=None):
+    def from_spec(cls, spec, canonical=None):
         """Create the MX quantizer selected by the requested MX format."""
         data_type = canonical or spec.data_type
         if data_type in ("mx_fp", "mx_int"):
@@ -447,13 +447,13 @@ class _MXQuantizer:
         """Create the dynamic MX activation quantizer for the same format."""
         return _MXActivationQuantizer(spec, cls._data_type(spec))
 
-    def create_state(self, weight, *, imatrix=None, tuning_options):
-        self.family = "optimized" if tuning_options.mode.value == "optimized_rtn" else "plain"
+    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
+        self.family = "optimized" if mode == "optimized_rtn" else "plain"
         grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
         tunables = {}
-        if self.family == "plain" and tuning_options.enable_round_tuning:
+        if self.family == "plain" and tune_rounding:
             tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
-        if self.family == "plain" and tuning_options.enable_minmax_tuning:
+        if self.family == "plain" and tune_minmax:
             tunables["max_scale"] = torch.nn.Parameter(
                 torch.ones(grouped.shape[:-1], device=weight.device, dtype=torch.float32)
             )

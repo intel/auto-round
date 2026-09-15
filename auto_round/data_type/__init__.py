@@ -27,7 +27,5 @@ import auto_round.data_type.gguf
 from auto_round.data_type.base import (
     DataTypeQuantizer,
     canonical_data_type,
-    create_activation_quantizer,
     create_quantizer,
-    create_weight_quantizer,
 )

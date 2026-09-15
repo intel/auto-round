@@ -82,18 +82,18 @@ class _ProgressiveFP8WeightQuantizer:
         self.spec = spec
 
     @classmethod
-    def from_spec(cls, spec, tuning_options, canonical=None):
+    def from_spec(cls, spec, canonical=None):
         """Create the progressive FP8-to-INT4 weight quantizer."""
         return cls(spec)
 
-    def create_state(self, weight, *, imatrix=None, tuning_options):
+    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
         grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
         tunables = {}
-        if tuning_options.enable_round_tuning:
+        if tune_rounding:
             tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
-        if tuning_options.enable_minmax_tuning:
+        if tune_minmax:
             shape = grouped.shape[:-1]
             tunables["min_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))
             tunables["max_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))

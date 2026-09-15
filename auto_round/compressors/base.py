@@ -1265,25 +1265,34 @@ class BaseOrchestrator(object):
         return get_torch_compile_off_reason(model)
 
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
-        """Apply torch.compile disabling rules for the current compressor state."""
+        """Apply torch.compile disabling rules for the current compressor state.
+
+        This is intentionally kept beside the compressor state it reads.  The
+        rules are not reusable policy: every input comes from this instance,
+        and preserving that context makes the precedence easy to audit.
+        """
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
-        from auto_round.compressors.compile_policy import resolve_torch_compile_policy
 
         _, is_valid_act_static = self._get_torch_compile_guard_state()
-        policy = resolve_torch_compile_policy(
-            enable_torch_compile,
-            user_specified=getattr(self, "_torch_compile_user_specified", False),
-            activation_is_static=is_valid_act_static,
-            architecture_off_reason=self._torch_compile_unsupported_arch_reason(),
-            is_auto_scheme=getattr(self, "is_auto_scheme", False)
-            or isinstance(getattr(self, "scheme", None), AutoScheme),
-            is_rtn=isinstance(self.quantize_config, RTNConfig),
-            iters=getattr(self.quantize_config, "iters", None),
-            min_iters=MIN_ITERS_FOR_TORCH_COMPILE,
-            components_compatible=True,
-            datatypes_compatible=True,
-        )
-        self.enable_torch_compile = policy.enabled
+        reason = None
+        if enable_torch_compile:
+            if is_valid_act_static:
+                reason = "activation is static"
+            else:
+                reason = self._torch_compile_unsupported_arch_reason()
+            user_specified = getattr(self, "_torch_compile_user_specified", False)
+            is_auto_scheme = getattr(self, "is_auto_scheme", False) or isinstance(
+                getattr(self, "scheme", None), AutoScheme
+            )
+            if reason is None and not user_specified and not is_auto_scheme:
+                if isinstance(self.quantize_config, RTNConfig):
+                    reason = "RTN/OPT-RTN quantizes each layer in a single pass"
+                else:
+                    iters = getattr(self.quantize_config, "iters", None)
+                    if iters is not None and iters < MIN_ITERS_FOR_TORCH_COMPILE:
+                        reason = f"`iters`={iters} is below {MIN_ITERS_FOR_TORCH_COMPILE}"
+
+        self.enable_torch_compile = enable_torch_compile and reason is None
         # Why compilation ended up off, used by ``_log_torch_compile_state``.  When the
         # incoming value is already False, keep the reason recorded by the earlier
         # precheck pass instead of dropping it.
@@ -1295,9 +1304,9 @@ class BaseOrchestrator(object):
                 or getattr(self, "_torch_compile_default_off_reason", None)
             )
         )
-        if not policy.enabled and policy.reason is not None:
-            self._torch_compile_off_reason = policy.reason
-            logger.warning_once("reset enable_torch_compile to `False` as %s", policy.reason)
+        if reason is not None:
+            self._torch_compile_off_reason = reason
+            logger.warning_once("reset enable_torch_compile to `False` as %s", reason)
 
     def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
         """Apply early torch.compile adjustments before scheme resolution.

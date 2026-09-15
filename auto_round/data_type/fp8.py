@@ -391,7 +391,7 @@ class _FP8WeightQuantizer:
         self.scale_layout = scale_layout
 
     @classmethod
-    def from_spec(cls, spec, tuning_options, canonical=None):
+    def from_spec(cls, spec, canonical=None):
         """Create the FP8 weight quantizer selected by the requested format."""
         return cls(spec)
 
@@ -400,14 +400,14 @@ class _FP8WeightQuantizer:
         """Create the FP8 activation quantizer for the same format."""
         return _create_fp8_activation(spec)
 
-    def create_state(self, weight, *, imatrix=None, tuning_options):
+    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
         grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
         reduction_dims = 2 if self.scale_layout == "block" else 1
         tunable_shape = grouped.shape[:-reduction_dims]
         tunables = {}
-        if tuning_options.enable_round_tuning:
+        if tune_rounding:
             tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
-        if tuning_options.enable_minmax_tuning:
+        if tune_minmax:
             tunables["max_scale"] = torch.nn.Parameter(
                 torch.ones(tunable_shape, device=weight.device, dtype=torch.float32)
             )

@@ -445,7 +445,7 @@ class _IntWeightQuantizer:
         self.family = family
 
     @classmethod
-    def from_spec(cls, spec, tuning_options, canonical=None):
+    def from_spec(cls, spec, canonical=None):
         """Create the integer weight quantizer for a resolved layer."""
         return cls(spec)
 
@@ -454,25 +454,21 @@ class _IntWeightQuantizer:
         """Create the matching integer activation quantizer."""
         return _IntActivationQuantizer(spec)
 
-    def create_state(self, weight, *, imatrix=None, tuning_options):
-        if tuning_options.mode.value == "optimized_rtn" and self.spec.sym:
+    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
+        if mode == "optimized_rtn" and self.spec.sym:
             self.family = "optimized"
-        elif tuning_options.mode.value == "rtn" and self.spec.sym:
+        elif mode == "rtn" and self.spec.sym:
             self.family = "rtn"
         else:
             self.family = "plain"
         grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
         tensor_min = torch.clamp(grouped.amin(dim=-1), max=0)
         tensor_max = torch.clamp(grouped.amax(dim=-1), min=0)
-        if tuning_options.clip_min is not None:
-            tensor_min = torch.maximum(tensor_min, tuning_options.clip_min.reshape(-1).to(tensor_min))
-        if tuning_options.clip_max is not None:
-            tensor_max = torch.minimum(tensor_max, tuning_options.clip_max.reshape(-1).to(tensor_max))
 
         tunables = {}
-        if self.family == "plain" and tuning_options.enable_round_tuning:
+        if self.family == "plain" and tune_rounding:
             tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
-        if self.family != "optimized" and tuning_options.enable_minmax_tuning:
+        if self.family != "optimized" and tune_minmax:
             shape = tensor_min.shape
             tunables["min_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))
             tunables["max_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))

@@ -456,7 +456,7 @@ class _NVFPWeightQuantizer:
         self.family = family
 
     @classmethod
-    def from_spec(cls, spec, tuning_options, canonical=None):
+    def from_spec(cls, spec, canonical=None):
         """Create the NVFP4 weight quantizer for a resolved layer."""
         return cls(spec)
 
@@ -465,13 +465,13 @@ class _NVFPWeightQuantizer:
         """Create dynamic NVFP4 activation quantization."""
         return _NVFPActivationQuantizer(spec, "nv_fp4")
 
-    def create_state(self, weight, *, imatrix=None, tuning_options):
-        self.family = "optimized" if tuning_options.mode.value == "optimized_rtn" else "plain"
+    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
+        self.family = "optimized" if mode == "optimized_rtn" else "plain"
         grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
         tunables = {}
-        if self.family == "plain" and tuning_options.enable_round_tuning:
+        if self.family == "plain" and tune_rounding:
             tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
-        if self.family != "optimized" and tuning_options.enable_minmax_tuning:
+        if self.family != "optimized" and tune_minmax:
             tunables["max_scale"] = torch.nn.Parameter(
                 torch.ones(grouped.shape[:-1], device=weight.device, dtype=torch.float32)
             )
@@ -527,7 +527,7 @@ class _NVFPV2WeightQuantizer:
         self.spec = spec
 
     @classmethod
-    def from_spec(cls, spec, tuning_options, canonical=None):
+    def from_spec(cls, spec, canonical=None):
         """Create the NVFP4-v2 weight quantizer for a resolved layer."""
         return cls(spec)
 
@@ -536,12 +536,12 @@ class _NVFPV2WeightQuantizer:
         """Create dynamic NVFP4-v2 activation quantization."""
         return _NVFPActivationQuantizer(spec, "nvfp4_v2")
 
-    def create_state(self, weight, *, imatrix=None, tuning_options):
+    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
         grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
         tunables = {}
-        if tuning_options.enable_round_tuning:
+        if tune_rounding:
             tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
-        if tuning_options.enable_minmax_tuning:
+        if tune_minmax:
             tunables["max_scale"] = torch.nn.Parameter(
                 torch.ones(grouped.shape[:-1], device=weight.device, dtype=torch.float32)
             )

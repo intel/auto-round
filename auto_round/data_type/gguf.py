@@ -1032,19 +1032,19 @@ class _GGUFWeightQuantizer:
         )
 
     @classmethod
-    def from_spec(cls, spec, tuning_options, canonical=None):
+    def from_spec(cls, spec, canonical=None):
         """Create the GGUF quantizer; its state selects tuned or RTN behavior."""
         return cls(spec)
 
-    def create_state(self, weight, *, imatrix=None, tuning_options):
-        self.family = "rtn" if tuning_options.mode.value in ("rtn", "optimized_rtn") else "plain"
+    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
+        self.family = "rtn" if mode in ("rtn", "optimized_rtn") else "plain"
         grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
         tensor_min = torch.clamp(grouped.amin(dim=-1), max=0)
         tensor_max = torch.clamp(grouped.amax(dim=-1), min=0)
         tunables = {}
-        if self.family == "plain" and tuning_options.enable_round_tuning:
+        if self.family == "plain" and tune_rounding:
             tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
-        if self.family == "plain" and tuning_options.enable_minmax_tuning:
+        if self.family == "plain" and tune_minmax:
             shape = tensor_min.shape
             tunables["min_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))
             tunables["max_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))
