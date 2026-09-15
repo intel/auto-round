@@ -248,7 +248,7 @@ class BaseOrchestrator(object):
         ignore_layers: str = "",
         quant_lm_head: bool = False,
         to_quant_block_names: Optional[Union[str, list[str]]] = None,
-        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
+        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader, "CalibDataset"]] = None,
         **kwargs,
     ) -> None:
         # ``CalibrationContext`` is the single source of truth for calibration
@@ -257,6 +257,13 @@ class BaseOrchestrator(object):
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
+        from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
+
+        # Normalize CalibDataset objects to spec strings
+        if isinstance(dataset, CalibDataset):
+            dataset = dataset.to_spec_string()
+        elif isinstance(dataset, (list, tuple)):
+            dataset = normalize_dataset_spec(dataset)
 
         dataset_was_explicitly_set = dataset is not None
         self.dataset = dataset if dataset_was_explicitly_set else "NeelNanda/pile-10k"
