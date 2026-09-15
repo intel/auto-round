@@ -589,7 +589,7 @@ class XpuWrapper {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_32)
     } else if (m <= 64) {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_64)
-    }else if (m <= 128) {
+    } else if (m <= 128) {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_128)
     } else {
       ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_32)
