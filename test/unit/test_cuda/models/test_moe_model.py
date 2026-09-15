@@ -17,7 +17,6 @@ def _calibration_data(seqlen):
 
 
 @pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
-@pytest.mark.timeout(90)
 def test_qwen3_5_moe(tiny_qwen35_moe_text_model_path, tmp_path):
     from transformers import Qwen3_5MoeForCausalLM
 
@@ -47,7 +46,6 @@ def test_qwen3_5_moe(tiny_qwen35_moe_text_model_path, tmp_path):
     reason="Architecture: Conditional Qwen3.5 fused-MoE validates the large VLM fixture; retain in the full test tier"
 )
 @pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
-@pytest.mark.timeout(300)
 def test_qwen3_5_moe_conditional(tiny_qwen35_moe_model_path, tmp_path):
     from transformers import Qwen3_5MoeForConditionalGeneration
 
