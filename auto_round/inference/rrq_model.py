@@ -55,7 +55,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from auto_round.export.export_to_autoround.export_to_rrq import RRQ_QUANT_METHOD
+from auto_round.export.export_to_autoround.export_to_rrq import RRQ_QUANT_METHOD, RRQ_PACKING_FORMAT
 from auto_round.logger import logger
 
 __all__ = ["load_rrq_model"]
@@ -200,9 +200,12 @@ def _validate_base_matches_residual(base_config: dict, residual_config: dict) ->
                 "The residual model must match the base model's bits/group_size/sym."
             )
 
-    if res_q.get("quant_method") != RRQ_QUANT_METHOD:
+    if res_q.get("quant_method") != RRQ_QUANT_METHOD or res_q.get("packing_format") != RRQ_PACKING_FORMAT:
         raise ValueError(
-            f"Residual model has quant_method={res_q.get('quant_method')!r}, " f"expected {RRQ_QUANT_METHOD!r}."
+            f"Residual model must have quant_method={RRQ_QUANT_METHOD!r} and "
+            f"packing_format={RRQ_PACKING_FORMAT!r}, "
+            f"got quant_method={res_q.get('quant_method')!r}, "
+            f"packing_format={res_q.get('packing_format')!r}."
         )
 
 

@@ -618,11 +618,11 @@ def save_quantized_as_mlx(
     # RRQ residual models are not supported by MLX; fail fast so the residual
     # planes are never silently dropped.
     quant_cfg = getattr(getattr(model, "config", None), "quantization_config", None)
-    if isinstance(quant_cfg, dict) and quant_cfg.get("quant_method") == "auto-round-rrq":
+    if isinstance(quant_cfg, dict) and quant_cfg.get("packing_format") == "auto_round:rrq":
         raise NotImplementedError(
             "MLX export does not support RRQ residual models "
-            "(quant_method='auto-round-rrq'). Use the standard INT2 base model "
-            "(quant_method='auto-round') or a dedicated RRQ runtime instead."
+            "(packing_format='auto_round:rrq'). Use the standard INT2 base model "
+            "(packing_format='auto_round') or a dedicated RRQ runtime instead."
         )
 
     if not inplace:
