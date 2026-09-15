@@ -29,6 +29,12 @@ from torch.utils.data import DataLoader
 
 from . import envs
 from .utils import is_local_path, logger
+from .utils.dataset_utils import (
+    auto_detect_text_field,
+    auto_detect_text_field_from_sample,
+    extract_text_from_sample,
+    parse_dataset_spec,
+)
 
 CALIB_DATASETS = {}
 _GITHUB_CODE_CLEAN_MAX_DATASETS_VERSION = Version("3.6.0")
@@ -822,6 +828,132 @@ def get_local_dataset(
     return calib_dataset
 
 
+def _get_generic_dataset(
+    tokenizer,
+    seqlen,
+    dataset_name,
+    split=None,
+    seed=42,
+    apply_chat_template=False,
+    system_prompt=None,
+    field=None,
+    fields=None,
+    template=None,
+    separator="\n\n",
+    streaming=False,
+):
+    """Generic dataset loader that works with any HuggingFace dataset.
+
+    Automatically detects the text field if not specified, or uses the
+    user-provided field/fields/template to extract text.
+
+    Args:
+        tokenizer: The tokenizer to use for tokenization.
+        seqlen: The maximum sequence length.
+        dataset_name: HuggingFace dataset name or local path.
+        split: The data split to use.
+        seed: Random seed for shuffling.
+        apply_chat_template: Whether to apply chat template.
+        system_prompt: Optional system prompt.
+        field: Single text field name to extract.
+        fields: List of field names to concatenate.
+        template: Template string with {field} placeholders.
+        separator: Separator for multi-field concatenation.
+        streaming: Whether to use streaming mode.
+
+    Returns:
+        A tokenized HuggingFace Dataset.
+    """
+    # Load the dataset
+    load_kwargs = {}
+    if streaming:
+        load_kwargs["streaming"] = True
+    if is_local_path(dataset_name):
+        # Local file: use json or text loader
+        if dataset_name.endswith(".json"):
+            calib_dataset = load_dataset("json", data_files=dataset_name, split=split or "train", **load_kwargs)
+        elif dataset_name.endswith(".jsonl"):
+            calib_dataset = load_dataset("json", data_files=dataset_name, split=split or "train", **load_kwargs)
+        elif dataset_name.endswith(".txt"):
+            calib_dataset = load_dataset("text", data_files=dataset_name, split=split or "train", **load_kwargs)
+        else:
+            calib_dataset = load_dataset(dataset_name, split=split or "train", **load_kwargs)
+    else:
+        # HuggingFace dataset
+        try:
+            calib_dataset = load_dataset(dataset_name, split=split or "train", trust_remote_code=True, **load_kwargs)
+        except Exception:
+            # Try without split (some datasets don't have explicit splits)
+            calib_dataset = load_dataset(dataset_name, trust_remote_code=True, **load_kwargs)
+            if split:
+                if isinstance(split, list):
+                    split = split[0]
+                if split in calib_dataset:
+                    calib_dataset = calib_dataset[split]
+                else:
+                    calib_dataset = calib_dataset[list(calib_dataset.keys())[0]]
+
+    # Determine the text field
+    if field is None and fields is None and template is None:
+        # Auto-detect
+        if hasattr(calib_dataset, "column_names"):
+            field = auto_detect_text_field(calib_dataset)
+        else:
+            # IterableDataset – grab first sample to detect
+            first_sample = next(iter(calib_dataset))
+            field = auto_detect_text_field_from_sample(first_sample)
+        logger.info(f"Auto-detected text field '{field}' for dataset '{dataset_name}'")
+    elif fields is not None and len(fields) > 1:
+        field = None  # multi-field mode
+    elif fields is not None and len(fields) == 1:
+        field = fields[0]
+        fields = None
+
+    # Build the text extraction function
+    def _extract_text(examples):
+        """Extract text from batched examples."""
+        texts = []
+        for i in range(len(next(iter(examples.values())))):
+            sample = {k: v[i] for k, v in examples.items()}
+            try:
+                text = extract_text_from_sample(
+                    sample,
+                    field=field,
+                    fields=fields,
+                    template=template,
+                    separator=separator,
+                )
+            except (KeyError, ValueError) as e:
+                logger.warning(f"Skipping sample due to field extraction error: {e}")
+                continue
+            texts.append(text)
+        return {"text": texts}
+
+    # Apply text extraction
+    if field is not None or fields is not None or template is not None:
+        calib_dataset = calib_dataset.map(_extract_text, batched=True, remove_columns=calib_dataset.column_names if hasattr(calib_dataset, 'column_names') else None)
+
+    # Shuffle and take samples
+    if streaming:
+        calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
+    else:
+        calib_dataset = calib_dataset.shuffle(seed=seed)
+
+    # Tokenize
+    tokenizer_function = get_tokenizer_function(
+        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
+    )
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+        ),
+    )
+
+    return calib_dataset
+
+
 def get_dataset_len(dataset):
     """Calculates the length of a dataset.
 
@@ -968,24 +1100,65 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         split = None
         do_concat = False
         apply_chat_template = False
+        field = None
+        fields = None
+        template = None
+        separator = "\n\n"
 
         if ":" in name:
             name, split_list = name.split(":")[0], name.split(":")[1:]
             for ele in split_list:
-                key, values = ele.split("=")[0], ele.split("=")[1:]
+                key, values = ele.split("=", 1)[0], ele.split("=", 1)[1:]
                 if key == "split":
                     split = values[0].split("+")
-                if key == "num":
+                elif key == "num":
                     data_lens[name] = int(values[0])
-                if key == "concat":
+                elif key == "concat":
                     do_concat = False if (len(values) > 0 and values[0].lower() == "false") else True
-                if key == "apply_chat_template":
+                elif key == "apply_chat_template":
                     apply_chat_template = False if (len(values) > 0 and values[0].lower() == "false") else True
-                if key == "system_prompt":
+                elif key == "system_prompt":
                     system_prompt = values[0]
                     apply_chat_template = True
-        if is_local_path(name):
-            get_dataset = CALIB_DATASETS.get("local")
+                elif key == "field":
+                    field = values[0]
+                elif key == "fields":
+                    fields = values[0].split("+")
+                elif key == "template":
+                    template = values[0]
+                elif key == "separator":
+                    separator = values[0].replace("\\n", "\n").replace("\\t", "\t")
+        # If user explicitly specified field/fields/template, use the generic
+        # loader regardless of whether the dataset is registered.
+        use_generic = field is not None or fields is not None or template is not None
+
+        if use_generic or is_local_path(name):
+            if is_local_path(name) and not use_generic:
+                # Local file without explicit field spec: use the local handler
+                dataset = CALIB_DATASETS["local"](
+                    tokenizer,
+                    seqlen,
+                    seed=seed,
+                    split=split,
+                    dataset_name=name,
+                    apply_chat_template=apply_chat_template,
+                    system_prompt=system_prompt,
+                )
+            else:
+                # Generic loader (for local files with field spec, or any HF dataset)
+                dataset = _get_generic_dataset(
+                    tokenizer,
+                    seqlen,
+                    dataset_name=name,
+                    split=split,
+                    seed=seed,
+                    apply_chat_template=apply_chat_template,
+                    system_prompt=system_prompt,
+                    field=field,
+                    fields=fields,
+                    template=template,
+                    separator=separator,
+                )
         else:
             calib_name = name
             if name not in CALIB_DATASETS.keys():
@@ -995,20 +1168,34 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                         calib_name = key
                         break
             get_dataset = CALIB_DATASETS.get(calib_name)
-        if get_dataset is None:
-            filtered_keys = [k for k in CALIB_DATASETS.keys() if "/" not in k]
-            raise ValueError(
-                f"Dataset '{name}' is not found. Please choose from the supported datasets: {filtered_keys}."
-            )
-        dataset = get_dataset(
-            tokenizer,
-            seqlen,
-            seed=seed,
-            split=split,
-            dataset_name=name,
-            apply_chat_template=apply_chat_template,
-            system_prompt=system_prompt,
-        )
+            if get_dataset is None:
+                # Fallback: use generic loader for any HuggingFace dataset
+                logger.info(
+                    f"Dataset '{name}' not in registry, using generic loader with auto field detection."
+                )
+                dataset = _get_generic_dataset(
+                    tokenizer,
+                    seqlen,
+                    dataset_name=name,
+                    split=split,
+                    seed=seed,
+                    apply_chat_template=apply_chat_template,
+                    system_prompt=system_prompt,
+                    field=field,
+                    fields=fields,
+                    template=template,
+                    separator=separator,
+                )
+            else:
+                dataset = get_dataset(
+                    tokenizer,
+                    seqlen,
+                    seed=seed,
+                    split=split,
+                    dataset_name=name,
+                    apply_chat_template=apply_chat_template,
+                    system_prompt=system_prompt,
+                )
         if do_concat:
             dataset = concat_dataset_element(dataset)
 

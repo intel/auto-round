@@ -21,6 +21,13 @@ from auto_round.utils.weight_handler import (
     detect_weight_type,
     is_quantized_input_module,
 )
+from auto_round.utils.dataset_utils import (
+    auto_detect_text_field,
+    auto_detect_text_field_from_sample,
+    extract_text_from_sample,
+    build_dataset_spec,
+    parse_dataset_spec,
+)
 
 
 def copy_missing_tensors_from_source(*args, **kwargs):
