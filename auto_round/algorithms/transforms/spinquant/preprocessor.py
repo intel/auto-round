@@ -28,6 +28,7 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 
+from auto_round.algorithms.registry import register_algorithm
 from auto_round.algorithms.transforms.base import BaseRotationConfig
 
 # ---------------------------------------------------------------------------
@@ -142,6 +143,20 @@ class SpinQuantConfig(BaseRotationConfig):
                     f"rotation_size must be a power of 2, got {self.rotation_size}. "
                     f"Valid values: 16, 32, 64, 128, 256, 512, 1024, ..."
                 )
+
+
+register_algorithm(
+    "quarot",
+    aliases=("quarot",),
+    config_factory=lambda: SpinQuantConfig(trainable_rotation=False, trainable_smooth=False),
+    summary="QuaRot fixed-Hadamard rotation (no training, no calibration data).",
+)
+register_algorithm(
+    "spinquant",
+    aliases=("spinquant",),
+    config_factory=lambda: SpinQuantConfig(trainable_rotation=True, trainable_smooth=True),
+    summary="SpinQuant trainable rotation (experimental).",
+)
 
 
 class TrainableRMSNorm(nn.Module):
@@ -353,7 +368,7 @@ class SpinQuantPreprocessor:
                 "[SpinQuant] Layer-wise rotation requires online_r1_rotation=True. "
                 "Offline R1 changes inter-layer hidden state space, which is "
                 "incompatible with pre-cached block inputs. Use full-model "
-                "rotation (layerwise_rotation=False) for offline R1."
+                "rotation (config `layerwise=False`) for offline R1."
             )
 
         logger.info("[SpinQuant] Preparing for layer-wise rotation...")
@@ -852,7 +867,7 @@ class SpinQuantPreprocessor:
 
         logger.info(
             f"[SpinQuant] Training complete: {result.steps} steps, "
-            f"best_loss={result.best_loss:.6f}, ortho_dev={result.final_ortho_deviation:.2e}"
+            f"best_loss={result.best_loss:.3e}, ortho_dev={result.final_ortho_deviation:.2e}"
         )
 
         del original_model

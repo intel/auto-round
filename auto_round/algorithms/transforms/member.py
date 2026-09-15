@@ -100,8 +100,7 @@ class RotationPreprocessor(BasePreprocessor):
 
         Whether to rotate per-block is taken from the rotation config's
         ``layerwise`` field. ``layerwise`` may be passed explicitly to override
-        the config (used by the deprecated top-level ``layerwise_rotation``
-        shim); ``None`` means "use the config value".
+        the config (``None`` means "use the config value").
 
         For full-model rotation the model is rotated immediately and returned.
         For layer-wise rotation (when the underlying algorithm supports it) only

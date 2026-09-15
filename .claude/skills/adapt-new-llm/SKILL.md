@@ -152,7 +152,6 @@ BUILTIN_MODULES["your_model_type"] = LazyImport("auto_round.modeling.fused_moe.y
 |------------|------|---------|
 | `llama4` | `fused_moe/llama4.py` | Custom replacement for no `use_experts_implementation` |
 | `deepseek_v2` | `fused_moe/deepseek_v2.py` | q_scale calibration for Gaudi |
-| `qwen3_5_moe` | `fused_moe/qwen3_5_moe.py` | Transformers >= 5.0 support |
 | `step3p5` | `fused_moe/step3_5_moe.py` | Splits fused MoELinear |
 | `qwen3_omni_moe` | `fused_moe/qwen3_omni.py` | Thinker + talker MoE |
 

@@ -286,7 +286,7 @@ def run_training_loop(
             on_step_end(step, loss_val, avg)
         elif step % log_interval == 0:
             avg = sum(loss_history[-50:]) / len(loss_history[-50:])
-            logger.info(f"[SpinQuant] Step {step}/{max_iters}, loss={loss_val:.6f} (avg={avg:.6f})")
+            logger.info(f"[SpinQuant] Step {step}/{max_iters}, loss={loss_val:.3e} (avg={avg:.3e})")
 
         step += 1
 
@@ -569,7 +569,7 @@ class LossLogger(RotationTrainerCallback):
         if step % self.log_interval == 0:
             loss = state.get("loss", 0.0)
             avg_loss = state.get("avg_loss", 0.0)
-            print(f"  [LossLogger] step={step}/{args.iters}  loss={loss:.6f}  avg={avg_loss:.6f}")
+            print(f"  [LossLogger] step={step}/{args.iters}  loss={loss:.3e}  avg={avg_loss:.3e}")
 
 
 class RotationTrainer:

@@ -310,6 +310,9 @@ def evaluate_with_model_instance(model, tokenizer, device_str, args):
             batch_size=args.eval_bs,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             add_bos_token=args.add_bos_token,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
     else:
         # Batch evaluation
@@ -328,6 +331,9 @@ def evaluate_with_model_instance(model, tokenizer, device_str, args):
             device=device_str,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             add_bos_token=args.add_bos_token,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
@@ -366,6 +372,9 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             mllm=getattr(autoround, "mllm", False),
             add_bos_token=args.add_bos_token,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
     else:
         # Batch evaluation
@@ -398,6 +407,9 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             device=device_str,
             batch_size=eval_bs,
             limit=args.limit,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         print(make_table(res))
         print("evaluation running time=%ds" % (time.time() - st))
@@ -429,8 +441,11 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         eval_folder = folders[-1] if folders else None
     else:
         eval_folder = folders
+
     # set model_type for ModelFreeCompressor.
-    model_type = detect_model_type(eval_folder)
+    # Fake format now always saves, so eval_folder is the canonical probe.
+    type_probe = eval_folder
+    model_type = detect_model_type(type_probe)
     if hasattr(autoround, "model_context") and model_type in ("mllm", "diffusion"):
         setattr(autoround.model_context, f"is_{model_type}", True)
     else:
@@ -468,6 +483,9 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         vllm_args.disable_trust_remote_code = getattr(args, "disable_trust_remote_code", False)
         vllm_args.add_bos_token = getattr(args, "add_bos_token", False)
         vllm_args.seed = getattr(args, "seed", 42)
+        vllm_args.num_fewshot = getattr(args, "num_fewshot", None)
+        vllm_args.eval_gen_kwargs = getattr(args, "eval_gen_kwargs", None)
+        vllm_args.fewshot_as_multiturn = getattr(args, "fewshot_as_multiturn", False)
         # VLLM-specific parameters
         vllm_args.vllm_args = getattr(args, "vllm_args", None)
         eval_with_vllm(vllm_args)
@@ -481,8 +499,12 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         logger.warning("set add_bos_token=True for llama model.")
         args.add_bos_token = True
 
-    # Check if GGUF model
-    eval_gguf_model = any(file.endswith("gguf") for file in os.listdir(eval_folder))
+    # Check if GGUF model in exported eval folder.
+    eval_gguf_model = (
+        eval_folder is not None
+        and os.path.isdir(eval_folder)
+        and any(file.endswith("gguf") for file in os.listdir(eval_folder))
+    )
 
     # Determine if model instance evaluation is needed
     need_model_instance = formats[-1] == "fake" or eval_gguf_model
@@ -494,8 +516,20 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
             if model is None:
                 return
         else:
-            eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-            model = prepare_model_for_eval(model, args.device_map, eval_model_dtype)
+            if model is None:
+                # Model-free mode: load model from the saved output directory
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+
+                eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+                model = AutoModelForCausalLM.from_pretrained(
+                    eval_folder, device_map=args.device_map, torch_dtype=eval_model_dtype
+                )
+                model.eval()
+                if tokenizer is None:
+                    tokenizer = AutoTokenizer.from_pretrained(eval_folder)
+            else:
+                eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+                model = prepare_model_for_eval(model, args.device_map, eval_model_dtype)
 
         # Evaluate with model instance
         evaluate_with_model_instance(model, tokenizer, device_str, args)

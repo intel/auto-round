@@ -32,7 +32,7 @@ Usage via the unified entry point::
 
 Usage via AutoRound pipeline::
 
-    from auto_round.compressors.entry import AutoRound
+    from auto_round import AutoRound
     from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 
     AutoRound(

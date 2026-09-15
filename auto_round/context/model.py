@@ -14,9 +14,11 @@
 
 import gc
 import importlib
+import os
 from typing import Any, Callable, Optional, Union
 
 import torch
+import transformers
 from packaging import version
 from transformers import AutoConfig
 
@@ -29,6 +31,7 @@ from auto_round.special_model_handler import _handle_special_model, update_modul
 from auto_round.utils import (
     check_and_mark_quantized_module,
     diffusion_load_model,
+    install_debug_layer_config_patch,
     is_diffusion_model,
     is_mllm_model,
     is_moe_model,
@@ -88,6 +91,7 @@ class ModelContext(BaseContext):
         self.processor = None
         self.image_processor = None
         self.pipe = None
+        self.preloaded_diffusion_pipeline = False
 
         # AWQ weight-clip thresholds kept for downstream block quantizers.
         # Populated by AWQTransform when ``apply_clip`` is enabled; keyed by
@@ -105,6 +109,12 @@ class ModelContext(BaseContext):
         self.need_calib = need_calib
         self.quant_nontext_module = quant_nontext_module
 
+        # Remember the original string model name
+        # so OffloadManager can later materialize blocks directly from this
+        # checkpoint.
+        self.disk_stream_model_dir = model if isinstance(model, str) else None
+        self._disk_stream_index = None
+
         # Load model and run basic initialization eagerly so the model is ready
         # by the time BaseCompressor.post_init() runs.
         self._load_model()
@@ -114,6 +124,8 @@ class ModelContext(BaseContext):
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
             )
+        if self._disk_stream_index is not None:
+            self._materialize_disk_stream_non_block_params()
         check_and_mark_quantized_module(self.model)
         self.model = self.model.eval()
         self.shared_cache_keys = get_shared_keys(self.model)
@@ -145,17 +157,61 @@ class ModelContext(BaseContext):
         device_manager.device = value
 
     def _load_model(self):
-        if is_mllm_model(self.model, platform=self.platform):
+        # Debug helper: when AR_DEBUG_LAYER_NUM is set, patch transformers config
+        # loading so every branch below (llm / mllm / diffusion / meta skeleton)
+        # loads only the first N decoder layers. No-op otherwise.
+        install_debug_layer_config_patch()
+        if is_diffusion_model(self.model):
+            self.is_diffusion = True
+            self.preloaded_diffusion_pipeline = not isinstance(self.model, str)
+            default_torch_dtype = "auto"
+            if self.amp and get_ar_device(self.device).supports_bf16():
+                default_torch_dtype = torch.bfloat16
+            self.pipe, self.model = diffusion_load_model(
+                self.model,
+                platform=self.platform,
+                device="cpu",
+                model_dtype=self.model_dtype,
+                default_torch_dtype=default_torch_dtype,
+            )
+        elif is_mllm_model(self.model, platform=self.platform):
             self.is_mllm = True
             if isinstance(self.model, str):
-                self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
-                    self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
-                )
-        elif is_diffusion_model(self.model):
-            self.is_diffusion = True
-            self.pipe, self.model = diffusion_load_model(
-                self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
-            )
+                # Multimodal checkpoints used to
+                # bypass disk streaming entirely -- mllm_load_model fully
+                # materializes the checkpoint on CPU, infeasible for a 100B+
+                # VLM (e.g. Ornith). Build the same meta skeleton the text
+                # path uses (build_meta_model resolves the multimodal class
+                # from config.architectures) and load the processor stack
+                # cheaply; non-block params INCLUDING the whole vision tower
+                # (small, and needed real for calibration forwards and RTN)
+                # are materialized right after the meta-device guard in
+                # __init__, exactly like the text path. Falls back to the
+                # full mllm_load_model on any failure.
+                loaded_via_meta = False
+                if self._should_use_meta_skeleton(self._peek_config()):
+                    try:
+                        self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
+                            self.disk_stream_model_dir
+                        )
+                        from transformers import AutoProcessor
+
+                        self.processor = AutoProcessor.from_pretrained(
+                            self.disk_stream_model_dir, trust_remote_code=self.trust_remote_code
+                        )
+                        self.image_processor = getattr(self.processor, "image_processor", None)
+                        loaded_via_meta = True
+                    except Exception:
+                        logger.warning(
+                            "Building a multimodal meta skeleton for %s failed; " "falling back to a full CPU load.",
+                            self.disk_stream_model_dir,
+                            exc_info=True,
+                        )
+                        self._disk_stream_index = None
+                if not loaded_via_meta:
+                    self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
+                        self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+                    )
         elif isinstance(self.model, str):
             config = self.config
             try:
@@ -173,22 +229,6 @@ class ModelContext(BaseContext):
             self.is_model_patched = apply_model_monkey_patches(
                 model_name=self.model, trust_remote_code=self.trust_remote_code
             )
-            import transformers
-
-            if (
-                not self.is_model_patched
-                and config is not None
-                and is_moe_model_via_config(config)
-                and version.parse(transformers.__version__) >= version.parse("5.0.0")
-            ):
-                from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
-
-                model_type = getattr(config, "model_type", None)
-                if model_type is not None and model_type not in BUILTIN_MODULES:
-                    logger.warning(
-                        "This MoE model has not been optimized by AutoRound yet, which may result in high RAM usage, "
-                        "Please consider submitting an issue to https://github.com/intel/auto-round/issues"
-                    )
 
             # Reclaim temporary HTTP/config objects from model type detection
             # and AutoConfig loading before the large model allocation.  This
@@ -197,17 +237,183 @@ class ModelContext(BaseContext):
             gc.collect()
             _force_trim_malloc()
 
-            self.model, self.tokenizer = llm_load_model(
-                self.model,
-                platform=self.platform,
-                device="cpu",  # always load cpu first
-                model_dtype=self.model_dtype,
-                trust_remote_code=self.trust_remote_code,
-            )
+            if self._should_use_meta_skeleton(config):
+                try:
+                    self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
+                        self.disk_stream_model_dir
+                    )
+                except Exception:
+                    logger.warning(
+                        "Building a meta skeleton for %s failed; falling back to a normal full CPU load.",
+                        self.disk_stream_model_dir,
+                        exc_info=True,
+                    )
+                    self._disk_stream_index = None
+                    self.model, self.tokenizer = llm_load_model(
+                        self.model,
+                        platform=self.platform,
+                        device="cpu",
+                        model_dtype=self.model_dtype,
+                        trust_remote_code=self.trust_remote_code,
+                    )
+            else:
+                self.model, self.tokenizer = llm_load_model(
+                    self.model,
+                    platform=self.platform,
+                    device="cpu",  # always load cpu first
+                    model_dtype=self.model_dtype,
+                    trust_remote_code=self.trust_remote_code,
+                )
         elif self.tokenizer is None and not self.is_diffusion and self.need_calib:
             raise ValueError("A tokenizer must be set for non-str model input")
 
         self._model_loaded = True
+
+        # Clear tuning_device from any previous quantization passes.
+        # Previous AutoRound runs may have set tuning_device on modules to match
+        # their device_map (e.g., cpu). When re-quantizing with a different
+        # device_map, stale tuning_device causes device mismatches (WrapperLinear
+        # uses orig_layer.tuning_device instead of the current device_manager.device).
+        for m in self.model.modules():
+            if hasattr(m, "tuning_device"):
+                delattr(m, "tuning_device")
+
+    def _peek_config(self):
+        """Best-effort config lookup before the model object exists."""
+        if self.config is not None:
+            return self.config
+        if not isinstance(self.model, str):
+            return getattr(self.model, "config", None)
+        try:
+            return AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
+        except Exception as exc:
+            logger.debug("could not peek the config of %s: %s", self.model, exc)
+            return None
+
+    def _should_use_meta_skeleton(self, config) -> bool:
+        """Whether to build a meta skeleton instead of a full CPU load.
+
+        Deliberately narrow: this only targets ``transformers>=5`` models whose experts are
+        stored as a *fused* 3D ``nn.Parameter``. For those, the checkpoint holds one 2D
+        tensor per expert, ``from_pretrained`` stacks them into the fused parameter, and
+        AutoRound then has to split it back into per-expert ``nn.Linear`` to quantize it --
+        and splitting real tensors needs the fused tensor and its per-expert copies alive
+        at once, i.e. ~2x one experts module on top of an already fully resident model.
+
+        Building on meta makes that unfuse allocation-free and lets the tuning loop
+        materialize one block at a time from the checkpoint. Every other model (dense, or
+        a MoE that already ships as ``ModuleList`` of ``Linear``) has nothing to gain and
+        keeps the ordinary load path. ``AR_DISK_STREAM_MODEL=1`` forces this on for any
+        model; ``AR_DISABLE_META_LOAD=1`` turns the automatic choice off.
+        """
+        if envs.AR_DISK_STREAM_MODEL:
+            return True
+        if envs.AR_DISABLE_META_LOAD:
+            return False
+        # The debug "load only N layers" path (AR_DEBUG_LAYER_NUM) relies on the
+        # normal from_pretrained load so the truncated config is honored; the meta
+        # skeleton streams the full checkpoint block-by-block and would ignore it.
+        if envs.AR_DEBUG_LAYER_NUM is not None:
+            return False
+        if not isinstance(self.model, str):
+            return False
+        if version.parse(transformers.__version__) < version.parse("5.0.0"):
+            return False
+        if config is None:
+            return False
+
+        from auto_round.modeling.fused_moe.moe_experts_interface import config_has_fused_moe_experts
+        from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+
+        if not config_has_fused_moe_experts(config):
+            return False
+        # Families with a dedicated replacement drive their own (already memory-aware)
+        # materialization; do not reroute them through the meta skeleton.
+        model_type = getattr(config, "model_type", None)
+        if model_type in BUILTIN_MODULES:
+            logger.debug("meta-skeleton load skipped: %s has a dedicated MoE replacement", model_type)
+            return False
+
+        checkpoint_dir = self._resolve_local_checkpoint_dir()
+        if checkpoint_dir is None:
+            logger.debug("meta-skeleton load skipped: %s is not addressable as a local directory", self.model)
+            return False
+        self.disk_stream_model_dir = checkpoint_dir
+        logger.info(
+            "Fused-MoE checkpoint detected: building a meta skeleton and materializing weights per block "
+            "(set `AR_DISABLE_META_LOAD=1` to load the whole model on CPU instead)."
+        )
+        return True
+
+    def _resolve_local_checkpoint_dir(self) -> Optional[str]:
+        """Return a local directory holding the checkpoint shards, or ``None``.
+
+        ``SafetensorsIndex`` reads shards by path, so a hub repo id has to be resolved to
+        a local snapshot first. Only the metadata + weights are fetched, and nothing is
+        read into memory here -- ``from_pretrained`` would have downloaded the same files.
+        """
+        if os.path.isdir(self.model):
+            return self.model
+        if envs.AR_USE_MODELSCOPE:
+            return None
+        try:
+            from huggingface_hub import snapshot_download
+
+            return snapshot_download(
+                self.model,
+                allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json", "*.txt", "*.model"],
+            )
+        except Exception as exc:
+            logger.debug("could not resolve %s to a local snapshot: %s", self.model, exc)
+            return None
+
+    def _build_disk_stream_model(self, model_name: str):
+        """Build an all-meta skeleton instead of
+        fully materializing the checkpoint on CPU RAM. Left fully meta here
+        (not even embeddings/lm_head materialized yet) so it passes the
+        existing ``unsupported_meta_device`` guard, which only allows models
+        that are either fully real or fully meta (with ``model.path`` set).
+        Non-block params are materialized for real right after that guard
+        runs, in ``__init__``, via ``_materialize_disk_stream_non_block_params``.
+        """
+        from auto_round.utils.disk_stream_util import build_meta_model
+
+        model, tokenizer, index = build_meta_model(model_name, trust_remote_code=self.trust_remote_code)
+        model.path = model_name
+        # Stash the index on the model object
+        # itself so downstream code that only has a reference to the model
+        # (not this ModelContext) -- e.g. AutoScheme's gen_layer_config, which
+        # runs after ModelContext has already turned the string into an object
+        # -- can still find it instead of re-scanning the checkpoint.
+        model._disk_stream_index = index
+        return model, tokenizer, index
+
+    def _materialize_disk_stream_non_block_params(self) -> None:
+        """Materialize embeddings/lm_head/norm (everything outside the
+        quantizable decoder blocks) for real, leaving the (typically 100+GB
+        combined) decoder blocks on meta for later per-block materialize/free
+        by OffloadManager. No-op unless the model was built via
+        ``_build_disk_stream_model``."""
+        if self._disk_stream_index is None:
+            return
+        from auto_round.utils import flatten_list, get_block_names
+        from auto_round.utils.disk_stream_util import materialize_non_block_params
+
+        block_prefixes = flatten_list(get_block_names(self.model, quant_vision=self.quant_nontext_module))
+        materialize_non_block_params(self.model, block_prefixes, self._disk_stream_index, device="cpu")
+
+        # Tied output embeddings (e.g. lm_head.weight
+        # tied to embed_tokens.weight) have no entry of their own in the checkpoint's
+        # safetensors index -- the on-disk format only stores the input embedding and
+        # relies on the model re-establishing the tie at load time. A normal
+        # from_pretrained() handles this automatically; our meta-skeleton +
+        # per-tensor materialize path does not, so without this the tied output
+        # module is silently left on meta (materialize_non_block_params only logs a
+        # warning and moves on). Re-tying now, after the real input embedding has
+        # been materialized above, makes the tied module real too by sharing the
+        # same (now real) Parameter object.
+        if hasattr(self.model, "tie_weights"):
+            self.model.tie_weights()
 
     def _import_custom_moe_replacements(self, model_or_config) -> None:
         model_type = getattr(model_or_config, "model_type", None)

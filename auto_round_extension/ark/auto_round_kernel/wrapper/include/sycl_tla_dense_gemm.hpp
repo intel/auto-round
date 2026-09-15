@@ -30,6 +30,7 @@
 #endif
 
 #include "utils.hpp"
+#include "sycl_tla_common.hpp"
 
 namespace ark {
 
@@ -39,27 +40,30 @@ namespace dense_gemm_detail {
 
 using namespace cute;
 
-template <class ATensor, class BTensor, class CTensor, class TiledMMA, class BiasElement>
+template <bool HasBias, class ATensor, class BTensor, class CTensor, class TiledMMA, class BiasElement>
 void gemm_device_impl(ATensor const& A, BTensor const& B, CTensor& C, TiledMMA const& mma,
                       const BiasElement* bias_ptr) {
+  /* Get workgroup and local IDs */
   auto item = sycl::ext::oneapi::this_work_item::get_nd_item<2>();
   auto wg_m = int(item.get_group(1));
   auto wg_n = int(item.get_group(0));
   auto local_id = int(item.get_local_id(0));
 
-  Tensor cA = make_identity_tensor(A.shape());
-  Tensor cB = make_identity_tensor(B.shape());
-  Tensor cC = make_identity_tensor(C.shape());
+  /* Create proxy coordinate tensors for each global tensor */
+  Tensor cA = make_identity_tensor(A.shape());  // (M,K)
+  Tensor cB = make_identity_tensor(B.shape());  // (N,K)
+  Tensor cC = make_identity_tensor(C.shape());  // (M,N)
 
+  /* Split GEMM into workgroup tiles, and identify our workgroup's tile (wg_coord) */
   auto wg_tile = mma.tile_mnk();
   auto wg_coord = make_coord(wg_m, wg_n, 0);
 
-  Tensor gA = local_tile(cA, select<0, 2>(wg_tile), make_coord(wg_m, _));
-  Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(wg_n, _));
-  Tensor gC = local_tile(cC, wg_tile, wg_coord, Step<_1, _1, X>{});
+  Tensor gA = local_tile(cA, select<0, 2>(wg_tile), make_coord(wg_m, _));  // (BLK_M,BLK_K,k)
+  Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(wg_n, _));  // (BLK_N,BLK_K,k)
+  Tensor gC = local_tile(cC, wg_tile, wg_coord, Step<_1, _1, X>{});        // (BLK_M,BLK_N)
 
-  auto copy_a = make_block_2d_copy_A(XE_LOAD_2D<16, 8, 32, 32>{}, mma, A);
-  auto copy_b = make_block_2d_copy_B(XE_LOAD_2D_TRANSPOSE<32, 16, 8>{}, mma, B);
+  auto copy_a = make_block_2d_copy_A(mma, A);
+  auto copy_b = make_block_2d_copy_B(mma, B);
   auto copy_c = make_block_2d_copy_D(mma, C);
 
   auto thr_mma = mma.get_slice(local_id);
@@ -118,30 +122,41 @@ void gemm_device_impl(ATensor const& A, BTensor const& B, CTensor& C, TiledMMA c
   }
 
   using ElementOutput = typename CTensor::element_type;
-  if constexpr (is_same_v<ElementOutput, float>) {
-    copy(copy_c, tCrC, tCgC);
-  } else {
-    Tensor tCrD = make_tensor_like<ElementOutput>(tCrC);
 
+  if constexpr (!HasBias && is_same_v<ElementOutput, float>) {
+    copy(copy_c, tCrC, tCgC);
+    return;
+  }
+
+  Tensor tCrD = make_tensor_like<ElementOutput>(tCrC);
+
+  if constexpr (HasBias) {
     CUTE_UNROLL
     for (int i = 0; i < size(tCrC); ++i) {
       auto coord = tCgC(i);
       int col = int(get<1>(coord));
       float value = static_cast<float>(tCrC(i));
-      if (bias_ptr != nullptr && col < int(shape<1>(C))) {
+      if (col < int(shape<1>(C))) {
         value += static_cast<float>(bias_ptr[col]);
       }
       tCrD(i) = static_cast<ElementOutput>(value);
     }
-
-    copy(copy_c, tCrD, tCgC);
+  } else {
+    CUTE_UNROLL
+    for (int i = 0; i < size(tCrC); ++i) {
+      tCrD(i) = static_cast<ElementOutput>(tCrC(i));
+    }
   }
+
+  copy(copy_c, tCrD, tCgC);
 }
 
 template <typename TA, typename TB, typename TC>
 auto choose_mma_op() {
   if constexpr (is_complete_v<XE_DPAS_TT<8, TC, TA, TB>>) {
     return XE_DPAS_TT<8, TC, TA, TB>{};
+  } else if constexpr (is_same_v<TA, float> && is_same_v<TB, float>) {
+    return XE_DPAS_TT<8, float, cute::tfloat32_t>{};
   } else if constexpr (is_same_v<TA, cute::bfloat16_t>) {
     return XE_DPAS_TT<8, float, cute::bfloat16_t>{};
   } else {
@@ -169,10 +184,10 @@ auto choose_tiled_mma_tile(ATensor const& A, BTensor const& B, CTensor const&) {
   return MMA{};
 }
 
-template <class, class, class, int, int, class, char, char>
+template <bool, class, class, class, int, int, class, char, char>
 class DenseGemmStoreKernelName;
 
-template <int TileM, int TileN, class SGLayout, class ATensor, class BTensor, class CTensor, typename TA,
+template <bool HasBias, int TileM, int TileN, class SGLayout, class ATensor, class BTensor, class CTensor, typename TA,
           typename TB, typename BiasElement, char layoutA, char layoutB>
 void gemm_cute_store_tile(sycl::queue* q, ATensor const& A, BTensor const& B, CTensor& C,
                           const BiasElement* bias_ptr) {
@@ -190,15 +205,29 @@ void gemm_cute_store_tile(sycl::queue* q, ATensor const& A, BTensor const& B, CT
 
   syclex::properties kernel_props{syclex::sub_group_size<16>, intelex::grf_size<256>};
 
-  auto event = q->parallel_for<
-      DenseGemmStoreKernelName<TA, TB, BiasElement, TileM, TileN, SGLayout, layoutA, layoutB>>(
+  q->parallel_for<DenseGemmStoreKernelName<HasBias, TA, TB, BiasElement, TileM, TileN, SGLayout, layoutA, layoutB>>(
       sycl::nd_range<2>(global, local), kernel_props,
-      [=](auto) { gemm_device_impl(A, B, C, mma, bias_ptr); });
+      [=](auto) { gemm_device_impl<HasBias>(A, B, C, mma, bias_ptr); });
 
 }
 
+using DenseSmallTileSG = Layout<Shape<_1, _4, _1>, Stride<_0, _1, _0>>;
+using DenseSmallMidTileSG = Layout<Shape<_2, _4, _1>, Stride<_4, _1, _0>>;
+using DenseMediumTileSG = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
+using DenseLargeTileSG = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
 
-template <typename Element>
+template <bool HasBias, int TileM, int TileN, class SGLayout, typename Element>
+void run_dense_gemm_fixed_tile(sycl::queue* q, int m, int n, int k, const Element* a_ptr, const Element* b_ptr,
+                               Element* c_ptr, const Element* bias_ptr) {
+  auto A = make_tensor(make_gmem_ptr(const_cast<Element*>(a_ptr)), make_shape(m, k), make_stride(k, _1{}));
+  auto B = make_tensor(make_gmem_ptr(const_cast<Element*>(b_ptr)), make_shape(n, k), make_stride(k, _1{}));
+  auto C = make_tensor(make_gmem_ptr(c_ptr), make_shape(m, n), make_stride(n, _1{}));
+  gemm_cute_store_tile<HasBias, TileM, TileN, SGLayout, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+                       'R', 'R'>(q, A, B, C, bias_ptr);
+}
+
+
+template <bool HasBias, typename Element>
 void run_dense_gemm_tuned_tile(sycl::queue* q, int m, int n, int k, const Element* a_ptr, const Element* b_ptr,
                                Element* c_ptr, const Element* bias_ptr) {
   auto A = make_tensor(make_gmem_ptr(const_cast<Element*>(a_ptr)), make_shape(m, k), make_stride(k, _1{}));
@@ -211,16 +240,16 @@ void run_dense_gemm_tuned_tile(sycl::queue* q, int m, int n, int k, const Elemen
   using LargeTileSG = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
   
   if (m < 32) {
-    gemm_cute_store_tile<8, 128, SmallTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+    gemm_cute_store_tile<HasBias, 8, 128, SmallTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
                          'R', 'R'>(q, A, B, C, bias_ptr);
   } else if (m < 128) {
-    gemm_cute_store_tile<64, 128, SmallMidTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+    gemm_cute_store_tile<HasBias, 64, 128, SmallMidTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
                          'R', 'R'>(q, A, B, C, bias_ptr);
   } else if (m <= 1024) {
-    gemm_cute_store_tile<128, 128, MediumTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+    gemm_cute_store_tile<HasBias, 128, 128, MediumTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
                          'R', 'R'>(q, A, B, C, bias_ptr);
   } else {
-    gemm_cute_store_tile<256, 256, LargeTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+    gemm_cute_store_tile<HasBias, 256, 256, LargeTileSG, decltype(A), decltype(B), decltype(C), Element, Element, Element,
                          'R', 'R'>(q, A, B, C, bias_ptr);
   }
 }
@@ -228,50 +257,14 @@ void run_dense_gemm_tuned_tile(sycl::queue* q, int m, int n, int k, const Elemen
 template <typename Element>
 void run_dense_gemm(sycl::queue* q, int m, int n, int k, const Element* a_ptr, const Element* b_ptr,
                                 Element* c_ptr, const Element* bias_ptr) {
-  run_dense_gemm_tuned_tile(q, m, n, k, a_ptr, b_ptr, c_ptr, bias_ptr);
+  if (bias_ptr != nullptr) {
+    run_dense_gemm_tuned_tile<true>(q, m, n, k, a_ptr, b_ptr, c_ptr, bias_ptr);
+  } else {
+    run_dense_gemm_tuned_tile<false>(q, m, n, k, a_ptr, b_ptr, c_ptr, bias_ptr);
+  }
 }
 
 }  // namespace dense_gemm_detail
-
-inline void sycl_tla_dense_gemm(sycl::queue* q, int m, int n, int k, const void* a, BTLA_DTYPE at,
-                                           const void* b, BTLA_DTYPE bt, void* c, BTLA_DTYPE ct, const void* bias,
-                                           bool BT) {
-  if (!q) {
-    throw std::invalid_argument("sycl_tla_dense_gemm: stream must be a valid SYCL queue");
-  }
-  if (!BT) {
-    throw std::invalid_argument("sycl_tla_dense_gemm: only the A @ B.T contract is supported");
-  }
-  if (!a || !b || !c) {
-    throw std::invalid_argument("sycl_tla_dense_gemm: input and output pointers must not be null");
-  }
-  if (m <= 0 || n <= 0 || k <= 0) {
-    return;
-  }
-  if (at != bt) {
-    throw std::invalid_argument("sycl_tla_dense_gemm: A and B must use the same dtype");
-  }
-  if (ct != at) {
-    throw std::invalid_argument("sycl_tla_dense_gemm: output dtype must match input dtype");
-  }
-
-  switch (at) {
-    case BTLA_DTYPE::F16:
-      dense_gemm_detail::run_dense_gemm(
-          q, m, n, k, static_cast<const cute::half_t*>(a), static_cast<const cute::half_t*>(b),
-          static_cast<cute::half_t*>(c), static_cast<const cute::half_t*>(bias));
-      return;
-
-    case BTLA_DTYPE::BF16:
-      dense_gemm_detail::run_dense_gemm(
-          q, m, n, k, static_cast<const cute::bfloat16_t*>(a), static_cast<const cute::bfloat16_t*>(b),
-          static_cast<cute::bfloat16_t*>(c), static_cast<const cute::bfloat16_t*>(bias));
-      return;
-
-    default:
-      throw std::invalid_argument("sycl_tla_dense_gemm: only FP16 and BF16 are supported");
-  }
-}
 
 #endif  // ARK_XPU && ARK_SYCL_TLA
 

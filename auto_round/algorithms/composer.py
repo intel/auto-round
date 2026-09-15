@@ -41,6 +41,7 @@ from auto_round.algorithms.config_resolver import (
     resolve_shared_config_values,
     split_quantization_configs,
 )
+from auto_round.algorithms.utils import _has_nvfp4_layer
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
 from auto_round.utils.device_manager import device_manager
@@ -77,6 +78,7 @@ class BlockContext:
     is_mllm: bool = False  # fail-fast gate for algorithms that don't support MLLM
     is_diffusion: bool = False  # fail-fast gate for algorithms that don't support diffusion
     pbar: Any = None
+    block_cnt: int = 0  # total number of blocks being quantized in this run
 
 
 # ---------------------------------------------------------------------------
@@ -86,9 +88,10 @@ class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
     a list of algorithm config objects and an optional compressor.
 
-    The ``preprocessors`` list is order-sensitive: algorithms are applied in
-    the listed order (e.g. ``[Rotation, AWQ]``).  There must be **exactly one**
-    ``block_quantizer`` (the terminal weight-compression step).
+    The ``preprocessors`` list is order-sensitive: preprocessors are applied in
+    the listed order (e.g. ``[Rotation, AWQ]``).  The block quantizer is always
+    the terminal weight-compression step, regardless of its position in the
+    input config list.  There must be **exactly one** ``block_quantizer``.
 
     Usage::
 
@@ -128,12 +131,9 @@ class AlgorithmComposer:
         # ``RotationPreprocessor`` member below so the orchestrator stays
         # rotation-agnostic and every rotation owns its own lifecycle.
         #
-        # Whether rotation runs per-block (layer-wise) is now a field on each
-        # rotation config (``BaseRotationConfig.layerwise``). The deprecated
-        # top-level ``layerwise_rotation`` kwarg is still honoured as an override
-        # for backward compatibility; see ``_legacy_layerwise_rotation`` below.
+        # Whether rotation runs per-block (layer-wise) is a field on each
+        # rotation config (``BaseRotationConfig.layerwise``).
         self._rotation_configs = [c for c in configs if isinstance(c, BaseRotationConfig)]
-        self._legacy_layerwise_rotation = bool(getattr(orchestrator, "layerwise_rotation", False))
 
         _, block_quantizer_configs = split_quantization_configs(configs)
         if not block_quantizer_configs:
@@ -193,11 +193,26 @@ class AlgorithmComposer:
         can_compile_block_forward = False
         self.block_quantizer = block_quantizers[0]
         if orchestrator is not None:
-            if self.block_quantizer is not None and self.block_quantizer.can_compile_block_forward():
-                user_torch_compile = getattr(
-                    getattr(orchestrator, "compress_context", None), "enable_torch_compile", False
+            user_torch_compile = bool(
+                getattr(getattr(orchestrator, "compress_context", None), "enable_torch_compile", False)
+            )
+            rotation_configs = getattr(orchestrator, "rotation_configs", ())
+            blockers = []
+            if not self.block_quantizer.can_compile_block_forward():
+                blockers.append(type(self.block_quantizer).__name__)
+            for component in [*self.preprocessors, *rotation_configs]:
+                if not getattr(component, "can_compile_block_forward", lambda: True)():
+                    blockers.append(type(component).__name__)
+            can_compile_block_forward = user_torch_compile and not blockers
+            if user_torch_compile and blockers:
+                logger.info(
+                    "Block-forward torch.compile is disabled because %s is incompatible.",
+                    ", ".join(blockers),
                 )
-                can_compile_block_forward = bool(user_torch_compile)
+
+            if _has_nvfp4_layer(orchestrator):
+                can_compile_block_forward = False
+                logger.info("Block-forward torch.compile is disabled because at least one quantized layer uses NVFP4.")
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
@@ -230,6 +245,7 @@ class AlgorithmComposer:
 
         Returns a list of hook handles that the caller must remove when done.
         """
+        from auto_round.compressors.utils import is_nv_fp
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
         is_act_nv_fp = getattr(self.block_quantizer.config, "is_act_nv_fp", False)
@@ -238,16 +254,18 @@ class AlgorithmComposer:
             input = input[0] if isinstance(input, (tuple, list)) else input
             if input.numel() == 0:
                 return
+            module_act_data_type = getattr(module, "act_data_type", None) or getattr(module, "data_type", None)
+            is_module_act_nv_fp = is_nv_fp(module_act_data_type) if module_act_data_type else is_act_nv_fp
             input, _, _ = reshape_pad_tensor_by_group_size(input, module.act_group_size)
             act_max = torch.max(torch.abs(input), dim=-1).values
             if not hasattr(module, "act_max") or module.act_max.numel() == 0:
                 module.act_max = act_max
-                if is_act_nv_fp:
+                if is_module_act_nv_fp:
                     max_val = act_max.max()
                     module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
                 return
             act_max = act_max.to(module.act_max.device)
-            if is_act_nv_fp:
+            if is_module_act_nv_fp:
                 max_val = torch.max(act_max.max(), module.act_max.max())
                 module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
             else:
@@ -300,7 +318,7 @@ class AlgorithmComposer:
         handles.extend(self.block_quantizer.register_qinput_forward_hooks(block))
         return handles
 
-    def _attach_act_max_for_outside_layer(self, layer: "torch.nn.Module", fp_input, q_input) -> None:
+    def _attach_act_max_for_outside_layer(self, layer: "torch.nn.Module", fp_inputs, q_inputs) -> None:
         """Compute and attach act_max for an outside-block layer from cached inputs.
 
         Mirrors the hook-based act_max collection done for in-block layers, but
@@ -308,14 +326,14 @@ class AlgorithmComposer:
 
         Args:
             layer: The layer module to attach act_max to.
-            fp_input: List of FP input tensors collected during calibration.
-            q_input: Optional list of quantized input tensors; used instead of
-                ``fp_input`` when provided.
+            fp_inputs: List of FP input tensors collected during calibration.
+            q_inputs: Optional list of quantized input tensors; used instead of
+                ``fp_inputs`` when provided.
         """
         from auto_round.compressors.utils import is_nv_fp
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
-        target_input = q_input or fp_input
+        target_input = q_inputs or fp_inputs
         act_group_size = getattr(layer, "act_group_size")
         if act_group_size is None:
             act_group_size = layer.group_size
@@ -366,7 +384,8 @@ class AlgorithmComposer:
         input_others,
         block_ctx: BlockContext,
         q_inputs=None,
-        valid_token_mask=None,
+        input_ids=None,
+        reference_output=None,
         **kwargs,
     ) -> tuple:
         """Run the full per-block algorithm pipeline: calibration → quantization → collection.
@@ -384,7 +403,7 @@ class AlgorithmComposer:
             input_ids: Full-precision (FP) cached inputs.
             input_others: Auxiliary kwargs (attention_mask, position_ids, …).
             ctx: Per-block lifecycle context (:class:`BlockContext`).
-            q_input: Quantized-input tensors from the previous block, or ``None``.
+            q_inputs: Quantized-input tensors from the previous block, or ``None``.
             valid_token_mask: Optional mask for per-token loss weighting.
 
         Returns:
@@ -426,13 +445,13 @@ class AlgorithmComposer:
         for pre in self.preprocessors:
             pre.pre_quantize_block(block_ctx)
 
-        reference_output = None
         reference_next_input = None
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
         if fp_inputs is not None:
             with torch.no_grad():
                 quant_hooks = self._get_fp_act_hooks(block)
-                reference_output = block_forward_fn(block, fp_inputs, input_others)
+                if reference_output is None:
+                    reference_output = block_forward_fn(block, fp_inputs, input_others)
                 reference_next_input = getattr(block_forward_fn, "last_output_dict", None) or reference_output
                 for h in quant_hooks:
                     h.remove()
@@ -457,7 +476,7 @@ class AlgorithmComposer:
 
                 if is_nv_fp(act_data_type) or not act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
-                update_block_global_scale_if_needed(block_ctx.model, data_type, group_size)
+                update_block_global_scale_if_needed(block, data_type, group_size)
 
         if q_inputs is not None and fp_inputs is not q_inputs:
             clear_memory(fp_inputs)
@@ -474,7 +493,7 @@ class AlgorithmComposer:
             reference_output,
             q_inputs,
             block_ctx,
-            valid_token_mask=valid_token_mask,
+            input_ids=input_ids,
         )
 
         # ── Step 5: post_quantize_block ─────────────────────────────────────────
@@ -494,10 +513,10 @@ class AlgorithmComposer:
     def compress_layer_outside_block(
         self,
         layer: "torch.nn.Module",
-        fp_input=None,
-        q_input=None,
-        valid_token_mask=None,
+        fp_inputs=None,
+        q_inputs=None,
         disable_opt_rtn=None,  # TODO wenhuach rename this to search_init_scale
+        input_ids=None,
     ) -> None:
         """Quantize a single layer that lives outside transformer blocks.
 
@@ -508,14 +527,14 @@ class AlgorithmComposer:
         Args:
             layer: The layer module to quantize. Must have a ``global_name``
                 attribute.
-            fp_input: Per-sample FP activations for calibration, or ``None``
+            fp_inputs: Per-sample FP activations for calibration, or ``None``
                 to fall back to zero-shot RTN.
-            q_input: Optional quantized activations from a previous stage.
+            q_inputs: Optional quantized activations from a previous stage.
             valid_token_mask: Per-sample token masks for loss weighting.
             disable_opt_rtn: Override optimized-RTN; ``None`` defers to quantizer config.
         """
         # Attach act_max for static activation quantization when inputs are available.
-        if fp_input is not None:
+        if fp_inputs is not None:
             from auto_round.compressors.utils import is_nv_fp
 
             act_data_type = getattr(layer, "act_data_type")
@@ -523,7 +542,7 @@ class AlgorithmComposer:
                 act_data_type = "fp"
             act_dynamic = getattr(layer, "act_dynamic", True)
             if is_nv_fp(act_data_type) or not act_dynamic:
-                self._attach_act_max_for_outside_layer(layer, fp_input, q_input)
+                self._attach_act_max_for_outside_layer(layer, fp_inputs, q_inputs)
 
         # Infrastructure: move layer to the tuning device before handing off to the quantizer.
         device = getattr(layer, "tuning_device", device_manager.device)  # TODO this should be handled by compressor
@@ -531,16 +550,23 @@ class AlgorithmComposer:
 
         return self.block_quantizer.quantize_layer_outside_block(
             layer,
-            fp_input=fp_input,
-            q_input=q_input,
-            valid_token_mask=valid_token_mask,
+            fp_inputs=fp_inputs,
+            q_inputs=q_inputs,
             disable_opt_rtn=disable_opt_rtn,
+            input_ids=input_ids,
         )
 
     # ── Convenience act-calib helpers ────────────────────────────────────────
 
     def members(self) -> list:
-        """Return all algorithm members: preprocessors, rotations, then the block quantizer."""
+        """Return the canonical execution order: preprocessors, rotations, then block quantizer.
+
+        Preprocessor order follows the input config list. The block quantizer
+        is always returned last, so its position in that input list has no
+        effect on pipeline execution. Rotation members sit between the
+        preprocessors and the block quantizer so ``prepare_run`` / ``finalize_run``
+        cover them like any other member.
+        """
         return list(self.preprocessors) + list(self._rotation_members) + [self.block_quantizer]
 
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
@@ -618,21 +644,11 @@ class AlgorithmComposer:
             self._rotation_prepared = True
             return model
 
-        if self._legacy_layerwise_rotation:
-            logger.warning(
-                "`layerwise_rotation` is deprecated; set `layerwise=True` on the rotation "
-                "config instead (e.g. SpinQuantConfig(layerwise=True) or "
-                "RotationConfig(layerwise=True)). The top-level flag will be removed in a "
-                "future release."
-            )
-
         data_type = self._resolve_rotation_data_type()
         logger.info("Applying Hadamard transform to the model.")
         for rotation_member in self._rotation_members:
-            # ``None`` lets the member honour its own config; the deprecated
-            # top-level flag, when set, forces layer-wise for every rotation.
-            layerwise_override = True if self._legacy_layerwise_rotation else None
-            model = rotation_member.rotate_model(model, data_type=data_type, layerwise=layerwise_override)
+            # ``None`` lets the member honour its own config (``layerwise`` field).
+            model = rotation_member.rotate_model(model, data_type=data_type, layerwise=None)
 
         self._rotation_prepared = True
         return model

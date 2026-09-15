@@ -116,6 +116,16 @@ using ::ark::moe_dpas_fp8::cute_scalar_t;
 using ::ark::moe_dpas_fp8::make_moe_tensor;
 
 // ---------------------------------------------------------------------------
+// Work-group counter served from the shared device scratch pool.
+//
+// Shared with the FP8 path -- see `moe_dpas_fp8::get_atomic_scratch_buffer` for
+// the rationale (one `int32_t` slot handed out by `DeviceMemoryPool` and reused
+// across calls, instead of a `sycl::malloc_device` / `sycl::free` pair per
+// dispatch, each of which forces a queue synchronization).
+// ---------------------------------------------------------------------------
+using ::ark::moe_dpas_fp8::get_atomic_scratch_buffer;
+
+// ---------------------------------------------------------------------------
 // Variant A -- per-tensor INT8 mainloop.
 //
 // Adapted from `moe_dpas_fp8::xe_gemm<>`. Structural differences:
@@ -761,6 +771,28 @@ void MoEGEMMLauncher_int(sycl::queue& stream, const ElementA* activations,
 // Scale pointer `[E]` FP32 (one per-expert scalar).
 // ---------------------------------------------------------------------------
 
+template <typename ScalarT, class Policy>
+void moe_prefill_int_dpas_per_tensor_dispatch_policy(
+    sycl::queue* q, const ScalarT* activations, const int8_t* weights_KN,
+    const float* scales_e, ScalarT* outputs, const int* num_tokens_per_expert,
+    int E, int N, int K, int total_tokens) {
+  if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
+
+  compat::set_default_queue(*q);
+
+  using ElementA = cute_scalar_t<ScalarT>;
+  const auto* activations_ca =
+      reinterpret_cast<const ElementA*>(activations);
+  auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
+
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
+
+  MoEGEMMLauncher_int<'R', 'R', Policy, ScaleMode::kPerTensor>(
+      *q, activations_ca, weights_KN, scales_e,
+      static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
+      num_tokens_per_expert, E, /*group_size=*/0, atomic_buffer);
+}
+
 template <typename ScalarT>
 void moe_prefill_int_dpas_per_tensor_dispatch(
     sycl::queue* q, const ScalarT* activations, const int8_t* weights_KN,
@@ -780,11 +812,7 @@ void moe_prefill_int_dpas_per_tensor_dispatch(
 
   int A_avg_M = total_tokens / E;
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_prefill_int_dpas(per-tensor): failed to allocate atomic buffer");
-  }
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
 #define ARK_DPAS_INT_PT_LAUNCH(policy)                                         \
   MoEGEMMLauncher_int<'R', 'R', policy, ScaleMode::kPerTensor>(                \
@@ -794,14 +822,12 @@ void moe_prefill_int_dpas_per_tensor_dispatch(
 
   if (A_avg_M <= 8) {
     ARK_DPAS_INT_PT_LAUNCH(dpas_w8a16_policy_m_16);
-  } else if (A_avg_M <= 32) {
+  } else if (A_avg_M <= 512) {
     ARK_DPAS_INT_PT_LAUNCH(dpas_w8a16_policy_m_32);
   } else {
     ARK_DPAS_INT_PT_LAUNCH(dpas_w8a16_policy);
   }
 #undef ARK_DPAS_INT_PT_LAUNCH
-
-  sycl::free(atomic_buffer, *q);
 }
 
 // ---------------------------------------------------------------------------
@@ -818,6 +844,34 @@ void moe_prefill_int_dpas_per_tensor_dispatch(
 // Scales `[E, N, K/group_size]` in act dtype (half / bfloat16), same layout
 // as the FP8 per-group path.
 // ---------------------------------------------------------------------------
+
+template <typename ScalarT, class Policy>
+void moe_prefill_int_dpas_per_group_dispatch_policy(
+    sycl::queue* q, const ScalarT* activations, const int8_t* weights_NK,
+    const ScalarT* scales, ScalarT* outputs,
+    const int* num_tokens_per_expert, int E, int N, int K, int group_size,
+    int total_tokens) {
+  if (E == 0 || N == 0 || K == 0 || total_tokens == 0) return;
+  if (K % group_size != 0) {
+    throw std::invalid_argument(
+        "moe_prefill_int_dpas(per-group): K must be a multiple of group_size");
+  }
+
+  compat::set_default_queue(*q);
+
+  using ElementA = cute_scalar_t<ScalarT>;
+  const auto* activations_ca =
+      reinterpret_cast<const ElementA*>(activations);
+  const auto* scales_ca = reinterpret_cast<const ElementA*>(scales);
+  auto* outputs_ca = reinterpret_cast<ElementA*>(outputs);
+
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
+
+  MoEGEMMLauncher_int<'R', 'C', Policy, ScaleMode::kPerGroup>(
+      *q, activations_ca, weights_NK, scales_ca,
+      static_cast<const ElementA*>(nullptr), outputs_ca, N, K,
+      num_tokens_per_expert, E, group_size, atomic_buffer);
+}
 
 template <typename ScalarT>
 void moe_prefill_int_dpas_per_group_dispatch(
@@ -843,11 +897,7 @@ void moe_prefill_int_dpas_per_group_dispatch(
 
   int A_avg_M = total_tokens / E;
 
-  int32_t* atomic_buffer = sycl::malloc_device<int32_t>(1, *q);
-  if (atomic_buffer == nullptr) {
-    throw std::runtime_error(
-        "moe_prefill_int_dpas(per-group): failed to allocate atomic buffer");
-  }
+  int32_t* atomic_buffer = get_atomic_scratch_buffer(q);
 
 #define ARK_DPAS_INT_PG_LAUNCH_SYM(policy)                                     \
   MoEGEMMLauncher_int<'R', 'C', policy, ScaleMode::kPerGroup>(                 \
@@ -857,14 +907,12 @@ void moe_prefill_int_dpas_per_group_dispatch(
 
   if (A_avg_M <= 8) {
     ARK_DPAS_INT_PG_LAUNCH_SYM(dpas_w8a16_policy_m_16);
-  } else if (A_avg_M <= 32) {
+  } else if (A_avg_M <= 512) {
     ARK_DPAS_INT_PG_LAUNCH_SYM(dpas_w8a16_policy_m_32);
   } else {
     ARK_DPAS_INT_PG_LAUNCH_SYM(dpas_w8a16_policy);
   }
 #undef ARK_DPAS_INT_PG_LAUNCH_SYM
-
-  sycl::free(atomic_buffer, *q);
 }
 
 // ---------------------------------------------------------------------------

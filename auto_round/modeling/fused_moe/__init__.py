@@ -18,11 +18,17 @@ from auto_round.modeling.fused_moe.replace_modules import (
     materialize_model_,
     release_original_module_,
 )
+from auto_round.modeling.fused_moe.grouped_experts import (
+    GROUPED_LINEAR_IMPL,
+    grouped_linear_experts_forward,
+)
 from auto_round.modeling.fused_moe.moe_experts_interface import (
+    LINEAR_LOOP_IMPL,
     is_linear_loop_available,
     linear_loop_experts_forward,
     prepare_model_for_moe_quantization,
     register_linear_loop_experts,
+    resolve_experts_implementation,
 )
 
 __all__ = [
@@ -32,7 +38,11 @@ __all__ = [
     "release_original_module_",
     # Transformers-native MOE integration (transformers 5.0+)
     "linear_loop_experts_forward",
+    "grouped_linear_experts_forward",
     "register_linear_loop_experts",
     "prepare_model_for_moe_quantization",
+    "resolve_experts_implementation",
     "is_linear_loop_available",
+    "LINEAR_LOOP_IMPL",
+    "GROUPED_LINEAR_IMPL",
 ]

@@ -62,25 +62,32 @@ def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: 
     fp8_pack_layer(layer_name, model, data_type, device, unsqueeze=True)
 
 
-def _construct_fp8_args():
+def _get_fp8_strategy(granularity: str = "tensor"):
+    from compressed_tensors.quantization import QuantizationStrategy  # pylint: disable=E0401
+
+    if granularity == "head":
+        return QuantizationStrategy.ATTN_HEAD
+    return QuantizationStrategy.TENSOR
+
+
+def _construct_fp8_args(granularity: str = "tensor"):
     from compressed_tensors.quantization import (  # pylint: disable=E0401
         QuantizationArgs,
-        QuantizationStrategy,
         QuantizationType,
     )
 
     return QuantizationArgs(
         num_bits=8,
         type=QuantizationType.FLOAT,
-        strategy=QuantizationStrategy.TENSOR,
+        strategy=_get_fp8_strategy(granularity),
         symmetric=True,
         dynamic=False,
     )
 
 
-def _construct_kv_scheme():
+def _construct_kv_scheme(granularity: str = "tensor"):
     """Construct the default KV cache quantization scheme for FP8_STATIC export."""
-    default_kv_scheme = _construct_fp8_args()
+    default_kv_scheme = _construct_fp8_args(granularity)
 
     logger.warning_once(
         "Using default KV cache scheme: %s. "
@@ -119,20 +126,23 @@ def _get_attention_targets(model: torch.nn.Module) -> list[str]:
     return attention_targets
 
 
-def _append_attention_group(config_groups: dict, model: torch.nn.Module) -> None:
-    from compressed_tensors.quantization import QuantizationScheme  # pylint: disable=E0401
+def _get_attention_config(model: torch.nn.Module, granularity: str = "tensor") -> dict | None:
+    """Return attention FP8 config as a standalone dict for the top-level
+    ``attention_input_activations`` field.
 
+    Keeping this out of ``config_groups`` prevents compressed_tensors from
+    trying to compress attention modules (which have no weight tensor to
+    compress) during model loading.
+    """
     attention_targets = _get_attention_targets(model)
     if len(attention_targets) == 0:
-        logger.warning("Skipping FP8 attention config group because no attention modules were detected.")
-        return
+        logger.warning("Skipping FP8 attention config because no attention modules were detected.")
+        return None
 
-    group_name = f"group_{len(config_groups)}"
-    config_groups[group_name] = QuantizationScheme(
-        targets=attention_targets,
-        input_activations=_construct_fp8_args(),
-        weights=None,
-    )
+    return {
+        "targets": attention_targets,
+        "input_activations": _construct_fp8_args(granularity).model_dump(),
+    }
 
 
 def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
@@ -234,18 +244,15 @@ def save_quantized_as_static_fp(
     config_groups = {}
     scheme = QuantizationScheme(targets=targets, **scheme_args)
     config_groups["group_0"] = scheme
-    if _use_fp8_attention(serialization_dict.get("static_attention_dtype", None)):
-        _append_attention_group(config_groups, model)
+    static_attention_granularity = serialization_dict.get("static_attention_granularity", "tensor")
+    static_kv_granularity = serialization_dict.get("static_kv_granularity", "tensor")
+    use_fp8_attention = _use_fp8_attention(serialization_dict.get("static_attention_dtype", None))
+    use_fp8_kv = _use_fp8_kv(serialization_dict.get("static_kv_dtype", None))
+    attention_config = _get_attention_config(model, static_attention_granularity) if use_fp8_attention else None
+    kv_granularity = static_attention_granularity if use_fp8_attention else static_kv_granularity
     quantization_config = QuantizationConfig(
         config_groups=config_groups,
-        kv_cache_scheme=(
-            _construct_kv_scheme()
-            if (
-                _use_fp8_kv(serialization_dict.get("static_kv_dtype", None))
-                or _use_fp8_attention(serialization_dict.get("static_attention_dtype", None))
-            )
-            else None
-        ),
+        kv_cache_scheme=_construct_kv_scheme(kv_granularity) if (use_fp8_kv or use_fp8_attention) else None,
         quantization_status=QuantizationStatus.COMPRESSED,
         ignore=ignore,
     )
@@ -255,6 +262,8 @@ def save_quantized_as_static_fp(
     quantization_config["format"] = "float-quantized"
     if group_size > 0:
         quantization_config["config_groups"]["group_0"]["weights"]["group_size"] = group_size
+    if attention_config is not None:
+        quantization_config["attention_input_activations"] = attention_config
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
 

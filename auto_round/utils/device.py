@@ -21,7 +21,6 @@ import sys
 import tempfile
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
-from itertools import combinations
 from threading import Lock
 from typing import Any, Callable, Optional, Union
 
@@ -313,7 +312,7 @@ def set_cuda_visible_devices(device: str):
             indices = [int(device) for device in devices]
             try:
                 pick_device = [current_visible_devices[i] for i in indices]
-            except:
+            except Exception:
                 raise ValueError(
                     "Invalid '--device' value: It must be smaller than the number of available devices."
                     " For example, with CUDA_VISIBLE_DEVICES=4,5, "
@@ -322,7 +321,9 @@ def set_cuda_visible_devices(device: str):
             visible_devices = ",".join(pick_device)
             os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
         else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = device
+            # Use the cleaned/normalized device indices (no spaces, no type
+            # prefixes) when initially setting the environment variable.
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(devices)
 
 
 class override_cuda_device_capability(ContextDecorator):
@@ -634,6 +635,92 @@ def set_non_auto_device_map(
                 logger.warning(f"{key} in `device_map` dose not match any modules, please have a check")
 
 
+def _resolve_moe_chunk() -> int:
+    """The configured experts-per-chunk (``AR_MOE_CHUNK``), for device co-allocation.
+
+    ``auto`` / invalid -> the default fixed chunk (16); ``<=0`` means "whole container"
+    (fuse everything -> a container is only ever placed as a single device-local unit).
+    """
+    from auto_round import envs
+
+    try:
+        return int(str(envs.AR_MOE_CHUNK))
+    except (TypeError, ValueError):
+        return 16
+
+
+def _preassign_moe_experts(
+    layer_memory_dict: dict, device_memory: dict, gpu_devices: list, mem_per_param: float
+) -> dict:
+    """Place a MoE experts container's experts chunk-locally so the grouped path stays on.
+
+    The grouped experts forward only needs the experts *of one fused chunk* to sit on the same
+    device (else that chunk falls back to the slow per-expert loop, which also churns
+    ``torch.compile`` recompiles). This pre-pass keeps each ``AR_MOE_CHUNK``-aligned group whole
+    on one device while spreading the groups across cards, so memory stays balanced across GPUs
+    instead of piling a whole (potentially hundreds of experts) container onto a single card.
+
+      * Per chunk -- place each ``AR_MOE_CHUNK``-aligned expert group whole on the device with
+        the most free memory that fits it, so grouped GEMM stays single-device within a chunk.
+      * Overflow -- groups that do not fit on any device are left unassigned here and fall
+        through to the general load balancer (grouped will loop-fallback for those layers).
+
+    Relies on the per-card memory budgets (``device_memory``) being set correctly by the caller
+    (symmetric transient reservation); otherwise best-fit repeatedly picks the same card and
+    piles experts there. Only placement is affected -- correctness is unchanged (the forward's
+    device checks and AlignDevicesHook handle whatever layout results). ``device_memory`` is
+    decremented in place for the layers this function assigns.
+
+    Returns a ``{layer_name: device}`` map for the experts it placed.
+    """
+    # Group expert projections by their container -> {expert_idx: [(name, mem_info), ...]}.
+    containers: dict[str, dict[int, list]] = {}
+    for name, info in layer_memory_dict.items():
+        if not info.get("is_moe_expert"):
+            continue
+        head, _, _slot = name.rpartition(".")  # ".../<container>.<idx>.<slot>"
+        container, _, idx_str = head.rpartition(".")
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            continue  # unexpected naming; leave it to the general balancer
+        containers.setdefault(container, {}).setdefault(idx, []).append((name, info))
+
+    assigned: dict[str, str] = {}
+    if not containers:
+        return assigned
+
+    def mem_of(items) -> float:
+        return sum(mem_info["param_memory"] * mem_per_param for _, mem_info in items)
+
+    def best_fit(required: float):
+        candidates = [d for d in gpu_devices if device_memory[d] >= required]
+        return max(candidates, key=lambda d: device_memory[d]) if candidates else None
+
+    def place(items, device) -> None:
+        for layer_name, _ in items:
+            assigned[layer_name] = device
+
+    chunk = _resolve_moe_chunk()
+    for container, by_idx in containers.items():
+        idxs = sorted(by_idx)
+
+        # Spread chunk-aligned groups across cards: each group stays whole on one device (so a
+        # chunk's grouped GEMM is single-device) but different groups balance across GPUs.
+        # ``chunk <= 0`` ("fuse everything") keeps the whole container as one group.
+        step = len(idxs) if chunk <= 0 else chunk
+        for start in range(0, len(idxs), step):
+            group_items = [item for i in idxs[start : start + step] for item in by_idx[i]]
+            group_mem = mem_of(group_items)
+            group_device = best_fit(group_mem)
+            if group_device is None:
+                continue  # Overflow: leave for the general balancer
+            place(group_items, group_device)
+            device_memory[group_device] -= group_mem
+
+    return assigned
+
+
 def _allocate_layers_to_devices(
     layer_memory_dict: dict, device_memory: dict, gpu_devices: list, mem_per_param: float
 ) -> tuple[dict, list]:
@@ -641,7 +728,10 @@ def _allocate_layers_to_devices(
     Allocates layers to devices using a load-balancing strategy.
 
     Strategy:
-    1. Sort layers by memory size (descending), preserve order for equal sizes
+    0. MoE pre-pass: keep each ``AR_MOE_CHUNK``-aligned expert group whole on one device while
+       spreading the groups across cards, so a chunk's grouped GEMM stays single-device without
+       piling a whole experts container onto one card.
+    1. Sort remaining layers by memory size (descending), preserve order for equal sizes
     2. Assign largest N layers to higher-index devices (N = num_devices)
     3. Remaining layers use memory availability + layer continuity scorings
 
@@ -653,32 +743,23 @@ def _allocate_layers_to_devices(
 
     Returns:
         tuple[dict, list]: (device_map, names)
-
-    Example:
-        Input:
-            device_memory = {"cuda:0": 30.0, "cuda:1": 40.0, "cuda:2": 40.0}
-            layer_memory_dict = {
-                "q_proj": {"param_memory": 4.0}, "k_proj": {"param_memory": 1.0},
-                "v_proj": {"param_memory": 1.0}, "o_proj": {"param_memory": 4.0},
-                "gate_proj": {"param_memory": 11.0}, "up_proj": {"param_memory": 11.0},
-                "down_proj": {"param_memory": 11.0}
-            }
-            mem_per_param = 2.0
-
-        Result (allocation order by size):
-            1. gate_proj (22GB) -> cuda:2 (largest, prefer last device)
-            2. up_proj (22GB) -> cuda:1 (2nd largest, prefer 2nd last device)
-            3. down_proj (22GB) -> cuda:0 (3rd largest, cuda:0 has 30GB available)
-            4. q_proj (8GB) -> cuda:2 (neighbor of gate_proj, continuity bonus)
-            5. o_proj (8GB) -> cuda:2 (neighbor of q_proj, continuity bonus)
-            6. k_proj (2GB) -> cuda:1 (neighbor of q_proj via original order)
-            7. v_proj (2GB) -> cuda:1 (neighbor of k_proj, continuity bonus)
     """
     device_map = {}
     names = []
     layer_names_in_order = list(layer_memory_dict.keys())
     layer_order = {name: idx for idx, name in enumerate(layer_names_in_order)}
-    sorted_layers = sorted(layer_memory_dict.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
+
+    # Phase 0: keep each MoE expert chunk device-local (grouped GEMM stays single-device, avoids
+    # the per-expert loop-fallback and its torch.compile recompiles) while spreading chunks across
+    # cards. Depends on the caller's symmetric per-card budgets so best-fit alternates cards
+    # instead of piling every chunk onto one card.
+    preassigned = _preassign_moe_experts(layer_memory_dict, device_memory, gpu_devices, mem_per_param)
+    device_map.update(preassigned)
+    names.extend(preassigned.keys())
+
+    # The general balancer handles everything the pre-pass did not place.
+    remaining = {name: layer_memory_dict[name] for name in layer_names_in_order if name not in preassigned}
+    sorted_layers = sorted(remaining.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
     num_devices = len(gpu_devices)
 
     def find_best_device(layer_name, estimated_memory, layer_idx):
@@ -716,7 +797,7 @@ def _allocate_layers_to_devices(
         # Fallback: device with most available memory
         return best_device or max(gpu_devices, key=lambda d: device_memory[d])
 
-    # Allocate layers
+    # Allocate the remaining (non-preassigned) layers
     for layer_idx, (layer_name, mem_info) in enumerate(sorted_layers):
         names.append(layer_name)
         estimated_memory = mem_info["param_memory"] * mem_per_param
@@ -814,15 +895,14 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
     return 1.0, False  # Default ratio for non-MoE models
 
 
-def estimate_tuning_block_mem(
-    block: torch.nn.Module, input_ids: list[torch.Tensor], batch_size: int
-) -> tuple[dict, float]:
+def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size: int) -> tuple[dict, float]:
     """
     Calculates the memory consumption of a specific block in the model.
 
     Args:
         block (torch.nn.Module): The block of the model to analyze.
-        input_ids (list[torch.Tensor]): A list of input tensors for the block.
+        input_ids: Cached block inputs as a tensor, a list of tensors, or a dictionary containing
+            ``hidden_states`` and auxiliary block inputs.
         batch_size (int): Number of samples to consider for memory estimation.
 
     Returns:
@@ -838,9 +918,23 @@ def estimate_tuning_block_mem(
 
     layer_memory_dict = {}
 
-    # Calculate batch_size and sequence_length from input_ids for output memory estimation
-    seq_len = input_ids[0].shape[1] if input_ids and len(input_ids[0].shape) >= 2 else 1
-    element_size = input_ids[0].element_size() if input_ids else 2  # Default to 2 bytes (fp16/bf16)
+    def iter_input_tensors(value):
+        if isinstance(value, torch.Tensor):
+            yield value
+        elif isinstance(value, dict):
+            for nested_value in value.values():
+                yield from iter_input_tensors(nested_value)
+        elif isinstance(value, (list, tuple)):
+            for nested_value in value:
+                yield from iter_input_tensors(nested_value)
+
+    input_tensors = list(iter_input_tensors(input_ids))
+    hidden_states = input_ids.get("hidden_states") if isinstance(input_ids, dict) else input_ids
+    reference_tensor = next(iter_input_tensors(hidden_states), input_tensors[0] if input_tensors else None)
+
+    # Calculate sequence length and dtype from hidden states for output memory estimation.
+    seq_len = reference_tensor.shape[1] if reference_tensor is not None and reference_tensor.ndim >= 2 else 1
+    element_size = reference_tensor.element_size() if reference_tensor is not None else 2
 
     moe_ratio, has_moe = get_moe_memory_ratio(block)  # Get MoE memory ratio (1.0 for non-MoE models)
 
@@ -881,7 +975,7 @@ def estimate_tuning_block_mem(
             }
 
     # Assuming bfloat16 or float32, input and output
-    block_input_output_memory = 2 * sum(tensor.nbytes for tensor in input_ids) / 1024**3
+    block_input_output_memory = 2 * sum(tensor.nbytes for tensor in input_tensors) / 1024**3
 
     # Roughly estimate additional memory for attention and other operations
     # For MoE expert layers, multiply activation memory by the ratio of active experts
@@ -943,6 +1037,20 @@ def set_auto_device_map_for_block_with_tuning(
         This function is intended for internal use in device memory management and tuning.
     """
     card_0_in_high_risk, loss_device = False, output_device
+    from auto_round.utils.model import (
+        _module_manages_own_device,
+        module_pinned_execution_device,
+        move_to_device_preserving_cpu_pinned,
+        place_ngram_embeddings_for_tuning_,
+    )
+
+    # Distribute huge, non-quantizable ngram embeddings before any block placement:
+    # row-shard them across the GPUs when >1 is available (on-device lookup, no card-0 OOM and
+    # far faster than a CPU-pinned table), otherwise keep them pinned on CPU. Must run first.
+    placed = place_ngram_embeddings_for_tuning_(block, list(device_list) if device_list else None)
+    if placed:
+        logger.debug(f"Placed {len(placed)} ngram embedding module(s) for tuning: {placed}")
+
     dev_mgr = get_current_device_manager()
     if dev_mgr.is_available() and dev_mgr.type != "cpu":
         num_devices = dev_mgr.device_count()
@@ -951,7 +1059,7 @@ def set_auto_device_map_for_block_with_tuning(
         return card_0_in_high_risk, loss_device
 
     if len(device_list) <= 1:  # Only 1 card is available or non-auto device map
-        block = block.to(output_device)
+        move_to_device_preserving_cpu_pinned(block, output_device)
         return card_0_in_high_risk, loss_device
 
     if device_list:
@@ -987,6 +1095,12 @@ def set_auto_device_map_for_block_with_tuning(
     card_1_left_memory = max(0, device_1_memory - loss_memory) if card_0_in_high_risk else device_1_memory
     loss_device = device_1 if card_0_in_high_risk else output_device
 
+    if not layer_memory_dict:
+        output_device = device_0 if output_device is None else output_device
+        move_to_device_preserving_cpu_pinned(block, output_device)
+        logger.debug(f"No layers require tuning; moved the block to {output_device}")
+        return card_0_in_high_risk, loss_device
+
     # Calculate total available memory across all devices
     total_available_memory = card_0_left_memory + card_1_left_memory
     for i in range(2, len(gpu_devices)):
@@ -1011,13 +1125,29 @@ def set_auto_device_map_for_block_with_tuning(
 
     # Ensure all remaining modules with parameters/buffers are moved to expected device, by default device_0
     output_device = device_0 if output_device is None else output_device
+
     for name, module in block.named_modules():
-        if name not in names:  # This module wasn't assigned a device
-            # Check if module has any parameters or buffers
-            has_params = any(True for _ in module.parameters(recurse=False))
-            has_buffers = any(True for _ in module.buffers(recurse=False))
-            if has_params or has_buffers:
-                module = module.to(output_device)
+        if name in names:  # This module was already assigned a device
+            continue
+        if module_pinned_execution_device(module) is not None:
+            # Intentionally pinned to a fixed execution device (CPU, or a specific card for
+            # huge non-quantizable ngram embeddings); never relocate it or it could OOM / break
+            # the chosen placement.
+            continue
+        if _module_manages_own_device(module):
+            # Places its own (possibly multi-device) storage, e.g. a row-sharded ngram
+            # embedding split across GPUs; moving its buffers here would collapse the shards.
+            continue
+        # Move only this module's OWN tensors (recurse=False). Using module.to()
+        # would recurse and drag a CPU-pinned child (e.g. a nested ngram
+        # embedding) back onto the accelerator. Because named_modules() visits
+        # every module, each tensor is still covered exactly once here.
+        for _, param in module.named_parameters(recurse=False):
+            if param.device.type != "meta":
+                param.data = param.data.to(output_device)
+        for _, buf in module.named_buffers(recurse=False):
+            if buf.device.type != "meta":
+                buf.data = buf.data.to(output_device)
 
     return card_0_in_high_risk, loss_device
 
@@ -1026,66 +1156,36 @@ def partition_dict_numbers(number_dict, n):
     """
     Partition a dictionary of numbers into N groups with approximately equal sums
     """
-    # Edge cases
-    if n > len(number_dict):
-        groups = []
-        for key, value in number_dict.items():
-            groups.append({key: value})
-        for _ in range(n - len(number_dict)):
-            groups.append({})
-        return groups
-
-    if n == len(number_dict):
-        return [{key: value} for key, value in number_dict.items()]
-
-    total_sum = sum(number_dict.values())
-    # target = total_sum / n  # Use float for better precision
+    # Quick handling of edge cases
+    if n <= 0:
+        return []
 
     items = list(number_dict.items())
-    result = []
-    remaining = items.copy()
+    m = len(items)
 
-    def find_optimal_subset(arr, target):
-        """Find subset with sum closest to target"""
-        best_subset = []
-        best_diff = float("inf")
+    if n >= m:
+        # Put each item in its own bucket, then pad empty buckets
+        groups = [{k: v} for k, v in items]
+        groups.extend({} for _ in range(n - m))
+        return groups
 
-        # Try all possible subset sizes
-        for r in range(1, len(arr) + 1):
-            for combo in combinations(arr, r):
-                current_sum = sum(value for _, value in combo)
-                current_diff = abs(current_sum - target)
+    # Greedy largest-first balancing (Longest Processing Time / LPT-like):
+    #  - Sort items by value descending
+    #  - Assign each item to the group with the current smallest sum
+    # Complexity: O(m log n) which scales well for large m (layers)
+    groups_sums = [0.0] * n
+    groups = [dict() for _ in range(n)]
 
-                # If we found a perfect match, return immediately
-                if current_diff == 0:
-                    return list(combo)
+    # Sort items descending by size
+    items_sorted = sorted(items, key=lambda kv: kv[1], reverse=True)
 
-                # Update the best subset if this is better
-                if current_diff < best_diff and current_sum <= total_sum:
-                    best_diff = current_diff
-                    best_subset = list(combo)
+    for key, val in items_sorted:
+        # choose the group with minimum current sum
+        idx = min(range(n), key=lambda i: groups_sums[i])
+        groups[idx][key] = val
+        groups_sums[idx] += val
 
-        return best_subset
-
-    # Distribute items into n-1 groups
-    for i in range(n - 1):
-        if not remaining:
-            break
-
-        # Calculate dynamic target based on remaining items
-        remaining_target = sum(value for _, value in remaining) / (n - i)
-        subset = find_optimal_subset(remaining, remaining_target)
-
-        result.append(dict(subset))
-
-        # Remove allocated items
-        for item in subset:
-            remaining.remove(item)
-
-    # Last group gets all remaining items
-    result.append(dict(remaining))
-
-    return result
+    return groups
 
 
 def dispatch_model_block_wise(model: torch.nn.Module, device_map: str, max_mem_ratio=0.9):
@@ -1338,13 +1438,24 @@ class MemoryMonitor:
         self.peak_vram = {}  # {device_id: peak_mb}
         self.enabled = True
 
+    @staticmethod
+    def _process_tree_rss() -> float:
+        """Return the combined RSS of this process and all live descendants in GB."""
+        process = psutil.Process()
+        rss = process.memory_info().rss
+        for child in process.children(recursive=True):
+            try:
+                rss += child.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return rss / 1024**3
+
     def update(self, device_list=None):
         """Update current memory usage and track peaks."""
         if not self.enabled:
             return
         # Track RAM
-        process = psutil.Process()
-        current_ram = process.memory_info().rss / 1024**3  # GB
+        current_ram = self._process_tree_rss()
         self.peak_ram = max(self.peak_ram, current_ram)
         if device_list is None:  # TODO this has issue, wait for clean_memory all pass device_list
             device_list = [0]
@@ -1386,8 +1497,7 @@ class MemoryMonitor:
     def update_cpu(self):
         if not self.enabled:
             return
-        process = psutil.Process()
-        current_ram = process.memory_info().rss / 1024**3  # GB
+        current_ram = self._process_tree_rss()
         self.peak_ram = max(self.peak_ram, current_ram)
 
     def update_hpu(self, device_list=None):

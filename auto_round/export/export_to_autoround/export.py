@@ -28,6 +28,7 @@ from tqdm import tqdm
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp, is_standard_fp
 from auto_round.export.export_to_autoround.utils import check_neq_config
+from auto_round.export.formats import BackendDataType
 from auto_round.export.utils import (
     filter_quantization_config,
     get_autogptq_packing_qlinear,
@@ -37,7 +38,6 @@ from auto_round.export.utils import (
     save_model,
     save_pretrained_artifact,
 )
-from auto_round.formats import AutoRoundExportFormat
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import (
@@ -164,6 +164,18 @@ def pack_layer(layer_name, model, backend, device=None):
     if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
         return
 
+    # A resumed disk-streamed run only
+    # materializes/quantizes the blocks it didn't already finish in a prior
+    # (crashed) process. Blocks it skipped are never touched in *this*
+    # process and stay on the meta device, while their packed weights
+    # already live in shard files the previous process flushed to disk (see
+    # ShardWriter._discover_existing_shards). There is nothing to pack here
+    # -- attempting to would fail (no real weight data to read `.scale`
+    # from) and would be redundant even if it didn't, since the on-disk
+    # export for this layer is already complete.
+    if layer.weight.device.type == "meta":
+        return
+
     if int(layer.act_bits) <= 8:
         return pack_qact_layer(layer_name, model)
 
@@ -263,7 +275,7 @@ def save_quantized_as_autoround(
     if (
         (serialization_dict.get("sym") is None or serialization_dict.get("sym"))
         and ("gptq" not in backend and "awq" not in backend)
-        and (AutoRoundExportFormat.FP8_STATIC.value not in backend)
+        and (BackendDataType.FP8_STATIC.value not in backend)
     ):
         backend = backend.replace("auto_round", "auto_round:auto_gptq")
 

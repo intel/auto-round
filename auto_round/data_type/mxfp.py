@@ -99,24 +99,135 @@ def qdq_mxfp(tensor, max_val, max_norm, emax, ebits, mbits):
     return tensor * scale
 
 
-def search_mx_scale(tensor, bits, qw=None):
-    data_type = "mx_fp" + str(bits)
+@torch.no_grad()
+def search_mx_scale(tensor, bits, qw=None, data_type=None):
+    if data_type is None or data_type not in MXFP_FORMAT_CACHE:
+        data_type = "mx_fp" + str(bits)
+
     ebits, mbits, emax, max_norm, _ = MXFP_FORMAT_CACHE[data_type]
+
     tensor = tensor.to(torch.float32)
+
     max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
-    qdq_t = qdq_mxfp(tensor, max_val, max_norm, emax, ebits, mbits)
-    best_loss = torch.sum((qdq_t - tensor) ** 2 * qw, dim=-1)
+
+    # Reusable buffers
+    scale_buf = torch.empty_like(max_val)
+    buf = torch.empty_like(tensor)
     scales = torch.ones_like(max_val)
-    for scale_value in range(50, 152):
-        tmp_scale = scale_value / 100.0
-        if tmp_scale == 1.0:
-            continue
-        tmp_qdq_t = qdq_mxfp(tensor, max_val * tmp_scale, max_norm, emax, ebits, mbits)
-        loss = torch.sum((tmp_qdq_t - tensor) ** 2 * qw, dim=-1)
+
+    best_loss = torch.empty(
+        tensor.shape[:-1],
+        dtype=tensor.dtype,
+        device=tensor.device,
+    )
+    loss = torch.empty_like(best_loss)
+
+    def compute_loss(qdq_tensor, out):
+        torch.sub(qdq_tensor, tensor, out=buf)
+        buf.pow_(2)
+        if qw is not None and not isinstance(qw, (int, float)):
+            buf.mul_(qw)
+        elif qw != 1.0:
+            buf.mul_(qw)
+        torch.sum(buf, dim=-1, out=out)
+
+    # Baseline (exp_offset = 0)
+    qdq_t = qdq_mxfp(
+        tensor,
+        max_val,
+        max_norm,
+        emax,
+        ebits,
+        mbits,
+    )
+    compute_loss(qdq_t, best_loss)
+
+    # MX shared exponent only changes when crossing powers of two.
+    # exp_offset = 0 has already been evaluated.
+    for tmp_scale in (0.5, 2.0):
+        # for scale_value in range(50, 152):
+        #     tmp_scale = scale_value / 100.0
+        #     if tmp_scale == 1.0:
+        #         continue
+        torch.mul(max_val, tmp_scale, out=scale_buf)
+
+        qdq_t = qdq_mxfp(
+            tensor,
+            scale_buf,
+            max_norm,
+            emax,
+            ebits,
+            mbits,
+        )
+
+        compute_loss(qdq_t, loss)
+
         replace_id = loss < best_loss
         scales[replace_id] = tmp_scale
         best_loss[replace_id] = loss[replace_id]
+
     return scales
+
+
+def quant_mx_opt_rtn(
+    tensor,
+    bits=4,
+    group_size=32,
+    v=0,
+    mantissa_rounding="even",
+    data_type="mx_fp",
+    imatrix=None,
+    **kwargs,
+):
+    from auto_round.data_type.gguf import _imatrix_handle_zero
+
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    data_type = data_type if data_type in MXFP_FORMAT_CACHE else "mx_fp" + str(bits)
+    ebits, mbits, emax, max_norm, _ = MXFP_FORMAT_CACHE[data_type]
+
+    orig_dtype = tensor.dtype
+    tensor = tensor.to(torch.float32)
+
+    if imatrix is None:
+        qw = 1.0
+    else:
+        imatrix = imatrix.reshape(1, -1)
+        imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+        imatrix = imatrix.expand(tensor.numel() // imatrix.numel(), -1)
+        imatrix = imatrix.reshape(tensor.shape)
+        imatrix = _imatrix_handle_zero(imatrix, tensor, bits, group_size)
+        qw = imatrix
+
+    max_scales = search_mx_scale(tensor, bits, qw=qw, data_type=data_type)
+
+    max_val = torch.amax(torch.abs(tensor), dim=-1, keepdim=True)
+    max_val.mul_(max_scales)
+
+    shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), torch.log2(max_val))
+    shared_exp.floor_()
+
+    scale_emax = 2.0 ** (8 - 1) - 1
+    shared_exp.sub_(emax).clamp_(
+        min=-scale_emax,
+        max=scale_emax,
+    )
+
+    scale = torch.pow(2.0, shared_exp)
+
+    tensor.div_(scale)
+    if v != 0:
+        tensor.add_(v)
+
+    tensor.clamp_(min=-max_norm, max=max_norm)
+    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
+    tensor.mul_(scale)
+    tensor = revert_tensor_by_pad(
+        tensor,
+        orig_shape=orig_shape,
+        pad_len=pad_len,
+    )
+
+    return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
 def quant_mx(
@@ -231,10 +342,77 @@ def quant_mx_rceil(
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
+"""
+Implementation based on:
+
+MXAttention: Data-Free Optimal Scaling and Pre-Normalization Quantization
+for MXFP4 Attention.
+
+Jianlin Yu, Jing Lin, Linghui Kong, et al.
+arXiv:2607.24377, 2026.
+https://arxiv.org/abs/2607.24377
+"""
+
+
+# Only for mxfp4
+def quant_mx_rceil_v2(
+    tensor, bits=4, group_size=-1, v=0, max_scale=1.0, mantissa_rounding="even", data_type="mx_fp", **kwargs
+):
+    """Quantize the given tensor using the specified parameters.
+
+    This function performs quantization on the `tensor` tensor according to the
+    given bit width (`bits`), data type (`data_type`), and additional parameters.
+    The quantization process involves scaling the tensor values and adjusting
+    the exponent and mantissa to fit within the specified format.
+
+    Args:
+        tensor (torch.Tensor): The tensor containing the tensors to be quantized.
+        bits (int): The bit width to be used for quantization.
+        group_size (int): The group size of sharing scale and exponent.
+        data_type (str): The data type for quantization (e.g., 'mx_fp4').
+        v (float): A value used for adjusting the tensors.
+        max_scale (float or torch.Tensor): The maximum scale to be applied to the tensors.
+        mantissa_rounding (str): rounding method for mantissa,currently support even,nearest,floor
+
+    Returns:
+        tuple: A tuple containing the quantized tensors, shared exponent, and None (reserved for future use).
+
+    Raises:
+        KeyError: If `data_type` is not found in `MXFP_FORMAT_CACHE`.
+    """
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    data_type = data_type if data_type in MXFP_FORMAT_CACHE else "mx_fp" + str(bits)
+    ebits, mbits, emax, max_norm, min_norm = MXFP_FORMAT_CACHE[data_type]
+    orig_dtype = tensor.dtype
+    tensor = tensor.to(torch.float32)
+    max_val, _ = torch.max(torch.abs(tensor), dim=-1, keepdim=True)
+    if isinstance(max_scale, torch.Tensor):
+        max_val *= (max_scale.unsqueeze(dim=-1)).to(tensor.device)
+    else:
+        max_val *= max_scale
+
+    # shared_exp = torch.log2(shared_exp + FP32_MIN_NORMAL * (shared_exp == 0).type(shared_exp.dtype))
+    shared_exp = torch.where(max_val == 0, torch.ones_like(max_val), ceil_ste(torch.log2(max_val / 7.25)))
+    scale_emax = 2.0 ** float(8 - 1) - 1
+    shared_exp = shared_exp.clamp(min=-scale_emax, max=scale_emax)
+
+    scale = torch.pow(2.0, shared_exp.float())
+    tensor = tensor / scale + v
+    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
+    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
+
+    tensor = tensor * scale
+    tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
+    return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
+
+
 for key in MXFP_FORMAT_CACHE.keys():
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx
     QUANT_FUNC_WITH_DTYPE[key + "_rceil"] = quant_mx_rceil
+    QUANT_FUNC_WITH_DTYPE["opt_rtn_" + key] = quant_mx_opt_rtn
 QUANT_FUNC_WITH_DTYPE["mx_fp_rceil"] = quant_mx_rceil
+QUANT_FUNC_WITH_DTYPE["mx_fp4_rceil_v2"] = quant_mx_rceil_v2
+QUANT_FUNC_WITH_DTYPE["opt_rtn_mx_fp"] = quant_mx_opt_rtn
 
 if __name__ == "__main__":
     data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])

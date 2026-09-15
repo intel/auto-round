@@ -74,6 +74,10 @@ class BaseRotationConfig:
     #: unsupported algorithms transparently fall back to full-model rotation.
     layerwise: bool = False
 
+    def can_compile_block_forward(self) -> bool:
+        """Whether block replay can be compiled after applying this rotation."""
+        return True
+
 
 # ---------------------------------------------------------------------------
 # Algorithm base
@@ -128,10 +132,10 @@ class BaseRotation(ABC):
     def supports_layerwise(self) -> bool:
         """Whether this rotation algorithm supports layer-wise execution.
 
-        When ``True``, the compressor can call :meth:`prepare_layerwise`
-        during ``post_init`` and then :meth:`rotate_layer` per-block inside
-        the ``_quantize_blocks`` loop — avoiding the need to load the
-        entire model onto GPU at once.
+        When ``True``, the composer can call :meth:`prepare_layerwise`
+        during ``apply_model_transforms`` and then :meth:`rotate_layer`
+        per-block inside the block-quantization loop — avoiding the need to
+        load the entire model onto GPU at once.
         """
         return False
 
@@ -143,7 +147,7 @@ class BaseRotation(ABC):
     ) -> "BaseRotation":
         """Prepare for layer-wise rotation without modifying model weights.
 
-        Called once during ``post_init`` when ``layerwise_rotation=True``.
+        Called once when the rotation config has ``layerwise=True``.
         Implementations should initialise rotation matrices (as model
         buffers) and any other lightweight state, but must **not** modify
         model weights or register hooks yet.
@@ -154,7 +158,7 @@ class BaseRotation(ABC):
             **kwargs: Algorithm-specific arguments (e.g. ``dataloader``).
 
         Returns:
-            ``self``, so the compressor can later call :meth:`rotate_layer`.
+            ``self``, so the composer can later call :meth:`rotate_layer`.
 
         Raises:
             NotImplementedError: If the algorithm does not support
@@ -172,7 +176,7 @@ class BaseRotation(ABC):
     ) -> None:
         """Apply rotation to a single decoder layer.
 
-        Called per-block in the ``_quantize_blocks`` loop, after the block
+        Called per-block in the block-quantization loop, after the block
         is materialised and placed on the target device, **before**
         reference-output collection.
 
@@ -195,7 +199,7 @@ class BaseRotation(ABC):
     def finalize_layerwise(self, model: torch.nn.Module) -> None:
         """Post-loop cleanup after all layers have been rotated.
 
-        Called once after the ``_quantize_blocks`` loop completes.
+        Called once after the block-quantization loop completes.
         Default implementation is a no-op.
 
         Args:

@@ -119,6 +119,54 @@ def decode_fp8_to_float(raw_bytes: torch.Tensor, fmt: str) -> torch.Tensor:
     return val * sign_mask
 
 
+def make_fp8_consistent_weight(k, n, blocksize, weight_type, scale_type, dtype, device):
+    if k % blocksize != 0:
+        raise ValueError("blocksize must divide k for this test")
+
+    if weight_type == "fp8_e4m3":
+        fp8_dtype = torch.float8_e4m3fn
+        emax = 8
+    elif weight_type == "fp8_e5m2":
+        fp8_dtype = torch.float8_e5m2
+        emax = 15
+    else:
+        raise ValueError(f"unsupported FP8 weight_type: {weight_type}")
+
+    cpu = torch.device("cpu")
+
+    # Realistic source first. Payload and scale are derived from the same block.
+    source = torch.randn(k, n, dtype=torch.float32, device=cpu) * 0.5
+    grouped = source.view(k // blocksize, blocksize, n)
+    block_absmax = grouped.abs().amax(dim=1).clamp_min(torch.finfo(torch.float32).tiny)
+
+    fp8_max = torch.finfo(fp8_dtype).max
+
+    if scale_type == "fp8_e8m0":
+        # E8M0 stores exponent. Real scale is 2 ** exponent.
+        scale = torch.floor(torch.log2(block_absmax)) - float(emax)
+        scale = scale.clamp(-127, 127).to(torch.float32)
+        scale_re = torch.pow(torch.tensor(2.0, dtype=torch.float32, device=cpu), scale)
+        scale_for_pack = scale
+    elif scale_type in {"fp16", "fp32"}:
+        # FP16/FP32 scales store the real multiplier directly.
+        scale = (block_absmax / fp8_max).clamp_min(torch.finfo(torch.float32).tiny)
+        scale_re = scale
+        scale_for_pack = scale.to(torch.float16 if scale_type == "fp16" else torch.float32)
+    else:
+        raise ValueError(f"unsupported FP8 scale_type: {scale_type}")
+
+    scale_re_full = scale_re.repeat_interleave(repeats=blocksize, dim=0)
+    scaled = (source / scale_re_full).clamp(-fp8_max, fp8_max)
+
+    raw_qweight = scaled.to(fp8_dtype).view(torch.uint8).view(torch.int8).to(device)
+    scale_for_pack = scale_for_pack.to(device)
+
+    decoded = decode_fp8_to_float(raw_qweight.cpu(), weight_type).to(dtype).to(device)
+    ref_dst = decoded * scale_re_full.to(device).to(dtype)
+
+    return raw_qweight, scale_for_pack, ref_dst
+
+
 def sample_valid_fp8(shape, fmt: str, device):
     """Generate FP8 payload bytes that avoid NaN encodings."""
     if isinstance(device, str):

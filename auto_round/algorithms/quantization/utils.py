@@ -14,7 +14,7 @@
 
 import torch
 
-from auto_round.compressors.utils import check_need_act_calibration
+from auto_round.compressors.utils import check_need_act_calibration, is_nv_fp
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized
 
@@ -26,16 +26,18 @@ def register_act_max_hooks(quantizer, model):
             input = input[0]
         if input.numel() == 0:
             return
+        module_act_data_type = getattr(module, "act_data_type", None) or getattr(module, "data_type", None)
+        is_module_act_nv_fp = is_nv_fp(module_act_data_type) if module_act_data_type else quantizer.config.is_act_nv_fp
         input, _, _ = reshape_pad_tensor_by_group_size(input, quantizer.act_group_size)
         act_max = torch.max(torch.abs(input), dim=-1).values
         if not hasattr(module, "act_max") or module.act_max.numel() == 0:
             module.act_max = act_max
-            if quantizer.config.is_act_nv_fp:
+            if is_module_act_nv_fp:
                 max_val = act_max.max()
                 module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
         else:
             act_max = act_max.to(module.act_max.device)
-            if quantizer.config.is_act_nv_fp:
+            if is_module_act_nv_fp:
                 max_val = torch.max(act_max.max(), module.act_max.max())
                 module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
             else:

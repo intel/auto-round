@@ -17,7 +17,18 @@
 #include <limits>
 #include <vector>
 #include "utils.hpp"
+#if ARK_DNNL
 #include "dnnl_wrapper.hpp"
+#endif
+
+#if ARK_SYCL_TLA
+#include "sycl_tla_common.hpp"
+#endif
+
+#if ARK_XPU
+#include "sycl_s8_wrapper.hpp"
+#endif
+
 #include "sycl_tla_common.hpp"
 
 namespace ark {
@@ -59,7 +70,7 @@ class XpuWrapper {
 
   static inline size_t get_scalext_size(QuantParam* p) {
     using namespace bestla::utils;
-    if (env_params::Instance()->auto_s8 == 0) return 0;
+    if (env_params::Instance()->auto_s8 == 0 or !rescale(p)) return 0;
     size_t nblk = 1;
     if (env_params::Instance()->auto_s8 != -1) {
       nblk *= p->k / env_params::Instance()->auto_s8;
@@ -234,6 +245,7 @@ class XpuWrapper {
       auto st = p->scale_type;
       if (st == BTLA_DTYPE::F32) {
         using T = float;
+        const float weight_fullrange = get_weight_fullrange(p);
         auto ker2 = [&](sycl::handler& cgh) {
           cgh.parallel_for(sycl::nd_range<2>({1, n}, {1, SG_SIZE}),
                            [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
@@ -249,7 +261,7 @@ class XpuWrapper {
                                for (int i = start_blk; i < end_blk; i += 1) {
                                  maxv = std::max(abs(sptr[i * n + g_1]), maxv);
                                }
-                               sxtptr[g_1 * newblks + j] = maxv * get_weight_fullrange(p) / 127.f;
+                               sxtptr[g_1 * newblks + j] = maxv * weight_fullrange / 127.f;
                              }
                            });
         };
@@ -257,6 +269,7 @@ class XpuWrapper {
       }
       if (st == BTLA_DTYPE::F16) {
         using T = sycl::half;
+        const float weight_fullrange = get_weight_fullrange(p);
         auto ker2 = [&](sycl::handler& cgh) {
           cgh.parallel_for(sycl::nd_range<2>({1, n}, {1, SG_SIZE}),
                            [=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(SG_SIZE)]]
@@ -272,7 +285,7 @@ class XpuWrapper {
                                for (int i = start_blk; i < end_blk; i += 1) {
                                  maxv = std::max(abs((float)sptr[i * n + g_1]), maxv);
                                }
-                               sxtptr[g_1 * newblks + j] = maxv * get_weight_fullrange(p) / 127.f;
+                               sxtptr[g_1 * newblks + j] = maxv * weight_fullrange / 127.f;
                              }
                            });
         };
@@ -658,6 +671,7 @@ class XpuWrapper {
 
   static inline bool rescale(QuantParam* p) {
 #ifdef ARK_RESCALE
+    if (p->weight_type != BTLA_DTYPE::S2 && p->weight_type != BTLA_DTYPE::S4) return false;
     if (env_params::Instance()->auto_s8 == -1) return true;
     if (env_params::Instance()->auto_s8 > p->blocksize && p->k % env_params::Instance()->auto_s8 == 0) return true;
 #endif
@@ -666,6 +680,7 @@ class XpuWrapper {
 
   static inline int rescale_blocksize(QuantParam* p) {
 #ifdef ARK_RESCALE
+    if (!rescale(p)) return p->blocksize;
     if (env_params::Instance()->auto_s8 == 0) return p->blocksize;
     return env_params::Instance()->auto_s8 == -1 ? p->k : env_params::Instance()->auto_s8;
 #else
@@ -696,14 +711,19 @@ class XpuWrapper {
     }
     auto ret = woq_gemv(q, m, p, a, b, c, bias, acdt);
     if (ret) {
-      auto dnnl_dt = to_dt(acdt);
+      
       check_compute_type(p);
       if (p->compute_type != BTLA_DTYPE::S8) {
         size_t elesize = bestla::utils::bestla_dtype_bytes(acdt);
         size_t total_size = elesize * p->k * p->n;
-        auto ptr = DnnlContext::Instance()->get_scratch_mem(total_size, 1, q);
+        auto ptr = DeviceMemoryPool::Instance()->get_scratch_mem(total_size, 1, q);
         unpackq(acdt, (int8_t*)b, ptr, p, q);
+#if ARK_DNNL
+        auto dnnl_dt = to_dt(acdt);
         DnnlWrapper::gemm(q, m, p->n, p->k, a, dnnl_dt, ptr, dnnl_dt, true, c, dnnl_dt, bias);
+#elif ARK_SYCL_TLA
+        ark::sycl_tla_dense_gemm(q, m, p->n, p->k, a, acdt, ptr, acdt, c, acdt, bias, true);
+#endif
       } else {
         auto bptr = (int8_t*)b;
         bool _rescale = rescale(p);
@@ -713,12 +733,12 @@ class XpuWrapper {
         } else {
           size_t elesize = 1;
           size_t total_size = elesize * p->k * p->n;
-          bptr = (int8_t*)DnnlContext::Instance()->get_scratch_mem(total_size, 2, q);
+          bptr = (int8_t*)DeviceMemoryPool::Instance()->get_scratch_mem(total_size, 2, q);
           unpackq(BTLA_DTYPE::S8, (int8_t*)b, bptr, p, q);
           scaleb_ptr = _rescale ? (int8_t*)b + get_scalext_offset(p) : (int8_t*)b + get_scale_offset(p);
         }
         auto blocksize = rescale_blocksize(p);
-        DnnlWrapper::woq_s8(q, m, p->n, p->k, a, bptr, true, c, dnnl_dt, scaleb_ptr, (void*)bias, blocksize);
+        ark::SyclS8Wrapper::woq_s8(q, m, p->n, p->k, a, bptr, true, c, acdt, scaleb_ptr, (void*)bias, blocksize);
       }
     }
   }
@@ -819,7 +839,7 @@ class XpuWrapper {
   template <typename T>
   static void print_value_distribution(sycl::queue* q, const T* dev_ptr, size_t count, const char* name) {
     if (dev_ptr == nullptr || count == 0) {
-      std::printf("[%s] empty\n", name);
+      std::fprintf(stdout, "[%s] empty\n", name);
       return;
     }
 
@@ -838,7 +858,7 @@ class XpuWrapper {
     }
 
     double mean = sum / static_cast<double>(count);
-    std::printf("[%s] min=%f max=%f mean=%f\n", name, min_value, max_value, static_cast<float>(mean));
+    std::fprintf(stdout, "[%s] min=%f max=%f mean=%f\n", name, min_value, max_value, static_cast<float>(mean));
   }
 
   // input: num_rows x head_dim matrix, output: int8 quantized matrix + scale (per block)
@@ -1495,7 +1515,7 @@ class XpuWrapper {
     size_t k_bias_size = use_mean_bias ? num_heads_kv * head_dim * batch * sizeof(T) : 0;
     size_t total_size = k_size + q_size + k_scale_size * sizeof(float) + q_scale_size * sizeof(float) + v_tmp_size +
                         v_scale_size + k_bias_size;
-    auto ptr = DnnlContext::Instance()->get_scratch_mem(total_size, 1, q);
+    auto ptr = DeviceMemoryPool::Instance()->get_scratch_mem(total_size, 1, q);
     auto q_out_ptr = (int8_t*)ptr;
     auto k_out_ptr = (int8_t*)ptr + q_size;
     auto qscale = (float*)((int8_t*)ptr + q_size + k_size);
@@ -1598,7 +1618,7 @@ class XpuWrapper {
     size_t k_bias_size = use_mean_bias ? num_heads_kv * head_dim * sizeof(T) : 0;
     size_t total_size = k_size + q_size + k_scale_size * sizeof(float) + q_scale_size * sizeof(float) + v_tmp_size +
                         v_scale_size + k_bias_size;
-    auto ptr = DnnlContext::Instance()->get_scratch_mem(total_size, 1, q);
+    auto ptr = DeviceMemoryPool::Instance()->get_scratch_mem(total_size, 1, q);
     auto q_out_ptr = (int8_t*)ptr;
     auto k_out_ptr = (int8_t*)ptr + q_size;
     auto qscale = (float*)((int8_t*)ptr + q_size + k_size);

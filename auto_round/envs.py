@@ -23,9 +23,20 @@ if TYPE_CHECKING:
     AR_MODEL_FREE_SHARD_PARALLELISM: Optional[int] = None
     AUTO_ROUND_CACHE: Optional[str] = None
     AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
+    AR_DISABLE_GGUF_MTP_EXPORT: bool = False
     LLAMA_CPP_ROOT: Optional[str] = None
     AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
     AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
+    AR_AUTO_SCHEME_CACHE: Optional[str] = None
+    AR_AUTO_SCHEME_NO_SERIAL_FALLBACK: bool = False
+    AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = True
+    AR_NVFP4_E5M3_CACHE_HP_WEIGHT: bool = False
+    AR_DISK_STREAM_MODEL: bool = False
+    AR_DISABLE_META_LOAD: bool = False
+    AR_RESUME_DIR: Optional[str] = None
+    AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
+    AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
+    AR_ALLOW_W8_ASYM: bool = False
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -55,6 +66,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
     "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
     in ("1", "true", "yes"),
+    # Device for the disk-streamed calibration forward pass in
+    # LLMCalibrator.collect()'s calibrate_on_cpu branch (targeted block
+    # re-quantization). Unset = upstream behavior (cpu). Set to e.g. "cuda:0"
+    # to run the whole pass on GPU -- see el_requantize_blocks.py.
+    "AR_CALIB_STREAM_DEVICE": lambda: os.getenv("AR_CALIB_STREAM_DEVICE", None),
     "AR_ACT_SCALE": lambda: float(os.getenv("AR_ACT_SCALE", "1.0")),
     "AR_ENABLE_ACT_MINMAX_TUNING": lambda: os.getenv("AR_ENABLE_ACT_MINMAX_TUNING", "0").lower()
     in ("1", "true", "yes"),
@@ -76,6 +92,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AUTO_ROUND_CACHE": lambda: os.getenv("AUTO_ROUND_CACHE", None),
     "AUTO_ROUND_GGUF_AUTO_UPDATE": lambda: os.getenv("AUTO_ROUND_GGUF_AUTO_UPDATE", "0").lower()
     in ("1", "true", "yes", "on"),
+    "AR_DISABLE_GGUF_MTP_EXPORT": lambda: os.getenv("AR_DISABLE_GGUF_MTP_EXPORT", "0").lower()
+    in ("1", "true", "yes", "on"),
     "LLAMA_CPP_ROOT": lambda: os.getenv("LLAMA_CPP_ROOT", None),
     # Controls the default number of calibration samples used by AutoScheme scoring
     # when ``AutoScheme.nsamples`` is not explicitly set.
@@ -85,6 +103,108 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # when ``AutoScheme.batch_size`` is not explicitly set.
     # When unset, AutoScheme uses its built-in heuristic (8 for low GPU memory mode, 1 for normal mode).
     "AR_AUTO_SCHEME_BATCH_SIZE": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_BATCH_SIZE"),
+    # Controls the default calibration sequence length used by AutoScheme scoring
+    # when ``AutoScheme.seqlen`` is not explicitly set.
+    # When unset, AutoScheme uses its built-in heuristic (128 for MoE models, 256 otherwise).
+    "AR_AUTO_SCHEME_SEQLEN": lambda: _get_optional_positive_int_env("AR_AUTO_SCHEME_SEQLEN"),
+    # Stores persistent AutoScheme scoring results independently from AR_WORK_SPACE,
+    # whose contents are temporary working data and may be cleaned after a run.
+    "AR_AUTO_SCHEME_CACHE": lambda: os.getenv("AR_AUTO_SCHEME_CACHE", None),
+    "AR_AUTO_SCHEME_NO_SERIAL_FALLBACK": lambda: os.getenv("AR_AUTO_SCHEME_NO_SERIAL_FALLBACK", "0").lower()
+    in ("1", "true", "yes"),
+    # Enables AutoScheme to score schemes in parallel. Enabled by default;
+    # set it to 0 when workers could exhaust host RAM or device memory.
+    "AR_ENABLE_AUTO_SCHEME_PARALLEL": lambda: os.getenv("AR_ENABLE_AUTO_SCHEME_PARALLEL", "1").lower()
+    in ("1", "true", "yes"),
+    # Controls whether NVFP4 E5M3 quant linear caches a dequantized high-
+    # precision weight after the first forward instead of dequantizing on
+    # every call. When enabled, the packed weight buffers are released after
+    # the cache is materialized, trading lower runtime overhead for higher
+    # steady-state memory usage.
+    "AR_NVFP4_E5M3_CACHE_HP_WEIGHT": lambda: os.getenv("AR_NVFP4_E5M3_CACHE_HP_WEIGHT", "0").lower()
+    in ("1", "true", "yes", "on"),
+    # When set, the model is built as a meta-device skeleton and streamed
+    # block-by-block from disk during quantization instead of being fully
+    # materialized on CPU RAM up front.
+    "AR_DISK_STREAM_MODEL": lambda: os.getenv("AR_DISK_STREAM_MODEL", "0").lower() in ("1", "true", "yes"),
+    # AutoRound builds a meta skeleton automatically for transformers>=5 MoE checkpoints
+    # (fused 3D experts must be split into per-expert Linear to be quantizable, and doing
+    # that on real tensors costs ~2x one experts module on top of a fully resident model).
+    # Set this to fall back to the old behavior of loading the whole model on CPU first.
+    "AR_DISABLE_META_LOAD": lambda: os.getenv("AR_DISABLE_META_LOAD", "0").lower() in ("1", "true", "yes"),
+    # When set to a directory path, the per-block tuning loop checkpoints its
+    # progress there after each completed block, and resumes from the first
+    # not-yet-completed block on a fresh run against the same directory --
+    # instead of restarting the whole tuning pass from block 0 after a
+    # crash/kill. See auto_round/utils/resume.py.
+    "AR_RESUME_DIR": lambda: os.getenv("AR_RESUME_DIR", None),
+    # When enabled, MoE routing can be overridden in selected model wrappers
+    # to rotate token assignments across all experts for calibration coverage.
+    "AR_FORCE_MOE_ROUTING_ALL_EXPERTS": lambda: os.getenv("AR_FORCE_MOE_ROUTING_ALL_EXPERTS", "0").lower()
+    in ("1", "true", "yes"),
+    # Experts forward used for AutoRound's unfused per-expert nn.Linear MoE layout:
+    #   "auto"                   - (default) same as "linear_grouped"
+    #   "linear_grouped"         - sort the routed (token, expert) pairs once and run one
+    #                      grouped GEMM over the sorted batch, using torch's native
+    #                      ``grouped_mm`` kernel (one launch for all experts -- markedly
+    #                      faster for tuning fwd+bwd on many-expert MoEs, up to ~5x on a
+    #                      synthetic full Qwen3.5-MoE decoder layer, batch=8, A100, with the
+    #                      gain almost entirely in backward). Avoids the per-expert
+    #                      nonzero()/numel() device syncs of the loop backend. Transparently
+    #                      falls back to the sliced per-expert loop when the native kernel is
+    #                      unavailable/ineligible (non-CUDA, pre-sm80, unsupported dtype/torch,
+    #                      alignment) -- see modeling/fused_moe/grouped_experts.py.
+    #   "linear_grouped_sliced"  - same grouped backend, but force the sliced per-expert
+    #                      ``F.linear`` loop instead of the native ``grouped_mm`` kernel.
+    #                      Both grouped paths are numerically identical (gradients included,
+    #                      verified bit-exact on A100).
+    #   "linear_loop"            - legacy per-expert Python loop.
+    # The grouped backend validates the layer and transparently falls back to the loop
+    # when the layer is not eligible (Conv1D experts, forward hooks, static/per-tensor
+    # activation quantization, mixed devices, ...).
+    "AR_MOE_EXPERTS_IMPL": lambda: os.getenv("AR_MOE_EXPERTS_IMPL", "auto").lower(),
+    # How many experts the "linear_grouped" backend groups per fused op. This one knob
+    # governs BOTH the fake-quant fusion AND the native grouped_mm tiling (when the native
+    # kernel is active): the qdq of a chunk is one fused quant call, and that same chunk
+    # is one native grouped_mm launch, so the ``torch.stack`` (E, out, in) operand the kernel
+    # needs is bounded to ``chunk`` experts instead of all active experts.
+    # Accepted values:
+    #   "auto"     - (default) derive the group size from a fixed working-set budget and the
+    #                weight shape (~16 on the shapes it was tuned on; more for small experts).
+    #                Benchmarks (A100, W4G128 tuning fwd+bwd) show "auto" matches or beats a
+    #                fixed 16 on every Qwen3-MoE preset (e.g. 35B-A3B: 108 ms vs 156 ms).
+    #   <int > 0>  - fixed group size. Fusing every active expert at once builds a working set
+    #                that grows with the expert count; past a point that costs peak memory on
+    #                GPU and cache locality on CPU (measured: fusing 64 experts halved CPU
+    #                calibration throughput, and doubled the GPU calibration peak).
+    #   0 or <0    - disable chunking/tiling: "fuse everything" in one group (e.g. set -1 to turn it off).
+    # Results are identical for any value -- rows stay independent. A fixed count and "auto"
+    # are both torch.compile-friendly (constant fused shape -> no per-count recompile).
+    "AR_MOE_CHUNK": lambda: os.getenv("AR_MOE_CHUNK", "auto").lower(),
+    # Where to place huge, non-quantizable per-layer ngram/PLE embeddings (e.g. Qwen4-Exp's
+    # ~95 GiB table) during per-block tuning. They do not participate in tuning but must run to
+    # produce correct block outputs.
+    #   "auto"  - (default) keep the table pinned on CPU (memory-safe: no per-card OOM and no
+    #             extra device RAM churn). A one-time hint suggests the faster on-GPU options.
+    #   "across"/"shard"/"gpu" - row-shard the table across all available GPUs (fast on-device
+    #             lookup, avoids card-0 OOM). Experimental.
+    #   "cpu"   - keep it pinned on CPU (same as the default).
+    #   "cuda:N"/"xpu:N"/"<index>" - put the whole table on that specific card.
+    # NOTE: multi-GPU sharding ("across") is experimental and may have bugs; prefer "cpu"
+    # (default) or a specific card if you hit issues.
+    "AR_NGRAM_DEVICE": lambda: os.getenv("AR_NGRAM_DEVICE", "auto").strip().lower(),
+    # vLLM fused kernels require q/k/v and gate/up projections to use one
+    # weight global scale. Disable only for runtimes without that requirement.
+    "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()
+    not in ("0", "false", "no", "off"),
+    "AR_ALLOW_W8_ASYM": lambda: os.getenv("AR_ALLOW_W8_ASYM", "0").lower() in ("1", "true", "yes"),
+    # Debug helper: when set to a positive integer N, models are loaded with only
+    # the first N decoder layers (config.num_hidden_layers is truncated to N before
+    # the weights are instantiated). This makes it possible to isolate and debug
+    # issues on very large models with a fraction of the load time and memory.
+    # Exposed on the CLI as ``--num_hidden_layers``. The resulting model is a
+    # partial model and must not be used for a real/production quantization run.
+    "AR_DEBUG_LAYER_NUM": lambda: _get_optional_positive_int_env("AR_DEBUG_LAYER_NUM"),
 }
 
 

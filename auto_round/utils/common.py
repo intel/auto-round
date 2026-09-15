@@ -42,7 +42,12 @@ def download_audiocaps_csv():
     import requests
 
     url = "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
-    cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
+    # Prefer AR_WORKSPACE environment variable for cache location when provided.
+    ar_workspace = os.environ.get("AR_WORKSPACE")
+    if ar_workspace:
+        cache_dir = os.path.join(ar_workspace, "audiocaps_cache")
+    else:
+        cache_dir = os.path.join(tempfile.gettempdir(), "audiocaps_cache")
     os.makedirs(cache_dir, exist_ok=True)
     cache_file = os.path.join(cache_dir, "train.csv")
 
@@ -98,7 +103,7 @@ class LazyImport(object):
         try:
             self.module = importlib.import_module(self.module_name)
             mod = getattr(self.module, name)
-        except:
+        except Exception:
             spec = importlib.util.find_spec(str(self.module_name + "." + name))
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
@@ -353,10 +358,48 @@ def monkey_patch_transformers():
         _patch_tensor_get_dtype_for_prequantized_loading()
     _patch_default_rope_init()
     _patch_rotary_embedding_init_for_legacy_remote_code()
+    _patch_nvfp4_e5m3_compressed_tensors_quantizer()
     if parsed_version >= version.parse("4.56.0"):
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", torch_dtype="dtype")
     else:
         _patch_classmethod_kwargs(transformers.AutoModelForCausalLM, "from_pretrained", dtype="torch_dtype")
+
+
+def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
+    """Route the global-scale-free E5M3 format through AutoRound qmodules."""
+    try:
+        from transformers.quantizers.quantizer_compressed_tensors import CompressedTensorsHfQuantizer
+    except ImportError:
+        return
+
+    original_before = CompressedTensorsHfQuantizer._process_model_before_weight_loading
+    if getattr(original_before, "_auto_round_nvfp4_e5m3_patch", False):
+        return
+    original_after = CompressedTensorsHfQuantizer._process_model_after_weight_loading
+
+    def is_nvfp4_e5m3(self):
+        compression_config = getattr(getattr(self, "compressor", None), "quantization_config", None)
+        return getattr(compression_config, "format", None) == "nvfp4-e5m3-pack-quantized"
+
+    def patched_before(self, model, **kwargs):
+        if not is_nvfp4_e5m3(self):
+            return original_before(self, model, **kwargs)
+        from auto_round.inference.convert_model import convert_hf_model
+
+        model.config.quantization_config = self.compressor.quantization_config
+        target_device = "cuda" if torch.cuda.is_available() else "cpu"
+        model, _ = convert_hf_model(model, target_device=target_device)
+        self.run_compressed = True
+        return model
+
+    def patched_after(self, model, **kwargs):
+        if is_nvfp4_e5m3(self):
+            return model
+        return original_after(self, model, **kwargs)
+
+    patched_before._auto_round_nvfp4_e5m3_patch = True
+    CompressedTensorsHfQuantizer._process_model_before_weight_loading = patched_before
+    CompressedTensorsHfQuantizer._process_model_after_weight_loading = patched_after
 
 
 @lru_cache(None)
@@ -619,6 +662,7 @@ class SupportedFormats:
             "auto_round:fp8",
             "mlx",
             "auto_round:mlx",
+            "svdquant_nunchaku",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -1172,14 +1216,167 @@ def get_reverse_checkpoint_conversion_mapping(model):
         v: k for k, v in getattr(model, "_checkpoint_conversion_mapping", {}).items()
     }
 
-    if hasattr(model, "_weight_conversions"):
-        weight_conversions = model._weight_conversions
+    weight_conversions = getattr(model, "_weight_conversions", None)
+
+    # Models built from config (e.g. AutoRound's meta / disk-stream skeleton in
+    # ``build_meta_model`` via ``model_cls(config)``) are NOT created through
+    # ``from_pretrained``, so transformers never attaches ``_weight_conversions``.
+    # Without it the per-family renames registered centrally in
+    # ``transformers/conversion_mapping.py`` (transformers >= 5.x) are lost, and
+    # module-side names such as ``attn_hc.base`` / ``self_attn.forget_gate.*``
+    # (glm5_next, deepseek_v4, ...) get written to the checkpoint verbatim instead
+    # of their original ``hc_attn_base`` / ``self_attn.*`` names, breaking reload
+    # (e.g. vLLM ``KeyError: 'layers.0.attn_hc.base'``). Fall back to the central
+    # registry and reverse those entries ourselves in that case.
+    if not weight_conversions and hasattr(transformers, "conversion_mapping"):
+        try:
+            from transformers.conversion_mapping import (
+                get_checkpoint_conversion_mapping as transformers_get_checkpoint_conversion_mapping,
+            )
+        except ImportError:  # pragma: no cover - transformers < 5
+            transformers_get_checkpoint_conversion_mapping = None
+
+        config = getattr(model, "config", None)
+        if transformers_get_checkpoint_conversion_mapping is not None and config is not None:
+            # Include the text sub-model type for composite models (e.g. VLMs), where
+            # the MoE / hyper-connection renames are registered on the text config.
+            model_types = []
+            for candidate in (
+                getattr(config, "model_type", None),
+                getattr(getattr(config, "text_config", None), "model_type", None),
+            ):
+                if candidate and candidate not in model_types:
+                    model_types.append(candidate)
+
+            weight_conversions = []
+            seen = set()
+            for model_type in model_types:
+                mapping = transformers_get_checkpoint_conversion_mapping(model_type)
+                if not mapping:
+                    continue
+                for entry in mapping:
+                    sig = (tuple(entry.source_patterns), tuple(entry.target_patterns))
+                    if sig in seen:
+                        continue
+                    seen.add(sig)
+                    weight_conversions.append(entry)
+
+    # ``PrefixChange`` transforms (e.g. ``qwen3_5_text``'s
+    # ``PrefixChange(prefix_to_remove="language_model", model_prefix="model")``)
+    # rely on a ``^`` anchor plus a negative look-ahead to add/remove a full
+    # prefix exactly once. The flattened regex applier
+    # (:func:`revert_checkpoint_conversion_mapping`) strips that ``^`` anchor, so
+    # the reverse ``^model\.(?:(?!language_model\.))(.+)$`` -> ``model.language_model.\1``
+    # no longer anchors at the start and instead matches the ``model.`` embedded
+    # inside ``language_model.``, doubling the prefix
+    # (``model.language_model.language_model.layers.*``) and bloating the export.
+    # These prefix changes are handled safely by the scope-aware
+    # :func:`get_reverse_weight_transforms` path, so drop them here.
+    try:
+        from transformers.core_model_loading import PrefixChange
+    except Exception:  # pragma: no cover - transformers < 5 has no such primitive
+        PrefixChange = None
+
+    if weight_conversions:
         for weight_conversion in weight_conversions:
-            reverse_conversion_mapping = weight_conversion.reverse_transform()
+            if PrefixChange is not None and isinstance(weight_conversion, PrefixChange):
+                continue
+            try:
+                reverse_conversion_mapping = weight_conversion.reverse_transform()
+            except Exception:  # pragma: no cover - not every transform is reversible (e.g. quantized converters)
+                continue
+            if PrefixChange is not None and isinstance(reverse_conversion_mapping, PrefixChange):
+                continue
             for source_pattern in reverse_conversion_mapping.source_patterns:
                 reverse_checkpoint_conversion_mapping[source_pattern] = reverse_conversion_mapping.target_patterns
 
     return reverse_checkpoint_conversion_mapping
+
+
+def get_reverse_weight_transforms(model):
+    """Build transformers' scope-aware reverse weight transforms for ``model``.
+
+    Returns a ``(renamings, converters)`` tuple of reversed ``WeightTransform``
+    objects, or ``None`` when transforms are unavailable (transformers too old,
+    or nothing to revert).
+
+    This mirrors ``transformers.core_model_loading.revert_weight_conversion`` so
+    AutoRound reverts parameter names exactly the way transformers itself does
+    when saving, honouring each transform's ``scope_prefix`` / ``base_model_prefix``
+    and ``^`` anchors. Two sources are used, in order:
+
+    * ``model._weight_conversions`` -- attached only to ``from_pretrained`` models;
+      the exact, already-scoped transforms that were used at load time.
+    * ``get_model_conversion_mapping(model, add_legacy=False)`` -- for models built
+      ``from_config`` (e.g. AutoRound's meta / disk-stream skeleton), rebuilt from
+      the model's real module tree so every transform is correctly scoped. As
+      transformers does in this case, ``PrefixChange`` transforms are dropped:
+      because the model was not loaded from a checkpoint we cannot know whether a
+      prefix was present, and re-adding it corrupts keys -- doubling
+      ``language_model`` (``model.language_model.language_model.layers.*``) or
+      nesting the sibling vision tower (``model.language_model.visual.*``).
+
+    The flattened ``{source: target}`` regex path in
+    :func:`revert_checkpoint_conversion_mapping`, by contrast, drops both the
+    ``^`` anchor and the per-sub-model scope, which is precisely what triggers the
+    prefix-doubling / vision-nesting corruption above.
+    """
+    try:
+        from transformers.core_model_loading import PrefixChange, WeightConverter, WeightRenaming
+    except Exception:  # pragma: no cover - transformers < 5 has no such primitives
+        return None
+
+    weight_conversions = getattr(model, "_weight_conversions", None)
+
+    if not weight_conversions:
+        # Model not created via ``from_pretrained`` -> rebuild scoped transforms
+        # from the real module tree and drop ``PrefixChange`` (see docstring).
+        try:
+            from transformers.conversion_mapping import get_model_conversion_mapping
+
+            weight_conversions = get_model_conversion_mapping(model, add_legacy=False)
+        except Exception:  # pragma: no cover - no module tree / older transformers
+            return None
+        weight_conversions = [c for c in weight_conversions if not isinstance(c, PrefixChange)]
+
+    if not weight_conversions:
+        return None
+
+    try:
+        # Mirror transformers.core_model_loading.revert_weight_conversion: reverse
+        # the conversion order first, then reverse each individual transform.
+        reversed_conversions = [conversion.reverse_transform() for conversion in list(weight_conversions)[::-1]]
+    except Exception:  # pragma: no cover - not every transform is reversible
+        return None
+
+    renamings = [entry for entry in reversed_conversions if isinstance(entry, WeightRenaming)]
+    converters = [entry for entry in reversed_conversions if isinstance(entry, WeightConverter)]
+    if not renamings and not converters:
+        return None
+    return renamings, converters
+
+
+def revert_name_with_weight_transforms(name: str, transforms) -> str:
+    """Revert ``name`` to its original checkpoint form using scope-aware transforms.
+
+    ``transforms`` is the ``(renamings, converters)`` tuple returned by
+    :func:`get_reverse_weight_transforms`. Applies transformers'
+    ``rename_source_key`` (reverse mode) so the reverse honours each transform's
+    ``scope_prefix`` / ``base_model_prefix`` and ``^`` anchors, avoiding the
+    prefix-leak / double-prefix corruption of the flattened regex fallback. On
+    any failure it returns ``name`` unchanged so saving never crashes.
+    """
+    if "," in name:
+        return ",".join(revert_name_with_weight_transforms(part, transforms) for part in name.split(","))
+
+    renamings, converters = transforms
+    try:
+        from transformers.core_model_loading import rename_source_key
+
+        renamed_key, _ = rename_source_key(name, renamings, converters, reverse=True)
+        return renamed_key
+    except Exception:  # pragma: no cover - defensive: never break saving on rename
+        return name
 
 
 def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
@@ -1194,6 +1391,16 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
             # Skip stripping the capture group if the target backreferences it,
             # otherwise re.subn raises "invalid group reference".
             if not re.search(r"\\g?<?\d+>?", target_pattern):
+                # A capture group that matches a numeric index (e.g.
+                # ``ngram_embedding.shard_(\d+).weight``) must NOT be stripped:
+                # dropping it and applying the rule would rewrite every
+                # ``shard_0, shard_1, ... shard_N`` onto the *same* reverted name,
+                # silently collapsing hundreds of distinct tensors into one (all
+                # but the first are then dropped by the saver's dedup guard).
+                # Such a rule cannot be expressed without a backreference, so skip
+                # it entirely and keep the original (indexed) name intact.
+                if re.search(r"\([^)]*(?:\\d|\[0-9\])[^)]*\)", source_pattern):
+                    continue
                 source_pattern = re.sub(r"\(.*\)", "", source_pattern)
 
             # Weight-conversion reverse mappings may expose bare tensor names

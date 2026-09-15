@@ -14,17 +14,184 @@
 import copy
 from copy import deepcopy
 from dataclasses import asdict, dataclass, fields
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
+GGUF_SCHEME_FACTS: dict[str, dict] = {
+    "gguf:q4_0": {
+        "bits": 4,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": True,
+        "data_type": "int",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+    "gguf:q4_1": {
+        "bits": 4,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": False,
+        "data_type": "int_asym_float_zp",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+    "gguf:q5_0": {
+        "bits": 5,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": True,
+        "data_type": "int",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+    "gguf:q5_1": {
+        "bits": 5,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": False,
+        "data_type": "int_asym_float_zp",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+    "gguf:q8_0": {
+        "bits": 8,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": True,
+        "data_type": "int",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+    "gguf:q2_k": {
+        "bits": 2,
+        "act_bits": 16,
+        "group_size": 16,
+        "sym": False,
+        "data_type": "int_asym_dq",
+        "super_bits": 4,
+        "super_group_size": 16,
+    },
+    "gguf:q3_k": {
+        "bits": 3,
+        "act_bits": 16,
+        "group_size": 16,
+        "sym": True,
+        "data_type": "int_sym_dq",
+        "super_bits": 6,
+        "super_group_size": 16,
+    },
+    "gguf:q4_k": {
+        "bits": 4,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": False,
+        "data_type": "int_asym_dq",
+        "super_bits": 6,
+        "super_group_size": 8,
+    },
+    "gguf:q5_k": {
+        "bits": 5,
+        "act_bits": 16,
+        "group_size": 32,
+        "sym": False,
+        "data_type": "int_asym_dq",
+        "super_bits": 6,
+        "super_group_size": 8,
+    },
+    "gguf:q6_k": {
+        "bits": 6,
+        "act_bits": 16,
+        "group_size": 16,
+        "sym": True,
+        "data_type": "int_sym_dq",
+        "super_bits": 8,
+        "super_group_size": 16,
+    },
+    "gguf:bf16": {
+        "bits": 16,
+        "act_bits": 16,
+        "group_size": None,
+        "sym": True,
+        "data_type": "int_sym_dq",
+        "super_bits": None,
+        "super_group_size": None,
+    },
+}
+GGUF_SCHEME_FACTS["gguf:fp16"] = GGUF_SCHEME_FACTS["gguf:bf16"]
+
+GGUF_PRESET_ALIASES: dict[str, str] = {
+    "gguf:q4_0": "gguf:q4_0",
+    "gguf:q4_1": "gguf:q4_1",
+    "gguf:q5_0": "gguf:q5_0",
+    "gguf:q5_1": "gguf:q5_1",
+    "gguf:q2_k_s": "gguf:q2_k",
+    "gguf:q2_k_mixed": "gguf:q2_k",
+    "gguf:q3_k_s": "gguf:q3_k",
+    "gguf:q3_k_m": "gguf:q3_k",
+    "gguf:q3_k_l": "gguf:q3_k",
+    "gguf:q4_k_s": "gguf:q4_k",
+    "gguf:q4_k_m": "gguf:q4_k",
+    "gguf:q5_k_s": "gguf:q5_k",
+    "gguf:q5_k_m": "gguf:q5_k",
+    "gguf:q6_k": "gguf:q6_k",
+    "gguf:q8_0": "gguf:q8_0",
+}
+
 from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_DTYPES, contain_any_mm_keys, infer_bits_by_data_type
 
-__all__ = ["QuantizationScheme", "get_gguf_scheme", "preset_name_to_scheme"]
+__all__ = [
+    "QuantizationScheme",
+    "BackendDataType",
+    "GGUF_SCHEME_FACTS",
+    "GGUF_PRESET_ALIASES",
+    "is_standard_fp",
+    "is_mx_fp",
+    "is_nv_fp",
+    "is_mx_int",
+    "get_gguf_scheme",
+    "preset_name_to_scheme",
+]
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+
+class BackendDataType(str, Enum):
+    STANDARD_FP = "fp"
+    MX_FP = "mx_fp"
+    NV_FP = "nv_fp"
+    MX_INT = "mx_int"
+    FP8_STATIC = "fp8_static"
+    FP8 = "fp8"
+
+
+# --- data_type string classifiers (single authority) ------------------------
+# These classify a raw data_type / backend string (e.g. "mx_fp4", "nv_fp",
+# "fp8_static"). They are the one place the substring rules live: both the
+# ``QuantizationScheme.is_*`` methods and ``compressors.utils`` (which re-exports
+# them for its many string call sites) delegate here, so there is no duplicate
+# copy of the "what makes a dtype mx_fp/nv_fp/..." logic.
+
+
+def is_mx_fp(backend: str) -> bool:
+    return BackendDataType.MX_FP in backend.lower()
+
+
+def is_nv_fp(backend: str) -> bool:
+    return BackendDataType.NV_FP in backend.lower()
+
+
+def is_mx_int(backend: str) -> bool:
+    return BackendDataType.MX_INT in backend.lower()
+
+
+def is_standard_fp(backend: str) -> bool:
+    backend = backend.lower()
+    return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
 
 
 @dataclass
@@ -117,6 +284,78 @@ class QuantizationScheme:
                     continue
                 return False
         return True
+
+    # --- classification predicates (single authority, see D1) ---
+
+    def is_standard_fp(self) -> bool:
+        return self.data_type is not None and is_standard_fp(self.data_type)
+
+    def is_mx_fp(self) -> bool:
+        return self.data_type is not None and is_mx_fp(self.data_type)
+
+    def is_nv_fp(self) -> bool:
+        return self.data_type is not None and is_nv_fp(self.data_type)
+
+    def is_mx_int(self) -> bool:
+        return self.data_type is not None and is_mx_int(self.data_type)
+
+    def is_act_standard_fp(self) -> bool:
+        return self.act_data_type is not None and is_standard_fp(self.act_data_type)
+
+    def is_act_mx_fp(self) -> bool:
+        return self.act_data_type is not None and is_mx_fp(self.act_data_type)
+
+    def is_act_nv_fp(self) -> bool:
+        return self.act_data_type is not None and is_nv_fp(self.act_data_type)
+
+    def is_act_quantize(self) -> bool:
+        return self.act_bits is not None and self.act_bits <= 8
+
+    def is_wint_woq(self) -> bool:
+        """Integer weight-only quantization with non-quantized activations (`act_bits >= 16`)."""
+        return "int" in self.data_type and self.act_bits >= 16 and self.super_group_size is None
+
+    def is_wfp8afp8(self) -> bool:
+        if self.act_data_type is None or self.data_type is None:
+            return False
+        return (
+            ("fp8" in self.act_data_type or ("fp" in self.act_data_type and self.act_bits == 8))
+            and ("fp8" in self.data_type or ("fp" in self.data_type and self.bits == 8))
+            and self.is_act_standard_fp()
+            and self.is_standard_fp()
+        )
+
+    def is_wint8aint8(self) -> bool:
+        return ("int8" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 8)) and (
+            "int8" in self.data_type or ("int" in self.data_type and self.bits == 8)
+        )
+
+    def is_wint4aint4(self) -> bool:
+        return ("int4" in self.act_data_type or ("int" in self.act_data_type and self.act_bits == 4)) and (
+            "int4" in self.data_type or ("int" in self.data_type and self.bits == 4)
+        )
+
+    def is_dynamic_afp8(self) -> bool:
+        return self.act_dynamic and self.act_data_type.startswith("fp") and self.act_bits == 8
+
+    def is_block_wfp8(self) -> bool:
+        return (
+            isinstance(self.group_size, tuple)
+            and len(self.group_size) == 2
+            and self.data_type.startswith("fp")
+            and self.bits == 8
+        )
+
+    def is_static_afp8(self) -> bool:
+        return self.act_data_type is not None and BackendDataType.FP8_STATIC in self.act_data_type
+
+    def is_act_static(self) -> bool:
+        return not self.act_dynamic
+
+    def is_dynamic_wint8aint8(self) -> bool:
+        if not self.act_dynamic:
+            return False
+        return self.is_wint8aint8()
 
 
 def preset_name_to_scheme(name: str) -> QuantizationScheme:
@@ -254,15 +493,43 @@ def _override_scheme_with_user_specify(
     return QuantizationScheme.from_dict(scheme_dict)
 
 
+def format_allows_w8_asym(format: str | None) -> bool:
+    """Whether an output format can represent and serve 8-bit asymmetric int weights.
+
+    ``llm_compressor`` (compressed-tensors pack-quantized) stores the zero point
+    as int8 with a signed-convention shift and vLLM serves it (which kernels
+    pick it up depends on GPU and group size -- see docs/step_by_step.md for
+    the current kernel matrix). ``fake`` is research-only by
+    declaration. The remaining formats (native ``auto_round``, ``auto_gptq``,
+    marlin, awq) cannot serve W8 asym today: their packed layouts have no
+    room for an 8-bit zero point and vLLM serves W8 GPTQ-format weights
+    symmetric-only.
+    """
+    if not format:
+        return False
+    # Multi-format requests are allowed only when EVERY requested format can
+    # serve W8 asym (a mixed "auto_round,llm_compressor" request would still
+    # produce a native artifact that stock vLLM cannot load - require the
+    # explicit AR_ALLOW_W8_ASYM=1 opt-in for that).
+    parts = str(format).split(",")
+    return all("llm_compressor" in p.split(":") or "fake" in p.split(":") for p in parts)
+
+
 def parse_scheme(
-    scheme: Union[str, dict, QuantizationScheme, "AutoScheme"], user_scheme_overrides: dict[str, Any]
+    scheme: Union[str, dict, QuantizationScheme, "AutoScheme"],
+    user_scheme_overrides: dict[str, Any],
+    format: str = None,
 ) -> tuple[Union[str, QuantizationScheme], bool, dict[str, Any]]:
     """
     Parses the final scheme.
     """
+    from auto_round import envs
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
     is_auto_scheme = isinstance(scheme, AutoScheme)
+    # W8 asym is allowed for formats that can serve it, or via the explicit
+    # AR_ALLOW_W8_ASYM=1 opt-in for serving stacks beyond stock vLLM.
+    w8_asym_ok = envs.AR_ALLOW_W8_ASYM or format_allows_w8_asym(format)
     if is_auto_scheme:
         if not scheme.options:
             raise ValueError("AutoScheme options cannot be empty")
@@ -274,6 +541,29 @@ def parse_scheme(
 
         # Map user overrides across all auto-scheme options
         scheme.options = [_override_scheme_with_user_specify(opt, user_scheme_overrides) for opt in scheme.options]
+
+        # --asym must never silently reach 8-bit options in formats that cannot
+        # serve W8 asym (native auto_round / auto_gptq / marlin): vLLM's
+        # GPTQ-format kernels are symmetric-only and Marlin's zero-point
+        # support is 4-bit only. Pin such options back to symmetric, loudly.
+        # llm_compressor exports (and AR_ALLOW_W8_ASYM) keep asym.
+        import dataclasses
+
+        if not w8_asym_ok:
+            for opt_i, opt in enumerate(scheme.options):
+                if (
+                    isinstance(opt, QuantizationScheme)
+                    and opt.sym is False
+                    and opt.bits == 8
+                    and opt.data_type == "int"
+                ):
+                    scheme.options[opt_i] = dataclasses.replace(opt, sym=True)
+                    logger.info(
+                        "AutoScheme option %s stays symmetric: 8-bit asymmetric quantization is "
+                        "not servable in this format (--asym applies to sub-8-bit options only; "
+                        "use format llm_compressor or AR_ALLOW_W8_ASYM=1 to keep W8 asym)",
+                        opt_i,
+                    )
 
         # Select the primary scheme for attribute binding (skipping BF16)
         default_scheme = scheme.options[0]
@@ -293,6 +583,32 @@ def parse_scheme(
         final_attrs = asdict(final_attrs)
     else:
         final_attrs = asdict(default_scheme)
+
+    if not is_auto_scheme and final_attrs.get("data_type") == "int" and final_attrs.get("bits") == 8:
+        if final_attrs.get("sym") is False:
+            if not w8_asym_ok:
+                # Formats without a servable W8-asym path fail before any quantization
+                # work starts. llm_compressor exports and AR_ALLOW_W8_ASYM are exempt.
+                raise ValueError(
+                    "8-bit asymmetric weight quantization is not supported for this format: "
+                    "vLLM serves W8 GPTQ-format weights symmetric-only and Marlin supports "
+                    "zero points at 4 bits only. Use a symmetric 8-bit scheme (drop --asym), "
+                    "an asymmetric width of 7 bits or fewer, format 'auto_round:llm_compressor' "
+                    "(compressed-tensors serves W8 asym), or set AR_ALLOW_W8_ASYM=1 "
+                    "to skip this check."
+                )
+            _group = final_attrs.get("group_size")
+            _fmt_parts = str(format or "").replace(",", ":").split(":")
+            # group_size 128 and 0/-1 (per-tensor/channelwise) are served
+            # broadly across current GPUs; other groups depend on kernel
+            # availability, so warn without pinning
+            if "llm_compressor" in _fmt_parts and _group not in (-1, 0, 128, None):
+                logger.warning_once(
+                    "8-bit asym with group_size %s under llm_compressor: current vLLM "
+                    "kernels serve 8-bit asym broadly only at group sizes 128/-1 "
+                    "(see docs for kernel/GPU availability)",
+                    _group,
+                )
     return default_scheme, is_auto_scheme, final_attrs
 
 
@@ -326,9 +642,9 @@ W6A16 = QuantizationScheme.from_dict(
     }
 )
 
-W2A16 = QuantizationScheme.from_dict(
+W7A16 = QuantizationScheme.from_dict(
     {
-        "bits": 2,
+        "bits": 7,
         "sym": True,
         "group_size": 128,
         "data_type": "int",
@@ -336,21 +652,11 @@ W2A16 = QuantizationScheme.from_dict(
     }
 )
 
-W2A16G64 = QuantizationScheme.from_dict(
+W2A16 = QuantizationScheme.from_dict(
     {
         "bits": 2,
         "sym": True,
-        "group_size": 64,
-        "data_type": "int",
-        "act_bits": 16,
-    }
-)
-
-W2A16G32 = QuantizationScheme.from_dict(
-    {
-        "bits": 2,
-        "sym": True,
-        "group_size": 32,
+        "group_size": 128,
         "data_type": "int",
         "act_bits": 16,
     }
@@ -467,6 +773,18 @@ NVFP4 = QuantizationScheme.from_dict(
     }
 )
 
+NVFP4_E5M3 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 16,
+        "data_type": "nvfp4_v2",
+        "act_bits": 4,
+        "act_data_type": "nvfp4_v2",
+        "act_group_size": 16,
+        "act_sym": True,
+    }
+)
+
 FPW8A16 = QuantizationScheme.from_dict(
     {
         "bits": 8,
@@ -550,12 +868,25 @@ BF16 = QuantizationScheme.from_dict(
     }
 )
 
+for _bits in (2, 3, 4, 5, 6, 7, 8):
+    for _g in (64, 32):
+        globals()[f"W{_bits}A16G{_g}"] = QuantizationScheme.from_dict(
+            {
+                "bits": _bits,
+                "sym": True,
+                "group_size": _g,
+                "data_type": "int",
+                "act_bits": 16,
+            }
+        )
+
 PRESET_SCHEMES = {
     "W4A16": W4A16,
     "W2A16": W2A16,
     "W3A16": W3A16,
     "W5A16": W5A16,
     "W6A16": W6A16,
+    "W7A16": W7A16,
     "W8A16": W8A16,
     "MXFP4": MXFP4,
     "MXFP6": MXFP6,
@@ -563,9 +894,16 @@ PRESET_SCHEMES = {
     "MXFP8": MXFP8,
     "MXFP8_RCEIL": MXFP8_RCEIL,
     "NVFP4": NVFP4,
+    "NVFP4_E5M3": NVFP4_E5M3,
     "FPW8A16": FPW8A16,
-    "W2A16G64": W2A16G64,
-    "W2A16G32": W2A16G32,
+    # Group-size variants for the 2-8 bit int presets: the bare presets default
+    # to group_size 128; these finer-group variants allow per-layer group-size
+    # selection via --scheme/layer_config and mixed-group AutoScheme pools, e.g.
+    # options="W3A16,W4A16,W4A16G64,W4A16G32". 8-bit variants are symmetric
+    # presets: formats that cannot serve W8 asym pin it back (see
+    # parse_scheme), and the llm_compressor route keeps 8-bit asym through the
+    # bare preset + --asym, so no asymmetric variant is needed.
+    **{f"W{b}A16G{g}": globals()[f"W{b}A16G{g}"] for b in (2, 3, 4, 5, 6, 7, 8) for g in (64, 32)},
     "FP8_STATIC": FP8_STATIC,
     "BF16": BF16,
     "W4A16_MIXED": W4A16,
@@ -575,14 +913,9 @@ PRESET_SCHEMES = {
     "FP8_BLOCK": FP8_BLOCK,
     "MXINT4": MXINT4,
 }
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 
-for key, val in GGUF_CONFIG.items():
-    value = copy.deepcopy(val)
-    value.pop("mostly", None)
-    value.pop("embedding", None)
-    value.pop("lm_head", None)
-    PRESET_SCHEMES[key.upper()] = QuantizationScheme.from_dict(value)
+for alias_key, facts_key in GGUF_PRESET_ALIASES.items():
+    PRESET_SCHEMES[alias_key.upper()] = QuantizationScheme.from_dict(GGUF_SCHEME_FACTS[facts_key])
 
 
 def _handle_special_schemes(
@@ -653,6 +986,8 @@ def _handle_special_schemes(
 
 
 def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
+    if scheme is None:
+        return ""
     if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):
         return scheme
     if isinstance(scheme, str):

@@ -65,12 +65,55 @@ __all__ = ["OffloadManager"]
 # =====================================================================
 
 
+def _maybe_split_fused_expert_keys(state_dict: dict, module: torch.nn.Module) -> dict:
+    """A checkpoint whose on-disk MoE layout is
+    the fused 3D one (``...experts.gate_up_proj [N, 2*inter, hidden]`` /
+    ``...experts.down_proj``, e.g. the real qwen3.5-397b-base) cannot be
+    assigned onto a module tree whose experts were already replaced by the
+    unfused ``SequentialQwen3_5MoeExperts`` (per-expert ``nn.Linear``s) --
+    the fused key silently resolves to nothing and the experts stay meta,
+    crashing far downstream at ``block.to(device)``. Detect that exact case
+    (fused key present, target tree lacks the fused attribute) and split the
+    fused tensor into per-expert keys via the same
+    ``split_fused_expert_tensors`` helper the missing-tensors export pass
+    uses. Trees that still hold the original fused module are left alone.
+    Never triggered before because every prior fixture's on-disk layout was
+    already unfused (transformers >=5.10 unfuses on save); the real
+    checkpoint is fused."""
+    fused_keys = [
+        k
+        for k, v in state_dict.items()
+        if k.endswith((".experts.gate_up_proj", ".experts.down_proj")) and torch.is_tensor(v) and v.dim() == 3
+    ]
+    if not fused_keys:
+        return state_dict
+    to_split = {}
+    for key in fused_keys:
+        parts = key.split(".")
+        target = module
+        resolved = True
+        for part in parts[:-1]:
+            if not hasattr(target, part):
+                resolved = False
+                break
+            target = getattr(target, part)
+        if resolved and hasattr(target, parts[-1]):
+            continue  # original fused module still in the tree; assign as-is
+        to_split[key] = state_dict.pop(key)
+    if to_split:
+        from auto_round.utils.model_free_utils import split_fused_expert_tensors
+
+        state_dict.update(split_fused_expert_tensors(to_split))
+    return state_dict
+
+
 def _load_state_dict_into_module(state_dict: dict, module: torch.nn.Module) -> None:
     """Assign every key in *state_dict* to the corresponding sub-module.
 
     Handles cleared parameters (empty tensors) and wrapper objects that store
     the original layer in an ``orig_layer`` attribute.
     """
+    state_dict = _maybe_split_fused_expert_keys(state_dict, module)
     for name, param in state_dict.items():
         parts = name.split(".")
         target = module
@@ -85,7 +128,14 @@ def _load_state_dict_into_module(state_dict: dict, module: torch.nn.Module) -> N
         if hasattr(target, param_name):
             old_param = getattr(target, param_name)
             if isinstance(old_param, torch.nn.Parameter):
-                param = param.to(dtype=old_param.dtype, device=old_param.device)
+                # `old_param` is on meta when the
+                # module started as a meta skeleton (AR_DISK_STREAM_MODEL=1) and
+                # is being materialized for the first time, rather than reloaded
+                # onto a previously-cleared real (cpu/cuda) tensor. Target "cpu"
+                # in that case instead of literally copying to meta (which would
+                # silently discard the just-read real data).
+                target_device = "cpu" if old_param.device.type == "meta" else old_param.device
+                param = param.to(dtype=old_param.dtype, device=target_device)
                 setattr(target, param_name, torch.nn.Parameter(param, requires_grad=old_param.requires_grad))
             else:
                 setattr(target, param_name, param)
@@ -139,21 +189,41 @@ def _clear_module_weights(
 # =====================================================================
 
 
-def _resolve_model_dir(model_dir: str) -> str:
+def _resolve_model_dir(model_dir: str, revision: Optional[str] = None) -> str:
     """Resolve a model name/path to a local directory containing weight files."""
     if os.path.isdir(model_dir):
         return model_dir
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import snapshot_download, try_to_load_from_cache
 
+        for filename in (
+            "model.safetensors.index.json",
+            "model.safetensors",
+            "pytorch_model.bin.index.json",
+            "pytorch_model.bin",
+        ):
+            cached_file = try_to_load_from_cache(model_dir, filename, revision=revision)
+            if isinstance(cached_file, str):
+                return os.path.dirname(cached_file)
+
+        if revision is not None:
+            return snapshot_download(model_dir, revision=revision, local_files_only=True)
         return snapshot_download(model_dir, local_files_only=True)
     except Exception:
+        if revision is not None:
+            raise
         return model_dir
 
 
 def _build_weight_map(model_dir: str) -> dict[str, str]:
     """Build ``{tensor_name: shard_filename}`` from the model directory."""
     index_path = os.path.join(model_dir, "model.safetensors.index.json")
+    if not os.path.exists(index_path) and os.path.isdir(model_dir):
+        custom_indexes = sorted(
+            filename for filename in os.listdir(model_dir) if filename.endswith(".safetensors.index.json")
+        )
+        if custom_indexes:
+            index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(index_path):
         with open(index_path) as f:
             return json.load(f)["weight_map"]
@@ -166,6 +236,10 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
             return {k: "model.safetensors" for k in f.keys()}
 
     bin_index_path = os.path.join(model_dir, "pytorch_model.bin.index.json")
+    if not os.path.exists(bin_index_path) and os.path.isdir(model_dir):
+        custom_indexes = sorted(filename for filename in os.listdir(model_dir) if filename.endswith(".bin.index.json"))
+        if custom_indexes:
+            bin_index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(bin_index_path):
         with open(bin_index_path) as f:
             return json.load(f)["weight_map"]
@@ -177,7 +251,7 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
 
     raise FileNotFoundError(
         f"Could not find model weight files in {model_dir}. "
-        "Expected model.safetensors or pytorch_model.bin (with optional index.json)."
+        "Expected a safetensors or PyTorch .bin checkpoint (with optional index.json)."
     )
 
 
@@ -193,6 +267,26 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
         block: The ``nn.Module`` to load weights into.
     """
     model_dir = _resolve_model_dir(model_dir)
+
+    def _has_meta(module: torch.nn.Module) -> bool:
+        return any(tensor.device.type == "meta" for tensor in list(module.parameters()) + list(module.buffers()))
+
+    if _has_meta(block):
+        # A meta-skeleton block (disk-streamed model): resolve each parameter's
+        # checkpoint-side name (checkpoint-conversion renames, fused expert
+        # layouts) instead of raw prefix matching, which silently skips tensors
+        # whose checkpoint spelling differs (e.g. the router stored as
+        # ``mlp.router.gate`` behind a ``mlp.gate`` module) and leaves them on
+        # meta until a downstream ``.to(device)`` crashes.
+        try:
+            from auto_round.utils.disk_stream_util import get_safetensors_index, materialize_module
+
+            materialize_module(block, block_name, get_safetensors_index(model_dir), device="cpu")
+            if not _has_meta(block):
+                return
+        except FileNotFoundError:
+            pass  # non-safetensors checkpoint: fall through to prefix loading
+
     weight_map = _build_weight_map(model_dir)
 
     prefix = block_name + "."
@@ -259,6 +353,9 @@ class OffloadManager:
     model_dir : str, optional
         Path to the model checkpoint directory. Required for ``"clean"``
         mode; optional for ``"offload"``.
+    model_revision : str, optional
+        Commit hash used to resolve a Hugging Face model ID without relying
+        on a mutable branch reference.
     offload_dir_prefix : str
         Prefix for the temp directory name (``"offload"`` mode only).
     cache_numel : bool
@@ -274,12 +371,17 @@ class OffloadManager:
         offload_dir_prefix: str = "ar_offload",
         cache_numel: bool = False,
         retain_saved_entries: bool = False,
+        model_revision: Optional[str] = None,
     ):
         from auto_round import envs
 
         self.enabled = enabled and not envs.AR_DISABLE_OFFLOAD
         self.mode = mode
-        self.model_dir = model_dir
+        self.model_dir = (
+            _resolve_model_dir(model_dir, revision=model_revision)
+            if mode == "clean" and model_dir is not None and model_revision is not None
+            else model_dir
+        )
         self.cache_numel = cache_numel
         self._prefix = offload_dir_prefix
         self.retain_saved_entries = retain_saved_entries
@@ -501,7 +603,44 @@ class OffloadManager:
         module = get_module(model, name)
         if module is None:
             return
+        model_dir = self.model_dir
+        component_subfolder = getattr(model, "_autoround_checkpoint_subfolder", None)
+        if model_dir is not None and component_subfolder:
+            resolved_dir = _resolve_model_dir(model_dir)
+            component_dir = os.path.join(resolved_dir, component_subfolder)
+            if os.path.isdir(component_dir):
+                model_dir = component_dir
         if self.mode == "offload":
+            if name not in self._saved:
+                # Before falling back to the
+                # original checkpoint, check whether a *prior process* already
+                # offloaded this block to the deterministic resume directory
+                # (see _ensure_dir()) -- this is what makes bare in-memory
+                # .quantize() resumability actually work: a resumed process's
+                # self._saved starts empty (it's an in-memory dict, not
+                # persisted), so without this check it would always look like
+                # nothing was ever offloaded, even when a crashed prior
+                # process's real work is sitting right there on disk.
+                from auto_round import envs
+
+                if envs.AR_RESUME_DIR:
+                    safe_name = name.replace(".", "_")
+                    candidate_path = os.path.join(self._ensure_dir(), f"{safe_name}.safetensors")
+                    if os.path.exists(candidate_path):
+                        self._saved[name] = {"save_path": candidate_path}
+                        self._load_from_disk(name, module)
+                        if not self.retain_saved_entries:
+                            self._remove_saved_entry(name)
+                        return
+                # This block was never actually offloaded with real data
+                # (either it's still on meta, or `_save_to_disk` found nothing
+                # real to save), which happens when the model started as a
+                # meta skeleton (AR_DISK_STREAM_MODEL=1) instead of a full CPU
+                # load. There is nothing on the temp dir to load from -- read
+                # straight from the original checkpoint instead.
+                if model_dir is not None:
+                    load_block_from_model_files(model_dir, name, module)
+                return
             self._load_from_disk(name, module)
             if not self.retain_saved_entries:
                 self._remove_saved_entry(name)
@@ -509,7 +648,7 @@ class OffloadManager:
             if self.model_dir is None:
                 logger.warning("OffloadManager: model_dir is required for clean mode")
                 return
-            load_block_from_model_files(self.model_dir, name, module)
+            load_block_from_model_files(model_dir, name, module)
 
     # ------------------------------------------------------------------
     # Hook-based transparent offloading
@@ -703,7 +842,23 @@ class OffloadManager:
 
             base_dir = os.path.join(envs.AR_WORK_SPACE, "offload")
             os.makedirs(base_dir, exist_ok=True)
-            self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_", dir=base_dir)
+            if envs.AR_RESUME_DIR:
+                # A fresh tempfile.mkdtemp()
+                # directory is unique to this process and can never be found
+                # again by a resumed run in a new process -- that's the whole
+                # reason bare in-memory .quantize() (no format=) resumability
+                # didn't actually work: ResumeState correctly skipped
+                # re-tuning already-done blocks, but their quantized weights,
+                # offloaded here, were unreachable from the resumed process,
+                # leaving those blocks on meta in the returned model. Use a
+                # stable, deterministic path instead whenever AR_RESUME_DIR is
+                # set, so a resumed process's OffloadManager can find (see
+                # _reload()'s discovery check below) and reuse what a prior
+                # crashed process already saved here.
+                self._tempdir = os.path.join(base_dir, f"{self._prefix}_resume")
+                os.makedirs(self._tempdir, exist_ok=True)
+            else:
+                self._tempdir = tempfile.mkdtemp(prefix=f"{self._prefix}_", dir=base_dir)
             logger.info(f"OffloadManager ({self._prefix}): tempdir = {self._tempdir}")
         return self._tempdir
 
@@ -721,6 +876,15 @@ class OffloadManager:
                 for k, v in module.state_dict().items()
                 if isinstance(v, torch.Tensor) and v.device.type != "meta"
             }
+            if not state_dict:
+                # Nothing real to save -- the
+                # module was still on meta (e.g. the model started as a meta
+                # skeleton under AR_DISK_STREAM_MODEL=1 and this block hasn't
+                # been touched yet). Do NOT record it in self._saved: a later
+                # reload() must fall through to materializing straight from
+                # the original checkpoint (see _reload), not silently load an
+                # empty file and leave the block on meta.
+                return
             safe_save_file(state_dict, save_path)
             self._saved[name] = {"save_path": save_path}
             del state_dict

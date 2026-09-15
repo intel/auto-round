@@ -182,6 +182,8 @@ ARK provides a full family of scaled dot-product attention kernels on XPU, rangi
 ### Drop-in SDPA Replacement
 
 Replace `torch.nn.functional.scaled_dot_product_attention` globally for lm-eval:
+#### Replace torch SDPA and run lm-eval
+  ARK exposes a standard SDPA interface through `ARK.sdpa(...)`. The implementation borrows from Neural Speed route logic internally, but the public contract is the standard scaled-dot-product-attention surface. If you want to replace `torch.nn.functional.scaled_dot_product_attention` globally for evaluation without editing model code, use the helper launcher in [tools/lm_eval_with_ark_sdpa.py](tools/lm_eval_with_ark_sdpa.py).
 
 ```bash
 cd /path/to/auto_round_extension/ark
@@ -222,6 +224,28 @@ python setup.py bdist_wheel; pip install dist/*
 ```
 
 Build with MoE / SageAttention support requires `ARK_SYCL_TLA=ON`.
+
+For oneAPI/SYCL-TLA builds, template compilation can require several gigabytes
+per compiler process. If the build host runs out of memory, limit concurrent
+XPU compilations with `ARK_SYCL_TLA_JOBS`:
+
+```bash
+ARK_SYCL_TLA_JOBS=1 pip install . --no-build-isolation
+```
+
+On a oneAPI-equipped build host, configure an XPU build with compile commands
+enabled and measure each translation unit before choosing a higher job count:
+
+```bash
+python tools/measure_sycl_tla_compile_memory.py \
+  --build-dir /path/to/ark/xbuild \
+  --output /tmp/ark-sycl-tla-rss.json
+```
+
+The measurement tool runs compiler commands serially and reports peak RSS,
+direct dispatch count, and reachable template declarations. The current
+environment must provide `icx` and a generated `compile_commands.json` for
+these measurements to represent the SYCL-TLA build.
 
 ---
 

@@ -25,7 +25,7 @@ function run_unit_test() {
 
         echo "##[group]Running ark ${test_file}..."
         local ut_log_name="${LOG_DIR}/unittest_ark_${test_basename}.log"
-        pytest -v ${test_file} 2>&1 | tee ${ut_log_name}
+        COVERAGE_CORE=sysmon pytest -v ${test_file} 2>&1 | tee ${ut_log_name}
         echo "##[endgroup]"
     done
 }

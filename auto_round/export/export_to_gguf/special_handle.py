@@ -20,14 +20,74 @@ import torch
 from safetensors import safe_open
 from torch import Tensor
 
-from auto_round.utils import download_or_get_path
+from auto_round.utils import LazyImport, download_or_get_path
+
+gguf = LazyImport("gguf")
+
+
+_GRANITE_MOE_ARCHITECTURES = {
+    "GraniteMoeForCausalLM",
+    "GraniteMoeSharedForCausalLM",
+    "GraniteMoeHybridForCausalLM",
+}
+
+_GRANITE_AGGREGATED_EXPERT_TENSORS = {
+    "down_proj": gguf.MODEL_TENSOR.FFN_DOWN_EXP,
+    "gate_proj": gguf.MODEL_TENSOR.FFN_GATE_EXP,
+    "up_proj": gguf.MODEL_TENSOR.FFN_UP_EXP,
+}
 
 
 def handle_special_model(cls, model_architecture):
     if model_architecture == "GptOssForCausalLM":
         cls.generate_extra_tensors = partial(gptoss_generate_extra_tensors, cls)
         cls.modify_tensors = partial(gptoss_modify_tensors, cls)
+    elif model_architecture in _GRANITE_MOE_ARCHITECTURES:
+        cls.modify_tensors = partial(granite_moe_modify_tensors, cls, cls.modify_tensors)
     return cls
+
+
+def granite_moe_modify_tensors(cls, original_modify_tensors, data_torch, name, bid):
+    """Handle AutoRound's aggregated Granite MoE views before llama.cpp conversion."""
+
+    expert_projection = next(
+        (
+            projection
+            for projection in _GRANITE_AGGREGATED_EXPERT_TENSORS
+            if name.endswith(f"block_sparse_moe.experts.{projection}")
+            or name.endswith(f"block_sparse_moe.experts.{projection}.weight")
+        ),
+        None,
+    )
+    if expert_projection is not None:
+        if data_torch.ndim != 3:
+            raise ValueError(
+                f"Aggregated Granite expert tensor {name!r} must be three-dimensional, "
+                f"got shape {tuple(data_torch.shape)}"
+            )
+        tensor_type = _GRANITE_AGGREGATED_EXPERT_TENSORS[expert_projection]
+        new_name = cls.format_tensor_name(tensor_type, bid)
+        yield new_name, data_torch
+        return
+
+    if name.endswith(("block_sparse_moe.experts.gate_up_proj", "block_sparse_moe.experts.gate_up_proj.weight")):
+        if data_torch.ndim != 3:
+            raise ValueError(
+                f"Aggregated Granite expert tensor {name!r} must be three-dimensional, "
+                f"got shape {tuple(data_torch.shape)}"
+            )
+        ffn_dim = cls.hparams["intermediate_size"]
+        if data_torch.shape[-2] != 2 * ffn_dim:
+            raise ValueError(
+                f"Aggregated Granite gate/up tensor {name!r} must have size {2 * ffn_dim} in dimension -2, "
+                f"got shape {tuple(data_torch.shape)}"
+            )
+        gate, up = data_torch.split(ffn_dim, dim=-2)
+        yield cls.format_tensor_name(gguf.MODEL_TENSOR.FFN_GATE_EXP, bid), gate
+        yield cls.format_tensor_name(gguf.MODEL_TENSOR.FFN_UP_EXP, bid), up
+        return
+
+    yield from original_modify_tensors(data_torch, name, bid)
 
 
 def get_tensor_from_file(dir_path, tensor_name):

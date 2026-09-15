@@ -93,12 +93,78 @@ def oot_replace_with_fp8_linear(
 _orig_validate_environment = OriginalFineGrainedFP8HfQuantizer.validate_environment
 
 
+def _patch_fp8_dequantize_for_ragged_tiles():
+    """Patch transformers FP8 dequantization to handle over-provisioned scale grids.
+
+    Some pre-quantized checkpoints keep FP8 weights in non-padded shape while the
+    corresponding ``weight_scale_inv`` grid is computed on padded block tiles.
+    Example: weight ``(576, 7168)`` with scale grid ``(5, 56)`` for block size
+    ``(128, 128)`` (5 rows of tiles implies padded rows to 640).
+
+    Upstream strict divisibility checks fail on those tensors. We keep upstream
+    behavior by default and only fall back on this specific shape mismatch.
+    """
+
+    try:
+        import transformers.integrations.finegrained_fp8 as transformers_fp8
+
+        from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
+    except ImportError:
+        return
+
+    if not hasattr(transformers_fp8, "Fp8Dequantize"):
+        return
+
+    cls = transformers_fp8.Fp8Dequantize
+    if hasattr(cls, "_auto_round_orig_dequantize_one"):
+        return
+
+    if not hasattr(cls, "_dequantize_one"):
+        return
+
+    cls._auto_round_orig_dequantize_one = cls._dequantize_one
+
+    def _dequantize_one_with_padding_fallback(self, quantized, scales, output_dtype=None):
+        try:
+            return cls._auto_round_orig_dequantize_one(self, quantized, scales, output_dtype=output_dtype)
+        except ValueError as e:
+            if "not divisible by scale grid" not in str(e):
+                raise
+
+            # Match upstream MXFP8 handling for uint8 E8M0 scales.
+            if scales.dtype == torch.uint8:
+                scales = (scales.to(torch.float32) - 127.0).exp2()
+
+            block_size = None
+            qcfg = getattr(self.hf_quantizer, "quantization_config", None)
+            if qcfg is not None:
+                if isinstance(qcfg, dict):
+                    block_size = qcfg.get("weight_block_size")
+                else:
+                    block_size = getattr(qcfg, "weight_block_size", None)
+
+            # Falls back to AutoRound's robust dequantizer that supports
+            # over-provisioned scale grids by padding then slicing back.
+            dequantized = _dequant_fp8_linear_weight(quantized, scales, block_size=block_size)
+            if output_dtype is not None:
+                dequantized = dequantized.to(output_dtype)
+            return dequantized
+
+    cls._dequantize_one = _dequantize_one_with_padding_fallback
+    auto_round_logger.debug("Applied FP8 ragged-tile dequantization fallback patch.")
+
+
 @override_cuda_device_capability()
 def oot_validate_environment(self, *args, **kwargs):
     return _orig_validate_environment(self, *args, **kwargs)
 
 
 def apply_fp8_expert_replacement_patch():
+    # Apply the ragged-tile dequantization fallback unconditionally so that
+    # dequantize-on-load (FineGrainedFP8Config(dequantize=True)) works on
+    # CPU and HPU as well as CUDA.
+    _patch_fp8_dequantize_for_ragged_tiles()
+
     if is_transformers_version_greater_or_equal_5() and torch.cuda.is_available():
         try:
             import transformers.integrations.finegrained_fp8 as transformers_fp8
