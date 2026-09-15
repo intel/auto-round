@@ -40,10 +40,6 @@ from auto_round.utils.common import to_standard_regex
 from auto_round.utils.device import clear_memory, compile_func
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
-_NVFP4_SCALE_MANTISSA_BITS = 3
-_NVFP4_MODEL_FREE_SCALE_SEARCH_MARGIN = 2**-_NVFP4_SCALE_MANTISSA_BITS
-_NVFP4_MODEL_FREE_SCALE_SEARCH_MIN = 1.0 - _NVFP4_MODEL_FREE_SCALE_SEARCH_MARGIN
-_NVFP4_MODEL_FREE_SCALE_SEARCH_MAX = 1.0 + _NVFP4_MODEL_FREE_SCALE_SEARCH_MARGIN
 _BLOCK_NAME_TO_IGNORE = ("shared_expert_gate.", ".gate.", "embed", "conv")
 _SUPPORTED_MXFP_BITS = (4, 8)
 _SUPPORTED_INT_BITS = (2, 4, 8)
@@ -1263,8 +1259,7 @@ def _quantize_weight_nvfp4_e5m3(
     quant_kwargs = {}
     if not disable_opt_rtn:
         quant_kwargs = {
-            "scale_search_min": _NVFP4_MODEL_FREE_SCALE_SEARCH_MIN,
-            "scale_search_max": _NVFP4_MODEL_FREE_SCALE_SEARCH_MAX,
+            "log_scale_selection_label": layer_name,
         }
     qdq_weight, _, _ = quant_func(weight_dev, bits=4, group_size=group_size, **quant_kwargs)
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
@@ -1299,8 +1294,7 @@ def _quantize_weight_nvfp4_fake(
     quant_kwargs = {}
     if not disable_opt_rtn:
         quant_kwargs = {
-            "scale_search_min": _NVFP4_MODEL_FREE_SCALE_SEARCH_MIN,
-            "scale_search_max": _NVFP4_MODEL_FREE_SCALE_SEARCH_MAX,
+            "log_scale_selection_label": layer_name,
         }
     qdq_weight, _, _ = quant_func(
         weight_dev,
@@ -1345,8 +1339,7 @@ def _quantize_weight_nvfp4(
     quant_kwargs = {}
     if not disable_opt_rtn:
         quant_kwargs = {
-            "scale_search_min": _NVFP4_MODEL_FREE_SCALE_SEARCH_MIN,
-            "scale_search_max": _NVFP4_MODEL_FREE_SCALE_SEARCH_MAX,
+            "log_scale_selection_label": layer_name,
         }
     _, scale, _ = quant_func(
         weight_dev, bits=4, group_size=group_size, global_scale=weight_global_scale, **quant_kwargs
@@ -1429,8 +1422,7 @@ def _pack_weight_nvfp4_e5m3(
     quant_kwargs = {}
     if not disable_opt_rtn:
         quant_kwargs = {
-            "scale_search_min": _NVFP4_MODEL_FREE_SCALE_SEARCH_MIN,
-            "scale_search_max": _NVFP4_MODEL_FREE_SCALE_SEARCH_MAX,
+            "log_scale_selection_label": layer_name,
         }
     _, scale, _ = quant_func(weight_dev, bits=4, group_size=group_size, **quant_kwargs)
     # nvfp4_v2 may return a flattened per-group scale layout (e.g. [N, 1]);

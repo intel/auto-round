@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
+import os
 
 import torch
 
@@ -315,18 +315,119 @@ def ref_nvfp4_quant_inplace(
     return out.reshape(m, n), scale
 
 
-def _get_scale_search_candidates(scale_search_min, scale_search_max, step=0.01):
-    if not 0 < scale_search_min <= 1.0 <= scale_search_max:
-        raise ValueError("scale search range must satisfy 0 < min <= 1 <= max")
+def _resolve_neighbor_search_steps() -> int:
+    """Resolve neighboring-search radius (steps around baseline) from env.
 
-    search_steps = math.floor((scale_search_max - scale_search_min) / step)
-    candidates = [scale_search_min + index * step for index in range(search_steps + 1)]
-    if not math.isclose(candidates[-1], scale_search_max, rel_tol=0.0, abs_tol=1e-9):
-        candidates.append(scale_search_max)
-    return candidates
+    A value of N searches up to N previous and N next representable scales
+    around the baseline scale for each group.
+    """
+    raw_value = os.getenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", "8")
+    try:
+        steps = int(raw_value)
+    except ValueError:
+        logger.warning_once(
+            "Invalid AR_NVFP4_NEIGHBOR_SEARCH_STEPS=%s; falling back to 8",
+            raw_value,
+        )
+        return 8
+    if steps < 1:
+        logger.warning_once(
+            "AR_NVFP4_NEIGHBOR_SEARCH_STEPS=%s is < 1; clamping to 1",
+            raw_value,
+        )
+        return 1
+    return steps
 
 
-def search_nvfp4_scale(tensor, bits=4, qw=None, scale_search_min=0.5, scale_search_max=1.51):
+def _rowwise_weighted_mse(qdq_t: torch.Tensor, tensor_fp32: torch.Tensor, qw: torch.Tensor) -> torch.Tensor:
+    diff = qdq_t - tensor_fp32
+    return (diff * diff * qw).sum(dim=-1)
+
+
+def _enumerate_neighbor_scale_coeffs(base_scale: torch.Tensor, *, signed: bool, steps: int) -> list[torch.Tensor]:
+    """Enumerate scale coefficients for +/- discrete neighbors around baseline."""
+    if steps < 1:
+        return []
+
+    prev_cursor = base_scale
+    next_cursor = base_scale
+    coeffs: list[torch.Tensor] = []
+    for _ in range(steps):
+        prev_cursor, _ = _neighboring_discrete_scales(prev_cursor, signed=signed)
+        _, next_cursor = _neighboring_discrete_scales(next_cursor, signed=signed)
+        coeffs.append(_scale_coeffs_from_neighbor_scales(prev_cursor, base_scale))
+        coeffs.append(_scale_coeffs_from_neighbor_scales(next_cursor, base_scale))
+    return coeffs
+
+
+def _neighboring_discrete_scales(scale: torch.Tensor, *, signed: bool) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return the previous and next representable scale values.
+
+    For signed E4M3 (standard NVFP4) we step one raw float8-e4m3fn code in each
+    direction. For unsigned E5M3 (NVFP4_E5M3) we step one encoded UE5M3 value in
+    each direction while clamping to the valid finite range.
+    """
+    scale_fp32 = scale.detach().to(torch.float32).contiguous()
+    if signed:
+        encoded = scale_fp32.to(torch.float8_e4m3fn).view(torch.uint8)
+        # NVFP4 scales are non-negative; clamp to the largest finite positive
+        # E4M3 code to avoid stepping into NaN/Inf encodings.
+        prev_encoded = (encoded.to(torch.int16) - 1).clamp(0, 0x7E).to(torch.uint8)
+        next_encoded = (encoded.to(torch.int16) + 1).clamp(0, 0x7E).to(torch.uint8)
+        prev_scale = prev_encoded.view(torch.float8_e4m3fn).to(torch.float32)
+        next_scale = next_encoded.view(torch.float8_e4m3fn).to(torch.float32)
+        return prev_scale.reshape_as(scale_fp32), next_scale.reshape_as(scale_fp32)
+
+    encoded = float_to_e5m3_frexp(scale_fp32)
+    prev_encoded = torch.where(encoded > 0, encoded - 1, encoded)
+    next_encoded = torch.where(encoded < 0xFE, encoded + 1, encoded)
+    return e5m3_to_float_tensor(prev_encoded).reshape_as(scale_fp32), e5m3_to_float_tensor(next_encoded).reshape_as(
+        scale_fp32
+    )
+
+
+def _scale_coeffs_from_neighbor_scales(target_scale: torch.Tensor, base_scale: torch.Tensor) -> torch.Tensor:
+    """Convert neighboring discrete scales back into multiplicative scale coefficients."""
+    target_scale = target_scale.to(torch.float32)
+    base_scale = base_scale.to(torch.float32)
+    return torch.where(base_scale != 0, target_scale * get_reciprocal(base_scale), torch.ones_like(target_scale))
+
+
+def _log_non_default_scale_selection(init_scale, log_scale_selection_label=None):
+    if not log_scale_selection_label or not isinstance(init_scale, torch.Tensor):
+        return
+
+    init_scale = init_scale.detach().to(torch.float32)
+    non_default_mask = ~torch.isclose(init_scale, torch.ones_like(init_scale), rtol=0.0, atol=1e-9)
+    if not torch.any(non_default_mask):
+        return
+
+    selected = init_scale[non_default_mask]
+    unique_values = torch.unique(selected).cpu().tolist()
+    distribution = []
+    total_groups = int(init_scale.numel())
+    changed_groups = int(non_default_mask.sum().item())
+    changed_ratio = changed_groups / total_groups * 100
+    for value in unique_values:
+        count = int(torch.sum(torch.isclose(selected, torch.tensor(value), rtol=0.0, atol=1e-9)).item())
+        distribution.append(f"{value:.3f}: {count / total_groups * 100:.2f}% of all groups")
+    preview = ", ".join(distribution)
+
+    logger.info(
+        "Model-free NVFP4 scale search selected non-1.0 scale(s) for %s: %d/%d group(s, %.2f%% changed), "
+        "distribution=[%s], selected_scale_min=%.3f, selected_scale_max=%.3f, selected_scale_mean=%.3f",
+        log_scale_selection_label,
+        changed_groups,
+        total_groups,
+        changed_ratio,
+        preview,
+        float(selected.min().item()),
+        float(selected.max().item()),
+        float(selected.mean().item()),
+    )
+
+
+def search_nvfp4_scale(tensor, bits=4, qw=None, global_scale=None):
     tensor_fp32 = tensor.float()
 
     qdq_t, scale, _ = nv_fp4(
@@ -334,57 +435,40 @@ def search_nvfp4_scale(tensor, bits=4, qw=None, scale_search_min=0.5, scale_sear
         bits=bits,
         group_size=16,
         v=0,
+        global_scale=global_scale,
         max_scale=1.0,
     )
 
-    # loss buffer
-    diff = torch.empty_like(tensor_fp32)
-    loss = torch.empty_like(tensor_fp32[..., 0])
-
-    diff.copy_(qdq_t)
-    diff.sub_(tensor_fp32)
-    diff.mul_(diff)
-    diff.mul_(qw)
-    loss.copy_(diff.sum(dim=-1))
-
-    best_loss = loss.clone()
-
-    # scale buffer reuse
+    best_loss = _rowwise_weighted_mse(qdq_t, tensor_fp32, qw)
+    base_scale = scale.detach().to(torch.float32)
     best_scale = torch.ones_like(scale)
+    max_steps = _resolve_neighbor_search_steps()
+    candidate_coeffs = _enumerate_neighbor_scale_coeffs(base_scale, signed=True, steps=max_steps)
 
-    # inplace modify
-    test_scale = torch.empty_like(scale)
-
-    for tmp_scale in _get_scale_search_candidates(scale_search_min, scale_search_max):
-        if math.isclose(tmp_scale, 1.0, rel_tol=0.0, abs_tol=1e-9):
+    for scale_coeff in candidate_coeffs:
+        valid = torch.ones_like(scale_coeff, dtype=torch.bool).view(-1)
+        if not torch.any(valid):
             continue
 
-        test_scale.fill_(tmp_scale)
-
+        bounded_coeff = torch.where(valid.view(-1, 1), scale_coeff, torch.ones_like(scale_coeff))
         tmp_qdq, _, _ = nv_fp4_rtn(
             tensor_fp32,
             bits=bits,
             group_size=16,
             v=0,
-            max_scale=test_scale,
+            global_scale=global_scale,
+            max_scale=bounded_coeff,
         )
-
-        diff.copy_(tmp_qdq)
-        diff.sub_(tensor_fp32)
-        diff.mul_(diff)
-        diff.mul_(qw)
-
-        loss.copy_(diff.sum(dim=-1))
-
-        mask = loss < best_loss
-
-        best_loss[mask] = loss[mask]
-        best_scale[mask] = test_scale[mask]
+        loss = _rowwise_weighted_mse(tmp_qdq, tensor_fp32, qw)
+        mask = valid & (loss < best_loss)
+        if torch.any(mask):
+            best_loss[mask] = loss[mask]
+            best_scale[mask] = bounded_coeff[mask]
 
     return best_scale
 
 
-def search_nvfp4_v2_scale(tensor, bits=4, group_size=16, qw=None, scale_search_min=0.5, scale_search_max=1.51):
+def search_nvfp4_v2_scale(tensor, bits=4, group_size=16, qw=None):
     tensor_fp32 = tensor.float()
 
     qdq_t, scale, _ = nvfp4_v2(
@@ -395,41 +479,30 @@ def search_nvfp4_v2_scale(tensor, bits=4, group_size=16, qw=None, scale_search_m
         max_scale=1.0,
     )
 
-    diff = torch.empty_like(tensor_fp32)
-    loss = torch.empty_like(tensor_fp32[..., 0])
-
-    diff.copy_(qdq_t)
-    diff.sub_(tensor_fp32)
-    diff.mul_(diff)
-    diff.mul_(qw)
-    loss.copy_(diff.sum(dim=-1))
-
-    best_loss = loss.clone()
+    best_loss = _rowwise_weighted_mse(qdq_t, tensor_fp32, qw)
+    base_scale = scale.detach().to(torch.float32)
     best_scale = torch.ones_like(scale)
-    test_scale = torch.empty_like(scale)
+    max_steps = _resolve_neighbor_search_steps()
+    candidate_coeffs = _enumerate_neighbor_scale_coeffs(base_scale, signed=False, steps=max_steps)
 
-    for tmp_scale in _get_scale_search_candidates(scale_search_min, scale_search_max):
-        if math.isclose(tmp_scale, 1.0, rel_tol=0.0, abs_tol=1e-9):
+    for scale_coeff in candidate_coeffs:
+        valid = torch.ones_like(scale_coeff, dtype=torch.bool).view(-1)
+        if not torch.any(valid):
             continue
 
-        test_scale.fill_(tmp_scale)
+        bounded_coeff = torch.where(valid.view(-1, 1), scale_coeff, torch.ones_like(scale_coeff))
         tmp_qdq, _, _ = nvfp4_v2(
             tensor_fp32,
             bits=bits,
             group_size=group_size,
             v=0,
-            max_scale=test_scale.view(-1),
+            max_scale=bounded_coeff.view(-1),
         )
-
-        diff.copy_(tmp_qdq)
-        diff.sub_(tensor_fp32)
-        diff.mul_(diff)
-        diff.mul_(qw)
-        loss.copy_(diff.sum(dim=-1))
-
-        mask = loss < best_loss
-        best_loss[mask] = loss[mask]
-        best_scale[mask] = test_scale[mask]
+        loss = _rowwise_weighted_mse(tmp_qdq, tensor_fp32, qw)
+        mask = valid & (loss < best_loss)
+        if torch.any(mask):
+            best_loss[mask] = loss[mask]
+            best_scale[mask] = bounded_coeff[mask]
 
     return best_scale
 
@@ -442,8 +515,6 @@ def opt_rtn_nvfp4_v2(
     v=0,
     max_scale=1.0,
     imatrix=1.0,
-    scale_search_min=0.5,
-    scale_search_max=1.51,
     **kwargs,
 ):
     assert group_size == 32 or group_size == 16
@@ -458,9 +529,8 @@ def opt_rtn_nvfp4_v2(
         imatrix = _imatrix_handle_zero(imatrix, tensor, bits, group_size)
         qw = imatrix
 
-    init_scale = search_nvfp4_v2_scale(
-        tensor, bits, group_size, qw, scale_search_min=scale_search_min, scale_search_max=scale_search_max
-    )
+    init_scale = search_nvfp4_v2_scale(tensor, bits, group_size, qw)
+    _log_non_default_scale_selection(init_scale, kwargs.get("log_scale_selection_label"))
     tensor = revert_tensor_by_pad(tensor, orig_shape, pad_len)
     if isinstance(max_scale, torch.Tensor):
         max_scale = max_scale.view(-1).to(tensor.device)
@@ -476,8 +546,6 @@ def opt_rtn_fast_nvfp4(
     global_scale=None,
     max_scale=1.0,
     imatrix=1.0,
-    scale_search_min=0.5,
-    scale_search_max=1.51,
     **kwargs,
 ):
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
@@ -491,7 +559,13 @@ def opt_rtn_fast_nvfp4(
         imatrix = _imatrix_handle_zero(imatrix, tensor, bits, group_size)
         qw = imatrix
 
-    init_scale = search_nvfp4_scale(tensor, 4, qw, scale_search_min=scale_search_min, scale_search_max=scale_search_max)
+    init_scale = search_nvfp4_scale(
+        tensor,
+        4,
+        qw,
+        global_scale=global_scale,
+    )
+    _log_non_default_scale_selection(init_scale, kwargs.get("log_scale_selection_label"))
     tensor = revert_tensor_by_pad(tensor, orig_shape, pad_len)
     return nv_fp4_rtn(tensor, bits, group_size, v, global_scale, max_scale, init_scale=init_scale)
 

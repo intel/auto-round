@@ -14,6 +14,7 @@
 """Unit tests for ``auto_round.data_type.nvfp``."""
 
 import math
+import os
 
 import pytest
 import torch
@@ -24,6 +25,9 @@ from auto_round.data_type.nvfp import (
     FLOAT8_E4M3_MAX,
     FLOAT8_E4M3_MIN,
     FLOAT8_UE5M3_MAX,
+    _enumerate_neighbor_scale_coeffs,
+    _neighboring_discrete_scales,
+    _scale_coeffs_from_neighbor_scales,
     calculate_gparam,
     cast_to_fp4,
     cast_to_ue5m3,
@@ -353,15 +357,21 @@ class TestSearchNvfp4Scale:
     a multiple of 16, so we pass an (8, 16) tensor.
     """
 
-    def test_shape_and_range(self):
+    def test_shape_and_neighbor_window(self, monkeypatch):
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", "8")
         tensor = torch.randn(8, 16, dtype=torch.float32)
         qw = torch.ones_like(tensor)
         scales = search_nvfp4_scale(tensor, qw=qw)
+        _, baseline_scale, _ = nv_fp4(tensor.float(), bits=4, group_size=16, v=0, max_scale=1.0)
+        candidates = {
+            round(v, 6)
+            for coeff in _enumerate_neighbor_scale_coeffs(baseline_scale, signed=True, steps=8)
+            for v in coeff.view(-1).tolist()
+        }
         # The function returns per-row scales (one per row in the 2-D input)
         assert scales.shape == (8, 1)
-        # All scales should be in the searched range [0.5, 1.51]
-        assert torch.all(scales >= 0.5 - 1e-6)
-        assert torch.all(scales <= 1.52 + 1e-6)
+        for value in scales.view(-1).tolist():
+            assert round(value, 6) in candidates or round(value, 6) == 1.0
 
     def test_qw_required(self):
         """``qw`` is not optional in practice — without it the function raises.
@@ -375,19 +385,14 @@ class TestSearchNvfp4Scale:
 
     def test_custom_search_range(self):
         tensor = torch.randn(8, 16, dtype=torch.float32)
-        scales = search_nvfp4_scale(
-            tensor,
-            qw=torch.ones_like(tensor),
-            scale_search_min=1.0,
-            scale_search_max=1.125,
-        )
+        scales = search_nvfp4_scale(tensor, qw=torch.ones_like(tensor))
 
-        assert torch.all(scales >= 1.0)
-        assert torch.all(scales <= 1.125)
+        assert torch.isfinite(scales).all()
 
-    def test_custom_search_includes_exact_upper_bound(self, monkeypatch):
+    def test_only_neighboring_discrete_scales_are_evaluated(self, monkeypatch):
         import auto_round.data_type.nvfp as nvfp
 
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", "3")
         original_quant = nvfp.nv_fp4_rtn
         evaluated_scales = []
 
@@ -398,26 +403,36 @@ class TestSearchNvfp4Scale:
             return original_quant(*args, **kwargs)
 
         monkeypatch.setattr(nvfp, "nv_fp4_rtn", track_scale)
-        tensor = torch.randn(2, 16, dtype=torch.float32)
-        search_nvfp4_scale(
-            tensor,
-            qw=torch.ones_like(tensor),
-            scale_search_min=1.0,
-            scale_search_max=1.125,
-        )
+        tensor = torch.full((2, 16), 2.0, dtype=torch.float32)
+        global_scale = torch.tensor(6.0, dtype=torch.float32)
+        _, baseline_scale, _ = nvfp.nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=global_scale, max_scale=1.0)
+        expected = {
+            round(v, 6)
+            for coeff in _enumerate_neighbor_scale_coeffs(baseline_scale, signed=True, steps=3)
+            for v in coeff.view(-1).tolist()
+        }
+        search_nvfp4_scale(tensor, qw=torch.ones_like(tensor), global_scale=global_scale)
 
-        assert evaluated_scales[-1] == pytest.approx(1.125)
+        assert len(evaluated_scales) <= 2 * int(os.environ["AR_NVFP4_NEIGHBOR_SEARCH_STEPS"])
+        assert set(round(v, 6) for v in evaluated_scales).issubset(expected)
 
 
 class TestSearchNvfp4V2Scale:
     @pytest.mark.parametrize("group_size", [16, 32])
-    def test_shape_and_range(self, group_size):
+    def test_shape_and_neighbor_window(self, group_size, monkeypatch):
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", "8")
         tensor = torch.randn(8, group_size, dtype=torch.float32)
         scales = search_nvfp4_v2_scale(tensor, group_size=group_size, qw=torch.ones_like(tensor))
+        _, baseline_scale, _ = nvfp4_v2(tensor, group_size=group_size, max_scale=1.0)
+        candidates = {
+            round(v, 6)
+            for coeff in _enumerate_neighbor_scale_coeffs(baseline_scale, signed=False, steps=8)
+            for v in coeff.view(-1).tolist()
+        }
 
         assert scales.shape == (8, 1)
-        assert torch.all(scales >= 0.5)
-        assert torch.all(scales <= 1.51)
+        for value in scales.view(-1).tolist():
+            assert round(value, 6) in candidates or round(value, 6) == 1.0
 
     def test_weighted_loss_does_not_increase(self):
         torch.manual_seed(42)
@@ -433,20 +448,14 @@ class TestSearchNvfp4V2Scale:
 
     def test_custom_search_range(self):
         tensor = torch.randn(8, 16, dtype=torch.float32)
-        scales = search_nvfp4_v2_scale(
-            tensor,
-            group_size=16,
-            qw=torch.ones_like(tensor),
-            scale_search_min=0.875,
-            scale_search_max=1.125,
-        )
+        scales = search_nvfp4_v2_scale(tensor, group_size=16, qw=torch.ones_like(tensor))
 
-        assert torch.all(scales >= 0.875)
-        assert torch.all(scales <= 1.125)
+        assert torch.isfinite(scales).all()
 
-    def test_custom_search_includes_exact_upper_bound(self, monkeypatch):
+    def test_only_neighboring_discrete_scales_are_evaluated(self, monkeypatch):
         import auto_round.data_type.nvfp as nvfp
 
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", "3")
         original_quant = nvfp.nvfp4_v2
         evaluated_scales = []
 
@@ -457,28 +466,67 @@ class TestSearchNvfp4V2Scale:
             return original_quant(*args, **kwargs)
 
         monkeypatch.setattr(nvfp, "nvfp4_v2", track_scale)
-        tensor = torch.randn(2, 16, dtype=torch.float32)
-        search_nvfp4_v2_scale(
-            tensor,
-            group_size=16,
-            qw=torch.ones_like(tensor),
-            scale_search_min=1.0,
-            scale_search_max=1.125,
-        )
+        tensor = torch.full((2, 16), 2.0, dtype=torch.float32)
+        _, baseline_scale, _ = original_quant(tensor, group_size=16, max_scale=1.0)
+        expected = {
+            round(v, 6)
+            for coeff in _enumerate_neighbor_scale_coeffs(baseline_scale, signed=False, steps=3)
+            for v in coeff.view(-1).tolist()
+        }
+        search_nvfp4_v2_scale(tensor, group_size=16, qw=torch.ones_like(tensor))
 
-        assert evaluated_scales[-1] == pytest.approx(1.125)
+        assert len(evaluated_scales) <= 2 * int(os.environ["AR_NVFP4_NEIGHBOR_SEARCH_STEPS"])
+        assert set(round(v, 6) for v in evaluated_scales).issubset(expected)
 
-    @pytest.mark.parametrize("bounds", [(0.0, 1.0), (1.01, 1.1), (0.9, 0.99)])
-    def test_invalid_search_range(self, bounds):
-        tensor = torch.randn(2, 16, dtype=torch.float32)
-        with pytest.raises(ValueError, match="0 < min <= 1 <= max"):
-            search_nvfp4_v2_scale(
-                tensor,
-                group_size=16,
-                qw=torch.ones_like(tensor),
-                scale_search_min=bounds[0],
-                scale_search_max=bounds[1],
-            )
+    @pytest.mark.parametrize("steps", [1, 3])
+    def test_neighbor_steps_control_candidate_coefficients(self, monkeypatch, steps):
+        import auto_round.data_type.nvfp as nvfp
+
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", str(steps))
+        original_quant = nvfp.nvfp4_v2
+        evaluated_scales = []
+
+        def track_scale(*args, **kwargs):
+            max_scale = kwargs.get("max_scale")
+            if isinstance(max_scale, torch.Tensor):
+                evaluated_scales.append(max_scale[0].item())
+            return original_quant(*args, **kwargs)
+
+        monkeypatch.setattr(nvfp, "nvfp4_v2", track_scale)
+        tensor = torch.full((2, 16), 2.0, dtype=torch.float32)
+        _, baseline_scale, _ = original_quant(tensor, group_size=16, max_scale=1.0)
+        candidate_coeffs = [
+            round(v, 6)
+            for coeff in _enumerate_neighbor_scale_coeffs(baseline_scale, signed=False, steps=steps)
+            for v in coeff.view(-1).tolist()
+        ]
+        expected = set(candidate_coeffs)
+        search_nvfp4_v2_scale(tensor, group_size=16, qw=torch.ones_like(tensor))
+
+        assert set(round(v, 6) for v in evaluated_scales) == expected
+
+
+class TestDiscreteScaleNeighbors:
+    def test_e4m3_neighbors_match_expected_example(self):
+        scale = torch.tensor([[2.0]], dtype=torch.float32)
+        prev_scale, next_scale = _neighboring_discrete_scales(scale, signed=True)
+
+        assert prev_scale.item() == pytest.approx(1.875)
+        assert next_scale.item() == pytest.approx(2.25)
+
+    def test_ue5m3_neighbors_match_expected_example(self):
+        scale = torch.tensor([[2.0]], dtype=torch.float32)
+        prev_scale, next_scale = _neighboring_discrete_scales(scale, signed=False)
+
+        assert prev_scale.item() == pytest.approx(1.875)
+        assert next_scale.item() == pytest.approx(2.25)
+
+    @pytest.mark.parametrize("raw_value,expected", [("invalid", 8), ("0", 1), ("-1", 1), ("3", 3)])
+    def test_resolve_neighbor_search_steps(self, monkeypatch, raw_value, expected):
+        import auto_round.data_type.nvfp as nvfp
+
+        monkeypatch.setenv("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", raw_value)
+        assert nvfp._resolve_neighbor_search_steps() == expected
 
 
 class TestOptRtnNvfp4V2:

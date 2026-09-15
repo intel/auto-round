@@ -1446,6 +1446,7 @@ class _ModelFreeCompressorCore:
                                 quant_output_dir=self._quant_output_dir,
                                 total_shards=total_shards,
                                 enable_torch_compile=self.enable_torch_compile,
+                                disable_opt_rtn=self.disable_opt_rtn,
                                 # Keep donor shards alive for recipient hydration.
                                 cleanup_source_shard=not is_donor,
                                 donor_tensors_to_exclude=donor_tensors,
@@ -1677,6 +1678,21 @@ class _ModelFreeCompressorCore:
             f"{compressed_ignored}\n"
         )
 
+    def _describe_opt_rtn_status(self) -> str:
+        """Return the effective opt-RTN state for the current model-free scheme."""
+        if self.disable_opt_rtn:
+            return "disabled"
+
+        data_type = (self.default_scheme.get("data_type") or "int").lower()
+        if (
+            is_mx_fp(data_type)
+            or _layer_config_has_mxfp(self.layer_config)
+            or is_nv_fp(data_type)
+            or data_type == _NVFP4_E5M3_DATA_TYPE
+        ):
+            return "enabled"
+        return "disabled"
+
     # -------------------------------------------------------------------
     # Public entry point
     # -------------------------------------------------------------------
@@ -1750,6 +1766,7 @@ class _ModelFreeCompressorCore:
             f"Model-free quantization: {self.model_name_or_path}\n"
             f"  Scheme: {self.scheme_obj}\n"
             f"  Packing format: {packing_format}\n"
+            f"  Opt-RTN: {self._describe_opt_rtn_status()}\n"
             f"  Output: {self.output_dir}\n"
             f"  Shards: {len(self.shard_names)}\n"
             f"  Shard parallelism: {self.shard_parallelism} ({shard_parallelism_source}, "

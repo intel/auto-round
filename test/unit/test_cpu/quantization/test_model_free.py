@@ -19,6 +19,7 @@ Backend-specific model-free behavior is covered by test_model_free_parity.py.
 """
 
 import json
+import logging
 import os
 from unittest.mock import Mock
 
@@ -196,6 +197,18 @@ def test_model_free_entry_preserves_enabled_opt_rtn(tiny_opt_model_path):
 
     assert type(compressor).__name__ == "ModelFreeCompressor"
     assert compressor.disable_opt_rtn is False
+
+
+def test_model_free_reports_opt_rtn_status():
+    core = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+    core.disable_opt_rtn = False
+    core.default_scheme = {"data_type": "nv_fp"}
+    core.layer_config = {}
+    assert core._describe_opt_rtn_status() == "enabled"
+
+    core.disable_opt_rtn = True
+    core.default_scheme = {"data_type": "int"}
+    assert core._describe_opt_rtn_status() == "disabled"
 
 
 @pytest.mark.parametrize("default_enabled", [True, False])
@@ -485,8 +498,56 @@ def test_model_free_nvfp4_quantization_searches_scale(
 
     assert optimized_mock.call_count == expected_calls
     if not disable_opt_rtn:
-        assert optimized_mock.call_args.kwargs["scale_search_min"] == 0.875
-        assert optimized_mock.call_args.kwargs["scale_search_max"] == 1.125
+        assert optimized_mock.call_args.kwargs["log_scale_selection_label"] == "layer.fc"
+
+
+@pytest.mark.parametrize(
+    ("quantize_func", "search_func_name"),
+    [
+        (_quantize_weight_nvfp4_e5m3, "search_nvfp4_v2_scale"),
+        (_quantize_weight_nvfp4_fake, "search_nvfp4_scale"),
+        (_quantize_weight_nvfp4, "search_nvfp4_scale"),
+    ],
+)
+def test_model_free_nvfp4_logs_when_non_default_scale_selected(monkeypatch, caplog, quantize_func, search_func_name):
+    import auto_round.data_type.nvfp as nvfp
+    import auto_round.logger as autoround_logger
+
+    selected_scales = torch.ones(16)
+    selected_scales[0] = 1.125
+    monkeypatch.setattr(nvfp, search_func_name, lambda *args, **kwargs: selected_scales.clone())
+    monkeypatch.setattr(autoround_logger.logger, "propagate", True)
+
+    with caplog.at_level(logging.INFO):
+        quantize_func(torch.randn(8, 32), "layer.fc", group_size=16, disable_opt_rtn=False)
+
+    assert "Model-free NVFP4 scale search selected non-1.0 scale(s) for layer.fc" in caplog.text
+    assert "1/16 group(s, 6.25% changed)" in caplog.text
+    assert "distribution=[1.125: 6.25% of all groups]" in caplog.text
+    assert "selected_scale_min=1.125, selected_scale_max=1.125, selected_scale_mean=1.125" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("quantize_func", "search_func_name"),
+    [
+        (_quantize_weight_nvfp4_e5m3, "search_nvfp4_v2_scale"),
+        (_quantize_weight_nvfp4_fake, "search_nvfp4_scale"),
+        (_quantize_weight_nvfp4, "search_nvfp4_scale"),
+    ],
+)
+def test_model_free_nvfp4_does_not_log_when_all_scales_are_default(
+    monkeypatch, caplog, quantize_func, search_func_name
+):
+    import auto_round.data_type.nvfp as nvfp
+    import auto_round.logger as autoround_logger
+
+    monkeypatch.setattr(nvfp, search_func_name, lambda *args, **kwargs: torch.ones(16))
+    monkeypatch.setattr(autoround_logger.logger, "propagate", True)
+
+    with caplog.at_level(logging.INFO):
+        quantize_func(torch.randn(8, 32), "layer.fc", group_size=16, disable_opt_rtn=False)
+
+    assert "Model-free NVFP4 scale search selected non-1.0 scale(s)" not in caplog.text
 
 
 @pytest.mark.parametrize("input_scale", [None, 0.25])
@@ -1607,6 +1668,32 @@ class TestSchemeValidation:
 
 
 class TestCliAutoRouting:
+    def test_to_autoround_kwargs_preserves_disable_opt_rtn(self):
+        from auto_round.cli.main import _to_autoround_kwargs
+        from auto_round.cli.parser import build_quantize_parser
+
+        args = build_quantize_parser().parse_args(
+            [
+                "--model",
+                "dummy",
+                "--device",
+                "cpu",
+                "--scheme",
+                "NVFP4",
+                "--model_free",
+                "--disable_opt_rtn",
+            ]
+        )
+
+        kwargs = _to_autoround_kwargs(
+            args,
+            low_cpu_mem_usage=True,
+            enable_torch_compile=False,
+            layer_config={},
+        )
+
+        assert kwargs["disable_opt_rtn"] is True
+
     def test_model_free_uses_auto_round_format_by_default(self, monkeypatch):
         from auto_round.cli import main as cli_main
 
@@ -1977,6 +2064,115 @@ class TestResolveShardParallelism:
             index = json.load(f)
         unique_shards = set(index["weight_map"].values())
         assert len(unique_shards) == 7, f"Expected 7 output shards, got {len(unique_shards)}: {unique_shards}"
+
+
+def test_streaming_pipeline_forwards_disable_opt_rtn_to_quant_worker(tmp_path, monkeypatch):
+    """Streaming mode must forward disable_opt_rtn into quant worker tasks."""
+
+    submitted_kwargs = []
+
+    class _ImmediateFuture:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class _FakeProcessPoolExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def submit(self, fn, *args, **kwargs):
+            # Record keyword args passed to _quantize_local_shard_task.
+            submitted_kwargs.append(kwargs)
+            if fn.__name__ == "_quantize_local_shard_task":
+                shard_idx = args[0]
+                shard_name = args[1]
+                return _ImmediateFuture(
+                    (
+                        shard_idx,
+                        shard_name,
+                        kwargs["shard_path"],
+                        "model-00001-of-00001.safetensors",
+                        ["layer.qweight"],
+                        ["layer"],
+                        [],
+                    )
+                )
+            return _ImmediateFuture(None)
+
+        def shutdown(self, wait=False, cancel_futures=True):
+            return None
+
+    class _FakeThreadPoolExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def submit(self, fn, *args, **kwargs):
+            return _ImmediateFuture(fn(*args, **kwargs))
+
+        def shutdown(self, wait=False, cancel_futures=True):
+            return None
+
+    # Force wait() to mark all currently-waiting futures as done immediately.
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free.wait",
+        lambda wait_set, return_when=None: (set(wait_set), set()),
+    )
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free.ThreadPoolExecutor",
+        _FakeThreadPoolExecutor,
+    )
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free.ProcessPoolExecutor",
+        _FakeProcessPoolExecutor,
+    )
+
+    source_shard_path = tmp_path / "source_shard.safetensors"
+    save_file({"layer.weight": torch.randn(8, 8)}, str(source_shard_path))
+
+    core = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+    core.model_name_or_path = "dummy/model"
+    core.work_dir = str(tmp_path)
+    core.source_dir = ""
+    core.is_streaming = True
+    core.device = "cpu"
+    core.default_scheme = _DEFAULT_SCHEME
+    core.layer_config = {}
+    core.ignore_patterns = []
+    core.fp8_block_size = None
+    core.model_type = None
+    core.source_quantization_config = {}
+    core.enable_torch_compile = False
+    core.disable_opt_rtn = True
+    core.shard_names = ["model-00001-of-00001.safetensors"]
+    core.shard_parallelism = 1
+    core.cross_shard_deps = {}
+    core.donor_shard_tensors = {}
+    core._donor_shard_paths = {}
+    core._donor_remaining_recipients = {}
+    core._donor_self_consumed = {}
+    core._resume_processed_shards = {}
+    core.output_dir = str(tmp_path / "output")
+    core.is_diffusion_model = False
+    core.all_quantized_layers = []
+    core.all_ignored_layers = []
+    core.output_weight_map = {}
+    os.makedirs(core._quant_output_dir, exist_ok=True)
+
+    monkeypatch.setattr(core, "_create_shard_progress", lambda _tqdm: None)
+    monkeypatch.setattr(core, "_mark_shard_completed", lambda *args, **kwargs: None)
+    monkeypatch.setattr(core, "_release_donor_dependency", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free._prefetch_shard",
+        lambda *args, **kwargs: str(source_shard_path),
+    )
+
+    core._process_all_shards_streaming_pipeline()
+
+    quant_submissions = [kwargs for kwargs in submitted_kwargs if "shard_path" in kwargs]
+    assert quant_submissions, "No quant worker task was submitted in streaming pipeline"
+    assert quant_submissions[0]["disable_opt_rtn"] is True
 
 
 # ===========================================================================
