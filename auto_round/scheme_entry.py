@@ -185,7 +185,8 @@ def resolve_entry_scheme(scheme, schemes, direct_kwargs):
             direct_kwargs["bits"] = int(bits)
         return scheme, direct_kwargs
 
-    if scheme not in (None, "W4A16"):
+    normalized_scheme = scheme.upper() if isinstance(scheme, str) else scheme
+    if normalized_scheme not in (None, "W4A16"):
         raise ValueError("`scheme` and `schemes` are mutually exclusive, please pass only `schemes` for AutoScheme")
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
