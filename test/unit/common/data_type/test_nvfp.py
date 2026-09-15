@@ -221,6 +221,34 @@ class TestFusedLayerGlobalScales:
         assert torch.equal(mlp.gate_proj.weight_scale, torch.ones(2, 2))
         assert torch.equal(mlp.up_proj.weight_scale, torch.full((2, 2), 8.0))
 
+    def test_fused_projections_without_block_scales_keep_legacy_minimum(self, monkeypatch):
+        monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+        attention = nn.Module()
+        attention.q_proj = self._projection(3.0)
+        attention.k_proj = self._projection(1.0)
+        attention.v_proj = self._projection(2.0)
+        del attention.q_proj.weight_scale
+        del attention.k_proj.weight_scale
+        del attention.v_proj.weight_scale
+
+        update_fused_layer_global_scales(attention)
+
+        assert all(
+            proj.weight_global_scale.item() == 1.0 for proj in (attention.q_proj, attention.k_proj, attention.v_proj)
+        )
+
+    def test_zero_global_scale_does_not_corrupt_block_scales(self, monkeypatch):
+        monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+        attention = nn.Module()
+        attention.q_proj = self._projection(3.0)
+        attention.k_proj = self._projection(0.0)
+        attention.v_proj = self._projection(2.0)
+
+        update_fused_layer_global_scales(attention)
+
+        assert torch.isfinite(attention.k_proj.weight_scale).all()
+        assert torch.equal(attention.k_proj.weight_scale, torch.ones(2, 2))
+
     def test_fused_projection_scale_update_can_be_disabled(self, monkeypatch):
         monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "0")
         attention = nn.Module()
@@ -251,6 +279,20 @@ class TestFusedLayerGlobalScales:
         assert torch.equal(tensors["model.layers.0.self_attn.k_proj.weight_scale"], torch.full((2, 2), 3.0))
         assert tensors["model.layers.0.mlp.gate_proj.weight_global_scale"].item() == 4.0
         assert torch.equal(tensors["model.layers.0.mlp.up_proj.weight_scale"], torch.full((2, 2), 8.0))
+
+    def test_model_free_zero_global_scale_does_not_corrupt_block_scales(self, monkeypatch):
+        monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+        tensors = {}
+        for projection, global_scale in {"q_proj": 3.0, "k_proj": 0.0, "v_proj": 2.0}.items():
+            prefix = f"model.layers.0.self_attn.{projection}"
+            tensors[f"{prefix}.weight_global_scale"] = torch.tensor([global_scale])
+            tensors[f"{prefix}.weight_scale"] = torch.ones(2, 2)
+
+        update_fused_tensor_global_scales(tensors)
+
+        k_scale = tensors["model.layers.0.self_attn.k_proj.weight_scale"]
+        assert torch.isfinite(k_scale).all()
+        assert torch.equal(k_scale, torch.ones(2, 2))
 
 
 # ---------------------------------------------------------------------------

@@ -2929,6 +2929,7 @@ def _build_mxfp_autoround_quantization_config(
     group_size = default_scheme.get("group_size", 32)
     data_type = (default_scheme.get("data_type") or "mx_fp").lower()
     is_fp_default = (bits or 0) >= 16
+    effective_scheme = default_scheme
 
     # For BF16 default + MXFP layer_config overrides, derive the dominant
     # MXFP bit-width from the layers that were actually quantized.
@@ -2938,7 +2939,8 @@ def _build_mxfp_autoround_quantization_config(
             layer_config=layer_config,
             default_scheme=default_scheme,
         )
-        mxfp_counter: Counter = Counter()
+        scheme_counter: Counter = Counter()
+        schemes_by_key: dict[tuple, dict] = {}
         for layer in quantized_layers:
             scheme = temp_matcher.resolve_scheme(f"{layer}.weight")
             if scheme is None:
@@ -2946,10 +2948,15 @@ def _build_mxfp_autoround_quantization_config(
             lb = scheme.get("bits")
             ldt = (scheme.get("data_type") or "").lower()
             if lb and lb < 16 and (is_mx_fp(ldt) or is_nv_fp(ldt)):
-                mxfp_counter[(lb, ldt)] += 1
-        if mxfp_counter:
-            (bits, data_type), _ = mxfp_counter.most_common(1)[0]
-            group_size = 16 if is_nv_fp(data_type) else 32
+                key = tuple(scheme.get(field.name) for field in fields(QuantizationScheme))
+                scheme_counter[key] += 1
+                schemes_by_key[key] = scheme
+        if scheme_counter:
+            dominant_key, _ = scheme_counter.most_common(1)[0]
+            effective_scheme = schemes_by_key[dominant_key]
+            bits = effective_scheme.get("bits")
+            data_type = (effective_scheme.get("data_type") or "").lower()
+            group_size = effective_scheme.get("group_size")
 
     if (bits or 0) < 1 or bits not in _SUPPORTED_MXFP_BITS:
         bits = 4  # safe fallback
@@ -2959,7 +2966,7 @@ def _build_mxfp_autoround_quantization_config(
         "packing_format": "auto_round:fake" if format == "fake" else "auto_round:llm_compressor",
         "bits": bits,
         "group_size": group_size or (16 if is_nv_fp(data_type) else 32),
-        "sym": True,
+        "sym": effective_scheme.get("sym", True),
         "data_type": data_type,
         "iters": 0,
         "model_free": True,
@@ -2974,7 +2981,7 @@ def _build_mxfp_autoround_quantization_config(
     # act_sym=True).  Including these keeps the config consistent with the
     # output produced by the regular AutoRound MXFP export flow.
     for act_key in ("act_bits", "act_data_type", "act_dynamic", "act_group_size", "act_sym"):
-        val = default_scheme.get(act_key)
+        val = effective_scheme.get(act_key)
         if val is not None:
             qconfig[act_key] = val
 

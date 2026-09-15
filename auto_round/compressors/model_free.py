@@ -1509,6 +1509,61 @@ class _ModelFreeCompressorCore:
             if filename.endswith((".safetensors", ".bin")) and filename not in current_shards:
                 os.remove(os.path.join(self._quant_output_dir, filename))
 
+    def _update_fused_scales_across_shards(self) -> None:
+        """Fuse NVFP4 projection scales after every output shard is available."""
+        global_suffix = ".weight_global_scale"
+        scale_suffix = ".weight_scale"
+        global_names = [name for name in self.output_weight_map if name.endswith(global_suffix)]
+        if not global_names:
+            return
+
+        global_scales = {}
+        layers_by_parent: dict[str, dict[str, str]] = {}
+        for tensor_name in global_names:
+            shard_path = os.path.join(self._quant_output_dir, self.output_weight_map[tensor_name])
+            with safe_open(shard_path, framework="pt") as shard:
+                global_scales[tensor_name] = shard.get_tensor(tensor_name).reshape(1).to(torch.float32)
+            layer_name = tensor_name[: -len(global_suffix)]
+            if "." in layer_name:
+                parent, projection = layer_name.rsplit(".", 1)
+                layers_by_parent.setdefault(parent, {})[projection] = layer_name
+
+        updates_by_shard: dict[str, dict[str, torch.Tensor]] = {}
+        projection_groups = (("q_proj", "k_proj", "v_proj"), ("gate_proj", "up_proj"), ("w1", "w3"))
+        for projections in projection_groups:
+            for layers in layers_by_parent.values():
+                if not all(projection in layers for projection in projections):
+                    continue
+                names = [f"{layers[projection]}{global_suffix}" for projection in projections]
+                fused_scale = torch.max(torch.stack([global_scales[name] for name in names]), dim=0).values
+                for name in names:
+                    old_scale = global_scales[name]
+                    if torch.equal(old_scale, fused_scale):
+                        continue
+                    shard_name = self.output_weight_map[name]
+                    updates = updates_by_shard.setdefault(shard_name, {})
+                    updates[name] = fused_scale
+                    block_name = f"{name[: -len(global_suffix)]}{scale_suffix}"
+                    if block_name in self.output_weight_map:
+                        block_shard_name = self.output_weight_map[block_name]
+                        block_updates = updates_by_shard.setdefault(block_shard_name, {})
+                        block_updates[block_name] = torch.where(
+                            old_scale != 0, fused_scale / old_scale, torch.ones_like(old_scale)
+                        )
+
+        for shard_name, updates in updates_by_shard.items():
+            shard_path = os.path.join(self._quant_output_dir, shard_name)
+            with safe_open(shard_path, framework="pt") as shard:
+                tensors = {name: shard.get_tensor(name) for name in shard.keys()}
+            for tensor_name, value in updates.items():
+                if tensor_name.endswith(global_suffix):
+                    tensors[tensor_name] = value.to(tensors[tensor_name].dtype)
+                else:
+                    tensors[tensor_name] = (tensors[tensor_name].to(torch.float32) * value).to(
+                        tensors[tensor_name].dtype
+                    )
+            _write_output_shard(self._quant_output_dir, shard_name, tensors, self.output_weight_map)
+
     def _remove_stale_quantization_config_files(self) -> None:
         """Remove source/output quantization metadata before writing the new config."""
         for directory in {self.output_dir, self._quant_output_dir}:
@@ -1721,6 +1776,7 @@ class _ModelFreeCompressorCore:
             )
 
         # ---- write outputs ----
+        self._update_fused_scales_across_shards()
         self._write_index()
         self._write_config_files()
         self._copy_metadata_files()

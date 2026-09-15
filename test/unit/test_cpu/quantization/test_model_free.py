@@ -562,6 +562,27 @@ def test_nvfp4_model_free_llm_compressor_config():
     assert group["input_activations"]["num_bits"] == 4
 
 
+def test_nvfp4_layer_override_supplies_complete_fake_config():
+    from auto_round.schemes import PRESET_SCHEMES
+
+    config = _build_quantization_config(
+        default_scheme=PRESET_SCHEMES["BF16"].to_dict(),
+        layer_config={"model.layers": PRESET_SCHEMES["NVFP4"].to_dict()},
+        ignore_patterns=[],
+        quantized_layers=["model.layers.0.self_attn.q_proj"],
+        ignored_layers=[],
+        format="fake",
+    )
+
+    assert config["bits"] == 4
+    assert config["group_size"] == 16
+    assert config["data_type"] == "nv_fp"
+    assert config["act_bits"] == 4
+    assert config["act_data_type"] == "nv_fp4_with_static_gs"
+    assert config["act_group_size"] == 16
+    assert config["act_dynamic"] is True
+
+
 @pytest.mark.parametrize("input_scale", ["0", "-1", "nan", "inf"])
 @pytest.mark.parametrize("quantize_func", [_quantize_weight_nvfp4, _quantize_weight_nvfp4_fake])
 def test_nvfp4_model_free_rejects_invalid_input_scale(monkeypatch, input_scale, quantize_func):
@@ -712,6 +733,48 @@ def test_nvfp4_model_free_fake_end_to_end(tmp_path, monkeypatch):
     assert quantization_config["act_bits"] == 4
     assert quantization_config["act_data_type"] == "nv_fp4_with_static_gs"
     assert quantization_config["act_group_size"] == 16
+
+
+def test_nvfp4_fuses_projection_scales_across_output_shards(tmp_path, monkeypatch):
+    monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    prefix = "model.layers.0.self_attn"
+    shard_names = [
+        "model-00001-of-00003.safetensors",
+        "model-00002-of-00003.safetensors",
+        "model-00003-of-00003.safetensors",
+    ]
+    shard_tensors = [
+        {
+            f"{prefix}.q_proj.weight_global_scale": torch.tensor([3.0]),
+            f"{prefix}.q_proj.weight_scale": torch.ones(2, 2),
+        },
+        {
+            f"{prefix}.k_proj.weight_global_scale": torch.tensor([1.0]),
+            f"{prefix}.v_proj.weight_global_scale": torch.tensor([2.0]),
+            f"{prefix}.v_proj.weight_scale": torch.ones(2, 2),
+        },
+        {f"{prefix}.k_proj.weight_scale": torch.ones(2, 2)},
+    ]
+    weight_map = {}
+    for shard_name, tensors in zip(shard_names, shard_tensors):
+        save_file(tensors, output_dir / shard_name)
+        weight_map.update({name: shard_name for name in tensors})
+
+    compressor = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+    compressor.output_dir = str(output_dir)
+    compressor.is_diffusion_model = False
+    compressor.output_weight_map = weight_map
+    compressor._update_fused_scales_across_shards()
+
+    with safe_open(output_dir / shard_names[0], framework="pt") as shard:
+        assert shard.get_tensor(f"{prefix}.q_proj.weight_global_scale").item() == 3.0
+    with safe_open(output_dir / shard_names[1], framework="pt") as shard:
+        assert shard.get_tensor(f"{prefix}.k_proj.weight_global_scale").item() == 3.0
+        assert torch.equal(shard.get_tensor(f"{prefix}.v_proj.weight_scale"), torch.full((2, 2), 1.5))
+    with safe_open(output_dir / shard_names[2], framework="pt") as shard:
+        assert torch.equal(shard.get_tensor(f"{prefix}.k_proj.weight_scale"), torch.full((2, 2), 3.0))
 
 
 def test_model_free_replaces_stale_multishard_checkpoint(tmp_path, monkeypatch):

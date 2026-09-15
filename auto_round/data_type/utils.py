@@ -485,17 +485,19 @@ def update_fused_layer_global_scales(
         # Move all scales to the same device before stacking
         target_device = scales[0].device
         scales_on_device = [s.to(target_device) for s in scales]
-        global_scale = torch.max(torch.stack(scales_on_device), dim=0).values
+        block_scale_name = f"{base_name}_scale"
+        has_all_block_scales = all(hasattr(proj, block_scale_name) for proj in modules)
+        reduce_func = torch.max if has_all_block_scales else torch.min
+        global_scale = reduce_func(torch.stack(scales_on_device), dim=0).values
 
         for proj in modules:
             if hasattr(proj, global_scale_name):
                 # Move global_scale to the same device as the projection's current scale
                 proj_scale = getattr(proj, global_scale_name)
                 old_scale = proj_scale.to(global_scale.device, dtype=torch.float32)
-                ratio = global_scale / old_scale
-                block_scale_name = f"{base_name}_scale"
                 if hasattr(proj, block_scale_name):
                     block_scale = getattr(proj, block_scale_name)
+                    ratio = torch.where(old_scale != 0, global_scale / old_scale, torch.ones_like(old_scale))
                     adjusted_block_scale = block_scale.to(torch.float32) * ratio
                     setattr(proj, block_scale_name, adjusted_block_scale.to(block_scale.dtype))
                 setattr(proj, global_scale_name, global_scale.clone().to(proj_scale.device))
@@ -554,9 +556,8 @@ def update_fused_tensor_global_scales(
                 block_key = f"{layer_name}{scale_suffix}"
                 if block_key in tensors:
                     block_scale = tensors[block_key]
-                    tensors[block_key] = (block_scale.to(torch.float32) * global_scale / old_scale).to(
-                        block_scale.dtype
-                    )
+                    ratio = torch.where(old_scale != 0, global_scale / old_scale, torch.ones_like(old_scale))
+                    tensors[block_key] = (block_scale.to(torch.float32) * ratio).to(block_scale.dtype)
                 tensors[global_key] = global_scale.to(tensors[global_key].dtype)
 
 
