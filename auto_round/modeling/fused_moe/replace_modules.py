@@ -184,9 +184,9 @@ def materialize_model_(model: torch.nn.Module) -> None:
         preview = ", ".join(still_meta[:8]) + (f" (+{len(still_meta) - 8} more)" if len(still_meta) > 8 else "")
         # The auto meta-skeleton is only enabled for fused-MoE checkpoints; an explicit
         # AR_DISK_STREAM_MODEL=1 forces it for anything else. Point at whichever toggle
-        # actually turned it on so the hint stays correct (AR_DISABLE_AUTO_META_LOAD is
+        # actually turned it on so the hint stays correct (AR_DISABLE_META_LOAD is
         # the MoE-only auto path).
-        hint = "unset AR_DISK_STREAM_MODEL" if envs.AR_DISK_STREAM_MODEL else "set AR_DISABLE_AUTO_META_LOAD=1"
+        hint = "unset AR_DISK_STREAM_MODEL" if envs.AR_DISK_STREAM_MODEL else "set AR_DISABLE_META_LOAD=1"
         raise RuntimeError(
             f"Failed to materialize {len(still_meta)} checkpoint tensor(s), still on meta: {preview}. "
             f"To load the whole model on CPU instead, {hint} (uses more RAM)."

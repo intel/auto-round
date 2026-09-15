@@ -29,8 +29,10 @@ from auto_round.logger import logger
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
 from auto_round.special_model_handler import _handle_special_model, update_module
 from auto_round.utils import (
+    cast_model_dtype,
     check_and_mark_quantized_module,
     diffusion_load_model,
+    install_debug_layer_config_patch,
     is_diffusion_model,
     is_mllm_model,
     is_moe_model,
@@ -137,7 +139,7 @@ class ModelContext(BaseContext):
             logger.warning("force to use bf16 for quantization tuning when enabling activation quantization")
             self.amp_dtype = torch.bfloat16
             if self.model.dtype != torch.bfloat16:
-                self.model = self.model.to(torch.bfloat16)
+                self.model = cast_model_dtype(self.model, torch.bfloat16)
         else:
             logger.debug(f"using {self.model.dtype} for quantization tuning")
 
@@ -156,6 +158,10 @@ class ModelContext(BaseContext):
         device_manager.device = value
 
     def _load_model(self):
+        # Debug helper: when AR_DEBUG_LAYER_NUM is set, patch transformers config
+        # loading so every branch below (llm / mllm / diffusion / meta skeleton)
+        # loads only the first N decoder layers. No-op otherwise.
+        install_debug_layer_config_patch()
         if is_diffusion_model(self.model):
             self.is_diffusion = True
             self.preloaded_diffusion_pipeline = not isinstance(self.model, str)
@@ -299,11 +305,16 @@ class ModelContext(BaseContext):
         materialize one block at a time from the checkpoint. Every other model (dense, or
         a MoE that already ships as ``ModuleList`` of ``Linear``) has nothing to gain and
         keeps the ordinary load path. ``AR_DISK_STREAM_MODEL=1`` forces this on for any
-        model; ``AR_DISABLE_AUTO_META_LOAD=1`` turns the automatic choice off.
+        model; ``AR_DISABLE_META_LOAD=1`` turns the automatic choice off.
         """
         if envs.AR_DISK_STREAM_MODEL:
             return True
-        if envs.AR_DISABLE_AUTO_META_LOAD:
+        if envs.AR_DISABLE_META_LOAD:
+            return False
+        # The debug "load only N layers" path (AR_DEBUG_LAYER_NUM) relies on the
+        # normal from_pretrained load so the truncated config is honored; the meta
+        # skeleton streams the full checkpoint block-by-block and would ignore it.
+        if envs.AR_DEBUG_LAYER_NUM is not None:
             return False
         if not isinstance(self.model, str):
             return False
@@ -331,7 +342,7 @@ class ModelContext(BaseContext):
         self.disk_stream_model_dir = checkpoint_dir
         logger.info(
             "Fused-MoE checkpoint detected: building a meta skeleton and materializing weights per block "
-            "(set `AR_DISABLE_AUTO_META_LOAD=1` to load the whole model on CPU instead)."
+            "(set `AR_DISABLE_META_LOAD=1` to load the whole model on CPU instead)."
         )
         return True
 
@@ -459,7 +470,7 @@ class ModelContext(BaseContext):
                 )
             self.amp_dtype = amp_dtype
         if self.model.dtype != self.amp_dtype:
-            self.model = self.model.to(self.amp_dtype)
+            self.model = cast_model_dtype(self.model, self.amp_dtype)
 
     def apply_patches(self, formats):
         """Apply format-specific model structure patches.
@@ -483,7 +494,7 @@ class ModelContext(BaseContext):
             m.global_name = n
 
         if self.amp and self.model.dtype != self.amp_dtype:
-            self.model = self.model.to(self.amp_dtype)
+            self.model = cast_model_dtype(self.model, self.amp_dtype)
 
         self._init_model = True
         self._is_initialized = True
