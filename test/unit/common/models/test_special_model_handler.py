@@ -983,26 +983,40 @@ class TestGetPredefinedIgnoreLayers:
 
 
 class TestTorchCompileOff:
-    """DeepSeek / GLM-5.3-Flash DSA families must not run under torch.compile."""
+    """DeepSeek / GLM-5.3-Flash DSA families must not run under torch.compile on torch < 2.14.0.
+
+    From torch 2.14.0 onward the recompile_limit issue is resolved, so these families no
+    longer force ``torch.compile`` off and instead honor the default / user-provided setting.
+    """
 
     def _cfg(self, model_type="", architectures=None):
         from types import SimpleNamespace
 
         return SimpleNamespace(config=SimpleNamespace(model_type=model_type, architectures=architectures or []))
 
+    def _expected_off(self):
+        from auto_round.utils import torch_version_at_least
+
+        # On torch >= 2.14.0 the rules are not registered, so the reason is ``None``.
+        return not torch_version_at_least("2.14.0")
+
     def test_deepseek_disabled(self):
         from auto_round.special_model_handler import get_torch_compile_off_reason
 
         for mt in ("deepseek_v3", "deepseek_v32"):
-            assert get_torch_compile_off_reason(self._cfg(model_type=mt)) is not None
+            off = get_torch_compile_off_reason(self._cfg(model_type=mt)) is not None
+            assert off == self._expected_off()
 
     def test_glm5_family_disabled(self):
         from auto_round.special_model_handler import get_torch_compile_off_reason
 
-        assert get_torch_compile_off_reason(self._cfg(model_type="glm5_next")) is not None
-        assert get_torch_compile_off_reason(self._cfg(model_type="glm_moe_dsa")) is not None
+        expected = self._expected_off()
+        assert (get_torch_compile_off_reason(self._cfg(model_type="glm5_next")) is not None) == expected
+        assert (get_torch_compile_off_reason(self._cfg(model_type="glm_moe_dsa")) is not None) == expected
         # Architecture name alone is enough (config before weights are materialized).
-        assert get_torch_compile_off_reason(self._cfg(architectures=["Glm5NextForConditionalGeneration"])) is not None
+        assert (
+            get_torch_compile_off_reason(self._cfg(architectures=["Glm5NextForConditionalGeneration"])) is not None
+        ) == expected
 
     def test_other_models_unaffected(self):
         from auto_round.special_model_handler import get_torch_compile_off_reason

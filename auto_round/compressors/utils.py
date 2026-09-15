@@ -155,7 +155,9 @@ def block_forward(
     # Use the block's actual parameter name for the first positional argument.
     import inspect as _inspect
 
-    param_names = [p for p in _inspect.signature(block.forward).parameters.keys() if p != "self"]
+    # For DDP-wrapped blocks, inspect the underlying module's signature
+    _actual_block = getattr(block, "module", block)
+    param_names = [p for p in _inspect.signature(_actual_block.forward).parameters.keys() if p != "self"]
     block_input_kwarg = param_names[0] if param_names else "hidden_states"
     if block_input_kwarg not in input_others:
         input_others[block_input_kwarg] = input_ids

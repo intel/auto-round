@@ -37,7 +37,7 @@ pool: INTEL-CPU
 
 variables:
   IMAGE_NAME: "auto-round"
-  IMAGE_TAG: "py312"
+  IMAGE_TAG: "py314"
   UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "Nightly_coverage_report"
@@ -97,8 +97,8 @@ stages:
           
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: '3.12'
-            displayName: 'Use Python 3.12'
+              versionSpec: '3.14'
+            displayName: 'Use Python 3.14'
 
           - script: |
               cd ${BUILD_SOURCESDIRECTORY}

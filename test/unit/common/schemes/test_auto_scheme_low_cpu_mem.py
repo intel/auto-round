@@ -19,6 +19,7 @@ This tests the disk offload mechanism for AutoScheme that reduces CPU RAM usage
 by offloading block weights to disk during gradient computation.
 """
 
+import json
 import shutil
 
 import pytest
@@ -204,8 +205,19 @@ class TestAutoSchemeIntegration:
     """Integration tests for AutoScheme with low_cpu_mem_usage."""
 
     @pytest.fixture(autouse=True)
-    def setup_save_dir(self, tmp_path):
+    def setup_save_dir(self, tmp_path, monkeypatch):
         self.save_dir = str(tmp_path / "saved")
+        calibration_path = tmp_path / "calibration.json"
+        calibration_path.write_text(
+            json.dumps(
+                [
+                    "auto round calibration sample keeps each token distinct for scoring",
+                    "another local calibration dataset keeps scoring token sequence distinct",
+                ]
+            )
+        )
+        self.calibration_dataset = str(calibration_path)
+        monkeypatch.setenv("AR_AUTO_SCHEME_CACHE", str(tmp_path / "auto_scheme_cache"))
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
@@ -213,68 +225,36 @@ class TestAutoSchemeIntegration:
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_auto_scheme_with_low_cpu_mem_disabled(self, tiny_opt_model_path):
-        """Test AutoScheme works normally with low_cpu_mem_usage disabled."""
-        model_name = tiny_opt_model_path
-        scheme = AutoScheme(
-            avg_bits=4,
-            options="W2A16,W4A16",
-            nsamples=1,
-            ignore_scale_zp_bits=True,
-            low_cpu_mem_usage=False,
-            low_gpu_mem_usage=True,
-        )
-        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
-        _, layer_config = ar.quantize()
-        assert layer_config is not None
-        assert len(layer_config) > 0
+    def test_low_cpu_mem_modes_produce_nonempty_consistent_configs(self, tiny_opt_model_path):
+        """Both offload modes must generate the same non-empty layer-config structure."""
 
-    def test_auto_scheme_with_low_cpu_mem_enabled(self, tiny_opt_model_path):
-        """Test AutoScheme works with low_cpu_mem_usage enabled."""
-        model_name = tiny_opt_model_path
-        scheme = AutoScheme(
-            avg_bits=4,
-            options="W2A16,W4A16",
-            nsamples=1,
-            ignore_scale_zp_bits=True,
-            low_cpu_mem_usage=True,
-            low_gpu_mem_usage=True,
-        )
-        ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
-        _, layer_config = ar.quantize()
-        assert layer_config is not None
-        assert len(layer_config) > 0
+        def quantize_with(low_cpu_mem_usage):
+            scheme = AutoScheme(
+                avg_bits=4,
+                options="W2A16,W4A16",
+                nsamples=1,
+                ignore_scale_zp_bits=True,
+                low_cpu_mem_usage=low_cpu_mem_usage,
+                low_gpu_mem_usage=True,
+            )
+            ar = AutoRound(
+                model=tiny_opt_model_path,
+                scheme=scheme,
+                iters=0,
+                nsamples=1,
+                seqlen=8,
+                dataset=self.calibration_dataset,
+                seed=42,
+            )
+            _, layer_config = ar.quantize()
+            return layer_config
 
-    def test_auto_scheme_low_cpu_mem_results_consistent(self, tiny_opt_model_path):
-        """Test that results are consistent with and without low_cpu_mem_usage."""
-        model_name = tiny_opt_model_path
+        disabled_config = quantize_with(low_cpu_mem_usage=False)
+        enabled_config = quantize_with(low_cpu_mem_usage=True)
 
-        # Without low_cpu_mem_usage
-        scheme1 = AutoScheme(
-            avg_bits=4,
-            options="W4A16",
-            nsamples=1,
-            ignore_scale_zp_bits=True,
-            low_cpu_mem_usage=False,
-            low_gpu_mem_usage=True,
-        )
-        ar1 = AutoRound(model=model_name, scheme=scheme1, iters=0, nsamples=1, seed=42)
-        _, layer_config1 = ar1.quantize()
-
-        # With low_cpu_mem_usage
-        scheme2 = AutoScheme(
-            avg_bits=4,
-            options="W4A16",
-            nsamples=1,
-            ignore_scale_zp_bits=True,
-            low_cpu_mem_usage=True,
-            low_gpu_mem_usage=True,
-        )
-        ar2 = AutoRound(model=model_name, scheme=scheme2, iters=0, nsamples=1, seed=42)
-        _, layer_config2 = ar2.quantize()
-
-        # Layer configs should have same keys
-        assert set(layer_config1.keys()) == set(layer_config2.keys())
+        assert disabled_config
+        assert enabled_config
+        assert set(disabled_config) == set(enabled_config)
 
 
 class TestOffloadManagerWithModel:

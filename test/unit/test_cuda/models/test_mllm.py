@@ -37,7 +37,7 @@ class VisionDataLoader:
             }
 
 
-@pytest.mark.skip_ci(reason="Only tiny model is suggested")
+@pytest.mark.skip_ci(reason="Architecture: Only tiny model is suggested")
 class TestAutoRound:
 
     @pytest.fixture(autouse=True)

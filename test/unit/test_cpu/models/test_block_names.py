@@ -66,15 +66,16 @@ class TestQuantizationBlocks:
         assert len(block_name) == 1
         assert block_name == get_block_names(model)
 
-    def test_moe(self):
+    def test_moe(self, tiny_qwen_moe_model_path):
+        from transformers import AutoConfig
+
         from auto_round.utils import get_block_names
 
-        model_name = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
-        # config = AutoConfig.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(model_name)
+        config = AutoConfig.from_pretrained(tiny_qwen_moe_model_path, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_config(config)
 
         block_name = get_block_names(model)
         block_name_2 = get_block_names(model, quant_vision=True)
         assert block_name == block_name_2
         assert len(block_name_2) == 1
-        assert "model.layers.23" == block_name_2[0][-1]
+        assert block_name_2[0][-1] == "model.layers.1"

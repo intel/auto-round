@@ -8,7 +8,7 @@ parameters:
   - name: pythonVersions
     type: string
     # Comma-separated list to avoid YAML float parsing (e.g. 3.10 -> 3.1).
-    default: "3.12"
+    default: "3.14"
   - name: buildMode
     type: string
     default: "dev"

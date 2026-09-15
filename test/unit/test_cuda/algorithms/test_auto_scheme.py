@@ -1,4 +1,5 @@
 import copy
+import json
 import re
 import shutil
 from test.helpers import evaluate_accuracy, get_model_path, get_tiny_model
@@ -15,6 +16,15 @@ from auto_round.utils import get_module
 from ...envs import multi_card
 
 
+def _local_calibration_dataset(tmp_path):
+    dataset_path = tmp_path / "autoscheme_calibration.json"
+    dataset_path.write_text(
+        json.dumps(["AutoScheme local calibration text with enough tokens. " * 16]),
+        encoding="utf-8",
+    )
+    return str(dataset_path)
+
+
 class TestAutoScheme:
 
     @pytest.fixture(autouse=True)
@@ -29,40 +39,51 @@ class TestAutoScheme:
         shutil.rmtree("runs", ignore_errors=True)
 
     @pytest.mark.timeout(60)
-    def test_gguf_k_0(self, tiny_qwen_model_path):
+    def test_gguf_k_0(self, tiny_qwen_model_path, tmp_path, monkeypatch):
+        monkeypatch.setenv("AR_AUTO_SCHEME_NSAMPLES", "1")
+        monkeypatch.setenv("AR_AUTO_SCHEME_BATCH_SIZE", "1")
+        calibration_dataset = _local_calibration_dataset(tmp_path)
         target_bits = 5.5
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q4_K_M", "GGUF:Q8_0"))
-        ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=1, enable_alg_ext=True)
+        ar = AutoRound(
+            model=tiny_qwen_model_path,
+            scheme=scheme,
+            iters=1,
+            nsamples=1,
+            seqlen=8,
+            dataset=calibration_dataset,
+            enable_alg_ext=True,
+        )
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
 
-    @pytest.mark.skip_ci(reason="not necessary to test all options")
+    @pytest.mark.skip_ci(reason="Matrix: not necessary to test all options")
     def test_auto_scheme_export_gguf(self, tiny_qwen_model_path):
         scheme = AutoScheme(avg_bits=3, options=("gguf:q2_k_s,gguf:q4_k_s"), nsamples=1, ignore_scale_zp_bits=True)
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1)
         ar.quantize()
 
-    @pytest.mark.skip_ci(reason="not necessary to test all options")
+    @pytest.mark.skip_ci(reason="Matrix: not necessary to test all options")
     def test_gguf_k_1(self, tiny_qwen_model_path):
         target_bits = 3.5
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_1"))
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=1, enable_alg_ext=True)
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
 
-    @pytest.mark.skip_ci(reason="not necessary to test all options")
+    @pytest.mark.skip_ci(reason="Matrix: not necessary to test all options")
     def test_embedding_fallback(self, tiny_qwen_model_path):
         target_bits = 5.0
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q4_K_M", "GGUF:Q8_0"))
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=1, enable_alg_ext=True)
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
 
-    @pytest.mark.skip_ci(reason="not necessary to test all options")
+    @pytest.mark.skip_ci(reason="Matrix: not necessary to test all options")
     def test_gguf_export(self, tiny_qwen_model_path):
         target_bits = 3
         scheme = AutoScheme(avg_bits=target_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_M"), ignore_scale_zp_bits=True)
         ar = AutoRound(model=tiny_qwen_model_path, scheme=scheme, iters=0)
         ar.quantize_and_save(self.save_dir, format="gguf:q2_k_s")
 
-    @pytest.mark.skip_ci(reason="not necessary to test all options")
+    @pytest.mark.skip_ci(reason="Matrix: not necessary to test all options")
     def test_gguf(self):
         model_name = get_model_path("Qwen/Qwen3-8B")
         model = get_tiny_model(model_name)
@@ -116,7 +137,7 @@ class TestAutoScheme:
         print(avg_bits)
         assert target_bits - 0.2 < avg_bits <= target_bits + 1e-3
 
-    @pytest.mark.skip_ci(reason="multiple card test")
+    @pytest.mark.skip_ci(reason="Resource: multiple card test")
     @multi_card
     def test_multi_card(self, tiny_qwen_model_path):
         target_bits = 4.5
@@ -135,7 +156,7 @@ class TestAutoScheme:
             print(avg_bits)
             assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
-    @pytest.mark.skip_ci(reason="multiple card test")
+    @pytest.mark.skip_ci(reason="Resource: multiple card test")
     @multi_card
     def test_multi_card_1(self, tiny_qwen_model_path):
         target_bits = 4.5
@@ -159,7 +180,7 @@ class TestAutoScheme:
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
-    @pytest.mark.skip_ci(reason="multiple card test")
+    @pytest.mark.skip_ci(reason="Resource: multiple card test")
     @multi_card
     def test_dict_device_map(self, tiny_qwen_model_path):
         target_bits = 8.25
@@ -174,7 +195,7 @@ class TestAutoScheme:
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
-    @pytest.mark.skip_ci(reason="Not necessary to test the corner case in CI")
+    @pytest.mark.skip_ci(reason="Matrix: Not necessary to test the corner case in CI")
     def test_min_target_bits(self, tiny_opt_model_path):
         target_bits = 4.644
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
@@ -184,7 +205,7 @@ class TestAutoScheme:
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Architecture: Only tiny model is suggested")
     def test_max_target_bits(self):
         target_bits = 8.025
         model_path = get_model_path("facebook/opt-125m")
@@ -195,7 +216,7 @@ class TestAutoScheme:
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
-    @pytest.mark.skip_ci(reason="Not necessary to test the corner case in CI")
+    @pytest.mark.skip_ci(reason="Matrix: Not necessary to test the corner case in CI")
     def test_patch_scheme(self, tiny_opt_model_path):
         target_bits = 5
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "W8A16"))
@@ -210,7 +231,7 @@ class TestAutoScheme:
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Architecture: Only tiny model is suggested")
     def test_layer_config(self):
         target_bits = 3.0
         model_name = get_model_path("facebook/opt-125m")
@@ -298,7 +319,7 @@ class TestAutoScheme:
         has_nonzero = any(opt[2] > 0 for opt in head_scores)
         assert has_nonzero, f"lm_head mix_score is 0 for all schemes: {head_scores}"
 
-    @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
+    @pytest.mark.skip_ci(reason="Accuracy: The evaluation is time-consuming")
     def test_auto_scheme_export(self):
         model_name = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=3, options=("W2A16", "W4A16", "W8A16", "BF16"))
@@ -306,7 +327,7 @@ class TestAutoScheme:
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(quantized_model_path, threshold=0.25)
 
-    @pytest.mark.skip_ci(reason="The evaluation is time-consuming")
+    @pytest.mark.skip_ci(reason="Accuracy: The evaluation is time-consuming")
     def test_enable_torch_compile(self):
         model_name = get_model_path("facebook/opt-125m")
         scheme = AutoScheme(avg_bits=2, options=("W2A16"), ignore_scale_zp_bits=True)
@@ -314,7 +335,7 @@ class TestAutoScheme:
         _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir)
         evaluate_accuracy(quantized_model_path, threshold=0.10)
 
-    @pytest.mark.skip_ci(reason="Time-consuming: two quantizations plus two lm_eval runs; covered by nightly")
+    @pytest.mark.skip_ci(reason="Accuracy: Time-consuming: two quantizations plus two lm_eval runs; covered by nightly")
     def test_mixed_bits_get_scoring(self):
         """Verify that AutoScheme scoring produces accuracy above a known reference threshold for mixed-bit
         quantization.

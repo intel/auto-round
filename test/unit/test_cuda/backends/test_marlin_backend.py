@@ -62,8 +62,7 @@ class TestAutoRoundMarlinBackend:
         evaluate_accuracy(model, tokenizer, threshold=0.27, batch_size=16)
         torch.cuda.empty_cache()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     def test_marlin_group_size(self, dataloader):
         for group_size in [-1, 64]:
             print(f"{group_size}!!!!!!!!!!!!!!!!!")
@@ -173,7 +172,9 @@ class TestAutoRoundMarlinBackend:
     #     shutil.rmtree("./saved", ignore_errors=True)
 
     @require_gptqmodel
-    @pytest.mark.skip_ci(reason="AWQ Marlin is a format/backend matrix case; standard Marlin smoke remains in PR CI")
+    @pytest.mark.skip_ci(
+        reason="Backend/JIT: AWQ Marlin is a format/backend matrix case; standard Marlin smoke remains in PR CI"
+    )
     @pytest.mark.timeout(90)
     def test_gptqmodel_awq_marlin_4bits_sym(self):
         """Test AWQ quantization with gptqmodel:awq_marlin backend (sym-only, float16)."""
@@ -205,8 +206,7 @@ class TestAutoRoundMarlinBackend:
         torch.cuda.empty_cache()
 
     @require_gptqmodel
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
-    @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
+    @pytest.mark.skip_ci(reason="Accuracy: Only tiny model is suggested; Time-consuming; Accuracy evaluation")
     @pytest.mark.parametrize("group_size", [32, 64, 128])
     def test_gptqmodel_awq_marlin_group_size(self, group_size):
         """Test AWQ marlin backend with different group sizes."""

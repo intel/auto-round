@@ -270,6 +270,7 @@ def test_prepare_model_for_moe_quantization():
     """Test the full prepare_model_for_moe_quantization flow."""
     from auto_round.modeling.fused_moe.moe_experts_interface import (
         prepare_model_for_moe_quantization,
+        resolve_experts_implementation,
     )
 
     _skip_if_no_linear_loop()
@@ -311,7 +312,7 @@ def test_prepare_model_for_moe_quantization():
     unfused = prepare_model_for_moe_quantization(model)
 
     # Verify
-    assert model.config._experts_implementation == "linear_loop"
+    assert model.config._experts_implementation == resolve_experts_implementation()
     assert len(unfused) == 1
     experts = model.layer["experts"]
     expert_0 = getattr(experts, "0")

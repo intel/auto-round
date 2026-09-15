@@ -17,9 +17,8 @@ omit =
  */auto_round/export/export_to_gguf/sync_llama_cpp_conversion.py
  */auto_round/algorithms/transforms/hadamard/utils/triton/*
  */auto_round/modeling/finegrained_fp8_patch*.py
-exclude_lines =
- pragma: no cover
+exclude_also =
  raise NotImplementedError
- raise TypeError
- except ImportError:
- except Exception as e:
+ if __name__ == .__main__.:
+ @(abc\.)?abstractmethod
+ def __repr__

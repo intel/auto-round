@@ -46,6 +46,9 @@ class TestAutoRound:
 
         generate_prompt(model, tokenizer)
 
+    @pytest.mark.skip_ci(
+        reason="Matrix: Default MXFP4 transform covers CUDA export/reload; MXFP4 tuning remains in the full test tier"
+    )
     @pytest.mark.timeout(90)
     def test_transform_mxfp4_tuning_quant_infer(self):
         model_name = get_model_path("qwen/Qwen3-0.6B")
@@ -66,6 +69,9 @@ class TestAutoRound:
 
         generate_prompt(model, tokenizer)
 
+    @pytest.mark.skip_ci(
+        reason="Matrix: Random Hadamard behavior has dedicated unit coverage; keep the CUDA MXFP4 E2E smoke deterministic"
+    )
     @pytest.mark.timeout(90)
     def test_random_transform_mxfp4_quant_infer(self):
         model_name = get_model_path("qwen/Qwen3-0.6B")

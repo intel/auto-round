@@ -80,7 +80,9 @@ class TestTorchBackendFunctional:
         tokenizer = AutoTokenizer.from_pretrained(self.save_dir)
         model_infer(model, tokenizer)
 
-    @pytest.mark.skip_ci(reason="Not necessary to test both symmetric and asymmetric for 3-bit quantization in CI")
+    @pytest.mark.skip_ci(
+        reason="Matrix: Not necessary to test both symmetric and asymmetric for 3-bit quantization in CI"
+    )
     @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
     def test_torch_backend_3bit_sym(self, tiny_opt_model_path, dataloader, device):
         """3-bit symmetric model loads via the torch backend and generates text."""

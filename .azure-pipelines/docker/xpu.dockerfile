@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-ARG UBUNTU_VER=24.04
+ARG UBUNTU_VER=26.04
 FROM ubuntu:${UBUNTU_VER}
 
 # See http://bugs.python.org/issue19846
@@ -18,8 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
     bc \
     jq \
     vim \
-    python3.12 \
-    python3.12-dev \
+    python3.14 \
+    python3.14-dev \
     python3-pip
 
 RUN apt-get install -y software-properties-common \
@@ -46,8 +46,9 @@ ENV VIRTUAL_ENV="/home/hostuser/.venv"
 ENV UV_NO_PROGRESS=1 \
     UV_LINK_MODE=copy
 
-RUN uv venv --python=3.12 /home/hostuser/.venv
+RUN uv python install 3.14
+RUN uv venv --python=3.14 /home/hostuser/.venv
 RUN which python && python --version
-RUN uv pip install torch==2.13.0 torchvision==0.28.0 --extra-index-url https://download.pytorch.org/whl/xpu
+RUN uv pip install torch==2.14.0 torchvision==0.29.0 --extra-index-url https://download.pytorch.org/whl/xpu
 
 WORKDIR /home/hostuser

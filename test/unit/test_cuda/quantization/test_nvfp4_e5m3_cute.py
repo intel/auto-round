@@ -49,11 +49,25 @@ def test_cute_nvfp4_e5m3_weight_dq_matches_reference_for_multiple_groups(dtype):
 
 
 def test_nvfp4_v2_uses_direct_scale_at_rounding_boundary():
-    activation = torch.tensor([[1.25] + [1.0] * 15], dtype=torch.float32)
+    activation = torch.tensor([[11.625] + [1.0] * 15], dtype=torch.float32)
 
     actual, scale, _ = nvfp4_v2(activation, bits=4, group_size=16)
     expected = cast_to_fp4(activation / scale) * scale
 
+    assert scale.item() == 2.0
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_cute_nvfp4_v2_qdq_carries_mantissa_round_overflow():
+    activation = torch.tensor([[11.625] + [1.0] * 15], device="cuda", dtype=torch.float32)
+    if not can_use_cute_nvfp4_v2_qdq(activation, 16):
+        pytest.skip("CuTe DSL is not available")
+
+    expected, _, _ = nvfp4_v2(activation, bits=4, group_size=16)
+    actual = try_cute_nvfp4_v2_qdq(activation, 16)
+
+    assert actual is not None
     torch.testing.assert_close(actual, expected)
 
 

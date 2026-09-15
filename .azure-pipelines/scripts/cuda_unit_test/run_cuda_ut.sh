@@ -26,6 +26,8 @@ source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/detect_changed_test
 
 LOG_DIR="${BUILD_SOURCESDIRECTORY}/log_dir"
 mkdir -p "${LOG_DIR}"
+
+source ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/retry_failed_tests.sh
 SUMMARY_LOG="${LOG_DIR}/results_summary.log"
 # print_summary reads this file unconditionally; a matrix part that selects no
 # test never writes it, so make sure it always exists.
@@ -37,7 +39,24 @@ function setup_environment() {
     export CUDA_VISIBLE_DEVICES=0
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export COVERAGE_RCFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/coveragerc/cuda.coveragerc"
+
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        export GIT_CONFIG_COUNT=1
+        export GIT_CONFIG_KEY_0="url.https://x-access-token:${GITHUB_TOKEN}@github.com/.insteadOf"
+        export GIT_CONFIG_VALUE_0="https://github.com/"
+    fi
 }
+
+function cleanup_test_workspace() {
+    local tmp_root="/test/tmp"
+    if [ -d "" ]; then
+        find "" -mindepth 1 -maxdepth 1 ! -name tiny_models -exec rm -rf {} +
+    fi
+    rm -rf "/test/ar_work_space"
+    rm -rf "/test/tmp_autoround"
+}
+
+trap cleanup_test_workspace EXIT
 
 function print_summary() {
     python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
@@ -58,20 +77,24 @@ function setup_basic_test_env() {
     echo "##[group]Setting up test environment..."
 
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
-    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    rm -rf /root/.venv
+    uv venv --python=3.14 /root/.venv
+    uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
-    uv pip install 'git+https://github.com/ggml-org/llama.cpp.git#subdirectory=gguf-py'
+    uv pip install 'git+https://github.com/ggml-org/llama.cpp.git@master#subdirectory=gguf-py'
     uv pip install -r test/unit/test_cuda/requirements.txt
     uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
     uv pip install -U pytest-cov
-    uv pip install kernels==0.15.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.13.1/setup.py#L93
+    uv pip install kernels==0.16.1 # For sm120: https://github.com/huggingface/transformers/blob/v5.16.1/setup.py#L93
     uv pip uninstall torch torchvision
-    uv pip install torch==2.13.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
+
+    echo "List dependencies ..."
+    uv pip list
     echo "##[endgroup]"
 
-    uv pip list
     cd "${BUILD_SOURCESDIRECTORY}/test" || exit 1
 }
 
@@ -80,6 +103,8 @@ function run_pytest() {
     local ut_log_name=$2
 
     echo "##[group]Running ${test_case}..."
+    # Record the test targets so a retry can rerun exactly these cases.
+    printf '%s\n' ${test_case} > "${ut_log_name%.log}.list"
     pytest -m "not skip_ci" --cov=auto_round --cov-report= --cov-append -vs \
         --junitxml="${ut_log_name%.log}.xml" ${test_case} 2>&1 | tee ${ut_log_name}
     echo "##[endgroup]"
@@ -100,6 +125,8 @@ function run_common_group() {
 }
 
 function run_common_unit_test() {
+    run_if_retry && return 0
+
     # common test case for cpu/gpu/xpu
     # Group cases by the first-level folder under unit/common; a single test
     # file placed directly under unit/common (e.g. test_main.py) runs on its own.
@@ -116,6 +143,8 @@ function run_common_unit_test() {
 
 
 function run_unit_test() {
+    run_if_retry && return 0
+
     # run ci cuda ut scope 
     find ./unit/test_cuda -type f -name "test_*.py" | grep -Ev "vlms|llmc|sglang|vllm|multiple_card" | sort > all_tests.txt
     total_lines=$(wc -l < all_tests.txt)
@@ -149,7 +178,7 @@ function run_unit_test_llmc() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
-    uv venv --python=3.12 /root/.venv
+    uv venv --python=3.14 /root/.venv
     uv pip install -U pytest-cov
     BUILD_TYPE="nightly" uv pip install \
         -r test/integration/test_cuda/requirements_llmc.txt \
@@ -173,7 +202,7 @@ function run_unit_test_sglang() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
-    uv venv --python=3.12 /root/.venv
+    uv venv --python=3.14 /root/.venv
     uv pip install -U pytest-cov
     uv pip install -r test/integration/test_cuda/requirements_sglang.txt \
         --prerelease=allow \
@@ -198,7 +227,7 @@ function run_unit_test_vllm() {
     echo "##[group]set up UT env..."
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
-    uv venv --python=3.12 /root/.venv
+    uv venv --python=3.14 /root/.venv
     uv pip install -U pytest-cov
     uv pip install -r test/integration/test_cuda/requirements_vllm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
@@ -221,11 +250,17 @@ function run_unit_test_vllm() {
 
 function collect_log() {
     touch "${SUMMARY_LOG}"
+    # collect_result.py also stages only the failed logs so a retry can rerun them.
     python ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts/ut/collect_result.py \
-        --test-type "Unit Tests" --log-pattern "unittest_cuda_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
+        --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} \
+        --summary-log ${SUMMARY_LOG} --failed-logs-dir "${LOG_DIR}/failed_logs"
 
     if [ -f .coverage ]; then
         cp .coverage "${LOG_DIR}/.coverage.part${test_part}"
+        # Keep .coverage in the failure artifact so a retry can accumulate onto it.
+        if [ -d "${LOG_DIR}/failed_logs" ]; then
+            cp .coverage "${LOG_DIR}/failed_logs/.coverage"
+        fi
     fi
 }
 

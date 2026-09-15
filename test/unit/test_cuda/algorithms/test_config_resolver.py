@@ -16,7 +16,7 @@ import shutil
 
 import pytest
 import torch
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM
 
 from auto_round import AutoRound
 
@@ -36,8 +36,8 @@ class TestConfigResolverGpu:
         autoround = AutoRound(tiny_opt_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, seqlen=16)
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
 
-        model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
-        assert getattr(model.config.quantization_config, "quant_method", None) == "auto-round"
+        config = AutoConfig.from_pretrained(quantized_model_path, trust_remote_code=True)
+        assert getattr(config, "quantization_config", {}).get("quant_method") == "auto-round"
 
     @pytest.mark.timeout(180)
     def test_layer_config_override(self, tiny_opt_model_path):

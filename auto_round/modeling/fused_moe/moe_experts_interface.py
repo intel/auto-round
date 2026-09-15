@@ -34,7 +34,13 @@ Usage:
 import torch
 from torch import nn
 
+from auto_round import envs
 from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
+from auto_round.modeling.fused_moe.grouped_experts import (
+    GROUPED_LINEAR_IMPL,
+    GROUPED_LINEAR_SLICED_IMPL,
+    grouped_linear_experts_forward,
+)
 from auto_round.modeling.fused_moe.utils import build_forced_routing, force_all_experts_routing_enabled
 from auto_round.utils import clear_memory, logger
 from auto_round.utils.device import memory_monitor
@@ -49,6 +55,39 @@ except ImportError:
 
 # Expert implementation name - change this if transformers want to use a different name
 LINEAR_LOOP_IMPL = "linear_loop"
+
+# Implementations AutoRound registers for its per-expert nn.Linear layout.
+AUTO_ROUND_EXPERTS_IMPLS = {
+    LINEAR_LOOP_IMPL: None,  # filled in below (avoids a forward reference to the function)
+    GROUPED_LINEAR_IMPL: grouped_linear_experts_forward,
+}
+
+
+def resolve_experts_implementation() -> str:
+    """Pick the experts forward used for AutoRound's unfused per-expert layout.
+
+    ``AR_MOE_EXPERTS_IMPL`` accepts ``auto`` (default), ``linear_grouped``,
+    ``linear_grouped_sliced`` or ``linear_loop``. ``auto``/``linear_grouped`` select the
+    grouped-GEMM backend with torch's native ``grouped_mm`` kernel, which batches the routed
+    token/expert pairs into a single sorted GEMM instead of looping (and syncing) over every
+    expert; it self-checks the layer and falls back to the loop when the layer is not
+    eligible. ``linear_grouped_sliced`` is the same grouped backend but forces the sliced
+    per-expert GEMM loop instead of the native kernel.
+    """
+    requested = str(envs.AR_MOE_EXPERTS_IMPL).lower()
+    if requested in ("", "auto", GROUPED_LINEAR_IMPL, GROUPED_LINEAR_SLICED_IMPL):
+        # Both grouped variants use the same forward; native vs sliced is decided inside it
+        # from AR_MOE_EXPERTS_IMPL (see grouped_experts._sliced_grouped_mm_requested).
+        return GROUPED_LINEAR_IMPL
+    if requested == LINEAR_LOOP_IMPL:
+        return LINEAR_LOOP_IMPL
+    logger.warning(
+        f"Unknown AR_MOE_EXPERTS_IMPL='{requested}', expected one of "
+        f"{['auto', GROUPED_LINEAR_IMPL, GROUPED_LINEAR_SLICED_IMPL, LINEAR_LOOP_IMPL]}. "
+        f"Falling back to '{LINEAR_LOOP_IMPL}'."
+    )
+    return LINEAR_LOOP_IMPL
+
 
 # Known expert projection patterns for reference
 # These are used as hints when auto-detection needs to infer projection properties
@@ -237,15 +276,22 @@ def linear_loop_experts_forward(
 
             # Get this expert's container with its projection layers
             expert = getattr(self, str(expert_idx))
-            gate_out = expert.gate_proj(expert_input)  # (num_samples, intermediate_dim)
             up_out = expert.up_proj(expert_input)  # (num_samples, intermediate_dim)
 
-            # Apply gating
-            if hasattr(self, "_apply_gate"):
-                gate_up_out = torch.cat([gate_out, up_out], dim=-1)
-                gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
+            # Non-gated MLP experts (e.g. NemotronH's @use_experts_implementation(has_gate=False))
+            # expose only up_proj/down_proj: out = down_proj(act_fn(up_proj(x))). Gated experts
+            # (Mixtral/Qwen3-MoE/...) additionally own gate_proj. Mirror the grouped path
+            # (grouped_linear_experts_forward) which keys the same branch off gate_proj presence.
+            if hasattr(expert, "gate_proj"):
+                gate_out = expert.gate_proj(expert_input)  # (num_samples, intermediate_dim)
+                # Apply gating
+                if hasattr(self, "_apply_gate"):
+                    gate_up_out = torch.cat([gate_out, up_out], dim=-1)
+                    gated_out = self._apply_gate(gate_up_out)  # (num_samples, intermediate_dim)
+                else:
+                    gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
             else:
-                gated_out = self.act_fn(gate_out) * up_out  # (num_samples, intermediate_dim)
+                gated_out = self.act_fn(up_out)  # (num_samples, intermediate_dim)
 
             # Down projection
             expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
@@ -287,7 +333,10 @@ def linear_loop_experts_forward(
 
 
 def register_linear_loop_experts() -> bool:
-    """Register the linear_loop experts implementation with transformers.
+    """Register AutoRound's experts implementations with transformers.
+
+    Registers both ``linear_loop`` (per-expert Python loop) and ``linear_grouped``
+    (sorted grouped-GEMM over the routed token/expert pairs).
 
     Returns:
         True if registration was successful, False otherwise.
@@ -300,9 +349,11 @@ def register_linear_loop_experts() -> bool:
         )
         return False
 
-    if LINEAR_LOOP_IMPL not in ALL_EXPERTS_FUNCTIONS._global_mapping:
-        ALL_EXPERTS_FUNCTIONS._global_mapping[LINEAR_LOOP_IMPL] = linear_loop_experts_forward
-        logger.debug(f"Registered '{LINEAR_LOOP_IMPL}' experts implementation")
+    AUTO_ROUND_EXPERTS_IMPLS[LINEAR_LOOP_IMPL] = linear_loop_experts_forward
+    for impl_name, impl_fn in AUTO_ROUND_EXPERTS_IMPLS.items():
+        if impl_name not in ALL_EXPERTS_FUNCTIONS._global_mapping:
+            ALL_EXPERTS_FUNCTIONS._global_mapping[impl_name] = impl_fn
+            logger.debug(f"Registered '{impl_name}' experts implementation")
 
     return True
 
@@ -326,33 +377,48 @@ def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
     This function scans the module for any 3D nn.Parameter attributes.
     It first checks known projection names, then discovers any unknown 3D parameters.
 
+    Reads ``module._parameters`` directly instead of ``getattr``/``dir()``. This runs once
+    per module in the model, and after unfusing a large MoE that is tens of thousands of
+    modules: ``dir()`` on an ``nn.Module`` is expensive, and every miss goes through
+    ``nn.Module.__getattr__``, which searches three dicts before raising. A parameter is
+    always registered in ``_parameters``, so the cheap membership test is equivalent.
+
     Returns:
         Dict mapping projection names to their config, only for projections that exist
         as 3D nn.Parameter in the module.
     """
+    parameters = getattr(module, "_parameters", None)
+    if not parameters:
+        return {}
+
+    # Fast reject: an experts module owns at least one 3D parameter. Almost every module
+    # in the model (Linear, norms, containers) fails here in a single dict scan.
+    three_dim = {
+        name: param
+        for name, param in parameters.items()
+        if param is not None and not name.startswith("_") and param.dim() == 3
+    }
+    if not three_dim:
+        return {}
+
     detected = {}
 
     # First, check known projection patterns
     for proj_name, config in KNOWN_PROJECTION_PATTERNS.items():
-        param = getattr(module, proj_name, None)
-        if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
+        if proj_name in three_dim:
             detected[proj_name] = config
 
-    # If no known patterns found, scan for any 3D Parameter (future-proofing),
-    # but exclude known non-expert 3D parameters that exist on some transformer
-    # architectures (e.g. scale_shift_table on WanTransformer3DModel).
+    # If no known patterns found, take any 3D parameter (future-proofing), but exclude
+    # known non-expert 3D parameters that exist on some transformer architectures
+    # (e.g. scale_shift_table on WanTransformer3DModel).
     _NON_EXPERT_3D_PARAMS = frozenset(["scale_shift_table"])
     if not detected:
-        for attr_name in dir(module):
-            if attr_name.startswith("_"):
+        for name in three_dim:
+            if name in _NON_EXPERT_3D_PARAMS:
                 continue
-            if attr_name in _NON_EXPERT_3D_PARAMS:
-                continue
-            param = getattr(module, attr_name, None)
-            if param is not None and isinstance(param, nn.Parameter) and param.dim() == 3:
-                # Use default config for unknown projections
-                logger.debug(f"Discovered unknown 3D projection: {attr_name}")
-                detected[attr_name] = {"is_input_proj": True, "output_multiplier": 1}
+            # Use default config for unknown projections
+            logger.debug(f"Discovered unknown 3D projection: {name}")
+            detected[name] = {"is_input_proj": True, "output_multiplier": 1}
 
     return detected
 
@@ -383,6 +449,27 @@ def _infer_dimensions(param: nn.Parameter, config: dict, is_transposed: bool) ->
         out_features = out_features // multiplier * multiplier  # ensure divisible
 
     return in_features, out_features
+
+
+def _new_meta_linear(in_features: int, out_features: int, has_bias: bool, dtype: torch.dtype) -> nn.Linear:
+    """Build an ``nn.Linear`` shell on meta without running its initializer.
+
+    ``nn.Linear.__init__`` calls ``reset_parameters`` -> ``kaiming_uniform_``, whose result
+    is always discarded here: the weight is either left on meta for the checkpoint loader
+    to fill, or replaced with a checkpoint slice on the very next line. With hundreds of
+    experts per layer (256 x 3 projections x 40 layers for Qwen3.5-MoE) that initializer
+    dominates the unfuse, so construct the module directly instead.
+    """
+    linear = nn.Linear.__new__(nn.Linear)
+    nn.Module.__init__(linear)
+    linear.in_features = in_features
+    linear.out_features = out_features
+    linear.weight = nn.Parameter(torch.empty((out_features, in_features), dtype=dtype, device="meta"))
+    if has_bias:
+        linear.bias = nn.Parameter(torch.empty(out_features, dtype=dtype, device="meta"))
+    else:
+        linear.register_parameter("bias", None)
+    return linear
 
 
 def _unfuse_single_projection(
@@ -456,7 +543,7 @@ def _unfuse_single_projection(
     linears = []
     for i in range(num_experts):
         # meta device: creates the module structure without allocating weight storage
-        linear = nn.Linear(in_features, out_features, bias=has_bias, dtype=dtype, device="meta")
+        linear = _new_meta_linear(in_features, out_features, has_bias, dtype)
 
         if not is_meta:
             # Direct parameter assignment — no copy, just references the CPU tensor slice
@@ -480,6 +567,33 @@ def _unfuse_single_projection(
 
 
 _logged_memory_before_replacement = False  # To ensure we only log memory once before replacements
+
+
+def _warn_if_unfusing_allocates(module: nn.Module, detected_projections: dict[str, dict]) -> None:
+    """Warn when the fused expert weights are not on meta.
+
+    Unfusing is free on meta. On a real device the fused tensor and the per-expert copies
+    must coexist for the duration of the split, so the peak is inherently ~2x one experts
+    module on top of an already resident model.
+    """
+    params = [
+        param
+        for param in (getattr(module, name, None) for name in detected_projections)
+        if isinstance(param, nn.Parameter) and param.device.type != "meta"
+    ]
+    if not params:
+        return
+
+    total_bytes = sum(param.numel() * param.element_size() for param in params)
+    logger.warning(
+        "[MoE Prep] fused expert weights are on %s (%.2f GB for '%s' alone), not meta. "
+        "Splitting them in memory needs the fused tensor and its per-expert copies at the "
+        "same time. AutoRound normally avoids this by building a meta skeleton and reading "
+        "each expert from disk; that requires a local checkpoint directory.",
+        params[0].device.type,
+        total_bytes / 1024**3,
+        module.__class__.__name__,
+    )
 
 
 def _unfuse_experts_weights_inplace(
@@ -521,6 +635,7 @@ def _unfuse_experts_weights_inplace(
     global _logged_memory_before_replacement
     if not _logged_memory_before_replacement:
         _logged_memory_before_replacement = True
+        _warn_if_unfusing_allocates(module, detected_projections)
         memory_monitor.update()
         memory_monitor.log_summary("Before applying custom replacements")
 
@@ -636,13 +751,13 @@ def _unfuse_experts_weights_inplace(
 
 def prepare_model_for_moe_quantization(
     model: nn.Module,
-    implementation: str = LINEAR_LOOP_IMPL,
+    implementation: str | None = None,
     skip_prefixes: list[str] | None = None,
 ) -> list[str]:
     """Prepare a model for MOE quantization using transformers' experts interface.
 
     This function:
-    1. Registers the linear_loop experts implementation with transformers
+    1. Registers AutoRound's experts implementations with transformers
     2. Sets model.config._experts_implementation = implementation
     3. Unfuses all fused MOE expert weights into per-expert containers of nn.Linear
 
@@ -651,7 +766,8 @@ def prepare_model_for_moe_quantization(
 
     Args:
         model: The model to prepare
-        implementation: The experts implementation to use (default: "linear_loop")
+        implementation: The experts implementation to use. Defaults to the one selected by
+            ``AR_MOE_EXPERTS_IMPL`` (``linear_grouped`` unless overridden).
         skip_prefixes: Module name prefixes to skip (e.g. ["talker."]).
             Modules under these prefixes stay in their original fused 3D format.
             ShardWriter handles the fused→per-expert conversion at save time.
@@ -664,6 +780,9 @@ def prepare_model_for_moe_quantization(
             "Failed to register linear_loop experts implementation. "
             "This requires transformers >= 5.0.0 with MOE integration support."
         )
+
+    if implementation is None:
+        implementation = resolve_experts_implementation()
 
     # Unfuse all fused experts modules (only those supporting @use_experts_implementation)
     unfused_modules = []
@@ -681,10 +800,13 @@ def prepare_model_for_moe_quantization(
         logger.info(f"[MoE Prep] Unfused {len(unfused_modules)} MOE experts modules")
         clear_memory()
 
-        # Set config for linear_loop forward
+        # Set config for the per-expert nn.Linear forward. A user-provided
+        # ``experts_implementation`` is only honored when it is one of ours: the fused
+        # backends (grouped_mm/batched_mm/...) index 3D parameters that no longer exist
+        # after unfusing.
         if hasattr(model, "config"):
             saved_impl = getattr(model.config, "experts_implementation", None)
-            impl_to_set = saved_impl or implementation
+            impl_to_set = saved_impl if saved_impl in AUTO_ROUND_EXPERTS_IMPLS else implementation
             model.config._experts_implementation = impl_to_set
             logger.debug(f"Set model.config._experts_implementation = '{impl_to_set}'")
 
@@ -697,3 +819,98 @@ def prepare_model_for_moe_quantization(
 def is_linear_loop_available() -> bool:
     """Check if linear_loop experts implementation is available."""
     return HAS_EXPERTS_INTERFACE
+
+
+def is_grouped_experts_forward_active(model: nn.Module | None) -> bool:
+    """Whether this model will run the grouped-GEMM experts forward during tuning.
+
+    The grouped experts forward (:func:`grouped_linear_experts_forward`) is deliberately
+    opaque to dynamo -- its routing is data-dependent Python control flow, so it runs
+    eager. Compiling the *block* forward around it therefore buys nothing over the experts
+    region and only pays dynamo's routing recompiles, while the per-layer qdq
+    (``weight_quant_func``) stays compiled in its own right. Callers use this to keep the
+    block forward eager for grouped MoE while leaving qdq compilation on.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return False
+    return getattr(config, "_experts_implementation", None) == GROUPED_LINEAR_IMPL
+
+
+def _config_model_types(config) -> list[str]:
+    """Collect ``model_type`` from a config and every nested sub-config.
+
+    A VLM keeps the MoE rules on the text sub-config
+    (``text_config.model_type == 'qwen3_5_moe_text'``), so the top-level type alone is
+    not enough. Uses ``sub_configs``/``get_text_config`` when available (the supported
+    transformers API) and falls back to scanning ``__dict__`` for config-like values.
+    """
+    found: list[str] = []
+    seen: set[int] = set()
+
+    def _walk(node) -> None:
+        if node is None or id(node) in seen:
+            return
+        seen.add(id(node))
+
+        model_type = getattr(node, "model_type", None)
+        if isinstance(model_type, str) and model_type not in found:
+            found.append(model_type)
+
+        children = []
+        # Preferred: the declared sub-config names (transformers >= 4.4x).
+        for name in getattr(type(node), "sub_configs", None) or ():
+            children.append(getattr(node, name, None))
+        get_text_config = getattr(node, "get_text_config", None)
+        if callable(get_text_config):
+            try:
+                children.append(get_text_config())
+            except Exception:  # pragma: no cover - defensive
+                pass
+        # Fallback for plain/duck-typed configs.
+        for value in (vars(node).values() if hasattr(node, "__dict__") else ()):
+            if getattr(value, "model_type", None) is not None:
+                children.append(value)
+
+        for child in children:
+            if child is not None and child is not node:
+                _walk(child)
+
+    _walk(config)
+    return found
+
+
+def config_has_fused_moe_experts(config) -> bool:
+    """Whether loading this config would build fused 3D expert parameters.
+
+    ``transformers>=5`` describes such models with a ``WeightConverter`` that stacks the
+    checkpoint's per-expert 2D tensors into one fused parameter (``MergeModulelist``).
+    That converter is exactly the signal we care about: its presence means
+    ``from_pretrained`` would produce a fused ``nn.Parameter`` that AutoRound then has to
+    split back into per-expert ``nn.Linear`` -- the expensive case worth building on meta
+    for. MoE models that already ship as ``ModuleList`` of ``Linear`` have no such
+    converter and are deliberately left on the ordinary load path.
+    """
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+        from transformers.core_model_loading import MergeModulelist, WeightConverter
+    except ImportError:  # pragma: no cover - transformers < 5
+        return False
+
+    for model_type in _config_model_types(config):
+        mapping = get_checkpoint_conversion_mapping(model_type)
+        if not mapping:
+            continue
+        for entry in mapping:
+            if not isinstance(entry, WeightConverter):
+                continue
+            if not any(isinstance(op, MergeModulelist) for op in entry.operations):
+                continue
+            if any("experts" in pattern for pattern in entry.source_patterns):
+                logger.debug(
+                    "[MoE Prep] '%s' merges per-expert checkpoint tensors into a fused parameter (%s)",
+                    model_type,
+                    entry.target_patterns,
+                )
+                return True
+    return False

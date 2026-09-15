@@ -79,6 +79,16 @@ export AR_DISABLE_OFFLOAD=1
 export AR_DISABLE_DATASET_SUBPROCESS=true
 ```
 
+### AR_DISABLE_GGUF_MTP_EXPORT
+- **描述**：导出 GGUF 模型时禁用多 token 预测（MTP）层。默认情况下，AutoRound 遵循 llama.cpp 转换器的行为，在模型提供 MTP 层时将其一并导出。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"` 或 `"on"`（不区分大小写）表示禁用 MTP 导出；其他值保持启用 MTP 导出
+- **用途**：当 checkpoint 使用支持 MTP 的模型架构，但实际不包含 MTP tensor 时启用
+
+```bash
+export AR_DISABLE_GGUF_MTP_EXPORT=1
+```
+
 ### AR_ACT_SCALE
 - **描述**：只用于研究性质，控制激活量化时对激活值最小/最大值的缩放系数。小于 1.0 的值会缩小裁剪范围，有助于减小离群值的影响。
 - **默认值**：`1.0`

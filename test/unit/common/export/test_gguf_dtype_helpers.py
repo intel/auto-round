@@ -312,3 +312,13 @@ class TestGGUFDTypeSelector:
         assert sel.ftype is ftype
         assert sel.i_attention_wv == 0
         assert sel.i_ffn_down == 0
+
+    def test_q2_k_s_uses_q4_k_for_first_eighth_ffn_down(self):
+        from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector
+
+        selector = GGUFDTypeSelector(
+            {"num_hidden_layers": 8},
+            gguf.LlamaFileType.MOSTLY_Q2_K_S,
+        )
+
+        assert selector.select_qtype("blk.0.ffn_down.weight", n_dims=2) == gguf.GGMLQuantizationType.Q4_K

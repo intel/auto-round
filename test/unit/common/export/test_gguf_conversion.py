@@ -113,6 +113,68 @@ def _make_mock_model(cls, hparams=None):
     return obj
 
 
+@pytest.mark.parametrize("disable_mtp_export", [False, True])
+def test_qwen35_gguf_mtp_export_control(monkeypatch, tmp_path, disable_mtp_export):
+    from auto_round.export.export_to_gguf import export
+    from auto_round.export.export_to_gguf.config import ModelType
+    from auto_round.export.export_to_gguf.conversion.base import ModelBase as ConversionModelBase
+    from auto_round.export.export_to_gguf.conversion.qwen import Qwen3_5TextModel
+
+    hparams = {
+        "architectures": ["Qwen3_5ForConditionalGeneration"],
+        "num_hidden_layers": 32,
+        "mtp_num_hidden_layers": 0 if disable_mtp_export else 1,
+    }
+
+    class FakeModel:
+        name_or_path = str(tmp_path)
+        config = type("Config", (), {"model_type": "qwen3_5"})()
+
+    class FakeConversion:
+        ModelBase = ConversionModelBase
+
+        @staticmethod
+        def model_type(model_type):
+            return model_type
+
+        @staticmethod
+        def get_model_architecture(_hparams, _model_type):
+            return "Qwen3_5ForConditionalGeneration"
+
+        @staticmethod
+        def get_model_class(_model_architecture, model_type):
+            return Qwen3_5TextModel
+
+    monkeypatch.setattr(ConversionModelBase, "load_hparams", staticmethod(lambda *_args: hparams.copy()))
+    monkeypatch.setattr(export, "get_conversion", lambda *_args, **_kwargs: FakeConversion)
+    monkeypatch.setattr(export, "wrapper_model_instance", lambda model_instance, **_kwargs: model_instance)
+    monkeypatch.setattr(export, "handle_special_model", lambda model_instance, _architecture: model_instance)
+    if disable_mtp_export:
+        monkeypatch.setenv("AR_DISABLE_GGUF_MTP_EXPORT", "1")
+    else:
+        monkeypatch.delenv("AR_DISABLE_GGUF_MTP_EXPORT", raising=False)
+
+    model = export.create_model_class(tmp_path, FakeModel(), {}, model_type=ModelType.TEXT)
+    item = ("mtp.layers.0.mlp.down_proj.weight", lambda: torch.ones(1, 1))
+
+    filtered = model.filter_tensors(item)
+    if disable_mtp_export:
+        assert model.block_count == 32
+        assert filtered is None
+        assert Qwen3_5TextModel.no_mtp is False
+        return
+
+    assert filtered is not None
+    name, tensor_fn = filtered
+
+    outputs = list(model.modify_tensors(tensor_fn(), name, bid=32))
+
+    assert model.block_count == 33
+    assert len(outputs) == 1
+    assert outputs[0][0] == "blk.32.ffn_down.weight"
+    assert torch.equal(outputs[0][1], tensor_fn())
+
+
 # ==============================================================================
 # granite.py tests
 # ==============================================================================

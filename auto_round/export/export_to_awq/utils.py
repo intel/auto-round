@@ -40,6 +40,18 @@ import torch.nn as nn
 from torch.autograd import Function
 
 from auto_round.utils import get_packing_device
+from auto_round.utils.bit_packing import (
+    pack_awq_bitstream,
+    pack_scalar_zero,
+    requires_generic_bit_packing,
+    unpack_awq_bitstream,
+)
+
+# Bit-widths the AWQ packing layout can represent. AutoAWQ's classic layout
+# interleaves 8 values per int32 word, which only lines up at 4 bits; 5/6/7-bit
+# keep the same 8-value interleave but write it into the generic bit-stream
+# layout (exactly what humming's AWQWeightSchema expects).
+SUPPORTED_AWQ_BITS = (4, 5, 6, 7)
 
 
 def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
@@ -84,10 +96,16 @@ def reverse_awq_order(iweights: torch.Tensor, izeros: torch.Tensor, bits: int):
 
 
 def dequantize_gemm(qweight, qzeros, scales, bits, group_size):
-    # Unpack the qweight and qzeros tensors
-    iweight, izeros = unpack_awq(qweight, qzeros, bits)
-    # Reverse the order of the iweight and izeros tensors
-    iweight, izeros = reverse_awq_order(iweight, izeros, bits)
+    if requires_generic_bit_packing(bits):
+        # 5/6/7-bit: values straddle int32 words, so unpack via the generic
+        # bit-stream helper (which also undoes the AWQ interleave).
+        iweight = unpack_awq_bitstream(qweight, bits, dim=1)
+        izeros = unpack_awq_bitstream(qzeros, bits, dim=1)
+    else:
+        # Unpack the qweight and qzeros tensors
+        iweight, izeros = unpack_awq(qweight, qzeros, bits)
+        # Reverse the order of the iweight and izeros tensors
+        iweight, izeros = reverse_awq_order(iweight, izeros, bits)
 
     # overflow checks
     iweight = torch.bitwise_and(iweight, (2**bits) - 1)
@@ -141,26 +159,32 @@ class WQLinear_GEMM(nn.Module):
     def __init__(self, w_bit, group_size, in_features, out_features, bias, dev, training=False):
         super().__init__()
 
-        if w_bit not in [4]:
-            raise NotImplementedError("Only 4-bit are supported for now.")
+        if w_bit not in SUPPORTED_AWQ_BITS:
+            raise NotImplementedError(f"Only {','.join(map(str, SUPPORTED_AWQ_BITS))}-bit are supported for now.")
 
         self.in_features = in_features
         self.out_features = out_features
         self.w_bit = w_bit
         self.group_size = group_size if group_size != -1 else in_features
         self.training = training
+        self.use_generic_bit_packing = requires_generic_bit_packing(w_bit)
 
         # quick sanity check (make sure alignment)
         if self.in_features % self.group_size != 0:
             raise ValueError(f"in_features ({self.in_features}) shape mismatch")
 
-        if out_features % (32 // self.w_bit) != 0:
-            raise ValueError(f"out_features ({out_features}) shape mismatch")
+        # 2/4/8-bit keep AutoAWQ's original ``32 // w_bit`` alignment rule; 5/6/7-bit
+        # pack a contiguous bit-stream over blocks of 32 values, so the output
+        # dimension must be a multiple of 32.
+        pack_align = 32 if self.use_generic_bit_packing else 32 // self.w_bit
+        if out_features % pack_align != 0:
+            raise ValueError(f"out_features ({out_features}) must be a multiple of {pack_align} for {w_bit}-bit AWQ")
+        packed_out_features = out_features * self.w_bit // 32
 
         self.register_buffer(
             "qweight",
             torch.zeros(
-                (in_features, out_features // (32 // self.w_bit)),
+                (in_features, packed_out_features),
                 dtype=torch.int32,
                 device=dev,
             ),
@@ -168,7 +192,7 @@ class WQLinear_GEMM(nn.Module):
         self.register_buffer(
             "qzeros",
             torch.zeros(
-                (in_features // self.group_size, out_features // (32 // self.w_bit)),
+                (in_features // self.group_size, packed_out_features),
                 dtype=torch.int32,
                 device=dev,
             ),
@@ -248,6 +272,22 @@ class WQLinear_GEMM(nn.Module):
 
         intweight = intweight.to(dtype=torch.int32)
         del repeat_scales
+
+        if awq_linear.use_generic_bit_packing:
+            # 5/6/7-bit: AWQ interleave (groups of 8) + generic bit-stream packing.
+            awq_linear.qweight = pack_awq_bitstream(intweight, awq_linear.w_bit, dim=1).to("cpu")
+            packed_cols = scales.shape[1] * awq_linear.w_bit // 32
+            if isinstance(zeros, torch.Tensor):
+                zeros = zeros.to(dtype=torch.int32, device=device)
+                qzeros = pack_awq_bitstream(zeros, awq_linear.w_bit, dim=1)
+            else:
+                # A single shared zero point is interleave-invariant, so it can be
+                # tiled directly without reordering.
+                qzeros = pack_scalar_zero(
+                    int(zeros), awq_linear.w_bit, packed_cols, (scales.shape[0], packed_cols), device=device
+                )
+            awq_linear.qzeros = qzeros.to("cpu")
+            return awq_linear
 
         intweight = intweight.reshape(-1, intweight.shape[1] // pack_num, pack_num)
 

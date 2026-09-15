@@ -11,6 +11,7 @@ import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 import torch
 
 from auto_round.compressors.diffusion_mixin import DiffusionMixin
@@ -25,7 +26,46 @@ class TestDiffusionMixinProperties:
         params = {k: v.default for k, v in sig.parameters.items() if v.default is not inspect.Parameter.empty}
         assert params.get("guidance_scale") == 7.5
         assert params.get("num_inference_steps") == 50
+        assert params.get("calib_num_inference_steps") == 8
         assert params.get("generator_seed") is None
+        assert params.get("diffusion_tuning_cache_size") == 0
+
+    @pytest.mark.parametrize("budget", [2, "auto"])
+    def test_generation_and_calibration_steps_are_independent(self, budget):
+        class Parent:
+            def __init__(self, *args, **kwargs):
+                self.model_context = SimpleNamespace(pipe=None, model=None)
+
+        class MockCompressor(DiffusionMixin, Parent):
+            pass
+
+        comp = MockCompressor(num_inference_steps=20, calib_num_inference_steps=7, diffusion_tuning_cache_size=budget)
+
+        assert comp.num_inference_steps == 20
+        assert comp.calib_num_inference_steps == 7
+        assert comp.model_context.diffusion_tuning_cache_size == budget
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"calib_num_inference_steps": 0}, "calib_num_inference_steps"),
+            ({"num_inference_steps": 0}, "num_inference_steps"),
+            ({"diffusion_tuning_cache_size": -1}, "diffusion_tuning_cache_size"),
+            ({"diffusion_tuning_cache_size": float("nan")}, "diffusion_tuning_cache_size"),
+            ({"diffusion_tuning_cache_size": float("inf")}, "diffusion_tuning_cache_size"),
+            ({"diffusion_tuning_cache_size": "invalid"}, "diffusion_tuning_cache_size"),
+        ],
+    )
+    def test_rejects_non_positive_inference_steps(self, kwargs, match):
+        class Parent:
+            def __init__(self, *args, **kwargs):
+                self.model_context = SimpleNamespace(pipe=None, model=None)
+
+        class MockCompressor(DiffusionMixin, Parent):
+            pass
+
+        with pytest.raises(ValueError, match=match):
+            MockCompressor(**kwargs)
 
     def test_get_calibrator_kind_returns_diffusion(self):
         # Create a minimal mock class

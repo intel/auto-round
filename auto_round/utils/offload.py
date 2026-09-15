@@ -101,7 +101,7 @@ def _maybe_split_fused_expert_keys(state_dict: dict, module: torch.nn.Module) ->
             continue  # original fused module still in the tree; assign as-is
         to_split[key] = state_dict.pop(key)
     if to_split:
-        from auto_round.utils.missing_tensors import split_fused_expert_tensors
+        from auto_round.utils.model_free_utils import split_fused_expert_tensors
 
         state_dict.update(split_fused_expert_tensors(to_split))
     return state_dict
@@ -189,21 +189,41 @@ def _clear_module_weights(
 # =====================================================================
 
 
-def _resolve_model_dir(model_dir: str) -> str:
+def _resolve_model_dir(model_dir: str, revision: Optional[str] = None) -> str:
     """Resolve a model name/path to a local directory containing weight files."""
     if os.path.isdir(model_dir):
         return model_dir
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import snapshot_download, try_to_load_from_cache
 
+        for filename in (
+            "model.safetensors.index.json",
+            "model.safetensors",
+            "pytorch_model.bin.index.json",
+            "pytorch_model.bin",
+        ):
+            cached_file = try_to_load_from_cache(model_dir, filename, revision=revision)
+            if isinstance(cached_file, str):
+                return os.path.dirname(cached_file)
+
+        if revision is not None:
+            return snapshot_download(model_dir, revision=revision, local_files_only=True)
         return snapshot_download(model_dir, local_files_only=True)
     except Exception:
+        if revision is not None:
+            raise
         return model_dir
 
 
 def _build_weight_map(model_dir: str) -> dict[str, str]:
     """Build ``{tensor_name: shard_filename}`` from the model directory."""
     index_path = os.path.join(model_dir, "model.safetensors.index.json")
+    if not os.path.exists(index_path) and os.path.isdir(model_dir):
+        custom_indexes = sorted(
+            filename for filename in os.listdir(model_dir) if filename.endswith(".safetensors.index.json")
+        )
+        if custom_indexes:
+            index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(index_path):
         with open(index_path) as f:
             return json.load(f)["weight_map"]
@@ -216,6 +236,10 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
             return {k: "model.safetensors" for k in f.keys()}
 
     bin_index_path = os.path.join(model_dir, "pytorch_model.bin.index.json")
+    if not os.path.exists(bin_index_path) and os.path.isdir(model_dir):
+        custom_indexes = sorted(filename for filename in os.listdir(model_dir) if filename.endswith(".bin.index.json"))
+        if custom_indexes:
+            bin_index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(bin_index_path):
         with open(bin_index_path) as f:
             return json.load(f)["weight_map"]
@@ -227,7 +251,7 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
 
     raise FileNotFoundError(
         f"Could not find model weight files in {model_dir}. "
-        "Expected model.safetensors or pytorch_model.bin (with optional index.json)."
+        "Expected a safetensors or PyTorch .bin checkpoint (with optional index.json)."
     )
 
 
@@ -255,9 +279,9 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
         # ``mlp.router.gate`` behind a ``mlp.gate`` module) and leaves them on
         # meta until a downstream ``.to(device)`` crashes.
         try:
-            from auto_round.utils.disk_stream_util import SafetensorsIndex, materialize_module
+            from auto_round.utils.disk_stream_util import get_safetensors_index, materialize_module
 
-            materialize_module(block, block_name, SafetensorsIndex(model_dir), device="cpu")
+            materialize_module(block, block_name, get_safetensors_index(model_dir), device="cpu")
             if not _has_meta(block):
                 return
         except FileNotFoundError:
@@ -329,6 +353,9 @@ class OffloadManager:
     model_dir : str, optional
         Path to the model checkpoint directory. Required for ``"clean"``
         mode; optional for ``"offload"``.
+    model_revision : str, optional
+        Commit hash used to resolve a Hugging Face model ID without relying
+        on a mutable branch reference.
     offload_dir_prefix : str
         Prefix for the temp directory name (``"offload"`` mode only).
     cache_numel : bool
@@ -344,12 +371,17 @@ class OffloadManager:
         offload_dir_prefix: str = "ar_offload",
         cache_numel: bool = False,
         retain_saved_entries: bool = False,
+        model_revision: Optional[str] = None,
     ):
         from auto_round import envs
 
         self.enabled = enabled and not envs.AR_DISABLE_OFFLOAD
         self.mode = mode
-        self.model_dir = model_dir
+        self.model_dir = (
+            _resolve_model_dir(model_dir, revision=model_revision)
+            if mode == "clean" and model_dir is not None and model_revision is not None
+            else model_dir
+        )
         self.cache_numel = cache_numel
         self._prefix = offload_dir_prefix
         self.retain_saved_entries = retain_saved_entries
@@ -571,6 +603,13 @@ class OffloadManager:
         module = get_module(model, name)
         if module is None:
             return
+        model_dir = self.model_dir
+        component_subfolder = getattr(model, "_autoround_checkpoint_subfolder", None)
+        if model_dir is not None and component_subfolder:
+            resolved_dir = _resolve_model_dir(model_dir)
+            component_dir = os.path.join(resolved_dir, component_subfolder)
+            if os.path.isdir(component_dir):
+                model_dir = component_dir
         if self.mode == "offload":
             if name not in self._saved:
                 # Before falling back to the
@@ -599,8 +638,8 @@ class OffloadManager:
                 # meta skeleton (AR_DISK_STREAM_MODEL=1) instead of a full CPU
                 # load. There is nothing on the temp dir to load from -- read
                 # straight from the original checkpoint instead.
-                if self.model_dir is not None:
-                    load_block_from_model_files(self.model_dir, name, module)
+                if model_dir is not None:
+                    load_block_from_model_files(model_dir, name, module)
                 return
             self._load_from_disk(name, module)
             if not self.retain_saved_entries:
@@ -609,7 +648,7 @@ class OffloadManager:
             if self.model_dir is None:
                 logger.warning("OffloadManager: model_dir is required for clean mode")
                 return
-            load_block_from_model_files(self.model_dir, name, module)
+            load_block_from_model_files(model_dir, name, module)
 
     # ------------------------------------------------------------------
     # Hook-based transparent offloading

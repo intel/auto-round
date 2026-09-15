@@ -14,17 +14,38 @@ def _types(configs):
     return [type(config).__name__ for config in configs]
 
 
+@pytest.mark.parametrize("value,expected", [("auto", "auto"), ("2", 2.0), ("0", 0.0)])
+def test_diffusion_cache_cli_and_entry_routing(value, expected):
+    from auto_round.cli.main import _build_entry_model_type_kwargs
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(["--diffusion_tuning_cache_size", value])
+    grouped = _split_entry_kwargs(_build_entry_model_type_kwargs(args))
+    assert grouped["diffusion"]["diffusion_tuning_cache_size"] == expected
+
+
 def test_split_entry_kwargs_partitions_owned_fields():
     processor = object()
 
     grouped = _split_entry_kwargs(
-        {"dataset": ["sample"], "scale_dtype": "fp32", "processor": processor, "model_free": False}
+        {
+            "dataset": ["sample"],
+            "scale_dtype": "fp32",
+            "processor": processor,
+            "model_free": False,
+            "num_inference_steps": 20,
+            "calib_num_inference_steps": 8,
+            "diffusion_tuning_cache_size": 2,
+        }
     )
 
     assert grouped["base"]["dataset"] == ["sample"]
     assert grouped["compressor"]["scale_dtype"] == "fp32"
     assert grouped["mllm"]["processor"] is processor
     assert grouped["route"]["model_free"] is False
+    assert grouped["diffusion"]["num_inference_steps"] == 20
+    assert grouped["diffusion"]["calib_num_inference_steps"] == 8
+    assert grouped["diffusion"]["diffusion_tuning_cache_size"] == 2
 
 
 def test_split_entry_kwargs_ignores_unknown_fields(monkeypatch):

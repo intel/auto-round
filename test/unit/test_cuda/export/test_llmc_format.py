@@ -33,7 +33,7 @@ class TestAutoRound:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
+    @pytest.mark.skip_ci(reason="Matrix: Cannot test all case in CI; time-consuming")
     def test_fp8input_mxfp4_llmcompressor_format(self, dataloader, tiny_fp8_qwen_model_path, mock_fp8_capable_device):
         scheme = "mxfp4"
         ar = AutoRound(
@@ -60,7 +60,7 @@ class TestAutoRound:
             and quantization_config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
         ), f"Invalid MXFP4 quantization configuration: {quantization_config}"
 
-    @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
+    @pytest.mark.skip_ci(reason="Matrix: Cannot test all case in CI; time-consuming")
     def test_nvfp4_llmcompressor_format(self, tiny_opt_model_path, dataloader):
         scheme = "nvfp4"
         autoround = AutoRound(
@@ -91,7 +91,7 @@ class TestAutoRound:
             and quantization_config["config_groups"]["group_0"]["input_activations"]["num_bits"] == 4
         ), f"Invalid NVFP4 quantization configuration: {quantization_config}"
 
-    @pytest.mark.skip_ci(reason="Cannot test all case in CI; time-consuming")
+    @pytest.mark.skip_ci(reason="Matrix: Cannot test all case in CI; time-consuming")
     def test_fp8_block_llm_compressor_format(self, tiny_qwen_model_path, dataloader):
         model_name = get_model_path("Qwen/Qwen3-0.6B")
 

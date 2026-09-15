@@ -1071,6 +1071,9 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         if len(datasets) > 1:
             from datasets import concatenate_datasets
 
+            # Source metadata is not part of the calibration input and can have
+            # incompatible schemas. Restrict columns only for the merge operation.
+            datasets = [dataset.select_columns(["input_ids", "attention_mask"]) for dataset in datasets]
             dataset_final = concatenate_datasets(datasets)
             dataset_final = dataset_final.shuffle(seed=seed)
             logger.info(dataset_cnt_info)

@@ -85,8 +85,10 @@ class TestDiffusionCalibrator:
             low_gpu_mem_usage=False,
             has_variable_block_shape=False,
             guidance_scale=7.5,
-            num_inference_steps=1,
+            calib_num_inference_steps=4,
+            num_inference_steps=20,
             generator_seed=None,
+            pipeline_call_kwargs={},
             pipe=pipe,
             model=model,
             model_context=SimpleNamespace(
@@ -239,6 +241,7 @@ class TestDiffusionCalibrator:
         calibrator.dataset = [("id0", ["p1", "p2"])]
         calibrator.pipe = FakePipeline(fn=lambda *args, **kwargs: None)
         calibrator.pipe._autoround_pipeline_fn = pipeline_fn
+        calibrator.pipeline_call_kwargs = {"audio_end_in_s": 3.0}
         calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
@@ -247,9 +250,11 @@ class TestDiffusionCalibrator:
         assert len(calls) == 1
         assert calls[0][1] == ["p1", "p2"]
         assert calls[0][2]["guidance_scale"] == pytest.approx(7.5)
+        assert calls[0][2]["num_inference_steps"] == 4
         assert calls[0][2]["generator"] is None
+        assert calls[0][2]["audio_end_in_s"] == pytest.approx(3.0)
 
-    def test_calib_falls_back_to_pipe_when_no_pipeline_fn(self, calibrator):
+    def test_calib_calls_pipe_with_calibration_kwargs(self, calibrator):
         calls = []
 
         def fake_pipe(prompts, **kwargs):
@@ -257,6 +262,7 @@ class TestDiffusionCalibrator:
 
         calibrator.dataset = [("id0", ["p1", "p2"])]
         calibrator.pipe = FakePipeline(fn=fake_pipe)
+        calibrator.pipeline_call_kwargs = {"height": 512, "width": 768, "num_inference_steps": 999}
         calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
@@ -264,6 +270,9 @@ class TestDiffusionCalibrator:
 
         assert len(calls) == 1
         assert calls[0][0] == ["p1", "p2"]
+        assert calls[0][1]["num_inference_steps"] == 4
+        assert calls[0][1]["height"] == 512
+        assert calls[0][1]["width"] == 768
 
     def test_calib_passes_image_when_required(self, calibrator):
         seen_images = []
@@ -277,7 +286,7 @@ class TestDiffusionCalibrator:
 
         assert seen_images[0] is calibration_image
 
-    def test_calib_not_implemented_error_is_swallowed(self, calibrator):
+    def test_calib_not_implemented_error_propagates(self, calibrator):
         def failing_pipe(*args, **kwargs):
             raise NotImplementedError("unsupported op")
 
@@ -286,9 +295,8 @@ class TestDiffusionCalibrator:
         calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
-            calibrator.calib(nsamples=1, bs=1)
-
-        assert calibrator.inputs == {}
+            with pytest.raises(NotImplementedError, match="unsupported op"):
+                calibrator.calib(nsamples=1, bs=1)
 
     def test_calib_other_exceptions_propagate(self, calibrator):
         def failing_pipe(*args, **kwargs):
@@ -350,5 +358,5 @@ class TestDiffusionCalibrator:
         calibrator._requires_calibration_image = lambda: False
 
         with patch("auto_round.calibration.diffusion.tqdm", FakeTqdm):
-            with pytest.raises(ValueError, match="valid samples is less than batch_size"):
+            with pytest.raises(ValueError, match="valid sample count is less than batch_size"):
                 calibrator.calib(nsamples=3, bs=2)

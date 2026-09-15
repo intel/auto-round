@@ -275,6 +275,7 @@ def get_diffusion_dataloader(dataset="coco2014", bs=1, seed=42, nsamples=128, im
     Returns:
         DataLoader: The DataLoader for the calibrated datasets.
     """
+    requested_dataset = dataset
     if dataset in COCO_URL:
         logger.info(f"use dataset {dataset}, loading calibration data...")
         dataframe = _load_coco_dataframe(dataset, nsamples, image_required)
@@ -292,6 +293,20 @@ def get_diffusion_dataloader(dataset="coco2014", bs=1, seed=42, nsamples=128, im
             dataset = DIFFUSION_DATASET["local"](dataset, nsamples)
     else:
         raise ValueError("Only support coco2014/audiocaps dataset or loading local tsv/csv file now.")
+
+    if (
+        image_required
+        and isinstance(requested_dataset, str)
+        and requested_dataset not in COCO_URL
+        and getattr(dataset, "image_paths", None) is None
+    ):
+        logger.warning(
+            f"Dataset {requested_dataset!r} does not provide images required for I2V calibration; "
+            "falling back to coco2014."
+        )
+        dataframe = _load_coco_dataframe("coco2014", nsamples, image_required=True)
+        dataset = DIFFUSION_DATASET["local"]("coco2014", nsamples, dataframe=dataframe)
+
     set_seed(seed)
     dataloader_params = {"batch_size": bs, "shuffle": True}
 
