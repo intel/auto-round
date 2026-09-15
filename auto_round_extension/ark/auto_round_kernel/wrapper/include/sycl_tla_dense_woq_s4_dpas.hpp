@@ -19,6 +19,7 @@
 #include "cutlass/integer_subbyte.h"
 #include "cutlass/platform/platform.h"
 #include "cutlass/util/sycl_event_manager.hpp"
+#include "sycl_tla_common.hpp"
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wpass-failed"
@@ -145,8 +146,154 @@ CUTE_DEVICE auto make_dense_tensor(T* ptr, int r, int c) {
 }
 
 template <class GmemTiledCopyA, class GmemTiledCopyB, class GmemTiledCopyC,
-          int GroupSize, class ATensor, class BTensor, class DTensor,
-          class TiledMMA, typename ElementS, typename ElementBI>
+          class ATensor, class BTensor, class DTensor, class TiledMMA,
+          typename ElementS, typename ElementBI>
+CUTE_DEVICE void dense_gemm_s4_single_group(
+    ATensor const& A,
+    BTensor const& B,
+    const ElementS* Scales,
+    const ElementBI* Bias,
+    DTensor& C,
+    Coord<int, int, cute::Underscore, int> blk_coord,
+    TiledMMA const& mma) {
+  using TA = typename ATensor::element_type;
+  using TB = typename BTensor::element_type;
+  static_assert(std::is_same_v<TB, cutlass::uint4b_t>,
+                "dense_gemm_s4_single_group: ElementB must be cutlass::uint4b_t");
+  static constexpr int sg_local_range = 16;
+
+  auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+  auto wg_m = get<0>(blk_coord);
+  auto wg_n = get<1>(blk_coord);
+  int local_id = item.get_local_linear_id();
+
+  Tensor cA = make_identity_tensor(A.shape());
+  Tensor cB = make_identity_tensor(B.shape());
+  Tensor cC = make_identity_tensor(C.shape());
+
+  auto wg_tile = mma.tile_mnk();
+  auto wg_coord = make_coord(wg_m, wg_n, 0);
+
+  Tensor gA = local_tile(cA, select<0, 2>(wg_tile), make_coord(wg_m, _));
+  Tensor gB = local_tile(cB, select<1, 2>(wg_tile), make_coord(wg_n, _));
+  Tensor gC = local_tile(cC, wg_tile, wg_coord, Step<_1, _1, X>{});
+
+  auto copy_a = get_block_2d_copy_A<GmemTiledCopyA>(mma, A);
+  auto copy_b = get_block_2d_copy_B<GmemTiledCopyB>(mma, B);
+  auto copy_c = get_block_2d_copy_D<GmemTiledCopyC>(mma, C);
+
+  auto thr_mma = mma.get_slice(local_id);
+  auto thr_copy_a = copy_a.get_slice(local_id);
+  auto thr_copy_b = copy_b.get_slice(local_id);
+  auto thr_copy_c = copy_c.get_slice(local_id);
+
+  auto tCrA = thr_mma.partition_sg_fragment_A(gA(_, _, 0));
+  auto tCrB = thr_mma.partition_sg_fragment_B(gB(_, _, 0));
+
+  auto tArA = thr_copy_a.partition_sg_fragment_D(gA(_, _, 0));
+  auto tBrB = thr_copy_b.partition_sg_fragment_D(gB(_, _, 0));
+
+  Tensor tAgA = thr_copy_a.partition_S(gA);
+  Tensor tBgB = thr_copy_b.partition_S(gB);
+
+  auto tCrC = thr_mma.partition_sg_fragment_C(gC);
+  auto tCrC_out = thr_copy_c.partition_sg_fragment_S(gC);
+  auto tCgC = thr_copy_c.partition_D(gC);
+
+  auto prefetch_a = make_block_2d_prefetch(copy_a);
+  auto prefetch_b = make_block_2d_prefetch(copy_b);
+
+  auto thr_prefetch_A = prefetch_a.get_slice(local_id);
+  auto thr_prefetch_B = prefetch_b.get_slice(local_id);
+
+  auto pAgA = thr_prefetch_A.partition_S(gA);
+  auto pBgB = thr_prefetch_B.partition_S(gB);
+
+  const int prefetch_dist = 3;
+  constexpr auto barrier_scope = ScopeWorkgroup;
+  int k_tile_count = ceil_div(shape<1>(A), get<2>(wg_tile));
+  int k_tile_prefetch = 0;
+
+  static constexpr auto ATOM_M = get<1>(typename TiledMMA::ThrLayoutVMNK{}.shape());
+  static constexpr auto ATOM_N = get<2>(typename TiledMMA::ThrLayoutVMNK{}.shape());
+  static constexpr auto tile_m = get<0>(wg_tile);
+  static constexpr auto tile_n = get<1>(wg_tile);
+  static constexpr auto SG_M = tile_m / ATOM_M;
+  static constexpr auto SG_N = tile_n / ATOM_N;
+  static constexpr int sg_n_strides = SG_N / sg_local_range;
+
+  auto n_tile_start = wg_n * tile_n;
+  auto sg_local_n_coord = cutlass::get_sub_group_id() % ATOM_N;
+  int sg_local_id = cutlass::get_sub_group_local_id();
+  int n_sg_start = sg_local_n_coord * SG_N;
+
+  clear(tCrC);
+
+  float sg_scale[sg_n_strides];
+  CUTLASS_PRAGMA_UNROLL
+  for (int sn = 0; sn < sg_n_strides; ++sn) {
+    int sg_local_n = sn * sg_local_range + sg_local_id;
+    sg_scale[sn] = static_cast<float>(Scales[n_tile_start + n_sg_start + sg_local_n]);
+  }
+
+  CUTE_UNROLL
+  for (; k_tile_prefetch < prefetch_dist; k_tile_prefetch++) {
+    prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
+    prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
+  }
+
+  for (int k_tile = 0; k_tile < k_tile_count; k_tile++, k_tile_prefetch++) {
+    barrier_arrive(barrier_scope);
+
+    copy(copy_a, tAgA(_, _, _, k_tile), tArA);
+    copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
+
+    if (k_tile_prefetch < k_tile_count) {
+      prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
+      prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
+    }
+
+    reorder(tArA, tCrA);
+    reorder(tBrB, tCrB);
+    CUTLASS_PRAGMA_UNROLL
+    for (int i = 0; i < tCrB.size(); ++i) {
+      tCrB(i) = static_cast<TA>(static_cast<float>(tCrB(i)) - 8.0f);
+    }
+
+    cute::gemm(mma, tCrA, tCrB, tCrC);
+
+    barrier_wait(barrier_scope);
+  }
+
+  CUTLASS_PRAGMA_UNROLL
+  for (int sn = 0; sn < sg_n_strides; ++sn) {
+    float s = sg_scale[sn];
+    CUTLASS_PRAGMA_UNROLL
+    for (int sm = 0; sm < SG_M; ++sm) {
+      tCrC(sn * SG_M + sm) *= s;
+    }
+  }
+
+  if (Bias != nullptr) {
+    CUTLASS_PRAGMA_UNROLL
+    for (int sn = 0; sn < sg_n_strides; ++sn) {
+      int sg_local_n = sn * sg_local_range + sg_local_id;
+      float b_float = Bias[n_tile_start + n_sg_start + sg_local_n];
+      CUTLASS_PRAGMA_UNROLL
+      for (int sm = 0; sm < SG_M; ++sm) {
+        tCrC(sn * SG_M + sm) += b_float;
+      }
+    }
+  }
+
+  reorder(tCrC, tCrC_out);
+  copy(copy_c, tCrC_out, tCgC);
+}
+
+template <class GmemTiledCopyA, class GmemTiledCopyB, class GmemTiledCopyC,
+          int GroupSize, bool TileAlignedGroup, class ATensor,
+          class BTensor, class DTensor, class TiledMMA, typename ElementS,
+          typename ElementBI>
 CUTE_DEVICE void dense_gemm_s4_pergroup(
     ATensor const& A,   // (M,K)   -- ElementA (bf16/fp16)
     BTensor const& B,   // (N,K)   -- cutlass::uint4b_t (packed nibbles)
@@ -223,6 +370,8 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
   static constexpr auto tile_m = get<0>(wg_tile);
   static constexpr auto tile_n = get<1>(wg_tile);
   static constexpr auto tile_k = get<2>(wg_tile);
+  static constexpr int tile_k_size = int(tile_k);
+  static constexpr int tiles_per_group = GroupSize / tile_k_size;
 
   static constexpr auto SG_M = tile_m / ATOM_M;
   static constexpr auto SG_N = tile_n / ATOM_N;
@@ -231,11 +380,8 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
 
   auto n_tile_start = wg_n * tile_n;
   auto sg_local_n_coord = cutlass::get_sub_group_id() % ATOM_N;
-  auto sg_local_m_coord = cutlass::get_sub_group_id() / ATOM_N;
   int sg_local_id = cutlass::get_sub_group_local_id();
   int n_sg_start = sg_local_n_coord * SG_N;
-  int m_sg_start = sg_local_m_coord * SG_M;
-  int m_tile_start = wg_m * tile_m;
   int group_num = get<1>(A.shape()) / group_size;
 
   // Group-local accumulator: same fragment shape as `tCrC`, cleared at
@@ -278,13 +424,17 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
     copy(copy_a, tAgA(_, _, _, k_tile), tArA);
     copy(copy_b, tBgB(_, _, _, k_tile), tBrB);
 
-    // Group-boundary scale reload. Same math as the INT8 per-group
-    // path: `tile_k` is expressed in element units (nibbles), not
-    // bytes, so `k_tile * tile_k` is the reduction position in
-    // *element* space and the modulo test against `group_size` matches
-    // the scale-tensor layout `[E, N, K/group_size]` unchanged.
-    if (k_tile * tile_k % group_size == 0) {
-      int group_idx = (k_tile * tile_k) / group_size;
+    bool is_group_start;
+    int group_idx;
+    if constexpr (TileAlignedGroup) {
+      is_group_start = k_tile % tiles_per_group == 0;
+      group_idx = k_tile / tiles_per_group;
+    } else {
+      is_group_start = k_tile * tile_k % group_size == 0;
+      group_idx = (k_tile * tile_k) / group_size;
+    }
+
+    if (is_group_start) {
       CUTLASS_PRAGMA_UNROLL
       for (int sn = 0; sn < sg_n_strides; ++sn) {
         int sg_local_n = sn * sg_local_range + sg_local_id;
@@ -324,11 +474,14 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
     // is applied ONCE at the end of the group in the fold block below.
     cute::gemm(mma, tCrA, tCrB, tCrC_group);
 
-    // Group-boundary fold. Fires when either (a) the NEXT k_tile would
-    // start a new scale group, or (b) we've reached the last k_tile of
-    // the K reduction (tail-group protection).
-    const bool is_group_end = (((k_tile + 1) * tile_k) % group_size == 0) ||
-                              (k_tile + 1 == k_tile_count);
+    bool is_group_end;
+    if constexpr (TileAlignedGroup) {
+      is_group_end = ((k_tile + 1) % tiles_per_group == 0) ||
+                     (k_tile + 1 == k_tile_count);
+    } else {
+      is_group_end = (((k_tile + 1) * tile_k) % group_size == 0) ||
+                     (k_tile + 1 == k_tile_count);
+    }
     if (is_group_end) {
       CUTLASS_PRAGMA_UNROLL
       for (int sn = 0; sn < sg_n_strides; ++sn) {
@@ -388,9 +541,20 @@ CUTE_DEVICE void DenseWoqS4GEMM(const ElementA* Activations,
                                                         gemm_n);
   auto tile_coord = make_coord(wg_m, wg_n, _, 0);
 
-  dense_gemm_s4_pergroup<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD,
-                       GroupSize>(A_tensor, B_tensor, Scales, Bias,
-                                  D_tensor, tile_coord, mma);
+  if (gemm_k == GroupSize) {
+    dense_gemm_s4_single_group<GmemTiledCopyA, GmemTiledCopyB,
+                               GmemTiledCopyD>(A_tensor, B_tensor, Scales,
+                                               Bias, D_tensor, tile_coord,
+                                               mma);
+  } else if constexpr (GroupSize % 32 == 0) {
+    dense_gemm_s4_pergroup<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD,
+                           GroupSize, true>(A_tensor, B_tensor, Scales, Bias,
+                                            D_tensor, tile_coord, mma);
+  } else {
+    dense_gemm_s4_pergroup<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD,
+                           GroupSize, false>(A_tensor, B_tensor, Scales, Bias,
+                                             D_tensor, tile_coord, mma);
+  }
 }
 
 template <char layoutA, char layoutB, class policy, int GroupSize,
