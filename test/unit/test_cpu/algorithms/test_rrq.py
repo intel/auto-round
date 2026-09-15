@@ -39,6 +39,7 @@ from auto_round.algorithms.quantization.rrq.quantizer import RRQPlaneWrapper, RR
 from auto_round.data_type.int import quant_tensor_rtn_sym
 from auto_round.export.export_to_autoround.export_to_rrq import (
     RRQ_QUANT_METHOD,
+    RRQ_PACKING_FORMAT,
     build_rrq_quantization_config,
     save_quantized_rrq,
 )
@@ -481,6 +482,7 @@ class TestRRQConfigBuilder:
     def test_config_fields(self):
         cfg = build_rrq_quantization_config(num_planes=4, group_size=128, sym=False)
         assert cfg["quant_method"] == RRQ_QUANT_METHOD
+        assert cfg["packing_format"] == RRQ_PACKING_FORMAT
         assert cfg["format_version"] == 1
         assert cfg["bits"] == 2
         assert cfg["base_bits"] == 2
@@ -576,19 +578,21 @@ class TestRRQSave:
 
         assert model.config.quantization_config is not None
         assert model.config.quantization_config["quant_method"] == RRQ_QUANT_METHOD
+        assert model.config.quantization_config["packing_format"] == RRQ_PACKING_FORMAT
         assert model.config.quantization_config["total_planes"] == 4
 
 
 class TestRRQValidation:
     """Tests for the base/residual config validation in load_rrq_model."""
 
-    def _residual_config(self, bits=2, group_size=128, sym=False, method=RRQ_QUANT_METHOD):
+    def _residual_config(self, bits=2, group_size=128, sym=False, method=RRQ_QUANT_METHOD, packing_format=RRQ_PACKING_FORMAT):
         return {
             "quantization_config": {
                 "bits": bits,
                 "group_size": group_size,
                 "sym": sym,
                 "quant_method": method,
+                "packing_format": packing_format,
                 "total_planes": 4,
             }
         }
@@ -629,8 +633,16 @@ class TestRRQValidation:
         from auto_round.inference.rrq_model import _validate_base_matches_residual
 
         base = {"quantization_config": {"bits": 2, "group_size": 128, "sym": False}}
-        residual = self._residual_config(bits=2, group_size=128, sym=False, method="auto-round")
+        residual = self._residual_config(bits=2, group_size=128, sym=False, method="gptq")
         with pytest.raises(ValueError, match="quant_method"):
+            _validate_base_matches_residual(base, residual)
+
+    def test_wrong_packing_format(self):
+        from auto_round.inference.rrq_model import _validate_base_matches_residual
+
+        base = {"quantization_config": {"bits": 2, "group_size": 128, "sym": False}}
+        residual = self._residual_config(bits=2, group_size=128, sym=False, packing_format="auto_round")
+        with pytest.raises(ValueError, match="packing_format"):
             _validate_base_matches_residual(base, residual)
 
 
