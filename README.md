@@ -47,6 +47,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 * [2026/06] **Community adoption update.** AutoRound is now fully integrated into vLLM-Omni  [*vLLM blog*](https://vllm.ai/blog/2026-06-02-vllm-omni-autoround), following its adoption by Transformers, vLLM, and SGLang. See the [*vLLM blog*](https://vllm.ai/blog/2026-06-02-vllm-omni-autoround).
 
+* [2026/05] We provide **free** devices for quantization; please visit [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for more details.
 
 * [2025/12] The **SignRoundV2** paper is available. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 

@@ -111,10 +111,9 @@ class QDQTool:
 
     def resolve_quantizer(self, params: dict):
         """Create one configured quantizer to reuse throughout a weight search."""
-        use_optimized_init = self.use_v2_scale_search and params["sym"] and not params["disable_opt_rtn"]
         return create_quantizer(
             {**params, "scale_dtype": torch.float32},
-            disable_opt_rtn=not use_optimized_init,
+            disable_opt_rtn=params["disable_opt_rtn"],
         )
 
     # ── the unified QDQ for AWQ search ──────────────────────

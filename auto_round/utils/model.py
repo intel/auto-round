@@ -2152,7 +2152,9 @@ def set_amax_for_uncalibrated_experts(
                     )
             return uncalibrated_experts
         # Flatten all tensors to 1D before concatenation
-        flat_values = [t.reshape(-1) for t in amax_values]
+        device = amax_values[0].device
+        dtype = amax_values[0].dtype
+        flat_values = [t.reshape(-1).to(device=device, dtype=dtype) for t in amax_values]
         all_values = torch.cat(flat_values)
         set_amax_value = torch.max(all_values)
         set_amax_value = set_amax_value.unsqueeze(0) if set_amax_value.dim() == 0 else set_amax_value

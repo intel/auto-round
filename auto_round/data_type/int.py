@@ -534,9 +534,10 @@ class _IntWeightQuantizer:
         if result.scale is None:
             raise ValueError("INT weight result was not materialized")
         module.weight.data.copy_(result.weight)
-        module.scale = result.scale.reshape(result.weight.shape[0], -1).cpu()
+        rows = result.logical_rows or result.weight.shape[0]
+        module.scale = result.scale.reshape(rows, -1).cpu()
         module.zp = (
-            result.zero_point.reshape(result.weight.shape[0], -1).cpu()
+            result.zero_point.reshape(rows, -1).cpu()
             if isinstance(result.zero_point, torch.Tensor)
             else result.zero_point
         )

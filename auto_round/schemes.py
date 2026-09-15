@@ -769,7 +769,7 @@ NVFP4 = QuantizationScheme.from_dict(
         "act_data_type": "nv_fp4_with_static_gs",
         "act_group_size": 16,
         "act_sym": True,
-        "act_dynamic": False,
+        "act_dynamic": True,
     }
 )
 

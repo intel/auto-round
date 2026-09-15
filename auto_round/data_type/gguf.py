@@ -1135,7 +1135,7 @@ class _GGUFWeightQuantizer:
         if result.scale is None:
             raise ValueError("GGUF weight result was not materialized")
         module.weight.data.copy_(result.weight)
-        rows = result.weight.shape[0]
+        rows = result.logical_rows or result.weight.shape[0]
 
         def set_values(values, primary):
             for key, value in values.items():

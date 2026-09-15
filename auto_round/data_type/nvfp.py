@@ -500,7 +500,8 @@ class _NVFPWeightQuantizer:
         if result.scale is None:
             raise ValueError("NVFP weight result was not materialized")
         module.weight.data.copy_(result.weight)
-        module.scale = result.scale.reshape(result.weight.shape[0], -1).cpu()
+        rows = result.logical_rows or result.weight.shape[0]
+        module.scale = result.scale.reshape(rows, -1).cpu()
         module.zp = None
         if result.metadata is not None:
             module.weight_global_scale = result.metadata.cpu()

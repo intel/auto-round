@@ -41,6 +41,20 @@ def test_integer_lifecycle_matches_primitive_and_materializes_payload():
     assert torch.equal(actual, expected)
 
 
+def test_write_back_keeps_conv1d_scale_indexed_by_output_channels():
+    """Conv1D stores a transposed weight, but its scale stays per output channel."""
+    weight = torch.tensor([[1.0, -0.75, 0.25, -0.5], [-1.0, 0.75, -0.25, 0.5]], dtype=torch.float32)
+    layer = torch.nn.Module()
+    layer.weight = torch.nn.Parameter(torch.empty(4, 2))
+    quantizer = create_quantizer(_weight_config("int", 4, 4), disable_opt_rtn=True)
+    quantizer.initialize(weight)
+
+    quantizer.write_back(layer, weight, transpose=True)
+
+    assert layer.weight.shape == (4, 2)
+    assert layer.scale.shape == (2, 1)
+
+
 def test_fp8_format_selection_does_not_turn_e5m2_into_block_e4m3():
     weight = torch.randn(16, 32)
     quantizer = create_quantizer(_weight_config("fp8_e5m2", 8, (8, 16)), iters=1)

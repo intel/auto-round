@@ -311,6 +311,8 @@ _ENTRY_KWARG_OWNERS = {
     "format": "route",
     "dataset": "base",
     "scale_dtype": "compressor",
+    "ignore_layers": "compressor",
+    "quant_lm_head": "compressor",
     "model_dtype": "base",
     "trust_remote_code": "base",
     "amp": "base",

@@ -435,8 +435,9 @@ class _FP8WeightQuantizer:
         if result.scale is None:
             raise ValueError("FP8 weight result was not materialized")
         scale = result.scale
-        if result.metadata == "row" and scale.numel() % result.weight.shape[0] == 0:
-            scale = scale.reshape(result.weight.shape[0], -1)
+        rows = result.logical_rows or result.weight.shape[0]
+        if result.metadata == "row" and scale.numel() % rows == 0:
+            scale = scale.reshape(rows, -1)
         module.weight.data.copy_(result.weight)
         module.scale = scale.cpu()
         module.zp = result.zero_point

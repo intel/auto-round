@@ -179,14 +179,14 @@ class TestPatchWrapperLinearIdempotency:
 
         # Call the patched _qdq_act on a wrapper
         wrapper = _make_wrapper_linear()
-        # Replace the wrapper's act_quant_func with a spy
-        wrapper.act_quant_func = MagicMock(return_value=(torch.zeros(1, 8), None, None))
+        # Activation QDQ is now owned by the datatype quantizer.
+        wrapper.activation_quantizer.qdq_with_scale = MagicMock(return_value=(torch.zeros(1, 8), None, None))
         x = torch.ones(1, 8)
         act_min = torch.tensor(1.0)
         act_max = torch.tensor(1.0)
-        wrapper._qdq_act(x, act_min_scale=act_min, act_max_scale=act_max)
+        wrapper._qdq_act(x, act_min_scale=act_min, act_max_scale=act_max, act_max=act_max)
         # The mock should have been called with x * 2
-        called_args = wrapper.act_quant_func.call_args[0]
+        called_args = wrapper.activation_quantizer.qdq_with_scale.call_args[0]
         assert torch.equal(called_args[0], x * 2.0)
 
     def test_qdq_weight_falls_through_for_high_bits(self):

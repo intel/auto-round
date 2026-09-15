@@ -148,6 +148,9 @@ class WeightQuantizationResult:
     scale: torch.Tensor | dict[str, torch.Tensor] | None = None
     zero_point: torch.Tensor | dict[str, torch.Tensor] | int | float | None = None
     metadata: object | None = None
+    # Conv1D weights are transposed before export.  Keep the original output
+    # dimension so per-output-channel tensors retain their intended layout.
+    logical_rows: int | None = None
 
 
 class DataTypeQuantizer:
@@ -197,8 +200,19 @@ class DataTypeQuantizer:
             tunables={**self.parameters, **parameters},
             materialize=True,
         )
+        logical_rows = result.weight.shape[0]
         if transpose:
-            result = WeightQuantizationResult(result.weight.t(), result.scale, result.zero_point, result.metadata)
+            result = WeightQuantizationResult(
+                result.weight.t(), result.scale, result.zero_point, result.metadata, logical_rows
+            )
+        if result.weight.device != layer.weight.device:
+            result = WeightQuantizationResult(
+                result.weight.to(layer.weight.device),
+                result.scale,
+                result.zero_point,
+                result.metadata,
+                result.logical_rows,
+            )
         self._apply_result(layer, result)
 
     def _ensure_initialized(self) -> None:

@@ -105,10 +105,10 @@ class WrapperLinear(torch.nn.Module):
         self.enable_torch_compile = enable_torch_compile
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
-        # Observation owns one activation quantizer per original layer.  Transfer
-        # its cache only after this wrapper owns the original module, so a failed
-        # earlier construction leaves the cache available to the caller.
-        self.activation_quantizer = self.orig_layer.__dict__.pop("_ar_activation_quantizer", None)
+        # Observation may have cached the quantizer on the original layer.  Do
+        # not consume it until wrapper initialization has completed successfully.
+        cached_activation_quantizer = getattr(self.orig_layer, "_ar_activation_quantizer", None)
+        self.activation_quantizer = cached_activation_quantizer
         if self.enable_act_quant and self.activation_quantizer is None:
             self.activation_quantizer = activation_quantizer_for_layer(orig_layer)
         self.weight_global_scale = getattr(self.orig_layer, "weight_global_scale", None)
@@ -117,6 +117,8 @@ class WrapperLinear(torch.nn.Module):
         else:
             self.q_scale_thresh = 1e-5
         self._init_tuning_params_and_quant_func()
+        if cached_activation_quantizer is not None:
+            self.orig_layer.__dict__.pop("_ar_activation_quantizer", None)
         if deepspeed_exists:
             if type(self.orig_layer) in (torch.nn.Linear, LinearLayer):
                 self.orig_forward = self.linear_forward

@@ -1015,6 +1015,14 @@ class TestAWQUseV2ScaleSearch:
         q._qdq_tool.configure(compressor)
 
         assert q._qdq_tool.disable_opt_rtn is True
+        params = {
+            "bits": 4,
+            "group_size": 128,
+            "sym": True,
+            "data_type": "int",
+            "disable_opt_rtn": True,
+        }
+        assert q._qdq_tool.resolve_quantizer(params)._mode == "rtn"
 
         compressor = self._make_compressor(self._signroundv2_config(data_type="mx_fp"))
 

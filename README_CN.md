@@ -49,6 +49,7 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 
 * [2026/06] **vLLM-Omni** 现已完全集成 AutoRound: [*vLLM 博客*](https://vllm.ai/blog/2026-06-02-vllm-omni-autoround)
 
+* [2026/05] 我们提供**免费**的硬件资源进行模型量化。更多详情请访问 [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard)。
 
 * [2026/05] 现已支持**免模型架构量化**模式, `auto-round-rtn` 现在会默认启用免模型方式: [文档](https://github.com/intel/auto-round/blob/main/docs/step_by_step_CN.md#%E5%85%8D%E6%A8%A1%E5%9E%8B%E6%9E%B6%E6%9E%84%E9%87%8F%E5%8C%96%E6%A8%A1%E5%BC%8F).
 
