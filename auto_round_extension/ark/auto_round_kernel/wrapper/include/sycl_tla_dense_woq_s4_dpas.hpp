@@ -97,6 +97,18 @@ class dpas_w4a16_dense_policy_m_4 : public dpas_policy_base {
   using SGLayout = Layout<Shape<_1, _4, _1>, Stride<_4, _1, _0>>;
 };
 
+class dpas_w4a16_dense_policy_m_4_n128 : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_4, _128, _32>;
+  using SGLayout = Layout<Shape<_1, _8, _1>, Stride<_8, _1, _0>>;
+};
+
+class dpas_w4a16_dense_policy_m_8_n128 : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_8, _128, _32>;
+  using SGLayout = Layout<Shape<_1, _8, _1>, Stride<_8, _1, _0>>;
+};
+
 class dpas_w4a16_dense_policy_m_16 : public dpas_policy_base {
  public:
   using WGTile = Shape<_16, _128, _32>;
@@ -109,9 +121,21 @@ class dpas_w4a16_dense_policy_m_32 : public dpas_policy_base {
   using SGLayout = Layout<Shape<_1, _8, _1>, Stride<_8, _1, _0>>;
 };
 
+class dpas_w4a16_dense_policy_m_32_n256 : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_32, _256, _32>;
+  using SGLayout = Layout<Shape<_1, _8, _1>, Stride<_8, _1, _0>>;
+};
+
 class dpas_w4a16_dense_policy_m_64 : public dpas_policy_base {
  public:
   using WGTile = Shape<_64, _128, _32>;
+  using SGLayout = Layout<Shape<_2, _8, _1>, Stride<_8, _1, _0>>;
+};
+
+class dpas_w4a16_dense_policy_m_64_n256 : public dpas_policy_base {
+ public:
+  using WGTile = Shape<_64, _256, _32>;
   using SGLayout = Layout<Shape<_2, _8, _1>, Stride<_8, _1, _0>>;
 };
 
@@ -131,7 +155,7 @@ inline bool is_supported_group_size(int group_size) {
 
 template <typename ElementA, typename ElementB, typename ElementS,
           typename ElementBI, typename ElementD, char layoutA, char layoutB,
-          class policy, int GroupSize>
+          class policy, int GroupSize, bool ScaleGroupMajor>
 class DenseWoqS4DpasName;
 
 template <typename T, char LayoutKind>
@@ -291,9 +315,9 @@ CUTE_DEVICE void dense_gemm_s4_single_group(
 }
 
 template <class GmemTiledCopyA, class GmemTiledCopyB, class GmemTiledCopyC,
-          int GroupSize, bool TileAlignedGroup, class ATensor,
-          class BTensor, class DTensor, class TiledMMA, typename ElementS,
-          typename ElementBI>
+          int GroupSize, bool TileAlignedGroup, bool ScaleGroupMajor,
+          class ATensor, class BTensor, class DTensor, class TiledMMA,
+          typename ElementS, typename ElementBI>
 CUTE_DEVICE void dense_gemm_s4_pergroup(
     ATensor const& A,   // (M,K)   -- ElementA (bf16/fp16)
     BTensor const& B,   // (N,K)   -- cutlass::uint4b_t (packed nibbles)
@@ -359,7 +383,8 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
   // On-hardware perf tuning may want to grow `prefetch_dist` on the
   // packed path since the B stream is half the bandwidth.
   const int prefetch_dist = 3;
-  const int prefetch_dist_scale = 3;
+  constexpr int prefetch_dist_scale =
+      ScaleGroupMajor ? (GroupSize == 32 ? 5 : 4) : 3;
   constexpr auto barrier_scope = ScopeWorkgroup;
   int k_tile_count = ceil_div(shape<1>(A), get<2>(wg_tile));
   int k_tile_prefetch = 0;
@@ -383,6 +408,7 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
   int sg_local_id = cutlass::get_sub_group_local_id();
   int n_sg_start = sg_local_n_coord * SG_N;
   int group_num = get<1>(A.shape()) / group_size;
+  int gemm_n = shape<0>(B);
 
   // Group-local accumulator: same fragment shape as `tCrC`, cleared at
   // every scale-group boundary and folded into `tCrC` with a per-N-column
@@ -404,17 +430,31 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
   CUTLASS_PRAGMA_UNROLL
   for (int pg = 0; pg < prefetch_dist_scale; ++pg) {
     if (pg * group_size < shape<1>(A)) {
-      auto next_scales_tensor = make_tensor(
-          make_gmem_ptr(reinterpret_cast<const ElementS*>(
-              Scales + (n_tile_start + n_sg_start) * group_num + pg)),
-          make_layout(make_shape(Int<SG_N>{}, Int<1>{}),
-                      make_stride(group_num, Int<1>{})));
-      auto prefetch_scales = make_block_2d_prefetch<1>(
-          make_shape(Int<SG_N>{}, Int<1>{}), next_scales_tensor);
-      auto thr_prefetch_scales = prefetch_scales.get_slice(sg_local_id);
-      auto pSgS = thr_prefetch_scales.partition_S(
-          make_identity_tensor(make_shape(Int<SG_N>{}, Int<1>{})));
-      prefetch(prefetch_scales, pSgS(_, 0, 0));
+      if constexpr (ScaleGroupMajor) {
+        auto next_scales_tensor = make_tensor(
+            make_gmem_ptr(reinterpret_cast<const ElementS*>(
+                Scales + pg * gemm_n + n_tile_start + n_sg_start)),
+            make_layout(make_shape(Int<SG_N>{}, Int<1>{}),
+                        make_stride(Int<1>{}, gemm_n)));
+        auto prefetch_scales = make_block_2d_prefetch<1>(
+            make_shape(Int<SG_N>{}, Int<1>{}), next_scales_tensor);
+        auto thr_prefetch_scales = prefetch_scales.get_slice(sg_local_id);
+        auto pSgS = thr_prefetch_scales.partition_S(
+            make_identity_tensor(make_shape(Int<SG_N>{}, Int<1>{})));
+        prefetch(prefetch_scales, pSgS(_, 0, 0));
+      } else {
+        auto next_scales_tensor = make_tensor(
+            make_gmem_ptr(reinterpret_cast<const ElementS*>(
+                Scales + (n_tile_start + n_sg_start) * group_num + pg)),
+            make_layout(make_shape(Int<SG_N>{}, Int<1>{}),
+                        make_stride(group_num, Int<1>{})));
+        auto prefetch_scales = make_block_2d_prefetch<1>(
+            make_shape(Int<SG_N>{}, Int<1>{}), next_scales_tensor);
+        auto thr_prefetch_scales = prefetch_scales.get_slice(sg_local_id);
+        auto pSgS = thr_prefetch_scales.partition_S(
+            make_identity_tensor(make_shape(Int<SG_N>{}, Int<1>{})));
+        prefetch(prefetch_scales, pSgS(_, 0, 0));
+      }
     }
   }
 
@@ -438,23 +478,43 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
       CUTLASS_PRAGMA_UNROLL
       for (int sn = 0; sn < sg_n_strides; ++sn) {
         int sg_local_n = sn * sg_local_range + sg_local_id;
-        sg_scale[sn] = static_cast<float>(
+        if constexpr (ScaleGroupMajor) {
+          sg_scale[sn] = static_cast<float>(
+            Scales[group_idx * gemm_n + n_tile_start + n_sg_start + sg_local_n]);
+        } else {
+          sg_scale[sn] = static_cast<float>(
             Scales[(n_tile_start + n_sg_start + sg_local_n) * group_num + group_idx]);
+        }
       }
 
       if ((group_idx + prefetch_dist_scale) * group_size < shape<1>(A)) {
-        auto next_scales_tensor = make_tensor(
-            make_gmem_ptr(reinterpret_cast<const ElementS*>(
-                Scales + (n_tile_start + n_sg_start) * group_num +
-                group_idx + prefetch_dist_scale)),
-            make_layout(make_shape(Int<SG_N>{}, Int<1>{}),
-                        make_stride(group_num, Int<1>{})));
-        auto prefetch_scales = make_block_2d_prefetch<1>(
-            make_shape(Int<SG_N>{}, Int<1>{}), next_scales_tensor);
-        auto thr_prefetch_scales = prefetch_scales.get_slice(sg_local_id);
-        auto pSgS = thr_prefetch_scales.partition_S(
-            make_identity_tensor(make_shape(Int<SG_N>{}, Int<1>{})));
-        prefetch(prefetch_scales, pSgS(_, 0, 0));
+        if constexpr (ScaleGroupMajor) {
+          auto next_scales_tensor = make_tensor(
+              make_gmem_ptr(reinterpret_cast<const ElementS*>(
+                  Scales + (group_idx + prefetch_dist_scale) * gemm_n +
+                  n_tile_start + n_sg_start)),
+              make_layout(make_shape(Int<SG_N>{}, Int<1>{}),
+                          make_stride(Int<1>{}, gemm_n)));
+          auto prefetch_scales = make_block_2d_prefetch<1>(
+              make_shape(Int<SG_N>{}, Int<1>{}), next_scales_tensor);
+          auto thr_prefetch_scales = prefetch_scales.get_slice(sg_local_id);
+          auto pSgS = thr_prefetch_scales.partition_S(
+              make_identity_tensor(make_shape(Int<SG_N>{}, Int<1>{})));
+          prefetch(prefetch_scales, pSgS(_, 0, 0));
+        } else {
+          auto next_scales_tensor = make_tensor(
+              make_gmem_ptr(reinterpret_cast<const ElementS*>(
+                  Scales + (n_tile_start + n_sg_start) * group_num +
+                  group_idx + prefetch_dist_scale)),
+              make_layout(make_shape(Int<SG_N>{}, Int<1>{}),
+                          make_stride(group_num, Int<1>{})));
+          auto prefetch_scales = make_block_2d_prefetch<1>(
+              make_shape(Int<SG_N>{}, Int<1>{}), next_scales_tensor);
+          auto thr_prefetch_scales = prefetch_scales.get_slice(sg_local_id);
+          auto pSgS = thr_prefetch_scales.partition_S(
+              make_identity_tensor(make_shape(Int<SG_N>{}, Int<1>{})));
+          prefetch(prefetch_scales, pSgS(_, 0, 0));
+        }
       }
     }
 
@@ -516,8 +576,9 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
 
 template <class GmemTiledCopyA, class GmemTiledCopyB, class GmemTiledCopyD,
           char LayoutKindA, char LayoutKindB, char LayoutKindD,
-          class TiledMMA, int GroupSize, typename ElementA, typename ElementB,
-          typename ElementS, typename ElementBI, typename ElementD>
+          class TiledMMA, int GroupSize, bool ScaleGroupMajor,
+          typename ElementA, typename ElementB, typename ElementS,
+          typename ElementBI, typename ElementD>
 CUTE_DEVICE void DenseWoqS4GEMM(const ElementA* Activations,
                                 const ElementB* Weights,
                                 const ElementS* Scales,
@@ -548,18 +609,18 @@ CUTE_DEVICE void DenseWoqS4GEMM(const ElementA* Activations,
                                                mma);
   } else if constexpr (GroupSize % 32 == 0) {
     dense_gemm_s4_pergroup<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD,
-                           GroupSize, true>(A_tensor, B_tensor, Scales, Bias,
-                                            D_tensor, tile_coord, mma);
+                           GroupSize, true, ScaleGroupMajor>(
+        A_tensor, B_tensor, Scales, Bias, D_tensor, tile_coord, mma);
   } else {
     dense_gemm_s4_pergroup<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD,
-                           GroupSize, false>(A_tensor, B_tensor, Scales, Bias,
-                                             D_tensor, tile_coord, mma);
+                           GroupSize, false, ScaleGroupMajor>(
+        A_tensor, B_tensor, Scales, Bias, D_tensor, tile_coord, mma);
   }
 }
 
 template <char layoutA, char layoutB, class policy, int GroupSize,
-          typename ElementA, typename ElementB, typename ElementS,
-          typename ElementBI, typename ElementD>
+          bool ScaleGroupMajor, typename ElementA, typename ElementB,
+          typename ElementS, typename ElementBI, typename ElementD>
 void DenseWoqS4GEMMLauncherGroup(sycl::queue& stream,
                                  const ElementA* activations,
                                  const ElementB* weights,
@@ -604,10 +665,12 @@ void DenseWoqS4GEMMLauncherGroup(sycl::queue& stream,
   auto event = stream.submit([&](sycl::handler& cgh) {
     cgh.parallel_for<DenseWoqS4DpasName<ElementA, ElementB, ElementS,
                                         ElementBI, ElementD, layoutA,
-                                        layoutB, policy, GroupSize>>(
+                                        layoutB, policy, GroupSize,
+                                        ScaleGroupMajor>>(
         sycl::nd_range<3>{groups * local, local}, kernel_props, [=](auto) {
           DenseWoqS4GEMM<GmemTiledCopyA, GmemTiledCopyB, GmemTiledCopyD,
-                         layoutA, layoutB, 'R', MMA, GroupSize>(
+                         layoutA, layoutB, 'R', MMA, GroupSize,
+                         ScaleGroupMajor>(
               activations, weights, scales, bias, outputs, mma, gemm_m, gemm_n,
               gemm_k);
         });
@@ -618,8 +681,8 @@ void DenseWoqS4GEMMLauncherGroup(sycl::queue& stream,
 }
 
 template <int GroupSize, char layoutA, char layoutB, class policy,
-          typename ElementA, typename ElementB, typename ElementS,
-          typename ElementBI, typename ElementD>
+          bool ScaleGroupMajor, typename ElementA, typename ElementB,
+          typename ElementS, typename ElementBI, typename ElementD>
 bool DenseWoqS4GEMMLauncherDispatch(sycl::queue& stream,
                                     const ElementA* activations,
                                     const ElementB* weights,
@@ -632,23 +695,24 @@ bool DenseWoqS4GEMMLauncherDispatch(sycl::queue& stream,
                                     const int group_size,
                                     bool wait) {
   if (group_size == GroupSize) {
-    DenseWoqS4GEMMLauncherGroup<layoutA, layoutB, policy, GroupSize>(
+    DenseWoqS4GEMMLauncherGroup<layoutA, layoutB, policy, GroupSize,
+                                ScaleGroupMajor>(
         stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
         gemm_k, wait);
     return true;
   }
   if constexpr (GroupSize < kMaxGroupSize) {
     return DenseWoqS4GEMMLauncherDispatch<GroupSize * 2, layoutA, layoutB,
-                                          policy>(
+                                          policy, ScaleGroupMajor>(
         stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
         gemm_k, group_size, wait);
   }
   return false;
 }
 
-template <char layoutA, char layoutB, class policy, typename ElementA,
-          typename ElementB, typename ElementS, typename ElementBI,
-          typename ElementD>
+template <char layoutA, char layoutB, class policy, bool ScaleGroupMajor,
+          typename ElementA, typename ElementB, typename ElementS,
+          typename ElementBI, typename ElementD>
 void DenseWoqS4GEMMLauncher(sycl::queue& stream,
                             const ElementA* activations,
                             const ElementB* weights,
@@ -662,7 +726,7 @@ void DenseWoqS4GEMMLauncher(sycl::queue& stream,
                             bool wait = true) {
   if (!is_supported_group_size(group_size) ||
       !DenseWoqS4GEMMLauncherDispatch<kMinGroupSize, layoutA, layoutB,
-                                      policy>(
+                                      policy, ScaleGroupMajor>(
           stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
           gemm_k, group_size, wait)) {
     throw std::runtime_error("dense_woq_s4_dpas: unsupported group size");

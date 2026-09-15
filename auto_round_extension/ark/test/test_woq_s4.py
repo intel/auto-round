@@ -25,6 +25,22 @@ ASYM = False
 WARMUP_LIMIT = 1000
 
 
+def _print_config_types():
+    config_values = {
+        "M_VALUES": M_VALUES,
+        "N": N,
+        "K": K,
+        "BLOCKSIZE": BLOCKSIZE,
+        "DTYPE": DTYPE,
+        "DEVICE": DEVICE,
+        "COMPUTE_TYPE": COMPUTE_TYPE,
+        "WEIGHT_TYPE": WEIGHT_TYPE,
+        "SCALE_TYPE": SCALE_TYPE,
+    }
+    print("\n=== Config types ===")
+    for name, value in config_values.items():
+        print(f"{name}: {value}")
+
 def _sync_xpu():
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         torch.xpu.synchronize()
@@ -274,5 +290,6 @@ def run_torch_int4_gemm_w4a16():
 
 
 if __name__ == "__main__":
+    _print_config_types()
     run_ark_woqgemm()
     run_torch_int4_gemm_w4a16()
