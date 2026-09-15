@@ -41,6 +41,7 @@ def _print_config_types():
     for name, value in config_values.items():
         print(f"{name}: {value}")
 
+
 def _sync_xpu():
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         torch.xpu.synchronize()
