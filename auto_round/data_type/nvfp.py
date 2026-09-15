@@ -393,40 +393,6 @@ def _scale_coeffs_from_neighbor_scales(target_scale: torch.Tensor, base_scale: t
     return torch.where(base_scale != 0, target_scale * get_reciprocal(base_scale), torch.ones_like(target_scale))
 
 
-def _log_non_default_scale_selection(init_scale, log_scale_selection_label=None):
-    if not log_scale_selection_label or not isinstance(init_scale, torch.Tensor):
-        return
-
-    init_scale = init_scale.detach().to(torch.float32)
-    non_default_mask = ~torch.isclose(init_scale, torch.ones_like(init_scale), rtol=0.0, atol=1e-9)
-    if not torch.any(non_default_mask):
-        return
-
-    selected = init_scale[non_default_mask]
-    unique_values = torch.unique(selected).cpu().tolist()
-    distribution = []
-    total_groups = int(init_scale.numel())
-    changed_groups = int(non_default_mask.sum().item())
-    changed_ratio = changed_groups / total_groups * 100
-    for value in unique_values:
-        count = int(torch.sum(torch.isclose(selected, torch.tensor(value), rtol=0.0, atol=1e-9)).item())
-        distribution.append(f"{value:.3f}: {count / total_groups * 100:.2f}% of all groups")
-    preview = ", ".join(distribution)
-
-    logger.info(
-        "Model-free NVFP4 scale search selected non-1.0 scale(s) for %s: %d/%d group(s, %.2f%% changed), "
-        "distribution=[%s], selected_scale_min=%.3f, selected_scale_max=%.3f, selected_scale_mean=%.3f",
-        log_scale_selection_label,
-        changed_groups,
-        total_groups,
-        changed_ratio,
-        preview,
-        float(selected.min().item()),
-        float(selected.max().item()),
-        float(selected.mean().item()),
-    )
-
-
 def search_nvfp4_scale(tensor, bits=4, qw=None, global_scale=None):
     tensor_fp32 = tensor.float()
 
@@ -530,7 +496,6 @@ def opt_rtn_nvfp4_v2(
         qw = imatrix
 
     init_scale = search_nvfp4_v2_scale(tensor, bits, group_size, qw)
-    _log_non_default_scale_selection(init_scale, kwargs.get("log_scale_selection_label"))
     tensor = revert_tensor_by_pad(tensor, orig_shape, pad_len)
     if isinstance(max_scale, torch.Tensor):
         max_scale = max_scale.view(-1).to(tensor.device)
@@ -565,7 +530,6 @@ def opt_rtn_fast_nvfp4(
         qw,
         global_scale=global_scale,
     )
-    _log_non_default_scale_selection(init_scale, kwargs.get("log_scale_selection_label"))
     tensor = revert_tensor_by_pad(tensor, orig_shape, pad_len)
     return nv_fp4_rtn(tensor, bits, group_size, v, global_scale, max_scale, init_scale=init_scale)
 
