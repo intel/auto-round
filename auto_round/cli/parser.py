@@ -108,6 +108,15 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument("--model_dtype", default=None, help="Model dtype used when loading the model.")
     rt.add_argument("--platform", default="hf", help="Model loading platform. Options: hf or model_scope.")
     rt.add_argument(
+        "--num_hidden_layers",
+        "--debug_layer_num",
+        default=None,
+        type=int,
+        help="Debug only: load only the first N decoder layers of the model. Useful for isolating and "
+        "debugging issues on very large models with a fraction of the load time and memory. The resulting "
+        "model is partial and must not be used for a real quantization run.",
+    )
+    rt.add_argument(
         "--batch_size", "--train_bs", "--bs", default=None, type=int, help="Batch size for calibration and tuning."
     )
     rt.add_argument("--seqlen", "--seq_len", default=None, type=int, help="Sequence length of the calibration samples.")
