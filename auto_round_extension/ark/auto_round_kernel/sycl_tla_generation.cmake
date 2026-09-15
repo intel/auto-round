@@ -448,6 +448,68 @@ set(MOE_SOURCE_MODE 16)
 generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_prefill_s4.cpp)
 set(MOE_SOURCE_MODE 17)
 generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_prefill_native_fp8.cpp)
+# W4A8 (int4 weights re-scaled to int8, int8 activations) prepack + GEMM.
+#
+# This used to be a single `sycl_tla_moe_w4a8.cpp`, which instantiated all 52
+# W4A8 kernels -- 12 grouped DPAS GEMMs, 14 decode GEMVs, 22 activation-quant
+# and 4 prepack kernels -- and peaked at ~4.2 GB of compiler RSS. It is now
+# fanned out the same way the S4 prefill is (see MOE_SOURCE_MODE 8): one TU per
+# variant, with the dispatcher left holding no kernels at all.
+#
+#   mode 21  dispatcher            0 kernels, cutlass-free
+#   mode 22  prefill, dtype x tile 1 DPAS kernel each  (12 TUs)
+#   mode 23  decode, dtype         7 kernels each      (2 TUs, cutlass-free)
+#   mode 24  act quant, dtype      11 kernels each     (2 TUs, cutlass-free)
+#   mode 25  prepack, dtype        2 kernels each      (2 TUs, cutlass-free)
+#
+# Only the 12 prefill TUs include the CuTe stack; the other seven take
+# `sycl_tla_moe_w4a8_kernels.hpp` / `..._helpers.hpp`, which stop at plain SYCL.
+set(MOE_SOURCE_MODE 21)
+generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_w4a8.cpp)
+
+# Prefill tile ladder: the policy names must match `W4A8PrefillTile` /
+# `moe_w4a8_prefill_select_tile` in `sycl_tla_moe_w4a8_helpers.hpp`, and the
+# function names the `prefill_*` declarations there.
+set(_w4a8_tiles m8 m64 m128 m128n256 m256n128 large)
+foreach(_w4a8_dtype IN ITEMS f16 bf16)
+  if(_w4a8_dtype STREQUAL "f16")
+    set(MOE_SCALAR_TYPE sycl::half)
+  else()
+    set(MOE_SCALAR_TYPE sycl::ext::oneapi::bfloat16)
+  endif()
+
+  set(MOE_SOURCE_MODE 22)
+  foreach(_w4a8_tile IN LISTS _w4a8_tiles)
+    if(_w4a8_tile STREQUAL "m8")
+      set(MOE_POLICY_NAME w4a8_policy_m_8)
+    elseif(_w4a8_tile STREQUAL "m64")
+      set(MOE_POLICY_NAME w4a8_policy_m_64)
+    elseif(_w4a8_tile STREQUAL "m128")
+      set(MOE_POLICY_NAME w4a8_policy_m_128)
+    elseif(_w4a8_tile STREQUAL "m128n256")
+      set(MOE_POLICY_NAME w4a8_policy_m_128_n256)
+    elseif(_w4a8_tile STREQUAL "m256n128")
+      set(MOE_POLICY_NAME w4a8_policy_m_256_n128)
+    else()
+      set(MOE_POLICY_NAME w4a8_policy_large)
+    endif()
+    set(MOE_FUNCTION_NAME prefill_${_w4a8_dtype}_${_w4a8_tile})
+    generate_sycl_tla_source(sycl_tla_moe.cpp.in
+                             sycl_tla_moe_w4a8_prefill_${_w4a8_dtype}_${_w4a8_tile}.cpp)
+  endforeach()
+
+  set(MOE_SOURCE_MODE 23)
+  set(MOE_FUNCTION_NAME decode_${_w4a8_dtype})
+  generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_w4a8_decode_${_w4a8_dtype}.cpp)
+
+  set(MOE_SOURCE_MODE 24)
+  set(MOE_FUNCTION_NAME quant_${_w4a8_dtype})
+  generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_w4a8_quant_${_w4a8_dtype}.cpp)
+
+  set(MOE_SOURCE_MODE 25)
+  set(MOE_FUNCTION_NAME prepack_${_w4a8_dtype})
+  generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_w4a8_prepack_${_w4a8_dtype}.cpp)
+endforeach()
 
 foreach(_moe_dtype IN ITEMS f16 bf16)
   if(_moe_dtype STREQUAL "f16")
