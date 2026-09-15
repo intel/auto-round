@@ -20,6 +20,18 @@
 // accumulation, which is neither bit-exact with the FWHT path nor with Path A.
 // Acceptance is tolerance based: SQNR >= 15 dB, max relative error < 0.25.
 //
+// Non-finite amax is out of contract and deliberately unspecified. This path
+// reads the FP32 exponent field rather than calling ilogb, so amax = +inf gives
+// e8m0 = 253 instead of the 254 that the ilogb-based FWHT paths and the PyTorch
+// reference saturate to, and NaN fails the ``amax > 0`` test and falls through
+// as an all-zero group. The two quantizer ladders also disagree on NaN by
+// construction -- the reference initialises the magnitude index to 7 and only
+// lowers it on a threshold hit, while this one sums the comparisons, so NaN
+// lands on 0 -- which puts byte-parity on non-finite input out of reach without
+// changing the bit-exact ladder the other paths rely on. Reaching it takes an
+// already-non-finite activation: with fp16/bf16 operands the 32-term FP32
+// accumulation peaks around 1.4e11, well inside the finite range.
+//
 // This is not a bandwidth optimization: it exists for non-Sylvester matrices,
 // where the butterfly (and therefore the FWHT path) is unavailable, and it is
 // not uniformly faster than FWHT on the shapes measured so far.

@@ -68,6 +68,7 @@
 #pragma once
 
 #include <cstdint>
+#include <stdexcept>
 
 #if defined(ARK_XPU)
 #include <sycl/sycl.hpp>
@@ -523,27 +524,32 @@ class XpuMxfp4Hadamard {
         });
   }
 
-  // Runtime dim -> compile-time lane count. Every supported D gets its own
-  // fully unrolled instantiation; an unsupported one is rejected here as a
-  // backstop, the wrapper and the binding having already validated it.
+  // Runtime dim -> compile-time lane count. Total over
+  // ``is_supported_hadamard_dim``: every supported D has its own fully unrolled
+  // instantiation and anything else throws, so this never returns having
+  // written nothing. The wrapper and the binding both validate the dim first;
+  // this is the backstop that stops the two sets from drifting apart silently.
+  // A silent no-op here would leave ``out_codes`` / ``out_scale`` holding
+  // whatever the caller allocated -- no error, just wrong bytes.
   template <typename T>
-  static bool dispatch_cooperative(sycl::queue* q, const T* x, const float* hadamard, uint8_t* out_codes,
+  static void dispatch_cooperative(sycl::queue* q, const T* x, const float* hadamard, uint8_t* out_codes,
                                    uint8_t* out_scale, int64_t num_rows, int64_t hadamard_dim) {
     switch (hadamard_dim) {
       case kGroupSize * 2:
         fwht_quant_cooperative<T, 2>(q, x, hadamard, out_codes, out_scale, num_rows);
-        return true;
+        return;
       case kGroupSize * 4:
         fwht_quant_cooperative<T, 4>(q, x, hadamard, out_codes, out_scale, num_rows);
-        return true;
+        return;
       case kGroupSize * 8:
         fwht_quant_cooperative<T, 8>(q, x, hadamard, out_codes, out_scale, num_rows);
-        return true;
+        return;
       case kGroupSize * 16:
         fwht_quant_cooperative<T, 16>(q, x, hadamard, out_codes, out_scale, num_rows);
-        return true;
+        return;
       default:
-        return false;
+        throw std::invalid_argument(
+            "ark::XpuMxfp4Hadamard: hadamard_dim is not a dispatched cooperative transform size");
     }
   }
 

@@ -779,6 +779,44 @@ static void sage_dynamic_quant_v_layout(torch_ptr stream, torch_ptr input, torch
   }
 }
 
+#if defined(ARK_SYCL_TLA)
+// Scratch-pool slot for the ``[D, D]`` Hadamard staging buffer the XMX path
+// below needs in the activation dtype. ``DeviceMemoryPool`` (``utils.hpp``)
+// hands out one grow-on-demand slab per (slot, device UUID, context, queue)
+// key, reused across every later call on that queue; slots 0-10 are already
+// claimed (see the slot table on ``DeviceMemoryPool::MaxLocNum``), so this one
+// takes 11 rather than aliasing a live scratch buffer.
+constexpr size_t kHadamardStagingScratchLoc = 11;
+
+// Body of the XMX path, templated over the activation dtype
+// (``cute::half_t`` / ``cute::bfloat16_t``) so the FP16 and BF16 entry points
+// share a single implementation.
+//
+// ``h_ptr`` is the caller's FP32 Hadamard matrix; the staging buffer holds its
+// transpose in ``T``, which is the layout the ``C = A @ B^T`` GEMM needs (see
+// ``convert_hadamard_to_dtype``). Every call rewrites all ``D * D`` elements,
+// so reusing one slab across calls with different matrices is safe: the two
+// launches that touch it go to the same queue, and the extension's queues are
+// in-order (see the note in `DeviceMemoryPool::get_scratch_ptr`).
+template <typename T>
+static void xmx_hadamard_quant_impl(sycl::queue* q, torch_ptr x, const float* h_ptr, uint8_t* codes_ptr,
+                                    uint8_t* scale_ptr, int64_t total_groups) {
+  constexpr size_t kElems =
+      static_cast<size_t>(XpuMxfp4Hadamard::kHadamardDim) * static_cast<size_t>(XpuMxfp4Hadamard::kHadamardDim);
+  // The request size is a compile-time constant, so the slab is allocated on
+  // the first call for a queue and then never grows -- the pool's grow path
+  // (which frees the old slab in place) is unreachable from here.
+  auto* pool = DeviceMemoryPool::Instance();
+  auto* h_t = static_cast<T*>(pool->get_scratch_mem(sizeof(T) * kElems, kHadamardStagingScratchLoc, q));
+  if (h_t == nullptr) {
+    throw std::runtime_error("ark::mxfp4_hadamard_quant: failed to acquire the Hadamard staging buffer");
+  }
+  ark::xmx_hadamard_detail::convert_hadamard_to_dtype<T>(q, h_ptr, h_t);
+  ark::xmx_hadamard_detail::mxfp4_hadamard_quant_xmx<T>(q, reinterpret_cast<const T*>(x), h_t, codes_ptr, scale_ptr,
+                                                        total_groups);
+}
+#endif  // ARK_SYCL_TLA
+
 // Activation-only fused kernel: normalized Hadamard + MXFP4 quant.
 // x:         [num_rows, k]      FP16 or BF16
 // hadamard:  [D, D]             FP32, row major, already normalized by 1/sqrt(D)
@@ -851,19 +889,10 @@ static void mxfp4_hadamard_quant(torch_ptr stream, torch_ptr x, torch_ptr hadama
     // XMX path: H is converted to the activation dtype (lossless) and the
     // transform runs on DPAS. x (sycl bf16/half) is layout-identical to
     // cute::bfloat16_t / cute::half_t, so the pointers are reinterpreted.
-    const int h_numel = ark::XpuMxfp4Hadamard::kHadamardDim * ark::XpuMxfp4Hadamard::kHadamardDim;
     if (dtype == BTLA_DTYPE::F16) {
-      auto* h_t = sycl::malloc_device<cute::half_t>(h_numel, *q);
-      ark::xmx_hadamard_detail::convert_hadamard_to_dtype<cute::half_t>(q, h_ptr, h_t);
-      ark::xmx_hadamard_detail::mxfp4_hadamard_quant_xmx<cute::half_t>(
-          q, reinterpret_cast<const cute::half_t*>(x), h_t, codes_ptr, scale_ptr, total_groups);
-      sycl::free(h_t, *q);
+      xmx_hadamard_quant_impl<cute::half_t>(q, x, h_ptr, codes_ptr, scale_ptr, total_groups);
     } else if (dtype == BTLA_DTYPE::BF16) {
-      auto* h_t = sycl::malloc_device<cute::bfloat16_t>(h_numel, *q);
-      ark::xmx_hadamard_detail::convert_hadamard_to_dtype<cute::bfloat16_t>(q, h_ptr, h_t);
-      ark::xmx_hadamard_detail::mxfp4_hadamard_quant_xmx<cute::bfloat16_t>(
-          q, reinterpret_cast<const cute::bfloat16_t*>(x), h_t, codes_ptr, scale_ptr, total_groups);
-      sycl::free(h_t, *q);
+      xmx_hadamard_quant_impl<cute::bfloat16_t>(q, x, h_ptr, codes_ptr, scale_ptr, total_groups);
     } else {
       throw std::invalid_argument("ark::mxfp4_hadamard_quant: only FP16 and BF16 activations are supported");
     }
