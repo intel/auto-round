@@ -15,6 +15,7 @@ import pytest
 import torch
 
 from auto_round.compressors.diffusion_mixin import DiffusionMixin
+from auto_round.context.model import ModelContext
 
 
 class TestDiffusionMixinProperties:
@@ -90,15 +91,27 @@ class TestDiffusionMixinProperties:
         comp.pipeline_call_kwargs = {"height": 512, "width": 512}
         assert comp.pipeline_call_kwargs.get("height") == 512
 
-    def test_align_pipeline_dtype_preserves_only_declared_fp32_tensors(self):
+    def test_align_pipeline_dtype_preserves_only_declared_fp32_tensors(self, monkeypatch):
         protected = torch.nn.Linear(2, 2)
         protected._keep_in_fp32_modules = ["weight"]
+        with torch.no_grad():
+            protected.weight.fill_(1.001)
+        expected_weight = protected.weight.detach().clone()
         ordinary = torch.nn.Linear(2, 2)
         pipe = SimpleNamespace(components=["protected", "ordinary"], protected=protected, ordinary=ordinary)
 
+        # AMP runs before pipeline alignment; restoring FP32 afterwards is too late.
+        protected.dtype = torch.float32
+        context = SimpleNamespace(model=protected, amp=True, device="cpu")
+        device = MagicMock()
+        device.prefers_bf16.return_value = True
+        device.supports_bf16.return_value = True
+        monkeypatch.setattr("auto_round.context.model.get_ar_device", lambda _: device)
+        ModelContext._set_amp_dtype(context)
         DiffusionMixin._align_pipeline_dtype(pipe, torch.bfloat16)
 
         assert protected.weight.dtype == torch.float32
+        assert torch.equal(protected.weight, expected_weight)
         assert protected.bias.dtype == torch.bfloat16
         assert ordinary.weight.dtype == torch.bfloat16
         assert ordinary.bias.dtype == torch.bfloat16

@@ -29,6 +29,7 @@ from auto_round.logger import logger
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
 from auto_round.special_model_handler import _handle_special_model, update_module
 from auto_round.utils import (
+    cast_model_dtype,
     check_and_mark_quantized_module,
     diffusion_load_model,
     install_debug_layer_config_patch,
@@ -138,7 +139,7 @@ class ModelContext(BaseContext):
             logger.warning("force to use bf16 for quantization tuning when enabling activation quantization")
             self.amp_dtype = torch.bfloat16
             if self.model.dtype != torch.bfloat16:
-                self.model = self.model.to(torch.bfloat16)
+                self.model = cast_model_dtype(self.model, torch.bfloat16)
         else:
             logger.debug(f"using {self.model.dtype} for quantization tuning")
 
@@ -469,7 +470,7 @@ class ModelContext(BaseContext):
                 )
             self.amp_dtype = amp_dtype
         if self.model.dtype != self.amp_dtype:
-            self.model = self.model.to(self.amp_dtype)
+            self.model = cast_model_dtype(self.model, self.amp_dtype)
 
     def apply_patches(self, formats):
         """Apply format-specific model structure patches.
@@ -493,7 +494,7 @@ class ModelContext(BaseContext):
             m.global_name = n
 
         if self.amp and self.model.dtype != self.amp_dtype:
-            self.model = self.model.to(self.amp_dtype)
+            self.model = cast_model_dtype(self.model, self.amp_dtype)
 
         self._init_model = True
         self._is_initialized = True
