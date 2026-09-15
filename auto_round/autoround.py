@@ -306,6 +306,11 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
 
 
 _ENTRY_KWARG_OWNERS = {
+    "model_free": "route",
+    "disable_model_free": "route",
+    "format": "route",
+    "dataset": "base",
+    "scale_dtype": "compressor",
     "model_dtype": "base",
     "trust_remote_code": "base",
     "amp": "base",

@@ -50,9 +50,11 @@ def register_act_max_hooks(quantizer, model):
 
         if name in quantizer.layer_config:
             config = quantizer.layer_config[name]
-            act_dynamic = config.get("act_dynamic", True)
-            act_data_type = config.get("act_data_type", None)
-            act_bits = config.get("act_bits", 16)
+            module.act_dynamic = config.get("act_dynamic", True)
+            module.act_data_type = config.get("act_data_type", "int_sym")
+            module.act_bits = config.get("act_bits", 16)
+            module.act_group_size = config.get("act_group_size", quantizer.act_group_size)
+            module.act_sym = config.get("act_sym", True)
             if (
                 config["bits"] <= 8
                 and getattr(cache_activation_quantizer(module), "requires_calibration", False)

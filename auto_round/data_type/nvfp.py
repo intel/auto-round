@@ -563,10 +563,10 @@ class _NVFPActivationQuantizer:
     def observe(self, activation, current):
         if not self.requires_calibration:
             raise RuntimeError("Dynamic NVFP activation quantization does not require calibration")
-        observed = activation.detach().float().abs().max()
+        observed = activation.detach().float().abs().max().unsqueeze(0)
         return observed if current is None else torch.maximum(current.to(observed.device), observed)
 
-    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+    def qdq_with_scale(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
         if self.requires_calibration and observed_max is None:
             raise ValueError(f"{self.data_type} activation requires observed_max")
         primitive = {
@@ -578,7 +578,12 @@ class _NVFPActivationQuantizer:
         kwargs = {"bits": self.spec.bits, "group_size": self.spec.group_size, "max_scale": max_scale}
         if self.requires_calibration:
             kwargs["tensor_max"] = observed_max
-        quantized, _, _ = primitive(activation, **kwargs)
+        return primitive(activation, **kwargs)
+
+    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+        quantized, _, _ = self.qdq_with_scale(
+            activation, observed_max=observed_max, min_scale=min_scale, max_scale=max_scale
+        )
         return quantized
 
 

@@ -225,12 +225,12 @@ def _weight_spec(layer) -> WeightQuantizationSpec:
 def _activation_spec(layer) -> ActivationQuantizationSpec:
     """Extract the activation request from a resolved quantized layer."""
     return ActivationQuantizationSpec(
-        data_type=layer.act_data_type,
-        bits=layer.act_bits,
-        group_size=layer.act_group_size,
-        sym=layer.act_sym,
+        data_type=getattr(layer, "act_data_type", "int_sym"),
+        bits=getattr(layer, "act_bits", 16),
+        group_size=getattr(layer, "act_group_size", -1),
+        sym=getattr(layer, "act_sym", True),
         scale_dtype=getattr(layer, "scale_dtype", torch.float32),
-        dynamic=layer.act_dynamic,
+        dynamic=getattr(layer, "act_dynamic", True),
     )
 
 

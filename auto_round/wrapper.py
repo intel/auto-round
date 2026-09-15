@@ -238,13 +238,12 @@ class WrapperLinear(torch.nn.Module):
         act_max_scale.data.clamp_(0, 1.0)
         act_min_scale.data.clamp_(0, 1.0)
         env_act_scale = envs.AR_ACT_SCALE  # fixed activation ratio,prioritize to use this one if set
-        result = self.activation_quantizer.qdq(
+        return self.activation_quantizer.qdq_with_scale(
             x,
             observed_max=act_max,
             max_scale=act_max_scale if math.isclose(env_act_scale, 1.0, rel_tol=1e-6) else env_act_scale,
             min_scale=act_min_scale if math.isclose(env_act_scale, 1.0, rel_tol=1e-6) else env_act_scale,
         )
-        return result, None, None
 
     def _qdq_bias(self, bias, bias_v):
         """Quantizes and dequantizes bias.

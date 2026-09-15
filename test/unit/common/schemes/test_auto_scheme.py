@@ -1209,12 +1209,10 @@ class TestScoreAnchorWeightScoring:
             def __init__(self):
                 self.calls = 0
 
-            def qdq(self, weight, state, *, tunables):
-                from auto_round.data_type.base import WeightQuantizationResult
-
+            def quantize(self, weight, **kwargs):
                 self.calls += 1
                 scale = weight.abs().amax().clamp(min=1e-4) / 7.0
-                return WeightQuantizationResult((weight / scale).round().clamp(-7, 7) * scale)
+                return (weight / scale).round().clamp(-7, 7) * scale
 
         wrapper.params = {}
         wrapper.weight_state = _State()
@@ -1226,13 +1224,13 @@ class TestScoreAnchorWeightScoring:
         wrapper, layer = self._make_wrapper()
         calls = {"n": 0}
         quantizer = wrapper.weight_quantizer
-        original_qdq = quantizer.qdq
+        original_quantize = quantizer.quantize
 
-        def counting_qdq(*args, **kwargs):
+        def counting_quantize(*args, **kwargs):
             calls["n"] += 1
-            return original_qdq(*args, **kwargs)
+            return original_quantize(*args, **kwargs)
 
-        quantizer.qdq = counting_qdq
+        quantizer.quantize = counting_quantize
         args = (torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0))
         first, _, _ = wrapper._qdq_weight(*args)
         second, _, _ = wrapper._qdq_weight(*args)
@@ -1415,11 +1413,9 @@ class TestScoreLinearRecompute:
             tunables = {}
 
         class _Quantizer:
-            def qdq(self, weight, state, *, tunables):
-                from auto_round.data_type.base import WeightQuantizationResult
-
+            def quantize(self, weight, **kwargs):
                 scale = weight.abs().amax().clamp(min=1e-4) / 7.0
-                return WeightQuantizationResult((weight / scale).round().clamp(-7, 7) * scale)
+                return (weight / scale).round().clamp(-7, 7) * scale
 
         wrapper.params = {}
         wrapper.weight_state = _State()

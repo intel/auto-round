@@ -434,7 +434,9 @@ class _FP8WeightQuantizer:
     def apply_result(module, result):
         if result.scale is None:
             raise ValueError("FP8 weight result was not materialized")
-        scale = result.scale.reshape(result.weight.shape[0], -1) if result.metadata == "row" else result.scale
+        scale = result.scale
+        if result.metadata == "row" and scale.numel() % result.weight.shape[0] == 0:
+            scale = scale.reshape(result.weight.shape[0], -1)
         module.weight.data.copy_(result.weight)
         module.scale = scale.cpu()
         module.zp = result.zero_point
@@ -461,20 +463,21 @@ class _FP8ActivationQuantizer:
             maximum = grouped.detach().abs().amax(dim=dims)
         return maximum if current is None else torch.maximum(maximum.to(current), current)
 
-    def qdq_tensor(self, activation, observed_max, min_scale, max_scale):
-        quantized, _, _ = self.primitive(
+    def qdq_with_scale(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+        if self.requires_calibration and observed_max is None:
+            raise ValueError(f"{self.data_type} activation requires observed_max")
+        return self.primitive(
             activation,
             bits=self.bits,
             group_size=self.group_size,
             tensor_max=observed_max if self.requires_calibration else None,
             max_scale=max_scale,
         )
-        return quantized
 
     def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
-        if self.requires_calibration and observed_max is None:
-            raise ValueError(f"{self.data_type} activation requires observed_max")
-        quantized = self.qdq_tensor(activation, observed_max, min_scale, max_scale)
+        quantized, _, _ = self.qdq_with_scale(
+            activation, observed_max=observed_max, min_scale=min_scale, max_scale=max_scale
+        )
         return quantized
 
 

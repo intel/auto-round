@@ -505,13 +505,18 @@ class _MXActivationQuantizer:
     def observe(self, activation, current):
         raise RuntimeError("Dynamic MX activation quantization does not require calibration")
 
-    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
-        quantized, _, _ = quant_mx(
+    def qdq_with_scale(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+        return quant_mx(
             activation,
             bits=self.spec.bits,
             group_size=self.spec.group_size,
             data_type=self.data_type,
             max_scale=max_scale,
+        )
+
+    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+        quantized, _, _ = self.qdq_with_scale(
+            activation, observed_max=observed_max, min_scale=min_scale, max_scale=max_scale
         )
         return quantized
 
@@ -567,6 +572,8 @@ for _family in ("fp", "int"):
             f"opt_rtn_mx_{_family}_sym",
         ),
     )(_MXQuantizer)
+
+register_quantizer("mx_fp_rceil", aliases=("mxfprceil",))(_MXQuantizer)
 
 if __name__ == "__main__":
     data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])

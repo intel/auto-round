@@ -554,14 +554,14 @@ class _IntActivationQuantizer:
         maximum = grouped.abs().amax(dim=-1)
         return maximum if current is None else torch.maximum(maximum.to(current), current)
 
-    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+    def qdq_with_scale(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
         if self.requires_calibration and observed_max is None:
             raise ValueError(f"{self.spec.data_type} activation requires observed_max")
         primitive = quant_tensor_sym if self.spec.sym else quant_tensor_asym
         kwargs = {}
         if observed_max is not None:
             kwargs.update(tensor_min=-observed_max, tensor_max=observed_max)
-        quantized, _, _ = primitive(
+        return primitive(
             activation,
             bits=self.spec.bits,
             group_size=self.spec.group_size,
@@ -570,6 +570,11 @@ class _IntActivationQuantizer:
             scale_dtype=self.spec.scale_dtype,
             q_scale_thresh=self.spec.q_scale_thresh,
             **kwargs,
+        )
+
+    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+        quantized, _, _ = self.qdq_with_scale(
+            activation, observed_max=observed_max, min_scale=min_scale, max_scale=max_scale
         )
         return quantized
 
@@ -580,6 +585,8 @@ register_quantizer(
         "int",
         "int4",
         "int4_sym",
+        "int8",
+        "int8_sym",
         "rtn_int",
         "rtn_int4",
         "rtn_int_sym",
