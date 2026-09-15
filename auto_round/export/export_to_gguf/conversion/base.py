@@ -319,13 +319,13 @@ class ModelBase:
         new_tensors: dict[str, Callable[[], Tensor]] = {}
 
         if (quant_config := self.hparams.get("quantization_config")) and isinstance(quant_config, dict):
-            quant_method = quant_config.get("quant_method")
+            packing_format = quant_config.get("packing_format")
 
-            if quant_method == "auto-round-rrq":
+            if packing_format == "auto_round:rrq":
                 raise NotImplementedError(
                     "GGUF export does not support RRQ residual models "
-                    "(quant_method='auto-round-rrq'). Use the standard INT2 base "
-                    "model (quant_method='auto-round') or a dedicated RRQ runtime instead. "
+                    "(packing_format='auto_round:rrq'). Use the standard INT2 base "
+                    "model (packing_format='auto_o_round') or a dedicated RRQ runtime instead. "
                     "Residual planes cannot be silently dropped."
                 )
 

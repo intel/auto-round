@@ -31,7 +31,8 @@ Storage strategy (Phase 1, packed INT2):
     Packing is done by the quantizer (``RRQRTNQuantizer``) via the W2A16
     ``QuantLinear.pack`` path; this module only renames ``rrq_*`` buffers to the
     on-disk ABI names and serializes.  The ``quantization_config`` uses
-    ``quant_method="auto-round-rrq"`` so loaders can distinguish the artifact.
+    ``quant_method="auto-round"`` with ``packing_format="auto_round:rrq"`` so
+    loaders can distinguish the artifact while keeping the same quant Method.
 """
 
 from typing import Union
@@ -41,7 +42,8 @@ import torch.nn as nn
 
 from auto_round.logger import logger
 
-RRQ_QUANT_METHOD = "auto-round-rrq"
+RRQ_QUANT_METHOD = "auto-round"
+RRQ_PACKING_FORMAT = "auto_round:rrq"
 
 
 def build_rrq_quantization_config(num_planes: int, group_size: int, sym: bool) -> dict:
@@ -57,6 +59,7 @@ def build_rrq_quantization_config(num_planes: int, group_size: int, sym: bool) -
     """
     return {
         "quant_method": RRQ_QUANT_METHOD,
+        "packing_format": RRQ_PACKING_FORMAT,
         "format_version": 1,
         "bits": 2,
         "base_bits": 2,
@@ -67,7 +70,6 @@ def build_rrq_quantization_config(num_planes: int, group_size: int, sym: bool) -
         "total_planes": num_planes,
         "group_size": group_size,
         "sym": sym,
-        "packing_format": "auto_round:rrq",
     }
 
 
