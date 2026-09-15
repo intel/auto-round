@@ -640,6 +640,7 @@ class _CompressorBuilder(object):
         format=None,
         dataset="NeelNanda/pile-10k",
         low_gpu_mem_usage: bool = False,
+        calibration_data_device: str = "auto",
         device_map: Union[str, torch.device, int, dict] = 0,
         iters: int = None,
         enable_torch_compile: bool = False,
@@ -761,6 +762,7 @@ class _CompressorBuilder(object):
             scheme=scheme,
             dataset=dataset,
             low_gpu_mem_usage=low_gpu_mem_usage,
+            calibration_data_device=calibration_data_device,
             device_map=device_map,
             iters=iters,
             enable_torch_compile=enable_torch_compile,
@@ -809,6 +811,11 @@ class AutoRound:
         nsamples: Number of calibration samples.
         batch_size: Calibration batch size.
         low_gpu_mem_usage: Enable lower-memory calibration at the cost of speed.
+        calibration_data_device: Placement of the block calibration-data pools:
+            ``"auto"`` (default; primary-first, shard across GPUs when needed),
+            ``"off"`` (no placement machinery), ``"cpu"`` (park pools in host
+            RAM), or an explicit csv such as ``"cuda:1,cuda:2"``. Forwards still
+            run on the compute devices; only the at-rest pool placement changes.
         device_map: Device or device mapping used for quantization.
         enable_torch_compile: Whether to use ``torch.compile`` where supported.
         seed: Random seed used by calibration and tuning.
@@ -834,6 +841,7 @@ class AutoRound:
         batch_size: int = 8,
         gradient_accumulate_steps: int | None = None,
         low_gpu_mem_usage: bool = False,
+        calibration_data_device: str = "auto",
         device_map: Union[str, torch.device, int, dict] = 0,
         enable_torch_compile: Optional[bool] = None,
         seed: int = 42,
@@ -867,6 +875,7 @@ class AutoRound:
             format=runtime_kwargs.pop("format", None),
             dataset=dataset,
             low_gpu_mem_usage=low_gpu_mem_usage,
+            calibration_data_device=calibration_data_device,
             device_map=normalize_default_device_map(device_map),
             iters=None,
             enable_torch_compile=enable_torch_compile,

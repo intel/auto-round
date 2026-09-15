@@ -12,12 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time as _ptime
+
 import torch
 
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.logger import logger
+
+
+def _rtn_phase_line(norm, quant, n, mean, max_):
+    """Format the zero-shot RTN phase breakdown for AR_PERF_COUNTERS."""
+    return "[perf] rtn phases: norm=%.2fs quant=%.2fs (n=%d, mean=%.3fs, max=%.3fs)" % (norm, quant, n, mean, max_)
+
+
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
@@ -132,9 +141,53 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             input_ids: Raw token IDs from the tokenizer (unused in RTN).
             **kwargs: Reserved for forward-compatibility with future parameters.
         """
-        # Normalize imatrix and quantize layers
-        for name, m in block.named_modules():
+        # Normalize imatrix first (cheap, serial), then quantize layers. The
+        # optimized RTN scale search is weight-local (weight + imatrix), so on a
+        # block whose layers sit on several devices the searches run in
+        # parallel, one worker per device.
+        import auto_round.envs as _envs
+        from auto_round.algorithms.quantization import search_dispatch
+
+        _perf = bool(getattr(_envs, "AR_PERF_COUNTERS", False))
+        _t_norm = _ptime.perf_counter()
+        for _name, m in block.named_modules():
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
-            if hasattr(m, "global_name") and check_to_quantized(m):
-                self.quantize_layer_outside_block(m)
+        _t_q0 = _ptime.perf_counter()
+        _n = 0
+        _q_max = 0.0
+        work = [m for _name, m in block.named_modules() if hasattr(m, "global_name") and check_to_quantized(m)]
+
+        def _quantize_counted(m):
+            nonlocal _n, _q_max
+            _l0 = _ptime.perf_counter() if _perf else 0.0
+            self.quantize_layer_outside_block(m)
+            if _perf:
+                _q_max = max(_q_max, _ptime.perf_counter() - _l0)
+            _n += 1
+
+        def _quantize_staged(name, m):
+            nonlocal _n, _q_max
+            _l0 = _ptime.perf_counter() if _perf else 0.0
+            w = self._quantize_layer_via_rtn(m, defer_search=True)
+            if _perf:
+                _q_max = max(_q_max, _ptime.perf_counter() - _l0)
+            _n += 1
+            return name, w
+
+        if not search_dispatch.batched_search_disabled():
+            from auto_round.algorithms.quantization.rtn.batched_search import run_batched_rtn_search
+
+            staged = []
+            for m in work:
+                name, w = _quantize_staged(getattr(m, "global_name", None) or "", m)
+                if w is not None:  # None = OOM fallback already finished it serially
+                    staged.append((name, w))
+            run_batched_rtn_search(self.model, staged)
+            search_dispatch.log_engaged_once("batched rtn search")
+        else:
+            for m in work:
+                _quantize_counted(m)
+        if _perf:
+            _t_q1 = _ptime.perf_counter()
+            logger.info("%s", _rtn_phase_line(_t_q0 - _t_norm, _t_q1 - _t_q0, _n, (_t_q1 - _t_q0) / max(_n, 1), _q_max))

@@ -116,7 +116,9 @@ class WrapperLinear(torch.nn.Module):
             self.q_scale_thresh = 1e-8
         else:
             self.q_scale_thresh = 1e-5
-        self._init_tuning_params_and_quant_func()
+        # consumed here so subclasses never see it in **kwargs; forwarded to the
+        # search init (staging for batched same-shape wrap searches)
+        self._init_tuning_params_and_quant_func(defer_search=bool(kwargs.pop("defer_search", False)))
         if deepspeed_exists:
             if type(self.orig_layer) in (torch.nn.Linear, LinearLayer):
                 self.orig_forward = self.linear_forward
@@ -136,7 +138,7 @@ class WrapperLinear(torch.nn.Module):
     def bias(self):
         return self.orig_layer.bias
 
-    def _init_tuning_params_and_quant_func(self):
+    def _init_tuning_params_and_quant_func(self, defer_search: bool = False):
         """Initializes tuning parameters and quantization functions.
 
         This method sets up required parameters and functions for weight quantization,
@@ -241,6 +243,101 @@ class WrapperLinear(torch.nn.Module):
 
         setattr(self, name, p)
 
+    def _apply_qdq(self, qdq_weight, scale, zp):
+        """Write a quantize-dequantized result back onto the original layer.
+
+        The single source of the unwrapper's write-back conventions (weight
+        copy, scale/zp attribute shapes and devices, grad reset, global
+        scale), shared with the batched zero-shot search driver.
+        """
+        self.orig_layer.weight.data.copy_(qdq_weight)
+        self.orig_layer.weight.grad = None
+
+        shape = qdq_weight.shape
+        if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
+            shape = qdq_weight.t().shape
+
+        def _set_dict_attr(attr_dict, attr_name):
+            for key in attr_dict.keys():
+                if key == attr_name:
+                    setattr(self.orig_layer, attr_name, attr_dict[key].reshape(shape[0], -1).to("cpu"))
+                else:
+                    name = "w_" + key
+                    setattr(self.orig_layer, name, attr_dict[key].to("cpu"))
+
+        if not isinstance(self.orig_layer.group_size, tuple):
+            if isinstance(scale, dict):
+                _set_dict_attr(scale, "scale")
+            elif scale is None:
+                self.orig_layer.scale = None
+            elif scale.numel() > 1:
+                self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
+            else:
+                self.orig_layer.scale = scale.view(-1).to("cpu")
+        else:
+            self.orig_layer.scale = scale.to("cpu")
+
+        if zp is not None:
+            if isinstance(zp, dict):
+                _set_dict_attr(zp, "zp")
+            elif isinstance(zp, torch.Tensor):
+                if zp.numel() > 1:
+                    zp = zp.reshape(shape[0], -1)
+                    self.orig_layer.zp = zp.to("cpu")
+                else:
+                    self.orig_layer.zp = zp.view(-1).to("cpu")
+            else:
+                self.orig_layer.zp = zp
+        else:
+            self.orig_layer.zp = None
+
+        if self.weight_global_scale is not None:
+            global_scale = self.weight_global_scale
+            assert global_scale.numel() == 1
+            self.orig_layer.weight_global_scale = global_scale.to("cpu")
+
+    def _quant_call_kwargs(self, value, min_scale, max_scale, imatrix_override=None):
+        """Assemble the weight_quant_func call kwargs from wrapper + layer state.
+
+        Single source of the quant-call contract, shared by the serial
+        ``_qdq_weight`` path and the batched zero-shot search driver (which
+        passes an explicit stacked ``imatrix_override``). ``weight_quant_func``
+        itself takes the weight as its first positional argument.
+        """
+        quant_kwargs = {}
+        if hasattr(self.orig_layer, "super_bits"):
+            quant_kwargs["super_bits"] = self.orig_layer.super_bits
+            quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
+        if hasattr(self, "_extra_quant_kwargs"):
+            quant_kwargs.update(self._extra_quant_kwargs())
+        imatrix = imatrix_override
+        if imatrix is None:
+            if hasattr(self.orig_layer, "imatrix"):
+                # a meta-resident stored weight (low-memory/offload lanes) must
+                # not become the relocation target -- the imatrix would go meta
+                # too while the weight itself is read through get_weight() onto
+                # the compute device; relocate to the effective compute device
+                _target = self.device if self.orig_layer.weight.device.type == "meta" else self.orig_layer.weight.device
+                imatrix = self.orig_layer.imatrix.to(_target)
+            else:
+                imatrix = None
+        return {
+            "bits": self.orig_layer.bits,
+            "group_size": self.orig_layer.group_size,
+            "v": value,
+            "min_scale": min_scale,
+            "max_scale": max_scale,
+            "scale_dtype": self.orig_layer.scale_dtype,
+            "tensor_min": self.weight_min,
+            "tensor_max": self.weight_max,
+            "data_type": self.data_type,
+            "q_scale_thresh": self.q_scale_thresh,
+            "imatrix": imatrix,
+            "global_scale": getattr(self, "weight_global_scale", None),
+            "init_scale": getattr(self, "init_scale", None),
+            **quant_kwargs,
+        }
+
     def _qdq_weight(self, value, min_scale, max_scale):
         """Quantizes and dequantizes weights with tuning parameters.
 
@@ -252,6 +349,15 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             tuple: Quantized weight, scale, and zero point.
         """
+        presolved = getattr(self, "_presolved_qdq", None)
+        if presolved is not None:
+            # Batched-search write-back: the search already ran on a stacked
+            # tensor; skip the recompute but keep everything downstream of this
+            # method (write-back conventions + the full unwrapper tail --
+            # bias/meta/update, static-act rescale, WrapperWALayer attachment)
+            # identical to the serial path.
+            self._presolved_qdq = None
+            return presolved
         if self.orig_layer.bits >= 16:
             return self.orig_layer.weight, None, None
         min_bound, max_bound = self.minmax_scale_bound
@@ -272,20 +378,12 @@ class WrapperLinear(torch.nn.Module):
 
         weight_q, scale, zp = self.weight_quant_func(
             weight.to(self.device),
-            bits=self.orig_layer.bits,
-            group_size=self.orig_layer.group_size,
-            v=value,
-            min_scale=min_scale,
-            max_scale=max_scale,
-            scale_dtype=self.orig_layer.scale_dtype,
-            tensor_min=self.weight_min,
-            tensor_max=self.weight_max,
-            data_type=self.data_type,
-            q_scale_thresh=self.q_scale_thresh,
-            imatrix=self.orig_layer.imatrix.to(weight.device) if hasattr(self.orig_layer, "imatrix") else None,
-            global_scale=getattr(self, "weight_global_scale", None),
-            init_scale=getattr(self, "init_scale", None),
-            **quant_kwargs,
+            **self._quant_call_kwargs(
+                value,
+                min_scale,
+                max_scale,
+                imatrix_override=None,
+            ),
         )
         weight_q = weight_q.to(weight.dtype)
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
@@ -366,53 +464,7 @@ class WrapperLinear(torch.nn.Module):
             self.orig_layer.to(self.device)
         # Unwrapper weight
         qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
-        # if hasattr(self.orig_layer, "imatrix"):
-        #     self.orig_layer.imatrix = None
-        self.orig_layer.weight.data.copy_(qdq_weight)
-        self.orig_layer.weight.grad = None
-
-        shape = qdq_weight.shape
-        if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
-            shape = qdq_weight.t().shape
-
-        def _set_dict_attr(attr_dict, attr_name):
-            for key in attr_dict.keys():
-                if key == attr_name:
-                    setattr(self.orig_layer, attr_name, attr_dict[key].reshape(shape[0], -1).to("cpu"))
-                else:
-                    name = "w_" + key
-                    setattr(self.orig_layer, name, attr_dict[key].to("cpu"))
-
-        if not isinstance(self.orig_layer.group_size, tuple):
-            if isinstance(scale, dict):
-                _set_dict_attr(scale, "scale")
-            elif scale is None:
-                self.orig_layer.scale = None
-            elif scale.numel() > 1:
-                self.orig_layer.scale = scale.reshape(shape[0], -1).to("cpu")
-            else:
-                self.orig_layer.scale = scale.view(-1).to("cpu")
-        else:
-            self.orig_layer.scale = scale.to("cpu")
-
-        if zp is not None:
-            if isinstance(zp, dict):
-                _set_dict_attr(zp, "zp")
-            elif isinstance(zp, torch.Tensor):
-                if zp.numel() > 1:
-                    zp = zp.reshape(shape[0], -1)
-                    self.orig_layer.zp = zp.to("cpu")
-                else:
-                    self.orig_layer.zp = zp.view(-1).to("cpu")
-            else:
-                self.orig_layer.zp = zp
-        else:
-            self.orig_layer.zp = None
-
-        if self.weight_global_scale is not None:
-            global_scale = self.weight_global_scale
-            assert global_scale.numel() == 1
-            self.orig_layer.weight_global_scale = global_scale.to("cpu")
+        self._apply_qdq(qdq_weight, scale, zp)
 
         # Unwrapper bias
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
@@ -794,37 +846,69 @@ def wrapper_block(
     """
     quantized_layers = []
     unquantized_layers = []
+
+    # Wrap-time searches (SignRoundV2 init-scale, GGUF DQ scale) read only the
+    # module's own weight plus per-module statistics, never calibration
+    # activations; eligible searches run later in one stacked batched call per
+    # (device, shape, config, search fn).
+    work = []
     for n, m in block.named_modules():
         if type(m) in SUPPORTED_LAYER_TYPES:
-            if not check_to_quantized(m):
-                unquantized_layers.append(n)
-                continue
-            new_m = wrapper_cls(
-                m,
-                enable_minmax_tuning=enable_minmax_tuning,
-                enable_norm_bias_tuning=enable_norm_bias_tuning,
-                enable_torch_compile=enable_torch_compile,
-                device=device,
-                **kwargs,
-            )
-            set_module(block, n, new_m)
-            quantized_layers.append(n)
+            work.append((n, m, "skip" if not check_to_quantized(m) else "linear"))
+        elif enable_norm_bias_tuning and "norm" in m.__class__.__name__.lower():
+            work.append((n, m, "norm"))
 
-        elif enable_norm_bias_tuning:
-            if "norm" in m.__class__.__name__.lower():
-                if m.__class__.__name__ in NORM_MAPPING.keys():
-                    wrapper_layer_class = NORM_MAPPING[m.__class__.__name__]
-                    new_m = wrapper_layer_class(m, device=device)
-                    set_module(block, n, new_m)
-                elif "RMSNorm" in m.__class__.__name__:
-                    logger.warning_once(
-                        f"use LlamaRMSNorm to wrap {m.__class__.__name__}, please check the correctness yourself"
-                    )
-                    wrapper_layer_class = NORM_MAPPING["LlamaRMSNorm"]
-                    new_m = wrapper_layer_class(m, device=device)
-                    set_module(block, n, new_m)
-                else:
-                    logger.warning_once(f"{m.__class__.__name__} is not supported")
+    from auto_round.algorithms.quantization import search_dispatch
+
+    _defer_batch = (
+        bool(getattr(wrapper_cls, "supports_batched_search", False)) and not search_dispatch.batched_search_disabled()
+    )
+    deferred_wrappers = []
+
+    def _wrap_one(n, m, kind):
+        if kind == "norm":
+            if m.__class__.__name__ in NORM_MAPPING.keys():
+                wrapper_layer_class = NORM_MAPPING[m.__class__.__name__]
+                new_m = wrapper_layer_class(m, device=device)
+                set_module(block, n, new_m)
+            elif "RMSNorm" in m.__class__.__name__:
+                logger.warning_once(
+                    f"use LlamaRMSNorm to wrap {m.__class__.__name__}, please check the correctness yourself"
+                )
+                wrapper_layer_class = NORM_MAPPING["LlamaRMSNorm"]
+                new_m = wrapper_layer_class(m, device=device)
+                set_module(block, n, new_m)
+            else:
+                logger.warning_once(f"{m.__class__.__name__} is not supported")
+            return None
+        if kind == "skip":
+            return "u"
+        extra = {"defer_search": True} if _defer_batch else {}
+        new_m = wrapper_cls(
+            m,
+            enable_minmax_tuning=enable_minmax_tuning,
+            enable_norm_bias_tuning=enable_norm_bias_tuning,
+            enable_torch_compile=enable_torch_compile,
+            device=device,
+            **kwargs,
+            **extra,
+        )
+        set_module(block, n, new_m)
+        if _defer_batch:
+            deferred_wrappers.append(new_m)
+        return "q"
+
+    results = [_wrap_one(n, m, kind) for n, m, kind in work]
+
+    if _defer_batch and deferred_wrappers:
+        # stacked same-shape batches per (device, shape, config, search fn);
+        # singletons and the kill-switch fall back to the identical per-module call
+        if not search_dispatch.run_batched_wrap_search(deferred_wrappers):
+            for w in deferred_wrappers:
+                w._run_deferred_search_now()
+
+    quantized_layers = [n for (n, _m, _k), r in zip(work, results) if r == "q"]
+    unquantized_layers = [n for (n, _m, _k), r in zip(work, results) if r == "u"]
     return quantized_layers, unquantized_layers
 
 
