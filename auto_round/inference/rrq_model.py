@@ -55,7 +55,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from auto_round.export.export_to_autoround.export_to_rrq import RRQ_QUANT_METHOD, RRQ_PACKING_FORMAT
+from auto_round.export.export_to_autoround.export_to_rrq import RRQ_PACKING_FORMAT, RRQ_QUANT_METHOD
 from auto_round.logger import logger
 
 __all__ = ["load_rrq_model"]
