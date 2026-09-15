@@ -1818,7 +1818,7 @@ def cast_model_dtype(model: torch.nn.Module, dtype: torch.dtype) -> torch.nn.Mod
 
 
 def _to_model_dtype(model, model_dtype):
-    if model_dtype is not None:
+    if isinstance(model_dtype, str):
         try:
             if (model_dtype == "float16" or model_dtype == "fp16") and model.dtype != torch.float16:
                 model = cast_model_dtype(model, torch.float16)
