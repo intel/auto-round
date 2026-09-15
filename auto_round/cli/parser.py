@@ -124,6 +124,16 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--device_map", "--device", "--devices", default="0", type=str, help="Device mapping used for quantization."
     )
+    rt.add_argument(
+        "--parallel_quantization",
+        "--ddp_world",
+        default="off",
+        type=str,
+        help="Single-process data-parallel SignRound tuning: 'off' (default), 'auto' (world derived from the "
+        "visible CUDA devices as a power of two, mirror-fit checked per device), or an explicit world size N "
+        "(power of two >= 2). Replicas hold full block mirrors on the plan devices and draw disjoint "
+        "calibration shards; equivalent to setting AR_TUNE_DDP_WORLD.",
+    )
     rt.add_argument("--dataset", default=None, type=str, help="Calibration dataset or local dataset path.")
     rt.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
     rt.add_argument(

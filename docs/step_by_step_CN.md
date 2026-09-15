@@ -831,6 +831,29 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 
 通常有两种情况需要启用多 GPU 训练：一是主要针对 lm-head 量化的标定阶段，二是参数量极大（如显存占用超 100GB）的模型。
 
+#### 跨 GPU 并行 block 调优
+当单个 block 可以放入单张 GPU 时，可通过 `--parallel_quantization` 在同一进程中利用其他 GPU 加速调优：每张
+GPU 持有当前 block 的镜像，并在各自独立的标定数据分片上进行调优，每轮迭代后在进程内交换梯度。
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --parallel_quantization auto
+```
+
+- `off`（默认）保持串行单 GPU 调优；`N>=2` 显式指定副本数。
+- `auto` 自动检测副本数：取不超过可见 CUDA 设备数的最大 2 的幂，并进一步缩减到空闲显存足以容纳 block 镜像的
+  设备（日志中会显示 `world reduced 4 -> 2 by VRAM guard`）。
+- 请求的并行副本数是一项要求而非偏好：若并行调优不可行（例如能容纳镜像的设备少于两个），运行会带着具体的
+  阻塞原因直接失败，而不是静默回退到串行。没有可调参数的 block（全 float 固定）仍走串行路径。
+- 各副本使用互不重叠的标定数据分片，有效 batch 覆盖与串行相同的数据，精度保持一致。
+- 每轮迭代的 loss 数值在固定模式与种子下可复现，但在串行与并行运行之间不可直接比较：串行从完整标定池中抽取
+  每轮 batch，而并行副本从各设备互不重叠的分片中抽取，以保证所有池读取都在本设备内完成。包装后的初始状态完全
+  一致（确定性的逐层搜索结果按位相同），因此应在产物层面（精度、KL 散度）比较不同模式，二者在该层面保持一致。
+- `AR_TUNE_DDP_DEVICES` 可指定镜像设备——参见[环境变量](environments_CN.md)。
+- 实际并行的内容取决于算法家族：block 采集前向与 SignRound（V1/V2）调优循环始终分片执行；`--iters 0` 时
+  每层的 RTN/optimized-RTN 零样本搜索按轮转方式分摊到各 GPU；SignRoundV2 的 wrap 阶段初始 scale 搜索同样在
+  副本上执行（mirrors-first），因此所有确定性的逐层搜索与串行结果完全一致。直接拟合标定数据的优化算法——
+  如 AWQ 激活感知缩放、GPTQ 等——尚未适配副本循环，与其他调优组合时仍以串行方式运行。
+
 #### lm_head 量化中开启多 GPU 标定
 量化 lm-head 时，AutoRound 需要缓存其输入数据以进行高效的标定，这要求**整个模型驻留在 GPU 显存中** ；若 GPU 显存不足，部分层会退回至 Pure RTN 模式。
 

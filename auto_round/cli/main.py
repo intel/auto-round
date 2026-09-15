@@ -309,6 +309,37 @@ def tune(args):
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
+    _parallel = str(getattr(args, "parallel_quantization", "off") or "off").strip().lower()
+    if _parallel == "off":
+        # 'off' must mean off: neutralize any ambient shell export so a stale
+        # AR_TUNE_DDP_WORLD cannot silently engage DDP in a run that did not
+        # ask for it (the engine reads the env directly, so pop it process-wide)
+        import os
+
+        _ambient = os.environ.pop("AR_TUNE_DDP_WORLD", None)
+        if _ambient is not None:
+            logger.warning(
+                "[tune-ddp] ignoring ambient AR_TUNE_DDP_WORLD=%s (--parallel_quantization is off)", _ambient
+            )
+    if _parallel != "off":
+        import os
+
+        if _parallel == "auto":
+            import torch
+
+            _n = torch.cuda.device_count()
+            _world = 1 << (max(_n, 1).bit_length() - 1)  # largest power of two <= visible devices
+            if _world < 2:
+                raise RuntimeError("--parallel_quantization auto needs at least 2 visible CUDA devices")
+        elif _parallel.isdigit():
+            _world = int(_parallel)
+            if _world < 2 or _world & (_world - 1):
+                raise RuntimeError(f"--parallel_quantization world must be a power of two >= 2, got {_world}")
+        else:
+            raise RuntimeError(f"--parallel_quantization accepts off|auto|N, got {_parallel!r}")
+        os.environ["AR_TUNE_DDP_WORLD"] = str(_world)
+        logger.info("[tune-ddp] --parallel_quantization %s -> world=%d", _parallel, _world)
+
     if args.enable_torch_compile is False:
         logger.info("`torch.compile` is explicitly disabled with `--disable_torch_compile`.")
 
