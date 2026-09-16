@@ -108,6 +108,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import multiprocessing as mp
 import os
 import re
@@ -340,7 +341,14 @@ def _prefetch_shard(
         return None
 
 
-def _configure_model_free_int_search_ratio(default_scheme: dict, disable_opt_rtn: bool) -> None:
+def _has_optimized_int_scheme(default_scheme: dict, layer_config: dict) -> bool:
+    schemes = (default_scheme, *layer_config.values())
+    return any(
+        (scheme.get("data_type") or "int").lower() == "int" and (scheme.get("bits") or 16) < 16 for scheme in schemes
+    )
+
+
+def _configure_model_free_int_search_ratio(default_scheme: dict, layer_config: dict, disable_opt_rtn: bool) -> None:
     """Enable the conservative default search ratio for model-free INT opt-RTN.
 
     This runs only in the main model-free compressor path, before worker
@@ -351,8 +359,7 @@ def _configure_model_free_int_search_ratio(default_scheme: dict, disable_opt_rtn
     if disable_opt_rtn:
         return
 
-    data_type = (default_scheme.get("data_type") or "int").lower()
-    if is_mx_fp(data_type) or is_nv_fp(data_type) or data_type == _NVFP4_E5M3_DATA_TYPE:
+    if not _has_optimized_int_scheme(default_scheme, layer_config):
         return
 
     if envs.AR_SEARCH_SCALE_RATIO is None and not envs.is_set("AR_SEARCH_SCALE_RATIO"):
@@ -363,6 +370,34 @@ def _configure_model_free_int_search_ratio(default_scheme: dict, disable_opt_rtn
             "is unavailable; keep it small and override it with AR_SEARCH_SCALE_RATIO=<ratio> when "
             "you have better calibration data.",
             envs.AR_SEARCH_SCALE_RATIO,
+        )
+
+
+def _has_standard_nvfp4_scheme(default_scheme: dict, layer_config: dict) -> bool:
+    if is_nv_fp((default_scheme.get("data_type") or "").lower()):
+        return True
+    return any(is_nv_fp((scheme.get("data_type") or "").lower()) for scheme in layer_config.values())
+
+
+def _validate_model_free_nvfp4_input_scale(default_scheme: dict, layer_config: dict) -> None:
+    if not _has_standard_nvfp4_scheme(default_scheme, layer_config):
+        return
+    input_scale = envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE
+    if not math.isfinite(input_scale) or input_scale <= 0:
+        raise ValueError("AR_MODEL_FREE_NVFP4_INPUT_SCALE must be a finite positive float, " f"got {input_scale!r}.")
+
+
+def _validate_model_free_scheme_combinations(default_scheme: dict, layer_config: dict) -> None:
+    if not is_nv_fp((default_scheme.get("data_type") or "").lower()):
+        return
+    has_int_override = any(
+        (scheme.get("data_type") or "int").lower() == "int" and (scheme.get("bits") or 16) < 16
+        for scheme in layer_config.values()
+    )
+    if has_int_override:
+        raise ValueError(
+            "Model-free standard NVFP4 does not support low-bit INT layer overrides because the output "
+            "requires incompatible packing and quantization metadata."
         )
 
 
@@ -1095,6 +1130,9 @@ class _ModelFreeCompressorCore:
             "model_type": self.model_type,
             "source_quantization_config": self.source_quantization_config,
             "nvfp4_input_scale": envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE if has_standard_nvfp4 else None,
+            "nvfp4_neighbor_search_steps": envs.AR_NVFP4_NEIGHBOR_SEARCH_STEPS,
+            "search_scale_ratio": envs.AR_SEARCH_SCALE_RATIO,
+            "nvfp4_fused_layer_global_scale": envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE,
         }
         return json.loads(json.dumps(parameters, sort_keys=True, default=str))
 
@@ -1538,6 +1576,9 @@ class _ModelFreeCompressorCore:
 
     def _update_fused_scales_across_shards(self) -> None:
         """Fuse NVFP4 projection scales after every output shard is available."""
+        if not envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE:
+            return
+
         global_suffix = ".weight_global_scale"
         scale_suffix = ".weight_scale"
         global_names = [name for name in self.output_weight_map if name.endswith(global_suffix)]
@@ -1710,6 +1751,8 @@ class _ModelFreeCompressorCore:
             return "disabled"
 
         data_type = (self.default_scheme.get("data_type") or "int").lower()
+        if _has_optimized_int_scheme(self.default_scheme, self.layer_config):
+            return "enabled"
         if (
             is_mx_fp(data_type)
             or _layer_config_has_mxfp(self.layer_config)
@@ -1717,7 +1760,7 @@ class _ModelFreeCompressorCore:
             or data_type == _NVFP4_E5M3_DATA_TYPE
         ):
             return "enabled"
-        return "enabled"
+        return "not applicable"
 
     # -------------------------------------------------------------------
     # Public entry point
@@ -1744,6 +1787,8 @@ class _ModelFreeCompressorCore:
         self._validate_format()
         self._parse_scheme()
         self._parse_layer_config()
+        _validate_model_free_nvfp4_input_scale(self.default_scheme, self.layer_config)
+        _validate_model_free_scheme_combinations(self.default_scheme, self.layer_config)
         self._build_ignore_patterns()
 
         # ---- source resolution ----
@@ -1756,6 +1801,7 @@ class _ModelFreeCompressorCore:
         self._build_cross_shard_deps()
         self._reorder_shards_by_dependency()
         self.shard_parallelism, shard_parallelism_source = self._resolve_shard_parallelism()
+        _configure_model_free_int_search_ratio(self.default_scheme, self.layer_config, self.disable_opt_rtn)
         self._prepare_resume_state()
 
         # Determine the output packing format based on scheme data type
@@ -1800,7 +1846,6 @@ class _ModelFreeCompressorCore:
                 envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE,
             )
         else:
-            _configure_model_free_int_search_ratio(self.default_scheme, self.disable_opt_rtn)
             if not self.disable_opt_rtn:
                 logger.info("Integer WOQ optimized RTN is enabled. Pass --disable_opt_rtn to use plain RTN.")
             else:

@@ -626,19 +626,21 @@ def _normalize_nvfp4_source_tensors(
         if weight_packed_key not in raw_tensors and weight_key in raw_tensors:
             raw_tensors[weight_packed_key] = raw_tensors.pop(weight_key).view(torch.uint8).contiguous()
 
-        if weight_scale_2_key in raw_tensors and weight_global_scale_key not in raw_tensors:
+        has_legacy_weight_global_scale = weight_scale_2_key in raw_tensors
+        has_legacy_input_global_scale = input_scale_key in raw_tensors
+        if has_legacy_weight_global_scale and weight_global_scale_key not in raw_tensors:
             raw_tensors[weight_global_scale_key] = raw_tensors.pop(weight_scale_2_key)
-        elif weight_scale_2_key in raw_tensors:
+        elif has_legacy_weight_global_scale:
             raw_tensors.pop(weight_scale_2_key)
 
-        if input_scale_key in raw_tensors and input_global_scale_key not in raw_tensors:
+        if has_legacy_input_global_scale and input_global_scale_key not in raw_tensors:
             raw_tensors[input_global_scale_key] = raw_tensors.pop(input_scale_key)
-        elif input_scale_key in raw_tensors:
+        elif has_legacy_input_global_scale:
             raw_tensors.pop(input_scale_key)
 
-        if weight_global_scale_key in raw_tensors:
+        if has_legacy_weight_global_scale and weight_global_scale_key in raw_tensors:
             raw_tensors[weight_global_scale_key] = _reciprocal_global_scale(raw_tensors[weight_global_scale_key])
-        if input_global_scale_key in raw_tensors:
+        if has_legacy_input_global_scale and input_global_scale_key in raw_tensors:
             raw_tensors[input_global_scale_key] = _reciprocal_global_scale(raw_tensors[input_global_scale_key])
 
         converted_layers.append(layer_name)
@@ -1107,6 +1109,12 @@ def _quantize_moe_fused_expert_weight(
     data_type = (scheme.get("data_type") or "int").lower()
     group_size = scheme["group_size"]
 
+    if is_nv_fp(data_type):
+        raise ValueError(
+            f"Model-free standard NVFP4 does not support fused 3-D MoE weight '{tensor_name}'. "
+            "Use an unfused checkpoint or a supported MXFP scheme."
+        )
+
     if not is_mx_fp(data_type):
         logger.warning_once(
             f"3-D fused MoE weight '{tensor_name}' (shape={list(tensor.shape)}) is only "
@@ -1257,12 +1265,7 @@ def _quantize_weight_nvfp4_e5m3(
 
     weight_dev = weight.to(device)
     quant_func = nvfp4_v2 if disable_opt_rtn else opt_rtn_nvfp4_v2
-    quant_kwargs = {}
-    if not disable_opt_rtn:
-        quant_kwargs = {
-            "log_scale_selection_label": layer_name,
-        }
-    qdq_weight, _, _ = quant_func(weight_dev, bits=4, group_size=group_size, **quant_kwargs)
+    qdq_weight, _, _ = quant_func(weight_dev, bits=4, group_size=group_size)
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
 
@@ -1292,17 +1295,11 @@ def _quantize_weight_nvfp4_fake(
     weight_dev = weight.to(device)
     weight_global_scale = calculate_gparam(weight_dev, group_size=group_size, device=device)
     quant_func = nv_fp4 if disable_opt_rtn else opt_rtn_fast_nvfp4
-    quant_kwargs = {}
-    if not disable_opt_rtn:
-        quant_kwargs = {
-            "log_scale_selection_label": layer_name,
-        }
     qdq_weight, _, _ = quant_func(
         weight_dev,
         bits=4,
         group_size=group_size,
         global_scale=weight_global_scale,
-        **quant_kwargs,
     )
     return {
         f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu"),
@@ -1337,14 +1334,7 @@ def _quantize_weight_nvfp4(
     weight_dev = weight.to(device)
     weight_global_scale = calculate_gparam(weight_dev, group_size=group_size, device=device)
     quant_func = nv_fp4 if disable_opt_rtn else opt_rtn_fast_nvfp4
-    quant_kwargs = {}
-    if not disable_opt_rtn:
-        quant_kwargs = {
-            "log_scale_selection_label": layer_name,
-        }
-    _, scale, _ = quant_func(
-        weight_dev, bits=4, group_size=group_size, global_scale=weight_global_scale, **quant_kwargs
-    )
+    _, scale, _ = quant_func(weight_dev, bits=4, group_size=group_size, global_scale=weight_global_scale)
     scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
     input_global_scale = torch.tensor([input_global_scale_value], dtype=torch.float32, device=device)
 
@@ -1420,12 +1410,7 @@ def _pack_weight_nvfp4_e5m3(
         )
     weight_dev = weight.to(device)
     quant_func = nvfp4_v2 if disable_opt_rtn else opt_rtn_nvfp4_v2
-    quant_kwargs = {}
-    if not disable_opt_rtn:
-        quant_kwargs = {
-            "log_scale_selection_label": layer_name,
-        }
-    _, scale, _ = quant_func(weight_dev, bits=4, group_size=group_size, **quant_kwargs)
+    _, scale, _ = quant_func(weight_dev, bits=4, group_size=group_size)
     # nvfp4_v2 may return a flattened per-group scale layout (e.g. [N, 1]);
     # normalize to [out_features, in_features // group_size] before packing
     # so serialized .weight_scale keeps the expected 2D shape.

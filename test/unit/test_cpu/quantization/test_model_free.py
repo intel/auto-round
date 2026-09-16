@@ -210,6 +210,13 @@ def test_model_free_reports_opt_rtn_status():
     core.default_scheme = {"data_type": "int"}
     assert core._describe_opt_rtn_status() == "disabled"
 
+    core.disable_opt_rtn = False
+    core.default_scheme = {"bits": 16, "data_type": "float"}
+    assert core._describe_opt_rtn_status() == "not applicable"
+
+    core.layer_config = {"model.layers": {"bits": 4, "data_type": "int"}}
+    assert core._describe_opt_rtn_status() == "enabled"
+
 
 @pytest.mark.parametrize("default_enabled", [True, False])
 def test_model_free_core_uses_default_torch_compile_policy_when_unset(tmp_path, monkeypatch, default_enabled):
@@ -497,57 +504,6 @@ def test_model_free_nvfp4_quantization_searches_scale(
     quantize_func(torch.randn(8, 32), "layer.fc", group_size=16, disable_opt_rtn=disable_opt_rtn)
 
     assert optimized_mock.call_count == expected_calls
-    if not disable_opt_rtn:
-        assert optimized_mock.call_args.kwargs["log_scale_selection_label"] == "layer.fc"
-
-
-@pytest.mark.parametrize(
-    ("quantize_func", "search_func_name"),
-    [
-        (_quantize_weight_nvfp4_e5m3, "search_nvfp4_v2_scale"),
-        (_quantize_weight_nvfp4_fake, "search_nvfp4_scale"),
-        (_quantize_weight_nvfp4, "search_nvfp4_scale"),
-    ],
-)
-def test_model_free_nvfp4_logs_when_non_default_scale_selected(monkeypatch, caplog, quantize_func, search_func_name):
-    import auto_round.data_type.nvfp as nvfp
-    import auto_round.logger as autoround_logger
-
-    selected_scales = torch.ones(16)
-    selected_scales[0] = 1.125
-    monkeypatch.setattr(nvfp, search_func_name, lambda *args, **kwargs: selected_scales.clone())
-    monkeypatch.setattr(autoround_logger.logger, "propagate", True)
-
-    with caplog.at_level(logging.INFO):
-        quantize_func(torch.randn(8, 32), "layer.fc", group_size=16, disable_opt_rtn=False)
-
-    assert "Model-free NVFP4 scale search selected non-1.0 scale(s) for layer.fc" in caplog.text
-    assert "1/16 group(s, 6.25% changed)" in caplog.text
-    assert "distribution=[1.125: 6.25% of all groups]" in caplog.text
-    assert "selected_scale_min=1.125, selected_scale_max=1.125, selected_scale_mean=1.125" in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("quantize_func", "search_func_name"),
-    [
-        (_quantize_weight_nvfp4_e5m3, "search_nvfp4_v2_scale"),
-        (_quantize_weight_nvfp4_fake, "search_nvfp4_scale"),
-        (_quantize_weight_nvfp4, "search_nvfp4_scale"),
-    ],
-)
-def test_model_free_nvfp4_does_not_log_when_all_scales_are_default(
-    monkeypatch, caplog, quantize_func, search_func_name
-):
-    import auto_round.data_type.nvfp as nvfp
-    import auto_round.logger as autoround_logger
-
-    monkeypatch.setattr(nvfp, search_func_name, lambda *args, **kwargs: torch.ones(16))
-    monkeypatch.setattr(autoround_logger.logger, "propagate", True)
-
-    with caplog.at_level(logging.INFO):
-        quantize_func(torch.randn(8, 32), "layer.fc", group_size=16, disable_opt_rtn=False)
-
-    assert "Model-free NVFP4 scale search selected non-1.0 scale(s)" not in caplog.text
 
 
 @pytest.mark.parametrize("input_scale", [None, 0.25])
@@ -651,6 +607,43 @@ def test_nvfp4_model_free_rejects_invalid_input_scale(monkeypatch, input_scale, 
 
     with pytest.raises(ValueError, match="finite positive float"):
         quantize_func(torch.randn(8, 32), "layer.fc")
+
+
+@pytest.mark.parametrize("scheme", ["NVFP4", "BF16"])
+def test_model_free_nvfp4_rejects_invalid_input_scale_during_preflight(tmp_path, monkeypatch, scheme):
+    monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "0")
+    model_dir = _make_model_dir(
+        tmp_path,
+        _LLAMA_CFG,
+        {"model.layers.0.self_attn.q_proj.weight": torch.randn(8, 16)},
+    )
+    layer_config = {"model.layers": "NVFP4"} if scheme == "BF16" else None
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=str(tmp_path / "output"),
+        scheme=scheme,
+        layer_config=layer_config,
+    )
+
+    with pytest.raises(ValueError, match="finite positive float"):
+        compressor.run()
+
+
+def test_model_free_nvfp4_rejects_low_bit_int_layer_override(tmp_path):
+    model_dir = _make_model_dir(
+        tmp_path,
+        _LLAMA_CFG,
+        {"model.layers.0.self_attn.q_proj.weight": torch.randn(8, 16)},
+    )
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=str(tmp_path / "output"),
+        scheme="NVFP4",
+        layer_config={"model.layers": {"bits": 4, "data_type": "int"}},
+    )
+
+    with pytest.raises(ValueError, match="does not support low-bit INT layer overrides"):
+        compressor.run()
 
 
 def test_int_model_free_fake_quantization():
@@ -838,6 +831,30 @@ def test_nvfp4_fuses_projection_scales_across_output_shards(tmp_path, monkeypatc
         assert torch.equal(shard.get_tensor(f"{prefix}.k_proj.weight_scale"), torch.full((2, 2), 3.0))
 
 
+def test_nvfp4_does_not_fuse_projection_scales_when_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "0")
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    prefix = "model.layers.0.self_attn"
+    shard_name = "model.safetensors"
+    tensors = {
+        f"{prefix}.q_proj.weight_global_scale": torch.tensor([3.0]),
+        f"{prefix}.k_proj.weight_global_scale": torch.tensor([1.0]),
+        f"{prefix}.v_proj.weight_global_scale": torch.tensor([2.0]),
+    }
+    save_file(tensors, output_dir / shard_name)
+
+    compressor = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+    compressor.output_dir = str(output_dir)
+    compressor.is_diffusion_model = False
+    compressor.output_weight_map = {name: shard_name for name in tensors}
+    compressor._update_fused_scales_across_shards()
+
+    with safe_open(output_dir / shard_name, framework="pt") as shard:
+        assert shard.get_tensor(f"{prefix}.k_proj.weight_global_scale").item() == 1.0
+        assert shard.get_tensor(f"{prefix}.v_proj.weight_global_scale").item() == 2.0
+
+
 def test_model_free_replaces_stale_multishard_checkpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "0.5")
     prefix = "model.layers.0.self_attn.q_proj"
@@ -944,6 +961,44 @@ def test_model_free_legacy_nvfp4_is_normalized_and_passthrough(tmp_path):
     assert prefix in quantized
     assert "model.layers.0.self_attn.q_proj" in quantized
     assert prefix not in ignored
+
+
+def test_model_free_direct_nvfp4_global_scales_are_preserved(tmp_path):
+    prefix = "model.layers.0.mlp.down_proj"
+    tensors = {
+        f"{prefix}.weight_packed": torch.randint(0, 256, (32, 32), dtype=torch.uint8),
+        f"{prefix}.weight_scale": torch.randint(0, 256, (32, 4), dtype=torch.uint8),
+        f"{prefix}.weight_global_scale": torch.tensor([0.5], dtype=torch.float32),
+        f"{prefix}.input_global_scale": torch.tensor([0.25], dtype=torch.float32),
+    }
+    shard_path = str(tmp_path / "shard.safetensors")
+    save_file(tensors, shard_path)
+
+    layer_config = {
+        prefix: {
+            "bits": 4,
+            "group_size": 16,
+            "sym": True,
+            "data_type": "nv_fp",
+        }
+    }
+    output, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, layer_config, [])
+
+    assert prefix in quantized
+    assert ignored == []
+    assert torch.equal(output[f"{prefix}.weight_packed"], tensors[f"{prefix}.weight_packed"])
+    assert torch.equal(output[f"{prefix}.weight_global_scale"], tensors[f"{prefix}.weight_global_scale"])
+    assert torch.equal(output[f"{prefix}.input_global_scale"], tensors[f"{prefix}.input_global_scale"])
+
+
+def test_model_free_nvfp4_rejects_fused_3d_moe_weight(tmp_path):
+    tensor_name = "model.layers.0.moe.experts.w13_weight"
+    shard_path = str(tmp_path / "shard.safetensors")
+    save_file({tensor_name: torch.randn(2, 8, 16)}, shard_path)
+    scheme = {"bits": 4, "group_size": 16, "sym": True, "data_type": "nv_fp"}
+
+    with pytest.raises(ValueError, match="does not support fused 3-D MoE weight"):
+        _process_shard(shard_path, scheme, {}, [], model_type="inkling_mm_model")
 
     def test_ignores_and_skips(self, tmp_path):
         shard_path = str(tmp_path / "shard.safetensors")

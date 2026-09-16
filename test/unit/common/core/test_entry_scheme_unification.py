@@ -227,6 +227,16 @@ def test_nvfp4_e5m3_default_routes_to_optimized_rtn():
     assert isinstance(cfg, OptimizedRTNConfig)
 
 
+def test_nvfp4_default_routes_to_optimized_rtn():
+    cfg = RTNConfig()
+
+    cls = _select_rtn_compressor_base_cls(cfg, "NVFP4", "auto_round", {})
+
+    assert cls is CompressionOrchestrator
+    assert cfg.enable_imatrix is True
+    assert isinstance(cfg, OptimizedRTNConfig)
+
+
 def test_nvfp4_e5m3_explicit_enable_routes_to_optimized_rtn():
     cfg = RTNConfig(enable_opt_rtn=True)
 

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
+from auto_round.compressors.utils import is_nv_fp
 from auto_round.logger import deprecated, logger
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
@@ -215,7 +216,7 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
                 enable_imatrix = True
             elif is_weight_scheme(scheme):
                 enable_imatrix = True
-            elif data_type == "nvfp4_v2" and _has_optimized_rtn_dtype(
+            elif (is_nv_fp(data_type) or data_type == "nvfp4_v2") and _has_optimized_rtn_dtype(
                 data_type, bits, sym, resolved_attrs.get("group_size")
             ):
                 enable_imatrix = True
