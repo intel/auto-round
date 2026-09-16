@@ -61,7 +61,6 @@ class TestMiMoAudioQuantization:
         has_quantlinear = any(m.__class__.__name__ == "QuantLinear" for m in quantized_model.modules())
         assert has_quantlinear, "Quantized model should contain QuantLinear layers"
 
-    @pytest.mark.timeout(90)
     def test_quantize_with_tuning(self, tiny_mimo_audio_model_path, tmp_path):
         """Tuned MiMo-Audio quantization uses local calibration data and produces QuantLinear layers."""
         import transformers

@@ -309,7 +309,6 @@ class TestAutoScheme:
 
     # Exporting both integer and MXFP schemes loads and rewrites the tiny
     # checkpoint twice; on CPU/XPU this can exceed the historical 70s limit.
-    @pytest.mark.timeout(180)
     def test_auto_scheme_export(self, micro_opt_model_path, tmp_path):
         calibration_dataset = _make_local_calibration_dataset(tmp_path)
         model_name = micro_opt_model_path
@@ -336,7 +335,6 @@ class TestAutoScheme:
         assert mxfp_config["data_type"] == "mx_fp"
         assert os.path.exists(os.path.join(int_model_path, "config.json"))
 
-    @pytest.mark.timeout(120)
     def test_gguf_user_fixed_embedding_budget(self, micro_qwen_model_path, tmp_path):
         """Regression test: a user-fixed embedding must be budget-priced at its fixed bits.
 
