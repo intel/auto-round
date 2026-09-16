@@ -16,6 +16,7 @@ from auto_round.auto_scheme.delta_loss import (
     _vram_inventory_text,
 )
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
+from auto_round.data_type.base import WeightQuantizationResult
 from auto_round.export.export_to_gguf.export import _clear_gguf_model_instances
 
 
@@ -1200,24 +1201,38 @@ class TestScoreAnchorWeightScoring:
         wrapper.max_act_value = 0
         wrapper._score_qdq_cpu = None
 
-        def _fake_quant(weight, **kwargs):
-            scale = weight.abs().amax().clamp(min=1e-4) / 7.0
-            return ((weight / scale).round().clamp(-7, 7) * scale), scale, None
+        class _State:
+            tunables = {}
 
-        wrapper.weight_quant_func = _fake_quant
+        class _Quantizer:
+            def __init__(self):
+                self.calls = 0
+
+            def quantize(self, weight, **kwargs):
+                self.calls += 1
+                scale = weight.abs().amax().clamp(min=1e-4) / 7.0
+                return (weight / scale).round().clamp(-7, 7) * scale
+
+        wrapper.params = {}
+        wrapper.weight_state = _State()
+        wrapper.weight_quantizer = _Quantizer()
+        wrapper.weight_qdq = lambda weight, **kwargs: WeightQuantizationResult(
+            wrapper.weight_quantizer.quantize(weight, **kwargs)
+        )
         layer.weight.requires_grad = True
         return wrapper, layer
 
     def test_qdq_weight_quantizes_once_and_reuses_cache(self):
         wrapper, layer = self._make_wrapper()
         calls = {"n": 0}
-        real_quant = wrapper.weight_quant_func
+        quantizer = wrapper.weight_quantizer
+        original_quantize = quantizer.quantize
 
-        def counting_quant(weight, **kwargs):
+        def counting_quantize(*args, **kwargs):
             calls["n"] += 1
-            return real_quant(weight, **kwargs)
+            return original_quantize(*args, **kwargs)
 
-        wrapper.weight_quant_func = counting_quant
+        quantizer.quantize = counting_quantize
         args = (torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0))
         first, _, _ = wrapper._qdq_weight(*args)
         second, _, _ = wrapper._qdq_weight(*args)
@@ -1396,11 +1411,20 @@ class TestScoreLinearRecompute:
         wrapper.min_scale = torch.tensor(1.0)
         wrapper.max_scale = torch.tensor(1.0)
 
-        def _fake_quant(weight, **kwargs):
-            scale = weight.abs().amax().clamp(min=1e-4) / 7.0
-            return (weight / scale).round().clamp(-7, 7) * scale, scale, None
+        class _State:
+            tunables = {}
 
-        wrapper.weight_quant_func = _fake_quant
+        class _Quantizer:
+            def quantize(self, weight, **kwargs):
+                scale = weight.abs().amax().clamp(min=1e-4) / 7.0
+                return (weight / scale).round().clamp(-7, 7) * scale
+
+        wrapper.params = {}
+        wrapper.weight_state = _State()
+        wrapper.weight_quantizer = _Quantizer()
+        wrapper.weight_qdq = lambda weight, **kwargs: WeightQuantizationResult(
+            wrapper.weight_quantizer.quantize(weight, **kwargs)
+        )
         layer.weight.requires_grad = True
         return wrapper, layer
 
