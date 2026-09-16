@@ -627,6 +627,8 @@ def test_legacy_auto_scheme_flags_alias_and_hidden():
     args = p.parse_args(["--target_bits", "3.5", "--option", "W2A16", "W4A16"])
     assert args.bits == 3.5
     assert _normalize_scheme_list(args.schemes) == "W2A16,W4A16"
+    args = p.parse_args(["--schemes", "W4A16", "W8A16", "--options", "W4A16,W8A16"])
+    assert _normalize_scheme_list(args.schemes) == "W4A16,W8A16"
     # singular aliases
     assert p.parse_args(["--bit", "8"]).bits == 8.0
 

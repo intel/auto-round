@@ -26,6 +26,7 @@ from auto_round.autoround import _select_rtn_compressor_base_cls
 from auto_round.compressors.orchestrator import CompressionOrchestrator
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
+    eager_validate_scheme,
     preview_resolved_attrs,
     resolve_entry_scheme,
 )
@@ -176,6 +177,12 @@ def test_preview_falls_back_to_config_overrides_when_preview_skipped(monkeypatch
     assert resolved.get("data_type") == "int"
     assert len(calls) == 1
     assert "definitely-not-a-real-scheme-xyz" not in str(calls[0]) or True  # message content not asserted verbatim
+
+
+def test_eager_validate_accepts_string_scheme_value_on_config():
+    cfg = RTNConfig()
+    cfg.scheme = "W4A16"
+    eager_validate_scheme(cfg, "W4A16")
 
 
 def test_routing_matches_between_scheme_only_and_equivalent_override():

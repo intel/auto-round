@@ -38,12 +38,20 @@ class _LegacyAliasAction(argparse.Action):
             "`%s` is deprecated, please use `%s` instead", option_string, self._CANONICAL_FLAGS[self.dest]
         )
         current_value = getattr(namespace, self.dest, None)
-        if current_value is not None and current_value != values:
+        if current_value is not None and _normalize_legacy_alias_value(
+            self.dest, current_value
+        ) != _normalize_legacy_alias_value(self.dest, values):
             parser.error(
                 f"conflicting values for {self._CANONICAL_FLAGS[self.dest]}: "
                 f"{current_value!r} was already provided, but {option_string!r} set {values!r}"
             )
         setattr(namespace, self.dest, values)
+
+
+def _normalize_legacy_alias_value(dest: str, value):
+    if dest != "schemes" or value is None:
+        return value
+    return ",".join(part.strip() for part in ",".join(value).split(",") if part.strip())
 
 
 def _parse_group_size(s: str):
