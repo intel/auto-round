@@ -14,7 +14,7 @@
 
 import torch
 
-from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE, register_dtype
+from auto_round.data_type.base import QUANT_FUNC_WITH_DTYPE, register_dtype, register_quantizer
 from auto_round.data_type.utils import (
     ceil_ste,
     floor_ste,
@@ -413,6 +413,168 @@ for key in MXFP_FORMAT_CACHE.keys():
 QUANT_FUNC_WITH_DTYPE["mx_fp_rceil"] = quant_mx_rceil
 QUANT_FUNC_WITH_DTYPE["mx_fp4_rceil_v2"] = quant_mx_rceil_v2
 QUANT_FUNC_WITH_DTYPE["opt_rtn_mx_fp"] = quant_mx_opt_rtn
+
+
+class _MXQuantizer:
+    """Own MX weight QDQ and derive the concrete MX format from the request."""
+
+    def __init__(self, spec, data_type=None, family="plain"):
+        self.spec = spec
+        self.data_type = data_type or self._data_type(spec)
+        self.family = family
+
+    @staticmethod
+    def _data_type(spec):
+        data_type = spec.data_type.lower()
+        if data_type in ("mx_fp", "mx_int"):
+            data_type = f"{data_type}{spec.bits}"
+        if data_type not in MXFP_FORMAT_CACHE and not data_type.endswith("_rceil"):
+            raise ValueError(f"Unsupported MX datatype {spec.data_type!r}")
+        return data_type
+
+    @classmethod
+    def from_spec(cls, spec, canonical=None):
+        """Create the MX quantizer selected by the requested MX format."""
+        data_type = canonical or spec.data_type
+        if data_type in ("mx_fp", "mx_int"):
+            data_type = f"{data_type}{spec.bits}"
+        if spec.data_type.endswith("_rceil"):
+            data_type += "_rceil"
+        return cls(spec, data_type)
+
+    @classmethod
+    def create_activation(cls, spec):
+        """Create the dynamic MX activation quantizer for the same format."""
+        return _MXActivationQuantizer(spec, cls._data_type(spec))
+
+    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
+        self.family = "optimized" if mode == "optimized_rtn" else "plain"
+        grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
+        tunables = {}
+        if self.family == "plain" and tune_rounding:
+            tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
+        if self.family == "plain" and tune_minmax:
+            tunables["max_scale"] = torch.nn.Parameter(
+                torch.ones(grouped.shape[:-1], device=weight.device, dtype=torch.float32)
+            )
+        return {"tunables": tunables, "imatrix": imatrix}
+
+    def qdq(self, weight, state, *, tunables, materialize=False):
+        kwargs = {
+            "bits": self.spec.bits,
+            "group_size": self.spec.group_size,
+            "data_type": self.data_type,
+        }
+        if self.family == "optimized":
+            quantized, exponent, zero_point = quant_mx_opt_rtn(weight, imatrix=state["imatrix"], **kwargs)
+        elif self.data_type.endswith("_rceil"):
+            quantized, exponent, zero_point = quant_mx_rceil(weight, **kwargs)
+        else:
+            quantized, exponent, zero_point = quant_mx(
+                weight,
+                v=tunables.get("value", 0),
+                max_scale=tunables.get("max_scale", 1.0),
+                **kwargs,
+            )
+        from auto_round.data_type.base import WeightQuantizationResult
+
+        return WeightQuantizationResult(
+            quantized, exponent if materialize else None, zero_point if materialize else None
+        )
+
+    @staticmethod
+    def apply_result(module, result):
+        if result.scale is None:
+            raise ValueError("MX weight result was not materialized")
+        module.weight.data.copy_(result.weight)
+        rows = result.logical_rows or result.weight.shape[0]
+        module.scale = result.scale.reshape(rows, -1).cpu()
+        module.zp = None
+
+
+class _MXActivationQuantizer:
+    """Apply dynamic MX activation QDQ; MX formats require no calibration pass."""
+
+    requires_calibration = False
+
+    def __init__(self, spec, data_type):
+        if not spec.dynamic:
+            raise ValueError(f"MX datatype {data_type!r} supports only dynamic activation quantization")
+        self.spec = spec
+        self.data_type = data_type
+
+    def observe(self, activation, current):
+        raise RuntimeError("Dynamic MX activation quantization does not require calibration")
+
+    def qdq_with_scale(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+        return quant_mx(
+            activation,
+            bits=self.spec.bits,
+            group_size=self.spec.group_size,
+            data_type=self.data_type,
+            max_scale=max_scale,
+        )
+
+    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+        quantized, _, _ = self.qdq_with_scale(
+            activation, observed_max=observed_max, min_scale=min_scale, max_scale=max_scale
+        )
+        return quantized
+
+
+_MX_ALIASES = {
+    "mx_int8": ("mxint8",),
+    "mx_int4": (
+        "mxint4",
+        "rtn_mx_int4",
+        "rtn_mx_int4_sym",
+        "opt_rtn_mx_int4",
+        "opt_rtn_mx_int4_sym",
+    ),
+    "mx_int2": ("mxint2",),
+    "mx_fp8e5m2": ("mxfp8e5m2",),
+    "mx_fp8": ("mxfp8",),
+    "mx_fp8e4m3": ("mxfp8e4m3",),
+    "mx_fp6e3m2": ("mxfp6e3m2",),
+    "mx_fp6": ("mxfp6",),
+    "mx_fp6e2m3": ("mxfp6e2m3",),
+    "mx_fp4": (
+        "mxfp4",
+        "mx_fp4_sym",
+        "rtn_mx_fp4",
+        "rtn_mx_fp4_sym",
+        "opt_rtn_mx_fp4",
+        "opt_rtn_mx_fp4_sym",
+    ),
+    "mx_fp4e2m1": ("mxfp4e2m1", "mx_fp4e2m1_rceil"),
+    "mx_float16": ("mxfloat16",),
+    "mx_fp16": ("mxfp16",),
+    "mx_bfloat16": ("mxbfloat16",),
+    "mx_bf16": ("mxbf16",),
+}
+
+
+for _data_type in MXFP_FORMAT_CACHE:
+    register_quantizer(
+        _data_type,
+        aliases=_MX_ALIASES[_data_type],
+    )(_MXQuantizer)
+
+for _family in ("fp", "int"):
+    _canonical = f"mx_{_family}"
+
+    register_quantizer(
+        _canonical,
+        aliases=(
+            f"mx_{_family}_sym",
+            f"rtn_mx_{_family}",
+            f"rtn_mx_{_family}_sym",
+            f"opt_rtn_mx_{_family}",
+            f"opt_rtn_mx_{_family}_sym",
+        ),
+    )(_MXQuantizer)
+
+register_quantizer("mx_fp_rceil", aliases=("mxfprceil",))(_MXQuantizer)
 
 if __name__ == "__main__":
     data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])

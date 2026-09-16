@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 import torch
 
-from auto_round.data_type.utils import get_quant_func
+from auto_round.data_type.base import create_quantizer, quantize_activation
 
 _FIXED_MXFP4_DTYPES = frozenset({"mx_fp4", "mx_fp4e2m1"})
 _MXFP4_ALIASES = frozenset({"mx_fp", *_FIXED_MXFP4_DTYPES})
@@ -108,16 +108,12 @@ def _rtn_qdq_tensor(tensor: torch.Tensor, scheme, *, tensor_name: str) -> torch.
     requested_dtype = values["data_type"]
     if values["bits"] == 4 and requested_dtype in _MXFP4_ALIASES:
         requested_dtype = f"{requested_dtype}_rceil"
-    quant_func, resolved_dtype = get_quant_func(
-        dtype=requested_dtype,
-        bits=values["bits"],
-        sym=values["sym"],
+    quantizer = create_quantizer(
+        {**values, "data_type": requested_dtype, "scale_dtype": tensor.dtype},
         disable_opt_rtn=True,
-        group_size=values["group_size"],
-        iters=0,
     )
-    logical_dtype = resolved_dtype.removeprefix("rtn_")
-    resolved_base_dtype = logical_dtype.removesuffix("_rceil")
+    quantizer.initialize(tensor)
+    resolved_base_dtype = requested_dtype.removesuffix("_rceil")
     if (
         resolved_base_dtype in _MXFP4_ALIASES
         and values["bits"] == 4
@@ -132,12 +128,7 @@ def _rtn_qdq_tensor(tensor: torch.Tensor, scheme, *, tensor_name: str) -> torch.
             f"got group_size={values['group_size']!r}."
         )
 
-    qdq, _, _ = quant_func(
-        tensor=tensor,
-        bits=values["bits"],
-        group_size=values["group_size"],
-        data_type=logical_dtype,
-    )
+    qdq = quantizer.quantize(tensor)
     if qdq.shape != tensor.shape or qdq.dtype != tensor.dtype:
         raise ValueError(
             f"{tensor_name.capitalize()} RTN QDQ must preserve the input shape and dtype; "
@@ -162,7 +153,13 @@ def rtn_qdq_residual(weight: torch.Tensor, scheme: ResidualQuantScheme) -> torch
 @torch.inference_mode()
 def rtn_qdq_activation(activation: torch.Tensor, scheme: ActivationQuantScheme) -> torch.Tensor:
     """Apply deployment-compatible dynamic activation quantize-dequantize."""
-    return _rtn_qdq_tensor(activation, scheme, tensor_name="activation")
+    values = _validate_scheme_values(scheme)
+    qdq = quantize_activation(activation, values)
+    if qdq.shape != activation.shape or qdq.dtype != activation.dtype or qdq.device != activation.device:
+        raise ValueError("Activation RTN QDQ must preserve shape, dtype, and device.")
+    if not torch.isfinite(qdq).all():
+        raise ValueError("Activation RTN QDQ produced non-finite values.")
+    return qdq
 
 
 @torch.inference_mode()

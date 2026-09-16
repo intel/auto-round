@@ -266,78 +266,53 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
 
     enable_imatrix = False
     disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", False)
-
-    # Single resolved-scheme source for routing (SchemeMixin does the authoritative
-    # resolution later; this preview only chooses the class). Computed once: neither
-    # `quant_config`'s scheme fields nor `scheme` itself change within this function,
-    # so the result is invariant across every use below — no need to recompute it.
     resolved_attrs = _preview_resolved_attrs(quant_config, scheme, format=format)
-
-    # Auto-disable rtn optimization for W8A16/W8A8-equivalent resolved schemes,
-    # unless the user already set disable_opt_rtn explicitly.
     if getattr(quant_config, "orig_disable_opt_rtn", None) is None:
-        bits = resolved_attrs.get("bits")
-        act_bits = resolved_attrs.get("act_bits")
-        data_type = resolved_attrs.get("data_type")
-        if bits is not None and bits >= 8 and act_bits is not None and act_bits >= 8 and data_type == "int":
+        if (
+            resolved_attrs.get("bits") is not None
+            and resolved_attrs.get("bits") >= 8
+            and resolved_attrs.get("act_bits") is not None
+            and resolved_attrs.get("act_bits") >= 8
+            and resolved_attrs.get("data_type") == "int"
+        ):
             logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
             disable_opt_rtn = True
             quant_config.disable_opt_rtn = True
-
     if not disable_opt_rtn:
-        has_gguf_k = is_gguf_k_target(format) or is_gguf_k_target(scheme)
-        if has_gguf_k:
+        if is_gguf_k_target(format) or is_gguf_k_target(scheme):
             enable_imatrix = True
-        else:
-            sym = resolved_attrs.get("sym")
-            data_type = resolved_attrs.get("data_type") or ""
-            bits = resolved_attrs.get("bits")
-            if sym is not None and sym is False:
-                enable_imatrix = False
-            elif data_type == "int" and (bits is None or bits < 8):
-                enable_imatrix = True
-            elif is_weight_scheme(scheme):
-                enable_imatrix = True
-
-    act_bits = resolved_attrs.get("act_bits")
-    act_data_type = resolved_attrs.get("act_data_type")
-    act_dynamic = resolved_attrs.get("act_dynamic")
-    is_act_quantize = act_bits is not None and act_bits <= 8
-    needs_act_calib = is_act_quantize and check_need_act_calibration(
-        act_dynamic,
-        act_data_type,
-        act_bits if act_bits is not None else 16,
-        static_kv_dtype=base_kwargs.get("static_kv_dtype"),
-        static_attention_dtype=base_kwargs.get("static_attention_dtype"),
+        elif resolved_attrs.get("sym") is not False:
+            enable_imatrix = (
+                resolved_attrs.get("data_type") == "int" and resolved_attrs.get("bits", 16) < 8
+            ) or is_weight_scheme(scheme)
+    needs_act_calib = (
+        resolved_attrs.get("act_bits") is not None
+        and resolved_attrs.get("act_bits") <= 8
+        and check_need_act_calibration(
+            resolved_attrs.get("act_dynamic"),
+            resolved_attrs.get("act_data_type"),
+            resolved_attrs.get("act_bits", 16),
+            static_kv_dtype=base_kwargs.get("static_kv_dtype"),
+            static_attention_dtype=base_kwargs.get("static_attention_dtype"),
+        )
     )
-
-    # AutoScheme always requires calibration data for delta-loss based scheme
-    # selection, regardless of whether imatrix is needed.
     quant_config.enable_imatrix = enable_imatrix
-    needs_optimized_rtn = enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme)
-    if needs_optimized_rtn:
+    if enable_imatrix or needs_act_calib or isinstance(scheme, AutoScheme):
         if not isinstance(quant_config, OptimizedRTNConfig):
             quant_config.__class__ = OptimizedRTNConfig
-    else:
-        # Pure zero-shot RTN: downgrade to basic RTNConfig
-        if isinstance(quant_config, OptimizedRTNConfig):
-            quant_config.__class__ = RTNConfig
-
-    # Always use Compressor — it internally detects whether calibration
-    # data is needed and falls back to the zero-shot (RTN) path when it is not.
+    elif isinstance(quant_config, OptimizedRTNConfig):
+        quant_config.__class__ = RTNConfig
     return Compressor
 
 
 _ENTRY_KWARG_OWNERS = {
     "model_free": "route",
     "disable_model_free": "route",
+    "format": "route",
+    "dataset": "base",
     "scale_dtype": "compressor",
     "ignore_layers": "compressor",
     "quant_lm_head": "compressor",
-    "to_quant_block_names": "compressor",
-    "format": "base",
-    "dataset": "base",
-    "batch_size": "base",
     "model_dtype": "base",
     "trust_remote_code": "base",
     "amp": "base",
@@ -677,6 +652,9 @@ class _CompressorBuilder(object):
             alg_configs = normalize_algorithm_config(alg_configs)
         configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
         preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
+        if quant_config not in configs_for_routing:
+            configs_for_routing.append(quant_config)
+            alg_configs = configs_for_routing
         is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
         if is_svdquant:
             format = "svdquant_nunchaku"
@@ -772,7 +750,6 @@ class _CompressorBuilder(object):
             **compressor_kwargs,
         )
         model_type, ctor_kwargs = _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwargs)
-
         # Preprocessor algorithms (AWQ, …) require a data-driven host so that
         # the per-block preprocessor lifecycle (prepare_block_group ->
         # block_forward_hooks -> pre_quantize_block -> post_quantize_block)
