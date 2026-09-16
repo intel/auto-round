@@ -10,7 +10,7 @@ Quantization for diffusion models is limited:
 
 1. Only the transformer module of diffusion models is quantized.
 2. Loading quantized diffusion models is not supported yet, so use `fake` format for quantization.
-3. Calibration dataset currently supports `coco2014` and user customized `.tsv` files.
+3. Calibration datasets currently support `opens2v`, `coco2014`, and user customized `.tsv` files.
 
 ### API Usage (CPU/GPU) Recommended
 
@@ -35,7 +35,8 @@ output_dir = "./tmp_autoround"
 autoround.quantize_and_save(output_dir, format="fake", inplace=True)
 ```
 
-- `dataset`: the dataset for quantization training. Currently supports `coco2014` and user customized `.tsv` files.
+- `dataset`: the dataset for quantization training. Currently supports `opens2v`, `coco2014`, and user customized
+  `.tsv` files.
 - `calib_num_inference_steps`: the number of inference steps requested when the scheduler builds its native
   short calibration schedule. Higher-order schedulers may expand these into more internal timesteps.
 - `num_inference_steps`: the number of denoising steps used for diffusion generation/evaluation; it does not
@@ -81,27 +82,28 @@ For diffusion models, currently we validate quantization on the following models
 | stepfun-ai/NextStep-1.1       | COCO2014      | - |
 | AIDC-AI/Ovis-Image-7B         | COCO2014      | - |
 | stabilityai/stable-audio-open-1.0 | audiocaps | - |
-| Wan-AI/Wan2.2-I2V-A14B-Diffusers | COCO2014   | - |
-| Wan-AI/Wan2.2-TI2V-5B-Diffusers  | COCO2014   | - |
-| Wan-AI/Wan2.2-T2V-A14B-Diffusers | COCO2014   | - |
+| Wan-AI/Wan2.2-I2V-A14B-Diffusers | OpenS2V    | - |
+| Wan-AI/Wan2.2-TI2V-5B-Diffusers  | OpenS2V    | - |
+| Wan-AI/Wan2.2-T2V-A14B-Diffusers | OpenS2V    | - |
 | nvidia/Cosmos3-Nano              | COCO2014   | - |
 | nvidia/Cosmos3-Super             | COCO2014   | - |
 
 <details>
 <summary style="font-size:17px;">Calibration Dataset</summary>
 
-For diffusion models, we use [**coco2014**](https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv) calibration dataset as the default.
+For diffusion models, we use the compact [**OpenS2V calibration set**](https://huggingface.co/datasets/changwangss/opens2v-calibration) by default. Pass `--dataset coco2014` to use COCO2014 explicitly.
 
 To use a custom dataset, build a `.tsv` file with the following structure and pass it through `--dataset`:
 
 ```text
-id      caption
-0       YOUR_PROMPT
-1       YOUR_PROMPT
-...     ...
+id      caption        image
+0       YOUR_PROMPT    OPTIONAL_IMAGE_PATH
+1       YOUR_PROMPT    OPTIONAL_IMAGE_PATH
+...     ...            ...
 ```
 
 - `id`: the id used to map generated images and prompts.
 - `caption`: the text prompt used to generate the images.
+- `image`: an optional local image path required by image-to-video pipelines.
 
 </details>
