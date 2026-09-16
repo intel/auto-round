@@ -42,18 +42,42 @@ def save_pretrained_artifact(artifact, output_dir: str, artifact_name: str = "ar
     return True
 
 
-def _save_model_configs(model: nn.Module, save_dir: str) -> None:
-    if hasattr(model, "config") and model.config is not None:
-        try:
-            model.config.save_pretrained(save_dir)
-        except (KeyError, TypeError):
-            # Some third-party configs (e.g. qwen-tts) fail with use_diff=True
-            # due to missing keys in recursive_diff_dict. Fall back to full config.
-            import json
+def save_config_artifact(model: nn.Module, save_dir: str) -> None:
+    """Write ``model.config`` to ``save_dir``, for transformers and diffusers models alike.
 
+    A diffusers ``ModelMixin`` keeps its config in a ``FrozenDict``, which has no
+    ``save_pretrained``; ``ModelMixin.save_config`` is the equivalent writer.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return
+
+    if not hasattr(config, "save_pretrained") and hasattr(model, "save_config"):
+        model.save_config(save_dir)
+        # save_config serializes the config's own dict, so the quantization_config the
+        # exporter set on the config object afterwards has to be merged back in.
+        quantization_config = getattr(config, "quantization_config", None)
+        if quantization_config is not None:
             config_path = os.path.join(save_dir, "config.json")
+            with open(config_path, encoding="utf-8") as f:
+                config_dict = json.load(f)
+            config_dict["quantization_config"] = quantization_config
             with open(config_path, "w", encoding="utf-8") as f:
-                f.write(model.config.to_json_string(use_diff=False))
+                json.dump(config_dict, f, indent=2, sort_keys=True)
+        return
+
+    try:
+        config.save_pretrained(save_dir)
+    except (KeyError, TypeError):
+        # Some third-party configs (e.g. qwen-tts) fail with use_diff=True
+        # due to missing keys in recursive_diff_dict. Fall back to full config.
+        config_path = os.path.join(save_dir, "config.json")
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(config.to_json_string(use_diff=False))
+
+
+def _save_model_configs(model: nn.Module, save_dir: str) -> None:
+    save_config_artifact(model, save_dir)
 
     if hasattr(model, "generation_config") and model.generation_config is not None:
         model.generation_config.save_pretrained(save_dir)
