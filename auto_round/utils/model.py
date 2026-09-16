@@ -1011,8 +1011,17 @@ def diffusion_load_model(
         return load_cosmos3_diffusion(pretrained_model_name_or_path, device_str)
 
     pipelines = LazyImport("diffusers.pipelines")
+    modular_pipeline_cls = _get_modular_pipeline_class()
     if isinstance(pretrained_model_name_or_path, str):
         model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if not os.path.exists(model_index) and os.path.exists(
+            os.path.join(pretrained_model_name_or_path, MODULAR_PIPELINE_INDEX_NAME)
+        ):
+            raise NotImplementedError(
+                f"{pretrained_model_name_or_path} is a Modular Diffusers pipeline "
+                f"({MODULAR_PIPELINE_INDEX_NAME}), which auto_round cannot assemble from a path yet. "
+                "Build the ModularPipeline yourself and pass the pipeline object as `model` instead."
+            )
         with open(model_index, "r", encoding="utf-8") as file:
             config = json.load(file)
 
@@ -1035,13 +1044,19 @@ def diffusion_load_model(
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
-    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
+    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline) or (
+        modular_pipeline_cls is not None and isinstance(pretrained_model_name_or_path, modular_pipeline_cls)
+    ):
         pipe = pretrained_model_name_or_path
-        pipe_config = pipe.load_config(pipe.config["_name_or_path"])
+        # a pipeline assembled in-process, as Modular Diffusers ones typically are,
+        # has no _name_or_path to reload the on-disk index from
+        name_or_path = pipe.config.get("_name_or_path", None)
+        pipe_config = pipe.load_config(name_or_path) if name_or_path is not None else {}
 
     else:
         raise ValueError(
-            f"Only support str or DiffusionPipeline class for model, but get {type(pretrained_model_name_or_path)}"
+            f"Only support str, DiffusionPipeline or ModularPipeline class for model, "
+            f"but get {type(pretrained_model_name_or_path)}"
         )
 
     # add missing key
@@ -1324,8 +1339,9 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
 
     model_path = get_model_name_or_path(model_or_path)
 
-    # Fast path: return cached result for already-seen paths
-    if model_path in _is_mllm_model_cache:
+    # Path-less in-process objects must be inspected independently rather than
+    # sharing a cache entry under None.
+    if model_path and model_path in _is_mllm_model_cache:
         return _is_mllm_model_cache[model_path]
 
     # Check model_type exclusion: some models have multimodal components
@@ -1344,7 +1360,10 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
     # For dummy model, model_path could be "".
     # Only try to download if the path looks like a HF repo id (not a local filesystem path).
     # Skip download for absolute paths or relative paths that contain current/parent dir markers.
-    _is_local_path = os.path.isabs(model_path) or model_path.startswith("./") or model_path.startswith("../")
+    # model_path is None for a model or pipeline built in-process, which has no name or path
+    _is_local_path = isinstance(model_path, str) and (
+        os.path.isabs(model_path) or model_path.startswith("./") or model_path.startswith("../")
+    )
     if model_path and not os.path.isdir(model_path) and not _is_local_path:
         model_path = download_or_get_path(model_path, platform=platform)
 
@@ -1370,7 +1389,8 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
 
     # Cache by the original path key (model_path may have been resolved above)
     original_key = get_model_name_or_path(model_or_path)
-    _is_mllm_model_cache[original_key] = result
+    if original_key:
+        _is_mllm_model_cache[original_key] = result
     return result
 
 
@@ -1385,6 +1405,48 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
                     is_gguf_file = True
                     break
     return is_gguf_file
+
+
+## ModularPipeline.config_name, spelled out to keep the diffusers import lazy
+MODULAR_PIPELINE_INDEX_NAME = "modular_model_index.json"
+
+
+def _find_pipeline_index_file(model_dir_or_repo: str) -> Optional[str]:
+    """Return the pipeline index file of a diffusers directory or repo, if it has one.
+
+    Standard pipelines ship ``model_index.json``, Modular Diffusers pipelines ship
+    ``modular_model_index.json`` instead.
+    """
+    index_names = ("model_index.json", MODULAR_PIPELINE_INDEX_NAME)
+
+    if os.path.isdir(model_dir_or_repo):
+        for name in index_names:
+            index_file = os.path.join(model_dir_or_repo, name)
+            if os.path.exists(index_file):
+                check_diffusers_installed()
+                return index_file
+        return None
+
+    from huggingface_hub import hf_hub_download
+
+    for name in index_names:
+        try:
+            index_file = hf_hub_download(model_dir_or_repo, name)
+            check_diffusers_installed()
+            return index_file
+        except Exception as e:
+            logger.debug(f"No {name} found in {model_dir_or_repo}: {e}")
+    return None
+
+
+def _get_modular_pipeline_class():
+    """Return ModularPipeline when supported by the installed Diffusers version."""
+    try:
+        from diffusers.modular_pipelines import ModularPipeline
+
+        return ModularPipeline
+    except (ImportError, AttributeError):
+        return None
 
 
 def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: bool = True) -> bool:
@@ -1411,25 +1473,14 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
             logger.warning(
                 f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
             )
-        index_file = None
-        if not os.path.isdir(model_or_path):
-            try:
-                from huggingface_hub import hf_hub_download
-
-                index_file = hf_hub_download(model_or_path, "model_index.json")
-                check_diffusers_installed()
-            except Exception as e:
-                print(e)
-                index_file = None
-
-        elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
-            check_diffusers_installed()
-            index_file = os.path.join(model_or_path, "model_index.json")
-        return index_file is not None
+        return _find_pipeline_index_file(model_or_path) is not None
     elif not isinstance(model_or_path, torch.nn.Module):
         check_diffusers_installed()
         pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
-        return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
+        if isinstance(model_or_path, pipeline_utils.DiffusionPipeline):
+            return True
+        modular_pipeline_cls = _get_modular_pipeline_class()
+        return modular_pipeline_cls is not None and isinstance(model_or_path, modular_pipeline_cls)
     else:
         return False
 
