@@ -18,6 +18,7 @@ import torch
 from auto_round import envs
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
+from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
 
 
@@ -54,21 +55,19 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
     if isinstance(qw, torch.Tensor):
         best_loss.mul_(qw)  # inplace multiply by weight
     best_loss = torch.sum(best_loss, dim=-1)
-    if bits == 2:
-        search_min = 18 * 5
-        step = 0.01
-    else:
-        grid = 200
-        search_ratio = envs.AR_SEARCH_SCALE_RATIO or 0.75  # default 0.5 -> nmax/2
-        search_min = nmax * search_ratio
-        step = search_min / grid * 2  # 0.08
-        search_min = int(search_min / step)
+    search_ratio = envs.AR_SEARCH_SCALE_RATIO or 0.75
+    search_step = 0.005
+    search_min = max(1, int(round(search_ratio / search_step)))
+    step = search_ratio / search_min
     # Search symmetrically around the baseline so equal-loss candidates do not
     # systematically prefer one side of the scale range.
     for _is in _symmetric_search_offsets(search_min):
 
-        # Update iscales in-place
-        iscales_tmp = -(nmax - step * _is) * get_reciprocal(group_max)
+        # Search uniformly in the actual scale ratio, rather than uniformly
+        # in inverse scale. This prevents the reciprocal mapping from placing
+        # disproportionately many candidates below the baseline scale.
+        scale_ratio = 1.0 + step * _is
+        iscales_tmp = iscales / scale_ratio
 
         # Compute temporary quantized values (in-place round + clamp)
         tmp_L = torch.empty_like(data)
@@ -138,7 +137,7 @@ def quant_tensor_rtn_sym(
     min_scale=1.0,
     max_scale=1.0,
     scale_dtype=torch.float16,
-    **kwargs
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
@@ -182,7 +181,7 @@ def quant_tensor_sym(
     tensor_max=None,
     q_scale_thresh=1e-5,
     init_scale=None,
-    **kwargs
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
@@ -257,7 +256,7 @@ def quant_tensor_asym(
     tensor_min=None,
     tensor_max=None,
     q_scale_thresh=1e-5,
-    **kwargs
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically.
 
@@ -317,7 +316,7 @@ def quant_tensor_sym_gptq(
     tensor_min=None,
     tensor_max=None,
     q_scale_thresh=1e-5,
-    **kwargs
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically.
 
@@ -383,7 +382,7 @@ def quant_tensor_asym_wo_round(
     tensor_min=None,
     tensor_max=None,
     q_scale_thresh=1e-5,
-    **kwargs
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically without rounding, this is mainly for tuning bias, norm.
 

@@ -340,6 +340,32 @@ def _prefetch_shard(
         return None
 
 
+def _configure_model_free_int_search_ratio(default_scheme: dict, disable_opt_rtn: bool) -> None:
+    """Enable the conservative default search ratio for model-free INT opt-RTN.
+
+    This runs only in the main model-free compressor path, before worker
+    processes are spawned, so the message is emitted once for the run instead of
+    once per shard.  It is intentionally conservative because without a real
+    calibration dataset we cannot justify a larger search span.
+    """
+    if disable_opt_rtn:
+        return
+
+    data_type = (default_scheme.get("data_type") or "int").lower()
+    if is_mx_fp(data_type) or is_nv_fp(data_type) or data_type == _NVFP4_E5M3_DATA_TYPE:
+        return
+
+    if envs.AR_SEARCH_SCALE_RATIO is None and not envs.is_set("AR_SEARCH_SCALE_RATIO"):
+        envs.set_config(AR_SEARCH_SCALE_RATIO=0.05)
+        logger.info(
+            "Model-free INT opt-RTN is using the default empirical search ratio %.3f for "
+            "AR_SEARCH_SCALE_RATIO. This is a conservative fallback because real-data calibration "
+            "is unavailable; keep it small and override it with AR_SEARCH_SCALE_RATIO=<ratio> when "
+            "you have better calibration data.",
+            envs.AR_SEARCH_SCALE_RATIO,
+        )
+
+
 def _process_single_shard_task(
     shard_idx: int,
     shard_name: str,
@@ -1691,7 +1717,7 @@ class _ModelFreeCompressorCore:
             or data_type == _NVFP4_E5M3_DATA_TYPE
         ):
             return "enabled"
-        return "disabled"
+        return "enabled"
 
     # -------------------------------------------------------------------
     # Public entry point
@@ -1743,25 +1769,6 @@ class _ModelFreeCompressorCore:
             packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
         else:
             packing_format = "fake" if self.format == "fake" else "auto_round:auto_gptq"
-        if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
-            if not self.disable_opt_rtn:
-                logger.info(
-                    "MXFP optimized RTN is enabled: evaluating the baseline E8M0 scale, "
-                    "2x scale, and 0.5x scale independently for each group. "
-                    "Pass --disable_opt_rtn to use plain RTN."
-                )
-        elif is_nv_fp(data_type):
-            logger.info(
-                "NVFP4 model-free quantization uses a fixed global input scale of %s "
-                "(AR_MODEL_FREE_NVFP4_INPUT_SCALE) for every quantized layer.",
-                envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE,
-            )
-        else:
-            logger.info(
-                "Integer WOQ model-free quantization uses plain RTN "
-                "(opt_rtn is disabled for INT WOQ to preserve accuracy)."
-            )
-
         logger.info(
             f"Model-free quantization: {self.model_name_or_path}\n"
             f"  Scheme: {self.scheme_obj}\n"
@@ -1778,6 +1785,29 @@ class _ModelFreeCompressorCore:
             f"  Torch compile: {self.enable_torch_compile}\n"
             f"  Device: {self.device}"
         )
+
+        if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
+            if not self.disable_opt_rtn:
+                logger.info(
+                    "MXFP optimized RTN is enabled: evaluating the baseline E8M0 scale, "
+                    "2x scale, and 0.5x scale independently for each group. "
+                    "Pass --disable_opt_rtn to use plain RTN."
+                )
+        elif is_nv_fp(data_type):
+            logger.info(
+                "NVFP4 model-free quantization uses a fixed global input scale of %s "
+                "(AR_MODEL_FREE_NVFP4_INPUT_SCALE) for every quantized layer.",
+                envs.AR_MODEL_FREE_NVFP4_INPUT_SCALE,
+            )
+        else:
+            _configure_model_free_int_search_ratio(self.default_scheme, self.disable_opt_rtn)
+            if not self.disable_opt_rtn:
+                logger.info("Integer WOQ optimized RTN is enabled. Pass --disable_opt_rtn to use plain RTN.")
+            else:
+                logger.info(
+                    "Integer WOQ optimized RTN is disabled. Pass --enable_opt_rtn or unset --disable_opt_rtn "
+                    "to use the optimized search path.",
+                )
 
         start_time = time.time()
         memory_monitor.reset()

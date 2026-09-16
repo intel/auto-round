@@ -1694,6 +1694,21 @@ class TestCliAutoRouting:
 
         assert kwargs["disable_opt_rtn"] is True
 
+    def test_model_free_entry_honors_disable_opt_rtn_without_rtn_config(self, caplog):
+        from auto_round.compressors.model_free import ModelFreeCompressor
+
+        with caplog.at_level(logging.WARNING, logger="auto_round"):
+            compressor = AutoRound(
+                "unused-model-path",
+                scheme="W4A16",
+                model_free=True,
+                disable_opt_rtn=True,
+            )
+
+        assert isinstance(compressor, ModelFreeCompressor)
+        assert compressor.disable_opt_rtn is True
+        assert "RTN-specific parameter 'disable_opt_rtn'" not in caplog.text
+
     def test_model_free_uses_auto_round_format_by_default(self, monkeypatch):
         from auto_round.cli import main as cli_main
 

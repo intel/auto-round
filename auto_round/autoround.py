@@ -359,6 +359,7 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
 _ENTRY_KWARG_OWNERS = {
     "model_free": "route",
     "disable_model_free": "route",
+    "disable_opt_rtn": "route",
     "scale_dtype": "compressor",
     "ignore_layers": "compressor",
     "quant_lm_head": "compressor",
@@ -486,7 +487,11 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             "do not pass it as AutoRound(..., backend=...)."
         )
     rotation_config = direct_kwargs.pop("rotation_config", None)
-    config_kwargs = {key: value for key, value in direct_kwargs.items() if key not in _ENTRY_KWARG_OWNERS}
+    config_kwargs = {
+        key: value
+        for key, value in direct_kwargs.items()
+        if key not in _ENTRY_KWARG_OWNERS or key in {"disable_opt_rtn", "enable_opt_rtn"}
+    }
     if alg_configs is None:
         # Preserve the legacy entry semantics: zero iterations are RTN, while
         # positive iterations use SignRound.  RTN-only kwargs also select RTN
@@ -575,6 +580,8 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             opt_rtn_value = False if key == "enable_opt_rtn" else value
             targets = [config for config in configs if "disable_opt_rtn" in _config_fields(config)]
             if not targets:
+                if direct_kwargs.get("model_free", False):
+                    continue
                 logger.warning_once(
                     "RTN-specific parameter '%s' was provided, but RTN/AWQ is not enabled by alg_configs. "
                     "The parameter is ignored.",
@@ -725,7 +732,7 @@ class _CompressorBuilder(object):
 
         # Model-free routing is now supported directly by the new entry path.
         model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
-        model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
+        model_free_disable_opt_rtn = route_kwargs.pop("disable_opt_rtn", getattr(quant_config, "disable_opt_rtn", None))
         # Model-free eligibility also depends on base-level options such as
         # static KV/attention quantization. Keep those options visible to the
         # route predicate; otherwise the fast path silently drops them and

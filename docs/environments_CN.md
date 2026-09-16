@@ -151,6 +151,16 @@ export AR_MODEL_FREE_SHARD_PARALLELISM=4
 export AR_MODEL_FREE_NVFP4_INPUT_SCALE=0.5
 ```
 
+### AR_NVFP4_NEIGHBOR_SEARCH_STEPS
+- **描述**：控制 NVFP4 opt-RTN scale 微调时的邻域搜索半径。设为 `N` 时，会在每个 group 的基线 scale 周围向前/向后各评估最多 `N` 个可表示的离散 scale 值，从而扩展局部搜索范围而不改变基础量化逻辑。该参数在 `auto_round.data_type.nvfp` 的快速 scale refinement 过程中使用。
+- **默认值**：`8`
+- **有效值**：正整数，如 `1`、`4`、`8`、`16`
+- **用途**：调大该值可进行更广的局部邻域搜索；调小则更快但可能更粗略。
+
+```bash
+export AR_NVFP4_NEIGHBOR_SEARCH_STEPS=4
+```
+
 ### AR_AUTO_SCHEME_NSAMPLES
 - **描述**：控制 AutoScheme 评分时使用的校准样本数默认值，仅在 `AutoScheme.nsamples` 未显式设置时生效。
 - **默认值**：未设置 → 16

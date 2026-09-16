@@ -16,11 +16,9 @@
 
 The integer tests cover two behaviors. Plain RTN
 (``disable_opt_rtn=True``) is expected to be bit-exact between the model-free
-path and the regular RTN flow.  Integer WOQ in model-free mode always uses
-plain RTN regardless of ``disable_opt_rtn``; opt_rtn is disabled for INT WOQ
-because it does not improve accuracy.  A dedicated test verifies that passing
-``disable_opt_rtn=False`` for INT WOQ still produces the same tensors as
-``disable_opt_rtn=True``.  The MXFP tests compare the AutoRound-format
+path and the regular RTN flow. Integer WOQ with ``disable_opt_rtn=False`` uses
+the optimized RTN scale search, so its export contract matches plain RTN while
+at least one quantized tensor differs. The MXFP tests compare the AutoRound-format
 quantization metadata produced for a mixed MXFP4/MXFP8 AutoScheme.
 These tests assert that:
 
@@ -390,10 +388,7 @@ def test_w8_asymmetric_refused_on_both_routes(tiny_opt_model_path):
 def test_model_free_int_opt_rtn_same_as_plain_rtn(
     tmp_path, tiny_opt_model_path, scheme_name, scheme_preset, scheme_kwargs
 ):
-    """``AutoRound(model_free=True, disable_opt_rtn=False)`` for integer WOQ must
-    produce identical tensors to plain RTN (``disable_opt_rtn=True``), because
-    opt_rtn is always disabled for INT WOQ in model-free mode.
-    """
+    """INT WOQ opt-RTN must preserve the export contract and alter quantized values."""
     from auto_round import AutoRound
 
     out_opt_rtn = str(tmp_path / f"mf_opt_rtn_{scheme_name}")
@@ -434,7 +429,10 @@ def test_model_free_int_opt_rtn_same_as_plain_rtn(
     _, out_plain_rtn = plain_rtn.quantize_and_save(format=export_format, output_dir=out_plain_rtn)
 
     _assert_int_export_contract_parity(out_opt_rtn, out_plain_rtn)
-    _assert_int_tensor_parity(out_opt_rtn, out_plain_rtn)
+    opt_tensors = _load_all_keys_and_tensors(out_opt_rtn)
+    plain_tensors = _load_all_keys_and_tensors(out_plain_rtn)
+    quantized_tensor_names = [name for name in opt_tensors if name.endswith((".qweight", ".scales"))]
+    assert any(not torch.equal(opt_tensors[name], plain_tensors[name]) for name in quantized_tensor_names)
 
 
 def test_auto_routing_to_model_free(tiny_opt_model_path):

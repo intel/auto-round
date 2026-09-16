@@ -294,7 +294,7 @@ def quantize_weight_rtn(
     group_size: int,
     sym: bool = True,
     device: Optional[torch.device] = None,
-    disable_opt_rtn: bool = True,
+    disable_opt_rtn: bool = False,
     *,
     packing: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -308,9 +308,10 @@ def quantize_weight_rtn(
     sym    : use symmetric quantisation
     device : compute device (cuda / cpu). Results are always returned on CPU.
     disable_opt_rtn : when False and sym=True, use the optimised-RTN scale
-        search (``quant_tensor_opt_rtn_sym``) which evaluates three E8M0
-        candidates per group and picks the best MSE.  Defaults to True
-        (plain RTN) to preserve backward-compatible behaviour.
+        search (``quant_tensor_opt_rtn_sym``), which evaluates the search
+        window defined by ``AR_SEARCH_SCALE_RATIO`` and picks the best MSE.
+        Defaults to False so model-free integer WOQ follows the same opt-RTN
+        behavior as the regular path unless the caller explicitly disables it.
     packing : the packing_format the artifact will declare (required); the
         zero-point convention follows the inference backend registry.  GPTQ_FORMAT
         entries ("auto_round:auto_gptq", qlinear_torch_zp) store zp - 1 per
@@ -1562,8 +1563,6 @@ def _quantize_single_tensor(
             return layer_name, {tensor_name: tensor}, None, layer_name
 
     # ---- Integer WOQ path ----
-    # opt_rtn is always disabled for integer WOQ in model-free mode because
-    # the scale search does not improve accuracy for INT quantization here.
     try:
         if scheme.get("_output_format") == "fake":
             out = _quantize_weight_int_fake(
@@ -1573,6 +1572,7 @@ def _quantize_single_tensor(
                 group_size=group_size,
                 sym=sym,
                 device=device,
+                disable_opt_rtn=disable_opt_rtn,
             )
             logger.debug(f"Fake-quantized: {layer_name} (bits={bits}, group_size={group_size}, sym={sym})")
             return layer_name, out, layer_name, None
@@ -1583,7 +1583,7 @@ def _quantize_single_tensor(
             group_size=group_size,
             sym=sym,
             device=device,
-            disable_opt_rtn=True,
+            disable_opt_rtn=disable_opt_rtn,
             # The packing convention must match the declared packing_format:
             # see _declared_int_packing (single source for bytes and config).
             packing=_declared_int_packing(sym),

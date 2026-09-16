@@ -151,6 +151,16 @@ export AR_MODEL_FREE_SHARD_PARALLELISM=4
 export AR_MODEL_FREE_NVFP4_INPUT_SCALE=0.5
 ```
 
+### AR_NVFP4_NEIGHBOR_SEARCH_STEPS
+- **Description**: Controls the neighbor-search radius used by the NVFP4 opt-RTN scale refinement. A value of `N` evaluates up to `N` previous and `N` next representable scale values around the baseline scale for each group, which widens the discrete search neighborhood without changing the base quantization logic. This is used in `auto_round.data_type.nvfp` during the fast scale refinement pass.
+- **Default**: `8`
+- **Valid Values**: positive integer, e.g. `1`, `4`, `8`, `16`
+- **Usage**: Increase this for a broader local search over neighboring FP8/E4M3 scales; lower it for faster but less exhaustive tuning.
+
+```bash
+export AR_NVFP4_NEIGHBOR_SEARCH_STEPS=4
+```
+
 ### AR_AUTO_SCHEME_NSAMPLES
 - **Description**: Controls the default number of calibration samples used by AutoScheme scoring when `AutoScheme.nsamples` is not explicitly set.
 - **Default**: unset → 16
