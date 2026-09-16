@@ -46,6 +46,51 @@ def has_moe_gemm_decode():
     return hasattr(ark.xpu_lib, "moe_gemm_decode")
 
 
+def has_moe_gemm_prefill_mxfp8_mxfp4():
+    """Check if MXFP8 x MXFP4 MoE prefill kernel is available."""
+    if ark.xpu_lib is None:
+        return False
+    return hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp8_mxfp4")
+
+
+@pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
+@pytest.mark.skipif(
+    not has_moe_gemm_prefill_mxfp8_mxfp4(),
+    reason="MXFP8 x MXFP4 MoE prefill kernel not built (need ARK_SYCL_TLA=ON)",
+)
+class TestMoEGemmPrefillMXFP8MXFP4:
+    """Unit tests for MXFP8 activation x MXFP4 weight MoE prefill."""
+
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    @pytest.mark.parametrize("output_dtype", [torch.float16, torch.bfloat16])
+    def test_constant_block_scaled_values(self, fp8_dtype, output_dtype):
+        num_experts = 2
+        total_tokens = 4
+        N = 16
+        K = 32
+
+        activations = torch.ones(total_tokens, K, dtype=torch.float16, device="xpu").to(fp8_dtype)
+        # 128 -> activation scale 2.0. 126 -> weight scale 0.5. FP4 nibble 0x2 -> 1.0.
+        # Each product is therefore 1.0, so every output element must equal K exactly.
+        activation_scales = torch.full((total_tokens, K // 32), 128, dtype=torch.uint8, device="xpu")
+        weights = torch.full((num_experts, N, K // 2), 0x22, dtype=torch.uint8, device="xpu")
+        weight_scales = torch.full((num_experts, N, K // 32), 126, dtype=torch.uint8, device="xpu")
+        num_tokens_per_expert = torch.tensor([2, 2], dtype=torch.int32, device="xpu")
+
+        output = ark.moe_gemm_prefill_mxfp8_mxfp4(
+            activations,
+            activation_scales,
+            weights,
+            weight_scales,
+            num_tokens_per_expert,
+            output_dtype=output_dtype,
+            group_size=32,
+        )
+
+        expected = torch.full((total_tokens, N), float(K), dtype=torch.float32, device="xpu")
+        torch.testing.assert_close(output.float(), expected, rtol=0, atol=0)
+
+
 @pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
 @pytest.mark.skipif(not has_moe_gemm(), reason="MOE GEMM kernel not built (need ARK_SYCL_TLA=ON)")
 class TestMoEGemm:

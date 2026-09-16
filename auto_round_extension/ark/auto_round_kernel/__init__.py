@@ -44,6 +44,7 @@ class ARK_DT:
     int7 = 263
     int8 = 264
     int32 = 288
+    float4_e2m1 = 4
     float8_e4m3 = 8
     float8_e5m2 = 65544
     float8_e8m0 = 196616
@@ -81,6 +82,8 @@ def cvtstr_dtype(dtype):
         return ARK_DT.float8_e5m2
     if dtype == "fp8_e8m0":
         return ARK_DT.float8_e8m0
+    if dtype in ("fp4_e2m1", "mxfp4"):
+        return ARK_DT.float4_e2m1
     if dtype == "int8":
         return ARK_DT.int8
     if dtype == "int4":
@@ -2424,6 +2427,7 @@ def moe_gemm_decode(
     weight_bits: int = 4,
     group_size: int = 128,
     asym: bool = False,
+    scale_dtype: Optional[str] = None,
 ) -> torch.Tensor:
     """MoE GEMV optimized for the decode phase.
 
@@ -2469,7 +2473,10 @@ def moe_gemm_decode(
     Returns:
         outputs: ``[total_tokens, N]`` in the same dtype as activations.
     """
-    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
+    if scale_dtype is not None:
+        raise ValueError("moe_gemm_decode does not support non-activation scale_dtype; use moe_gemm_prefill")
+
+    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, _scale_dtype_id, total_tokens, N, K, num_experts = (
         _validate_moe_quant_args(
             activations,
             weights,
@@ -2479,6 +2486,7 @@ def moe_gemm_decode(
             weight_bits=weight_bits,
             group_size=group_size,
             asym=asym,
+            scale_dtype=scale_dtype,
             api_name="moe_gemm_decode",
         )
     )
@@ -2577,14 +2585,15 @@ def _validate_moe_quant_args(
     weight_bits: int,
     group_size: int,
     asym: bool,
+    scale_dtype: Optional[str],
     api_name: str,
 ):
     """Shared validation/normalisation for quantized MoE entry points.
 
     Returns a tuple of normalised tensors and dtype/shape metadata used by the
     kernel-call site:
-        ``(activations, weights, scales, zeros, num_tokens_per_expert,
-           weight_dtype, total_tokens, N, K, num_experts)``.
+          ``(activations, weights, scales, zeros, num_tokens_per_expert,
+              weight_dtype, scale_dtype_id, total_tokens, N, K, num_experts)``.
 
     The caller owns the contract that ``num_tokens_per_expert`` sums to
     ``activations.shape[0]``; see :func:`moe_routing_validation_enabled` for how
@@ -2600,6 +2609,8 @@ def _validate_moe_quant_args(
         raise ValueError("activations must be 2D [total_tokens, K]")
     if weights.ndim != 3:
         raise ValueError("weights must be 3D [E, N, K_packed]")
+    if scale_dtype is not None:
+        scale_dtype = scale_dtype.lower()
 
     if not activations.is_contiguous():
         activations = activations.contiguous()
@@ -2638,6 +2649,7 @@ def _validate_moe_quant_args(
         if zeros is not None:
             raise ValueError("zeros must be None for FP8 weights")
         weight_dtype = ARK_DT.float8_e4m3 if weights.dtype == torch.float8_e4m3fn else ARK_DT.float8_e5m2
+        scale_dtype_id = cvt_dtype(activations.dtype)
         if not scales.is_contiguous():
             scales = scales.contiguous()
     elif weight_bits == 16:
@@ -2648,6 +2660,7 @@ def _validate_moe_quant_args(
         weight_dtype = cvt_dtype(activations.dtype)
         if scales is not None or zeros is not None:
             raise ValueError("scales/zeros must be None when weight_bits=16")
+        scale_dtype_id = cvt_dtype(activations.dtype)
     elif weight_bits in (8, 4, 2):
         if weights.dtype != torch.uint8:
             raise ValueError(f"Int{weight_bits} packed weights must be torch.uint8")
@@ -2669,13 +2682,25 @@ def _validate_moe_quant_args(
             )
         if scales is None:
             raise ValueError(f"scales is required for int{weight_bits} weights")
-        if scales.dtype != activations.dtype:
-            raise ValueError("scales dtype must match activations dtype")
         if K % group_size != 0:
             raise ValueError("K must be a multiple of group_size")
+        is_mxfp4 = weight_bits == 4 and scale_dtype == "fp8_e8m0"
         # Group_size constraints per dtype.
+        if is_mxfp4:
+            if group_size != 32:
+                raise ValueError("MXFP4 weights require group_size=32")
+            if asym:
+                raise ValueError("MXFP4 weights do not support asym=True")
+            if scales.dtype != torch.uint8:
+                raise ValueError("MXFP4 scales must be torch.uint8 E8M0")
+            if zeros is not None:
+                raise ValueError("zeros must be None for MXFP4 weights")
+        elif scale_dtype is not None:
+            raise ValueError("scale_dtype is only supported as 'fp8_e8m0' for MXFP4 weights")
+        elif scales.dtype != activations.dtype:
+            raise ValueError("scales dtype must match activations dtype")
         if weight_bits == 4 and (group_size & 1) != 0:
-            raise ValueError("group_size must be even for int4 weights")
+            raise ValueError("group_size must be even for int4/MXFP4 weights")
         if weight_bits == 2 and (group_size & 3) != 0:
             raise ValueError("group_size must be a multiple of 4 for int2 weights")
         expected_scale_shape = (num_experts, N, K // group_size)
@@ -2691,7 +2716,8 @@ def _validate_moe_quant_args(
         else:
             if zeros is not None:
                 raise ValueError("zeros must be None when asym=False")
-        weight_dtype = {8: ARK_DT.int8, 4: ARK_DT.int4, 2: ARK_DT.int2}[weight_bits]
+        weight_dtype = ARK_DT.float4_e2m1 if is_mxfp4 else {8: ARK_DT.int8, 4: ARK_DT.int4, 2: ARK_DT.int2}[weight_bits]
+        scale_dtype_id = ARK_DT.float8_e8m0 if is_mxfp4 else cvt_dtype(activations.dtype)
         if not scales.is_contiguous():
             scales = scales.contiguous()
         if asym and not zeros.is_contiguous():
@@ -2704,7 +2730,19 @@ def _validate_moe_quant_args(
 
     _check_routing_total(num_tokens_per_expert, total_tokens)
 
-    return (activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts)
+    return (
+        activations,
+        weights,
+        scales,
+        zeros,
+        num_tokens_per_expert,
+        weight_dtype,
+        scale_dtype_id,
+        total_tokens,
+        N,
+        K,
+        num_experts,
+    )
 
 
 @dataclass(eq=False)
@@ -2904,6 +2942,7 @@ class MoeSymmetricGemm:
             workspace.data_ptr(),
             self.act_dtype,
             self.weight_dtype,
+            self.act_dtype,
             self.N,
             self.K,
             self.group_size,
@@ -3231,6 +3270,7 @@ def moe_gemm_prefill(
     group_size: int = 128,
     asym: bool = False,
     scale_scheme: Optional[str] = None,
+    scale_dtype: Optional[str] = None,
 ) -> torch.Tensor:
     """MoE Grouped GEMM optimized for the prefill phase, supporting all weight
     encodings of ``moe_gemm_decode`` (FP16/BF16, INT8 sym/asym, INT4 sym/asym,
@@ -3303,7 +3343,7 @@ def moe_gemm_prefill(
             f"got {weights.dtype}"
         )
 
-    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
+    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, scale_dtype_id, total_tokens, N, K, num_experts = (
         _validate_moe_quant_args(
             activations,
             weights,
@@ -3313,6 +3353,7 @@ def moe_gemm_prefill(
             weight_bits=weight_bits,
             group_size=group_size,
             asym=asym,
+            scale_dtype=scale_dtype,
             api_name="moe_gemm_prefill",
         )
     )
@@ -3389,6 +3430,7 @@ def moe_gemm_prefill(
         workspace_ptr,
         cvt_dtype(activations.dtype),
         weight_dtype,
+        scale_dtype_id,
         N,
         K,
         group_size,
@@ -3450,9 +3492,164 @@ def _get_moe_prefill_workspace(device: torch.device, dtype: torch.dtype, E: int,
     return ws
 
 
+_MOE_PREFILL_ACTIVATION_WORKSPACE_CACHE: "dict[tuple, torch.Tensor]" = {}
+_MOE_PREFILL_MXFP8_MXFP4_WEIGHT_STAGING_CACHE: "dict[tuple, tuple]" = {}
+
+
+def _mxfp8_mxfp4_bdpas_enabled() -> bool:
+    env = os.environ.get("ARK_MOE_PREFILL_BDPAS_MXFP8_MXFP4")
+    if env is None:
+        return True
+    return env.strip().lower() not in ("0", "false", "off", "no")
+
+
+def _get_moe_prefill_activation_workspace(
+    device: torch.device, dtype: torch.dtype, total_tokens: int, K: int
+) -> torch.Tensor:
+    if not isinstance(device, torch.device):
+        device = torch.device(device)
+    key = ("activation", device.type, device.index, dtype, int(total_tokens), int(K))
+    ws = _MOE_PREFILL_ACTIVATION_WORKSPACE_CACHE.get(key)
+    if ws is None:
+        ws = torch.empty((total_tokens, K), device=device, dtype=dtype)
+        _MOE_PREFILL_ACTIVATION_WORKSPACE_CACHE[key] = ws
+    return ws
+
+
 def clear_moe_prefill_workspace_cache() -> None:
     """Release all cached `moe_gemm_prefill` dequant-workspace tensors."""
     _MOE_PREFILL_WORKSPACE_CACHE.clear()
+    _MOE_PREFILL_ACTIVATION_WORKSPACE_CACHE.clear()
+    _MOE_PREFILL_MXFP8_MXFP4_WEIGHT_STAGING_CACHE.clear()
+
+
+def moe_gemm_prefill_mxfp8_mxfp4(
+    activations: torch.Tensor,
+    activation_scales: torch.Tensor,
+    weights: torch.Tensor,
+    weight_scales: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    output_dtype: torch.dtype = torch.bfloat16,
+    group_size: int = 32,
+) -> torch.Tensor:
+    """MoE prefill for MXFP8 activations and MXFP4 E2M1 weights.
+
+    ``activations`` are FP8 bytes (``float8_e4m3fn`` or ``float8_e5m2``) with
+    E8M0 block scales ``[total_tokens, K // group_size]``. ``weights`` are
+    packed FP4 E2M1 ``[E, N, K // 2]`` with E8M0 block scales
+    ``[E, N, K // group_size]``. The C++ backend dequantizes both tensors on
+    device into BF16/FP16 workspaces and then dispatches the existing grouped
+    GEMM.
+    """
+    if activations.device.type != "xpu":
+        raise NotImplementedError("moe_gemm_prefill_mxfp8_mxfp4 is only supported on XPU")
+    if activations.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2):
+        raise ValueError(f"activations must be FP8, got {activations.dtype}")
+    if output_dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"output_dtype must be fp16/bf16, got {output_dtype}")
+    if group_size != 32:
+        raise ValueError("MXFP8/MXFP4 prefill currently requires group_size=32")
+    if activations.ndim != 2:
+        raise ValueError("activations must be 2D [total_tokens, K]")
+    if weights.ndim != 3:
+        raise ValueError("weights must be 3D [E, N, K // 2]")
+    if weights.dtype != torch.uint8:
+        raise ValueError(f"MXFP4 packed weights must be torch.uint8, got {weights.dtype}")
+    if activation_scales.dtype != torch.uint8 or weight_scales.dtype != torch.uint8:
+        raise ValueError("activation_scales and weight_scales must be torch.uint8 E8M0")
+    if activation_scales.device != activations.device or weights.device != activations.device:
+        raise ValueError("activation_scales and weights must be on the same device as activations")
+    if weight_scales.device != activations.device:
+        raise ValueError("weight_scales must be on the same device as activations")
+
+    if not activations.is_contiguous():
+        activations = activations.contiguous()
+    if not activation_scales.is_contiguous():
+        activation_scales = activation_scales.contiguous()
+    if not weights.is_contiguous():
+        weights = weights.contiguous()
+    if not weight_scales.is_contiguous():
+        weight_scales = weight_scales.contiguous()
+    if num_tokens_per_expert.dtype != torch.int32:
+        num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
+    if not num_tokens_per_expert.is_contiguous():
+        num_tokens_per_expert = num_tokens_per_expert.contiguous()
+
+    total_tokens, K = activations.shape
+    num_experts, N, K_packed = weights.shape
+    if K % group_size != 0:
+        raise ValueError("K must be a multiple of group_size")
+    if K_packed != K // 2:
+        raise ValueError(f"weights last dim {K_packed} must equal K // 2 ({K // 2})")
+    expected_activation_scales = (total_tokens, K // group_size)
+    if tuple(activation_scales.shape) != expected_activation_scales:
+        raise ValueError(
+            f"activation_scales shape {tuple(activation_scales.shape)} != expected {expected_activation_scales}"
+        )
+    expected_weight_scales = (num_experts, N, K // group_size)
+    if tuple(weight_scales.shape) != expected_weight_scales:
+        raise ValueError(f"weight_scales shape {tuple(weight_scales.shape)} != expected {expected_weight_scales}")
+    if num_tokens_per_expert.shape[0] != num_experts:
+        raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
+    if N % 16 != 0:
+        raise ValueError(f"N must be a multiple of 16 (got {N})")
+    _check_routing_total(num_tokens_per_expert, total_tokens)
+
+    lib = get_lib(activations)
+    if not hasattr(lib, "moe_gemm_prefill_mxfp8_mxfp4"):
+        raise RuntimeError(
+            "moe_gemm_prefill_mxfp8_mxfp4: the C++ backend was built without the required symbol. "
+            "Rebuild auto_round_extension with sycl-tla support."
+        )
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=output_dtype)
+    activation_workspace = _get_moe_prefill_activation_workspace(activations.device, output_dtype, total_tokens, K)
+    weight_workspace = _get_moe_prefill_workspace(activations.device, output_dtype, num_experts, K, N)
+    weight_cache_key = (
+        activations.device.type,
+        activations.device.index,
+        output_dtype,
+        int(num_experts),
+        int(N),
+        int(K),
+        id(weights),
+        id(weight_scales),
+        int(weights.data_ptr()),
+        int(weight_scales.data_ptr()),
+    )
+    weight_versions = (int(getattr(weights, "_version", 0)), int(getattr(weight_scales, "_version", 0)))
+    cached_staging = _MOE_PREFILL_MXFP8_MXFP4_WEIGHT_STAGING_CACHE.get(weight_cache_key)
+    bdpas_supported = (
+        _mxfp8_mxfp4_bdpas_enabled()
+        and activations.dtype == torch.float8_e4m3fn
+        and output_dtype == torch.bfloat16
+        and K % 64 == 0
+    )
+    refresh_weight_staging = cached_staging is None or cached_staging[:2] != weight_versions
+
+    lib.moe_gemm_prefill_mxfp8_mxfp4(
+        stream,
+        activations.data_ptr(),
+        activation_scales.data_ptr(),
+        weights.data_ptr(),
+        weight_scales.data_ptr(),
+        outputs.data_ptr(),
+        activation_workspace.data_ptr(),
+        weight_workspace.data_ptr(),
+        cvt_dtype(output_dtype),
+        cvt_dtype(activations.dtype),
+        N,
+        K,
+        group_size,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+        refresh_weight_staging,
+    )
+    if bdpas_supported:
+        _MOE_PREFILL_MXFP8_MXFP4_WEIGHT_STAGING_CACHE[weight_cache_key] = (*weight_versions, weights, weight_scales)
+    return outputs
 
 
 # ---------------------------------------------------------------------------
@@ -3555,6 +3752,7 @@ def moe(
     weight_bits: int = 4,
     group_size: int = 128,
     asym: bool = False,
+    scale_dtype: Optional[str] = None,
     phase: str = "auto",
     decode_threshold: Optional[int] = None,
 ) -> torch.Tensor:
@@ -3573,7 +3771,7 @@ def moe(
             quant-specific layout/dtype contract.
         num_tokens_per_expert: ``[E]`` int32. Sum must equal
             ``activations.shape[0]`` (see :func:`moe_gemm_decode`).
-        scales, zeros, weight_bits, group_size, asym: forwarded to the
+        scales, zeros, weight_bits, group_size, asym, scale_dtype: forwarded to the
             underlying kernel; see :func:`moe_gemm_decode`.
         phase: dispatch mode.
 
@@ -3605,6 +3803,8 @@ def moe(
         phase = "decode" if total_tokens <= threshold else "prefill"
 
     if phase == "decode":
+        if scale_dtype is not None:
+            raise ValueError("moe(phase='decode') does not support scale_dtype; use phase='prefill'")
         return moe_gemm_decode(
             activations,
             weights,
@@ -3625,6 +3825,7 @@ def moe(
         weight_bits=weight_bits,
         group_size=group_size,
         asym=asym,
+        scale_dtype=scale_dtype,
     )
 
 

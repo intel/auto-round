@@ -7,6 +7,7 @@ option(ARK_RESCALE "Experimental" OFF)
 if(ARK_XPU)
   option(ARK_DNNL "Build oneDNN-backed kernels" OFF)
   option(ARK_JOINT_MATRIX "Build BestLA joint_matrix S8 backend" OFF)
+  set(ARK_MXFP_BDPAS_CUTLASS_DIR "" CACHE PATH "Optional CUTLASS tree containing Xe BDPAS block-scaled grouped GEMM headers")
 else()
   option(ARK_DNNL "Build oneDNN-backed kernels" ON)
 endif()
@@ -182,6 +183,17 @@ endif()
 
 if(ARK_XPU AND ARK_SYCL_TLA)
   target_compile_definitions(${PY_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
+  if(ARK_MXFP_BDPAS_CUTLASS_DIR)
+    if(NOT EXISTS "${ARK_MXFP_BDPAS_CUTLASS_DIR}/include/cutlass/gemm/collective/xe_array_mma_blockscaled_native.hpp")
+      message(FATAL_ERROR "ARK_MXFP_BDPAS_CUTLASS_DIR must point to a CUTLASS tree with Xe block-scaled grouped GEMM headers")
+    endif()
+    target_compile_definitions(${PY_NAME} PRIVATE ARK_MXFP_BDPAS_CUTLASS=1)
+    set_source_files_properties(
+      ${CMAKE_CURRENT_SOURCE_DIR}/sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas.cpp
+      PROPERTIES
+        COMPILE_DEFINITIONS "SYCL_TARGET_INTEL_GPU_CRI;SYCL_INTEL_TARGET;CUTLASS_ENABLE_SYCL;CUTE_ENABLE_XE_BLOCK_2D_ASSERT"
+        COMPILE_OPTIONS "-std=c++17;-DCUTLASS_VERSIONS_GENERATED;-I${ARK_MXFP_BDPAS_CUTLASS_DIR}/include;-I${ARK_MXFP_BDPAS_CUTLASS_DIR}/build/include;-I${ARK_MXFP_BDPAS_CUTLASS_DIR}/tools/util/include")
+  endif()
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/wrapper/include)
   target_include_directories(${PY_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated/sdpa)
   # Use SYSTEM include directories for sycl-tla to suppress warnings/errors from third-party headers

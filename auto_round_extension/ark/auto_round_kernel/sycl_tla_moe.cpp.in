@@ -5,6 +5,7 @@
 #if @MOE_SOURCE_MODE@ == 1
 
 #include "sycl_tla_common.hpp"
+#include "sycl_tla_moe_mixed.hpp"
 
 namespace ark {
 
@@ -205,6 +206,7 @@ void sycl_tla_moe_decode_fp8(const MoeDecodeParams& params) {
                                        nullptr,
                                        params.act_dtype,
                                        params.weight_dtype,
+                                       params.act_dtype,
                                        params.N,
                                        params.K,
                                        params.group_size,
@@ -372,12 +374,15 @@ void sycl_tla_moe_decode_@DECODE_INT_KIND@(const MoeDecodeParams& params) {
 #elif @MOE_SOURCE_MODE@ == 7
 
 #include "sycl_tla_common.hpp"
+#include "sycl_tla_moe_mixed.hpp"
+#include "sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas.hpp"
 
 namespace ark {
 
 void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, void* scales, void* zeros, void* outputs,
-                      void* dequant_workspace, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
-                      int group_size, int* num_tokens_per_expert, int num_experts, int total_tokens, bool asym) {
+                      void* dequant_workspace, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype,
+                      BTLA_DTYPE scale_dtype, int N, int K, int group_size, int* num_tokens_per_expert,
+                      int num_experts, int total_tokens, bool asym) {
   if (total_tokens == 0) return;
 
   if (weight_dtype == act_dtype && weight_dtype == BTLA_DTYPE::F16) {
@@ -390,7 +395,7 @@ void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, void* sc
   }
 
   MoePrefillParams params{q, activations, weights, scales, zeros, outputs, dequant_workspace, act_dtype, weight_dtype,
-                          N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, asym};
+                          scale_dtype, N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, asym};
 
   if (sycl_tla_moe_prefill_int8_dpas(params)) return;
   if (sycl_tla_moe_prefill_s4_dpas(params)) return;
@@ -410,6 +415,83 @@ void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, void* sc
     return;
   }
   throw std::invalid_argument("moe_gemm_prefill: act_dtype must be F16 or BF16");
+}
+
+template <typename ScalarT>
+void moe_gemm_prefill_mxfp8_mxfp4_dispatch(sycl::queue* q, void* activations, void* activation_scales,
+                                           void* weights, void* weight_scales, void* outputs,
+                                           void* activation_workspace, void* weight_workspace,
+                                           BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype, int N, int K,
+                                           int group_size, int* num_tokens_per_expert, int num_experts,
+                                           int total_tokens, bool refresh_weight_staging) {
+  if (activation_workspace == nullptr || weight_workspace == nullptr) {
+    throw std::invalid_argument("moe_gemm_prefill_mxfp8_mxfp4: workspace pointers must be non-null");
+  }
+  if (K % group_size != 0) {
+    throw std::invalid_argument("moe_gemm_prefill_mxfp8_mxfp4: K must be a multiple of group_size");
+  }
+
+  const bool use_lut = moe_dequant::fp8_decode_use_lut();
+  auto* act_hp = static_cast<ScalarT*>(activation_workspace);
+  auto* weights_kn = static_cast<ScalarT*>(weight_workspace);
+  if (sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas(q, activations, activation_scales, weights, weight_scales, outputs,
+                                             activation_workspace, weight_workspace, output_dtype, activation_dtype,
+                                             N, K, group_size, num_tokens_per_expert, num_experts, total_tokens,
+                                             refresh_weight_staging)) {
+    return;
+  }
+  if (activation_dtype == BTLA_DTYPE::F8_E4M3) {
+    if (use_lut) {
+      moe_mixed_detail::launch_dequant_mxfp8_activation<ScalarT, true, true>(
+          q, static_cast<const uint8_t*>(activations), static_cast<const uint8_t*>(activation_scales), act_hp,
+          total_tokens, K, group_size);
+    } else {
+      moe_mixed_detail::launch_dequant_mxfp8_activation<ScalarT, true, false>(
+          q, static_cast<const uint8_t*>(activations), static_cast<const uint8_t*>(activation_scales), act_hp,
+          total_tokens, K, group_size);
+    }
+  } else if (activation_dtype == BTLA_DTYPE::F8_E5M2) {
+    if (use_lut) {
+      moe_mixed_detail::launch_dequant_mxfp8_activation<ScalarT, false, true>(
+          q, static_cast<const uint8_t*>(activations), static_cast<const uint8_t*>(activation_scales), act_hp,
+          total_tokens, K, group_size);
+    } else {
+      moe_mixed_detail::launch_dequant_mxfp8_activation<ScalarT, false, false>(
+          q, static_cast<const uint8_t*>(activations), static_cast<const uint8_t*>(activation_scales), act_hp,
+          total_tokens, K, group_size);
+    }
+  } else {
+    throw std::invalid_argument("moe_gemm_prefill_mxfp8_mxfp4: activation_dtype must be F8_E4M3 or F8_E5M2");
+  }
+
+  moe_mixed_detail::launch_dequant_mxfp4<ScalarT>(q, static_cast<const uint8_t*>(weights),
+                                                  static_cast<const uint8_t*>(weight_scales), weights_kn,
+                                                  num_experts, N, K, group_size, num_tokens_per_expert);
+  moe_gemm(q, act_hp, weights_kn, nullptr, outputs, output_dtype, N, K, num_tokens_per_expert, num_experts);
+}
+
+void moe_gemm_prefill_mxfp8_mxfp4(sycl::queue* q, void* activations, void* activation_scales, void* weights,
+                                  void* weight_scales, void* outputs, void* activation_workspace,
+                                  void* weight_workspace, BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype,
+                                  int N, int K, int group_size, int* num_tokens_per_expert, int num_experts,
+                                  int total_tokens, bool refresh_weight_staging) {
+  if (total_tokens == 0) return;
+  if (output_dtype == BTLA_DTYPE::F16) {
+    moe_gemm_prefill_mxfp8_mxfp4_dispatch<sycl::half>(q, activations, activation_scales, weights, weight_scales,
+                                                      outputs, activation_workspace, weight_workspace, output_dtype,
+                                                      activation_dtype, N, K, group_size, num_tokens_per_expert,
+                                                      num_experts, total_tokens, refresh_weight_staging);
+    return;
+  }
+  if (output_dtype == BTLA_DTYPE::BF16) {
+    using BF = sycl::ext::oneapi::bfloat16;
+    moe_gemm_prefill_mxfp8_mxfp4_dispatch<BF>(q, activations, activation_scales, weights, weight_scales, outputs,
+                                              activation_workspace, weight_workspace, output_dtype, activation_dtype,
+                                              N, K, group_size, num_tokens_per_expert, num_experts, total_tokens,
+                                              refresh_weight_staging);
+    return;
+  }
+  throw std::invalid_argument("moe_gemm_prefill_mxfp8_mxfp4: output_dtype must be F16 or BF16");
 }
 
 }  // namespace ark
@@ -514,8 +596,8 @@ void sycl_tla_moe_prefill_dequant_@MOE_DEQUANT_DTYPE@(const MoePrefillParams& pa
   using ScalarT = @MOE_DEQUANT_SCALAR@;
   auto* weights_kn = static_cast<ScalarT*>(params.dequant_workspace);
   moe_mixed_detail::dequant_to_KN<ScalarT>(
-      params.q, params.weights, params.scales, params.zeros, weights_kn, params.weight_dtype, params.num_experts,
-      params.N, params.K, params.group_size, params.asym, params.num_tokens_per_expert);
+      params.q, params.weights, params.scales, params.zeros, weights_kn, params.weight_dtype, params.scale_dtype,
+      params.num_experts, params.N, params.K, params.group_size, params.asym, params.num_tokens_per_expert);
   moe_gemm(params.q, params.activations, weights_kn, nullptr, params.outputs, params.act_dtype, params.N, params.K,
            params.num_tokens_per_expert, params.num_experts);
 }
@@ -580,8 +662,8 @@ void moe_gemm_prefill_fp8_dpas(sycl::queue* q, void* activations, void* weights,
   if (weight_dtype != BTLA_DTYPE::F8_E4M3 && weight_dtype != BTLA_DTYPE::F8_E5M2) {
     throw std::invalid_argument("moe_gemm_prefill_fp8_dpas: weight_dtype must be F8_E4M3 or F8_E5M2");
   }
-  MoePrefillParams params{q, activations, weights, scales, nullptr, outputs, nullptr, act_dtype, weight_dtype, N, K,
-                          0, num_tokens_per_expert, num_experts, total_tokens, false};
+  MoePrefillParams params{q, activations, weights, scales, nullptr, outputs, nullptr, act_dtype, weight_dtype,
+                          BTLA_DTYPE::F32, N, K, 0, num_tokens_per_expert, num_experts, total_tokens, false};
   const int average_tokens = num_experts > 0 ? total_tokens / num_experts : 0;
   const bool is_e4m3 = weight_dtype == BTLA_DTYPE::F8_E4M3;
   if (act_dtype == BTLA_DTYPE::F16) {
@@ -679,8 +761,8 @@ void moe_gemm_prefill_int_dpas(sycl::queue* q, void* activations, void* weights,
   if (weight_dtype != BTLA_DTYPE::S8) {
     throw std::invalid_argument("moe_gemm_prefill_int_dpas: weight_dtype must be S8");
   }
-  MoePrefillParams params{q, activations, weights, scales, nullptr, outputs, nullptr, act_dtype, weight_dtype, N, K,
-                          0, num_tokens_per_expert, num_experts, total_tokens, false};
+  MoePrefillParams params{q, activations, weights, scales, nullptr, outputs, nullptr, act_dtype, weight_dtype,
+                          BTLA_DTYPE::F32, N, K, 0, num_tokens_per_expert, num_experts, total_tokens, false};
   const int average_tokens = num_experts > 0 ? total_tokens / num_experts : 0;
   if (act_dtype == BTLA_DTYPE::F16) {
     if (average_tokens <= 8) moe_prefill_int_tensor_detail::dispatch_f16_small(params);
@@ -880,6 +962,7 @@ void sycl_tla_moe_decode_int4(const MoeDecodeParams& params) {
                                        nullptr,
                                        params.act_dtype,
                                        params.weight_dtype,
+                                       params.act_dtype,
                                        params.N,
                                        params.K,
                                        params.group_size,

@@ -146,8 +146,15 @@ void moe_decode_release_scratch();
  *   - outputs:               [total_tokens, N]      in act_dtype
  */
 void moe_gemm_prefill(sycl::queue* q, void* activations, void* weights, void* scales, void* zeros, void* outputs,
-                      void* dequant_workspace, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
-                      int group_size, int* num_tokens_per_expert, int num_experts, int total_tokens, bool asym);
+                      void* dequant_workspace, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype,
+                      BTLA_DTYPE scale_dtype, int N, int K, int group_size, int* num_tokens_per_expert,
+                      int num_experts, int total_tokens, bool asym);
+
+void moe_gemm_prefill_mxfp8_mxfp4(sycl::queue* q, void* activations, void* activation_scales, void* weights,
+                                  void* weight_scales, void* outputs, void* activation_workspace,
+                                  void* weight_workspace, BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype,
+                                  int N, int K, int group_size, int* num_tokens_per_expert, int num_experts,
+                                  int total_tokens, bool refresh_weight_staging);
 
 struct MoePrefillParams {
     sycl::queue* q;
@@ -159,6 +166,7 @@ struct MoePrefillParams {
     void* dequant_workspace;
     BTLA_DTYPE act_dtype;
     BTLA_DTYPE weight_dtype;
+    BTLA_DTYPE scale_dtype;
     int N;
     int K;
     int group_size;

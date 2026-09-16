@@ -85,6 +85,14 @@ class MoEDequantKernelInt2Fast;
 template <typename ScalarT, bool IsE4M3, bool UseLut>
 class MoEDequantKernelFP8;
 
+template <typename ScalarT, bool IsE4M3, bool UseLut>
+class MoEDequantKernelMXFP8Activation;
+
+template <typename ScalarT>
+class MoEDequantKernelMXFP4;
+
+class MoEUnpackKernelMXFP4ToFP8;
+
 // Tile sizes for the dequant kernels.
 //
 // Each work-group covers a (PACK_K x WG_N) tile in (k, n) and writes PACK_K
@@ -114,6 +122,7 @@ constexpr int WG_N = 32;
 constexpr int PACK_K_FP = 4;
 constexpr int PACK_K_INT8 = 4;
 constexpr int PACK_K_FP8 = 4;
+constexpr int PACK_K_MXFP8 = 4;
 
 // PR-1 fast-path PACK_K: one work-item handles 4 packed bytes for INT4
 // (= 8 nibbles = 8 K outputs) and 2 packed bytes for INT2 (= 8 fields =
@@ -499,14 +508,99 @@ void launch_dequant_fp8(sycl::queue* q, const uint8_t* weights_NK, const ScalarT
       });
 }
 
+template <typename ScalarT, bool IsE4M3, bool UseLut>
+void launch_dequant_mxfp8_activation(sycl::queue* q, const uint8_t* activations, const uint8_t* scales,
+                                     ScalarT* activations_hp, int total_tokens, int K, int group_size) {
+  if (total_tokens == 0 || K == 0) return;
+  const int num_groups_k = K / group_size;
+  const int k_tiles = (K + PACK_K_MXFP8 - 1) / PACK_K_MXFP8;
+  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(k_tiles)};
+
+  q->parallel_for<MoEDequantKernelMXFP8Activation<ScalarT, IsE4M3, UseLut>>(
+      global, [=](sycl::id<2> idx) {
+        const int row = static_cast<int>(idx[0]);
+        const int k_base = static_cast<int>(idx[1]) * PACK_K_MXFP8;
+        const int g = k_base / group_size;
+        const float scale = moe_dequant::decode_e8m0_scale(scales[static_cast<size_t>(row) * num_groups_k + g]);
+        const size_t row_base = static_cast<size_t>(row) * K;
+#pragma unroll
+        for (int j = 0; j < PACK_K_MXFP8; ++j) {
+          const int k = k_base + j;
+          if (k >= K) break;
+          const uint8_t raw = activations[row_base + static_cast<size_t>(k)];
+          const float v = moe_dequant::decode_fp8<IsE4M3, UseLut>(raw) * scale;
+          activations_hp[row_base + static_cast<size_t>(k)] = static_cast<ScalarT>(v);
+        }
+      });
+}
+
+template <typename ScalarT>
+void launch_dequant_mxfp4(sycl::queue* q, const uint8_t* weights_NKp, const uint8_t* scales, ScalarT* weights_KN,
+                          int E, int N, int K, int group_size, const int* num_tokens_per_expert = nullptr) {
+  if (E == 0 || N == 0 || K == 0) return;
+  if ((K & 1) != 0) {
+    throw std::invalid_argument("moe_gemm_prefill(mxfp4): K must be even");
+  }
+  const int num_groups_k = K / group_size;
+  const int k_packed = K / 2;
+
+  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(k_packed),
+                        static_cast<size_t>((N + WG_N - 1) / WG_N) * WG_N};
+  sycl::range<3> local{1, 1, static_cast<size_t>(WG_N)};
+
+  q->parallel_for<MoEDequantKernelMXFP4<ScalarT>>(
+      sycl::nd_range<3>(global, local), [=](sycl::nd_item<3> it) {
+        const int e = static_cast<int>(it.get_global_id(0));
+        if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
+        const int kp = static_cast<int>(it.get_global_id(1));
+        const int n = static_cast<int>(it.get_global_id(2));
+        if (n >= N) return;
+        const int k_base = kp * 2;
+        const int g = k_base / group_size;
+        const size_t s_idx = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * num_groups_k +
+                             static_cast<size_t>(g);
+        const float scale = moe_dequant::decode_e8m0_scale(scales[s_idx]);
+        const uint8_t packed = weights_NKp[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
+                                           static_cast<size_t>(kp)];
+        const size_t out_base = static_cast<size_t>(e) * K * N + static_cast<size_t>(n);
+        float lo, hi;
+        moe_dequant::decode_fp4_e2m1_pair(packed, lo, hi);
+        weights_KN[out_base + static_cast<size_t>(k_base) * N] = static_cast<ScalarT>(lo * scale);
+        weights_KN[out_base + static_cast<size_t>(k_base + 1) * N] = static_cast<ScalarT>(hi * scale);
+      });
+}
+
+inline void launch_unpack_mxfp4_to_fp8_e4m3(sycl::queue* q, const uint8_t* weights_NKp, uint8_t* weights_NK, int E,
+                                            int N, int K, const int* num_tokens_per_expert = nullptr) {
+  if (E == 0 || N == 0 || K == 0) return;
+  if ((K & 1) != 0) {
+    throw std::invalid_argument("moe_gemm_prefill(mxfp4->fp8): K must be even");
+  }
+  const int k_packed = K / 2;
+
+  sycl::range<3> global{static_cast<size_t>(E), static_cast<size_t>(N), static_cast<size_t>(k_packed)};
+  q->parallel_for<MoEUnpackKernelMXFP4ToFP8>(global, [=](sycl::id<3> idx) {
+    const int e = static_cast<int>(idx[0]);
+    if (num_tokens_per_expert != nullptr && num_tokens_per_expert[e] == 0) return;
+    const int n = static_cast<int>(idx[1]);
+    const int kp = static_cast<int>(idx[2]);
+    const uint8_t packed = weights_NKp[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed +
+                                       static_cast<size_t>(kp)];
+    const size_t out_base = (static_cast<size_t>(e) * N + static_cast<size_t>(n)) * K +
+                            static_cast<size_t>(kp) * 2;
+    weights_NK[out_base] = moe_dequant::encode_fp4_e2m1_as_fp8_e4m3(packed & 0x0Fu);
+    weights_NK[out_base + 1] = moe_dequant::encode_fp4_e2m1_as_fp8_e4m3((packed >> 4) & 0x0Fu);
+  });
+}
+
 // ----------------------------------------------------------------------------
 // Dispatch helper: dequant any supported weight encoding into `weights_KN`
 // (already-allocated `[E, K, N]` ScalarT buffer) using ScalarT == act dtype.
 // ----------------------------------------------------------------------------
 template <typename ScalarT>
 void dequant_to_KN(sycl::queue* q, const void* weights, const void* scales, const void* zeros, ScalarT* weights_KN,
-                   BTLA_DTYPE weight_dtype, int E, int N, int K, int group_size, bool asym,
-                   const int* num_tokens_per_expert = nullptr) {
+                   BTLA_DTYPE weight_dtype, BTLA_DTYPE scale_dtype, int E, int N, int K, int group_size,
+                   bool asym, const int* num_tokens_per_expert = nullptr) {
   if (weight_dtype == BTLA_DTYPE::F16 || weight_dtype == BTLA_DTYPE::BF16) {
     launch_dequant_fp<ScalarT>(q, static_cast<const ScalarT*>(weights), weights_KN, E, N, K, num_tokens_per_expert);
     return;
@@ -533,6 +627,17 @@ void dequant_to_KN(sycl::queue* q, const void* weights, const void* scales, cons
                                           static_cast<const ScalarT*>(zeros), weights_KN, E, N, K, group_size,
                                           num_tokens_per_expert);
     }
+    return;
+  }
+  if (weight_dtype == BTLA_DTYPE::F4_E2M1) {
+    if (asym) {
+      throw std::invalid_argument("moe_gemm_prefill(mxfp4): asym mode is not supported");
+    }
+    if (scale_dtype != BTLA_DTYPE::F8_E8M0) {
+      throw std::invalid_argument("moe_gemm_prefill(mxfp4): scale_dtype must be F8_E8M0");
+    }
+    launch_dequant_mxfp4<ScalarT>(q, static_cast<const uint8_t*>(weights), static_cast<const uint8_t*>(scales),
+                                  weights_KN, E, N, K, group_size, num_tokens_per_expert);
     return;
   }
   if (weight_dtype == BTLA_DTYPE::S2_CLIP) {
@@ -596,7 +701,7 @@ void dequant_to_KN(sycl::queue* q, const void* weights, const void* scales, cons
     return;
   }
   throw std::invalid_argument(
-      "moe_gemm_prefill: unsupported weight_dtype (supported: F16, BF16, S8, S4_CLIP, S2_CLIP, F8_E4M3, F8_E5M2)");
+      "moe_gemm_prefill: unsupported weight_dtype (supported: F16, BF16, S8, S4_CLIP, S2_CLIP, F4_E2M1, F8_E4M3, F8_E5M2)");
 }
 
 }  // namespace moe_mixed_detail
