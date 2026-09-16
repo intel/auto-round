@@ -44,6 +44,8 @@ packed FP4 code bytes must be **equal** to the PyTorch FP32 reference, no
 mismatch tolerance.
 """
 
+import math
+
 import pytest
 import torch
 from auto_round_kernel.mxfp4_hadamard import (
@@ -75,9 +77,12 @@ DTYPES = [torch.float16, torch.bfloat16]
 # the FP32 accumulator. Tests that probe "as large as possible" stay below it.
 MAX_SAFE_INPUT = 3.4e38 / 32.0**0.5
 
-# Group counts that stress the work-group tail: one work-group covers
-# 256 / 32 = 8 quant groups, so anything not a multiple of 8 has a partial
-# trailing work-group whose idle sub-groups must exit without writing.
+# Group counts that stress the work-group tail. The D = 32 per-item kernel gives
+# one work-item one quantization group and runs kWorkGroupSize = 256 work-items
+# per work-group, so a count that is not a multiple of 256 leaves a partial
+# trailing work-group whose idle work-items must exit without writing. All four
+# counts below are below 256, i.e. every launch here is a single partial
+# work-group.
 TAIL_SHAPES = [(1, 32), (9, 32), (5, 96), (13, 160)]
 
 
@@ -120,8 +125,6 @@ class TestReferenceContract:
         assert torch.all(scale == 0)
 
     def test_e8m0_matches_floor_log2_contract(self):
-        import math
-
         torch.manual_seed(0)
         x = torch.randn(4, 64, dtype=torch.float16)
         _, scale = mxfp4_hadamard_quant_reference(x)
@@ -683,23 +686,39 @@ class TestXpuKernelErrors:
         assert torch.equal(expected[1].cpu(), actual[1].cpu())
 
 
-@requires_xpu
 def _xmx_path_available() -> bool:
     """True when the current XPU build exposes the opt-in XMX path."""
     return _xmx_supported()
 
 
+# One E2M1 level step at the top of a group, expressed as a fraction of the
+# group peak: the levels are 0, .5, 1, 1.5, 2, 3, 4, 6, so the widest single-step
+# gap is 6 - 4 = 2 against a peak of 6. A code that lands one level off cannot
+# exceed this; anything larger means the code moved by two or more levels, or the
+# E8M0 scale bucket disagrees, both of which are real bugs rather than rounding.
+ONE_E2M1_LEVEL_REL = 2.0 / 6.0
+
+
 def _precision_metrics(deq: torch.Tensor, ref: torch.Tensor, ref_scale: torch.Tensor) -> tuple[float, float, float]:
-    """``(sqnr_db, max_rel, p999_rel)`` of ``deq`` vs ``ref`` (both FP32).
+    """``(sqnr_db, max_rel, flip_rate)`` of ``deq`` vs ``ref`` (both FP32).
 
     SQNR is the standard signal-to-quantization-noise ratio in dB. Relative
     errors are measured **per group against the group's peak magnitude**
     (``amax = 6 * 2**(e8m0-127)``, the largest FP4 level): per-element relative
     error is meaningless near zero (FP4 alone allows unbounded relative error
-    for tiny values), while the per-group bound is inherent to E2M1. ``max_rel``
-    is the strict worst case; ``p999_rel`` is the 99.9th percentile, robust to
-    the handful of threshold-boundary code flips that any slightly-different
-    transform path (here: bf16 H + DPAS) produces.
+    for tiny values), while the per-group bound is inherent to E2M1.
+
+    ``max_rel`` is the strict worst case. It is **discrete**, not continuous:
+    the two paths either agree on a code or they do not, so the only attainable
+    values are the E2M1 level gaps over the group peak (0, 1/12, 1/6, 1/3). A
+    threshold set between two of those -- 0.25, say -- therefore does not express
+    a tolerance at all; it silently demands bit-exactness of the top level, which
+    the XMX path (bf16 H + DPAS) never promised.
+
+    ``flip_rate`` is the fraction of elements whose code differs at all. This is
+    what actually carries regression signal: a percentile of ``rel`` is useless
+    here because disagreements are so rare (~3e-4) that every percentile up to
+    p999 sits inside the identical majority and reads exactly 0.
     """
     deq = deq.double()
     ref = ref.double()
@@ -710,8 +729,8 @@ def _precision_metrics(deq: torch.Tensor, ref: torch.Tensor, ref_scale: torch.Te
     amax = (6.0 * torch.pow(2.0, ref_scale.double() - 127.0)).reshape(-1, 1)
     rel = (err.abs().reshape(-1, GROUP_SIZE) / amax).flatten()
     max_rel = float(rel.max())
-    p999_rel = float(rel.quantile(0.999))
-    return sqnr_db, max_rel, p999_rel
+    flip_rate = float((err != 0).double().mean())
+    return sqnr_db, max_rel, flip_rate
 
 
 @requires_xpu
@@ -720,9 +739,8 @@ class TestXpuKernelXmx:
 
     The XMX path is *not* bit-exact: the Hadamard matrix is stored in the
     activation dtype (fp16/bf16) and the transform runs on XMX DPAS with FP32
-    accumulation (relaxed contract). Acceptance: SQNR >= 15 dB and max relative
-    error < 0.25 against the frozen FP32 reference (both measured on
-    dequantized outputs).
+    accumulation (relaxed contract). Acceptance: SQNR >= 15 dB, no code off by
+    more than one E2M1 level, and a code-disagreement rate below 0.1%.
     """
 
     @pytest.fixture(autouse=True)
@@ -745,13 +763,14 @@ class TestXpuKernelXmx:
 
         deq_xmx = _dequantize(codes.cpu(), scale.cpu(), k)
         deq_ref = _dequantize(ref_codes, ref_scale, k)
-        sqnr_db, max_rel, p999_rel = _precision_metrics(deq_xmx, deq_ref, ref_scale)
+        sqnr_db, max_rel, flip_rate = _precision_metrics(deq_xmx, deq_ref, ref_scale)
         assert sqnr_db >= 15.0, f"SQNR {sqnr_db:.2f} dB < 15 dB"
-        # Worst case stays within half the group peak (no real bug); the
-        # 99.9th percentile meets the design-doc 0.25 target robustly, ignoring
-        # the rare threshold-boundary code flips from the bf16-H/DPAS path.
-        assert max_rel < 0.5, f"max relative error {max_rel:.4f} >= 0.5"
-        assert p999_rel < 0.25, f"99.9th pct relative error {p999_rel:.4f} >= 0.25"
+        # Both bounds are on the same quantity -- how far a code may move -- so
+        # they stay consistent as the path changes: max_rel can never exceed one
+        # E2M1 level step, and flip_rate stays a small fraction of a percent
+        # (measured ~2e-4 .. 5e-4 on the shapes below).
+        assert max_rel <= ONE_E2M1_LEVEL_REL + 1e-6, f"max relative error {max_rel:.4f} exceeds one E2M1 level"
+        assert flip_rate < 1e-3, f"code disagreement rate {flip_rate:.2e} >= 1e-3"
 
     @pytest.mark.parametrize("dtype", DTYPES)
     def test_xmx_scales_are_close_to_reference(self, dtype):
@@ -895,9 +914,11 @@ class TestXpuKernelAllDims:
     @pytest.mark.parametrize("dtype", DTYPES)
     @pytest.mark.parametrize("dim", COOPERATIVE_DIMS)
     def test_bit_exact_against_reference(self, dtype, dim):
-        # 33 rows spans more than one work-group for every L, which is what this
-        # case adds over test_partial_work_group_tail (that one owns the
-        # boundary row counts, in one dtype).
+        # Rows per work-group is 256 / L, so 33 rows spans more than one
+        # work-group only at D = 256 (L = 8) and D = 512 (L = 16); at L = 2 and
+        # L = 4 it is a single partial work-group.
+        # test_partial_work_group_tail owns the exact boundary row counts, in
+        # one dtype.
         torch.manual_seed(32)
         x = torch.randn(33, dim, dtype=dtype, device="xpu")
         codes, scale = mxfp4_hadamard_quant(x, get_hadamard_matrix(dim, x.device))
@@ -1014,7 +1035,10 @@ class TestXpuKernelAllDims:
             last = fwht_transform_reference(x, norm, norm_last=True)
             first = fwht_transform_reference(x, norm, norm_last=False)
             assert torch.allclose(last, first, atol=1e-4), f"D={dim}"
-            if not float(norm).hex().endswith("p-4") and dim not in (64, 256):
+            # 1/sqrt(D) is an exact power of two only for D = 64 (1/8) and
+            # D = 256 (1/16); a frexp mantissa of exactly 0.5 is the precise test
+            # for that. Everything else -- 128 included -- must discriminate.
+            if math.frexp(float(norm))[0] != 0.5:
                 assert not torch.equal(last, first), f"D={dim}: the two orders must be distinguishable"
 
     def test_lane_count_divides_sub_group(self):

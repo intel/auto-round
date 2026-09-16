@@ -144,12 +144,12 @@ class XpuMxfp4Hadamard {
   // packed code bytes as four 32-bit words.
   //
   // Shared by every path that owns a whole group in a single work-item (the
-  // D = 32 per-item kernel and each lane of the D = 128 cooperative kernel), so
-  // that all of them are bit-exact against the same PyTorch reference. The
-  // operation order is part of the frozen contract: ilogb for the exponent,
-  // a per-element ldexp for the scaling, and the branchy threshold ladder
-  // above -- not the cheaper bit manipulations, which round NaN/Inf amax
-  // differently.
+  // D = 32 per-item kernel and each lane of the cooperative kernel at any
+  // D > 32), so that all of them are bit-exact against the same PyTorch
+  // reference. The operation order is part of the frozen contract: ilogb for the
+  // exponent, a per-element ldexp for the scaling, and the branchless threshold
+  // count above -- never a direct read of the exponent field, which handles a
+  // non-finite amax differently (see xpu_mxfp4_hadamard_xmx.hpp).
   static inline void quant_group32(const float* v, sycl::vec<uint32_t, 4>& packed, uint8_t& e8m0) {
     float amax = 0.0f;
 #pragma unroll
@@ -524,32 +524,28 @@ class XpuMxfp4Hadamard {
         });
   }
 
-  // Runtime dim -> compile-time lane count. Total over
-  // ``is_supported_hadamard_dim``: every supported D has its own fully unrolled
-  // instantiation and anything else throws, so this never returns having
-  // written nothing. The wrapper and the binding both validate the dim first;
-  // this is the backstop that stops the two sets from drifting apart silently.
-  // A silent no-op here would leave ``out_codes`` / ``out_scale`` holding
-  // whatever the caller allocated -- no error, just wrong bytes.
+  // Runtime dim -> compile-time lane count. Every cooperative D (i.e. every
+  // supported size above 32) gets its own fully unrolled instantiation; an
+  // unsupported one is rejected here as a backstop, the wrapper and the binding
+  // having already validated it.
   template <typename T>
-  static void dispatch_cooperative(sycl::queue* q, const T* x, const float* hadamard, uint8_t* out_codes,
+  static bool dispatch_cooperative(sycl::queue* q, const T* x, const float* hadamard, uint8_t* out_codes,
                                    uint8_t* out_scale, int64_t num_rows, int64_t hadamard_dim) {
     switch (hadamard_dim) {
       case kGroupSize * 2:
         fwht_quant_cooperative<T, 2>(q, x, hadamard, out_codes, out_scale, num_rows);
-        return;
+        return true;
       case kGroupSize * 4:
         fwht_quant_cooperative<T, 4>(q, x, hadamard, out_codes, out_scale, num_rows);
-        return;
+        return true;
       case kGroupSize * 8:
         fwht_quant_cooperative<T, 8>(q, x, hadamard, out_codes, out_scale, num_rows);
-        return;
+        return true;
       case kGroupSize * 16:
         fwht_quant_cooperative<T, 16>(q, x, hadamard, out_codes, out_scale, num_rows);
-        return;
+        return true;
       default:
-        throw std::invalid_argument(
-            "ark::XpuMxfp4Hadamard: hadamard_dim is not a dispatched cooperative transform size");
+        return false;
     }
   }
 
@@ -679,7 +675,16 @@ class XpuMxfp4Hadamard {
 
     if (hadamard_dim > kGroupSize) {
       // D > 32 supports the Sylvester matrix only; the caller enforces this.
-      dispatch_cooperative<T>(q, x, hadamard, out_codes, out_scale, num_rows * (k / hadamard_dim), hadamard_dim);
+      // The dispatch result is checked rather than discarded: on an unsupported
+      // dim no kernel is enqueued, and silently returning would leave
+      // out_codes / out_scale holding whatever the caller allocated -- no
+      // error, just wrong bytes.
+      const bool dispatched = dispatch_cooperative<T>(q, x, hadamard, out_codes, out_scale,
+                                                      num_rows * (k / hadamard_dim), hadamard_dim);
+      if (!dispatched) {
+        throw std::invalid_argument(
+            "ark::XpuMxfp4Hadamard: hadamard_dim is not a dispatched cooperative transform size");
+      }
       return;
     }
 

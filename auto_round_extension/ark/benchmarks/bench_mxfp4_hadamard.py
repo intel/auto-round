@@ -24,8 +24,10 @@ in a 1:1 ratio, while the fused kernel reads 64 B and writes 17 B per group
 that ratio -- measured on Arc Pro B60, 0.144 ns per 64 B read at W/R = 0, 0.187
 at W/R = 0.25 and 0.414 at W/R = 1.0. Second, the instruction mix is wrong:
 ``memcpy`` reaches 407 GB/s where a hand-written 1:1 SYCL kernel reaches only
-310, so even at a matched ratio the two are not comparable. Gating on this
-number understates the kernel by roughly 8%.
+310, so even at a matched ratio the two are not comparable. The copy baseline is
+in fact the faster of the two, so ``f/cp`` reads systematically below the
+stream-only figure on every configuration measured; that is why it is reported
+for context but never gated on.
 
 ``quant_only`` strips the Hadamard transform but keeps the quantization, with
 byte-identical traffic. It is a clean *ablation* and answers "what does the
@@ -59,9 +61,9 @@ is worth stating precisely, because it is not merely "the numbers are big".
 Once the data is resident the roofline rises to cache bandwidth, and the
 transform and quantization arithmetic no longer fits underneath it -- the
 kernel stops being memory bound and becomes math bound. Measured: at
-``[2048, 2048]`` bf16 the stream baseline reaches 1065 GB/s while the fused
-kernel reaches 280, an ``f/s`` of 0.26, whereas the same kernel sits at
-0.93-0.97 once the working set spills to DRAM. Both numbers are real; they
+``[2048, 2048]`` bf16 the stream baseline reaches ~1050 GB/s while the fused
+kernel reaches ~420, an ``f/s`` of 0.40, whereas the same kernel sits at
+0.98-1.01 once the working set spills to DRAM. Both numbers are real; they
 answer different questions, and only the DRAM-bound one answers "does this
 kernel saturate memory?", which is what the gate is for.
 """
@@ -106,7 +108,8 @@ DEFAULT_K = (2048, 4096, 8192)
 # Primary gate: BW(fused) / BW(stream-only). The stream-only baseline is the
 # traffic-matched roofline (same loads/stores, no math), so this is the
 # kernel's utilization of what the device can actually deliver for this access
-# pattern. Measured 0.95-1.00 on Arc Pro B60 for D = 32 and ~0.91 for D = 128.
+# pattern. Measured on Arc Pro B60: 1.011-1.012 on the WAN shapes and a mean of
+# 0.998-0.999 over the DRAM-bound prefill sweep, for both D = 32 and D = 128.
 TARGET_STREAM_RATIO = 0.95
 
 # Secondary gate: BW(HMT+quant) / BW(quant-only) -- the Hadamard ablation.

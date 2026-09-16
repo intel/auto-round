@@ -121,8 +121,10 @@ SUPPORTED_HADAMARD_DIMS = tuple(GROUP_SIZE * (1 << i) for i in range(MAX_LANES_P
 # FP4 (E2M1) magnitude levels.
 E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 
-# (threshold, is_closed_interval, magnitude_index), evaluated in order. Mirrors
-# ``cast_to_fp4`` including the alternating ``<=`` / ``<`` boundary operators.
+# (threshold, is_closed_interval, magnitude_index), first match wins, mirroring
+# the early-out ladder of ``cast_to_fp4`` including its alternating ``<=`` / ``<``
+# boundary operators. ``_encode_fp4`` walks the table in reverse with
+# ``torch.where``, so each earlier entry overrides every later one.
 _E2M1_THRESHOLDS = (
     (0.25, True, 0),
     (0.75, False, 1),
@@ -234,23 +236,24 @@ def hadamard_transform_reference(x_groups: torch.Tensor, h: torch.Tensor) -> tor
 
 
 def fwht_transform_reference(x_groups: torch.Tensor, norm: torch.Tensor, *, norm_last: bool = False) -> torch.Tensor:
-    """32-point fast Walsh-Hadamard transform under the frozen butterfly contract.
+    """D-point fast Walsh-Hadamard transform under the frozen butterfly contract.
 
     Computes the same mathematical result as ``x_groups @ H`` for the normalized
-    Sylvester matrix ``H``, but in ``log2(32) = 5`` butterfly stages instead of
-    32 multiply-accumulates. ``norm = H[0][0] = 1/sqrt(32)`` is applied *first*,
-    then stage ``s`` pairs each lane with ``lane ^ (1 << s)``:
+    Sylvester matrix ``H`` of dimension ``D``, but in ``log2(D)`` butterfly
+    stages instead of ``D`` multiply-accumulates. ``norm = H[0][0] =
+    1/sqrt(D)`` is applied *first*, then stage ``s`` pairs each lane with
+    ``lane ^ (1 << s)``:
 
         ``acc = (lane & h) ? (partner - acc) : (acc + partner)``
 
     Normalizing up front rather than at the end costs the same single multiply
-    but bounds the intermediates by ``sqrt(32) * max|x|`` instead of
-    ``32 * max|x|``, keeping the safe input range identical to Path A. With the
-    scale applied last, inputs above ``FP32_MAX / 32`` overflow to infinity even
+    but bounds the intermediates by ``sqrt(D) * max|x|`` instead of
+    ``D * max|x|``, keeping the safe input range identical to Path A. With the
+    scale applied last, inputs above ``FP32_MAX / D`` overflow to infinity even
     though the mathematical result is perfectly representable.
 
     Taking ``norm`` from the matrix itself (rather than recomputing
-    ``1/sqrt(32)``) guarantees the kernel and this reference scale by the
+    ``1/sqrt(D)``) guarantees the kernel and this reference scale by the
     identical FP32 value.
 
     Every intermediate is a plain FP32 add or subtract, so there is nothing for

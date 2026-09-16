@@ -18,7 +18,9 @@
 // *relaxed* numerical contract: the Hadamard matrix is stored in FP16/BF16
 // (same dtype as the activation) and the transform runs on XMX DPAS with FP32
 // accumulation, which is neither bit-exact with the FWHT path nor with Path A.
-// Acceptance is tolerance based: SQNR >= 15 dB, max relative error < 0.25.
+// Acceptance is tolerance based, and is enforced by
+// test/test_mxfp4_hadamard.py::TestXpuKernelXmx: SQNR >= 15 dB, no code off by
+// more than one E2M1 level, and a code-disagreement rate below 0.1%.
 //
 // Non-finite amax is out of contract and deliberately unspecified. This path
 // reads the FP32 exponent field rather than calling ilogb, so amax = +inf gives
@@ -73,19 +75,11 @@ namespace xmx_hadamard_detail {
 
 using namespace cute;
 
-// Branchless E2M1 magnitude index, equivalent to the piecewise thresholds
-// <=.25 / <.75 / <=1.25 / <1.75 / <=2.5 / <3.5 / <=5 used by
-// XpuMxfp4Hadamard::e2m1_magnitude_index. On the SPIR-V/OpenCL target vector
-// comparisons return -1 (true) / 0 (false), hence the negation.
-inline int e2m1_index(float a) {
-  return int(a > 0.25f) + int(a >= 0.75f) + int(a > 1.25f) + int(a >= 1.75f) +
-         int(a > 2.5f) + int(a >= 3.5f) + int(a > 5.0f);
-}
-
 // The DPAS atom is pinned to half input: bf16 values (8-bit mantissa) convert
 // losslessly to half (10-bit mantissa) in range, so one atom serves both
-// activation dtypes. Verified bit-exact against the fp32 reference for both
-// fp16 and bf16 on Arc Pro B60 (see bench_xmx_final_fragquant.cpp).
+// activation dtypes. Verified against the fp32 reference for both fp16 and bf16
+// on Arc Pro B60 by
+// test/test_mxfp4_hadamard.py::TestXpuKernelXmx::test_xmx_matches_reference_within_tolerance.
 template <typename TA, typename TB, typename TC>
 auto choose_mma_op() {
   return XE_DPAS_TT<8, float, cute::half_t>{};
@@ -192,7 +186,10 @@ void fused_core_xmx(ATensor const& A, BTensor const& B, uint8_t* out_codes, uint
       sycl::vec<float, 8> v;
       for (int t = 0; t < 8; ++t) v[t] = tCrC(c * 8 + t);
       const sycl::vec<float, 8> aq = sycl::fabs(v) * inv;
-      // NOTE: on this target vec comparisons return -1 (true) / 0 (false).
+      // The same piecewise thresholds and alternating <= / < operators as
+      // XpuMxfp4Hadamard::e2m1_magnitude_index, but counted up from 0 instead of
+      // down from 7. On this target vec comparisons return -1 (true) / 0
+      // (false), so the negated sum is the magnitude index.
       const sycl::vec<int, 8> idx =
           -(aq > 0.25f) - (aq >= 0.75f) - (aq > 1.25f) - (aq >= 1.75f) -
           (aq > 2.5f) - (aq >= 3.5f) - (aq > 5.0f);            // 0..7
