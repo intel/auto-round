@@ -269,6 +269,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - ​**​`low_gpu_mem_usage`​**​（bool）：若要节省显存，可以设为 `True` 。它会将中间特征卸载到 CPU，但会增加 30%-100% 的时间（默认 `False`）。
 - ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 用于启用即时保存以减少内存占用。该功能默认开启；在 CLI 中可使用 `--disable_low_cpu_mem_usage` 关闭（`--low_cpu_mem_usage` 仅为兼容旧参数保留）。
 - ​**​`device_map`​**​（str | dict | int）：计算设备指定，如 `auto`​、`cpu`​、`cuda`​、`0,1,2`​（默认 `0`​）。使用 `auto` 时会尝试利用所有可用 GPU。
+- **`calibration_data_device`**（str）：多 GPU 运行时块校准数据的存放位置：`auto`（默认）| `cpu` | `off` | `1,2` | `cuda:1,cuda:2`。
 
 </details>
 

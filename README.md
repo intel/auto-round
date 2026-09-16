@@ -254,6 +254,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~30%-100% more tuning time (default is `False`).
 - **`low_cpu_mem_usage` (bool)**: [Experimental Feature] Whether to enable immediate-save mode to reduce RAM usage. It is enabled by default. In CLI, use `--disable_low_cpu_mem_usage` to turn it off (the legacy `--low_cpu_mem_usage` flag is kept only for compatibility).
 - **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `auto`, `cpu`, `cuda`, `0,1,2` (default is `0`). When using `auto`, it will try to use all available GPUs.
+- **`calibration_data_device` (str)**: Placement of the block calibration data in multi-GPU runs: `auto` (default) | `cpu` | `off` | `1,2` | `cuda:1,cuda:2`.
 
 </details>
 

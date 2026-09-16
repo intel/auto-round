@@ -176,6 +176,26 @@ def get_quant_func(
     )
 
 
+def _int_search_with_thresh(search_scales, q_scale_thresh):
+    """Stable partial for the clamped int init-scale search.
+
+    A module-level partial (captures visible as ``keywords``) instead of a
+    per-call closure, so resolved callables compare equal across calls and can
+    safely key same-shape search batches.
+    """
+    import functools
+
+    def _clamped(weight_reshape, bits, imatrix, *, _thresh):
+        init_scale = search_scales(weight_reshape, bits, imatrix)
+        return torch.where(
+            init_scale < 0,
+            torch.clamp(init_scale, max=-_thresh),
+            torch.clamp(init_scale, min=_thresh),
+        )
+
+    return functools.partial(_clamped, _thresh=q_scale_thresh)
+
+
 def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5):
     """Resolve the SignRound optimized ``(scale_search_fn, quant_func)`` for a data type.
 
@@ -201,15 +221,7 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
             return None, None
         from auto_round.data_type.int import quant_tensor_sym, search_scales
 
-        def search_int(weight_reshape, bits, imatrix):
-            init_scale = search_scales(weight_reshape, bits, imatrix)
-            return torch.where(
-                init_scale < 0,
-                torch.clamp(init_scale, max=-q_scale_thresh),
-                torch.clamp(init_scale, min=q_scale_thresh),
-            )
-
-        return search_int, quant_tensor_sym
+        return _int_search_with_thresh(search_scales, q_scale_thresh), quant_tensor_sym
     if dt.startswith("mx"):
         from auto_round.data_type.mxfp import quant_mx, search_mx_scale
 
@@ -219,6 +231,19 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
 
         return search_nvfp4_scale, nv_fp4
     return None, None
+
+
+def resolve_optimized_init_scale_fn(data_type: str, q_scale_thresh: float = 1e-5):
+    """Resolve the per-group init-scale search callable for a data type.
+
+    Returns the exact callable ``search_optimized_init_scale`` would invoke --
+    ``(weight_reshape, bits, imatrix) -> init_scale`` -- or ``None`` for data
+    types without an optimized path. The resolved callable can be staged and
+    invoked later (batched wrap searches) with identical semantics, so future
+    dispatch changes travel with the caller automatically.
+    """
+    search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
+    return search_fn
 
 
 def search_optimized_init_scale(

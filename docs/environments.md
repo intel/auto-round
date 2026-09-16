@@ -241,6 +241,56 @@ export AR_DISK_STREAM_MODEL=1
 AR_ALLOW_W8_ASYM=1 python -m auto_round --model ... --scheme W8A16 --asym --format auto_round
 ```
 
+### AR_DISABLE_BATCHED_SEARCH
+- **Description**: Disables the batched quantization-search machinery: SignRoundV2 wrap-time init-scale searches (iters>0) and optimized-RTN scale searches (iters=0) then run fully serially (the GGUF DQ scale search always runs inline per module), one module at a time, on the device hosting each weight. Batching stacks modules sharing device/shape/config into one call with bit-identical per-module results; set this to fall back to the serial loop (e.g. for debugging or bisecting a suspected batching-related difference). Stacking also changes the transient VRAM envelope (see `AR_SEARCH_BATCH_GB`).
+- **Default**: `0` (batching enabled)
+- **Valid Values**: `0` / `1`
+- **Usage**: Kill switch for the batched/parallel search machinery.
+
+```bash
+AR_DISABLE_BATCHED_SEARCH=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_PERF_COUNTERS
+- **Description**: Emits one per-block `[perf] tune phases` INFO line with the wall time of each tuning phase (wrap / prepare / loop / tail) and, inside the loop, the sampler draw, best-params snapshots, gradient sync + optimizer step, rest, and the serial forward+loss+backward time. Intended for performance attribution of large multi-device quantization runs; adds negligible overhead.
+- **Default**: `0` (disabled)
+- **Valid Values**: `0` / `1`
+- **Usage**: Set during benchmarking runs to attribute block time to wrap searches vs the tuning loop.
+
+```bash
+AR_PERF_COUNTERS=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_SEARCH_BATCH_GB
+- **Description**: Overrides the element budget of the batched quantization searches in GiB of stacked fp32 weights per batched call (default ~1 GiB, matching the fixed budget used by the expert batching). Applies to BOTH lanes: the iters=0 optimized-RTN search and the iters>0 wrapper init search (they share the batch cap). The searches are bandwidth-bound, so larger batches rarely reduce wall time; use this only to shrink transient VRAM on tight cards or to experiment with batch sizes.
+- **Default**: unset (fixed ~1 GiB budget)
+- **Valid Values**: positive float (GiB)
+- **Usage**: Shrink batches on memory-tight multi-device runs.
+
+```bash
+AR_SEARCH_BATCH_GB=0.5 python -m auto_round --model ... --device_map 0,1
+```
+
+### AR_MOE_EXPERTS_IMPL
+- **Description**: Experts forward used during MoE tuning for models that were unfused into per-expert modules. `auto` (default) predicts the per-device VRAM of the grouped-GEMM tuning path before the first MoE block and selects `linear_loop` for the whole run when grouped tuning cannot fit (qdq stack retention plus in-loop tuning state vs the free memory of each device); the decision and the per-device numbers are logged. Explicit values are never overridden by `auto`.
+- **Default**: `auto`
+- **Valid Values**: `auto`, `linear_grouped`, `linear_grouped_sliced`, `linear_loop`
+- **Usage**: Force a specific experts implementation for tuning, or keep `auto` to let the memory model choose.
+
+```bash
+AR_MOE_EXPERTS_IMPL=linear_loop python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_DISABLE_MULTIGPU_SEARCH
+- **Description**: Keeps batched search batches on the device that hosts each weight instead of also using other GPUs. Without this flag, a stacked batch may execute on ANY CUDA device with free VRAM for its transient working set (chosen by a free-memory probe with margin), because the searches read only their module's weight plus per-module statistics -- never calibration activations. The primary winner is the zero-shot (iters=0) lane where the whole block sits on one GPU and the other cards are idle. Only the optimized-RTN (iters=0) searches offload this way; iters>0 wrap-search batches always stay on the weight's device. Set to `1` on rigs whose GPUs are shared with other jobs (a free-memory probe cannot see foreign reservations), when debugging cross-device behavior, or on hosts where the PCIe transfers outweigh the search cost. When no device fits, chunks stay on the weight's home device and rely on the per-chunk OOM fallback.
+- **Default**: `0` (multi-GPU search enabled, probe-gated)
+- **Valid Values**: `0` / `1`
+- **Usage**: Pin search traffic to the weight-hosting devices.
+
+```bash
+AR_DISABLE_MULTIGPU_SEARCH=1 python -m auto_round --model ... --iters 0
+```
+
 ### AR_RESUME_DIR
 - **Description**: When set to a directory path, the per-block tuning loop checkpoints its progress there after each completed block, and resumes from the first not-yet-completed block on a fresh run against the same directory -- instead of restarting the whole tuning pass from block 0 after a crash or kill.
 - **Default**: unset (no resumability)
