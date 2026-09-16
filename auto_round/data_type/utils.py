@@ -362,16 +362,31 @@ def update_fused_layer_global_scales(
         reduce_func = torch.max if has_all_block_scales else torch.min
         global_scale = reduce_func(torch.stack(scales_on_device), dim=0).values
 
+        adjusted_block_scales = {}
         for proj in modules:
             if hasattr(proj, global_scale_name):
-                # Move global_scale to the same device as the projection's current scale
                 proj_scale = getattr(proj, global_scale_name)
                 old_scale = proj_scale.to(global_scale.device, dtype=torch.float32)
                 if hasattr(proj, block_scale_name):
                     block_scale = getattr(proj, block_scale_name)
                     ratio = torch.where(old_scale != 0, global_scale / old_scale, torch.ones_like(old_scale))
-                    adjusted_block_scale = block_scale.to(torch.float32) * ratio
-                    setattr(proj, block_scale_name, adjusted_block_scale.to(block_scale.dtype))
+                    adjusted_block_scale = block_scale.to(torch.float32) * ratio.to(block_scale.device)
+                    if block_scale.is_floating_point():
+                        max_value = torch.finfo(block_scale.dtype).max
+                        if not bool(torch.isfinite(adjusted_block_scale).all()) or not bool(
+                            (adjusted_block_scale.abs() <= max_value).all()
+                        ):
+                            logger.warning(
+                                "Skipping fused NVFP4 scale update because a block scale is not representable."
+                            )
+                            return
+                    adjusted_block_scales[proj] = adjusted_block_scale.to(block_scale.dtype)
+
+        for proj in modules:
+            if hasattr(proj, global_scale_name):
+                proj_scale = getattr(proj, global_scale_name)
+                if proj in adjusted_block_scales:
+                    setattr(proj, block_scale_name, adjusted_block_scales[proj])
                 setattr(proj, global_scale_name, global_scale.clone().to(proj_scale.device))
 
     # ---------------- Attention ----------------
@@ -422,6 +437,7 @@ def update_fused_tensor_global_scales(
             global_keys = [f"{layers[projection]}{global_suffix}" for projection in projections]
             global_scales = [tensors[key].reshape(1).to(torch.float32) for key in global_keys]
             global_scale = torch.max(torch.stack(global_scales), dim=0).values
+            adjusted_block_scales = {}
             for projection, global_key in zip(projections, global_keys):
                 layer_name = layers[projection]
                 old_scale = tensors[global_key].reshape(1).to(torch.float32)
@@ -429,8 +445,21 @@ def update_fused_tensor_global_scales(
                 if block_key in tensors:
                     block_scale = tensors[block_key]
                     ratio = torch.where(old_scale != 0, global_scale / old_scale, torch.ones_like(old_scale))
-                    tensors[block_key] = (block_scale.to(torch.float32) * ratio).to(block_scale.dtype)
-                tensors[global_key] = global_scale.to(tensors[global_key].dtype)
+                    adjusted_block_scale = block_scale.to(torch.float32) * ratio.to(block_scale.device)
+                    if block_scale.is_floating_point():
+                        max_value = torch.finfo(block_scale.dtype).max
+                        if not bool(torch.isfinite(adjusted_block_scale).all()) or not bool(
+                            (adjusted_block_scale.abs() <= max_value).all()
+                        ):
+                            logger.warning(
+                                "Skipping fused NVFP4 scale update because a block scale is not representable."
+                            )
+                            break
+                    adjusted_block_scales[block_key] = adjusted_block_scale.to(block_scale.dtype)
+            else:
+                for global_key in global_keys:
+                    tensors[global_key] = global_scale.to(tensors[global_key].dtype)
+                tensors.update(adjusted_block_scales)
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):

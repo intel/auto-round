@@ -668,7 +668,8 @@ def test_int_model_free_fake_quantization():
     assert not torch.equal(output["layer.fc.weight"], weight)
 
 
-def test_int_model_free_fake_export_has_no_quantization_config(tmp_path):
+def test_int_model_free_fake_export_has_no_quantization_config(tmp_path, monkeypatch):
+    monkeypatch.delenv("AR_SEARCH_SCALE_RATIO", raising=False)
     tensors = {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}
     model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
     output_dir = str(tmp_path / "output")
@@ -687,6 +688,7 @@ def test_int_model_free_fake_export_has_no_quantization_config(tmp_path):
     assert not os.path.exists(os.path.join(output_dir, "quantization_config.json"))
     with open(os.path.join(output_dir, "config.json")) as f:
         assert "quantization_config" not in json.load(f)
+    assert "AR_SEARCH_SCALE_RATIO" not in os.environ
 
 
 def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
@@ -905,22 +907,22 @@ def test_nvfp4_e5m3_model_free_llm_compressor(tmp_path):
         scheme="NVFP4_E5M3",
         format="llm_compressor",
     )
-    compressor.run()
+    with pytest.raises(ValueError, match="does not currently support the NVFP4_E5M3 scheme"):
+        compressor.run()
 
-    output_keys = _read_output_keys(output_dir)
+
+def test_model_free_rejects_invalid_nvfp4_layer_override_during_preflight(tmp_path):
     prefix = "model.layers.0.self_attn.q_proj"
-    assert f"{prefix}.weight_packed" in output_keys
-    assert f"{prefix}.weight_scale" in output_keys
-    assert f"{prefix}.weight" not in output_keys
-    assert f"{prefix}.weight_global_scale" not in output_keys
-    assert f"{prefix}.input_global_scale" not in output_keys
-    quantization_config = _read_qconfig(output_dir)
-    group = quantization_config["config_groups"]["group_0"]
-    assert quantization_config["format"] == "nvfp4-e5m3-pack-quantized"
-    assert quantization_config["quant_method"] == "compressed-tensors"
-    assert quantization_config["provider"] == "auto-round"
-    assert group["weights"]["group_size"] == 16
-    assert group["input_activations"]["dynamic"] == "local"
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {f"{prefix}.weight": torch.randn(32, 32)})
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=str(tmp_path / "output"),
+        scheme="BF16",
+        layer_config={prefix: {"bits": 4, "group_size": 32, "data_type": "nv_fp"}},
+    )
+
+    with pytest.raises(ValueError, match="requires bits=4 and group_size=16"):
+        compressor.run()
 
 
 def test_model_free_legacy_nvfp4_is_normalized_and_passthrough(tmp_path):
@@ -989,6 +991,35 @@ def test_model_free_direct_nvfp4_global_scales_are_preserved(tmp_path):
     assert torch.equal(output[f"{prefix}.weight_packed"], tensors[f"{prefix}.weight_packed"])
     assert torch.equal(output[f"{prefix}.weight_global_scale"], tensors[f"{prefix}.weight_global_scale"])
     assert torch.equal(output[f"{prefix}.input_global_scale"], tensors[f"{prefix}.input_global_scale"])
+
+
+def test_model_free_requantizes_standard_nvfp4_source_for_e5m3_target(tmp_path):
+    prefix = "model.layers.0.mlp.down_proj"
+    tensors = {
+        f"{prefix}.weight_packed": torch.randint(0, 256, (32, 32), dtype=torch.uint8),
+        f"{prefix}.weight_scale": torch.randint(0, 256, (32, 4), dtype=torch.uint8),
+        f"{prefix}.weight_global_scale": torch.tensor([0.5], dtype=torch.float32),
+        f"{prefix}.input_global_scale": torch.tensor([0.25], dtype=torch.float32),
+    }
+    shard_path = str(tmp_path / "shard.safetensors")
+    save_file(tensors, shard_path)
+
+    layer_config = {
+        prefix: {
+            "bits": 4,
+            "group_size": 16,
+            "sym": True,
+            "data_type": "nvfp4_v2",
+        }
+    }
+    output, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, layer_config, [])
+
+    assert prefix in quantized
+    assert ignored == []
+    assert f"{prefix}.weight_packed" in output
+    assert f"{prefix}.weight_scale" in output
+    assert f"{prefix}.weight_global_scale" not in output
+    assert f"{prefix}.input_global_scale" not in output
 
 
 def test_model_free_nvfp4_rejects_fused_3d_moe_weight(tmp_path):

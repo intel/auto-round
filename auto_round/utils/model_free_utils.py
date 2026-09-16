@@ -834,10 +834,16 @@ def _handle_nvfp4_source_tensors(
             continue
         scheme_bits = scheme.get("bits")
         scheme_data_type = (scheme.get("data_type") or "").lower()
-        if scheme_bits == 4 and (is_nv_fp(scheme_data_type) or scheme_data_type == _NVFP4_E5M3_DATA_TYPE):
+        weight_global_scale_key = f"{layer_name}.weight_global_scale"
+        input_global_scale_key = f"{layer_name}.input_global_scale"
+        source_is_standard_nvfp4 = weight_global_scale_key in raw_tensors or input_global_scale_key in raw_tensors
+        target_is_standard_nvfp4 = is_nv_fp(scheme_data_type)
+        if (
+            scheme_bits == 4
+            and (target_is_standard_nvfp4 or scheme_data_type == _NVFP4_E5M3_DATA_TYPE)
+            and source_is_standard_nvfp4 == target_is_standard_nvfp4
+        ):
             keys_to_move = [name, scale_key]
-            weight_global_scale_key = f"{layer_name}.weight_global_scale"
-            input_global_scale_key = f"{layer_name}.input_global_scale"
             if weight_global_scale_key in raw_tensors:
                 keys_to_move.append(weight_global_scale_key)
             if input_global_scale_key in raw_tensors:

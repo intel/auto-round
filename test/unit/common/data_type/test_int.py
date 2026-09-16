@@ -39,7 +39,7 @@ class TestSearchScales:
             messages.append(message % args if args else message)
 
         monkeypatch.setattr("auto_round.compressors.model_free.logger.info", capture_info)
-        _configure_model_free_int_search_ratio({"data_type": "int"}, disable_opt_rtn=True)
+        _configure_model_free_int_search_ratio({"data_type": "int", "bits": 4}, {}, disable_opt_rtn=True)
 
         assert envs.AR_SEARCH_SCALE_RATIO is None
         assert not any("default empirical search ratio" in msg for msg in messages)
@@ -55,7 +55,7 @@ class TestSearchScales:
             messages.append(message % args if args else message)
 
         monkeypatch.setattr("auto_round.compressors.model_free.logger.info", capture_info)
-        _configure_model_free_int_search_ratio({"data_type": "int"}, disable_opt_rtn=False)
+        _configure_model_free_int_search_ratio({"data_type": "int", "bits": 4}, {}, disable_opt_rtn=False)
 
         assert envs.AR_SEARCH_SCALE_RATIO == pytest.approx(0.05)
         assert any("default empirical search ratio 0.050" in msg for msg in messages)

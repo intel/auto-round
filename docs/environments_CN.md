@@ -110,8 +110,8 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 ```
 
 ### AR_SEARCH_SCALE_RATIO
-- **描述**：控制 `auto_round.data_type.int.search_scales` 中对称 INT 量化 scale 搜索的范围比例。搜索上界为 `nmax * AR_SEARCH_SCALE_RATIO`，其中 `nmax = 2^(bits-1)`。值越小搜索范围越窄（更快，但可能漏掉较优解）；值越大搜索范围越广（更慢，对离群权重可能更准）。
-- **默认值**：未设置 → 走内置默认值（`0.5`，即 `nmax/2`）。
+- **描述**：控制 `auto_round.data_type.int.search_scales` 中对称 INT 量化 scale 搜索的相对范围。候选 scale 会围绕初始 scale 对称采样，比例范围为 `1 - AR_SEARCH_SCALE_RATIO` 至 `1 + AR_SEARCH_SCALE_RATIO`。值越小搜索范围越窄（更快，但可能漏掉较优解）；值越大搜索范围越广（更慢，对离群权重可能更准）。INT2 保留专用的搜索网格。
+- **默认值**：未设置 → 使用内置默认值（`0.75`）。对未设置该变量的 model-free 低比特 INT，运行期间会临时使用 `0.05`。
 - **有效值**：正浮点数，如 `0.25`、`0.5`、`0.75`、`1.0`
 - **用途**：覆盖默认的 scale 搜索范围
 

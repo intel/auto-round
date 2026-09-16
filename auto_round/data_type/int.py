@@ -57,10 +57,14 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
     if isinstance(qw, torch.Tensor):
         best_loss.mul_(qw)  # inplace multiply by weight
     best_loss = torch.sum(best_loss, dim=-1)
-    search_ratio = envs.AR_SEARCH_SCALE_RATIO or 0.75
-    search_step = 0.005
-    search_min = max(1, int(round(search_ratio / search_step)))
-    step = search_ratio / search_min
+    if bits == 2:
+        search_min = 18 * 5
+        step = 0.01
+    else:
+        search_ratio = envs.AR_SEARCH_SCALE_RATIO or 0.75
+        search_step = 0.005
+        search_min = max(1, int(round(search_ratio / search_step)))
+        step = search_ratio / search_min
     # Search symmetrically around the baseline so equal-loss candidates do not
     # systematically prefer one side of the scale range.
     for _is in _symmetric_search_offsets(search_min):

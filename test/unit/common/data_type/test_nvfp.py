@@ -298,6 +298,22 @@ class TestFusedLayerGlobalScales:
         assert torch.isfinite(k_scale).all()
         assert torch.equal(k_scale, torch.ones(2, 2))
 
+    def test_model_free_fusion_preserves_group_when_float8_block_scale_overflows(self, monkeypatch):
+        monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
+        prefix = "model.layers.0.self_attn"
+        tensors = {}
+        for projection, global_scale in {"q_proj": 3.0, "k_proj": 1.0, "v_proj": 2.0}.items():
+            tensors[f"{prefix}.{projection}.weight_global_scale"] = torch.tensor([global_scale])
+            tensors[f"{prefix}.{projection}.weight_scale"] = torch.full((2, 2), 448.0, dtype=torch.float8_e4m3fn)
+
+        update_fused_tensor_global_scales(tensors)
+
+        assert [
+            tensors[f"{prefix}.{projection}.weight_global_scale"].item()
+            for projection in ("q_proj", "k_proj", "v_proj")
+        ] == [3.0, 1.0, 2.0]
+        assert torch.equal(tensors[f"{prefix}.k_proj.weight_scale"].to(torch.float32), torch.full((2, 2), 448.0))
+
 
 # ---------------------------------------------------------------------------
 # ref_nvfp4_quant

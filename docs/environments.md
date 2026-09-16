@@ -110,8 +110,8 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 ```
 
 ### AR_SEARCH_SCALE_RATIO
-- **Description**: Controls the search range ratio used by the symmetric INT scale search in `auto_round.data_type.int.search_scales`. The search bound is `nmax * AR_SEARCH_SCALE_RATIO`, where `nmax = 2^(bits-1)`. Smaller values restrict the search to a tighter neighborhood around the initial scale (faster, less thorough); larger values broaden the search (slower, may improve accuracy on outlier-heavy weights).
-- **Default**: unset → falls back to the built-in default (`0.5`, i.e. `nmax/2`).
+- **Description**: Controls the relative search span used by the symmetric INT scale search in `auto_round.data_type.int.search_scales`. Candidate scales are sampled symmetrically around the initial scale over ratios from `1 - AR_SEARCH_SCALE_RATIO` to `1 + AR_SEARCH_SCALE_RATIO`. Smaller values restrict the search to a tighter neighborhood around the initial scale (faster, less thorough); larger values broaden the search (slower, may improve accuracy on outlier-heavy weights). INT2 retains its dedicated search grid.
+- **Default**: unset → falls back to the built-in default (`0.75`). Model-free low-bit INT uses `0.05` only for the duration of that run when the variable is unset.
 - **Valid Values**: positive float, e.g. `0.25`, `0.5`, `0.75`, `1.0`
 - **Usage**: Set this to override the default scale-search range
 
