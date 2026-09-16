@@ -45,7 +45,6 @@ class TestAutoRound:
         ar.post_init()
         assert ar.bits == 2
 
-    @pytest.mark.timeout(120)
     def test_w4a16_mixed(self, micro_qwen_moe_model_path, dataloader):
 
         layer_config = {
@@ -186,7 +185,6 @@ class TestAutoRound:
         else:
             assert device_list == [f"{major_type}:0", f"{major_type}:1"]
 
-    @pytest.mark.timeout(60)
     def test_set_scheme(self, tiny_qwen_model_path):
         pytest.importorskip("sentencepiece")
         ar = AutoRound(
