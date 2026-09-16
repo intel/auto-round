@@ -21,7 +21,15 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from auto_round.logger import deprecated, logger
-from auto_round.schemes import QuantizationScheme, parse_scheme
+from auto_round.scheme_entry import (
+    collect_config_scheme_overrides,
+    eager_validate_scheme,
+    is_gguf_k_target,
+    is_weight_scheme,
+    preview_resolved_attrs,
+    resolve_entry_scheme,
+)
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils.device_manager import normalize_default_device_map
 
 if TYPE_CHECKING:
@@ -29,90 +37,6 @@ if TYPE_CHECKING:
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
     from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
-
-
-def _collect_config_scheme_overrides(config) -> dict:
-    """Return the config's explicitly-set scheme fields as a ``{field: value}`` dict.
-
-    These are exactly the per-field overrides layered on top of ``scheme=`` — the
-    single mechanism through which ``bits`` / ``act_bits`` / ``data_type`` etc.
-    reach the resolved scheme. Fields left as ``None`` are omitted so the scheme's
-    own value wins.
-    """
-    return {k: getattr(config, k) for k in config._scheme_fields if getattr(config, k, None) is not None}
-
-
-def _preview_resolved_attrs(config, scheme=None, format=None) -> dict:
-    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-
-    """Resolve scheme attributes without mutating config, for routing decisions.
-
-    Called in ``AutoRound.__new__`` before the concrete compressor class is
-    chosen.  ``SchemeMixin.resolve_scheme()`` will do the authoritative
-    resolution later; this is just a lightweight preview so routing logic
-    (``enable_imatrix``, ``needs_act_calib``, etc.) can use the correct values
-    even when the user specified only ``scheme=`` without explicit bit/dtype args.
-
-    This is the single source of resolved scheme fields for entry-level routing:
-    callers read from the returned dict and never re-read raw ``config`` attrs.
-    When the scheme cannot be previewed (``AutoScheme``, or a deferred parse
-    error), the config's own explicitly-set scheme overrides are returned so the
-    values still reflect what the user passed. ``format`` must match the
-    authoritative parse so format-scoped policies (e.g. the 8-bit asym rule)
-    resolve identically here and never turn a refusal into fabricated defaults.
-
-    Returns:
-        dict: resolved scheme attributes (config overrides when preview is skipped).
-    """
-    config_overrides = _collect_config_scheme_overrides(config)
-    if isinstance(scheme, AutoScheme):
-        # AutoScheme needs model info — cannot preview; fall back to raw config attrs.
-        return config_overrides
-    try:
-        _, _, final_attrs = parse_scheme(scheme, config_overrides, format=format)
-        return final_attrs
-    except Exception as e:
-        logger.warning_once(
-            "Scheme preview failed (%s: %s); routing falls back to the config's explicit overrides.",
-            type(e).__name__,
-            e,
-        )
-        return config_overrides
-
-
-def _eager_validate_scheme(config, scheme=None, format=None) -> None:
-    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-
-    """Eagerly validate scheme/config constraints at construction time.
-
-    Mirrors the old-arch ``_check_configs()`` call in ``BaseCompressor.__init__``.
-    Raises ``ValueError`` or ``NotImplementedError`` immediately if the scheme
-    contains config-only invalid combinations (e.g. tuple group_size with non-fp8
-    weight dtype) so that callers get a fast failure rather than a deferred error
-    buried inside ``post_init()``.
-
-    ``AutoScheme`` is skipped because it requires model information.
-    """
-    if isinstance(scheme, AutoScheme):
-        return
-
-    user_overrides = _collect_config_scheme_overrides(config)
-    try:
-        _, _, final_attrs = parse_scheme(scheme, user_overrides, format=format)
-    except (ValueError, NotImplementedError):
-        raise
-    except Exception:
-        return  # Other parse errors are deferred to post_init
-
-    import copy
-
-    temp_config = copy.copy(config)
-    if hasattr(config, "scheme"):
-        temp_config.scheme = config.scheme.copy()
-        temp_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
-    for key, value in final_attrs.items():
-        setattr(temp_config, key, value)
-    temp_config.check_config()  # raises ValueError / NotImplementedError if invalid
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +219,7 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
     # resolution later; this preview only chooses the class). Computed once: neither
     # `quant_config`'s scheme fields nor `scheme` itself change within this function,
     # so the result is invariant across every use below — no need to recompute it.
-    resolved_attrs = _preview_resolved_attrs(quant_config, scheme, format=format)
+    resolved_attrs = preview_resolved_attrs(quant_config, scheme, format=format)
 
     # Auto-disable rtn optimization for W8A16/W8A8-equivalent resolved schemes,
     # unless the user already set disable_opt_rtn explicitly.
@@ -749,14 +673,14 @@ class _CompressorBuilder(object):
         route_scheme = (
             scheme
             if hasattr(scheme, "options") and hasattr(scheme, "avg_bits")
-            else QuantizationScheme.from_dict(_preview_resolved_attrs(quant_config, scheme, format=format))
+            else QuantizationScheme.from_dict(preview_resolved_attrs(quant_config, scheme, format=format))
         )
         # Eagerly validate scheme constraints that do not require model info.
         # This mirrors old-arch _check_configs() called at __init__ time so that
         # callers get ValueError/NotImplementedError on construction, not deferred.
         # Runs before the model-free early return so both routes enforce the
         # same config-level constraints (e.g. the format-scoped 8-bit asym rule).
-        _eager_validate_scheme(quant_config, scheme, format=format)
+        eager_validate_scheme(quant_config, scheme, format=format)
         # NOTE: the W8-asym opt-in is the AR_ALLOW_W8_ASYM environment
         # variable, read directly by parse_scheme and the generation-time
         # gates; nothing is threaded through the compressor here.
@@ -835,6 +759,13 @@ class AutoRound:
         model: A model name/path or an already-loaded ``torch.nn.Module``.
         tokenizer: Optional tokenizer used for calibration data.
         scheme: Quantization scheme such as ``"W4A16"`` or ``"MXFP4"``.
+        schemes: Optional candidate quantization schemes for AutoScheme
+            (adaptive mixed-bit selection), e.g. ``("W4A16", "W8A16")`` or
+            ``"W4A16,W8A16"``. Providing schemes enables AutoScheme; ``bits``
+            then sets the average target bits. Mutually exclusive with
+            ``scheme``.
+        bits: Weight quantization bit width. When ``schemes`` is provided it
+            is the average target bits for AutoScheme (e.g. ``4.2``).
         alg_configs: Algorithm alias, config instance, or sequence of either.
             Use config instances to provide algorithm-specific options, such
             as ``SignRoundConfig(iters=50)`` or ``AWQConfig(apply_clip=True)``.
@@ -861,6 +792,8 @@ class AutoRound:
         tokenizer=None,
         platform: str = "hf",
         scheme: Union[str, dict, QuantizationScheme, "AutoScheme"] = "W4A16",
+        schemes: Union[str, list, tuple, None] = None,
+        bits: Union[int, float, None] = None,
         layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
         dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
         iters: int | None = None,
@@ -889,6 +822,9 @@ class AutoRound:
             direct_kwargs["gradient_accumulate_steps"] = gradient_accumulate_steps
         if algorithm is not None:
             direct_kwargs["algorithm"] = algorithm
+        if bits is not None:
+            direct_kwargs["bits"] = bits
+        scheme, direct_kwargs = resolve_entry_scheme(scheme, schemes, direct_kwargs)
 
         configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs)
         runtime_kwargs["batch_size"] = batch_size

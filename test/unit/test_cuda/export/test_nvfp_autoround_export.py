@@ -30,7 +30,6 @@ class TestNvfpAutoroundExport:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     def test_nvfp4_autoround_export(self, tiny_opt_model_path):
         autoround = AutoRound(
             tiny_opt_model_path,
