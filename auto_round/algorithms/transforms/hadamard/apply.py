@@ -163,6 +163,84 @@ class HadamardRotation(BaseRotation, SerializerMixin):
         return model
 
     # ------------------------------------------------------------------
+    # Layer-wise (block-wise) rotation interface
+    # ------------------------------------------------------------------
+    #
+    # The per-Linear ``transform`` backend fuses an independent Hadamard into
+    # each Linear's weight/input; there is no cross-layer (residual-stream)
+    # coupling, so applying it one decoder layer at a time is mathematically
+    # identical to the full-model pass. That makes block-wise rotation a trivial
+    # scoping of :meth:`apply_to_model` down to a single layer's sub-modules.
+    #
+    # The ``inplace`` / QuaRot backend rotates the shared residual stream and
+    # therefore *couples* consecutive layers; it cannot be decomposed per-block,
+    # so :attr:`supports_layerwise` reports ``False`` for it (clean fall back to
+    # full-model rotation) and :meth:`prepare_layerwise` refuses it explicitly.
+
+    @property
+    def supports_layerwise(self) -> bool:
+        """Hadamard supports layer-wise rotation for the per-Linear backend.
+
+        The QuaRot ``inplace`` backend couples layers through the residual
+        stream and cannot run per-block, so it reports ``False`` (the composer
+        then falls back to full-model rotation).
+        """
+        cfg = self.config
+        backend = getattr(cfg, "backend", "auto")
+        hadamard_type = getattr(cfg, "hadamard_type", "") or ""
+        if backend == "inplace" or "inplace" in hadamard_type:
+            return False
+        return True
+
+    def prepare_layerwise(
+        self,
+        model: torch.nn.Module,
+        data_type: str = "mx_fp",
+        location: str = "weight",
+        **kwargs: Any,
+    ) -> "HadamardRotation":
+        """Prepare for per-block Hadamard rotation without touching weights.
+
+        The per-Linear Hadamard needs no global pre-computation — matrices are
+        built lazily inside :meth:`rotate_layer`. This only validates that the
+        resolved backend is the per-Linear ``transform`` path and records the
+        config on *model* (so serialization still works, since the model-level
+        :meth:`apply_to_model` — which normally sets ``_rotation_config`` — is
+        skipped in layer-wise mode).
+        """
+        from auto_round.algorithms.transforms.hadamard.dispatcher import resolve_hadamard_backend
+
+        backend = resolve_hadamard_backend(self.config, data_type)
+        if backend != "transform":
+            raise NotImplementedError(
+                "Layer-wise Hadamard rotation only supports the per-Linear 'transform' backend "
+                f"(MXFP4 / NVFP4). Resolved backend={backend!r} for data_type={data_type!r}. "
+                "Use full-model rotation (layerwise=False), or the inplace/QuaRot rotation path."
+            )
+        self._layerwise_location = location
+        self._layerwise_data_type = data_type
+        setattr(model, "_rotation_config", self.config)
+        return self
+
+    def rotate_layer(
+        self,
+        layer: torch.nn.Module,
+        layer_idx: int,
+        **kwargs: Any,
+    ) -> None:
+        """Apply the per-Linear Hadamard to every target module inside *layer*."""
+        cfg = self.config
+        location = getattr(self, "_layerwise_location", "weight")
+        data_type = getattr(self, "_layerwise_data_type", "mx_fp")
+        target_types = (torch.nn.Linear, QModuleBase)
+        for name, module in layer.named_modules():
+            if not isinstance(module, target_types):
+                continue
+            if "lm_head" in name:
+                continue
+            _apply_to_module(layer, module, cfg, location, data_type)
+
+    # ------------------------------------------------------------------
     # SerializerMixin — Save side
     # ------------------------------------------------------------------
 
