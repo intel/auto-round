@@ -141,6 +141,31 @@ export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
+### AR_PERF_COUNTERS
+- **描述**：输出 `[perf]` 阶段耗时日志——数据驱动循环的每块 `load/tune/pack/write/clean/offload`，
+  以及 `--parallel_quantization` 调优的每块 `mirrors/warmup/fwd/bwd/exch/step/teardown`。
+- **默认**：关闭
+
+### AR_TUNE_DDP_DEVICES
+- **描述**：`--parallel_quantization` 调参时可选的显式副本设备列表（逗号分隔，例如 `0,1,2,3`）。
+  默认由计划从可见的 CUDA 设备中挑选空闲显存足够容纳镜像的设备；每个副本在其计划设备上持有完整的块镜像，
+  并抽取互不重叠的校准分片，因此等效 batch 与串行运行的数据覆盖一致。
+- **默认值**：未设置 → 由计划推导
+- **取值**：逗号分隔的设备编号
+
+```bash
+export AR_TUNE_DDP_DEVICES=0,1,2,3
+```### AR_TUNE_DDP_DEVICES
+- **描述**：`--parallel_quantization` 调参时可选的显式副本设备列表（逗号分隔，例如 `0,1,2,3`）。
+  默认由计划从可见的 CUDA 设备中挑选空闲显存足够容纳镜像的设备；每个副本在其计划设备上持有完整的块镜像，
+  并抽取互不重叠的校准分片，因此等效 batch 与串行运行的数据覆盖一致。
+- **默认值**：未设置 → 由计划推导
+- **取值**：逗号分隔的设备编号
+
+```bash
+export AR_TUNE_DDP_DEVICES=0,1,2,3
+```
+
 ### AR_AUTO_SCHEME_NSAMPLES
 - **描述**：控制 AutoScheme 评分时使用的校准样本数默认值，仅在 `AutoScheme.nsamples` 未显式设置时生效。
 - **默认值**：未设置 → 16
