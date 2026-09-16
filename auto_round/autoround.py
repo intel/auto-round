@@ -74,37 +74,6 @@ def _get_compressor_class(model_type: str, base_cls: type) -> type:
     return combined
 
 
-def is_weight_scheme(scheme: Union[str, dict, object]) -> bool:
-    if isinstance(scheme, str):
-        return scheme.upper().startswith("W")
-    if isinstance(scheme, dict):
-        return all(isinstance(s, str) and s.upper().startswith("W") for s in scheme.values())
-    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-
-    if isinstance(scheme, AutoScheme):
-        opts = scheme.options
-        if isinstance(opts, (list, tuple)):
-            return all(isinstance(s, str) and s.upper().startswith("W") for s in opts)
-        if isinstance(opts, str):
-            return opts.upper().startswith("W")
-    return False
-
-
-def is_gguf_k_target(value: Union[str, "AutoScheme", object]) -> bool:
-    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        return normalized.startswith("gguf:") and "_k" in normalized
-    if isinstance(value, AutoScheme):
-        opts = value.options
-        if isinstance(opts, str):
-            opts = [opts]
-        if isinstance(opts, (list, tuple)):
-            return any(isinstance(opt, str) and is_gguf_k_target(opt) for opt in opts)
-    return False
-
-
 def _has_optimized_rtn_dtype(data_type: str, bits: int, sym: bool, group_size) -> bool:
     if not data_type or bits is None:
         return False
