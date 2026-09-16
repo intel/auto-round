@@ -554,9 +554,8 @@ class _NVFPActivationQuantizer:
 
     def __init__(self, spec, data_type):
         is_static = data_type in ("nv_fp4_with_static_gs", "nvfp4_v2_with_global_scale")
-        if is_static == spec.dynamic:
-            mode = "static" if is_static else "dynamic"
-            raise ValueError(f"NVFP datatype {data_type!r} supports only {mode} activation quantization")
+        if not is_static and not spec.dynamic:
+            raise ValueError(f"NVFP datatype {data_type!r} supports only dynamic activation quantization")
         self.spec = spec
         self.data_type = data_type
         self.requires_calibration = is_static

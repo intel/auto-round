@@ -16,6 +16,7 @@ from auto_round.auto_scheme.delta_loss import (
     _vram_inventory_text,
 )
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
+from auto_round.data_type.base import WeightQuantizationResult
 from auto_round.export.export_to_gguf.export import _clear_gguf_model_instances
 
 
@@ -1217,6 +1218,9 @@ class TestScoreAnchorWeightScoring:
         wrapper.params = {}
         wrapper.weight_state = _State()
         wrapper.weight_quantizer = _Quantizer()
+        wrapper.weight_qdq = lambda weight, **kwargs: WeightQuantizationResult(
+            wrapper.weight_quantizer.quantize(weight, **kwargs)
+        )
         layer.weight.requires_grad = True
         return wrapper, layer
 
@@ -1420,6 +1424,9 @@ class TestScoreLinearRecompute:
         wrapper.params = {}
         wrapper.weight_state = _State()
         wrapper.weight_quantizer = _Quantizer()
+        wrapper.weight_qdq = lambda weight, **kwargs: WeightQuantizationResult(
+            wrapper.weight_quantizer.quantize(weight, **kwargs)
+        )
         layer.weight.requires_grad = True
         return wrapper, layer
 

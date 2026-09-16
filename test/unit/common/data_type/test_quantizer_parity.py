@@ -106,6 +106,25 @@ def test_activation_lifecycle_handles_dynamic_and_calibrated_integer_quantizatio
     assert torch.isfinite(result).all()
 
 
+def test_nvfp_static_global_scale_accepts_dynamic_calibration():
+    """NVFP4 calibrates a static global scale while keeping dynamic QDQ enabled."""
+    layer = type(
+        "Layer",
+        (),
+        dict(
+            act_data_type="nv_fp4_with_static_gs",
+            act_bits=4,
+            act_group_size=16,
+            act_sym=True,
+            act_dynamic=True,
+        ),
+    )()
+
+    quantizer = activation_quantizer_for_layer(layer, scale_dtype=torch.float32)
+
+    assert quantizer.requires_calibration is True
+
+
 def test_aliases_keep_a_single_canonical_datatype_for_policy():
     assert canonical_data_type("int") == "int_sym"
     assert canonical_data_type("INT4_ASYM") == "int_asym"
