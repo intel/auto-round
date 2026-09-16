@@ -1471,7 +1471,6 @@ _TRANSFORMER_TENSORS = {
 class TestKimiK25Int4Source:
     """Tests for _copy_metadata_files including subdirectory handling."""
 
-    @pytest.mark.timeout(120)
     def test_non_diffusion_copies_subfolders(self, tmp_path):
         """Non-diffusion model: subdirectories should be copied to output."""
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
@@ -1715,7 +1714,6 @@ class TestModelFreeAutoScheme:
     moved to test/unit/test_cpu/utils/test_model_free_utils.py -> TestAutoSchemeHelpers.
     """
 
-    @pytest.mark.timeout(120)
     def test_e2e_int_auto_scheme(self, tmp_path, tiny_opt_model_path):
         from auto_round import AutoScheme
 

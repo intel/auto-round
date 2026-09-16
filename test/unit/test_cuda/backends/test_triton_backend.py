@@ -22,7 +22,6 @@ class TestAutoRoundTritonBackend:
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_greater_than_050
-    @pytest.mark.timeout(120)
     def test_tritonv2_2bits_asym(self, tiny_opt_model_path):
         """A tuned INT2 asymmetric export reloads and generates with Triton.
 

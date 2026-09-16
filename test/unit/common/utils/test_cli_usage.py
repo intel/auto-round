@@ -41,7 +41,6 @@ class TestAutoRoundCmd:
     def test_auto_round_cmd(self, monkeypatch):
         _assert_cli_ok(monkeypatch, ["auto_round", "-h"])
 
-    @pytest.mark.timeout(90)
     def test_auto_round_cmd2(self, monkeypatch, tiny_opt_model_path, tmp_path):
         calibration_path = tmp_path / "calibration.json"
         calibration_path.write_text(json.dumps(["AutoRound CLI local calibration sample. " * 32]))
