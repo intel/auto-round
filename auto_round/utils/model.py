@@ -1011,7 +1011,7 @@ def diffusion_load_model(
         return load_cosmos3_diffusion(pretrained_model_name_or_path, device_str)
 
     pipelines = LazyImport("diffusers.pipelines")
-    modular_pipeline = LazyImport("diffusers.modular_pipelines.modular_pipeline")
+    modular_pipeline_cls = _get_modular_pipeline_class()
     if isinstance(pretrained_model_name_or_path, str):
         model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
         if not os.path.exists(model_index) and os.path.exists(
@@ -1044,9 +1044,8 @@ def diffusion_load_model(
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
-    elif isinstance(
-        pretrained_model_name_or_path,
-        (pipelines.pipeline_utils.DiffusionPipeline, modular_pipeline.ModularPipeline),
+    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline) or (
+        modular_pipeline_cls is not None and isinstance(pretrained_model_name_or_path, modular_pipeline_cls)
     ):
         pipe = pretrained_model_name_or_path
         # a pipeline assembled in-process, as Modular Diffusers ones typically are,
@@ -1340,8 +1339,9 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
 
     model_path = get_model_name_or_path(model_or_path)
 
-    # Fast path: return cached result for already-seen paths
-    if model_path in _is_mllm_model_cache:
+    # Path-less in-process objects must be inspected independently rather than
+    # sharing a cache entry under None.
+    if model_path and model_path in _is_mllm_model_cache:
         return _is_mllm_model_cache[model_path]
 
     # Check model_type exclusion: some models have multimodal components
@@ -1389,7 +1389,8 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
 
     # Cache by the original path key (model_path may have been resolved above)
     original_key = get_model_name_or_path(model_or_path)
-    _is_mllm_model_cache[original_key] = result
+    if original_key:
+        _is_mllm_model_cache[original_key] = result
     return result
 
 
@@ -1438,6 +1439,16 @@ def _find_pipeline_index_file(model_dir_or_repo: str) -> Optional[str]:
     return None
 
 
+def _get_modular_pipeline_class():
+    """Return ModularPipeline when supported by the installed Diffusers version."""
+    try:
+        from diffusers.modular_pipelines import ModularPipeline
+
+        return ModularPipeline
+    except (ImportError, AttributeError):
+        return None
+
+
 def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: bool = True) -> bool:
     from auto_round.utils.common import LazyImport
 
@@ -1466,8 +1477,10 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
     elif not isinstance(model_or_path, torch.nn.Module):
         check_diffusers_installed()
         pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
-        modular_pipeline = LazyImport("diffusers.modular_pipelines.modular_pipeline")
-        return isinstance(model_or_path, (pipeline_utils.DiffusionPipeline, modular_pipeline.ModularPipeline))
+        if isinstance(model_or_path, pipeline_utils.DiffusionPipeline):
+            return True
+        modular_pipeline_cls = _get_modular_pipeline_class()
+        return modular_pipeline_cls is not None and isinstance(model_or_path, modular_pipeline_cls)
     else:
         return False
 

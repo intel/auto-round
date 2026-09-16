@@ -196,6 +196,21 @@ def test_modular_pipeline_is_detected_as_diffusion():
     assert detect_model_type(pipe) == "diffusion"
 
 
+def test_pathless_models_do_not_share_mllm_cache_entry():
+    """Each in-process model without a path must be inspected independently."""
+    from auto_round.utils.model import _is_mllm_model_cache, is_mllm_model
+
+    class VisionModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.vision_model = torch.nn.Linear(1, 1)
+
+    _is_mllm_model_cache.clear()
+    assert is_mllm_model(torch.nn.Linear(1, 1)) is False
+    assert is_mllm_model(VisionModel()) is True
+    assert None not in _is_mllm_model_cache
+
+
 def test_modular_model_index_dir_is_detected_as_diffusion(tmp_path):
     """Modular Diffusers ships modular_model_index.json instead of model_index.json."""
     pytest.importorskip("diffusers.modular_pipelines")
