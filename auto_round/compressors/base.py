@@ -555,6 +555,12 @@ class BaseOrchestrator(object):
         if isinstance(self.scheme, AutoScheme):
             return True
 
+        # Static KV-cache / attention quantization observes KV magnitudes
+        # during the calibration forwards, so it always needs data — even for
+        # weight-only schemes (e.g. NVFP4 with iters=0).
+        if self.static_kv_dtype is not None or self.static_attention_dtype is not None:
+            return True
+
         # Check if activation calibration is needed
         from auto_round.compressors.utils import check_need_act_calibration
 

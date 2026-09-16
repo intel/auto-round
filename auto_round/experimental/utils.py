@@ -112,8 +112,19 @@ def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: 
         module.register_parameter(name, torch.nn.Parameter(new_val))
 
 
-def normalize_static_kv_dtype(static_kv_dtype: str | torch.dtype) -> torch.dtype:
-    valid_dtype_name_lst = ["float16", "bfloat16", "fp8", "float32", "float"]
+NVFP4_KV_DTYPE = "nvfp4"
+NVFP4_KV_BLOCK_SIZE = 16
+
+
+def normalize_static_kv_dtype(static_kv_dtype: str | torch.dtype) -> torch.dtype | str:
+    """Normalize the static KV-cache quantization dtype.
+
+    Returns a ``torch.dtype`` for float dtypes, or the ``"nvfp4"`` sentinel
+    (see :data:`NVFP4_KV_DTYPE`) for NVFP4 KV cache quantization.
+    """
+    if isinstance(static_kv_dtype, torch.dtype):
+        return static_kv_dtype
+    valid_dtype_name_lst = ["float16", "bfloat16", "fp8", "float32", "float", NVFP4_KV_DTYPE, "fp4", "float4_e2m1"]
     valid_torch_dtype = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
@@ -122,6 +133,8 @@ def normalize_static_kv_dtype(static_kv_dtype: str | torch.dtype) -> torch.dtype
         "float32": torch.float32,
         "float": torch.float32,  # Alias for float32
     }
+    if static_kv_dtype in (NVFP4_KV_DTYPE, "fp4", "float4_e2m1"):
+        return NVFP4_KV_DTYPE
     if static_kv_dtype in valid_dtype_name_lst:
         new_dtype = valid_torch_dtype[static_kv_dtype]
     elif static_kv_dtype in valid_torch_dtype.values():
