@@ -464,10 +464,16 @@ class _IntWeightQuantizer:
         grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
         tensor_min = torch.clamp(grouped.amin(dim=-1), max=0)
         tensor_max = torch.clamp(grouped.amax(dim=-1), min=0)
-        if self.spec.clip_min is not None:
-            tensor_min = self.spec.clip_min.to(weight.device)
         if self.spec.clip_max is not None:
-            tensor_max = self.spec.clip_max.to(weight.device)
+            clip_max = self.spec.clip_max.reshape(-1).to(weight.device, tensor_max.dtype)
+            clip_min = (
+                -clip_max
+                if self.spec.clip_min is None
+                else self.spec.clip_min.reshape(-1).to(weight.device, tensor_min.dtype)
+            )
+            if clip_min.numel() == tensor_min.numel() and clip_max.numel() == tensor_max.numel():
+                tensor_min = torch.maximum(tensor_min, clip_min.reshape_as(tensor_min))
+                tensor_max = torch.minimum(tensor_max, clip_max.reshape_as(tensor_max))
 
         tunables = {}
         if self.family == "plain" and tune_rounding:

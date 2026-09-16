@@ -167,3 +167,23 @@ def test_mx_aliases_and_rceil_keep_the_requested_format():
 
     assert activation.data_type == "mx_fp4"
     assert torch.equal(quantizer.quantize(weight), expected)
+
+
+def test_awq_clip_ranges_are_flattened_before_integer_qdq():
+    """AWQ stores [output, group] clips while INT QDQ uses flattened group rows."""
+    weight = torch.randn(4, 8)
+    clip = weight.abs().reshape(4, 2, 4).amax(dim=-1)
+    quantizer = create_quantizer(
+        {
+            **_weight_config("int", 4, 4),
+            "awq_clip_min": -clip,
+            "awq_clip_max": clip,
+        },
+        iters=1,
+    )
+    quantizer.initialize(weight)
+
+    result = quantizer.quantize(weight)
+
+    assert result.shape == weight.shape
+    assert torch.isfinite(result).all()
