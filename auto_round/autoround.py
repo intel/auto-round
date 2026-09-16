@@ -22,13 +22,14 @@ import torch
 
 from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme, parse_scheme
+from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
 from auto_round.utils.device_manager import normalize_default_device_map
 
 if TYPE_CHECKING:
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-    from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
+    from auto_round.compressors.base import BaseCompressor as BaseCompressor
 
 
 def _collect_config_scheme_overrides(config) -> dict:
@@ -638,7 +639,7 @@ class _CompressorBuilder(object):
         tokenizer=None,
         platform="hf",
         format=None,
-        dataset="NeelNanda/pile-10k",
+        dataset: Optional[Union[str, "CalibDataset", list, tuple, torch.utils.data.DataLoader]] = None,
         low_gpu_mem_usage: bool = False,
         device_map: Union[str, torch.device, int, dict] = 0,
         iters: int = None,
@@ -655,7 +656,14 @@ class _CompressorBuilder(object):
         from auto_round.algorithms.registry import normalize_algorithm_config
         from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
         from auto_round.compressors.utils import check_need_act_calibration
+        from auto_round.utils.dataset_utils import CalibDataset
         from auto_round.utils.model import is_model_free_route
+
+        # Normalize CalibDataset objects to spec strings
+        if isinstance(dataset, CalibDataset):
+            dataset = dataset.to_spec_string()
+        elif isinstance(dataset, (list, tuple)):
+            dataset = normalize_dataset_spec(dataset)
 
         if alg_configs is None:
             alg_configs = "signround"
@@ -804,7 +812,8 @@ class AutoRound:
             Use config instances to provide algorithm-specific options, such
             as ``SignRoundConfig(iters=50)`` or ``AWQConfig(apply_clip=True)``.
         layer_config: Optional per-layer quantization overrides.
-        dataset: Calibration dataset name, samples, or dataloader.
+        dataset: Calibration dataset name, samples, dataloader, or a
+            :class:`~auto_round.utils.dataset_utils.CalibDataset` object.
         seqlen: Calibration sequence length.
         nsamples: Number of calibration samples.
         batch_size: Calibration batch size.

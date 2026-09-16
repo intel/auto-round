@@ -29,6 +29,14 @@ from torch.utils.data import DataLoader
 
 from . import envs
 from .utils import is_local_path, logger
+from .utils.dataset_utils import (
+    CalibDataset,
+    auto_detect_text_field,
+    auto_detect_text_field_from_sample,
+    extract_text_from_sample,
+    normalize_dataset_spec,
+    parse_dataset_spec,
+)
 
 CALIB_DATASETS = {}
 _GITHUB_CODE_CLEAN_MAX_DATASETS_VERSION = Version("3.6.0")
@@ -822,6 +830,247 @@ def get_local_dataset(
     return calib_dataset
 
 
+def _get_generic_dataset(
+    tokenizer,
+    seqlen,
+    dataset_name,
+    split=None,
+    seed=42,
+    apply_chat_template=False,
+    system_prompt=None,
+    fields=None,
+    template=None,
+    separator="\n\n",
+    streaming=True,
+    nsamples=None,
+    timeout=300,
+):
+    """Generic dataset loader that works with any HuggingFace dataset.
+
+    Automatically detects the text field if not specified, or uses the
+    user-provided fields/template to extract text.
+
+    By default uses streaming mode to avoid downloading the entire dataset.
+    Samples are collected until ``nsamples`` valid samples (meeting ``seqlen``)
+    are gathered, or the ``timeout`` is reached.
+
+    Args:
+        tokenizer: The tokenizer to use for tokenization.
+        seqlen: The maximum sequence length.
+        dataset_name: HuggingFace dataset name or local path.
+        split: The data split to use.
+        seed: Random seed for shuffling.
+        apply_chat_template: Whether to apply chat template.
+        system_prompt: Optional system prompt.
+        fields: Text field(s) to extract. A single string for one column,
+            or a list of strings for multiple columns (concatenated with
+            *separator*). If ``None``, the text field is auto-detected.
+        template: Template string with {field} placeholders.
+        separator: Separator for multi-field concatenation.
+        streaming: Whether to use streaming mode (default True for remote
+            datasets to avoid downloading the full dataset).
+        nsamples: Maximum number of samples to collect (for streaming mode).
+            If None, collects up to 10000 samples.
+        timeout: Timeout in seconds for streaming collection. If the dataset
+            cannot provide enough samples within this time, a warning is
+            logged and the collected samples are used.
+
+    Returns:
+        A tokenized HuggingFace Dataset.
+    """
+    import time
+
+    # Determine if we should use streaming
+    # Local files are always loaded fully (they're already on disk)
+    is_local = is_local_path(dataset_name)
+    use_streaming = streaming and not is_local
+
+    # Load the dataset
+    if is_local:
+        # Local file: use json or text loader (always full load)
+        if dataset_name.endswith(".json"):
+            calib_dataset = load_dataset("json", data_files=dataset_name, split=split or "train")
+        elif dataset_name.endswith(".jsonl"):
+            calib_dataset = load_dataset("json", data_files=dataset_name, split=split or "train")
+        elif dataset_name.endswith(".txt"):
+            calib_dataset = load_dataset("text", data_files=dataset_name, split=split or "train")
+        else:
+            calib_dataset = load_dataset(dataset_name, split=split or "train")
+    else:
+        # HuggingFace dataset
+        if use_streaming:
+            try:
+                calib_dataset = load_dataset(
+                    dataset_name,
+                    split=split or "train",
+                    trust_remote_code=True,
+                    streaming=True,
+                )
+            except Exception:
+                # Try without split (some datasets don't have explicit splits)
+                calib_dataset = load_dataset(
+                    dataset_name,
+                    trust_remote_code=True,
+                    streaming=True,
+                )
+                if split:
+                    if isinstance(split, list):
+                        split = split[0]
+                    if split in calib_dataset:
+                        calib_dataset = calib_dataset[split]
+                    else:
+                        calib_dataset = calib_dataset[list(calib_dataset.keys())[0]]
+        else:
+            try:
+                calib_dataset = load_dataset(
+                    dataset_name,
+                    split=split or "train",
+                    trust_remote_code=True,
+                )
+            except Exception:
+                # Try without split (some datasets don't have explicit splits)
+                calib_dataset = load_dataset(dataset_name, trust_remote_code=True)
+                if split:
+                    if isinstance(split, list):
+                        split = split[0]
+                    if split in calib_dataset:
+                        calib_dataset = calib_dataset[split]
+                    else:
+                        calib_dataset = calib_dataset[list(calib_dataset.keys())[0]]
+
+    # Determine the text field
+    if fields is None and template is None:
+        # Auto-detect
+        if hasattr(calib_dataset, "column_names"):
+            fields = auto_detect_text_field(calib_dataset)
+        else:
+            # IterableDataset – grab first sample to detect
+            first_sample = next(iter(calib_dataset))
+            fields = auto_detect_text_field_from_sample(first_sample)
+        logger.info(f"Auto-detected text field '{fields}' for dataset '{dataset_name}'")
+
+    # Build the text extraction function
+    def _extract_text_from_sample(sample):
+        """Extract text from a single sample dict."""
+        try:
+            return extract_text_from_sample(
+                sample,
+                fields=fields,
+                template=template,
+                separator=separator,
+            )
+        except (KeyError, ValueError) as e:
+            logger.warning(f"Skipping sample due to field extraction error: {e}")
+            return None
+
+    # Tokenizer function
+    tokenizer_function = get_tokenizer_function(
+        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
+    )
+
+    if use_streaming:
+        # --- Streaming mode: collect samples until nsamples or timeout ---
+        target = nsamples if nsamples is not None else 10000
+        start_time = time.time()
+        collected_texts = []
+        total_scanned = 0
+        skipped = 0
+
+        logger.info(
+            f"Streaming dataset '{dataset_name}': collecting up to {target} samples " f"(timeout={timeout}s)..."
+        )
+
+        # Shuffle the iterable dataset for random sampling
+        iter_ds = calib_dataset.shuffle(seed=seed)
+
+        for sample in iter_ds:
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                logger.warning(
+                    f"Dataset '{dataset_name}' streaming timeout reached ({timeout}s). "
+                    f"Collected {len(collected_texts)}/{target} samples after scanning "
+                    f"{total_scanned} samples ({skipped} skipped). "
+                    f"Using available samples for calibration."
+                )
+                break
+
+            total_scanned += 1
+            text = _extract_text_from_sample(sample)
+            if text is None or not text.strip():
+                skipped += 1
+                continue
+
+            collected_texts.append(text)
+
+            if len(collected_texts) >= target:
+                break
+
+            # Progress logging every 1000 samples
+            if total_scanned % 1000 == 0:
+                logger.info(
+                    f"  Streaming '{dataset_name}': {len(collected_texts)}/{target} "
+                    f"valid samples collected ({total_scanned} scanned, {skipped} skipped, "
+                    f"{elapsed:.1f}s elapsed)"
+                )
+
+        if len(collected_texts) == 0:
+            raise ValueError(
+                f"Dataset '{dataset_name}' yielded no valid samples within {timeout}s. "
+                f"Scanned {total_scanned} samples. Check the dataset format or "
+                f"specify 'fields' explicitly."
+            )
+
+        if len(collected_texts) < target:
+            logger.warning(
+                f"Dataset '{dataset_name}': only {len(collected_texts)}/{target} samples "
+                f"collected (scanned {total_scanned} total, {skipped} skipped). "
+                f"Calibration will use {len(collected_texts)} samples."
+            )
+
+        # Build a Dataset from collected texts
+        calib_dataset = Dataset.from_dict({"text": collected_texts})
+
+    else:
+        # --- Non-streaming mode: full dataset ---
+        def _extract_text_batched(examples):
+            """Extract text from batched examples."""
+            texts = []
+            for i in range(len(next(iter(examples.values())))):
+                sample = {k: v[i] for k, v in examples.items()}
+                text = _extract_text_from_sample(sample)
+                if text is not None:
+                    texts.append(text)
+                else:
+                    texts.append("")  # placeholder, will be filtered later
+            return {"text": texts}
+
+        if fields is not None or template is not None:
+            calib_dataset = calib_dataset.map(
+                _extract_text_batched,
+                batched=True,
+                remove_columns=calib_dataset.column_names if hasattr(calib_dataset, "column_names") else None,
+            )
+        else:
+            # Auto-detected field: rename to "text" if needed
+            if fields != "text":
+                calib_dataset = calib_dataset.rename_column(fields, "text")
+
+        calib_dataset = calib_dataset.shuffle(seed=seed)
+
+    # Filter out empty/short texts and tokenize
+    calib_dataset = calib_dataset.filter(lambda x: len(x["text"].strip()) > 0)
+
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+        ),
+    )
+
+    return calib_dataset
+
+
 def get_dataset_len(dataset):
     """Calculates the length of a dataset.
 
@@ -905,6 +1154,12 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
     Returns:
         Dataset: The processed dataset ready for calibration.
     """
+    # Normalize CalibDataset objects to spec strings
+    if isinstance(dataset_name, CalibDataset):
+        dataset_name = dataset_name.to_spec_string()
+    elif isinstance(dataset_name, (list, tuple)):
+        dataset_name = normalize_dataset_spec(dataset_name)
+
     dataset_names = dataset_name.split(",")
 
     def filter_func(example):
@@ -968,24 +1223,71 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         split = None
         do_concat = False
         apply_chat_template = False
+        fields = None
+        template = None
+        separator = "\n\n"
+        timeout = 300
 
         if ":" in name:
             name, split_list = name.split(":")[0], name.split(":")[1:]
             for ele in split_list:
-                key, values = ele.split("=")[0], ele.split("=")[1:]
+                key, values = ele.split("=", 1)[0], ele.split("=", 1)[1:]
                 if key == "split":
                     split = values[0].split("+")
-                if key == "num":
+                elif key == "num":
                     data_lens[name] = int(values[0])
-                if key == "concat":
+                elif key == "concat":
                     do_concat = False if (len(values) > 0 and values[0].lower() == "false") else True
-                if key == "apply_chat_template":
+                elif key == "apply_chat_template":
                     apply_chat_template = False if (len(values) > 0 and values[0].lower() == "false") else True
-                if key == "system_prompt":
+                elif key == "system_prompt":
                     system_prompt = values[0]
                     apply_chat_template = True
-        if is_local_path(name):
-            get_dataset = CALIB_DATASETS.get("local")
+                elif key == "fields":
+                    # Single field: "fields=text" -> "text"
+                    # Multiple fields: "fields=q+a" -> ["q", "a"]
+                    if "+" in values[0]:
+                        fields = values[0].split("+")
+                    else:
+                        fields = values[0]
+                elif key == "template":
+                    template = values[0]
+                elif key == "separator":
+                    separator = values[0].replace("\\n", "\n").replace("\\t", "\t")
+                elif key == "timeout":
+                    timeout = int(values[0])
+        # If user explicitly specified fields/template, use the generic
+        # loader regardless of whether the dataset is registered.
+        use_generic = fields is not None or template is not None
+
+        if use_generic or is_local_path(name):
+            if is_local_path(name) and not use_generic:
+                # Local file without explicit field spec: use the local handler
+                dataset = CALIB_DATASETS["local"](
+                    tokenizer,
+                    seqlen,
+                    seed=seed,
+                    split=split,
+                    dataset_name=name,
+                    apply_chat_template=apply_chat_template,
+                    system_prompt=system_prompt,
+                )
+            else:
+                # Generic loader (for local files with field spec, or any HF dataset)
+                dataset = _get_generic_dataset(
+                    tokenizer,
+                    seqlen,
+                    dataset_name=name,
+                    split=split,
+                    seed=seed,
+                    apply_chat_template=apply_chat_template,
+                    system_prompt=system_prompt,
+                    fields=fields,
+                    template=template,
+                    separator=separator,
+                    nsamples=nsamples,
+                    timeout=timeout,
+                )
         else:
             calib_name = name
             if name not in CALIB_DATASETS.keys():
@@ -995,20 +1297,33 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                         calib_name = key
                         break
             get_dataset = CALIB_DATASETS.get(calib_name)
-        if get_dataset is None:
-            filtered_keys = [k for k in CALIB_DATASETS.keys() if "/" not in k]
-            raise ValueError(
-                f"Dataset '{name}' is not found. Please choose from the supported datasets: {filtered_keys}."
-            )
-        dataset = get_dataset(
-            tokenizer,
-            seqlen,
-            seed=seed,
-            split=split,
-            dataset_name=name,
-            apply_chat_template=apply_chat_template,
-            system_prompt=system_prompt,
-        )
+            if get_dataset is None:
+                # Fallback: use generic loader for any HuggingFace dataset
+                logger.info(f"Dataset '{name}' not in registry, using generic loader with auto field detection.")
+                dataset = _get_generic_dataset(
+                    tokenizer,
+                    seqlen,
+                    dataset_name=name,
+                    split=split,
+                    seed=seed,
+                    apply_chat_template=apply_chat_template,
+                    system_prompt=system_prompt,
+                    fields=fields,
+                    template=template,
+                    separator=separator,
+                    nsamples=nsamples,
+                    timeout=timeout,
+                )
+            else:
+                dataset = get_dataset(
+                    tokenizer,
+                    seqlen,
+                    seed=seed,
+                    split=split,
+                    dataset_name=name,
+                    apply_chat_template=apply_chat_template,
+                    system_prompt=system_prompt,
+                )
         if do_concat:
             dataset = concat_dataset_element(dataset)
 
@@ -1100,13 +1415,20 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, n
     Args:
         tokenizer: The tokenizer to use for tokenization.
         seqlen (int): The exact sequence length.
-        dataset_name (str, optional): Dataset name(s) separated by commas.
+        dataset_name (str, optional): Dataset name(s) separated by commas, or a
+            ``CalibDataset`` object. Defaults to "NeelNanda/pile-10k".
         seed (int, optional): Random seed for reproducibility. Defaults to 42.
         nsamples (int, optional): Total number of samples to include. Defaults to 512.
 
     Returns:
         Dataset: The processed dataset ready for calibration.
     """
+    # Normalize CalibDataset objects to spec strings
+    if isinstance(dataset_name, CalibDataset):
+        dataset_name = dataset_name.to_spec_string()
+    elif isinstance(dataset_name, (list, tuple)):
+        dataset_name = normalize_dataset_spec(dataset_name)
+
     # Allow disabling subprocess mode via environment variable
     if envs.AR_DISABLE_DATASET_SUBPROCESS:
         return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
