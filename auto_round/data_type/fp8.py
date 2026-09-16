@@ -371,9 +371,9 @@ if is_gaudi2():
 class _FP8WeightQuantizer:
     """Select the requested FP8 format and materialize its scale layout."""
 
-    def __init__(self, spec, primitive=None, scale_layout=None):
+    def __init__(self, spec, primitive=None, scale_layout=None, data_type=None):
         self.spec = spec
-        data_type = spec.data_type.lower()
+        data_type = (data_type or spec.data_type).lower()
         if primitive is None:
             if data_type in ("fp8_e5m2",):
                 primitive, scale_layout = quant_fp8_e5m2, "row"
@@ -393,7 +393,7 @@ class _FP8WeightQuantizer:
     @classmethod
     def from_spec(cls, spec, canonical=None):
         """Create the FP8 weight quantizer selected by the requested format."""
-        return cls(spec)
+        return cls(spec, data_type=canonical)
 
     @staticmethod
     def create_activation(spec):

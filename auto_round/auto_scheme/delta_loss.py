@@ -542,7 +542,7 @@ def _replay_retain_graph(block_module) -> bool:
             canonical_id = canonical_data_type(data_type)
         except LookupError:
             continue
-        if canonical_id in {"mx_fp4", "mx_int8"}:
+        if canonical_id.startswith("mx_"):
             return True
     return False
 

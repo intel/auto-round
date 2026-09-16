@@ -19,12 +19,14 @@ import torch
 
 from auto_round.data_type.base import (
     activation_quantizer_for_layer,
+    cache_activation_quantizer,
     canonical_data_type,
     create_quantizer,
 )
 from auto_round.data_type.fp8 import quant_fp8_e5m2
+from auto_round.data_type.gguf import _GGUFWeightQuantizer
 from auto_round.data_type.int import quant_tensor_sym
-from auto_round.data_type.mxfp import quant_mx
+from auto_round.data_type.mxfp import quant_mx, quant_mx_rceil
 
 
 def _weight_config(data_type, bits, group_size, *, sym=True):
@@ -128,3 +130,40 @@ def test_nvfp_static_global_scale_accepts_dynamic_calibration():
 def test_aliases_keep_a_single_canonical_datatype_for_policy():
     assert canonical_data_type("int") == "int_sym"
     assert canonical_data_type("INT4_ASYM") == "int_asym"
+
+
+def test_activation_quantizer_uses_the_spec_default_datatype():
+    """Partial layer metadata keeps the public ``int_sym`` activation default."""
+    layer = type("Layer", (), dict(act_bits=8, act_group_size=4, act_sym=True, act_dynamic=True))()
+
+    assert type(cache_activation_quantizer(layer)).__name__ == "_IntActivationQuantizer"
+    assert type(activation_quantizer_for_layer(layer)).__name__ == "_IntActivationQuantizer"
+
+
+def test_format_aliases_keep_the_requested_quantization_format():
+    weight = torch.randn(4, 32)
+    fp8 = create_quantizer(_weight_config("fp8-e5m2", 8, -1), iters=1)
+    fp8.initialize(weight)
+    expected, _, _ = quant_fp8_e5m2(weight, bits=8, group_size=-1)
+
+    gguf = create_quantizer(_weight_config("INT_SYM_DQ", 4, 32), disable_opt_rtn=True)
+    legacy_gguf = create_quantizer(_weight_config("rtn_int_sym_dq", 4, 32), disable_opt_rtn=True)
+
+    assert torch.equal(fp8.quantize(weight), expected)
+    assert isinstance(gguf._implementation, _GGUFWeightQuantizer)
+    assert gguf._implementation.kind == "sym"
+    assert isinstance(legacy_gguf._implementation, _GGUFWeightQuantizer)
+
+
+def test_mx_aliases_and_rceil_keep_the_requested_format():
+    weight = torch.randn(4, 32)
+    layer = type(
+        "Layer", (), dict(act_data_type="mxfp4", act_bits=4, act_group_size=32, act_sym=True, act_dynamic=True)
+    )()
+    activation = activation_quantizer_for_layer(layer)
+    quantizer = create_quantizer(_weight_config("mx_fp4e2m1_rceil", 4, 32), iters=1)
+    quantizer.initialize(weight)
+    expected, _, _ = quant_mx_rceil(weight, bits=4, group_size=32, data_type="mx_fp4e2m1")
+
+    assert activation.data_type == "mx_fp4"
+    assert torch.equal(quantizer.quantize(weight), expected)

@@ -1034,7 +1034,8 @@ class _GGUFWeightQuantizer:
     @classmethod
     def from_spec(cls, spec, canonical=None):
         """Create the GGUF quantizer; its state selects tuned or RTN behavior."""
-        return cls(spec)
+        kind = {"int_sym_dq": "sym", "int_asym_float_zp": "float_zp"}.get(canonical, "asym")
+        return cls(spec, kind=kind)
 
     def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
         self.family = "rtn" if mode in ("rtn", "optimized_rtn") else "plain"
@@ -1154,6 +1155,6 @@ class _GGUFWeightQuantizer:
             module.zp = result.zero_point
 
 
-register_quantizer("int_sym_dq")(_GGUFWeightQuantizer)
-register_quantizer("int_asym_dq")(_GGUFWeightQuantizer)
+register_quantizer("int_sym_dq", aliases=("rtn_int_sym_dq",))(_GGUFWeightQuantizer)
+register_quantizer("int_asym_dq", aliases=("rtn_int_asym_dq",))(_GGUFWeightQuantizer)
 register_quantizer("int_asym_float_zp")(_GGUFWeightQuantizer)

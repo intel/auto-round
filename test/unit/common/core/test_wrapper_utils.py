@@ -335,6 +335,30 @@ class TestWrapperLinearDeviceTransfer:
         assert wrapper.device == "cpu"
         assert wrapper.orig_layer is orig_layer
 
+    def test_unwrapper_keeps_weight_for_activation_only_quantization(self):
+        """W16A8 writes activation state only; its weight stays full precision."""
+        from auto_round.wrapper import WrapperLinear
+
+        layer = torch.nn.Linear(4, 2, bias=False)
+        layer.bits = 16
+        layer.sym = True
+        layer.group_size = -1
+        layer.scale_dtype = torch.float32
+        layer.data_type = "int"
+        layer.act_bits = 8
+        layer.act_data_type = "int"
+        layer.act_sym = True
+        layer.act_dynamic = True
+        layer.act_group_size = -1
+        layer.iters = 0
+        layer.tuning_device = "cpu"
+        expected = layer.weight.detach().clone()
+
+        WrapperLinear(layer, device="cpu", disable_opt_rtn=True).unwrapper({})
+
+        assert torch.equal(layer.weight, expected)
+        assert not hasattr(layer, "scale")
+
     def test_custom_weight_qdq_is_shared_by_forward_and_write_back(self):
         """A per-layer algorithm hook controls both tuning and final materialization."""
         from auto_round.wrapper import WrapperLinear

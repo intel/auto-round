@@ -462,7 +462,11 @@ class _NVFPWeightQuantizer:
                 torch.ones(grouped.shape[:-1], device=weight.device, dtype=torch.float32)
             )
 
-        global_scale = calculate_gparam(weight, self.spec.group_size, weight.device)
+        global_scale = self.spec.global_scale
+        if global_scale is None:
+            global_scale = calculate_gparam(weight, self.spec.group_size, weight.device)
+        else:
+            global_scale = global_scale.to(weight.device)
         optimized_init = None
         if self.family == "optimized":
             if isinstance(imatrix, torch.Tensor):

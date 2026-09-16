@@ -14,7 +14,7 @@ class.  It deliberately contains no quantization math.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -98,9 +98,9 @@ def _create_weight_quantizer(data_type: str, spec: "WeightQuantizationSpec"):
 
 def _create_activation_quantizer(data_type: str, spec: "ActivationQuantizationSpec"):
     """Create the activation implementation owned by ``data_type``."""
-    canonical_data_type(data_type)
+    canonical = canonical_data_type(data_type)
     try:
-        return _quantizer_class(data_type).create_activation(spec)
+        return _quantizer_class(data_type).create_activation(replace(spec, data_type=canonical))
     except AttributeError as error:
         raise LookupError(f"Datatype {data_type!r} has no activation quantizer") from error
 
@@ -125,6 +125,9 @@ class WeightQuantizationSpec:
     q_scale_thresh: float = 1e-5
     super_bits: int | None = None
     super_group_size: int | None = None
+    global_scale: torch.Tensor | None = None
+    clip_min: torch.Tensor | None = None
+    clip_max: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +185,16 @@ class DataTypeQuantizer:
         tunables = self._state.get("tunables", self._state) if isinstance(self._state, dict) else self._state.tunables
         self.parameters = dict(tunables)
 
+    def refresh(self, weight: torch.Tensor, *, imatrix=None) -> None:
+        """Rebuild fixed datatype state while preserving existing trainable tensors."""
+        previous_parameters = self.parameters
+        self.initialize(weight, imatrix=imatrix)
+        if isinstance(self._state, dict):
+            self._state["tunables"] = previous_parameters
+        else:
+            self._state = replace(self._state, tunables=previous_parameters)
+        self.parameters = previous_parameters
+
     def quantize(self, weight: torch.Tensor, **parameters) -> torch.Tensor:
         """Return QDQ weights for the current trainable parameter values."""
         return self.qdq(weight, **parameters).weight
@@ -236,6 +249,9 @@ def _weight_spec(layer) -> WeightQuantizationSpec:
         q_scale_thresh=getattr(layer, "q_scale_thresh", 1e-5),
         super_bits=getattr(layer, "super_bits", None),
         super_group_size=getattr(layer, "super_group_size", None),
+        global_scale=getattr(layer, "weight_global_scale", None),
+        clip_min=getattr(layer, "awq_clip_min", None),
+        clip_max=getattr(layer, "awq_clip_max", None),
     )
 
 
@@ -268,7 +284,8 @@ def cache_activation_quantizer(layer):
         return None
     if hasattr(layer, "_ar_activation_quantizer"):
         return layer._ar_activation_quantizer
-    quantizer = _create_activation_quantizer(layer.act_data_type, _activation_spec(layer))
+    spec = _activation_spec(layer)
+    quantizer = _create_activation_quantizer(spec.data_type, spec)
     layer._ar_activation_quantizer = quantizer
     return quantizer
 
@@ -280,7 +297,7 @@ def activation_quantizer_for_layer(layer, *, scale_dtype=None):
         from dataclasses import replace
 
         spec = replace(spec, scale_dtype=scale_dtype)
-    return _create_activation_quantizer(layer.act_data_type, spec)
+    return _create_activation_quantizer(spec.data_type, spec)
 
 
 def quantize_activation(tensor, config):

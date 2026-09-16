@@ -438,8 +438,6 @@ class _MXQuantizer:
         data_type = canonical or spec.data_type
         if data_type in ("mx_fp", "mx_int"):
             data_type = f"{data_type}{spec.bits}"
-        if spec.data_type.endswith("_rceil"):
-            data_type += "_rceil"
         return cls(spec, data_type)
 
     @classmethod
@@ -507,11 +505,12 @@ class _MXActivationQuantizer:
         raise RuntimeError("Dynamic MX activation quantization does not require calibration")
 
     def qdq_with_scale(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
-        return quant_mx(
+        primitive = quant_mx_rceil if self.data_type.endswith("_rceil") else quant_mx
+        return primitive(
             activation,
             bits=self.spec.bits,
             group_size=self.spec.group_size,
-            data_type=self.data_type,
+            data_type=self.data_type.removesuffix("_rceil"),
             max_scale=max_scale,
         )
 
@@ -546,7 +545,7 @@ _MX_ALIASES = {
         "opt_rtn_mx_fp4",
         "opt_rtn_mx_fp4_sym",
     ),
-    "mx_fp4e2m1": ("mxfp4e2m1", "mx_fp4e2m1_rceil"),
+    "mx_fp4e2m1": ("mxfp4e2m1",),
     "mx_float16": ("mxfloat16",),
     "mx_fp16": ("mxfp16",),
     "mx_bfloat16": ("mxbfloat16",),
@@ -575,6 +574,7 @@ for _family in ("fp", "int"):
     )(_MXQuantizer)
 
 register_quantizer("mx_fp_rceil", aliases=("mxfprceil",))(_MXQuantizer)
+register_quantizer("mx_fp4e2m1_rceil")(_MXQuantizer)
 
 if __name__ == "__main__":
     data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])

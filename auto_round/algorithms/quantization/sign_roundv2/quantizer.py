@@ -43,10 +43,9 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         super().prepare_run(composer=composer)
 
         canonical_dtype = canonical_data_type(self.scheme.data_type)
-        optimized_families = {"int", "mx_fp4", "mx_int8", "nv_fp4", "nvfp4_v2"}
-        is_optimized_family = canonical_dtype in optimized_families
+        is_optimized_family = canonical_dtype.startswith(("int_", "mx_", "nv_", "nvfp"))
         if self.scheme.sym and self.scheme.super_group_size is None and is_optimized_family:
-            if self.scheme.bits > 2 and canonical_dtype == "int":
+            if self.scheme.bits > 2 and canonical_dtype.startswith("int_"):
                 logger.warning_once(
                     "algorithm extension has only undergone limited validation on "
                     "W2A16,INT4, MXFP4 and NVFP4; use with caution."

@@ -307,18 +307,19 @@ class WrapperLinear(torch.nn.Module):
 
         if self.orig_layer.weight.device.type == "meta":
             self.orig_layer.to(self.device)
-        weight = self.orig_layer.weight
-        if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
-            weight = weight.t()
-        result = self.weight_qdq(
-            weight.to(self.device),
-            materialize=True,
-        )
-        self.weight_quantizer.apply_result(
-            self.orig_layer,
-            result,
-            transpose=type(self.orig_layer) == transformers.pytorch_utils.Conv1D,
-        )
+        if self.orig_layer.bits < 16:
+            weight = self.orig_layer.weight
+            if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
+                weight = weight.t()
+            result = self.weight_qdq(
+                weight.to(self.device),
+                materialize=True,
+            )
+            self.weight_quantizer.apply_result(
+                self.orig_layer,
+                result,
+                transpose=type(self.orig_layer) == transformers.pytorch_utils.Conv1D,
+            )
         self.orig_layer.weight.grad = None
 
         # Unwrapper bias
