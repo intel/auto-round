@@ -473,61 +473,107 @@ class SignRoundQuantizer(BaseQuantizer):
             else None
         )
 
-        for i in range(self.iters):
-            if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
-                for n, m in block.named_modules():
-                    m.cur_iter = i
-            total_loss = 0
-            global_indices = index_sampler.next_batch()
-            if valid_token_mask:
-                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+        tuning_cache = None
+        # Only opt-in diffusion tuning can enter the CUDA staging path.
+        cache_budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
+        use_tuning_cache = (
+            getattr(self.model_context, "is_diffusion", False)
+            and (cache_budget == "auto" or cache_budget > 0)
+            and self.compress_context.low_gpu_mem_usage
+            and str(device).startswith("cuda")
+            and len(device_manager.device_list) == 1
+            and (loss_device is None or torch.device(loss_device) == torch.device(device))
+        )
 
-            for batch_start in range(0, len(global_indices), batch_size):
-                indices = global_indices[batch_start : batch_start + batch_size]
-                ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
-                pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
-                if loss_device is not None:
-                    pred_output = pred_output.to(loss_device)
-                if (
-                    block_ctx.block_index == block_ctx.block_cnt - 1
-                    and self.enable_lfq
-                    and input_ids is not None
-                    and self._is_text_decoder_block(block_ctx.block_name)
-                ):
-                    loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
-                else:
-                    loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
-                num_elm = 1 if num_elm <= 0 else num_elm
-                total_loss += loss.item() / num_elm
+        try:
+            for i in range(self.iters):
+                # Auto observes a complete forward/backward/optimizer iteration
+                # on the legacy path before allocating any extra GPU buffers.
+                if use_tuning_cache and i == (1 if cache_budget == "auto" else 0):
+                    from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
 
-                if mid_iter_mem_check:
-                    # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
+                    tuning_cache = DiffusionTuningCache.create(
+                        block,
+                        block_fwd,
+                        active_inputs,
+                        input_others,
+                        fp_outputs,
+                        index_sampler,
+                        self.iters - i,
+                        cache_budget,
+                        device,
+                    )
+                if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
+                    for n, m in block.named_modules():
+                        m.cur_iter = i
+                total_loss = 0
+                global_indices = index_sampler.next_batch()
+                if valid_token_mask:
+                    num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
-                self._scale_loss_and_backward(scaler, loss)
+                for batch_start in range(0, len(global_indices), batch_size):
+                    indices = global_indices[batch_start : batch_start + batch_size]
+                    staged = tuning_cache.get(indices) if tuning_cache is not None else None
+                    if staged is None:
+                        ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
+                        pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
+                    else:
+                        ref_output = staged[2]
+                        pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
+                    if loss_device is not None:
+                        pred_output = pred_output.to(loss_device)
+                    if (
+                        block_ctx.block_index == block_ctx.block_cnt - 1
+                        and self.enable_lfq
+                        and input_ids is not None
+                        and self._is_text_decoder_block(block_ctx.block_name)
+                    ):
+                        loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
+                    else:
+                        loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
+                    num_elm = 1 if num_elm <= 0 else num_elm
+                    total_loss += loss.item() / num_elm
 
-                if mid_iter_mem_check:
-                    # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
+                    if mid_iter_mem_check:
+                        # clear memory to avoid OOM due to memory fragmentation
+                        clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
 
-            if i == 0:
-                init_loss = total_loss
-            current_lr = optimizer.param_groups[0]["lr"]
-            logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
+                    self._scale_loss_and_backward(scaler, loss)
 
-            if total_loss < best_loss:
-                best_loss = total_loss
+                    if mid_iter_mem_check:
+                        # clear memory to avoid OOM due to memory fragmentation
+                        clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
+
+                if i == 0:
+                    init_loss = total_loss
+                current_lr = optimizer.param_groups[0]["lr"]
+                logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
+
+                if total_loss < best_loss:
+                    best_loss = total_loss
+                    if not self.not_use_best_mse:
+                        best_params = (
+                            tuning_cache.collect_best_params()
+                            if tuning_cache is not None and tuning_cache.best is not None
+                            else collect_best_params(block, self.compress_context.cache_device)
+                        )
+                        last_best_iter = i
+                if self.not_use_best_mse and i == self.iters - 1:
+                    best_params = (
+                        tuning_cache.collect_best_params()
+                        if tuning_cache is not None and tuning_cache.best is not None
+                        else collect_best_params(block, self.compress_context.cache_device)
+                    )
+
                 if not self.not_use_best_mse:
-                    best_params = collect_best_params(block, self.compress_context.cache_device)
-                    last_best_iter = i
-            if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(block, self.compress_context.cache_device)
+                    if 0 < self.dynamic_max_gap <= i - last_best_iter:
+                        break
+                sync_gradients()
+                self._step(scaler, optimizer, lr_schedule)
 
-            if not self.not_use_best_mse:
-                if 0 < self.dynamic_max_gap <= i - last_best_iter:
-                    break
-            sync_gradients()
-            self._step(scaler, optimizer, lr_schedule)
+        finally:
+            if tuning_cache is not None:
+                tuning_cache.close()
 
         last_loss = total_loss
         best_iter = self.iters

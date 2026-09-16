@@ -108,6 +108,15 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument("--model_dtype", default=None, help="Model dtype used when loading the model.")
     rt.add_argument("--platform", default="hf", help="Model loading platform. Options: hf or model_scope.")
     rt.add_argument(
+        "--num_hidden_layers",
+        "--debug_layer_num",
+        default=None,
+        type=int,
+        help="Debug only: load only the first N decoder layers of the model. Useful for isolating and "
+        "debugging issues on very large models with a fraction of the load time and memory. The resulting "
+        "model is partial and must not be used for a real quantization run.",
+    )
+    rt.add_argument(
         "--batch_size", "--train_bs", "--bs", default=None, type=int, help="Batch size for calibration and tuning."
     )
     rt.add_argument("--seqlen", "--seq_len", default=None, type=int, help="Sequence length of the calibration samples.")
@@ -296,6 +305,14 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         help="Number of denoising steps for diffusion generation/evaluation.",
     )
     diff.add_argument("--generator_seed", default=None, type=int, help="Random seed used for diffusion generation.")
+    diff.add_argument(
+        "--diffusion_tuning_cache_size",
+        default=0,
+        type=lambda value: value if value == "auto" else float(value),
+        help="Extra GPU buffer budget in GiB for single-CUDA diffusion SignRound prefetch with low_gpu_mem_usage. "
+        "Use 'auto' to select a budget after the first tuning iteration; 0 preserves the existing path. "
+        "This is not a limit on total GPU memory.",
+    )
 
     # ---- Common Quantization Arguments ----
     quant_group = parser.add_argument_group("Common Quantization Arguments")

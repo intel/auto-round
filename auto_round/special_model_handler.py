@@ -1087,7 +1087,12 @@ register_ignore_layers(
     matchers=[
         ModelTypeMatcher(r"glm5_next", mode="full"),
     ],
-    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj", "indexer"],  # get_glm_flash_ignore_layers: vllm issue
+    ignore_layers=[
+        get_glm_flash_ignore_layers,  # vllm issue
+        "weights_proj",
+        "indexer",
+        "self_attn",
+    ],
 )
 
 # step3p5
@@ -1111,6 +1116,18 @@ register_ignore_layers(
     ignore_layers=[
         "vision_tower",
         "mm_projector",
+    ],
+)
+
+# qwen4: keep hyper_connection and MoE gate modules in full precision.
+register_ignore_layers(
+    matchers=[
+        ArchitectureMatcher(r"Qwen4", mode="in"),
+    ],
+    ignore_layers=[
+        "hyper_connection",
+        "mlp.gate",  # MoE router gate
+        "shared_expert",
     ],
 )
 
