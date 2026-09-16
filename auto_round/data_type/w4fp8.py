@@ -14,7 +14,7 @@
 
 import torch
 
-from auto_round.data_type.register import register_dtype
+from auto_round.data_type.base import register_dtype, register_quantizer
 from auto_round.data_type.utils import float8_e4m3fn_ste, get_gaudi_fp8_ste_func
 
 
@@ -72,3 +72,58 @@ def progressive_quant_fp8_int4(
 
     bf16_to_int4_scale = scale_fp8_to_int4 * bf16_to_fp8_scale
     return qdq_tensor, {"scale": bf16_to_int4_scale, "bf16_to_fp8_scale": bf16_to_fp8_scale}, zp_fp8_to_int4
+
+
+@register_quantizer("fp8_to_int_sym")
+class _ProgressiveFP8WeightQuantizer:
+    """Own the progressive BF16-to-FP8-to-INT4 weight quantization path."""
+
+    def __init__(self, spec):
+        self.spec = spec
+
+    @classmethod
+    def from_spec(cls, spec, canonical=None):
+        """Create the progressive FP8-to-INT4 weight quantizer."""
+        return cls(spec)
+
+    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+
+        grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
+        tunables = {}
+        if tune_rounding:
+            tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
+        if tune_minmax:
+            shape = grouped.shape[:-1]
+            tunables["min_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))
+            tunables["max_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))
+        return tunables
+
+    def qdq(self, weight, state, *, tunables, materialize=False):
+        quantized, scales, zero_point = progressive_quant_fp8_int4(
+            weight,
+            bits=self.spec.bits,
+            group_size=self.spec.group_size,
+            v=tunables.get("value", 0),
+            min_scale=tunables.get("min_scale", 1.0),
+            max_scale=tunables.get("max_scale", 1.0),
+            q_scale_thresh=self.spec.q_scale_thresh,
+        )
+        from auto_round.data_type.base import WeightQuantizationResult
+
+        return WeightQuantizationResult(
+            quantized,
+            scales["scale"] if materialize else None,
+            zero_point if materialize else None,
+            scales["bf16_to_fp8_scale"] if materialize else None,
+        )
+
+    @staticmethod
+    def apply_result(module, result):
+        if result.scale is None:
+            raise ValueError("Progressive FP8 weight result was not materialized")
+        module.weight.data.copy_(result.weight)
+        rows = result.logical_rows or result.weight.shape[0]
+        module.scale = result.scale.reshape(rows, -1).cpu()
+        module.zp = result.zero_point
+        module.w_bf16_to_fp8_scale = result.metadata.cpu()

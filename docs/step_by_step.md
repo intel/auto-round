@@ -174,7 +174,7 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 
 **MLX Format**[Experimental Feature]: This format targets Apple Silicon (M1/M2/M3/...) and is loaded directly by [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (text-only LLM) or [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) (vision/audio + language).
 - Supports **2, 3, 4, 5, 6, 8 bits** (5/6 bits are MLX-exclusive — GPTQ/AWQ have no standard packing for them).
-- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--schemes "..." --bits 3.5`); 
+- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--schemes "..." --bits 3.5`);
 - Use `--format mlx` for a native MLX checkpoint; use `--format auto_round:mlx` if you want HuggingFace `transformers` + AutoRound to load it (post-init repacks each layer into MLX `QuantLinear` on Darwin).
 - Limitation: embedding layer quantization has not supported
 #### Format and scheme support matrix
