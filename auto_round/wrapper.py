@@ -20,8 +20,9 @@ import transformers
 from torch.functional import F
 
 import auto_round.envs as envs
+from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type.base import activation_quantizer_for_layer, create_quantizer
-from auto_round.data_type.utils import quantize_bias_without_round, reshape_pad_tensor_by_group_size
+from auto_round.data_type.utils import get_quant_func, quantize_bias_without_round, reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -113,6 +114,12 @@ class WrapperLinear(torch.nn.Module):
         if self.enable_act_quant and self.activation_quantizer is None:
             self.activation_quantizer = activation_quantizer_for_layer(orig_layer)
         self.weight_global_scale = getattr(self.orig_layer, "weight_global_scale", None)
+        layer_data_type = (self.orig_layer.data_type or "").lower()
+        if (is_nv_fp(layer_data_type) or layer_data_type == "nvfp4_v2") and self.weight_global_scale is None:
+            from auto_round.data_type.nvfp import calculate_gparam
+
+            weight = getattr(self.orig_layer, "get_weight", lambda: self.orig_layer.weight)()
+            self.weight_global_scale = calculate_gparam(weight, self.orig_layer.group_size).to(weight.device)
         if hasattr(self.orig_layer, "scale_dtype") and self.orig_layer.scale_dtype == torch.float32:
             self.q_scale_thresh = 1e-8
         else:
@@ -181,6 +188,17 @@ class WrapperLinear(torch.nn.Module):
         self.min_scale = getattr(self, "min_scale", torch.tensor(1.0, device=self.device, dtype=p_dtype))
         self.max_scale = getattr(self, "max_scale", torch.tensor(1.0, device=self.device, dtype=p_dtype))
         self.data_type = orig_layer.data_type
+        self.weight_quant_func_eager, _ = get_quant_func(
+            orig_layer.data_type,
+            orig_layer.bits,
+            orig_layer.sym,
+            self.disable_opt_rtn,
+            orig_layer.group_size,
+            iters=orig_layer.iters,
+        )
+        self.weight_quant_func = self.weight_quant_func_eager
+        if self.enable_torch_compile:
+            self.weight_quant_func = compile_func(self.weight_quant_func_eager, self.device)
 
         if self.enable_act_quant:
             self.act_data_type = orig_layer.act_data_type

@@ -86,6 +86,7 @@ def test_wrapper_keeps_canonical_dtype_for_optimized_nvfp4_v2():
 
     wrapper = WrapperLinear(orig_layer, device="cpu", disable_opt_rtn=False, enable_torch_compile=False, iters=0)
 
+    assert wrapper.weight_global_scale is not None
     assert wrapper.weight_quant_func is opt_rtn_nvfp4_v2
     assert wrapper.data_type == "nvfp4_v2"
     wrapper.unwrapper({})
