@@ -45,9 +45,10 @@ namespace moe_w4a8 {
 
 // `DeviceMemoryPool` slots owned by the W4A8 path. Slots 0-7 belong to the
 // dnnl / xpu / sycl-s8 / cpu wrappers and the SDPA kernels, slot 8 to the DPAS
-// work-group counter, and slots 9-10 to the int4 decode scratch.
-inline constexpr size_t kW4A8QactScratchLoc = 11;
-inline constexpr size_t kW4A8ExpertMapScratchLoc = 12;
+// work-group counter, slots 9-10 to the int4 decode scratch, and slot 11 to
+// the XMX Hadamard staging buffer.
+inline constexpr size_t kW4A8QactScratchLoc = 12;
+inline constexpr size_t kW4A8ExpertMapScratchLoc = 13;
 
 // Acquire the quantized-activation slab (int8 activations + per-token scales).
 // Returns `nullptr` for a zero-byte request; throws `std::invalid_argument` on

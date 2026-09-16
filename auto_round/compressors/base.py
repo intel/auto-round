@@ -24,7 +24,6 @@ from transformers import AutoConfig, set_seed
 from auto_round.algorithms.quantization import BaseQuantizer, QuantizationConfig
 from auto_round.algorithms.transforms import (
     BaseRotationConfig,
-    apply_rotation,
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.config_resolution import (
@@ -1295,8 +1294,34 @@ class BaseOrchestrator(object):
         return get_torch_compile_off_reason(model)
 
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
-        """Apply torch.compile disabling rules for the current compressor state."""
-        self.enable_torch_compile = enable_torch_compile
+        """Apply torch.compile disabling rules for the current compressor state.
+
+        This is intentionally kept beside the compressor state it reads.  The
+        rules are not reusable policy: every input comes from this instance,
+        and preserving that context makes the precedence easy to audit.
+        """
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+        _, is_valid_act_static = self._get_torch_compile_guard_state()
+        reason = None
+        if enable_torch_compile:
+            if is_valid_act_static:
+                reason = "activation is static"
+            else:
+                reason = self._torch_compile_unsupported_arch_reason()
+            user_specified = getattr(self, "_torch_compile_user_specified", False)
+            is_auto_scheme = getattr(self, "is_auto_scheme", False) or isinstance(
+                getattr(self, "scheme", None), AutoScheme
+            )
+            if reason is None and not user_specified and not is_auto_scheme:
+                if isinstance(self.quantize_config, RTNConfig):
+                    reason = "RTN/OPT-RTN quantizes each layer in a single pass"
+                else:
+                    iters = getattr(self.quantize_config, "iters", None)
+                    if iters is not None and iters < MIN_ITERS_FOR_TORCH_COMPILE:
+                        reason = f"`iters`={iters} is below {MIN_ITERS_FOR_TORCH_COMPILE}"
+
+        self.enable_torch_compile = enable_torch_compile and reason is None
         # Why compilation ended up off, used by ``_log_torch_compile_state``.  When the
         # incoming value is already False, keep the reason recorded by the earlier
         # precheck pass instead of dropping it.
@@ -1308,33 +1333,9 @@ class BaseOrchestrator(object):
                 or getattr(self, "_torch_compile_default_off_reason", None)
             )
         )
-        _, is_valid_act_static = self._get_torch_compile_guard_state()
-
-        # On HPU, we rely on torch.compile to speed up the model execution.
-        if self.enable_torch_compile and is_valid_act_static:
-            self.enable_torch_compile = False
-            self._torch_compile_off_reason = "activation is static"
-            logger.warning_once("reset enable_torch_compile to `False` as activation is static")
-
-        # Architecture-level hard block (DeepSeek / GLM-5.3-Flash DSA families). These
-        # hit dynamo's recompile_limit and cannot be overridden by an explicit
-        # ``enable_torch_compile=True``.
-        if self.enable_torch_compile:
-            arch_reason = self._torch_compile_unsupported_arch_reason()
-            if arch_reason is not None:
-                self.enable_torch_compile = False
-                self._torch_compile_off_reason = arch_reason
-                logger.warning_once("reset enable_torch_compile to `False` as %s", arch_reason)
-
-        if self.enable_torch_compile:
-            disabled_reason = self._torch_compile_disabled_reason()
-            if disabled_reason is not None:
-                self.enable_torch_compile = False
-                self._torch_compile_off_reason = disabled_reason
-                logger.warning_once(
-                    "reset enable_torch_compile to `False` as %s, " "so compilation cost would outweigh its benefit",
-                    disabled_reason,
-                )
+        if reason is not None:
+            self._torch_compile_off_reason = reason
+            logger.warning_once("reset enable_torch_compile to `False` as %s", reason)
 
     def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
         """Apply early torch.compile adjustments before scheme resolution.
@@ -1406,7 +1407,6 @@ class BaseOrchestrator(object):
         self._resolve_formats()
         self._patch_model()
         self._build_layer_config()
-        self._apply_rotations()
 
         # Reclaim temporaries from Phases 1-4 (scheme resolution, format
         # parsing, model patching, layer-config walk) before Phase 5
@@ -1420,6 +1420,14 @@ class BaseOrchestrator(object):
         # BlockForwardRunner is now created inside AlgorithmComposer.__init__,
         # so _build_composer must run first.
         self._build_composer()
+
+        # Phase 4.5 – Model-level pre-quantisation transforms (rotation).
+        # Applies full-model rotation up-front (or prepares layer-wise rotation
+        # matrices). Runs here so every entry point — the full quantize() loop,
+        # the zero-shot loop, and the external single-block quantize_block() API —
+        # sees a consistently transformed model before any calibration data is
+        # collected. Rotation is now owned by the composer's rotation members.
+        self.model_context.model = self.alg_composer.apply_model_transforms(self.model_context.model)
 
         # Set block_forward torch compile for block forward
         # Final trim after all init phases.
@@ -1629,39 +1637,6 @@ class BaseOrchestrator(object):
             ShardWriter.reset()
             # Defer ShardWriter construction to _ensure_shard_writer() to avoid
             # heap fragmentation during post_init (parameter iteration).
-
-    def _apply_rotations(self) -> None:
-        """Phase 4.5 – Apply Hadamard / rotation transforms to the model.
-
-        Preconditions:
-          - Phase 3 complete: model topology is final (``apply_patches`` has
-            replaced / merged layers, e.g. MoE experts), so rotation operates
-            on the same modules that quantization will later see.
-          - Phase 4 complete: ``self.layer_config`` is built; rotation only
-            transforms weights and does not change layer names, so this
-            ordering matches the old arch where rotation ran after
-            ``configure_layer_config``.
-          - ``self.quantize_config.data_type`` is final (rotation backend
-            dispatch depends on it).
-
-        Work performed:
-          - Iterates ``self.rotation_configs`` and calls
-            :func:`~auto_round.algorithms.transforms.apply_rotation` on the
-            model for each config.
-
-        Postconditions:
-          - ``self.model_context.model`` carries the rotated weights and any
-            inserted online-Hadamard hooks.
-        """
-        if not self.rotation_configs:
-            return
-        logger.info("Applying Hadamard transform to the model.")
-        for rotation_cfg in self.rotation_configs:
-            self.model_context.model = apply_rotation(
-                self.model_context.model,
-                rotation_cfg,
-                data_type=self.quantize_config.data_type,
-            )
 
     def _patch_model(self) -> None:
         """Phase 3 – Model structure patching.
