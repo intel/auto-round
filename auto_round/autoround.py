@@ -353,7 +353,9 @@ _ENTRY_KWARG_OWNERS = {
     "quant_nontext_module": "mllm",
     "guidance_scale": "diffusion",
     "num_inference_steps": "diffusion",
+    "calib_num_inference_steps": "diffusion",
     "generator_seed": "diffusion",
+    "diffusion_tuning_cache_size": "diffusion",
 }
 
 _SCHEME_FIELDS = set(QuantizationScheme.get_attributes())

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG UBUNTU_VER=24.04
+ARG UBUNTU_VER=26.04
 FROM ubuntu:${UBUNTU_VER}
 
 # See http://bugs.python.org/issue19846
@@ -46,8 +46,9 @@ ENV VIRTUAL_ENV="/home/hostuser/.venv"
 ENV UV_NO_PROGRESS=1 \
     UV_LINK_MODE=copy
 
-RUN uv venv --python=3.12 /home/hostuser/.venv
+RUN uv python install 3.14
+RUN uv venv --python=3.14 /home/hostuser/.venv
 RUN which python && python --version
-RUN uv pip install torch==2.13.0 torchvision==0.28.0 --extra-index-url https://download.pytorch.org/whl/cpu
+RUN uv pip install torch==2.14.0 torchvision==0.29.0 --extra-index-url https://download.pytorch.org/whl/cpu
 
 WORKDIR /home/hostuser

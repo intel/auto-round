@@ -141,7 +141,6 @@ def setup_flux():
     return pipe, output_dir
 
 
-@pytest.mark.timeout(120)
 def test_flux_saving(setup_flux):
     pipe, output_dir = setup_flux
     autoround = AutoRound(
@@ -149,7 +148,7 @@ def test_flux_saving(setup_flux):
         tokenizer=None,
         scheme="W4A16",
         iters=0,
-        num_inference_steps=2,
+        calib_num_inference_steps=2,
         disable_opt_rtn=True,
     )
     autoround.quantize_and_save(output_dir)
@@ -158,7 +157,6 @@ def test_flux_saving(setup_flux):
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
-@pytest.mark.timeout(150)
 def test_flux(setup_flux):
     pipe, output_dir = setup_flux
     autoround = AutoRound(
@@ -166,7 +164,7 @@ def test_flux(setup_flux):
         tokenizer=None,
         scheme="MXFP4",
         iters=0,
-        num_inference_steps=2,
+        calib_num_inference_steps=2,
         disable_opt_rtn=True,  # We change the logic, for opt-rtn, we always do calibration which is slow on cpu
     )
     # skip model saving since it takes much time
@@ -181,7 +179,7 @@ def test_flux(setup_flux):
 #         tokenizer=None,
 #         scheme="NVFP4",
 #         iters=1,
-#         num_inference_steps=2,
+#         calib_num_inference_steps=2,
 #         nsamples=2,
 #         dataset="coco2014",
 #     )

@@ -34,6 +34,18 @@ def warning_once(self, msg, *args):
     logger.warning(msg, *args, stacklevel=2)
 
 
+@lru_cache(maxsize=None)
+def info_once(self, msg, *args):
+    """
+    Log an info message only once per unique message/arguments combination.
+
+    Args:
+        msg: The info message format string
+        *args: Variable positional arguments for message formatting
+    """
+    logger.info(msg, *args, stacklevel=2)
+
+
 # Define a new logging level TRACE
 TRACE_LEVEL = 5
 logging.addLevelName(TRACE_LEVEL, "TRACE")
@@ -94,6 +106,7 @@ class AutoRoundFormatter(logging.Formatter):
 
 
 logging.Logger.warning_once = warning_once
+logging.Logger.info_once = info_once
 logger = logging.getLogger("autoround")
 logger.setLevel(envs.AR_LOG_LEVEL)
 logger.propagate = False

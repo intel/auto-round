@@ -32,6 +32,83 @@ def _mxfp4_compressor(**updates):
     return SimpleNamespace(**values)
 
 
+def _sdxl_base_config():
+    return {
+        "_class_name": "UNet2DConditionModel",
+        "addition_embed_type": "text_time",
+        "attention_head_dim": [5, 10, 20],
+        "block_out_channels": [320, 640, 1280],
+        "cross_attention_dim": 2048,
+        "down_block_types": ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"],
+        "in_channels": 4,
+        "layers_per_block": 2,
+        "out_channels": 4,
+        "projection_class_embeddings_input_dim": 2816,
+        "sample_size": 128,
+        "transformer_layers_per_block": [1, 2, 10],
+        "up_block_types": ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"],
+        "use_linear_projection": True,
+    }
+
+
+def test_format_resolves_nested_sdxl_quant_blocks():
+    class BasicTransformerBlock(torch.nn.Module):
+        pass
+
+    class SDXLModel(torch.nn.Module):
+        config = _sdxl_base_config()
+
+        def __init__(self):
+            super().__init__()
+            attention = torch.nn.Module()
+            attention.transformer_blocks = torch.nn.ModuleList([BasicTransformerBlock(), BasicTransformerBlock()])
+            down_block = torch.nn.Module()
+            down_block.attentions = torch.nn.ModuleList([attention])
+            self.down_blocks = torch.nn.ModuleList([down_block])
+
+    scheme = PRESET_SCHEMES["MXFP4"].copy()
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    ctx = SimpleNamespace(model=SDXLModel(), layer_config=None, quant_block_list=None)
+
+    _, _, _, quant_block_list = output_format.check_and_reset_format(scheme, ctx)
+
+    assert quant_block_list == [
+        ["down_blocks.0.attentions.0.transformer_blocks.0"],
+        ["down_blocks.0.attentions.0.transformer_blocks.1"],
+    ]
+
+
+@pytest.mark.parametrize("quant_block_list", [[["custom.block"]], []], ids=["custom", "empty"])
+def test_format_preserves_explicit_quant_blocks_without_adapter_resolution(monkeypatch, quant_block_list):
+    import auto_round.export.svdquant_adapters as svdquant_adapters
+
+    monkeypatch.setattr(
+        svdquant_adapters,
+        "resolve_svdquant_model_adapter",
+        lambda *args, **kwargs: pytest.fail("explicit quant blocks must skip adapter resolution"),
+    )
+    scheme = PRESET_SCHEMES["MXFP4"].copy()
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    ctx = SimpleNamespace(model=torch.nn.Module(), layer_config=None, quant_block_list=quant_block_list)
+
+    _, _, _, resolved_quant_block_list = output_format.check_and_reset_format(scheme, ctx)
+
+    assert resolved_quant_block_list is quant_block_list
+
+
+def test_format_leaves_flux_quant_blocks_unresolved():
+    class FluxModel(torch.nn.Module):
+        config = {"_class_name": "FluxTransformer2DModel", "num_layers": 0, "num_single_layers": 0}
+
+    scheme = PRESET_SCHEMES["MXFP4"].copy()
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+    ctx = SimpleNamespace(model=FluxModel(), layer_config=None, quant_block_list=None)
+
+    _, _, _, quant_block_list = output_format.check_and_reset_format(scheme, ctx)
+
+    assert quant_block_list is None
+
+
 def test_svdquant_nunchaku_rejects_incompatible_scheme():
     scheme = PRESET_SCHEMES["MXFP4"].copy()
     scheme.group_size = 64
@@ -120,6 +197,48 @@ def test_format_uses_flux_adapter_and_diffusers_weight_name(monkeypatch, tmp_pat
     assert (tmp_path / "config.json").is_file()
 
 
+def test_format_auto_resolves_sdxl_adapter(monkeypatch, tmp_path):
+    import auto_round.export.svdquant_nunchaku as exporter
+    from auto_round.export.svdquant_adapters.sdxl import SDXLSVDQuantNunchakuAdapter
+
+    output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
+
+    class SDXLModel(torch.nn.Module):
+        config = {
+            "_class_name": "UNet2DConditionModel",
+            "addition_embed_type": "text_time",
+            "attention_head_dim": [5, 10, 20],
+            "block_out_channels": [320, 640, 1280],
+            "cross_attention_dim": 2048,
+            "down_block_types": ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"],
+            "in_channels": 4,
+            "layers_per_block": 2,
+            "out_channels": 4,
+            "projection_class_embeddings_input_dim": 2816,
+            "sample_size": 128,
+            "transformer_layers_per_block": [1, 2, 10],
+            "up_block_types": ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"],
+            "use_linear_projection": True,
+        }
+
+        def save_config(self, output_dir):
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            Path(output_dir, "config.json").write_text(json.dumps(self.config), encoding="utf-8")
+
+    model = SDXLModel()
+    captured = {}
+
+    def fake_export(export_model, output_path, *, config, residual_provider, adapter):
+        captured.update(output_path=output_path, adapter=adapter)
+
+    monkeypatch.setattr(exporter, "save_svdquant_nunchaku_safetensors", fake_export)
+
+    output_format.save_quantized(tmp_path, model=model, model_adapter="auto", device="cpu")
+
+    assert captured["output_path"] == str(tmp_path / "diffusion_pytorch_model.safetensors")
+    assert isinstance(captured["adapter"], SDXLSVDQuantNunchakuAdapter)
+
+
 def test_diffusion_save_exports_self_contained_nunchaku_pipeline(tmp_path):
     from auto_round.compressors.diffusion_mixin import DiffusionMixin
 
@@ -181,4 +300,68 @@ def test_diffusion_save_exports_self_contained_nunchaku_pipeline(tmp_path):
     assert (tmp_path / "vae" / "diffusion_pytorch_model.safetensors").is_file()
     model_index = json.loads((tmp_path / "model_index.json").read_text(encoding="utf-8"))
     assert model_index["transformer"] == ["diffusers", "FluxTransformer2DModel"]
+    assert model_index["vae"] == ["diffusers", "AutoencoderKL"]
+
+
+def test_diffusion_save_exports_sdxl_nunchaku_unet_component(tmp_path):
+    from auto_round.compressors.diffusion_mixin import DiffusionMixin
+
+    class QuantizedUNet(torch.nn.Module):
+        def save_config(self, output_dir):
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "config.json").write_text('{"_class_name": "UNet2DConditionModel"}', encoding="utf-8")
+
+    class Bf16Component:
+        def save_pretrained(self, output_dir):
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "config.json").write_text("{}", encoding="utf-8")
+            (output_dir / "diffusion_pytorch_model.safetensors").touch()
+
+    unet = QuantizedUNet()
+    vae = Bf16Component()
+
+    class Pipeline:
+        def __init__(self):
+            self.unet = unet
+            self.vae = vae
+            self.components = {"unet": unet, "vae": vae}
+
+        def save_config(self, output_dir):
+            Path(output_dir, "model_index.json").write_text(
+                json.dumps(
+                    {
+                        "_class_name": "StableDiffusionXLPipeline",
+                        "unet": ["diffusers", "UNet2DConditionModel"],
+                        "vae": ["diffusers", "AutoencoderKL"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    class ExportParent:
+        def save_quantized(self, output_dir, **kwargs):
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            save_file(
+                {"probe": torch.zeros(1)},
+                f"{output_dir}/diffusion_pytorch_model.safetensors",
+                metadata={"model_class": "NunchakuSDXLUNet2DConditionModel"},
+            )
+            return self.model_context.model
+
+    class Compressor(DiffusionMixin, ExportParent):
+        pass
+
+    compressor = Compressor.__new__(Compressor)
+    compressor.formats = [SimpleNamespace(format_name="svdquant_nunchaku")]
+    compressor.model_context = SimpleNamespace(pipe=Pipeline(), model=unet)
+    compressor.compress_context = SimpleNamespace(is_immediate_saving=False)
+
+    compressor.save_quantized(tmp_path)
+
+    assert (tmp_path / "unet" / "diffusion_pytorch_model.safetensors").is_file()
+    assert (tmp_path / "vae" / "diffusion_pytorch_model.safetensors").is_file()
+    model_index = json.loads((tmp_path / "model_index.json").read_text(encoding="utf-8"))
+    assert model_index["unet"] == ["diffusers", "UNet2DConditionModel"]
     assert model_index["vae"] == ["diffusers", "AutoencoderKL"]

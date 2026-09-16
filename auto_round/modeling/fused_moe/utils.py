@@ -102,6 +102,49 @@ def sequential_moe_forward(
     return final_hidden_states
 
 
+def grouped_or_sequential_moe_forward(
+    hidden_states: torch.Tensor,
+    top_k_index: torch.Tensor,
+    top_k_weights: torch.Tensor,
+    experts,
+    num_experts: int,
+) -> torch.Tensor:
+    """Fast grouped-GEMM MoE forward on CUDA, single-sort sequential loop everywhere else.
+
+    Custom fused-MoE replacements (Qwen3.5, etc.) split the fused 3D experts into a
+    ``ModuleList`` of per-expert ``gate_proj``/``up_proj``/``down_proj`` linears -- exactly
+    the layout :func:`grouped_linear_experts_forward` consumes. Routing through it batches
+    the routed token/expert pairs into sorted grouped GEMMs (one launch for all experts,
+    with batched fake-quant), which is markedly faster for tuning fwd+bwd on many-expert
+    MoEs than the per-expert loop; it self-checks the layer and falls back to the loop when
+    a layer is ineligible.
+
+    Only taken on CUDA: the grouped/loop paths issue the per-expert gather kernels that
+    trigger a driver-level bug on some XPU builds, which :func:`sequential_moe_forward`
+    (a single sort, no per-expert gather) is written to avoid. It also requires the experts
+    container to expose ``act_fn`` / ``_apply_gate`` (the grouped path applies gating at the
+    container level), so containers without one keep the sequential path.
+
+    Gated by ``AR_MOE_EXPERTS_IMPL``: setting it to ``linear_loop`` forces the sequential
+    path even on CUDA; ``auto`` / ``linear_grouped`` / ``linear_grouped_sliced`` take grouped.
+    """
+    from auto_round.modeling.fused_moe.moe_experts_interface import (
+        LINEAR_LOOP_IMPL,
+        resolve_experts_implementation,
+    )
+
+    use_grouped = (
+        hidden_states.device.type == "cuda"
+        and (hasattr(experts, "act_fn") or hasattr(experts, "_apply_gate"))
+        and resolve_experts_implementation() != LINEAR_LOOP_IMPL
+    )
+    if use_grouped:
+        from auto_round.modeling.fused_moe.grouped_experts import grouped_linear_experts_forward
+
+        return grouped_linear_experts_forward(experts, hidden_states, top_k_index, top_k_weights)
+    return sequential_moe_forward(hidden_states, top_k_index, top_k_weights, experts, num_experts)
+
+
 def get_num_experts(original: torch.nn.Module) -> int:
     """Get the number of experts from either fused or linearized layout."""
     if is_fused_layout(original):

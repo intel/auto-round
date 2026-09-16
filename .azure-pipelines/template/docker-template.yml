@@ -4,10 +4,10 @@ parameters:
     default: "auto-round"
   - name: repoTag
     type: string
-    default: "py312"
+    default: "py314"
   - name: dockerFileName
     type: string
-    default: "Dockerfile"
+    default: "cpu.dockerfile"
   - name: containerName
     type: string
   - name: repo
@@ -29,7 +29,7 @@ steps:
 
       docker image prune -f || true
       IMAGE="${{ parameters.repoName }}:${{ parameters.repoTag }}"
-      DOCKERFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/docker/${{parameters.dockerFileName}}.devel"
+      DOCKERFILE="${BUILD_SOURCESDIRECTORY}/.azure-pipelines/docker/${{ parameters.dockerFileName }}"
       CURRENT_HASH=$(md5sum "$DOCKERFILE" | awk '{print $1}')
       NEED_BUILD=false
       if [[ ! $(docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -Fx "$IMAGE") ]]; then

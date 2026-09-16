@@ -119,16 +119,18 @@ class FakeFormat(OutputFormat):
         if config_act_bits is not None and config_act_bits <= 8:
             has_fake_act_quant = True
 
-        quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
-        quantization_config["quant_method"] = "auto-round"
         if has_fake_act_quant:
+            quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
+            quantization_config["quant_method"] = "auto-round"
             quantization_config["packing_format"] = "auto_round:fake"
-        quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
-        from auto_round.export.utils import filter_quantization_config
+            quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
+            from auto_round.export.utils import filter_quantization_config
 
-        filter_quantization_config(quantization_config)
-        if hasattr(model, "config") and model.config is not None:
-            model.config.quantization_config = quantization_config
+            filter_quantization_config(quantization_config)
+            if hasattr(model, "config") and model.config is not None:
+                model.config.quantization_config = quantization_config
+        elif hasattr(model, "config") and model.config is not None and hasattr(model.config, "quantization_config"):
+            delattr(model.config, "quantization_config")
 
         if not has_meta_device:
             model = model.to("cpu")

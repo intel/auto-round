@@ -58,8 +58,11 @@ class _SaveableModel(torch.nn.Module):
     def save_pretrained(self, output_dir):
         os.makedirs(output_dir, exist_ok=True)
         torch.save(self.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))
+        config = {}
+        if hasattr(self.config, "quantization_config"):
+            config["quantization_config"] = self.config.quantization_config
         with open(os.path.join(output_dir, "config.json"), "w") as config_file:
-            json.dump({"quantization_config": self.config.quantization_config}, config_file)
+            json.dump(config, config_file)
 
 
 def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
@@ -211,7 +214,7 @@ def test_transformers_load_replaces_fake_linear(tmp_path):
     assert not torch.equal(q_proj.qdq_input(activation), activation)
 
 
-def test_fake_format_keeps_woq_packing_format(tmp_path):
+def test_fake_format_omits_woq_quantization_config(tmp_path):
     model = _SaveableModel()
     output_dir = str(tmp_path / "woq_model")
 
@@ -232,10 +235,9 @@ def test_fake_format_keeps_woq_packing_format(tmp_path):
     )
 
     with open(os.path.join(output_dir, "config.json")) as config_file:
-        quantization_config = json.load(config_file)["quantization_config"]
+        config = json.load(config_file)
 
-    assert quantization_config["packing_format"] == "auto_round:auto_gptq"
-    assert "act_bits" not in quantization_config
+    assert "quantization_config" not in config
 
 
 def test_fake_format_still_saves_when_env_disabled(tmp_path):

@@ -136,12 +136,15 @@ foreach(_moe_tile IN LISTS _moe_tiles)
   if(_moe_tile STREQUAL "small")
     set(MOE_POLICY_SUFFIX small)
     set(MOE_POLICY_NAME dpas_w8a16_policy_m_16)
+    set(MOE_S4_POLICY_NAME dpas_w4a16_policy_m_16)
   elseif(_moe_tile STREQUAL "mid")
     set(MOE_POLICY_SUFFIX mid)
     set(MOE_POLICY_NAME dpas_w8a16_policy_m_32)
+    set(MOE_S4_POLICY_NAME dpas_w4a16_policy_m_32)
   else()
     set(MOE_POLICY_SUFFIX large)
     set(MOE_POLICY_NAME dpas_w8a16_policy)
+    set(MOE_S4_POLICY_NAME dpas_w4a16_policy)
   endif()
 
   foreach(_moe_dtype IN ITEMS f16 bf16)
@@ -202,7 +205,7 @@ foreach(_moe_tile IN LISTS _moe_tiles)
     endif()
     generate_sycl_tla_source(sycl_tla_moe.cpp.in ${_moe_output})
 
-    set(MOE_POLICY_ARGS "moe_dpas_s4::${MOE_POLICY_NAME}")
+    set(MOE_POLICY_ARGS "moe_dpas_s4::${MOE_S4_POLICY_NAME}")
     set(MOE_FUNCTION_NAME dispatch_${_moe_dtype}_${MOE_POLICY_SUFFIX})
     set(_moe_output sycl_tla_moe_prefill_s4_${_moe_dtype}${_moe_output_suffix}.cpp)
     set(MOE_HELPER_HEADER sycl_tla_moe_prefill_s4_helpers.hpp)
@@ -218,6 +221,103 @@ foreach(_moe_tile IN LISTS _moe_tiles)
       set(MOE_DEFINE_S4_HELPERS 1)
     endif()
     generate_sycl_tla_source(sycl_tla_moe.cpp.in ${_moe_output})
+  endforeach()
+endforeach()
+
+# The S4-sym dispatch uses a four-tier `A_avg_M` ladder (`_m_8` -> `_m_16` ->
+# `_m_32` -> wide) matching the reference `w4a16` grouped GEMM, so it needs one
+# extra 8-row tile on top of the three tiers the INT8 / FP8 dispatches share.
+set(MOE_POLICY_SUFFIX tiny)
+set(MOE_POLICY_ARGS "moe_dpas_s4::dpas_w4a16_policy_m_8")
+set(MOE_HELPER_HEADER sycl_tla_moe_prefill_s4_helpers.hpp)
+set(MOE_DPAS_HEADER sycl_tla_moe_prefill_s4_dpas.hpp)
+set(MOE_NAMESPACE moe_prefill_s4_detail)
+set(MOE_DPAS_NAMESPACE moe_dpas_s4)
+set(MOE_DISPATCH_FUNCTION moe_prefill_s4_dpas_per_group_dispatch_policy)
+set(MOE_WEIGHT_TYPE uint8_t)
+set(MOE_DEFINE_FP8_HELPERS 0)
+set(MOE_DEFINE_INT8_HELPERS 0)
+set(MOE_DEFINE_S4_HELPERS 0)
+foreach(_moe_dtype IN ITEMS f16 bf16)
+  if(_moe_dtype STREQUAL "f16")
+    set(MOE_SCALAR_TYPE sycl::half)
+  else()
+    set(MOE_SCALAR_TYPE sycl::ext::oneapi::bfloat16)
+  endif()
+  set(MOE_FUNCTION_NAME dispatch_${_moe_dtype}_${MOE_POLICY_SUFFIX})
+  generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_prefill_s4_${_moe_dtype}_${MOE_POLICY_SUFFIX}.cpp)
+endforeach()
+
+# The FP8 *decode* dispatch uses the same four-tier ladder as S4 (`_m_8` ->
+# `_m_16` -> `_m_32` -> wide), so it needs the same extra 8-row tile. Keeping
+# these instantiations in their own translation units (rather than expanding
+# the whole ladder inside `sycl_tla_moe_decode_fp8.cpp`) is what keeps peak
+# compiler RSS per TU bounded -- one policy per TU instead of all four.
+# `dpas_w4a16_policy_m_8` carries no 4-bit-specific types; it is purely a
+# `WGTile`/`SGLayout` shape, so the FP8 mainloop reuses it verbatim.
+set(MOE_POLICY_SUFFIX tiny)
+set(MOE_HELPER_HEADER sycl_tla_moe_prefill_fp8_helpers.hpp)
+set(MOE_DPAS_HEADER sycl_tla_moe_prefill_fp8_dpas.hpp)
+set(MOE_NAMESPACE moe_prefill_fp8_detail)
+set(MOE_DPAS_NAMESPACE moe_dpas_fp8)
+set(MOE_DISPATCH_FUNCTION moe_prefill_fp8_dpas_per_group_dispatch_policy)
+set(MOE_WEIGHT_TYPE uint8_t)
+set(MOE_DEFINE_FP8_HELPERS 0)
+set(MOE_DEFINE_INT8_HELPERS 0)
+set(MOE_DEFINE_S4_HELPERS 0)
+foreach(_moe_dtype IN ITEMS f16 bf16)
+  if(_moe_dtype STREQUAL "f16")
+    set(MOE_SCALAR_TYPE sycl::half)
+  else()
+    set(MOE_SCALAR_TYPE sycl::ext::oneapi::bfloat16)
+  endif()
+  foreach(_moe_format IN ITEMS e4m3 e5m2)
+    if(_moe_format STREQUAL "e4m3")
+      set(MOE_FORMAT_ARGUMENT true)
+    else()
+      set(MOE_FORMAT_ARGUMENT false)
+    endif()
+    set(MOE_POLICY_ARGS "${MOE_FORMAT_ARGUMENT}, moe_dpas_fp8::dpas_w4a16_policy_m_8")
+    set(MOE_FUNCTION_NAME dispatch_${_moe_dtype}_${_moe_format}_${MOE_POLICY_SUFFIX})
+    generate_sycl_tla_source(
+      sycl_tla_moe.cpp.in sycl_tla_moe_prefill_fp8_${_moe_dtype}_${_moe_format}_${MOE_POLICY_SUFFIX}.cpp)
+  endforeach()
+endforeach()
+
+# FP8 scalar-GEMV decode kernels, one translation unit per
+# (dtype, format, byte-decode mode). `sycl_tla_moe_decode_fp8.cpp` used to
+# instantiate `launch_fp8_by_mode` for all four dtype/format pairs, and each of
+# those expands three decode modes x (one plain kernel + three K-split column
+# factors) -- 48 SYCL kernels in a single TU, measured at ~14.4 GiB peak
+# compiler RSS. Every other decode TU instantiates only four to eight kernels,
+# which is why this one file was the outlier. Splitting on the mode as well as
+# the dtype/format keeps each TU to exactly four kernels; the decode TU itself
+# is left with none.
+set(MOE_SOURCE_MODE 19)
+foreach(_moe_dtype IN ITEMS f16 bf16)
+  if(_moe_dtype STREQUAL "f16")
+    set(MOE_SCALAR_TYPE sycl::half)
+  else()
+    set(MOE_SCALAR_TYPE sycl::ext::oneapi::bfloat16)
+  endif()
+  foreach(_moe_format IN ITEMS e4m3 e5m2)
+    if(_moe_format STREQUAL "e4m3")
+      set(MOE_FORMAT_ARGUMENT true)
+    else()
+      set(MOE_FORMAT_ARGUMENT false)
+    endif()
+    foreach(_moe_fp8_mode IN ITEMS word lut bits)
+      if(_moe_fp8_mode STREQUAL "word")
+        set(MOE_FP8_DECODE_MODE kWord)
+      elseif(_moe_fp8_mode STREQUAL "lut")
+        set(MOE_FP8_DECODE_MODE kLut)
+      else()
+        set(MOE_FP8_DECODE_MODE kBits)
+      endif()
+      set(MOE_FUNCTION_NAME dispatch_${_moe_dtype}_${_moe_format}_${_moe_fp8_mode})
+      generate_sycl_tla_source(
+        sycl_tla_moe.cpp.in sycl_tla_moe_decode_fp8_${_moe_dtype}_${_moe_format}_${_moe_fp8_mode}.cpp)
+    endforeach()
   endforeach()
 endforeach()
 
@@ -285,6 +385,25 @@ foreach(_moe_dispatch_dtype IN ITEMS f16 bf16)
   else()
     set(MOE_DISPATCH_ELEMENT cutlass::bfloat16_t)
   endif()
+  # The bf16/fp16 grouped MoE GEMM picks one of three work-group tile policies
+  # from N. Expanding all three in `sycl_tla_moe_<dtype>.cpp` put three full
+  # cutlass grouped-GEMM instantiations in one translation unit, measured at
+  # ~2219 MB peak compiler RSS; every other cutlass TU in this build carries
+  # exactly one policy and stays well under that. Give each policy its own TU
+  # and leave `sycl_tla_moe_<dtype>.cpp` as a pure host-side dispatcher.
+  foreach(_moe_tile IN ITEMS n64 n128 n256)
+    set(MOE_TILE_SUFFIX ${_moe_tile})
+    if(_moe_tile STREQUAL "n64")
+      set(MOE_TILE_POLICY kN64)
+    elseif(_moe_tile STREQUAL "n128")
+      set(MOE_TILE_POLICY kN128)
+    else()
+      set(MOE_TILE_POLICY kN256)
+    endif()
+    set(MOE_SOURCE_MODE 20)
+    generate_sycl_tla_source(sycl_tla_moe.cpp.in
+                             sycl_tla_moe_${_moe_dispatch_dtype}_${_moe_tile}.cpp)
+  endforeach()
   set(MOE_SOURCE_MODE 2)
   generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_${_moe_dispatch_dtype}.cpp)
 endforeach()
@@ -295,11 +414,15 @@ set(MOE_SOURCE_MODE 4)
 generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_decode_fp.cpp)
 set(MOE_SOURCE_MODE 5)
 generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_decode_fp8.cpp)
-foreach(_decode_int_kind IN ITEMS int2 int4 int8)
+foreach(_decode_int_kind IN ITEMS int2 int8)
   set(DECODE_INT_KIND ${_decode_int_kind})
   set(MOE_SOURCE_MODE 6)
   generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_decode_${_decode_int_kind}.cpp)
 endforeach()
+# int4 decode has its own translation unit: on top of the shared scalar GEMV it
+# owns the coalesced-load fallback and the S4-sym DPAS fast path.
+set(MOE_SOURCE_MODE 18)
+generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_decode_int4.cpp)
 
 set(MOE_SOURCE_MODE 7)
 generate_sycl_tla_source(sycl_tla_moe.cpp.in sycl_tla_moe_mixed.cpp)

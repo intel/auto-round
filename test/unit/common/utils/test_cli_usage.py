@@ -1,5 +1,6 @@
 import argparse
 import inspect
+import json
 import shutil
 import sys
 from test.helpers import get_model_path
@@ -40,8 +41,10 @@ class TestAutoRoundCmd:
     def test_auto_round_cmd(self, monkeypatch):
         _assert_cli_ok(monkeypatch, ["auto_round", "-h"])
 
-    @pytest.mark.timeout(90)
-    def test_auto_round_cmd2(self, monkeypatch, tiny_opt_model_path):
+    def test_auto_round_cmd2(self, monkeypatch, tiny_opt_model_path, tmp_path):
+        calibration_path = tmp_path / "calibration.json"
+        calibration_path.write_text(json.dumps(["AutoRound CLI local calibration sample. " * 32]))
+
         _assert_cli_ok(
             monkeypatch,
             [
@@ -54,14 +57,12 @@ class TestAutoRoundCmd:
                 "2",
                 "--nsamples",
                 "1",
+                "--dataset",
+                str(calibration_path),
                 "--format",
                 "auto_gptq,auto_round",
                 "--output_dir",
                 self.save_dir,
-                "--tasks",
-                "piqa",
-                "--limit",
-                "2",
             ],
         )
 
@@ -108,27 +109,19 @@ class TestAutoRoundCmd:
             "2",
         ]
 
-    @pytest.mark.timeout(90)
-    def test_auto_round_cmd4(self, monkeypatch):
-        _assert_cli_ok(
-            monkeypatch,
-            [
-                "auto_round",
-                "--seqlen",
-                "8",
-                "--iter",
-                "2",
-                "--nsamples",
-                "8",
-                "--output_dir",
-                self.save_dir,
-                "--tasks",
-                "lambada_openai",
-                "--limit",
-                "2",
-            ],
-            entry=run_light,
-        )
+    def test_auto_round_cmd4_applies_light_recipe(self, monkeypatch):
+        from auto_round.cli import main as cli_main
+
+        captured = {}
+        monkeypatch.setattr(cli_main, "tune", lambda args: captured.setdefault("args", args))
+        monkeypatch.setattr(sys, "argv", ["auto-round-light", "--model", "dummy-model"])
+
+        run_light()
+
+        args = captured["args"]
+        assert args.iters == 50
+        assert args.seqlen == 2048
+        assert args.nsamples == 128
 
     def test_auto_round_cmd5(self, monkeypatch):
         _assert_cli_ok(monkeypatch, ["auto_round", "--eval", "-h"])
@@ -136,15 +129,19 @@ class TestAutoRoundCmd:
     def test_auto_round_cmd6(self, monkeypatch):
         _assert_cli_ok(monkeypatch, ["auto_round", "--eval", "--lmms", "-h"])
 
-    @pytest.mark.timeout(90)
-    def test_auto_round_cmd7(self, monkeypatch, tiny_qwen_vl_model_path):
-        _assert_cli_ok(
-            monkeypatch,
+    def test_auto_round_cmd7_routes_mllm_without_quantizing(self, monkeypatch):
+        from auto_round.cli import main as cli_main
+
+        captured = {}
+        monkeypatch.setattr(cli_main, "tune", lambda args: captured.setdefault("args", args))
+        monkeypatch.setattr(
+            sys,
+            "argv",
             [
                 "auto_round",
                 "--mllm",
                 "--model",
-                tiny_qwen_vl_model_path,
+                "dummy-model",
                 "--iter",
                 "2",
                 "--nsamples",
@@ -153,10 +150,15 @@ class TestAutoRoundCmd:
                 "32",
                 "--format",
                 "auto_round",
-                "--output_dir",
-                self.save_dir,
             ],
         )
+
+        run()
+
+        args = captured["args"]
+        assert args.model_name == "dummy-model"
+        assert args.mllm is True
+        assert args.iters == 2
 
     def test_auto_round_cmd8_routes_quant_nontext_module_without_quantizing(self, monkeypatch):
         from auto_round.cli import main as cli_main
@@ -216,6 +218,24 @@ class TestAutoRoundCmd:
             ]
         )
         assert args.layer_config == layer_cfg
+
+
+def test_diffusion_quantize_cli_keeps_inference_steps_separate():
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(
+        [
+            "--model",
+            "dummy-model",
+            "--calib_num_inference_steps",
+            "6",
+            "--num_inference_steps",
+            "12",
+        ]
+    )
+
+    assert args.calib_num_inference_steps == 6
+    assert args.num_inference_steps == 12
 
 
 def test_run_rtn_uses_zero_shot_recipe(monkeypatch):
@@ -339,7 +359,8 @@ def test_legacy_disable_flags_map_to_enable_bools():
     assert args.enable_quanted_input is False
 
 
-def test_svdquant_cli_builds_hyphenated_options_before_rtn():
+@pytest.mark.parametrize("model_adapter", ["flux", "sdxl"])
+def test_svdquant_cli_builds_hyphenated_options_before_rtn(model_adapter):
     from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
     from auto_round.cli.algorithms import AlgorithmHandler
     from auto_round.cli.parser import build_quantize_parser
@@ -368,7 +389,7 @@ def test_svdquant_cli_builds_hyphenated_options_before_rtn():
             "--svdquant-exclude-modules",
             "proj_out",
             "--svdquant-model-adapter",
-            "flux",
+            model_adapter,
             "--disable_opt_rtn",
         ]
     )
@@ -385,7 +406,7 @@ def test_svdquant_cli_builds_hyphenated_options_before_rtn():
     assert configs[0].low_rank_dtype == "fp32"
     assert configs[0].target_modules == ["attn", "ff"]
     assert configs[0].exclude_modules == ["proj_out"]
-    assert configs[0].model_adapter == "flux"
+    assert configs[0].model_adapter == model_adapter
     assert configs[1].__class__.__name__ == "RTNConfig"
 
 

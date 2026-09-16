@@ -27,17 +27,31 @@ void moe_gemm(sycl::queue* q, void* activations, void* weights, void* scales, vo
 #elif @MOE_SOURCE_MODE@ == 2
 
 #include "sycl_tla_common.hpp"
-#include "sycl_tla_moe.hpp"
+#include "sycl_tla_moe_gemm_helpers.hpp"
 
 namespace ark {
 
+// Host-side tile-policy dispatcher. The three work-group tile policies live in
+// their own translation units (`sycl_tla_moe_@MOE_DISPATCH_DTYPE@_n{64,128,256}.cpp`)
+// so that no cutlass grouped-GEMM template is instantiated here; see
+// `sycl_tla_moe_gemm_helpers.hpp` for why.
 void sycl_tla_moe_gemm_@MOE_DISPATCH_DTYPE@(sycl::queue* q, void* activations, void* weights, void* scales,
                                            void* outputs, int N, int K, int* num_tokens_per_expert,
                                            int num_experts) {
-  using Element = @MOE_DISPATCH_ELEMENT@;
-  moe_detail::moe_gemm_launcher<'R', 'R', Element, Element, Element, Element>(
-      q, static_cast<const Element*>(activations), static_cast<const Element*>(weights),
-      static_cast<const Element*>(scales), static_cast<Element*>(outputs), N, K, num_tokens_per_expert, num_experts);
+  switch (moe_gemm_detail::select_tile_policy(N)) {
+    case moe_gemm_detail::TilePolicy::kN64:
+      moe_gemm_detail::dispatch_@MOE_DISPATCH_DTYPE@_n64(q, activations, weights, scales, outputs, N, K,
+                                                         num_tokens_per_expert, num_experts);
+      return;
+    case moe_gemm_detail::TilePolicy::kN256:
+      moe_gemm_detail::dispatch_@MOE_DISPATCH_DTYPE@_n256(q, activations, weights, scales, outputs, N, K,
+                                                          num_tokens_per_expert, num_experts);
+      return;
+    default:
+      moe_gemm_detail::dispatch_@MOE_DISPATCH_DTYPE@_n128(q, activations, weights, scales, outputs, N, K,
+                                                          num_tokens_per_expert, num_experts);
+      return;
+  }
 }
 
 }  // namespace ark
@@ -70,10 +84,21 @@ void sycl_tla_moe_decode_fill_expert_id(sycl::queue* q, int* expert_id_per_token
 void moe_gemm_decode(sycl::queue* q, void* activations, void* weights, void* scales, void* zeros, void* outputs,
                      int* expert_id_per_token_buf, BTLA_DTYPE act_dtype, BTLA_DTYPE weight_dtype, int N, int K,
                      int group_size, int* num_tokens_per_expert, int num_experts, int total_tokens, bool asym) {
-  sycl_tla_moe_decode_fill_expert_id(q, expert_id_per_token_buf, num_tokens_per_expert, num_experts, total_tokens);
-
   MoeDecodeParams params{q, activations, weights, scales, zeros, outputs, expert_id_per_token_buf, act_dtype,
-                         weight_dtype, N, K, group_size, total_tokens, asym};
+                         weight_dtype, N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, asym};
+
+  // The int4-sym and FP8 DPAS fast paths consume `num_tokens_per_expert`
+  // directly and never read `expert_id_per_token_buf`. Skipping the fill on
+  // those paths removes an extra device-timeline kernel launch from the decode
+  // hot path; every other path (fp, int8, int2, and the scalar int4 / fp8
+  // fallbacks) still needs the per-token expert mapping.
+  const bool dpas_fastpath =
+      (weight_dtype == BTLA_DTYPE::S4_CLIP && sycl_tla_moe_decode_int4_dpas_applicable(params)) ||
+      ((weight_dtype == BTLA_DTYPE::F8_E4M3 || weight_dtype == BTLA_DTYPE::F8_E5M2) &&
+       sycl_tla_moe_decode_fp8_dpas_applicable(params));
+  if (!dpas_fastpath) {
+    sycl_tla_moe_decode_fill_expert_id(q, expert_id_per_token_buf, num_tokens_per_expert, num_experts, total_tokens);
+  }
 
   if (weight_dtype == BTLA_DTYPE::F16 || weight_dtype == BTLA_DTYPE::BF16) {
     if (weight_dtype != act_dtype) {
@@ -138,66 +163,164 @@ void sycl_tla_moe_decode_fp(const MoeDecodeParams& params) {
 
 #include "sycl_tla_common.hpp"
 #include "sycl_tla_moe_decode.hpp"
+// FP8 per-group DPAS grouped GEMM. Like the S4 decode path, the tile-policy
+// instantiations live in the generated `sycl_tla_moe_prefill_fp8_*` translation
+// units; this TU only needs the `dispatch_*` declarations and the env-flag /
+// shape gates. Instantiating the ladder here instead would pull four cutlass
+// grouped-GEMM policies x four group sizes into a single TU and push peak
+// compiler RSS into the tens of GiB.
+#include "sycl_tla_moe_decode_fp8_helpers.hpp"
+#include "sycl_tla_moe_prefill_fp8_helpers.hpp"
 
 namespace ark {
 
+bool sycl_tla_moe_decode_fp8_dpas_applicable(const MoeDecodeParams& params) {
+  return (params.weight_dtype == BTLA_DTYPE::F8_E4M3 || params.weight_dtype == BTLA_DTYPE::F8_E5M2) && !params.asym &&
+         (params.act_dtype == BTLA_DTYPE::F16 || params.act_dtype == BTLA_DTYPE::BF16) &&
+         moe_decode_dpas_fp8_enabled() &&
+         moe_decode_dpas_fp8_occupancy_ok(params.total_tokens, params.num_experts) &&
+         moe_prefill_fp8_detail::shape_ok(params.N, params.K, params.group_size);
+}
+
 void sycl_tla_moe_decode_fp8(const MoeDecodeParams& params) {
+  if (params.act_dtype != BTLA_DTYPE::F16 && params.act_dtype != BTLA_DTYPE::BF16) {
+    throw std::invalid_argument("moe_gemm_decode(fp8): act_dtype must be FP16 or BF16");
+  }
   const bool is_e4m3 = params.weight_dtype == BTLA_DTYPE::F8_E4M3;
-  const bool use_lut = moe_decode_detail::fp8_decode_use_lut();
+
+  // Fast path: FP8 through the decode-phase per-group DPAS grouped GEMM.
+  // Falls back to the scalar GEMV when the env flag is off, when the batch is
+  // too small to fill the DPAS M tile (the usual decode case), or when the
+  // shape gate rejects the tile geometry (e.g. N%64!=0, K%32!=0, unsupported
+  // group_size). Shares `sycl_tla_moe_decode_fp8_dpas_applicable` with
+  // `moe_gemm_decode` (which uses it to skip the `fill_expert_id` launch) so
+  // the two decisions cannot diverge.
+  if (sycl_tla_moe_decode_fp8_dpas_applicable(params)) {
+    const MoePrefillParams dpas_params{params.q,
+                                       params.activations,
+                                       params.weights,
+                                       params.scales,
+                                       params.zeros,
+                                       params.outputs,
+                                       nullptr,
+                                       params.act_dtype,
+                                       params.weight_dtype,
+                                       params.N,
+                                       params.K,
+                                       params.group_size,
+                                       params.num_tokens_per_expert,
+                                       params.num_experts,
+                                       params.total_tokens,
+                                       params.asym};
+    // Decode `A_avg_M` ladder (`_m_8` -> `_m_16` -> `_m_32` -> wide), matching
+    // the S4 decode ladder rather than the FP8 prefill one, whose
+    // `<= 512 -> m_32` rung is tuned for prefill-sized batches. The 8-row rung
+    // matters because decode `A_avg_M` is far below 16, so without it half of
+    // every M tile is padding and the bandwidth-bound FP8 weights are streamed
+    // for rows that contribute nothing.
+    const int average_tokens = params.num_experts > 0 ? params.total_tokens / params.num_experts : 0;
+    if (params.act_dtype == BTLA_DTYPE::F16) {
+      if (is_e4m3) {
+        if (average_tokens <= 4) {
+          moe_prefill_fp8_detail::dispatch_f16_e4m3_tiny(dpas_params);
+        } else if (average_tokens <= 8) {
+          moe_prefill_fp8_detail::dispatch_f16_e4m3_small(dpas_params);
+        } else if (average_tokens <= 128) {
+          moe_prefill_fp8_detail::dispatch_f16_e4m3_mid(dpas_params);
+        } else {
+          moe_prefill_fp8_detail::dispatch_f16_e4m3_large(dpas_params);
+        }
+      } else if (average_tokens <= 4) {
+        moe_prefill_fp8_detail::dispatch_f16_e5m2_tiny(dpas_params);
+      } else if (average_tokens <= 8) {
+        moe_prefill_fp8_detail::dispatch_f16_e5m2_small(dpas_params);
+      } else if (average_tokens <= 128) {
+        moe_prefill_fp8_detail::dispatch_f16_e5m2_mid(dpas_params);
+      } else {
+        moe_prefill_fp8_detail::dispatch_f16_e5m2_large(dpas_params);
+      }
+    } else if (is_e4m3) {
+      if (average_tokens <= 4) {
+        moe_prefill_fp8_detail::dispatch_bf16_e4m3_tiny(dpas_params);
+      } else if (average_tokens <= 8) {
+        moe_prefill_fp8_detail::dispatch_bf16_e4m3_small(dpas_params);
+      } else if (average_tokens <= 128) {
+        moe_prefill_fp8_detail::dispatch_bf16_e4m3_mid(dpas_params);
+      } else {
+        moe_prefill_fp8_detail::dispatch_bf16_e4m3_large(dpas_params);
+      }
+    } else if (average_tokens <= 4) {
+      moe_prefill_fp8_detail::dispatch_bf16_e5m2_tiny(dpas_params);
+    } else if (average_tokens <= 8) {
+      moe_prefill_fp8_detail::dispatch_bf16_e5m2_small(dpas_params);
+    } else if (average_tokens <= 128) {
+      moe_prefill_fp8_detail::dispatch_bf16_e5m2_mid(dpas_params);
+    } else {
+      moe_prefill_fp8_detail::dispatch_bf16_e5m2_large(dpas_params);
+    }
+    return;
+  }
+
+  // Scalar GEMV fallback. The kernels are not instantiated here: each
+  // (dtype, format, decode-mode) triple lives in its own generated
+  // `sycl_tla_moe_decode_fp8_*` translation unit, so this TU instantiates no
+  // SYCL kernels at all. Expanding them inline means 2 dtypes x 2 formats x 3
+  // modes x 4 kernels = 48 kernels in one TU, which measured ~14.4 GiB of peak
+  // compiler RSS. `fp8_decode_mode()` (`ARK_FP8_DECODE_MODE`) picks the
+  // byte-decode mode on the host exactly as `launch_fp8_by_mode` used to; the
+  // K-split vs legacy choice still happens inside the selected TU. All
+  // variants are numerically equivalent.
+  const moe_dequant::Fp8DecodeMode decode_mode = moe_dequant::fp8_decode_mode();
   if (params.act_dtype == BTLA_DTYPE::F16) {
     if (is_e4m3) {
-      if (use_lut) {
-        moe_decode_detail::launch_fp8<sycl::half, true, true>(
-            params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
-            static_cast<const sycl::half*>(params.scales), static_cast<sycl::half*>(params.outputs),
-            params.expert_id_per_token, params.total_tokens, params.N, params.K, params.group_size);
-      } else {
-        moe_decode_detail::launch_fp8<sycl::half, true, false>(
-            params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
-            static_cast<const sycl::half*>(params.scales), static_cast<sycl::half*>(params.outputs),
-            params.expert_id_per_token, params.total_tokens, params.N, params.K, params.group_size);
+      switch (decode_mode) {
+        case moe_dequant::Fp8DecodeMode::kLut:
+          moe_decode_fp8_detail::dispatch_f16_e4m3_lut(params);
+          return;
+        case moe_dequant::Fp8DecodeMode::kBits:
+          moe_decode_fp8_detail::dispatch_f16_e4m3_bits(params);
+          return;
+        default:
+          moe_decode_fp8_detail::dispatch_f16_e4m3_word(params);
+          return;
       }
-    } else if (use_lut) {
-      moe_decode_detail::launch_fp8<sycl::half, false, true>(
-          params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
-          static_cast<const sycl::half*>(params.scales), static_cast<sycl::half*>(params.outputs),
-          params.expert_id_per_token, params.total_tokens, params.N, params.K, params.group_size);
-    } else {
-      moe_decode_detail::launch_fp8<sycl::half, false, false>(
-          params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
-          static_cast<const sycl::half*>(params.scales), static_cast<sycl::half*>(params.outputs),
-          params.expert_id_per_token, params.total_tokens, params.N, params.K, params.group_size);
     }
-    return;
-  }
-  if (params.act_dtype == BTLA_DTYPE::BF16) {
-    using BF = sycl::ext::oneapi::bfloat16;
-    if (is_e4m3) {
-      if (use_lut) {
-        moe_decode_detail::launch_fp8<BF, true, true>(
-            params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
-            static_cast<const BF*>(params.scales), static_cast<BF*>(params.outputs), params.expert_id_per_token,
-            params.total_tokens, params.N, params.K, params.group_size);
-      } else {
-        moe_decode_detail::launch_fp8<BF, true, false>(
-            params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
-            static_cast<const BF*>(params.scales), static_cast<BF*>(params.outputs), params.expert_id_per_token,
-            params.total_tokens, params.N, params.K, params.group_size);
-      }
-    } else if (use_lut) {
-      moe_decode_detail::launch_fp8<BF, false, true>(
-          params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
-          static_cast<const BF*>(params.scales), static_cast<BF*>(params.outputs), params.expert_id_per_token,
-          params.total_tokens, params.N, params.K, params.group_size);
-    } else {
-      moe_decode_detail::launch_fp8<BF, false, false>(
-          params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
-          static_cast<const BF*>(params.scales), static_cast<BF*>(params.outputs), params.expert_id_per_token,
-          params.total_tokens, params.N, params.K, params.group_size);
+    switch (decode_mode) {
+      case moe_dequant::Fp8DecodeMode::kLut:
+        moe_decode_fp8_detail::dispatch_f16_e5m2_lut(params);
+        return;
+      case moe_dequant::Fp8DecodeMode::kBits:
+        moe_decode_fp8_detail::dispatch_f16_e5m2_bits(params);
+        return;
+      default:
+        moe_decode_fp8_detail::dispatch_f16_e5m2_word(params);
+        return;
     }
-    return;
   }
-  throw std::invalid_argument("moe_gemm_decode(fp8): act_dtype must be FP16 or BF16");
+  if (is_e4m3) {
+    switch (decode_mode) {
+      case moe_dequant::Fp8DecodeMode::kLut:
+        moe_decode_fp8_detail::dispatch_bf16_e4m3_lut(params);
+        return;
+      case moe_dequant::Fp8DecodeMode::kBits:
+        moe_decode_fp8_detail::dispatch_bf16_e4m3_bits(params);
+        return;
+      default:
+        moe_decode_fp8_detail::dispatch_bf16_e4m3_word(params);
+        return;
+    }
+  }
+  switch (decode_mode) {
+    case moe_dequant::Fp8DecodeMode::kLut:
+      moe_decode_fp8_detail::dispatch_bf16_e5m2_lut(params);
+      return;
+    case moe_dequant::Fp8DecodeMode::kBits:
+      moe_decode_fp8_detail::dispatch_bf16_e5m2_bits(params);
+      return;
+    default:
+      moe_decode_fp8_detail::dispatch_bf16_e5m2_word(params);
+      return;
+  }
 }
 
 }  // namespace ark
@@ -590,20 +713,29 @@ bool sycl_tla_moe_prefill_s4_dpas(const MoePrefillParams& params) {
       (params.act_dtype != BTLA_DTYPE::F16 && params.act_dtype != BTLA_DTYPE::BF16)) {
     return false;
   }
+  // Four-tier bucketing on the average tokens-per-expert, matching the
+  // reference `w4a16` dispatch in vllm-xpu-kernels
+  // (`grouped_gemm_xe2_interface.hpp`): tiny M uses an 8-row tile, and the
+  // 32-row tile covers M up to 128 (instead of jumping to the wide large-M
+  // tile at 33) so mid-size chunked-prefill batches avoid the padding waste of
+  // the 128-row tile.
+  const int average_tokens = params.num_experts > 0 ? params.total_tokens / params.num_experts : 0;
   if (params.act_dtype == BTLA_DTYPE::F16) {
-    const int average_tokens = params.num_experts > 0 ? params.total_tokens / params.num_experts : 0;
-    if (average_tokens <= 8) {
+    if (average_tokens <= 4) {
+      moe_prefill_s4_detail::dispatch_f16_tiny(params);
+    } else if (average_tokens <= 8) {
       moe_prefill_s4_detail::dispatch_f16_small(params);
-    } else if (average_tokens <= 32) {
+    } else if (average_tokens <= 128) {
       moe_prefill_s4_detail::dispatch_f16_mid(params);
     } else {
       moe_prefill_s4_detail::dispatch_f16_large(params);
     }
   } else {
-    const int average_tokens = params.num_experts > 0 ? params.total_tokens / params.num_experts : 0;
-    if (average_tokens <= 8) {
+    if (average_tokens <= 4) {
+      moe_prefill_s4_detail::dispatch_bf16_tiny(params);
+    } else if (average_tokens <= 8) {
       moe_prefill_s4_detail::dispatch_bf16_small(params);
-    } else if (average_tokens <= 32) {
+    } else if (average_tokens <= 128) {
       moe_prefill_s4_detail::dispatch_bf16_mid(params);
     } else {
       moe_prefill_s4_detail::dispatch_bf16_large(params);
@@ -694,6 +826,218 @@ bool sycl_tla_moe_prefill_native_fp8(const MoePrefillParams& params) {
   return false;
 }
 
+}  // namespace ark
+
+#elif @MOE_SOURCE_MODE@ == 18
+
+#include "sycl_tla_common.hpp"
+#include "sycl_tla_moe_decode.hpp"
+// S4-sym per-group DPAS grouped GEMM. The tile-policy instantiations live in
+// the generated `sycl_tla_moe_prefill_s4_*` translation units; this TU only
+// needs the env-flag / shape-gate helpers and the `dispatch_*` declarations.
+#include "sycl_tla_moe_prefill_s4_dpas.hpp"
+#include "sycl_tla_moe_prefill_s4_helpers.hpp"
+
+namespace ark {
+
+// Both scratch buffers released here are int4-decode-only, so this translation
+// unit owns the public entry point declared in `sycl_tla_common.hpp`. The
+// buffers themselves live in the extension-wide `DeviceMemoryPool`; see
+// `sycl_tla_moe_decode_scratch.hpp`.
+void moe_decode_release_scratch() {
+  moe_decode_detail::release_decode_scratch();
+}
+
+bool sycl_tla_moe_decode_int4_dpas_applicable(const MoeDecodeParams& params) {
+  return params.weight_dtype == BTLA_DTYPE::S4_CLIP && !params.asym &&
+         (params.act_dtype == BTLA_DTYPE::F16 || params.act_dtype == BTLA_DTYPE::BF16) &&
+         moe_decode_dpas_s4_enabled() &&
+         moe_decode_dpas_s4_occupancy_ok(params.total_tokens, params.num_experts) &&
+         moe_dpas_s4::moe_prefill_dpas_s4_pergroup_shape_ok(params.N, params.K, params.group_size);
+}
+
+void sycl_tla_moe_decode_int4(const MoeDecodeParams& params) {
+  if (params.act_dtype != BTLA_DTYPE::F16 && params.act_dtype != BTLA_DTYPE::BF16) {
+    throw std::invalid_argument("moe_gemm_decode(int4): act_dtype must be FP16 or BF16");
+  }
+
+  // Fast path: sym int4 through the shared per-group S4 DPAS grouped GEMM.
+  // Falls back to the scalar GEMV for asym weights (DPAS S4 is sym-only), when
+  // the env flag is off, when the batch is too small to fill the DPAS M tile
+  // (the usual decode case -- sym then runs the exact same `launch_int4*`
+  // kernel as asym, with `Asym=false`), or when the shape gate rejects the tile
+  // geometry (e.g. N%64!=0, K%32!=0, unsupported group_size). Shares
+  // `sycl_tla_moe_decode_int4_dpas_applicable` with `moe_gemm_decode` (which
+  // uses it to skip the `fill_expert_id` launch) so the two decisions cannot
+  // diverge.
+  if (sycl_tla_moe_decode_int4_dpas_applicable(params)) {
+    const MoePrefillParams dpas_params{params.q,
+                                       params.activations,
+                                       params.weights,
+                                       params.scales,
+                                       params.zeros,
+                                       params.outputs,
+                                       nullptr,
+                                       params.act_dtype,
+                                       params.weight_dtype,
+                                       params.N,
+                                       params.K,
+                                       params.group_size,
+                                       params.num_tokens_per_expert,
+                                       params.num_experts,
+                                       params.total_tokens,
+                                       params.asym};
+    // Same `A_avg_M` tile ladder as the prefill dispatch (`_m_8` -> `_m_16` ->
+    // `_m_32` -> wide), matching the reference `w4a16` decode dispatch.
+    // `ARK_MOE_DECODE_S4_DPAS_M8=1` forces the legacy hard-pinned 8-row tile
+    // for A/B comparison; the two paths are numerically identical and only the
+    // tile shape differs.
+    const int average_tokens = params.num_experts > 0 ? params.total_tokens / params.num_experts : 0;
+    const bool force_m8 = moe_dpas_s4::moe_decode_s4_dpas_force_m8();
+    if (params.act_dtype == BTLA_DTYPE::F16) {
+      if (force_m8 || average_tokens <= 4) {
+        moe_prefill_s4_detail::dispatch_f16_tiny(dpas_params);
+      } else if (average_tokens <= 8) {
+        moe_prefill_s4_detail::dispatch_f16_small(dpas_params);
+      } else if (average_tokens <= 128) {
+        moe_prefill_s4_detail::dispatch_f16_mid(dpas_params);
+      } else {
+        moe_prefill_s4_detail::dispatch_f16_large(dpas_params);
+      }
+    } else {
+      if (force_m8 || average_tokens <= 4) {
+        moe_prefill_s4_detail::dispatch_bf16_tiny(dpas_params);
+      } else if (average_tokens <= 8) {
+        moe_prefill_s4_detail::dispatch_bf16_small(dpas_params);
+      } else if (average_tokens <= 128) {
+        moe_prefill_s4_detail::dispatch_bf16_mid(dpas_params);
+      } else {
+        moe_prefill_s4_detail::dispatch_bf16_large(dpas_params);
+      }
+    }
+    return;
+  }
+
+  // Scalar FMA GEMV fallback (asym, flag off, or shape gate miss). By default
+  // this uses the coalesced-load variant, which repacks the weights on-device
+  // so sub-group loads are contiguous; `ARK_MOE_DECODE_COALESCE_INT4=0` forces
+  // the legacy per-lane-strided kernel.
+  const bool coalesce = moe_decode_coalesce_int4_enabled() &&
+                        moe_decode_coalesce_int4_amortized(params.total_tokens, params.num_experts);
+  if (params.act_dtype == BTLA_DTYPE::F16) {
+    if (params.asym) {
+      if (coalesce) {
+        moe_decode_detail::launch_int4_coalesced<sycl::half, true>(
+            params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
+            static_cast<const sycl::half*>(params.scales), static_cast<const sycl::half*>(params.zeros),
+            static_cast<sycl::half*>(params.outputs), params.expert_id_per_token, params.total_tokens, params.N,
+            params.K, params.group_size, params.num_experts);
+      } else {
+        moe_decode_detail::launch_int4<sycl::half, true>(
+            params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
+            static_cast<const sycl::half*>(params.scales), static_cast<const sycl::half*>(params.zeros),
+            static_cast<sycl::half*>(params.outputs), params.expert_id_per_token, params.total_tokens, params.N,
+            params.K, params.group_size);
+      }
+    } else if (coalesce) {
+      moe_decode_detail::launch_int4_coalesced<sycl::half, false>(
+          params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
+          static_cast<const sycl::half*>(params.scales), static_cast<const sycl::half*>(params.zeros),
+          static_cast<sycl::half*>(params.outputs), params.expert_id_per_token, params.total_tokens, params.N,
+          params.K, params.group_size, params.num_experts);
+    } else {
+      moe_decode_detail::launch_int4<sycl::half, false>(
+          params.q, static_cast<const sycl::half*>(params.activations), static_cast<const uint8_t*>(params.weights),
+          static_cast<const sycl::half*>(params.scales), static_cast<const sycl::half*>(params.zeros),
+          static_cast<sycl::half*>(params.outputs), params.expert_id_per_token, params.total_tokens, params.N,
+          params.K, params.group_size);
+    }
+    return;
+  }
+
+  using BF = sycl::ext::oneapi::bfloat16;
+  if (params.asym) {
+    if (coalesce) {
+      moe_decode_detail::launch_int4_coalesced<BF, true>(
+          params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
+          static_cast<const BF*>(params.scales), static_cast<const BF*>(params.zeros), static_cast<BF*>(params.outputs),
+          params.expert_id_per_token, params.total_tokens, params.N, params.K, params.group_size, params.num_experts);
+    } else {
+      moe_decode_detail::launch_int4<BF, true>(
+          params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
+          static_cast<const BF*>(params.scales), static_cast<const BF*>(params.zeros), static_cast<BF*>(params.outputs),
+          params.expert_id_per_token, params.total_tokens, params.N, params.K, params.group_size);
+    }
+  } else if (coalesce) {
+    moe_decode_detail::launch_int4_coalesced<BF, false>(
+        params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
+        static_cast<const BF*>(params.scales), static_cast<const BF*>(params.zeros), static_cast<BF*>(params.outputs),
+        params.expert_id_per_token, params.total_tokens, params.N, params.K, params.group_size, params.num_experts);
+  } else {
+    moe_decode_detail::launch_int4<BF, false>(
+        params.q, static_cast<const BF*>(params.activations), static_cast<const uint8_t*>(params.weights),
+        static_cast<const BF*>(params.scales), static_cast<const BF*>(params.zeros), static_cast<BF*>(params.outputs),
+        params.expert_id_per_token, params.total_tokens, params.N, params.K, params.group_size);
+  }
+}
+
+}  // namespace ark
+
+#elif @MOE_SOURCE_MODE@ == 19
+
+#include "sycl_tla_common.hpp"
+#include "sycl_tla_moe_decode.hpp"
+#include "sycl_tla_moe_decode_fp8_helpers.hpp"
+
+namespace ark {
+namespace moe_decode_fp8_detail {
+
+// One FP8 scalar-GEMV decode mode for one (dtype, format) pair. Instantiates
+// exactly four SYCL kernels -- the plain `MoEDecodeKernelFP8` plus the three
+// `MoEDecodeKernelFP8KSplit` column factors -- instead of the 48 that expanding
+// every dtype/format/mode combination inside `sycl_tla_moe_decode_fp8.cpp`
+// would produce. The body is `launch_fp8_by_mode` with `Mode` fixed at
+// configure time; the K-split decision is still made here, from the same
+// inputs, so behaviour is unchanged.
+void @MOE_FUNCTION_NAME@(const MoeDecodeParams& params) {
+  using ScalarT = @MOE_SCALAR_TYPE@;
+  const bool ksplit = moe_decode_detail::moe_decode_fp8_ksplit_enabled() &&
+                      moe_decode_detail::moe_decode_fp8_ksplit_shape_ok(params.N, params.K, params.group_size);
+  moe_decode_detail::launch_fp8_dispatch<ScalarT, @MOE_FORMAT_ARGUMENT@,
+                                         moe_dequant::Fp8DecodeMode::@MOE_FP8_DECODE_MODE@>(
+      params.q, static_cast<const ScalarT*>(params.activations), static_cast<const uint8_t*>(params.weights),
+      static_cast<const ScalarT*>(params.scales), static_cast<ScalarT*>(params.outputs), params.expert_id_per_token,
+      params.total_tokens, params.N, params.K, params.group_size, ksplit);
+}
+
+}  // namespace moe_decode_fp8_detail
+}  // namespace ark
+
+#elif @MOE_SOURCE_MODE@ == 20
+
+#include "sycl_tla_common.hpp"
+#include "sycl_tla_moe.hpp"
+#include "sycl_tla_moe_gemm_helpers.hpp"
+
+namespace ark {
+namespace moe_gemm_detail {
+
+// One bf16/fp16 grouped MoE GEMM tile policy per translation unit. Expanding
+// all three inside `sycl_tla_moe_<dtype>.cpp` put three full cutlass
+// grouped-GEMM instantiations in one TU (~2.2 GiB peak compiler RSS); every
+// other cutlass TU in this build instantiates exactly one policy. The policy is
+// selected on the host by `select_tile_policy()`, so this is numerically
+// identical to the fused dispatcher it replaces.
+void dispatch_@MOE_DISPATCH_DTYPE@_@MOE_TILE_SUFFIX@(sycl::queue* q, const void* activations, const void* weights,
+                                                     const void* scales, void* outputs, int N, int K,
+                                                     int* num_tokens_per_expert, int num_experts) {
+  using Element = @MOE_DISPATCH_ELEMENT@;
+  moe_detail::moe_gemm_dispatch<Element, TilePolicy::@MOE_TILE_POLICY@>(
+      q, static_cast<const Element*>(activations), static_cast<const Element*>(weights),
+      static_cast<const Element*>(scales), static_cast<Element*>(outputs), N, K, num_tokens_per_expert, num_experts);
+}
+
+}  // namespace moe_gemm_detail
 }  // namespace ark
 
 #endif

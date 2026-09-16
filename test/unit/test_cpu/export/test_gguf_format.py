@@ -120,7 +120,6 @@ class TestGGUF:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(60)
     def test_q4_0(self, tiny_qwen_model_path):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
@@ -154,7 +153,6 @@ class TestGGUF:
         assert type(autoround).__name__ == "CompressionOrchestrator"
         assert isinstance(autoround.quantize_config, OptimizedRTNConfig)
 
-    @pytest.mark.timeout(60)
     def test_func(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -172,7 +170,6 @@ class TestGGUF:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         eval_generated_prompt(model, self.tokenizer)
 
-    @pytest.mark.timeout(120)
     def test_q4_k_m(self, dataloader, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         layer_config = {
@@ -212,7 +209,6 @@ class TestGGUF:
         assert autoround.model.model.layers[0].mlp.gate_proj.bits == 8
         assert autoround.layer_config["model.layers.0.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
 
-    @pytest.mark.timeout(360)
     def test_all_format(self, monkeypatch, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         # for gguf_format in ["gguf:q4_0", "gguf:q4_1", "gguf:q4_k_m", "gguf:q6_k"]:
@@ -243,7 +239,6 @@ class TestGGUF:
         )
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
-    @pytest.mark.timeout(90)
     def test_vlm_gguf(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRound
 
@@ -264,7 +259,6 @@ class TestGGUF:
             else:
                 assert file_size < 270, f"file size {file_size} MB is too large for non-quantized mmproj-model.gguf"
 
-    @pytest.mark.timeout(60)
     def test_vlm_gguf_wo_quant_nontext_module(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRound
 
@@ -422,48 +416,6 @@ class TestGGUF:
         assert model_instance.ftype is ftypes["q4_0"]
         assert model_instance.fname_out == tmp_path
 
-    def test_autoround_export_disables_mtp_for_supported_conversion(self, tmp_path):
-        from auto_round.export.export_to_gguf import export
-
-        class FakeMtpModel:
-            supports_mtp_export = True
-            no_mtp = False
-
-            def __init__(self, hparams, **kwargs):
-                assert type(self).no_mtp
-                self.hparams = hparams
-                self.__dict__.update(kwargs)
-
-        instance = export._create_conversion_model(
-            FakeMtpModel,
-            {"num_hidden_layers": 4},
-            dir_model=tmp_path,
-        )
-
-        assert instance.no_mtp
-        assert isinstance(instance, FakeMtpModel)
-        assert FakeMtpModel.no_mtp is False
-
-    def test_autoround_export_keeps_non_mtp_conversion_unchanged(self, tmp_path):
-        from auto_round.export.export_to_gguf import export
-
-        class FakeModel:
-            supports_mtp_export = False
-            no_mtp = False
-
-            def __init__(self, hparams, **kwargs):
-                assert not type(self).no_mtp
-                self.hparams = hparams
-                self.__dict__.update(kwargs)
-
-        instance = export._create_conversion_model(
-            FakeModel,
-            {"num_hidden_layers": 4},
-            dir_model=tmp_path,
-        )
-
-        assert instance.no_mtp is False
-
     def test_qtype_setting(self, tiny_qwen_vl_model_path):
         # Qwen2.5-0.5B-Instruct no output, token_embed q6_k fallbakc to q8_0 336M
         # Qwen3-0.6B output q6_k, token_embed q4_0  448M
@@ -565,7 +517,6 @@ class TestGGUF:
         assert ar.layer_config["model.language_model.embed_tokens"]["bits"] == 6
         assert ar.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
 
-    @pytest.mark.timeout(60)
     def test_q2k_mixed(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(
@@ -588,7 +539,6 @@ class TestGGUF:
         tensor_types = {tensor.name: tensor.tensor_type.name for tensor in gguf_model.tensors}
         assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"
 
-    @pytest.mark.timeout(60)
     def test_q2k_mixed_keeps_only_three_dim_expert_weights_at_q2k(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(

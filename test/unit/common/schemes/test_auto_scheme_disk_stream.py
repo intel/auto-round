@@ -21,6 +21,7 @@ mixed-bit layer_config as the non-streaming baseline, and that the underlying
 materialize/free primitives round-trip correctly.
 """
 
+import json
 import os
 import shutil
 
@@ -42,32 +43,47 @@ def _clean_disk_stream_env():
         os.environ["AR_DISK_STREAM_MODEL"] = previous
 
 
+def _make_local_calibration_dataset(tmp_path):
+    dataset_path = tmp_path / "calibration.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                "auto round calibration sample keeps each token distinct for scoring",
+                "another local calibration dataset keeps scoring token sequence distinct",
+            ]
+        )
+    )
+    return str(dataset_path)
+
+
 class TestAutoSchemeDiskStream:
     @pytest.fixture(autouse=True)
-    def setup_save_dir(self, tmp_path):
+    def setup_save_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AR_AUTO_SCHEME_CACHE", str(tmp_path / "auto_scheme_cache"))
         self.save_dir = str(tmp_path / "saved")
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    def _gen_layer_config(self, model_name, target_bits=3.5):
+    def _gen_layer_config(self, model_name, calibration_dataset, target_bits=3.5):
         # iters=1 (the standard tuning loop) rather than iters=0 (RTN): RTN's
         # separate block-materialization path doesn't support disk streaming yet
         # and is unrelated to this PR, which only streams AutoScheme's own
         # sensitivity-scoring pass.
         scheme = AutoScheme(avg_bits=target_bits, options=("W2A16", "W4A16", "BF16"), nsamples=1)
-        ar = AutoRound(model=model_name, scheme=scheme, iters=1, nsamples=1)
+        ar = AutoRound(model=model_name, scheme=scheme, iters=1, nsamples=1, seqlen=8, dataset=calibration_dataset)
         _, layer_config = ar.quantize()
         return {name: cfg["bits"] for name, cfg in layer_config.items() if "bits" in cfg}
 
-    def test_disk_stream_matches_baseline_layer_config(self, tiny_opt_model_path):
+    def test_disk_stream_matches_baseline_layer_config(self, micro_opt_model_path, tmp_path):
         """AR_DISK_STREAM_MODEL=1 must select the exact same per-layer bits as the
         non-streaming baseline -- streaming changes *how* weights are loaded during
         scoring, not the scores themselves."""
+        calibration_dataset = _make_local_calibration_dataset(tmp_path)
         os.environ.pop("AR_DISK_STREAM_MODEL", None)
-        baseline_bits = self._gen_layer_config(tiny_opt_model_path)
+        baseline_bits = self._gen_layer_config(micro_opt_model_path, calibration_dataset)
 
         os.environ["AR_DISK_STREAM_MODEL"] = "1"
-        streamed_bits = self._gen_layer_config(tiny_opt_model_path)
+        streamed_bits = self._gen_layer_config(micro_opt_model_path, calibration_dataset)
 
         assert streamed_bits == baseline_bits
 

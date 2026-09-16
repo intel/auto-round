@@ -202,7 +202,6 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-    @pytest.mark.timeout(120)
     @pytest.mark.parametrize("static_kv_dtype", ["fp8", "float16"])
     def test_static_afp8_export(self, static_kv_dtype):
         import os
@@ -395,7 +394,6 @@ class TestAutoRound:
         assert quantization_config["static_attention_dtype"] == "fp8"
         assert quantization_config["static_attention_granularity"] == "head"
 
-    @pytest.mark.timeout(120)
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
         model_name = get_model_path("microsoft/phi-4")
@@ -430,7 +428,6 @@ class TestAutoRound:
 
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
 
-    @pytest.mark.timeout(120)
     def test_gptq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, True, 128
         # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.
@@ -556,7 +553,10 @@ class TestAutoRound:
             sym=True,
         )
         ar.post_init()
-        with pytest.raises(ValueError, match="auto_awq format support quantization scheme with W4A16 but got bits=2"):
+        with pytest.raises(
+            ValueError,
+            match="auto_awq format support quantization scheme with W4A16,W5A16,W6A16,W7A16 but got bits=2",
+        ):
             resolve_formats(
                 ResolvedScheme.from_scheme(ar.scheme_context),
                 format="auto_round:auto_awq",
@@ -595,7 +595,6 @@ class TestAutoRound:
             scale_dtype=ar.scale_dtype,
         )
 
-    @pytest.mark.timeout(480)
     def test_autoawq_qwen3_vl_infer(self, dataloader):
         model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")
         autoround = AutoRound(

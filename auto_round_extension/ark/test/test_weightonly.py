@@ -229,6 +229,140 @@ def test_xpu_s8_large_tile(m, n, k):
         torch.xpu.empty_cache()
 
 
+@pytest.mark.skipif(
+    os.environ.get("ARK_DNNL", "0") not in ["1", "ON", "true", "True"],
+    reason="Skipped because ARK_DNNL is not enabled in environment variables",
+)
+def test_xpu_woqgemm_graph_capture_uses_live_queue():
+    if not torch.xpu.is_available():
+        pytest.skip("No XPU Device")
+    required = ("CUDAGraph", "Stream", "graph", "stream")
+    if any(not hasattr(torch.xpu, name) for name in required):
+        pytest.skip("torch.xpu graph APIs are not available")
+    xpu_lib = getattr(ark, "xpu_lib", None)
+    debug_required = (
+        "_debug_xpu_device_context_key",
+        "_debug_xpu_device_queue_key",
+        "_debug_xpu_pool_scratch_ptr",
+        "_debug_xpu_dnnl_engine_ptr",
+        "_debug_xpu_dnnl_scratch_ptr",
+    )
+    if xpu_lib is None or any(not hasattr(xpu_lib, name) for name in debug_required):
+        pytest.skip("XPU debug probes for context-aware scratch/engine isolation are unavailable")
+
+    with torch.no_grad():
+        default_stream = torch.xpu.current_stream()
+        capture_stream = torch.xpu.Stream()
+
+        def _on_stream(stream, fn, *args):
+            with torch.xpu.stream(stream):
+                return fn(torch.xpu.current_stream().sycl_queue, *args)
+
+        default_context_key = int(_on_stream(default_stream, xpu_lib._debug_xpu_device_context_key))
+        capture_context_key = int(_on_stream(capture_stream, xpu_lib._debug_xpu_device_context_key))
+        if default_context_key != capture_context_key:
+            pytest.skip("Unable to create two queues in the same SYCL context for this XPU runtime")
+
+        default_queue_key = int(_on_stream(default_stream, xpu_lib._debug_xpu_device_queue_key))
+        capture_queue_key = int(_on_stream(capture_stream, xpu_lib._debug_xpu_device_queue_key))
+        if default_queue_key == capture_queue_key:
+            pytest.skip("Unable to create two distinct queues in this SYCL context")
+
+        def _assert_pool_slot_isolated(slot, small_bytes, large_bytes):
+            ptr_a0 = int(_on_stream(default_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
+            ptr_a1 = int(_on_stream(default_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
+            assert ptr_a0 != 0 and ptr_a0 == ptr_a1
+            ptr_b0 = int(_on_stream(capture_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
+            assert ptr_b0 != 0 and ptr_b0 != ptr_a0
+            ptr_b1 = int(_on_stream(capture_stream, xpu_lib._debug_xpu_pool_scratch_ptr, large_bytes, slot))
+            assert ptr_b1 != 0
+            ptr_a2 = int(_on_stream(default_stream, xpu_lib._debug_xpu_pool_scratch_ptr, small_bytes, slot))
+            assert ptr_a2 == ptr_a0
+
+        for slot, small, large in ((8, 4, 64), (9, 4096, 8192), (10, 4096, 8192)):
+            _assert_pool_slot_isolated(slot, small, large)
+
+        eng_a0 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_engine_ptr))
+        eng_a1 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_engine_ptr))
+        eng_b = int(_on_stream(capture_stream, xpu_lib._debug_xpu_dnnl_engine_ptr))
+        assert eng_a0 != 0 and eng_a0 == eng_a1
+        assert eng_b != 0 and eng_b == eng_a0
+
+        dnnl_scratch_a0 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 4096, 0))
+        dnnl_scratch_b0 = int(_on_stream(capture_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 4096, 0))
+        assert dnnl_scratch_b0 != 0 and dnnl_scratch_b0 != dnnl_scratch_a0
+        _ = _on_stream(capture_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 8192, 0)
+        dnnl_scratch_a1 = int(_on_stream(default_stream, xpu_lib._debug_xpu_dnnl_scratch_ptr, 4096, 0))
+        assert dnnl_scratch_a0 != 0 and dnnl_scratch_a1 == dnnl_scratch_a0
+
+        m, n, k = 8, 256, 256
+        blocksize = 32
+        compute_type = "fp16"
+        weight_type = "int4"
+        scale_type = "fp16"
+        asym = False
+
+        raw_s8_wei = gen_weis8(weight_type, "xpu", k, n)
+        scale = torch.rand(k // blocksize, n, dtype=torch.float16, device="xpu") / 300 + 0.002
+        bias = torch.randn(1, n, dtype=torch.float16, device="xpu")
+        zp = torch.empty(0, device=raw_s8_wei.device)
+        packw = ark.repack_quantized_weight(
+            raw_s8_wei, scale, zp, blocksize, compute_type, weight_type, scale_type, asym
+        )
+
+        def _woq_call(x):
+            return ark.woqgemm(x, packw, bias, n, k, blocksize, compute_type, weight_type, scale_type, asym)
+
+        eager_input = torch.randn(m, k, dtype=torch.float16, device="xpu") - 0.5
+        replay_input = eager_input + 0.75
+
+        # Force a smaller scratch allocation on capture_stream first so the
+        # overlapping call below takes the growth path on that queue.
+        with torch.xpu.stream(capture_stream):
+            _ = _woq_call(eager_input[:1])
+
+        # Submit work to two queues in the same SYCL context before any global
+        # synchronize so the executions can overlap in-flight.
+        with torch.xpu.stream(default_stream):
+            out_a = _woq_call(eager_input)
+        with torch.xpu.stream(capture_stream):
+            out_b = _woq_call(replay_input)
+        torch.xpu.synchronize()
+        expected_a = _woq_call(eager_input)
+        expected_b = _woq_call(replay_input)
+        torch.xpu.synchronize()
+        assert torch.allclose(out_a, expected_a, rtol=0.1, atol=2.0)
+        assert torch.allclose(out_b, expected_b, rtol=0.1, atol=2.0)
+        assert not torch.allclose(out_a, out_b, rtol=1e-3, atol=1e-3)
+
+        # Warm up on the default queue to reproduce stale stream cache regressions.
+        _ = _woq_call(eager_input)
+        torch.xpu.synchronize()
+        graph_input = eager_input.clone()
+        graph = torch.xpu.CUDAGraph()
+
+        try:
+            with torch.xpu.stream(capture_stream):
+                with torch.xpu.graph(graph):
+                    graph_output = _woq_call(graph_input)
+        except RuntimeError as err:
+            pytest.skip(f"XPU graph capture is unavailable in this environment: {err}")
+
+        outputs = []
+        for current in (eager_input, replay_input):
+            graph_input.copy_(current)
+            graph.replay()
+            torch.xpu.synchronize()
+            replayed = graph_output.clone()
+            expected = _woq_call(current)
+            torch.xpu.synchronize()
+            assert torch.allclose(replayed, expected, rtol=0.1, atol=2.0)
+            outputs.append(replayed)
+
+        assert not torch.allclose(outputs[0], outputs[1], rtol=1e-3, atol=1e-3)
+        torch.xpu.empty_cache()
+
+
 @pytest.mark.parametrize("m", [1, 1024])
 @pytest.mark.parametrize("n, k", [(1024, 768)])
 @pytest.mark.parametrize("blocksize", [32, 128])

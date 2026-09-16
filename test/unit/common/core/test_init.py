@@ -112,6 +112,38 @@ def test_torch_compile_runtime_defaults(tiny_opt_model_path):
     assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
 
 
+def test_hf_model_id_sets_resolved_checkpoint_on_compressor_offloader(tiny_opt_model_path, monkeypatch):
+    """Zero-shot block reloads use the resolved snapshot rather than the model ID."""
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    commit = "a" * 40
+    resolve_calls = []
+    config = AutoConfig.from_pretrained(tiny_opt_model_path)
+    config._commit_hash = commit
+
+    def load_model(*_args, **_kwargs):
+        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path)
+        model.config._commit_hash = commit
+        return model, None
+
+    def resolve_model_dir(model_id, revision):
+        resolve_calls.append((model_id, revision))
+        return tiny_opt_model_path
+
+    monkeypatch.setattr("auto_round.utils.model.detect_model_type", lambda _model: "llm")
+    monkeypatch.setattr("auto_round.compressors.base.BaseOrchestrator._preload_model_config", lambda *_: config)
+    monkeypatch.setattr("auto_round.context.model.is_diffusion_model", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("auto_round.context.model.is_mllm_model", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr("auto_round.context.model.llm_load_model", load_model)
+    monkeypatch.setattr("auto_round.compressors.base._resolve_model_dir", resolve_model_dir)
+
+    ar = AutoRound(model="org/model", scheme="W4A16", iters=0, nsamples=1)
+
+    assert resolve_calls == [("org/model", commit)]
+    assert ar.model_context.disk_stream_model_dir == tiny_opt_model_path
+    assert ar._offloader.model_dir == tiny_opt_model_path
+
+
 def _assert_compile(ar, expected: bool):
     """Assert the effective torch.compile flag, tolerating the model-free path.
 

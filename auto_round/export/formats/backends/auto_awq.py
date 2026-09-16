@@ -25,13 +25,17 @@ from auto_round.schemes import QuantizationScheme
 
 @OutputFormat.register("auto_awq")
 class AutoAWQFormat(OutputFormat):
-    support_schemes = ["W4A16"]
+    support_schemes = ["W4A16", "W5A16", "W6A16", "W7A16"]
     format_name = "auto_awq"
+
+    # See AutoGPTQFormat.EXTENDED_BITS -- 5/6/7-bit uses the generic bit-stream
+    # layout, which upstream AutoAWQ kernels cannot read.
+    EXTENDED_BITS = (5, 6, 7)
 
     @classmethod
     def check_scheme_args(cls, scheme: QuantizationScheme) -> bool:
         error_logs = []
-        if scheme.bits != 4:
+        if scheme.bits not in (4,) + cls.EXTENDED_BITS:
             error_logs.append(f"bits={scheme.bits}")
         if not re.search("int", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
@@ -49,14 +53,17 @@ class AutoAWQFormat(OutputFormat):
     @staticmethod
     def check_awq_gemm_compatibility(model, bits, group_size, sym, layer_configs=None):
         """Check whether a model is compatible with the AutoAWQ GEMM kernel."""
+        from auto_round.utils.bit_packing import requires_generic_bit_packing
         from auto_round.utils.model import get_layer_names_in_block, get_module
 
-        if bits != 4:
+        if bits not in (4, 5, 6, 7):
             return False, "AutoAWQ GEMM kernel only supports 4 bits"
         for _, module in model.named_modules():
             if type(module) == transformers.pytorch_utils.Conv1D:
                 return False, "AutoAWQ GEMM kernel does not support conv1d"
 
+        # 5/6/7-bit packs a contiguous bit-stream over blocks of 32 values.
+        out_align = 32 if requires_generic_bit_packing(bits) else 32 // bits
         layer_names = get_layer_names_in_block(model)
         for layer_name in layer_names:
             if (
@@ -69,8 +76,8 @@ class AutoAWQFormat(OutputFormat):
             layer = get_module(model, layer_name)
             if layer.in_features % group_size != 0:
                 return False, f"Layer {layer_name} in_features is not multiple of group_size {group_size}"
-            if layer.out_features % (32 // bits) != 0:
-                return False, f"Layer {layer_name} out_features is not multiple of 32 // bits"
+            if layer.out_features % out_align != 0:
+                return False, f"Layer {layer_name} out_features is not multiple of {out_align}"
 
         return True, ""
 
@@ -80,8 +87,17 @@ class AutoAWQFormat(OutputFormat):
         )
         if not awq_supported:
             logger.warning(f"The AutoAWQ format may not be supported due to {info}")
-        if scheme.bits != 4:
-            raise ValueError(f"auto_awq format support quantization scheme with W4A16 but got bits={scheme.bits}")
+        if scheme.bits in self.EXTENDED_BITS and not self.output_format.startswith("auto_round"):
+            raise ValueError(
+                f"{self.output_format} format does not support bits={scheme.bits}. "
+                f"{self.EXTENDED_BITS} bit packing is only defined for the `auto_round` format family, "
+                "please export to `auto_round:auto_awq`."
+            )
+        if scheme.bits not in (4,) + self.EXTENDED_BITS:
+            raise ValueError(
+                f"{self.format_name} format support quantization scheme with {','.join(self.support_schemes)} "
+                f"but got bits={scheme.bits}, please have a check."
+            )
 
         if self.backend is None:
             ctx.layer_config = _check_divisible_by_32(scheme, ctx.model, ctx.layer_config)

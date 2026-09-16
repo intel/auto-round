@@ -34,7 +34,7 @@ class TestGptqmodelAwqTorchBackend:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     @require_gptqmodel
-    @pytest.mark.skip_ci(reason="Not necessary to test low priority backend in CI")
+    @pytest.mark.skip_ci(reason="Backend/JIT: Not necessary to test low priority backend in CI")
     def test_gptqmodel_awq_torch_4bits_group_size_16(self, dataloader):
         """AWQ-quantized (group_size=16) model loads via the gptqmodel:awq_torch backend and meets accuracy."""
         model_path = get_model_path("facebook/opt-125m")

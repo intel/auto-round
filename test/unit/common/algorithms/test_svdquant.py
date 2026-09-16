@@ -49,6 +49,17 @@ class FluxTransformerBlock(torch.nn.Module):
         self.norm1.linear = torch.nn.Linear(32, 16)
 
 
+class BasicTransformerBlock(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.attn1 = torch.nn.Module()
+        self.attn1.to_q = torch.nn.Linear(32, 16)
+        self.attn1.to_k = torch.nn.Linear(32, 16)
+        self.attn1.to_v = torch.nn.Linear(32, 16)
+        self.attn2 = torch.nn.Module()
+        self.attn2.to_k = torch.nn.Linear(32, 16)
+
+
 def _prepare_model():
     model = DummyModel()
     for name, module in model.named_modules():
@@ -185,3 +196,65 @@ def test_flux_targets_resolve_when_model_is_attached_after_prepare_run():
 
     assert isinstance(model.blocks[0].attn.to_q, SVDQuantLinear)
     assert isinstance(model.blocks[0].norm1.linear, torch.nn.Linear)
+
+
+def test_sdxl_targets_resolve_when_model_is_attached_after_prepare_run():
+    model = torch.nn.Module()
+    model.config = {
+        "_class_name": "UNet2DConditionModel",
+        "addition_embed_type": "text_time",
+        "attention_head_dim": [5, 10, 20],
+        "block_out_channels": [320, 640, 1280],
+        "cross_attention_dim": 2048,
+        "down_block_types": ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"],
+        "in_channels": 4,
+        "layers_per_block": 2,
+        "out_channels": 4,
+        "projection_class_embeddings_input_dim": 2816,
+        "sample_size": 128,
+        "transformer_layers_per_block": [1, 2, 10],
+        "up_block_types": ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"],
+        "use_linear_projection": True,
+    }
+    model.blocks = torch.nn.ModuleList([BasicTransformerBlock()])
+    for name, module in model.named_modules():
+        module.global_name = name
+        if isinstance(module, torch.nn.Linear):
+            for key, value in {
+                "bits": 4,
+                "group_size": 32,
+                "sym": True,
+                "data_type": "mx_fp4e2m1",
+                "act_bits": 4,
+                "act_group_size": 32,
+                "act_sym": True,
+                "act_data_type": "mx_fp4e2m1",
+                "act_dynamic": True,
+            }.items():
+                setattr(module, key, value)
+
+    model_context = SimpleNamespace(model=None)
+    transform = AlgorithmComposer([SVDQuantConfig(rank=2), RTNConfig(disable_opt_rtn=True)]).preprocessors[0]
+    transform.bind(
+        SimpleNamespace(
+            model_context=model_context,
+            compress_context=None,
+            calibration_context=None,
+            scheme_context=PRESET_SCHEMES["MXFP4"],
+            scale_dtype=None,
+            nblocks=1,
+            quant_block_list=[["blocks.0"]],
+        )
+    )
+    transform.prepare_run()
+    model_context.model = model
+    ctx = BlockContext(model=model, block_names=["blocks.0"], block_name="blocks.0", block_index=0)
+
+    transform.pre_quantize_block(ctx)
+
+    assert isinstance(model.blocks[0].attn1.to_q, SVDQuantLinear)
+    assert isinstance(model.blocks[0].attn1.to_k, SVDQuantLinear)
+    assert isinstance(model.blocks[0].attn1.to_v, SVDQuantLinear)
+    torch.testing.assert_close(model.blocks[0].attn1.to_q.lora_down.weight, model.blocks[0].attn1.to_k.lora_down.weight)
+    torch.testing.assert_close(model.blocks[0].attn1.to_q.lora_down.weight, model.blocks[0].attn1.to_v.lora_down.weight)
+    assert isinstance(model.blocks[0].attn2.to_k, torch.nn.Linear)
