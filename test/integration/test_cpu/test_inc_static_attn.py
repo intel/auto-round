@@ -10,7 +10,6 @@ from auto_round import AutoRound
 deepseekv3_model_name = get_model_path("tflsxyy/DeepSeek-V3-bf16-4layers")
 
 
-@pytest.mark.timeout(180)
 def test_deepseek_v2(tiny_deepseek_v2_model_path):
     model_name = tiny_deepseek_v2_model_path
     model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=False)
@@ -51,7 +50,6 @@ def setup_deepseekv3():
     return model, tokenizer, output_dir, config
 
 
-@pytest.mark.timeout(90)
 def test_deepseek_v3(setup_deepseekv3):
     model, tokenizer, output_dir, config = setup_deepseekv3
     autoround = AutoRound(

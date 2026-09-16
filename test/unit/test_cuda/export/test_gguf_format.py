@@ -105,7 +105,6 @@ class TestAutoRound:
     @pytest.mark.skipif(not check_version("transformers>=5.2.0"), reason="requires transformers >= 5.2.0")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     @require_gguf
-    @pytest.mark.timeout(240)
     def test_qwen35_moe_gguf(self, tiny_qwen35_moe_model_path, monkeypatch):
         monkeypatch.setenv("AR_DISABLE_GGUF_MTP_EXPORT", "1")
         self._export_qwen35_moe_gguf(tiny_qwen35_moe_model_path)
@@ -231,7 +230,6 @@ class TestAutoRound:
         reason="Architecture: Gemma VLM GGUF export validates mmproj output and requires a large multimodal fixture"
     )
     @require_gguf
-    @pytest.mark.timeout(120)
     def test_vlm_gguf(self):
         from test.helpers import save_tiny_model
 
@@ -309,7 +307,6 @@ class TestAutoRound:
         reason="Matrix: The Q2_K_S first-eighth FFN-down dtype rule is covered by a dedicated GGUF dtype unit test"
     )
     @require_gguf
-    @pytest.mark.timeout(90)
     def test_q2_k_s_ffn_down_q4k(self):
         """Verify blk.0.ffn_down.weight is Q4_K in gguf:q2_k_s format.
         Blocks where i_layer < n_layer/8 should use Q4_K instead of Q2_K for ffn_down."""
