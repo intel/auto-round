@@ -107,6 +107,67 @@ class SpinQuantRotation(BaseRotation, SerializerMixin):
         return preprocessor.preprocess(dataloader)
 
     # ------------------------------------------------------------------
+    # Layer-wise rotation interface (block-wise quantization)
+    # ------------------------------------------------------------------
+
+    @property
+    def supports_layerwise(self) -> bool:
+        """SpinQuant supports layer-wise rotation (Online R1 + R2/R3/R4)."""
+        return True
+
+    def prepare_layerwise(
+        self,
+        model: torch.nn.Module,
+        data_type: str = "mx_fp",
+        **kwargs: Any,
+    ) -> "SpinQuantRotation":
+        """Prepare for layer-wise rotation: init R matrices only.
+
+        Creates a :class:`SpinQuantPreprocessor`, calls its
+        :meth:`~SpinQuantPreprocessor.prepare` method (which initialises
+        rotation matrices without modifying weights), and stores the
+        preprocessor for later :meth:`rotate_layer` calls.
+
+        Args:
+            model: The model to prepare (weights not modified).
+            data_type: Quantization data type (informational).
+            **kwargs: ``dataloader`` forwarded when ``trainable_rotation=True``.
+
+        Returns:
+            ``self``, for chaining.
+        """
+        from auto_round.algorithms.transforms.spinquant.preprocessor import (
+            SpinQuantPreprocessor,
+        )
+
+        dataloader = kwargs.get("dataloader")
+        self._preprocessor = SpinQuantPreprocessor(model, self.config)
+        self._preprocessor.prepare(dataloader)
+        return self
+
+    def rotate_layer(
+        self,
+        layer: torch.nn.Module,
+        layer_idx: int,
+        **kwargs: Any,
+    ) -> None:
+        """Apply rotation to a single decoder layer.
+
+        Delegates to :meth:`SpinQuantPreprocessor.rotate_layer`.
+        """
+        if not hasattr(self, "_preprocessor"):
+            raise RuntimeError(
+                "prepare_layerwise() must be called before rotate_layer(). "
+                "The preprocessor has not been initialised."
+            )
+        self._preprocessor.rotate_layer(layer, layer_idx)
+
+    def finalize_layerwise(self, model: torch.nn.Module) -> None:
+        """Cleanup after all layers have been rotated."""
+        if hasattr(self, "_preprocessor"):
+            self._preprocessor.finalize()
+
+    # ------------------------------------------------------------------
     # SerializerMixin — Save side
     # ------------------------------------------------------------------
 
