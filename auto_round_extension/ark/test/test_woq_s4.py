@@ -12,9 +12,7 @@ import auto_round_kernel as ark
 import torch
 from ut_utils import gen_weis8
 
-# M_VALUES = [1, 2, 4, 8, 16, 32, 64, 128]
-M_VALUES = [1, 2, 3, 7, 15, 31, 63, 127]
-DENSE_S4_DPAS_PARTIAL_M_VALUES = [5, 6, 7, 9, 17, 33, 65]
+M_VALUES = [1, 2, 4, 8, 16, 32, 64, 128]
 N = 16384
 K = 4096
 BLOCKSIZE = 32
@@ -205,6 +203,30 @@ def _guarded_output(m, n, dtype=DTYPE, device=DEVICE):
     return storage[:m], storage[m:]
 
 
+def _assert_ark_woqgemm_matches_reference_with_output_bounds(m, n=ACCURACY_N, k=ACCURACY_K, blocksize=BLOCKSIZE):
+    activation, packw, bias, ref_c = _ark_case(m, n=n, k=k, blocksize=blocksize)
+    output, guard = _guarded_output(m, n)
+
+    actual = ark.woqgemm(
+        activation,
+        packw,
+        bias,
+        n,
+        k,
+        blocksize,
+        COMPUTE_TYPE,
+        WEIGHT_TYPE,
+        SCALE_TYPE,
+        ASYM,
+        out=output,
+    )
+    _sync_xpu()
+
+    assert actual.data_ptr() == output.data_ptr()
+    assert torch.allclose(actual, ref_c, rtol=0.1, atol=2.0)
+    assert torch.all(guard == OUTPUT_GUARD_VALUE)
+
+
 def _memory_bytes(m, n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE):
     element_size = torch.empty((), dtype=dtype).element_size()
     return m * k * element_size + m * n * element_size + n * k // 2 + (k // blocksize) * n * element_size
@@ -308,34 +330,25 @@ def run_torch_int4_gemm_w4a16():
         _print_perf(m, batch, warmup, runs, "torch.ops._xpu_C.int4_gemm_w4a16", dur, "oneDNN_w4a16_int4")
 
 
+def test_ark_woqgemm_sym_accuracy_and_output_bounds():
+    if not hasattr(torch, "xpu") or not torch.xpu.is_available():
+        raise unittest.SkipTest("No XPU Device")
+
+    DENSE_S4_SYM_M_VALUES = [1, 2, 4, 8, 16, 32, 64, 128]
+    for m in DENSE_S4_SYM_M_VALUES:
+        expected_route = "bestla_s4_gemv" if m == 1 else "woq_s4_dpas"
+        assert _ark_expected_route(m, ACCURACY_N, ACCURACY_K, BLOCKSIZE) == expected_route
+        _assert_ark_woqgemm_matches_reference_with_output_bounds(m)
+
+
 def test_dense_s4_dpas_non_tile_aligned_m_accuracy_and_output_bounds():
     if not hasattr(torch, "xpu") or not torch.xpu.is_available():
         raise unittest.SkipTest("No XPU Device")
 
+    DENSE_S4_DPAS_PARTIAL_M_VALUES = [5, 6, 7, 9, 17, 33, 65]
     for m in DENSE_S4_DPAS_PARTIAL_M_VALUES:
         assert _ark_expected_route(m, ACCURACY_N, ACCURACY_K, BLOCKSIZE) == "woq_s4_dpas"
-
-        activation, packw, bias, ref_c = _ark_case(m, n=ACCURACY_N, k=ACCURACY_K, blocksize=BLOCKSIZE)
-        output, guard = _guarded_output(m, ACCURACY_N)
-
-        actual = ark.woqgemm(
-            activation,
-            packw,
-            bias,
-            ACCURACY_N,
-            ACCURACY_K,
-            BLOCKSIZE,
-            COMPUTE_TYPE,
-            WEIGHT_TYPE,
-            SCALE_TYPE,
-            ASYM,
-            out=output,
-        )
-        _sync_xpu()
-
-        assert actual.data_ptr() == output.data_ptr()
-        assert torch.allclose(actual, ref_c, rtol=0.1, atol=2.0)
-        assert torch.all(guard == OUTPUT_GUARD_VALUE)
+        _assert_ark_woqgemm_matches_reference_with_output_bounds(m)
 
 
 if __name__ == "__main__":
