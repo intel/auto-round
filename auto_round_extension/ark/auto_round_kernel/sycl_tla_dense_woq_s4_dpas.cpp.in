@@ -10,19 +10,19 @@ namespace detail {
 
 void @DENSE_WOQ_S4_FUNCTION_NAME@(sycl::queue* q, const void* activations, const void* weights, const void* scales,
                                   const void* bias, void* outputs, int gemm_m, int gemm_n, int gemm_k,
-                                  int group_size, bool wait) {
+                                  int group_size) {
   using ElementA = cute_scalar_t<sycl::half>;
 
   if constexpr (@DENSE_WOQ_S4_SCALE_GROUP_MAJOR@) {
     DenseWoqS4GEMMLauncherUpTo<kPackedScaleMaxGroupSize, 'R', 'C', @DENSE_WOQ_S4_POLICY_NAME@, true>(
         *q, static_cast<const ElementA*>(activations), static_cast<const cutlass::uint4b_t*>(weights),
         static_cast<const ElementA*>(scales), static_cast<const ElementA*>(bias), static_cast<ElementA*>(outputs),
-        gemm_m, gemm_n, gemm_k, group_size, wait);
+        gemm_m, gemm_n, gemm_k, group_size);
   } else {
     DenseWoqS4GEMMLauncher<'R', 'C', @DENSE_WOQ_S4_POLICY_NAME@, false>(
         *q, static_cast<const ElementA*>(activations), static_cast<const cutlass::uint4b_t*>(weights),
         static_cast<const ElementA*>(scales), static_cast<const ElementA*>(bias), static_cast<ElementA*>(outputs),
-        gemm_m, gemm_n, gemm_k, group_size, wait);
+        gemm_m, gemm_n, gemm_k, group_size);
   }
 }
 

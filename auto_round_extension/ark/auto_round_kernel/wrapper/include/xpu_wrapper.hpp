@@ -604,11 +604,11 @@ class XpuWrapper {
       if (use_dpas_scales) {                                                       \
         ark::dense_woq_s4_dpas::detail::route##_group_n(                           \
             q, matA, blobB, scales_ptr, bias, matC, static_cast<int>(m), p->n,      \
-            p->k, p->blocksize, false);                                            \
+            p->k, p->blocksize);                                                   \
       } else {                                                                     \
         ark::dense_woq_s4_dpas::detail::route##_n_group(                           \
             q, matA, blobB, scales_ptr, bias, matC, static_cast<int>(m), p->n,      \
-            p->k, p->blocksize, false);                                            \
+            p->k, p->blocksize);                                                   \
       }                                                                            \
     } while (false);
 
