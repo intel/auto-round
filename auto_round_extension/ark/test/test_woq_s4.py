@@ -4,6 +4,7 @@
 import importlib
 import sys
 import time
+import unittest
 from importlib import metadata
 from pathlib import Path
 
@@ -11,10 +12,15 @@ import auto_round_kernel as ark
 import torch
 from ut_utils import gen_weis8
 
-M_VALUES = [1, 2, 4, 8, 16, 32, 64, 128]
+# M_VALUES = [1, 2, 4, 8, 16, 32, 64, 128]
+M_VALUES = [1, 2, 3, 7, 15, 31, 63, 127]
+DENSE_S4_DPAS_PARTIAL_M_VALUES = [5, 6, 7, 9, 17, 33, 65]
 N = 16384
 K = 4096
 BLOCKSIZE = 32
+ACCURACY_N = 256
+ACCURACY_K = 256
+OUTPUT_GUARD_VALUE = -1234.0
 DTYPE = torch.float16
 DEVICE = "xpu"
 COMPUTE_TYPE = "int8"
@@ -62,6 +68,22 @@ def _ark_expected_route(m, n=N, k=K, blocksize=BLOCKSIZE):
     if blocksize < 32 or blocksize > 4096 or not _is_power_of_two(blocksize):
         return "woqgemm_s8(unpack_s4_to_s8)"
     return "woq_s4_dpas"
+
+
+def _dense_s4_dpas_tile_m(m):
+    if m <= 4:
+        return 4
+    if m <= 8:
+        return 8
+    if m <= 16:
+        return 16
+    if m <= 32:
+        return 32
+    if m <= 64:
+        return 64
+    if m <= 128:
+        return 128
+    raise ValueError(f"m={m} is outside dense S4 DPAS coverage")
 
 
 def _has_torch_int4_op():
@@ -177,6 +199,12 @@ def _repeat_nt_weight(weight, batch):
     return weight_nk.unsqueeze(0).repeat(batch, 1, 1).transpose(1, 2)
 
 
+def _guarded_output(m, n, dtype=DTYPE, device=DEVICE):
+    guard_rows = _dense_s4_dpas_tile_m(m) - m + 1
+    storage = torch.full((m + guard_rows, n), OUTPUT_GUARD_VALUE, dtype=dtype, device=device)
+    return storage[:m], storage[m:]
+
+
 def _memory_bytes(m, n=N, k=K, blocksize=BLOCKSIZE, dtype=DTYPE):
     element_size = torch.empty((), dtype=dtype).element_size()
     return m * k * element_size + m * n * element_size + n * k // 2 + (k // blocksize) * n * element_size
@@ -278,6 +306,36 @@ def run_torch_int4_gemm_w4a16():
             continue
 
         _print_perf(m, batch, warmup, runs, "torch.ops._xpu_C.int4_gemm_w4a16", dur, "oneDNN_w4a16_int4")
+
+
+def test_dense_s4_dpas_non_tile_aligned_m_accuracy_and_output_bounds():
+    if not hasattr(torch, "xpu") or not torch.xpu.is_available():
+        raise unittest.SkipTest("No XPU Device")
+
+    for m in DENSE_S4_DPAS_PARTIAL_M_VALUES:
+        assert _ark_expected_route(m, ACCURACY_N, ACCURACY_K, BLOCKSIZE) == "woq_s4_dpas"
+
+        activation, packw, bias, ref_c = _ark_case(m, n=ACCURACY_N, k=ACCURACY_K, blocksize=BLOCKSIZE)
+        output, guard = _guarded_output(m, ACCURACY_N)
+
+        actual = ark.woqgemm(
+            activation,
+            packw,
+            bias,
+            ACCURACY_N,
+            ACCURACY_K,
+            BLOCKSIZE,
+            COMPUTE_TYPE,
+            WEIGHT_TYPE,
+            SCALE_TYPE,
+            ASYM,
+            out=output,
+        )
+        _sync_xpu()
+
+        assert actual.data_ptr() == output.data_ptr()
+        assert torch.allclose(actual, ref_c, rtol=0.1, atol=2.0)
+        assert torch.all(guard == OUTPUT_GUARD_VALUE)
 
 
 if __name__ == "__main__":
