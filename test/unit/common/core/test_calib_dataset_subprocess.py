@@ -7,6 +7,9 @@ The fix selects ``"spawn"`` on macOS and ``"fork"`` on Linux.
 
 import os
 
+import pytest
+from datasets import Dataset
+
 
 class _FakeProcess:
     """Minimal subprocess stub: starts, joins, and exits cleanly."""
@@ -23,6 +26,17 @@ class _FakeProcess:
     exitcode = 0
 
 
+class _FakeQueue:
+    def get(self, timeout=None):
+        raise __import__("queue").Empty
+
+    def close(self):
+        pass
+
+    def join_thread(self):
+        pass
+
+
 def _fake_get_context(captured):
     """Return a factory that records the requested multiprocessing context name."""
 
@@ -31,6 +45,7 @@ def _fake_get_context(captured):
 
         class _FakeCtx:
             Process = _FakeProcess
+            Queue = _FakeQueue
 
         return _FakeCtx()
 
@@ -81,3 +96,45 @@ def test_windows_falls_back_to_inprocess(monkeypatch):
     cd.get_dataset(tokenizer=None, seqlen=512)
 
     assert inprocess_called, "in-process fallback should have been called on Windows"
+
+
+def test_subprocess_network_error_falls_back_without_retrying_source(monkeypatch):
+    """A child-process network error must switch directly to FineWeb-Edu."""
+    import auto_round.calib_dataset as cd
+
+    class _NetworkErrorQueue:
+        def get(self, timeout=None):
+            return cd._DATASET_RESULT_ERROR, "simulated proxy failure"
+
+        def close(self):
+            pass
+
+        def join_thread(self):
+            pass
+
+    class _NetworkErrorProcess(_FakeProcess):
+        exitcode = 1
+
+    class _NetworkErrorContext:
+        Process = _NetworkErrorProcess
+        Queue = _NetworkErrorQueue
+
+    fallback_dataset = Dataset.from_dict({"input_ids": [[1]], "attention_mask": [[1]]})
+    fallback = []
+
+    def fallback_to_fineweb(error, tokenizer, seqlen, dataset_name, seed, nsamples):
+        fallback.append((error, dataset_name))
+        return fallback_dataset
+
+    monkeypatch.setattr(cd.multiprocessing, "get_context", lambda method: _NetworkErrorContext())
+    monkeypatch.setattr(cd.os, "name", "posix")
+    monkeypatch.setattr(cd.sys, "platform", "linux")
+    monkeypatch.setattr(cd.envs, "AR_DISABLE_DATASET_SUBPROCESS", False)
+    monkeypatch.setattr(cd, "_fallback_to_fineweb_edu", fallback_to_fineweb)
+    monkeypatch.setattr(cd, "_get_dataset_impl", lambda *args: pytest.fail("source retried"))
+
+    result = cd.get_dataset(tokenizer=None, seqlen=128, dataset_name="source")
+
+    assert result is fallback_dataset
+    assert isinstance(fallback[0][0], ConnectionError)
+    assert fallback[0][1] == "source"
