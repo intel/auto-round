@@ -122,7 +122,7 @@ SUPPORTED_HADAMARD_DIMS = tuple(GROUP_SIZE * (1 << i) for i in range(MAX_LANES_P
 E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 
 # (threshold, is_closed_interval, magnitude_index), first match wins, mirroring
-# the early-out ladder of ``cast_to_fp4`` including its alternating ``<=`` / ``<``
+# the early-out ladder of ``_E2M1_THRESHOLDS'`` including its alternating ``<=`` / ``<``
 # boundary operators. ``_encode_fp4`` walks the table in reverse with
 # ``torch.where``, so each earlier entry overrides every later one.
 _E2M1_THRESHOLDS = (
