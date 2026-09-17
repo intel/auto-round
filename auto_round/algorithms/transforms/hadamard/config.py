@@ -77,6 +77,11 @@ class RotationConfig(AlgorithmConfig, BaseModel, BaseRotationConfig):
     backend: str = Field(default="auto")
     block_size: Optional[int] = Field(default=None)
     hadamard_type: str = Field(default="hadamard")
+    # Apply the Hadamard rotation per decoder block, in lock-step with block-wise
+    # quantization, instead of rotating the whole model up-front. Honoured by the
+    # per-Linear transform backend; unsupported cases fall back to full-model
+    # rotation (see ``RotationPreprocessor.rotate_model``).
+    layerwise: bool = Field(default=False)
 
     # ---- inplace-only ----
     fuse_online_to_weight: Optional[bool] = Field(default=None)

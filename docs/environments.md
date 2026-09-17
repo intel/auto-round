@@ -50,6 +50,17 @@ export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 export AR_USE_MODELSCOPE=true
 ```
 
+### AR_QUANTIZE_BAGEL_MOE_GEN
+
+- **Description**: Enables quantization of BAGEL's `*_moe_gen` image-generation experts. By default, AutoRound keeps these modules in BF16 because quantizing them has been observed to reduce image-generation quality. BAGEL's normal transformer attention and MLP layers are still quantized by default.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, or `"yes"` (case-insensitive) for enabling; any other value keeps `*_moe_gen` in BF16
+- **Usage**: Enable only when experimenting with the checkpoint-size and image-quality tradeoff
+
+```bash
+export AR_QUANTIZE_BAGEL_MOE_GEN=1
+```
+
 ### AR_WORK_SPACE
 - **Description**: Sets the workspace directory for AutoRound operations
 - **Default**: `"ar_work_space"`

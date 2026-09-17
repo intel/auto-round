@@ -24,6 +24,8 @@ Each patch is idempotent: calling it twice has no effect.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import transformers
 
@@ -75,6 +77,8 @@ def patch_wrapperlinear_to_apply_transform(
                 if is_conv1d:
                     new_weight = new_weight.t().contiguous()
                 self.orig_layer.weight.data.copy_(new_weight)
+                logical_weight = new_weight.t() if is_conv1d else new_weight
+                self.weight_quantizer.refresh(logical_weight, imatrix=getattr(self.orig_layer, "imatrix", None))
                 self.applied_weight_hadamard = True
 
         return _orig_qdq_weight(self, value, min_scale, max_scale)
@@ -106,16 +110,18 @@ def patch_wrapperwalayer_forward_to_apply_transform(
     _orig_forward = WrapperWALayer.forward
 
     def _forward_patched(self, x):
-        act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
         x = inp_transform(x)
-        x, _, _ = self.orig_layer.act_quant_func(
+        import auto_round.envs as envs
+
+        act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
+        act_scale = envs.AR_ACT_SCALE
+        max_scale = self.orig_layer.act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
+        min_scale = self.orig_layer.act_min_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
+        x = self.activation_quantizer.qdq(
             x,
-            bits=self.orig_layer.act_bits,
-            group_size=self.orig_layer.act_group_size,
-            scale_dtype=self.orig_layer.scale_dtype,
-            q_scale_thresh=self.orig_layer.q_scale_thresh,
-            data_type=self.orig_layer.act_data_type,
-            tensor_max=act_max,
+            observed_max=act_max,
+            min_scale=min_scale,
+            max_scale=max_scale,
         )
         return self.orig_layer.forward(x)
 

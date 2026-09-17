@@ -490,6 +490,11 @@ def _batched_qdq_weights(
     eligible and the caller must go per-expert.
     """
     ref = layers[0]
+    # Datatype quantizers intentionally keep their per-layer QDQ state private.
+    # Without the legacy compiled function, that state cannot be safely merged,
+    # so retain correctness by using the normal per-expert path.
+    if not hasattr(ref, "weight_quant_func"):
+        return None
     orig = ref.orig_layer
     out_features, in_features = ref.weight.shape
     num_experts = len(layers)

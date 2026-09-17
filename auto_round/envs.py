@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     AR_DISABLE_META_LOAD: bool = False
     AR_RESUME_DIR: Optional[str] = None
     AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
+    AR_QUANTIZE_BAGEL_MOE_GEN: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
     AR_ALLOW_W8_ASYM: bool = False
 
@@ -142,6 +143,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # to rotate token assignments across all experts for calibration coverage.
     "AR_FORCE_MOE_ROUTING_ALL_EXPERTS": lambda: os.getenv("AR_FORCE_MOE_ROUTING_ALL_EXPERTS", "0").lower()
     in ("1", "true", "yes"),
+    # BAGEL's image-generation experts are kept in BF16 by default because
+    # quantizing them can reduce image quality. Enable only for experiments
+    # that explicitly trade image quality for a smaller checkpoint.
+    "AR_QUANTIZE_BAGEL_MOE_GEN": lambda: os.getenv("AR_QUANTIZE_BAGEL_MOE_GEN", "0").lower() in ("1", "true", "yes"),
     # Experts forward used for AutoRound's unfused per-expert nn.Linear MoE layout:
     #   "auto"                   - (default) same as "linear_grouped"
     #   "linear_grouped"         - sort the routed (token, expert) pairs once and run one
