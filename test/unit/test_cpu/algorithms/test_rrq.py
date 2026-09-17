@@ -338,6 +338,66 @@ class TestRRQQuantization:
         rel_err = (W - W_recon).norm() / W.norm()
         assert rel_err < 0.05, f"8-bit RRQ relative error too high: {rel_err:.6f}"
 
+    def test_conv1d_weight_orientation_preserved(self):
+        """Conv1D layers must be quantized with correct (out, in) group-wise quantization.
+
+        GPT-2-style ``Conv1D`` layers store weights as (in_features, out_features).
+        The RRQ quantizer must transpose to (out, in) before quantizing (matching
+        the standard ``WrapperLinear`` path) and transpose back when storing back
+        into ``layer.weight``. Without this, group-wise quantization would run
+        along the wrong axis, producing incorrect scales/qzeros.
+
+        See: https://github.com/intel/auto-round/issues/NNNN (Conv1D orientation bug)
+        """
+        import transformers
+
+        torch.manual_seed(42)
+        in_features, out_features, group_size = 64, 32, 32
+        W = torch.randn(in_features, out_features) * 0.01
+
+        # Build a Conv1D layer (GPT-2 style: weight is (in, out))
+        conv = transformers.pytorch_utils.Conv1D(nf=out_features, nx=in_features)
+        conv.weight.data = W.clone().to(torch.float16)
+        conv.group_size = group_size
+        conv.bits = 2
+        conv.sym = True
+        conv.data_type = "int"
+        conv.act_bits = 16
+
+        quantizer = RRQRTNQuantizer(RRQConfig(group_size=group_size, sym=True))
+        quantizer._quantize_layer_rrq(conv)
+
+        # 1. Base plane weight must remain in native (in, out) orientation.
+        assert conv.weight.shape == (in_features, out_features), (
+            f"Conv1D weight shape changed from ({in_features}, {out_features}); "
+            f"got {conv.weight.shape}. RRQ must restore native (in, out) orientation."
+        )
+
+        # 2. Reconstruct the dequantized weight: base + residual planes, all in
+        #    the native (in, out) Conv1D orientation.
+        #    - Base plane ``conv.weight`` is (in, out) natively.
+        #    - Each residual plane is a packed W2A16 QuantLinear built with
+        #      (in_features, out_features); its ``_dequantize()`` returns (in, out).
+        from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
+
+        W_recon = conv.weight.data.float().clone()
+        for k in range(1, quantizer.num_planes):
+            ql = QuantLinear(2, group_size, in_features, out_features, bias=False)
+            ql.qweight.data = getattr(conv, f"rrq_qweight_{k}").to(torch.int32)
+            ql.scales.data = getattr(conv, f"rrq_scales_{k}").to(torch.float16)
+            ql.qzeros.data = getattr(conv, f"rrq_qzeros_{k}").to(torch.int32)
+            plane = ql._dequantize().to(torch.float32)  # (in, out)
+            assert plane.shape == (in_features, out_features)
+            W_recon = W_recon + plane
+
+        # 3. Full 2+2+2+2 = 8-bit reconstruction should be close to original.
+        rel_err = (W.float() - W_recon).norm() / W.norm()
+        assert rel_err < 0.05, (
+            f"RRQ 8-bit reconstruction on Conv1D is too inaccurate: "
+            f"relative error {rel_err:.6f} > 0.05. "
+            f"Likely weight orientation bug (Conv1D is (in, out), not (out, in))."
+        )
+
     def test_marker_attributes(self):
         """An RRQ layer should carry the expected metadata attributes."""
         torch.manual_seed(42)
@@ -372,6 +432,66 @@ class TestRRQQuantization:
 
         rel_err = (W - W_recon).norm() / W.norm()
         assert rel_err < 0.05, f"8-bit RRQ relative error too high: {rel_err:.6f}"
+
+
+class TestRRQConv1D:
+    """Tests that RRQ handles Conv1D (GPT-2) weights with correct orientation."""
+
+    @pytest.fixture(autouse=True)
+    def _seed(self):
+        torch.manual_seed(42)
+        yield
+
+    def _make_conv1d(self, in_features=64, out_features=32):
+        from transformers.pytorch_utils import Conv1D
+
+        conv = Conv1D(nf=out_features, nx=in_features)
+        conv.weight.data = torch.randn(in_features, out_features) * 0.01
+        conv.group_size = 32
+        conv.bits = 2
+        conv.sym = True
+        conv.data_type = "int"
+        conv.act_bits = 16
+        return conv
+
+    def test_weight_shape_preserved(self):
+        """Conv1D weight must remain (in, out) after RRQ quantization."""
+        conv = self._make_conv1d(128, 64)
+        quantizer = RRQRTNQuantizer(RRQConfig(group_size=32, sym=True))
+        quantizer._quantize_layer_rrq(conv)
+        assert conv.weight.shape == (128, 64), (
+            f"Conv1D weight shape changed from (128, 64) to {conv.weight.shape}"
+        )
+
+    def test_residual_plane_shape(self):
+        """Residual planes should be packed with correct (in, out) dims."""
+        conv = self._make_conv1d(64, 32)
+        quantizer = RRQRTNQuantizer(RRQConfig(group_size=32, num_residual_planes=1, sym=True))
+        quantizer._quantize_layer_rrq(conv)
+        # (in // 32 * bits, out) = (64//32*2, 32) = (4, 32)
+        assert conv.rrq_qweight_1.shape == (4, 32), (
+            f"Residual qweight shape {conv.rrq_qweight_1.shape} != (4, 32)"
+        )
+
+    def test_reconstruction_accuracy(self):
+        """8-bit reconstruction on Conv1D should be close to the original."""
+        from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
+
+        conv = self._make_conv1d(128, 64)
+        W = conv.weight.data.clone().float()
+        quantizer = RRQRTNQuantizer(RRQConfig(group_size=32, sym=True))
+        quantizer._quantize_layer_rrq(conv)
+
+        W_recon = conv.weight.data.float().clone()
+        for k in range(1, 4):
+            ql = QuantLinear(2, 32, 128, 64, bias=False)
+            ql.qweight.data = getattr(conv, f"rrq_qweight_{k}").to(torch.int32)
+            ql.scales.data = getattr(conv, f"rrq_scales_{k}").to(torch.float16)
+            ql.qzeros.data = getattr(conv, f"rrq_qzeros_{k}").to(torch.int32)
+            W_recon = W_recon + ql._dequantize().to(torch.float32)
+
+        rel_err = (W - W_recon).norm() / W.norm()
+        assert rel_err < 0.05, f"Conv1D 8-bit RRQ recon error too high: {rel_err:.6f}"
 
 
 class TestRRQLinear:

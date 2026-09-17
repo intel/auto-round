@@ -28,6 +28,7 @@ from contextlib import nullcontext
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import transformers
 
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rrq.config import RRQConfig
@@ -390,19 +391,36 @@ class RRQRTNQuantizer(BaseQuantizer):
 
         quant_func = self._get_quant_func(bits, group_size)
 
+        # The quantization helpers and ``QuantLinear.pack`` operate on
+        # ``(out_features, in_features)``.  ``transformers.pytorch_utils.Conv1D``
+        # stores its weight as ``(in_features, out_features)`` (GPT-2 style), so
+        # normalize it to ``(out, in)`` here and restore the native orientation on
+        # store -- mirroring the standard ``WrapperLinear._qdq_weight`` /
+        # ``QuantLinear.pack`` path.  Without this, group-wise quantization and
+        # bit-packing run along the wrong axis for Conv1D layers.
+        is_conv1d = type(layer) is transformers.pytorch_utils.Conv1D
+        if is_conv1d:
+            original_weight = original_weight.t()
+
         # In the real compressor path, generate plane 0 through the exact
         # standard AutoRound RTN entry point (``_quantize_layer_via_rtn``) so
         # the base plane is bit-identical to an ordinary W2A16 opt-RTN model.
         # ``_quantize_layer_via_rtn`` mutates ``layer`` in place: after it runs,
-        # ``layer.weight`` holds the dequantized base and ``layer.scale``/
-        # ``layer.zp`` are set. The standalone unit-test layers lack compressor
-        # context, so they keep the direct RTN fallback below.
+        # ``layer.weight`` holds the dequantized base (in the layer's native
+        # orientation) and ``layer.scale``/``layer.zp`` are set. The standalone
+        # unit-test layers lack compressor context, so they keep the direct RTN
+        # fallback below.
         use_standard_base = (
             hasattr(layer, "global_name") and hasattr(self, "model_context") and hasattr(self, "compress_context")
         )
         if use_standard_base:
             self._quantize_layer_via_rtn(layer, disable_opt_rtn=False)
             base_quantized = layer.weight.detach().clone().to(torch.float32).to(device)
+            if is_conv1d:
+                # ``_quantize_layer_via_rtn`` restores the weight in the layer's
+                # native ``(in, out)`` orientation; normalize back to ``(out, in)``
+                # so it matches the residual planes accumulated below.
+                base_quantized = base_quantized.t()
             accumulated = base_quantized.clone()
         else:
             base_quantized = None
@@ -436,12 +454,16 @@ class RRQRTNQuantizer(BaseQuantizer):
             scale_n, zp_n = self._normalize_scale_zp(scale, zp, original_weight.shape[0])
 
             if plane_idx == 0:
-                layer.weight.data.copy_(quantized.to(layer.weight.data.dtype))
+                # Store the base plane in the layer's native orientation
+                # (Conv1D is ``(in, out)``; all other layers are ``(out, in)``).
+                store_weight = quantized.t() if is_conv1d else quantized
+                layer.weight.data.copy_(store_weight.to(layer.weight.data.dtype))
                 layer.scale = scale_n.cpu()
                 layer.zp = zp_n.to(device) if isinstance(zp_n, torch.Tensor) else zp_n
             else:
                 # Residual plane: store packed INT2 (W2A16 layout) so the
                 # on-disk artifact is a standard single-plane INT2 layout.
+                # ``original_weight`` is already in ``(out, in)`` orientation here.
                 in_features = original_weight.shape[1]
                 qweight, scales, qzeros = self._pack_plane(quantized, scale, zp, bits, group_size, in_features)
                 layer.register_buffer(f"rrq_qweight_{plane_idx}", qweight.cpu())
