@@ -39,6 +39,7 @@
 
 import json
 import os
+import tempfile
 
 import torch
 
@@ -50,6 +51,70 @@ from auto_round.utils.model_free_utils import (
     split_fused_expert_tensors,
 )
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
+
+
+def _restore_special_fp32_tensors(
+    source_tensor_to_file: dict[str, str],
+    saved_tensor_to_file: dict[str, str],
+) -> None:
+    """Restore source FP32 tensors that were saved as FP16 or BF16."""
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    common_tensor_names = source_tensor_to_file.keys() & saved_tensor_to_file.keys()
+    source_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in common_tensor_names:
+        source_names_by_shard.setdefault(source_tensor_to_file[tensor_name], []).append(tensor_name)
+
+    candidates: list[str] = []
+    for source_shard, tensor_names in source_names_by_shard.items():
+        with safe_open(source_shard, framework="pt", device="cpu") as source_file:
+            for tensor_name in tensor_names:
+                if source_file.get_slice(tensor_name).get_dtype() == "F32":
+                    candidates.append(tensor_name)
+
+    target_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in candidates:
+        target_names_by_shard.setdefault(saved_tensor_to_file[tensor_name], []).append(tensor_name)
+
+    tensors_to_restore: dict[str, torch.Tensor] = {}
+    for target_shard, tensor_names in target_names_by_shard.items():
+        with safe_open(target_shard, framework="pt", device="cpu") as target_file:
+            for tensor_name in tensor_names:
+                if target_file.get_slice(tensor_name).get_dtype() in {"F16", "BF16"}:
+                    source_shard = source_tensor_to_file[tensor_name]
+                    with safe_open(source_shard, framework="pt", device="cpu") as source_file:
+                        tensors_to_restore[tensor_name] = source_file.get_tensor(tensor_name)
+
+    restore_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in tensors_to_restore:
+        restore_names_by_shard.setdefault(saved_tensor_to_file[tensor_name], []).append(tensor_name)
+
+    for target_shard, tensor_names in restore_names_by_shard.items():
+        with safe_open(target_shard, framework="pt", device="cpu") as target_file:
+            metadata = target_file.metadata()
+            shard_tensors = {name: target_file.get_tensor(name) for name in target_file.keys()}
+        for tensor_name in tensor_names:
+            shard_tensors[tensor_name] = tensors_to_restore[tensor_name]
+
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=os.path.dirname(target_shard), prefix=".restore_fp32_", suffix=".safetensors", delete=False
+            ) as temporary_file:
+                temporary_path = temporary_file.name
+            save_file({name: tensor.contiguous() for name, tensor in shard_tensors.items()}, temporary_path, metadata)
+            os.replace(temporary_path, target_shard)
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.remove(temporary_path)
+
+    if tensors_to_restore:
+        tensor_summary = compress_layer_names([name.rsplit(".", 1)[0] for name in tensors_to_restore])
+        logger.info(
+            f"Restored {len(tensors_to_restore)} tensor(s) from FP16/BF16 to their original FP32 values: "
+            f"{tensor_summary}."
+        )
 
 
 def _get_conversion_aliases(name: str, model_type: str | None) -> set[str]:
@@ -188,19 +253,25 @@ def copy_missing_tensors_from_source(
     # ------------------------------------------------------------------ #
     # Collect tensor names already present in the saved output              #
     # ------------------------------------------------------------------ #
-    saved_tensor_names: set = set()
+    saved_tensor_to_file: dict[str, str] = {}
     saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
     saved_single_file = os.path.join(target_dir, "model.safetensors")
 
     if os.path.exists(saved_index_file):
         with open(saved_index_file) as f:
             saved_idx = json.load(f)
-        saved_tensor_names = set(saved_idx["weight_map"].keys())
+        saved_tensor_to_file = {
+            tensor_name: os.path.join(target_dir, shard_file)
+            for tensor_name, shard_file in saved_idx["weight_map"].items()
+        }
     elif os.path.exists(saved_single_file):
         with safe_open(saved_single_file, framework="pt", device="cpu") as f:
-            saved_tensor_names = set(f.keys())
+            saved_tensor_to_file = {tensor_name: saved_single_file for tensor_name in f.keys()}
     else:
         return
+
+    _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file)
+    saved_tensor_names = set(saved_tensor_to_file)
 
     # ------------------------------------------------------------------ #
     # Identify missing tensors via block-prefix statistics                 #
@@ -465,7 +536,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     """
     import re as _re
 
-    BLOCK_NAME_TO_IGNORE = [".shared_expert_gate.", ".mlp.gate.", ".g_proj.", "mtp.fc."]
+    BLOCK_NAME_TO_IGNORE = [".shared_expert_gate.", ".gate.", ".g_proj.", "mtp.fc."]
     qconfig = _get_woq_config_from_dir(target_dir)
     if qconfig is None:
         return missing_tensors_dict

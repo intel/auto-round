@@ -494,12 +494,75 @@ class TestCopyMissingTensorsFromSource:
         src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
         os.makedirs(src)
         os.makedirs(tgt)
-        t = torch.randn(64)
+        t = torch.randn(64, dtype=torch.bfloat16)
         _save_safetensors({"mtp.0.norm.weight": t}, os.path.join(src, "model.safetensors"))
         _save_safetensors({"mtp.0.norm.weight": t}, os.path.join(tgt, "model.safetensors"))
         _write_config(tgt)
         copy_missing_tensors_from_source(src, tgt)
         assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    def test_restores_fp32_tensor_saved_as_fp16(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        original = torch.tensor([1.0001, -2.0002], dtype=torch.float32)
+        unchanged = torch.tensor([3.0], dtype=torch.float32)
+        _save_safetensors(
+            {"model.special.weight": original, "model.unchanged.weight": unchanged},
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors(
+            {
+                "model.special.weight": original.to(torch.float16),
+                "model.unchanged.weight": torch.tensor([9.0], dtype=torch.float32),
+            },
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+
+        copy_missing_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        assert result["model.special.weight"].dtype == torch.float32
+        assert torch.equal(result["model.special.weight"], original)
+        assert torch.equal(result["model.unchanged.weight"], torch.tensor([9.0], dtype=torch.float32))
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    def test_restores_fp32_tensor_in_indexed_shards(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        original = torch.tensor([1.0001, -2.0002], dtype=torch.float32)
+        source_shard = "model-00002-of-00002.safetensors"
+        target_shard = "model-00001-of-00002.safetensors"
+        _save_safetensors({"model.special.weight": original}, os.path.join(src, source_shard))
+        _save_safetensors(
+            {"model.special.weight": original.to(torch.bfloat16), "model.other.weight": torch.ones(2)},
+            os.path.join(tgt, target_shard),
+        )
+        with open(os.path.join(src, "model.safetensors.index.json"), "w") as f:
+            json.dump({"metadata": {}, "weight_map": {"model.special.weight": source_shard}}, f)
+        with open(os.path.join(tgt, "model.safetensors.index.json"), "w") as f:
+            json.dump(
+                {
+                    "metadata": {},
+                    "weight_map": {
+                        "model.special.weight": target_shard,
+                        "model.other.weight": target_shard,
+                    },
+                },
+                f,
+            )
+        _write_config(tgt)
+
+        copy_missing_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, target_shard))
+        assert result["model.special.weight"].dtype == torch.float32
+        assert torch.equal(result["model.special.weight"], original)
+        assert torch.equal(result["model.other.weight"], torch.ones(2))
+        with open(os.path.join(tgt, "model.safetensors.index.json")) as f:
+            assert json.load(f)["weight_map"]["model.special.weight"] == target_shard
 
     def test_detects_multiple_missing_tensors_from_different_blocks(self, tmp_path):
         """All source tensors from blocks absent in the saved output are copied."""
