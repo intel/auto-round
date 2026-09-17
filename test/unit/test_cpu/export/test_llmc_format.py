@@ -472,6 +472,31 @@ class TestLLMCNVFP4KV:
             static_kv_dtype="nvfp4",
         ).quantize_and_save(tmp_path, format="llm_compressor")
 
+    def test_nvfp4_kv_missing_scales_raises(self):
+        """An explicit NVFP4 KV request must not silently drop the scheme."""
+        import torch.nn as nn
+
+        class FakeAttention(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer_idx = 0
+                self.head_dim = 64
+                self.k_proj = nn.Linear(64, 256, bias=False)
+                self.v_proj = nn.Linear(64, 256, bias=False)
+
+        class FakeModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.attn = FakeAttention()
+
+        with pytest.raises(ValueError, match="NVFP4"):
+            llmc_fp_export._resolve_kv_cache_scheme(
+                FakeModel(),
+                use_fp8_kv=False,
+                use_nvfp4_kv=True,
+                use_fp8_attention=False,
+            )
+
     @pytest.mark.timeout(120)
     def test_llmcompressor_nvfp4_kv_config(self, tiny_opt_model_path, dataloader, tmp_path):
         _, quantized_model_path = self._quantize_nvfp4_kv(tiny_opt_model_path, dataloader, tmp_path)

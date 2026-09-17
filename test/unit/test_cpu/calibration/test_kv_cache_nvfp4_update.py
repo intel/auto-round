@@ -43,11 +43,11 @@ def test_update_tracks_k_and_v_amax_separately():
     assert cache.k_amax[0] == pytest.approx(k_amax)
     assert cache.v_amax[0] == pytest.approx(v_amax)
 
-    # QDQ outputs must track their own side, not the other one.
-    assert qk.shape == key_states.shape
-    assert qv.shape == value_states.shape
-    assert qk.abs().max().item() == pytest.approx(k_amax, rel=0.2)
-    assert qv.abs().max().item() == pytest.approx(v_amax, rel=0.2)
+    # Calibration is observe-only: K/V pass through unmodified; the exported
+    # static scale is derived from the final amax (see the convention test
+    # below).  This mirrors llm-compressor's observer-based KV calibration.
+    assert torch.equal(qk, key_states)
+    assert torch.equal(qv, value_states)
 
 
 def test_update_running_max_per_side():
@@ -94,3 +94,34 @@ def test_stored_nvfp4_scale_uses_vllm_dequant_multiplier_convention():
         assert sf.max().item() <= 448.0 + 1e-4
         # e4m3 min subnormal is 2**-9 (~1.95e-3)
         assert sf.min().item() >= 2.0**-9
+
+
+def _make_fake_attention(head_dim: int, num_heads: int = 4):
+    import torch.nn as nn
+
+    class FakeAttention(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layer_idx = 0
+            self.head_dim = head_dim
+            self.k_proj = nn.Linear(head_dim, num_heads * head_dim, bias=False)
+            self.v_proj = nn.Linear(head_dim, num_heads * head_dim, bias=False)
+
+    return FakeAttention()
+
+
+def test_nvfp4_kv_incompatible_head_dim_fails_early():
+    """A single unsupported layer must fail loudly, not disable all layers."""
+    from auto_round.experimental.kv_cache import initialize_quantized_kv_cache
+
+    module = _make_fake_attention(head_dim=88)
+    with pytest.raises(ValueError, match="divisible by 16"):
+        initialize_quantized_kv_cache(module, dtype="nvfp4")
+    assert not hasattr(module, "kv_cache")
+
+
+def test_nvfp4_kv_incompatible_head_dim_raises_at_update():
+    cache = QuantizedKVParameterCache(dtype="nvfp4")
+    bad = torch.randn(1, 1, 16, 88)
+    with pytest.raises(ValueError, match="divisible by 16"):
+        cache.update(bad, bad.clone(), layer_idx=0)

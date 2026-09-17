@@ -121,9 +121,6 @@ class QuantizedKVParameterCache(DynamicCache):
         else:
             assert dtype == torch.float8_e4m3fn, "Only fp8_e4m3fn is supported for now."
             self.granularity = normalize_fp8_granularity(granularity)
-        # Set when a layer turns out incompatible with NVFP4 KV (e.g. head_dim
-        # not divisible by 16); all subsequent updates become identity passes.
-        self.disabled = False
         if not self._initialized:
             super().__init__()
 
@@ -145,11 +142,11 @@ class QuantizedKVParameterCache(DynamicCache):
         Get the k_scale and v_scale and output the quant-dequant key_states and value_states
         """
         if self.is_nvfp4:
-            if self.disabled:
-                return key_states, value_states
-            qdq_key_states = self._nvfp4_quant_dequant(key_states.contiguous(), KVCacheScaleType.KEY, layer_idx)
-            qdq_value_states = self._nvfp4_quant_dequant(value_states.contiguous(), KVCacheScaleType.VALUE, layer_idx)
-            return qdq_key_states, qdq_value_states
+            # Observe-only: track the per-side running amax and let K/V
+            # pass through unmodified (see _nvfp4_track_amax).
+            self._nvfp4_track_amax(key_states, KVCacheScaleType.KEY, layer_idx)
+            self._nvfp4_track_amax(value_states, KVCacheScaleType.VALUE, layer_idx)
+            return key_states, value_states
 
         qdq_key_states = self._quant_dequant(key_states.contiguous(), KVCacheScaleType.KEY, layer_idx)
         qdq_value_states = self._quant_dequant(value_states.contiguous(), KVCacheScaleType.VALUE, layer_idx)
@@ -203,27 +200,24 @@ class QuantizedKVParameterCache(DynamicCache):
         _pad_and_append_at_idx_(scales, layer_idx, scale.reshape(-1).detach())
         return qdq_tensor
 
-    def _nvfp4_quant_dequant(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int):
-        """NVFP4 quant-dequant for a K/V tensor.
+    def _nvfp4_track_amax(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int):
+        """Track the running NVFP4 K/V amax during calibration (observe-only).
 
-        Keeps a running max amax per layer and per side; the QDQ uses the
-        corresponding running global scale ``gs = 2688 / amax`` (fp4 max 6 x
-        fp8 max 448), mirroring the runtime semantics where the fp8 block
-        scale is computed on the fly and only the global scale is static. The
-        final amax is converted to the stored ``k_global_scale``/
-        ``v_global_scale`` parameters by the output hook, which writes the
-        vLLM dequant-multiplier convention (``amax / 2688``) -- see
-        ``_nvfp4_global_scale``.
+        Mirrors the observer-based KV calibration in llm-compressor: the
+        per-side running amax is accumulated while the K/V tensors pass
+        through unmodified, so calibration never fake-quantizes with an
+        incomplete scale.  The static global scale is derived from the
+        final (full-calibration-set) amax by the output hook, which
+        writes the vLLM dequant-multiplier convention (``amax / 2688``) --
+        see ``_nvfp4_global_scale``.
         """
         if tensor.shape[-1] % NVFP4_KV_BLOCK_SIZE != 0:
-            logger.warning(
-                "NVFP4 KV cache requires the last dim (head_dim) to be divisible by %d "
-                "(got %d); disabling NVFP4 KV cache quantization.",
-                NVFP4_KV_BLOCK_SIZE,
-                tensor.shape[-1],
+            raise ValueError(
+                f"NVFP4 KV cache quantization requires the last dim (head_dim) "
+                f"to be divisible by {NVFP4_KV_BLOCK_SIZE} (got {tensor.shape[-1]} "
+                f"at layer_idx={layer_idx}); use static_kv_dtype='fp8' for "
+                f"this model."
             )
-            self.disabled = True
-            return tensor
 
         amax = tensor.abs().max().item()
         amax_list = self.k_amax if kv_type == KVCacheScaleType.KEY else self.v_amax
@@ -231,14 +225,6 @@ class QuantizedKVParameterCache(DynamicCache):
             _pad_and_append_at_idx_(amax_list, layer_idx, amax)
         else:
             amax_list[layer_idx] = max(amax_list[layer_idx], amax)
-        running_amax = amax_list[layer_idx]
-        if running_amax <= 0:
-            return tensor
-
-        from auto_round.data_type.nvfp import nv_fp4_with_static_gs
-
-        qdq_tensor, _, _ = nv_fp4_with_static_gs(tensor, tensor_max=running_amax)
-        return qdq_tensor
 
 
 def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4m3fn, granularity: str = "tensor"):
@@ -251,6 +237,20 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
 
     if isinstance(existing_kv_cache, QuantizedKVParameterCache):
         return
+
+    dtype = normalize_static_kv_dtype(dtype)
+    if dtype == NVFP4_KV_DTYPE:
+        # NVFP4 KV needs head_dim divisible by the fp4 block size; fail
+        # early per layer instead of silently degrading all layers.
+        head_dim = getattr(module, "head_dim", None)
+        if head_dim is not None and head_dim % NVFP4_KV_BLOCK_SIZE != 0:
+            raise ValueError(
+                f"NVFP4 KV cache quantization requires head_dim divisible by "
+                f"{NVFP4_KV_BLOCK_SIZE} (got {head_dim} in "
+                f"{module.__class__.__name__}, "
+                f"layer_idx={getattr(module, 'layer_idx', '?')}); "
+                f"use static_kv_dtype='fp8' for this model."
+            )
 
     quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype, granularity=granularity)
     setattr(module, "kv_cache", quantized_kv_cache)
@@ -318,8 +318,6 @@ def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output:
     """
     kv_cache = getattr(module, "kv_cache")
     if kv_cache.is_nvfp4:
-        if kv_cache.disabled:
-            return
         layer_idx = module.layer_idx
         k_amax = kv_cache.k_amax[layer_idx] if layer_idx < len(kv_cache.k_amax) else 0.0
         v_amax = kv_cache.v_amax[layer_idx] if layer_idx < len(kv_cache.v_amax) else 0.0

@@ -168,13 +168,15 @@ def _attention_modules_have_nvfp4_kv_scales(model: torch.nn.Module) -> bool:
     """
     from auto_round.experimental.utils import is_attention_module
 
+    num_attention_modules = 0
     for module in model.modules():
         if is_attention_module(module):
+            num_attention_modules += 1
             if not isinstance(getattr(module, "k_global_scale", None), torch.nn.Parameter) or not isinstance(
                 getattr(module, "v_global_scale", None), torch.nn.Parameter
             ):
                 return False
-    return True
+    return num_attention_modules > 0
 
 
 def _build_mixed_fp_quantization_config(
@@ -279,11 +281,12 @@ def _resolve_kv_cache_scheme(
         )
     if use_nvfp4_kv:
         if not _attention_modules_have_nvfp4_kv_scales(model):
-            logger.warning(
-                "No NVFP4 KV cache global scales were collected (calibration may not have run); "
-                "skipping the kv_cache_scheme in the exported compressed-tensors config."
+            raise ValueError(
+                "NVFP4 static KV cache quantization was requested "
+                "(static_kv_dtype='nvfp4') but no k_global_scale/v_global_scale "
+                "parameters were collected. Quantize with calibration data and "
+                "static_kv_dtype='nvfp4' set (or drop the NVFP4 KV option)."
             )
-            return None
         return _construct_nvfp4_kv_scheme()
     if use_fp8_kv or use_fp8_attention:
         return _construct_kv_scheme(kv_granularity)
