@@ -744,8 +744,18 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
     def quantize_layer_outside_block(
         self, layer, fp_inputs=None, q_inputs=None, disable_opt_rtn=None, input_ids=None
     ) -> None:
-        if self.iters <= 0 or fp_inputs is None:
-            return RRQRTNQuantizer.quantize_layer_outside_block(
-                self, layer, fp_inputs, q_inputs, disable_opt_rtn, input_ids
-            )
-        raise NotImplementedError("Phase 3 tuning for layers outside transformer blocks is not implemented")
+        """Quantize a layer outside transformer blocks (e.g. lm_head, embedding).
+
+        Outside-block layers are always quantized with RTN (no sign-SGD tuning),
+        regardless of ``self.iters``.  This is because the per-plane sign-SGD
+        tuning loop requires block-level calibration inputs with a loss signal,
+        which is not available for standalone layers outside transformer blocks.
+        """
+        logger.info(
+            "quantize_layer_outside_block: using RTN for %s "
+            "(tuning is only available for in-block layers)",
+            getattr(layer, "global_name", layer.__class__.__name__),
+        )
+        return RRQRTNQuantizer.quantize_layer_outside_block(
+            self, layer, fp_inputs, q_inputs, disable_opt_rtn, input_ids
+        )
