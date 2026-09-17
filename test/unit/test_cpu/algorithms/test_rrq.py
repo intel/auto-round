@@ -459,9 +459,7 @@ class TestRRQConv1D:
         conv = self._make_conv1d(128, 64)
         quantizer = RRQRTNQuantizer(RRQConfig(group_size=32, sym=True))
         quantizer._quantize_layer_rrq(conv)
-        assert conv.weight.shape == (128, 64), (
-            f"Conv1D weight shape changed from (128, 64) to {conv.weight.shape}"
-        )
+        assert conv.weight.shape == (128, 64), f"Conv1D weight shape changed from (128, 64) to {conv.weight.shape}"
 
     def test_residual_plane_shape(self):
         """Residual planes should be packed with correct (in, out) dims."""
@@ -469,9 +467,7 @@ class TestRRQConv1D:
         quantizer = RRQRTNQuantizer(RRQConfig(group_size=32, num_residual_planes=1, sym=True))
         quantizer._quantize_layer_rrq(conv)
         # (in // 32 * bits, out) = (64//32*2, 32) = (4, 32)
-        assert conv.rrq_qweight_1.shape == (4, 32), (
-            f"Residual qweight shape {conv.rrq_qweight_1.shape} != (4, 32)"
-        )
+        assert conv.rrq_qweight_1.shape == (4, 32), f"Residual qweight shape {conv.rrq_qweight_1.shape} != (4, 32)"
 
     def test_reconstruction_accuracy(self):
         """8-bit reconstruction on Conv1D should be close to the original."""
