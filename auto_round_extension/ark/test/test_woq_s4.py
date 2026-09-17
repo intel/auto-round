@@ -2,7 +2,6 @@
 # # SPDX-License-Identifier: Apache-2.0
 
 import importlib
-import os
 import sys
 import time
 from importlib import metadata
@@ -47,13 +46,6 @@ def _sync_xpu():
         torch.xpu.synchronize()
 
 
-def _env_enabled(name, default=True):
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() not in {"0", "false", "off", "no"}
-
-
 def _is_power_of_two(value):
     return value > 0 and (value & (value - 1)) == 0
 
@@ -61,8 +53,6 @@ def _is_power_of_two(value):
 def _ark_expected_route(m, n=N, k=K, blocksize=BLOCKSIZE):
     if m <= 1:
         return "bestla_s4_gemv"
-    if not _env_enabled("ARK_WOQ_DPAS_S4", True):
-        return "woqgemm_s8(unpack_s4_to_s8)"
     if m > 128:
         return "woqgemm_s8(unpack_s4_to_s8)"
     if n % 64 != 0 or (k & 1) != 0 or blocksize <= 0:

@@ -583,9 +583,6 @@ class XpuWrapper {
     if (p->weight_type != BTLA_DTYPE::S4 || p->scale_type != BTLA_DTYPE::F16 || outt != BTLA_DTYPE::F16 || p->asym) {
       return false;
     }
-    if (env_params::Instance()->woq_dpas_s4 == 0) {
-      return false;
-    }
     if (!woq_s4_dpas_shape_ok(m, p)) {
       return false;
     }
@@ -593,11 +590,11 @@ class XpuWrapper {
     const auto scale_offset = use_dpas_scales ? get_dpas_scale_offset(p) : get_scale_offset(p);
     const auto* scales_ptr = reinterpret_cast<const int8_t*>(blobB) + scale_offset;
 
-#define ARK_WOQ_DPAS_S4_LAUNCH(route, policy_name)                                 \
+#define ARK_WOQ_S4_DPAS_LAUNCH(route, policy_name)                                 \
     do {                                                                           \
       if (env_params::Instance()->verbose <= 1) {                                  \
         std::fprintf(stdout,                                                       \
-                     "[ARK_WOQ_DPAS_S4] launch:%s m=%zu n=%d k=%d blocksize=%d scale_layout=%s\n", \
+                     "[ARK_WOQ_S4_DPAS] launch:%s m=%zu n=%d k=%d blocksize=%d scale_layout=%s\n", \
                      policy_name, m, p->n, p->k, p->blocksize,                    \
                      use_dpas_scales ? "group_n" : "n_group");                   \
       }                                                                            \
@@ -613,25 +610,25 @@ class XpuWrapper {
     } while (false);
 
     if (m <= 4) {
-      ARK_WOQ_DPAS_S4_LAUNCH(run_m4_n128, "dpas_w4a16_dense_policy_m_4_n128")
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m4_n128, "dpas_w4a16_dense_policy_m_4_n128")
     }  else if (m <= 8) {
-      ARK_WOQ_DPAS_S4_LAUNCH(run_m8_n128, "dpas_w4a16_dense_policy_m_8_n128")
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m8_n128, "dpas_w4a16_dense_policy_m_8_n128")
     } else if (m <= 16) {
-      ARK_WOQ_DPAS_S4_LAUNCH(run_m16, "dpas_w4a16_dense_policy_m_16")
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m16, "dpas_w4a16_dense_policy_m_16")
     } else if (m <= 32) {
       if (p->blocksize == p->k) {
-        ARK_WOQ_DPAS_S4_LAUNCH(run_m32_n256, "dpas_w4a16_dense_policy_m_32_n256")
+        ARK_WOQ_S4_DPAS_LAUNCH(run_m32_n256, "dpas_w4a16_dense_policy_m_32_n256")
       } else {
-        ARK_WOQ_DPAS_S4_LAUNCH(run_m32, "dpas_w4a16_dense_policy_m_32")
+        ARK_WOQ_S4_DPAS_LAUNCH(run_m32, "dpas_w4a16_dense_policy_m_32")
       }
     } else if (m <= 64) {
-      ARK_WOQ_DPAS_S4_LAUNCH(run_m64_n256, "dpas_w4a16_dense_policy_m_64_n256")
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m64_n256, "dpas_w4a16_dense_policy_m_64_n256")
     } else if (m <= 128) {
-      ARK_WOQ_DPAS_S4_LAUNCH(run_m128, "dpas_w4a16_dense_policy_m_128")
+      ARK_WOQ_S4_DPAS_LAUNCH(run_m128, "dpas_w4a16_dense_policy_m_128")
     } else {
       return false;
     }
-#undef ARK_WOQ_DPAS_S4_LAUNCH
+#undef ARK_WOQ_S4_DPAS_LAUNCH
     return true;
   }
 #endif
