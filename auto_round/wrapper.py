@@ -518,13 +518,10 @@ class WrapperWALayer(torch.nn.Module):
 
         max_scale = self.orig_layer.act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
         min_scale = self.orig_layer.act_min_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
-        x = self.activation_quantizer.qdq(
-            x,
-            observed_max=act_max,
-            min_scale=min_scale,
-            max_scale=max_scale,
-            global_scale=getattr(self.orig_layer, "input_global_scale", None),
-        )
+        quant_kwargs = {"observed_max": act_max, "min_scale": min_scale, "max_scale": max_scale}
+        if hasattr(self.orig_layer, "input_global_scale"):
+            quant_kwargs["global_scale"] = self.orig_layer.input_global_scale
+        x = self.activation_quantizer.qdq(x, **quant_kwargs)
         # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)
 

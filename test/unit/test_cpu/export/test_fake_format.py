@@ -73,6 +73,20 @@ def test_fake_evaluation_wrapper_uses_saved_input_global_scale():
     assert captured_kwargs["global_scale"] is linear.input_global_scale
 
 
+def test_fake_evaluation_wrapper_does_not_pass_global_scale_to_other_quantizers():
+    linear = torch.nn.Linear(16, 4)
+    linear.act_max_scale = torch.ones(1)
+    linear.act_min_scale = torch.ones(1)
+
+    class ActivationQuantizer:
+        def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+            return activation
+
+    wrapper = WrapperWALayer(linear, enable_torch_compile=False, activation_quantizer=ActivationQuantizer())
+
+    wrapper(torch.randn(2, 16))
+
+
 class _WrappedLinear(WrapperWALayer):
     def __init__(self, linear):
         torch.nn.Module.__init__(self)
@@ -108,7 +122,7 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
     expected_weight = model.linear.orig_layer.weight.detach().clone()
     output_dir = str(tmp_path / "fake_model")
 
-    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
+    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4"], SimpleNamespace(mllm=False)).save_quantized(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -116,11 +130,11 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
             "bits": 4,
             "group_size": 16,
             "sym": True,
-            "data_type": "nvfp4_v2",
+            "data_type": "nv_fp",
             "act_bits": 4,
             "act_group_size": 16,
             "act_sym": True,
-            "act_data_type": "nvfp4_v2",
+            "act_data_type": "nv_fp4_with_static_gs",
             "to_quant_block_names": ["block"],
             "supported_types": [torch.nn.Linear],
         },
@@ -142,6 +156,9 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
 
     loaded_model = _TinyLoadModel(SimpleNamespace(**quantization_config))
     loaded_model, used_backends = convert_hf_model(loaded_model, target_device="cpu")
+    loaded_model.block.linear.load_state_dict(
+        {"input_global_scale": state_dict["linear.input_global_scale"]}, strict=False
+    )
     assert used_backends == ["auto_round:fake"]
     _assert_has_act_hook(loaded_model.block.linear)
     assert torch.equal(loaded_model.block.linear.input_global_scale, torch.tensor([1.5], dtype=torch.float32))
