@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
+from auto_round.compressors.utils import is_nv_fp
 from auto_round.logger import deprecated, logger
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
@@ -72,6 +73,30 @@ def _get_compressor_class(model_type: str, base_cls: type) -> type:
     combined = type(f"{model_type.capitalize()}{base_cls.__name__}", (mixin, base_cls), {})
     _COMPRESSOR_REGISTRY[key] = combined
     return combined
+
+
+def _has_optimized_rtn_dtype(data_type: str, bits: int, sym: bool, group_size) -> bool:
+    if not data_type or bits is None:
+        return False
+    from auto_round.data_type.utils import get_quant_func
+
+    optimized_func, optimized_type = get_quant_func(
+        data_type,
+        bits,
+        sym,
+        disable_opt_rtn=False,
+        group_size=group_size,
+        iters=0,
+    )
+    plain_func, plain_type = get_quant_func(
+        data_type,
+        bits,
+        sym,
+        disable_opt_rtn=True,
+        group_size=group_size,
+        iters=0,
+    )
+    return optimized_type != plain_type or optimized_func is not plain_func
 
 
 def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, "QuantizationConfig"]:
@@ -191,6 +216,10 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
                 enable_imatrix = True
             elif is_weight_scheme(scheme):
                 enable_imatrix = True
+            elif (is_nv_fp(data_type) or data_type == "nvfp4_v2") and _has_optimized_rtn_dtype(
+                data_type, bits, sym, resolved_attrs.get("group_size")
+            ):
+                enable_imatrix = True
 
     act_bits = resolved_attrs.get("act_bits")
     act_data_type = resolved_attrs.get("act_data_type")
@@ -224,6 +253,7 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
 _ENTRY_KWARG_OWNERS = {
     "model_free": "route",
     "disable_model_free": "route",
+    "disable_opt_rtn": "route",
     "scale_dtype": "compressor",
     "ignore_layers": "compressor",
     "quant_lm_head": "compressor",
@@ -351,7 +381,11 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             "do not pass it as AutoRound(..., backend=...)."
         )
     rotation_config = direct_kwargs.pop("rotation_config", None)
-    config_kwargs = {key: value for key, value in direct_kwargs.items() if key not in _ENTRY_KWARG_OWNERS}
+    config_kwargs = {
+        key: value
+        for key, value in direct_kwargs.items()
+        if key not in _ENTRY_KWARG_OWNERS or key in {"disable_opt_rtn", "enable_opt_rtn"}
+    }
     if alg_configs is None:
         # Preserve the legacy entry semantics: zero iterations are RTN, while
         # positive iterations use SignRound.  RTN-only kwargs also select RTN
@@ -440,6 +474,8 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             opt_rtn_value = False if key == "enable_opt_rtn" else value
             targets = [config for config in configs if "disable_opt_rtn" in _config_fields(config)]
             if not targets:
+                if direct_kwargs.get("model_free", False):
+                    continue
                 logger.warning_once(
                     "RTN-specific parameter '%s' was provided, but RTN/AWQ is not enabled by alg_configs. "
                     "The parameter is ignored.",
@@ -590,7 +626,7 @@ class _CompressorBuilder(object):
 
         # Model-free routing is now supported directly by the new entry path.
         model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
-        model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
+        model_free_disable_opt_rtn = route_kwargs.pop("disable_opt_rtn", getattr(quant_config, "disable_opt_rtn", None))
         # Model-free eligibility also depends on base-level options such as
         # static KV/attention quantization. Keep those options visible to the
         # route predicate; otherwise the fast path silently drops them and

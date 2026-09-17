@@ -73,6 +73,7 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "low_gpu_mem_usage": args.low_gpu_mem_usage,
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
+        "disable_opt_rtn": args.disable_opt_rtn,
         "enable_torch_compile": enable_torch_compile,
         "enable_deterministic_algorithms": args.enable_deterministic_algorithms,
         "seed": args.seed,

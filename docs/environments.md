@@ -110,8 +110,8 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 ```
 
 ### AR_SEARCH_SCALE_RATIO
-- **Description**: Controls the search range ratio used by the symmetric INT scale search in `auto_round.data_type.int.search_scales`. The search bound is `nmax * AR_SEARCH_SCALE_RATIO`, where `nmax = 2^(bits-1)`. Smaller values restrict the search to a tighter neighborhood around the initial scale (faster, less thorough); larger values broaden the search (slower, may improve accuracy on outlier-heavy weights).
-- **Default**: unset → falls back to the built-in default (`0.5`, i.e. `nmax/2`).
+- **Description**: Controls the relative search span used by the symmetric INT scale search in `auto_round.data_type.int.search_scales`. Candidate scales are sampled symmetrically around the initial scale over ratios from `1 - AR_SEARCH_SCALE_RATIO` to `1 + AR_SEARCH_SCALE_RATIO`. Smaller values restrict the search to a tighter neighborhood around the initial scale (faster, less thorough); larger values broaden the search (slower, may improve accuracy on outlier-heavy weights). INT2 retains its dedicated search grid.
+- **Default**: unset → falls back to the built-in default (`0.75`). Model-free low-bit INT uses `0.05` only for the duration of that run when the variable is unset.
 - **Valid Values**: positive float, e.g. `0.25`, `0.5`, `0.75`, `1.0`
 - **Usage**: Set this to override the default scale-search range
 
@@ -139,6 +139,26 @@ export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 
 ```bash
 export AR_MODEL_FREE_SHARD_PARALLELISM=4
+```
+
+### AR_MODEL_FREE_NVFP4_INPUT_SCALE
+- **Description**: Sets one fixed global input scale for every NVFP4-quantized layer in model-free mode, where calibration data is unavailable. Packed and fake outputs both save this value per layer as `input_global_scale`. For fake output, weight quantization metadata remains in `config.json` as `bits: 4` and `group_size: 16`; activation metadata is stored separately as `act_bits` and `act_group_size`. This only affects the standard `NVFP4` scheme, not `NVFP4_E5M3`.
+- **Default**: `1.0`
+- **Valid Values**: any finite positive float
+- **Usage**: Set this before model-free NVFP4 quantization to override the default input scale.
+
+```bash
+export AR_MODEL_FREE_NVFP4_INPUT_SCALE=0.5
+```
+
+### AR_NVFP4_NEIGHBOR_SEARCH_STEPS
+- **Description**: Controls the neighbor-search radius used by the NVFP4 opt-RTN scale refinement. A value of `N` evaluates up to `N` previous and `N` next representable scale values around the baseline scale for each group, which widens the discrete search neighborhood without changing the base quantization logic. This is used in `auto_round.data_type.nvfp` during the fast scale refinement pass.
+- **Default**: `8`
+- **Valid Values**: positive integer, e.g. `1`, `4`, `8`, `16`
+- **Usage**: Increase this for a broader local search over neighboring FP8/E4M3 scales; lower it for faster but less exhaustive tuning.
+
+```bash
+export AR_NVFP4_NEIGHBOR_SEARCH_STEPS=4
 ```
 
 ### AR_AUTO_SCHEME_NSAMPLES

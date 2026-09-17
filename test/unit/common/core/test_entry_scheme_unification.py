@@ -26,6 +26,7 @@ from auto_round.autoround import _select_rtn_compressor_base_cls
 from auto_round.compressors.orchestrator import CompressionOrchestrator
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
+    eager_validate_scheme,
     preview_resolved_attrs,
     resolve_entry_scheme,
 )
@@ -178,6 +179,12 @@ def test_preview_falls_back_to_config_overrides_when_preview_skipped(monkeypatch
     assert "definitely-not-a-real-scheme-xyz" not in str(calls[0]) or True  # message content not asserted verbatim
 
 
+def test_eager_validate_accepts_string_scheme_value_on_config():
+    cfg = RTNConfig()
+    cfg.scheme = "W4A16"
+    eager_validate_scheme(cfg, "W4A16")
+
+
 def test_routing_matches_between_scheme_only_and_equivalent_override():
     base_kwargs = {}
     # sym W4A16 (int4, sym) -> imatrix enabled, identical whether the bits/dtype
@@ -208,3 +215,44 @@ def test_w8a16_symmetric_routes_to_zero_shot():
     cls = _select_rtn_compressor_base_cls(cfg, "W8A16", None, {})
     assert cls is CompressionOrchestrator
     assert cfg.enable_imatrix is False
+
+
+def test_nvfp4_e5m3_default_routes_to_optimized_rtn():
+    cfg = RTNConfig()
+
+    cls = _select_rtn_compressor_base_cls(cfg, "NVFP4_E5M3", "auto_round", {})
+
+    assert cls is CompressionOrchestrator
+    assert cfg.enable_imatrix is True
+    assert isinstance(cfg, OptimizedRTNConfig)
+
+
+def test_nvfp4_default_routes_to_optimized_rtn():
+    cfg = RTNConfig()
+
+    cls = _select_rtn_compressor_base_cls(cfg, "NVFP4", "auto_round", {})
+
+    assert cls is CompressionOrchestrator
+    assert cfg.enable_imatrix is True
+    assert isinstance(cfg, OptimizedRTNConfig)
+
+
+def test_nvfp4_e5m3_explicit_enable_routes_to_optimized_rtn():
+    cfg = RTNConfig(enable_opt_rtn=True)
+
+    cls = _select_rtn_compressor_base_cls(cfg, "NVFP4_E5M3", "auto_round", {})
+
+    assert cls is CompressionOrchestrator
+    assert cfg.enable_imatrix is True
+    assert isinstance(cfg, OptimizedRTNConfig)
+
+
+def test_nvfp4_e5m3_explicit_plain_rtn_skips_calibration():
+    cfg = RTNConfig(disable_opt_rtn=True)
+
+    cls = _select_rtn_compressor_base_cls(cfg, "NVFP4_E5M3", "auto_round", {})
+
+    assert cls is CompressionOrchestrator
+    assert cfg.enable_imatrix is False
+    assert isinstance(cfg, RTNConfig)
+    assert not isinstance(cfg, OptimizedRTNConfig)

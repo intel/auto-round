@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import torch
 from transformers import AutoModelForCausalLM, OPTConfig, OPTForCausalLM
 
+from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental.qmodules.fake import FakeActQuantLinear
 from auto_round.export.formats.backends.fake import (
     _normalize_state_dict_keys,
@@ -151,6 +152,24 @@ def test_fake_config_replaces_linear_and_qdq_activation_on_load():
     assert torch.equal(model.block.linear(activation), expected)
 
 
+def test_nvfp4_fake_linear_uses_saved_input_global_scale():
+    config = PRESET_SCHEMES["NVFP4"]
+    layer = FakeActQuantLinear.from_original(config, torch.nn.Linear(16, 4))
+    layer.input_global_scale.fill_(0.5)
+    activation = torch.randn(2, 3, 16)
+
+    actual = layer.qdq_input(activation)
+    quant_func, _ = get_quant_func(config.act_data_type, config.act_bits, config.act_sym)
+    expected, _, _ = quant_func(
+        activation,
+        bits=config.act_bits,
+        group_size=config.act_group_size,
+        global_scale=torch.tensor([0.5]),
+    )
+
+    assert torch.equal(actual, expected)
+
+
 def test_fake_config_keeps_modules_to_not_convert_in_full_precision():
     quantization_config = SimpleNamespace(
         bits=4,
@@ -189,27 +208,35 @@ def test_transformers_load_replaces_fake_linear(tmp_path):
         max_position_embeddings=32,
         word_embed_proj_dim=16,
     )
-    config.quantization_config = {
+    quantization_config = {
         "bits": 4,
         "group_size": 16,
         "sym": True,
-        "data_type": "nvfp4_v2",
+        "data_type": "nv_fp",
         "act_bits": 4,
         "act_group_size": 16,
         "act_sym": True,
-        "act_data_type": "nvfp4_v2",
+        "act_data_type": "nv_fp4_with_static_gs",
         "act_dynamic": True,
         "quant_method": "auto-round",
         "packing_format": "auto_round:fake",
         "block_name_to_quantize": "model.decoder.layers",
     }
+    model = OPTForCausalLM(config)
+    model.config.quantization_config = SimpleNamespace(**quantization_config)
     model_dir = str(tmp_path / "fake_opt")
-    OPTForCausalLM(config).save_pretrained(model_dir)
+    model, _ = convert_hf_model(model, target_device="cpu")
+    model.model.decoder.layers[0].self_attn.q_proj.input_global_scale.fill_(0.5)
+    model.config.quantization_config = quantization_config
+    model.save_pretrained(model_dir)
 
     loaded_model = AutoModelForCausalLM.from_pretrained(model_dir, device_map="cpu")
 
+    assert loaded_model.config.quantization_config.bits == 4
+    assert loaded_model.config.quantization_config.group_size == 16
     q_proj = loaded_model.model.decoder.layers[0].self_attn.q_proj
     _assert_has_act_hook(q_proj)
+    assert torch.equal(q_proj.input_global_scale, torch.tensor([0.5]))
     activation = torch.randn(1, 2, 16)
     assert not torch.equal(q_proj.qdq_input(activation), activation)
 

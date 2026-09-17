@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Union
 
 from auto_round.logger import logger
-from auto_round.schemes import parse_scheme
+from auto_round.schemes import QuantizationScheme, parse_scheme
 
 if TYPE_CHECKING:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
@@ -111,7 +111,10 @@ def eager_validate_scheme(config, scheme=None, format=None) -> None:
 
     temp_config = copy.copy(config)
     if hasattr(config, "scheme"):
-        temp_config.scheme = config.scheme.copy()
+        temp_scheme = copy.copy(config.scheme)
+        if not isinstance(temp_scheme, QuantizationScheme):
+            temp_scheme = QuantizationScheme.empty()
+        temp_config.scheme = temp_scheme
         temp_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
     for key, value in final_attrs.items():
         setattr(temp_config, key, value)

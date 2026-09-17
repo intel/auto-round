@@ -110,8 +110,8 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 ```
 
 ### AR_SEARCH_SCALE_RATIO
-- **描述**：控制 `auto_round.data_type.int.search_scales` 中对称 INT 量化 scale 搜索的范围比例。搜索上界为 `nmax * AR_SEARCH_SCALE_RATIO`，其中 `nmax = 2^(bits-1)`。值越小搜索范围越窄（更快，但可能漏掉较优解）；值越大搜索范围越广（更慢，对离群权重可能更准）。
-- **默认值**：未设置 → 走内置默认值（`0.5`，即 `nmax/2`）。
+- **描述**：控制 `auto_round.data_type.int.search_scales` 中对称 INT 量化 scale 搜索的相对范围。候选 scale 会围绕初始 scale 对称采样，比例范围为 `1 - AR_SEARCH_SCALE_RATIO` 至 `1 + AR_SEARCH_SCALE_RATIO`。值越小搜索范围越窄（更快，但可能漏掉较优解）；值越大搜索范围越广（更慢，对离群权重可能更准）。INT2 保留专用的搜索网格。
+- **默认值**：未设置 → 使用内置默认值（`0.75`）。对未设置该变量的 model-free 低比特 INT，运行期间会临时使用 `0.05`。
 - **有效值**：正浮点数，如 `0.25`、`0.5`、`0.75`、`1.0`
 - **用途**：覆盖默认的 scale 搜索范围
 
@@ -139,6 +139,26 @@ export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 
 ```bash
 export AR_MODEL_FREE_SHARD_PARALLELISM=4
+```
+
+### AR_MODEL_FREE_NVFP4_INPUT_SCALE
+- **描述**：在无法使用校准数据的 model-free 模式中，为每个 NVFP4 量化层设置同一个固定的全局输入 scale。packed 和 fake 输出都会将该值按层保存为 `input_global_scale`。对于 fake 输出，weight 量化元数据仍保存在 `config.json` 中，字段为 `bits: 4` 和 `group_size: 16`；activation 元数据则分别使用 `act_bits` 和 `act_group_size`。该变量仅影响标准 `NVFP4` scheme，不影响 `NVFP4_E5M3`。
+- **默认值**：`1.0`
+- **有效值**：任意有限正浮点数
+- **用途**：在 model-free NVFP4 量化前设置该变量，以覆盖默认输入 scale。
+
+```bash
+export AR_MODEL_FREE_NVFP4_INPUT_SCALE=0.5
+```
+
+### AR_NVFP4_NEIGHBOR_SEARCH_STEPS
+- **描述**：控制 NVFP4 opt-RTN scale 微调时的邻域搜索半径。设为 `N` 时，会在每个 group 的基线 scale 周围向前/向后各评估最多 `N` 个可表示的离散 scale 值，从而扩展局部搜索范围而不改变基础量化逻辑。该参数在 `auto_round.data_type.nvfp` 的快速 scale refinement 过程中使用。
+- **默认值**：`8`
+- **有效值**：正整数，如 `1`、`4`、`8`、`16`
+- **用途**：调大该值可进行更广的局部邻域搜索；调小则更快但可能更粗略。
+
+```bash
+export AR_NVFP4_NEIGHBOR_SEARCH_STEPS=4
 ```
 
 ### AR_AUTO_SCHEME_NSAMPLES

@@ -86,6 +86,18 @@ compressor = ModelFreeCompressor(
 compressor.run()
 ```
 
+### 优化 RTN
+
+`NVFP4_E5M3` 在 `--iters 0` 下与其他支持优化 RTN 的 dtype 保持一致，默认
+使用基于 imatrix 加权的逐 block scale 搜索。搜索会评估基准 E5M3 scale，及其
+两侧可表示的相邻 E5M3 值。`AR_NVFP4_NEIGHBOR_SEARCH_STEPS` 控制每侧相邻值的
+数量（默认：8），因此即使不执行梯度迭代，仍会使用校准样本。添加
+`--disable_opt_rtn` 可强制使用普通 RTN。
+
+model-free 的 `NVFP4` 与 `NVFP4_E5M3` 也会使用相同的逐 block 无权重
+scale 搜索。model-free 没有校准输入，因此使用均匀权重而不是 imatrix。
+添加 `--disable_opt_rtn` 可关闭该搜索并使用普通 RTN。
+
 ### 加载量化后的模型
 
 ```python

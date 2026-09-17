@@ -20,7 +20,16 @@ import torch
 from auto_round import envs
 from auto_round.data_type.base import register_dtype, register_quantizer
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
+from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
+
+
+def _symmetric_search_offsets(search_radius: int) -> list[int]:
+    offsets = []
+    for radius in range(1, search_radius + 1):
+        offsets.append(-radius)
+        offsets.append(radius)
+    return offsets
 
 
 def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, float] = None) -> torch.Tensor:
@@ -52,18 +61,19 @@ def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, f
         search_min = 18 * 5
         step = 0.01
     else:
-        grid = 200
-        search_ratio = envs.AR_SEARCH_SCALE_RATIO or 0.75  # default 0.5 -> nmax/2
-        search_min = nmax * search_ratio
-        step = search_min / grid * 2  # 0.08
-        search_min = int(search_min / step)
-    # Iterative search over small adjustments
-    for _is in range(-search_min, search_min + 1):
-        if _is == 0:
-            continue
+        search_ratio = envs.AR_SEARCH_SCALE_RATIO or 0.75
+        search_step = 0.005
+        search_min = max(1, int(round(search_ratio / search_step)))
+        step = search_ratio / search_min
+    # Search symmetrically around the baseline so equal-loss candidates do not
+    # systematically prefer one side of the scale range.
+    for _is in _symmetric_search_offsets(search_min):
 
-        # Update iscales in-place
-        iscales_tmp = -(nmax - step * _is) * get_reciprocal(group_max)
+        # Search uniformly in the actual scale ratio, rather than uniformly
+        # in inverse scale. This prevents the reciprocal mapping from placing
+        # disproportionately many candidates below the baseline scale.
+        scale_ratio = 1.0 + step * _is
+        iscales_tmp = iscales / scale_ratio
 
         # Compute temporary quantized values (in-place round + clamp)
         tmp_L = torch.empty_like(data)

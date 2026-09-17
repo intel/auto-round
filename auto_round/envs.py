@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     AR_LOG_LEVEL: str = "INFO"
     AR_USE_MODELSCOPE: bool = "False"
     AR_MODEL_FREE_SHARD_PARALLELISM: Optional[int] = None
+    AR_MODEL_FREE_NVFP4_INPUT_SCALE: float = 1.0
+    AR_NVFP4_NEIGHBOR_SEARCH_STEPS: int = 8
     AUTO_ROUND_CACHE: Optional[str] = None
     AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
     AR_DISABLE_GGUF_MTP_EXPORT: bool = False
@@ -50,6 +52,20 @@ def _get_optional_positive_int_env(name: str) -> Optional[int]:
         raise ValueError(f"{name} must be a positive integer, got {raw!r}") from exc
     if value < 1:
         raise ValueError(f"{name} must be a positive integer, got {value}")
+    return value
+
+
+def _get_positive_int_env_with_fallback(name: str, default: int) -> int:
+    """Read an int env var with validation and fallback to a default value."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value < 1:
+        return 1
     return value
 
 
@@ -89,6 +105,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # not exceed dynamo's default limit (8) and fall back to eager.
     "AR_DYNAMO_CACHE_SIZE_LIMIT": lambda: int(os.getenv("AR_DYNAMO_CACHE_SIZE_LIMIT", "16")),
     "AR_MODEL_FREE_SHARD_PARALLELISM": lambda: _get_optional_positive_int_env("AR_MODEL_FREE_SHARD_PARALLELISM"),
+    "AR_MODEL_FREE_NVFP4_INPUT_SCALE": lambda: float(os.getenv("AR_MODEL_FREE_NVFP4_INPUT_SCALE", "1.0")),
+    # Controls the number of discrete neighboring NVFP4 scale candidates
+    # checked on each side of the baseline scale during opt-RTN search.
+    # A value of N searches up to N previous and N next representable scales,
+    # with invalid values falling back to 8 and values < 1 clamped to 1.
+    "AR_NVFP4_NEIGHBOR_SEARCH_STEPS": lambda: _get_positive_int_env_with_fallback("AR_NVFP4_NEIGHBOR_SEARCH_STEPS", 8),
     "AUTO_ROUND_CACHE": lambda: os.getenv("AUTO_ROUND_CACHE", None),
     "AUTO_ROUND_GGUF_AUTO_UPDATE": lambda: os.getenv("AUTO_ROUND_GGUF_AUTO_UPDATE", "0").lower()
     in ("1", "true", "yes", "on"),
