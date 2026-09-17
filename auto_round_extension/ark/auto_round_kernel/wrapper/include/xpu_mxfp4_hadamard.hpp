@@ -117,7 +117,7 @@ class XpuMxfp4Hadamard {
 
   // FP4 (E2M1) magnitude levels: 0, 0.5, 1, 1.5, 2, 3, 4, 6.
   // Thresholds and boundary comparison operators are taken verbatim from the
-  // PyTorch reference (auto_round.experimental.qmodules.fp4_utils)
+  // PyTorch reference (auto_round_extension/ark/auto_round_kernel/mxfp4_hadamard.py::_E2M1_THRESHOLDS)
   // so that the kernel is bit-exact with it.
   //
   // Written branchless, as a descending count rather than the reference's
