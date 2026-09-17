@@ -214,8 +214,10 @@ class DeviceMemoryPool {
   // SDPA kernels; slot 8 is the MoE DPAS grouped-GEMM work-group counter
   // (`moe_dpas_fp8::kAtomicScratchLoc`); slots 9 and 10 are the int4 decode
   // weight-repack and activation-sum buffers
-  // (`moe_decode_detail::kInt4RepackScratchLoc` / `kActGroupSumScratchLoc`).
-  static constexpr int MaxLocNum = 11;
+  // (`moe_decode_detail::kInt4RepackScratchLoc` / `kActGroupSumScratchLoc`);
+  // slot 11 is the XMX Hadamard staging buffer
+  // (`kHadamardStagingScratchLoc` in `ark.cpp`).
+  static constexpr int MaxLocNum = 12;
   using SizeMap = std::unordered_map<size_t, size_t>;
   using PtrMap = std::unordered_map<size_t, int8_t*>;
 

@@ -4,7 +4,9 @@
 set -xe
 
 CONDA_ENV_NAME="unittest_cuda"
-PYTHON_VERSION="3.14"
+PYTHON_VERSION="3.12"
+TORCH_VERSION="2.14.0"
+
 REPO_PATH=$(git rev-parse --show-toplevel)
 LOG_DIR=${REPO_PATH}/ut_log_dir
 SUMMARY_LOG=${LOG_DIR}/results_summary.log
@@ -24,7 +26,7 @@ function create_conda_env() {
     if conda info --envs | grep -q "^$CONDA_ENV_NAME\s"; then conda remove -n ${CONDA_ENV_NAME} --all -y; fi
     conda create --quiet -n ${CONDA_ENV_NAME} python=${PYTHON_VERSION} setuptools -y
     source activate ${CONDA_ENV_NAME} > /dev/null 2>&1
-    conda install --quiet -c conda-forge git gxx=11.2.0 gcc=11.2.0 gdb sysroot_linux-64 libgcc uv -y
+    conda install --quiet -c conda-forge git gxx=13.4 gcc=13.4 gdb sysroot_linux-64 libgcc uv -y
     export LD_PRELOAD=${CONDA_PREFIX}/lib/libstdc++.so.6
 
     # install AutoRound
@@ -94,14 +96,14 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==${TORCH_VERSION} torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git@master#subdirectory=gguf-py'
     uv pip install -r unit/test_cuda/requirements.txt
     uv pip install -r unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet
     uv pip uninstall torch torchvision
-    uv pip install torch==2.14.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==${TORCH_VERSION} torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
@@ -130,9 +132,8 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==2.14.0 torchvision --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==${TORCH_VERSION} torchvision --index-url https://download.pytorch.org/whl/cu130
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
-    uv pip install flash-attn==2.8.3 --no-build-isolation
     uv pip install -r unit/test_cuda/requirements_vlm.txt \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         --index-strategy unsafe-best-match

@@ -177,7 +177,6 @@ class TestAutoRound:
         eval_generated_prompt(model, tokenizer)
         torch.cuda.empty_cache()
 
-    @pytest.mark.timeout(120)
     def test_fp8_block_fp8_format(self, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
 

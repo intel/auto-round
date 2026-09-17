@@ -21,7 +21,7 @@ import torch
 
 from auto_round.export.formats.base import OutputFormat
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
+from auto_round.schemes import QuantizationScheme, is_nv_fp
 from auto_round.utils import copy_python_files_from_model_cache, unsupported_meta_device
 
 
@@ -80,6 +80,18 @@ def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
             logger.warning("Failed to normalize pytorch checkpoint keys for %s: %s", file_path, exc)
 
 
+def _materialize_fake_input_global_scales(model: torch.nn.Module) -> None:
+    """Persist calibrated NVFP activation scales in fake-format checkpoints."""
+    for layer in model.modules():
+        if not is_nv_fp(getattr(layer, "act_data_type", "") or "") or "input_global_scale" in layer._buffers:
+            continue
+        input_global_scale = getattr(layer, "input_global_scale", None)
+        if not isinstance(input_global_scale, torch.Tensor):
+            continue
+        delattr(layer, "input_global_scale")
+        layer.register_buffer("input_global_scale", input_global_scale.to(torch.float32))
+
+
 @OutputFormat.register("fake")
 class FakeFormat(OutputFormat):
     support_schemes = None
@@ -134,9 +146,13 @@ class FakeFormat(OutputFormat):
 
         if not has_meta_device:
             model = model.to("cpu")
+            if has_fake_act_quant:
+                _materialize_fake_input_global_scales(model)
             model.save_pretrained(output_dir)
-        elif hasattr(model, "config") and model.config is not None:
-            model.config.save_pretrained(output_dir)
+        else:
+            from auto_round.export.utils import save_config_artifact
+
+            save_config_artifact(model, output_dir)
 
         # Some save flows write wrapper keys first; normalize to plain Linear keys
         # so HF loading does not report UNEXPECTED/MISSING pairs.
