@@ -38,6 +38,7 @@ from auto_round.data_type.nvfp import (
     ref_fp4_quant,
     ref_nvfp4_quant,
     search_nvfp4_scale,
+    search_nvfp4_v2_scale,
 )
 from auto_round.data_type.utils import update_fused_layer_global_scales
 
@@ -302,6 +303,24 @@ class TestSearchNvfp4Scale:
         tensor = torch.randn(8, 16, dtype=torch.float32)
         with pytest.raises(TypeError):
             search_nvfp4_scale(tensor, qw=None)
+
+
+class TestSearchNvfp4V2Scale:
+    def test_search_does_not_increase_weighted_mse(self):
+        torch.manual_seed(1)
+        tensor = torch.randn(8, 16, dtype=torch.float32)
+        qw = torch.rand_like(tensor) + 0.1
+
+        scales = search_nvfp4_v2_scale(tensor, qw=qw)
+        baseline, _, _ = nvfp4_v2(tensor, group_size=16)
+        optimized, _, _ = nvfp4_v2(tensor, group_size=16, max_scale=scales)
+
+        baseline_loss = ((baseline - tensor).square() * qw).sum()
+        optimized_loss = ((optimized - tensor).square() * qw).sum()
+        assert scales.shape == (tensor.shape[0],)
+        assert torch.all(scales >= 0.5)
+        assert torch.all(scales <= 1.51)
+        assert optimized_loss <= baseline_loss
 
 
 # ---------------------------------------------------------------------------
