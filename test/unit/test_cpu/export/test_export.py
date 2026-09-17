@@ -202,7 +202,6 @@ class TestAutoRound:
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
         print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50)[0]))
 
-    @pytest.mark.timeout(120)
     @pytest.mark.parametrize("static_kv_dtype", ["fp8", "float16"])
     def test_static_afp8_export(self, static_kv_dtype):
         import os
@@ -395,7 +394,6 @@ class TestAutoRound:
         assert quantization_config["static_attention_dtype"] == "fp8"
         assert quantization_config["static_attention_granularity"] == "head"
 
-    @pytest.mark.timeout(120)
     def test_awq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, False, 128
         model_name = get_model_path("microsoft/phi-4")
@@ -430,7 +428,6 @@ class TestAutoRound:
 
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
 
-    @pytest.mark.timeout(120)
     def test_gptq_lmhead_export(self, dataloader):
         bits, sym, group_size = 4, True, 128
         # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.
@@ -598,7 +595,6 @@ class TestAutoRound:
             scale_dtype=ar.scale_dtype,
         )
 
-    @pytest.mark.timeout(480)
     def test_autoawq_qwen3_vl_infer(self, dataloader):
         model_path = get_model_path("Qwen/Qwen3-VL-2B-Instruct")
         autoround = AutoRound(
@@ -789,3 +785,33 @@ def test_immediate_saving_mode(tiny_opt_model_path, tmp_path, low_cpu_mem_usage,
     with safe_open(os.path.join(quantized_model_path, safetensor_files[0]), framework="pt") as f:
         keys = f.keys()
         assert len(keys) > 0, "Safetensors file has no tensors"
+
+
+def test_save_model_writes_diffusers_config(tmp_path):
+    """A diffusers config is a FrozenDict with no save_pretrained; the export must still write it."""
+    diffusers = pytest.importorskip("diffusers")
+
+    from auto_round.export.utils import save_model
+
+    model = diffusers.SD3Transformer2DModel(
+        sample_size=8,
+        patch_size=2,
+        in_channels=4,
+        num_layers=1,
+        attention_head_dim=32,
+        num_attention_heads=2,
+        joint_attention_dim=64,
+        caption_projection_dim=64,
+        pooled_projection_dim=64,
+        out_channels=4,
+    )
+    assert not hasattr(model.config, "save_pretrained")
+    model.config.quantization_config = {"quant_method": "auto-round", "bits": 4}
+
+    # immediate_saving: weights are already on disk, only the configs are written
+    save_model(model, str(tmp_path), immediate_saving=True)
+
+    with open(os.path.join(tmp_path, "config.json")) as f:
+        config = json.load(f)
+    assert config["_class_name"] == "SD3Transformer2DModel"
+    assert config["quantization_config"] == {"quant_method": "auto-round", "bits": 4}

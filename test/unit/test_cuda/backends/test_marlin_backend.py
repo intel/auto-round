@@ -34,7 +34,6 @@ class TestAutoRoundMarlinBackend:
     # Keep one CI test for marlin backend and skip others to save time.
     # @pytest.mark.skip_ci(reason="Only tiny model is suggested")
     # @pytest.mark.skip_ci(reason="Time-consuming; Accuracy evaluation")
-    @pytest.mark.timeout(240)
     def test_marlin_4bits_sym_with_zp_m_1(self, dataloader):
         model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
@@ -175,7 +174,6 @@ class TestAutoRoundMarlinBackend:
     @pytest.mark.skip_ci(
         reason="Backend/JIT: AWQ Marlin is a format/backend matrix case; standard Marlin smoke remains in PR CI"
     )
-    @pytest.mark.timeout(90)
     def test_gptqmodel_awq_marlin_4bits_sym(self):
         """Test AWQ quantization with gptqmodel:awq_marlin backend (sym-only, float16)."""
         model_path = get_model_path("facebook/opt-125m")
