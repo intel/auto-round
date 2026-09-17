@@ -249,7 +249,7 @@ def load_rrq_model(
     Raises:
         FileNotFoundError: If either directory is missing or has no weights.
         ValueError: If base/residual quant settings do not match, the residual
-            model is not an ``auto-round-rrq`` model, or no layers are found.
+            model is not an ``auto_round:rrq`` model, or no layers are found.
     """
     import transformers
 
