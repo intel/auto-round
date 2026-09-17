@@ -23,6 +23,7 @@
 #include "cutlass/platform/platform.h"
 #include "cutlass/util/sycl_event_manager.hpp"
 #include "sycl_tla_common.hpp"
+#include "sycl_tla_dense_woq_s4_dpas_helpers.hpp"
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wpass-failed"
@@ -135,14 +136,6 @@ class dpas_w4a16_dense_policy_m_128 : public dpas_policy_base {
   using WGTile = Shape<_128, _256, _32>;
   using SGLayout = Layout<Shape<_4, _8, _1>, Stride<_8, _1, _0>>;
 };
-
-inline constexpr int kMinGroupSize = 32;
-inline constexpr int kMaxGroupSize = 4096;
-
-inline bool is_supported_group_size(int group_size) {
-  return group_size >= kMinGroupSize && group_size <= kMaxGroupSize &&
-         (group_size & (group_size - 1)) == 0;
-}
 
 template <typename ElementA, typename ElementB, typename ElementS,
           typename ElementBI, typename ElementD, char layoutA, char layoutB,
@@ -671,6 +664,39 @@ void DenseWoqS4GEMMLauncherGroup(sycl::queue& stream,
   if (wait) event.wait();
 }
 
+template <int MaxGroupSize, int GroupSize, char layoutA, char layoutB, class policy,
+          bool ScaleGroupMajor, typename ElementA, typename ElementB,
+          typename ElementS, typename ElementBI, typename ElementD>
+bool DenseWoqS4GEMMLauncherDispatchUpTo(sycl::queue& stream,
+                                        const ElementA* activations,
+                                        const ElementB* weights,
+                                        const ElementS* scales,
+                                        const ElementBI* bias,
+                                        ElementD* outputs,
+                                        const int gemm_m,
+                                        const int gemm_n,
+                                        const int gemm_k,
+                                        const int group_size,
+                                        bool wait) {
+  static_assert(MaxGroupSize >= kMinGroupSize && MaxGroupSize <= kMaxGroupSize &&
+                    (MaxGroupSize & (MaxGroupSize - 1)) == 0,
+                "DenseWoqS4GEMMLauncherDispatchUpTo: invalid max group size");
+  if (group_size == GroupSize) {
+    DenseWoqS4GEMMLauncherGroup<layoutA, layoutB, policy, GroupSize,
+                                ScaleGroupMajor>(
+        stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
+        gemm_k, wait);
+    return true;
+  }
+  if constexpr (GroupSize < MaxGroupSize) {
+    return DenseWoqS4GEMMLauncherDispatchUpTo<MaxGroupSize, GroupSize * 2,
+                                              layoutA, layoutB, policy, ScaleGroupMajor>(
+        stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
+        gemm_k, group_size, wait);
+  }
+  return false;
+}
+
 template <int GroupSize, char layoutA, char layoutB, class policy,
           bool ScaleGroupMajor, typename ElementA, typename ElementB,
           typename ElementS, typename ElementBI, typename ElementD>
@@ -685,20 +711,34 @@ bool DenseWoqS4GEMMLauncherDispatch(sycl::queue& stream,
                                     const int gemm_k,
                                     const int group_size,
                                     bool wait) {
-  if (group_size == GroupSize) {
-    DenseWoqS4GEMMLauncherGroup<layoutA, layoutB, policy, GroupSize,
-                                ScaleGroupMajor>(
-        stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
-        gemm_k, wait);
-    return true;
+  return DenseWoqS4GEMMLauncherDispatchUpTo<kMaxGroupSize, GroupSize,
+                                            layoutA, layoutB, policy, ScaleGroupMajor>(
+      stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
+      gemm_k, group_size, wait);
+}
+
+template <int MaxGroupSize, char layoutA, char layoutB, class policy, bool ScaleGroupMajor,
+          typename ElementA, typename ElementB, typename ElementS,
+          typename ElementBI, typename ElementD>
+void DenseWoqS4GEMMLauncherUpTo(sycl::queue& stream,
+                                const ElementA* activations,
+                                const ElementB* weights,
+                                const ElementS* scales,
+                                const ElementBI* bias,
+                                ElementD* outputs,
+                                const int gemm_m,
+                                const int gemm_n,
+                                const int gemm_k,
+                                const int group_size,
+                                bool wait = true) {
+  if (!is_supported_group_size(group_size) ||
+      group_size > MaxGroupSize ||
+      !DenseWoqS4GEMMLauncherDispatchUpTo<MaxGroupSize, kMinGroupSize,
+                                          layoutA, layoutB, policy, ScaleGroupMajor>(
+          stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
+          gemm_k, group_size, wait)) {
+    throw std::runtime_error("dense_woq_s4_dpas: unsupported group size");
   }
-  if constexpr (GroupSize < kMaxGroupSize) {
-    return DenseWoqS4GEMMLauncherDispatch<GroupSize * 2, layoutA, layoutB,
-                                          policy, ScaleGroupMajor>(
-        stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
-        gemm_k, group_size, wait);
-  }
-  return false;
 }
 
 template <char layoutA, char layoutB, class policy, bool ScaleGroupMajor,
@@ -715,13 +755,10 @@ void DenseWoqS4GEMMLauncher(sycl::queue& stream,
                             const int gemm_k,
                             const int group_size,
                             bool wait = true) {
-  if (!is_supported_group_size(group_size) ||
-      !DenseWoqS4GEMMLauncherDispatch<kMinGroupSize, layoutA, layoutB,
-                                      policy, ScaleGroupMajor>(
-          stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
-          gemm_k, group_size, wait)) {
-    throw std::runtime_error("dense_woq_s4_dpas: unsupported group size");
-  }
+  DenseWoqS4GEMMLauncherUpTo<kMaxGroupSize, layoutA, layoutB, policy,
+                             ScaleGroupMajor>(
+      stream, activations, weights, scales, bias, outputs, gemm_m, gemm_n,
+      gemm_k, group_size, wait);
 }
 
 }  // namespace dense_woq_s4_dpas

@@ -26,7 +26,7 @@
 #endif
 
 #if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
-#include "sycl_tla_dense_woq_s4_dpas.hpp"
+#include "sycl_tla_dense_woq_s4_dpas_helpers.hpp"
 #endif
 
 #if ARK_XPU
@@ -586,54 +586,47 @@ class XpuWrapper {
     if (!woq_s4_dpas_shape_ok(m, p)) {
       return false;
     }
-    using namespace ark::dense_woq_s4_dpas;
-    using ElementA = cute_scalar_t<sycl::half>;
-
-    const auto* activations_ca = reinterpret_cast<const ElementA*>(matA);
     const bool use_dpas_scales = has_dpas_scale_layout(p, blob_count);
     const auto scale_offset = use_dpas_scales ? get_dpas_scale_offset(p) : get_scale_offset(p);
-    const auto* scales_ca = reinterpret_cast<const ElementA*>(reinterpret_cast<const int8_t*>(blobB) + scale_offset);
-    const auto* bias_ca = bias != nullptr ? reinterpret_cast<const ElementA*>(bias) : static_cast<const ElementA*>(nullptr);
-    auto* outputs_ca = reinterpret_cast<ElementA*>(matC);
-    const auto* weights_i4 = reinterpret_cast<const cutlass::uint4b_t*>(blobB);
+    const auto* scales_ptr = reinterpret_cast<const int8_t*>(blobB) + scale_offset;
 
-#define ARK_WOQ_DPAS_S4_LAUNCH(policy)                                             \
+#define ARK_WOQ_DPAS_S4_LAUNCH(route, policy_name)                                 \
     do {                                                                           \
       if (env_params::Instance()->verbose <= 1) {                                  \
         std::fprintf(stdout,                                                       \
                      "[ARK_WOQ_DPAS_S4] launch:%s m=%zu n=%d k=%d blocksize=%d scale_layout=%s\n", \
-                     #policy, m, p->n, p->k, p->blocksize,                        \
+                     policy_name, m, p->n, p->k, p->blocksize,                    \
                      use_dpas_scales ? "group_n" : "n_group");                   \
       }                                                                            \
       if (use_dpas_scales) {                                                       \
-        DenseWoqS4GEMMLauncher<'R', 'C', policy, true>(                            \
-            *q, activations_ca, weights_i4, scales_ca, bias_ca, outputs_ca,         \
-            static_cast<int>(m), p->n, p->k, p->blocksize, false);                 \
+        ark::dense_woq_s4_dpas::detail::route##_group_n(                           \
+            q, matA, blobB, scales_ptr, bias, matC, static_cast<int>(m), p->n,      \
+            p->k, p->blocksize, false);                                            \
       } else {                                                                     \
-        DenseWoqS4GEMMLauncher<'R', 'C', policy, false>(                           \
-            *q, activations_ca, weights_i4, scales_ca, bias_ca, outputs_ca,         \
-            static_cast<int>(m), p->n, p->k, p->blocksize, false);                 \
+        ark::dense_woq_s4_dpas::detail::route##_n_group(                           \
+            q, matA, blobB, scales_ptr, bias, matC, static_cast<int>(m), p->n,      \
+            p->k, p->blocksize, false);                                            \
       }                                                                            \
     } while (false);
 
     if (m <= 4) {
-      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_4_n128)
+      ARK_WOQ_DPAS_S4_LAUNCH(run_m4_n128, "dpas_w4a16_dense_policy_m_4_n128")
     }  else if (m <= 8) {
-      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_8_n128)
+      ARK_WOQ_DPAS_S4_LAUNCH(run_m8_n128, "dpas_w4a16_dense_policy_m_8_n128")
     } else if (m <= 16) {
-      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_16)
+      ARK_WOQ_DPAS_S4_LAUNCH(run_m16, "dpas_w4a16_dense_policy_m_16")
     } else if (m <= 32) {
       if (p->blocksize == p->k) {
-        ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_32_n256)
+        ARK_WOQ_DPAS_S4_LAUNCH(run_m32_n256, "dpas_w4a16_dense_policy_m_32_n256")
       } else {
-        ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_32)
+        ARK_WOQ_DPAS_S4_LAUNCH(run_m32, "dpas_w4a16_dense_policy_m_32")
       }
     } else if (m <= 64) {
-      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_64_n256)
+      ARK_WOQ_DPAS_S4_LAUNCH(run_m64_n256, "dpas_w4a16_dense_policy_m_64_n256")
     } else if (m <= 128) {
-      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_dense_policy_m_128)
+      ARK_WOQ_DPAS_S4_LAUNCH(run_m128, "dpas_w4a16_dense_policy_m_128")
     } else {
-      ARK_WOQ_DPAS_S4_LAUNCH(dpas_w4a16_policy_m_32)
+      return false;
     }
 #undef ARK_WOQ_DPAS_S4_LAUNCH
     return true;
