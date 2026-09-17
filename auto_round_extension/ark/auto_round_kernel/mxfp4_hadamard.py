@@ -29,7 +29,7 @@ Frozen MVP contract (Phase 0):
   is ``2 ** (e8m0 - 127)`` (standard E8M0, always a power of two);
 * ``q = y * 2 ** -(e8m0 - 127)`` is encoded as ``signbit(q) << 3 | magnitude``
   with FP4 (E2M1) magnitude levels ``0, 0.5, 1, 1.5, 2, 3, 4, 6`` and the
-    nearest-even thresholds of the shared FP4 utility;
+    nearest-even thresholds of the frozen ``_E2M1_THRESHOLDS`` table below;
 * **zero is canonicalised**: whenever the magnitude index is 0 the sign bit is
   dropped, so the code is ``0x0`` and never ``0x8`` (negative zero). See
   "Canonical zero" below for why this rule is required rather than optional;
