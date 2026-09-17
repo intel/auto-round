@@ -560,10 +560,16 @@ class XpuWrapper {
     return dense_woq_s4_dpas::is_supported_group_size(group_size);
   }
 
+  static inline int woq_s4_dpas_tile_n(size_t m, QuantParam* p) {
+    if (m <= 16) return 128;
+    if (m <= 32) return p->blocksize == p->k ? 256 : 128;
+    return 256;
+  }
+
   static inline bool woq_s4_dpas_shape_ok(size_t m, QuantParam* p) {
     if (m <= 1 || m > kWoqS4DpasMaxM) return false;
     if (m > static_cast<size_t>(std::numeric_limits<int>::max())) return false;
-    if (p->n % 64 != 0 || (p->k & 1) != 0 || p->blocksize <= 0) return false;
+    if (p->blocksize <= 0 || p->n % woq_s4_dpas_tile_n(m, p) != 0 || (p->k & 1) != 0) return false;
     if (p->k % p->blocksize != 0) return false;
     return woq_s4_dpas_group_size_ok(p->blocksize);
   }

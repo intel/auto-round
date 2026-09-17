@@ -609,7 +609,7 @@ def woqgemm(
     wt = cvtstr_dtype(weight_type)
     st = cvtstr_dtype(scale_type)
     if out is None:
-        C = torch.empty(m, n, dtype=A.dtype, device=A.device)
+        C = torch.zeros(m, n, dtype=A.dtype, device=A.device)
     else:
         if out.shape != (m, n):
             raise ValueError(f"out must have shape {(m, n)}, got {tuple(out.shape)}")
