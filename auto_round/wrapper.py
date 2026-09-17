@@ -523,6 +523,7 @@ class WrapperWALayer(torch.nn.Module):
             observed_max=act_max,
             min_scale=min_scale,
             max_scale=max_scale,
+            global_scale=getattr(self.orig_layer, "input_global_scale", None),
         )
         # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)
