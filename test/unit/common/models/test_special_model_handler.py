@@ -958,18 +958,15 @@ class TestGetPredefinedIgnoreLayers:
         assert "vision_tower" in layers
         assert "mm_projector" in layers
 
-    def test_bagel_matcher(self):
+    def test_bagel_matcher(self, monkeypatch):
         from auto_round.special_model_handler import get_predefined_ignore_layers
 
+        monkeypatch.delenv("AR_QUANTIZE_BAGEL_MOE_GEN", raising=False)
         mock_model = MagicMock()
         mock_model.config.model_type = "bagel"
         mock_model.language_model.model.layers = [MagicMock() for _ in range(32)]
         layers = get_predefined_ignore_layers(mock_model)
-        assert "moe_gen" in layers
-        assert "self_attn.q_proj" in layers
-        assert "self_attn.k_proj" in layers
-        assert "self_attn.v_proj" in layers
-        assert "self_attn.o_proj" in layers
+        assert layers == ["moe_gen"]
 
     def test_moe_model_via_config(self):
         from auto_round.special_model_handler import get_predefined_ignore_layers
@@ -1029,24 +1026,18 @@ class TestTorchCompileOff:
 class TestGetBagelIgnoreLayers:
     """Test get_bagel_ignore_layers function."""
 
-    def test_returns_expected_layers(self):
+    @pytest.mark.parametrize(
+        ("env_value", "expected"),
+        [(None, ["moe_gen"]), ("0", ["moe_gen"]), ("1", [])],
+    )
+    def test_moe_gen_policy(self, monkeypatch, env_value, expected):
         from auto_round.special_model_handler import get_bagel_ignore_layers
 
-        mock_model = MagicMock()
-        mock_model.language_model.model.layers = [MagicMock() for _ in range(32)]
-        layers = get_bagel_ignore_layers(mock_model)
-        assert "moe_gen" in layers
-        assert "self_attn.q_proj" in layers
-        assert "self_attn.k_proj" in layers
-        assert "self_attn.v_proj" in layers
-        assert "self_attn.o_proj" in layers
-
-    def test_no_language_model(self):
-        from auto_round.special_model_handler import get_bagel_ignore_layers
-
-        mock_model = MagicMock(spec=[])
-        layers = get_bagel_ignore_layers(mock_model)
-        assert "moe_gen" in layers
+        if env_value is None:
+            monkeypatch.delenv("AR_QUANTIZE_BAGEL_MOE_GEN", raising=False)
+        else:
+            monkeypatch.setenv("AR_QUANTIZE_BAGEL_MOE_GEN", env_value)
+        assert get_bagel_ignore_layers(MagicMock()) == expected
 
 
 class TestGetGlmFlashIgnoreLayers:
