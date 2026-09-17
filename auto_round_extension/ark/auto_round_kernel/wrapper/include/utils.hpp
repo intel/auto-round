@@ -215,9 +215,9 @@ class DeviceMemoryPool {
   // (`moe_dpas_fp8::kAtomicScratchLoc`); slots 9 and 10 are the int4 decode
   // weight-repack and activation-sum buffers
   // (`moe_decode_detail::kInt4RepackScratchLoc` / `kActGroupSumScratchLoc`);
-  // slots 11, 12, and 13 are the MXFP block-scaled grouped-GEMM metadata,
-  // scheduler workspace, and float-output staging buffers.
-  static constexpr int MaxLocNum = 14;
+  // slots 11 and 12 are the MXFP block-scaled grouped-GEMM metadata and
+  // scheduler workspace buffers.
+  static constexpr int MaxLocNum = 13;
   using SizeMap = std::unordered_map<size_t, size_t>;
   using PtrMap = std::unordered_map<size_t, int8_t*>;
 

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -40,12 +41,10 @@ using namespace cute;
 
 inline constexpr size_t kMetadataScratchLoc = 11;
 inline constexpr size_t kWorkspaceScratchLoc = 12;
-inline constexpr size_t kOutputScratchLoc = 13;
 
 class UnpackMXFP4WeightToFP8Kernel;
 class TransposeActivationScaleKernel;
 class TransposeWeightScaleKernel;
-class ConvertFloatToBF16Kernel;
 
 bool env_enabled() {
   const char* env = std::getenv("ARK_MOE_PREFILL_BDPAS_MXFP8_MXFP4");
@@ -129,20 +128,11 @@ void launch_transpose_weight_scales(sycl::queue* queue, const uint8_t* input_sca
   });
 }
 
-void launch_convert_float_to_bf16(sycl::queue* queue, const float* input, uint16_t* output, int total_count) {
-  queue->parallel_for<ConvertFloatToBF16Kernel>(sycl::range<1>{static_cast<size_t>(total_count)}, [=](sycl::id<1> index) {
-    const int offset = static_cast<int>(index[0]);
-    const uint32_t bits = sycl::bit_cast<uint32_t>(input[offset]);
-    const uint32_t lsb = (bits >> 16) & 1u;
-    output[offset] = static_cast<uint16_t>((bits + 0x7fffu + lsb) >> 16);
-  });
-}
-
 template <typename ElementInputA>
 bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_scales, void* weights,
                        void* weight_scales, void* outputs, void* activation_workspace, void* weight_workspace,
                        int N, int K, int group_size, int* num_tokens_per_expert, int num_experts, int total_tokens,
-                       bool refresh_weight_staging) {
+                       bool refresh_weight_staging, int* num_tokens_per_expert_host, bool refresh_metadata) {
   using ElementScale = cutlass::float_ue8m0_t;
   using ElementAccumulator = float;
   using ElementComputeEpilogue = float;
@@ -151,7 +141,7 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
   using LayoutC = cutlass::layout::RowMajor;
   using LayoutD = cutlass::layout::RowMajor;
   using ElementInputB = ElementInputA;
-  using ElementOutput = float;
+  using ElementOutput = cutlass::bfloat16_t;
   using TileShape = Shape<Int<64>, _512, _64>;
   using ThreadLayout = Layout<Shape<_1, Int<32>, _1>, Stride<Int<32>, _1, _0>>;
   using TiledMma = typename TiledMMAHelper<MMA_Atom<XE_BDPAS_TT<8, float, ElementInputA>>,
@@ -188,7 +178,11 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
   if (activation_workspace == nullptr || weight_workspace == nullptr) return false;
 
   std::vector<int32_t> token_counts_all(static_cast<size_t>(num_experts));
-  queue->memcpy(token_counts_all.data(), num_tokens_per_expert, sizeof(int32_t) * num_experts).wait();
+  if (num_tokens_per_expert_host != nullptr) {
+    std::copy(num_tokens_per_expert_host, num_tokens_per_expert_host + num_experts, token_counts_all.begin());
+  } else {
+    queue->memcpy(token_counts_all.data(), num_tokens_per_expert, sizeof(int32_t) * num_experts).wait();
+  }
 
   std::vector<int32_t> active_experts_host;
   std::vector<int32_t> row_offsets_host;
@@ -226,10 +220,6 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
   auto* scales_bdpas_a = static_cast<uint8_t*>(activation_workspace);
   auto* scales_bdpas_b = weights_fp8 + static_cast<size_t>(num_experts) * N * K;
   if (static_cast<size_t>(num_experts) * N * scale_groups > static_cast<size_t>(num_experts) * N * K) return false;
-  auto* output_fp32 = static_cast<float*>(DeviceMemoryPool::Instance()->get_scratch_mem(
-      sizeof(float) * static_cast<size_t>(total_tokens) * N, kOutputScratchLoc, queue));
-  if (output_fp32 == nullptr) throw std::runtime_error("mxfp8_mxfp4_bdpas: failed to allocate output scratch");
-
   size_t metadata_bytes = 0;
   reserve_bytes<UnderlyingProblemShape>(active_count, metadata_bytes);
   reserve_bytes<const ElementInputA*>(active_count, metadata_bytes);
@@ -306,7 +296,8 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
         scales_bdpas_a + scale_a_offsets_host[static_cast<size_t>(active_index)]);
     ptr_scale_b_host[static_cast<size_t>(active_index)] = reinterpret_cast<const ElementScale*>(
       scales_bdpas_b + static_cast<size_t>(expert_index) * N * scale_groups);
-    ptr_d_host[static_cast<size_t>(active_index)] = output_fp32 + static_cast<size_t>(row_offset) * N;
+    ptr_d_host[static_cast<size_t>(active_index)] = reinterpret_cast<ElementOutput*>(outputs) +
+                            static_cast<size_t>(row_offset) * N;
 
     auto shape_a = make_shape(token_count, K, 1);
     auto shape_b = make_shape(N, K, 1);
@@ -321,24 +312,33 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
     stride_scale_b_host.push_back(cutlass::make_cute_packed_stride(StrideScaleB{}, shape_scale_b));
   }
 
-  queue->memcpy(problem_shapes_device, problem_shapes_host.data(), sizeof(UnderlyingProblemShape) * active_count);
-  queue->memcpy(ptr_a_device, ptr_a_host.data(), sizeof(const ElementInputA*) * active_count);
-  queue->memcpy(ptr_b_device, ptr_b_host.data(), sizeof(const ElementInputB*) * active_count);
-  queue->memcpy(ptr_scale_a_device, ptr_scale_a_host.data(), sizeof(const ElementScale*) * active_count);
-  queue->memcpy(ptr_scale_b_device, ptr_scale_b_host.data(), sizeof(const ElementScale*) * active_count);
-  queue->memcpy(ptr_c_device, ptr_c_host.data(), sizeof(const ElementAccumulator*) * active_count);
-  queue->memcpy(ptr_d_device, ptr_d_host.data(), sizeof(ElementOutput*) * active_count);
-  queue->memcpy(stride_a_device, stride_a_host.data(), sizeof(StrideA) * active_count);
-  queue->memcpy(stride_b_device, stride_b_host.data(), sizeof(StrideB) * active_count);
-  queue->memcpy(stride_c_device, stride_c_host.data(), sizeof(StrideC) * active_count);
-  queue->memcpy(stride_d_device, stride_d_host.data(), sizeof(StrideD) * active_count);
-  queue->memcpy(stride_scale_a_device, stride_scale_a_host.data(), sizeof(StrideScaleA) * active_count);
-  queue->memcpy(stride_scale_b_device, stride_scale_b_host.data(), sizeof(StrideScaleB) * active_count);
-  queue->memcpy(active_experts_device, active_experts_host.data(), sizeof(int32_t) * active_count);
-  queue->memcpy(row_offsets_device, row_offsets_host.data(), sizeof(int32_t) * active_count);
-  queue->memcpy(token_counts_device, token_counts_host.data(), sizeof(int32_t) * active_count);
-  queue->memcpy(padded_token_counts_device, padded_token_counts_host.data(), sizeof(int32_t) * active_count);
-  queue->memcpy(scale_a_offsets_device, scale_a_offsets_host.data(), sizeof(int32_t) * active_count);
+  if (refresh_metadata) {
+    std::vector<uint8_t> metadata_host(metadata_bytes, 0);
+    auto copy_metadata = [&](auto* device_dst, auto const* host_src, size_t count) {
+      using Value = std::remove_pointer_t<decltype(device_dst)>;
+      const size_t offset = reinterpret_cast<uint8_t*>(device_dst) - metadata;
+      std::memcpy(metadata_host.data() + offset, host_src, sizeof(Value) * count);
+    };
+    copy_metadata(problem_shapes_device, problem_shapes_host.data(), active_count);
+    copy_metadata(ptr_a_device, ptr_a_host.data(), active_count);
+    copy_metadata(ptr_b_device, ptr_b_host.data(), active_count);
+    copy_metadata(ptr_scale_a_device, ptr_scale_a_host.data(), active_count);
+    copy_metadata(ptr_scale_b_device, ptr_scale_b_host.data(), active_count);
+    copy_metadata(ptr_c_device, ptr_c_host.data(), active_count);
+    copy_metadata(ptr_d_device, ptr_d_host.data(), active_count);
+    copy_metadata(stride_a_device, stride_a_host.data(), active_count);
+    copy_metadata(stride_b_device, stride_b_host.data(), active_count);
+    copy_metadata(stride_c_device, stride_c_host.data(), active_count);
+    copy_metadata(stride_d_device, stride_d_host.data(), active_count);
+    copy_metadata(stride_scale_a_device, stride_scale_a_host.data(), active_count);
+    copy_metadata(stride_scale_b_device, stride_scale_b_host.data(), active_count);
+    copy_metadata(active_experts_device, active_experts_host.data(), active_count);
+    copy_metadata(row_offsets_device, row_offsets_host.data(), active_count);
+    copy_metadata(token_counts_device, token_counts_host.data(), active_count);
+    copy_metadata(padded_token_counts_device, padded_token_counts_host.data(), active_count);
+    copy_metadata(scale_a_offsets_device, scale_a_offsets_host.data(), active_count);
+    queue->memcpy(metadata, metadata_host.data(), metadata_bytes);
+  }
   if (refresh_weight_staging) {
     launch_unpack_mxfp4_to_fp8(queue, static_cast<const uint8_t*>(weights), weights_fp8, num_experts, N, K);
     launch_transpose_weight_scales(queue, static_cast<const uint8_t*>(weight_scales), scales_bdpas_b, num_experts, N,
@@ -347,7 +347,6 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
   launch_transpose_activation_scales(queue, static_cast<const uint8_t*>(activation_scales), scales_bdpas_a,
                                      row_offsets_device, token_counts_device, scale_a_offsets_device,
                                      padded_token_counts_device, active_count, scale_groups, max_padded_tokens);
-  queue->wait();
 
   cutlass::KernelHardwareInfo hardware_info;
   hardware_info.sm_count = cutlass::KernelHardwareInfo::query_device_multiprocessor_count(hardware_info.device_id);
@@ -373,8 +372,6 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
   }
   if (gemm_op.initialize(arguments, workspace, queue) != cutlass::Status::kSuccess) return false;
   if (gemm_op.run(queue) != cutlass::Status::kSuccess) return false;
-  queue->wait();
-  launch_convert_float_to_bf16(queue, output_fp32, static_cast<uint16_t*>(outputs), total_tokens * N);
   return true;
 }
 
@@ -385,12 +382,14 @@ bool sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas(sycl::queue* q, void* activations, v
                                             void* activation_workspace, void* weight_workspace,
                                             BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype, int N, int K,
                                             int group_size, int* num_tokens_per_expert, int num_experts,
-                                            int total_tokens, bool refresh_weight_staging) {
+                                            int total_tokens, bool refresh_weight_staging,
+                                            int* num_tokens_per_expert_host, bool refresh_metadata) {
   if (!moe_mxfp_bdpas_detail::env_enabled()) return false;
   if (activation_dtype == BTLA_DTYPE::F8_E4M3 && output_dtype == BTLA_DTYPE::BF16) {
     return moe_mxfp_bdpas_detail::run_grouped_bdpas<cutlass::float_e4m3_t>(
         q, activations, activation_scales, weights, weight_scales, outputs, activation_workspace, weight_workspace,
-      N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, refresh_weight_staging);
+      N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, refresh_weight_staging,
+      num_tokens_per_expert_host, refresh_metadata);
   }
   if (activation_dtype == BTLA_DTYPE::F8_E5M2 && output_dtype == BTLA_DTYPE::BF16) {
     return false;

@@ -3494,12 +3494,21 @@ def _get_moe_prefill_workspace(device: torch.device, dtype: torch.dtype, E: int,
 
 _MOE_PREFILL_ACTIVATION_WORKSPACE_CACHE: "dict[tuple, torch.Tensor]" = {}
 _MOE_PREFILL_MXFP8_MXFP4_WEIGHT_STAGING_CACHE: "dict[tuple, tuple]" = {}
+_MOE_PREFILL_MXFP8_MXFP4_ROUTING_CACHE: "dict[tuple, tuple[int, torch.Tensor]]" = {}
+_MOE_PREFILL_MXFP8_MXFP4_METADATA_CACHE: "dict[tuple, int]" = {}
 
 
 def _mxfp8_mxfp4_bdpas_enabled() -> bool:
     env = os.environ.get("ARK_MOE_PREFILL_BDPAS_MXFP8_MXFP4")
     if env is None:
         return True
+    return env.strip().lower() not in ("0", "false", "off", "no")
+
+
+def _mxfp8_mxfp4_static_routing_cache_enabled() -> bool:
+    env = os.environ.get("ARK_MOE_PREFILL_STATIC_ROUTING_CACHE_MXFP8_MXFP4")
+    if env is None:
+        return False
     return env.strip().lower() not in ("0", "false", "off", "no")
 
 
@@ -3521,6 +3530,8 @@ def clear_moe_prefill_workspace_cache() -> None:
     _MOE_PREFILL_WORKSPACE_CACHE.clear()
     _MOE_PREFILL_ACTIVATION_WORKSPACE_CACHE.clear()
     _MOE_PREFILL_MXFP8_MXFP4_WEIGHT_STAGING_CACHE.clear()
+    _MOE_PREFILL_MXFP8_MXFP4_ROUTING_CACHE.clear()
+    _MOE_PREFILL_MXFP8_MXFP4_METADATA_CACHE.clear()
 
 
 def moe_gemm_prefill_mxfp8_mxfp4(
@@ -3606,6 +3617,24 @@ def moe_gemm_prefill_mxfp8_mxfp4(
     outputs = torch.empty((total_tokens, N), device=activations.device, dtype=output_dtype)
     activation_workspace = _get_moe_prefill_activation_workspace(activations.device, output_dtype, total_tokens, K)
     weight_workspace = _get_moe_prefill_workspace(activations.device, output_dtype, num_experts, K, N)
+    static_routing_cache = _mxfp8_mxfp4_static_routing_cache_enabled()
+    routing_version = int(getattr(num_tokens_per_expert, "_version", 0))
+    routing_host = None
+    if static_routing_cache:
+        routing_cache_key = (
+            activations.device.type,
+            activations.device.index,
+            int(num_experts),
+            int(total_tokens),
+            id(num_tokens_per_expert),
+            int(num_tokens_per_expert.data_ptr()),
+        )
+        cached_routing = _MOE_PREFILL_MXFP8_MXFP4_ROUTING_CACHE.get(routing_cache_key)
+        if cached_routing is None or cached_routing[0] != routing_version:
+            routing_host = num_tokens_per_expert.detach().cpu().contiguous()
+            _MOE_PREFILL_MXFP8_MXFP4_ROUTING_CACHE[routing_cache_key] = (routing_version, routing_host)
+        else:
+            routing_host = cached_routing[1]
     weight_cache_key = (
         activations.device.type,
         activations.device.index,
@@ -3624,9 +3653,33 @@ def moe_gemm_prefill_mxfp8_mxfp4(
         _mxfp8_mxfp4_bdpas_enabled()
         and activations.dtype == torch.float8_e4m3fn
         and output_dtype == torch.bfloat16
+        and group_size == 32
         and K % 64 == 0
     )
-    refresh_weight_staging = cached_staging is None or cached_staging[:2] != weight_versions
+    refresh_weight_staging = (not bdpas_supported) or cached_staging is None or cached_staging[:2] != weight_versions
+    if not bdpas_supported:
+        _MOE_PREFILL_MXFP8_MXFP4_WEIGHT_STAGING_CACHE.pop(weight_cache_key, None)
+    metadata_cache_key = None
+    refresh_metadata = bdpas_supported
+    if static_routing_cache and routing_host is not None:
+        metadata_cache_key = (
+            activations.device.type,
+            activations.device.index,
+            cvt_dtype(activations.dtype),
+            cvt_dtype(output_dtype),
+            int(activations.data_ptr()),
+            int(outputs.data_ptr()),
+            int(activation_workspace.data_ptr()),
+            int(weight_workspace.data_ptr()),
+            int(N),
+            int(K),
+            int(group_size),
+            int(num_experts),
+            int(total_tokens),
+            int(routing_host.data_ptr()),
+            routing_version,
+        )
+        refresh_metadata = bdpas_supported and _MOE_PREFILL_MXFP8_MXFP4_METADATA_CACHE.get(metadata_cache_key) != routing_version
 
     lib.moe_gemm_prefill_mxfp8_mxfp4(
         stream,
@@ -3646,9 +3699,13 @@ def moe_gemm_prefill_mxfp8_mxfp4(
         num_experts,
         total_tokens,
         refresh_weight_staging,
+        0 if routing_host is None else routing_host.data_ptr(),
+        refresh_metadata,
     )
     if bdpas_supported:
         _MOE_PREFILL_MXFP8_MXFP4_WEIGHT_STAGING_CACHE[weight_cache_key] = (*weight_versions, weights, weight_scales)
+        if metadata_cache_key is not None:
+            _MOE_PREFILL_MXFP8_MXFP4_METADATA_CACHE[metadata_cache_key] = routing_version
     return outputs
 
 

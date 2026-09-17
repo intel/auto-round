@@ -423,7 +423,8 @@ void moe_gemm_prefill_mxfp8_mxfp4_dispatch(sycl::queue* q, void* activations, vo
                                            void* activation_workspace, void* weight_workspace,
                                            BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype, int N, int K,
                                            int group_size, int* num_tokens_per_expert, int num_experts,
-                                           int total_tokens, bool refresh_weight_staging) {
+                                           int total_tokens, bool refresh_weight_staging,
+                                           int* num_tokens_per_expert_host, bool refresh_metadata) {
   if (activation_workspace == nullptr || weight_workspace == nullptr) {
     throw std::invalid_argument("moe_gemm_prefill_mxfp8_mxfp4: workspace pointers must be non-null");
   }
@@ -437,7 +438,7 @@ void moe_gemm_prefill_mxfp8_mxfp4_dispatch(sycl::queue* q, void* activations, vo
   if (sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas(q, activations, activation_scales, weights, weight_scales, outputs,
                                              activation_workspace, weight_workspace, output_dtype, activation_dtype,
                                              N, K, group_size, num_tokens_per_expert, num_experts, total_tokens,
-                                             refresh_weight_staging)) {
+                                             refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata)) {
     return;
   }
   if (activation_dtype == BTLA_DTYPE::F8_E4M3) {
@@ -474,13 +475,15 @@ void moe_gemm_prefill_mxfp8_mxfp4(sycl::queue* q, void* activations, void* activ
                                   void* weight_scales, void* outputs, void* activation_workspace,
                                   void* weight_workspace, BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype,
                                   int N, int K, int group_size, int* num_tokens_per_expert, int num_experts,
-                                  int total_tokens, bool refresh_weight_staging) {
+                                  int total_tokens, bool refresh_weight_staging, int* num_tokens_per_expert_host,
+                                  bool refresh_metadata) {
   if (total_tokens == 0) return;
   if (output_dtype == BTLA_DTYPE::F16) {
     moe_gemm_prefill_mxfp8_mxfp4_dispatch<sycl::half>(q, activations, activation_scales, weights, weight_scales,
                                                       outputs, activation_workspace, weight_workspace, output_dtype,
                                                       activation_dtype, N, K, group_size, num_tokens_per_expert,
-                                                      num_experts, total_tokens, refresh_weight_staging);
+                                                      num_experts, total_tokens, refresh_weight_staging,
+                                                      num_tokens_per_expert_host, refresh_metadata);
     return;
   }
   if (output_dtype == BTLA_DTYPE::BF16) {
@@ -488,7 +491,7 @@ void moe_gemm_prefill_mxfp8_mxfp4(sycl::queue* q, void* activations, void* activ
     moe_gemm_prefill_mxfp8_mxfp4_dispatch<BF>(q, activations, activation_scales, weights, weight_scales, outputs,
                                               activation_workspace, weight_workspace, output_dtype, activation_dtype,
                                               N, K, group_size, num_tokens_per_expert, num_experts, total_tokens,
-                                              refresh_weight_staging);
+                                              refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata);
     return;
   }
   throw std::invalid_argument("moe_gemm_prefill_mxfp8_mxfp4: output_dtype must be F16 or BF16");

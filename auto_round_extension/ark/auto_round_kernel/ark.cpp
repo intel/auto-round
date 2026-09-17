@@ -563,12 +563,13 @@ static void moe_gemm_prefill_mxfp8_mxfp4_wrapper(torch_ptr stream, torch_ptr act
                          torch_ptr activation_workspace, torch_ptr weight_workspace,
                          int output_dtype, int activation_dtype, int N, int K,
                          int group_size, torch_ptr num_tokens_per_expert, int num_experts,
-                         int total_tokens, bool refresh_weight_staging) {
+                         int total_tokens, bool refresh_weight_staging, torch_ptr num_tokens_per_expert_host,
+                         bool refresh_metadata) {
   ark::moe_gemm_prefill_mxfp8_mxfp4(
     (sycl::queue*)stream, (void*)activations, (void*)activation_scales, (void*)weights, (void*)weight_scales,
     (void*)outputs, (void*)activation_workspace, (void*)weight_workspace, (BTLA_DTYPE)(output_dtype),
     (BTLA_DTYPE)(activation_dtype), N, K, group_size, (int*)num_tokens_per_expert, num_experts, total_tokens,
-    refresh_weight_staging);
+    refresh_weight_staging, (int*)num_tokens_per_expert_host, refresh_metadata);
 }
 
 // Variant A: FP8 per-tensor DPAS grouped GEMM (mirrors vllm-xpu-kernels'

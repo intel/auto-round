@@ -154,7 +154,8 @@ void moe_gemm_prefill_mxfp8_mxfp4(sycl::queue* q, void* activations, void* activ
                                   void* weight_scales, void* outputs, void* activation_workspace,
                                   void* weight_workspace, BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype,
                                   int N, int K, int group_size, int* num_tokens_per_expert, int num_experts,
-                                  int total_tokens, bool refresh_weight_staging);
+                                  int total_tokens, bool refresh_weight_staging, int* num_tokens_per_expert_host,
+                                  bool refresh_metadata);
 
 struct MoePrefillParams {
     sycl::queue* q;

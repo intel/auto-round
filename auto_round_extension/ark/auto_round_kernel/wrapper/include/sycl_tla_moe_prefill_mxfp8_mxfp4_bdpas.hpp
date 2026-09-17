@@ -12,10 +12,12 @@ bool sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas(sycl::queue* q, void* activations, v
                                             void* activation_workspace, void* weight_workspace,
                                             BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype, int N, int K,
                                             int group_size, int* num_tokens_per_expert, int num_experts,
-                                            int total_tokens, bool refresh_weight_staging);
+                                              int total_tokens, bool refresh_weight_staging,
+                                              int* num_tokens_per_expert_host, bool refresh_metadata);
 #else
 inline bool sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas(sycl::queue*, void*, void*, void*, void*, void*, void*, void*,
-                                                   BTLA_DTYPE, BTLA_DTYPE, int, int, int, int*, int, int, bool) {
+                                                BTLA_DTYPE, BTLA_DTYPE, int, int, int, int*, int, int, bool, int*,
+                                                bool) {
   return false;
 }
 #endif
