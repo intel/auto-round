@@ -316,13 +316,15 @@ def ref_nvfp4_quant_inplace(
     return out.reshape(m, n), scale
 
 
-def search_nvfp4_scale(tensor, bits=4, qw=None):
+def search_nvfp4_scale(tensor, bits=4, qw=None, quant_func=None, group_size=16):
     tensor_fp32 = tensor.float()
+    baseline_func = nv_fp4 if quant_func is None else quant_func
+    candidate_func = nv_fp4_rtn if quant_func is None else quant_func
 
-    qdq_t, scale, _ = nv_fp4(
+    qdq_t, scale, _ = baseline_func(
         tensor_fp32,
         bits=bits,
-        group_size=16,
+        group_size=group_size,
         v=0,
         max_scale=1.0,
     )
@@ -352,13 +354,14 @@ def search_nvfp4_scale(tensor, bits=4, qw=None):
             continue
 
         test_scale.fill_(tmp_scale)
+        candidate_scale = test_scale.squeeze(-1) if quant_func is nvfp4_v2 else test_scale
 
-        tmp_qdq, _, _ = nv_fp4_rtn(
+        tmp_qdq, _, _ = candidate_func(
             tensor_fp32,
             bits=bits,
-            group_size=16,
+            group_size=group_size,
             v=0,
-            max_scale=test_scale,
+            max_scale=candidate_scale,
         )
 
         diff.copy_(tmp_qdq)
@@ -374,6 +377,10 @@ def search_nvfp4_scale(tensor, bits=4, qw=None):
         best_scale[mask] = test_scale[mask]
 
     return best_scale
+
+
+def search_nvfp4_v2_scale(tensor, bits=4, qw=None):
+    return search_nvfp4_scale(tensor, bits, qw, quant_func=nvfp4_v2, group_size=tensor.shape[-1]).squeeze(-1)
 
 
 @register_dtype("opt_rtn_nv_fp4")
@@ -531,21 +538,35 @@ class _NVFPV2WeightQuantizer:
     def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
         grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
         tunables = {}
-        if tune_rounding:
+        optimized_rtn = mode == "optimized_rtn"
+        if tune_rounding and not optimized_rtn:
             tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
-        if tune_minmax:
+        if tune_minmax and not optimized_rtn:
             tunables["max_scale"] = torch.nn.Parameter(
                 torch.ones(grouped.shape[:-1], device=weight.device, dtype=torch.float32)
             )
-        return _NVFPState(tunables, None, None)
+        optimized_scale = None
+        if optimized_rtn:
+            if isinstance(imatrix, torch.Tensor):
+                imatrix = imatrix.reshape(1, -1)
+                imatrix = reshape_pad_tensor_by_group_size(imatrix, self.spec.group_size, val=1e-5)[0].view(1, -1)
+                imatrix = imatrix.expand(grouped.numel() // imatrix.numel(), -1).reshape(grouped.shape)
+                qw = _imatrix_handle_zero(imatrix, grouped, self.spec.bits, self.spec.group_size)
+            else:
+                qw = 1.0
+            optimized_scale = search_nvfp4_v2_scale(grouped, self.spec.bits, qw)
+        return _NVFPState(tunables, None, optimized_scale)
 
     def qdq(self, weight, state, *, tunables, materialize=False):
+        max_scale = tunables.get("max_scale", 1.0)
+        if state.optimized_init is not None:
+            max_scale = max_scale * state.optimized_init
         quantized, scale, zero_point = nvfp4_v2(
             weight,
             bits=self.spec.bits,
             group_size=self.spec.group_size,
             v=tunables.get("value", 0),
-            max_scale=tunables.get("max_scale", 1.0),
+            max_scale=max_scale,
         )
         from auto_round.data_type.base import WeightQuantizationResult
 

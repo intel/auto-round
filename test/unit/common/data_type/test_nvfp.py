@@ -38,6 +38,7 @@ from auto_round.data_type.nvfp import (
     ref_fp4_quant,
     ref_nvfp4_quant,
     search_nvfp4_scale,
+    search_nvfp4_v2_scale,
 )
 from auto_round.data_type.utils import update_fused_layer_global_scales
 
@@ -302,6 +303,51 @@ class TestSearchNvfp4Scale:
         tensor = torch.randn(8, 16, dtype=torch.float32)
         with pytest.raises(TypeError):
             search_nvfp4_scale(tensor, qw=None)
+
+
+class TestSearchNvfp4V2Scale:
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+    @pytest.mark.parametrize("disable_opt_rtn", [False, True])
+    def test_wrapper_preserves_searched_scale(self, disable_opt_rtn, dtype):
+        from auto_round.wrapper import WrapperLinear
+
+        torch.manual_seed(1)
+        layer = nn.Linear(32, 4, bias=False).to(dtype)
+        layer.bits = 4
+        layer.group_size = 16
+        layer.sym = True
+        layer.data_type = "nvfp4_v2"
+        layer.act_bits = 16
+        weight = layer.weight.detach().clone()
+        scales = search_nvfp4_v2_scale(weight.reshape(-1, 16), qw=1.0)
+        baseline, _, _ = nvfp4_v2(weight, group_size=16)
+        optimized, _, _ = nvfp4_v2(weight, group_size=16, max_scale=scales)
+        assert not torch.equal(optimized, baseline)
+        expected, expected_scale, _ = nvfp4_v2(weight, group_size=16, max_scale=1.0 if disable_opt_rtn else scales)
+
+        wrapper = WrapperLinear(layer, iters=0, disable_opt_rtn=disable_opt_rtn, enable_torch_compile=False)
+        forward_weight, _, _ = wrapper._qdq_weight(wrapper.value, wrapper.min_scale, wrapper.max_scale)
+        torch.testing.assert_close(forward_weight, expected, rtol=0, atol=0)
+        result = wrapper.unwrapper({})
+
+        torch.testing.assert_close(result.weight, expected, rtol=0, atol=0)
+        torch.testing.assert_close(result.scale, expected_scale.reshape(4, -1), rtol=0, atol=0)
+
+    def test_search_does_not_increase_weighted_mse(self):
+        torch.manual_seed(1)
+        tensor = torch.randn(8, 16, dtype=torch.float32)
+        qw = torch.rand_like(tensor) + 0.1
+
+        scales = search_nvfp4_v2_scale(tensor, qw=qw)
+        baseline, _, _ = nvfp4_v2(tensor, group_size=16)
+        optimized, _, _ = nvfp4_v2(tensor, group_size=16, max_scale=scales)
+
+        baseline_loss = ((baseline - tensor).square() * qw).sum()
+        optimized_loss = ((optimized - tensor).square() * qw).sum()
+        assert scales.shape == (tensor.shape[0],)
+        assert torch.all(scales >= 0.5)
+        assert torch.all(scales <= 1.51)
+        assert optimized_loss <= baseline_loss
 
 
 # ---------------------------------------------------------------------------
