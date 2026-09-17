@@ -102,23 +102,24 @@ def nv_fp4(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0,
 
 
 @register_dtype("nv_fp4_with_static_gs")
-def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, **kwargs):
+def nv_fp4_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, global_scale=None, **kwargs):
     if tensor is None or tensor.numel() == 0:
         return tensor, None, None
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    if tensor_max is None:
-        tensor_max = tensor.to(torch.float32).abs().max()
-    else:
-        if not isinstance(tensor_max, torch.Tensor):
+    if global_scale is None:
+        if tensor_max is None:
+            tensor_max = tensor.to(torch.float32).abs().max()
+        elif not isinstance(tensor_max, torch.Tensor):
             tensor_max = torch.tensor(tensor_max, device=tensor.device, dtype=torch.float32)
         else:
             tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
-        if tensor_max.numel() != 1:
-            tensor_max = tensor_max.to(torch.float32).abs().max()
-
-    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
-    global_scale = global_scale.to(tensor.device)
+            if tensor_max.numel() != 1:
+                tensor_max = tensor_max.abs().max()
+        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
+    elif not isinstance(global_scale, torch.Tensor):
+        global_scale = torch.tensor(global_scale, device=tensor.device, dtype=torch.float32)
+    global_scale = global_scale.to(device=tensor.device, dtype=torch.float32)
     qdq_res, scale = ref_nvfp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
@@ -570,7 +571,7 @@ class _NVFPActivationQuantizer:
         observed = activation.detach().float().abs().max().unsqueeze(0)
         return observed if current is None else torch.maximum(current.to(observed.device), observed)
 
-    def qdq_with_scale(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+    def qdq_with_scale(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0, global_scale=None):
         if self.requires_calibration and observed_max is None:
             raise ValueError(f"{self.data_type} activation requires observed_max")
         primitive = {
@@ -582,11 +583,17 @@ class _NVFPActivationQuantizer:
         kwargs = {"bits": self.spec.bits, "group_size": self.spec.group_size, "max_scale": max_scale}
         if self.requires_calibration:
             kwargs["tensor_max"] = observed_max
+        if global_scale is not None:
+            kwargs["global_scale"] = global_scale
         return primitive(activation, **kwargs)
 
-    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0, global_scale=None):
         quantized, _, _ = self.qdq_with_scale(
-            activation, observed_max=observed_max, min_scale=min_scale, max_scale=max_scale
+            activation,
+            observed_max=observed_max,
+            min_scale=min_scale,
+            max_scale=max_scale,
+            global_scale=global_scale,
         )
         return quantized
 
