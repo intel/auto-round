@@ -306,6 +306,33 @@ class TestSearchNvfp4Scale:
 
 
 class TestSearchNvfp4V2Scale:
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+    @pytest.mark.parametrize("disable_opt_rtn", [False, True])
+    def test_wrapper_preserves_searched_scale(self, disable_opt_rtn, dtype):
+        from auto_round.wrapper import WrapperLinear
+
+        torch.manual_seed(1)
+        layer = nn.Linear(32, 4, bias=False).to(dtype)
+        layer.bits = 4
+        layer.group_size = 16
+        layer.sym = True
+        layer.data_type = "nvfp4_v2"
+        layer.act_bits = 16
+        weight = layer.weight.detach().clone()
+        scales = search_nvfp4_v2_scale(weight.reshape(-1, 16), qw=1.0)
+        baseline, _, _ = nvfp4_v2(weight, group_size=16)
+        optimized, _, _ = nvfp4_v2(weight, group_size=16, max_scale=scales)
+        assert not torch.equal(optimized, baseline)
+        expected, expected_scale, _ = nvfp4_v2(weight, group_size=16, max_scale=1.0 if disable_opt_rtn else scales)
+
+        wrapper = WrapperLinear(layer, iters=0, disable_opt_rtn=disable_opt_rtn, enable_torch_compile=False)
+        forward_weight, _, _ = wrapper._qdq_weight(wrapper.value, wrapper.min_scale, wrapper.max_scale)
+        torch.testing.assert_close(forward_weight, expected, rtol=0, atol=0)
+        result = wrapper.unwrapper({})
+
+        torch.testing.assert_close(result.weight, expected, rtol=0, atol=0)
+        torch.testing.assert_close(result.scale, expected_scale.reshape(4, -1), rtol=0, atol=0)
+
     def test_search_does_not_increase_weighted_mse(self):
         torch.manual_seed(1)
         tensor = torch.randn(8, 16, dtype=torch.float32)

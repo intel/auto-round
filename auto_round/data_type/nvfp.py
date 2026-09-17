@@ -558,12 +558,15 @@ class _NVFPV2WeightQuantizer:
         return _NVFPState(tunables, None, optimized_scale)
 
     def qdq(self, weight, state, *, tunables, materialize=False):
+        max_scale = tunables.get("max_scale", 1.0)
+        if state.optimized_init is not None:
+            max_scale = max_scale * state.optimized_init
         quantized, scale, zero_point = nvfp4_v2(
             weight,
             bits=self.spec.bits,
             group_size=self.spec.group_size,
             v=tunables.get("value", 0),
-            max_scale=tunables.get("max_scale", state.optimized_init if state.optimized_init is not None else 1.0),
+            max_scale=max_scale,
         )
         from auto_round.data_type.base import WeightQuantizationResult
 
