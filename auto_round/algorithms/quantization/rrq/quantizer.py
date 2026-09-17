@@ -752,8 +752,7 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
         which is not available for standalone layers outside transformer blocks.
         """
         logger.info(
-            "quantize_layer_outside_block: using RTN for %s "
-            "(tuning is only available for in-block layers)",
+            "quantize_layer_outside_block: using RTN for %s " "(tuning is only available for in-block layers)",
             getattr(layer, "global_name", layer.__class__.__name__),
         )
         return RRQRTNQuantizer.quantize_layer_outside_block(
