@@ -701,8 +701,7 @@ class MXFP4Handler(WeightTypeHandler):
 
         layer = layer.to(device)
 
-        # MXFP4 dequantization using to_dtype from mxfp4_qdq_utils
-        from auto_round_extension.vllm_ext.mxfp4_qdq_utils import to_dtype
+        from auto_round.utils.model_free_utils import dequant_mxfp4
 
         # Get packed weight and scale from layer
         # MXFP4 weights are stored as packed uint8 in weight_packed
@@ -716,7 +715,7 @@ class MXFP4Handler(WeightTypeHandler):
             raise ValueError("MXFP4 layer must have weight_packed and weight_scale attributes")
 
         # Dequantize using to_dtype function
-        dq_weight = to_dtype(
+        dq_weight = dequant_mxfp4(
             data_lp=weight_packed,
             scale_e8m0=weight_scale,
             elem_dtype="fp4_e2m1",
@@ -790,8 +789,7 @@ class MXFP8Handler(WeightTypeHandler):
 
         layer = layer.to(device)
 
-        # MXFP8 dequantization using dequant_mx_fp8 from mxfp8_qdq_utils
-        from auto_round_extension.vllm_ext.mxfp8_qdq_utils import dequant_mx_fp8
+        from auto_round.utils.model_free_utils import dequant_mx_fp8
 
         # Get weight and scale from layer
         weight = layer.weight
