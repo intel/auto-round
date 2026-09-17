@@ -67,9 +67,13 @@ class XpuWrapper {
   }
 
   static inline bool use_dpas_scale_layout(QuantParam* p) {
-    return p->compute_type == BTLA_DTYPE::S8 && p->weight_type == BTLA_DTYPE::S4 &&
-           p->scale_type == BTLA_DTYPE::F16 && !p->asym &&
-           (p->blocksize == 32 || p->blocksize == 64 || p->blocksize == 128);
+#if defined(ARK_XPU) && defined(ARK_SYCL_TLA)
+    return p->weight_type == BTLA_DTYPE::S4 && p->scale_type == BTLA_DTYPE::F16 && !p->asym &&
+           dense_woq_s4_dpas::is_supported_group_size(p->blocksize) &&
+           p->blocksize <= dense_woq_s4_dpas::kPackedScaleMaxGroupSize;
+#else
+    return false;
+#endif
   }
 
   static inline size_t get_dpas_scale_size(QuantParam* p) {
@@ -576,8 +580,7 @@ class XpuWrapper {
 
   static bool woq_try_s4_dpas(sycl::queue* q, size_t m, QuantParam* p, const void* matA, const void* blobB,
                               void* matC, const void* bias, BTLA_DTYPE outt, size_t blob_count) {
-    if (p->compute_type != BTLA_DTYPE::S8 || p->weight_type != BTLA_DTYPE::S4 ||
-        p->scale_type != BTLA_DTYPE::F16 || outt != BTLA_DTYPE::F16 || p->asym) {
+    if (p->weight_type != BTLA_DTYPE::S4 || p->scale_type != BTLA_DTYPE::F16 || outt != BTLA_DTYPE::F16 || p->asym) {
       return false;
     }
     if (env_params::Instance()->woq_dpas_s4 == 0) {
