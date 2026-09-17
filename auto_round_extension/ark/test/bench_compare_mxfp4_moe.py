@@ -70,6 +70,21 @@ def unpack_mxfp4_to_float(packed: torch.Tensor, scales: torch.Tensor, k: int) ->
     return values * scale_values.repeat_interleave(32, dim=2)
 
 
+def unpack_mxfp4_activation_to_float(packed: torch.Tensor, scales: torch.Tensor, k: int) -> torch.Tensor:
+    total_tokens, _ = packed.shape
+    raw = packed.cpu().to(torch.int64)
+    low = raw & 0x0F
+    high = (raw >> 4) & 0x0F
+    nibbles = torch.empty((total_tokens, k), dtype=torch.int64)
+    nibbles[:, 0::2] = low
+    nibbles[:, 1::2] = high
+    mag = nibbles & 0x7
+    sign = torch.where((nibbles & 0x8) != 0, -1.0, 1.0)
+    values = FP4_E2M1[mag] * sign
+    scale_values = torch.ldexp(torch.ones_like(scales.cpu(), dtype=torch.float32), scales.cpu().to(torch.int32) - 127)
+    return values * scale_values.repeat_interleave(32, dim=1)
+
+
 def reference_moe(activations: torch.Tensor, dequant_weights_nk: torch.Tensor, ntpe: torch.Tensor) -> torch.Tensor:
     total_tokens, _ = activations.shape
     experts, n, _ = dequant_weights_nk.shape
@@ -99,6 +114,21 @@ def reference_mxfp8_mxfp4(
         torch.ones_like(activation_scales.cpu(), dtype=torch.float32), activation_scales.cpu().to(torch.int32) - 127
     )
     act = act * scale_values.repeat_interleave(32, dim=1)
+    weights_fp = unpack_mxfp4_to_float(weights, weight_scales, k)
+    return reference_moe(act.to(output_dtype), weights_fp.to(output_dtype), ntpe).to(output_dtype).float()
+
+
+def reference_mxfp4_mxfp4(
+    activations: torch.Tensor,
+    activation_scales: torch.Tensor,
+    weights: torch.Tensor,
+    weight_scales: torch.Tensor,
+    ntpe: torch.Tensor,
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
+    _, k_packed = activations.shape
+    k = k_packed * 2
+    act = unpack_mxfp4_activation_to_float(activations, activation_scales, k)
     weights_fp = unpack_mxfp4_to_float(weights, weight_scales, k)
     return reference_moe(act.to(output_dtype), weights_fp.to(output_dtype), ntpe).to(output_dtype).float()
 
@@ -139,11 +169,12 @@ def make_common_inputs(shape: Shape, fp8_dtype: torch.dtype):
     base = (torch.randn(total_tokens, shape.k, device="xpu", dtype=torch.float16) * 0.25).clamp(-2, 2)
     activations_bf16 = base.to(torch.bfloat16)
     activations_mxfp8 = base.to(fp8_dtype)
+    activations_mxfp4 = torch.randint(0, 256, (total_tokens, shape.k // 2), device="xpu", dtype=torch.uint8)
     activation_scales = torch.randint(126, 129, (total_tokens, shape.k // 32), device="xpu", dtype=torch.uint8)
     weights = torch.randint(0, 256, (shape.experts, shape.n, shape.k // 2), device="xpu", dtype=torch.uint8)
     weight_scales = torch.randint(126, 129, (shape.experts, shape.n, shape.k // 32), device="xpu", dtype=torch.uint8)
     ntpe = torch.tensor(shape.tokens_per_expert, device="xpu", dtype=torch.int32)
-    return activations_bf16, activations_mxfp8, activation_scales, weights, weight_scales, ntpe
+    return activations_bf16, activations_mxfp8, activations_mxfp4, activation_scales, weights, weight_scales, ntpe
 
 
 def run_accuracy(fp8_dtype: torch.dtype, output_dtype: torch.dtype) -> None:
@@ -151,7 +182,7 @@ def run_accuracy(fp8_dtype: torch.dtype, output_dtype: torch.dtype) -> None:
     for shape in ACCURACY_CASES:
         torch.manual_seed(2026)
         torch.xpu.manual_seed_all(2026)
-        act_bf16, act_mxfp8, act_scales, weights, weight_scales, ntpe = make_common_inputs(shape, fp8_dtype)
+        act_bf16, act_mxfp8, act_mxfp4, act_scales, weights, weight_scales, ntpe = make_common_inputs(shape, fp8_dtype)
 
         out_mxfp8 = ark.moe_gemm_prefill_mxfp8_mxfp4(
             act_mxfp8, act_scales, weights, weight_scales, ntpe, output_dtype=output_dtype, group_size=32
@@ -161,6 +192,16 @@ def run_accuracy(fp8_dtype: torch.dtype, output_dtype: torch.dtype) -> None:
         print(
             f"accuracy,{shape.label},mxfp8_mxfp4,{str(fp8_dtype).split('.')[-1]},{str(output_dtype).split('.')[-1]},"
             f"{diff_mxfp8.max().item():.6f},{diff_mxfp8.mean().item():.6f}"
+        )
+
+        out_mxfp4 = ark.moe_gemm_prefill_mxfp4_mxfp4(
+            act_mxfp4, act_scales, weights, weight_scales, ntpe, output_dtype=output_dtype, group_size=32
+        )
+        ref_mxfp4 = reference_mxfp4_mxfp4(act_mxfp4, act_scales, weights, weight_scales, ntpe, output_dtype)
+        diff_mxfp4 = (out_mxfp4.float().cpu() - ref_mxfp4).abs()
+        print(
+            f"accuracy,{shape.label},mxfp4_mxfp4,{str(fp8_dtype).split('.')[-1]},{str(output_dtype).split('.')[-1]},"
+            f"{diff_mxfp4.max().item():.6f},{diff_mxfp4.mean().item():.6f}"
         )
 
         out_bf16 = ark.moe_gemm_prefill(
@@ -201,6 +242,18 @@ def mxfp8_packed_bytes(shape: Shape, output_dtype: torch.dtype) -> int:
     )
 
 
+def mxfp4_packed_bytes(shape: Shape, output_dtype: torch.dtype) -> int:
+    total_tokens = sum(shape.tokens_per_expert)
+    out_bytes = torch.empty((), dtype=output_dtype).element_size()
+    return (
+        total_tokens * (shape.k // 2)
+        + total_tokens * (shape.k // 32)
+        + active_experts(shape) * shape.n * (shape.k // 2)
+        + active_experts(shape) * shape.n * (shape.k // 32)
+        + total_tokens * shape.n * out_bytes
+    )
+
+
 def bf16_packed_bytes(shape: Shape) -> int:
     total_tokens = sum(shape.tokens_per_expert)
     out_bytes = torch.empty((), dtype=torch.bfloat16).element_size()
@@ -222,6 +275,16 @@ def mxfp8_workspace_bytes(shape: Shape, output_dtype: torch.dtype) -> int:
     )
 
 
+def mxfp4_workspace_bytes(shape: Shape, output_dtype: torch.dtype) -> int:
+    total_tokens = sum(shape.tokens_per_expert)
+    scale_groups = shape.k // 32
+    return (
+        mxfp4_packed_bytes(shape, output_dtype)
+        + (total_tokens + 3 * shape.experts) * scale_groups
+        + active_experts(shape) * shape.n * scale_groups
+    )
+
+
 def bf16_workspace_bytes(shape: Shape) -> int:
     out_bytes = torch.empty((), dtype=torch.bfloat16).element_size()
     return bf16_packed_bytes(shape) + 2 * active_experts(shape) * shape.k * shape.n * out_bytes
@@ -235,7 +298,7 @@ def benchmark(args: argparse.Namespace, fp8_dtype: torch.dtype, output_dtype: to
     for shape in SHAPES:
         torch.manual_seed(123)
         torch.xpu.manual_seed_all(123)
-        act_bf16, act_mxfp8, act_scales, weights, weight_scales, ntpe = make_common_inputs(shape, fp8_dtype)
+        act_bf16, act_mxfp8, act_mxfp4, act_scales, weights, weight_scales, ntpe = make_common_inputs(shape, fp8_dtype)
 
         def run_mxfp8():
             return ark.moe_gemm_prefill_mxfp8_mxfp4(
@@ -254,12 +317,24 @@ def benchmark(args: argparse.Namespace, fp8_dtype: torch.dtype, output_dtype: to
                 scale_dtype="fp8_e8m0",
             )
 
+        def run_mxfp4():
+            return ark.moe_gemm_prefill_mxfp4_mxfp4(
+                act_mxfp4, act_scales, weights, weight_scales, ntpe, output_dtype=output_dtype, group_size=32
+            )
+
         for kernel_name, fn, byte_fn, workspace_fn, dtype_name in (
             (
                 "mxfp8_mxfp4",
                 run_mxfp8,
                 lambda current_shape: mxfp8_packed_bytes(current_shape, output_dtype),
                 lambda current_shape: mxfp8_workspace_bytes(current_shape, output_dtype),
+                str(output_dtype).split(".")[-1],
+            ),
+            (
+                "mxfp4_mxfp4",
+                run_mxfp4,
+                lambda current_shape: mxfp4_packed_bytes(current_shape, output_dtype),
+                lambda current_shape: mxfp4_workspace_bytes(current_shape, output_dtype),
                 str(output_dtype).split(".")[-1],
             ),
             (
@@ -300,6 +375,10 @@ def main() -> None:
         raise RuntimeError("auto_round_kernel lacks moe_gemm_prefill_mxfp8_mxfp4")
     if ark.xpu_lib is None or not hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp8_mxfp4"):
         raise RuntimeError("auto_round_kernel XPU extension lacks moe_gemm_prefill_mxfp8_mxfp4")
+    if not hasattr(ark, "moe_gemm_prefill_mxfp4_mxfp4"):
+        raise RuntimeError("auto_round_kernel lacks moe_gemm_prefill_mxfp4_mxfp4")
+    if ark.xpu_lib is None or not hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp4_mxfp4"):
+        raise RuntimeError("auto_round_kernel XPU extension lacks moe_gemm_prefill_mxfp4_mxfp4")
 
     fp8_dtype = torch.float8_e4m3fn if args.fp8 == "e4m3" else torch.float8_e5m2
     output_dtype = torch.bfloat16 if args.output == "bf16" else torch.float16

@@ -46,8 +46,8 @@ class UnpackMXFP4WeightToFP8Kernel;
 class TransposeActivationScaleKernel;
 class TransposeWeightScaleKernel;
 
-bool env_enabled() {
-  const char* env = std::getenv("ARK_MOE_PREFILL_BDPAS_MXFP8_MXFP4");
+bool env_enabled(const char* env_name) {
+  const char* env = std::getenv(env_name);
   if (env == nullptr) return true;
   std::string value(env);
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
@@ -128,7 +128,7 @@ void launch_transpose_weight_scales(sycl::queue* queue, const uint8_t* input_sca
   });
 }
 
-template <typename ElementInputA>
+template <typename ElementInputA, bool NativeMxfp4 = false>
 bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_scales, void* weights,
                        void* weight_scales, void* outputs, void* activation_workspace, void* weight_workspace,
                        int N, int K, int group_size, int* num_tokens_per_expert, int num_experts, int total_tokens,
@@ -137,13 +137,14 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
   using ElementAccumulator = float;
   using ElementComputeEpilogue = float;
   using LayoutA = cutlass::layout::RowMajor;
-  using LayoutB = cutlass::layout::RowMajor;
+  using LayoutB = std::conditional_t<NativeMxfp4, cutlass::layout::ColumnMajor, cutlass::layout::RowMajor>;
   using LayoutC = cutlass::layout::RowMajor;
   using LayoutD = cutlass::layout::RowMajor;
   using ElementInputB = ElementInputA;
   using ElementOutput = cutlass::bfloat16_t;
-  using TileShape = Shape<Int<64>, _512, _64>;
-  using ThreadLayout = Layout<Shape<_1, Int<32>, _1>, Stride<Int<32>, _1, _0>>;
+  using TileShape = std::conditional_t<NativeMxfp4, Shape<_256, _512, _128>, Shape<Int<64>, _512, _64>>;
+  using ThreadLayout = std::conditional_t<NativeMxfp4, Layout<Shape<_4, _8, _1>, Stride<_8, _1, _0>>,
+                                         Layout<Shape<_1, Int<32>, _1>, Stride<Int<32>, _1, _0>>>;
   using TiledMma = typename TiledMMAHelper<MMA_Atom<XE_BDPAS_TT<8, float, ElementInputA>>,
                                           Layout<TileShape>, ThreadLayout>::TiledMMA;
   using EpilogueDispatchPolicy = cutlass::epilogue::IntelXeGenericGroup;
@@ -216,9 +217,12 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
   const int active_count = static_cast<int>(active_experts_host.size());
   if (active_count == 0) return true;
 
-  auto* weights_fp8 = static_cast<uint8_t*>(weight_workspace);
-  auto* scales_bdpas_a = static_cast<uint8_t*>(activation_workspace);
-  auto* scales_bdpas_b = weights_fp8 + static_cast<size_t>(num_experts) * N * K;
+  auto* activation_workspace_bytes = static_cast<uint8_t*>(activation_workspace);
+  auto* weight_workspace_bytes = static_cast<uint8_t*>(weight_workspace);
+  auto* weights_fp8 = weight_workspace_bytes;
+  auto* scales_bdpas_a = activation_workspace_bytes;
+  auto* scales_bdpas_b = NativeMxfp4 ? weight_workspace_bytes
+                                     : weights_fp8 + static_cast<size_t>(num_experts) * N * K;
   if (static_cast<size_t>(num_experts) * N * scale_groups > static_cast<size_t>(num_experts) * N * K) return false;
   size_t metadata_bytes = 0;
   reserve_bytes<UnderlyingProblemShape>(active_count, metadata_bytes);
@@ -288,10 +292,17 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
     const int token_count = token_counts_host[static_cast<size_t>(active_index)];
     const int row_offset = row_offsets_host[static_cast<size_t>(active_index)];
     const int padded_tokens = padded_token_counts_host[static_cast<size_t>(active_index)];
-    ptr_a_host[static_cast<size_t>(active_index)] = static_cast<const ElementInputA*>(activations) +
-                                                    static_cast<size_t>(row_offset) * K;
-    ptr_b_host[static_cast<size_t>(active_index)] = reinterpret_cast<const ElementInputB*>(
-        weights_fp8 + (static_cast<size_t>(expert_index) * N * K));
+    if constexpr (NativeMxfp4) {
+      ptr_a_host[static_cast<size_t>(active_index)] = reinterpret_cast<const ElementInputA*>(
+          static_cast<const uint8_t*>(activations) + static_cast<size_t>(row_offset) * (K / 2));
+      ptr_b_host[static_cast<size_t>(active_index)] = reinterpret_cast<const ElementInputB*>(
+          static_cast<const uint8_t*>(weights) + static_cast<size_t>(expert_index) * N * (K / 2));
+    } else {
+      ptr_a_host[static_cast<size_t>(active_index)] = reinterpret_cast<const ElementInputA*>(
+          static_cast<const uint8_t*>(activations) + static_cast<size_t>(row_offset) * K);
+      ptr_b_host[static_cast<size_t>(active_index)] = reinterpret_cast<const ElementInputB*>(
+          weights_fp8 + static_cast<size_t>(expert_index) * N * K);
+    }
     ptr_scale_a_host[static_cast<size_t>(active_index)] = reinterpret_cast<const ElementScale*>(
         scales_bdpas_a + scale_a_offsets_host[static_cast<size_t>(active_index)]);
     ptr_scale_b_host[static_cast<size_t>(active_index)] = reinterpret_cast<const ElementScale*>(
@@ -340,7 +351,9 @@ bool run_grouped_bdpas(sycl::queue* queue, void* activations, void* activation_s
     queue->memcpy(metadata, metadata_host.data(), metadata_bytes);
   }
   if (refresh_weight_staging) {
-    launch_unpack_mxfp4_to_fp8(queue, static_cast<const uint8_t*>(weights), weights_fp8, num_experts, N, K);
+    if constexpr (!NativeMxfp4) {
+      launch_unpack_mxfp4_to_fp8(queue, static_cast<const uint8_t*>(weights), weights_fp8, num_experts, N, K);
+    }
     launch_transpose_weight_scales(queue, static_cast<const uint8_t*>(weight_scales), scales_bdpas_b, num_experts, N,
                                    scale_groups);
   }
@@ -384,15 +397,32 @@ bool sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas(sycl::queue* q, void* activations, v
                                             int group_size, int* num_tokens_per_expert, int num_experts,
                                             int total_tokens, bool refresh_weight_staging,
                                             int* num_tokens_per_expert_host, bool refresh_metadata) {
-  if (!moe_mxfp_bdpas_detail::env_enabled()) return false;
+  if (!moe_mxfp_bdpas_detail::env_enabled("ARK_MOE_PREFILL_BDPAS_MXFP8_MXFP4")) return false;
   if (activation_dtype == BTLA_DTYPE::F8_E4M3 && output_dtype == BTLA_DTYPE::BF16) {
-    return moe_mxfp_bdpas_detail::run_grouped_bdpas<cutlass::float_e4m3_t>(
+    return moe_mxfp_bdpas_detail::run_grouped_bdpas<cutlass::float_e4m3_t, false>(
         q, activations, activation_scales, weights, weight_scales, outputs, activation_workspace, weight_workspace,
       N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, refresh_weight_staging,
       num_tokens_per_expert_host, refresh_metadata);
   }
   if (activation_dtype == BTLA_DTYPE::F8_E5M2 && output_dtype == BTLA_DTYPE::BF16) {
     return false;
+  }
+  return false;
+}
+
+bool sycl_tla_moe_prefill_mxfp4_mxfp4_bdpas(sycl::queue* q, void* activations, void* activation_scales,
+                                            void* weights, void* weight_scales, void* outputs,
+                                            void* activation_workspace, void* weight_workspace,
+                                            BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype, int N, int K,
+                                            int group_size, int* num_tokens_per_expert, int num_experts,
+                                            int total_tokens, bool refresh_weight_staging,
+                                            int* num_tokens_per_expert_host, bool refresh_metadata) {
+  if (!moe_mxfp_bdpas_detail::env_enabled("ARK_MOE_PREFILL_BDPAS_MXFP4_MXFP4")) return false;
+  if (activation_dtype == BTLA_DTYPE::F4_E2M1 && output_dtype == BTLA_DTYPE::BF16) {
+    return moe_mxfp_bdpas_detail::run_grouped_bdpas<cutlass::float_e2m1_t, true>(
+        q, activations, activation_scales, weights, weight_scales, outputs, activation_workspace, weight_workspace,
+        N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, refresh_weight_staging,
+      num_tokens_per_expert_host, refresh_metadata);
   }
   return false;
 }

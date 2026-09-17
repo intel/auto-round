@@ -435,10 +435,17 @@ void moe_gemm_prefill_mxfp8_mxfp4_dispatch(sycl::queue* q, void* activations, vo
   const bool use_lut = moe_dequant::fp8_decode_use_lut();
   auto* act_hp = static_cast<ScalarT*>(activation_workspace);
   auto* weights_kn = static_cast<ScalarT*>(weight_workspace);
-  if (sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas(q, activations, activation_scales, weights, weight_scales, outputs,
-                                             activation_workspace, weight_workspace, output_dtype, activation_dtype,
-                                             N, K, group_size, num_tokens_per_expert, num_experts, total_tokens,
-                                             refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata)) {
+    const bool bdpas_done =
+    activation_dtype == BTLA_DTYPE::F4_E2M1
+        ? sycl_tla_moe_prefill_mxfp4_mxfp4_bdpas(
+          q, activations, activation_scales, weights, weight_scales, outputs, activation_workspace,
+          weight_workspace, output_dtype, activation_dtype, N, K, group_size, num_tokens_per_expert,
+          num_experts, total_tokens, refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata)
+        : sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas(
+          q, activations, activation_scales, weights, weight_scales, outputs, activation_workspace,
+          weight_workspace, output_dtype, activation_dtype, N, K, group_size, num_tokens_per_expert,
+          num_experts, total_tokens, refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata);
+    if (bdpas_done) {
     return;
   }
   if (activation_dtype == BTLA_DTYPE::F8_E4M3) {
@@ -461,8 +468,13 @@ void moe_gemm_prefill_mxfp8_mxfp4_dispatch(sycl::queue* q, void* activations, vo
           q, static_cast<const uint8_t*>(activations), static_cast<const uint8_t*>(activation_scales), act_hp,
           total_tokens, K, group_size);
     }
+  } else if (activation_dtype == BTLA_DTYPE::F4_E2M1) {
+    moe_mixed_detail::launch_dequant_mxfp4_activation<ScalarT>(
+        q, static_cast<const uint8_t*>(activations), static_cast<const uint8_t*>(activation_scales), act_hp,
+        total_tokens, K, group_size);
   } else {
-    throw std::invalid_argument("moe_gemm_prefill_mxfp8_mxfp4: activation_dtype must be F8_E4M3 or F8_E5M2");
+    throw std::invalid_argument(
+        "moe_gemm_prefill_mxfp8_mxfp4: activation_dtype must be F8_E4M3, F8_E5M2, or F4_E2M1");
   }
 
   moe_mixed_detail::launch_dequant_mxfp4<ScalarT>(q, static_cast<const uint8_t*>(weights),
@@ -495,6 +507,21 @@ void moe_gemm_prefill_mxfp8_mxfp4(sycl::queue* q, void* activations, void* activ
     return;
   }
   throw std::invalid_argument("moe_gemm_prefill_mxfp8_mxfp4: output_dtype must be F16 or BF16");
+}
+
+void moe_gemm_prefill_mxfp4_mxfp4(sycl::queue* q, void* activations, void* activation_scales, void* weights,
+                                  void* weight_scales, void* outputs, void* activation_workspace,
+                                  void* weight_workspace, BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype,
+                                  int N, int K, int group_size, int* num_tokens_per_expert, int num_experts,
+                                  int total_tokens, bool refresh_weight_staging, int* num_tokens_per_expert_host,
+                                  bool refresh_metadata) {
+  if (activation_dtype != BTLA_DTYPE::F4_E2M1) {
+    throw std::invalid_argument("moe_gemm_prefill_mxfp4_mxfp4: activation_dtype must be F4_E2M1");
+  }
+  moe_gemm_prefill_mxfp8_mxfp4(q, activations, activation_scales, weights, weight_scales, outputs,
+                               activation_workspace, weight_workspace, output_dtype, activation_dtype, N, K,
+                               group_size, num_tokens_per_expert, num_experts, total_tokens, refresh_weight_staging,
+                               num_tokens_per_expert_host, refresh_metadata);
 }
 
 }  // namespace ark

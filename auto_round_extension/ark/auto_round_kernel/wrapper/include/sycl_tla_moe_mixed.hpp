@@ -89,6 +89,9 @@ template <typename ScalarT, bool IsE4M3, bool UseLut>
 class MoEDequantKernelMXFP8Activation;
 
 template <typename ScalarT>
+class MoEDequantKernelMXFP4Activation;
+
+template <typename ScalarT>
 class MoEDequantKernelMXFP4;
 
 class MoEUnpackKernelMXFP4ToFP8;
@@ -123,6 +126,7 @@ constexpr int PACK_K_FP = 4;
 constexpr int PACK_K_INT8 = 4;
 constexpr int PACK_K_FP8 = 4;
 constexpr int PACK_K_MXFP8 = 4;
+constexpr int PACK_K_MXFP4 = 2;
 
 // PR-1 fast-path PACK_K: one work-item handles 4 packed bytes for INT4
 // (= 8 nibbles = 8 K outputs) and 2 packed bytes for INT2 (= 8 fields =
@@ -532,6 +536,32 @@ void launch_dequant_mxfp8_activation(sycl::queue* q, const uint8_t* activations,
           activations_hp[row_base + static_cast<size_t>(k)] = static_cast<ScalarT>(v);
         }
       });
+}
+
+template <typename ScalarT>
+void launch_dequant_mxfp4_activation(sycl::queue* q, const uint8_t* activations_packed, const uint8_t* scales,
+                                     ScalarT* activations_hp, int total_tokens, int K, int group_size) {
+  if (total_tokens == 0 || K == 0) return;
+  if ((K & 1) != 0) {
+    throw std::invalid_argument("moe_gemm_prefill(mxfp4 activation): K must be even");
+  }
+  const int num_groups_k = K / group_size;
+  const int k_packed = K / 2;
+
+  sycl::range<2> global{static_cast<size_t>(total_tokens), static_cast<size_t>(k_packed)};
+  q->parallel_for<MoEDequantKernelMXFP4Activation<ScalarT>>(global, [=](sycl::id<2> idx) {
+    const int row = static_cast<int>(idx[0]);
+    const int kp = static_cast<int>(idx[1]);
+    const int k_base = kp * PACK_K_MXFP4;
+    const int g = k_base / group_size;
+    const float scale = moe_dequant::decode_e8m0_scale(scales[static_cast<size_t>(row) * num_groups_k + g]);
+    const uint8_t packed = activations_packed[static_cast<size_t>(row) * k_packed + static_cast<size_t>(kp)];
+    float lo, hi;
+    moe_dequant::decode_fp4_e2m1_pair(packed, lo, hi);
+    const size_t out_base = static_cast<size_t>(row) * K + static_cast<size_t>(k_base);
+    activations_hp[out_base] = static_cast<ScalarT>(lo * scale);
+    activations_hp[out_base + 1] = static_cast<ScalarT>(hi * scale);
+  });
 }
 
 template <typename ScalarT>
