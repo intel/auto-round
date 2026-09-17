@@ -1133,33 +1133,25 @@ register_ignore_layers(
 
 
 def get_bagel_ignore_layers(model) -> list[str]:
-    """Keep BAGEL generation-path modules in FP16.
+    """Keep BAGEL generation-path modules in BF16.
 
     BAGEL uses `*_moe_gen` modules for the image-generation path. Quantizing
-    them causes quality to collapse during the iterative denoising loop.
-    The shared attention projections are also highly sensitive, and preserving
-    the top 4 transformer blocks in FP16 gave acceptable image quality in
-    validation runs.
+    them can reduce quality during the iterative denoising loop. Users can
+    explicitly opt in with ``AR_QUANTIZE_BAGEL_MOE_GEN=1``.
+
+    The standard Qwen2 attention and MLP projections are deliberately not
+    ignored: they form BAGEL's normal text path and should follow AutoRound's
+    usual transformer-layer policy.
     """
-    top_fp16_layers = 0
+    from auto_round import envs
 
-    ignore_layers = [
-        "moe_gen",
-        "self_attn.q_proj",
-        "self_attn.k_proj",
-        "self_attn.v_proj",
-        "self_attn.o_proj",
-    ]
-
-    num_layers = 0
-    if hasattr(model, "language_model") and hasattr(model.language_model, "model"):
-        num_layers = len(getattr(model.language_model.model, "layers", []))
-
-    if num_layers > 0:
-        for layer_idx in range(max(0, num_layers - top_fp16_layers), num_layers):
-            ignore_layers.append(f"language_model.model.layers.{layer_idx}")
-
-    return ignore_layers
+    if envs.AR_QUANTIZE_BAGEL_MOE_GEN:
+        logger.warning(
+            "AR_QUANTIZE_BAGEL_MOE_GEN is enabled. Quantizing BAGEL's image-generation experts may reduce image "
+            "quality."
+        )
+        return []
+    return ["moe_gen"]
 
 
 register_ignore_layers(

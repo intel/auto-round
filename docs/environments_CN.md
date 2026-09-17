@@ -50,6 +50,17 @@ export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 export AR_USE_MODELSCOPE=true
 ```
 
+### AR_QUANTIZE_BAGEL_MOE_GEN
+
+- **描述**：启用 BAGEL `*_moe_gen` 图像生成专家层的量化。AutoRound 默认将这些模块保留为 BF16，因为实际测试发现量化它们可能降低图像生成质量。BAGEL 的普通 transformer attention 和 MLP 层默认仍会量化。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"` 或 `"yes"`（不区分大小写）表示启用；其他值会让 `*_moe_gen` 保持 BF16
+- **用途**：仅在研究 checkpoint 大小与图像质量之间的取舍时启用
+
+```bash
+export AR_QUANTIZE_BAGEL_MOE_GEN=1
+```
+
 ### AR_WORK_SPACE
 - **描述**：设置 AutoRound 操作的工作目录
 - **默认值**：`"ar_work_space"`
