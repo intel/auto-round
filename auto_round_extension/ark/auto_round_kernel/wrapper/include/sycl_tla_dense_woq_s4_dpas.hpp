@@ -1,3 +1,6 @@
+// Copyright (C) 2026 Intel Corporation
+// SPDX-License-Identifier: Apache-2.0
+
 // SYCL-TLA Dense WOQ S4 DPAS Wrapper
 
 #pragma once
@@ -91,12 +94,6 @@ class dpas_w4a16_policy_m_32 : public dpas_policy_base {
   using SGLayout = Layout<Shape<_1, _4, _1>, Stride<_4, _1, _0>>;
 };
 
-class dpas_w4a16_dense_policy_m_4 : public dpas_policy_base {
- public:
-  using WGTile = Shape<_4, _64, _32>;
-  using SGLayout = Layout<Shape<_1, _4, _1>, Stride<_4, _1, _0>>;
-};
-
 class dpas_w4a16_dense_policy_m_4_n128 : public dpas_policy_base {
  public:
   using WGTile = Shape<_4, _128, _32>;
@@ -125,12 +122,6 @@ class dpas_w4a16_dense_policy_m_32_n256 : public dpas_policy_base {
  public:
   using WGTile = Shape<_32, _256, _32>;
   using SGLayout = Layout<Shape<_1, _8, _1>, Stride<_8, _1, _0>>;
-};
-
-class dpas_w4a16_dense_policy_m_64 : public dpas_policy_base {
- public:
-  using WGTile = Shape<_64, _128, _32>;
-  using SGLayout = Layout<Shape<_2, _8, _1>, Stride<_8, _1, _0>>;
 };
 
 class dpas_w4a16_dense_policy_m_64_n256 : public dpas_policy_base {
@@ -261,7 +252,7 @@ CUTE_DEVICE void dense_gemm_s4_single_group(
   }
 
   CUTE_UNROLL
-  for (; k_tile_prefetch < prefetch_dist; k_tile_prefetch++) {
+  for (; k_tile_prefetch < prefetch_dist && k_tile_prefetch < k_tile_count; k_tile_prefetch++) {
     prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
     prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
   }
@@ -423,7 +414,7 @@ CUTE_DEVICE void dense_gemm_s4_pergroup(
   float sg_scale[sg_n_strides];
 
   CUTE_UNROLL
-  for (; k_tile_prefetch < prefetch_dist; k_tile_prefetch++) {
+  for (; k_tile_prefetch < prefetch_dist && k_tile_prefetch < k_tile_count; k_tile_prefetch++) {
     prefetch(prefetch_a, pAgA(_, _, _, k_tile_prefetch));
     prefetch(prefetch_b, pBgB(_, _, _, k_tile_prefetch));
   }
