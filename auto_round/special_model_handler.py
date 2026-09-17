@@ -1145,13 +1145,15 @@ def get_bagel_ignore_layers(model) -> list[str]:
     """
     from auto_round import envs
 
-    if envs.AR_QUANTIZE_BAGEL_MOE_GEN:
+    ignore_layers = []
+    if not envs.AR_QUANTIZE_BAGEL_MOE_GEN:
+        ignore_layers.append("moe_gen")
+    else:
         logger.warning(
             "AR_QUANTIZE_BAGEL_MOE_GEN is enabled. Quantizing BAGEL's image-generation experts may reduce image "
             "quality."
         )
-        return []
-    return ["moe_gen"]
+    return ignore_layers
 
 
 register_ignore_layers(
