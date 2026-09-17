@@ -690,6 +690,39 @@ def test_model_free_legacy_nvfp4_is_normalized_and_passthrough(tmp_path):
 
 
 class TestModelFreeQuantize:
+    @pytest.mark.parametrize(
+        "disable_opt_rtn,expected_status",
+        [(False, "enabled"), (True, "disabled")],
+    )
+    def test_nvfp4_e5m3_startup_summary_reports_opt_rtn_status(
+        self, tmp_path, monkeypatch, disable_opt_rtn, expected_status
+    ):
+        tensors = {"model.decoder.layers.0.self_attn.q_proj.weight": torch.randn(4, 16)}
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, tensors)
+        output_dir = str(tmp_path / "output")
+        info_mock = Mock()
+        monkeypatch.setattr("auto_round.compressors.model_free.logger.info", info_mock)
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="NVFP4_E5M3",
+            format="fake",
+            disable_opt_rtn=disable_opt_rtn,
+            device="cpu",
+            enable_torch_compile=False,
+        )
+        monkeypatch.setattr(core, "_process_all_shards", Mock(side_effect=RuntimeError("stop after summary")))
+
+        with pytest.raises(RuntimeError, match="stop after summary"):
+            core.run()
+
+        startup_summary = next(
+            call.args[0]
+            for call in info_mock.call_args_list
+            if call.args and isinstance(call.args[0], str) and call.args[0].startswith("Model-free quantization:")
+        )
+        assert f"Optimized RTN: {expected_status}" in startup_summary
+
     def test_basic(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
         output_dir = str(tmp_path / "output")

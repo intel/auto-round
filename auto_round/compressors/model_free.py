@@ -1641,6 +1641,13 @@ class _ModelFreeCompressorCore:
             packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
         else:
             packing_format = "fake" if self.format == "fake" else "auto_round:auto_gptq"
+        supports_opt_rtn = (
+            is_mx_fp(data_type)
+            or data_type == _NVFP4_E5M3_DATA_TYPE
+            or _layer_config_has_mxfp(self.layer_config)
+            or _layer_config_has_nvfp4(self.layer_config)
+        )
+        opt_rtn_enabled = supports_opt_rtn and not self.disable_opt_rtn
         if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
             if not self.disable_opt_rtn:
                 logger.info(
@@ -1648,7 +1655,7 @@ class _ModelFreeCompressorCore:
                     "2x scale, and 0.5x scale independently for each group. "
                     "Pass --disable_opt_rtn to use plain RTN."
                 )
-        else:
+        elif not supports_opt_rtn:
             logger.info(
                 "Integer WOQ model-free quantization uses plain RTN "
                 "(opt_rtn is disabled for INT WOQ to preserve accuracy)."
@@ -1658,6 +1665,7 @@ class _ModelFreeCompressorCore:
             f"Model-free quantization: {self.model_name_or_path}\n"
             f"  Scheme: {self.scheme_obj}\n"
             f"  Packing format: {packing_format}\n"
+            f"  Optimized RTN: {'enabled' if opt_rtn_enabled else 'disabled'}\n"
             f"  Output: {self.output_dir}\n"
             f"  Shards: {len(self.shard_names)}\n"
             f"  Shard parallelism: {self.shard_parallelism} ({shard_parallelism_source}, "
