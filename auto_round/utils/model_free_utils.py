@@ -2511,6 +2511,7 @@ def _write_output_shard(
 
 def _write_index_file(output_dir: str, weight_map: dict[str, str]):
     """Write model.safetensors.index.json (or rename single shard)."""
+    index_path = os.path.join(output_dir, "model.safetensors.index.json")
     if len(set(weight_map.values())) <= 1:
         shard_names = list(set(weight_map.values()))
         if shard_names and shard_names[0] != "model.safetensors":
@@ -2518,11 +2519,13 @@ def _write_index_file(output_dir: str, weight_map: dict[str, str]):
             dst = os.path.join(output_dir, "model.safetensors")
             if os.path.exists(src):
                 os.rename(src, dst)
-            weight_map = {k: "model.safetensors" for k in weight_map}
+            weight_map.update(dict.fromkeys(weight_map, "model.safetensors"))
+        if os.path.exists(index_path):
+            os.remove(index_path)
         return
 
     index = {"metadata": {"total_size": 0}, "weight_map": weight_map}
-    with open(os.path.join(output_dir, "model.safetensors.index.json"), "w") as f:
+    with open(index_path, "w") as f:
         json.dump(index, f, indent=2)
 
 

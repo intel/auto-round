@@ -50,6 +50,7 @@ from auto_round.utils.model_free_utils import (
     _quantize_single_tensor,
     _quantize_weight_mxfp,
     _validate_auto_scheme_options,
+    _write_index_file,
 )
 from auto_round.utils.model_free_utils import (
     handle_model_type_low_precision_source_tensors as _handle_model_type_low_precision_source_tensors,
@@ -99,6 +100,51 @@ def _read_output_keys(output_dir):
             with safe_open(os.path.join(output_dir, f), framework="pt") as sf:
                 keys.update(sf.keys())
     return keys
+
+
+@pytest.mark.parametrize("shard_name", ["model.safetensors", "model.safetensors-00001-of-00001.safetensors"])
+def test_write_index_single_shard(tmp_path, shard_name):
+    tensors = {"layer.weight": torch.ones(2, 2)}
+    save_file(tensors, str(tmp_path / shard_name))
+    index_path = tmp_path / "model.safetensors.index.json"
+    index_path.write_text(json.dumps({"weight_map": {"old.weight": "old.safetensors"}}))
+    weight_map = {"layer.weight": shard_name}
+
+    _write_index_file(str(tmp_path), weight_map)
+
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["model.safetensors"]
+    assert weight_map == {"layer.weight": "model.safetensors"}
+    with safe_open(str(tmp_path / "model.safetensors"), framework="pt") as saved:
+        assert torch.equal(saved.get_tensor("layer.weight"), tensors["layer.weight"])
+
+
+def test_write_index_multiple_shards(tmp_path):
+    weight_map = {
+        "first.weight": "model-00001-of-00002.safetensors",
+        "second.weight": "model-00002-of-00002.safetensors",
+    }
+
+    _write_index_file(str(tmp_path), weight_map)
+
+    index = json.loads((tmp_path / "model.safetensors.index.json").read_text())
+    assert index["weight_map"] == weight_map
+
+
+def test_copy_metadata_skips_source_weight_indexes(tmp_path):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    for filename in ("model.safetensors.index.json", "pytorch_model.bin.index.json", "tokenizer_config.json"):
+        (source_dir / filename).write_text("{}")
+    core = _ModelFreeCompressorCore(model_name_or_path=str(source_dir), output_dir=str(output_dir), scheme="W4A16")
+    core.source_dir = str(source_dir)
+    core.is_streaming = False
+    core.is_diffusion_model = False
+
+    core._copy_metadata_files()
+
+    assert sorted(path.name for path in output_dir.iterdir()) == ["tokenizer_config.json"]
 
 
 def test_modelopt_nvfp4_failure_restores_scale2():

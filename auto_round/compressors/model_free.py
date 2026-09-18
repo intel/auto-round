@@ -1554,7 +1554,11 @@ class _ModelFreeCompressorCore:
             return
 
         for fname in os.listdir(self.source_dir):
-            if _is_weight_shard(fname) or _is_stale_quantization_metadata(fname):
+            if (
+                _is_weight_shard(fname)
+                or fname.endswith((".safetensors.index.json", ".bin.index.json"))
+                or _is_stale_quantization_metadata(fname)
+            ):
                 continue
             src = os.path.join(self.source_dir, fname)
             dst = os.path.join(self.output_dir, fname)
