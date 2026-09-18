@@ -15,7 +15,6 @@
 
 #include "sycl_tla_moe_dequant.hpp"
 #include "utils.hpp"
-#include "xpu_mxfp4_hadamard.hpp"
 
 #include "cute/tensor.hpp"
 #include "cutlass/cutlass.h"
@@ -424,56 +423,6 @@ bool sycl_tla_moe_prefill_mxfp4_mxfp4_bdpas(sycl::queue* q, void* activations, v
         q, activations, activation_scales, weights, weight_scales, outputs, activation_workspace, weight_workspace,
         N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, refresh_weight_staging,
       num_tokens_per_expert_host, refresh_metadata);
-  }
-  return false;
-}
-
-template <typename ActivationT>
-bool sycl_tla_moe_prefill_hmt_mxfp4_mxfp4_bdpas_impl(
-    sycl::queue* q, void* activations, void* hadamard, void* weights, void* weight_scales, void* outputs,
-    void* activation_workspace, void* weight_workspace, BTLA_DTYPE output_dtype, int N, int K, int group_size,
-    int* num_tokens_per_expert, int num_experts, int total_tokens, bool use_fwht, int hadamard_dim,
-    bool refresh_weight_staging, int* num_tokens_per_expert_host, bool refresh_metadata) {
-  if (activation_workspace == nullptr || weight_workspace == nullptr || hadamard == nullptr) return false;
-  if (output_dtype != BTLA_DTYPE::BF16 || group_size != ark::XpuMxfp4Hadamard::kGroupSize) return false;
-  if (K % 64 != 0 || K % hadamard_dim != 0) return false;
-  if (!ark::XpuMxfp4Hadamard::is_supported_hadamard_dim(hadamard_dim)) return false;
-  if (!use_fwht && hadamard_dim != ark::XpuMxfp4Hadamard::kHadamardDim) return false;
-
-  auto* workspace_bytes = static_cast<uint8_t*>(activation_workspace);
-  auto* packed_activations = workspace_bytes;
-  auto* activation_scales = packed_activations + static_cast<size_t>(total_tokens) * (K / 2);
-  auto* bdpas_activation_workspace = activation_scales + static_cast<size_t>(total_tokens) * (K / group_size);
-
-  ark::XpuMxfp4Hadamard::mxfp4_hadamard_quant<ActivationT>(
-      q, static_cast<const ActivationT*>(activations), static_cast<const float*>(hadamard), packed_activations,
-      activation_scales, total_tokens, K, use_fwht, /*quant_only=*/false, hadamard_dim, /*stream_only=*/false);
-
-  return moe_mxfp_bdpas_detail::run_grouped_bdpas<cutlass::float_e2m1_t, true>(
-      q, packed_activations, activation_scales, weights, weight_scales, outputs, bdpas_activation_workspace,
-      weight_workspace, N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, refresh_weight_staging,
-      num_tokens_per_expert_host, refresh_metadata);
-}
-
-bool sycl_tla_moe_prefill_hmt_mxfp4_mxfp4_bdpas(sycl::queue* q, void* activations, void* hadamard, void* weights,
-                                                void* weight_scales, void* outputs, void* activation_workspace,
-                                                void* weight_workspace, BTLA_DTYPE output_dtype,
-                                                BTLA_DTYPE activation_dtype, int N, int K, int group_size,
-                                                int* num_tokens_per_expert, int num_experts, int total_tokens,
-                                                bool use_fwht, int hadamard_dim, bool refresh_weight_staging,
-                                                int* num_tokens_per_expert_host, bool refresh_metadata) {
-  if (!moe_mxfp_bdpas_detail::env_enabled("ARK_MOE_PREFILL_BDPAS_HMT_MXFP4_MXFP4")) return false;
-  if (activation_dtype == BTLA_DTYPE::F16) {
-    return sycl_tla_moe_prefill_hmt_mxfp4_mxfp4_bdpas_impl<sycl::half>(
-        q, activations, hadamard, weights, weight_scales, outputs, activation_workspace, weight_workspace,
-        output_dtype, N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, use_fwht, hadamard_dim,
-        refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata);
-  }
-  if (activation_dtype == BTLA_DTYPE::BF16) {
-    return sycl_tla_moe_prefill_hmt_mxfp4_mxfp4_bdpas_impl<sycl::ext::oneapi::bfloat16>(
-        q, activations, hadamard, weights, weight_scales, outputs, activation_workspace, weight_workspace,
-        output_dtype, N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, use_fwht, hadamard_dim,
-        refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata);
   }
   return false;
 }

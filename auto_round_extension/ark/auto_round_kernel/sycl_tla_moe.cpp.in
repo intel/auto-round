@@ -435,17 +435,18 @@ void moe_gemm_prefill_mxfp8_mxfp4_dispatch(sycl::queue* q, void* activations, vo
   const bool use_lut = moe_dequant::fp8_decode_use_lut();
   auto* act_hp = static_cast<ScalarT*>(activation_workspace);
   auto* weights_kn = static_cast<ScalarT*>(weight_workspace);
-    const bool bdpas_done =
-    activation_dtype == BTLA_DTYPE::F4_E2M1
-        ? sycl_tla_moe_prefill_mxfp4_mxfp4_bdpas(
-          q, activations, activation_scales, weights, weight_scales, outputs, activation_workspace,
-          weight_workspace, output_dtype, activation_dtype, N, K, group_size, num_tokens_per_expert,
-          num_experts, total_tokens, refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata)
-        : sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas(
-          q, activations, activation_scales, weights, weight_scales, outputs, activation_workspace,
-          weight_workspace, output_dtype, activation_dtype, N, K, group_size, num_tokens_per_expert,
-          num_experts, total_tokens, refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata);
-    if (bdpas_done) {
+  const bool bdpas_done = activation_dtype == BTLA_DTYPE::F4_E2M1
+                              ? sycl_tla_moe_prefill_mxfp4_mxfp4_bdpas(
+                                    q, activations, activation_scales, weights, weight_scales, outputs,
+                                    activation_workspace, weight_workspace, output_dtype, activation_dtype, N, K,
+                                    group_size, num_tokens_per_expert, num_experts, total_tokens,
+                                    refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata)
+                              : sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas(
+                                    q, activations, activation_scales, weights, weight_scales, outputs,
+                                    activation_workspace, weight_workspace, output_dtype, activation_dtype, N, K,
+                                    group_size, num_tokens_per_expert, num_experts, total_tokens,
+                                    refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata);
+  if (bdpas_done) {
     return;
   }
   if (activation_dtype == BTLA_DTYPE::F8_E4M3) {
@@ -522,39 +523,6 @@ void moe_gemm_prefill_mxfp4_mxfp4(sycl::queue* q, void* activations, void* activ
                                activation_workspace, weight_workspace, output_dtype, activation_dtype, N, K,
                                group_size, num_tokens_per_expert, num_experts, total_tokens, refresh_weight_staging,
                                num_tokens_per_expert_host, refresh_metadata);
-}
-
-void moe_gemm_prefill_hmt_mxfp4_mxfp4(sycl::queue* q, void* activations, void* hadamard, void* weights,
-                                      void* weight_scales, void* outputs, void* activation_workspace,
-                                      void* weight_workspace, BTLA_DTYPE output_dtype, BTLA_DTYPE activation_dtype,
-                                      int N, int K, int group_size, int* num_tokens_per_expert, int num_experts,
-                                      int total_tokens, bool use_fwht, int hadamard_dim, bool refresh_weight_staging,
-                                      int* num_tokens_per_expert_host, bool refresh_metadata) {
-  if (total_tokens == 0) return;
-  if (activation_workspace == nullptr || weight_workspace == nullptr) {
-    throw std::invalid_argument("moe_gemm_prefill_hmt_mxfp4_mxfp4: workspace pointers must be non-null");
-  }
-  if (hadamard == nullptr) {
-    throw std::invalid_argument("moe_gemm_prefill_hmt_mxfp4_mxfp4: hadamard pointer must be non-null");
-  }
-  if (activation_dtype != BTLA_DTYPE::F16 && activation_dtype != BTLA_DTYPE::BF16) {
-    throw std::invalid_argument("moe_gemm_prefill_hmt_mxfp4_mxfp4: activations must be F16 or BF16");
-  }
-  if (output_dtype != BTLA_DTYPE::BF16) {
-    throw std::invalid_argument("moe_gemm_prefill_hmt_mxfp4_mxfp4: output_dtype must be BF16");
-  }
-  if (K % group_size != 0) {
-    throw std::invalid_argument("moe_gemm_prefill_hmt_mxfp4_mxfp4: K must be a multiple of group_size");
-  }
-
-  const bool bdpas_done = sycl_tla_moe_prefill_hmt_mxfp4_mxfp4_bdpas(
-      q, activations, hadamard, weights, weight_scales, outputs, activation_workspace, weight_workspace, output_dtype,
-      activation_dtype, N, K, group_size, num_tokens_per_expert, num_experts, total_tokens, use_fwht, hadamard_dim,
-      refresh_weight_staging, num_tokens_per_expert_host, refresh_metadata);
-  if (!bdpas_done) {
-    throw std::runtime_error(
-        "moe_gemm_prefill_hmt_mxfp4_mxfp4: BDPAS HMT MXFP4/MXFP4 path is unavailable for this build or shape");
-  }
 }
 
 }  // namespace ark
