@@ -97,6 +97,7 @@
 // grf_size_properties extension are present, so no new CMake work is
 // required for this header.
 #include "sycl_tla_moe.hpp"
+#include "sycl_tla_moe_dequant.hpp"
 
 // `DeviceMemoryPool`, the extension-wide device scratch allocator that serves
 // the grouped-GEMM work-group counter (see `get_atomic_scratch_buffer` below).
@@ -794,6 +795,8 @@ CUTE_DEVICE auto make_moe_tensor(T* ptr, int r, int c) {
 // ---------------------------------------------------------------------------
 
 enum class ScaleMode : int { kPerTensor = 0, kPerGroup = 1 };
+
+inline bool moe_prefill_dpas_fp8_pergroup_shape_ok(int N, int K, int group_size);
 
 template <class GmemTiledCopyA, class GmemTiledCopyB, class GmemTiledCopyD,
           char LayoutKindA, char LayoutKindB, char LayoutKindD, ScaleMode Mode,

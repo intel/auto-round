@@ -326,6 +326,9 @@ class CMakeBuild(build_ext):
         ]
         if sycl_target:
             cmake_cmd.append(f"-DDPCPP_SYCL_TARGET={sycl_target}")
+        mxfp_bdpas_cutlass_dir = os.environ.get("ARK_MXFP_BDPAS_CUTLASS_DIR")
+        if mxfp_bdpas_cutlass_dir:
+            cmake_cmd.append(f"-DARK_MXFP_BDPAS_CUTLASS_DIR={mxfp_bdpas_cutlass_dir}")
         if sys.platform == "win32":
             cmake_cmd.append("-GNinja")
         xpu_n_job = get_sycl_tla_job_count(n_job) if enable_sycl_tla else n_job
