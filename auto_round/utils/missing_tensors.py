@@ -56,14 +56,31 @@ from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 def _restore_special_fp32_tensors(
     source_tensor_to_file: dict[str, str],
     saved_tensor_to_file: dict[str, str],
+    model_type: str | None = None,
 ) -> None:
     """Restore source FP32 tensors that were saved as FP16 or BF16."""
     from safetensors import safe_open
     from safetensors.torch import save_file
 
-    common_tensor_names = source_tensor_to_file.keys() & saved_tensor_to_file.keys()
+    def _tensor_aliases(name: str) -> list[str]:
+        aliases = {name}
+        if name.startswith("language_model.model."):
+            aliases.add("model.language_model." + name[len("language_model.model.") :])
+        elif name.startswith("model.language_model."):
+            aliases.add("language_model.model." + name[len("model.language_model.") :])
+        if model_type:
+            aliases |= _get_conversion_aliases(name, model_type)
+        return sorted(aliases, key=lambda alias: (alias != name, len(alias), alias))
+
+    source_to_saved: dict[str, str] = {}
+    for source_name in source_tensor_to_file:
+        for alias in _tensor_aliases(source_name):
+            if alias in saved_tensor_to_file:
+                source_to_saved[source_name] = alias
+                break
+
     source_names_by_shard: dict[str, list[str]] = {}
-    for tensor_name in common_tensor_names:
+    for tensor_name in source_to_saved:
         source_names_by_shard.setdefault(source_tensor_to_file[tensor_name], []).append(tensor_name)
 
     candidates: list[str] = []
@@ -75,27 +92,33 @@ def _restore_special_fp32_tensors(
 
     target_names_by_shard: dict[str, list[str]] = {}
     for tensor_name in candidates:
-        target_names_by_shard.setdefault(saved_tensor_to_file[tensor_name], []).append(tensor_name)
+        target_name = source_to_saved[tensor_name]
+        target_names_by_shard.setdefault(saved_tensor_to_file[target_name], []).append(tensor_name)
 
     tensors_to_restore: dict[str, torch.Tensor] = {}
     for target_shard, tensor_names in target_names_by_shard.items():
         with safe_open(target_shard, framework="pt", device="cpu") as target_file:
             for tensor_name in tensor_names:
-                if target_file.get_slice(tensor_name).get_dtype() in {"F16", "BF16"}:
+                target_name = source_to_saved[tensor_name]
+                if target_file.get_slice(target_name).get_dtype() in {"F16", "BF16"}:
                     source_shard = source_tensor_to_file[tensor_name]
                     with safe_open(source_shard, framework="pt", device="cpu") as source_file:
                         tensors_to_restore[tensor_name] = source_file.get_tensor(tensor_name)
 
     restore_names_by_shard: dict[str, list[str]] = {}
     for tensor_name in tensors_to_restore:
-        restore_names_by_shard.setdefault(saved_tensor_to_file[tensor_name], []).append(tensor_name)
+        restore_names_by_shard.setdefault(saved_tensor_to_file[source_to_saved[tensor_name]], []).append(tensor_name)
 
     for target_shard, tensor_names in restore_names_by_shard.items():
         with safe_open(target_shard, framework="pt", device="cpu") as target_file:
             metadata = target_file.metadata()
             shard_tensors = {name: target_file.get_tensor(name) for name in target_file.keys()}
         for tensor_name in tensor_names:
-            shard_tensors[tensor_name] = tensors_to_restore[tensor_name]
+            shard_tensors[source_to_saved[tensor_name]] = tensors_to_restore[tensor_name]
+
+        # Preserve the original shard permission bits so the temporary file's
+        # 0600 mode is not inherited by the final replacement target.
+        original_mode = os.stat(target_shard).st_mode
 
         temporary_path = None
         try:
@@ -105,6 +128,7 @@ def _restore_special_fp32_tensors(
                 temporary_path = temporary_file.name
             save_file({name: tensor.contiguous() for name, tensor in shard_tensors.items()}, temporary_path, metadata)
             os.replace(temporary_path, target_shard)
+            os.chmod(target_shard, original_mode)
         finally:
             if temporary_path and os.path.exists(temporary_path):
                 os.remove(temporary_path)
@@ -270,7 +294,7 @@ def copy_missing_tensors_from_source(
     else:
         return
 
-    _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file)
+    _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file, model_type=model_type)
     saved_tensor_names = set(saved_tensor_to_file)
 
     # ------------------------------------------------------------------ #

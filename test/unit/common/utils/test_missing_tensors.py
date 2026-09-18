@@ -564,6 +564,24 @@ class TestCopyMissingTensorsFromSource:
         with open(os.path.join(tgt, "model.safetensors.index.json")) as f:
             assert json.load(f)["weight_map"]["model.special.weight"] == target_shard
 
+    def test_restores_renamed_fp32_tensor_saved_as_bf16(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        original = torch.tensor([1.0001, -2.0002], dtype=torch.float32)
+        _save_safetensors({"model.language_model.special.weight": original}, os.path.join(src, "model.safetensors"))
+        _save_safetensors(
+            {"language_model.model.special.weight": original.to(torch.bfloat16)},
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+
+        copy_missing_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        assert result["language_model.model.special.weight"].dtype == torch.float32
+        assert torch.equal(result["language_model.model.special.weight"], original)
+
     def test_detects_multiple_missing_tensors_from_different_blocks(self, tmp_path):
         """All source tensors from blocks absent in the saved output are copied."""
         src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
