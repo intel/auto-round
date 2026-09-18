@@ -40,18 +40,15 @@ W4A8ScratchState& w4a8_scratch_state() {
   return *s;
 }
 
-// Acquire a slab from the shared pool, synchronizing first when the request
-// grows it: `DeviceMemoryPool` frees the old pointer in place when it grows a
-// slot, and in-flight kernels may still be reading the old slab, so the wait
-// has to happen before the call rather than after.
+// Acquire a slab from the shared pool.
+//
+// Growth goes through `DeviceMemoryPool::get_scratch_mem`, which already uses
+// the pool's non-blocking per-queue replacement path: it must not host-wait
+// here because that breaks XPU graph capture (see `utils.hpp`).
 //
 // The caller must hold `W4A8ScratchState::mu`.
 void* acquire_w4a8_slab(sycl::queue* q, size_t bytes, size_t buf_loc) {
   auto* pool = DeviceMemoryPool::Instance();
-  const size_t held = pool->get_scratch_size(buf_loc, q);
-  if (held != 0 && held < bytes) {
-    q->wait();
-  }
   void* ptr = pool->get_scratch_mem(bytes, buf_loc, q);
   if (ptr == nullptr) {
     // The pool records the slot before checking the result, so a failed

@@ -2554,6 +2554,63 @@ if pytest is not None:
             for c, f in zip(coarse, fine):
                 assert f["block"] <= c["block"]
 
+        def test_cache_rekeys_on_resolved_block_override(self):
+            """Changing ``ARK_MOE_W4A8_AUTO_S8`` must not reuse a stale prepack.
+
+            The convenience wrapper caches the int8 conversion, but the effective
+            block comes from the environment as well as the argument. Reusing a
+            cache entry across two override values would silently ignore the
+            second setting and feed GEMM scales laid out for the first one.
+            """
+            case = _build_case(16, 256, 1, 1, 128, torch.bfloat16, need_reference=False, need_dequant=False)
+            with _env_override(ARK_MOE_W4A8_AUTO_S8="128"):
+                ark.moe_w4a8(case["activations"], case["packed"], case["ntpe"], scales=case["scales"])
+            with _env_override(ARK_MOE_W4A8_AUTO_S8="256"):
+                ark.moe_w4a8(case["activations"], case["packed"], case["ntpe"], scales=case["scales"])
+            blocks = sorted(entry[2] for entry in ark._MOE_W4A8_PREPACK_CACHE.values())
+            assert blocks == [128, 256], f"expected separate cache entries per resolved block, got {blocks}"
+
+        def test_gemm_rejects_aux_tensor_device_mismatch(self):
+            """Every auxiliary tensor passed to the XPU kernel must share the XPU device."""
+            case = _build_case(16, 256, 1, 2, 128, torch.bfloat16, need_reference=False, need_dequant=False, topk=1)
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(case["packed"], case["scales"], group_size=128)
+            with pytest.raises(ValueError, match="num_tokens_per_expert"):
+                ark.moe_gemm_w4a8(
+                    case["activations"],
+                    weights_s8,
+                    wscales,
+                    case["ntpe"].cpu(),
+                    rescale_block_size=block,
+                    phase="prefill",
+                )
+            with pytest.raises(ValueError, match="routing_weights"):
+                ark.moe_gemm_w4a8(
+                    case["activations"],
+                    weights_s8,
+                    wscales,
+                    case["ntpe"],
+                    rescale_block_size=block,
+                    phase="prefill",
+                    row_to_token=case["row_to_token"],
+                    routing_weights=case["routing_weights"].cpu(),
+                    output_rows=case["batch"],
+                )
+
+        def test_rejects_oversized_k(self):
+            """Reject shapes whose int32 accumulator would overflow before dispatch."""
+            K = 133184
+            group_size = 128
+            packed = torch.empty((1, 16, K // 2), device="xpu", dtype=torch.uint8)
+            scales = torch.empty((1, 16, K // group_size), device="xpu", dtype=torch.bfloat16)
+            activations = torch.empty((1, K), device="xpu", dtype=torch.bfloat16)
+            weights_s8 = torch.empty((1, 16, K), device="xpu", dtype=torch.int8)
+            wscales = torch.empty((1, 16, 1), device="xpu", dtype=torch.float32)
+            ntpe = torch.ones(1, device="xpu", dtype=torch.int32)
+            with pytest.raises(ValueError, match="accumulator overflow"):
+                ark.moe_w4a8_prepack(packed, scales, group_size=group_size)
+            with pytest.raises(ValueError, match="accumulator overflow"):
+                ark.moe_gemm_w4a8(activations, weights_s8, wscales, ntpe, rescale_block_size=K, phase="prefill")
+
         def test_perf_decode(self, request):
             all_shapes = request.config.getoption("--all-shapes", default=False)
             rows = run_perf("decode", _decode_batches(all_shapes), models=_models_option(request))

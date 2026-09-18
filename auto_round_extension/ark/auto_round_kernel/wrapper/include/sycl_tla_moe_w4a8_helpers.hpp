@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -56,6 +57,8 @@ using moe_decode_detail::SG_SIZE;
 // `xpu_wrapper.hpp`'s `packscale` rescale kernel.
 constexpr float kInt4FullRange = 8.0f;
 constexpr float kInt8Max = 127.0f;
+constexpr int64_t kInt8AccumMax = 127;
+constexpr int64_t kMaxAccumK = std::numeric_limits<int32_t>::max() / (kInt8AccumMax * kInt8AccumMax);
 
 // K elements decoded per work-item in the prepack kernel (one 32-bit word of
 // packed nibbles). Requires `K % 8 == 0`, which the shape gate enforces.
@@ -88,11 +91,16 @@ inline int moe_w4a8_rescale_block_size(int K, int group_size, int requested) {
   return v;
 }
 
+inline bool moe_w4a8_k_ok(int K) {
+  return K > 0 && static_cast<int64_t>(K) <= kMaxAccumK;
+}
+
 // Shape preconditions shared by the prepack, prefill and decode paths.
 inline bool moe_w4a8_shape_ok(int N, int K, int group_size) {
   if (N <= 0 || K <= 0 || group_size <= 0) return false;
   if (N % N_TILE != 0) return false;
   if (K % 64 != 0) return false;
+  if (!moe_w4a8_k_ok(K)) return false;
   if (group_size % kPrepackOctet != 0) return false;
   if (K % group_size != 0) return false;
   return true;
@@ -278,7 +286,8 @@ inline void moe_w4a8_prepack(sycl::queue* q, void* weights_s4, void* scales, voi
   if (!moe_w4a8::moe_w4a8_shape_ok(N, K, group_size)) {
     throw std::invalid_argument(
         "moe_w4a8_prepack: unsupported shape (need N % 16 == 0, K % 64 == 0, "
-        "group_size % 8 == 0 and K % group_size == 0)");
+        "K <= 133144 to avoid int32 accumulator overflow, group_size % 8 == 0 "
+        "and K % group_size == 0)");
   }
   if (weights_s4 == nullptr || scales == nullptr || weights_s8 == nullptr || wscales == nullptr) {
     throw std::invalid_argument("moe_w4a8_prepack: null buffer");
@@ -347,6 +356,9 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
   }
   if (K % 64 != 0) {
     throw std::invalid_argument("moe_gemm_w4a8: K must be a multiple of 64");
+  }
+  if (!moe_w4a8::moe_w4a8_k_ok(K)) {
+    throw std::invalid_argument("moe_gemm_w4a8: K must be <= 133144 to avoid int32 accumulator overflow");
   }
   if (rescale_block_size <= 0 || rescale_block_size > K || K % rescale_block_size != 0 ||
       rescale_block_size % 64 != 0) {

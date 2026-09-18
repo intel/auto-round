@@ -3485,9 +3485,10 @@ def clear_moe_prefill_workspace_cache() -> None:
 # elements.
 #
 # `moe_w4a8` keeps the conversion result in a module-level cache keyed on the
-# weight/scale tensor identity so repeated forward passes over the same expert
-# weights pay for it only once. Callers that manage their own storage should
-# use `moe_w4a8_prepack` + `moe_gemm_w4a8` directly.
+# source tensor identity plus the layout / mutation state and the resolved
+# AUTO_S8 block, so repeated forward passes over the same expert weights pay
+# for it only once. Callers that manage their own storage should use
+# `moe_w4a8_prepack` + `moe_gemm_w4a8` directly.
 #
 # Cache entries are `(weights_s8, wscales, block, weights, scales)`: the source
 # tensors are pinned in the entry because the address half of the key is
@@ -3497,6 +3498,7 @@ def clear_moe_prefill_workspace_cache() -> None:
 # ---------------------------------------------------------------------------
 
 _MOE_W4A8_PREPACK_CACHE: "dict[tuple, tuple]" = {}
+_MOE_W4A8_MAX_ACCUM_K = (2**31 - 1) // (127 * 127)
 
 
 def moe_w4a8_rescale_block_size(K: int, group_size: int, rescale_group_size: int = -1) -> int:
@@ -3534,6 +3536,27 @@ def moe_w4a8_rescale_block_size(K: int, group_size: int, rescale_group_size: int
     return value
 
 
+def _synchronize_xpu_device(device: torch.device) -> None:
+    if device.type != "xpu":
+        return
+    if device.index is None:
+        torch.xpu.synchronize()
+    else:
+        torch.xpu.synchronize(device.index)
+
+
+def _validate_moe_w4a8_k(K: int, api_name: str) -> None:
+    if K > _MOE_W4A8_MAX_ACCUM_K:
+        raise ValueError(
+            f"{api_name}: K must be <= {_MOE_W4A8_MAX_ACCUM_K} to avoid int32 accumulator overflow (got {K})"
+        )
+
+
+def _require_same_device(tensor: torch.Tensor, reference: torch.Tensor, tensor_name: str, api_name: str) -> None:
+    if tensor.device != reference.device:
+        raise ValueError(f"{api_name}: {tensor_name} must be on {reference.device}, got {tensor.device}")
+
+
 def moe_w4a8_release_scratch() -> None:
     """Release the device scratch slabs held by the W4A8 MoE path.
 
@@ -3548,7 +3571,21 @@ def moe_w4a8_release_scratch() -> None:
 
 
 def clear_moe_w4a8_prepack_cache() -> None:
-    """Release every int8 weight/scale pair cached by :func:`moe_w4a8`."""
+    """Release every int8 weight/scale pair cached by :func:`moe_w4a8`.
+
+    Synchronizes the cached XPU devices first so queued kernels cannot outlive
+    the cached tensors they still read.
+    """
+    synced = set()
+    for entry in _MOE_W4A8_PREPACK_CACHE.values():
+        device = entry[0].device
+        if device.type != "xpu":
+            continue
+        key = (device.type, device.index)
+        if key in synced:
+            continue
+        _synchronize_xpu_device(device)
+        synced.add(key)
     _MOE_W4A8_PREPACK_CACHE.clear()
 
 
@@ -3557,6 +3594,7 @@ def _validate_moe_w4a8_shape(N: int, K: int, group_size: int, api_name: str) -> 
         raise ValueError(f"{api_name}: N must be a multiple of 16 (got {N})")
     if K % 64 != 0:
         raise ValueError(f"{api_name}: K must be a multiple of 64 (got {K})")
+    _validate_moe_w4a8_k(K, api_name)
     if group_size <= 0 or group_size % 8 != 0:
         raise ValueError(f"{api_name}: group_size must be a positive multiple of 8 (got {group_size})")
     if K % group_size != 0:
@@ -3734,6 +3772,11 @@ def moe_gemm_w4a8(
         raise ValueError("weights_s8 must be a 3D torch.int8 tensor [E, N, K]")
     if wscales.ndim != 3 or wscales.dtype != torch.float32:
         raise ValueError("wscales must be a 3D torch.float32 tensor [E, N, K // block]")
+    _require_same_device(weights_s8, activations, "weights_s8", "moe_gemm_w4a8")
+    _require_same_device(wscales, activations, "wscales", "moe_gemm_w4a8")
+    _require_same_device(num_tokens_per_expert, activations, "num_tokens_per_expert", "moe_gemm_w4a8")
+    if prequantized:
+        _require_same_device(activation_scale, activations, "activation_scale", "moe_gemm_w4a8")
 
     activations = activations.contiguous()
     weights_s8 = weights_s8.contiguous()
@@ -3751,6 +3794,7 @@ def moe_gemm_w4a8(
         raise ValueError(f"N must be a multiple of 16 (got {N})")
     if K % 64 != 0:
         raise ValueError(f"K must be a multiple of 64 (got {K})")
+    _validate_moe_w4a8_k(K, "moe_gemm_w4a8")
 
     nblk = wscales.shape[2]
     if nblk <= 0 or K % nblk != 0:
@@ -3775,6 +3819,8 @@ def moe_gemm_w4a8(
             raise ValueError("the fused top-k reduction is prefill-only; pass phase='prefill'")
         if int(output_rows) <= 0:
             raise ValueError(f"output_rows must be positive (got {output_rows})")
+        _require_same_device(row_to_token, activations, "row_to_token", "moe_gemm_w4a8")
+        _require_same_device(routing_weights, activations, "routing_weights", "moe_gemm_w4a8")
         if row_to_token.dtype != torch.int32:
             row_to_token = row_to_token.to(torch.int32)
         if routing_weights.dtype != torch.float32:
@@ -3886,10 +3932,10 @@ def moe_w4a8(
     """W4A8 MoE from auto-round's packed int4-sym weights (prefill + decode).
 
     Convenience wrapper that runs :func:`moe_w4a8_prepack` (cached on the
-    weight/scale tensor identity) and then :func:`moe_gemm_w4a8`. It is a
-    drop-in replacement for :func:`moe` on int4-sym weights, trading a small
-    amount of extra quantization error on the activations for the int8 DPAS
-    throughput.
+    source tensor identity plus layout / mutation state and the resolved
+    AUTO_S8 block) and then :func:`moe_gemm_w4a8`. It is a drop-in replacement
+    for :func:`moe` on int4-sym weights, trading a small amount of extra
+    quantization error on the activations for the int8 DPAS throughput.
 
     Args:
         activations: ``[total_tokens, K]`` fp16/bf16, rows sorted by expert.
@@ -3900,11 +3946,12 @@ def moe_w4a8(
         rescale_group_size: AUTO_S8 block size, ``-1`` = per output channel.
         phase: ``"auto"``, ``"decode"`` or ``"prefill"``.
         cache_prepack: keep the converted int8 weights in a module-level cache
-            keyed on ``(weights, scales)`` identity. The cache entry holds
-            strong references to ``weights`` / ``scales`` so their addresses
-            cannot be recycled by another tensor while the entry lives (see
-            :data:`_MOE_W4A8_PREPACK_CACHE`). Set to ``False`` for one-shot use
-            so the (large) int8 copy is released immediately.
+            keyed on source identity, layout, mutation version and the resolved
+            block size. The cache entry holds strong references to ``weights`` /
+            ``scales`` so their addresses cannot be recycled by another tensor
+            while the entry lives (see :data:`_MOE_W4A8_PREPACK_CACHE`). Set to
+            ``False`` for one-shot use so the (large) int8 copy is released as
+            soon as the queued work completes.
 
     Returns:
         ``[total_tokens, N]`` in the activations dtype.
@@ -3916,7 +3963,10 @@ def moe_w4a8(
 
     key = None
     entry = None
+    block = None
     if cache_prepack:
+        if weights.ndim == 3:
+            block = moe_w4a8_rescale_block_size(weights.shape[2] * 2, group_size, rescale_group_size)
         device = weights.device
         key = (
             device.type,
@@ -3924,8 +3974,13 @@ def moe_w4a8(
             weights.data_ptr(),
             scales.data_ptr(),
             tuple(weights.shape),
+            tuple(scales.shape),
+            tuple(weights.stride()),
+            tuple(scales.stride()),
+            int(weights._version),
+            int(scales._version),
             int(group_size),
-            int(rescale_group_size),
+            int(block) if block is not None else None,
             str(scales.dtype),
         )
         entry = _MOE_W4A8_PREPACK_CACHE.get(key)
@@ -3947,7 +4002,7 @@ def moe_w4a8(
             _MOE_W4A8_PREPACK_CACHE[key] = entry
 
     weights_s8, wscales, block = entry[0], entry[1], entry[2]
-    return moe_gemm_w4a8(
+    outputs = moe_gemm_w4a8(
         activations,
         weights_s8,
         wscales,
@@ -3955,6 +4010,9 @@ def moe_w4a8(
         rescale_block_size=block,
         phase=phase,
     )
+    if not cache_prepack:
+        _synchronize_xpu_device(activations.device)
+    return outputs
 
 
 # ---------------------------------------------------------------------------
