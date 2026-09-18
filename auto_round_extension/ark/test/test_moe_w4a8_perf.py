@@ -2598,7 +2598,7 @@ if pytest is not None:
 
         def test_rejects_oversized_k(self):
             """Reject shapes whose int32 accumulator would overflow before dispatch."""
-            K = 133184
+            K = ((ark._MOE_W4A8_MAX_ACCUM_K // 64) + 1) * 64
             group_size = 128
             packed = torch.empty((1, 16, K // 2), device="xpu", dtype=torch.uint8)
             scales = torch.empty((1, 16, K // group_size), device="xpu", dtype=torch.bfloat16)

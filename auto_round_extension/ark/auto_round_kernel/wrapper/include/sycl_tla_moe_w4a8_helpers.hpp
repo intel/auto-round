@@ -30,6 +30,7 @@
 #include <map>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -284,10 +285,9 @@ inline void moe_w4a8_prepack(sycl::queue* q, void* weights_s4, void* scales, voi
                              int rescale_group_size) {
   if (num_experts <= 0) return;
   if (!moe_w4a8::moe_w4a8_shape_ok(N, K, group_size)) {
-    throw std::invalid_argument(
-        "moe_w4a8_prepack: unsupported shape (need N % 16 == 0, K % 64 == 0, "
-        "K <= 133144 to avoid int32 accumulator overflow, group_size % 8 == 0 "
-        "and K % group_size == 0)");
+    throw std::invalid_argument("moe_w4a8_prepack: unsupported shape (need N % 16 == 0, K % 64 == 0, K <= " +
+                                std::to_string(moe_w4a8::kMaxAccumK) +
+                                " to avoid int32 accumulator overflow, group_size % 8 == 0 and K % group_size == 0)");
   }
   if (weights_s4 == nullptr || scales == nullptr || weights_s8 == nullptr || wscales == nullptr) {
     throw std::invalid_argument("moe_w4a8_prepack: null buffer");
@@ -358,7 +358,8 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
     throw std::invalid_argument("moe_gemm_w4a8: K must be a multiple of 64");
   }
   if (!moe_w4a8::moe_w4a8_k_ok(K)) {
-    throw std::invalid_argument("moe_gemm_w4a8: K must be <= 133144 to avoid int32 accumulator overflow");
+    throw std::invalid_argument("moe_gemm_w4a8: K must be <= " + std::to_string(moe_w4a8::kMaxAccumK) +
+                                " to avoid int32 accumulator overflow");
   }
   if (rescale_block_size <= 0 || rescale_block_size > K || K % rescale_block_size != 0 ||
       rescale_block_size % 64 != 0) {
