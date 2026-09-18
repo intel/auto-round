@@ -2476,19 +2476,29 @@ def moe_gemm_decode(
     if scale_dtype is not None:
         raise ValueError("moe_gemm_decode does not support non-activation scale_dtype; use moe_gemm_prefill")
 
-    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, _scale_dtype_id, total_tokens, N, K, num_experts = (
-        _validate_moe_quant_args(
-            activations,
-            weights,
-            num_tokens_per_expert,
-            scales=scales,
-            zeros=zeros,
-            weight_bits=weight_bits,
-            group_size=group_size,
-            asym=asym,
-            scale_dtype=scale_dtype,
-            api_name="moe_gemm_decode",
-        )
+    (
+        activations,
+        weights,
+        scales,
+        zeros,
+        num_tokens_per_expert,
+        weight_dtype,
+        _scale_dtype_id,
+        total_tokens,
+        N,
+        K,
+        num_experts,
+    ) = _validate_moe_quant_args(
+        activations,
+        weights,
+        num_tokens_per_expert,
+        scales=scales,
+        zeros=zeros,
+        weight_bits=weight_bits,
+        group_size=group_size,
+        asym=asym,
+        scale_dtype=scale_dtype,
+        api_name="moe_gemm_decode",
     )
 
     lib = get_lib(activations)
@@ -3343,19 +3353,29 @@ def moe_gemm_prefill(
             f"got {weights.dtype}"
         )
 
-    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, scale_dtype_id, total_tokens, N, K, num_experts = (
-        _validate_moe_quant_args(
-            activations,
-            weights,
-            num_tokens_per_expert,
-            scales=scales,
-            zeros=zeros,
-            weight_bits=weight_bits,
-            group_size=group_size,
-            asym=asym,
-            scale_dtype=scale_dtype,
-            api_name="moe_gemm_prefill",
-        )
+    (
+        activations,
+        weights,
+        scales,
+        zeros,
+        num_tokens_per_expert,
+        weight_dtype,
+        scale_dtype_id,
+        total_tokens,
+        N,
+        K,
+        num_experts,
+    ) = _validate_moe_quant_args(
+        activations,
+        weights,
+        num_tokens_per_expert,
+        scales=scales,
+        zeros=zeros,
+        weight_bits=weight_bits,
+        group_size=group_size,
+        asym=asym,
+        scale_dtype=scale_dtype,
+        api_name="moe_gemm_prefill",
     )
 
     lib = get_lib(activations)
@@ -3750,7 +3770,9 @@ def moe_gemm_prefill_mxfp8_mxfp4(
             int(routing_host.data_ptr()),
             routing_version,
         )
-        refresh_metadata = bdpas_supported and _MOE_PREFILL_MXFP8_MXFP4_METADATA_CACHE.get(metadata_cache_key) != routing_version
+        refresh_metadata = (
+            bdpas_supported and _MOE_PREFILL_MXFP8_MXFP4_METADATA_CACHE.get(metadata_cache_key) != routing_version
+        )
 
     lib.moe_gemm_prefill_mxfp8_mxfp4(
         stream,
@@ -3860,7 +3882,9 @@ def moe_gemm_prefill_mxfp4_mxfp4(
         )
     stream = get_stream(activations)
     outputs = torch.empty((total_tokens, N), device=activations.device, dtype=output_dtype)
-    bdpas_supported = _mxfp4_mxfp4_bdpas_enabled() and output_dtype == torch.bfloat16 and group_size == 32 and K % 64 == 0
+    bdpas_supported = (
+        _mxfp4_mxfp4_bdpas_enabled() and output_dtype == torch.bfloat16 and group_size == 32 and K % 64 == 0
+    )
     if bdpas_supported:
         activation_workspace = _get_moe_prefill_mxfp4_activation_bdpas_workspace(
             activations.device, total_tokens, K, num_experts
@@ -3924,7 +3948,9 @@ def moe_gemm_prefill_mxfp4_mxfp4(
             int(routing_host.data_ptr()),
             routing_version,
         )
-        refresh_metadata = bdpas_supported and _MOE_PREFILL_MXFP4_MXFP4_METADATA_CACHE.get(metadata_cache_key) != routing_version
+        refresh_metadata = (
+            bdpas_supported and _MOE_PREFILL_MXFP4_MXFP4_METADATA_CACHE.get(metadata_cache_key) != routing_version
+        )
 
     lib.moe_gemm_prefill_mxfp4_mxfp4(
         stream,
@@ -3972,7 +3998,7 @@ def moe_gemm_prefill_hmt_mxfp4_mxfp4(
     ``weights`` are packed FP4 E2M1 ``[E, N, K // 2]`` with E8M0 scales
     ``[E, N, K // group_size]``.
     """
-    from .mxfp4_hadamard import HADAMARD_DIM, get_hadamard_matrix, is_default_hadamard, _validate_hadamard
+    from .mxfp4_hadamard import is_default_hadamard, _validate_hadamard
 
     if activations.device.type != "xpu":
         raise NotImplementedError("moe_gemm_prefill_hmt_mxfp4_mxfp4 is only supported on XPU")

@@ -25,7 +25,6 @@ import auto_round_kernel as ark
 import torch
 from auto_round_kernel.mxfp4_hadamard import mxfp4_hadamard_quant_reference
 
-
 FP4_E2M1 = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=torch.float32)
 
 

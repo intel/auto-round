@@ -134,7 +134,9 @@ def main() -> None:
 
     print(f"device={torch.xpu.get_device_name(0)}")
     print(f"ark={ark.__file__}")
-    print("phase,label,fp8_dtype,output_dtype,M,E,N,K,iters,median_ms,best_ms,tflops_median,tflops_best,packed_GBps_median,packed_GBps_best,workspace_GBps_median,workspace_GBps_best")
+    print(
+        "phase,label,fp8_dtype,output_dtype,M,E,N,K,iters,median_ms,best_ms,tflops_median,tflops_best,packed_GBps_median,packed_GBps_best,workspace_GBps_median,workspace_GBps_best"
+    )
 
     for shape in SHAPES:
         if shape.k % 32 != 0 or shape.n % 16 != 0:
