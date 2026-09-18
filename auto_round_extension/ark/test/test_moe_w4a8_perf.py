@@ -3579,6 +3579,36 @@ if pytest is not None:
                 _release_xpu_memory()
 
         @pytest.mark.skipif(bool(_QUANT_ACT_SKIP), reason=_QUANT_ACT_SKIP or "standalone quantizer unavailable")
+        def test_quant_act_zero_tokens_returns_empty_outputs(self):
+            """The Python wrapper should preserve the valid zero-token no-op."""
+            activations = torch.empty((0, 64), device="xpu", dtype=torch.bfloat16)
+            qact, ascale = ark.moe_w4a8_quant_act(activations)
+            assert qact.shape == (0, 64)
+            assert qact.dtype == torch.int8
+            assert ascale.shape == (0,)
+            assert ascale.dtype == torch.float32
+
+        @pytest.mark.skipif(bool(_QUANT_ACT_SKIP), reason=_QUANT_ACT_SKIP or "standalone quantizer unavailable")
+        def test_quant_act_zero_tokens_still_validates_entry_point_args(self):
+            """The standalone entry point must validate queue/buffer arguments even for zero tokens."""
+            activations = torch.empty((0, 64), device="xpu", dtype=torch.bfloat16)
+            qact = torch.empty((0, 64), device="xpu", dtype=torch.int8)
+            ascale = torch.empty((0,), device="xpu", dtype=torch.float32)
+            lib = ark.get_lib(activations)
+            args = (
+                activations.data_ptr(),
+                qact.data_ptr(),
+                ascale.data_ptr(),
+                ark.cvt_dtype(activations.dtype),
+                0,
+                64,
+            )
+            with pytest.raises(Exception, match="stream must be a valid SYCL queue"):
+                lib.moe_w4a8_quant_act(0, *args)
+            with pytest.raises(Exception, match="null buffer"):
+                lib.moe_w4a8_quant_act(ark.get_stream(activations), 0, qact.data_ptr(), ascale.data_ptr(), *args[3:])
+
+        @pytest.mark.skipif(bool(_QUANT_ACT_SKIP), reason=_QUANT_ACT_SKIP or "standalone quantizer unavailable")
         def test_quant_act_matches_in_call_quant(self):
             """The standalone quantizer must be the pass the call runs internally.
 

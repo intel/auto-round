@@ -589,7 +589,9 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
 // ---------------------------------------------------------------------------
 inline void moe_w4a8_quant_act(sycl::queue* q, const void* activations, void* qact, void* ascale,
                                BTLA_DTYPE act_dtype, int total_tokens, int K) {
-  if (total_tokens == 0) return;
+  if (q == nullptr) {
+    throw std::invalid_argument("moe_w4a8_quant_act: stream must be a valid SYCL queue");
+  }
   if (total_tokens < 0) {
     throw std::invalid_argument("moe_w4a8_quant_act: total_tokens must be non-negative");
   }
@@ -602,6 +604,7 @@ inline void moe_w4a8_quant_act(sycl::queue* q, const void* activations, void* qa
   if (act_dtype != BTLA_DTYPE::F16 && act_dtype != BTLA_DTYPE::BF16) {
     throw std::invalid_argument("moe_w4a8_quant_act: act_dtype must be F16 or BF16");
   }
+  if (total_tokens == 0) return;
 
   W4A8QuantParams qp;
   qp.q = q;
