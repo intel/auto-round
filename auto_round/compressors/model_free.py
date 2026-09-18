@@ -58,7 +58,7 @@ Output formats
   ``quant_method="compressed-tensors"``, compatible with vLLM / llm-compressor.
 * **NVFP4_E5M3** → AutoRound format with packed ``.weight_packed`` and
     ``.weight_scale`` tensors; use ``format="fake"`` explicitly for high-precision
-    QDQ ``.weight`` tensors.
+    QDQ ``.weight`` tensors with metadata that restores runtime activation QDQ.
 
 Usage (CLI)
 -----------
@@ -1516,7 +1516,7 @@ class _ModelFreeCompressorCore:
 
         self._remove_stale_quantization_config_files()
         _remove_quantization_configs(self.config)
-        if self.format == "fake":
+        if self.format == "fake" and quantization_config.get("packing_format") != "auto_round:fake":
             with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
                 json.dump(self.config, f, indent=2)
             return
