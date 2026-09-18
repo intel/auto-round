@@ -603,6 +603,7 @@ def woqgemm(
     weight_type,
     scale_type,
     asym,
+    out: torch.Tensor | None = None,
 ):
     _validate_packed_blob(B, n, k, groupsize, compute_type, weight_type, scale_type, asym)
     m = A.shape[0]
@@ -610,7 +611,18 @@ def woqgemm(
     ct = cvtstr_dtype(compute_type)
     wt = cvtstr_dtype(weight_type)
     st = cvtstr_dtype(scale_type)
-    C = torch.zeros(m, n, dtype=A.dtype, device=A.device)
+    if out is None:
+        C = torch.zeros(m, n, dtype=A.dtype, device=A.device)
+    else:
+        if out.shape != (m, n):
+            raise ValueError(f"out must have shape {(m, n)}, got {tuple(out.shape)}")
+        if out.dtype != A.dtype:
+            raise ValueError(f"out dtype must be {A.dtype}, got {out.dtype}")
+        if out.device != A.device:
+            raise ValueError(f"out device must be {A.device}, got {out.device}")
+        if not out.is_contiguous():
+            raise ValueError("out must be contiguous")
+        C = out
     stream = get_stream(A)
     lib.woqgemm(
         stream,
@@ -620,7 +632,7 @@ def woqgemm(
         A.contiguous().data_ptr(),
         cvt_dtype(A.dtype),
         B.contiguous().data_ptr(),
-        C.contiguous().data_ptr(),
+        C.data_ptr(),
         bias.contiguous().data_ptr(),
         groupsize,
         ct,
