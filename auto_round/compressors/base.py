@@ -1933,9 +1933,11 @@ class BaseOrchestrator(object):
         if output_dir is not None:
             self.compress_context.output_dir = output_dir
         if format is not None:
-            if isinstance(format, str) and getattr(self, "formats", None) is None:
+            if isinstance(format, str):
                 self.formats = self._resolve_format_string(format)
-                self.compress_context.formats = self.formats
+            else:
+                self.formats = list(format)
+            self.compress_context.formats = self.formats
 
         if not self.model_context.quantized:
             logger.warning("please run autoround.quantize first")

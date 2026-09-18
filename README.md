@@ -41,6 +41,8 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 * [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.
 
+* [2026/09] We experimentally support **Recurrent Residual Quantization (RRQ)**, a progressive multi-precision representation that stacks INT2 residual planes on a standard INT2 base. A single checkpoint serves 2/4/6/8-bit — and per-layer mixed precision — selectable at load time without re-quantizing: [*Paper*](https://arxiv.org/abs/2608.04048). Note: this is an experimental feature and production-level deployments are not yet supported.
+
 * [2026/08] We experimentally support **algorithm composition** (e.g., `--algs awq,signround` or `--algs hadamard,awq,signround`) to improve accuracy [*Overview*](./docs/algorithm_combinations.md). We welcome any practical, deployable algorithms that are ready for real-world use. Feel free to submit a PR or leave a comment in Issues.
 
 * [2026/06] AutoScheme has been refined to improve accuracy for gguf format. See [AutoScheme Accuracy](./docs/auto_scheme_acc.md) for details. This enhancement incurs additional tuning cost.
