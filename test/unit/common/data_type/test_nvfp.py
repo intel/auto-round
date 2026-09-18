@@ -396,6 +396,16 @@ class TestNvFp4WithStaticGs:
         q, s, z = nv_fp4_with_static_gs(t, tensor_max=tm)
         assert q.shape == t.shape
 
+    def test_explicit_global_scale_is_used(self):
+        t = torch.tensor([[0.25, -1.0] * 8], dtype=torch.float32)
+        global_scale = torch.ones(1, dtype=torch.float32)
+
+        q, scale, _ = nv_fp4_with_static_gs(t, global_scale=global_scale)
+        expected_q, expected_scale = ref_nvfp4_quant(t, global_scale, block_size=16)
+
+        torch.testing.assert_close(q, expected_q)
+        torch.testing.assert_close(scale, expected_scale)
+
     def test_empty_tensor(self):
         t = torch.empty(0, 16, dtype=torch.bfloat16)
         q, s, z = nv_fp4_with_static_gs(t)
