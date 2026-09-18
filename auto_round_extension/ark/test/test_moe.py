@@ -60,6 +60,13 @@ def has_moe_gemm_prefill_mxfp4_mxfp4():
     return hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp4_mxfp4")
 
 
+def has_moe_gemm_prefill_hmt_mxfp4_mxfp4():
+    """Check if HMT + MXFP4 x MXFP4 MoE prefill kernel is available."""
+    if ark.xpu_lib is None:
+        return False
+    return hasattr(ark.xpu_lib, "moe_gemm_prefill_hmt_mxfp4_mxfp4")
+
+
 @pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
 @pytest.mark.skipif(
     not has_moe_gemm_prefill_mxfp8_mxfp4(),
@@ -132,6 +139,41 @@ class TestMoEGemmPrefillMXFP4MXFP4:
         )
 
         expected = torch.full((total_tokens, N), float(K), dtype=torch.float32, device="xpu")
+        torch.testing.assert_close(output.float(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
+@pytest.mark.skipif(
+    not has_moe_gemm_prefill_hmt_mxfp4_mxfp4(),
+    reason="HMT MXFP4 x MXFP4 MoE prefill kernel not built (need ARK_SYCL_TLA=ON)",
+)
+class TestMoEGemmPrefillHMTMXFP4MXFP4:
+    """Unit tests for fused HMT + MXFP4 activation x MXFP4 weight MoE prefill."""
+
+    @pytest.mark.parametrize("activation_dtype", [torch.float16, torch.bfloat16])
+    def test_constant_hadamard_block_scaled_values(self, activation_dtype):
+        num_experts = 2
+        total_tokens = 4
+        N = 16
+        K = 64
+
+        activations = torch.ones(total_tokens, K, dtype=activation_dtype, device="xpu")
+        weights = torch.zeros((num_experts, N, K // 2), dtype=torch.uint8, device="xpu")
+        weights[:, :, 0] = 0x02
+        weights[:, :, 16] = 0x02
+        weight_scales = torch.full((num_experts, N, K // 32), 127, dtype=torch.uint8, device="xpu")
+        num_tokens_per_expert = torch.tensor([2, 2], dtype=torch.int32, device="xpu")
+
+        output = ark.moe_gemm_prefill_hmt_mxfp4_mxfp4(
+            activations,
+            weights,
+            weight_scales,
+            num_tokens_per_expert,
+            output_dtype=torch.bfloat16,
+            group_size=32,
+        )
+
+        expected = torch.full((total_tokens, N), 12.0, dtype=torch.float32, device="xpu")
         torch.testing.assert_close(output.float(), expected, rtol=0, atol=0)
 
 

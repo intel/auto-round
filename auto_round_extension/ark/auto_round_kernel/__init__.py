@@ -3497,8 +3497,10 @@ _MOE_PREFILL_MXFP8_MXFP4_WEIGHT_STAGING_CACHE: "dict[tuple, tuple]" = {}
 _MOE_PREFILL_MXFP4_MXFP4_WEIGHT_STAGING_CACHE: "dict[tuple, tuple]" = {}
 _MOE_PREFILL_MXFP8_MXFP4_ROUTING_CACHE: "dict[tuple, tuple[int, torch.Tensor]]" = {}
 _MOE_PREFILL_MXFP4_MXFP4_ROUTING_CACHE: "dict[tuple, tuple[int, torch.Tensor]]" = {}
+_MOE_PREFILL_HMT_MXFP4_MXFP4_ROUTING_CACHE: "dict[tuple, tuple[int, torch.Tensor]]" = {}
 _MOE_PREFILL_MXFP8_MXFP4_METADATA_CACHE: "dict[tuple, int]" = {}
 _MOE_PREFILL_MXFP4_MXFP4_METADATA_CACHE: "dict[tuple, int]" = {}
+_MOE_PREFILL_HMT_MXFP4_MXFP4_METADATA_CACHE: "dict[tuple, int]" = {}
 
 
 def _mxfp8_mxfp4_bdpas_enabled() -> bool:
@@ -3557,6 +3559,24 @@ def _get_moe_prefill_mxfp4_activation_bdpas_workspace(
     return ws
 
 
+def _get_moe_prefill_hmt_mxfp4_activation_workspace(
+    device: torch.device, total_tokens: int, K: int, num_experts: int
+) -> torch.Tensor:
+    if not isinstance(device, torch.device):
+        device = torch.device(device)
+    scale_groups = K // 32
+    packed_bytes = total_tokens * (K // 2)
+    row_scale_bytes = total_tokens * scale_groups
+    bdpas_scale_bytes = (total_tokens + 3 * num_experts) * scale_groups
+    size = packed_bytes + row_scale_bytes + bdpas_scale_bytes
+    key = ("hmt_mxfp4_activation", device.type, device.index, int(total_tokens), int(K), int(num_experts))
+    ws = _MOE_PREFILL_ACTIVATION_WORKSPACE_CACHE.get(key)
+    if ws is None:
+        ws = torch.empty(size, device=device, dtype=torch.uint8)
+        _MOE_PREFILL_ACTIVATION_WORKSPACE_CACHE[key] = ws
+    return ws
+
+
 def _get_moe_prefill_mxfp4_weight_bdpas_workspace(
     device: torch.device, num_experts: int, N: int, K: int
 ) -> torch.Tensor:
@@ -3579,8 +3599,10 @@ def clear_moe_prefill_workspace_cache() -> None:
     _MOE_PREFILL_MXFP4_MXFP4_WEIGHT_STAGING_CACHE.clear()
     _MOE_PREFILL_MXFP8_MXFP4_ROUTING_CACHE.clear()
     _MOE_PREFILL_MXFP4_MXFP4_ROUTING_CACHE.clear()
+    _MOE_PREFILL_HMT_MXFP4_MXFP4_ROUTING_CACHE.clear()
     _MOE_PREFILL_MXFP8_MXFP4_METADATA_CACHE.clear()
     _MOE_PREFILL_MXFP4_MXFP4_METADATA_CACHE.clear()
+    _MOE_PREFILL_HMT_MXFP4_MXFP4_METADATA_CACHE.clear()
 
 
 def moe_gemm_prefill_mxfp8_mxfp4(
@@ -3929,6 +3951,183 @@ def moe_gemm_prefill_mxfp4_mxfp4(
         _MOE_PREFILL_MXFP4_MXFP4_WEIGHT_STAGING_CACHE[weight_cache_key] = (*weight_versions, weights, weight_scales)
         if metadata_cache_key is not None:
             _MOE_PREFILL_MXFP4_MXFP4_METADATA_CACHE[metadata_cache_key] = routing_version
+    return outputs
+
+
+def moe_gemm_prefill_hmt_mxfp4_mxfp4(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    weight_scales: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    hadamard_matrix: Optional[torch.Tensor] = None,
+    *,
+    output_dtype: torch.dtype = torch.bfloat16,
+    group_size: int = 32,
+) -> torch.Tensor:
+    """MoE prefill with fused normalized Hadamard + MXFP4 activation quantization.
+
+    ``activations`` are FP16/BF16 ``[total_tokens, K]``. The native backend applies
+    the normalized Hadamard transform, quantizes each 32-wide group to MXFP4
+    ``(FP4 E2M1 + E8M0)``, then runs the native MXFP4 x MXFP4 grouped GEMM.
+    ``weights`` are packed FP4 E2M1 ``[E, N, K // 2]`` with E8M0 scales
+    ``[E, N, K // group_size]``.
+    """
+    from .mxfp4_hadamard import HADAMARD_DIM, get_hadamard_matrix, is_default_hadamard, _validate_hadamard
+
+    if activations.device.type != "xpu":
+        raise NotImplementedError("moe_gemm_prefill_hmt_mxfp4_mxfp4 is only supported on XPU")
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"activations must be float16 or bfloat16, got {activations.dtype}")
+    if output_dtype != torch.bfloat16:
+        raise ValueError("moe_gemm_prefill_hmt_mxfp4_mxfp4 currently requires output_dtype=torch.bfloat16")
+    if group_size != 32:
+        raise ValueError("HMT MXFP4/MXFP4 prefill currently requires group_size=32")
+    if activations.ndim != 2:
+        raise ValueError("activations must be 2D [total_tokens, K]")
+    if weights.ndim != 3:
+        raise ValueError("weights must be 3D [E, N, K // 2]")
+    if weights.dtype != torch.uint8:
+        raise ValueError(f"MXFP4 packed weights must be torch.uint8, got {weights.dtype}")
+    if weight_scales.dtype != torch.uint8:
+        raise ValueError(f"weight_scales must be torch.uint8 E8M0, got {weight_scales.dtype}")
+    if weights.device != activations.device or weight_scales.device != activations.device:
+        raise ValueError("weights and weight_scales must be on the same device as activations")
+
+    if hadamard_matrix is None:
+        hadamard_matrix = get_hadamard_matrix(HADAMARD_DIM, activations.device)
+        hadamard_dim = HADAMARD_DIM
+        use_fwht = True
+    else:
+        hadamard_dim = _validate_hadamard(hadamard_matrix, check_finite=False)
+        use_fwht = is_default_hadamard(hadamard_matrix)
+        if not use_fwht and hadamard_dim != HADAMARD_DIM:
+            raise NotImplementedError(f"hadamard_dim {hadamard_dim} supports the normalized Sylvester matrix only")
+
+    if not activations.is_contiguous():
+        activations = activations.contiguous()
+    if not weights.is_contiguous():
+        weights = weights.contiguous()
+    if not weight_scales.is_contiguous():
+        weight_scales = weight_scales.contiguous()
+    if num_tokens_per_expert.dtype != torch.int32:
+        num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
+    if not num_tokens_per_expert.is_contiguous():
+        num_tokens_per_expert = num_tokens_per_expert.contiguous()
+    hadamard_matrix = hadamard_matrix.to(device=activations.device, dtype=torch.float32).contiguous()
+
+    total_tokens, K = activations.shape
+    num_experts, N, K_packed = weights.shape
+    if K % hadamard_dim != 0:
+        raise ValueError(f"K must be a multiple of hadamard_dim ({hadamard_dim})")
+    if K % group_size != 0:
+        raise ValueError("K must be a multiple of group_size")
+    if K % 64 != 0:
+        raise ValueError("HMT MXFP4/MXFP4 BDPAS currently requires K % 64 == 0")
+    if K_packed != K // 2:
+        raise ValueError(f"weights last dim {K_packed} must equal K // 2 ({K // 2})")
+    expected_weight_scales = (num_experts, N, K // group_size)
+    if tuple(weight_scales.shape) != expected_weight_scales:
+        raise ValueError(f"weight_scales shape {tuple(weight_scales.shape)} != expected {expected_weight_scales}")
+    if num_tokens_per_expert.shape[0] != num_experts:
+        raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
+    if N % 16 != 0:
+        raise ValueError(f"N must be a multiple of 16 (got {N})")
+    _check_routing_total(num_tokens_per_expert, total_tokens)
+
+    lib = get_lib(activations)
+    if not hasattr(lib, "moe_gemm_prefill_hmt_mxfp4_mxfp4"):
+        raise RuntimeError(
+            "moe_gemm_prefill_hmt_mxfp4_mxfp4: the C++ backend was built without the required symbol. "
+            "Rebuild auto_round_extension with sycl-tla and MXFP BDPAS support."
+        )
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=output_dtype)
+    activation_workspace = _get_moe_prefill_hmt_mxfp4_activation_workspace(
+        activations.device, total_tokens, K, num_experts
+    )
+    weight_workspace = _get_moe_prefill_mxfp4_weight_bdpas_workspace(activations.device, num_experts, N, K)
+    static_routing_cache = _mxfp4_mxfp4_static_routing_cache_enabled()
+    routing_version = int(getattr(num_tokens_per_expert, "_version", 0))
+    routing_host = None
+    if static_routing_cache:
+        routing_cache_key = (
+            activations.device.type,
+            activations.device.index,
+            int(num_experts),
+            int(total_tokens),
+            id(num_tokens_per_expert),
+            int(num_tokens_per_expert.data_ptr()),
+        )
+        cached_routing = _MOE_PREFILL_HMT_MXFP4_MXFP4_ROUTING_CACHE.get(routing_cache_key)
+        if cached_routing is None or cached_routing[0] != routing_version:
+            routing_host = num_tokens_per_expert.detach().cpu().contiguous()
+            _MOE_PREFILL_HMT_MXFP4_MXFP4_ROUTING_CACHE[routing_cache_key] = (routing_version, routing_host)
+        else:
+            routing_host = cached_routing[1]
+
+    weight_cache_key = (
+        activations.device.type,
+        activations.device.index,
+        output_dtype,
+        int(num_experts),
+        int(N),
+        int(K),
+        id(weights),
+        id(weight_scales),
+        int(weights.data_ptr()),
+        int(weight_scales.data_ptr()),
+    )
+    weight_versions = (int(getattr(weights, "_version", 0)), int(getattr(weight_scales, "_version", 0)))
+    cached_staging = _MOE_PREFILL_MXFP4_MXFP4_WEIGHT_STAGING_CACHE.get(weight_cache_key)
+    refresh_weight_staging = cached_staging is None or cached_staging[:2] != weight_versions
+    metadata_cache_key = None
+    refresh_metadata = True
+    if static_routing_cache and routing_host is not None:
+        metadata_cache_key = (
+            activations.device.type,
+            activations.device.index,
+            cvt_dtype(activations.dtype),
+            cvt_dtype(output_dtype),
+            int(activation_workspace.data_ptr()),
+            int(weight_workspace.data_ptr()),
+            int(outputs.data_ptr()),
+            int(N),
+            int(K),
+            int(group_size),
+            int(hadamard_dim),
+            int(num_experts),
+            int(total_tokens),
+            int(routing_host.data_ptr()),
+            routing_version,
+        )
+        refresh_metadata = _MOE_PREFILL_HMT_MXFP4_MXFP4_METADATA_CACHE.get(metadata_cache_key) != routing_version
+
+    lib.moe_gemm_prefill_hmt_mxfp4_mxfp4(
+        stream,
+        activations.data_ptr(),
+        hadamard_matrix.data_ptr(),
+        weights.data_ptr(),
+        weight_scales.data_ptr(),
+        outputs.data_ptr(),
+        activation_workspace.data_ptr(),
+        weight_workspace.data_ptr(),
+        cvt_dtype(output_dtype),
+        cvt_dtype(activations.dtype),
+        N,
+        K,
+        group_size,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+        bool(use_fwht),
+        int(hadamard_dim),
+        refresh_weight_staging,
+        0 if routing_host is None else routing_host.data_ptr(),
+        refresh_metadata,
+    )
+    _MOE_PREFILL_MXFP4_MXFP4_WEIGHT_STAGING_CACHE[weight_cache_key] = (*weight_versions, weights, weight_scales)
+    if metadata_cache_key is not None:
+        _MOE_PREFILL_HMT_MXFP4_MXFP4_METADATA_CACHE[metadata_cache_key] = routing_version
     return outputs
 
 

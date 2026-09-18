@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 import auto_round_kernel as ark
 import torch
+from auto_round_kernel.mxfp4_hadamard import mxfp4_hadamard_quant_reference
 
 
 FP4_E2M1 = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=torch.float32)
@@ -133,6 +134,17 @@ def reference_mxfp4_mxfp4(
     return reference_moe(act.to(output_dtype), weights_fp.to(output_dtype), ntpe).to(output_dtype).float()
 
 
+def reference_hmt_mxfp4_mxfp4(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    weight_scales: torch.Tensor,
+    ntpe: torch.Tensor,
+    output_dtype: torch.dtype,
+) -> torch.Tensor:
+    activation_codes, activation_scales = mxfp4_hadamard_quant_reference(activations.cpu())
+    return reference_mxfp4_mxfp4(activation_codes, activation_scales, weights, weight_scales, ntpe, output_dtype)
+
+
 def reference_bf16_mxfp4(
     activations: torch.Tensor,
     weights: torch.Tensor,
@@ -203,6 +215,17 @@ def run_accuracy(fp8_dtype: torch.dtype, output_dtype: torch.dtype) -> None:
             f"accuracy,{shape.label},mxfp4_mxfp4,{str(fp8_dtype).split('.')[-1]},{str(output_dtype).split('.')[-1]},"
             f"{diff_mxfp4.max().item():.6f},{diff_mxfp4.mean().item():.6f}"
         )
+
+        if output_dtype == torch.bfloat16:
+            out_hmt = ark.moe_gemm_prefill_hmt_mxfp4_mxfp4(
+                act_bf16, weights, weight_scales, ntpe, output_dtype=torch.bfloat16, group_size=32
+            )
+            ref_hmt = reference_hmt_mxfp4_mxfp4(act_bf16, weights, weight_scales, ntpe, torch.bfloat16)
+            diff_hmt = (out_hmt.float().cpu() - ref_hmt).abs()
+            print(
+                f"accuracy,{shape.label},hmt_mxfp4_mxfp4,{str(fp8_dtype).split('.')[-1]},bfloat16,"
+                f"{diff_hmt.max().item():.6f},{diff_hmt.mean().item():.6f}"
+            )
 
         out_bf16 = ark.moe_gemm_prefill(
             act_bf16,
@@ -285,6 +308,29 @@ def mxfp4_workspace_bytes(shape: Shape, output_dtype: torch.dtype) -> int:
     )
 
 
+def hmt_mxfp4_packed_bytes(shape: Shape) -> int:
+    total_tokens = sum(shape.tokens_per_expert)
+    out_bytes = torch.empty((), dtype=torch.bfloat16).element_size()
+    return (
+        total_tokens * shape.k * torch.empty((), dtype=torch.bfloat16).element_size()
+        + active_experts(shape) * shape.n * (shape.k // 2)
+        + active_experts(shape) * shape.n * (shape.k // 32)
+        + total_tokens * shape.n * out_bytes
+    )
+
+
+def hmt_mxfp4_workspace_bytes(shape: Shape) -> int:
+    total_tokens = sum(shape.tokens_per_expert)
+    scale_groups = shape.k // 32
+    return (
+        hmt_mxfp4_packed_bytes(shape)
+        + 2 * total_tokens * (shape.k // 2)
+        + 2 * total_tokens * scale_groups
+        + (total_tokens + 3 * shape.experts) * scale_groups
+        + active_experts(shape) * shape.n * scale_groups
+    )
+
+
 def bf16_workspace_bytes(shape: Shape) -> int:
     out_bytes = torch.empty((), dtype=torch.bfloat16).element_size()
     return bf16_packed_bytes(shape) + 2 * active_experts(shape) * shape.k * shape.n * out_bytes
@@ -322,7 +368,7 @@ def benchmark(args: argparse.Namespace, fp8_dtype: torch.dtype, output_dtype: to
                 act_mxfp4, act_scales, weights, weight_scales, ntpe, output_dtype=output_dtype, group_size=32
             )
 
-        for kernel_name, fn, byte_fn, workspace_fn, dtype_name in (
+        kernels = [
             (
                 "mxfp8_mxfp4",
                 run_mxfp8,
@@ -337,6 +383,20 @@ def benchmark(args: argparse.Namespace, fp8_dtype: torch.dtype, output_dtype: to
                 lambda current_shape: mxfp4_workspace_bytes(current_shape, output_dtype),
                 str(output_dtype).split(".")[-1],
             ),
+        ]
+        if output_dtype == torch.bfloat16:
+            kernels.append(
+                (
+                    "hmt_mxfp4_mxfp4",
+                    lambda: ark.moe_gemm_prefill_hmt_mxfp4_mxfp4(
+                        act_bf16, weights, weight_scales, ntpe, output_dtype=torch.bfloat16, group_size=32
+                    ),
+                    hmt_mxfp4_packed_bytes,
+                    hmt_mxfp4_workspace_bytes,
+                    "bfloat16",
+                )
+            )
+        kernels.append(
             (
                 "bf16_mxfp4",
                 run_bf16,
@@ -344,7 +404,8 @@ def benchmark(args: argparse.Namespace, fp8_dtype: torch.dtype, output_dtype: to
                 bf16_workspace_bytes,
                 "bfloat16",
             ),
-        ):
+        )
+        for kernel_name, fn, byte_fn, workspace_fn, dtype_name in kernels:
             median_ms, best_ms = time_stats(fn, shape.iterations, args.warmup, args.repeats)
             median_s = median_ms / 1000.0
             best_s = best_ms / 1000.0
@@ -379,6 +440,10 @@ def main() -> None:
         raise RuntimeError("auto_round_kernel lacks moe_gemm_prefill_mxfp4_mxfp4")
     if ark.xpu_lib is None or not hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp4_mxfp4"):
         raise RuntimeError("auto_round_kernel XPU extension lacks moe_gemm_prefill_mxfp4_mxfp4")
+    if not hasattr(ark, "moe_gemm_prefill_hmt_mxfp4_mxfp4"):
+        raise RuntimeError("auto_round_kernel lacks moe_gemm_prefill_hmt_mxfp4_mxfp4")
+    if ark.xpu_lib is None or not hasattr(ark.xpu_lib, "moe_gemm_prefill_hmt_mxfp4_mxfp4"):
+        raise RuntimeError("auto_round_kernel XPU extension lacks moe_gemm_prefill_hmt_mxfp4_mxfp4")
 
     fp8_dtype = torch.float8_e4m3fn if args.fp8 == "e4m3" else torch.float8_e5m2
     output_dtype = torch.bfloat16 if args.output == "bf16" else torch.float16

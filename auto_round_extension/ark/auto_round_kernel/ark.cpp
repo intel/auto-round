@@ -590,6 +590,21 @@ static void moe_gemm_prefill_mxfp8_mxfp4_wrapper(torch_ptr stream, torch_ptr act
     refresh_weight_staging, (int*)num_tokens_per_expert_host, refresh_metadata);
   }
 
+static void moe_gemm_prefill_hmt_mxfp4_mxfp4_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr hadamard,
+                                                     torch_ptr weights, torch_ptr weight_scales, torch_ptr outputs,
+                                                     torch_ptr activation_workspace, torch_ptr weight_workspace,
+                                                     int output_dtype, int activation_dtype, int N, int K,
+                                                     int group_size, torch_ptr num_tokens_per_expert,
+                                                     int num_experts, int total_tokens, bool use_fwht,
+                                                     int hadamard_dim, bool refresh_weight_staging,
+                                                     torch_ptr num_tokens_per_expert_host, bool refresh_metadata) {
+  ark::moe_gemm_prefill_hmt_mxfp4_mxfp4(
+      (sycl::queue*)stream, (void*)activations, (void*)hadamard, (void*)weights, (void*)weight_scales,
+      (void*)outputs, (void*)activation_workspace, (void*)weight_workspace, (BTLA_DTYPE)(output_dtype),
+      (BTLA_DTYPE)(activation_dtype), N, K, group_size, (int*)num_tokens_per_expert, num_experts, total_tokens,
+      use_fwht, hadamard_dim, refresh_weight_staging, (int*)num_tokens_per_expert_host, refresh_metadata);
+}
+
 // Variant A: FP8 per-tensor DPAS grouped GEMM (mirrors vllm-xpu-kernels'
 // `cutlass_grouped_gemm_xe2_impl` FP8 branch). `scales` is [E] FP32.
 // Weights are [E, K, N] row-major uint8. STATUS: NEEDS-HARDWARE-VALIDATION.
@@ -1605,6 +1620,7 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);
   m.def("moe_gemm_prefill_mxfp8_mxfp4", &ark::moe_gemm_prefill_mxfp8_mxfp4_wrapper);
   m.def("moe_gemm_prefill_mxfp4_mxfp4", &ark::moe_gemm_prefill_mxfp4_mxfp4_wrapper);
+  m.def("moe_gemm_prefill_hmt_mxfp4_mxfp4", &ark::moe_gemm_prefill_hmt_mxfp4_mxfp4_wrapper);
   m.def("moe_gemm_prefill_fp8_dpas", &ark::moe_gemm_prefill_fp8_dpas_wrapper);
   m.def("moe_gemm_prefill_int_dpas", &ark::moe_gemm_prefill_int_dpas_wrapper);
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
