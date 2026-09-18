@@ -55,6 +55,7 @@ def _compact_name_diffs(a: str, b: str) -> tuple[str, str]:
     differing middle is returned. If nothing differs, returns the last segment.
     This keeps log messages short and focused on the changed fields.
     """
+
     def _single_diff(x: str, y: str) -> tuple[str, str]:
         x_parts = x.split(".")
         y_parts = y.split(".")

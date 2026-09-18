@@ -35,7 +35,7 @@ import torch
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
-from auto_round.utils.common import to_standard_regex, _normalize_tensor_name_for_warning
+from auto_round.utils.common import _normalize_tensor_name_for_warning, to_standard_regex
 from auto_round.utils.device import clear_memory, compile_func
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
