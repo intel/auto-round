@@ -490,7 +490,9 @@ class RotationTrainerConfig:
 
     def __post_init__(self):
         if self.device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            from auto_round.utils.device_manager import get_major_device
+
+            self.device = get_major_device()
 
 
 class RotationTrainerCallback:
@@ -880,8 +882,9 @@ class RotationTrainer:
         if self._original_model is not None:
             del self._original_model
             self._original_model = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            from auto_round.utils.device_manager import get_current_device_manager
+
+            get_current_device_manager().empty_cache()
         self.model.eval()
 
     def _trigger_event(self, event_name: str, **kwargs) -> None:

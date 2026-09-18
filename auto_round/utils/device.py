@@ -19,6 +19,7 @@ import re
 import shutil
 import sys
 import tempfile
+from collections.abc import Mapping
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from threading import Lock
@@ -32,21 +33,46 @@ from accelerate.utils import get_balanced_memory, get_max_memory
 
 from auto_round.logger import logger
 from auto_round.utils.device_manager import (
+    ARDevice,
     clear_memory,
     detect_device_count,
     get_ar_device,
     get_available_device_types,
     get_current_device_manager,
+    get_current_device_type,
     get_device_memory,
     get_major_device,
 )
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
-DEVICE_ENVIRON_VARIABLE_MAPPING = {
-    "cuda": "CUDA_VISIBLE_DEVICES",
-    "xpu": "ZE_AFFINITY_MASK",
-    "hpu": "HABANA_VISIBLE_MODULES",
-}
+
+class _VisibleDevicesEnvMapping(Mapping):
+    """``{device_type: env var}`` view backed by the :class:`ARDevice` registry.
+
+    Keeps the historical ``DEVICE_ENVIRON_VARIABLE_MAPPING[...]`` / ``in`` usage
+    working while making a new backend's env var come from its handle, so no
+    table has to be edited when a device is added.
+    """
+
+    @staticmethod
+    def _env_var(device_type: str) -> Optional[str]:
+        device_cls = ARDevice._registry.get(device_type)
+        return device_cls.visible_devices_env_var if device_cls is not None else None
+
+    def __getitem__(self, device_type: str) -> str:
+        env_var = self._env_var(device_type)
+        if env_var is None:
+            raise KeyError(device_type)
+        return env_var
+
+    def __iter__(self):
+        return (dtype for dtype, cls in ARDevice._registry.items() if cls.visible_devices_env_var)
+
+    def __len__(self) -> int:
+        return sum(1 for _ in iter(self))
+
+
+DEVICE_ENVIRON_VARIABLE_MAPPING = _VisibleDevicesEnvMapping()
 
 # Note on HPU usage:
 # There are two modes available for enabling auto-round on HPU:
@@ -290,40 +316,59 @@ def check_is_cpu(device):
 def is_pipeline_parallel_supported(device_type: str) -> bool:
     """Whether multi-card (naive pipeline) parallel tuning is enabled.
 
-    Split out of ``get_device_and_parallelism`` so the parallelism policy stays a
-    standalone concern instead of living on the device manager.  Currently only
-    CUDA supports multi-card pipeline parallel tuning.
+    The policy itself lives on the backend handle
+    (:attr:`ARDevice.supports_pipeline_parallel`), so a new device declares it
+    once instead of being special-cased here.
     """
-    return device_type == "cuda"
+    return get_ar_device(device_type).supports_pipeline_parallel
+
+
+def set_visible_devices(device: str, device_type: Optional[str] = None) -> None:
+    """Restrict the visible cards of ``device_type`` to the requested indices.
+
+    Works for any backend that declares a ``visible_devices_env_var`` (e.g.
+    ``CUDA_VISIBLE_DEVICES`` for CUDA, ``ZE_AFFINITY_MASK`` for XPU); backends
+    without one are silently ignored.
+    """
+    if device is None:
+        return
+    device = str(device).replace(" ", "")
+    if not device or device == "auto":
+        return
+    if device_type is None:
+        head = device.split(",")[0].split(":")[0]
+        device_type = head if head and not head.isdigit() else get_current_device_type()
+    env_var = get_ar_device(device_type).visible_devices_env_var
+    if not env_var:
+        return
+
+    devices = ["0"] if device == device_type else device.split(",")
+    devices = [dev.split(":")[-1] for dev in devices]
+    if not all(s.isdigit() for s in devices):
+        return
+
+    current = os.environ.get(env_var)
+    if current is None:
+        # Use the cleaned/normalized device indices (no spaces, no type
+        # prefixes) when initially setting the environment variable.
+        os.environ[env_var] = ",".join(devices)
+        return
+
+    current_visible_devices = current.split(",")
+    try:
+        pick_device = [current_visible_devices[int(dev)] for dev in devices]
+    except Exception:
+        raise ValueError(
+            "Invalid '--device' value: It must be smaller than the number of available devices."
+            f" For example, with {env_var}=4,5, "
+            "--device 0,1 is valid, but --device 4,5 is not supported."
+        )
+    os.environ[env_var] = ",".join(pick_device)
 
 
 def set_cuda_visible_devices(device: str):
-    if device == "cuda":
-        devices = ["0"]
-    elif device == "auto":
-        return
-    else:
-        devices = device.replace(" ", "").split(",")
-    devices = [device.split(":")[-1] for device in devices]
-    if all(s.isdigit() for s in devices):
-        if "CUDA_VISIBLE_DEVICES" in os.environ:
-            current_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"]
-            current_visible_devices = current_visible_devices.split(",")
-            indices = [int(device) for device in devices]
-            try:
-                pick_device = [current_visible_devices[i] for i in indices]
-            except Exception:
-                raise ValueError(
-                    "Invalid '--device' value: It must be smaller than the number of available devices."
-                    " For example, with CUDA_VISIBLE_DEVICES=4,5, "
-                    "--device 0,1 is valid, but --device 4,5 is not supported."
-                )
-            visible_devices = ",".join(pick_device)
-            os.environ["CUDA_VISIBLE_DEVICES"] = visible_devices
-        else:
-            # Use the cleaned/normalized device indices (no spaces, no type
-            # prefixes) when initially setting the environment variable.
-            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(devices)
+    """Backward-compatible alias of :func:`set_visible_devices`."""
+    set_visible_devices(device)
 
 
 class override_cuda_device_capability(ContextDecorator):
@@ -1240,9 +1285,10 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     device_list = parse_available_devices(device_map)
     gpu_devices = []
     for device in device_list:
-        if device.startswith("hpu") and len(device_list) > 1:
-            logger.warning_once("Auto-scheme does not support multiple HPUs.")
-        if device.startswith("cpu") or device.startswith("hpu"):
+        device_type = device.split(":")[0]
+        if not get_ar_device(device_type).supports_multi_card_tuning:
+            if device_type != "cpu" and len(device_list) > 1:
+                logger.warning_once(f"Auto-scheme does not support multiple {device_type} devices.")
             continue
         gpu_devices.append(device)
     num_devices = len(gpu_devices)
@@ -1320,14 +1366,8 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
     # === Step 2. Parse different input formats ===
     if device_map is None:
         # Automatically detect one available device
-        if "cuda" in device_types:
-            return ["cuda:0"]
-        elif "xpu" in device_types:
-            return ["xpu:0"]
-        elif "hpu" in device_types:
-            return ["hpu:0"]
-        else:
-            return ["cpu"]
+        primary = device_types[0]
+        return ["cpu"] if primary == "cpu" else [f"{primary}:0"]
 
     if isinstance(device_map, torch.device):
         # Handle torch.device objects
@@ -1365,15 +1405,10 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
         if device_map.lower() == "cpu":
             return ["cpu"]
         if device_map.lower() == "auto":
-            device_count = detect_device_count()
-            if "cuda" in device_types:
-                return [f"cuda:{i}" for i in range(device_count)]
-            elif "xpu" in device_types:
-                return [f"xpu:{i}" for i in range(device_count)]
-            elif "hpu" in device_types:
-                return [f"hpu:{i}" for i in range(device_count)]
-            else:
+            primary = device_types[0]
+            if primary == "cpu":
                 return ["cpu"]
+            return [f"{primary}:{i}" for i in range(detect_device_count())]
         # Split by commas
         parts = [x.strip() for x in device_map.split(",") if x.strip()]
         parsed = []

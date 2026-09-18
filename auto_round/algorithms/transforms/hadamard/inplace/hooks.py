@@ -23,19 +23,17 @@ except ImportError:
 def _resolve_compute_device(compute_device) -> torch.device:
     """Return *compute_device* if explicitly given, otherwise auto-detect GPU.
 
-    When ``compute_device`` is ``None`` the function checks for CUDA / XPU
-    availability and returns the first accelerator it finds so that heavy
-    matrix operations are offloaded to GPU even when the model weights live
-    on CPU.  Falls back to ``torch.device("cpu")`` when no accelerator is
-    present.
+    When ``compute_device`` is ``None`` the active accelerator reported by the
+    device manager is used, so heavy matrix operations are offloaded to it even
+    when the model weights live on CPU.  Backends excluded from implicit
+    selection (see ``ARDevice.auto_select_by_default``) and CPU-only hosts fall
+    back to ``torch.device("cpu")``.
     """
     if compute_device is not None:
         return torch.device(compute_device) if not isinstance(compute_device, torch.device) else compute_device
-    if torch.cuda.is_available():
-        return torch.device("cuda:0")
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        return torch.device("xpu:0")
-    return torch.device("cpu")
+    from auto_round.utils.device_manager import get_active_device
+
+    return get_active_device()
 
 
 BUILTIN_ROTATION_PRESETS = {"quarot_hadamard", "hadamard", "random_hadamard"}
