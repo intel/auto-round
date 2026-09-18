@@ -2570,6 +2570,24 @@ if pytest is not None:
             blocks = sorted(entry[2] for entry in ark._MOE_W4A8_PREPACK_CACHE.values())
             assert blocks == [128, 256], f"expected separate cache entries per resolved block, got {blocks}"
 
+        def test_clear_prepack_cache_waits_for_inflight_work(self):
+            """Clearing the cache must not release weights still in use by queued work."""
+            case = _build_case(16, 256, 1, 8, 128, torch.bfloat16, need_reference=False, need_dequant=False)
+            weights_s8, wscales, block = ark.moe_w4a8_prepack(case["packed"], case["scales"], group_size=128)
+            expected = ark.moe_gemm_w4a8(
+                case["activations"],
+                weights_s8,
+                wscales,
+                case["ntpe"],
+                rescale_block_size=block,
+                phase="prefill",
+            ).clone()
+            actual = ark.moe_w4a8(
+                case["activations"], case["packed"], case["ntpe"], scales=case["scales"], phase="prefill"
+            )
+            ark.clear_moe_w4a8_prepack_cache()
+            assert torch.equal(actual, expected), "clearing the prepack cache changed an in-flight W4A8 result"
+
         def test_gemm_rejects_aux_tensor_device_mismatch(self):
             """Every auxiliary tensor passed to the XPU kernel must share the XPU device."""
             case = _build_case(16, 256, 1, 2, 128, torch.bfloat16, need_reference=False, need_dequant=False, topk=1)

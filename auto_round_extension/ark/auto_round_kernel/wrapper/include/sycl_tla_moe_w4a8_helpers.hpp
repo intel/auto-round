@@ -283,7 +283,12 @@ void prefill_bf16_large(const W4A8PrefillParams& params);
 inline void moe_w4a8_prepack(sycl::queue* q, void* weights_s4, void* scales, void* weights_s8, void* wscales,
                              BTLA_DTYPE act_dtype, int num_experts, int N, int K, int group_size,
                              int rescale_group_size) {
-  if (num_experts <= 0) return;
+  if (q == nullptr) {
+    throw std::invalid_argument("moe_w4a8_prepack: stream must be a valid SYCL queue");
+  }
+  if (num_experts <= 0) {
+    throw std::invalid_argument("moe_w4a8_prepack: num_experts must be positive");
+  }
   if (!moe_w4a8::moe_w4a8_shape_ok(N, K, group_size)) {
     throw std::invalid_argument("moe_w4a8_prepack: unsupported shape (need N % 16 == 0, K % 64 == 0, K <= " +
                                 std::to_string(moe_w4a8::kMaxAccumK) +
@@ -350,7 +355,15 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
                           const void* qact_in = nullptr, const float* ascale_in = nullptr,
                           const int* row_to_token = nullptr, const float* routing_weights = nullptr,
                           float* fused_out = nullptr, int fused_batch = 0) {
-  if (total_tokens == 0 || num_experts <= 0) return;
+  if (q == nullptr) {
+    throw std::invalid_argument("moe_gemm_w4a8: stream must be a valid SYCL queue");
+  }
+  if (num_experts <= 0) {
+    throw std::invalid_argument("moe_gemm_w4a8: num_experts must be positive");
+  }
+  if (total_tokens < 0) {
+    throw std::invalid_argument("moe_gemm_w4a8: total_tokens must be non-negative");
+  }
   if (N % moe_w4a8::N_TILE != 0) {
     throw std::invalid_argument("moe_gemm_w4a8: N must be a multiple of 16");
   }
@@ -369,6 +382,9 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
   }
   if (act_dtype != BTLA_DTYPE::F16 && act_dtype != BTLA_DTYPE::BF16) {
     throw std::invalid_argument("moe_gemm_w4a8: act_dtype must be F16 or BF16");
+  }
+  if (weights_s8 == nullptr || wscales == nullptr || num_tokens_per_expert == nullptr) {
+    throw std::invalid_argument("moe_gemm_w4a8: weights_s8, wscales and num_tokens_per_expert must be non-null");
   }
 
   const bool prequantized = qact_in != nullptr || ascale_in != nullptr;
@@ -389,6 +405,7 @@ inline void moe_gemm_w4a8(sycl::queue* q, void* activations, void* weights_s8, v
   if (!fused_reduce && outputs == nullptr) {
     throw std::invalid_argument("moe_gemm_w4a8: null outputs");
   }
+  if (total_tokens == 0) return;
 
   const bool is_f16 = act_dtype == BTLA_DTYPE::F16;
   const int blocksize = rescale_block_size;
