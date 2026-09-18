@@ -499,6 +499,43 @@ def test_int_model_free_fake_export_has_no_quantization_config(tmp_path):
         assert "quantization_config" not in json.load(f)
 
 
+def test_nvfp4_e5m3_model_free_fake_export_preserves_activation_config(tmp_path):
+    tensors = {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir, output_dir=output_dir, scheme="NVFP4_E5M3", format="fake"
+    )
+    compressor.run()
+
+    assert "model.layers.0.self_attn.q_proj.weight" in _read_output_keys(output_dir)
+    quantization_config = _read_qconfig(output_dir)
+    assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["act_data_type"] == "nvfp4_v2"
+    with open(os.path.join(output_dir, "config.json")) as config_file:
+        assert json.load(config_file)["quantization_config"] == quantization_config
+
+    from types import SimpleNamespace
+
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    from auto_round.experimental.qmodules.fake import FakeActQuantLinear
+    from auto_round.inference.convert_model import convert_hf_model
+
+    config = LlamaConfig(
+        hidden_size=32, intermediate_size=64, num_hidden_layers=1, num_attention_heads=2, vocab_size=64
+    )
+    model = LlamaForCausalLM(config)
+    model.config.quantization_config = SimpleNamespace(**quantization_config)
+    model, used_backends = convert_hf_model(model, target_device="cpu")
+    layer = model.model.layers[0].self_attn.q_proj
+    assert used_backends == ["auto_round:fake"]
+    assert isinstance(layer, FakeActQuantLinear)
+    activation = torch.randn(2, 32)
+    assert not torch.equal(layer.qdq_input(activation), activation)
+
+
 def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
     tensors = {
         "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),
