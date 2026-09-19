@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include "bestla/bestla.h"
+#include "flash_attn_dtype.hpp"
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
 #endif
