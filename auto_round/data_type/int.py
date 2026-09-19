@@ -11,12 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Union
 
 import torch
 
 from auto_round import envs
-from auto_round.data_type.register import register_dtype
+from auto_round.data_type.base import register_dtype, register_quantizer
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
 from auto_round.utils import get_reciprocal
 
@@ -131,7 +133,7 @@ def quant_tensor_rtn_sym(
     min_scale=1.0,
     max_scale=1.0,
     scale_dtype=torch.float16,
-    **kwargs
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
@@ -175,7 +177,7 @@ def quant_tensor_sym(
     tensor_max=None,
     q_scale_thresh=1e-5,
     init_scale=None,
-    **kwargs
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically. full range, credit goes to llamacpp community
 
@@ -250,7 +252,7 @@ def quant_tensor_asym(
     tensor_min=None,
     tensor_max=None,
     q_scale_thresh=1e-5,
-    **kwargs
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically.
 
@@ -310,7 +312,7 @@ def quant_tensor_sym_gptq(
     tensor_min=None,
     tensor_max=None,
     q_scale_thresh=1e-5,
-    **kwargs
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically.
 
@@ -376,7 +378,7 @@ def quant_tensor_asym_wo_round(
     tensor_min=None,
     tensor_max=None,
     q_scale_thresh=1e-5,
-    **kwargs
+    **kwargs,
 ):
     """Quantize and de-quantize tensor asymmetrically without rounding, this is mainly for tuning bias, norm.
 
@@ -423,3 +425,193 @@ def quant_tensor_asym_wo_round(
     qdq_result = (scale * (q - zp)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, scale, zp
+
+
+@dataclass(frozen=True)
+class _IntState:
+    """Per-layer integer ranges, optional optimized scale, and trainable values."""
+
+    tunables: Mapping[str, torch.Tensor]
+    tensor_min: torch.Tensor
+    tensor_max: torch.Tensor
+    optimized_init: torch.Tensor | None
+
+
+class _IntWeightQuantizer:
+    """Own integer weight QDQ and choose tuned, RTN, or optimized RTN internally."""
+
+    def __init__(self, spec, family="plain"):
+        self.spec = spec
+        self.family = family
+
+    @classmethod
+    def from_spec(cls, spec, canonical=None):
+        """Create the integer weight quantizer for a resolved layer."""
+        return cls(spec)
+
+    @staticmethod
+    def create_activation(spec):
+        """Create the matching integer activation quantizer."""
+        return _IntActivationQuantizer(spec)
+
+    def create_state(self, weight, *, imatrix=None, mode, tune_rounding, tune_minmax):
+        if mode == "optimized_rtn" and self.spec.sym:
+            self.family = "optimized"
+        elif mode == "rtn" and self.spec.sym:
+            self.family = "rtn"
+        else:
+            self.family = "plain"
+        grouped, _, _ = reshape_pad_tensor_by_group_size(weight, self.spec.group_size)
+        tensor_min = torch.clamp(grouped.amin(dim=-1), max=0)
+        tensor_max = torch.clamp(grouped.amax(dim=-1), min=0)
+        if self.spec.clip_max is not None:
+            clip_max = self.spec.clip_max.reshape(-1).to(weight.device, tensor_max.dtype)
+            clip_min = (
+                -clip_max
+                if self.spec.clip_min is None
+                else self.spec.clip_min.reshape(-1).to(weight.device, tensor_min.dtype)
+            )
+            if clip_min.numel() == tensor_min.numel() and clip_max.numel() == tensor_max.numel():
+                tensor_min = torch.maximum(tensor_min, clip_min.reshape_as(tensor_min))
+                tensor_max = torch.minimum(tensor_max, clip_max.reshape_as(tensor_max))
+
+        tunables = {}
+        if self.family == "plain" and tune_rounding:
+            tunables["value"] = torch.nn.Parameter(torch.zeros_like(grouped, dtype=torch.float32))
+        if self.family != "optimized" and tune_minmax:
+            shape = tensor_min.shape
+            tunables["min_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))
+            tunables["max_scale"] = torch.nn.Parameter(torch.ones(shape, device=weight.device, dtype=torch.float32))
+
+        optimized_init = None
+        if self.family == "optimized" and self.spec.sym:
+            search_weight = weight
+            if self.spec.clip_min is not None or self.spec.clip_max is not None:
+                search_weight = torch.clamp(weight, min=self.spec.clip_min, max=self.spec.clip_max)
+            _, optimized_init, _ = quant_tensor_opt_rtn_sym(
+                search_weight.clone(),
+                bits=self.spec.bits,
+                group_size=self.spec.group_size,
+                q_scale_thresh=self.spec.q_scale_thresh,
+                imatrix=imatrix,
+            )
+        return _IntState(tunables, tensor_min, tensor_max, optimized_init)
+
+    def qdq(self, weight, state, *, tunables, materialize=False):
+        value = tunables.get("value", 0)
+        min_scale = tunables.get("min_scale", 1.0)
+        max_scale = tunables.get("max_scale", 1.0)
+        if isinstance(min_scale, torch.Tensor):
+            min_scale.data.clamp_(0.0, 1.0)
+        if isinstance(max_scale, torch.Tensor):
+            max_scale.data.clamp_(0.0, 1.0)
+
+        kwargs = {
+            "bits": self.spec.bits,
+            "group_size": self.spec.group_size,
+            "q_scale_thresh": self.spec.q_scale_thresh,
+        }
+        if self.family == "optimized" and self.spec.sym:
+            quantized, scale, zero_point = quant_tensor_sym(
+                weight,
+                init_scale=state.optimized_init,
+                scale_dtype=self.spec.scale_dtype,
+                **kwargs,
+            )
+        elif self.family == "rtn" and self.spec.sym:
+            quantized, scale, zero_point = quant_tensor_rtn_sym(
+                weight,
+                min_scale=min_scale,
+                max_scale=max_scale,
+                scale_dtype=self.spec.scale_dtype,
+                **kwargs,
+            )
+        else:
+            primitive = quant_tensor_sym if self.spec.sym else quant_tensor_asym
+            quantized, scale, zero_point = primitive(
+                weight,
+                v=value,
+                min_scale=min_scale,
+                max_scale=max_scale,
+                scale_dtype=self.spec.scale_dtype,
+                tensor_min=state.tensor_min,
+                tensor_max=state.tensor_max,
+                **kwargs,
+            )
+        from auto_round.data_type.base import WeightQuantizationResult
+
+        return WeightQuantizationResult(quantized, scale if materialize else None, zero_point if materialize else None)
+
+    @staticmethod
+    def apply_result(module, result):
+        if result.scale is None:
+            raise ValueError("INT weight result was not materialized")
+        module.weight.data.copy_(result.weight)
+        rows = result.logical_rows or result.weight.shape[0]
+        module.scale = result.scale.reshape(rows, -1).cpu()
+        module.zp = (
+            result.zero_point.reshape(rows, -1).cpu()
+            if isinstance(result.zero_point, torch.Tensor)
+            else result.zero_point
+        )
+
+
+class _IntActivationQuantizer:
+    """Quantize integer activations, optionally using a calibrated maximum."""
+
+    def __init__(self, spec):
+        self.spec = spec
+        self.requires_calibration = not spec.dynamic
+
+    def observe(self, activation, current):
+        grouped, _, _ = reshape_pad_tensor_by_group_size(activation, self.spec.group_size)
+        maximum = grouped.abs().amax(dim=-1)
+        return maximum if current is None else torch.maximum(maximum.to(current), current)
+
+    def qdq_with_scale(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+        if self.requires_calibration and observed_max is None:
+            raise ValueError(f"{self.spec.data_type} activation requires observed_max")
+        primitive = quant_tensor_sym if self.spec.sym else quant_tensor_asym
+        kwargs = {}
+        if observed_max is not None:
+            kwargs.update(tensor_min=-observed_max, tensor_max=observed_max)
+        return primitive(
+            activation,
+            bits=self.spec.bits,
+            group_size=self.spec.group_size,
+            min_scale=min_scale,
+            max_scale=max_scale,
+            scale_dtype=self.spec.scale_dtype,
+            q_scale_thresh=self.spec.q_scale_thresh,
+            **kwargs,
+        )
+
+    def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+        quantized, _, _ = self.qdq_with_scale(
+            activation, observed_max=observed_max, min_scale=min_scale, max_scale=max_scale
+        )
+        return quantized
+
+
+register_quantizer(
+    "int_sym",
+    aliases=(
+        "int",
+        "int4",
+        "int4_sym",
+        "int8",
+        "int8_sym",
+        "rtn_int",
+        "rtn_int4",
+        "rtn_int_sym",
+        "rtn_int4_sym",
+        "opt_rtn_int",
+        "opt_rtn_int4",
+        "opt_rtn_int_sym",
+        "opt_rtn_int4_sym",
+    ),
+)(_IntWeightQuantizer)
+register_quantizer(
+    "int_asym",
+    aliases=("int4_asym", "rtn_int_asym", "rtn_int4_asym", "opt_rtn_int_asym", "opt_rtn_int4_asym"),
+)(_IntWeightQuantizer)

@@ -79,6 +79,8 @@ class FP8Format(OutputFormat):
             if len(ignored_layers) > 0:
                 serialization_dict["ignored_layers"] = ignored_layers
 
+        export_kwargs = {"quant_method": backend} if backend == "fp8" else {"backend": backend}
+
         return save_quantized_as_autoround(
             output_dir=output_dir,
             model=model,
@@ -87,6 +89,6 @@ class FP8Format(OutputFormat):
             inplace=inplace,
             device=device,
             serialization_dict=serialization_dict,
-            backend=backend,
+            **export_kwargs,
             **kwargs,
         )

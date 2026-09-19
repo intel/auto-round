@@ -289,6 +289,7 @@ def _check_accelerate_version():
 
 
 _MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
+_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32"}
 
 
 def _is_mxfp4_model(model_path, trust_remote_code=True):
@@ -301,7 +302,7 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
 
     try:  # in case of config loading failure for new models
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
-    except:
+    except Exception:
         return False
 
     model_type = getattr(config, "model_type", "")
@@ -318,6 +319,121 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
         else getattr(quant_config, "quant_method", "")
     )
     return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
+
+
+def _is_fp8_model(model_path, trust_remote_code=True):
+    """Check if a model is an FP8 quantized model supported for direct loading.
+
+    Only checks when transformers >= 4.56.0. Returns False immediately for older versions,
+    adding zero overhead to non-FP8 model loading.
+    """
+    if version.parse(transformers.__version__) < version.parse("4.56.0"):
+        return False
+
+    from transformers import AutoConfig
+
+    try:  # in case of config loading failure for new models
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    except Exception:
+        return False
+
+    model_type = getattr(config, "model_type", "")
+    if model_type not in _FP8_SUPPORTED_MODEL_TYPES:
+        return False
+
+    quant_config = getattr(config, "quantization_config", None)
+    if quant_config is None:
+        return False
+
+    quant_method = (
+        quant_config.get("quant_method", "")
+        if isinstance(quant_config, dict)
+        else getattr(quant_config, "quant_method", "")
+    )
+    return quant_method == "fp8" and model_type in _FP8_SUPPORTED_MODEL_TYPES
+
+
+def _maybe_truncate_debug_layers(config) -> bool:
+    """Debug helper: truncate the number of decoder layers on a config in place.
+
+    Controlled by the ``AR_DEBUG_LAYER_NUM`` env var (exposed on the CLI as
+    ``--num_hidden_layers``). When set to a positive integer N, only the first N
+    decoder layers are kept so that very large models can be loaded quickly with
+    a fraction of the memory for isolating and debugging issues.
+
+    Handles both flat configs (``num_hidden_layers``) and the nested sub-configs
+    used by multimodal models (e.g. ``text_config`` on a Qwen*-VL config). Every
+    reachable ``PretrainedConfig`` that exposes ``num_hidden_layers`` is truncated.
+
+    Returns ``True`` if the config was modified.
+    """
+    debug_layer_num = envs.AR_DEBUG_LAYER_NUM
+    if debug_layer_num is None or config is None:
+        return False
+
+    # Collect the config itself plus any nested sub-config it carries. Multimodal
+    # models keep the decoder layer count on a sub-config (text_config /
+    # thinker_config / ...), so scan the attribute dict generically instead of
+    # hard-coding one name.
+    targets = [config]
+    seen = {id(config)}
+    for value in list(getattr(config, "__dict__", {}).values()):
+        if hasattr(value, "num_hidden_layers") and id(value) not in seen:
+            targets.append(value)
+            seen.add(id(value))
+
+    changed = False
+    for cfg in targets:
+        current = getattr(cfg, "num_hidden_layers", None)
+        if isinstance(current, int) and debug_layer_num < current:
+            cfg.num_hidden_layers = debug_layer_num
+            changed = True
+
+    if changed:
+        logger.warning_once(
+            f"AR_DEBUG_LAYER_NUM={debug_layer_num} is set: loading only the first {debug_layer_num} "
+            "decoder layer(s) for debugging. The resulting model is partial and must not be used for a "
+            "real quantization run."
+        )
+    return changed
+
+
+def install_debug_layer_config_patch() -> None:
+    """Make ``AR_DEBUG_LAYER_NUM`` apply to *every* model-loading path.
+
+    The various loaders (``llm_load_model`` / ``mllm_load_model`` /
+    ``diffusion_load_model`` / the meta-skeleton builder) each let ``transformers``
+    resolve the config internally, so there is no single AutoRound call site to
+    intercept. They do all funnel through ``PretrainedConfig.from_dict`` (used by
+    ``AutoConfig.from_pretrained``, every concrete config's ``from_pretrained``,
+    and therefore every ``model.from_pretrained``), so patch that one classmethod
+    to truncate the decoder-layer count on the freshly built config.
+
+    No-op unless ``AR_DEBUG_LAYER_NUM`` is set. Idempotent.
+    """
+    if envs.AR_DEBUG_LAYER_NUM is None:
+        return
+
+    from transformers import PretrainedConfig
+
+    original = PretrainedConfig.__dict__.get("from_dict")
+    if original is None or getattr(original.__func__, "_ar_debug_patched", False):
+        return
+    original_func = original.__func__
+
+    def _patched_from_dict(cls, config_dict, **kwargs):
+        result = original_func(cls, config_dict, **kwargs)
+        # from_dict returns either the config or a (config, unused_kwargs) tuple.
+        config = result[0] if isinstance(result, tuple) else result
+        try:
+            _maybe_truncate_debug_layers(config)
+        except Exception as exc:  # pragma: no cover - best-effort debug path
+            logger.debug(f"AR_DEBUG_LAYER_NUM truncation skipped for {cls}: {exc}")
+        return result
+
+    _patched_from_dict._ar_debug_patched = True
+    PretrainedConfig.from_dict = classmethod(_patched_from_dict)
+    logger.debug("Installed AR_DEBUG_LAYER_NUM config patch on PretrainedConfig.from_dict")
 
 
 def llm_load_model(
@@ -372,6 +488,18 @@ def llm_load_model(
         "device_map": "auto" if use_auto_mapping else None,
     }
     load_kwargs.update(kwargs)
+
+    # Debug helper: honor AR_DEBUG_LAYER_NUM (load only the first N decoder
+    # layers) on every load path via a transformers config patch.
+    install_debug_layer_config_patch()
+
+    if version.parse(transformers.__version__) >= version.parse("4.56.0"):
+        is_fp8 = _is_fp8_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+        if is_fp8 and "quantization_config" not in load_kwargs:
+            from transformers import FineGrainedFP8Config
+
+            load_kwargs["quantization_config"] = FineGrainedFP8Config(dequantize=True)
+            logger.info("Detected FP8 quantized model, using FineGrainedFP8Config(dequantize=True) for loading.")
 
     if version.parse(transformers.__version__) >= version.parse("5.0.0"):
         is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -832,6 +960,7 @@ def diffusion_load_model(
     use_auto_mapping: bool = False,
     trust_remote_code: bool = True,
     model_dtype: str = None,
+    default_torch_dtype: Union[str, torch.dtype] = "auto",
     **kwargs,
 ):
     from functools import partial
@@ -847,15 +976,16 @@ def diffusion_load_model(
         )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
-    torch_dtype = "auto"
-    if device_str is not None and "hpu" in device_str:
+    if model_dtype is not None:
+        torch_dtype = convert_dtype_str2torch(model_dtype)
+    elif torch_dtype == "auto" and device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
     try:
         from transformers import AutoConfig
 
         config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
-    except:
+    except Exception:
         config = None
 
     model_type = getattr(config, "model_type", "")
@@ -881,8 +1011,17 @@ def diffusion_load_model(
         return load_cosmos3_diffusion(pretrained_model_name_or_path, device_str)
 
     pipelines = LazyImport("diffusers.pipelines")
+    modular_pipeline_cls = _get_modular_pipeline_class()
     if isinstance(pretrained_model_name_or_path, str):
         model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if not os.path.exists(model_index) and os.path.exists(
+            os.path.join(pretrained_model_name_or_path, MODULAR_PIPELINE_INDEX_NAME)
+        ):
+            raise NotImplementedError(
+                f"{pretrained_model_name_or_path} is a Modular Diffusers pipeline "
+                f"({MODULAR_PIPELINE_INDEX_NAME}), which auto_round cannot assemble from a path yet. "
+                "Build the ModularPipeline yourself and pass the pipeline object as `model` instead."
+            )
         with open(model_index, "r", encoding="utf-8") as file:
             config = json.load(file)
 
@@ -893,20 +1032,31 @@ def diffusion_load_model(
                 if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
                     with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
                         component_config = json.load(file)
-                    torch_dtype[k] = component_config.get("torch_dtype", "auto")
+                    component_dtype = component_config.get("torch_dtype")
+                    if component_dtype is None or component_dtype == "auto":
+                        component_dtype = default_torch_dtype
+                    elif isinstance(component_dtype, str):
+                        component_dtype = convert_dtype_str2torch(component_dtype.removeprefix("torch."))
+                    torch_dtype[k] = component_dtype
 
         pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
             pretrained_model_name_or_path, torch_dtype=torch_dtype
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
-    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
+    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline) or (
+        modular_pipeline_cls is not None and isinstance(pretrained_model_name_or_path, modular_pipeline_cls)
+    ):
         pipe = pretrained_model_name_or_path
-        pipe_config = pipe.load_config(pipe.config["_name_or_path"])
+        # a pipeline assembled in-process, as Modular Diffusers ones typically are,
+        # has no _name_or_path to reload the on-disk index from
+        name_or_path = pipe.config.get("_name_or_path", None)
+        pipe_config = pipe.load_config(name_or_path) if name_or_path is not None else {}
 
     else:
         raise ValueError(
-            f"Only support str or DiffusionPipeline class for model, but get {type(pretrained_model_name_or_path)}"
+            f"Only support str, DiffusionPipeline or ModularPipeline class for model, "
+            f"but get {type(pretrained_model_name_or_path)}"
         )
 
     # add missing key
@@ -914,8 +1064,18 @@ def diffusion_load_model(
         if k not in pipe.config:
             pipe.config[k] = v
 
-    pipe = _to_model_dtype(pipe, model_dtype)
-    model = pipe.transformer
+    if hasattr(pipe, "unet"):
+        # Stable Diffusion pipelines (e.g., SD and SDXL) use a UNet denoiser.
+        model = pipe.unet
+        model_component_name = "unet"
+    else:
+        # DiT-based pipelines (e.g., Flux and SD3) use a Transformer denoiser.
+        model = pipe.transformer
+        model_component_name = "transformer"
+
+    # Diffusers keeps denoiser checkpoints below the pipeline repository root.
+    # Retain the component name so block-wise offloading can find those files.
+    model._autoround_checkpoint_subfolder = model_component_name
 
     # Attach custom pipeline function for models that need special API calls
     _attach_diffusion_pipeline_fn(pipe)
@@ -942,6 +1102,7 @@ def diffusion_load_model(
             and comp is not None
             and isinstance(comp, torch.nn.Module)
         ):
+            comp._autoround_checkpoint_subfolder = comp_name
             setattr(
                 comp.config, "save_pretrained", partial(config_save_pretrained, comp.config, "config.json", model=comp)
             )
@@ -1178,8 +1339,9 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
 
     model_path = get_model_name_or_path(model_or_path)
 
-    # Fast path: return cached result for already-seen paths
-    if model_path in _is_mllm_model_cache:
+    # Path-less in-process objects must be inspected independently rather than
+    # sharing a cache entry under None.
+    if model_path and model_path in _is_mllm_model_cache:
         return _is_mllm_model_cache[model_path]
 
     # Check model_type exclusion: some models have multimodal components
@@ -1198,7 +1360,10 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
     # For dummy model, model_path could be "".
     # Only try to download if the path looks like a HF repo id (not a local filesystem path).
     # Skip download for absolute paths or relative paths that contain current/parent dir markers.
-    _is_local_path = os.path.isabs(model_path) or model_path.startswith("./") or model_path.startswith("../")
+    # model_path is None for a model or pipeline built in-process, which has no name or path
+    _is_local_path = isinstance(model_path, str) and (
+        os.path.isabs(model_path) or model_path.startswith("./") or model_path.startswith("../")
+    )
     if model_path and not os.path.isdir(model_path) and not _is_local_path:
         model_path = download_or_get_path(model_path, platform=platform)
 
@@ -1224,7 +1389,8 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
 
     # Cache by the original path key (model_path may have been resolved above)
     original_key = get_model_name_or_path(model_or_path)
-    _is_mllm_model_cache[original_key] = result
+    if original_key:
+        _is_mllm_model_cache[original_key] = result
     return result
 
 
@@ -1239,6 +1405,48 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
                     is_gguf_file = True
                     break
     return is_gguf_file
+
+
+## ModularPipeline.config_name, spelled out to keep the diffusers import lazy
+MODULAR_PIPELINE_INDEX_NAME = "modular_model_index.json"
+
+
+def _find_pipeline_index_file(model_dir_or_repo: str) -> Optional[str]:
+    """Return the pipeline index file of a diffusers directory or repo, if it has one.
+
+    Standard pipelines ship ``model_index.json``, Modular Diffusers pipelines ship
+    ``modular_model_index.json`` instead.
+    """
+    index_names = ("model_index.json", MODULAR_PIPELINE_INDEX_NAME)
+
+    if os.path.isdir(model_dir_or_repo):
+        for name in index_names:
+            index_file = os.path.join(model_dir_or_repo, name)
+            if os.path.exists(index_file):
+                check_diffusers_installed()
+                return index_file
+        return None
+
+    from huggingface_hub import hf_hub_download
+
+    for name in index_names:
+        try:
+            index_file = hf_hub_download(model_dir_or_repo, name)
+            check_diffusers_installed()
+            return index_file
+        except Exception as e:
+            logger.debug(f"No {name} found in {model_dir_or_repo}: {e}")
+    return None
+
+
+def _get_modular_pipeline_class():
+    """Return ModularPipeline when supported by the installed Diffusers version."""
+    try:
+        from diffusers.modular_pipelines import ModularPipeline
+
+        return ModularPipeline
+    except (ImportError, AttributeError):
+        return None
 
 
 def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: bool = True) -> bool:
@@ -1261,29 +1469,18 @@ def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: boo
             # A special case for NextStep
             if model_type == "nextstep":
                 return True
-        except:
+        except Exception:
             logger.warning(
                 f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
             )
-        index_file = None
-        if not os.path.isdir(model_or_path):
-            try:
-                from huggingface_hub import hf_hub_download
-
-                index_file = hf_hub_download(model_or_path, "model_index.json")
-                check_diffusers_installed()
-            except Exception as e:
-                print(e)
-                index_file = None
-
-        elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
-            check_diffusers_installed()
-            index_file = os.path.join(model_or_path, "model_index.json")
-        return index_file is not None
+        return _find_pipeline_index_file(model_or_path) is not None
     elif not isinstance(model_or_path, torch.nn.Module):
         check_diffusers_installed()
         pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
-        return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
+        if isinstance(model_or_path, pipeline_utils.DiffusionPipeline):
+            return True
+        modular_pipeline_cls = _get_modular_pipeline_class()
+        return modular_pipeline_cls is not None and isinstance(model_or_path, modular_pipeline_cls)
     else:
         return False
 
@@ -1643,18 +1840,46 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
         )
 
 
+def cast_model_dtype(model: torch.nn.Module, dtype: torch.dtype) -> torch.nn.Module:
+    """Cast a model without rounding its declared FP32 parameters and buffers."""
+    fp32_modules = set()
+    for attribute in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+        names = getattr(model, attribute, None) or []
+        fp32_modules.update([names] if isinstance(names, str) else names)
+    if not fp32_modules:
+        return model.to(dtype)
+
+    # Inspect all aliases before casting so a shared tensor is protected even
+    # when its first name is outside the FP32 modules.
+    protected = set()
+    tensors = list(model.named_parameters(remove_duplicate=False)) + list(model.named_buffers(remove_duplicate=False))
+    for name, tensor in tensors:
+        if any(module_name in name for module_name in fp32_modules):
+            protected.add(id(tensor))
+            if isinstance(tensor, torch.nn.Parameter) and tensor.grad is not None:
+                protected.add(id(tensor.grad))
+
+    def convert(tensor):
+        if not (tensor.is_floating_point() or tensor.is_complex()):
+            return tensor
+        target_dtype = torch.float32 if id(tensor) in protected else dtype
+        return tensor.to(dtype=target_dtype)
+
+    return model._apply(convert)
+
+
 def _to_model_dtype(model, model_dtype):
-    if model_dtype is not None:
+    if isinstance(model_dtype, str):
         try:
             if (model_dtype == "float16" or model_dtype == "fp16") and model.dtype != torch.float16:
-                model = model.to(torch.float16)
+                model = cast_model_dtype(model, torch.float16)
             elif (
                 model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16"
             ) and model.dtype != torch.bfloat16:
-                model = model.to(torch.bfloat16)
-            elif model_dtype == "float32" or model_dtype == "fp32" and model.dtype != torch.bfloat32:
-                model = model.to(torch.float32)
-        except:
+                model = cast_model_dtype(model, torch.bfloat16)
+            elif model_dtype == "float32" or model_dtype == "fp32":
+                model = cast_model_dtype(model, torch.float32)
+        except Exception:
             logger.error("please use more device to fit the device or just use one device")
             exit()
     return model
@@ -2006,7 +2231,9 @@ def set_amax_for_uncalibrated_experts(
                     )
             return uncalibrated_experts
         # Flatten all tensors to 1D before concatenation
-        flat_values = [t.reshape(-1) for t in amax_values]
+        device = amax_values[0].device
+        dtype = amax_values[0].dtype
+        flat_values = [t.reshape(-1).to(device=device, dtype=dtype) for t in amax_values]
         all_values = torch.cat(flat_values)
         set_amax_value = torch.max(all_values)
         set_amax_value = set_amax_value.unsqueeze(0) if set_amax_value.dim() == 0 else set_amax_value
@@ -2506,23 +2733,433 @@ def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
         os.remove(idx)
 
 
-def hook_ngram_embeddings_on_cpu(model):
-    has_ngram_embeddings = hasattr(model, "model") and hasattr(model.model, "ngram_embeddings")
-    if has_ngram_embeddings:
-        raw_ngram_embeddings = model.model.ngram_embeddings
+def _pin_module_execution_on_device(module: torch.nn.Module, device) -> None:
+    """Attach an accelerate hook that runs ``module``'s forward on ``device``.
 
-        def hook_input_output_device_for_cpu_module(module):
-            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+    ``AlignDevicesHook(execution_device=device, io_same_device=True)`` aligns the module's
+    inputs to ``device`` before the forward and moves the output back to the caller's device,
+    so a huge, non-quantizable embedding can stay resident on a chosen device (CPU host RAM,
+    or a specific accelerator) instead of being dragged around by generic block relocation.
+    Params are expected to already live on ``device`` (the caller moves them for GPU targets).
+    """
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
 
-            hook = AlignDevicesHook(
-                io_same_device=True,
-                execution_device="cpu",
+    add_hook_to_module(module, AlignDevicesHook(io_same_device=True, execution_device=str(device)))
+
+
+def _pin_module_execution_on_cpu(module: torch.nn.Module) -> None:
+    """Attach an accelerate hook that keeps ``module``'s forward on CPU."""
+    _pin_module_execution_on_device(module, "cpu")
+
+
+def module_pinned_execution_device(module: torch.nn.Module) -> str | None:
+    """Return the execution-device string a module is pinned to, or ``None`` if not pinned.
+
+    Matches modules hooked by :func:`_pin_module_execution_on_device` (CPU or a specific
+    accelerator). Used by block relocation to leave intentionally-pinned modules in place.
+    """
+    hook = getattr(module, "_hf_hook", None)
+    if hook is None:
+        return None
+    hooks = getattr(hook, "hooks", (hook,))  # SequentialHook aggregates several
+    for h in hooks:
+        exec_device = getattr(h, "execution_device", None)
+        if exec_device is not None:
+            return str(exec_device)
+    return None
+
+
+def module_is_pinned_on_cpu(module: torch.nn.Module) -> bool:
+    """Return True if ``module`` carries a CPU-execution accelerate hook."""
+    return module_pinned_execution_device(module) == "cpu"
+
+
+def pin_ngram_embeddings_on_cpu_(module: torch.nn.Module) -> list:
+    """Pin every ngram embedding found under ``module`` on CPU, in place.
+
+    Works on any subtree (a whole model *or* a single decoder block), so it can
+    be applied right after a block is materialized and before it is dispatched
+    onto accelerators. Returns the list of pinned module names.
+    """
+    pinned = []
+    pinned_modules = []
+    for name, sub in module.named_modules():
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf in ("ngram_embedding", "ngram_embeddings"):
+            if not module_is_pinned_on_cpu(sub):
+                _pin_module_execution_on_cpu(sub)
+            pinned.append(name)
+            pinned_modules.append(sub)
+    if pinned_modules:
+        _log_ngram_cpu_hint(pinned_modules)
+    return pinned
+
+
+def _log_ngram_cpu_hint(ngram_modules: list) -> None:
+    """Tell the user ngram embeddings are on CPU and how to move them (once per run).
+
+    Emits the total ngram size and, when ``AR_NGRAM_DEVICE`` is not explicitly set, points at
+    the faster on-GPU options -- noting that ``across`` (multi-GPU sharding) is experimental
+    and may have bugs.
+    """
+    from auto_round import envs
+
+    total_nbytes = sum(_module_storage_nbytes(sub) for sub in ngram_modules)
+    if envs.is_set("AR_NGRAM_DEVICE"):
+        logger.info_once(
+            "Found %d ngram embedding module(s) (total %s); AR_NGRAM_DEVICE=%s keeps them on CPU.",
+            len(ngram_modules),
+            _format_nbytes_gib(total_nbytes),
+            str(getattr(envs, "AR_NGRAM_DEVICE", "auto")),
+        )
+    else:
+        logger.info_once(
+            "Found %d ngram embedding module(s) (total %s). AR_NGRAM_DEVICE is not set, so they stay on "
+            "CPU by default (memory-safe, but adds host<->device copies each block forward). To speed up, "
+            "set AR_NGRAM_DEVICE=<cuda:N|xpu:N> to place the whole table on one card, or AR_NGRAM_DEVICE=across "
+            "to row-shard it across all GPUs (experimental, may have bugs).",
+            len(ngram_modules),
+            _format_nbytes_gib(total_nbytes),
+        )
+
+
+def move_to_device_preserving_cpu_pinned(module: torch.nn.Module, device) -> torch.nn.Module:
+    """Move ``module`` to ``device`` but leave pinned/self-managed subtrees in place.
+
+    ``nn.Module.to()`` recurses unconditionally and would drag a pinned child (e.g. a
+    multi-GiB ngram embedding pinned on CPU or on a specific accelerator) onto ``device``,
+    which is exactly what causes card-0 OOM on large ngram models. This walks the tree
+    manually and stops at any subtree pinned to an execution device
+    (:func:`_pin_module_execution_on_device`) or one that manages its own (possibly
+    multi-device) storage, e.g. a row-sharded :class:`_ShardedEmbedding`.
+    """
+    if module_pinned_execution_device(module) is not None or _module_manages_own_device(module):
+        return module
+    # Materialize the iterators before mutating: reassigning ``param.data`` can trigger
+    # changes to the module's internal ``_parameters``/``_buffers`` dicts (e.g. on HPU lazy
+    # mode), which would raise ``RuntimeError: dictionary keys changed during iteration``.
+    for _, param in list(module.named_parameters(recurse=False)):
+        if param.device.type != "meta":
+            param.data = param.data.to(device)
+            if param.grad is not None:
+                param.grad.data = param.grad.data.to(device)
+    for _, buf in list(module.named_buffers(recurse=False)):
+        if buf.device.type != "meta":
+            buf.data = buf.data.to(device)
+    for child in list(module.children()):
+        move_to_device_preserving_cpu_pinned(child, device)
+    return module
+
+
+class _ShardedEmbedding(torch.nn.Module):
+    """Row-sharded, multi-GPU drop-in replacement for a huge ``nn.Embedding``.
+
+    A single embedding table ``(num_embeddings, dim)`` that is too large to fit on one
+    accelerator (e.g. the ~95 GiB Qwen4-Exp per-layer ngram table) is split along dim 0 into
+    contiguous row ranges, one shard per device. ``forward(ids)`` reproduces
+    ``nn.Embedding(ids)`` bit-exactly by gathering each id from the shard that owns its row,
+    so the lookup runs on-GPU instead of being pinned (slowly) on CPU.
+
+    The module owns its (multi-device) storage: generic block-relocation helpers must skip it
+    (see :func:`_module_manages_own_device`), or the shards would be collapsed onto one device.
+    Shards are registered as non-persistent buffers so ``.to("cpu")`` based offload can still
+    reclaim their device memory after the block is done.
+    """
+
+    def __init__(self, embedding: "torch.nn.Embedding", devices: list) -> None:
+        super().__init__()
+        weight = embedding.weight.data
+        self.num_embeddings, self.embedding_dim = int(weight.shape[0]), int(weight.shape[1])
+        self.weight_dtype = weight.dtype
+        n = max(1, len(devices))
+        rows_per_shard = (self.num_embeddings + n - 1) // n
+        self._bounds: list[tuple[int, int]] = []
+        for i, device in enumerate(devices):
+            lo = i * rows_per_shard
+            hi = min(self.num_embeddings, lo + rows_per_shard)
+            if lo >= hi:
+                break
+            self.register_buffer(f"shard_{i}", weight[lo:hi].to(device), persistent=False)
+            self._bounds.append((lo, hi))
+
+    @property
+    def weight(self):
+        # Exposed so callers that read ``embedding.weight.device`` keep working (the forward
+        # re-routes ids to the correct shard regardless of which device they arrive on).
+        return getattr(self, "shard_0")
+
+    def forward(self, input_ids: "torch.Tensor") -> "torch.Tensor":
+        flat = input_ids.reshape(-1)
+        # Compile-friendly gather: no data-dependent control flow. Avoid ``mask.any()`` (a scalar
+        # sync -> dynamo graph break) and boolean-mask indexing (``flat[mask]`` -> data-dependent
+        # shapes -> recompiles). Instead, for every shard clamp ids into its local range, gather,
+        # and select the owning shard's rows with ``torch.where``. Each id lives in exactly one
+        # shard, so exactly one iteration writes it; the rest keep the running ``out``.
+        out = torch.zeros(flat.shape[0], self.embedding_dim, dtype=self.weight_dtype, device=flat.device)
+        for i, (lo, hi) in enumerate(self._bounds):
+            shard = getattr(self, f"shard_{i}")
+            mask = (flat >= lo) & (flat < hi)
+            local = torch.clamp(flat - lo, 0, hi - lo - 1).to(shard.device)
+            gathered = torch.nn.functional.embedding(local, shard).to(out.device)
+            out = torch.where(mask.unsqueeze(-1), gathered, out)
+        return out.reshape(*input_ids.shape, self.embedding_dim)
+
+
+def _module_manages_own_device(module: torch.nn.Module) -> bool:
+    """True for modules that place their own (possibly multi-device) storage.
+
+    Such modules (e.g. :class:`_ShardedEmbedding`) must be skipped by the generic block
+    relocation helpers so their shards are not collapsed onto a single device.
+    """
+    return isinstance(module, _ShardedEmbedding)
+
+
+def shard_ngram_embeddings_across_gpus_(module: torch.nn.Module, devices: list) -> list:
+    """Row-shard every plain ``nn.Embedding`` ngram table under ``module`` across ``devices``.
+
+    Requires >= 2 devices; only plain, already-materialized ``nn.Embedding`` tables are
+    sharded (anything else is left for the caller to CPU-pin). Returns the sharded names.
+    """
+    if not devices or len(devices) < 2:
+        return []
+    sharded = []
+    for name, sub in list(module.named_modules()):
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf not in ("ngram_embedding", "ngram_embeddings"):
+            continue
+        if not isinstance(sub, torch.nn.Embedding) or isinstance(sub, _ShardedEmbedding):
+            continue
+        if sub.weight.device.type == "meta":
+            continue  # not materialized yet; caller decides
+        parent = get_module(module, name.rsplit(".", 1)[0]) if "." in name else module
+        try:
+            replacement = _ShardedEmbedding(sub, devices)
+        except Exception as err:  # OOM or device error -> leave for the caller to CPU-pin
+            logger.warning(f"Could not shard ngram embedding '{name}' across GPUs ({err}); keeping it on CPU.")
+            continue
+        setattr(parent, leaf, replacement)
+        sharded.append(name)
+    return sharded
+
+
+def _iter_ngram_modules(module: torch.nn.Module):
+    """Yield ``(name, submodule)`` for every ngram embedding leaf under ``module``."""
+    for name, sub in module.named_modules():
+        leaf = name.rsplit(".", 1)[-1]
+        # Keep exact matches first, but also accept common ngram leaf variants.
+        if leaf in ("ngram_embedding", "ngram_embeddings") or ("ngram_embedding" in leaf or leaf.startswith("ngram")):
+            yield name, sub
+
+
+def _module_storage_nbytes(module: torch.nn.Module) -> int:
+    """Return parameter+buffer storage bytes for one module (including its children)."""
+    total = 0
+    for param in module.parameters(recurse=True):
+        total += int(param.numel()) * int(param.element_size())
+    for buf in module.buffers(recurse=True):
+        total += int(buf.numel()) * int(buf.element_size())
+    return total
+
+
+def _format_nbytes_gib(nbytes: int) -> str:
+    """Format byte count in GiB for user-facing logs."""
+    gib = float(nbytes) / (1024.0**3)
+    return f"{gib:.2f} GiB"
+
+
+def _place_ngram_on_single_device_(sub: torch.nn.Module, device: str) -> None:
+    """Keep one ngram embedding resident on ``device`` (CPU or a specific accelerator).
+
+    For a GPU target the params are physically moved onto the card first (so the on-device
+    lookup is real); for CPU they stay in host RAM. An ``AlignDevicesHook`` then keeps the
+    module executing on ``device`` and re-aligns I/O to the caller, and marks it so the
+    generic block relocation leaves it in place.
+    """
+    if module_pinned_execution_device(sub) == str(device):
+        return
+    if not isinstance(sub, _ShardedEmbedding):
+        try:
+            tensors = list(sub.parameters(recurse=False)) + list(sub.buffers(recurse=False))
+            if any(t.device.type != "meta" for t in tensors):
+                sub.to(device)
+        except Exception as err:  # OOM, invalid/unavailable device, ... -> safe CPU fallback
+            logger.warning(f"Could not place ngram embedding on {device} ({err}); keeping it on CPU.")
+            device = "cpu"
+    _pin_module_execution_on_device(sub, device)
+
+
+def _normalize_ngram_target_device(setting: str, devices: list) -> str | None:
+    """Resolve an ``AR_NGRAM_DEVICE`` value naming a single device to a concrete device string.
+
+    Accepts a full string (``cuda:1``/``xpu:0``/``cpu``) or a bare index (``1`` -> the second
+    entry of ``devices`` when present, else ``<accelerator>:1``). Returns ``None`` if the value
+    is not a single-device request.
+    """
+    if setting == "cpu":
+        return "cpu"
+    if ":" in setting:
+        return setting
+    if setting.isdigit():
+        idx = int(setting)
+        if devices and idx < len(devices):
+            return str(devices[idx])
+        try:
+            from auto_round.utils.device_manager import device_manager
+
+            return f"{device_manager.type}:{idx}"
+        except Exception:  # pragma: no cover - device manager optional/unavailable
+            return f"cuda:{idx}"
+    return None
+
+
+def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: list | None = None) -> list:
+    """Place ngram embeddings for per-block tuning, honoring the ``AR_NGRAM_DEVICE`` env var.
+
+    ``AR_NGRAM_DEVICE`` values:
+
+    * ``auto`` (default): keep the table pinned on CPU (memory-safe; the table does not
+      participate in tuning). A one-time hint points users at the faster on-GPU options.
+    * ``across`` / ``shard`` / ``gpu``: force row-sharding across all available GPUs.
+    * ``cpu``: pin on CPU (same as the default).
+    * a device (``cuda:1``, ``xpu:0``, or a bare index like ``1``): put the whole table on
+      that specific card.
+
+    Multi-GPU sharding is experimental (see the warning below). Returns the handled names.
+    """
+    from auto_round import envs
+
+    setting = str(getattr(envs, "AR_NGRAM_DEVICE", "auto")).strip().lower()
+    ngram_device_explicitly_set = bool(envs.is_set("AR_NGRAM_DEVICE"))
+
+    devices = [str(d) for d in gpu_devices] if gpu_devices else []
+    if not devices:
+        try:
+            from auto_round.utils.device_manager import device_manager
+
+            if device_manager.is_available() and device_manager.type != "cpu":
+                devices = [str(d) for d in device_manager.device_list]
+        except Exception:  # pragma: no cover - device manager optional/unavailable
+            devices = []
+
+    ngram_modules = list(_iter_ngram_modules(module))
+    if not ngram_modules:
+        fallback_ngram_names = [name for name, _ in module.named_modules() if "ngram" in name.lower()]
+        if fallback_ngram_names:
+            logger.info_once(
+                "AR_NGRAM_DEVICE=%s is set, but no ngram embedding leaf matched placement rules in this block. "
+                "Found %d ngram-like module name(s), e.g. %s",
+                setting or "auto",
+                len(fallback_ngram_names),
+                ", ".join(fallback_ngram_names[:3]),
             )
+        return []
+    total_ngram_nbytes = sum(_module_storage_nbytes(sub) for _, sub in ngram_modules)
+    logger.info_once(
+        "Detected %d ngram embedding module(s), total size %s (AR_NGRAM_DEVICE=%s).",
+        len(ngram_modules),
+        _format_nbytes_gib(total_ngram_nbytes),
+        setting or "auto",
+    )
 
-            add_hook_to_module(module, hook)
+    # Resolve the requested mode.
+    single_target = _normalize_ngram_target_device(setting, devices)
+    if setting in ("across", "shard", "gpu"):
+        mode = "across"
+    elif setting in ("auto", ""):
+        # Default: keep the (huge, non-tunable) ngram table on CPU. It does not participate in
+        # tuning, so host residency is correct and memory-safe (no per-card OOM, no extra device
+        # RAM churn); the only cost is host<->device copies per forward. Point users at the
+        # faster on-GPU options once, so they can opt in when they have the headroom.
+        mode = "single"
+        single_target = "cpu"
+        if not ngram_device_explicitly_set:
+            logger.info_once(
+                "AR_NGRAM_DEVICE is not set, so ngram embeddings stay on CPU by default (total %s, memory-safe). "
+                "For faster lookup set AR_NGRAM_DEVICE=<cuda:N|xpu:N> (single GPU) or AR_NGRAM_DEVICE=across "
+                "(multi-GPU sharding, experimental and may have bugs).",
+                _format_nbytes_gib(total_ngram_nbytes),
+            )
+        else:
+            logger.info_once(
+                "AR_NGRAM_DEVICE=%s keeps ngram embeddings on CPU (total %s, memory-safe).",
+                setting,
+                _format_nbytes_gib(total_ngram_nbytes),
+            )
+    elif single_target is not None:
+        mode = "single"
+    else:
+        logger.warning(f"Unrecognized AR_NGRAM_DEVICE={setting!r}; falling back to CPU (safe default).")
+        mode = "single"
+        single_target = "cpu"
 
-        hook_input_output_device_for_cpu_module(raw_ngram_embeddings)
-    return has_ngram_embeddings, raw_ngram_embeddings if has_ngram_embeddings else None
+    handled: list = []
+    if mode == "across":
+        if len(devices) >= 2:
+            logger.warning_once(
+                "Sharding ngram embeddings across multiple GPUs is experimental and may have bugs; "
+                "set AR_NGRAM_DEVICE=cpu (safe) or a specific card (e.g. AR_NGRAM_DEVICE=cuda:0) if you hit issues."
+            )
+            handled = list(shard_ngram_embeddings_across_gpus_(module, devices))
+            if handled:
+                logger.info(
+                    "Placed %d ngram embedding module(s) across %d GPUs (total %s).",
+                    len(handled),
+                    len(devices),
+                    _format_nbytes_gib(total_ngram_nbytes),
+                )
+        # Any ngram not sharded (single/no GPU, custom module, OOM) falls back to CPU pin below.
+        fallback = devices[0] if len(devices) == 1 else "cpu"
+        for name, sub in ngram_modules:
+            if name in handled or isinstance(sub, _ShardedEmbedding):
+                continue
+            _place_ngram_on_single_device_(sub, fallback)
+            handled.append(name)
+        if handled and len(devices) < 2:
+            logger.info(
+                "Placed %d ngram embedding module(s) on %s (total %s).",
+                len(handled),
+                fallback,
+                _format_nbytes_gib(total_ngram_nbytes),
+            )
+        return handled
+
+    # mode == "single": every ngram table on one chosen device (CPU or a specific card).
+    target = single_target if single_target is not None else "cpu"
+    for name, sub in ngram_modules:
+        _place_ngram_on_single_device_(sub, target)
+        handled.append(name)
+    if handled:
+        logger.info(
+            "Placed %d ngram embedding module(s) on %s (total %s).",
+            len(handled),
+            target,
+            _format_nbytes_gib(total_ngram_nbytes),
+        )
+    return handled
+
+
+def hook_ngram_embeddings_on_cpu(model):
+    """Pin ngram embeddings on CPU so they are never moved onto an accelerator.
+
+    Handles two layouts:
+
+    * The top-level ``model.model.ngram_embeddings`` module (original behavior).
+    * Per-layer ngram embeddings nested anywhere in the tree, e.g.
+      ``model.language_model.layers.N.ple.ple_embedding.ngram_embedding`` used by
+      Qwen3-Next-Flash style checkpoints. These are single, very large lookup
+      tables (~tens of GiB) that do not participate in tuning, so keeping them on
+      CPU avoids GPU OOM during per-block dispatch.
+
+    Returns ``(has_top_level_ngram, raw_top_level_ngram_or_None)`` for backward
+    compatibility with the calibration dispatch restore logic.
+    """
+    # Per-layer / nested ngram embeddings (match any module attribute literally
+    # named ``ngram_embedding``, plus the pluralized top-level ``ngram_embeddings``).
+    pin_ngram_embeddings_on_cpu_(model)
+
+    has_ngram_embeddings = hasattr(model, "model") and hasattr(model.model, "ngram_embeddings")
+    raw_ngram_embeddings = model.model.ngram_embeddings if has_ngram_embeddings else None
+    return has_ngram_embeddings, raw_ngram_embeddings
 
 
 def is_model_free_route(
@@ -2585,16 +3222,15 @@ def is_model_free_route(
         return False
 
     if fmt_first == "llm_compressor":
-        # llm_compressor output format is only supported for MXFP schemes.
-        from auto_round.compressors.utils import is_mx_fp
+        from auto_round.compressors.model_free import _apply_scheme_overrides
+        from auto_round.schemes import is_mx_fp as _is_mx_fp
 
         try:
-            from auto_round.compressors.model_free import _normalize_scheme
-
-            scheme_obj = _normalize_scheme(scheme)
-            return common_conditions and is_mx_fp((scheme_obj.data_type or "").lower())
-        except (ValueError, TypeError):
-            return False
+            scheme_obj = _apply_scheme_overrides(scheme, kwargs)
+            scheme_is_mx_fp = _is_mx_fp(scheme_obj.data_type or "")
+        except Exception:
+            scheme_is_mx_fp = False
+        return common_conditions and scheme_is_mx_fp and is_model_free_supported_scheme(scheme, kwargs)
     if fmt_first != "auto_round":
         return False
     return common_conditions and is_model_free_supported_scheme(scheme, kwargs)

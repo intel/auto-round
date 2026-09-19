@@ -14,7 +14,9 @@
 
 from __future__ import annotations
 
+from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
+from auto_round.algorithms.registry import register_algorithm
 
 
 class SVDQuantConfig(QuantizationConfig):
@@ -34,6 +36,75 @@ class SVDQuantConfig(QuantizationConfig):
         model_adapter: Architecture adapter used for grouping and export.
         **kwargs: Shared :class:`QuantizationConfig` options.
     """
+
+    @classmethod
+    def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
+        registry.add_argument("--svdquant-rank", field="rank", default=32, type=int, help="SVDQuant low-rank size.")
+        registry.add_argument(
+            "--enable-svdquant-smooth",
+            field="smooth_enabled",
+            dest="svdquant_smooth_enabled",
+            default=False,
+            action="store_true",
+            help="Enable SVDQuant activation-aware smoothing.",
+        )
+        registry.add_argument(
+            "--svdquant-smooth-num-grids",
+            field="smooth_num_grids",
+            default=20,
+            type=int,
+            help="Number of candidates per SVDQuant smooth search grid family.",
+        )
+        registry.add_argument(
+            "--svdquant-smooth-max-calibration-calls",
+            field="smooth_max_calibration_calls",
+            default=128,
+            type=int,
+            help="Maximum calibration calls retained per SVDQuant smooth group.",
+        )
+        registry.add_argument(
+            "--svdquant-residual-iters",
+            field="residual_iters",
+            default=1,
+            type=int,
+            help="Number of alternating low-rank and residual quantization iterations.",
+        )
+        registry.add_argument(
+            "--enable-svdquant-residual-early-stop",
+            field="residual_early_stop",
+            dest="svdquant_residual_early_stop",
+            default=False,
+            action="store_true",
+            help="Stop residual iteration when reconstruction error no longer improves.",
+        )
+        registry.add_argument(
+            "--svdquant-low-rank-dtype",
+            field="low_rank_dtype",
+            default="bf16",
+            choices=["bf16", "bfloat16", "fp16", "float16", "fp32", "float32"],
+            help="Data type for the SVDQuant low-rank branch.",
+        )
+        registry.add_argument(
+            "--svdquant-target-modules",
+            field="target_modules",
+            default=None,
+            type=str,
+            help="Comma-separated module-name substrings to transform.",
+        )
+        registry.add_argument(
+            "--svdquant-exclude-modules",
+            field="exclude_modules",
+            default=None,
+            type=str,
+            help="Comma-separated module-name substrings to exclude.",
+        )
+        registry.add_argument(
+            "--svdquant-model-adapter",
+            field="model_adapter",
+            default="auto",
+            choices=["auto", "identity", "flux", "sdxl"],
+            help="Architecture adapter used by SVDQuant export.",
+        )
 
     def __init__(
         self,
@@ -113,3 +184,11 @@ def _normalize_patterns(value):
     if isinstance(value, str):
         return [item.strip() for item in value.split(",") if item.strip()]
     return list(value)
+
+
+register_algorithm(
+    "svdquant",
+    aliases=("svdquant",),
+    config_factory=SVDQuantConfig,
+    summary="SVD low-rank decomposition before residual quantization.",
+)

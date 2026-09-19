@@ -11,15 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import importlib
 import re
+import sys
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import torch
 
 from auto_round.export.formats import OutputFormat
 from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
-from auto_round.utils import is_moe_model_via_config, logger
+from auto_round.utils import is_moe_model_via_config, logger, torch_version_at_least
 
 mllms_with_limited_bs = (
     "llava",
@@ -1059,12 +1062,37 @@ register_ignore_layers(
     ],
 )
 
-# glm5
+# GLM-5.3-Flash family: ``glm_moe_dsa`` (text) and ``glm5_next`` (multimodal).
+#
+# Both keep their whole DSA indexer out of quantization:
+#   * ``{GlmMoeDsa,Glm5NextText}Indexer.forward`` is decorated with ``@torch.no_grad()``
+#     while owning three quantizable linears (``wq_b``, ``wk``, ``weights_proj``).
+#     Wrapping them makes the same compiled quant function run under both grad-disabled
+#     (indexer) and grad-enabled (rest of the block) modes. dynamo keys its cache by
+#     *code object* -- shared by every WrapperLinear -- so the AOTAutograd backward then
+#     fails with "cannot enter context: <Context ...> is already entered".
+#   * transformers marks ``indexer.weights_proj`` in ``_keep_in_fp32_modules``, i.e. it
+#     is not even supposed to leave FP32.
+# The indexer is tiny anyway (``weights_proj`` outputs ``index_n_heads``), so there is
+# no compression to gain here. ``get_glm_flash_ignore_layers`` additionally keeps the
+# leading dense MLPs in full precision to work around a vLLM loading issue.
 register_ignore_layers(
     matchers=[
         ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
     ],
-    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj"],  # vllm issue
+    ignore_layers=[get_glm_flash_ignore_layers, "weights_proj", "indexer"],  # get_glm_flash_ignore_layers: vllm issue
+)
+
+register_ignore_layers(
+    matchers=[
+        ModelTypeMatcher(r"glm5_next", mode="full"),
+    ],
+    ignore_layers=[
+        get_glm_flash_ignore_layers,  # vllm issue
+        "weights_proj",
+        "indexer",
+        "self_attn",
+    ],
 )
 
 # step3p5
@@ -1091,34 +1119,40 @@ register_ignore_layers(
     ],
 )
 
+# qwen4: keep hyper_connection and MoE gate modules in full precision.
+register_ignore_layers(
+    matchers=[
+        ArchitectureMatcher(r"Qwen4", mode="in"),
+    ],
+    ignore_layers=[
+        "hyper_connection",
+        "mlp.gate",  # MoE router gate
+        "shared_expert",
+    ],
+)
+
 
 def get_bagel_ignore_layers(model) -> list[str]:
-    """Keep BAGEL generation-path modules in FP16.
+    """Keep BAGEL generation-path modules in BF16.
 
     BAGEL uses `*_moe_gen` modules for the image-generation path. Quantizing
-    them causes quality to collapse during the iterative denoising loop.
-    The shared attention projections are also highly sensitive, and preserving
-    the top 4 transformer blocks in FP16 gave acceptable image quality in
-    validation runs.
+    them can reduce quality during the iterative denoising loop. Users can
+    explicitly opt in with ``AR_QUANTIZE_BAGEL_MOE_GEN=1``.
+
+    The standard Qwen2 attention and MLP projections are deliberately not
+    ignored: they form BAGEL's normal text path and should follow AutoRound's
+    usual transformer-layer policy.
     """
-    top_fp16_layers = 0
+    from auto_round import envs
 
-    ignore_layers = [
-        "moe_gen",
-        "self_attn.q_proj",
-        "self_attn.k_proj",
-        "self_attn.v_proj",
-        "self_attn.o_proj",
-    ]
-
-    num_layers = 0
-    if hasattr(model, "language_model") and hasattr(model.language_model, "model"):
-        num_layers = len(getattr(model.language_model.model, "layers", []))
-
-    if num_layers > 0:
-        for layer_idx in range(max(0, num_layers - top_fp16_layers), num_layers):
-            ignore_layers.append(f"language_model.model.layers.{layer_idx}")
-
+    ignore_layers = []
+    if not envs.AR_QUANTIZE_BAGEL_MOE_GEN:
+        ignore_layers.append("moe_gen")
+    else:
+        logger.warning(
+            "AR_QUANTIZE_BAGEL_MOE_GEN is enabled. Quantizing BAGEL's image-generation experts may reduce image "
+            "quality."
+        )
     return ignore_layers
 
 
@@ -1153,6 +1187,68 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
                 layers.append(name)
 
     return list(dict.fromkeys(layers))
+
+
+# ---------------------------------------------------------------------------
+# Architectures for which ``torch.compile`` is force-disabled during tuning.
+# ---------------------------------------------------------------------------
+@dataclass
+class PreDefinedTorchCompileOff:
+    """A rule that force-disables ``torch.compile`` for a family of models."""
+
+    matchers: list[Callable[[Any], bool]]
+    reason: str
+
+
+_PRE_DEFINED_TORCH_COMPILE_OFF: list[PreDefinedTorchCompileOff] = []
+
+
+def register_torch_compile_off(matchers: list[Callable[[Any], bool]], reason: str) -> None:
+    """Register an architecture family for which ``torch.compile`` must stay off.
+
+    Any matcher hitting is enough (``any``, not ``all``) so one rule can cover several
+    equivalent identifiers (model_type and architecture name).
+    """
+    _PRE_DEFINED_TORCH_COMPILE_OFF.append(PreDefinedTorchCompileOff(matchers, reason))
+
+
+def get_torch_compile_off_reason(model) -> str | None:
+    """Return why ``torch.compile`` must stay off for this model, else ``None``.
+
+    Accepts a model or anything exposing ``.config``.
+    """
+    if model is None:
+        return None
+    proxy = model if hasattr(model, "config") else SimpleNamespace(config=model)
+    for rule in _PRE_DEFINED_TORCH_COMPILE_OFF:
+        if any(matcher(proxy) for matcher in rule.matchers):
+            return rule.reason
+    return None
+
+
+# DeepSeek V2/V3/V3.2/V4 and the GLM-5.3-Flash family (``glm_moe_dsa`` text /
+# ``glm5_next`` multimodal) share a DSA indexer + fused MoE with shape-dependent
+# control flow. On torch < 2.14.0 compiling the tuning graph there hits dynamo's
+# recompile_limit and provides little benefit, so keep those runs in eager mode.
+# From torch 2.14.0 onward these constraints are resolved, so we no longer force
+# ``torch.compile`` off and instead honor the default / user-provided setting.
+if not torch_version_at_least("2.14.0"):
+    register_torch_compile_off(
+        matchers=[
+            ModelTypeMatcher("deepseek", mode="in"),
+            ArchitectureMatcher("Deepseek", mode="in"),
+            ArchitectureMatcher("DeepSeek", mode="in"),
+        ],
+        reason="the DeepSeek architecture is incompatible with torch.compile during tuning on torch < 2.14.0",
+    )
+    register_torch_compile_off(
+        matchers=[
+            ModelTypeMatcher(r"glm_moe_dsa", mode="full"),
+            ModelTypeMatcher(r"glm5_next", mode="full"),
+            ArchitectureMatcher(r"Glm5Next", mode="in"),
+        ],
+        reason="the GLM-5 architecture is incompatible with torch.compile during tuning on torch < 2.14.0",
+    )
 
 
 def _attach_gemma4_rotary_emb(model):
@@ -1352,10 +1448,16 @@ def _get_cosmos3_multimodal_block(model, quant_vision=False):
 
 def _bypass_cosmos3_safety_checker():
     """Patch Cosmos3 safety checker so calibration does not require cosmos_guardrail."""
-    try:
-        import diffusers.pipelines.cosmos.pipeline_cosmos3_omni as pipeline_cosmos3_omni
-    except ImportError:
-        return
+    # Prefer an already-registered module.  Besides avoiding an unnecessary
+    # import, this makes the optional dependency easy to substitute in tests
+    # and in environments where diffusers lazily registers pipeline modules.
+    module_name = "diffusers.pipelines.cosmos.pipeline_cosmos3_omni"
+    pipeline_cosmos3_omni = sys.modules.get(module_name)
+    if pipeline_cosmos3_omni is None:
+        try:
+            pipeline_cosmos3_omni = importlib.import_module(module_name)
+        except ImportError:
+            return
 
     safety_checker = getattr(pipeline_cosmos3_omni, "CosmosSafetyChecker", None)
     if safety_checker is None or getattr(safety_checker, "_autoround_patched", False):

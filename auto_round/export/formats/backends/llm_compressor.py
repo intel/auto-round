@@ -29,13 +29,23 @@ class LLMCompressorFormat(OutputFormat):
         "MXFP4",
         "MXFP8",
         "NVFP4",
+        "NVFP4_E5M3",
         "FPW8A16",
         "FP8_STATIC",
         "INT8",
         "INT8_W8A8",
         "FP8_BLOCK",
         "W4A16",
+        "W5A16",
+        "W6A16",
+        "W7A16",
         "W8A16",
+        # group-size variants for mixed int pools (CT pack-quantized handles
+        # any width/group); 8-bit variants are symmetric presets -- this format
+        # also serves 8-bit asym via --asym, unlike the native formats
+        *[f"W{b}A16G{g}" for b in (2, 3, 4, 5, 6, 7, 8) for g in (64, 32)],
+        "W2A16",
+        "W3A16",
     ]
     format_name = "llm_compressor"
 
@@ -49,7 +59,12 @@ class LLMCompressorFormat(OutputFormat):
         if re.search("^(auto_round:)?llm_compressor", format):
             self.output_format = format
             self.backend = None
-            if scheme.is_nv_fp() or scheme.is_mx_fp():
+            if scheme.data_type == "nvfp4_v2":
+                from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
+                check_compressed_tensors_supported(raise_error=True)
+                self.output_format = "llm_compressor:nvfp4_v2"
+            elif scheme.is_nv_fp() or scheme.is_mx_fp():
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 check_compressed_tensors_supported(raise_error=True)
@@ -89,13 +104,13 @@ class LLMCompressorFormat(OutputFormat):
     @classmethod
     def check_scheme_args(cls: OutputFormat, scheme: QuantizationScheme) -> bool:
         error_logs = []
-        if scheme.bits not in [4, 8, 16]:
+        if scheme.bits not in [2, 3, 4, 5, 6, 7, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
         if not re.search("mxfp|fp|nvfp|int", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
         if scheme.data_type == "fp" and scheme.bits != 8:
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
-        if scheme.data_type == "int" and scheme.bits not in [4, 8]:
+        if scheme.data_type == "int" and scheme.bits not in [2, 3, 4, 5, 6, 7, 8]:
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
         if scheme.super_bits:
             error_logs.append(f"super_bits={scheme.super_bits}")
@@ -135,6 +150,8 @@ class LLMCompressorFormat(OutputFormat):
             )
 
         if scheme.act_bits <= 8 and (not scheme.is_act_standard_fp() or scheme.act_dynamic):
+            if scheme.act_data_type == "nvfp4_v2":
+                return None, scheme, layer_config, quant_block_list
             if (scheme.is_act_nv_fp() and "static_gs" in scheme.act_data_type) or scheme.is_act_mx_fp():
                 return None, scheme, layer_config, quant_block_list
             elif scheme.is_dynamic_afp8() and scheme.is_block_wfp8():
@@ -159,7 +176,7 @@ class LLMCompressorFormat(OutputFormat):
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         if self.backend is not None:
             return self.backend.pack_layer(layer_name, model, device=device, **kwargs)
-        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}", self.output_format):
+        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}|nvfp4_v2", self.output_format):
             from auto_round.export.export_to_llmcompressor.export_to_fp import pack_layer
 
             return pack_layer(layer_name, model, device=device)
@@ -195,7 +212,7 @@ class LLMCompressorFormat(OutputFormat):
         **kwargs,
     ) -> torch.nn.Module:
         backend = self.get_backend_name()
-        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}", backend):
+        if re.search(f"{BackendDataType.MX_FP.value}|{BackendDataType.NV_FP.value}|nvfp4_v2", backend):
             from auto_round.export.export_to_llmcompressor.export_to_fp import save_quantized_as_fp
 
             export_func = save_quantized_as_fp

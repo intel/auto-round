@@ -47,14 +47,33 @@ pytest test/e2e/test_cpu/
 
 Test fixtures create tiny models (OPT-125M, Qwen-0.6B) at session scope — first run downloads them.
 
-## Code Style
+## Code Quality & Pre-commit
 
-- **Line length: 120** (non-default) — enforced by black, isort, ruff, pylint
-- **Formatter: black** (profile used by isort)
-- **Import sorting: isort** with `profile=black`, first-party: `auto_round`, `auto_round_extension`
-- **Linter: ruff** — rules `E4, E7, E9, F, NPY, FURB`; E501/E402/F401/F403 are intentionally ignored
-- **License header**: Apache 2.0 auto-inserted into `.py/.yaml/.yml/.sh` under `auto_round/` and `auto_round_extension/`
-- Pre-commit config: `.pre-commit-config.yaml`
+All syntax, formatting, licensing, spelling, and linting checks are enforced via `.pre-commit-config.yaml`.
+
+### Execution Rules for Agents
+
+1. **Always run pre-commit after editing files**:
+   - For focused changes (preferred):
+     ```bash
+     pre-commit run --files <changed_file1> <changed_file2>
+     ```
+   - For a specific hook/tool (e.g., `ruff`, `black`, `codespell`):
+     ```bash
+     pre-commit run <hook_id> --files <changed_file>
+     ```
+   - For repository-wide checks (recommended for extensive changes or initial runs; fast and lightweight):
+     ```bash
+     pre-commit run --all-files
+     ```
+2. **Rerun until clean**: Tools like `ruff` and `codespell` automatically fix issues but will exit with non-zero on first modification (`--exit-non-zero-on-fix`). Keep changes and rerun the command until all checks pass.
+3. **Manual fixes**: Only make manual changes if a check fails and cannot be auto-fixed (e.g., `bandit` security findings, `check-json`, or complex syntax errors).
+
+### Automated Checks Summary
+
+- **Auto-fixing hooks**: `black` (line length 120), `isort` (imports), `ruff` (lint fixes), `insert-license` (Apache 2.0 header), `codespell` (typos), `mixed-line-ending` (LF).
+- **Check-only hooks**: `bandit` (security issues under `auto_round/`), `typos`, `check-yaml`/`check-json`, `markdown-link-check`.
+- *Note*: `auto_round/export/export_to_gguf/conversion/` is intentionally excluded from most hooks.
 
 ## Commit & PR Conventions
 

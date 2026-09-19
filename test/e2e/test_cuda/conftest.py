@@ -222,7 +222,11 @@ def quantize_and_save(
                    --sym --format {fmt} --output_dir {output_dir} \\
                    --iters {iters} --nsamples {nsamples} --seqlen {seqlen}
     """
+    from test.helpers import get_model_path
+
     from auto_round import AutoRound  # local import: heavy module
+
+    model_id = get_model_path(model_id) if "/" in model_id else model_id
 
     shutil.rmtree(output_dir, ignore_errors=True)
     ar = AutoRound(

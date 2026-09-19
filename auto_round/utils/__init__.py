@@ -21,7 +21,13 @@ from auto_round.utils.weight_handler import (
     detect_weight_type,
     is_quantized_input_module,
 )
-from auto_round.utils.missing_tensors import copy_missing_tensors_from_source
+
+
+def copy_missing_tensors_from_source(*args, **kwargs):
+    from auto_round.utils.missing_tensors import copy_missing_tensors_from_source as _copy_missing_tensors_from_source
+
+    return _copy_missing_tensors_from_source(*args, **kwargs)
+
 
 import transformers
 from packaging.version import Version

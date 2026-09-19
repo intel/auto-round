@@ -396,7 +396,7 @@ class ARDevice:
         if callable(fn):
             try:
                 fn()  # pylint: disable=E1102 # mps has issues
-            except:
+            except Exception:
                 pass
 
     def device_index(self, index: int):
@@ -898,8 +898,7 @@ def default_enable_torch_compile(
     device: Union[None, str, int, torch.device] = None, platform_name: str | None = None
 ) -> bool:
     """Return the safe torch.compile default for a backend."""
-    device_type = _normalize_device_type(device) or get_current_device_type()
-    return device_type != "xpu" and (platform_name or sys.platform) != "win32"
+    return (platform_name or sys.platform) != "win32"
 
 
 def get_current_device_manager() -> ARDevice:

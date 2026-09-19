@@ -42,18 +42,42 @@ def save_pretrained_artifact(artifact, output_dir: str, artifact_name: str = "ar
     return True
 
 
-def _save_model_configs(model: nn.Module, save_dir: str) -> None:
-    if hasattr(model, "config") and model.config is not None:
-        try:
-            model.config.save_pretrained(save_dir)
-        except (KeyError, TypeError):
-            # Some third-party configs (e.g. qwen-tts) fail with use_diff=True
-            # due to missing keys in recursive_diff_dict. Fall back to full config.
-            import json
+def save_config_artifact(model: nn.Module, save_dir: str) -> None:
+    """Write ``model.config`` to ``save_dir``, for transformers and diffusers models alike.
 
+    A diffusers ``ModelMixin`` keeps its config in a ``FrozenDict``, which has no
+    ``save_pretrained``; ``ModelMixin.save_config`` is the equivalent writer.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return
+
+    if not hasattr(config, "save_pretrained") and hasattr(model, "save_config"):
+        model.save_config(save_dir)
+        # save_config serializes the config's own dict, so the quantization_config the
+        # exporter set on the config object afterwards has to be merged back in.
+        quantization_config = getattr(config, "quantization_config", None)
+        if quantization_config is not None:
             config_path = os.path.join(save_dir, "config.json")
+            with open(config_path, encoding="utf-8") as f:
+                config_dict = json.load(f)
+            config_dict["quantization_config"] = quantization_config
             with open(config_path, "w", encoding="utf-8") as f:
-                f.write(model.config.to_json_string(use_diff=False))
+                json.dump(config_dict, f, indent=2, sort_keys=True)
+        return
+
+    try:
+        config.save_pretrained(save_dir)
+    except (KeyError, TypeError):
+        # Some third-party configs (e.g. qwen-tts) fail with use_diff=True
+        # due to missing keys in recursive_diff_dict. Fall back to full config.
+        config_path = os.path.join(save_dir, "config.json")
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(config.to_json_string(use_diff=False))
+
+
+def _save_model_configs(model: nn.Module, save_dir: str) -> None:
+    save_config_artifact(model, save_dir)
 
     if hasattr(model, "generation_config") and model.generation_config is not None:
         model.generation_config.save_pretrained(save_dir)
@@ -225,6 +249,75 @@ def resolve_pipeline_export_layout(model: nn.Module, output_dir: str) -> tuple[s
     return model_output_dir, processor_output_dir, True
 
 
+def _load_source_config_dict(source_dir: str) -> dict | None:
+    """Load the source checkpoint's ``config.json`` as a dict (local dir or HF repo id)."""
+    if not isinstance(source_dir, str) or not source_dir:
+        return None
+    config_path = None
+    if os.path.isdir(source_dir):
+        candidate = os.path.join(source_dir, "config.json")
+        config_path = candidate if os.path.exists(candidate) else None
+    else:
+        try:
+            from huggingface_hub import hf_hub_download
+
+            config_path = hf_hub_download(source_dir, "config.json")
+        except Exception:
+            config_path = None
+    if config_path is None or not os.path.exists(config_path):
+        return None
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _restore_original_layer_types(save_dir: str, source_dir: str) -> None:
+    """Restore the original ``layer_types`` from the source checkpoint into the saved config.
+
+    transformers normalizes ``layer_types`` (e.g. legacy name remapping) when a config is
+    loaded and re-saved. For hybrid-attention models this rewrites the strings the user
+    authored in their checkpoint. This copies the original ``layer_types`` back so the
+    exported ``config.json`` matches the source. Both the top-level config and a nested
+    ``text_config`` (VL models) are handled. The value is only restored when it differs and
+    the number of entries matches, to avoid tripping transformers' length validation.
+    """
+    saved_path = os.path.join(save_dir, "config.json")
+    if not os.path.exists(saved_path):
+        return
+    source_config = _load_source_config_dict(source_dir)
+    if source_config is None:
+        return
+
+    with open(saved_path, "r", encoding="utf-8") as f:
+        saved_config = json.load(f)
+
+    changed = False
+    for src_scope, dst_scope, scope_name in (
+        (source_config, saved_config, "config"),
+        (source_config.get("text_config"), saved_config.get("text_config"), "text_config"),
+    ):
+        if not isinstance(src_scope, dict) or not isinstance(dst_scope, dict):
+            continue
+        original = src_scope.get("layer_types")
+        current = dst_scope.get("layer_types")
+        if not isinstance(original, list) or original == current:
+            continue
+        if isinstance(current, list) and len(current) != len(original):
+            logger.warning(
+                "Not restoring original layer_types for %s: source has %d entries but exported has %d.",
+                scope_name,
+                len(original),
+                len(current),
+            )
+            continue
+        dst_scope["layer_types"] = original
+        changed = True
+        logger.info("Restored original layer_types from source checkpoint for %s.", scope_name)
+
+    if changed:
+        with open(saved_path, "w", encoding="utf-8") as f:
+            json.dump(saved_config, f, indent=2)
+
+
 def save_model(
     model: nn.Module,
     save_dir: str,
@@ -298,6 +391,16 @@ def save_model(
             data["dtype"] = dtype_str
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
+
+    # transformers' PreTrainedConfig normalizes ``layer_types`` on load/save (via
+    # ``remap_legacy_layer_types`` and dataclass post-init), so ``model.save_pretrained``
+    # can rewrite the strings (e.g. hybrid-attention Qwen models). Restore the original
+    # ``layer_types`` from the source checkpoint so the exported config stays faithful.
+    if source_dir is not None:
+        try:
+            _restore_original_layer_types(save_dir, source_dir)
+        except Exception as e:  # pragma: no cover - best-effort, never block export
+            logger.warning("Skipping restore of original layer_types due to error: %s", e)
 
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):

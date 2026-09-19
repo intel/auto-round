@@ -98,8 +98,14 @@ class GenScheme:
         tokenizer=None,
         enable_torch_compile=True,
         processor=None,
+        export_format: str = None,
     ):
         self.auto_scheme = auto_scheme
+        # Export-format context for the generation-time 8-bit-asym policy: the
+        # compressor passes the format the run actually saves with (including
+        # one supplied only to quantize_and_save). The AR_ALLOW_W8_ASYM env
+        # opt-in is read at the policy gate itself.
+        self.export_format = export_format
         # Upstream unconditionally forced low_cpu_mem_usage=False here
         # (commit 0c9c5b1d, "reduce memory consumption... for gguf") because of an
         # acknowledged bug for mixed INT4/INT8 schemes under the old OffloadManager-
@@ -199,6 +205,7 @@ class GenScheme:
             low_gpu_mem_usage=self.auto_scheme.low_gpu_mem_usage,
             min_avg_bit_scheme=self.min_avg_bit_scheme,
             processor=self.processor,
+            export_format=self.export_format,
         )
         layer_config = self.fallback_gguf_layer_config(layer_config)
         return layer_config

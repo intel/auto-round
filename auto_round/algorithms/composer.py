@@ -41,8 +41,10 @@ from auto_round.algorithms.config_resolver import (
     resolve_shared_config_values,
     split_quantization_configs,
 )
+from auto_round.algorithms.utils import _has_nvfp4_layer
+from auto_round.data_type.base import canonical_data_type, prepare_data_type_block
 from auto_round.logger import logger
-from auto_round.utils import clear_memory
+from auto_round.utils import check_to_quantized, clear_memory
 from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
@@ -83,20 +85,14 @@ class BlockContext:
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
-def _can_compile_block_forward(block_quantizer, rotation_configs, user_enabled: bool) -> bool:
-    """Return whether every component participating in block replay supports compilation."""
-    if not user_enabled or not block_quantizer.can_compile_block_forward():
-        return False
-    return all(getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
-
-
 class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
     a list of algorithm config objects and an optional compressor.
 
-    The ``preprocessors`` list is order-sensitive: algorithms are applied in
-    the listed order (e.g. ``[Rotation, AWQ]``).  There must be **exactly one**
-    ``block_quantizer`` (the terminal weight-compression step).
+    The ``preprocessors`` list is order-sensitive: preprocessors are applied in
+    the listed order (e.g. ``[Rotation, AWQ]``).  The block quantizer is always
+    the terminal weight-compression step, regardless of its position in the
+    input config list.  There must be **exactly one** ``block_quantizer``.
 
     Usage::
 
@@ -126,9 +122,19 @@ class AlgorithmComposer:
         """
         from auto_round.algorithms.quantization.base import BaseQuantizer
         from auto_round.algorithms.quantization.config import QuantizationConfig
-        from auto_round.algorithms.transforms.base import BasePreprocessor
+        from auto_round.algorithms.transforms.base import BasePreprocessor, BaseRotationConfig
 
         configs = list(configs)
+
+        # Rotation configs travel in the same config list but are not block
+        # quantizers / preprocessors (they are ``BaseRotationConfig``, not
+        # ``QuantizationConfig``). Capture them here and wrap each in a
+        # ``RotationPreprocessor`` member below so the orchestrator stays
+        # rotation-agnostic and every rotation owns its own lifecycle.
+        #
+        # Whether rotation runs per-block (layer-wise) is a field on each
+        # rotation config (``BaseRotationConfig.layerwise``).
+        self._rotation_configs = [c for c in configs if isinstance(c, BaseRotationConfig)]
 
         _, block_quantizer_configs = split_quantization_configs(configs)
         if not block_quantizer_configs:
@@ -192,18 +198,18 @@ class AlgorithmComposer:
                 getattr(getattr(orchestrator, "compress_context", None), "enable_torch_compile", False)
             )
             rotation_configs = getattr(orchestrator, "rotation_configs", ())
-            can_compile_block_forward = _can_compile_block_forward(
-                self.block_quantizer, rotation_configs, user_torch_compile
-            )
-            if (
-                user_torch_compile
-                and not can_compile_block_forward
-                and any(not getattr(config, "can_compile_block_forward", lambda: True)() for config in rotation_configs)
-            ):
-                logger.info("Block-forward torch.compile is disabled because an enabled rotation is incompatible.")
-
-            if "nv_fp" in orchestrator.data_type:
-                can_compile_block_forward = False
+            blockers = []
+            if not self.block_quantizer.can_compile_block_forward():
+                blockers.append(type(self.block_quantizer).__name__)
+            for component in [*self.preprocessors, *rotation_configs]:
+                if not getattr(component, "can_compile_block_forward", lambda: True)():
+                    blockers.append(type(component).__name__)
+            can_compile_block_forward = user_torch_compile and not blockers
+            if user_torch_compile and blockers:
+                logger.info(
+                    "Block-forward torch.compile is disabled because %s is incompatible.",
+                    ", ".join(blockers),
+                )
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
@@ -216,6 +222,19 @@ class AlgorithmComposer:
                 self.block_quantizer.bind_block_forward_runner(self.block_forward)
         self.scheme = getattr(orchestrator, "scheme_context", None)
 
+        # Rotation is modelled as ordinary pipeline members (see
+        # ``RotationPreprocessor``) that own their entire lifecycle. They are
+        # built from the rotation configs captured above and bound like every
+        # other member so ``finalize_run`` can reach the live model.
+        from auto_round.algorithms.transforms.member import RotationPreprocessor
+
+        self._rotation_members = [RotationPreprocessor(cfg) for cfg in self._rotation_configs]
+        if orchestrator is not None:
+            for rotation_member in self._rotation_members:
+                rotation_member.bind(orchestrator)
+        # Guards the one-shot model-level rotation stage (apply_model_transforms).
+        self._rotation_prepared: bool = False
+
     # ── Internal hook helpers (act_max calibration) ───────────────────────────
 
     def _register_act_max_hooks(self, block: "torch.nn.Module") -> list:
@@ -223,28 +242,15 @@ class AlgorithmComposer:
 
         Returns a list of hook handles that the caller must remove when done.
         """
-        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
-
-        is_act_nv_fp = getattr(self.block_quantizer.config, "is_act_nv_fp", False)
+        from auto_round.data_type.base import cache_activation_quantizer
 
         def collect_act_max(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
             if input.numel() == 0:
                 return
-            input, _, _ = reshape_pad_tensor_by_group_size(input, module.act_group_size)
-            act_max = torch.max(torch.abs(input), dim=-1).values
-            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
-                module.act_max = act_max
-                if is_act_nv_fp:
-                    max_val = act_max.max()
-                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-                return
-            act_max = act_max.to(module.act_max.device)
-            if is_act_nv_fp:
-                max_val = torch.max(act_max.max(), module.act_max.max())
-                module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-            else:
-                module.act_max = torch.max(act_max, module.act_max)
+            quantizer = cache_activation_quantizer(module)
+            if quantizer is not None:
+                module.act_max = quantizer.observe(input, getattr(module, "act_max", None))
 
         def should_collect(name, module):
             from auto_round.compressors.utils import check_need_act_calibration
@@ -253,8 +259,8 @@ class AlgorithmComposer:
             if isinstance(module, tuple(SUPPORTED_LAYER_TYPES)):
                 return (
                     hasattr(module, "act_dynamic")
-                    and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
                     and check_to_quantized(module)
+                    and bool(getattr(cache_activation_quantizer(module), "requires_calibration", False))
                 )
             if hasattr(module, "bits"):
                 act_dynamic = getattr(module, "act_dynamic", True)
@@ -262,8 +268,8 @@ class AlgorithmComposer:
                 act_bits = getattr(module, "act_bits", 16)
                 return (
                     module.bits <= 8
-                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
                     and check_to_quantized(module)
+                    and bool(getattr(cache_activation_quantizer(module), "requires_calibration", False))
                 )
             return False
 
@@ -305,39 +311,19 @@ class AlgorithmComposer:
             q_inputs: Optional list of quantized input tensors; used instead of
                 ``fp_inputs`` when provided.
         """
-        from auto_round.compressors.utils import is_nv_fp
-        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+        from auto_round.data_type.base import cache_activation_quantizer
 
         target_input = q_inputs or fp_inputs
-        act_group_size = getattr(layer, "act_group_size")
-        if act_group_size is None:
-            act_group_size = layer.group_size
-        act_data_type = getattr(layer, "act_data_type")
-        if act_data_type is None:
-            act_data_type = layer.data_type
-        is_act_nv_fp_flag = is_nv_fp(act_data_type) if act_data_type else False
+        quantizer = cache_activation_quantizer(layer)
+        if quantizer is None:
+            return
 
         for inp in target_input:
             if isinstance(inp, (tuple, list)):
                 inp = inp[0]
             if inp.numel() == 0:
                 continue
-            inp, _, _ = reshape_pad_tensor_by_group_size(inp, act_group_size)
-            act_max = torch.max(torch.abs(inp), dim=-1).values
-
-            if not hasattr(layer, "act_max") or layer.act_max.numel() == 0:
-                layer.act_max = act_max
-                if is_act_nv_fp_flag:
-                    max_val = act_max.max()
-                    layer.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-                continue
-
-            act_max = act_max.to(layer.act_max.device)
-            if is_act_nv_fp_flag:
-                max_val = torch.max(act_max.max(), layer.act_max.max())
-                layer.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-            else:
-                layer.act_max = torch.max(act_max, layer.act_max)
+            layer.act_max = quantizer.observe(inp, getattr(layer, "act_max", None))
 
     def need_quanted_input(self):
         for preprocessor in self.preprocessors:
@@ -360,6 +346,7 @@ class AlgorithmComposer:
         block_ctx: BlockContext,
         q_inputs=None,
         input_ids=None,
+        reference_output=None,
         **kwargs,
     ) -> tuple:
         """Run the full per-block algorithm pipeline: calibration → quantization → collection.
@@ -389,6 +376,13 @@ class AlgorithmComposer:
         """
         block_forward_fn = self.block_forward
 
+        # ── Step 0: Layer-wise rotation (before any reference/calibration) ────
+        # Each rotation member rotates this block's weights and installs online
+        # hooks so all downstream calibration and reference collection operate on
+        # the rotated block. No-op unless a member prepared layer-wise rotation.
+        for rotation_member in self._rotation_members:
+            rotation_member.on_block_ready(block, block_ctx)
+
         # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──────
         with torch.no_grad():
             pre_hooks = []
@@ -412,13 +406,13 @@ class AlgorithmComposer:
         for pre in self.preprocessors:
             pre.pre_quantize_block(block_ctx)
 
-        reference_output = None
         reference_next_input = None
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
         if fp_inputs is not None:
             with torch.no_grad():
                 quant_hooks = self._get_fp_act_hooks(block)
-                reference_output = block_forward_fn(block, fp_inputs, input_others)
+                if reference_output is None:
+                    reference_output = block_forward_fn(block, fp_inputs, input_others)
                 reference_next_input = getattr(block_forward_fn, "last_output_dict", None) or reference_output
                 for h in quant_hooks:
                     h.remove()
@@ -438,12 +432,26 @@ class AlgorithmComposer:
             act_data_type = self.scheme.act_data_type if self.scheme else data_type
             if act_data_type is not None or not act_dynamic:
                 from auto_round.compressors.utils import is_nv_fp
-                from auto_round.data_type.utils import update_block_global_scale_if_needed
                 from auto_round.utils import set_amax_for_all_moe_layers
 
                 if is_nv_fp(act_data_type) or not act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
-                update_block_global_scale_if_needed(block, data_type, group_size)
+
+                runtimes_by_datatype = {}
+                for name, module in block.named_modules():
+                    if not check_to_quantized(module):
+                        continue
+                    module_data_type = getattr(module, "data_type", data_type)
+                    try:
+                        canonical_id = canonical_data_type(module_data_type)
+                    except LookupError:
+                        continue
+                    runtimes_by_datatype.setdefault(canonical_id, {})[name] = {
+                        "data_type": module_data_type,
+                        "group_size": getattr(module, "group_size", group_size),
+                    }
+                for canonical_id, runtimes in runtimes_by_datatype.items():
+                    prepare_data_type_block(canonical_id, block, runtimes)
 
         if q_inputs is not None and fp_inputs is not q_inputs:
             clear_memory(fp_inputs)
@@ -526,8 +534,15 @@ class AlgorithmComposer:
     # ── Convenience act-calib helpers ────────────────────────────────────────
 
     def members(self) -> list:
-        """Return all algorithm members: preprocessors followed by the block quantizer."""
-        return list(self.preprocessors) + [self.block_quantizer]
+        """Return the canonical execution order: preprocessors, rotations, then block quantizer.
+
+        Preprocessor order follows the input config list. The block quantizer
+        is always returned last, so its position in that input list has no
+        effect on pipeline execution. Rotation members sit between the
+        preprocessors and the block quantizer so ``prepare_run`` / ``finalize_run``
+        cover them like any other member.
+        """
+        return list(self.preprocessors) + list(self._rotation_members) + [self.block_quantizer]
 
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
         """Dispatch block to device(s) via the pipeline's algorithms.
@@ -562,5 +577,58 @@ class AlgorithmComposer:
             alg.prepare_run(composer=self)
 
     def finalize_run(self):
+        # Rotation members are part of ``members()`` and finalize themselves
+        # (layer-wise teardown lives in ``RotationPreprocessor.finalize_run``).
         for alg in self.members():
             alg.finalize_run()
+
+    # ------------------------------------------------------------------
+    # Rotation lifecycle (delegated to rotation members)
+    # ------------------------------------------------------------------
+    #
+    # Rotation is a model-level pre-quantisation transform. Full-model rotation
+    # must run *before* calibration data is cached, which is earlier than the
+    # per-member ``prepare_run`` stage; layer-wise rotation instead prepares its
+    # matrices here and rotates each block from within ``compress_block``. All
+    # algorithm-specific decisions live in the rotation members; the composer
+    # only drives the single generic entry point :meth:`apply_model_transforms`.
+
+    def _resolve_rotation_data_type(self) -> str:
+        """Best-effort resolution of the quantization data_type for rotation dispatch."""
+        if self.scheme is not None and getattr(self.scheme, "data_type", None):
+            return self.scheme.data_type
+        if self.block_quantizer is not None:
+            return getattr(self.block_quantizer.config, "data_type", "mx_fp")
+        return "mx_fp"
+
+    def apply_model_transforms(self, model: "torch.nn.Module") -> "torch.nn.Module":
+        """Apply model-level pre-quantisation transforms (rotation) to *model*.
+
+        Generic entry point invoked once by the orchestrator before calibration
+        caching / the block loop. Each rotation member either rotates the whole
+        model immediately (full-model mode) or prepares its rotation matrices and
+        defers per-block work to :meth:`compress_block` (layer-wise mode).
+        Idempotent — repeated calls are a no-op.
+
+        Returns:
+            The (possibly mutated) model.
+        """
+        if self._rotation_prepared:
+            return model
+        if not self._rotation_members:
+            self._rotation_prepared = True
+            return model
+
+        data_type = self._resolve_rotation_data_type()
+        logger.info("Applying Hadamard transform to the model.")
+        for rotation_member in self._rotation_members:
+            # The member honours its own config (``layerwise`` field).
+            model = rotation_member.rotate_model(model, data_type=data_type)
+
+        self._rotation_prepared = True
+        return model
+
+    @property
+    def has_layerwise_rotation(self) -> bool:
+        """Whether any rotation member is driving per-block (layer-wise) rotation."""
+        return any(rotation_member.is_layerwise_active for rotation_member in self._rotation_members)

@@ -16,7 +16,7 @@
 #if ARK_XPU
 
 #if ARK_SYCL_TLA
-#include "sycl_tla_s8_gemm.hpp"
+#include "sycl_tla_common.hpp"
 #endif
 
 namespace ark {

@@ -9,7 +9,7 @@ AutoRound uses the new compressor and calibration architecture for diffusion qua
 Quantization for diffusion models is limited:
 
 1. Only the transformer module of diffusion models is quantized.
-2. Loading quantized diffusion models is not supported yet, so use `fake` format for quantization.
+2. Use `auto_round` (the default) for a packed, reloadable checkpoint; use `fake` only for research or debugging.
 3. Calibration dataset currently supports `coco2014` and user customized `.tsv` files.
 
 ### API Usage (CPU/GPU) Recommended
@@ -23,7 +23,7 @@ autoround = AutoRound(
     "black-forest-labs/FLUX.1-dev",
     scheme="MXFP8",
     dataset="coco2014",
-    num_inference_steps=10,
+    calib_num_inference_steps=8,
     guidance_scale=7.5,
     generator_seed=None,
     batch_size=1,
@@ -31,14 +31,19 @@ autoround = AutoRound(
 
 # Save the quantized model
 output_dir = "./tmp_autoround"
-# Loading quantized diffusion models is not supported yet, so use fake format.
-autoround.quantize_and_save(output_dir, format="fake", inplace=True)
+autoround.quantize_and_save(output_dir, format="auto_round", inplace=True)
 ```
 
 - `dataset`: the dataset for quantization training. Currently supports `coco2014` and user customized `.tsv` files.
-- `num_inference_steps`: the reference number of denoising steps.
+- `calib_num_inference_steps`: the number of inference steps requested when the scheduler builds its native
+  short calibration schedule. Higher-order schedulers may expand these into more internal timesteps.
+- `num_inference_steps`: the number of denoising steps used for diffusion generation/evaluation; it does not
+  control the calibration schedule.
 - `guidance_scale`: controls how much the image generation process follows the text prompt.
 - `generator_seed`: a seed that controls the initial noise from which an image is generated.
+- `diffusion_tuning_cache_size`: opt-in extra GPU buffer budget in GiB for diffusion SignRound prefetch.
+  It only takes effect with `low_gpu_mem_usage=True` on single-GPU SignRound flow (`enable_quanted_input=False`
+  and no custom `layer_config`). This value reserves additional temporary buffers and is not a cap on total VRAM.
 
 For more hyperparameters, refer to [Homepage Detailed Hyperparameters](../../../README.md#quantization-scheme--configuration).
 
@@ -50,11 +55,18 @@ A user guide detailing the full list of supported arguments is provided by calli
 auto-round \
     --model black-forest-labs/FLUX.1-dev \
     --scheme MXFP8 \
-    --format fake \
+    --format auto_round \
     --batch_size 1 \
     --dataset coco2014 \
+    --calib_num_inference_steps 8 \
+    --low_gpu_mem_usage \
+    --diffusion_tuning_cache_size auto \
     --output_dir ./tmp_autoround
 ```
+
+Use `--diffusion_tuning_cache_size` only when `--low_gpu_mem_usage` is enabled on single-GPU SignRound
+(`--enable_quanted_input` disabled and no custom `--layer_config`). The GiB value controls extra prefetch buffers,
+not total GPU memory.
 
 ### Diffusion Support Matrix
 

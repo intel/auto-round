@@ -19,6 +19,7 @@
 #endif
 
 #include "utils.hpp"
+#include "sycl_tla_common.hpp"
 
 namespace ark {
 
@@ -444,45 +445,23 @@ void run_typed(sycl::queue* q, int m, int n, int k, const int8_t* a, const int8_
   launch_igemm_kblock<ElementOut>(q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, blks);
 }
 
-}  // namespace sycl_tla_s8_detail
-
-inline void sycl_tla_igemm_s8s8_dequant(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,
-                                         BTLA_DTYPE ct, const void* scale_a, const void* scale_b, const void* bias,
-                                         int blocksize) {
-  if (!q) throw std::invalid_argument("sycl_tla_igemm_s8s8_dequant: queue must not be null");
-  if (!a || !b || !c || !scale_a || !scale_b) {
-    throw std::invalid_argument("sycl_tla_igemm_s8s8_dequant: input pointers must not be null");
-  }
-  if (m <= 0 || n <= 0 || k <= 0) return;
-
-  bool k_block = !(blocksize == k || blocksize == -1);
-
-  switch (ct) {
-    case BTLA_DTYPE::F32:
-      sycl_tla_s8_detail::run_typed(q, m, n, k, static_cast<const int8_t*>(a), static_cast<const int8_t*>(b),
-                                    static_cast<float*>(c), static_cast<const float*>(scale_a),
-                                    static_cast<const float*>(scale_b), static_cast<const float*>(bias), blocksize);
-      return;
-    case BTLA_DTYPE::F16:
-      sycl_tla_s8_detail::run_typed(q, m, n, k, static_cast<const int8_t*>(a), static_cast<const int8_t*>(b),
-                                    static_cast<cute::half_t*>(c), static_cast<const cute::half_t*>(scale_a),
-                                    static_cast<const cute::half_t*>(scale_b), static_cast<const cute::half_t*>(bias),
-                                    blocksize);
-      return;
-    case BTLA_DTYPE::BF16:
-      if (k_block) {
-        throw std::invalid_argument("sycl_tla_igemm_s8s8_dequant: k-block path supports only F32/F16 output");
-      }
-      sycl_tla_s8_detail::run_typed(q, m, n, k, static_cast<const int8_t*>(a), static_cast<const int8_t*>(b),
-                                    static_cast<cute::bfloat16_t*>(c),
-                                    static_cast<const cute::bfloat16_t*>(scale_a),
-                                    static_cast<const cute::bfloat16_t*>(scale_b),
-                                    static_cast<const cute::bfloat16_t*>(bias), blocksize);
-      return;
-    default:
-      throw std::invalid_argument("sycl_tla_igemm_s8s8_dequant: unsupported output dtype");
-  }
+template <class ElementOut, int TileM, int TileN, class SGLayout>
+void run_igemm_normal_fixed_tile(sycl::queue* q, int m, int n, int k, const int8_t* a, const int8_t* b,
+                                 ElementOut* c, const ElementOut* scale_a, const ElementOut* scale_b,
+                                 const ElementOut* bias) {
+  launch_igemm_tile<false, ElementOut, TileM, TileN, SGLayout>(
+      q, m, n, k, k, k, a, b, c, nullptr, scale_a, scale_b, bias, 0, 1);
 }
+
+template <class ElementOut, int TileM, int TileN, class SGLayout>
+void run_igemm_kblock_fixed_tile(sycl::queue* q, int m, int n, int k, const int8_t* a, const int8_t* b,
+                                 ElementOut* c, const ElementOut* scale_a, const ElementOut* scale_b,
+                                 const ElementOut* bias, int blocksize) {
+  launch_igemm_kblock_tile_dispatch<ElementOut, TileM, TileN, SGLayout>(
+      q, m, n, k, a, b, c, scale_a, scale_b, bias, blocksize, k / blocksize);
+}
+
+}  // namespace sycl_tla_s8_detail
 
 #endif  // ARK_XPU && ARK_SYCL_TLA
 

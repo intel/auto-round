@@ -11,23 +11,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import inspect
 import json
+import math
 import os
 from typing import Any, Optional, Union
 
 import torch
-from tqdm import tqdm
 
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
 from auto_round.utils.device import (
     dispatch_model_block_wise,
-    dispatch_model_by_all_available_devices,
     get_major_device,
 )
 from auto_round.utils.device_manager import device_manager, is_auto_device_mapping
-from auto_round.utils.model import rename_weights_files
+from auto_round.utils.model import cast_model_dtype, rename_weights_files
 
 
 class DiffusionMixin:
@@ -44,8 +42,13 @@ class DiffusionMixin:
 
     Diffusion-specific parameters:
         guidance_scale: Control how much image generation follows text prompt
-        num_inference_steps: Reference number of denoising steps
+        num_inference_steps: Number of denoising steps for diffusion generation or evaluation
+        calib_num_inference_steps: Number of denoising steps used to collect calibration inputs
         generator_seed: Seed for initial noise generation
+        diffusion_tuning_cache_size: Extra persistent GPU buffer budget in GiB for
+            single-CUDA SignRound prefetch with low_gpu_mem_usage; 0 disables it.
+            "auto" selects a conservative budget after the first tuning iteration.
+            Training activations/workspace are not included in this budget.
 
     Design note:
         ``ModelContext._load_model()`` loads the diffusion pipeline and sets
@@ -59,12 +62,29 @@ class DiffusionMixin:
         *args,
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
+        calib_num_inference_steps: int = 8,
         generator_seed: Optional[int] = None,
+        diffusion_tuning_cache_size: Union[float, str] = 0,
         **kwargs,
     ) -> None:
+        if num_inference_steps < 1:
+            raise ValueError("num_inference_steps must be a positive integer.")
+        if calib_num_inference_steps < 1:
+            raise ValueError("calib_num_inference_steps must be a positive integer.")
+        if diffusion_tuning_cache_size != "auto":
+            try:
+                diffusion_tuning_cache_size = float(diffusion_tuning_cache_size)
+                if not math.isfinite(diffusion_tuning_cache_size) or diffusion_tuning_cache_size < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "diffusion_tuning_cache_size must be 'auto' or finite and non-negative (GiB)."
+                ) from None
+
         # Store diffusion-specific attributes
         self.guidance_scale = guidance_scale
         self.num_inference_steps = num_inference_steps
+        self.calib_num_inference_steps = calib_num_inference_steps
         self.generator_seed = generator_seed
         self.pipeline_call_kwargs = dict(kwargs.pop("pipeline_call_kwargs", {}) or {})
 
@@ -114,21 +134,34 @@ class DiffusionMixin:
 
         # Call parent class __init__ (will be Compressor, ImatrixCompressor, etc)
         super().__init__(*args, **kwargs)
+        self.model_context.diffusion_tuning_cache_size = diffusion_tuning_cache_size
 
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
-        if pipe is not None and model is not None:
-            is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
-            if not is_nextstep:
-                pipe.to(model.dtype)
+        if (
+            getattr(self.model_context, "preloaded_diffusion_pipeline", False)
+            and pipe is not None
+            and model is not None
+        ):
+            self._align_pipeline_dtype(pipe, model.dtype)
+
+    @staticmethod
+    def _align_pipeline_dtype(pipe, target_dtype) -> None:
+        """Align a preloaded pipeline without casting declared FP32 tensors."""
+
+        for component_name in pipe.components:
+            component = getattr(pipe, component_name, None)
+            if not isinstance(component, torch.nn.Module):
+                continue
+
+            cast_model_dtype(component, target_dtype)
 
     def _get_calibrator_kind(self) -> str:
         """Select the diffusion calibration strategy.
 
         ``DiffusionCalibrator`` lives at
-        :mod:`auto_round.calibration.diffusion` and owns what used to be
-        ``DiffusionMixin.calib`` / ``_get_block_forward_func`` /
-        ``_should_stop_cache_forward``.
+        :mod:`auto_round.calibration.diffusion` and owns diffusion-specific
+        calibration input collection.
         """
         return "diffusion"
 
@@ -149,17 +182,23 @@ class DiffusionMixin:
                 result.append((comp_name, comp))
         return result
 
+    def _defer_multi_transformer_serialization(self) -> None:
+        """Keep every transformer executable until all calibration passes finish.
+
+        Immediate packing replaces tuned ``nn.Linear`` modules with export-only
+        ``QuantLinear`` modules. A multi-transformer pipeline such as WAN can
+        still execute the primary transformer while collecting inputs for
+        ``transformer_2``, so both packing and shard writing must be deferred.
+        """
+        self.compress_context.is_immediate_packing = False
+        self.compress_context.is_immediate_saving = False
+
     def _align_device_and_dtype_for_secondary(self, transformer_name: str):
-        """Align dtype and dispatch secondary transformer for multi-transformer pipelines."""
+        """Dispatch a secondary transformer without changing component dtypes."""
         pipe = getattr(self.model_context, "pipe", None)
         model = getattr(self.model_context, "model", None)
         if pipe is None or model is None:
             return
-
-        # Cast full pipeline to transformer's dtype
-        is_nextstep = hasattr(model, "config") and getattr(model.config, "model_type", None) == "nextstep"
-        if not is_nextstep:
-            pipe.to(model.dtype)
 
         # Dispatch secondary transformer to GPU(s)
         device_map = getattr(self.compress_context, "device_map", None)
@@ -179,8 +218,6 @@ class DiffusionMixin:
                 )
                 is_other_component = not comp_name.startswith("transformer")
                 if is_other_transformer or is_other_component:
-                    if isinstance(comp, torch.nn.Module) and hasattr(comp, "dtype") and comp.dtype != model.dtype:
-                        comp.to(dtype=model.dtype)
                     try:
                         comp.to(comp_device)
                     except (NotImplementedError, RuntimeError):
@@ -192,118 +229,6 @@ class DiffusionMixin:
             target_device = get_major_device(device_map)
             pipe.to(target_device)
 
-    @torch.no_grad()
-    def calib(self, nsamples: int, bs: int) -> None:
-        """Perform diffusion-specific calibration for quantization.
-
-        Override parent's calib method to use diffusion dataset loading logic.
-        The diffusion pipeline is read from ``self.model_context.pipe``.
-        """
-        from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
-
-        pipe = self.model_context.pipe
-        if pipe is None:
-            raise ValueError(
-                "Diffusion pipeline not found in model_context. " "Ensure the model was loaded as a diffusion model."
-            )
-
-        logger.warning(
-            "Diffusion model will catch nsamples * num_inference_steps inputs, "
-            "you can reduce nsamples or num_inference_steps if OOM or take too much time."
-        )
-        if isinstance(self.dataset, str):
-            dataset = self.dataset.replace(" ", "")
-            self.dataloader, self.batch_size = get_diffusion_dataloader(
-                dataset=dataset,
-                bs=self.batch_size,
-                seed=self.seed,
-                nsamples=self.nsamples,
-            )
-        else:
-            self.dataloader = self.dataset
-        total_cnt = 0
-
-        total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
-
-        # NOTE: we intentionally skip the sequential offloading check here (the guard that
-        # exits when pipe is already dispatched).  In new-arch diffusion, the pipe may
-        # already be dispatched to multi-device in a prior calib call.  The dispatch
-        # state is preserved across calls, so re-dispatching or moving is unnecessary and
-        # would break the existing placement.
-        if pipe.device != self.model.device:
-            pipe.to(self.model.device)
-        if (
-            hasattr(self.model, "hf_device_map")
-            and len(self.model.hf_device_map) > 1
-            and torch.device(self.model.device).type in ["cuda", "xpu"]
-        ):
-            logger.warning(
-                "Diffusion model is activated sequential model offloading. "
-                "Pipe may already be dispatched from a prior calib call. "
-                "Skipping re-dispatch to avoid breaking the existing placement."
-            )
-
-        device_map = getattr(self.compress_context, "device_map", None)
-        device_list = getattr(self.compress_context, "device_list", [])
-        # Skip dispatch for secondary transformers
-        if (
-            not getattr(self, "_inputs_cached", False)
-            and device_map is not None
-            and is_auto_device_mapping(device_map)
-            and len(device_list) > 1
-        ):
-            pipe_transformer = getattr(pipe, "transformer", None)
-            if self.model_context.model is not pipe_transformer:
-                pass  # secondary transformer — skip pipeline dispatch
-            else:
-                pipe = dispatch_model_by_all_available_devices(pipe, device_map)
-
-        with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
-            for ids, prompts in self.dataloader:
-                if isinstance(prompts, tuple):
-                    prompts = list(prompts)
-                pipe_kwargs = self._build_pipeline_call_kwargs(pipe, prompts)
-                try:
-                    if self._requires_calibration_image() or "prompt" in pipe_kwargs:
-                        # I2V pipeline: 'image' is the first positional arg, so pass
-                        # 'prompt' as keyword to avoid "multiple values for argument 'image'".
-                        pipe(**pipe_kwargs)
-                    else:
-                        pipe(prompts, **pipe_kwargs)
-                except NotImplementedError:
-                    pass
-                except Exception as error:
-                    raise error
-                step = len(prompts)
-                total_cnt += step
-                pbar.update(step)
-                if total_cnt >= nsamples:
-                    break
-        if total_cnt == 0:
-            logger.error(
-                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
-                f"dataset or decease the sequence length"
-            )
-            exit(-1)
-        elif total_cnt < nsamples:
-            logger.warning(
-                f"Insufficient number of samples collected may affect the quantization. "
-                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
-            )
-            if total_cnt < self.batch_size:
-                raise ValueError(
-                    f"valid samples is less than batch_size({self.batch_size}),"
-                    " please adjust self.batch_size or seqlen."
-                )
-            max_len = (total_cnt // self.batch_size) * self.batch_size
-            for k, v in self.inputs.items():
-                for key in v:
-                    if isinstance(v[key], list) and len(v[key]) == total_cnt:
-                        self.inputs[k][key] = v[key][:max_len]
-
-        # torch.cuda.empty_cache()
-
-    # TODO move to calibration wenhuach
     def try_cache_inter_data_gpucpu(self, *args, **kwargs) -> Any:
         """Skip re-caching when DiffusionMixin.quantize has already populated self.inputs.
 
@@ -385,24 +310,25 @@ class DiffusionMixin:
         # Dual-transformer path: quantize all transformers sequentially
         logger.info("Detected multi-transformer diffusion pipeline, quantizing all transformers")
 
-        # Ensure at least 2 inference steps so both transformers are exercised during calibration
-        orig_steps = getattr(self, "num_inference_steps", None) or 50
+        # Ensure at least 2 calibration inference steps so both transformers are exercised.
+        orig_steps = getattr(self, "calib_num_inference_steps", None) or 8
         if orig_steps < 2:
             logger.warning(
-                f"num_inference_steps={orig_steps} is too low for dual-transformer "
+                f"calib_num_inference_steps={orig_steps} is too low for dual-transformer "
                 f"quantization — increasing to 2 so all transformers receive calibration data."
             )
-            self.num_inference_steps = 2
+            self.calib_num_inference_steps = 2
 
         # Disable low_cpu_mem_usage so quantized models stay in memory during multi-transformer
         # quantization.
         orig_low_cpu = self.compress_context.low_cpu_mem_usage
+        orig_immediate_packing = self.compress_context.is_immediate_packing
         orig_immediate_saving = self.compress_context.is_immediate_saving
         self.compress_context.low_cpu_mem_usage = False
-        # Defer shard writing until all transformers are quantized. Immediate saving
-        # offloads the primary transformer to meta during the first pass, which breaks
-        # later calibration when the pipeline switches to transformer_2.
-        self.compress_context.is_immediate_saving = False
+        # Keep the primary transformer executable for the later transformer_2
+        # calibration pass. The llm_compressor QuantLinear produced by immediate
+        # packing is an export container and intentionally has no forward method.
+        self._defer_multi_transformer_serialization()
 
         # Store primary transformer state
         primary_model = self.model
@@ -414,7 +340,7 @@ class DiffusionMixin:
         logger.info("start to cache block inputs for primary transformer")
         all_inputs = self.try_cache_inter_data_gpucpu(
             to_cache_block_names,
-            self.nsamples,
+            self.calibration_context.nsamples,
             layer_names=[],
         )
         self.inputs = all_inputs
@@ -434,21 +360,26 @@ class DiffusionMixin:
             self.model_context.model = transformer
             self.model_context.quantized = False
             self._post_init_done = False
+            # Calibrators snapshot the active model at construction time. Recreate
+            # it so transformer_2 block hooks are not installed on the primary model.
+            self.calibration = None
 
-            # Re-align device/dtype and dispatch pipeline for secondary transformer
+            # Dispatch the pipeline for the secondary transformer without recasting it.
             self._align_device_and_dtype_for_secondary(comp_name)
 
             # Re-run post_init to set up quantizer for new model
             self.post_init()
+            # post_init recomputes immediate packing/saving from the output format.
+            # Reassert the multi-transformer deferral before pipeline calibration.
+            self._defer_multi_transformer_serialization()
 
             # Get block names for new transformer
             all_blocks = get_block_names(self.model_context.model)
             self.quant_block_list = find_matching_blocks(self.model_context.model, all_blocks, None)
-            self.layer_config = {}
 
             # Get new block names for caching
-            if bool(self.quantizer.quant_block_list):
-                all_blocks = self.quantizer.quant_block_list
+            if bool(self.quant_block_list):
+                all_blocks = self.quant_block_list
             else:
                 all_blocks = get_block_names(self.model_context.model)
             if len(all_blocks) == 0:
@@ -463,7 +394,7 @@ class DiffusionMixin:
             logger.info(f"start to cache block inputs for {comp_name}")
             all_inputs = self.try_cache_inter_data_gpucpu(
                 to_cache_block_names,
-                self.nsamples,
+                self.calibration_context.nsamples,
                 layer_names=[],
             )
             self.inputs = all_inputs
@@ -483,10 +414,11 @@ class DiffusionMixin:
         self.quant_block_list = primary_quant_block_list
         self._quantized_transformers = quantized_extras
         self.compress_context.low_cpu_mem_usage = orig_low_cpu
+        self.compress_context.is_immediate_packing = orig_immediate_packing
         self.compress_context.is_immediate_saving = orig_immediate_saving
-        self.num_inference_steps = orig_steps
+        self.calib_num_inference_steps = orig_steps
 
-        return self.model_context.model, self.quantizer.layer_config
+        return self.model_context.model, self.layer_config
 
     def save_quantized(
         self,

@@ -30,8 +30,12 @@ from auto_round.utils import (
     get_lm_head_name,
     get_module,
     get_reverse_checkpoint_conversion_mapping,
+    get_reverse_weight_transforms,
     revert_checkpoint_conversion_mapping,
+    revert_name_with_weight_transforms,
 )
+
+DEFAULT_MAX_SHARD_SIZE = "5GB"
 
 
 class ShardWriter:
@@ -62,21 +66,7 @@ class ShardWriter:
             return
         self.model = model
         self.lm_head_name = get_lm_head_name(self.model)
-        total_params = sum(p.numel() for p in self.model.parameters())
-        # Heuristic estimate of model size in GB used to choose a default max_shard_size:
-        # - total_params * rounder.bits       -> total number of bits in all parameters
-        # - // 8                              -> convert bits to bytes
-        # - // 1e9                            -> approx convert bytes to GB (1e9 bytes ~= 1 GB)
-        # - final // 10                       -> apply a safety margin so default shards are
-        #                                         smaller than the full model; this intentionally
-        #                                         underestimates size before clamping below.
-        max_split_num = 10
-        model_size = int(total_params * bits // 1e9 // 8 + max_split_num - 1) / max_split_num
-        model_size = max(1, min(int(model_size), 5))
-
-        # Configuration
-        max_shard_size = max_shard_size or f"{model_size}GB"
-        self.max_shard_size = self._parse_size(max_shard_size)
+        self.max_shard_size = self._parse_size(max_shard_size or DEFAULT_MAX_SHARD_SIZE)
         self.safe_serialization = safe_serialization
 
         # Internal State
@@ -87,6 +77,13 @@ class ShardWriter:
         self.shard_meta = []  # List of {tmp_file: str, params: list}
         self.global_weight_map = {}
         self.shard_counter = 0
+        # Prefer transformers' own scope-aware reverse transforms (only attached to
+        # ``from_pretrained`` models). They revert a parameter name exactly the way
+        # transformers would when saving, honouring each transform's scope / anchors
+        # so a text-model prefix rule cannot leak onto a sibling vision tower or
+        # double-apply on an already-prefixed key. Fall back to the flattened regex
+        # mapping for models built from config (no ``_weight_conversions``).
+        self.reverse_weight_transforms = get_reverse_weight_transforms(self.model)
         self.reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
 
         # Persistent set of all parameter names already flushed to a shard file.
@@ -250,7 +247,7 @@ class ShardWriter:
             List of (key, 2D tensor) pairs, or None if not a fused expert param.
         """
         from auto_round.modeling.fused_moe.replace_modules import MOE_SKIP_PREFIXES
-        from auto_round.utils.missing_tensors import split_fused_expert_tensors
+        from auto_round.utils.model_free_utils import split_fused_expert_tensors
 
         parts = name.rsplit(".", 1)
         if len(parts) != 2:
@@ -268,6 +265,28 @@ class ShardWriter:
         if set(expanded) == {name}:
             return None
         return list(expanded.items())
+
+    def _split_merged_concat(self, name: str, tensor: torch.Tensor) -> list[tuple[str, torch.Tensor]] | None:
+        """Split a merged model-side concat param back into its checkpoint shards.
+
+        Some families store a parameter as several numbered shards on disk and
+        concatenate them into one model-side tensor on load (e.g. Qwen3-Next
+        "Flash" PLE n-gram embeddings: ``...ngram_embedding.shard_<i>.weight`` ->
+        ``...ngram_embedding.weight``). ``save_pretrained`` reverses this
+        automatically; this immediate-saving path must replay the inverse so the
+        checkpoint keeps its original shards instead of one unusable blob.
+
+        Returns a list of ``(shard_name, shard_tensor)`` pairs, or ``None`` when
+        *name* is not such a merged concat parameter.
+        """
+        from auto_round.utils.disk_stream_util import split_merged_concat_tensor
+
+        config = getattr(self.model, "config", None)
+        try:
+            return split_merged_concat_tensor(config, name, tensor)
+        except Exception as e:  # pragma: no cover - never break saving on a split attempt
+            logger.warning("Failed to split merged concat tensor '%s' (%s); saving it as-is.", name, e)
+            return None
 
     def _add_tensor(self, name: str, tensor: torch.Tensor):
         if is_attention_calibration_tensor_name(name):
@@ -290,18 +309,33 @@ class ShardWriter:
                     self._add_tensor(sub_name, sub_tensor)
                 return
 
+        # Split a merged model-side concat parameter (e.g. Qwen3-Next "Flash" PLE
+        # n-gram embedding, merged from ``shard_<i>.weight`` on load) back into its
+        # numbered checkpoint shards. ``save_pretrained`` does this automatically,
+        # but this immediate-saving path bypasses it, so replay the inverse here --
+        # otherwise a single, unusable ``[sum_rows, dim]`` blob is written.
+        split = self._split_merged_concat(name, tensor)
+        if split is not None:
+            self._all_saved.add(name)
+            for sub_name, sub_tensor in split:
+                self._add_tensor(sub_name, sub_tensor)
+            return
+
         # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
-        name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
+        if self.reverse_weight_transforms is not None:
+            name = revert_name_with_weight_transforms(name, self.reverse_weight_transforms)
+        else:
+            name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
 
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()
         self.total_param_size_bytes += t_size
         tensor = tensor.detach().cpu()
-        # If single tensor exceeds limit, flush current, save it solo, then continue
+        # Keep an oversized tensor with any buffered tensors so it does not
+        # leave a tiny shard immediately before its own shard.
         if t_size > self.max_shard_size:
-            self._flush_shard()
             self.current_shard_tensors[name] = tensor
-            self.current_shard_size = t_size
+            self.current_shard_size += t_size
             self._flush_shard()
         # If adding exceeds limit, flush first
         elif self.current_shard_size + t_size > self.max_shard_size and self.current_shard_size > 0:

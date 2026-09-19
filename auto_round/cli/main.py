@@ -50,10 +50,22 @@ def _extract_common_quantization_kwargs(args) -> dict:
     }
 
 
+def _normalize_scheme_list(raw) -> str | None:
+    """Normalize --schemes/--options into a comma-joined scheme list.
+
+    Accepts both space-separated (nargs="+" list) and comma-separated forms,
+    e.g. 'W4A16 W8A16' or 'W4A16,W8A16' -> 'W4A16,W8A16'.
+    """
+    if raw is None:
+        return None
+    flat = ",".join(raw)  # handles list; each element may itself contain commas
+    return ",".join(p.strip() for p in flat.split(",") if p.strip())
+
+
 def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
     return {
         "platform": args.platform,
-        "format": args.format,
+        "format": getattr(args, "_api_format", args.format),
         "dataset": args.dataset,
         "seqlen": args.seqlen,
         "nsamples": args.nsamples,
@@ -62,6 +74,7 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
         "enable_torch_compile": enable_torch_compile,
+        "enable_deterministic_algorithms": args.enable_deterministic_algorithms,
         "seed": args.seed,
         "layer_config": layer_config,
         "model_dtype": args.model_dtype,
@@ -96,7 +109,9 @@ def _build_entry_model_type_kwargs(args) -> dict:
         "template": args.template,
         "guidance_scale": args.guidance_scale,
         "num_inference_steps": args.num_inference_steps,
+        "calib_num_inference_steps": args.calib_num_inference_steps,
         "generator_seed": args.generator_seed,
+        "diffusion_tuning_cache_size": args.diffusion_tuning_cache_size,
     }
 
 
@@ -217,7 +232,7 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     add_common_quantization_arguments(quant_group)
     for name in canonical_names:
         alg_group = mini.add_argument_group(f"Algorithm: {name}")
-        AlgorithmHandler.get(name).register(alg_group)
+        AlgorithmHandler.add_group(name, alg_group)
     mini.print_help()
     return True
 
@@ -225,12 +240,16 @@ def _print_algorithm_help(argv: list[str]) -> bool:
 def start(recipe="default", argv=None):
     recipe_defaults = RECIPES[recipe]
     argv = list(sys.argv[1:] if argv is None else argv)
+    format_was_explicit = any(
+        arg in {"--format", "--formats"} or arg.startswith(("--format=", "--formats=")) for arg in argv
+    )
 
     if _print_algorithm_help(argv):
         return
 
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
+    args._api_format = args.format if format_was_explicit or args.model_free else None
 
     # Apply recipe defaults for fields the user didn't set
     for key, value in recipe_defaults.items():
@@ -246,6 +265,13 @@ def tune(args):
         args.model = args.model_name
     if args.eval_bs is None:
         args.eval_bs = "auto"
+
+    if getattr(args, "num_hidden_layers", None) is not None:
+        # Debug helper: load only the first N decoder layers. Propagated to the
+        # model loader via an env var so every load path picks it up.
+        from auto_round import envs
+
+        envs.set_config(AR_DEBUG_LAYER_NUM=args.num_hidden_layers)
 
     from transformers.utils.versions import require_version
 
@@ -272,6 +298,15 @@ def tune(args):
     for fmt in formats:
         if fmt not in SUPPORTED_FORMATS:
             raise ValueError(f"{fmt} is not supported, we only support {SUPPORTED_FORMATS}")
+
+    if any("llm_compressor" in fmt for fmt in formats):
+        from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+
+        try:
+            check_compressed_tensors_supported(raise_error=True)
+        except ImportError as error:
+            logger.error(str(error))
+            raise SystemExit(1) from None
 
     if "auto_gptq" in args.format and args.asym is True:
         logger.warning(
@@ -316,12 +351,6 @@ def tune(args):
     if scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
 
-    if args.disable_deterministic_algorithms:
-        logger.warning(
-            "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-            " please use enable_deterministic_algorithms instead. "
-        )
-
     from auto_round.utils import parse_layer_config_arg
 
     layer_config = {}
@@ -335,11 +364,16 @@ def tune(args):
 
     from auto_round.auto_scheme import AutoScheme
 
-    # Normalize --options: accepts both space-separated (nargs="+" list) and comma-separated string.
-    # Examples: --options W4A16 W8A16  OR  --options W4A16,W8A16
-    if args.options is not None:
-        flat = ",".join(args.options)  # handles list; each element may itself contain commas
-        args.options = ",".join(p.strip() for p in flat.split(",") if p.strip())
+    # Supplying multiple schemes enables AutoScheme: the schemes are the
+    # candidate options and --bits is the average target bits.
+    # --options/--avg_bits/--target_bits are deprecated aliases that argparse
+    # merges into --schemes/--bits (see _LegacyAliasAction in parser.py); they
+    # stay functional but are hidden from --help.
+    scheme_options = None
+    if args.schemes is not None:
+        if args.scheme.upper() != "W4A16":
+            raise ValueError("`--scheme` and `--schemes` cannot be used together, please use only `--schemes`")
+        scheme_options = _normalize_scheme_list(args.schemes)
 
     # Normalize --shared_layers: supports three forms per invocation:
     #   - all bare tokens (no commas): treated as one group
@@ -367,17 +401,17 @@ def tune(args):
                     normalized_groups.append(group)
         args.shared_layers = normalized_groups or None
 
-    if args.avg_bits is not None:
-        if args.options is None:
-            raise ValueError("please set --options for auto scheme")
+    if scheme_options is not None:
+        if args.bits is None:
+            raise ValueError("please set --bits for auto scheme")
         if enable_torch_compile is False:
             logger.warning(
                 "`torch.compile` is disabled with AutoScheme. "
                 "Enabling it (the default) is strongly recommended to save VRAM."
             )
         scheme = AutoScheme(
-            options=args.options,
-            avg_bits=args.avg_bits,
+            options=scheme_options,
+            avg_bits=args.bits,
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
             low_gpu_mem_usage=True,
@@ -385,6 +419,21 @@ def tune(args):
         )
 
     common_kwargs = _extract_common_quantization_kwargs(args)
+    if scheme_options is not None:
+        # `bits` is the AutoScheme average target, not a scheme override:
+        # the candidate options carry their own bit widths.
+        common_kwargs.pop("bits", None)
+    else:
+        # Without --schemes, `--bits` is a plain weight bit width and must be an integer.
+        bits = common_kwargs.get("bits")
+        if bits is not None:
+            if float(bits).is_integer():
+                common_kwargs["bits"] = int(bits)
+            else:
+                raise ValueError(
+                    "`--bits` must be an integer for weight quantization; "
+                    "use `--schemes` to set a fractional AutoScheme average target"
+                )
     alg_configs = AlgorithmHandler.build_configs(args, common_kwargs)
 
     from auto_round.utils import clear_memory
@@ -401,7 +450,11 @@ def tune(args):
         ),
     )
 
-    model, folders = autoround.quantize_and_save(args.output_dir, format=args.format)  # pylint: disable=no-member
+    model, folders = autoround.quantize_and_save(  # pylint: disable=no-member
+        args.output_dir,
+        format=getattr(args, "_api_format", args.format),
+        max_shard_size=args.max_shard_size,
+    )
     tokenizer = autoround.tokenizer  # pylint: disable=no-member
     clear_memory()
 

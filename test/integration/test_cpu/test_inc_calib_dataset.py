@@ -1,0 +1,148 @@
+import json
+import os
+import shutil
+from pathlib import Path
+
+import pytest
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from auto_round import AutoRound
+from auto_round.calib_dataset import get_code_calibration_dataset
+
+
+@pytest.mark.parametrize(
+    "datasets_version,expected",
+    [
+        (
+            "3.6.0",
+            "opencode-instruct:concat=true:num=64,github-code-clean:num=64",
+        ),
+        ("5.0.0", "opencode-instruct:concat=true:num=128"),
+    ],
+)
+def test_code_calibration_dataset(datasets_version, expected):
+    assert get_code_calibration_dataset(128, datasets_version) == expected
+
+
+def test_tiny_code_calibration_dataset_omits_zero_sample_sources():
+    assert get_code_calibration_dataset(1, "3.6.0") == "opencode-instruct:concat=true:num=1"
+
+
+def test_automatic_code_dataset_and_non_default_override(tiny_opt_model_path, tmp_path, monkeypatch):
+    import datasets
+
+    monkeypatch.setattr(datasets, "__version__", "5.0.0")
+    code_model_path = tmp_path / "Qwen3-Coder-smoke"
+    code_model_path.symlink_to(Path(tiny_opt_model_path).resolve(), target_is_directory=True)
+    common = dict(iters=1, nsamples=6, seqlen=8, device_map="cpu", low_cpu_mem_usage=False)
+
+    autoround = AutoRound(str(code_model_path), **common)
+    assert autoround.dataset == "opencode-instruct:concat=true:num=6"
+
+    autoround = AutoRound(str(code_model_path), dataset="NeelNanda/pile-10k", alg_configs="auto_round", **common)
+    assert autoround.dataset == "NeelNanda/pile-10k"
+
+    autoround = AutoRound(str(code_model_path), dataset="pile-10k", alg_configs="auto_round", **common)
+    assert autoround.dataset == "pile-10k"
+
+
+class TestLocalCalibDataset:
+    @pytest.fixture(autouse=True)
+    def setup_save_dir(self, tmp_path):
+        self.save_dir = str(tmp_path / "saved")
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        json_data = [{"text": "awefdsfsddfd"}, {"text": "fdfdfsdfdfdfd"}, {"text": "dfdsfsdfdfdfdf"}]
+        self.json_file = os.path.join(self.save_dir, "tmp.json")
+        with open(self.json_file, "w") as json_file:
+            json.dump(json_data, json_file, indent=4)
+
+        jsonl_data = [{"text": "哈哈，開心點"}, {"text": "hello world"}]
+        self.jsonl_file = os.path.join(self.save_dir, "tmp.jsonl")
+        with open(self.jsonl_file, "w") as jsonl_file:
+            for item in jsonl_data:
+                json.dump(item, jsonl_file, ensure_ascii=False)
+                jsonl_file.write("\n")
+
+        yield
+        shutil.rmtree(self.save_dir, ignore_errors=True)
+
+    @classmethod
+    def teardown_class(self):
+        shutil.rmtree("runs", ignore_errors=True)
+
+    def test_json(self, tiny_opt_model_path):
+        bits, group_size, sym = 4, 128, True
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=5,
+            dataset=self.json_file,
+        )
+        autoround.quantize()
+
+    def test_jsonl(self, tiny_opt_model_path):
+        bits, group_size, sym = 4, 128, True
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=4,
+            dataset=self.jsonl_file,
+        )
+        autoround.quantize()
+
+    def test_apply_chat_template(self, tiny_qwen_model_path):
+        model_name = tiny_qwen_model_path
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        dataset = "NeelNanda/pile-10k:apply_chat_template:system_prompt=''"
+        bits, group_size, sym = 4, 128, True
+        autoround = AutoRound(
+            model,
+            tokenizer,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=128,
+            dataset=dataset,
+            nsamples=1,
+        )
+        autoround.quantize()
+
+    def test_combine_dataset(self, tiny_qwen_model_path):
+        dataset = "NeelNanda/pile-10k" + "," + "madao33/new-title-chinese" + "," + "mbpp" + "," + "opencode-instruct"
+        bits, group_size, sym = 4, 128, True
+        autoround = AutoRound(
+            tiny_qwen_model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=128,
+            dataset=dataset,
+            nsamples=1,
+        )
+        autoround.quantize()
+
+    def test_combine_dataset2(self, tiny_opt_model_path):
+        dataset = "NeelNanda/pile-10k:num=256,mbpp:num=256"
+        bits, group_size, sym = 4, 128, True
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            bits=bits,
+            group_size=group_size,
+            sym=sym,
+            iters=2,
+            seqlen=128,
+            dataset=dataset,
+            nsamples=1,
+        )
+        autoround.quantize()

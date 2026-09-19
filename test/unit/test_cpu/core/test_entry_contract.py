@@ -48,3 +48,39 @@ def test_cli_explicit_auto_round_with_zero_iters_selects_rtn():
     configs = AlgorithmHandler.build_configs(args, {})
 
     assert type(configs[0]).__name__ == "RTNConfig"
+
+
+def test_cli_awq_rtn_opt_policy():
+    from argparse import Namespace
+
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    cases = [
+        (Namespace(algorithm="awq", iters=200, disable_opt_rtn=True), ["AWQConfig", "RTNConfig"], [True, True]),
+        (Namespace(algorithm="awq", iters=200, disable_opt_rtn=None), ["AWQConfig", "RTNConfig"], [True, True]),
+        (Namespace(algorithm="awq,rtn", iters=200, disable_opt_rtn=False), ["AWQConfig", "RTNConfig"], [False, False]),
+    ]
+
+    for args, expected_types, expected_disable_opt_rtn in cases:
+        configs = AlgorithmHandler.build_configs(args, {})
+
+        assert [type(config).__name__ for config in configs] == expected_types
+        assert [config.disable_opt_rtn for config in configs] == expected_disable_opt_rtn
+
+
+def test_cli_rtn_inherits_built_awq_config_without_mutating_args(monkeypatch):
+    from argparse import Namespace
+
+    from auto_round.algorithms.registry import get_algorithm_entry
+    from auto_round.algorithms.transforms.awq.config import AWQConfig
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    monkeypatch.setattr(get_algorithm_entry("awq"), "config_factory", lambda: AWQConfig(disable_opt_rtn=False))
+
+    args = Namespace(algorithm="rtn,awq", iters=200, disable_opt_rtn=None)
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert [type(config).__name__ for config in configs] == ["RTNConfig", "AWQConfig"]
+    assert configs[0].disable_opt_rtn is False
+    assert configs[1].disable_opt_rtn is False
+    assert args.disable_opt_rtn is None

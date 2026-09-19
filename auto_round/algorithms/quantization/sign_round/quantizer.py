@@ -64,6 +64,20 @@ class SignRoundQuantizer(BaseQuantizer):
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
+        # Kept for per-layer (mixed-bit) lr resolution during tuning.
+        self._config = config
+        self.lr_is_auto = getattr(config, "lr_is_auto", False)
+        self.minmax_lr_is_auto = getattr(config, "minmax_lr_is_auto", False)
+        # Emit the low-bit lr notice at most once across all blocks/layers.
+        self._logged_low_bit_lr = False
+
+    def _maybe_log_low_bit_lr(self, bits) -> None:
+        """Log once when low-bit (<=3) layers get the higher 2.0/iters lr."""
+        if self._logged_low_bit_lr or not self.lr_is_auto:
+            return
+        if self.iters >= 1000 and bits is not None and bits <= 3:
+            logger.info("using higher lr (2.0/iters) for <=3 bit layers to improve accuracy")
+            self._logged_low_bit_lr = True
 
     def dispatch_block(self, block, input_ids, input_others):
         """Multi-GPU aware block dispatch for SignRound tuning.
@@ -96,7 +110,12 @@ class SignRoundQuantizer(BaseQuantizer):
                         continue
                     add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
         else:
-            block = block.to(device_manager.device)
+            from auto_round.utils.model import move_to_device_preserving_cpu_pinned, place_ngram_embeddings_for_tuning_
+
+            # Honor AR_NGRAM_DEVICE even on a single GPU (default keeps the table on CPU and
+            # logs a hint); this also surfaces the ngram size / placement info to the user.
+            place_ngram_embeddings_for_tuning_(block)
+            block = move_to_device_preserving_cpu_pinned(block, device_manager.device)
             card_0_in_high_risk, loss_device = False, device_manager.device
 
         self._card_0_in_high_risk = card_0_in_high_risk
@@ -355,37 +374,38 @@ class SignRoundQuantizer(BaseQuantizer):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            weight_qdq_builder=self.build_weight_qdq,
         )
 
         round_params = []
         minmax_params = []
+        # Group parameters by their effective lr so that mixed-bit configs
+        # (e.g. a 4-bit model with a few 2-bit layers) use a per-layer lr
+        # derived from each layer's own bit-width.
+        round_lr_groups: dict[float, list] = {}
+        minmax_lr_groups: dict[float, list] = {}
         for n, m in block.named_modules():
             if hasattr(m, "orig_layer"):
+                layer_bits = getattr(m.orig_layer, "bits", None)
+                layer_lr = self._config.compute_lr(layer_bits)
+                if layer_lr is None:
+                    layer_lr = self.lr
+                self._maybe_log_low_bit_lr(layer_bits)
+                layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
+                if layer_minmax_lr is None:
+                    layer_minmax_lr = self.minmax_lr
                 for key in m.params.keys():
                     if "min" in key or "max" in key:
                         minmax_params.append(m.params[key])
+                        minmax_lr_groups.setdefault(float(layer_minmax_lr), []).append(m.params[key])
                     else:
                         round_params.append(m.params[key])
+                        round_lr_groups.setdefault(float(layer_lr), []).append(m.params[key])
 
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
 
         extra_kwargs = {} if self.momentum is None else {"momentum": self.momentum}
-
-        if self.enable_minmax_tuning:
-            params = [
-                {"params": round_params},
-                {"params": minmax_params, "lr": minmax_lr},
-            ]
-        else:
-            params = round_params
-
-        optimizer = self.optimizer(
-            params,
-            lr=lr,
-            weight_decay=0,
-            **extra_kwargs,
-        )
 
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = (
@@ -395,6 +415,19 @@ class SignRoundQuantizer(BaseQuantizer):
             logger.info(dump_info)
             unwrapper_block(block, {})
             return {}
+
+        # Build optimizer param groups with a per-layer lr for the rounding
+        # parameters (and min-max parameters when enabled).
+        params = [{"params": ps, "lr": torch.tensor(group_lr)} for group_lr, ps in round_lr_groups.items()]
+        if self.enable_minmax_tuning:
+            params += [{"params": ps, "lr": torch.tensor(group_lr)} for group_lr, ps in minmax_lr_groups.items()]
+
+        optimizer = self.optimizer(
+            params,
+            lr=lr,
+            weight_decay=0,
+            **extra_kwargs,
+        )
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
@@ -441,59 +474,104 @@ class SignRoundQuantizer(BaseQuantizer):
             else None
         )
 
-        for i in range(self.iters):
-            if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
-                for n, m in block.named_modules():
-                    m.cur_iter = i
-            total_loss = 0
-            global_indices = index_sampler.next_batch()
-            if valid_token_mask:
-                num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+        tuning_cache = None
+        # Only opt-in diffusion tuning can enter the CUDA staging path.
+        cache_budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
+        use_tuning_cache = (
+            getattr(self.model_context, "is_diffusion", False)
+            and (cache_budget == "auto" or cache_budget > 0)
+            and self.compress_context.low_gpu_mem_usage
+            and str(device).startswith("cuda")
+            and len(device_manager.device_list) == 1
+            and (loss_device is None or torch.device(loss_device) == torch.device(device))
+        )
 
-            for batch_start in range(0, len(global_indices), batch_size):
-                indices = global_indices[batch_start : batch_start + batch_size]
-                ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
-                pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
-                if loss_device is not None:
-                    pred_output = pred_output.to(loss_device)
-                if (
-                    block_ctx.block_index == block_ctx.block_cnt - 1
-                    and self.enable_lfq
-                    and input_ids is not None
-                    and self._is_text_decoder_block(block_ctx.block_name)
-                ):
-                    loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
-                else:
-                    loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
-                num_elm = 1 if num_elm <= 0 else num_elm
-                total_loss += loss.item() / num_elm
+        try:
+            for i in range(self.iters):
+                # Auto observes a complete forward/backward/optimizer iteration
+                # on the legacy path before allocating any extra GPU buffers.
+                if use_tuning_cache and i == (1 if cache_budget == "auto" else 0):
+                    from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
 
-                if mid_iter_mem_check:
-                    # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
+                    tuning_cache = DiffusionTuningCache.create(
+                        block,
+                        block_fwd,
+                        active_inputs,
+                        input_others,
+                        fp_outputs,
+                        index_sampler,
+                        self.iters - i,
+                        cache_budget,
+                        device,
+                    )
+                total_loss = 0
+                global_indices = index_sampler.next_batch()
+                if valid_token_mask:
+                    num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
-                self._scale_loss_and_backward(scaler, loss)
+                for batch_start in range(0, len(global_indices), batch_size):
+                    indices = global_indices[batch_start : batch_start + batch_size]
+                    staged = tuning_cache.get(indices) if tuning_cache is not None else None
+                    if staged is None:
+                        ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
+                        pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
+                    else:
+                        ref_output = staged[2]
+                        pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
+                    if loss_device is not None:
+                        pred_output = pred_output.to(loss_device)
+                    if (
+                        block_ctx.block_index == block_ctx.block_cnt - 1
+                        and self.enable_lfq
+                        and input_ids is not None
+                        and self._is_text_decoder_block(block_ctx.block_name)
+                    ):
+                        loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
+                    else:
+                        loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
+                    num_elm = 1 if num_elm <= 0 else num_elm
+                    total_loss += loss.item() / num_elm
 
-                if mid_iter_mem_check:
-                    # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
+                    if mid_iter_mem_check:
+                        # clear memory to avoid OOM due to memory fragmentation
+                        clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
 
-            if i == 0:
-                init_loss = total_loss
+                    self._scale_loss_and_backward(scaler, loss)
 
-            if total_loss < best_loss:
-                best_loss = total_loss
+                    if mid_iter_mem_check:
+                        # clear memory to avoid OOM due to memory fragmentation
+                        clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
+
+                if i == 0:
+                    init_loss = total_loss
+                current_lr = optimizer.param_groups[0]["lr"]
+                logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
+
+                if total_loss < best_loss:
+                    best_loss = total_loss
+                    if not self.not_use_best_mse:
+                        best_params = (
+                            tuning_cache.collect_best_params()
+                            if tuning_cache is not None and tuning_cache.best is not None
+                            else collect_best_params(block, self.compress_context.cache_device)
+                        )
+                        last_best_iter = i
+                if self.not_use_best_mse and i == self.iters - 1:
+                    best_params = (
+                        tuning_cache.collect_best_params()
+                        if tuning_cache is not None and tuning_cache.best is not None
+                        else collect_best_params(block, self.compress_context.cache_device)
+                    )
+
                 if not self.not_use_best_mse:
-                    best_params = collect_best_params(block, self.compress_context.cache_device)
-                    last_best_iter = i
-            if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(block, self.compress_context.cache_device)
+                    if 0 < self.dynamic_max_gap <= i - last_best_iter:
+                        break
+                sync_gradients()
+                self._step(scaler, optimizer, lr_schedule)
 
-            if not self.not_use_best_mse:
-                if 0 < self.dynamic_max_gap <= i - last_best_iter:
-                    break
-            sync_gradients()
-            self._step(scaler, optimizer, lr_schedule)
+        finally:
+            if tuning_cache is not None:
+                tuning_cache.close()
 
         last_loss = total_loss
         best_iter = self.iters
@@ -503,7 +581,7 @@ class SignRoundQuantizer(BaseQuantizer):
         if self.iters > 0:
             dump_info = (
                 f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
-                f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+                f"layers in the block, loss iter 0: {init_loss:.3e} -> iter {best_iter}: {last_loss:.3e}"
             )
         else:
             dump_info = (
@@ -586,6 +664,7 @@ class SignRoundQuantizer(BaseQuantizer):
             enable_minmax_tuning=self.enable_minmax_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            weight_qdq_builder=self.build_weight_qdq,
         ).to(device)
         round_params = []
         minmax_params = []
@@ -593,7 +672,7 @@ class SignRoundQuantizer(BaseQuantizer):
             if "min" in key or "max" in key:
                 minmax_params.append(wrapper_linear.params[key])
             else:
-                round_params.append(wrapper_linear.value)
+                round_params.append(wrapper_linear.params[key])
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = f"quantized {layer_name}"
             logger.info(dump_info)
@@ -603,6 +682,16 @@ class SignRoundQuantizer(BaseQuantizer):
 
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
+        # Use a lr derived from this layer's own bit-width so mixed-bit configs
+        # (e.g. a 4-bit model with a few 2-bit layers) tune each layer correctly.
+        layer_bits = getattr(layer, "bits", None)
+        layer_lr = self._config.compute_lr(layer_bits)
+        if layer_lr is not None:
+            lr = torch.tensor(layer_lr)
+        self._maybe_log_low_bit_lr(layer_bits)
+        layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
+        if layer_minmax_lr is not None:
+            minmax_lr = torch.tensor(layer_minmax_lr)
         if self.enable_minmax_tuning:
             optimizer = self.optimizer(
                 [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
@@ -696,6 +785,8 @@ class SignRoundQuantizer(BaseQuantizer):
                 self._scale_loss_and_backward(scaler, loss)
             if i == 0:
                 init_loss = total_loss
+            current_lr = optimizer.param_groups[0]["lr"]
+            logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
             if total_loss < best_loss:
                 best_loss = total_loss
@@ -718,7 +809,7 @@ class SignRoundQuantizer(BaseQuantizer):
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
         mv_module_from_gpu(layer)
-        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
+        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.3e} -> iter {best_iter}: {last_loss:.3e}"
         logger.info(dump_info)
 
     def finalize_run(self) -> None:

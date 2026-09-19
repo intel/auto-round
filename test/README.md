@@ -18,7 +18,7 @@ Tests are split into three **tiers**, then by hardware backend
 - **`unit/`** — fast, self-contained tests. Run on **every PR** (`unit-test*.yml`).
 - **`integration/`** — tests against third-party frameworks (vLLM, SGLang,
   LLMCompressor, INC, HuggingFace). Run **nightly** — CPU via
-  `nightly-test-cpu.yml`, XPU via `nightly-test-xpu.yml`.
+  `nightly-test-cpu.yml`, XPU via `nightly-test-xpu.yml`, CUDA via `nightly-test-cuda.yml`.
 - **`e2e/`** — full-model / real inference-engine tests. Run **manually**
 
 Within `unit/test_cpu/` and `unit/test_cuda/`, tests are grouped by functionality:

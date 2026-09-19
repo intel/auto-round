@@ -39,152 +39,93 @@
 
 import json
 import os
-import re
-from typing import Optional, Tuple
+import tempfile
 
 import torch
 
 from auto_round.logger import logger
 from auto_round.utils.common import compress_layer_names
+from auto_round.utils.model_free_utils import (
+    _normalize_tensor_name_for_warning,
+    quantize_weight_rtn,
+    split_fused_expert_tensors,
+)
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
-# ------------------------------------------------------------------ #
-# Fused expert projection patterns                                      #
-# ------------------------------------------------------------------ #
-# Maps a fused projection name to its constituent split names.
-# When a 3D tensor ``*.experts.<fused_name>`` (shape [num_experts, ...])
-# is encountered, it is split along dimension 0 of the per-expert 2-D
-# slice to produce one tensor per split name per expert.
-_FUSED_EXPERT_PROJ_PATTERNS: dict[str, list[str]] = {
-    "gate_up_proj": ["gate_proj", "up_proj"],
-    "w13": ["w1", "w3"],
-}
 
-_AUTOROUND_ISSUE_URL = "https://github.com/intel/auto-round/issues"
-_WARNING_INDEX_PLACEHOLDER = "<idx>"
+def _restore_special_fp32_tensors(
+    source_tensor_to_file: dict[str, str],
+    saved_tensor_to_file: dict[str, str],
+) -> None:
+    """Restore source FP32 tensors that were saved as FP16 or BF16."""
+    from safetensors import safe_open
+    from safetensors.torch import save_file
 
+    source_to_saved: dict[str, str] = {}
+    for source_name in source_tensor_to_file:
+        if source_name in saved_tensor_to_file:
+            source_to_saved[source_name] = source_name
 
-def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WARNING_INDEX_PLACEHOLDER) -> str:
-    """Normalize tensor names for warning_once deduplication.
+    source_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in source_to_saved:
+        source_names_by_shard.setdefault(source_tensor_to_file[tensor_name], []).append(tensor_name)
 
-    Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
-    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder
-    (``<idx>`` by default) so warning keys are stable across different
-    layer/expert ids.
-    """
-    parts = name.split(".")
-    normalized_parts = []
-    for part in parts:
-        if part.isdigit():
-            normalized_parts.append(numeric_replacement)
-            continue
-        normalized_parts.append(re.sub(r"\[(\d+)\]", f"[{numeric_replacement}]", part))
-    return ".".join(normalized_parts)
+    candidates: list[str] = []
+    for source_shard, tensor_names in source_names_by_shard.items():
+        with safe_open(source_shard, framework="pt", device="cpu") as source_file:
+            for tensor_name in tensor_names:
+                if source_file.get_slice(tensor_name).get_dtype() == "F32":
+                    candidates.append(tensor_name)
 
+    target_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in candidates:
+        target_name = source_to_saved[tensor_name]
+        target_names_by_shard.setdefault(saved_tensor_to_file[target_name], []).append(tensor_name)
 
-def split_fused_expert_tensors(
-    tensors_dict: dict[str, torch.Tensor],
-) -> dict[str, torch.Tensor]:
-    """Split 3-D fused expert tensors into per-expert 2-D tensors.
+    tensors_to_restore: dict[str, torch.Tensor] = {}
+    for target_shard, tensor_names in target_names_by_shard.items():
+        with safe_open(target_shard, framework="pt", device="cpu") as target_file:
+            for tensor_name in tensor_names:
+                target_name = source_to_saved[tensor_name]
+                if target_file.get_slice(target_name).get_dtype() in {"F16", "BF16"}:
+                    source_shard = source_tensor_to_file[tensor_name]
+                    with safe_open(source_shard, framework="pt", device="cpu") as source_file:
+                        tensors_to_restore[tensor_name] = source_file.get_tensor(tensor_name)
 
-    Many MoE checkpoints store expert weights as fused 3-D parameters
-    under either ``*.experts.<proj_name>`` or ``*.moe.<proj_name>``
-    (for example ``gate_up_proj`` with shape
-    ``[num_experts, 2*intermediate, hidden]``, or ``down_proj`` with shape
-    ``[num_experts, out, in]``).  After unfusing, each expert gets its own
-    2-D weight tensor, e.g.
-    ``experts.0.gate_proj.weight [intermediate, hidden]``.
+    restore_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in tensors_to_restore:
+        restore_names_by_shard.setdefault(saved_tensor_to_file[source_to_saved[tensor_name]], []).append(tensor_name)
 
-    Splitting rules:
+    for target_shard, tensor_names in restore_names_by_shard.items():
+        with safe_open(target_shard, framework="pt", device="cpu") as target_file:
+            metadata = target_file.metadata()
+            shard_tensors = {name: target_file.get_tensor(name) for name in target_file.keys()}
+        for tensor_name in tensor_names:
+            shard_tensors[source_to_saved[tensor_name]] = tensors_to_restore[tensor_name]
 
-        * **gate_up_proj** ``[N, 2*inter, hidden]`` →
-      ``experts.{i}.gate_proj.weight`` + ``experts.{i}.up_proj.weight``
-    * **up_gate_proj** ``[N, 2*inter, hidden]`` →
-      ``experts.{i}.up_proj.weight`` + ``experts.{i}.gate_proj.weight``
-        * **Other** stacked projections (e.g. ``down_proj``) ``[N, out, in]`` →
-            ``experts.{i}.<proj>.weight``
+        # Preserve the original shard permission bits so the temporary file's
+        # 0600 mode is not inherited by the final replacement target.
+        original_mode = os.stat(target_shard).st_mode
 
-        For ``*.moe.<proj_name>`` tensors, outputs use
-        ``*.moe.experts.{i}.<proj>.weight`` so they align with the sequential
-        expert module layout used by quantized MoE replacements.
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=os.path.dirname(target_shard), prefix=".restore_fp32_", suffix=".safetensors", delete=False
+            ) as temporary_file:
+                temporary_path = temporary_file.name
+            save_file({name: tensor.contiguous() for name, tensor in shard_tensors.items()}, temporary_path, metadata)
+            os.replace(temporary_path, target_shard)
+            os.chmod(target_shard, original_mode)
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.remove(temporary_path)
 
-    Non-3-D or non-expert tensors pass through unchanged.
-
-    Args:
-        tensors_dict: Mapping of tensor names to tensors.
-
-    Returns:
-        New dict with fused expert tensors replaced by per-expert 2-D tensors.
-    """
-    result: dict[str, torch.Tensor] = {}
-    split_count = 0
-
-    for tensor_name, tensor in tensors_dict.items():
-        if tensor.dim() != 3:
-            result[tensor_name] = tensor
-            continue
-
-        warning_tensor_name = _normalize_tensor_name_for_warning(tensor_name)
-
-        # Strip optional .weight suffix for pattern matching
-        stripped = tensor_name
-        stripped = stripped.removesuffix(".weight")  # len(".weight") == 7
-
-        # Expect: <prefix>.experts.<proj_name>
-        dot_idx = stripped.rfind(".")
-        if dot_idx < 0:
-            result[tensor_name] = tensor
-            continue
-
-        parent = stripped[:dot_idx]
-        proj_name = stripped[dot_idx + 1 :]
-
-        parent_last = parent.split(".")[-1]
-        is_experts_parent = parent.endswith("experts") or parent_last == "experts"
-        is_moe_parent = parent.endswith("moe") or parent_last == "moe"
-
-        # The immediate parent must be "experts" or "moe"
-        if not is_experts_parent and not is_moe_parent:
-            logger.warning_once(
-                "Found 3-D tensor '%s' while splitting expert tensors; "
-                "it will be kept unchanged. If this is an MoE/expert weight that should be split/quantized, "
-                "please open an issue at %s.",
-                warning_tensor_name,
-                _AUTOROUND_ISSUE_URL,
-            )
-            result[tensor_name] = tensor
-            continue
-
-        target_prefix = parent if is_experts_parent else f"{parent}.experts"
-
-        num_experts = tensor.shape[0]
-
-        if proj_name in _FUSED_EXPERT_PROJ_PATTERNS:
-            split_names = _FUSED_EXPERT_PROJ_PATTERNS[proj_name]
-            logger.warning_once(
-                f"Splitting fused expert tensor '{warning_tensor_name}' "
-                f"(shape={list(tensor.shape)}, num_experts={num_experts}) "
-                f"into {split_names}"
-            )
-            for i in range(num_experts):
-                expert_2d = tensor[i]  # [fused_out, in_features]
-                chunks = expert_2d.chunk(len(split_names), dim=0)
-                for split_name, chunk in zip(split_names, chunks):
-                    out_key = f"{target_prefix}.{i}.{split_name}.weight"
-                    result[out_key] = chunk.contiguous()
-        else:
-            logger.warning_once(
-                f"Splitting stacked expert tensor '{warning_tensor_name}' "
-                f"(shape={list(tensor.shape)}, num_experts={num_experts})"
-            )
-            for i in range(num_experts):
-                expert_2d = tensor[i]  # [out, in]
-                out_key = f"{target_prefix}.{i}.{proj_name}.weight"
-                result[out_key] = expert_2d.contiguous()
-
-        split_count += 1
-
-    return result
+    if tensors_to_restore:
+        tensor_summary = compress_layer_names([name.rsplit(".", 1)[0] for name in tensors_to_restore])
+        logger.info(
+            f"Restored {len(tensors_to_restore)} tensor(s) from FP16/BF16 to their original FP32 values: "
+            f"{tensor_summary}."
+        )
 
 
 def copy_missing_tensors_from_source(
@@ -272,19 +213,25 @@ def copy_missing_tensors_from_source(
     # ------------------------------------------------------------------ #
     # Collect tensor names already present in the saved output              #
     # ------------------------------------------------------------------ #
-    saved_tensor_names: set = set()
+    saved_tensor_to_file: dict[str, str] = {}
     saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
     saved_single_file = os.path.join(target_dir, "model.safetensors")
 
     if os.path.exists(saved_index_file):
         with open(saved_index_file) as f:
             saved_idx = json.load(f)
-        saved_tensor_names = set(saved_idx["weight_map"].keys())
+        saved_tensor_to_file = {
+            tensor_name: os.path.join(target_dir, shard_file)
+            for tensor_name, shard_file in saved_idx["weight_map"].items()
+        }
     elif os.path.exists(saved_single_file):
         with safe_open(saved_single_file, framework="pt", device="cpu") as f:
-            saved_tensor_names = set(f.keys())
+            saved_tensor_to_file = {tensor_name: saved_single_file for tensor_name in f.keys()}
     else:
         return
+
+    _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file)
+    saved_tensor_names = set(saved_tensor_to_file)
 
     # ------------------------------------------------------------------ #
     # Identify missing tensors via block-prefix statistics                 #
@@ -328,34 +275,20 @@ def copy_missing_tensors_from_source(
     shortcut_block_prefix: set = {name.split(".", 1)[1] for name in saved_block_prefix if "." in name}
     saved_block_prefix.update(shortcut_block_prefix)
 
-    def _name_aliases(name: str) -> set:
-        """Return a set of equivalent tensor-name variants to match against saved tensors.
-
-        Handles models where the source and saved prefixes differ, e.g.
-        google/gemma-3-4b-it: ``language_model.model.*`` ↔ ``model.language_model.*``.
-        """
-        aliases = {name}
-        if name.startswith("language_model.model."):
-            aliases.add("model.language_model." + name[len("language_model.model.") :])
-        elif name.startswith("model.language_model."):
-            aliases.add("language_model.model." + name[len("model.language_model.") :])
-        return aliases
-
     def _is_truly_missing(name: str) -> bool:
         # Special case: Qwen/Qwen3-0.6B-FP8
         # lm_head is tied but still in source_dir → not missing
         if name == "lm_head.weight":
             return False
-        aliases = _name_aliases(name)
-        if aliases & saved_tensor_names:
+        if name in saved_tensor_names:
             return False
-        parents = {a.rsplit(".", 1)[0] for a in aliases}
-        if parents & saved_parent_layers:
+        parent = name.rsplit(".", 1)[0]
+        if parent in saved_parent_layers:
             return False
         # For split experts, name is changed but block name is the same.
-        blocks = {_first_numeric_prefix(a) for a in aliases} - {None}
-        if blocks:
-            return not (blocks & saved_block_prefix)
+        block = _first_numeric_prefix(name)
+        if block is not None:
+            return block not in saved_block_prefix
         return True
 
     missing_tensor_names: list = [name for name in source_tensor_to_file if _is_truly_missing(name)]
@@ -515,144 +448,6 @@ def copy_missing_tensors_from_source(
     )
 
 
-def quantize_weight_rtn(
-    weight: torch.Tensor,
-    bits: int,
-    group_size: int,
-    sym: bool = True,
-    device: Optional[torch.device] = None,
-    disable_opt_rtn: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Quantize a 2-D weight tensor and pack into auto_gptq format.
-
-    Parameters
-    ----------
-    weight : Tensor [out_features, in_features]
-    bits   : target bit-width (e.g. 4, 8)
-    group_size : quantization group size along in_features
-    sym    : use symmetric quantisation
-    device : compute device (cuda / cpu). Results are always returned on CPU.
-    disable_opt_rtn : when False and sym=True, use the optimised-RTN scale
-        search (``quant_tensor_opt_rtn_sym``) which evaluates three E8M0
-        candidates per group and picks the best MSE.  Defaults to True
-        (plain RTN) to preserve backward-compatible behaviour.
-
-    Returns
-    -------
-    qweight : [in_features // pack_factor, out_features]  int32
-    qzeros  : [num_groups,  out_features // pack_factor]   int32
-    scales  : [num_groups,  out_features]                   float16
-    """
-    assert weight.dim() == 2, f"Expected 2-D weight, got {weight.dim()}-D"
-    out_features, in_features = weight.shape
-    if device is None:
-        device = weight.device
-    # Single-step transfer + cast avoids an intermediate BF16 copy on CUDA
-    # (``weight.to(device).float()`` would briefly allocate both BF16 and
-    # float32 buffers on the target device).
-    weight = weight.to(device=device, dtype=torch.float32)
-
-    # --- pad in_features to multiple of group_size ---
-    if in_features % group_size != 0:
-        pad = group_size - (in_features % group_size)
-        weight = torch.nn.functional.pad(weight, (0, pad))
-        in_features = weight.shape[1]
-
-    num_groups = in_features // group_size
-    pack_factor = 32 // bits  # values per int32
-
-    # --- pad out_features to multiple of pack_factor (needed for qzeros) ---
-    out_pad = 0
-    if out_features % pack_factor != 0:
-        out_pad = pack_factor - (out_features % pack_factor)
-        weight = torch.nn.functional.pad(weight, (0, 0, 0, out_pad))
-    padded_out = weight.shape[0]
-
-    from auto_round.data_type.utils import get_quant_func, reshape_pad_tensor_by_group_size
-
-    # Use get_quant_func (same as WrapperLinear) so all data types and opt_rtn
-    # variants are resolved via the QUANT_FUNC_WITH_DTYPE registry uniformly.
-    quant_func, _ = get_quant_func("int", bits, sym=sym, disable_opt_rtn=disable_opt_rtn, iters=0)
-    # quant_func returns (qdq_result, scale, zp_or_maxq)
-    _, scale, zp_val = quant_func(weight, bits=bits, group_size=group_size)
-
-    if sym:
-        maxq = 1 << (bits - 1)  # e.g. 8 for 4-bit
-        zero_point = maxq  # unsigned offset for packing
-
-        # scale shape: [padded_out * num_groups, 1]
-        # Reshape weight for group-wise quantization: [padded_out * num_groups, group_size]
-        w_grouped, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
-        w_grouped = w_grouped.to(device=device, dtype=torch.float32)
-        del weight
-
-        # Compute integer values for packing
-        q = (w_grouped / scale).round_().clamp_(-maxq, maxq - 1)
-        del w_grouped
-        q += zero_point  # shift to unsigned [0, 2*maxq - 1]
-        q = q.to(torch.int32)
-
-        # scale → [num_groups, padded_out] (float16)
-        scales_out = scale.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.float16)
-        del scale
-
-        zp = torch.full((num_groups, padded_out), zero_point, dtype=torch.int32, device=device)
-    else:
-        # Asymmetric quantization
-        max_int = (1 << bits) - 1
-
-        # scale shape: [padded_out * num_groups, 1], zp_val shape: [padded_out * num_groups, 1]
-
-        # Reshape weight for group-wise quantization
-        w_grouped, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
-        w_grouped = w_grouped.to(device=device, dtype=torch.float32)
-        del weight
-
-        # Compute integer values for packing
-        q = (w_grouped / scale).round_()
-        del w_grouped
-        q += zp_val
-        q.clamp_(0, max_int)
-        q = q.to(torch.int32)
-
-        # scale → [num_groups, padded_out] (float16)
-        scales_out = scale.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.float16)
-        del scale
-
-        # zp → [num_groups, padded_out]
-        zp = zp_val.squeeze(-1).reshape(padded_out, num_groups).t().contiguous().to(torch.int32)
-        del zp_val
-
-    # q → [in_features, padded_out]
-    q = q.reshape(padded_out, in_features).t().contiguous()
-
-    # ---- Pack qweight: [in_features // pack_factor, padded_out] ----
-    # Vectorised: reshape → broadcast shift → int64 sum (≡ bitwise-OR for
-    # non-overlapping bit lanes) avoids a Python loop per bit-lane.
-    _shifts = torch.arange(pack_factor, dtype=torch.int64, device=device) * bits
-    q_packed = q.reshape(in_features // pack_factor, pack_factor, padded_out).to(torch.int64)
-    del q
-    qweight = (q_packed << _shifts[None, :, None]).sum(dim=1).to(torch.int32)
-    del q_packed
-
-    # ---- Pack qzeros: [num_groups, padded_out // pack_factor] ----
-    # The auto_round:auto_gptq format (qlinear_torch_zp) adds +1 to zeros
-    # after unpacking, so we must subtract 1 before packing to compensate.
-    zp -= 1
-    zp_packed = zp.reshape(num_groups, padded_out // pack_factor, pack_factor).to(torch.int64)
-    del zp
-    qzeros = (zp_packed << _shifts[None, None, :]).sum(dim=2).to(torch.int32)
-    del zp_packed, _shifts
-
-    # Remove output padding from qweight / scales (qzeros stays in pack units)
-    if out_pad > 0:
-        qweight = qweight[:, :out_features]
-        scales_out = scales_out[:, :out_features]
-
-    # Always return CPU tensors (safetensors requires CPU)
-    return qweight.cpu(), qzeros.cpu(), scales_out.cpu()
-
-
 def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -> dict:
     """Apply WOQ (Weight-Only Quantization) to missing Linear weight tensors.
 
@@ -682,7 +477,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     """
     import re as _re
 
-    BLOCK_NAME_TO_IGNORE = [".shared_expert_gate.", ".mlp.gate.", ".g_proj.", "mtp.fc."]
+    BLOCK_NAME_TO_IGNORE = [".shared_expert_gate.", ".gate.", ".g_proj.", "mtp.fc."]
     qconfig = _get_woq_config_from_dir(target_dir)
     if qconfig is None:
         return missing_tensors_dict
@@ -690,6 +485,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     global_bits = qconfig["bits"]
     global_group_size = qconfig["group_size"]
     global_sym = qconfig["sym"]
+    declared_packing = qconfig.get("packing_format", "auto_round:auto_gptq")
     block_name_to_quantize = qconfig.get("block_name_to_quantize", None)
     extra_config: dict = qconfig.get("extra_config", {}) or {}
 
@@ -923,7 +719,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         base_name = layer_name
 
         try:
-            qweight, qzeros, scales = quantize_weight_rtn(weight, bits=bits, group_size=effective_gs, sym=sym)
+            qweight, qzeros, scales = quantize_weight_rtn(
+                weight, bits=bits, group_size=effective_gs, sym=sym, packing=declared_packing
+            )
         except Exception as e:
             logger.warning(f"Failed to quantize {weight_key}: {e}, keeping original weight")
             continue

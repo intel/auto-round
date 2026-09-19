@@ -102,7 +102,10 @@ def preprocess_block_inputs(
         elif isinstance(input_others[key], list):
             for i in range(len(input_others[key])):
                 v = input_others[key][i]
-                if isinstance(v, torch.Tensor) and v.dtype in (torch.int32, torch.int64):
+                # Only floating point tensors may be recast. Boolean padding masks and
+                # integer ids must keep their dtype: e.g. GLM-5.3-Flash's DSA indexer
+                # does ``~attention_mask``, which fails on a float tensor.
+                if isinstance(v, torch.Tensor) and not v.is_floating_point():
                     continue
                 input_others[key][i] = to_dtype(v, tmp_dtype)
     return input_ids, input_others

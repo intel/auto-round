@@ -56,12 +56,21 @@ def register_dataset(name_list):
 class LlavaDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
+    LLAVA_REPO_ID = "liuhaotian/LLaVA-Instruct-150K"
     BASE_LLAVA_URL = "https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/resolve/main/"
+    LLAVA_DATASET_FILES = {
+        "llava_conv_58k": "conversation_58k.json",
+        "llava_instruct_80k": "llava_instruct_80k.json",
+        "llava_instruct_150k": "llava_instruct_150k.json",
+    }
+    # Kept for backward compatibility, `LLAVA_DATASET_FILES` is the source of truth.
     LLAVA_DATASET = {
         "llava_conv_58k": BASE_LLAVA_URL + "conversation_58k.json?download=true",
         "llava_instruct_80k": BASE_LLAVA_URL + "llava_instruct_80k.json?download=true",
         "llava_instruct_150k": BASE_LLAVA_URL + "llava_instruct_150k.json?download=true",
     }
+    DOWNLOAD_TIMEOUT = 60
+    DOWNLOAD_RETRIES = 3
     _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
     IMAGE_TOKEN = "<image>"
     MAX_SUPPORT_SEQLEN = 512
@@ -88,18 +97,18 @@ class LlavaDataset(Dataset):
             logger.info(f"use dataset {dataset_path}, loading from disk...")
             self.questions = json.load(open(dataset_path, "r"))
         else:
-            import requests
-
             if dataset_path == "liuhaotian/llava":
                 dataset_path = "llava_conv_58k"
             else:
                 dataset_path = dataset_path.split("/")[-1]
             dataset_name = dataset_path.split("/")[-1]
-            if dataset_name in self.LLAVA_DATASET:
+            if dataset_name in self.LLAVA_DATASET_FILES:
                 logger.info(f"use dataset {dataset_name}, downloading...")
-                self.questions = requests.get(self.LLAVA_DATASET[dataset_name], stream=True).json()
+                self.questions = self._download_questions(dataset_name)
             else:
-                raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
+                raise KeyError(
+                    f"{dataset_path} is not supported; supported datasets: {', '.join(self.LLAVA_DATASET_FILES.keys())}."
+                )
 
         self.seqlen = seqlen
         self.questions = self.check(self.questions, self.seqlen, nsamples)
@@ -116,6 +125,56 @@ class LlavaDataset(Dataset):
             if isinstance(image_fold, dict):
                 image_fold = image_fold["image"]
             self.image_fold = image_fold
+
+    @classmethod
+    def _download_questions(cls, dataset_name: str):
+        """Download a LLaVA instruction dataset and return the decoded JSON payload.
+
+        ``huggingface_hub`` is preferred because it honours ``HF_TOKEN``/``HF_ENDPOINT`` mirrors,
+        retries transient failures and caches the file locally. A plain HTTP request is used as a
+        fallback. Both paths validate the payload, so a non-JSON body (an HTML error/rate-limit
+        page, an empty response from a proxy, ...) raises an actionable error instead of a bare
+        ``JSONDecodeError``.
+        """
+        filename = cls.LLAVA_DATASET_FILES[dataset_name]
+        errors = []
+
+        try:
+            from huggingface_hub import hf_hub_download
+
+            local_path = hf_hub_download(repo_id=cls.LLAVA_REPO_ID, filename=filename, repo_type="dataset")
+            with open(local_path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            errors.append(f"huggingface_hub: {type(e).__name__}: {e}")
+            logger.warning(
+                f"failed to fetch dataset '{dataset_name}' via huggingface_hub ({type(e).__name__}: {e}),"
+                " falling back to a direct http download."
+            )
+
+        import requests
+
+        url = cls.LLAVA_DATASET[dataset_name]
+        for attempt in range(1, cls.DOWNLOAD_RETRIES + 1):
+            try:
+                response = requests.get(url, timeout=cls.DOWNLOAD_TIMEOUT)
+                response.raise_for_status()
+                return json.loads(response.content.decode("utf-8"))
+            except Exception as e:
+                errors.append(f"http attempt {attempt}: {type(e).__name__}: {e}")
+                if attempt < cls.DOWNLOAD_RETRIES:
+                    logger.warning(
+                        f"failed to download dataset '{dataset_name}' from {url}"
+                        f" ({type(e).__name__}: {e}), retrying (attempt {attempt + 1}/{cls.DOWNLOAD_RETRIES})..."
+                    )
+
+        details = "\n  ".join(errors)
+        raise RuntimeError(
+            f"could not download the calibration dataset '{dataset_name}' from"
+            f" '{cls.LLAVA_REPO_ID}'. Please check your network connection/proxy, or download"
+            f" '{filename}' manually and pass its local path via the `dataset` argument."
+            f"\nCauses:\n  {details}"
+        )
 
     def check(self, questions, word_len, nsamples):
         def _check(questions, min_word_len, max_word_len, nsamples):

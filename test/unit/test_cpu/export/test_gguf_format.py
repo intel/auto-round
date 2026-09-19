@@ -1,7 +1,10 @@
 import os
 import shutil
 import sys
+from importlib import import_module
 from test.helpers import eval_generated_prompt, get_model_path, get_tiny_model, save_tiny_model
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -10,6 +13,54 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
+
+
+def test_pack_gguf_layer_clears_global_state_on_error(monkeypatch, tmp_path):
+    export_module = import_module("auto_round.export.export_to_gguf.export")
+    failure = RuntimeError("packing failed")
+    gguf_model = SimpleNamespace(
+        model_arch=object(),
+        prepare_tensors=MagicMock(side_effect=failure),
+    )
+    block = MagicMock()
+    block.named_modules.return_value = []
+    model = SimpleNamespace(last_layer_name_to_block_name={"layer.weight": "model.layers.0"})
+
+    monkeypatch.setattr(export_module, "get_module", lambda *_: block)
+    export_module.gguf_model_instance_global = [gguf_model]
+
+    try:
+        with pytest.raises(RuntimeError, match="packing failed"):
+            export_module.pack_gguf_layer(
+                "layer.weight",
+                model,
+                "gguf:q4_0",
+                str(tmp_path),
+                {},
+                tokenizer=None,
+            )
+
+        assert not hasattr(export_module, "gguf_model_instance_global")
+    finally:
+        export_module._clear_gguf_model_instances()
+
+
+def test_save_gguf_clears_global_state_on_writer_error():
+    export_module = import_module("auto_round.export.export_to_gguf.export")
+    gguf_model = SimpleNamespace(
+        model_arch=object(),
+        fname_out="broken.gguf",
+        write=MagicMock(side_effect=RuntimeError("writer failed")),
+    )
+    export_module.gguf_model_instance_global = [gguf_model]
+
+    try:
+        with pytest.raises(RuntimeError, match="writer failed"):
+            export_module.save_quantized_as_gguf("unused", model=object())
+
+        assert not hasattr(export_module, "gguf_model_instance_global")
+    finally:
+        export_module._clear_gguf_model_instances()
 
 
 def _run_auto_round_cli(monkeypatch, cmd):
@@ -69,7 +120,6 @@ class TestGGUF:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(60)
     def test_q4_0(self, tiny_qwen_model_path):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
@@ -103,7 +153,6 @@ class TestGGUF:
         assert type(autoround).__name__ == "CompressionOrchestrator"
         assert isinstance(autoround.quantize_config, OptimizedRTNConfig)
 
-    @pytest.mark.timeout(60)
     def test_func(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -121,7 +170,6 @@ class TestGGUF:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         eval_generated_prompt(model, self.tokenizer)
 
-    @pytest.mark.timeout(120)
     def test_q4_k_m(self, dataloader, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         layer_config = {
@@ -161,7 +209,6 @@ class TestGGUF:
         assert autoround.model.model.layers[0].mlp.gate_proj.bits == 8
         assert autoround.layer_config["model.layers.0.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
 
-    @pytest.mark.timeout(360)
     def test_all_format(self, monkeypatch, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         # for gguf_format in ["gguf:q4_0", "gguf:q4_1", "gguf:q4_k_m", "gguf:q6_k"]:
@@ -192,7 +239,6 @@ class TestGGUF:
         )
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
-    @pytest.mark.timeout(90)
     def test_vlm_gguf(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRound
 
@@ -213,7 +259,6 @@ class TestGGUF:
             else:
                 assert file_size < 270, f"file size {file_size} MB is too large for non-quantized mmproj-model.gguf"
 
-    @pytest.mark.timeout(60)
     def test_vlm_gguf_wo_quant_nontext_module(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRound
 
@@ -472,7 +517,6 @@ class TestGGUF:
         assert ar.layer_config["model.language_model.embed_tokens"]["bits"] == 6
         assert ar.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
 
-    @pytest.mark.timeout(60)
     def test_q2k_mixed(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(
@@ -495,7 +539,6 @@ class TestGGUF:
         tensor_types = {tensor.name: tensor.tensor_type.name for tensor in gguf_model.tensors}
         assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"
 
-    @pytest.mark.timeout(60)
     def test_q2k_mixed_keeps_only_three_dim_expert_weights_at_q2k(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(

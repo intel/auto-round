@@ -30,6 +30,7 @@
 #endif
 
 #include "utils.hpp"
+#include "sycl_tla_common.hpp"
 
 namespace ark {
 
@@ -210,6 +211,21 @@ void gemm_cute_store_tile(sycl::queue* q, ATensor const& A, BTensor const& B, CT
 
 }
 
+using DenseSmallTileSG = Layout<Shape<_1, _4, _1>, Stride<_0, _1, _0>>;
+using DenseSmallMidTileSG = Layout<Shape<_2, _4, _1>, Stride<_4, _1, _0>>;
+using DenseMediumTileSG = Layout<Shape<_4, _4, _1>, Stride<_4, _1, _0>>;
+using DenseLargeTileSG = Layout<Shape<_8, _4, _1>, Stride<_4, _1, _0>>;
+
+template <bool HasBias, int TileM, int TileN, class SGLayout, typename Element>
+void run_dense_gemm_fixed_tile(sycl::queue* q, int m, int n, int k, const Element* a_ptr, const Element* b_ptr,
+                               Element* c_ptr, const Element* bias_ptr) {
+  auto A = make_tensor(make_gmem_ptr(const_cast<Element*>(a_ptr)), make_shape(m, k), make_stride(k, _1{}));
+  auto B = make_tensor(make_gmem_ptr(const_cast<Element*>(b_ptr)), make_shape(n, k), make_stride(k, _1{}));
+  auto C = make_tensor(make_gmem_ptr(c_ptr), make_shape(m, n), make_stride(n, _1{}));
+  gemm_cute_store_tile<HasBias, TileM, TileN, SGLayout, decltype(A), decltype(B), decltype(C), Element, Element, Element,
+                       'R', 'R'>(q, A, B, C, bias_ptr);
+}
+
 
 template <bool HasBias, typename Element>
 void run_dense_gemm_tuned_tile(sycl::queue* q, int m, int n, int k, const Element* a_ptr, const Element* b_ptr,
@@ -249,52 +265,6 @@ void run_dense_gemm(sycl::queue* q, int m, int n, int k, const Element* a_ptr, c
 }
 
 }  // namespace dense_gemm_detail
-
-inline void sycl_tla_dense_gemm(sycl::queue* q, int m, int n, int k, const void* a, BTLA_DTYPE at,
-                                           const void* b, BTLA_DTYPE bt, void* c, BTLA_DTYPE ct, const void* bias,
-                                           bool BT) {
-  if (!q) {
-    throw std::invalid_argument("sycl_tla_dense_gemm: stream must be a valid SYCL queue");
-  }
-  if (!BT) {
-    throw std::invalid_argument("sycl_tla_dense_gemm: only the A @ B.T contract is supported");
-  }
-  if (!a || !b || !c) {
-    throw std::invalid_argument("sycl_tla_dense_gemm: input and output pointers must not be null");
-  }
-  if (m <= 0 || n <= 0 || k <= 0) {
-    return;
-  }
-  if (at != bt) {
-    throw std::invalid_argument("sycl_tla_dense_gemm: A and B must use the same dtype");
-  }
-  if (ct != at) {
-    throw std::invalid_argument("sycl_tla_dense_gemm: output dtype must match input dtype");
-  }
-
-  switch (at) {
-    case BTLA_DTYPE::F32:
-      dense_gemm_detail::run_dense_gemm(
-          q, m, n, k, static_cast<const float*>(a), static_cast<const float*>(b),
-          static_cast<float*>(c), static_cast<const float*>(bias));
-      return;
-
-    case BTLA_DTYPE::F16:
-      dense_gemm_detail::run_dense_gemm(
-          q, m, n, k, static_cast<const cute::half_t*>(a), static_cast<const cute::half_t*>(b),
-          static_cast<cute::half_t*>(c), static_cast<const cute::half_t*>(bias));
-      return;
-
-    case BTLA_DTYPE::BF16:
-      dense_gemm_detail::run_dense_gemm(
-          q, m, n, k, static_cast<const cute::bfloat16_t*>(a), static_cast<const cute::bfloat16_t*>(b),
-          static_cast<cute::bfloat16_t*>(c), static_cast<const cute::bfloat16_t*>(bias));
-      return;
-
-    default:
-      throw std::invalid_argument("sycl_tla_dense_gemm: only FP32, FP16 and BF16 are supported");
-  }
-}
 
 #endif  // ARK_XPU && ARK_SYCL_TLA
 

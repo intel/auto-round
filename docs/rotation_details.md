@@ -1,6 +1,6 @@
-# Rotation Transform — Details (Experimental)
+# Rotation Transform — Details (Research)
 
-> ⚠️ **Experimental feature.** Rotation transform is still in an experimental stage. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend. As a result, inference may be slower compared to native (non-rotated) models.
+> ⚠️ **Research feature.** Rotation transform is still in a research stage. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend. As a result, inference may be slower compared to native (non-rotated) models.
 
 This document is the in-depth reference for AutoRound's rotation transforms. For a
 concise getting-started guide, see the *Rotation* section in
@@ -16,11 +16,11 @@ This is most useful for aggressive low-bit schemes such as MXFP4, NVFP4 and W4A4
 AutoRound provides two independent rotation implementations:
 
 - **QuaRot / SpinQuant** — architecture-aware, full-model rotation applied at up to
-  four positions (R1–R4). Selected via `rotation_config="quarot"`,
-  `rotation_config="spinquant"`, or a `SpinQuantConfig` instance. **Recommended.**
+  four positions (R1–R4). Selected via `alg_configs=[..., "quarot"]`,
+  `alg_configs=[..., "spinquant"]`, or a `SpinQuantConfig` instance. **Recommended.**
 - **Per-Linear Block Rotation** — an earlier, simpler implementation that applies a
   block-diagonal Hadamard uniformly to every `nn.Linear`. Selected via
-  `rotation_config="default"` / a string Hadamard type, or a `RotationConfig`
+  `alg_configs=[..., "hadamard"]` / a string Hadamard type, or a `RotationConfig`
   instance. Also exposed through the `--algorithm hadamard` CLI.
 
 ---
@@ -77,8 +77,8 @@ Defined in `auto_round/algorithms/transforms/spinquant/preprocessor.py`.
 | `rotation_size` | `None` (auto) | Overrides the R1/R4 block size (R1 uses it instead of `hidden_size`, R4 instead of `intermediate_size`). R2 always uses `head_dim`; R3 has no custom size. Must be a positive power of 2. |
 | `random_r1` / `random_r2` / `random_r3` / `random_r4` | `False` | Use random Hadamard (`H × diag(±1)`) instead of the deterministic matrix at that position. Only relevant in QuaRot mode. |
 | `online_r1_rotation` | `True` | Apply R1 online via hook (`True`) or fuse it fully into weights (`False`). |
-| `trainable_rotation` | `False` | Learn the rotation matrices via Cayley SGD (SpinQuant mode). **Experimental**, requires a dataloader. |
-| `trainable_smooth` | `False` | Learn SmoothQuant-style `smooth_values` jointly via Adam. **Experimental**, requires a dataloader. |
+| `trainable_rotation` | `False` | Learn the rotation matrices via Cayley SGD (SpinQuant mode). **Research**, requires a dataloader. |
+| `trainable_smooth` | `False` | Learn SmoothQuant-style `smooth_values` jointly via Adam. **Research**, requires a dataloader. |
 | `iters` | `200` | Training iterations (trainable modes only). |
 | `lr` | `1e-4` | SGDG (Cayley) learning rate for rotation matrices. |
 | `smooth_lr` | `1e-3` | Adam learning rate for smooth values. |
@@ -87,21 +87,23 @@ Defined in `auto_round/algorithms/transforms/spinquant/preprocessor.py`.
 | `kl_top_k` | `1000` | Top-k logits used by the `kl_top` loss. |
 | `fuse_rmsnorm` | `True` | Fuse RMSNorm scales into following linear layers. |
 | `untie_embeddings` | `True` | Untie shared embedding / LM-head weights before rotating. |
+| `layerwise` | `False` | Apply rotation **per decoder block**, in lock-step with AutoRound's block-wise quantization, instead of rotating the whole model up-front (see §1.8). Supported by QuaRot / SpinQuant and the per-Linear Hadamard *transform* backend; the Hadamard *inplace* backend ignores it and falls back to full-model rotation. |
 | `dtype` | `torch.float32` | Numerical dtype used for rotation math. |
 | `device` | `None` (auto) | Defaults to `"cuda"` if available, else `"cpu"`. |
 
 ### 1.3 String shortcuts
 
-| Value | Equivalent |
+Both are registered algorithm aliases usable directly in `alg_configs`:
+
+| Alias | Equivalent |
 |-------|-----------|
 | `"quarot"` | `SpinQuantConfig(trainable_rotation=False, trainable_smooth=False)` — deterministic Hadamard, no training, no calibration data. |
-| `"spinquant"` | `SpinQuantConfig(trainable_rotation=True, trainable_smooth=True)` — **experimental**, requires a dataloader. |
+| `"spinquant"` | `SpinQuantConfig(trainable_rotation=True, trainable_smooth=True)` — **research**, requires a dataloader. |
 
-Both presets keep the default `r1=True, r2=True, r3=False, r4=False`. A dict with
-`algorithm="spinquant"` is also parsed into a `SpinQuantConfig`.
+Both presets keep the default `r1=True, r2=True, r3=False, r4=False`.
 
 > ⚠️ **SpinQuant trainable rotation** (`trainable_rotation=True`) enables learnable
-> rotation matrices optimized via Cayley SGD. This feature is experimental and not
+> rotation matrices optimized via Cayley SGD. This feature is a research feature and not
 > fully validated on real models. Use `"quarot"` (fixed Hadamard) for production
 > workloads.
 
@@ -113,14 +115,17 @@ from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
 
 model_name = "Qwen/Qwen3-0.6B"
 
-# QuaRot preset: R1+R2 deterministic Hadamard, no training
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config="quarot")
+# QuaRot preset: R1+R2 deterministic Hadamard, no training. Rotation configs are
+# passed alongside a quantization algorithm through `alg_configs`.
+ar = AutoRound(model_name, scheme="MXFP4", alg_configs=["auto_round", "quarot"])
 
-# Choose how many positions to rotate:
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True))  # R1 only
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True))  # R1+R2
+# Choose how many positions to rotate by passing a SpinQuantConfig instance instead:
+ar = AutoRound(model_name, scheme="MXFP4", alg_configs=["auto_round", SpinQuantConfig(r1=True)])  # R1 only
+ar = AutoRound(model_name, scheme="MXFP4", alg_configs=["auto_round", SpinQuantConfig(r1=True, r2=True)])  # R1+R2
 ar = AutoRound(
-    model_name, scheme="MXFP4", rotation_config=SpinQuantConfig(r1=True, r2=True, r3=True, r4=True)
+    model_name,
+    scheme="MXFP4",
+    alg_configs=["auto_round", SpinQuantConfig(r1=True, r2=True, r3=True, r4=True)],
 )  # all four
 
 ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot", format="auto_round")
@@ -147,16 +152,19 @@ from `known_hadamard.py`, combining it with a Sylvester block.
 ar = AutoRound(
     model_name,
     scheme="MXFP4",
-    rotation_config=SpinQuantConfig(
-        r1=True,
-        r2=True,
-        r3=True,
-        r4=True,
-        random_r1=True,
-        random_r2=True,
-        random_r3=True,
-        random_r4=True,
-    ),
+    alg_configs=[
+        "auto_round",
+        SpinQuantConfig(
+            r1=True,
+            r2=True,
+            r3=True,
+            r4=True,
+            random_r1=True,
+            random_r2=True,
+            random_r3=True,
+            random_r4=True,
+        ),
+    ],
 )
 ```
 
@@ -201,11 +209,74 @@ with a `*_type` code: `0` = deterministic, `1` = random, `2` = trained):
   re-patches the QuantLinear forward (R1/R4) and re-applies the R3 RoPE monkeypatch.
   R3 is rebuilt purely from `config.json`, not from stored buffers.
 
+### 1.8 Block-wise (layer-wise) rotation
+
+By default QuaRot / SpinQuant rotate the **entire model up-front**: R1 is fused into
+the embedding and all linears, R2 into attention, and R3/R4 are installed as online
+hooks — after which quantization runs. This requires the whole model to be resident at
+once, which is heavy for large models and decoupled from AutoRound's block-wise
+quantization loop.
+
+Setting `layerwise=True` on the rotation config aligns rotation with block-wise
+quantization: only the rotation matrices (R1–R4) are initialised up-front, and each
+decoder block is rotated **just before it is quantized**, so only one block needs to be
+on-device at a time.
+
+```python
+from auto_round import AutoRound
+from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
+
+# Block-wise QuaRot: rotate each decoder block in lock-step with quantization.
+ar = AutoRound(
+    "Qwen/Qwen3-0.6B",
+    scheme="MXFP4",
+    alg_configs=["rtn", SpinQuantConfig(r1=True, r2=True, layerwise=True)],
+)
+ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot-blockwise", format="auto_round")
+```
+
+The per-Linear Hadamard rotation also supports block-wise execution. Because it fuses an
+independent Hadamard into each Linear (no cross-layer residual-stream coupling), rotating
+one decoder block at a time is mathematically identical to the full-model pass:
+
+```python
+from auto_round import AutoRound
+from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+
+# Block-wise Hadamard (per-Linear transform backend, MXFP4 / NVFP4).
+ar = AutoRound(
+    "Qwen/Qwen3-0.6B",
+    scheme="MXFP4",
+    iters=0,
+    rotation_config=RotationConfig(hadamard_type="hadamard", layerwise=True),
+)
+ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-hadamard-blockwise", format="auto_round")
+```
+
+Notes and limitations:
+
+- **Supported algorithms.** `layerwise` is honoured by QuaRot / SpinQuant and by the
+  per-Linear Hadamard **transform** backend (`BaseRotation.supports_layerwise == True`).
+  The Hadamard **inplace** / QuaRot residual-stream backend (`backend="inplace"`) couples
+  consecutive layers, so it reports `supports_layerwise == False` and transparently falls
+  back to full-model rotation. Requesting `layerwise=True` for the transform backend on a
+  non-MXFP4/NVFP4 dtype raises `NotImplementedError` (block-wise Hadamard needs the
+  per-Linear kernel path).
+- **`nblocks` aware.** When several decoder layers are fused into one scheduling group
+  (`nblocks > 1`), each fused layer receives its correct global `layer_idx`, so R2/R3/R4
+  head-dim math stays aligned with the model topology.
+- **Single-block API.** Layer-wise rotation is driven by AutoRound's internal block loop
+  and is **not** supported through the external single-block `quantize_block()` API
+  (e.g. LLM-Compressor); attempting it raises `NotImplementedError`. Use the full
+  `quantize()` entry point, or set `layerwise=False`.
+- **Accuracy parity.** Block-wise rotation is mathematically equivalent to full-model
+  rotation for the R1/R2/R3/R4 positions it supports; see §4 for measured parity.
+
 ---
 
 ## 2. Per-Linear Block Rotation
 
-> ⚠️ This is an earlier experimental implementation that applies block-diagonal
+> ⚠️ This is an earlier research implementation that applies block-diagonal
 > Hadamard rotation **per linear layer** by patching every `nn.Linear` module in the
 > model. For most use cases the QuaRot / SpinQuant approach above is preferred — it
 > provides architecture-aware rotation at specific positions (R1–R4) with better
@@ -241,6 +312,7 @@ Application modes (`hadamard/apply.py`):
 | `hadamard_type` | `"hadamard"` | One of `hadamard`, `random_hadamard`, `inplace_quarot_hadamard`, `inplace_hadamard`, `inplace_random`. Deterministic Hadamard uses Sylvester construction (`block_size` must be a power of 2); `random_hadamard` supports non-power-of-2 sizes from the known-matrix library. |
 | `fuse_online_to_weight` | `None` | Fuse online Hadamard rotation into weights when supported (`inplace` backend only). |
 | `allow_online_rotation` | `True` | Allow online activation rotation. |
+| `layerwise` | `False` | Apply the Hadamard rotation **per decoder block**, in lock-step with AutoRound's block-wise quantization (see §1.8). Supported by the per-Linear `transform` backend (MXFP4 / NVFP4); the `inplace` backend couples layers and falls back to full-model rotation. |
 
 ### 2.2 Usage
 
@@ -249,8 +321,8 @@ from auto_round import AutoRound
 
 model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
 
-# rotation_config="default": block_size auto (32 for MXFP), hadamard_type="hadamard"
-ar = AutoRound(model_name_or_path, scheme="MXFP4", rotation_config="default")
+# "hadamard": block_size auto (32 for MXFP), hadamard_type="hadamard"
+ar = AutoRound(model_name_or_path, scheme="MXFP4", alg_configs=["auto_round", "hadamard"])
 ar.quantize_and_save(output_dir="./Llama-3.1-8B-Instruct-mxfp4-ht", format="auto_round")
 ```
 
@@ -268,18 +340,21 @@ CLI flags: `--rotation_type {hadamard,random_hadamard,quarot_hadamard}`,
 
 ---
 
-## 3. How `rotation_config` is dispatched
+## 3. How rotation configs are dispatched
 
-`rotation_config` is accepted by `AutoRound` and normalized by the unified
-`apply_rotation()` entry point in
+A rotation config is passed alongside a quantization algorithm through `alg_configs`
+(e.g. `alg_configs=["auto_round", "hadamard"]` or
+`alg_configs=["auto_round", SpinQuantConfig(...)]`). It is not accepted as a separate
+top-level `AutoRound(...)` parameter. Once resolved, it is normalized and dispatched by
+the unified `apply_rotation()` entry point in
 `auto_round/algorithms/transforms/__init__.py`:
 
 - A `BaseRotationConfig` instance (`SpinQuantConfig` or `RotationConfig`) is used
   directly.
-- The strings `"quarot"` / `"spinquant"` map to the `SpinQuantConfig` shortcuts above.
-- A dict with `algorithm="spinquant"` becomes a `SpinQuantConfig`.
-- Any other string (e.g. `"default"`, `"hadamard"`, `"random_hadamard"`) or dict maps to
-  the per-linear `RotationConfig`.
+- The registered aliases `"quarot"` / `"spinquant"` resolve to the `SpinQuantConfig`
+  shortcuts above.
+- The registered aliases `"hadamard"`, `"random_hadamard"`, `"quarot_hadamard"` resolve
+  to the per-linear `RotationConfig` presets.
 
 ---
 

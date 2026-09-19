@@ -17,8 +17,11 @@ import json
 import logging
 import multiprocessing
 import os
+import queue
 import random
+import ssl
 import sys
+from importlib.metadata import PackageNotFoundError, version
 
 logging.getLogger("datasets").setLevel(logging.WARNING)
 
@@ -32,6 +35,81 @@ from .utils import is_local_path, logger
 
 CALIB_DATASETS = {}
 _GITHUB_CODE_CLEAN_MAX_DATASETS_VERSION = Version("3.6.0")
+_FINEWEB_EDU_HF_DATASET = "HuggingFaceFW/fineweb-edu"
+_FINEWEB_EDU_MODELSCOPE_DATASET = "AI-ModelScope/fineweb-edu"
+_FINEWEB_EDU_CONFIG = "sample-10BT"
+_FINEWEB_EDU_MIN_CANDIDATES = 10000
+_DATASET_RESULT_SUCCESS = "success"
+_DATASET_RESULT_ERROR = "error"
+
+
+def _get_dataset_network_error(error):
+    """Return the network failure in an exception chain, if present."""
+    visited = set()
+    current = error
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        error_name = type(current).__name__.lower()
+        error_module = type(current).__module__.lower()
+        error_message = str(current).lower()
+        if isinstance(current, (ConnectionError, TimeoutError, ssl.SSLError)):
+            return current
+        if any(term in error_name for term in ("connection", "http", "proxy", "ssl", "timeout")) and any(
+            package in error_module
+            for package in ("datasets", "huggingface_hub", "httpcore", "httpx", "requests", "urllib3")
+        ):
+            return current
+        if any(
+            marker in error_message
+            for marker in (
+                "cannot send a request, as the client has been closed",
+                "connection timed out",
+                "max retries exceeded",
+                "proxy error",
+                "ssl error",
+            )
+        ):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples):
+    """Switch to ModelScope FineWeb-Edu after a calibration dataset network failure."""
+    network_error = _get_dataset_network_error(error)
+    if network_error is None:
+        raise error
+    try:
+        version("modelscope")
+    except PackageNotFoundError:
+        raise RuntimeError(
+            f"Failed to load calibration dataset {dataset_name!r} because of an HTTP/proxy network issue: "
+            f"{network_error}. Install ModelScope with `pip install modelscope` to enable automatic fallback "
+            "to FineWeb-Edu."
+        ) from error
+
+    if dataset_name == _FINEWEB_EDU_MODELSCOPE_DATASET:
+        raise error
+
+    logger.warning(
+        "Failed to load calibration dataset %r because of an HTTP/proxy network issue: %s. "
+        "Automatically switching to the ModelScope FineWeb-Edu mirror (%s).",
+        dataset_name,
+        network_error,
+        _FINEWEB_EDU_MODELSCOPE_DATASET,
+    )
+    return _get_dataset_impl(tokenizer, seqlen, _FINEWEB_EDU_MODELSCOPE_DATASET, seed, nsamples)
+
+
+def _preprocess_dataset_in_subprocess(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples):
+    """Run dataset preprocessing and report network failures to the parent process."""
+    try:
+        _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+    except Exception as error:
+        network_error = _get_dataset_network_error(error)
+        result_queue.put((_DATASET_RESULT_ERROR, str(network_error) if network_error is not None else None))
+        raise
+    result_queue.put((_DATASET_RESULT_SUCCESS, None))
 
 
 def get_code_calibration_dataset(nsamples, datasets_version=None):
@@ -103,7 +181,7 @@ def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=Non
                 tokenize=False,
                 add_generation_prompt=True,
             )
-        except:
+        except Exception:
             logger.warning("Failed to apply chat template. removing the system role in chat history.")
             message_modified = [msg for msg in message if msg["role"] != "system"]
             chat_templated = tokenizer.apply_chat_template(
@@ -193,22 +271,7 @@ def get_pile_dataset(
     tokenizer_function = get_tokenizer_function(
         tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
     )
-    try:
-        calib_dataset = load_dataset("NeelNanda/pile-10k", split=split)
-    except Exception as e:
-        import ssl
-
-        error_message = str(e)
-        # Check for proxy or SSL error
-        if "proxy" in error_message.lower() or isinstance(e, ssl.SSLError) or "SSL" in error_message.upper():
-            logger.error(
-                f"Network error detected, please check proxy settings. "
-                f"Error: {error_message}. Or consider using a backup dataset by `pip install modelscope` "
-                f"and set '--dataset swift/pile-val-backup' in AutoRound API."
-            )
-        else:
-            logger.error(f"Failed to load the dataset: {error_message}")
-        sys.exit(1)
+    calib_dataset = load_dataset("NeelNanda/pile-10k", split=split)
     calib_dataset = calib_dataset.shuffle(seed=seed)
     calib_dataset = calib_dataset.map(
         tokenizer_function,
@@ -221,47 +284,72 @@ def get_pile_dataset(
     return calib_dataset
 
 
-@register_dataset(["swift/pile-val-backup", "pile-val-backup"])
-def get_pile_val_dataset(
+@register_dataset([_FINEWEB_EDU_HF_DATASET, _FINEWEB_EDU_MODELSCOPE_DATASET, "fineweb-edu"])
+def get_fineweb_edu_dataset(
     tokenizer,
     seqlen,
-    dataset_name="swift/pile-val-backup",
+    dataset_name="fineweb-edu",
     split=None,
     seed=42,
     apply_chat_template=False,
     system_prompt=None,
+    max_samples=_FINEWEB_EDU_MIN_CANDIDATES,
 ):
-    """Returns a dataloader for the specified dataset and split.
+    """Return a streaming FineWeb-Edu calibration dataset from either supported hub.
 
     Args:
     tokenizer: The tokenizer to be used for tokenization.
     seqlen: The maximum sequence length.
-    data_name: The name of the dataset.
-    split: The data split to be used (e.g., "train", "test", "validation").
+    dataset_name: FineWeb-Edu alias or explicit Hugging Face/ModelScope repository.
+    split: The data split to use. FineWeb-Edu currently provides ``train``.
     seed: The random seed for shuffling the dataset.
     apply_chat_template: Whether to apply chat template in tokenization.
 
     Returns:
-    A dataloader for the specified dataset and split, using the provided tokenizer and sequence length.
+    A tokenized streaming dataset using the provided tokenizer and sequence length.
     """
-
-    split = "validation"
+    split = "train" if split is None else split
+    if isinstance(split, list):
+        if len(split) != 1:
+            raise ValueError("FineWeb-Edu supports only one split at a time.")
+        split = split[0]
+    if split != "train":
+        raise ValueError("FineWeb-Edu supports only the train split.")
 
     tokenizer_function = get_tokenizer_function(
         tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
     )
-    from transformers.utils.versions import require_version
-
-    require_version(
-        "modelscope",
-        "Loading 'swift/pile-val-backup' dataset requires modelscope to be installed, " "`pip install modelscope`",
+    use_modelscope = dataset_name == _FINEWEB_EDU_MODELSCOPE_DATASET or (
+        dataset_name == "fineweb-edu" and envs.AR_USE_MODELSCOPE
     )
-    from modelscope import MsDataset  # pylint: disable=E0401
+    if use_modelscope:
+        from transformers.utils.versions import require_version
 
-    calib_dataset = MsDataset.load(
-        "swift/pile-val-backup", "default", split=split
-    ).to_iterable_dataset()  # , use_streaming=True
-    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
+        require_version(
+            "modelscope",
+            "Loading FineWeb-Edu from ModelScope requires `modelscope`; install it with `pip install modelscope`.",
+        )
+        from modelscope import MsDataset  # pylint: disable=E0401
+
+        calib_dataset = MsDataset.load(
+            _FINEWEB_EDU_MODELSCOPE_DATASET,
+            subset_name=_FINEWEB_EDU_CONFIG,
+            split=split,
+            use_streaming=True,
+        )
+        # ModelScope's streaming reader can keep background HTTP requests alive
+        # after iteration. Materialize the bounded sample before tokenization so
+        # downloads finish cleanly and shuffle remains deterministic.
+        calib_dataset = Dataset.from_list(list(calib_dataset.take(max_samples)))
+        calib_dataset = calib_dataset.shuffle(seed=seed)
+    else:
+        calib_dataset = load_dataset(
+            _FINEWEB_EDU_HF_DATASET,
+            name=_FINEWEB_EDU_CONFIG,
+            split=split,
+            streaming=True,
+        )
+        calib_dataset = calib_dataset.shuffle(seed=seed).take(max_samples)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
@@ -837,7 +925,7 @@ def get_dataset_len(dataset):
     try:
         dataset_len = len(dataset)
         return dataset_len
-    except:
+    except Exception:
         cnt = 0
         for _ in dataset:
             cnt += 1
@@ -879,7 +967,7 @@ def select_dataset(dataset, indices):
     """
     try:
         return dataset.select(indices)
-    except:
+    except Exception:
         list_data = list(select(dataset, indices))
         import pandas as pd
 
@@ -1000,15 +1088,21 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
             raise ValueError(
                 f"Dataset '{name}' is not found. Please choose from the supported datasets: {filtered_keys}."
             )
-        dataset = get_dataset(
-            tokenizer,
-            seqlen,
+        dataset_kwargs = dict(
+            tokenizer=tokenizer,
+            seqlen=seqlen,
             seed=seed,
             split=split,
             dataset_name=name,
             apply_chat_template=apply_chat_template,
             system_prompt=system_prompt,
         )
+        if get_dataset is get_fineweb_edu_dataset:
+            dataset_kwargs["max_samples"] = max(
+                _FINEWEB_EDU_MIN_CANDIDATES,
+                data_lens.get(name, nsamples),
+            )
+        dataset = get_dataset(**dataset_kwargs)
         if do_concat:
             dataset = concat_dataset_element(dataset)
 
@@ -1071,6 +1165,9 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         if len(datasets) > 1:
             from datasets import concatenate_datasets
 
+            # Source metadata is not part of the calibration input and can have
+            # incompatible schemas. Restrict columns only for the merge operation.
+            datasets = [dataset.select_columns(["input_ids", "attention_mask"]) for dataset in datasets]
             dataset_final = concatenate_datasets(datasets)
             dataset_final = dataset_final.shuffle(seed=seed)
             logger.info(dataset_cnt_info)
@@ -1106,12 +1203,16 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, n
     """
     # Allow disabling subprocess mode via environment variable
     if envs.AR_DISABLE_DATASET_SUBPROCESS:
-        return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+        try:
+            return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+        except Exception as error:
+            return _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples)
 
     # Run preprocessing in a subprocess so all temporary memory is freed on exit.
     # The HuggingFace datasets cache is warmed up as a side effect.
     logger.info("Preprocessing calibration dataset in a subprocess to avoid memory leaks...")
 
+    subprocess_network_error = None
     try:
         if os.name == "nt":
             raise OSError("fork is not available on Windows")
@@ -1121,22 +1222,38 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, n
         # threads).  Use "spawn" on macOS, which is safe but requires pickling args.
         mp_context = "spawn" if sys.platform == "darwin" else "fork"
         ctx = multiprocessing.get_context(mp_context)
+        result_queue = ctx.Queue()
         p = ctx.Process(
-            target=_get_dataset_impl,
-            args=(tokenizer, seqlen, dataset_name, seed, nsamples),
+            target=_preprocess_dataset_in_subprocess,
+            args=(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples),
         )
         p.start()
         p.join()
 
+        try:
+            result_status, network_error_message = result_queue.get(timeout=1)
+        except queue.Empty:
+            result_status, network_error_message = None, None
+        result_queue.close()
+        result_queue.join_thread()
         if p.exitcode != 0:
-            raise RuntimeError(f"Dataset preprocessing subprocess exited with code {p.exitcode}")
+            if result_status == _DATASET_RESULT_ERROR and network_error_message is not None:
+                subprocess_network_error = ConnectionError(network_error_message)
+            else:
+                raise RuntimeError(f"Dataset preprocessing subprocess exited with code {p.exitcode}")
 
     except Exception as e:
         logger.warning(f"Subprocess dataset preprocessing failed ({e}), falling back to in-process mode.")
 
+    if subprocess_network_error is not None:
+        return _fallback_to_fineweb_edu(subprocess_network_error, tokenizer, seqlen, dataset_name, seed, nsamples)
+
     # (Re-)load the dataset in the main process.  When the subprocess
     # succeeded the HF datasets cache makes this almost instant.
-    return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+    try:
+        return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+    except Exception as error:
+        return _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples)
 
 
 def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, nsamples=512):

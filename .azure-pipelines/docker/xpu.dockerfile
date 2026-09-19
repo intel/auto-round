@@ -1,0 +1,54 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+ARG UBUNTU_VER=26.04
+FROM ubuntu:${UBUNTU_VER}
+
+# See http://bugs.python.org/issue19846
+ENV LANG C.UTF-8
+
+RUN apt-get update && apt-get install -y --no-install-recommends --fix-missing \
+    build-essential \
+    ca-certificates \
+    git \
+    libomp-dev \
+    numactl \
+    time \
+    wget \
+    bc \
+    jq \
+    vim \
+    python3.14 \
+    python3.14-dev \
+    python3-pip
+
+RUN apt-get install -y software-properties-common \
+    && add-apt-repository -y ppa:kobuk-team/intel-graphics \
+    && apt-get install -y libze-intel-gpu1 libze1 intel-metrics-discovery intel-opencl-icd clinfo intel-gsc \
+    && apt-get install -y intel-media-va-driver-non-free libmfx-gen1 libvpl2 libvpl-tools libva-glx2 va-driver-all vainfo \
+    && apt-get install -y libze-dev intel-ocloc \
+    && apt-get install -y libze-intel-gpu-raytracing
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+
+RUN groupadd -g ${GROUP_ID} hostgroup && \
+    useradd -m -u ${USER_ID} -g ${GROUP_ID} hostuser && \
+    groupadd -g 991 render && \
+    usermod -aG render hostuser
+
+USER hostuser
+
+ENV PATH="/home/hostuser/.venv/bin:$PATH"
+ENV VIRTUAL_ENV="/home/hostuser/.venv"
+ENV UV_NO_PROGRESS=1 \
+    UV_LINK_MODE=copy
+
+RUN uv python install 3.14
+RUN uv venv --python=3.14 /home/hostuser/.venv
+RUN which python && python --version
+RUN uv pip install torch==2.14.0 torchvision==0.29.0 --extra-index-url https://download.pytorch.org/whl/xpu
+
+WORKDIR /home/hostuser

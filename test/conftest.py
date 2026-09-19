@@ -71,6 +71,44 @@ def pytest_unconfigure(config):
     os.environ.update(config.stash[backup_env])
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _warmup_triton_cuda_driver():
+    """Force Triton's CUDA driver singleton to snapshot the *real* device capability.
+
+    Triton's ``GPUDriver.__init__`` (triton/backends/driver.py) does::
+
+        self.get_device_capability = torch.cuda.get_device_capability
+
+    This copies the function object once, when the process-wide
+    ``triton.runtime.driver.active`` singleton is first constructed. If that
+    first construction happens to occur while some test has patched
+    ``torch.cuda.get_device_capability`` (e.g. ``mock_fp8_capable_device``
+    faking an FP8-capable device), the mocked return value gets baked in
+    *permanently* for the rest of the process -- unaffected by the patch
+    being un-applied later. Every subsequent Triton kernel is then compiled
+    for that fake architecture, causing
+    ``RuntimeError: Triton Error [CUDA]: no kernel image is available for
+    execution on the device`` on the *real* hardware regardless of its actual
+    compute capability (reproduced on both sm80 and sm120).
+    See https://github.com/intel/auto-round/issues/2048.
+
+    Triggering the singleton construction here -- as an autouse, session
+    scoped fixture that pytest always instantiates before any function scoped
+    fixture -- guarantees it captures the real capability before any test
+    gets a chance to mock it.
+    """
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        import triton
+
+        triton.runtime.driver.active.get_current_target()
+    except Exception:
+        pass
+
+
 @pytest.fixture(autouse=True)
 def disable_torch_compile_by_default(request, monkeypatch):
     """Use a no-op torch.compile by default to reduce test overhead and flakiness.

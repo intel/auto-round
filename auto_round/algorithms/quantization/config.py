@@ -13,12 +13,13 @@
 # limitations under the License.
 from typing import ClassVar
 
+from auto_round.algorithms.config import AlgorithmConfig
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
 
-class QuantizationConfig:
+class QuantizationConfig(AlgorithmConfig):
     """Common quantization configuration shared by block quantizers.
 
     Args:

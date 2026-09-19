@@ -16,11 +16,13 @@ import os
 import shutil
 import sys
 import time
+from functools import wraps
 from pathlib import Path
 
 import requests
 import torch
 
+from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.export.export_to_gguf.convert import is_mmproj_tensor_name, wrapper_model_instance
 from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
@@ -40,6 +42,23 @@ from auto_round.utils import (
 TMP_DIR_NAME = "tmp_dir"
 
 gguf = LazyImport("gguf")
+
+
+def _clear_gguf_model_instances():
+    globals().pop("gguf_model_instance_global", None)
+
+
+def _clear_gguf_model_instances_on_error(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception:
+            _clear_gguf_model_instances()
+            raise
+
+    return wrapper
+
 
 FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
     "f32": gguf.LlamaFileType.ALL_F32,
@@ -112,17 +131,23 @@ def create_model_class(
         output_type = FTYPE_MAP.get(output_type.lower())
 
         hparams.pop("quantization_config", None)
+        if envs.AR_DISABLE_GGUF_MTP_EXPORT and getattr(model_class, "supports_mtp_export", False):
+            model_class = type(
+                f"AutoRound{model_class.__name__}",
+                (model_class,),
+                {"model_arch": model_class.model_arch, "no_mtp": True},
+            )
         model_instance = model_class(
             dir_model=Path(tmp_work_dir),
             ftype=output_type,
             fname_out=Path(output_dir),
             is_big_endian=False,
-            hparams=hparams,
             model_name=model_name,
             split_max_tensors=False,
             split_max_size=0,
             dry_run=False,
             small_first_shard=False,
+            hparams=hparams,
         )
         if native_nontext_export:
             logger.info("Using native llama.cpp F32 export for non-text GGUF model")
@@ -142,6 +167,7 @@ def create_model_class(
 
 
 @torch.inference_mode()
+@_clear_gguf_model_instances_on_error
 def pack_gguf_layer(
     name,
     model,
@@ -275,12 +301,14 @@ def save_quantized_as_gguf(
                 )
             )
 
-    for gguf_model in gguf_model_instance_global:
-        model_kind = "mmproj" if gguf_model.model_arch == gguf.MODEL_ARCH.MMPROJ else "text"
-        logger.info("Start writing %s GGUF model to %s", model_kind, gguf_model.fname_out)
-        gguf_model.write()
-        rt = time.time() - st
-        logger.info(f"Model successfully exported to {gguf_model.fname_out}, running time={rt}")
-    del gguf_model_instance_global
+    try:
+        for gguf_model in gguf_model_instance_global:
+            model_kind = "mmproj" if gguf_model.model_arch == gguf.MODEL_ARCH.MMPROJ else "text"
+            logger.info("Start writing %s GGUF model to %s", model_kind, gguf_model.fname_out)
+            gguf_model.write()
+            rt = time.time() - st
+            logger.info(f"Model successfully exported to {gguf_model.fname_out}, running time={rt}")
+    finally:
+        _clear_gguf_model_instances()
 
     return model

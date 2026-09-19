@@ -35,7 +35,7 @@ This document presents step-by-step instructions for auto-round llm quantization
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
-  + [Rotation (Experimental)](#rotation-experimental)
+  + [Rotation (Research)](#rotation-research)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -63,7 +63,9 @@ pip install auto-round
 
 The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in huggingface is adopted as the default
 calibration data and will be downloaded automatically from the datasets Hub. Other available datasets include:
-- `swift/pile-val-backup` from modelscope for addressing HF network issue
+- [`fineweb-edu`](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) from Hugging Face. If Hugging Face is
+  inaccessible, install `modelscope`, set `AR_USE_MODELSCOPE=1`, and use the same alias to load the
+  [ModelScope mirror](https://modelscope.cn/datasets/AI-ModelScope/fineweb-edu)
 - `BAAI/CCI3-HQ` for Chinese
 - `codeparrot/github-code-clean` for code
 - `HuggingFaceH4/ultrachat_200k` for chat data
@@ -123,10 +125,13 @@ AutoRound supports several Schemes:
 
 - **W4A16**(bits:4,group_size:128,sym:True,act_bits:16)
 - **W8A16**(bits:8,group_size:128,sym:True,act_bits:16)
-- **W6A16**(bits:6,group_size:128,sym:True,act_bits:16) — `mlx` format only
-- **W5A16**(bits:5,group_size:128,sym:True,act_bits:16) — `mlx` format only
+- **W7A16**(bits:7,group_size:128,sym:True,act_bits:16)
+- **W6A16**(bits:6,group_size:128,sym:True,act_bits:16)
+- **W5A16**(bits:5,group_size:128,sym:True,act_bits:16)
 - **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
+- **Group-size variants** `W{2..8}A16G64` / `W{2..8}A16G32` - `llm_compressor` (W2-W8); `auto_round` / `auto_gptq` (W2 only)
+- Asymmetric quantization (`--asym`) supports weight bits <= 7 for `auto_round` / `auto_gptq` / `auto_awq` exports: vLLM serves W8 GPTQ-format weights symmetric-only and Marlin supports zero points at 4 bits only. The `llm_compressor` format supports 8-bit asym - vLLM serves it via Machete (SM90+, group sizes 64/128/-1) or Conch (SM80+, group size 128 or channelwise). The rule applies uniformly to AutoScheme options and fixed layer pins (e.g. lm_head): a run exporting to `llm_compressor` keeps its 8-bit entries asymmetric, other formats pin them back to symmetric. Setting the environment variable `AR_ALLOW_W8_ASYM=1` lifts the restriction for every format (for serving stacks beyond stock vLLM); artifacts produced with it may not load in vLLM.
 - **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 provided by llamacpp are supported)
 - **Mixed Bits Weight only**
 - **NVFP4**(Experimental feature, recommend exporting to `llm_compressor` format.data_type nvfp4,act_data_type nvfp4,static_global_scale,group_size 16)
@@ -143,7 +148,17 @@ Besides, you could modify the `group_size`, `bits`, `sym` and many other configs
 You can use command `auto_round list format` to show all supported formats with support scheme.
 
 **AutoRound Format**: This format is well-suited for CPU, Intel GPU, CUDA and HPU devices, 2 bits, as well as mixed-precision
-inference. **[2,3,4,8] bits are supported**. Please set `--format auto_round`
+inference. **[2,3,4,5,6,7,8] bits are supported**. Please set `--format auto_round`
+
+> **About 5/6/7 bits**: these widths do not divide 32 evenly, so each value is stored in a contiguous
+> little-endian bit-stream laid over blocks of 32 values (`in_features * bits / 32` int32 words).
+> This is a strict generalization of the existing layouts — 2/4/8-bit and 3-bit checkpoints keep
+> byte-identical `qweight`/`qzeros`. 5/6/7 bits work with `auto_round`, `auto_round:auto_gptq` and
+> `auto_round:auto_awq`, and can be freely combined in mixed-bit recipes. Upstream AutoGPTQ/AutoAWQ
+> kernels cannot read them, so the plain `auto_gptq` / `auto_awq` formats still reject 5/6/7 bits.
+> Both `in_features` and `out_features` must be multiples of 32. For inference, install the
+> [humming](https://github.com/inclusionAI/humming) kernels (`pip install git+https://github.com/inclusionAI/humming.git`);
+> otherwise AutoRound falls back to the slow `torch` dequantize-and-matmul backend.
 
 **GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
 community. `q*_k`,`q*_0`,`q*_1` are supported. Please set `--format gguf:q4_k_m`,  `--format gguf:q2_k_s`, etc
@@ -155,26 +170,28 @@ models. Besides, recently 3 bits may have some accuracy issues in Transformers. 
 
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
 adopted within the community, **only 4-bits quantization is supported**. Please set `--format auto_awq`
+(the AutoRound-flavoured `auto_round:auto_awq` additionally supports 5/6/7 bits).
 
 **LLM-Compressor Format**: **NVFP4, MXFP4(kernel in WIP), MXFP8 are supported**. Please set `--format llm_compressor`
 
 **MLX Format**[Experimental Feature]: This format targets Apple Silicon (M1/M2/M3/...) and is loaded directly by [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (text-only LLM) or [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) (vision/audio + language).
 - Supports **2, 3, 4, 5, 6, 8 bits** (5/6 bits are MLX-exclusive — GPTQ/AWQ have no standard packing for them).
-- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--target_bits 3.5 --options "..."`); 
+- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--schemes "..." --bits 3.5`);
 - Use `--format mlx` for a native MLX checkpoint; use `--format auto_round:mlx` if you want HuggingFace `transformers` + AutoRound to load it (post-init repacks each layer into MLX `QuantLinear` on Darwin).
 - Limitation: embedding layer quantization has not supported
 #### Format and scheme support matrix
 > Gray indicates the absence of a kernel or the presence of only an inefficient/reference kernel. BF16 is mainly for AutoScheme
 
-
 | Format                       | Supported Schemes                                                                                                                                                       |
 |:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **auto_round**               | W4A16, W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `BF16`, `MXINT4`      |
+| **auto_round**               | W4A16, W2A16, W3A16, W5A16, W6A16, W7A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `BF16`, `MXINT4`         |
+| **llm_compressor**           | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK, W2A16, W3A16, W4A16, W5A16, W6A16, W7A16, W8A16 and G64/G32 variants of W2-W8                                                            |
+| **gguf**                     | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
+| **mlx** / **auto_round:mlx** | W2A16, W3A16, W4A16, W5A16, W6A16, W8A16, BF16, mixed-bit / mixed-group_size (Apple Silicon only)                                                                       |
+| **auto_round:auto_awq**      | W4A16, W5A16, W6A16, W7A16, BF16                                                                                                                                        |
+| **auto_round:auto_gptq**     | W4A16, W2A16, W3A16, W5A16, W6A16, W7A16, W8A16, W2A16G64, W2A16G32, BF16                                                                                               |
 | **auto_awq**                 | W4A16, BF16                                                                                                                                                             |
 | **auto_gptq**                | W4A16, W2A16, W3A16, W8A16,W2A16G64, W2A16G32, BF16                                                                                                                     |
-| **llm_compressor**           | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK                                                                                                   |
-| **mlx** / **auto_round:mlx** | W2A16, W3A16, W4A16, W5A16, W6A16, W8A16, BF16, mixed-bit / mixed-group_size (Apple Silicon only)                                                  |
-| **gguf**                     | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
 | **fp8**                      | FP8_BLOCK                                                                                                                                                               |
 | **fake**                     | `all schemes (only for research)`                                                                                                                                       |
 
@@ -351,6 +368,8 @@ AWQ (Activation-Aware Weight Quantization) is available as an alternative quanti
 
 The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **INT8** is AutoRound's W8A8 scheme and can use AWQ smoothing before RTN quantization for vLLM's compressed_tensors backend (cutlass INT8 GEMM).
 
+AWQ can also be composed with AutoRound optimization (`--algorithm awq,auto_round`). See [AWQ algorithm results](./awq_details.md) for accuracy and cost comparisons across W4A16, MXFP4, and INT8.
+
 #### CLI Usage
 
 ```bash
@@ -463,6 +482,8 @@ See [SVDQuant Details](./svdquant_details.md) for smooth search, residual iterat
 
 AutoScheme automatically generates adaptive mixed-bit and mixed-data-type quantization recipes. For accuracy results, see [AutoScheme Accuracy Report](./auto_scheme_acc.md).
 
+We recommend exporting to the llm_compressor format for now, as it can be easily deployed with vLLM.
+
 **Note:** Mixed-data-types are supported during tuning, but cannot be exported to real models at this time.
 
 #### CLI Usage
@@ -470,11 +491,13 @@ AutoScheme automatically generates adaptive mixed-bit and mixed-data-type quanti
 - **`--iters 0`**: RTN. Fast (seconds to minutes).
 - **`--iters 200`**: Tuning-aware scheme selection. More accurate but much slower.
 
+Providing multiple `--schemes` enables AutoScheme; `--bits` is then the average target bits.
+
 ~~~bash
 auto_round \
   --model_name  $model_name \
-  --avg_bits 6 \
-  --options "mxfp4,mxfp8" \
+  --schemes "mxfp4,mxfp8" \
+  --bits 6 \
   --ignore_scale_zp_bits \
   --iters 0 \
   --format fake 
@@ -482,16 +505,14 @@ auto_round \
 
 #### API Usage
 ~~~
-avg_bits= 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("W2A16G64“, "W4A16","W8A16"))
-ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, schemes=("W2A16G64", "W4A16", "W8A16"), bits=3.0, iters=0, nsamples=1)
 ar.quantize_and_save()
 ~~~
 
 #### Hyperparameters in AutoScheme
-`avg_bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation.
+`bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation. Without `schemes`, `bits` is the plain weight bit width and must be an integer.
 
-`options(Union[str, list[Union[QuantizationScheme, str]])` the options of quantization schemes to choose from. It could be a string like "W4A16", or a list of strings or QuantizationScheme objects.
+`schemes(Union[str, list[Union[QuantizationScheme, str]])` the candidate quantization schemes to choose from, e.g. a string like "W4A16,W8A16", or a list of strings or QuantizationScheme objects. Providing schemes enables AutoScheme.
 
 `ignore_scale_zp_bits(bool)` Whether to ignore the bits of scale and zero point in average bits calculation. Default is False.
 
@@ -509,30 +530,33 @@ In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accel
 
 
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 shared_layers = [
     ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
     ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
     ("fc1", "fc2"),
 ]
-target_bits = 5.0
 model_name = "Qwen/Qwen3-0.6B"
-scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
-ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, schemes=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
 ```
 
 Besides, if you want to fix the scheme for some layers, you could set it via `layer_config` in AutoRound API.
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 model_name = "Qwen/Qwen3-8B"
-avg_bits = 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_S"), ignore_scale_zp_bits=True)
 layer_config = {"lm_head": "GGUF:Q6_K"}
 
-ar = AutoRound(model=model_name, scheme=scheme, layer_config=layer_config, iters=0)
+ar = AutoRound(
+    model=model_name,
+    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    bits=3.0,
+    ignore_scale_zp_bits=True,
+    layer_config=layer_config,
+    iters=0,
+)
 ar.quantize_and_save()
 ```
 
@@ -540,7 +564,7 @@ ar.quantize_and_save()
 
 We tested it on Nvidia A100 80G using torch v2.8.
 
-We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-1.5x of the model's BF16 size
+RAM usage has been optimized since v0.14.2.
 
 | Models        | Scheme                | VRAM Cost | Time Cost             |
 | ------------- | --------------------- | --------- | --------------------- |
@@ -914,7 +938,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 
 - **Reduced CPU Memory Usage :**
-    - Enable `low_cpu_mem_usage` (experimental): Only one export format is supported. The quantized model is saved immediately after each block is packed, reducing peak CPU memory usage.
+    - `low_cpu_mem_usage` (experimental) is enabled by default. In CLI, use `--disable_low_cpu_mem_usage` to turn it off (`--low_cpu_mem_usage` is retained only for compatibility). Only one export format is supported. The quantized model is saved immediately after each block is packed, reducing peak CPU memory usage.
 
     - Trigger immediate packing: Packing will be triggered immediately when using the command-line interface or the
       quantize_and_save API, as long as only one export format is specified.
@@ -949,13 +973,13 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
-### Rotation (Experimental)
+### Rotation (Research)
 
-> ⚠️ **Experimental feature**: Rotation transform is still experimental. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend, so rotated models may run slower than native (non-rotated) models.
+> ⚠️ **Research feature**: Rotation transform is still a research feature. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend, so rotated models may run slower than native (non-rotated) models.
 
 Rotation redistributes outliers in weights and activations before quantization, making the distribution more uniform and quantization-friendly. It is most useful for aggressive low-bit schemes such as MXFP4, NVFP4 and W4A4.
 
-AutoRound applies rotation through the `rotation_config` argument. The `"quarot"` preset — deterministic Hadamard rotation (QuaRot / SpinQuant), no training and no calibration data — is recommended for most use cases.
+AutoRound applies rotation through `alg_configs`, alongside a quantization algorithm. The `"quarot"` preset — deterministic Hadamard rotation (QuaRot / SpinQuant), no training and no calibration data — is recommended for most use cases.
 
 #### API Usage
 
@@ -965,7 +989,7 @@ from auto_round import AutoRound
 model_name = "Qwen/Qwen3-0.6B"
 
 # QuaRot preset: deterministic Hadamard, no training
-ar = AutoRound(model_name, scheme="MXFP4", rotation_config="quarot")
+ar = AutoRound(model_name, scheme="MXFP4", alg_configs=["auto_round", "quarot"])
 ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot", format="auto_round")
 ```
 
@@ -1013,7 +1037,12 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 ### CUDA
 
-Supports 2, 3, 4, and 8 bits. We recommend using GPTQModel for 4 and 8 bits inference.
+Supports 2, 3, 4, 5, 6, 7 and 8 bits. We recommend using GPTQModel for 4 and 8 bits inference, and
+[humming](https://github.com/inclusionAI/humming) for 5/6/7 bits (it is also faster than Triton for the other widths).
+
+```bash
+pip install git+https://github.com/inclusionAI/humming.git
+```
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -1082,8 +1111,10 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | gptqmodel:awq_marlin                         | cuda         | 4,8     | FP16      | 5        | awq             | gptqmodel                         |
 | gptqmodel:awq_gemm                           | cuda         | 4       | FP16      | 3        | awq             | gptqmodel                         |
 | gptqmodel:awq_torch                          | cuda/cpu     | 4       | FP16      | 2        | awq             | gptqmodel                         |
+| humming                                      | cuda         | 2,3,4,5,6,7,8 | BF16/FP16 | 4  | gptq/gptq_zp+-1 | humming-kernels                   |
+| humming                                      | cuda         | 2,3,4,5,6,7,8 | BF16/FP16 | 4  | awq             | humming-kernels                   |
 | hpu                                          | hpu          | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                        |
-| torch                                        | xpu/cpu/cuda | 2,3,4,8 | BF16/FP16 | 0        | gptq/gptq_zp+-1 | auto-round                        |
+| torch                                        | xpu/cpu/cuda | 2,3,4,5,6,7,8 | BF16/FP16 | 0  | gptq/gptq_zp+-1 | auto-round                        |
 
 
 ### Convert GPTQ/AWQ to AutoRound

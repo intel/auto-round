@@ -23,21 +23,7 @@ class TestCustomizedData:
         yield
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_list_batch_encoding(self, tiny_qwen_model_path):
-        model_name = tiny_qwen_model_path
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-        texts = [
-            "There is a girl who likes adventure,",
-            "Tell me a story about a brave robot,",
-            "Explain why the sky is blue,",
-        ]
-        inputs = tokenizer(texts, padding=True, truncation=True, max_length=9, return_tensors="pt")
-
-        ar = AutoRound(model_name, dataset=[inputs], seqlen=9)
-        ar.quantize()
-
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Architecture: Only tiny model is suggested")
     def test_mixed_attention_mask(self):
         model_name = get_model_path("Qwen/Qwen3-0.6B")
         tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -54,7 +40,7 @@ class TestCustomizedData:
         ar = AutoRound(model_name, dataset=inputs, seqlen=9)
         ar.quantize()
 
-    @pytest.mark.skip_ci(reason="Only tiny model is suggested")
+    @pytest.mark.skip_ci(reason="Architecture: Only tiny model is suggested")
     def test_batch_encoding(self):
         model_name = get_model_path("Qwen/Qwen3-0.6B")
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto")

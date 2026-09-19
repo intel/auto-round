@@ -20,6 +20,30 @@ import argparse
 
 from auto_round.cli.algorithms import AlgorithmHandler
 from auto_round.eval.eval_cli import EvalArgumentParser
+from auto_round.logger import logger
+
+
+class _LegacyAliasAction(argparse.Action):
+    """Parse a deprecated flag into its canonical argument, hidden from --help.
+
+    e.g. ``--avg_bits``/``--target_bits`` store into ``bits`` and
+    ``--options``/``--option`` store into ``schemes``, so the legacy CLI usage
+    keeps working while the old names stay out of ``--help``.
+    """
+
+    _CANONICAL_FLAGS = {"bits": "--bits", "schemes": "--schemes"}
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        logger.warning_once(
+            "`%s` is deprecated, please use `%s` instead", option_string, self._CANONICAL_FLAGS[self.dest]
+        )
+        current_value = getattr(namespace, self.dest, None)
+        if current_value is not None and current_value != values:
+            parser.error(
+                f"conflicting values for {self._CANONICAL_FLAGS[self.dest]}: "
+                f"{current_value!r} was already provided, but {option_string!r} set {values!r}"
+            )
+        setattr(namespace, self.dest, values)
 
 
 def _parse_group_size(s: str):
@@ -36,7 +60,13 @@ def add_common_quantization_arguments(group) -> None:
     _extract_common_quantization_kwargs() in main.py.
     """
     group.add_argument("--scheme", default="W4A16", type=str, help="Quantization scheme preset, e.g. W4A16, W8A16.")
-    group.add_argument("--bits", default=None, type=int, help="Weight quantization bit width.")
+    group.add_argument(
+        "--bits",
+        "--bit",
+        default=None,
+        type=float,
+        help="Weight quantization bit width. With --schemes, the average target bits for AutoScheme.",
+    )
     group.add_argument(
         "--group_size",
         default=None,
@@ -108,6 +138,15 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument("--model_dtype", default=None, help="Model dtype used when loading the model.")
     rt.add_argument("--platform", default="hf", help="Model loading platform. Options: hf or model_scope.")
     rt.add_argument(
+        "--num_hidden_layers",
+        "--debug_layer_num",
+        default=None,
+        type=int,
+        help="Debug only: load only the first N decoder layers of the model. Useful for isolating and "
+        "debugging issues on very large models with a fraction of the load time and memory. The resulting "
+        "model is partial and must not be used for a real quantization run.",
+    )
+    rt.add_argument(
         "--batch_size", "--train_bs", "--bs", default=None, type=int, help="Batch size for calibration and tuning."
     )
     rt.add_argument("--seqlen", "--seq_len", default=None, type=int, help="Sequence length of the calibration samples.")
@@ -120,24 +159,48 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--format", "--formats", default="auto_round", type=str, help="Output format for the quantized model."
     )
+    rt.add_argument(
+        "--max_shard_size", default=None, type=str, help="Maximum size of each safetensors shard. Defaults to 5GB."
+    )
     # TODO wenhuach need to add choice or verify the correctness
     rt.add_argument(
         "--algorithm",
         "--algorithms",
         "--alg",
         "--algs",
+        "--alg_config",
+        "--alg_configs",
         default=None,
         type=str,
         help="Comma-separated algorithms such as 'awq' or 'awq,auto_round'.",
     )
     rt.add_argument("--output_dir", default="./tmp_autoround", type=str, help="Directory to save quantized artifacts.")
-    rt.add_argument("--avg_bits", "--target_bits", default=None, type=float, help="Average target bits for AutoScheme.")
     rt.add_argument(
-        "--options",
+        "--schemes",
         default=None,
         type=str,
         nargs="+",
-        help="AutoScheme options. Accepts comma-separated ('W4A16,W8A16') or space-separated (W4A16 W8A16).",
+        help="Candidate quantization schemes for AutoScheme, e.g. 'W4A16,W8A16'. "
+        "Providing schemes enables AutoScheme; use --bits to set the average target bits.",
+    )
+    rt.add_argument(
+        "--avg_bits",
+        "--target_bits",
+        dest="bits",
+        default=None,
+        type=float,
+        help=argparse.SUPPRESS,
+        action=_LegacyAliasAction,
+    )
+    rt.add_argument(
+        "--options",
+        "--option",
+        dest="schemes",
+        default=None,
+        type=str,
+        nargs="+",
+        help=argparse.SUPPRESS,
+        action=_LegacyAliasAction,
     )
     rt.add_argument(
         "--low_gpu_mem_usage", action="store_true", help="Enable memory-efficient mode by offloading features to CPU."
@@ -181,7 +244,7 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--static_kv_dtype",
         default=None,
         type=str,
-        choices=["fp8", "float8_e4m3fn"],
+        choices=["fp8", "float8_e4m3fn", "nvfp4"],
         help="Static KV-cache quantization data type.",
     )
     rt.add_argument(
@@ -250,13 +313,9 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     compat.add_argument("--disable_amp", action="store_true", help="Disable AMP during tuning.")
     compat.add_argument(
-        "--disable_deterministic_algorithms",
-        action="store_true",
-        help="Deprecated flag to disable deterministic algorithms.",
-    )
-    compat.add_argument(
         "--enable_deterministic_algorithms",
         action="store_true",
+        default=None,
         help="Enable deterministic algorithms for reproducible runs.",
     )
     compat.add_argument("--model_free", action="store_true", help="Force model-free quantization mode.")
@@ -283,9 +342,26 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     diff.add_argument("--guidance_scale", default=7.5, type=float, help="Classifier-free guidance scale.")
     diff.add_argument(
-        "--num_inference_steps", default=50, type=int, help="Number of denoising steps for diffusion evaluation."
+        "--calib_num_inference_steps",
+        default=8,
+        type=int,
+        help="Number of denoising steps used to collect diffusion quantization calibration inputs.",
+    )
+    diff.add_argument(
+        "--num_inference_steps",
+        default=50,
+        type=int,
+        help="Number of denoising steps for diffusion generation/evaluation.",
     )
     diff.add_argument("--generator_seed", default=None, type=int, help="Random seed used for diffusion generation.")
+    diff.add_argument(
+        "--diffusion_tuning_cache_size",
+        default=0,
+        type=lambda value: value if value == "auto" else float(value),
+        help="Extra GPU buffer budget in GiB for single-CUDA diffusion SignRound prefetch with low_gpu_mem_usage. "
+        "Use 'auto' to select a budget after the first tuning iteration; 0 preserves the existing path. "
+        "This is not a limit on total GPU memory.",
+    )
 
     # ---- Common Quantization Arguments ----
     quant_group = parser.add_argument_group("Common Quantization Arguments")

@@ -28,19 +28,15 @@ Usage (the same unified QDQ serves both the scale grid-search and clip-search)::
     tool.configure(compressor)                     # opt_rtn / v2 flags
 
     params = tool.resolve_params(layer)            # per-layer scheme
-    qf, opt_qf = tool.resolve_quant_funcs(params)  # dispatch once, reuse in loop
-    w_qdq = tool.qdq(weight, params, quant_func=qf, opt_quant_func=opt_qf)
+    quantizer = tool.resolve_quantizer(params)  # dispatch once, reuse in loop
+    w_qdq = tool.qdq(weight, params, quantizer=quantizer)
 """
 
 from __future__ import annotations
 
 import torch
 
-from auto_round.data_type.utils import (
-    compute_optimized_init_scale,
-    get_optimized_quant_func,
-    get_quant_func,
-)
+from auto_round.data_type.base import create_quantizer
 
 
 class QDQTool:
@@ -62,16 +58,32 @@ class QDQTool:
         self.disable_opt_rtn: bool | None = None
         self.use_v2_scale_search: bool = False
 
-    # # ── runtime wiring ────────────────────────────────────────────────────────
-    def configure(self, composer) -> None:
+    # ── runtime wiring ────────────────────────────────────────────────────────
+    @staticmethod
+    def _block_quantizer_config(block_quantizer_or_composer):
+        """Return the terminal block-quantizer config from new or legacy hosts."""
+        block_quantizer = getattr(block_quantizer_or_composer, "block_quantizer", block_quantizer_or_composer)
+        config = getattr(block_quantizer, "config", None)
+        if config is not None:
+            return config
+        return getattr(block_quantizer_or_composer, "quantize_config", None)
+
+    def configure(self, composer, awq_config=None) -> None:
         """Derive QDQ behaviour from the run's block quantizer."""
-        self.disable_opt_rtn = bool(getattr(composer.block_quantizer, "disable_opt_rtn", False))
-        self.use_v2_scale_search = self._block_quantizer_is_signroundv2(composer.block_quantizer)
+        block_config = self._block_quantizer_config(composer)
+        awq_disable_opt_rtn = getattr(awq_config, "disable_opt_rtn", None)
+        if awq_disable_opt_rtn is None:
+            awq_disable_opt_rtn = getattr(block_config, "disable_opt_rtn", False)
+        self.disable_opt_rtn = bool(awq_disable_opt_rtn)
+        self.use_v2_scale_search = self._block_quantizer_is_signroundv2(composer)
 
     @staticmethod
-    def _block_quantizer_is_signroundv2(quantizer) -> bool:
+    def _block_quantizer_is_signroundv2(block_quantizer_or_composer) -> bool:
         """Return ``True`` if the terminal block quantizer is SignRoundV2."""
-        return quantizer.__class__.__name__ == "SignRoundV2Quantizer"
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
+
+        config = QDQTool._block_quantizer_config(block_quantizer_or_composer)
+        return isinstance(config, SignRoundV2Config)
 
     # ── per-layer scheme resolution + dispatch ────────────────────────────────
     def _layer_config_for(self, layer: torch.nn.Module) -> dict:
@@ -82,7 +94,7 @@ class QDQTool:
         """Resolve the per-layer weight-quant params (``layer_config`` + fallbacks).
 
         Single source of every scheme field the QDQ needs, so callers pass the
-        returned dict straight to :meth:`resolve_quant_funcs` and :meth:`qdq`.
+        returned dict straight to :meth:`resolve_quantizer` and :meth:`qdq`.
         ``super_bits`` / ``super_group_size`` are the GGUF double-quant
         super-block params and are ``None`` for non-GGUF schemes.
         """
@@ -97,25 +109,12 @@ class QDQTool:
             "super_group_size": cfg.get("super_group_size", None),
         }
 
-    def resolve_quant_funcs(self, params: dict):
-        """Dispatch ``(quant_func, opt_quant_func)`` for ``params``.
-
-        ``opt_quant_func`` is non-``None`` only when the SignRoundV2 optimized
-        init-scale path applies (it depends solely on ``data_type`` / ``sym``).
-        Hoisting this out of a search loop avoids repeated dispatch.
-        """
-        quant_func, _ = get_quant_func(
-            params["data_type"],
-            params["bits"],
-            params["sym"],
+    def resolve_quantizer(self, params: dict):
+        """Create one configured quantizer to reuse throughout a weight search."""
+        return create_quantizer(
+            {**params, "scale_dtype": torch.float32},
             disable_opt_rtn=params["disable_opt_rtn"],
-            group_size=params["group_size"],
-            iters=0,
         )
-        opt_quant_func = None
-        if self.use_v2_scale_search and params["sym"]:
-            opt_quant_func = get_optimized_quant_func(params["data_type"])
-        return quant_func, opt_quant_func
 
     # ── the unified QDQ for AWQ search ──────────────────────
     @torch.no_grad()
@@ -124,48 +123,11 @@ class QDQTool:
         weight: torch.Tensor,
         params: dict,
         *,
-        quant_func=None,
-        opt_quant_func=None,
+        quantizer=None,
         imatrix: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Quantize-dequantize ``weight`` under the resolved ``params``.
-
-        The single QDQ entry point for every scheme: ``bits`` / ``group_size`` /
-        ``sym`` / ``data_type`` plus the optional GGUF super-block params drive
-        the dispatched ``quant_func``; a non-``None`` ``opt_quant_func`` enables
-        the SignRoundV2 optimized init-scale path for this weight. Used for
-        both the scale grid-search and the clip-search -- reference/loss only,
-        it never mutates stored weights.
-        """
-        if quant_func is None:
-            quant_func, opt_quant_func = self.resolve_quant_funcs(params)
-        if quant_func is None:
-            raise RuntimeError(
-                "QDQTool: no quantization function resolved for "
-                f"data_type={params['data_type']}, bits={params['bits']}, "
-                f"sym={params['sym']}, group_size={params['group_size']}."
-            )
-
-        quant_kwargs = {
-            "bits": params["bits"],
-            "group_size": params["group_size"],
-            "data_type": params["data_type"],
-            "sym": params["sym"],
-        }
-        if params.get("super_bits") is not None:
-            quant_kwargs["super_bits"] = params["super_bits"]
-        if params.get("super_group_size") is not None:
-            quant_kwargs["super_group_size"] = params["super_group_size"]
-
-        active_quant_func = quant_func
-        if opt_quant_func is not None:
-            init_scale = compute_optimized_init_scale(
-                weight, params["data_type"], params["bits"], params["group_size"], imatrix=imatrix
-            )
-            if init_scale is not None:
-                quant_kwargs["init_scale"] = init_scale
-                quant_kwargs["imatrix"] = imatrix if isinstance(imatrix, torch.Tensor) else torch.ones_like(weight)
-                active_quant_func = opt_quant_func
-
-        qdq_weight, _, _ = active_quant_func(weight, **quant_kwargs)
-        return qdq_weight
+        """Simulate quantization for a search candidate without changing stored weights."""
+        if quantizer is None:
+            quantizer = self.resolve_quantizer(params)
+        quantizer.initialize(weight, imatrix=imatrix)
+        return quantizer.quantize(weight)

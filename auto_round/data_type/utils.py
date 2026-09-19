@@ -20,9 +20,17 @@ from typing import List, Union
 import torch
 from torch.nn import Linear, Module
 
+from auto_round import envs
 from auto_round.compressors.utils import is_nv_fp
-from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
+from auto_round.data_type.base import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import check_to_quantized, logger
+
+
+def quantize_bias_without_round(*args, **kwargs):
+    """Quantize bias/norm weights without exposing the INT primitive to algorithms."""
+    from auto_round.data_type.int import quant_tensor_asym_wo_round
+
+    return quant_tensor_asym_wo_round(*args, **kwargs)
 
 
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: Union[int, list], val: float = 0.0):
@@ -175,141 +183,6 @@ def get_quant_func(
     )
 
 
-def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5):
-    """Resolve the SignRound optimized ``(scale_search_fn, quant_func)`` for a data type.
-
-    Single source of truth for the optimized-path dispatch shared by
-    ``SignRoundOptimizedWrapperLinear`` and AWQ's internal QDQ:
-
-    * ``scale_search_fn(weight_reshape, bits, imatrix) -> init_scale`` searches the
-      data-type-specific per-group init scale (the int variant clamps to
-      ``q_scale_thresh`` to avoid a degenerate zero scale).
-    * ``quant_func`` is the matching *plain* quant function (``init_scale`` already
-      encodes the searched scale, so no opt-rtn / rtn variant is needed).
-
-    Returns ``(None, None)`` for data types without an optimized path
-    (asym int, ``*_dq``, or unrelated types).
-    """
-    dt = str(data_type)
-    if dt.endswith("dq"):
-        return None, None
-    if dt.startswith("int"):
-        # The optimized int init-scale search is symmetric-only; asym int uses
-        # the standard tensor_min/tensor_max range instead.
-        if "asym" in dt:
-            return None, None
-        from auto_round.data_type.int import quant_tensor_sym, search_scales
-
-        def search_int(weight_reshape, bits, imatrix):
-            init_scale = search_scales(weight_reshape, bits, imatrix)
-            return torch.where(
-                init_scale < 0,
-                torch.clamp(init_scale, max=-q_scale_thresh),
-                torch.clamp(init_scale, min=q_scale_thresh),
-            )
-
-        return search_int, quant_tensor_sym
-    if dt.startswith("mx"):
-        from auto_round.data_type.mxfp import quant_mx, search_mx_scale
-
-        return search_mx_scale, quant_mx
-    if dt.startswith("nv"):
-        from auto_round.data_type.nvfp import nv_fp4, search_nvfp4_scale
-
-        return search_nvfp4_scale, nv_fp4
-    return None, None
-
-
-def search_optimized_init_scale(
-    weight_reshape: torch.Tensor,
-    data_type: str,
-    bits: int,
-    imatrix=None,
-    q_scale_thresh: float = 1e-5,
-):
-    """Compute the SignRoundV2 optimized per-group ``init_scale`` for a grouped weight.
-
-    Mirrors ``SignRoundOptimizedWrapperLinear``: dispatches on ``data_type`` so that
-    any caller (the optimized wrapper itself or AWQ's internal QDQ used for the
-    smooth/clip grid search) seeds the quantizer with the same initial scale.
-    Returns ``None`` for data types that do not use the optimized init-scale search
-    (asym int, ``*_dq``, or unrelated types).
-
-    Args:
-        weight_reshape: Weight reshaped/padded to ``[..., group_size]``.
-        data_type: Resolved weight data type (e.g. ``"int_sym"``, ``"mx_fp4"``, ``"nv_fp4"``).
-        bits: Weight bit-width.
-        imatrix: Per-element importance matrix matching ``weight_reshape`` (or ``None``/scalar).
-        q_scale_thresh: Minimum scale magnitude used to clamp the int init_scale.
-
-    Returns:
-        The per-group ``init_scale`` tensor, or ``None`` if unsupported.
-    """
-    search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
-    if search_fn is None:
-        return None
-    if imatrix is None or not isinstance(imatrix, torch.Tensor):
-        imatrix = torch.ones_like(weight_reshape)
-    return search_fn(weight_reshape, bits, imatrix)
-
-
-def get_optimized_quant_func(data_type: str):
-    """Return the plain quant function used by the SignRound optimized path.
-
-    The optimized init-scale search always pairs with the *plain* (non opt-rtn /
-    non rtn) quant function for the data type, since ``init_scale`` already
-    encodes the searched scale. Returns ``None`` for data types without an
-    optimized path (asym int, ``*_dq``, or unrelated types).
-    """
-    _, quant_func = _resolve_optimized_dtype_funcs(data_type)
-    return quant_func
-
-
-def reshape_imatrix_for_weight(imatrix, weight_reshape: torch.Tensor, group_size):
-    """Reshape/pad an importance matrix to match a group-reshaped weight.
-
-    Encapsulates the imatrix grouping logic shared by the SignRound optimized
-    wrapper and AWQ's internal QDQ so callers never handle the low-level reshape.
-    Returns a tensor of ones when no imatrix is available (uniform importance),
-    keeping every downstream optimized dtype implementation on its tensor path.
-    """
-    if imatrix is None or not isinstance(imatrix, torch.Tensor):
-        return torch.ones_like(weight_reshape)
-    imatrix = imatrix.reshape(1, -1)
-    imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
-    imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)
-    return imatrix.reshape(weight_reshape.shape).to(weight_reshape.device)
-
-
-def compute_optimized_init_scale(
-    weight: torch.Tensor,
-    data_type: str,
-    bits: int,
-    group_size,
-    imatrix=None,
-    q_scale_thresh: float = 1e-5,
-):
-    """Compute the SignRound optimized per-group ``init_scale`` for a full weight.
-
-    Group-reshapes ``weight``, prepares the ``imatrix`` layout, and runs the
-    data-type-specific scale search. Unlike :func:`search_optimized_init_scale`
-    (which expects an already group-reshaped weight), this is the entry point for
-    callers holding a full 2-D weight, e.g. AWQ's internal QDQ. Pair it with
-    :func:`get_optimized_quant_func` (resolved once) to obtain the matching quant
-    function, so the smooth/clip grid-search loss mirrors what
-    ``SignRoundOptimizedWrapperLinear`` applies.
-
-    Returns ``None`` for data types without an optimized init-scale path
-    (asym int, ``*_dq``, or unrelated types).
-    """
-    search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
-    if search_fn is None:
-        return None
-    weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight, group_size)
-    imatrix = reshape_imatrix_for_weight(imatrix, weight_reshape, group_size)
-    return search_fn(weight_reshape, bits, imatrix)
-
-
 def round_ste(x: torch.Tensor):
     """Straight-Through Estimator for rounding.
 
@@ -438,13 +311,17 @@ def update_fused_layer_global_scales(
 
     For attention layers:
       - q/k/v projections share a single global scale.
+      - Diffusers self-attention uses to_q/to_k/to_v (e.g. Wan).
 
     For MLP layers:
       - gate_proj and up_proj share a single global scale.
 
-    This behavior is currently required by vLLM and may become optional
-    in the future.
+    Set ``AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0`` to retain per-projection
+    global scales. The default keeps scales compatible with vLLM fused kernels.
     """
+    if not envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE:
+        return
+
     global_scale_name = f"{base_name}_global_scale"
 
     def _collect_scales(mods: List[Module]) -> List[torch.Tensor]:
@@ -459,14 +336,14 @@ def update_fused_layer_global_scales(
         return scales
 
     def _is_attention_module(module: Module):
-        return "attention" in module.__class__.__name__.lower() and (
-            hasattr(module, "k_proj") or hasattr(module, "v_proj") or hasattr(module, "qkv_proj")
-        )
+        return all(hasattr(module, projection) for projection in ("q_proj", "k_proj", "v_proj"))
 
     def _is_mlp_module(module: Module):
-        return "mlp" in module.__class__.__name__.lower() and (
-            hasattr(module, "gate_proj") and hasattr(module, "up_proj")
-        )
+        return all(hasattr(module, projection) for projection in ("gate_proj", "up_proj"))
+
+    def _is_moe_expert_module(module: Module):
+        """Check for MoE expert naming: w1 (gate) and w3 (up)."""
+        return all(hasattr(module, projection) for projection in ("w1", "w3"))
 
     def _update_global_scales(modules: List[Module]):
         """Update global scales for a list of modules."""
@@ -487,28 +364,47 @@ def update_fused_layer_global_scales(
 
     # ---------------- Attention ----------------
     if _is_attention_module(submodule):
-        # Already fused
-        if hasattr(submodule, "qkv_proj"):
-            return
         _update_global_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
+        return
+
+    # Diffusers self-attention (e.g. Wan) uses to_q/to_k/to_v. Cross-attention
+    # Q consumes different inputs from K/V and must not join their scale group.
+    if not getattr(submodule, "is_cross_attention", False) and all(
+        hasattr(submodule, projection) for projection in ("to_q", "to_k", "to_v")
+    ):
+        _update_global_scales([submodule.to_q, submodule.to_k, submodule.to_v])
         return
 
     # ---------------- MLP ----------------
     if _is_mlp_module(submodule):
         _update_global_scales([submodule.gate_proj, submodule.up_proj])
+        return
+
+    # ---------------- MoE Expert (w1/w3) ----------------
+    if _is_moe_expert_module(submodule):
+        _update_global_scales([submodule.w1, submodule.w3])
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):
-    if not is_nv_fp(data_type):
-        return
-
     from auto_round.data_type.nvfp import calculate_gparam
+
+    has_nvfp = is_nv_fp(data_type)
 
     # Calculate block wise weight global scale
     for _, m in block.named_modules():
-        if check_to_quantized(m) and not hasattr(m, "weight_global_scale"):
-            weight_global_scale = calculate_gparam(m.weight, group_size)
-            setattr(m, "weight_global_scale", weight_global_scale)
+        if not check_to_quantized(m):
+            continue
+        # Check per-layer data_type for mixed-scheme scenarios
+        module_data_type = getattr(m, "data_type", data_type)
+        module_group_size = getattr(m, "group_size", group_size)
+        if is_nv_fp(module_data_type):
+            has_nvfp = True
+            if not hasattr(m, "weight_global_scale"):
+                weight_global_scale = calculate_gparam(m.weight, module_group_size)
+                setattr(m, "weight_global_scale", weight_global_scale)
+
+    if not has_nvfp:
+        return
 
     # Update fused layer global scales
     for module in block.modules():

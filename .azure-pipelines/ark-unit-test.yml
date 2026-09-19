@@ -20,13 +20,13 @@ parameters:
     type: string
     # Comma-separated list to avoid YAML float parsing in runtime inputs.
     # For example, "3.10,3.11,3.12,3.13,3.14"
-    default: "3.12"
+    default: "3.14"
   - name: torchVersions
     displayName: "Torch versions"
     type: string
     # Comma-separated list to align with pythonVersions runtime input style.
-    # For example, "2.13.0"
-    default: "2.13.0"
+    # For example, "2.14.0"
+    default: "2.14.0"
   - name: publishTarget
     displayName: "Publish wheels to"
     type: string

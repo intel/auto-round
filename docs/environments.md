@@ -30,6 +30,16 @@ export AR_LOG_LEVEL=DEBUG
 export AR_ENABLE_COMPILE_PACKING=1
 ```
 
+### AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE
+- **Description**: Makes fused NVFP4 weight projections use one shared weight global scale. This applies to `q_proj`/`k_proj`/`v_proj` and `gate_proj`/`up_proj`, as required by vLLM fused kernels.
+- **Default**: `True` (equivalent to `"1"`)
+- **Valid Values**: `"0"`, `"false"`, `"no"`, or `"off"` (case-insensitive) disable sharing; any other value enables it.
+- **Usage**: Disable only when exporting for a runtime that does not require fused projections to share a global scale.
+
+```bash
+export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
+```
+
 ### AR_USE_MODELSCOPE
 - **Description**: Controls whether to use ModelScope for model downloads
 - **Default**: `False`
@@ -38,6 +48,17 @@ export AR_ENABLE_COMPILE_PACKING=1
 
 ```bash
 export AR_USE_MODELSCOPE=true
+```
+
+### AR_QUANTIZE_BAGEL_MOE_GEN
+
+- **Description**: Enables quantization of BAGEL's `*_moe_gen` image-generation experts. By default, AutoRound keeps these modules in BF16 because quantizing them has been observed to reduce image-generation quality. BAGEL's normal transformer attention and MLP layers are still quantized by default.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, or `"yes"` (case-insensitive) for enabling; any other value keeps `*_moe_gen` in BF16
+- **Usage**: Enable only when experimenting with the checkpoint-size and image-quality tradeoff
+
+```bash
+export AR_QUANTIZE_BAGEL_MOE_GEN=1
 ```
 
 ### AR_WORK_SPACE
@@ -67,6 +88,16 @@ export AR_DISABLE_OFFLOAD=1
 
 ```bash
 export AR_DISABLE_DATASET_SUBPROCESS=true
+```
+
+### AR_DISABLE_GGUF_MTP_EXPORT
+- **Description**: Disables multi-token prediction (MTP) layers when exporting GGUF models. By default, AutoRound follows the llama.cpp converter and includes MTP layers when the model provides them.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"`, or `"on"` (case-insensitive) disable MTP export; any other value keeps MTP export enabled
+- **Usage**: Enable this when exporting a checkpoint that uses an MTP-capable architecture but does not contain MTP tensors
+
+```bash
+export AR_DISABLE_GGUF_MTP_EXPORT=1
 ```
 
 ### AR_ACT_SCALE
@@ -141,6 +172,26 @@ export AR_AUTO_SCHEME_NSAMPLES=1  # set 1 for quick execution
 export AR_AUTO_SCHEME_BATCH_SIZE=1
 ```
 
+### AR_AUTO_SCHEME_SEQLEN
+- **Description**: Controls the default calibration sequence length used by AutoScheme scoring when `AutoScheme.seqlen` is not explicitly set.
+- **Default**: unset → built-in heuristic applies (128 for MoE models, 256 otherwise)
+- **Valid Values**: any positive integer, e.g. `256`, `512`, `1024`
+- **Usage**: Set this to override the default sequence length for AutoScheme (2-bit schemes usually benefit from `1024`)
+
+```bash
+export AR_AUTO_SCHEME_SEQLEN=1024
+```
+
+### AR_AUTO_SCHEME_NO_SERIAL_FALLBACK
+- **Description**: Turn a parallel-scoring failure into a hard error instead of falling back to serial scoring. Useful when the serial pass is known to be unable to run (or would take workers-count times longer): completed schemes and batches are persisted in the per-scheme cache, so a rerun scores only the failed parts.
+- **Default**: unset -> parallel scoring failure falls back to serial
+- **Valid Values**: `1`, `true`, `yes`
+- **Usage**: Set this to fail fast on parallel scoring errors
+
+```bash
+export AR_AUTO_SCHEME_NO_SERIAL_FALLBACK=1
+```
+
 ### AR_AUTO_SCHEME_CACHE
 - **Description**: Stores persistent per-scheme AutoScheme scoring JSON files. This directory is independent of `AR_WORK_SPACE`, which is reserved for temporary working data.
 - **Default**: `~/.cache/auto_round`
@@ -161,6 +212,26 @@ export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
 export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
 ```
 
+### AR_SCHEME_MEM_INVENTORY
+- **Description**: When enabled, AutoScheme streaming scoring prints a live CUDA-tensor census (`[mem-inv]` lines) at block boundaries -- tensors grouped by (shape, dtype), largest first -- which makes unreleased module weights or retained autograd graphs visible as they accumulate. Independently of this variable, a richer census (live tensors, the retaining containers, and the failing op's traceback) is always attached to scoring-worker CUDA OOM errors.
+- **Default**: `False`
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) for enabling; any other value for disabling
+- **Usage**: Enable when investigating VRAM growth during AutoScheme scoring
+
+```bash
+export AR_SCHEME_MEM_INVENTORY=1
+```
+
+### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
+- **Description**: Controls whether `NVFP4E5M3QuantLinear` caches a dequantized high-precision weight after the first forward pass, instead of dequantizing the packed FP4 weight on every call.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive) enable caching; any other value disables caching
+- **Usage**: Enable this when repeated inference throughput matters more than memory footprint. The current implementation releases `weight_packed` and `weight_scale` after materializing the cached high-precision weight, so steady-state memory usage increases and the cache cannot be cleared back to packed storage.
+
+```bash
+export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
+```
+
 ### AR_DISK_STREAM_MODEL
 - **Description**: When enabled, `AutoRound(model=<path>, ...)` builds the model as a meta-device skeleton instead of fully materializing the checkpoint on CPU RAM up front, and streams each decoder block's real weights from the checkpoint's safetensors shards on demand -- materializing right before a block is used (calibration, tuning, or `AutoScheme` sensitivity scoring) and freeing it back to meta right after. This keeps peak CPU RAM roughly flat regardless of checkpoint size, instead of proportional to it. Non-block parameters (embeddings, `lm_head`, final norm) are still loaded up front, since they are typically small. Text-model AutoScheme scoring also supports combining this with parallel scoring, which is enabled by default; each worker streams its own block copy.
 - **Default**: `False`
@@ -169,6 +240,16 @@ export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
 
 ```bash
 export AR_DISK_STREAM_MODEL=1
+```
+
+### AR_ALLOW_W8_ASYM
+- **Description**: Allows 8-bit asymmetric weight quantization in every export format, skipping the default refusal for formats that cannot serve it (native `auto_round` / `auto_gptq` / `auto_awq` / marlin). Without it, 8-bit asym is allowed for the `llm_compressor` format (compressed-tensors serving in vLLM) and refused or pinned back to symmetric elsewhere. Artifacts produced with it may not load in stock vLLM GPTQ-format serving.
+- **Default**: `0` (disabled)
+- **Valid Values**: `0` / `1`
+- **Usage**: Opt-in escape hatch for serving stacks beyond stock vLLM.
+
+```bash
+AR_ALLOW_W8_ASYM=1 python -m auto_round --model ... --scheme W8A16 --asym --format auto_round
 ```
 
 ### AR_RESUME_DIR

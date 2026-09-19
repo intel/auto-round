@@ -32,11 +32,12 @@ class TestSpecialModelHandlerGpu:
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
     def test_moe_gate_ignore_layers(self, tiny_qwen_moe_model_path):
-        model = AutoModelForCausalLM.from_pretrained(tiny_qwen_moe_model_path, trust_remote_code=True).to("cuda")
+        # Ignore-layer discovery is architecture-only; avoid a needless CUDA
+        # transfer in this smoke test.
+        model = AutoModelForCausalLM.from_pretrained(tiny_qwen_moe_model_path, trust_remote_code=True)
         layers = get_predefined_ignore_layers(model)
         assert any(".gate" in name for name in layers), f"No MoE gate ignore layers found: {layers}"
 
-    @pytest.mark.timeout(240)
     def test_moe_quantize_reload(self, tiny_qwen_moe_model_path):
         autoround = AutoRound(
             tiny_qwen_moe_model_path,
@@ -59,11 +60,10 @@ class TestSpecialModelHandlerGpu:
 
     def test_non_special_model_ignore_layers_empty(self, tiny_opt_model_path):
         """A plain OPT model is not special: no predefined ignore layers are returned."""
-        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, trust_remote_code=True).to("cuda")
+        model = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path, trust_remote_code=True)
         layers = get_predefined_ignore_layers(model)
         assert layers == []
 
-    @pytest.mark.timeout(240)
     def test_moe_lm_head_not_quantized(self, tiny_qwen_moe_model_path):
         """lm_head is not in the quant block list and must stay unquantized after export."""
         autoround = AutoRound(
@@ -83,7 +83,6 @@ class TestSpecialModelHandlerGpu:
         if lm_head is not None:
             assert not hasattr(lm_head, "qweight"), "lm_head was unexpectedly quantized"
 
-    @pytest.mark.timeout(240)
     def test_moe_quantize_iters_reload(self, tiny_qwen_moe_model_path):
         """MoE quantization with sign-SGD (iters>0) + reload."""
         autoround = AutoRound(

@@ -15,7 +15,11 @@
 import torch
 import torch.nn as nn
 
-from auto_round.modeling.fused_moe.utils import sequential_moe_forward
+from auto_round.modeling.fused_moe.utils import (
+    build_forced_routing,
+    force_all_experts_routing_enabled,
+    sequential_moe_forward,
+)
 
 
 class LinearDeepseekV3MoE(nn.Module):
@@ -53,6 +57,17 @@ class LinearDeepseekV3MoE(nn.Module):
 
     def route_tokens_to_experts(self, router_logits):
         router_logits = router_logits.sigmoid()
+        if force_all_experts_routing_enabled():
+            return build_forced_routing(
+                module=self,
+                routing_scores=router_logits,
+                top_k=self.top_k,
+                num_experts=self.num_experts,
+                dtype=router_logits.dtype,
+                normalize=self.norm_topk_prob,
+                scaling_factor=self.routed_scaling_factor,
+            )
+
         router_logits_for_choice = router_logits + self.gate.e_score_correction_bias
         group_scores = (
             router_logits_for_choice.view(-1, self.n_group, self.n_routed_experts // self.n_group)
@@ -81,7 +96,17 @@ class LinearDeepseekV3MoE(nn.Module):
         orig_shape = hidden_states.shape
         router_logits = self.gate(hidden_states)
         if isinstance(router_logits, tuple):  # transformers >= 5.13.0
-            _, topk_weights, topk_indices = router_logits
+            base_router_logits, topk_weights, topk_indices = router_logits
+            if force_all_experts_routing_enabled():
+                topk_indices, topk_weights = build_forced_routing(
+                    module=self,
+                    routing_scores=base_router_logits.sigmoid(),
+                    top_k=self.top_k,
+                    num_experts=self.num_experts,
+                    dtype=hidden_states.dtype,
+                    normalize=self.norm_topk_prob,
+                    scaling_factor=self.routed_scaling_factor,
+                )
         else:
             topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])

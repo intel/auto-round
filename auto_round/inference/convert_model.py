@@ -13,6 +13,7 @@
 # limitations under the License.
 import os
 import re
+from types import SimpleNamespace
 from typing import Union
 
 import torch
@@ -65,12 +66,12 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
     modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
     try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
-    except:
+    except Exception:
         modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
             if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
-                layer_configs[layer_name] = {"bits": 16}
+                layer_configs[layer_name] = {"bits": 16, "act_bits": 16}
     return layer_configs
 
 
@@ -155,7 +156,7 @@ try:
     from transformers.quantizers.base import HfQuantizer
 
     get_modules_to_not_convert = HfQuantizer.get_modules_to_not_convert
-except:
+except Exception:
     get_modules_to_not_convert = _get_modules_to_not_convert
 
 
@@ -499,7 +500,7 @@ def _import_exllamav2_kernels():
     """Attempts to import ExLlamaV2 kernels for performance optimization."""
     try:
         from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
-    except:
+    except Exception:
         logger.warning_once(
             "AutoGPTQ ExLlamaV2 has not been installed, Please install it using the following command: "
             "`pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`"
@@ -522,7 +523,19 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
             bias=bias,
         )
 
+    if "humming" in layer_backend:
+        return QuantLinear(
+            bits=config["bits"],
+            group_size=config["group_size"],
+            infeatures=in_features,
+            outfeatures=out_features,
+            bias=bias,
+            sym=config["sym"],
+            weight_dtype=layer.weight.dtype,
+        )
+
     if "auto_round_kernel" in layer_backend:
+
         return QuantLinear(
             bits=config["bits"],
             group_size=config["group_size"],
@@ -571,6 +584,9 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
         or BackendDataType.MXFP4.value in layer_backend
         or BackendDataType.NVFP4.value in layer_backend
         or BackendDataType.MXINT4.value in layer_backend
+        or layer_backend == "auto_round:torch_nvfp4_e5m3"
+        or layer_backend == "auto_round:cute_nvfp4_e5m3"
+        or layer_backend == "auto_round:fake"
     ):
         return QuantLinear.from_original(config, layer)
 
@@ -713,6 +729,7 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     need_autogptq_init = False
     need_gptqmodel_init = False
     need_ark_init = False
+    need_humming_init = False
     used_gptq_exllamav2 = False
     # Determine which backends require post-init
     for backend in used_backends:
@@ -724,6 +741,8 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
             need_gptqmodel_init = True
         elif backend.startswith("auto_round_kernel"):
             need_ark_init = True
+        elif "humming" in backend:
+            need_humming_init = True
 
     # AutoGPTQ post-init
     if need_autogptq_init:
@@ -764,6 +783,13 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                 layers.append(m)
 
         for layer in tqdm(layers, desc=message, total=len(layers), leave=True):
+            layer.post_init()
+
+    # humming post-init: repack the checkpoint layout into the kernel-native one
+    # and JIT-compile the selected GEMM.
+    if need_humming_init:
+        layers = [m for _, m in model.named_modules() if getattr(m, "QUANT_TYPE", "").startswith("humming")]
+        for layer in tqdm(layers, desc="repacking to humming format", total=len(layers), leave=True):
             layer.post_init()
 
     # ExLLaMAv2 kernels
@@ -839,6 +865,30 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     if is_transformers_version_greater_or_equal_5():
         disable_moe_conversion_mapping(model)
     quantization_config = model.config.quantization_config
+    config_format = (
+        quantization_config.get("format")
+        if isinstance(quantization_config, dict)
+        else getattr(quantization_config, "format", None)
+    )
+    if config_format == "nvfp4-e5m3-pack-quantized":
+        config_dict = quantization_config if isinstance(quantization_config, dict) else quantization_config.to_dict()
+        ignored = config_dict.get("ignore") or []
+        # TODO: For experimental purpose, will delete when it's not necessary.
+        quantization_config = SimpleNamespace(
+            quant_method="auto-round",
+            packing_format="auto_round:llm_compressor_nvfp4_e5m3",
+            bits=4,
+            group_size=16,
+            sym=True,
+            data_type="nvfp4_v2",
+            act_bits=4,
+            act_group_size=16,
+            act_sym=True,
+            act_data_type="nvfp4_v2",
+            act_dynamic=True,
+            extra_config={name: {"bits": 16, "act_bits": 16} for name in ignored},
+        )
+        model.config.quantization_config = quantization_config
 
     # Check desc_act + static_groups
     if getattr(quantization_config, "desc_act", False):
@@ -879,6 +929,12 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
+    logger.info(
+        "Inference backend selection: requested=%s, packing_format=%s, selected=%s",
+        backend,
+        packing_format,
+        ", ".join(used_backends),
+    )
 
     # Apply rotation hooks (hadamard, spinquant, quarot, etc.) via unified dispatch.
     _has_rotation = getattr(quantization_config, "rotation_config", None) or getattr(

@@ -28,6 +28,11 @@ from auto_round.export.svdquant_adapters.flux import (
     FluxSVDQuantNunchakuAdapter,
     flux_onefile_tensor_count,
 )
+from auto_round.export.svdquant_adapters.sdxl import (
+    SDXL_SVDQUANT_TARGET_MODULES,
+    SDXLSVDQuantNunchakuAdapter,
+    is_sdxl_unet_config,
+)
 
 
 def _model_config(model: torch.nn.Module) -> dict:
@@ -42,6 +47,18 @@ def _model_config(model: torch.nn.Module) -> dict:
     return {}
 
 
+def detect_svdquant_model_adapter(model: torch.nn.Module) -> str:
+    """Return the runtime adapter name implied by a model's architecture config."""
+
+    config = _model_config(model)
+    class_name = str(config.get("_class_name", type(model).__name__)).lower()
+    if "fluxtransformer" in class_name:
+        return "flux"
+    if is_sdxl_unet_config(config, type(model).__name__):
+        return "sdxl"
+    return "identity"
+
+
 def resolve_svdquant_model_adapter(
     name: str,
     model: torch.nn.Module,
@@ -51,14 +68,19 @@ def resolve_svdquant_model_adapter(
     """Resolve a registered architecture adapter without runtime dependencies."""
 
     normalized = name.strip().lower()
-    if normalized not in {"auto", "identity", "flux"}:
-        raise ValueError(f"unknown SVDQuant model adapter {name!r}; expected auto, identity, or flux")
+    if normalized not in {"auto", "identity", "flux", "sdxl"}:
+        raise ValueError(f"unknown SVDQuant model adapter {name!r}; expected auto, identity, flux, or sdxl")
     config = _model_config(model)
-    class_name = str(config.get("_class_name", type(model).__name__)).lower()
     if normalized == "auto":
-        normalized = "flux" if "fluxtransformer" in class_name else "identity"
+        normalized = detect_svdquant_model_adapter(model)
     if normalized == "flux":
         return FluxSVDQuantNunchakuAdapter(
+            config=config or None,
+            decomposition_device=decomposition_device,
+            require_complete_model=True,
+        )
+    if normalized == "sdxl":
+        return SDXLSVDQuantNunchakuAdapter(
             config=config or None,
             decomposition_device=decomposition_device,
             require_complete_model=True,
@@ -69,7 +91,10 @@ def resolve_svdquant_model_adapter(
 __all__ = [
     "FLUX_TOP_LEVEL_TENSOR_KEYS",
     "FLUX_SVDQUANT_TARGET_MODULES",
+    "SDXL_SVDQUANT_TARGET_MODULES",
+    "SDXLSVDQuantNunchakuAdapter",
     "FluxSVDQuantNunchakuAdapter",
+    "detect_svdquant_model_adapter",
     "flux_onefile_tensor_count",
     "resolve_svdquant_model_adapter",
 ]

@@ -1,1 +1,5 @@
 pillow
+gguf
+sentencepiece
+diffusers
+compressed-tensors

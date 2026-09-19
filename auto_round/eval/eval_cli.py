@@ -270,7 +270,6 @@ def eval_with_vllm(args):
 
     from lm_eval import evaluator  # pylint: disable=E0401
     from lm_eval.models.vllm_causallms import VLLM  # pylint: disable=E0401
-    from lm_eval.models.vllm_vlms import VLLM_VLM  # pylint: disable=E0401
     from lm_eval.utils import make_table  # pylint: disable=E0401
 
     st = time.time()
@@ -334,7 +333,12 @@ def eval_with_vllm(args):
 
             logger.info(f"Set {env_name}={os.environ[env_name]}, tensor_parallel_size={tensor_parallel_size}")
 
-    vllm_lm = VLLM_VLM(**vllm_kwargs) if args.mllm else VLLM(**vllm_kwargs)
+    if args.mllm:
+        from lm_eval.models.vllm_vlms import VLLM_VLM  # pylint: disable=E0401
+
+        vllm_lm = VLLM_VLM(**vllm_kwargs)
+    else:
+        vllm_lm = VLLM(**vllm_kwargs)
     res = evaluator.simple_evaluate(
         model=vllm_lm,
         tasks=tasks,

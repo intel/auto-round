@@ -39,10 +39,36 @@ stages:
               scheme: 'FP8_STATIC'
 
         steps:
-          - template: template/docker-template.yml
-            parameters:
-              containerName: $(CONTAINER_NAME)
-              imageSource: pull
+          - script: |
+              rm -fr ${BUILD_SOURCESDIRECTORY} || sudo rm -fr ${BUILD_SOURCESDIRECTORY} || true
+            displayName: "Clean workspace"
+
+          - checkout: self
+            clean: true
+            fetchTags: true
+            displayName: "Checkout out Repo"
+
+          - script: |
+              docker pull vault.habana.ai/gaudi-docker/1.24.0/ubuntu24.04/habanalabs/pytorch-installer-2.10.0:latest
+            displayName: "Pull habana docker image"
+
+          - script: |
+              docker stop $(CONTAINER_NAME)
+              docker rm -vf $(CONTAINER_NAME) || true
+              env | sort
+            displayName: "Clean docker container"
+
+          - task: Bash@3
+            inputs:
+              targetType: "inline"
+              script: |
+                docker run -dit --disable-content-trust --privileged --name=$(CONTAINER_NAME) --shm-size="2g" \
+                  --runtime=habana -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --net=host --ipc=host \
+                  -v ${BUILD_SOURCESDIRECTORY}:/auto-round vault.habana.ai/gaudi-docker/1.24.0/ubuntu24.04/habanalabs/pytorch-installer-2.10.0:latest
+                docker exec $(CONTAINER_NAME) bash -c "ln -sf \$(which python3) /usr/bin/python"
+                echo "Show the container list after docker run ... "
+                docker ps -a
+            displayName: "Docker run - $(CONTAINER_NAME) Container"
 
           - script: |
               docker exec $(CONTAINER_NAME) bash -c "cd /auto-round \

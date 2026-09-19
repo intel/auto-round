@@ -13,12 +13,19 @@
 # limitations under the License.
 
 import copy
+import math
 import os
+from collections.abc import Mapping
 from typing import Callable, Union
 
 import torch
 
-from auto_round.export.utils import is_immediate_saving_mode, save_model, save_pretrained_artifact
+from auto_round.export.utils import (
+    is_immediate_saving_mode,
+    save_config_artifact,
+    save_model,
+    save_pretrained_artifact,
+)
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -101,6 +108,85 @@ def _get_quant_format(model):
     return None
 
 
+def _canonicalize_quantization_value(value):
+    """Convert a serialized quantization value into a deterministic hashable form."""
+    if isinstance(value, Mapping):
+        return tuple(sorted((str(key), _canonicalize_quantization_value(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_canonicalize_quantization_value(item) for item in value)
+    if isinstance(value, set):
+        return tuple(sorted((_canonicalize_quantization_value(item) for item in value), key=repr))
+
+    value = getattr(value, "value", value)
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    return str(value)
+
+
+def _quant_args_signature(args):
+    """Return a hashable signature of every serialized QuantizationArgs field.
+
+    Two layers whose weight (and activation) args share this signature end up in
+    the same config_group, so we use it to map real module names back onto the
+    group that `QuantizationConfig.from_pretrained` built for them.
+    """
+    if args is None:
+        return None
+
+    if not isinstance(args, Mapping):
+        args = args.model_dump(mode="json")
+    return _canonicalize_quantization_value(args)
+
+
+def _rewrite_config_group_targets(model, quantization_config_dict):
+    """Fill each config_group's `targets` with the real module names it covers.
+
+    `construct_ct_scheme` writes `targets=[layer.__class__.__name__]` (always
+    "Linear") for every layer, so a mixed-precision model ends up with multiple
+    config_groups that all say `targets=["Linear"]`. Inference engines (vLLM)
+    then cannot tell which layer is 4-bit vs 8-bit and miss-unpack the weights,
+    producing garbage output. Here we group the actually-quantized modules by
+    their scheme signature and rewrite the matching group's `targets` to the
+    concrete module names.
+
+    Single-group (uniform) models are left untouched: their lone `["Linear"]`
+    target is unambiguous and already loads correctly.
+    """
+    groups = quantization_config_dict.get("config_groups", {})
+    if len(groups) <= 1:
+        return quantization_config_dict
+
+    from collections import defaultdict
+
+    sig_to_names = defaultdict(list)
+    for name, module in model.named_modules():
+        scheme = getattr(module, "quantization_scheme", None)
+        if scheme is None:
+            continue
+        sig = (
+            _quant_args_signature(getattr(scheme, "weights", None)),
+            _quant_args_signature(getattr(scheme, "input_activations", None)),
+        )
+        sig_to_names[sig].append(name)
+
+    for group in groups.values():
+        sig = (
+            _quant_args_signature(group.get("weights")),
+            _quant_args_signature(group.get("input_activations")),
+        )
+        names = sig_to_names.get(sig)
+        if names:
+            group["targets"] = sorted(names)
+        else:
+            logger.warning(
+                "AutoRound llm_compressor export: no quantized module matched "
+                "config_group %s; leaving its targets unchanged.",
+                group.get("targets"),
+            )
+
+    return quantization_config_dict
+
+
 def _compress_and_set_format(layer, scheme, device=None):
     """Compress a layer and set its quantization format.
 
@@ -127,7 +213,7 @@ def _compress_and_set_format(layer, scheme, device=None):
 
 
 def pack_layer(name, model, device=None):
-    from compressed_tensors.quantization import QuantizationStatus  # pylint: disable=E0401
+    from compressed_tensors.quantization import QuantizationStatus, QuantizationType  # pylint: disable=E0401
 
     layer = get_module(model, name)
     if type(layer) not in SUPPORTED_LAYER_TYPES and not isinstance(layer, WrapperWALayer):  ##already packed
@@ -150,13 +236,73 @@ def pack_layer(name, model, device=None):
     scheme = construct_ct_scheme(layer)
     setattr(layer, "quantization_scheme", scheme)
     setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale.to(weight_device)))
+    # AutoRound zp is the UNSIGNED level convention (q in [0, 2^b-1],
+    # W = (q - zp) * s); compressed-tensors packs the SIGNED convention (q in
+    # [-2^(b-1), 2^(b-1)-1], zp added BEFORE the clamp into that range - see
+    # calculate_range / _process_quantization). Handing the unsigned zp over
+    # verbatim makes compress() clamp every level above 2^(b-1)-1, collapsing
+    # the upper half of each group's range into one wrong value. Shifting zp
+    # into the signed range makes CT's re-quantization exact:
+    # clamp(round(w/s) + zp - 2^(b-1)) reproduces q - 2^(b-1) for the
+    # quantizer's own q in [0, 2^b-1], and (q_ct - zp_ct) * s == (q - zp) * s.
+    # FLOAT schemes (fp8/mxfp) keep CT's native zp convention: no shift.
+    # QuantizationType is a str-Enum, but coerce defensively so the check
+    # holds whether ``type`` is the enum member or its plain string value.
+    zp_shift = (
+        (1 << (scheme.weights.num_bits - 1)) if QuantizationType(scheme.weights.type) == QuantizationType.INT else 0
+    )
+    num_bits = scheme.weights.num_bits
     if not isinstance(layer.zp, torch.Tensor):
-        if layer.sym:
-            zp = torch.full_like(layer.weight_scale, 0).to(torch.int8)
-        else:
-            zp = torch.full_like(layer.weight_scale, layer.zp).to(torch.int8)
+        zp_val = 0 if layer.sym else float(layer.zp)
+        if not layer.sym:
+            if not math.isfinite(zp_val) or zp_val != round(zp_val):
+                raise ValueError(
+                    f"asymmetric zero-point {zp_val} is not a finite integer value; refusing to "
+                    "pack a zero point that is not an unsigned quantization level"
+                )
+            if not 0 <= zp_val <= (1 << num_bits) - 1:
+                raise ValueError(
+                    f"asymmetric zero-point {zp_val} is outside the unsigned level range "
+                    f"[0, {2 ** num_bits - 1}] expected for a {num_bits}-bit layer; refusing to "
+                    "pack a zero point that is not an unsigned quantization level"
+                )
+        fill = 0 if layer.sym else zp_val - zp_shift
+        zp = torch.full_like(layer.weight_scale, fill).to(torch.int8)
     else:
+        # NeUQI / optimized-RTN searches leave zp as a float32 integral-valued
+        # tensor; compressed_tensors' packed format hard-requires torch.int8
+        # (its own lifecycle quantizes with dtype=torch.int8), so cast here and
+        # refuse values that would wrap rather than corrupting them silently.
+        # Validate the UNSIGNED domain first: the shifted value alone cannot
+        # catch e.g. a raw 4-bit zp of 100 (shifted 92 passes an int8 check).
         zp = layer.zp
+        if zp.dtype != torch.int8:
+            # NaN passes every min/max comparison, so check finiteness
+            # explicitly; non-integral values indicate a corrupted search and
+            # must not be silently rounded into a valid level.
+            if zp.numel() and not bool(torch.isfinite(zp).all()):
+                raise ValueError("asymmetric zero-point tensor contains non-finite values; refusing to pack it")
+            if zp.numel() and not bool(torch.equal(zp, zp.round())):
+                raise ValueError(
+                    "asymmetric zero-point tensor contains non-integral values; zero points "
+                    "must be integer quantization levels, refusing to pack a rounded copy"
+                )
+            zp = zp.round()
+        if zp.numel() and (zp.min() < 0 or zp.max() > (1 << num_bits) - 1):
+            raise ValueError(
+                f"asymmetric zero-point values [{int(zp.min())}, {int(zp.max())}] are outside "
+                f"the unsigned level range [0, {2 ** num_bits - 1}] for a {num_bits}-bit layer; "
+                "the zero point must be an unsigned quantization level before the signed "
+                "convention shift"
+            )
+        zp = zp - zp_shift
+        if zp.numel() and (zp.min() < -128 or zp.max() > 127):
+            raise ValueError(
+                f"asymmetric zero-point values [{int(zp.min())}, {int(zp.max())}] (signed "
+                "convention) do not fit torch.int8, which the compressed-tensors packed "
+                "format requires"
+            )
+        zp = zp.to(torch.int8)
 
     setattr(layer, "weight_zero_point", torch.nn.Parameter(zp.to(weight_device), requires_grad=False))
     delattr(layer, "scale")
@@ -221,13 +367,19 @@ def save_quantized_as_llmcompressor(
 
     quant_format = _get_quant_format(model)
     quantization_config = QuantizationConfig.from_pretrained(model, format=quant_format)
-    model.config.quantization_config = quantization_config.to_dict()
+    quantization_config_dict = quantization_config.to_dict()
+    # from_pretrained groups layers by scheme correctly, but every group inherits
+    # the placeholder targets=["Linear"] from construct_ct_scheme. For mixed
+    # precision that makes groups indistinguishable to vLLM; rewrite targets with
+    # the concrete module names each group covers.
+    quantization_config_dict = _rewrite_config_group_targets(model, quantization_config_dict)
+    model.config.quantization_config = quantization_config_dict
 
     if output_dir is None:
         return model
 
     # save model.config, model.state_dict()
-    model.config.save_pretrained(output_dir)
+    save_config_artifact(model, output_dir)
 
     save_model(model, output_dir, safe_serialization=safe_serialization, immediate_saving=immediate_saving)
 

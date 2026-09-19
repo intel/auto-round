@@ -62,6 +62,17 @@ def _record(result: BenchResult) -> None:
         f.write(json.dumps(result.__dict__) + "\n")
 
 
+def _server_arg_fields():
+    try:
+        import dataclasses
+
+        from sglang.srt.server_args import ServerArgs
+
+        return {f.name for f in dataclasses.fields(ServerArgs)}
+    except Exception:
+        return set()
+
+
 # ---------------------------------------------------------------------------
 # Skip markers
 # ---------------------------------------------------------------------------
@@ -92,6 +103,7 @@ pytestmark = [
         not torch.cuda.is_available(),
         reason="SGLang throughput tests require a CUDA GPU",
     ),
+    pytest.mark.enable_torch_compile,
 ]
 
 
@@ -112,14 +124,24 @@ def _build_sglang_engine(model_path: str, mem_fraction_static: float, context_le
     except ImportError as e:
         pytest.skip(f"sglang is not installed: {e}")
 
+    fields = _server_arg_fields()
+    engine_kwargs = {}
+    if "disable_piecewise_cuda_graph" in fields:
+        engine_kwargs["disable_piecewise_cuda_graph"] = True
+        if "cuda_graph_bs" in fields:
+            engine_kwargs["cuda_graph_bs"] = [1]
+    elif "disable_cuda_graph" in fields:
+        engine_kwargs["disable_cuda_graph"] = True
+        if "cuda_graph_bs_decode" in fields:
+            engine_kwargs["cuda_graph_bs_decode"] = [1]
+
     return sgl.Engine(
         model_path=model_path,
         mem_fraction_static=mem_fraction_static,
         context_length=context_len,
         # Keep cuda-graphs conservative – AutoRound-int4 checkpoints don't
         # benefit from large captured graphs on small workloads.
-        disable_piecewise_cuda_graph=True,
-        cuda_graph_bs=[1, 2, 4],
+        **engine_kwargs,
     )
 
 
@@ -159,7 +181,16 @@ def _run_sglang_benchmark(
         outputs = llm.generate(prompts, sampling_params)
         total_time = time.perf_counter() - t0
 
-        n_out_tokens = sum(len(o.get("meta_info", {}).get("output_ids", []) or []) for o in outputs)
+        # SGLang 0.5.x puts ``output_ids`` at the TOP level of each output dict,
+        # not inside ``meta_info``. ``completion_tokens`` in ``meta_info`` is
+        # always present, so fall back to it for robustness across versions.
+        def _count_output_tokens(o):
+            ids = o.get("output_ids") or (o.get("meta_info", {}) or {}).get("output_ids")
+            if ids:
+                return len(ids)
+            return (o.get("meta_info", {}) or {}).get("completion_tokens", 0) or 0
+
+        n_out_tokens = sum(_count_output_tokens(o) for o in outputs)
         gen_tokens_per_s = n_out_tokens / max(total_time, 1e-6)
 
         # SGLang's per-request meta_info exposes per-request decode throughput
@@ -354,10 +385,20 @@ def test_sglang_awq_format_via_cli(require_cuda):
         rc = os.system(cmd)
         assert rc == 0, f"awq-format quant via CLI failed (rc={rc})"
 
+        # The CLI derives a descriptive export sub-directory under
+        # ``output_dir`` (e.g. ``Qwen3-0.6B-w4g128/`` via ``_get_export_dir``),
+        # so the engine must load from that folder rather than ``out`` itself.
+        saved = [
+            os.path.join(out, d)
+            for d in os.listdir(out)
+            if os.path.isdir(os.path.join(out, d)) and os.path.isfile(os.path.join(out, d, "config.json"))
+        ]
+        assert len(saved) == 1, f"expected one quantized model dir under {out}, got {saved}"
+
         # SGLang will JIT-compile the awq kernels during the first generate
         # call, so we expect the first request to be slow but the second
         # to be representative.
-        llm = _build_sglang_engine(out, mem_fraction_static=0.5, context_len=1024)
+        llm = _build_sglang_engine(saved[0], mem_fraction_static=0.5, context_len=1024)
         try:
             outputs = llm.generate(["Hello, my name is"], {"max_new_tokens": 16, "temperature": 0.0})
             text = outputs[0]["text"]

@@ -19,11 +19,9 @@ parameters:
   - name: unitTestParts
     type: object
     default:
+      - 0
       - 1
       - 2
-      - 3
-      - 4
-      - 5
       - inc
       - llmc
 
@@ -39,7 +37,7 @@ pool: INTEL-CPU
 
 variables:
   IMAGE_NAME: "auto-round"
-  IMAGE_TAG: "py312"
+  IMAGE_TAG: "py314"
   UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "Nightly_coverage_report"
@@ -61,13 +59,19 @@ stages:
         timeoutInMinutes: 60
         strategy:
           matrix:
-            ${{ each part in parameters.unitTestParts }}:
-              part_${{ part }}:
-                PART: ${{ part }}
+            # PR-triggered runs only cover inc/llmc; the 0-4 parts duplicate the fast PR unit-test pipeline.
+            ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
+              part_inc:
+                PART: inc
+              part_llmc:
+                PART: llmc
+            ${{ else }}:
+              ${{ each part in parameters.unitTestParts }}:
+                part_${{ part }}:
+                  PART: ${{ part }}
         steps:
           - template: template/ut-template.yml
             parameters:
-              dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut-$(PART)"
@@ -81,6 +85,7 @@ stages:
     pool:
       vmImage: "ubuntu-latest"
     dependsOn: [Unit_test]
+    condition: and(succeeded('Unit_test'), ne(variables['Build.Reason'], 'PullRequest'))
     jobs:
       - job: CollectDatafiles
         steps:
@@ -92,8 +97,8 @@ stages:
           
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: '3.12'
-            displayName: 'Use Python 3.12'
+              versionSpec: '3.14'
+            displayName: 'Use Python 3.14'
 
           - script: |
               cd ${BUILD_SOURCESDIRECTORY}
@@ -102,7 +107,7 @@ stages:
               uv pip install .
               pip list
               cd ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts
-              bash ut/collect_log.sh
+              bash ut/collect_log.sh cpu
             env:
               PYTHONUNBUFFERED: '1'
               UV_NO_PROGRESS: '1'

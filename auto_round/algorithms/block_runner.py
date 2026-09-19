@@ -414,7 +414,10 @@ class BlockForwardRunner:
                 else:
                     selected_others[key] = torch.cat(batch_vals, dim=batch_dim)
             elif isinstance(val, torch.Tensor):
-                selected_others[key] = torch.index_select(val, batch_dim, indices)
+                # ``batch_indices`` are created on CPU by the sampler.  XPU
+                # (and other accelerator backends) require index tensors on
+                # the same device as the indexed value.
+                selected_others[key] = torch.index_select(val, batch_dim, indices.to(device=val.device))
             elif isinstance(val, (str, bool, type(None))):
                 selected_others[key] = val
             else:

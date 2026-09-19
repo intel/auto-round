@@ -1,6 +1,9 @@
+import json
 import os
 import shutil
 from test.helpers import get_model_path, transformers_version
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -8,8 +11,64 @@ from packaging import version
 
 from auto_round import AutoRound
 from auto_round.calibration.diffusion import _prepare_pipeline_for_calibration
+from auto_round.utils.model import diffusion_load_model
 
 flux_name_or_path = get_model_path("black-forest-labs/FLUX.1-dev")
+
+
+def test_diffusion_load_preserves_declared_fp32_modules(tmp_path):
+    from diffusers import WanTransformer3DModel
+
+    transformer = WanTransformer3DModel(
+        patch_size=(1, 2, 2),
+        num_attention_heads=2,
+        attention_head_dim=8,
+        in_channels=4,
+        out_channels=4,
+        text_dim=16,
+        freq_dim=8,
+        ffn_dim=32,
+        num_layers=1,
+        rope_max_seq_len=16,
+    )
+    transformer.save_pretrained(tmp_path / "transformer")
+    model_index = {
+        "_class_name": "TestPipeline",
+        "transformer": ["diffusers", "WanTransformer3DModel"],
+    }
+    (tmp_path / "model_index.json").write_text(json.dumps(model_index))
+
+    class Config(dict):
+        __getattr__ = dict.__getitem__
+        __setattr__ = dict.__setitem__
+
+    class TestPipeline:
+        def __init__(self, model):
+            self.transformer = model
+            self.config = Config()
+            self.components = {"transformer": model}
+
+        @classmethod
+        def from_pretrained(cls, path, torch_dtype):
+            transformer_dtype = torch_dtype["transformer"] if isinstance(torch_dtype, dict) else torch_dtype
+            model = WanTransformer3DModel.from_pretrained(
+                os.path.join(path, "transformer"), torch_dtype=transformer_dtype
+            )
+            return cls(model)
+
+        @staticmethod
+        def load_config(path):
+            return json.loads((tmp_path / "model_index.json").read_text())
+
+    pipelines = SimpleNamespace(pipeline_utils=SimpleNamespace(DiffusionPipeline=TestPipeline))
+    with patch("auto_round.utils.common.LazyImport", return_value=pipelines):
+        for load_kwargs in ({"default_torch_dtype": torch.bfloat16}, {"model_dtype": "bf16"}):
+            _, loaded = diffusion_load_model(str(tmp_path), **load_kwargs)
+
+            assert loaded.dtype == torch.bfloat16
+            assert loaded.patch_embedding.weight.dtype == torch.bfloat16
+            assert loaded.condition_embedder.time_embedder.linear_1.weight.dtype == torch.float32
+            assert loaded.blocks[0].norm2.weight.dtype == torch.float32
 
 
 def test_low_gpu_memory_diffusion_calibration_uses_model_cpu_offload():
@@ -82,7 +141,6 @@ def setup_flux():
     return pipe, output_dir
 
 
-@pytest.mark.timeout(120)
 def test_flux_saving(setup_flux):
     pipe, output_dir = setup_flux
     autoround = AutoRound(
@@ -90,7 +148,7 @@ def test_flux_saving(setup_flux):
         tokenizer=None,
         scheme="W4A16",
         iters=0,
-        num_inference_steps=2,
+        calib_num_inference_steps=2,
         disable_opt_rtn=True,
     )
     autoround.quantize_and_save(output_dir)
@@ -99,7 +157,6 @@ def test_flux_saving(setup_flux):
     shutil.rmtree(output_dir, ignore_errors=True)
 
 
-@pytest.mark.timeout(150)
 def test_flux(setup_flux):
     pipe, output_dir = setup_flux
     autoround = AutoRound(
@@ -107,12 +164,64 @@ def test_flux(setup_flux):
         tokenizer=None,
         scheme="MXFP4",
         iters=0,
-        num_inference_steps=2,
+        calib_num_inference_steps=2,
         disable_opt_rtn=True,  # We change the logic, for opt-rtn, we always do calibration which is slow on cpu
     )
     # skip model saving since it takes much time
     autoround.quantize()
     shutil.rmtree(output_dir, ignore_errors=True)
+
+
+def _build_empty_modular_pipeline():
+    """A ModularPipeline with no components, so nothing is downloaded or loaded."""
+    from diffusers.modular_pipelines import SequentialPipelineBlocks
+
+    class EmptyBlocks(SequentialPipelineBlocks):
+        block_classes = []
+        block_names = []
+
+    return EmptyBlocks().init_pipeline()
+
+
+def test_modular_pipeline_is_detected_as_diffusion():
+    """A ModularPipeline is not a DiffusionPipeline, but it is still a diffusion model."""
+    pytest.importorskip("diffusers.modular_pipelines")
+
+    from auto_round.utils.model import detect_model_type, is_diffusion_model, is_mllm_model
+
+    pipe = _build_empty_modular_pipeline()
+
+    assert is_mllm_model(pipe) is False
+    assert is_diffusion_model(pipe) is True
+    assert detect_model_type(pipe) == "diffusion"
+
+
+def test_pathless_models_do_not_share_mllm_cache_entry():
+    """Each in-process model without a path must be inspected independently."""
+    from auto_round.utils.model import _is_mllm_model_cache, is_mllm_model
+
+    class VisionModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.vision_model = torch.nn.Linear(1, 1)
+
+    _is_mllm_model_cache.clear()
+    assert is_mllm_model(torch.nn.Linear(1, 1)) is False
+    assert is_mllm_model(VisionModel()) is True
+    assert None not in _is_mllm_model_cache
+
+
+def test_modular_model_index_dir_is_detected_as_diffusion(tmp_path):
+    """Modular Diffusers ships modular_model_index.json instead of model_index.json."""
+    pytest.importorskip("diffusers.modular_pipelines")
+
+    from auto_round.utils.model import diffusion_load_model, is_diffusion_model
+
+    (tmp_path / "modular_model_index.json").write_text("{}", encoding="utf-8")
+
+    assert is_diffusion_model(str(tmp_path)) is True
+    with pytest.raises(NotImplementedError, match="Modular Diffusers"):
+        diffusion_load_model(str(tmp_path))
 
 
 # def test_flux_calib(setup_flux):
@@ -122,7 +231,7 @@ def test_flux(setup_flux):
 #         tokenizer=None,
 #         scheme="NVFP4",
 #         iters=1,
-#         num_inference_steps=2,
+#         calib_num_inference_steps=2,
 #         nsamples=2,
 #         dataset="coco2014",
 #     )
