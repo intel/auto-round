@@ -453,43 +453,53 @@ def extract_text_from_sample(
 # ---------------------------------------------------------------------------
 
 
-def normalize_dataset_spec(dataset: Union[str, "CalibDataset", list]) -> str:
-    """Normalize a dataset specification to a spec string.
+def normalize_dataset_spec(dataset: Union[str, "CalibDataset", list, tuple]) -> Union[str, list, tuple]:
+    """Normalize a dataset specification to a spec string or pass through raw data.
 
-    Accepts a ``CalibDataset`` instance, a plain string, or a list of either.
+    Accepts a ``CalibDataset`` instance, a plain string, or a list/tuple.
     ``CalibDataset`` objects are converted to their spec-string representation
     via :meth:`CalibDataset.to_spec_string`.
 
+    A list/tuple is treated as **raw calibration data** (returned unchanged)
+    unless it consists solely of ``CalibDataset`` objects, in which case the
+    specs are joined into a comma-separated spec string.  A list of plain
+    strings is therefore raw calibration text (each sample is tokenized on the
+    fly), not a list of dataset names.  To combine multiple *named* datasets,
+    pass a single comma-separated string (e.g. ``"ds1,ds2"``) or a list of
+    ``CalibDataset`` objects.
+
     Args:
         dataset: A dataset specification — a string, a ``CalibDataset``, or a
-            list of strings / ``CalibDataset`` objects.
+            list/tuple of raw samples / ``CalibDataset`` objects.
 
     Returns:
-        A comma-separated spec string suitable for ``_get_dataset_impl``.
+        A comma-separated spec string suitable for ``_get_dataset_impl``, or
+        the original list/tuple when it holds raw calibration data.
 
     Raises:
-        TypeError: If *dataset* is not a string, ``CalibDataset``, or list of
-            those types.
+        TypeError: If *dataset* is ``None``.
     """
+    if dataset is None:
+        raise TypeError(
+            f"dataset must be a str, CalibDataset, or list of str/CalibDataset, got {type(dataset).__name__}"
+        )
     if isinstance(dataset, CalibDataset):
         return dataset.to_spec_string()
     if isinstance(dataset, str):
         return dataset
     if isinstance(dataset, (list, tuple)):
-        parts = []
-        for item in dataset:
-            if isinstance(item, CalibDataset):
-                parts.append(item.to_spec_string())
-            elif isinstance(item, str):
-                parts.append(item)
-            else:
-                raise TypeError(
-                    f"Dataset list entries must be str or CalibDataset, got {type(item).__name__}"
-                )
-        return ",".join(parts)
-    raise TypeError(
-        f"dataset must be a str, CalibDataset, or list of str/CalibDataset, got {type(dataset).__name__}"
-    )
+        # A list/tuple is raw calibration data (returned unchanged) unless it
+        # is a list of CalibDataset specs.  A list of plain strings is raw
+        # calibration text (each sample tokenized on the fly), not a list of
+        # dataset names.  Multiple named datasets use a comma-separated string
+        # or a list of CalibDataset objects.
+        if not dataset:
+            return ""
+        if all(isinstance(item, CalibDataset) for item in dataset):
+            return ",".join(item.to_spec_string() for item in dataset)
+        return dataset
+    # Non-spec types (DataLoader, BatchEncoding, etc.) are passed through.
+    return dataset
 
 
 # ---------------------------------------------------------------------------# Spec-string building and parsing

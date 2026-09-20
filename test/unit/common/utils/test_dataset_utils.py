@@ -462,25 +462,32 @@ class TestNormalizeDatasetSpec:
         spec = CalibDataset("my/ds", num=100)
         assert normalize_dataset_spec(spec) == "my/ds:num=100"
 
-    def test_list_of_strings(self):
+    def test_list_of_strings_is_raw_data(self):
+        """A list of plain strings is raw calibration text, passed through."""
         result = normalize_dataset_spec(["my/ds", "other/ds"])
-        assert result == "my/ds,other/ds"
+        assert result == ["my/ds", "other/ds"]
 
     def test_list_of_calib_datasets(self):
         specs = [CalibDataset("my/ds", num=100), CalibDataset("other/ds", num=200)]
         result = normalize_dataset_spec(specs)
         assert result == "my/ds:num=100,other/ds:num=200"
 
-    def test_mixed_list(self):
-        """Mix of strings and CalibDataset objects."""
+    def test_mixed_list_is_raw_data(self):
+        """A list mixing strings and CalibDataset objects is raw data."""
         specs = ["my/ds", CalibDataset("other/ds", num=200, timeout=60)]
         result = normalize_dataset_spec(specs)
-        assert result == "my/ds,other/ds:num=200:timeout=60"
+        assert result == specs
 
-    def test_tuple(self):
-        specs = ("my/ds", CalibDataset("other/ds", num=100))
+    def test_tuple_of_calib_datasets(self):
+        specs = (CalibDataset("my/ds", num=100), CalibDataset("other/ds", num=200))
         result = normalize_dataset_spec(specs)
-        assert result == "my/ds,other/ds:num=100"
+        assert result == "my/ds:num=100,other/ds:num=200"
+
+    def test_list_with_non_spec_items_is_raw_data(self):
+        """A list containing non-str/non-CalibDataset items is raw data."""
+        sentinel = object()
+        result = normalize_dataset_spec([sentinel])
+        assert result == [sentinel]
 
     def test_empty_list(self):
         assert normalize_dataset_spec([]) == ""
