@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from auto_round.logger import deprecated, logger
-
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
     eager_validate_scheme,
