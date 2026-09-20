@@ -101,6 +101,7 @@ if(NOT ARK_XPU)
 endif()
 set(SDPA_GENERATED_SRCS)
 set(SDPA_KERNEL_DECLARATIONS)
+set(SDPA_SPARSE_KERNEL_DECLARATIONS)
 set(SYCL_TLA_GENERATED_SRCS)
 
 include_directories(wrapper/include)
