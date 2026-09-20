@@ -25,6 +25,7 @@ from auto_round.utils import (
     logger,
     unsupported_meta_device,
 )
+from auto_round.utils.path_safety import resolve_within_directory
 
 
 def save_pretrained_artifact(artifact, output_dir: str, artifact_name: str = "artifact") -> bool:
@@ -155,10 +156,12 @@ def _resolve_model_source_dir(model: nn.Module) -> str | None:
 
 
 def _copy_pipeline_artifact(model_dir: str, relative_path: str, output_dir: str) -> None:
-    target_path = os.path.join(output_dir, relative_path)
+    # ``relative_path`` comes from the pipeline's own model_index.json, so it must
+    # stay inside output_dir (write side) and model_dir (read side).
+    target_path = str(resolve_within_directory(output_dir, relative_path, origin="model_index.json"))
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     if is_local_pipeline_model_dir(model_dir):
-        source_path = os.path.join(model_dir, relative_path)
+        source_path = str(resolve_within_directory(model_dir, relative_path, origin="model_index.json"))
     else:
         from huggingface_hub import hf_hub_download
 
