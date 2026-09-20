@@ -14,11 +14,15 @@
 
 """Unit tests for auto_round.utils.disk_stream_util (AR_DISK_STREAM_MODEL primitives)."""
 
+import json
+
 import pytest
 import torch
 import torch.nn as nn
 from accelerate import init_empty_weights
+from safetensors.torch import save_file
 
+from auto_round.utils import disk_stream_util
 from auto_round.utils.disk_stream_util import (
     build_meta_model,
     free_module,
@@ -26,6 +30,97 @@ from auto_round.utils.disk_stream_util import (
     materialize_non_block_params,
     total_resident_bytes,
 )
+
+
+class TestNativeFusedMoeCheckpointDetection:
+    @staticmethod
+    def _write_checkpoint(tmp_path, tensors):
+        checkpoint_dir = tmp_path / "checkpoint"
+        checkpoint_dir.mkdir()
+        save_file(tensors, checkpoint_dir / "model.safetensors")
+        return checkpoint_dir
+
+    def test_detects_paired_three_dimensional_fused_experts(self, tmp_path, monkeypatch):
+        checkpoint_dir = self._write_checkpoint(
+            tmp_path,
+            {
+                "model.layers.0.experts.gate_up_proj": torch.empty(4, 8, 4),
+                "model.layers.0.experts.down_proj": torch.empty(4, 4, 4),
+            },
+        )
+
+        real_safe_open = disk_stream_util.safe_open
+
+        class HeaderOnlySafeOpen:
+            def __init__(self, *args, **kwargs):
+                self._context = real_safe_open(*args, **kwargs)
+
+            def __enter__(self):
+                self._file = self._context.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self._context.__exit__(*args)
+
+            def keys(self):
+                return self._file.keys()
+
+            def get_slice(self, name):
+                return self._file.get_slice(name)
+
+            def get_tensor(self, name):
+                raise AssertionError(f"native fused detection read tensor payload: {name}")
+
+        monkeypatch.setattr(disk_stream_util, "safe_open", HeaderOnlySafeOpen)
+
+        assert disk_stream_util.checkpoint_has_native_fused_moe_experts(checkpoint_dir) is True
+
+    def test_detects_pair_split_across_shards(self, tmp_path):
+        checkpoint_dir = tmp_path / "checkpoint"
+        checkpoint_dir.mkdir()
+        gate_name = "model.layers.0.experts.gate_up_proj"
+        down_name = "model.layers.0.experts.down_proj"
+        save_file({gate_name: torch.empty(4, 8, 4)}, checkpoint_dir / "model-00001-of-00002.safetensors")
+        save_file({down_name: torch.empty(4, 4, 4)}, checkpoint_dir / "model-00002-of-00002.safetensors")
+        index = {
+            "weight_map": {
+                gate_name: "model-00001-of-00002.safetensors",
+                down_name: "model-00002-of-00002.safetensors",
+            }
+        }
+        (checkpoint_dir / "model.safetensors.index.json").write_text(json.dumps(index))
+
+        assert disk_stream_util.checkpoint_has_native_fused_moe_experts(checkpoint_dir) is True
+
+    def test_malformed_safetensors_is_not_detected(self, tmp_path):
+        checkpoint_dir = tmp_path / "checkpoint"
+        checkpoint_dir.mkdir()
+        (checkpoint_dir / "model.safetensors").write_bytes(b"not a safetensors file")
+
+        assert disk_stream_util.checkpoint_has_native_fused_moe_experts(checkpoint_dir) is False
+
+    @pytest.mark.parametrize(
+        "tensors",
+        [
+            {
+                "model.layers.0.experts.gate_up_proj": torch.empty(8, 4),
+                "model.layers.0.experts.down_proj": torch.empty(4, 4),
+            },
+            {"model.layers.0.experts.gate_up_proj": torch.empty(4, 8, 4)},
+            {
+                "model.layers.0.experts.gate_up_proj": torch.empty(4, 8, 4),
+                "model.layers.1.experts.down_proj": torch.empty(4, 4, 4),
+            },
+            {
+                "model.layers.0.experts.0.gate_proj.weight": torch.empty(8, 4),
+                "model.layers.0.experts.0.down_proj.weight": torch.empty(4, 4),
+            },
+        ],
+    )
+    def test_rejects_non_native_fused_layouts(self, tmp_path, tensors):
+        checkpoint_dir = self._write_checkpoint(tmp_path, tensors)
+
+        assert disk_stream_util.checkpoint_has_native_fused_moe_experts(checkpoint_dir) is False
 
 
 class TestMaterializeModuleRoundTrip:

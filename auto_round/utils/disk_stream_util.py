@@ -20,7 +20,7 @@ from typing import Dict
 import torch
 import torch.nn as nn
 from accelerate.utils import set_module_tensor_to_device
-from safetensors import safe_open
+from safetensors import SafetensorError, safe_open
 
 from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 
@@ -63,6 +63,12 @@ class SafetensorsIndex:
     def read_tensor(self, name: str, device: str = "cpu") -> torch.Tensor:
         return self.read_tensors([name], device=device)[name]
 
+    def tensor_shape(self, name: str) -> tuple[int, ...]:
+        """Return a tensor's shape from its safetensors header without reading its payload."""
+        shard_name = self.weight_map[name]
+        with safe_open(str(self.checkpoint_dir / shard_name), framework="pt") as f:
+            return tuple(f.get_slice(name).get_shape())
+
     def read_tensors(self, names: list[str], device: str = "cpu") -> Dict[str, torch.Tensor]:
         """Read several tensors, grouped by shard file so each shard is opened and
         closed (unmapped) once regardless of how many tensors are pulled from it."""
@@ -95,6 +101,45 @@ def get_safetensors_index(checkpoint_dir: str) -> "SafetensorsIndex":
     used to build a fresh index for every block, re-reading the index JSON 40+ times.
     """
     return SafetensorsIndex(str(checkpoint_dir))
+
+
+def checkpoint_has_native_fused_moe_experts(checkpoint_dir: str) -> bool:
+    """Whether a checkpoint directly stores supported fused 3D expert tensors.
+
+    Unlike :func:`config_has_fused_moe_experts`, which detects experts fused by a
+    Transformers checkpoint converter, this inspects the checkpoint layout itself.
+    Only the ``gate_up_proj`` + ``down_proj`` layout understood by
+    :func:`materialize_module` is accepted. Tensor shapes come from safetensors
+    headers, so this check never maps or copies the weight payloads.
+    """
+    try:
+        index = get_safetensors_index(str(checkpoint_dir))
+    except (OSError, ValueError, KeyError, SafetensorError):
+        return False
+
+    gate_up_suffix = ".experts.gate_up_proj"
+    for gate_up_name in index.weight_map:
+        if not gate_up_name.endswith(gate_up_suffix):
+            continue
+        prefix = gate_up_name[: -len(gate_up_suffix)]
+        down_name = f"{prefix}.experts.down_proj"
+        if not index.has_tensor(down_name):
+            continue
+        try:
+            gate_up_shape = index.tensor_shape(gate_up_name)
+            down_shape = index.tensor_shape(down_name)
+        except (OSError, ValueError, KeyError, SafetensorError):
+            continue
+        if len(gate_up_shape) == 3 and len(down_shape) == 3 and gate_up_shape[0] == down_shape[0] > 1:
+            logger.debug(
+                "Native fused-MoE checkpoint tensors detected: %s %s and %s %s",
+                gate_up_name,
+                gate_up_shape,
+                down_name,
+                down_shape,
+            )
+            return True
+    return False
 
 
 # Model-side module names sometimes differ from the checkpoint-side tensor

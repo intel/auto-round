@@ -35,7 +35,7 @@ import torch
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
-from auto_round.utils.common import to_standard_regex
+from auto_round.utils.common import _normalize_tensor_name_for_warning, to_standard_regex
 from auto_round.utils.device import clear_memory, compile_func
 from auto_round.utils.path_safety import (
     resolve_within_directory,
@@ -104,22 +104,8 @@ _WARNING_INDEX_PLACEHOLDER = "<idx>"
 _KEEP_FUSED_EXPERT_MODEL_TYPES: frozenset[str] = frozenset({"inkling_mm_model"})
 
 
-def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WARNING_INDEX_PLACEHOLDER) -> str:
-    """Normalize tensor names for warning_once deduplication.
-
-    Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
-    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder
-    (``<idx>`` by default) so warning keys are stable across different
-    layer/expert ids.
-    """
-    parts = name.split(".")
-    normalized_parts = []
-    for part in parts:
-        if part.isdigit():
-            normalized_parts.append(numeric_replacement)
-            continue
-        normalized_parts.append(re.sub(r"\[(\d+)\]", f"[{numeric_replacement}]", part))
-    return ".".join(normalized_parts)
+# _normalize_tensor_name_for_warning moved to auto_round.utils.common to
+# avoid circular imports; keep compatibility by importing it from there.
 
 
 def _parse_fused_proj_token(token: str) -> tuple[str, str]:

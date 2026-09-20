@@ -39,11 +39,12 @@
 
 import json
 import os
+import tempfile
 
 import torch
 
 from auto_round.logger import logger
-from auto_round.utils.common import apply_checkpoint_conversion_mapping, compress_layer_names
+from auto_round.utils.common import compress_layer_names
 from auto_round.utils.model_free_utils import (
     _normalize_tensor_name_for_warning,
     quantize_weight_rtn,
@@ -53,41 +54,79 @@ from auto_round.utils.path_safety import resolve_within_directory, validate_weig
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
 
-def _get_conversion_aliases(name: str, model_type: str | None) -> set[str]:
-    """Return tensor-name aliases produced by transformers checkpoint conversion.
+def _restore_special_fp32_tensors(
+    source_tensor_to_file: dict[str, str],
+    saved_tensor_to_file: dict[str, str],
+) -> None:
+    """Restore source FP32 tensors that were saved as FP16 or BF16."""
+    from safetensors import safe_open
+    from safetensors.torch import save_file
 
-    Uses ``transformers.conversion_mapping.get_checkpoint_conversion_mapping``
-    to obtain the rename rules for *model_type* and applies them to *name*.
-    Returns a set containing the original name plus any converted variants.
+    source_to_saved: dict[str, str] = {}
+    for source_name in source_tensor_to_file:
+        if source_name in saved_tensor_to_file:
+            source_to_saved[source_name] = source_name
 
-    Falls back to ``{name}`` when the mapping is unavailable (older transformers
-    versions, unknown model_type, etc.).
-    """
-    aliases = {name}
-    if not model_type:
-        return aliases
-    try:
-        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+    source_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in source_to_saved:
+        source_names_by_shard.setdefault(source_tensor_to_file[tensor_name], []).append(tensor_name)
 
-        mappings = get_checkpoint_conversion_mapping(model_type)
-        if not mappings:
-            return aliases
-        # Build a flat {source_pattern: target_pattern} dict (first match wins)
-        key_mapping: dict[str, str] = {}
-        for conversion in mappings:
-            for src in conversion.source_patterns:
-                if src not in key_mapping:
-                    key_mapping[src] = (
-                        conversion.target_patterns[0]
-                        if isinstance(conversion.target_patterns, list)
-                        else conversion.target_patterns
-                    )
-        converted = apply_checkpoint_conversion_mapping(name, key_mapping)
-        if converted != name:
-            aliases.add(converted)
-    except (ImportError, AttributeError, TypeError, ValueError):
-        pass
-    return aliases
+    candidates: list[str] = []
+    for source_shard, tensor_names in source_names_by_shard.items():
+        with safe_open(source_shard, framework="pt", device="cpu") as source_file:
+            for tensor_name in tensor_names:
+                if source_file.get_slice(tensor_name).get_dtype() == "F32":
+                    candidates.append(tensor_name)
+
+    target_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in candidates:
+        target_name = source_to_saved[tensor_name]
+        target_names_by_shard.setdefault(saved_tensor_to_file[target_name], []).append(tensor_name)
+
+    tensors_to_restore: dict[str, torch.Tensor] = {}
+    for target_shard, tensor_names in target_names_by_shard.items():
+        with safe_open(target_shard, framework="pt", device="cpu") as target_file:
+            for tensor_name in tensor_names:
+                target_name = source_to_saved[tensor_name]
+                if target_file.get_slice(target_name).get_dtype() in {"F16", "BF16"}:
+                    source_shard = source_tensor_to_file[tensor_name]
+                    with safe_open(source_shard, framework="pt", device="cpu") as source_file:
+                        tensors_to_restore[tensor_name] = source_file.get_tensor(tensor_name)
+
+    restore_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in tensors_to_restore:
+        restore_names_by_shard.setdefault(saved_tensor_to_file[source_to_saved[tensor_name]], []).append(tensor_name)
+
+    for target_shard, tensor_names in restore_names_by_shard.items():
+        with safe_open(target_shard, framework="pt", device="cpu") as target_file:
+            metadata = target_file.metadata()
+            shard_tensors = {name: target_file.get_tensor(name) for name in target_file.keys()}
+        for tensor_name in tensor_names:
+            shard_tensors[source_to_saved[tensor_name]] = tensors_to_restore[tensor_name]
+
+        # Preserve the original shard permission bits so the temporary file's
+        # 0600 mode is not inherited by the final replacement target.
+        original_mode = os.stat(target_shard).st_mode
+
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=os.path.dirname(target_shard), prefix=".restore_fp32_", suffix=".safetensors", delete=False
+            ) as temporary_file:
+                temporary_path = temporary_file.name
+            save_file({name: tensor.contiguous() for name, tensor in shard_tensors.items()}, temporary_path, metadata)
+            os.replace(temporary_path, target_shard)
+            os.chmod(target_shard, original_mode)
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.remove(temporary_path)
+
+    if tensors_to_restore:
+        tensor_summary = compress_layer_names([name.rsplit(".", 1)[0] for name in tensors_to_restore])
+        logger.info(
+            f"Restored {len(tensors_to_restore)} tensor(s) from FP16/BF16 to their original FP32 values: "
+            f"{tensor_summary}."
+        )
 
 
 def copy_missing_tensors_from_source(
@@ -141,20 +180,6 @@ def copy_missing_tensors_from_source(
     if not os.path.exists(config_path):
         return
 
-    # Load model_type from config for checkpoint conversion mapping
-    model_type: str | None = None
-    try:
-        with open(config_path) as f:
-            _cfg = json.load(f)
-        model_type = _cfg.get("model_type")
-        if model_type is None:
-            # For composite models (e.g. VLMs), try text_config
-            text_cfg = _cfg.get("text_config")
-            if isinstance(text_cfg, dict):
-                model_type = text_cfg.get("model_type")
-    except (json.JSONDecodeError, OSError):
-        pass
-
     if not os.path.isdir(source_dir):
         try:
             from auto_round.utils.model import download_hf_model
@@ -193,19 +218,25 @@ def copy_missing_tensors_from_source(
     # ------------------------------------------------------------------ #
     # Collect tensor names already present in the saved output              #
     # ------------------------------------------------------------------ #
-    saved_tensor_names: set = set()
+    saved_tensor_to_file: dict[str, str] = {}
     saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
     saved_single_file = os.path.join(target_dir, "model.safetensors")
 
     if os.path.exists(saved_index_file):
         with open(saved_index_file) as f:
             saved_idx = json.load(f)
-        saved_tensor_names = set(saved_idx["weight_map"].keys())
+        saved_tensor_to_file = {
+            tensor_name: os.path.join(target_dir, shard_file)
+            for tensor_name, shard_file in saved_idx["weight_map"].items()
+        }
     elif os.path.exists(saved_single_file):
         with safe_open(saved_single_file, framework="pt", device="cpu") as f:
-            saved_tensor_names = set(f.keys())
+            saved_tensor_to_file = {tensor_name: saved_single_file for tensor_name in f.keys()}
     else:
         return
+
+    _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file)
+    saved_tensor_names = set(saved_tensor_to_file)
 
     # ------------------------------------------------------------------ #
     # Identify missing tensors via block-prefix statistics                 #
@@ -249,39 +280,20 @@ def copy_missing_tensors_from_source(
     shortcut_block_prefix: set = {name.split(".", 1)[1] for name in saved_block_prefix if "." in name}
     saved_block_prefix.update(shortcut_block_prefix)
 
-    def _name_aliases(name: str) -> set:
-        """Return a set of equivalent tensor-name variants to match against saved tensors.
-
-        Handles models where the source and saved prefixes differ, e.g.
-        google/gemma-3-4b-it: ``language_model.model.*`` ↔ ``model.language_model.*``.
-        Also applies transformers checkpoint conversion mapping (e.g. Nemotron-H
-        ``backbone.*`` → ``model.*``).
-        """
-        aliases = {name}
-        if name.startswith("language_model.model."):
-            aliases.add("model.language_model." + name[len("language_model.model.") :])
-        elif name.startswith("model.language_model."):
-            aliases.add("language_model.model." + name[len("model.language_model.") :])
-        # Apply transformers checkpoint conversion mapping (e.g. Nemotron-H)
-        if model_type:
-            aliases |= _get_conversion_aliases(name, model_type)
-        return aliases
-
     def _is_truly_missing(name: str) -> bool:
         # Special case: Qwen/Qwen3-0.6B-FP8
         # lm_head is tied but still in source_dir → not missing
         if name == "lm_head.weight":
             return False
-        aliases = _name_aliases(name)
-        if aliases & saved_tensor_names:
+        if name in saved_tensor_names:
             return False
-        parents = {a.rsplit(".", 1)[0] for a in aliases}
-        if parents & saved_parent_layers:
+        parent = name.rsplit(".", 1)[0]
+        if parent in saved_parent_layers:
             return False
         # For split experts, name is changed but block name is the same.
-        blocks = {_first_numeric_prefix(a) for a in aliases} - {None}
-        if blocks:
-            return not (blocks & saved_block_prefix)
+        block = _first_numeric_prefix(name)
+        if block is not None:
+            return block not in saved_block_prefix
         return True
 
     missing_tensor_names: list = [name for name in source_tensor_to_file if _is_truly_missing(name)]
@@ -470,7 +482,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     """
     import re as _re
 
-    BLOCK_NAME_TO_IGNORE = [".shared_expert_gate.", ".mlp.gate.", ".g_proj.", "mtp.fc."]
+    BLOCK_NAME_TO_IGNORE = [".shared_expert_gate.", ".gate.", ".g_proj.", "mtp.fc."]
     qconfig = _get_woq_config_from_dir(target_dir)
     if qconfig is None:
         return missing_tensors_dict
