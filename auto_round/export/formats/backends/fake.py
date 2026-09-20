@@ -14,6 +14,7 @@
 
 import copy
 import glob
+import json
 import os
 from typing import Any, Callable, Union
 
@@ -55,6 +56,7 @@ def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
         return
 
     safetensor_files = sorted(glob.glob(os.path.join(output_dir, "*.safetensors")))
+    rewrote_safetensors = False
     for file_path in safetensor_files:
         try:
             from safetensors.torch import load_file as safe_load_file
@@ -64,8 +66,23 @@ def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
             normalized, changed = _normalize_state_dict_keys(state)
             if changed:
                 safe_save_file(normalized, file_path)
+                rewrote_safetensors = True
         except Exception as exc:
             logger.warning("Failed to normalize safetensors keys for %s: %s", file_path, exc)
+
+    index_path = os.path.join(output_dir, "model.safetensors.index.json")
+    if rewrote_safetensors and os.path.exists(index_path):
+        try:
+            with open(index_path) as index_file:
+                index = json.load(index_file)
+            weight_map = index.get("weight_map", {})
+            normalized_weight_map, changed = _normalize_state_dict_keys(weight_map)
+            if changed:
+                index["weight_map"] = normalized_weight_map
+                with open(index_path, "w") as index_file:
+                    json.dump(index, index_file, indent=2)
+        except Exception as exc:
+            logger.warning("Failed to normalize safetensors index keys for %s: %s", index_path, exc)
 
     bin_files = sorted(glob.glob(os.path.join(output_dir, "*.bin")))
     for file_path in bin_files:
@@ -159,10 +176,9 @@ class FakeFormat(OutputFormat):
         if has_fake_act_quant:
             _rewrite_saved_weights_without_orig_layer(output_dir)
 
-        if not has_meta_device:
-            from auto_round.export.utils import apply_post_save_source_fixes
+        from auto_round.export.utils import apply_post_save_source_fixes
 
-            apply_post_save_source_fixes(model, output_dir)
+        apply_post_save_source_fixes(model, output_dir)
 
         if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(output_dir)

@@ -166,6 +166,25 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
     assert not torch.equal(loaded_model.block.linear.qdq_input(roundtrip_activation), roundtrip_activation)
 
 
+def test_fake_format_normalizes_sharded_safetensors_index(tmp_path):
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    shard_name = "model-00001-of-00001.safetensors"
+    original_key = "model.layers.0.orig_layer.weight"
+    normalized_key = "model.layers.0.weight"
+    save_file({original_key: torch.ones(2, 2)}, tmp_path / shard_name)
+    with open(tmp_path / "model.safetensors.index.json", "w") as index_file:
+        json.dump({"metadata": {}, "weight_map": {original_key: shard_name}}, index_file)
+
+    _rewrite_saved_weights_without_orig_layer(str(tmp_path))
+
+    with safe_open(tmp_path / shard_name, framework="pt", device="cpu") as shard:
+        assert list(shard.keys()) == [normalized_key]
+    with open(tmp_path / "model.safetensors.index.json") as index_file:
+        assert json.load(index_file)["weight_map"] == {normalized_key: shard_name}
+
+
 class _TinyLoadModel(torch.nn.Module):
     def __init__(self, quantization_config):
         super().__init__()
@@ -321,6 +340,26 @@ def test_fake_format_still_saves_when_env_disabled(tmp_path):
     assert returned is not None
     assert os.path.exists(output_dir)
     assert os.path.exists(os.path.join(output_dir, "config.json"))
+
+
+def test_fake_format_meta_device_applies_post_save_source_fixes(tmp_path, monkeypatch):
+    model = _SaveableModel()
+    output_dir = str(tmp_path / "meta_device_model")
+    fixup_calls = []
+
+    monkeypatch.setattr("auto_round.export.formats.backends.fake.unsupported_meta_device", lambda model: True)
+    monkeypatch.setattr("auto_round.export.utils.save_config_artifact", lambda model, save_dir: None)
+    monkeypatch.setattr(
+        "auto_round.export.utils.apply_post_save_source_fixes",
+        lambda saved_model, save_dir: fixup_calls.append((saved_model, save_dir)),
+    )
+
+    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized(
+        output_dir=output_dir,
+        model=model,
+    )
+
+    assert fixup_calls == [(model, output_dir)]
 
 
 class _SaveableSafetensorsModel(torch.nn.Module):
