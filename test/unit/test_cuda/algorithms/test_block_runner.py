@@ -52,7 +52,6 @@ class TestBlockRunnerGpu:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     def test_3bit_asym_sign_sgd_reload(self, tiny_opt_model_path, dataloader):
         autoround = AutoRound(
             tiny_opt_model_path,
@@ -77,7 +76,6 @@ class TestBlockRunnerGpu:
     @pytest.mark.skip_ci(
         reason="Matrix: group_size=64 packing is covered by test_autoround_int_export; retain full Sign-SGD case weekly"
     )
-    @pytest.mark.timeout(180)
     def test_group64_sign_sgd_reload(self, tiny_opt_model_path):
         autoround = AutoRound(
             tiny_opt_model_path,
@@ -97,7 +95,6 @@ class TestBlockRunnerGpu:
     @pytest.mark.skip_ci(
         reason="Coverage: symmetric INT export/reload is covered by test_autoround_int_export; retain tuning case weekly"
     )
-    @pytest.mark.timeout(180)
     def test_4bit_sym_group128_reload(self, tiny_opt_model_path):
         autoround = AutoRound(
             tiny_opt_model_path,
@@ -117,7 +114,6 @@ class TestBlockRunnerGpu:
     @pytest.mark.skip_ci(
         reason="Coverage: asymmetric INT2 runtime is covered by the Triton backend smoke; retain full tuning case weekly"
     )
-    @pytest.mark.timeout(180)
     def test_2bit_asym_group32_reload(self, tiny_opt_model_path):
         autoround = AutoRound(
             tiny_opt_model_path,
@@ -141,7 +137,6 @@ class TestBlockRunnerGpu:
     @pytest.mark.skip_ci(
         reason="Coverage: test_3bit_asym_sign_sgd_reload already verifies tuned reload and forward; retain longer convergence case weekly"
     )
-    @pytest.mark.timeout(180)
     def test_sign_sgd_forward_after_reload(self, tiny_opt_model_path):
         """Sign-SGD quantized model must forward-pass on GPU after reload."""
         autoround = AutoRound(

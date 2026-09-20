@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 import torch
 
-from auto_round.data_type.utils import get_quant_func
+from auto_round.data_type.base import create_quantizer, quantize_activation
 
 _FIXED_MXFP4_DTYPES = frozenset({"mx_fp4", "mx_fp4e2m1"})
 _MXFP4_ALIASES = frozenset({"mx_fp", *_FIXED_MXFP4_DTYPES})
@@ -108,16 +108,12 @@ def _rtn_qdq_tensor(tensor: torch.Tensor, scheme, *, tensor_name: str) -> torch.
     requested_dtype = values["data_type"]
     if values["bits"] == 4 and requested_dtype in _MXFP4_ALIASES:
         requested_dtype = f"{requested_dtype}_rceil"
-    quant_func, resolved_dtype = get_quant_func(
-        dtype=requested_dtype,
-        bits=values["bits"],
-        sym=values["sym"],
+    quantizer = create_quantizer(
+        {**values, "data_type": requested_dtype, "scale_dtype": tensor.dtype},
         disable_opt_rtn=True,
-        group_size=values["group_size"],
-        iters=0,
     )
-    logical_dtype = resolved_dtype.removeprefix("rtn_")
-    resolved_base_dtype = logical_dtype.removesuffix("_rceil")
+    quantizer.initialize(tensor)
+    resolved_base_dtype = requested_dtype.removesuffix("_rceil")
     if (
         resolved_base_dtype in _MXFP4_ALIASES
         and values["bits"] == 4
@@ -132,12 +128,7 @@ def _rtn_qdq_tensor(tensor: torch.Tensor, scheme, *, tensor_name: str) -> torch.
             f"got group_size={values['group_size']!r}."
         )
 
-    qdq, _, _ = quant_func(
-        tensor=tensor,
-        bits=values["bits"],
-        group_size=values["group_size"],
-        data_type=logical_dtype,
-    )
+    qdq = quantizer.quantize(tensor)
     if qdq.shape != tensor.shape or qdq.dtype != tensor.dtype:
         raise ValueError(
             f"{tensor_name.capitalize()} RTN QDQ must preserve the input shape and dtype; "
@@ -162,12 +153,20 @@ def rtn_qdq_residual(weight: torch.Tensor, scheme: ResidualQuantScheme) -> torch
 @torch.inference_mode()
 def rtn_qdq_activation(activation: torch.Tensor, scheme: ActivationQuantScheme) -> torch.Tensor:
     """Apply deployment-compatible dynamic activation quantize-dequantize."""
-    return _rtn_qdq_tensor(activation, scheme, tensor_name="activation")
+    values = _validate_scheme_values(scheme)
+    qdq = quantize_activation(activation, values)
+    if qdq.shape != activation.shape or qdq.dtype != activation.dtype or qdq.device != activation.device:
+        raise ValueError("Activation RTN QDQ must preserve shape, dtype, and device.")
+    if not torch.isfinite(qdq).all():
+        raise ValueError("Activation RTN QDQ produced non-finite values.")
+    return qdq
 
 
 @torch.inference_mode()
-def truncated_svd(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return a rank-limited reconstruction and its shared down/up factors."""
+def compute_svd_factors(
+    weight: torch.Tensor, rank: int, *, driver: str | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return shared down/up factors without materializing a dense reconstruction."""
     if weight.ndim != 2:
         raise ValueError(f"SVDQuant expects a two-dimensional weight matrix, got shape={tuple(weight.shape)}.")
     max_rank = min(weight.shape)
@@ -176,15 +175,24 @@ def truncated_svd(weight: torch.Tensor, rank: int) -> tuple[torch.Tensor, torch.
 
     out_features, in_features = weight.shape
     if rank == 0:
-        low_rank = torch.zeros_like(weight)
         down_weight = torch.empty((0, in_features), dtype=weight.dtype, device=weight.device)
         up_weight = torch.empty((out_features, 0), dtype=weight.dtype, device=weight.device)
-        return low_rank, down_weight, up_weight
+        return down_weight, up_weight
 
-    u, s, vh = torch.linalg.svd(weight, full_matrices=False)
+    u, s, vh = torch.linalg.svd(weight, full_matrices=False, driver=driver if weight.is_cuda else None)
     down_weight = vh[:rank, :]
     up_weight = u[:, :rank] * s[:rank].reshape(1, -1)
-    return up_weight @ down_weight, down_weight, up_weight
+    return down_weight, up_weight
+
+
+@torch.inference_mode()
+def truncated_svd(
+    weight: torch.Tensor, rank: int, *, driver: str | None = None
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return a rank-limited reconstruction and its shared down/up factors."""
+    down_weight, up_weight = compute_svd_factors(weight, rank, driver=driver)
+    low_rank = torch.zeros_like(weight) if rank == 0 else up_weight @ down_weight
+    return low_rank, down_weight, up_weight
 
 
 @torch.inference_mode()
@@ -197,6 +205,7 @@ def iterate_residual_decomposition(
     early_stop: bool,
     residual_dtype: torch.dtype,
     low_rank_dtype: torch.dtype,
+    driver: str | None = None,
 ) -> ResidualDecomposition:
     """Select the lowest weight-MSE residual/low-rank candidate after deployment casting."""
     if type(iterations) is not int or iterations < 1:
@@ -209,7 +218,7 @@ def iterate_residual_decomposition(
     best_iteration = None
 
     for iteration in range(1, iterations + 1):
-        low_rank, down, up = truncated_svd(weight - quantized_residual, rank)
+        low_rank, down, up = truncated_svd(weight - quantized_residual, rank, driver=driver)
         if not all(torch.isfinite(tensor).all() for tensor in (low_rank, down, up)):
             break
 

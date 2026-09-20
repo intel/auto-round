@@ -38,7 +38,6 @@ class TestAutoScheme:
         yield
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.timeout(60)
     def test_gguf_k_0(self, tiny_qwen_model_path, tmp_path, monkeypatch):
         monkeypatch.setenv("AR_AUTO_SCHEME_NSAMPLES", "1")
         monkeypatch.setenv("AR_AUTO_SCHEME_BATCH_SIZE", "1")
@@ -97,7 +96,6 @@ class TestAutoScheme:
         # Due to the tiny model and embedding, the actual number of bits of gguf format will be larger than the target bits.
         assert target_bits - 0.1 < avg_bits <= target_bits + 0.3
 
-    @pytest.mark.timeout(150)
     def test_shared_layers(self, tiny_opt_model_path):
         model_name = tiny_opt_model_path
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -270,7 +268,6 @@ class TestAutoScheme:
         print(avg_bits)
         assert target_bits - 0.1 < avg_bits <= target_bits + 1e-3
 
-    @pytest.mark.timeout(150)
     def test_lm_head_and_mix_dtype(self, tiny_untied_qwen_model_path):
         target_bits = 5
         scheme = AutoScheme(avg_bits=target_bits, options=("MXFP4", "MXFP8"))

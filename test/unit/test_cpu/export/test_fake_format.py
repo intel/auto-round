@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import torch
 from transformers import AutoModelForCausalLM, OPTConfig, OPTForCausalLM
 
+import auto_round.experimental.qmodules.fake as fake_qmodule
 from auto_round.experimental.qmodules.fake import FakeActQuantLinear
 from auto_round.export.formats.backends.fake import (
     _normalize_state_dict_keys,
@@ -35,6 +36,55 @@ def _assert_has_act_hook(layer):
     assert isinstance(layer, FakeActQuantLinear)
     assert hasattr(layer, "qdq_input")
     assert callable(layer.qdq_input)
+
+
+def test_fake_nvfp4_qdq_uses_saved_input_global_scale(monkeypatch):
+    captured_kwargs = {}
+
+    def quant_func(**kwargs):
+        captured_kwargs.update(kwargs)
+        return kwargs["tensor"], None, None
+
+    monkeypatch.setattr(fake_qmodule, "get_quant_func", lambda **kwargs: (quant_func, None))
+    layer = FakeActQuantLinear(16, 4, PRESET_SCHEMES["NVFP4"], dtype=torch.float32)
+    layer.input_global_scale.fill_(1.5)
+
+    layer.qdq_input(torch.randn(2, 16))
+
+    assert captured_kwargs["global_scale"] is layer.input_global_scale
+
+
+def test_fake_evaluation_wrapper_uses_saved_input_global_scale():
+    captured_kwargs = {}
+    linear = torch.nn.Linear(16, 4)
+    linear.act_max_scale = torch.ones(1)
+    linear.act_min_scale = torch.ones(1)
+    linear.input_global_scale = torch.tensor([1.5], dtype=torch.float32)
+
+    class ActivationQuantizer:
+        def qdq(self, activation, **kwargs):
+            captured_kwargs.update(kwargs)
+            return activation
+
+    wrapper = WrapperWALayer(linear, enable_torch_compile=False, activation_quantizer=ActivationQuantizer())
+
+    wrapper(torch.randn(2, 16))
+
+    assert captured_kwargs["global_scale"] is linear.input_global_scale
+
+
+def test_fake_evaluation_wrapper_does_not_pass_global_scale_to_other_quantizers():
+    linear = torch.nn.Linear(16, 4)
+    linear.act_max_scale = torch.ones(1)
+    linear.act_min_scale = torch.ones(1)
+
+    class ActivationQuantizer:
+        def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
+            return activation
+
+    wrapper = WrapperWALayer(linear, enable_torch_compile=False, activation_quantizer=ActivationQuantizer())
+
+    wrapper(torch.randn(2, 16))
 
 
 class _WrappedLinear(WrapperWALayer):
@@ -67,10 +117,12 @@ class _SaveableModel(torch.nn.Module):
 
 def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
     model = _SaveableModel()
+    model.linear.orig_layer.act_data_type = "nv_fp4_with_static_gs"
+    model.linear.orig_layer.input_global_scale = torch.tensor([1.5], dtype=torch.float32)
     expected_weight = model.linear.orig_layer.weight.detach().clone()
     output_dir = str(tmp_path / "fake_model")
 
-    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
+    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4"], SimpleNamespace(mllm=False)).save_quantized(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -78,19 +130,20 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
             "bits": 4,
             "group_size": 16,
             "sym": True,
-            "data_type": "nvfp4_v2",
+            "data_type": "nv_fp",
             "act_bits": 4,
             "act_group_size": 16,
             "act_sym": True,
-            "act_data_type": "nvfp4_v2",
+            "act_data_type": "nv_fp4_with_static_gs",
             "to_quant_block_names": ["block"],
             "supported_types": [torch.nn.Linear],
         },
     )
 
     state_dict = torch.load(os.path.join(output_dir, "pytorch_model.bin"), weights_only=True)
-    assert set(state_dict) == {"linear.weight", "linear.bias", "linear.act_max_scale"}
+    assert set(state_dict) == {"linear.weight", "linear.bias", "linear.act_max_scale", "linear.input_global_scale"}
     assert torch.equal(state_dict["linear.weight"], expected_weight)
+    assert torch.equal(state_dict["linear.input_global_scale"], torch.tensor([1.5], dtype=torch.float32))
     # Save-time should keep in-memory wrappers unchanged; replacement happens on load.
     assert hasattr(saved_model.linear, "orig_layer")
     with open(os.path.join(output_dir, "config.json")) as config_file:
@@ -103,8 +156,12 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
 
     loaded_model = _TinyLoadModel(SimpleNamespace(**quantization_config))
     loaded_model, used_backends = convert_hf_model(loaded_model, target_device="cpu")
+    loaded_model.block.linear.load_state_dict(
+        {"input_global_scale": state_dict["linear.input_global_scale"]}, strict=False
+    )
     assert used_backends == ["auto_round:fake"]
     _assert_has_act_hook(loaded_model.block.linear)
+    assert torch.equal(loaded_model.block.linear.input_global_scale, torch.tensor([1.5], dtype=torch.float32))
     roundtrip_activation = torch.randn(2, 3, 16)
     assert not torch.equal(loaded_model.block.linear.qdq_input(roundtrip_activation), roundtrip_activation)
 

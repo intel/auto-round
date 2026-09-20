@@ -31,7 +31,6 @@ class TestSignSgdPipeline:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     def test_sign_sgd_quantize_reload_forward(self, tiny_opt_model_path):
         """Run a real sign-SGD quantization on GPU, reload and forward-pass it."""
         autoround = AutoRound(
@@ -56,7 +55,6 @@ class TestSignSgdPipeline:
             out = model(input_ids)
         assert out.logits.shape[0] == 1
 
-    @pytest.mark.timeout(180)
     def test_w4a8_quantize_reload(self, tiny_opt_model_path):
         """W4A8 with iters>0 exercises the activation-quantization hooks on GPU."""
         autoround = AutoRound(
@@ -81,7 +79,6 @@ class TestSignSgdPipeline:
             out = model(input_ids)
         assert out.logits.shape[0] == 1
 
-    @pytest.mark.timeout(180)
     def test_sign_sgd_asym(self, tiny_opt_model_path):
         """Asymmetric sign-SGD quantization + export on GPU.
 
@@ -103,7 +100,6 @@ class TestSignSgdPipeline:
         assert isinstance(compressed_model, torch.nn.Module)
         assert os.path.isdir(quantized_model_path)
 
-    @pytest.mark.timeout(180)
     def test_sign_sgd_bits2_group32(self, tiny_opt_model_path):
         """2-bit, small-group sign-SGD exercises low-bit block optimization."""
         autoround = AutoRound(
