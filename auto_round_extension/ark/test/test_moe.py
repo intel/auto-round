@@ -61,10 +61,10 @@ def has_moe_gemm_prefill_mxfp4_mxfp4():
 
 
 def has_moe_gemm_prefill_hmt_mxfp4_mxfp4():
-    """Check if HMT + MXFP4 x MXFP4 MoE prefill kernel is available."""
+    """Check if the FWHT HMT + MXFP4 x MXFP4 MoE prefill path is available."""
     if ark.xpu_lib is None:
         return False
-    return hasattr(ark.xpu_lib, "moe_gemm_prefill_hmt_mxfp4_mxfp4")
+    return hasattr(ark.xpu_lib, "mxfp4_hadamard_quant") and hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp4_mxfp4")
 
 
 @pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")

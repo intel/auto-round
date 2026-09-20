@@ -441,8 +441,8 @@ def main() -> None:
         raise RuntimeError("auto_round_kernel XPU extension lacks moe_gemm_prefill_mxfp4_mxfp4")
     if not hasattr(ark, "moe_gemm_prefill_hmt_mxfp4_mxfp4"):
         raise RuntimeError("auto_round_kernel lacks moe_gemm_prefill_hmt_mxfp4_mxfp4")
-    if ark.xpu_lib is None or not hasattr(ark.xpu_lib, "moe_gemm_prefill_hmt_mxfp4_mxfp4"):
-        raise RuntimeError("auto_round_kernel XPU extension lacks moe_gemm_prefill_hmt_mxfp4_mxfp4")
+    if ark.xpu_lib is None or not hasattr(ark.xpu_lib, "mxfp4_hadamard_quant"):
+        raise RuntimeError("auto_round_kernel XPU extension lacks mxfp4_hadamard_quant")
 
     fp8_dtype = torch.float8_e4m3fn if args.fp8 == "e4m3" else torch.float8_e5m2
     output_dtype = torch.bfloat16 if args.output == "bf16" else torch.float16
