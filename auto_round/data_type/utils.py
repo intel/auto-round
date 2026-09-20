@@ -311,6 +311,7 @@ def update_fused_layer_global_scales(
 
     For attention layers:
       - q/k/v projections share a single global scale.
+      - Diffusers self-attention uses to_q/to_k/to_v (e.g. Wan).
 
     For MLP layers:
       - gate_proj and up_proj share a single global scale.
@@ -364,6 +365,14 @@ def update_fused_layer_global_scales(
     # ---------------- Attention ----------------
     if _is_attention_module(submodule):
         _update_global_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
+        return
+
+    # Diffusers self-attention (e.g. Wan) uses to_q/to_k/to_v. Cross-attention
+    # Q consumes different inputs from K/V and must not join their scale group.
+    if not getattr(submodule, "is_cross_attention", False) and all(
+        hasattr(submodule, projection) for projection in ("to_q", "to_k", "to_v")
+    ):
+        _update_global_scales([submodule.to_q, submodule.to_k, submodule.to_v])
         return
 
     # ---------------- MLP ----------------
