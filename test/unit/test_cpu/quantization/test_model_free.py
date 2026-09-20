@@ -536,6 +536,25 @@ def test_nvfp4_e5m3_model_free_fake_export_preserves_activation_config(tmp_path)
     assert not torch.equal(layer.qdq_input(activation), activation)
 
 
+def test_mixed_nvfp4_e5m3_fake_export_preserves_activation_config(tmp_path):
+    tensors = {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="BF16",
+        layer_config={"model.layers.0.self_attn.q_proj": {"scheme": "NVFP4_E5M3"}},
+        format="fake",
+    )
+    compressor.run()
+
+    quantization_config = _read_qconfig(output_dir)
+    assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["act_data_type"] == "nvfp4_v2"
+
+
 def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
     tensors = {
         "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),

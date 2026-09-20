@@ -3069,12 +3069,18 @@ def _derive_dominant_int_scheme(
         return None
 
     (bits, group_size, sym, data_type), _ = counter.most_common(1)[0]
-    return {
+    dominant = {
         "bits": bits,
         "group_size": group_size,
         "sym": sym,
         "data_type": data_type,
     }
+    if data_type == _NVFP4_E5M3_DATA_TYPE:
+        for act_key in ("act_bits", "act_data_type", "act_group_size", "act_sym", "act_dynamic"):
+            value = scheme.get(act_key)
+            if value is not None:
+                dominant[act_key] = value
+    return dominant
 
 
 def _build_quantization_config(
@@ -3159,6 +3165,7 @@ def _build_quantization_config(
         dominant = _derive_dominant_int_scheme(quantized_layers, layer_config, default_scheme)
         if dominant is not None:
             default_scheme = dominant
+            data_type = (default_scheme.get("data_type") or "int").lower()
 
     from auto_round.version import __version__
 

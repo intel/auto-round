@@ -528,15 +528,27 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
 
                 clear_memory()
 
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-
             eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-            model = AutoModelForCausalLM.from_pretrained(
-                eval_folder, device_map=device_str, torch_dtype=eval_model_dtype
-            )
-            model.eval()
-            if tokenizer is None:
-                tokenizer = AutoTokenizer.from_pretrained(eval_folder)
+            if getattr(autoround, "mllm", False):
+                from auto_round.utils.model import mllm_load_model
+
+                model, _, loaded_tokenizer, _ = mllm_load_model(
+                    eval_folder,
+                    device=device_str,
+                    torch_dtype=eval_model_dtype,
+                    trust_remote_code=not args.disable_trust_remote_code,
+                )
+                if tokenizer is None:
+                    tokenizer = loaded_tokenizer
+            else:
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+
+                model = AutoModelForCausalLM.from_pretrained(
+                    eval_folder, device_map=device_str, torch_dtype=eval_model_dtype
+                )
+                model.eval()
+                if tokenizer is None:
+                    tokenizer = AutoTokenizer.from_pretrained(eval_folder)
 
         # Evaluate with model instance
         evaluate_with_model_instance(model, tokenizer, device_str, args)
