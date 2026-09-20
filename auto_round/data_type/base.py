@@ -14,7 +14,7 @@ class.  It deliberately contains no quantization math.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Callable
 
@@ -174,10 +174,17 @@ class DataTypeQuantizer:
         self.parameters: dict[str, torch.Tensor] = {}
 
     def initialize(self, weight: torch.Tensor, *, imatrix=None) -> None:
-        """Initialize datatype state and expose its trainable tensors."""
+        """Initialize datatype state and expose its trainable tensors.
+
+        The weight is detached: state buffers are pure data and must not keep
+        an autograd graph back to the init-time weight alive - a later
+        backward would free it and every subsequent QDQ reusing the state
+        would hit the freed graph ("backward through the graph a second
+        time"). Trainable values are created fresh inside ``create_state``.
+        """
         self._state = self._implementation.create_state(
-            weight,
-            imatrix=imatrix,
+            weight.detach(),
+            imatrix=imatrix.detach() if isinstance(imatrix, torch.Tensor) else imatrix,
             mode=self._mode,
             tune_rounding=self._tune_rounding,
             tune_minmax=self._tune_minmax,
@@ -208,6 +215,48 @@ class DataTypeQuantizer:
             tunables={**self.parameters, **parameters},
             materialize=materialize,
         )
+
+    def qdq_window(
+        self,
+        weight: torch.Tensor,
+        *,
+        tunables=None,
+        g_start=None,
+        g_end=None,
+        tensor_min=None,
+        tensor_max=None,
+        init_scale=None,
+        materialize=False,
+    ) -> "WeightQuantizationResult":
+        """QDQ one output-row window of a huge layer.
+
+        Row blocking bounds the fp32 intermediates of quantize and backward
+        math for layers whose full-tensor QDQ does not fit the accelerator.
+        Per-group state buffers (``tensor_min``/``tensor_max``/
+        ``optimized_init``, flat ``[rows * groups_per_row]``) are sliced to
+        the window; explicit ``tensor_min``/``tensor_max``/``init_scale``
+        arguments win over the state slices. Groups never straddle row
+        windows, so the windowed computation equals the full-tensor one.
+        """
+        state = self._state
+        if state is not None and is_dataclass(state):
+            overrides = {}
+            for name, explicit in (
+                ("tensor_min", tensor_min),
+                ("tensor_max", tensor_max),
+                ("optimized_init", init_scale),
+            ):
+                t = explicit
+                if t is None and g_start is not None:
+                    candidate = getattr(state, name, None)
+                    if isinstance(candidate, torch.Tensor) and candidate.dim() >= 1:
+                        t = candidate[g_start:g_end]
+                if t is not None:
+                    overrides[name] = t
+            if overrides:
+                state = replace(state, **overrides)
+        merged = {**self.parameters, **(tunables or {})}
+        return self._implementation.qdq(weight, state, tunables=merged, materialize=materialize)
 
     def apply_result(self, layer, result: WeightQuantizationResult, *, transpose=False) -> None:
         """Store an already computed QDQ result on its source layer."""

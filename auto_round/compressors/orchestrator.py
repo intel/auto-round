@@ -14,6 +14,7 @@
 import copy
 import gc
 import os
+import re
 import time
 from functools import partial
 from typing import TYPE_CHECKING, Any, Optional, Union
@@ -53,6 +54,7 @@ from auto_round.utils import (
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
+    to_standard_regex,
 )
 from auto_round.utils.device import (
     _force_trim_malloc,
@@ -321,6 +323,12 @@ class CompressionOrchestrator(BaseOrchestrator):
 
             q_input = new_q_input
 
+            # keep the chain tail alive for tail-fed external layers (lm_head)
+            # lm_head-class layers: the last block's fp reference and
+            # quantized-chain outputs are their inputs (through the final norm)
+            if getattr(self, "_tail_fed_layers_", None):
+                self._lm_head_chain_tail_ = (new_q_input, reference_output)
+
             # ── Infrastructure: hook removal, device cleanup, logging ─────────
             if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                 accelerate.hooks.remove_hook_from_submodules(m)
@@ -530,6 +538,18 @@ class CompressionOrchestrator(BaseOrchestrator):
             remain_layer_names.append(n)
         for name in remain_layer_names:
             logger.info(f"Quantizing remaining layer {name} on CPU.")
+            from auto_round.utils.device import log_cuda_memory_census
+
+            # phase boundary: the block loop just freed its large tuning
+            # buffers; returning them to the driver keeps the allocator pool
+            # compact before the (potentially huge) outside-block wrappers
+            # are built, instead of reserving fragmented segments nobody can use
+            from auto_round.utils.device_manager import get_current_device_manager
+
+            _ar = get_current_device_manager()
+            if _ar.is_available():
+                _ar.empty_cache()
+            log_cuda_memory_census(f"outside-block loop entry {name}", walk=False)
             self.alg_composer.compress_layer_outside_block(get_module(self.model, name))
             # Outside-block layers (embed_tokens/lm_head/etc.) are typically few so just
             # log a summary after each one.
@@ -578,12 +598,23 @@ class CompressionOrchestrator(BaseOrchestrator):
                 supported_types=SUPPORTED_LAYER_TYPES,
                 quant_block_list=self.quant_block_list,
             )
+        # lm_head-class external layers are tail-fed: the block loop's chain
+        # output (fp reference + quantized rows through the final norm) is
+        # their input, so they neither join the upfront capture call nor the
+        # outside-block q-capture pass - no extra whole-model forwards
+        self._tail_fed_layers_ = []
+        self._lm_head_chain_tail_ = None
+        self._lm_head_norm_name_ = None
+        lm_head_name = self._resolve_lm_head_name_(layer_names)
+        if lm_head_name is not None:
+            self._tail_fed_layers_ = [lm_head_name]
+            self._lm_head_norm_name_ = self._discover_final_norm_(all_blocks)
         if not self.has_variable_block_shape:
             to_cache_block_names = [block[0] for block in all_blocks]
         else:
             to_cache_block_names = flatten_list(all_blocks)
         _last_cache_name = to_cache_block_names[-1] if len(to_cache_block_names) > 1 else None
-        to_cache_layer_names = layer_names
+        to_cache_layer_names = [n for n in layer_names if n not in self._tail_fed_layers_]
         if self.super_group_size is not None:
             to_cache_layer_names = []
         if len(layer_names) > 0:
@@ -858,6 +889,24 @@ class CompressionOrchestrator(BaseOrchestrator):
         # TODO currently we take all the layers outside blocks as post block layers which is not optimal
         # if there is no input for layer, we use rtn
 
+        # tail-fed layers (lm_head) receive their inputs from the block loop's
+        # chain output through the final norm - no input-capture entries
+        tail_inputs = {}
+        for tail_name in list(getattr(self, "_tail_fed_layers_", []) or []):
+            if tail_name not in layer_names:
+                continue
+            derived = self._lm_head_tail_inputs_(tail_name)
+            if derived is not None:
+                tail_inputs[tail_name] = derived
+                self._attach_tail_imatrix_(tail_name, derived[0])
+        if tail_inputs:
+            layer_inputs = dict(layer_inputs)
+            for tail_name, (fp_rows, _q_rows) in tail_inputs.items():
+                layer_inputs[tail_name] = fp_rows
+            # release the raw tail: its residency would collide with the
+            # wrapper's value/grad buffers during the tune below
+            self._lm_head_chain_tail_ = None
+
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
@@ -910,8 +959,12 @@ class CompressionOrchestrator(BaseOrchestrator):
             dispatch_model(self.model, self.model.hf_device_map)
 
         if enable_quanted_input:
-            logger.info("starting to cache layer inputs for %s, this may be quite slow ", layer_names)
-            q_layer_inputs = self.cache_data([], self.calibration_context.nsamples, layer_names=layer_names)
+            capture_names = [n for n in layer_names if n not in tail_inputs]
+            if capture_names:
+                logger.info("starting to cache layer inputs for %s, this may be quite slow ", capture_names)
+                q_layer_inputs = self.cache_data([], self.calibration_context.nsamples, layer_names=capture_names)
+            else:
+                logger.info("outside-block layer inputs come from the calibration chain tail; no extra pass")
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
@@ -920,16 +973,49 @@ class CompressionOrchestrator(BaseOrchestrator):
             self.model = mv_module_from_gpu(self.model)
         clear_memory()
         for layer_name in layer_names:
-            layer_input = layer_inputs[layer_name]
-            layer_input = to_device(layer_input, self.compress_context.cache_device)
-            q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
-            q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
-            self.alg_composer.compress_layer_outside_block(
-                get_module(self.model, layer_name),
-                fp_inputs=layer_input,
-                q_inputs=q_layer_input,
-                input_ids=token_ids,
-            )
+            if layer_name in tail_inputs:
+                # tail rows are parked on host by design and the tune loop
+                # streams them per micro-batch; pulling the whole set onto
+                # cache_device is the capture-path contract, not ours
+                layer_input = layer_inputs[layer_name]
+            else:
+                layer_input = to_device(layer_inputs[layer_name], self.compress_context.cache_device)
+            if layer_name in tail_inputs:
+                q_layer_input = tail_inputs[layer_name][1]
+            else:
+                q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
+                q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
+            try:
+                self.alg_composer.compress_layer_outside_block(
+                    get_module(self.model, layer_name),
+                    fp_inputs=layer_input,
+                    q_inputs=q_layer_input,
+                    input_ids=token_ids,
+                )
+            except Exception as e:  # pylint: disable=broad-except
+                # containment: a failed tune leaves the layer unquantized and
+                # the export pass (missing-tensors) completes the artifact,
+                # instead of losing a run whose blocks are already tuned and
+                # streamed
+                from auto_round.utils.device import is_oom_exception  # pylint: disable=import-outside-toplevel
+
+                if is_oom_exception(e):
+                    # the only vantage that sees the failed working set; the
+                    # baseline header fired at wrapper-ready time
+                    from auto_round.utils.device import log_cuda_memory_census
+
+                    log_cuda_memory_census(f"outside-block layer {layer_name} OOM (at failure)", device_manager.device)
+                logger.warning(
+                    "outside-block layer %s tuning failed (%s: %s); leaving it to the export path",
+                    layer_name,
+                    type(e).__name__,
+                    e,
+                    exc_info=True,
+                )
+                del layer_input
+                clear_memory(q_layer_input)
+                clear_memory()
+                continue
             if self.compress_context.is_immediate_packing:
                 immediate_pack(layer_name, self.layer_config)
 
@@ -939,6 +1025,190 @@ class CompressionOrchestrator(BaseOrchestrator):
             del layer_input
             clear_memory(q_layer_input)
             memory_monitor.log_summary()
+
+    def _discover_final_norm_(self, all_blocks) -> Optional[str]:
+        """Name-agnostic final-norm discovery: the last block-external norm-like leaf.
+
+        Accepts any leaf whose parameters are ALL 1-D (RMSNorm has one,
+        LayerNorm-with-bias has two - GPT-J/OPT-class models) and whose name
+        says norm/ln_f; lm_head-class projections carry a 2-D weight and never
+        match."""
+        block_prefixes = [name for block in all_blocks for name in block]
+        best = None
+        for name, m in self.model_context.model.named_modules():
+            if not name:
+                continue
+            if any(name == b or name.startswith(b + ".") for b in block_prefixes):
+                continue
+            if list(m.children()):
+                continue
+            params = list(m.parameters())
+            if params and all(p.dim() == 1 for p in params):
+                low = name.lower()
+                if "norm" in low or "ln_f" in low:
+                    best = name
+        return best
+
+    @staticmethod
+    def _chain_hidden_rows(chain_state):
+        """A chain input/output as a plain list of per-sample row tensors.
+
+        The chain keeps rows as a list, or a dict of per-key row lists for
+        block classes with structured outputs (e.g. gated-delta-net): take its
+        ``hidden_states`` rows."""
+        rows = chain_state.get("hidden_states") if isinstance(chain_state, dict) else chain_state
+        if isinstance(rows, dict):
+            rows = next(iter(rows.values()))
+        return rows
+
+    def _resolve_lm_head_name_(self, layer_names) -> Optional[str]:
+        """lm_head's module name from the outside-block plan, or ``None``."""
+        if not layer_names:
+            return None
+        candidates = [n for n in layer_names if n == "lm_head" or n.rsplit(".", 1)[-1] == "lm_head"]
+        if not candidates:
+            candidates = [n for n in layer_names if "lm_head" in n]
+        if not candidates:
+            return None
+        if len(candidates) > 1:
+            logger.warning(
+                "multiple lm_head candidates in the outside-block plan %s; tuning %s", candidates, candidates[0]
+            )
+        return candidates[0]
+
+    def _quantizer_requests_q_inputs_(self) -> bool:
+        """Whether the active quantizer(s) maintain the quantized-input chain.
+
+        SignRound defaults ``enable_quanted_input`` to True, RTN (iters=0)
+        defaults to False; drives the log level of the FP-only tail fallback.
+        """
+        quantizers = getattr(self.alg_composer, "block_quantizer", None)
+        if quantizers is None:
+            return False
+        if not isinstance(quantizers, (list, tuple)):
+            quantizers = [quantizers]
+        return any(bool(getattr(q, "enable_quanted_input", False)) for q in quantizers)
+
+    def _attach_tail_imatrix_(self, lm_head_name, fp_rows) -> None:
+        """Attach the fp-input imatrix for lm_head from the chain tail rows.
+
+        In the capture path this statistic was accumulated by the quantizer's
+        fp-input forward hook while the collection walk executed lm_head; with
+        the single-block-target early-stop the walk never reaches lm_head, so
+        the same math (fp32 column sums of squares over all token rows, plus
+        the token-row count) runs directly over the tail rows - the identical
+        input VALUES the hook would have seen. Count-convention note: the
+        lm_head hook sees a (tokens, hidden) input, so its imatrix_cnt also
+        counts token rows; BLOCK-layer hooks count batch entries instead. The
+        outside-block lane never divides by imatrix_cnt, so the difference is
+        inert here. Never overwrites an existing statistic.
+        """
+        module = get_module(self.model_context.model, lm_head_name)
+        if module is None or hasattr(module, "imatrix"):
+            return
+        if not fp_rows:
+            return
+        total = None
+        count = 0
+        for row in fp_rows:
+            flattened = row.reshape(-1, row.shape[-1]).to(torch.float32)
+            squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
+            total = squared if total is None else total + squared.to(total.device)
+            count += flattened.shape[0]  # token rows - the lm_head hook's convention
+        module.imatrix = total
+        module.imatrix_cnt = count
+        logger.info("[lm_head] attached the fp-input imatrix for %s from %d chain-tail rows", lm_head_name, count)
+
+    def _lm_head_tail_inputs_(self, lm_head_name):
+        """``(fp_rows, q_rows)`` for lm_head from the calibration chain tail.
+
+        The block loop's chain output is the RAW last-block output; lm_head
+        consumes POST-final-norm states, so the final norm is applied to the
+        rows (its weights stream in when still meta). Returns ``None`` on any
+        mismatch - the caller then keeps the closed-form path for the layer.
+        """
+        tail = getattr(self, "_lm_head_chain_tail_", None)
+        if tail is None:
+            logger.warning(
+                "[lm_head] %s falls back to zero-shot RTN (no input-capture entry; the layer was excluded from capture caching): the block loop kept no chain tail",
+                lm_head_name,
+            )
+            return None
+        new_q_output, reference_output = tail
+        fp_rows = self._chain_hidden_rows(reference_output)
+        if (
+            not isinstance(fp_rows, (list, tuple))
+            or len(fp_rows) == 0
+            or not all(isinstance(r, torch.Tensor) for r in fp_rows)
+        ):
+            logger.warning(
+                "[lm_head] %s falls back to zero-shot RTN (unexpected chain-tail row format: %s)",
+                lm_head_name,
+                type(fp_rows).__name__,
+            )
+            return None
+        q_rows = self._chain_hidden_rows(new_q_output) if new_q_output is not None else None
+        q_requested = self._quantizer_requests_q_inputs_()
+        if not isinstance(q_rows, (list, tuple)) or len(q_rows) != len(fp_rows):
+            if q_requested:
+                logger.warning(
+                    "[lm_head] %s tunes on FP chain inputs (enable_quanted_input cannot be honored): "
+                    "quantized chain rows are missing or malformed",
+                    lm_head_name,
+                )
+            else:
+                # RTN (iters=0) defaults enable_quanted_input to False: the q chain
+                # was never maintained by configuration, so this is the expected
+                # path, not a degradation - and the search ignores q rows anyway.
+                logger.info(
+                    "[lm_head] %s tunes on FP chain inputs (quantized-input chain disabled by config)",
+                    lm_head_name,
+                )
+            q_rows = None
+        norm_name = getattr(self, "_lm_head_norm_name_", None)
+        norm_mod = get_module(self.model_context.model, norm_name) if norm_name else None
+        if norm_mod is None:
+            logger.warning(
+                "[lm_head] %s falls back to zero-shot RTN (cannot locate the final norm that feeds it)",
+                lm_head_name,
+            )
+            return None
+        # a wrongly picked leaf is detectable: the real final norm scales the
+        # hidden dim lm_head consumes
+        in_features = getattr(get_module(self.model_context.model, lm_head_name), "in_features", None)
+        if in_features is not None and norm_mod.weight.numel() != in_features:
+            logger.warning(
+                "[lm_head] %s falls back to zero-shot RTN (candidate final norm %s does not match lm_head's "
+                "input width (%d vs %d))",
+                lm_head_name,
+                norm_name,
+                norm_mod.weight.numel(),
+                in_features,
+            )
+            return None
+        if any(p.is_meta for p in norm_mod.parameters()):
+            offloader = getattr(self, "_offloader", None)
+            if offloader is None:
+                logger.warning(
+                    "[lm_head] %s falls back to zero-shot RTN (the final norm is still meta and no offloader "
+                    "is available to load it)",
+                    lm_head_name,
+                )
+                return None
+            offloader.reload(self.model_context.model, norm_name)
+            materialize_model_(norm_mod)
+        with torch.no_grad():
+            # Compute on the norm's device (its params stay put); results park
+            # on the HOST: the tune loop streams rows per micro-batch
+            # (torch.cat(...).to(device)), so keeping the whole set resident on
+            # cache_device only collides with the wrapper's value/grad buffers
+            # on tight GPUs. Only one per-sample transient is away from host
+            # at a time.
+            ndev, dt = norm_mod.weight.device, norm_mod.weight.dtype
+            fp_rows = [norm_mod(r.to(ndev).to(dt)).to("cpu") for r in fp_rows]
+            if q_rows is not None:
+                q_rows = [norm_mod(r.to(ndev).to(dt)).to("cpu") for r in q_rows]
+        return fp_rows, q_rows
 
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""

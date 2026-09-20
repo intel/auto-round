@@ -368,6 +368,7 @@ def _single_tensor_sgd(
 ):
     for i, param in enumerate(params):
         d_p = d_p_list[i] if not maximize else -d_p_list[i]
+        sign_in_place = True
 
         if weight_decay != 0:
             d_p = d_p.add(param, alpha=weight_decay)
@@ -385,5 +386,11 @@ def _single_tensor_sgd(
                 d_p = d_p.add(buf, alpha=momentum)
             else:
                 d_p = buf
+                # the buffer is reused next step; its values must survive
+                sign_in_place = False
 
-        param.add_(torch.sign(d_p), alpha=-lr)
+        # a fresh sign tensor is as large as the gradient (several GiB for a
+        # full-vocabulary lm_head); in-place sign on the gradient (zeroed
+        # after the step) or on the fresh add() result allocates nothing
+        update = d_p.sign_() if sign_in_place else torch.sign(d_p)
+        param.add_(update, alpha=-lr)

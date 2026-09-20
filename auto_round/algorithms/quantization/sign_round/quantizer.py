@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import logging
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
@@ -23,8 +24,10 @@ from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import (
+    BestParamsSlot,
     IndexSampler,
     collect_best_params,
+    snapshot_best_params,
 )
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -33,13 +36,45 @@ from auto_round.utils import (
     mv_module_from_gpu,
     set_amax_for_all_moe_layers,
 )
-from auto_round.utils.device import clear_memory_if_reached_threshold
+from auto_round.utils.device import clear_memory_if_reached_threshold, log_cuda_memory_census
 from auto_round.utils.device_manager import device_manager
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import BlockContext
+
+
+# Output-element budget for one forward/backward while tuning an outside-block
+# layer: a full-vocabulary lm_head at long seqlen cannot hold its fp32 logits
+# plus backward transients on a single GPU, so the tune loop slices the
+# sample's rows to stay within this many output elements per slice (64M = a
+# 256MB fp32 logits tensor; the accumulated gradient is unchanged)
+_OUTSIDE_TUNE_CHUNK_OUT_ELEMS = 2**26
+
+
+def _valid_token_mask_rows(valid_token_mask, indices, device, rows_axis):
+    """Concatenate per-sample valid-token masks into the input's row layout.
+
+    Per-sample masks are ``[1, seq]``. For 3-D inputs (rows on dim 1) the
+    result is ``[n, seq, 1]`` so a chunk slices ``[:, start:end]``; for 2-D
+    inputs (rows concatenated on dim 0) it flattens to ``[total_rows, 1]`` so
+    a chunk slices ``[start:end]``.
+    """
+    m = torch.cat([valid_token_mask[i] for i in indices], dim=0).to(device)
+    if rows_axis == 1:
+        return m.unsqueeze(-1)
+    return m.reshape(-1, 1)
+
+
+def _outside_tune_rows_per_chunk(out_features, sample_rows, budget=_OUTSIDE_TUNE_CHUNK_OUT_ELEMS):
+    """Rows of one sample processed per forward/backward slice.
+
+    Small-output layers (every decoder projection) get their whole sample in
+    one slice; only huge-output layers (lm_head-class vocabularies) split."""
+    if out_features is None or out_features <= 0:
+        return sample_rows
+    return max(1, min(sample_rows, budget // out_features))
 
 
 @register_pipeline_member(SignRoundConfig)
@@ -353,8 +388,10 @@ class SignRoundQuantizer(BaseQuantizer):
         """
         device = device_manager.device
         loss_device = getattr(self, "_loss_device", device)
-        card_0_in_high_risk = getattr(self, "_card_0_in_high_risk", False)
-        mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+        # inter-iteration consolidation probes live pressure per device (a
+        # ratio check, us-cheap): low-usage tunes never trip it, tight tunes
+        # (huge out-of-block layers) consolidate fragmentation
+        # every iteration instead of accumulating holes until a mid-backward OOM
 
         valid_token_mask = None
         # Derive valid_token_mask from raw token IDs when not supplied by caller.
@@ -512,35 +549,36 @@ class SignRoundQuantizer(BaseQuantizer):
                 for batch_start in range(0, len(global_indices), batch_size):
                     indices = global_indices[batch_start : batch_start + batch_size]
                     staged = tuning_cache.get(indices) if tuning_cache is not None else None
-                    if staged is None:
-                        ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
-                        pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
-                    else:
-                        ref_output = staged[2]
-                        pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
-                    if loss_device is not None:
-                        pred_output = pred_output.to(loss_device)
-                    if (
-                        block_ctx.block_index == block_ctx.block_cnt - 1
-                        and self.enable_lfq
-                        and input_ids is not None
-                        and self._is_text_decoder_block(block_ctx.block_name)
-                    ):
-                        loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
-                    else:
-                        loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
+
+                    def _compute_loss():
+                        if staged is None:
+                            ref_output_l = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
+                            pred_output_l = block_fwd.forward(
+                                block, active_inputs, input_others, indices, _fwd_cache_device
+                            )
+                        else:
+                            ref_output_l = staged[2]
+                            pred_output_l = tuning_cache.forward(block, staged, _fwd_cache_device)
+                        if loss_device is not None:
+                            pred_output_l = pred_output_l.to(loss_device)
+                        if (
+                            block_ctx.block_index == block_ctx.block_cnt - 1
+                            and self.enable_lfq
+                            and input_ids is not None
+                            and self._is_text_decoder_block(block_ctx.block_name)
+                        ):
+                            return self.lfq_loss(pred_output_l, torch.cat([input_ids[i] for i in indices], dim=0))
+                        return self._get_loss(pred_output_l, ref_output_l, indices, mse_loss, device, valid_token_mask)
+
+                    loss = _compute_loss()
+                    # clear memory to avoid OOM due to memory fragmentation
+                    clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
+                    self._scale_loss_and_backward(scaler, loss)
                     num_elm = 1 if num_elm <= 0 else num_elm
                     total_loss += loss.item() / num_elm
 
-                    if mid_iter_mem_check:
-                        # clear memory to avoid OOM due to memory fragmentation
-                        clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
-
-                    self._scale_loss_and_backward(scaler, loss)
-
-                    if mid_iter_mem_check:
-                        # clear memory to avoid OOM due to memory fragmentation
-                        clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
+                    # clear memory to avoid OOM due to memory fragmentation
+                    clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
 
                 if i == 0:
                     init_loss = total_loss
@@ -550,17 +588,25 @@ class SignRoundQuantizer(BaseQuantizer):
                 if total_loss < best_loss:
                     best_loss = total_loss
                     if not self.not_use_best_mse:
+                        # drop the previous snapshot BEFORE cloning the new one:
+                        # holding both doubles the snapshot footprint for the
+                        # duration of the clone (weight-sized fp32 rounding
+                        # values make that window OOM-class for huge layers),
+                        # and the fresh clone reuses the freed storage when
+                        # shapes match, so the swap leaves no fragmentation
+                        best_params = None
                         best_params = (
                             tuning_cache.collect_best_params()
                             if tuning_cache is not None and tuning_cache.best is not None
-                            else collect_best_params(block, self.compress_context.cache_device)
+                            else snapshot_best_params(block, self.compress_context.cache_device)
                         )
                         last_best_iter = i
                 if self.not_use_best_mse and i == self.iters - 1:
+                    best_params = None
                     best_params = (
                         tuning_cache.collect_best_params()
                         if tuning_cache is not None and tuning_cache.best is not None
-                        else collect_best_params(block, self.compress_context.cache_device)
+                        else snapshot_best_params(block, self.compress_context.cache_device)
                     )
 
                 if not self.not_use_best_mse:
@@ -601,6 +647,28 @@ class SignRoundQuantizer(BaseQuantizer):
 
         logger.infoclean(dump_info)
         return best_params
+
+    @staticmethod
+    def _preallocate_tuning_grads_(optimizer, layer_name=""):
+        """Create zero ``.grad`` buffers so autograd accumulates in place.
+
+        The first backward would otherwise allocate a dense gradient for every
+        tuning parameter mid-run (as large as the rounding parameter itself);
+        allocating it up front keeps the peak inside the budget measured at
+        wrapper-construction time and is gradient-identical (accumulate into
+        zeros)."""
+        total = 0
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                if param.grad is None and param.requires_grad:
+                    param.grad = torch.zeros_like(param)
+                    total += param.grad.numel() * param.grad.element_size()
+        if total:
+            logger.debug(
+                "pre-allocated tuning gradient buffers for %s (%.2fGiB)",
+                layer_name,
+                total / 1024**3,
+            )
 
     def quantize_layer_outside_block(
         self,
@@ -654,18 +722,39 @@ class SignRoundQuantizer(BaseQuantizer):
         logger.info(f"quantizing layer {layer_name}")
         # Layer is already on the correct device (placed by the caller / AlgorithmComposer).
         device = layer.weight.device if hasattr(layer, "weight") else device_manager.device
+        log_cuda_memory_census(f"outside-block tune start {layer_name}", device, walk=False)
         for i in range(len(fp_inputs)):
             fp_inputs[i] = fp_inputs[i].to(layer.weight.dtype)
             if q_inputs is not None:
                 q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
 
+        # Inductor's backward for a 1B+-element value parameter materializes
+        # an extra full-size tiled buffer (observed ~4.7GiB on a 248k-vocab
+        # lm_head) on top of the value, its gradient, and the quantized
+        # weight autograd saves - compiled eager autograd fits where the
+        # compiled graph does not. Compiling one outside-block layer for a
+        # handful of iterations buys no measurable speed, so skip it for
+        # wrappers whose rounding parameter exceeds the chunking budget.
+        value_elements = layer.weight.numel() if getattr(layer, "weight", None) is not None else 0
+        compile_wrapper = self.compress_context.enable_torch_compile and value_elements <= _OUTSIDE_TUNE_CHUNK_OUT_ELEMS
+        if self.compress_context.enable_torch_compile and not compile_wrapper:
+            logger.info(
+                "skipping torch.compile for %s (rounding parameter of %d elements; compiled backward "
+                "would exceed the memory budget)",
+                getattr(layer, "global_name", "layer"),
+                value_elements,
+            )
         wrapper_linear = WrapperLinear(
             layer,
             enable_minmax_tuning=self.enable_minmax_tuning,
-            enable_torch_compile=self.compress_context.enable_torch_compile,
+            enable_torch_compile=compile_wrapper,
             device=device,
             weight_qdq_builder=self.build_weight_qdq,
         ).to(device)
+        # header only: the tensor-list walk runs in the lane's failure handler
+        log_cuda_memory_census(
+            f"outside-block wrapper ready {layer_name} (compile={compile_wrapper})", device, walk=False
+        )
         round_params = []
         minmax_params = []
         for key in wrapper_linear.params.keys():
@@ -698,6 +787,7 @@ class SignRoundQuantizer(BaseQuantizer):
             )
         else:
             optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
+        self._preallocate_tuning_grads_(optimizer, layer_name)
 
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
@@ -709,6 +799,11 @@ class SignRoundQuantizer(BaseQuantizer):
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         best_params = None
+        # reserve the huge-layer snapshot BEFORE the loop: the row-window
+        # machinery free-probes per forward, so an on-device reservation
+        # shrinks the windows from iteration 0 instead of overflowing on the
+        # first improving iteration
+        snapshot_slot = BestParamsSlot(wrapper_linear) if value_elements > _OUTSIDE_TUNE_CHUNK_OUT_ELEMS else None
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
 
@@ -722,6 +817,7 @@ class SignRoundQuantizer(BaseQuantizer):
         if gradient_accumulate_steps != 1:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        mse_sum_loss = torch.nn.MSELoss(reduction="sum").to(device)
         batch_size = 1  # Force to low gpu
         global_batch_size = gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
@@ -752,49 +848,136 @@ class SignRoundQuantizer(BaseQuantizer):
                     current_input = [fp_inputs[i] for i in indices]
                     current_input = torch.cat(current_input, dim=0).to(device)
                     org_input = current_input
-                with torch.no_grad():
-                    current_output = layer(org_input)
                 autocast_ctx = (
                     nullcontext()
                     if not self.model_context.amp
                     else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
                 )
-                if valid_token_mask:
-                    tmp_valid_mask = [valid_token_mask[i] for i in indices]
-                    tmp_valid_mask = torch.cat(tmp_valid_mask, dim=0).to(device)
-                    tmp_valid_mask.unsqueeze_(-1)
+                # Huge-output layers (a full-vocabulary lm_head) cannot hold one
+                # sample's fp32 logits plus the backward transients on a single
+                # GPU; slice the sample's rows so each forward stays within the
+                # output-element budget. Gradients accumulate across slices, so
+                # the result is identical to the single-shot loss.
+                rows_axis = 1 if current_input.dim() == 3 else 0
+                sample_rows = current_input.shape[rows_axis]
+                out_features = layer.weight.shape[0] if layer.weight.dim() == 2 else None
+                # row-blocked wrappers keep only one block's graph alive, so the
+                # position-chunk budget must size against the block width, not
+                # the full output; they must also take the interleaved loop
+                # even when one chunk covers all rows (a single-shot forward
+                # would hold every block's graph at once)
+                blockwise = wrapper_linear.row_block_active()
+                block_bounds = wrapper_linear.row_block_bounds() if blockwise else None
+                chunk_out_features = out_features
+                if blockwise:
+                    chunk_out_features = block_bounds[0][1] - block_bounds[0][0]
+                chunk_rows = (
+                    _outside_tune_rows_per_chunk(chunk_out_features, sample_rows, _OUTSIDE_TUNE_CHUNK_OUT_ELEMS)
+                    if chunk_out_features is not None
+                    else sample_rows
+                )
+                if chunk_rows >= sample_rows and not blockwise:
+                    with torch.no_grad():
+                        current_output = layer(org_input)
+                    if valid_token_mask:
+                        tmp_valid_mask = _valid_token_mask_rows(valid_token_mask, indices, device, rows_axis)
 
-                    with autocast_ctx:
-                        output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                        loss = mse_loss(  # pylint: disable=not-callable
-                            (output_q * tmp_valid_mask).to(torch.float32),
-                            (current_output * tmp_valid_mask).to(torch.float32),
-                        )
+                        with autocast_ctx:
+                            output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                            loss = mse_loss(  # pylint: disable=not-callable
+                                (output_q * tmp_valid_mask).to(torch.float32),
+                                (current_output * tmp_valid_mask).to(torch.float32),
+                            )
 
+                    else:
+                        with autocast_ctx:
+                            output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                            loss = mse_loss(  # pylint: disable=not-callable
+                                output_q.to(torch.float32),
+                                current_output.to(torch.float32),  # mul 1.0 will copy the output
+                            )
+
+                    num_elm = 1 if num_elm <= 0 else num_elm
+                    total_loss += loss.item() / num_elm
+
+                    self._scale_loss_and_backward(scaler, loss)
                 else:
-                    with autocast_ctx:
-                        output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                        loss = mse_loss(  # pylint: disable=not-callable
-                            output_q.to(torch.float32),
-                            current_output.to(torch.float32),  # mul 1.0 will copy the output
-                        )
-
-                num_elm = 1 if num_elm <= 0 else num_elm
-                total_loss += loss.item() / num_elm
-
-                self._scale_loss_and_backward(scaler, loss)
+                    # chunk-sum losses divide by the same denominator the
+                    # single-shot reduction uses, so both the accumulated
+                    # gradient and the logged total stay unchanged
+                    sum_denom = sample_rows * out_features if mse_reduction == "mean" else 1
+                    cat_mask = None
+                    if valid_token_mask:
+                        cat_mask = _valid_token_mask_rows(valid_token_mask, indices, device, rows_axis)
+                    # a row-blocked wrapper keeps its autograd graph per output
+                    # block, so backward must run per block too: the MSE sum
+                    # decomposes over output columns and gradients accumulate,
+                    # making the result identical to one big backward
+                    num_elm = 1 if num_elm <= 0 else num_elm
+                    for start in range(0, sample_rows, chunk_rows):
+                        end = min(start + chunk_rows, sample_rows)
+                        chunk_input = current_input[:, start:end] if rows_axis == 1 else current_input[start:end]
+                        chunk_ref_input = org_input[:, start:end] if rows_axis == 1 else org_input[start:end]
+                        with torch.no_grad():
+                            chunk_ref = layer(chunk_ref_input)
+                        if cat_mask is not None:
+                            # rows live on dim 1 for 3-D [batch, seq, out] inputs;
+                            # the mask is [rows, 1] after unsqueeze, so slice the
+                            # matching axis
+                            chunk_mask = cat_mask[:, start:end] if rows_axis == 1 else cat_mask[start:end]
+                        if not blockwise:
+                            with autocast_ctx:
+                                chunk_q = wrapper_linear(chunk_input)  # pylint: disable=not-callable
+                            if cat_mask is not None:
+                                loss = mse_sum_loss(
+                                    (chunk_q * chunk_mask).to(torch.float32),
+                                    (chunk_ref * chunk_mask).to(torch.float32),
+                                )
+                            else:
+                                loss = mse_sum_loss(chunk_q.to(torch.float32), chunk_ref.to(torch.float32))
+                            loss = loss / sum_denom
+                            total_loss += loss.item() / num_elm
+                            self._scale_loss_and_backward(scaler, loss)
+                        else:
+                            for b0, b1 in block_bounds:
+                                # forward, loss, and backward complete per block
+                                # so only one block's autograd graph is ever live
+                                # (bias included: the reference forward keeps it)
+                                _bias = getattr(layer, "bias", None)
+                                with autocast_ctx:
+                                    chunk_q_block = wrapper_linear.forward_rows(chunk_input, b0, b1, bias=_bias)
+                                ref_block = chunk_ref[..., b0:b1]
+                                if cat_mask is not None:
+                                    loss = mse_sum_loss(
+                                        (chunk_q_block * chunk_mask).to(torch.float32),
+                                        (ref_block * chunk_mask).to(torch.float32),
+                                    )
+                                else:
+                                    loss = mse_sum_loss(chunk_q_block.to(torch.float32), ref_block.to(torch.float32))
+                                loss = loss / sum_denom
+                                total_loss += loss.item() / num_elm
+                                self._scale_loss_and_backward(scaler, loss)
             if i == 0:
                 init_loss = total_loss
+                log_cuda_memory_census(f"outside-block first backward done {layer_name}", device, walk=False)
             current_lr = optimizer.param_groups[0]["lr"]
             logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
             if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
-                    best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
+                    best_params = (
+                        snapshot_slot.refresh(wrapper_linear)
+                        if snapshot_slot is not None
+                        else collect_best_params(wrapper_linear, self.compress_context.cache_device)
+                    )
                     last_best_iter = i
             if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
+                best_params = (
+                    snapshot_slot.refresh(wrapper_linear)
+                    if snapshot_slot is not None
+                    else collect_best_params(wrapper_linear, self.compress_context.cache_device)
+                )
 
             if not self.not_use_best_mse:
                 if 0 < self.dynamic_max_gap <= i - last_best_iter:
@@ -806,6 +989,12 @@ class SignRoundQuantizer(BaseQuantizer):
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
+        # tuning is complete: the gradient buffers (as large as the rounding
+        # parameter on huge layers, zeroed in place between steps) are dead
+        # weight for the final quantize/dequantize transients that follow
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                param.grad = None
         with torch.no_grad():
             unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
         mv_module_from_gpu(layer)
@@ -871,5 +1060,8 @@ class SignRoundQuantizer(BaseQuantizer):
         # for hpu
         if is_hpex_available():
             htcore.mark_step()
-        optimizer.zero_grad()
+        # keep the buffers: reallocating a dense gradient as large as the
+        # rounding parameter would break the memory budget of huge layers
+        # (outside-block lm_head tuning) in every iteration after the first
+        optimizer.zero_grad(set_to_none=False)
         lr_schedule.step()
