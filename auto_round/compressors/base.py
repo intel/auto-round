@@ -53,7 +53,6 @@ from auto_round.schemes import (
     scheme_to_preset_name,
 )
 from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
-from auto_round.utils.dataset_utils import CalibDataset
 from auto_round.utils import (
     AUDIO_MM_KEYS,
     INNER_SUPPORTED_LAYER_TYPES,
@@ -76,6 +75,7 @@ from auto_round.utils import (
     revert_checkpoint_conversion_mapping,
     revert_name_with_weight_transforms,
 )
+from auto_round.utils.dataset_utils import CalibDataset
 from auto_round.utils.device import (
     _force_trim_malloc,
     patch_xpu_sdpa_drop_causal_mask,
