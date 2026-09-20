@@ -51,6 +51,9 @@ from auto_round.utils.model_free_utils import (
     _quantize_weight_mxfp,
     _validate_auto_scheme_options,
     _write_index_file,
+    dequant_mx_fp8,
+    dequant_mxfp4,
+    get_fp_scale,
 )
 from auto_round.utils.model_free_utils import (
     handle_model_type_low_precision_source_tensors as _handle_model_type_low_precision_source_tensors,
@@ -979,6 +982,24 @@ class TestHandleMXFPSourceTensors:
         assert out["layer.weight"].dtype == torch.bfloat16
         assert torch.allclose(out["layer.weight"], weight_fp8.to(torch.bfloat16))
         assert "layer.weight_scale" not in out
+
+
+class TestMXFPDequantization:
+    def test_get_fp_scale(self):
+        scale = torch.tensor([126, 127, 128], dtype=torch.uint8)
+        assert torch.equal(get_fp_scale(scale), torch.tensor([0.5, 1.0, 2.0]))
+
+    def test_dequant_mxfp4(self):
+        packed = torch.tensor([[0x10, 0x32]], dtype=torch.uint8)
+        scale = torch.tensor([[128]], dtype=torch.uint8)
+        result = dequant_mxfp4(packed, scale, "fp4_e2m1", block_size=4, target_dtype=torch.float32)
+        assert torch.equal(result, torch.tensor([[0.0, 1.0, 2.0, 3.0]]))
+
+    def test_dequant_mx_fp8(self):
+        weight = torch.tensor([[1.0, 2.0, 3.0, 4.0]], dtype=torch.float8_e4m3fn)
+        scale = torch.tensor([[126, 128]], dtype=torch.uint8)
+        result = dequant_mx_fp8(weight, scale, block_size=2, target_dtype=torch.float32)
+        assert torch.equal(result, torch.tensor([[0.5, 1.0, 6.0, 8.0]]))
 
 
 # ===========================================================================

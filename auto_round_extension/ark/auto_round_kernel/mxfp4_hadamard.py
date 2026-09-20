@@ -29,12 +29,12 @@ Frozen MVP contract (Phase 0):
   is ``2 ** (e8m0 - 127)`` (standard E8M0, always a power of two);
 * ``q = y * 2 ** -(e8m0 - 127)`` is encoded as ``signbit(q) << 3 | magnitude``
   with FP4 (E2M1) magnitude levels ``0, 0.5, 1, 1.5, 2, 3, 4, 6`` and the
-  nearest-even thresholds of ``vllm_ext/fp4_utils.py::cast_to_fp4``;
+    nearest-even thresholds of the frozen ``_E2M1_THRESHOLDS`` table below;
 * **zero is canonicalised**: whenever the magnitude index is 0 the sign bit is
   dropped, so the code is ``0x0`` and never ``0x8`` (negative zero). See
   "Canonical zero" below for why this rule is required rather than optional;
 * two codes share one byte, the even element occupying the low nibble
-  (identical to ``vllm_ext/fp4_utils.py::pack_fp4_to_uint8``);
+    (identical to ``auto_round.experimental.qmodules.fp4_utils::pack_fp4_to_uint8``);
 * an all-zero group produces ``e8m0 = 0`` and all-zero codes;
 * NaN/Inf are outside the supported input domain. The reference always rejects
   them; the XPU entry point only does so under ``check_finite=True``, because
@@ -92,7 +92,7 @@ the mathematical value rather than of the rounding residue. Both this reference
 and the kernel therefore drop the sign bit whenever the magnitude index is 0.
 
 This is a deliberate, documented deviation from
-``vllm_ext/fp4_utils.py::pack_fp4_to_uint8``, which applies ``signbit``
+``auto_round.experimental.qmodules.fp4_utils::pack_fp4_to_uint8``, which applies ``signbit``
 unconditionally: that helper encodes already-clean dequantized values, where a
 negative zero can only appear if the caller supplied one.
 """
@@ -122,7 +122,7 @@ SUPPORTED_HADAMARD_DIMS = tuple(GROUP_SIZE * (1 << i) for i in range(MAX_LANES_P
 E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 
 # (threshold, is_closed_interval, magnitude_index), first match wins, mirroring
-# the early-out ladder of ``cast_to_fp4`` including its alternating ``<=`` / ``<``
+# the early-out ladder of ``_E2M1_THRESHOLDS'`` including its alternating ``<=`` / ``<``
 # boundary operators. ``_encode_fp4`` walks the table in reverse with
 # ``torch.where``, so each earlier entry overrides every later one.
 _E2M1_THRESHOLDS = (

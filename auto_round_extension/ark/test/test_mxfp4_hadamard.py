@@ -105,8 +105,8 @@ class TestReferenceContract:
     supported D by :class:`TestHadamardDimReferenceParity`.
     """
 
-    def test_packing_matches_vllm_ext_fp4_utils(self):
-        fp4_utils = pytest.importorskip("auto_round_extension.vllm_ext.fp4_utils")
+    def test_packing_matches_fp4_utils(self):
+        fp4_utils = pytest.importorskip("auto_round.experimental.qmodules.fp4_utils")
         torch.manual_seed(0)
         codes = torch.randint(0, 16, (4, 64), dtype=torch.uint8)
         # Build the FP4 values the codes represent, then pack them with the

@@ -192,12 +192,12 @@ class TestFusedLayerGlobalScales:
         projection.weight_global_scale = torch.tensor([scale])
         return projection
 
-    def test_fused_projections_share_minimum_scale_by_default(self, monkeypatch):
+    @pytest.mark.parametrize("projection_names", [("q_proj", "k_proj", "v_proj"), ("to_q", "to_k", "to_v")])
+    def test_fused_projections_share_minimum_scale_by_default(self, monkeypatch, projection_names):
         monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
         attention = nn.Module()
-        attention.q_proj = self._projection(3.0)
-        attention.k_proj = self._projection(1.0)
-        attention.v_proj = self._projection(2.0)
+        for name, scale in zip(projection_names, [3.0, 1.0, 2.0]):
+            setattr(attention, name, self._projection(scale))
         mlp = nn.Module()
         mlp.gate_proj = self._projection(4.0)
         mlp.up_proj = self._projection(0.5)
@@ -205,21 +205,23 @@ class TestFusedLayerGlobalScales:
         update_fused_layer_global_scales(attention)
         update_fused_layer_global_scales(mlp)
 
-        assert all(
-            proj.weight_global_scale.item() == 1.0 for proj in (attention.q_proj, attention.k_proj, attention.v_proj)
-        )
+        assert all(getattr(attention, name).weight_global_scale.item() == 1.0 for name in projection_names)
         assert all(proj.weight_global_scale.item() == 0.5 for proj in (mlp.gate_proj, mlp.up_proj))
 
-    def test_fused_projection_scale_update_can_be_disabled(self, monkeypatch):
-        monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "0")
+    @pytest.mark.parametrize(
+        "projection_names,is_cross_attention",
+        [(("q_proj", "k_proj", "v_proj"), False), (("to_q", "to_k", "to_v"), False), (("to_q", "to_k", "to_v"), True)],
+    )
+    def test_fused_projection_scales_are_preserved(self, monkeypatch, projection_names, is_cross_attention):
+        monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1" if is_cross_attention else "0")
         attention = nn.Module()
-        attention.q_proj = self._projection(3.0)
-        attention.k_proj = self._projection(1.0)
-        attention.v_proj = self._projection(2.0)
+        attention.is_cross_attention = is_cross_attention
+        for name, scale in zip(projection_names, [3.0, 1.0, 2.0]):
+            setattr(attention, name, self._projection(scale))
 
         update_fused_layer_global_scales(attention)
 
-        assert [proj.weight_global_scale.item() for proj in (attention.q_proj, attention.k_proj, attention.v_proj)] == [
+        assert [getattr(attention, name).weight_global_scale.item() for name in projection_names] == [
             3.0,
             1.0,
             2.0,
