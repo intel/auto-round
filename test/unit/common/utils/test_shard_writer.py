@@ -197,3 +197,42 @@ def test_oversized_tensor_does_not_leave_tiny_preceding_shard(tmp_path, monkeypa
 
     assert writer.shard_counter == 1
     assert set(writer.current_shard_tensors) == set()
+
+
+def test_finalize_skips_unpacked_weight_of_resumed_packed_module(tmp_path, monkeypatch):
+    """A module packed before a crash must not be written again as fp weights.
+
+    The resumed run skips tuning for that module, so the model tree still holds
+    the original ``nn.Linear``. Its ``weight`` name never matches the packed
+    ``qweight`` recovered from the crashed run's shard, so the name-exact dedup
+    alone would write both into the final checkpoint.
+    """
+    from auto_round import envs
+
+    # A shard flushed by the crashed run, holding the packed tensors.
+    torch.save(
+        {
+            "transformer_blocks.0.linear.qweight": torch.zeros(4, 1, dtype=torch.int32),
+            "transformer_blocks.0.linear.scales": torch.ones(4, 1),
+            "transformer_blocks.0.linear.bias": torch.zeros(4),
+        },
+        os.path.join(tmp_path, "model-shard-00001.bin"),
+    )
+
+    monkeypatch.setattr(envs, "AR_RESUME_DIR", str(tmp_path))
+
+    model = _DiffusionStyleModel()
+    writer = _make_writer(model, str(tmp_path), monkeypatch)
+    writer.finalize()
+
+    saved = {}
+    for name in os.listdir(tmp_path):
+        if name.endswith(".bin"):
+            saved.update(torch.load(os.path.join(tmp_path, name), map_location="cpu"))
+
+    assert "transformer_blocks.0.linear.qweight" in saved
+    assert (
+        "transformer_blocks.0.linear.weight" not in saved
+    ), "the packed module must not also be saved as a floating-point weight"
+    # Modules that were never packed are still saved.
+    assert "proj_out.weight" in saved
