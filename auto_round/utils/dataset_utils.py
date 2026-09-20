@@ -489,7 +489,6 @@ def normalize_dataset_spec(dataset: Union[str, "CalibDataset", list, tuple]) -> 
     if isinstance(dataset, str):
         return dataset
     if isinstance(dataset, (list, tuple)):
-<<<<<<< HEAD
         # A list/tuple is raw calibration data (returned unchanged) unless it
         # is a list of CalibDataset specs.  A list of plain strings is raw
         # calibration text (each sample tokenized on the fly), not a list of
@@ -502,18 +501,7 @@ def normalize_dataset_spec(dataset: Union[str, "CalibDataset", list, tuple]) -> 
         return dataset
     # Non-spec types (DataLoader, BatchEncoding, etc.) are passed through.
     return dataset
-=======
-        parts = []
-        for item in dataset:
-            if isinstance(item, CalibDataset):
-                parts.append(item.to_spec_string())
-            elif isinstance(item, str):
-                parts.append(item)
-            else:
-                raise TypeError(f"Dataset list entries must be str or CalibDataset, got {type(item).__name__}")
-        return ",".join(parts)
-    raise TypeError(f"dataset must be a str, CalibDataset, or list of str/CalibDataset, got {type(dataset).__name__}")
->>>>>>> refs/rewritten/refine-data
+
 
 
 # ---------------------------------------------------------------------------# Spec-string building and parsing
