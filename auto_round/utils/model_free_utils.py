@@ -35,7 +35,7 @@ import torch
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
-from auto_round.utils.common import to_standard_regex
+from auto_round.utils.common import _normalize_tensor_name_for_warning, to_standard_regex
 from auto_round.utils.device import clear_memory, compile_func
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
@@ -99,22 +99,8 @@ _WARNING_INDEX_PLACEHOLDER = "<idx>"
 _KEEP_FUSED_EXPERT_MODEL_TYPES: frozenset[str] = frozenset({"inkling_mm_model"})
 
 
-def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WARNING_INDEX_PLACEHOLDER) -> str:
-    """Normalize tensor names for warning_once deduplication.
-
-    Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
-    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder
-    (``<idx>`` by default) so warning keys are stable across different
-    layer/expert ids.
-    """
-    parts = name.split(".")
-    normalized_parts = []
-    for part in parts:
-        if part.isdigit():
-            normalized_parts.append(numeric_replacement)
-            continue
-        normalized_parts.append(re.sub(r"\[(\d+)\]", f"[{numeric_replacement}]", part))
-    return ".".join(normalized_parts)
+# _normalize_tensor_name_for_warning moved to auto_round.utils.common to
+# avoid circular imports; keep compatibility by importing it from there.
 
 
 def _parse_fused_proj_token(token: str) -> tuple[str, str]:
@@ -1654,6 +1640,57 @@ def _modelopt_nvfp4_bases_from_weight_map(weight_map: dict[str, str]) -> set[str
     }
 
 
+def get_fp_scale(scale_e8m0: torch.Tensor) -> torch.Tensor:
+    """Convert biased E8M0 exponents to floating-point scales."""
+    exponent = scale_e8m0.view(torch.uint8).to(torch.int16) - 127
+    return torch.pow(2.0, exponent.to(torch.float32))
+
+
+def dequant_mxfp4(
+    data_lp: torch.Tensor,
+    scale_e8m0: torch.Tensor,
+    elem_dtype: str,
+    block_size: int,
+    target_dtype: torch.dtype,
+    scale_dtype: torch.dtype | None = None,
+    return_scale: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """Dequantize packed MXFP4 data to ``target_dtype``."""
+    from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
+
+    original_shape = data_lp.shape
+    last_dim = original_shape[-1]
+    data_lp = data_lp.reshape(-1, last_dim)
+    result_shape = original_shape[:-1] + (last_dim * 2,)
+    assert data_lp.is_contiguous(), f"Data must be contiguous, got {data_lp.stride()}"
+    assert elem_dtype == "fp4_e2m1", f"Expected 'fp4_e2m1', got {elem_dtype}"
+
+    rows, half_columns = data_lp.shape
+    data_hp = unpack_fp4_from_uint8(data_lp, rows, half_columns * 2, dtype=target_dtype)
+    data_hp = data_hp.reshape(-1, block_size)
+
+    if scale_dtype is None:
+        scale_dtype = target_dtype
+    scale = get_fp_scale(scale_e8m0).reshape(-1, 1).to(scale_dtype)
+    if return_scale:
+        return data_hp.reshape(result_shape), scale
+
+    return (data_hp * scale).reshape(result_shape)
+
+
+def dequant_mx_fp8(
+    weight_fp8: torch.Tensor,
+    scale_e8m0: torch.Tensor,
+    block_size: int,
+    target_dtype: torch.dtype,
+) -> torch.Tensor:
+    """Dequantize MXFP8 data using its per-block E8M0 scales."""
+    original_shape = weight_fp8.shape
+    weight = weight_fp8.to(torch.bfloat16).reshape(-1, block_size)
+    scale = get_fp_scale(scale_e8m0).reshape(-1, 1)
+    return (weight * scale).reshape(original_shape).to(target_dtype)
+
+
 def _hydrate_and_clean_modelopt_nvfp4_aux(
     raw_tensors: dict[str, torch.Tensor],
     shard_path: str,
@@ -1773,21 +1810,17 @@ def _dequant_mxfp_tensors(
 ) -> dict[str, torch.Tensor]:
     """Dequantize llm-compressor MXFP8 / MXFP4 weight tensors to bfloat16.
 
-    Detection is purely by *name* and *dtype*, reusing the dequant kernels in
-    :mod:`auto_round_extension.vllm_ext`:
+    Detection is purely by *name* and *dtype*:
 
     * ``<layer>.weight`` (``float8_e4m3fn``) + ``<layer>.weight_scale`` → MXFP8,
-      dequantized via :func:`~auto_round_extension.vllm_ext.mxfp8_qdq_utils.dequant_mx_fp8`.
+    dequantized via :func:`dequant_mx_fp8`.
     * ``<layer>.weight_packed`` (``uint8``) + ``<layer>.weight_scale`` → MXFP4,
-      dequantized via :func:`~auto_round_extension.vllm_ext.mxfp4_qdq_utils.to_dtype`.
+    dequantized via :func:`dequant_mxfp4`.
 
     The dequantized weight is written back under ``<layer>.weight`` and the
     scale (and any ``weight_packed``) tensor is removed, so the downstream RTN
     path can requantize the layer to the requested target scheme.
     """
-    from auto_round_extension.vllm_ext.mxfp4_qdq_utils import to_dtype
-    from auto_round_extension.vllm_ext.mxfp8_qdq_utils import dequant_mx_fp8
-
     # Tuple layout: (layer_name, weight_key, scale_key, bits)
     entries = _collect_mxfp_source_entries(raw_tensors)
 
@@ -1831,14 +1864,14 @@ def _dequant_mxfp_tensors(
                 shard_prefix=shard_prefix,
                 op_name="MXFP dequant",
                 tensor_label=layer_name,
-                on_device=lambda weight=weight, scale=scale: to_dtype(
+                on_device=lambda weight=weight, scale=scale: dequant_mxfp4(
                     data_lp=weight.view(torch.uint8).contiguous().to(dequant_device, non_blocking=True),
                     scale_e8m0=scale.to(dequant_device, non_blocking=True),
                     elem_dtype="fp4_e2m1",
                     block_size=32,
                     target_dtype=torch.bfloat16,
                 ).to("cpu"),
-                on_cpu=lambda weight=weight, scale=scale: to_dtype(
+                on_cpu=lambda weight=weight, scale=scale: dequant_mxfp4(
                     data_lp=weight.view(torch.uint8).contiguous(),
                     scale_e8m0=scale,
                     elem_dtype="fp4_e2m1",

@@ -244,7 +244,7 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--static_kv_dtype",
         default=None,
         type=str,
-        choices=["fp8", "float8_e4m3fn"],
+        choices=["fp8", "float8_e4m3fn", "nvfp4"],
         help="Static KV-cache quantization data type.",
     )
     rt.add_argument(

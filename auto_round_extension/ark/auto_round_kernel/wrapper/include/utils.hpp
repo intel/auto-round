@@ -67,8 +67,8 @@ struct env_params {
   }
 
   static inline void env_i(const char* envstr, int& default_) {
-    const char* log_level_env = std::getenv(envstr);
-    if (log_level_env != nullptr) default_ = std::stoi(log_level_env);
+    const char* env_value = std::getenv(envstr);
+    if (env_value != nullptr) default_ = std::stoi(env_value);
   }
 };
 

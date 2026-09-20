@@ -23,6 +23,7 @@ import transformers
 from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.experimental.utils import NVFP4_KV_DTYPE
 from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
 from auto_round.export.export_to_llmcompressor.config import check_compressed_tensors_supported
 from auto_round.export.utils import is_immediate_saving_mode, save_model, save_pretrained_artifact
@@ -112,6 +113,32 @@ def _use_fp8_attention(static_attention_dtype: str | None) -> bool:
         logger.warning_once("Exporting model with static attention in FP8 dtype.")
         return True
     return False
+
+
+def _use_nvfp4_kv(static_kv_dtype: str | None) -> bool:
+    """Return True if static KV cache should use NVFP4."""
+    if static_kv_dtype in (NVFP4_KV_DTYPE, "fp4", "float4_e2m1"):
+        logger.warning_once("Exporting model with static KV cache in NVFP4 dtype.")
+        return True
+    return False
+
+
+def _construct_nvfp4_kv_scheme():
+    """Construct the NVFP4 KV cache scheme from the compressed-tensors NVFP4 preset.
+
+    Reusing the preset's input-activation args guarantees the serialized
+    ``kv_cache_scheme`` is identical to what llm-compressor / compressed-tensors
+    produce for NVFP4 KV cache (fp4 e2m1, 16-element groups, fp8_e4m3 block
+    scales computed at runtime, static per-tensor global scale).
+    """
+    from compressed_tensors.quantization import preset_name_to_scheme  # pylint: disable=E0401
+
+    kv_args = preset_name_to_scheme("NVFP4", ["Linear"]).input_activations
+    logger.warning_once(
+        "Using the compressed-tensors NVFP4 preset input-activation args as the KV cache scheme: %s",
+        repr(kv_args),
+    )
+    return kv_args
 
 
 def _get_attention_targets(model: torch.nn.Module) -> list[str]:
@@ -248,6 +275,11 @@ def save_quantized_as_static_fp(
     static_kv_granularity = serialization_dict.get("static_kv_granularity", "tensor")
     use_fp8_attention = _use_fp8_attention(serialization_dict.get("static_attention_dtype", None))
     use_fp8_kv = _use_fp8_kv(serialization_dict.get("static_kv_dtype", None))
+    if _use_nvfp4_kv(serialization_dict.get("static_kv_dtype", None)):
+        raise ValueError(
+            "NVFP4 KV cache export is only supported on the NVFP4 compressed-tensors export path "
+            "(NVFP4 weight scheme + format 'llm_compressor'); this path (FP8_STATIC) supports FP8 KV cache only."
+        )
     attention_config = _get_attention_config(model, static_attention_granularity) if use_fp8_attention else None
     kv_granularity = static_attention_granularity if use_fp8_attention else static_kv_granularity
     quantization_config = QuantizationConfig(

@@ -24,7 +24,6 @@ from transformers import AutoConfig, set_seed
 from auto_round.algorithms.quantization import BaseQuantizer, QuantizationConfig
 from auto_round.algorithms.transforms import (
     BaseRotationConfig,
-    apply_rotation,
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.config_resolution import (
@@ -553,6 +552,12 @@ class BaseOrchestrator(object):
 
         # AutoScheme needs data for delta-loss scheme selection
         if isinstance(self.scheme, AutoScheme):
+            return True
+
+        # Static KV-cache / attention quantization observes KV magnitudes
+        # during the calibration forwards, so it always needs data — even for
+        # weight-only schemes (e.g. NVFP4 with iters=0).
+        if self.static_kv_dtype is not None or self.static_attention_dtype is not None:
             return True
 
         # Check if activation calibration is needed
@@ -1408,7 +1413,6 @@ class BaseOrchestrator(object):
         self._resolve_formats()
         self._patch_model()
         self._build_layer_config()
-        self._apply_rotations()
 
         # Reclaim temporaries from Phases 1-4 (scheme resolution, format
         # parsing, model patching, layer-config walk) before Phase 5
@@ -1422,6 +1426,14 @@ class BaseOrchestrator(object):
         # BlockForwardRunner is now created inside AlgorithmComposer.__init__,
         # so _build_composer must run first.
         self._build_composer()
+
+        # Phase 4.5 – Model-level pre-quantisation transforms (rotation).
+        # Applies full-model rotation up-front (or prepares layer-wise rotation
+        # matrices). Runs here so every entry point — the full quantize() loop,
+        # the zero-shot loop, and the external single-block quantize_block() API —
+        # sees a consistently transformed model before any calibration data is
+        # collected. Rotation is now owned by the composer's rotation members.
+        self.model_context.model = self.alg_composer.apply_model_transforms(self.model_context.model)
 
         # Set block_forward torch compile for block forward
         # Final trim after all init phases.
@@ -1631,39 +1643,6 @@ class BaseOrchestrator(object):
             ShardWriter.reset()
             # Defer ShardWriter construction to _ensure_shard_writer() to avoid
             # heap fragmentation during post_init (parameter iteration).
-
-    def _apply_rotations(self) -> None:
-        """Phase 4.5 – Apply Hadamard / rotation transforms to the model.
-
-        Preconditions:
-          - Phase 3 complete: model topology is final (``apply_patches`` has
-            replaced / merged layers, e.g. MoE experts), so rotation operates
-            on the same modules that quantization will later see.
-          - Phase 4 complete: ``self.layer_config`` is built; rotation only
-            transforms weights and does not change layer names, so this
-            ordering matches the old arch where rotation ran after
-            ``configure_layer_config``.
-          - ``self.quantize_config.data_type`` is final (rotation backend
-            dispatch depends on it).
-
-        Work performed:
-          - Iterates ``self.rotation_configs`` and calls
-            :func:`~auto_round.algorithms.transforms.apply_rotation` on the
-            model for each config.
-
-        Postconditions:
-          - ``self.model_context.model`` carries the rotated weights and any
-            inserted online-Hadamard hooks.
-        """
-        if not self.rotation_configs:
-            return
-        logger.info("Applying Hadamard transform to the model.")
-        for rotation_cfg in self.rotation_configs:
-            self.model_context.model = apply_rotation(
-                self.model_context.model,
-                rotation_cfg,
-                data_type=self.quantize_config.data_type,
-            )
 
     def _patch_model(self) -> None:
         """Phase 3 – Model structure patching.
