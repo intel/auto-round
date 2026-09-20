@@ -26,7 +26,7 @@ from auto_round.logger import deprecated, logger
 from auto_round.schemes import QuantizationScheme, parse_scheme
 from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
 
-=======
+
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
     eager_validate_scheme,
@@ -37,7 +37,7 @@ from auto_round.scheme_entry import (
 )
 from auto_round.schemes import QuantizationScheme
 
->>>>>>> refs/rewritten/origin-main
+
 from auto_round.utils.device_manager import normalize_default_device_map
 
 if TYPE_CHECKING:
