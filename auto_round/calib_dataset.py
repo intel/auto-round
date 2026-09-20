@@ -1385,7 +1385,6 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                         calib_name = key
                         break
             get_dataset = CALIB_DATASETS.get(calib_name)
-<<<<<<< HEAD
             if get_dataset is None:
                 # Fallback: use generic loader for any HuggingFace dataset
                 logger.info(f"Dataset '{name}' not in registry, using generic loader with auto field detection.")
@@ -1404,37 +1403,27 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                     timeout=timeout,
                 )
             else:
-                dataset = get_dataset(
-                    tokenizer,
-                    seqlen,
+                if get_dataset is None:
+                    filtered_keys = [k for k in CALIB_DATASETS.keys() if "/" not in k]
+                    raise ValueError(
+                        f"Dataset '{name}' is not found. Please choose from the supported datasets: {filtered_keys}."
+                    )
+                dataset_kwargs = dict(
+                    tokenizer=tokenizer,
+                    seqlen=seqlen,
                     seed=seed,
                     split=split,
                     dataset_name=name,
                     apply_chat_template=apply_chat_template,
                     system_prompt=system_prompt,
                 )
-=======
-        if get_dataset is None:
-            filtered_keys = [k for k in CALIB_DATASETS.keys() if "/" not in k]
-            raise ValueError(
-                f"Dataset '{name}' is not found. Please choose from the supported datasets: {filtered_keys}."
-            )
-        dataset_kwargs = dict(
-            tokenizer=tokenizer,
-            seqlen=seqlen,
-            seed=seed,
-            split=split,
-            dataset_name=name,
-            apply_chat_template=apply_chat_template,
-            system_prompt=system_prompt,
-        )
-        if get_dataset is get_fineweb_edu_dataset:
-            dataset_kwargs["max_samples"] = max(
-                _FINEWEB_EDU_MIN_CANDIDATES,
-                data_lens.get(name, nsamples),
-            )
-        dataset = get_dataset(**dataset_kwargs)
->>>>>>> refs/rewritten/origin-main
+                if get_dataset is get_fineweb_edu_dataset:
+                    dataset_kwargs["max_samples"] = max(
+                        _FINEWEB_EDU_MIN_CANDIDATES,
+                        data_lens.get(name, nsamples),
+                    )
+                dataset = get_dataset(**dataset_kwargs)
+
         if do_concat:
             dataset = concat_dataset_element(dataset)
 
