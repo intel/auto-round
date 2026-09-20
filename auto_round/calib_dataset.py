@@ -901,13 +901,17 @@ def _get_generic_dataset(
         if use_streaming:
             try:
                 calib_dataset = load_dataset(
-                    dataset_name, split=split or "train",
-                    trust_remote_code=True, streaming=True,
+                    dataset_name,
+                    split=split or "train",
+                    trust_remote_code=True,
+                    streaming=True,
                 )
             except Exception:
                 # Try without split (some datasets don't have explicit splits)
                 calib_dataset = load_dataset(
-                    dataset_name, trust_remote_code=True, streaming=True,
+                    dataset_name,
+                    trust_remote_code=True,
+                    streaming=True,
                 )
                 if split:
                     if isinstance(split, list):
@@ -919,7 +923,9 @@ def _get_generic_dataset(
         else:
             try:
                 calib_dataset = load_dataset(
-                    dataset_name, split=split or "train", trust_remote_code=True,
+                    dataset_name,
+                    split=split or "train",
+                    trust_remote_code=True,
                 )
             except Exception:
                 # Try without split (some datasets don't have explicit splits)
@@ -971,8 +977,7 @@ def _get_generic_dataset(
         skipped = 0
 
         logger.info(
-            f"Streaming dataset '{dataset_name}': collecting up to {target} samples "
-            f"(timeout={timeout}s)..."
+            f"Streaming dataset '{dataset_name}': collecting up to {target} samples " f"(timeout={timeout}s)..."
         )
 
         # Shuffle the iterable dataset for random sampling
