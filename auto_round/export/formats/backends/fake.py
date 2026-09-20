@@ -22,7 +22,7 @@ import torch
 from auto_round.export.formats.base import OutputFormat
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, is_nv_fp
-from auto_round.utils import copy_python_files_from_model_cache, unsupported_meta_device
+from auto_round.utils import unsupported_meta_device
 
 
 def _serialize_quantization_config_value(value):
@@ -159,13 +159,14 @@ class FakeFormat(OutputFormat):
         if has_fake_act_quant:
             _rewrite_saved_weights_without_orig_layer(output_dir)
 
+        if not has_meta_device:
+            from auto_round.export.utils import apply_post_save_source_fixes
+
+            apply_post_save_source_fixes(model, output_dir)
+
         if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(output_dir)
         processor = kwargs.get("processor", None)
         if processor is not None:
             processor.save_pretrained(output_dir)
-        try:
-            copy_python_files_from_model_cache(model, output_dir)
-        except Exception as e:
-            logger.warning("Skipping source model Python file copy due to error: %s", e)
         return model
