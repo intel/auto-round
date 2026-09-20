@@ -21,9 +21,11 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from auto_round.logger import deprecated, logger
+
 <<<<<<< HEAD
 from auto_round.schemes import QuantizationScheme, parse_scheme
 from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
+
 =======
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
@@ -34,6 +36,7 @@ from auto_round.scheme_entry import (
     resolve_entry_scheme,
 )
 from auto_round.schemes import QuantizationScheme
+
 >>>>>>> refs/rewritten/origin-main
 from auto_round.utils.device_manager import normalize_default_device_map
 
