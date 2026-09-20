@@ -29,6 +29,64 @@ from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
 
 
+def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = "<idx>") -> str:
+    """Normalize tensor names for warning deduplication.
+
+    Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
+    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder
+    (``<idx>`` by default) so warning keys are stable across different
+    layer/expert ids.
+    """
+    parts = name.split(".")
+    normalized_parts = []
+    for part in parts:
+        if part.isdigit():
+            normalized_parts.append(numeric_replacement)
+            continue
+        normalized_parts.append(re.sub(r"\[(\d+)\]", f"[{numeric_replacement}]", part))
+    return ".".join(normalized_parts)
+
+
+def _compact_name_diffs(a: str, b: str) -> tuple[str, str]:
+    """Return the minimal differing fragments of two dotted/comma-separated names.
+
+    Handles comma-separated lists by diffing each corresponding part. For each
+    dotted name pair, the common prefix and suffix are stripped and only the
+    differing middle is returned. If nothing differs, returns the last segment.
+    This keeps log messages short and focused on the changed fields.
+    """
+
+    def _single_diff(x: str, y: str) -> tuple[str, str]:
+        x_parts = x.split(".")
+        y_parts = y.split(".")
+        # common prefix
+        i = 0
+        while i < len(x_parts) and i < len(y_parts) and x_parts[i] == y_parts[i]:
+            i += 1
+        # common suffix
+        j = 0
+        while j < len(x_parts) - i and j < len(y_parts) - i and x_parts[-1 - j] == y_parts[-1 - j]:
+            j += 1
+        x_mid = x_parts[i : len(x_parts) - j] if i < len(x_parts) - j else [x_parts[-1]]
+        y_mid = y_parts[i : len(y_parts) - j] if i < len(y_parts) - j else [y_parts[-1]]
+        return ".".join(x_mid), ".".join(y_mid)
+
+    if "," in a or "," in b:
+        a_list = [p.strip() for p in a.split(",")]
+        b_list = [p.strip() for p in b.split(",")]
+        max_len = max(len(a_list), len(b_list))
+        a_list += [""] * (max_len - len(a_list))
+        b_list += [""] * (max_len - len(b_list))
+        a_out = []
+        b_out = []
+        for ax, bx in zip(a_list, b_list):
+            ad, bd = _single_diff(ax, bx)
+            a_out.append(ad)
+            b_out.append(bd)
+        return ",".join(a_out), ",".join(b_out)
+    return _single_diff(a, b)
+
+
 def download_audiocaps_csv():
     """Download AudioCaps train.csv and return the local cache path.
 
@@ -1374,14 +1432,35 @@ def revert_name_with_weight_transforms(name: str, transforms) -> str:
         from transformers.core_model_loading import rename_source_key
 
         renamed_key, _ = rename_source_key(name, renamings, converters, reverse=True)
+        if renamed_key != name:
+            norm_orig = _normalize_tensor_name_for_warning(name, numeric_replacement="[idx]")
+            norm_new = _normalize_tensor_name_for_warning(renamed_key, numeric_replacement="[idx]")
+            a_diff, b_diff = _compact_name_diffs(norm_orig, norm_new)
+            logger.warning_once(
+                "Transformers checkpoint->model renaming detected: '%s' -> '%s'. Using reverted checkpoint name.",
+                a_diff,
+                b_diff,
+            )
         return renamed_key
     except Exception:  # pragma: no cover - defensive: never break saving on rename
         return name
 
 
 def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) -> str:
+    original_name = name
     if "," in name:
-        return ",".join(revert_checkpoint_conversion_mapping(part, key_mapping) for part in name.split(","))
+        # handle comma-separated lists by mapping each part independently
+        reverted = ",".join(revert_checkpoint_conversion_mapping(part, key_mapping) for part in name.split(","))
+        if reverted != original_name:
+            norm_orig = _normalize_tensor_name_for_warning(original_name, numeric_replacement="[idx]")
+            norm_rev = _normalize_tensor_name_for_warning(reverted, numeric_replacement="[idx]")
+            a_diff, b_diff = _compact_name_diffs(norm_orig, norm_rev)
+            logger.warning_once(
+                "Transformers checkpoint->model flattened conversion detected: '%s' -> '%s'.",
+                a_diff,
+                b_diff,
+            )
+        return reverted
 
     for source_pattern, target_patterns in key_mapping.items():
         if isinstance(target_patterns, str):
@@ -1416,6 +1495,15 @@ def revert_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str])
             name, n_replace = re.subn(match_pattern, target_pattern, name)
             # Early exit of the loop
             if n_replace > 0:
+                if name != original_name:
+                    norm_orig = _normalize_tensor_name_for_warning(original_name, numeric_replacement="[idx]")
+                    norm_new = _normalize_tensor_name_for_warning(name, numeric_replacement="[idx]")
+                    a_diff, b_diff = _compact_name_diffs(norm_orig, norm_new)
+                    logger.warning_once(
+                        "Transformers checkpoint->model flattened conversion detected [Recover]: '%s' -> '%s'.",
+                        a_diff,
+                        b_diff,
+                    )
                 return name
     return name
 

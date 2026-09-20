@@ -67,8 +67,8 @@ struct env_params {
   }
 
   static inline void env_i(const char* envstr, int& default_) {
-    const char* log_level_env = std::getenv(envstr);
-    if (log_level_env != nullptr) default_ = std::stoi(log_level_env);
+    const char* env_value = std::getenv(envstr);
+    if (env_value != nullptr) default_ = std::stoi(env_value);
   }
 };
 
@@ -214,8 +214,10 @@ class DeviceMemoryPool {
   // SDPA kernels; slot 8 is the MoE DPAS grouped-GEMM work-group counter
   // (`moe_dpas_fp8::kAtomicScratchLoc`); slots 9 and 10 are the int4 decode
   // weight-repack and activation-sum buffers
-  // (`moe_decode_detail::kInt4RepackScratchLoc` / `kActGroupSumScratchLoc`).
-  static constexpr int MaxLocNum = 11;
+  // (`moe_decode_detail::kInt4RepackScratchLoc` / `kActGroupSumScratchLoc`);
+  // slot 11 is the XMX Hadamard staging buffer
+  // (`kHadamardStagingScratchLoc` in `ark.cpp`).
+  static constexpr int MaxLocNum = 12;
   using SizeMap = std::unordered_map<size_t, size_t>;
   using PtrMap = std::unordered_map<size_t, int8_t*>;
 

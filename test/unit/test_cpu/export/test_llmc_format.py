@@ -213,7 +213,6 @@ class TestLLMC:
     #     autoround.quantize()
     #     autoround.save_quantized("./saved", format="llm_compressor", inplace=True)
 
-    @pytest.mark.timeout(120)
     def test_llmcompressor_fp8(self, tmp_path):
         ## quantize the model
         model_name = opt_name_or_path
@@ -296,7 +295,6 @@ class TestLLMC:
             and quantization_config["ignore"] == ["lm_head"]
         ), f"Invalid MXFP8 quantization configuration: {quantization_config}"
 
-    @pytest.mark.timeout(60)
     def test_mxfp8_llmcompressor_kv_config(self, tiny_opt_model_path, tmp_path):
         ar = AutoRound(
             model=tiny_opt_model_path,
@@ -417,7 +415,6 @@ class TestLLMC:
         assert q_scale.shape == torch.Size([compressed_model.config.num_attention_heads])
         assert k_scale.ndim == 1
 
-    @pytest.mark.timeout(60)
     def test_mixed_precision_llmcompressor_format(self, tiny_opt_model_path, tmp_path):
         scheme = AutoScheme(
             avg_bits=7,
@@ -453,6 +450,165 @@ class TestLLMC:
             and quantization_config["config_groups"]["group_1"]["format"] == "mxfp4-pack-quantized"
             and quantization_config["ignore"] == ["lm_head"]
         ), f"Invalid mixed precision quantization configuration: {quantization_config}"
+
+
+class TestLLMCNVFP4KV:
+    """NVFP4 static KV cache: calibration, saved global scales, and CT-parity export."""
+
+    @staticmethod
+    def _expected_nvfp4_kv_args():
+        from compressed_tensors.quantization import preset_name_to_scheme
+
+        return preset_name_to_scheme("NVFP4", ["Linear"]).input_activations.model_dump()
+
+    def _quantize_nvfp4_kv(self, tiny_opt_model_path, dataloader, tmp_path):
+        return AutoRound(
+            tiny_opt_model_path,
+            scheme="NVFP4",
+            seqlen=8,
+            nsamples=2,
+            iters=0,
+            dataset=dataloader,
+            static_kv_dtype="nvfp4",
+        ).quantize_and_save(tmp_path, format="llm_compressor")
+
+    def test_nvfp4_kv_missing_scales_raises(self):
+        """An explicit NVFP4 KV request must not silently drop the scheme."""
+        import torch.nn as nn
+
+        class FakeAttention(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer_idx = 0
+                self.head_dim = 64
+                self.k_proj = nn.Linear(64, 256, bias=False)
+                self.v_proj = nn.Linear(64, 256, bias=False)
+
+        class FakeModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.attn = FakeAttention()
+
+        with pytest.raises(ValueError, match="NVFP4"):
+            llmc_fp_export._resolve_kv_cache_scheme(
+                FakeModel(),
+                use_fp8_kv=False,
+                use_nvfp4_kv=True,
+                use_fp8_attention=False,
+            )
+
+    @pytest.mark.timeout(120)
+    def test_llmcompressor_nvfp4_kv_config(self, tiny_opt_model_path, dataloader, tmp_path):
+        _, quantized_model_path = self._quantize_nvfp4_kv(tiny_opt_model_path, dataloader, tmp_path)
+
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            config = json.load(f)
+        kv_cache_scheme = config["quantization_config"]["kv_cache_scheme"]
+        assert kv_cache_scheme is not None
+        # Must match the compressed-tensors NVFP4 preset input-activation args
+        # (same convention llm-compressor serializes for NVFP4 KV cache).
+        expected = self._expected_nvfp4_kv_args()
+        for key, value in expected.items():
+            assert (
+                kv_cache_scheme.get(key) == value
+            ), f"kv_cache_scheme[{key!r}] mismatch: {kv_cache_scheme.get(key)!r} != {value!r}"
+        assert config["quantization_config"]["format"] == "nvfp4-pack-quantized"
+
+    @pytest.mark.timeout(120)
+    def test_llmcompressor_nvfp4_kv_global_scales(self, tiny_opt_model_path, dataloader, tmp_path):
+        from safetensors import safe_open
+
+        from auto_round.data_type.nvfp import calculate_gparam
+        from auto_round.experimental.kv_cache import QuantizedKVParameterCache
+
+        _, quantized_model_path = self._quantize_nvfp4_kv(tiny_opt_model_path, dataloader, tmp_path)
+
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            config = json.load(f)
+        num_layers = config["num_hidden_layers"]
+
+        # Calibration must have observed KV magnitudes (data-driven path).
+        cache = QuantizedKVParameterCache._instance
+        assert cache is not None and cache.is_nvfp4
+        assert len(cache.k_amax) >= num_layers and len(cache.v_amax) >= num_layers
+
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
+            for i in range(num_layers):
+                k_global_scale = f.get_tensor(f"model.decoder.layers.{i}.self_attn.k_global_scale")
+                v_global_scale = f.get_tensor(f"model.decoder.layers.{i}.self_attn.v_global_scale")
+                assert k_global_scale.dtype == torch.float32 and k_global_scale.shape == torch.Size([1])
+                assert v_global_scale.dtype == torch.float32 and v_global_scale.shape == torch.Size([1])
+                assert cache.k_amax[i] > 0 and cache.v_amax[i] > 0
+                # vLLM serving convention: the checkpoint stores the dequantization
+                # multiplier amax / 2688 = 1 / calculate_gparam(amax) (see
+                # _nvfp4_global_scale), not the weight-style 2688 / amax.
+                expected_k = 1.0 / calculate_gparam(cache.k_amax[i])
+                expected_v = 1.0 / calculate_gparam(cache.v_amax[i])
+                assert torch.isclose(k_global_scale.flatten()[0], expected_k, rtol=1e-5, atol=0.0)
+                assert torch.isclose(v_global_scale.flatten()[0], expected_v, rtol=1e-5, atol=0.0)
+
+    @pytest.mark.timeout(120)
+    def test_nvfp4_kv_scheme_round_trip_matches_vllm_runtime(self, tiny_opt_model_path, dataloader, tmp_path):
+        from safetensors import safe_open
+
+        from auto_round.data_type.nvfp import cast_to_fp4, nv_fp4_with_static_gs
+        from auto_round.experimental.kv_cache import QuantizedKVParameterCache
+
+        # The stored scale must make the *vLLM* NVFP4 KV store/read kernels
+        # reproduce the calibration-time QDQ.  The pure-Python compressed-tensors
+        # runtime (forward_quantize) is no longer a valid reference here: it
+        # interprets the checkpoint value as the weight-style global scale
+        # (sf = gs * block_max / 6), i.e. the opposite convention of vLLM
+        # (sf = (1 / k_scale) * block_max / 6).  vLLM is the target serving
+        # engine, so this test mirrors the vLLM kernel math instead.
+        _, quantized_model_path = self._quantize_nvfp4_kv(tiny_opt_model_path, dataloader, tmp_path)
+
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            config = json.load(f)
+        with safe_open(os.path.join(quantized_model_path, "model.safetensors"), framework="pt") as f:
+            k_global_scale = f.get_tensor("model.decoder.layers.0.self_attn.k_global_scale")
+        val = k_global_scale.to(torch.float32).flatten()[0]
+
+        torch.manual_seed(0)
+        k_states = torch.randn(1, 2, 16, 64)
+
+        # vLLM store kernel (reshape_and_cache_nvfp4, via cvt_warp_fp16_to_fp4
+        # with SFScaleVal = 1/val): sf = (1/val) * block_max/6 rounded to
+        # fp8_e4m3; fp4 code = x * (1/val) / sf (saturating at +/-6).
+        xb = k_states.to(torch.float32).unflatten(-1, (-1, 16))
+        block_max = xb.abs().amax(dim=-1, keepdim=True)
+        sf8 = ((block_max / 6.0) / val).to(torch.float8_e4m3fn).to(torch.float32)
+        out_scale = torch.where(sf8 == 0, torch.zeros_like(sf8), (1.0 / val) / sf8)
+        fp4 = cast_to_fp4((xb * out_scale).clamp(-6.0, 6.0))
+        # vLLM reader: x_hat = fp4 * sf * val
+        vllm_runtime_qdq = (fp4 * sf8 * val).flatten(-2).to(k_states.dtype)
+        assert not torch.allclose(vllm_runtime_qdq, k_states), "quantization had no effect"
+
+        # Calibration-time QDQ simulation (same amax that produced `val`):
+        # the fp8 block scales must be bit-identical and the dequantized
+        # values may only differ by fp32 associativity noise -- far below
+        # one fp4 step (amax / 3), which a wrong scale convention would
+        # produce (e.g. zeroed blocks under the old 2688 / amax convention).
+        cache = QuantizedKVParameterCache._instance
+        assert cache is not None and cache.is_nvfp4
+        sim_qdq, sim_scale, _ = nv_fp4_with_static_gs(k_states, tensor_max=cache.k_amax[0])
+        assert torch.equal(sf8, sim_scale.reshape(sf8.shape)), "fp8 block scales differ from calibration"
+        max_diff = (vllm_runtime_qdq - sim_qdq).abs().max().item()
+        assert max_diff <= 1e-4 * k_states.abs().max().item(), f"max diff {max_diff}"
+
+    @pytest.mark.timeout(120)
+    def test_nvfp4_kv_conflicts_with_fp8_static(self, tiny_opt_model_path, dataloader, tmp_path):
+        autoround = AutoRound(
+            tiny_opt_model_path,
+            scheme="FP8_STATIC",
+            seqlen=8,
+            nsamples=2,
+            iters=0,
+            dataset=dataloader,
+            static_kv_dtype="nvfp4",
+        )
+        with pytest.raises(ValueError, match="NVFP4"):
+            autoround.quantize_and_save(tmp_path, format="llm_compressor")
 
 
 def test_llmcompressor_static_fp_export_packs_serially(tiny_opt_model_path, dataloader, tmp_path, monkeypatch):

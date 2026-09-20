@@ -9,7 +9,7 @@ AutoRound uses the new compressor and calibration architecture for diffusion qua
 Quantization for diffusion models is limited:
 
 1. Only the transformer module of diffusion models is quantized.
-2. Loading quantized diffusion models is not supported yet, so use `fake` format for quantization.
+2. Use `auto_round` (the default) for a packed, reloadable checkpoint; use `fake` only for research or debugging.
 3. Calibration dataset currently supports `coco2014` and user customized `.tsv` files.
 
 ### API Usage (CPU/GPU) Recommended
@@ -31,8 +31,7 @@ autoround = AutoRound(
 
 # Save the quantized model
 output_dir = "./tmp_autoround"
-# Loading quantized diffusion models is not supported yet, so use fake format.
-autoround.quantize_and_save(output_dir, format="fake", inplace=True)
+autoround.quantize_and_save(output_dir, format="auto_round", inplace=True)
 ```
 
 - `dataset`: the dataset for quantization training. Currently supports `coco2014` and user customized `.tsv` files.
@@ -56,7 +55,7 @@ A user guide detailing the full list of supported arguments is provided by calli
 auto-round \
     --model black-forest-labs/FLUX.1-dev \
     --scheme MXFP8 \
-    --format fake \
+    --format auto_round \
     --batch_size 1 \
     --dataset coco2014 \
     --calib_num_inference_steps 8 \

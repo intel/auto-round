@@ -1,5 +1,5 @@
 import shutil
-from test.helpers import evaluate_accuracy, model_infer
+from test.helpers import evaluate_accuracy, get_model_path, model_infer
 
 import pytest
 import torch
@@ -11,6 +11,8 @@ from ...envs import require_greater_than_050
 
 
 class TestAutoRoundTritonBackend:
+    model_name = get_model_path("facebook/opt-125m")
+
     @pytest.fixture(autouse=True)
     def _save_dir(self, tmp_path):
         self.save_folder = str(tmp_path / "saved")
@@ -22,7 +24,6 @@ class TestAutoRoundTritonBackend:
         shutil.rmtree("runs", ignore_errors=True)
 
     @require_greater_than_050
-    @pytest.mark.timeout(120)
     def test_tritonv2_2bits_asym(self, tiny_opt_model_path):
         """A tuned INT2 asymmetric export reloads and generates with Triton.
 

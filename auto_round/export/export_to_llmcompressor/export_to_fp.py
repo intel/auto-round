@@ -54,9 +54,11 @@ from .config import check_compressed_tensors_supported
 from .export_to_static_fp import (
     _configure_gaudi2_fp8_dtype,
     _construct_kv_scheme,
+    _construct_nvfp4_kv_scheme,
     _get_attention_config,
     _use_fp8_attention,
     _use_fp8_kv,
+    _use_nvfp4_kv,
 )
 
 __all__ = [
@@ -156,6 +158,27 @@ def _get_group_format(bits, data_type):
     return "float-quantized"
 
 
+def _attention_modules_have_nvfp4_kv_scales(model: torch.nn.Module) -> bool:
+    """True when every attention module collected NVFP4 KV global scales in calibration.
+
+    The ``k_global_scale``/``v_global_scale`` parameters are only registered
+    once the calibration forwards observed KV magnitudes, so their presence on
+    all attention modules is the signal that an NVFP4 ``kv_cache_scheme`` can
+    be exported with valid static scales.
+    """
+    from auto_round.experimental.utils import is_attention_module
+
+    num_attention_modules = 0
+    for module in model.modules():
+        if is_attention_module(module):
+            num_attention_modules += 1
+            if not isinstance(getattr(module, "k_global_scale", None), torch.nn.Parameter) or not isinstance(
+                getattr(module, "v_global_scale", None), torch.nn.Parameter
+            ):
+                return False
+    return num_attention_modules > 0
+
+
 def _build_mixed_fp_quantization_config(
     scheme_groups,
     layer_config,
@@ -209,17 +232,24 @@ def _build_mixed_fp_quantization_config(
         group_formats[group_name] = _get_group_format(lbits, ldata_type)
 
     use_fp8_attention = _use_fp8_attention(static_attention_dtype)
+    use_fp8_kv = _use_fp8_kv(static_kv_dtype)
+    use_nvfp4_kv = _use_nvfp4_kv(static_kv_dtype)
     if use_fp8_attention:
         attention_config = _get_attention_config(model, static_attention_granularity)
     else:
         attention_config = None
     kv_granularity = static_attention_granularity if use_fp8_attention else static_kv_granularity
+    kv_cache_scheme = _resolve_kv_cache_scheme(
+        model,
+        use_fp8_kv=use_fp8_kv,
+        use_nvfp4_kv=use_nvfp4_kv,
+        use_fp8_attention=use_fp8_attention,
+        kv_granularity=kv_granularity,
+    )
     quantization_config = initialize_quantization(
         scheme=None,
         config_groups=config_groups,
-        kv_cache_scheme=(
-            _construct_kv_scheme(kv_granularity) if (_use_fp8_kv(static_kv_dtype) or use_fp8_attention) else None
-        ),
+        kv_cache_scheme=kv_cache_scheme,
         ignore=ignore,
     )
     quantization_config = quantization_config.to_dict()
@@ -234,6 +264,33 @@ def _build_mixed_fp_quantization_config(
         quantization_config["attention_input_activations"] = attention_config
 
     return quantization_config
+
+
+def _resolve_kv_cache_scheme(
+    model: torch.nn.Module,
+    use_fp8_kv: bool,
+    use_nvfp4_kv: bool,
+    use_fp8_attention: bool,
+    kv_granularity: str = "tensor",
+):
+    """Pick the KV cache scheme for the exported compressed-tensors config."""
+    if use_nvfp4_kv and (use_fp8_kv or use_fp8_attention):
+        raise ValueError(
+            "static_kv_dtype 'nvfp4' conflicts with the FP8 static attention/KV options; "
+            "please set only one of them."
+        )
+    if use_nvfp4_kv:
+        if not _attention_modules_have_nvfp4_kv_scales(model):
+            raise ValueError(
+                "NVFP4 static KV cache quantization was requested "
+                "(static_kv_dtype='nvfp4') but no k_global_scale/v_global_scale "
+                "parameters were collected. Quantize with calibration data and "
+                "static_kv_dtype='nvfp4' set (or drop the NVFP4 KV option)."
+            )
+        return _construct_nvfp4_kv_scheme()
+    if use_fp8_kv or use_fp8_attention:
+        return _construct_kv_scheme(kv_granularity)
+    return None
 
 
 def save_quantized_as_fp(
@@ -334,10 +391,12 @@ def save_quantized_as_fp(
     static_attention_granularity = serialization_dict.get("static_attention_granularity", "tensor")
     static_kv_granularity = serialization_dict.get("static_kv_granularity", "tensor")
     kv_granularity = static_attention_granularity if use_fp8_attention else static_kv_granularity
-    kv_cache_scheme = (
-        _construct_kv_scheme(kv_granularity)
-        if (_use_fp8_kv(serialization_dict.get("static_kv_dtype", None)) or use_fp8_attention)
-        else None
+    kv_cache_scheme = _resolve_kv_cache_scheme(
+        model,
+        use_fp8_kv=_use_fp8_kv(serialization_dict.get("static_kv_dtype", None)),
+        use_nvfp4_kv=_use_nvfp4_kv(serialization_dict.get("static_kv_dtype", None)),
+        use_fp8_attention=use_fp8_attention,
+        kv_granularity=kv_granularity,
     )
 
     if is_mixed:

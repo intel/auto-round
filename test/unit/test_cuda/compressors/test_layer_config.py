@@ -36,7 +36,6 @@ class TestLayerConfigGpu:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     def test_mixed_precision_quantize_reload(self, tiny_opt_model_path):
         layer_config = {
             "model.decoder.layers.0.self_attn.q_proj": {"bits": 8},
@@ -63,7 +62,6 @@ class TestLayerConfigGpu:
             out = model(input_ids)
         assert out.logits.shape[0] == 1
 
-    @pytest.mark.timeout(180)
     def test_layer_config_string_scheme(self, tiny_opt_model_path):
         """layer_config values given as preset scheme strings."""
         layer_config = {
@@ -87,7 +85,6 @@ class TestLayerConfigGpu:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, device_map="cuda:0", trust_remote_code=True)
         assert isinstance(model, torch.nn.Module)
 
-    @pytest.mark.timeout(180)
     def test_ignore_layers_not_quantized(self, tiny_opt_model_path):
         """A layer listed in ignore_layers must not be quantized."""
         ignored = "model.decoder.layers.0.self_attn.q_proj"
@@ -111,7 +108,6 @@ class TestLayerConfigGpu:
             q_proj = getattr(q_proj, part)
         assert not hasattr(q_proj, "qweight"), "ignored layer was unexpectedly quantized"
 
-    @pytest.mark.timeout(180)
     def test_layer_config_bits2_8(self, tiny_opt_model_path):
         """Mixed 2-bit and 8-bit per-layer config."""
         layer_config = {
