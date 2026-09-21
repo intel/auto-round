@@ -978,6 +978,26 @@ class TestGetPredefinedIgnoreLayers:
         layers = get_predefined_ignore_layers(mock_model)
         # Should not add any layers without matching rules
 
+    def test_generic_moe_ignores_router_and_shared_expert_gates(self):
+        from types import SimpleNamespace
+
+        from auto_round.special_model_handler import get_predefined_ignore_layers
+
+        mock_model = MagicMock()
+        mock_model.config = SimpleNamespace(model_type="test_moe", architectures=[])
+        mock_model.named_modules.return_value = iter(
+            [
+                ("layers.0.mlp.gate", MagicMock()),
+                ("layers.0.mlp.shared_expert_gate", MagicMock()),
+                ("layers.0.mlp.gate", MagicMock()),
+                ("layers.0.mlp.up_proj", MagicMock()),
+            ]
+        )
+
+        layers = get_predefined_ignore_layers(mock_model)
+
+        assert layers == ["layers.0.mlp.gate", "layers.0.mlp.shared_expert_gate"]
+
 
 class TestTorchCompileOff:
     """DeepSeek / GLM-5.3-Flash DSA families must not run under torch.compile on torch < 2.14.0.
