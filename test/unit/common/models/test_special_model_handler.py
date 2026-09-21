@@ -888,8 +888,11 @@ class TestRegisterIgnoreLayers:
 
         initial_count = len(_PRE_DEFINED_IGNORE_LAYERS)
         matcher = MagicMock(return_value=True)
-        register_ignore_layers(matchers=[matcher], ignore_layers=["layer.0"])
-        assert len(_PRE_DEFINED_IGNORE_LAYERS) == initial_count + 1
+        try:
+            register_ignore_layers(matchers=[matcher], ignore_layers=["layer.0"])
+            assert len(_PRE_DEFINED_IGNORE_LAYERS) == initial_count + 1
+        finally:
+            del _PRE_DEFINED_IGNORE_LAYERS[initial_count:]
 
 
 class TestGetPredefinedIgnoreLayers:
@@ -977,6 +980,7 @@ class TestGetPredefinedIgnoreLayers:
         mock_model.named_modules.return_value = iter([])
         layers = get_predefined_ignore_layers(mock_model)
         # Should not add any layers without matching rules
+        assert layers == []
 
     def test_generic_moe_ignores_router_and_shared_expert_gates(self):
         from types import SimpleNamespace
