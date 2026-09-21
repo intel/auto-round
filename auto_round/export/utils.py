@@ -23,6 +23,7 @@ from auto_round.utils import (
     copy_missing_tensors_from_source,
     copy_python_files_from_model_cache,
     logger,
+    restore_fp32_tensors_from_source,
     unsupported_meta_device,
 )
 
@@ -345,6 +346,32 @@ def _get_state_dict_for_export_dtype(model: nn.Module, dtype) -> dict | None:
         )
         for name, tensor in state_dict.items()
     }
+def apply_post_save_source_fixes(model: nn.Module, save_dir: str) -> None:
+    """Restore checkpoint artifacts that ``save_pretrained`` does not preserve."""
+    source_dir = _resolve_model_source_dir(model)
+    if source_dir is None:
+        return
+
+    try:
+        restore_fp32_tensors_from_source(source_dir=source_dir, target_dir=save_dir)
+    except Exception as e:
+        logger.warning("Skipping restore of FP32 tensors from source checkpoint due to error: %s", e)
+
+    if not envs.AR_DISABLE_COPY_MTP_WEIGHTS:
+        try:
+            copy_missing_tensors_from_source(source_dir=source_dir, target_dir=save_dir)
+        except Exception as e:
+            logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
+
+    try:
+        _restore_original_layer_types(save_dir, source_dir)
+    except Exception as e:  # pragma: no cover - best-effort, never block export
+        logger.warning("Skipping restore of original layer_types due to error: %s", e)
+
+    try:
+        copy_python_files_from_model_cache(model, save_dir)
+    except Exception as e:
+        logger.warning("Skipping source model Python file copy due to error: %s", e)
 
 
 def save_model(
@@ -400,18 +427,7 @@ def save_model(
             save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
             _save_model_configs(model, save_dir)
 
-    source_dir = _resolve_model_source_dir(model)
-
-    # Allow disabling copy_missing_tensors_from_source via env var AR_DISABLE_COPY_MTP_WEIGHTS, default enabled
-    if not envs.AR_DISABLE_COPY_MTP_WEIGHTS:
-        try:
-            if source_dir is not None:
-                copy_missing_tensors_from_source(
-                    source_dir=source_dir,
-                    target_dir=save_dir,
-                )
-        except Exception as e:
-            logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
+    apply_post_save_source_fixes(model, save_dir)
 
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
@@ -425,26 +441,10 @@ def save_model(
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
 
-    # transformers' PreTrainedConfig normalizes ``layer_types`` on load/save (via
-    # ``remap_legacy_layer_types`` and dataclass post-init), so ``model.save_pretrained``
-    # can rewrite the strings (e.g. hybrid-attention Qwen models). Restore the original
-    # ``layer_types`` from the source checkpoint so the exported config stays faithful.
-    if source_dir is not None:
-        try:
-            _restore_original_layer_types(save_dir, source_dir)
-        except Exception as e:  # pragma: no cover - best-effort, never block export
-            logger.warning("Skipping restore of original layer_types due to error: %s", e)
-
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-    try:
-        if source_dir is not None:
-            copy_python_files_from_model_cache(model, save_dir)
-    except Exception as e:
-        logger.warning("Skipping source model Python file copy due to error: %s", e)
 
 
 def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):

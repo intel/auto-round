@@ -20,9 +20,13 @@ replacement) must keep the ordinary load path, so the blast radius stays small.
 """
 
 import pytest
+import torch
 import transformers
 from packaging import version
+from safetensors.torch import save_file
 
+from auto_round import envs
+from auto_round.context.model import ModelContext
 from auto_round.modeling.fused_moe.moe_experts_interface import (
     _config_model_types,
     config_has_fused_moe_experts,
@@ -42,6 +46,26 @@ class _FakeConfig:
         self.model_type = model_type
         for name, value in sub_configs.items():
             setattr(self, name, value)
+
+
+def _native_fused_checkpoint(tmp_path):
+    checkpoint_dir = tmp_path / "checkpoint"
+    checkpoint_dir.mkdir()
+    save_file(
+        {
+            "model.layers.0.experts.gate_up_proj": torch.empty(4, 8, 4),
+            "model.layers.0.experts.down_proj": torch.empty(4, 4, 4),
+        },
+        checkpoint_dir / "model.safetensors",
+    )
+    return checkpoint_dir
+
+
+def _model_context_for_detection(checkpoint_dir):
+    context = object.__new__(ModelContext)
+    context.model = str(checkpoint_dir)
+    context.disk_stream_model_dir = str(checkpoint_dir)
+    return context
 
 
 # Fused 3D experts: `from_pretrained` merges `experts.<i>.<proj>` into one parameter.
@@ -98,3 +122,48 @@ def test_families_with_a_dedicated_replacement_are_left_alone():
         # These two only get a dedicated replacement on the pre-5.0 linear_loop path.
         expected |= {"qwen3_vl_moe", "gpt_oss"}
     assert set(BUILTIN_MODULES) == expected
+
+
+def test_native_fused_checkpoint_enables_meta_skeleton_without_merge_converter(tmp_path, monkeypatch):
+    checkpoint_dir = _native_fused_checkpoint(tmp_path)
+    context = _model_context_for_detection(checkpoint_dir)
+    config = _FakeConfig("gemma4", text_config=_FakeConfig("gemma4_text"))
+    monkeypatch.setattr(envs, "AR_DISK_STREAM_MODEL", False)
+    monkeypatch.setattr(envs, "AR_DISABLE_META_LOAD", False)
+    monkeypatch.setattr(envs, "AR_DEBUG_LAYER_NUM", None)
+
+    assert config_has_fused_moe_experts(config) is False, "precondition: Gemma4 has no merge converter"
+    assert context._should_use_meta_skeleton(config) is True
+    assert context.disk_stream_model_dir == str(checkpoint_dir)
+
+
+def test_nested_dedicated_replacement_prevents_native_fused_auto_meta_load(tmp_path, monkeypatch):
+    checkpoint_dir = _native_fused_checkpoint(tmp_path)
+    context = _model_context_for_detection(checkpoint_dir)
+    config = _FakeConfig("wrapper", text_config=_FakeConfig("llama4"))
+    monkeypatch.setattr(envs, "AR_DISK_STREAM_MODEL", False)
+    monkeypatch.setattr(envs, "AR_DISABLE_META_LOAD", False)
+    monkeypatch.setattr(envs, "AR_DEBUG_LAYER_NUM", None)
+
+    assert context._should_use_meta_skeleton(config) is False
+
+
+@pytest.mark.parametrize(
+    "force_disk_stream,disable_meta_load,debug_layer_num,expected",
+    [
+        (True, True, 1, True),
+        (False, True, None, False),
+        (False, False, 1, False),
+    ],
+)
+def test_meta_skeleton_override_precedence(
+    tmp_path, monkeypatch, force_disk_stream, disable_meta_load, debug_layer_num, expected
+):
+    checkpoint_dir = _native_fused_checkpoint(tmp_path)
+    context = _model_context_for_detection(checkpoint_dir)
+    config = _FakeConfig("gemma4", text_config=_FakeConfig("gemma4_text"))
+    monkeypatch.setattr(envs, "AR_DISK_STREAM_MODEL", force_disk_stream)
+    monkeypatch.setattr(envs, "AR_DISABLE_META_LOAD", disable_meta_load)
+    monkeypatch.setattr(envs, "AR_DEBUG_LAYER_NUM", debug_layer_num)
+
+    assert context._should_use_meta_skeleton(config) is expected
