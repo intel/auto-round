@@ -995,6 +995,13 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
     """
     dataset_names = dataset_name.split(",")
 
+    def cast_dataset_columns(dataset):
+        dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+        features = dict(dataset.features)
+        features["input_ids"] = Sequence(Value("int64"))
+        features["attention_mask"] = Sequence(Value("int8"))
+        return dataset.cast(Features(features))
+
     def filter_func(example):
         if isinstance(example["input_ids"], list):
             example["input_ids"] = torch.tensor(example["input_ids"])
@@ -1106,32 +1113,19 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         if do_concat:
             dataset = concat_dataset_element(dataset)
 
-        is_streaming = isinstance(dataset, IterableDataset)
-        if is_streaming:
+        if isinstance(dataset, IterableDataset):
+            # Filter and limit the stream before materializing it in memory.
             dataset = dataset.filter(filter_func)
             if name in data_lens:
                 dataset = select_dataset(dataset, range(data_lens[name]))
-        if isinstance(dataset, IterableDataset):
-            # A single dataset source never contributes more than `nsamples` rows to the
-            # final combined dataset, so cap materialization here instead of fully consuming
-            # the (much larger) internal `.take(...)` pool used by streaming dataset loaders.
-            # This avoids needless downloads/shard resolution for large remote datasets
-            # (e.g. BAAI/CCI3-HQ) when only a small subset of samples is actually needed.
-            dataset = Dataset.from_list(list(itertools.islice(dataset, nsamples)))
-        dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
-        new_features = {}
-        for k, v in dataset.features.items():
-            if k == "input_ids":
-                new_features[k] = Sequence(Value("int64"))
-            elif k == "attention_mask":
-                new_features[k] = Sequence(Value("int8"))
-            else:
-                new_features[k] = v
-
-        dataset = dataset.cast(Features(new_features))
-        if not is_streaming:
-            # Cast before filtering/selecting creates row indices. Casting indexed
-            # Arrow slices can otherwise duplicate a full values buffer per row.
+            # select_dataset may have already materialized the requested rows.
+            if isinstance(dataset, IterableDataset):
+                dataset = Dataset.from_list(list(itertools.islice(dataset, nsamples)))
+            dataset = cast_dataset_columns(dataset)
+        else:
+            # Cast before filter/select creates indices, avoiding a full values
+            # buffer conversion for each indexed Arrow row.
+            dataset = cast_dataset_columns(dataset)
             dataset = dataset.filter(filter_func)
             if name in data_lens:
                 dataset = select_dataset(dataset, range(data_lens[name]))
