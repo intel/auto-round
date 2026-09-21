@@ -217,7 +217,9 @@ class DeviceMemoryPool {
   // (`moe_decode_detail::kInt4RepackScratchLoc` / `kActGroupSumScratchLoc`);
   // slot 11 is the XMX Hadamard staging buffer
   // (`kHadamardStagingScratchLoc` in `ark.cpp`).
-  static constexpr int MaxLocNum = 12;
+  // slots 12 and 13 are the MXFP block-scaled grouped-GEMM metadata and
+  // scheduler workspace buffers.
+  static constexpr int MaxLocNum = 14;
   using SizeMap = std::unordered_map<size_t, size_t>;
   using PtrMap = std::unordered_map<size_t, int8_t*>;
 
