@@ -1593,6 +1593,27 @@ def get_block_names(model, quant_vision=False):
 
 
 def get_lm_head_name(model):
+    """Resolve the name of the LM head module (e.g. ``lm_head``).
+
+    Prefers the model's own ``get_output_embeddings()`` declaration — the
+    transformers-native source of truth, overridden per family — and
+    reverse-maps the returned module to its registered name. Falls back to the
+    last-leaf walk for objects without the method, raising getters, or
+    unregistered heads (trust-remote-code, diffusers, plain ``nn.Module``).
+    Weight tying shares parameters while module objects stay distinct, so the
+    identity mapping stays unambiguous for tied models.
+    """
+    getter = getattr(model, "get_output_embeddings", None)
+    if callable(getter):
+        try:
+            head = getter()
+        except Exception:  # family-specific failures fall back to the walk
+            head = None
+        if head is not None:
+            for name, module in model.named_modules():
+                if module is head:
+                    return name
+            # an unregistered head: fall through to the last-leaf walk
     block_names = get_block_names(model, True)
     last_name = None
     for n, m in model.named_modules():

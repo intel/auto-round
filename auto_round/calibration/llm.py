@@ -201,6 +201,33 @@ class LLMCalibrator(Calibrator):
         return all_inputs
 
     @torch.no_grad()
+    def _cache_raw_input_ids_(self, input_ids) -> None:
+        """Cache raw token IDs for quantize_block under ``self.inputs["input_ids"]``.
+
+        Positions excluded from the loss are marked with -100 (PyTorch's
+        standard ignore index): actual pad tokens (matched via pad_token_id
+        when available, or detected as trailing repeated tokens otherwise) and
+        the last token of every sample (no next-token target). Called by the
+        standard text calib driver; the valid-token-mask derivation for
+        outside-block (lm_head) tuning consumes the cached ids.
+        """
+        if "input_ids" not in self.inputs:
+            self.inputs["input_ids"] = []
+        ids_to_cache = input_ids.clone()
+        if self.tokenizer is not None and getattr(self.tokenizer, "pad_token_id", None) is not None:
+            ids_to_cache[ids_to_cache == self.tokenizer.pad_token_id] = -100
+        else:
+            # Heuristic: trailing repeated tokens are treated as padding.
+            for b in range(ids_to_cache.shape[0]):
+                last_token = ids_to_cache[b, -1]
+                j = ids_to_cache.shape[1] - 2
+                while j >= 0 and ids_to_cache[b, j] == last_token:
+                    ids_to_cache[b, j] = -100
+                    j -= 1
+        # Always exclude the last position (no supervision target).
+        ids_to_cache[:, -1] = -100
+        self.inputs["input_ids"].extend(list(torch.split(ids_to_cache.to("cpu"), 1, dim=0)))
+
     def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
         """Replace forward, run :meth:`calib`, return cached ``inputs``.
 
@@ -337,28 +364,7 @@ class LLMCalibrator(Calibrator):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            # Cache raw token IDs for quantize_block.  Positions that should be
-            # excluded from the loss are marked with -100 (PyTorch's standard
-            # ignore index):
-            #   • actual pad tokens (matched via pad_token_id when available, or
-            #     detected as trailing repeated tokens otherwise)
-            #   • the last token of every sample (no next-token target)
-            if "input_ids" not in self.inputs:
-                self.inputs["input_ids"] = []
-            ids_to_cache = input_ids.clone()
-            if self.tokenizer is not None and getattr(self.tokenizer, "pad_token_id", None) is not None:
-                ids_to_cache[ids_to_cache == self.tokenizer.pad_token_id] = -100
-            else:
-                # Heuristic: trailing repeated tokens are treated as padding.
-                for b in range(ids_to_cache.shape[0]):
-                    last_token = ids_to_cache[b, -1]
-                    j = ids_to_cache.shape[1] - 2
-                    while j >= 0 and ids_to_cache[b, j] == last_token:
-                        ids_to_cache[b, j] = -100
-                        j -= 1
-            # Always exclude the last position (no supervision target).
-            ids_to_cache[:, -1] = -100
-            self.inputs["input_ids"].extend(list(torch.split(ids_to_cache.to("cpu"), 1, dim=0)))
+            self._cache_raw_input_ids_(input_ids)
             if need_attention_mask:
                 if (
                     isinstance(data_new, dict)

@@ -129,6 +129,90 @@ class TestGetLmHeadName:
         assert lm_head_name is not None
         assert isinstance(lm_head_name, str)
 
+    @staticmethod
+    def _fake_causal_lm():
+        """A transformers-shaped fake: ModuleList body + final norm + head."""
+        import torch.nn as nn
+
+        class Layer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = nn.Linear(4, 4)
+
+        class Body(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleList([Layer() for _ in range(2)])
+                self.norm = nn.LayerNorm(4)
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = Body()
+                self.lm_head = nn.Linear(4, 4)
+                # a module AFTER the head: the last-leaf walk would pick this
+                self.tail_module = nn.Linear(4, 4)
+
+        return Model()
+
+    def test_get_output_embeddings_override_wins(self):
+        import torch.nn as nn
+
+        """The model's own declaration beats the last-leaf heuristic."""
+        from auto_round.utils.model import get_lm_head_name
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = nn.Module()
+                self.model.norm = nn.LayerNorm(4)
+                self.lm_head = nn.Linear(4, 4)
+                self.tail_module = nn.Linear(4, 4)
+
+            def get_output_embeddings(self):
+                return self.lm_head
+
+        assert get_lm_head_name(Model()) == "lm_head"
+
+    def test_unregistered_head_falls_back_to_last_leaf(self):
+        """A getter returning a module outside the tree falls back to the walk."""
+        import torch.nn as nn
+
+        from auto_round.utils.model import get_lm_head_name
+
+        model = self._fake_causal_lm()
+
+        class WithUnregisteredGetter(type(model)):
+            def get_output_embeddings(self):
+                return nn.Linear(4, 4)  # never registered under the model
+
+        unregistered = WithUnregisteredGetter()
+        assert get_lm_head_name(unregistered) == "tail_module"  # last-leaf result
+
+    def test_raising_getter_falls_back_to_last_leaf(self):
+        import torch.nn as nn
+
+        """A getter raising any exception falls back to the walk."""
+        from auto_round.utils.model import get_lm_head_name
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = nn.Module()
+                self.model.norm = nn.LayerNorm(4)
+                self.lm_head = nn.Linear(4, 4)
+
+            def get_output_embeddings(self):
+                raise RuntimeError("family-specific failure")
+
+        assert get_lm_head_name(Model()) == "lm_head"
+
+    def test_no_getter_falls_back_to_last_leaf(self):
+        """Objects without the method (diffusers, plain nn.Module) use the walk."""
+        from auto_round.utils.model import get_lm_head_name
+
+        assert get_lm_head_name(self._fake_causal_lm()) == "tail_module"
+
 
 class TestGetExpertLinearNames:
     """Test get_expert_linear_names function."""

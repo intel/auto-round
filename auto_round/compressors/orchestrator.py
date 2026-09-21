@@ -14,6 +14,7 @@
 import copy
 import gc
 import os
+import re
 import time
 from functools import partial
 from typing import TYPE_CHECKING, Any, Optional, Union
@@ -29,6 +30,7 @@ from auto_round.calibration.utils import (
     _update_inputs,
 )
 from auto_round.compressors.base import BaseOrchestrator
+from auto_round.compressors.tail_mock import tail_smoke_check
 from auto_round.compressors.utils import (
     _get_quantized_layer_names_outside_blocks,
     immediate_pack,
@@ -53,6 +55,7 @@ from auto_round.utils import (
     set_amax_for_all_moe_layers,
     set_module,
     to_device,
+    to_standard_regex,
 )
 from auto_round.utils.device import (
     _force_trim_malloc,
@@ -321,6 +324,12 @@ class CompressionOrchestrator(BaseOrchestrator):
 
             q_input = new_q_input
 
+            # keep the chain tail alive for tail-fed external layers (lm_head)
+            # lm_head-class layers: the last block's fp reference and
+            # quantized-chain outputs are their inputs (through the final norm)
+            if getattr(self, "_tail_fed_layers_", None):
+                self._lm_head_chain_tail_ = (new_q_input, reference_output)
+
             # ── Infrastructure: hook removal, device cleanup, logging ─────────
             if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                 accelerate.hooks.remove_hook_from_submodules(m)
@@ -530,6 +539,18 @@ class CompressionOrchestrator(BaseOrchestrator):
             remain_layer_names.append(n)
         for name in remain_layer_names:
             logger.info(f"Quantizing remaining layer {name} on CPU.")
+            from auto_round.utils.device import log_cuda_memory_census
+
+            # phase boundary: the block loop just freed its large tuning
+            # buffers; returning them to the driver keeps the allocator pool
+            # compact before the (potentially huge) outside-block wrappers
+            # are built, instead of reserving fragmented segments nobody can use
+            from auto_round.utils.device_manager import get_current_device_manager
+
+            _ar = get_current_device_manager()
+            if _ar.is_available():
+                _ar.empty_cache()
+            log_cuda_memory_census(f"outside-block loop entry {name}", walk=False)
             self.alg_composer.compress_layer_outside_block(get_module(self.model, name))
             # Outside-block layers (embed_tokens/lm_head/etc.) are typically few so just
             # log a summary after each one.
@@ -578,12 +599,18 @@ class CompressionOrchestrator(BaseOrchestrator):
                 supported_types=SUPPORTED_LAYER_TYPES,
                 quant_block_list=self.quant_block_list,
             )
+        # lm_head-class external layers are tail-fed: the block loop's chain
+        # output (fp reference + quantized rows) is their input, so they neither
+        # join the upfront capture call nor the outside-block q-capture pass -
+        # no extra whole-model forwards. The init-time smoke gate decides the
+        # lane: a failed check keeps lm_head on the ordinary capture walk.
+        self._decide_tail_fed_lane_(layer_names, all_blocks)
         if not self.has_variable_block_shape:
             to_cache_block_names = [block[0] for block in all_blocks]
         else:
             to_cache_block_names = flatten_list(all_blocks)
         _last_cache_name = to_cache_block_names[-1] if len(to_cache_block_names) > 1 else None
-        to_cache_layer_names = layer_names
+        to_cache_layer_names = [n for n in layer_names if n not in self._tail_fed_layers_]
         if self.super_group_size is not None:
             to_cache_layer_names = []
         if len(layer_names) > 0:
@@ -599,6 +626,10 @@ class CompressionOrchestrator(BaseOrchestrator):
             last_cache_name=_last_cache_name,
         )
         # Raw token IDs from the tokenizer, cached during calibration for use in quantize_block.
+        # NOTE: these cached ids are LOSS-LABEL convention, not forward input:
+        # ignored positions carry -100 (the loss-mask contract, see
+        # _compute_valid_token_mask). Any consumer feeding them back into a
+        # model forward must clamp (the mocked tail capture does).
         input_ids_cache = all_inputs.pop("input_ids", None)
         self.inputs = all_inputs
 
@@ -858,6 +889,24 @@ class CompressionOrchestrator(BaseOrchestrator):
         # TODO currently we take all the layers outside blocks as post block layers which is not optimal
         # if there is no input for layer, we use rtn
 
+        # tail-fed layers (lm_head) receive their inputs from the block loop's
+        # chain output through the final norm - no input-capture entries
+        tail_inputs = {}
+        for tail_name in list(getattr(self, "_tail_fed_layers_", []) or []):
+            if tail_name not in layer_names:
+                continue
+            derived = self._lm_head_tail_inputs_(tail_name, token_ids=token_ids)
+            if derived is not None:
+                tail_inputs[tail_name] = derived
+                self._attach_tail_imatrix_(tail_name, derived[0])
+        if tail_inputs:
+            layer_inputs = dict(layer_inputs)
+            for tail_name, (fp_rows, _q_rows) in tail_inputs.items():
+                layer_inputs[tail_name] = fp_rows
+            # release the raw tail: its residency would collide with the
+            # wrapper's value/grad buffers during the tune below
+            self._lm_head_chain_tail_ = None
+
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
                 if self.act_bits < 16 and not self.act_dynamic:
@@ -910,8 +959,12 @@ class CompressionOrchestrator(BaseOrchestrator):
             dispatch_model(self.model, self.model.hf_device_map)
 
         if enable_quanted_input:
-            logger.info("starting to cache layer inputs for %s, this may be quite slow ", layer_names)
-            q_layer_inputs = self.cache_data([], self.calibration_context.nsamples, layer_names=layer_names)
+            capture_names = [n for n in layer_names if n not in tail_inputs]
+            if capture_names:
+                logger.info("starting to cache layer inputs for %s, this may be quite slow ", capture_names)
+                q_layer_inputs = self.cache_data([], self.calibration_context.nsamples, layer_names=capture_names)
+            else:
+                logger.info("outside-block layer inputs come from the calibration chain tail; no extra pass")
             if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                 accelerate.hooks.remove_hook_from_submodules(
                     self.model
@@ -920,16 +973,49 @@ class CompressionOrchestrator(BaseOrchestrator):
             self.model = mv_module_from_gpu(self.model)
         clear_memory()
         for layer_name in layer_names:
-            layer_input = layer_inputs[layer_name]
-            layer_input = to_device(layer_input, self.compress_context.cache_device)
-            q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
-            q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
-            self.alg_composer.compress_layer_outside_block(
-                get_module(self.model, layer_name),
-                fp_inputs=layer_input,
-                q_inputs=q_layer_input,
-                input_ids=token_ids,
-            )
+            if layer_name in tail_inputs:
+                # tail rows are parked on host by design and the tune loop
+                # streams them per micro-batch; pulling the whole set onto
+                # cache_device is the capture-path contract, not ours
+                layer_input = layer_inputs[layer_name]
+            else:
+                layer_input = to_device(layer_inputs[layer_name], self.compress_context.cache_device)
+            if layer_name in tail_inputs:
+                q_layer_input = tail_inputs[layer_name][1]
+            else:
+                q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
+                q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
+            try:
+                self.alg_composer.compress_layer_outside_block(
+                    get_module(self.model, layer_name),
+                    fp_inputs=layer_input,
+                    q_inputs=q_layer_input,
+                    input_ids=token_ids,
+                )
+            except Exception as e:  # pylint: disable=broad-except
+                # containment: a failed tune leaves the layer unquantized and
+                # the export pass (missing-tensors) completes the artifact,
+                # instead of losing a run whose blocks are already tuned and
+                # streamed
+                from auto_round.utils.device import is_oom_exception  # pylint: disable=import-outside-toplevel
+
+                if is_oom_exception(e):
+                    # the only vantage that sees the failed working set; the
+                    # baseline header fired at wrapper-ready time
+                    from auto_round.utils.device import log_cuda_memory_census
+
+                    log_cuda_memory_census(f"outside-block layer {layer_name} OOM (at failure)", device_manager.device)
+                logger.warning(
+                    "outside-block layer %s tuning failed (%s: %s); leaving it to the export path",
+                    layer_name,
+                    type(e).__name__,
+                    e,
+                    exc_info=True,
+                )
+                del layer_input
+                clear_memory(q_layer_input)
+                clear_memory()
+                continue
             if self.compress_context.is_immediate_packing:
                 immediate_pack(layer_name, self.layer_config)
 
@@ -939,6 +1025,319 @@ class CompressionOrchestrator(BaseOrchestrator):
             del layer_input
             clear_memory(q_layer_input)
             memory_monitor.log_summary()
+
+    def _decide_tail_fed_lane_(self, layer_names, all_blocks) -> None:
+        """Select the lm_head input lane at init, before any quantization work.
+
+        Runs the two-token mocked-continuation smoke check against the loaded
+        model. PASS -> the tail-fed lane: lm_head leaves the upfront capture
+        set and immediate packing stays on. FAIL -> lm_head keeps the ordinary
+        capture walk (the conservative path, as on main): the upfront walk
+        executes through the head and captures its inputs, and the outside-block
+        q-capture pass covers it like any external layer.
+        """
+        self._tail_fed_layers_ = []
+        self._lm_head_chain_tail_ = None
+        self._tail_stub_arity_ = None
+        self._tail_lane_blocks_ = []
+        lm_head_name = get_lm_head_name(self.model_context.model)
+        if lm_head_name is None or lm_head_name not in layer_names:
+            return
+        flat_blocks = [name for block in all_blocks for name in block]
+        smoke_ok, tuple_arity = tail_smoke_check(self.model_context.model, lm_head_name, flat_blocks)
+        if smoke_ok:
+            self._tail_fed_layers_ = [lm_head_name]
+            self._tail_stub_arity_ = tuple_arity
+            self._tail_lane_blocks_ = flat_blocks
+            return
+        logger.warning(
+            "[lm_head] %s keeps the ordinary capture walk (the mocked-continuation smoke check failed): "
+            "lm_head joins the upfront input capture like any external layer",
+            lm_head_name,
+        )
+        # The tail-only relaxations granted at post_init (inplace stays True and
+        # immediate packing stays on when the only outside-block layer is a
+        # single lm_head) are void now: the capture walk executes the model
+        # through the blocks, so the legacy restrictions apply again.
+        # is_immediate_saving is granted only while immediate packing is on
+        # (base post_init), so it reverts with it; a lazily-created shard
+        # writer simply stays unused. GGUF runs never reach this branch: they
+        # resolve outside-block layers differently and the plan is empty.
+        self.inplace = False
+        self.compress_context.is_immediate_packing = False
+        if self.compress_context.is_immediate_saving:
+            self.compress_context.is_immediate_saving = False
+
+    @staticmethod
+    def _chain_hidden_rows(chain_state):
+        """A chain input/output as a plain list of per-sample row tensors.
+
+        The chain keeps rows as a list, or a dict of per-key row lists for
+        block classes with structured outputs (e.g. gated-delta-net): take its
+        ``hidden_states`` rows."""
+        rows = chain_state.get("hidden_states") if isinstance(chain_state, dict) else chain_state
+        if isinstance(rows, dict):
+            rows = next(iter(rows.values()))
+        return rows
+
+    def _quantizer_requests_q_inputs_(self) -> bool:
+        """Whether the active quantizer(s) maintain the quantized-input chain.
+
+        SignRound defaults ``enable_quanted_input`` to True, RTN (iters=0)
+        defaults to False; drives the log level of the FP-only tail fallback.
+        """
+        quantizers = getattr(self.alg_composer, "block_quantizer", None)
+        if quantizers is None:
+            return False
+        if not isinstance(quantizers, (list, tuple)):
+            quantizers = [quantizers]
+        return any(bool(getattr(q, "enable_quanted_input", False)) for q in quantizers)
+
+    def _attach_tail_imatrix_(self, lm_head_name, fp_rows) -> None:
+        """Attach the fp-input imatrix for lm_head from the captured rows.
+
+        In the walk lane this statistic is accumulated by the quantizer's
+        fp-input forward hook while the collection walk executes lm_head; the
+        tail-fed lane never executes lm_head, so the same math (fp32 column
+        sums of squares over all token rows, plus the token-row count) runs
+        directly over the captured rows - the identical input VALUES the hook
+        would have seen. Count-convention note: the
+        lm_head hook sees a (tokens, hidden) input, so its imatrix_cnt also
+        counts token rows; BLOCK-layer hooks count batch entries instead. The
+        outside-block lane never divides by imatrix_cnt, so the difference is
+        inert here. Never overwrites an existing statistic.
+        """
+        module = get_module(self.model_context.model, lm_head_name)
+        if module is None or hasattr(module, "imatrix"):
+            return
+        if not fp_rows:
+            return
+        total = None
+        count = 0
+        for row in fp_rows:
+            flattened = row.reshape(-1, row.shape[-1]).to(torch.float32)
+            squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
+            total = squared if total is None else total + squared.to(total.device)
+            count += flattened.shape[0]  # token rows - the lm_head hook's convention
+        module.imatrix = total.to(device_manager.device)
+        module.imatrix_cnt = count
+        logger.info("[lm_head] attached the fp-input imatrix for %s from %d chain-tail rows", lm_head_name, count)
+
+    def _mocked_tail_capture_(self, lm_head_name, fp_rows, q_rows, token_ids=None):
+        """Capture lm_head input rows by running the model's own post-block code.
+
+        Installs the smoke-validated pass-through stubs, puts a
+        :class:`TailInjector` with the cached last-block output at the last layer
+        slot, and swaps lm_head for a :class:`CaptureHead`. One mocked forward per
+        calibration sample (and per chain variant) executes the model's own
+        pre-loop and post-block code - final norm, pre-head scalings, dtype
+        casts, stream mixers, functional glue - and the capture head records the
+        exact rows the real model feeds the head, returning a tiny dummy instead
+        of logits. Modules left on the meta device are reloaded lazily through
+        forward-pre-hooks, so only chain members that actually fire are
+        materialized. Returns ``(fp_captured, q_captured_or_None)`` host lists,
+        or ``None`` when the pass cannot run (the caller then keeps the
+        zero-shot RTN path).
+        """
+        from auto_round.compressors.tail_mock import CaptureHead, TailInjector, install_block_stubs_, restore_blocks_
+
+        model = self.model_context.model
+        arity = getattr(self, "_tail_stub_arity_", None)
+        block_names = list(getattr(self, "_tail_lane_blocks_", None) or [])
+        if arity is None or not block_names:
+            logger.warning(
+                "[lm_head] %s falls back to zero-shot RTN (the smoke-gate metadata for the mocked pass is missing)",
+                lm_head_name,
+            )
+            return None
+        head = get_module(model, lm_head_name) if lm_head_name else None
+        out_features = getattr(head, "out_features", None) if head is not None else None
+        if out_features is None:
+            logger.warning("[lm_head] %s falls back to zero-shot RTN (cannot resolve the head width)", lm_head_name)
+            return None
+
+        def _ids_for(index, row):
+            ids = token_ids[index] if token_ids is not None and index < len(token_ids) else None
+            if (
+                ids is None
+                or not isinstance(ids, torch.Tensor)
+                or ids.shape[0] != row.shape[0]
+                or ids.shape[-1] != row.shape[1]
+            ):
+                ids = torch.zeros(row.shape[0], row.shape[1], dtype=torch.long)
+            # cached ids may carry -100 padding; the stubbed layers ignore the
+            # embedding content, so remap to a valid index instead of failing
+            return ids.clamp(min=0)
+
+        # ── Lazy meta-reload: forward-pre-hooks materialize exactly what fires ──
+        block_prefixes = tuple(block_names)
+        name_of = {id(m): n for n, m in model.named_modules()}
+        offloader = getattr(self, "_offloader", None)
+        hook_handles = []
+
+        def _make_reload_hook(mod_name):
+            def _reload_if_meta(module, args):
+                if any(p.is_meta for p in module.parameters()):
+                    if offloader is None:
+                        raise RuntimeError(f"chain module '{mod_name}' is still meta and no offloader is available")
+                    offloader.reload(model, mod_name)
+                    materialize_model_(module)
+
+            return _reload_if_meta
+
+        try:
+            for name, module in model.named_modules():
+                if not name or any(name == b or name.startswith(b + ".") for b in block_prefixes):
+                    continue
+                if any(p.is_meta for p in module.parameters()):
+                    hook_handles.append(module.register_forward_pre_hook(_make_reload_hook(name)))
+            # the embedding always fires: materialize it up front to learn the device
+            embed_device = None
+            try:
+                embeddings = model.get_input_embeddings()
+            except Exception:
+                embeddings = None
+            if embeddings is not None and any(p.is_meta for p in embeddings.parameters()):
+                if offloader is None:
+                    raise RuntimeError("the embedding is still meta and no offloader is available")
+                offloader.reload(model, name_of.get(id(embeddings), ""))
+                materialize_model_(embeddings)
+            if embeddings is not None:
+                embed_device = embeddings.weight.device
+            if embed_device is None or embed_device.type == "meta":
+                embed_device = next((p.device for p in model.parameters() if p.device.type != "meta"), None)
+            if embed_device is None or embed_device.type == "meta":
+                raise RuntimeError("cannot determine a device for the mocked forward")
+            # the injected tail should sit where the post-block chain lives: the
+            # first block-external parameterized module outside the embedding
+            chain_device = None
+            for name, module in model.named_modules():
+                if not name or any(name == b or name.startswith(b + ".") for b in block_prefixes):
+                    continue
+                if module is embeddings:
+                    continue
+                params = [p for p in module.parameters()]
+                if params and all(p.device.type != "meta" for p in params):
+                    chain_device = params[0].device
+                    break
+            target_device = chain_device if chain_device is not None else embed_device
+
+            restore_info = install_block_stubs_(model, block_names, arity=arity)
+            head_parent = None
+            head_attr = None
+            original_head = None
+            was_training = model.training
+            model.eval()
+            try:
+                last_parent, last_attr, _ = restore_info["slots"][-1]
+                injector = TailInjector(fp_rows[0], arity=arity)
+                setattr(last_parent, last_attr, injector)
+                head_parent_path, _, head_attr = lm_head_name.rpartition(".")
+                head_parent = get_module(model, head_parent_path) if head_parent_path else model
+                original_head = getattr(head_parent, head_attr)
+                capture_head = CaptureHead(out_features, original=original_head)
+                setattr(head_parent, head_attr, capture_head)
+                for variant, rows in (("fp", fp_rows), ("q", q_rows)):
+                    if rows is None:
+                        continue
+                    capture_head.records.clear()
+                    for index, row in enumerate(rows):
+                        injector.tail = row.to(target_device)
+                        ids = _ids_for(index, row).to(embed_device)
+                        with torch.no_grad():
+                            model(input_ids=ids, attention_mask=torch.ones_like(ids), use_cache=False)
+                    captured = list(capture_head.records)
+                    if len(captured) != len(rows):
+                        raise RuntimeError(f"the mocked pass recorded {len(captured)} row sets for {len(rows)} samples")
+                    expected_width = head.in_features
+                    for captured_row in captured:
+                        if captured_row.dim() < 2 or captured_row.shape[-1] != expected_width:
+                            raise RuntimeError(
+                                f"captured head-input rows have shape {tuple(captured_row.shape)}, "
+                                f"expected the head input width {expected_width}; the post-block code "
+                                "reshapes or splits streams in a way the plain-row capture cannot represent"
+                            )
+                    if variant == "fp":
+                        fp_captured = captured
+                    else:
+                        q_captured = captured
+            finally:
+                if head_parent is not None:
+                    setattr(head_parent, head_attr, original_head)
+                restore_blocks_(model, restore_info)
+                model.train(was_training)
+            return fp_captured, q_captured if q_rows is not None else None
+        except Exception as err:  # any family-specific failure: keep the conservative path
+            logger.warning(
+                "[lm_head] %s falls back to zero-shot RTN (the mocked-continuation capture failed: %s)",
+                lm_head_name,
+                err,
+            )
+            return None
+        finally:
+            for handle in hook_handles:
+                handle.remove()
+
+    def _lm_head_tail_inputs_(self, lm_head_name, token_ids=None):
+        """``(fp_rows, q_rows)`` for lm_head, captured through the model's own code.
+
+        The block loop's chain output is the RAW last-block output; the mocked
+        continuation replays it through the model's own post-block code (final
+        norm, scalings, casts, stream mixers - whatever the family does) with a
+        capture head in place of lm_head, recording the exact rows the real
+        model feeds the head. Returns ``None`` on any failure - the caller then
+        falls back to zero-shot RTN for the layer.
+        """
+        tail = getattr(self, "_lm_head_chain_tail_", None)
+        if tail is None:
+            logger.warning(
+                "[lm_head] %s falls back to zero-shot RTN (no input-capture entry; the layer was excluded from capture caching): the block loop kept no chain tail",
+                lm_head_name,
+            )
+            self._lm_head_chain_tail_ = None
+            return None
+        new_q_output, reference_output = tail
+        fp_rows = self._chain_hidden_rows(reference_output)
+        if (
+            not isinstance(fp_rows, (list, tuple))
+            or len(fp_rows) == 0
+            or not all(isinstance(r, torch.Tensor) for r in fp_rows)
+        ):
+            logger.warning(
+                "[lm_head] %s falls back to zero-shot RTN (unexpected chain-tail row format: %s)",
+                lm_head_name,
+                type(fp_rows).__name__,
+            )
+            self._lm_head_chain_tail_ = None
+            return None
+        q_rows = self._chain_hidden_rows(new_q_output) if new_q_output is not None else None
+        q_requested = self._quantizer_requests_q_inputs_()
+        if not isinstance(q_rows, (list, tuple)) or len(q_rows) != len(fp_rows):
+            if q_requested:
+                logger.warning(
+                    "[lm_head] %s tunes on FP chain inputs (enable_quanted_input cannot be honored): "
+                    "quantized chain rows are missing or malformed",
+                    lm_head_name,
+                )
+            else:
+                # RTN (iters=0) defaults enable_quanted_input to False: the q chain
+                # was never maintained by configuration, so this is the expected
+                # path, not a degradation - and the search ignores q rows anyway.
+                logger.info(
+                    "[lm_head] %s tunes on FP chain inputs (quantized-input chain disabled by config)",
+                    lm_head_name,
+                )
+            q_rows = None
+        captured = self._mocked_tail_capture_(lm_head_name, fp_rows, q_rows, token_ids=token_ids)
+        if captured is None:
+            logger.warning(
+                "[lm_head] %s falls back to zero-shot RTN (the captured head-input rows are unavailable)",
+                lm_head_name,
+            )
+            # the raw tail only fed the capture; release it on the fallback path
+            self._lm_head_chain_tail_ = None
+            return None
+        return captured
 
     def _check_compatibility(self) -> None:
         """Checks compatibility of the configurations and model."""

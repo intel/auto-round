@@ -14,11 +14,13 @@
 import ctypes
 import functools
 import gc
+import logging
 import os
 import re
 import shutil
 import sys
 import tempfile
+from collections import defaultdict
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from threading import Lock
@@ -940,14 +942,23 @@ def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size
 
     for name, module in block.named_modules():
         if check_to_quantized(module):
-            enable_act_quant = module.act_bits <= 8
+            # read through the wrapper like check_to_quantized does: tuning
+            # wrappers carry the stamps, weight, and feature dims on
+            # orig_layer, not themselves
+            src_module = getattr(module, "orig_layer", module)
+            enable_act_quant = getattr(src_module, "act_bits", 16) <= 8
             layer_name = name
-            param_size = module.weight.nbytes
+            weight = getattr(module, "weight", None)
+            if weight is None:
+                weight = getattr(src_module, "weight", None)
+            if weight is None:
+                continue
+            param_size = weight.nbytes
             param_memory_gb = param_size / 1024**3
             param_memory_gb *= 2  # considering the v tensor for weight rounding
 
             # Estimate output memory based on input_features and out_features
-            in_features, out_features = get_layer_features(module)
+            in_features, out_features = get_layer_features(src_module)
             if in_features is not None and out_features is not None:
                 # Output tensor size: batch_size * seq_len * out_features * element_size
                 output_size = batch_size * seq_len * out_features * element_size
@@ -1764,3 +1775,175 @@ def dispatch_model_by_all_available_devices(
     device_map = infer_auto_device_map(model, max_memory=new_max_memory, no_split_module_classes=no_split_modules)
     model = dispatch_model(model, device_map=device_map)
     return model
+
+
+def is_oom_exception(exc: BaseException) -> bool:
+    """Whether an exception means the accelerator ran out of memory.
+
+    Used by the outside-block tune's failure containment to attach an
+    at-failure census: recognizes both the typed
+    ``torch.cuda.OutOfMemoryError`` and message-only OOM runtimes."""
+    oom_cls = getattr(getattr(torch.cuda, "OutOfMemoryError", None), "__name__", "")
+    if oom_cls and type(exc).__name__ == oom_cls:
+        return True
+    return "out of memory" in str(exc).lower()
+
+
+def log_cuda_memory_census(tag: str, device=None, top: int = 12, walk: bool = True) -> None:
+    """Log a DEBUG-level VRAM census: allocator totals plus the largest live tensors.
+
+    Intended for diagnosing memory pressure at specific points (tuning huge
+    layers, staged-model phases): ``mem_get_info`` and torch's allocator are
+    the ground truth, while the python-side walk names the tensors holding
+    the memory; the gap between the two is allocator-internal (autograd-saved
+    or graph-owned storage). No-op without CUDA.
+    """
+    import torch
+
+    if not logger.isEnabledFor(logging.DEBUG):
+        return  # the gc walk below is expensive; skip it entirely unless visible
+    if isinstance(device, str):
+        # device_manager.device is a str; normalize so the type checks below
+        # do not silently drop the census (observed live: str has no .type)
+        device = torch.device(device)
+    if device is None:
+        if not torch.cuda.is_available():
+            return
+        # un-indexed torch.device("cuda") never equals cuda:i tensors in the
+        # walk below; resolve to the current device
+        device = torch.device(f"cuda:{torch.cuda.current_device()}")
+    if device is None or getattr(device, "type", "cpu") != "cuda":
+        return
+    if not walk:
+        # allocator-only header: the gc walk is the expensive part and runs
+        # only where a failure needs the tensor list
+        try:
+            free_b, total_b = torch.cuda.mem_get_info(device)
+        except Exception:  # pylint: disable=broad-except
+            return
+        logger.debug(
+            "[vram] %s: free %.2fGiB / total %.2fGiB | torch allocated %.2fGiB reserved %.2fGiB",
+            tag,
+            free_b / 2**30,
+            total_b / 2**30,
+            torch.cuda.memory_allocated(device) / 2**30,
+            torch.cuda.memory_reserved(device) / 2**30,
+        )
+        return
+    try:
+        free_b, total_b = torch.cuda.mem_get_info(device)
+    except Exception:  # pylint: disable=broad-except
+        return
+    allocated_b = torch.cuda.memory_allocated(device)
+    reserved_b = torch.cuda.memory_reserved(device)
+    groups = {}
+    storages = {}
+    for obj in gc.get_objects():  # noqa: C417  pylint: disable=too-many-nested-blocks
+        try:
+            if torch.is_tensor(obj) and obj.device == device:
+                nbytes = obj.element_size() * obj.numel()
+                key = (tuple(obj.shape), str(obj.dtype))
+                groups.setdefault(key, [0, 0, set()])
+                groups[key][0] += 1
+                groups[key][1] += nbytes
+                # views share storage; count each storage once for the total
+                # AND once per row: a row of split() views otherwise reports
+                # the underlying storage's bytes once per view
+                ptr = obj.untyped_storage().data_ptr()
+                groups[key][2].add(ptr)
+                if ptr not in storages:
+                    storages[ptr] = obj.untyped_storage().nbytes()
+        except Exception:  # pylint: disable=broad-except
+            continue
+    lines = [
+        "[vram] %s: free %.2fGiB / total %.2fGiB | torch allocated %.2fGiB reserved %.2fGiB | "
+        "python-visible %.2fGiB (%.2fGiB unique storages) in %d tensor groups",
+        tag,
+        free_b / 2**30,
+        total_b / 2**30,
+        allocated_b / 2**30,
+        reserved_b / 2**30,
+        sum(v[1] for v in groups.values()) / 2**30,
+        sum(storages.values()) / 2**30,
+        len(groups),
+    ]
+    logger.debug(*lines)
+    top_items = sorted(groups.items(), key=lambda kv: -kv[1][1])[:top]
+    for (shape, dtype), (count, nbytes, uniq) in top_items:
+        uniq_gib = sum(storages[p] for p in uniq if p in storages) / 2**30
+        logger.debug(
+            "[vram]   %6.3fGiB x%-3d %s %s (unique %.3fGiB in %d storages)",
+            nbytes / 2**30,
+            count,
+            dtype,
+            shape,
+            uniq_gib,
+            len(uniq),
+        )
+    # forensics: across ALL copies of the biggest groups - python referrer
+    # kinds per copy, plus how many copies sit inside a live autograd graph
+    # (grad_fn set, no python referrers = held by C++ autograd nodes)
+    # one gc pass for ALL groups (each walk costs seconds on a big heap,
+    # and this runs inside OOM handlers)
+    _forensic_keys = [
+        (shape, dtype) for (shape, dtype), (count, nbytes, _uniq) in top_items[:3] if nbytes / 2**30 >= 0.5
+    ]
+    _forensic_copies = {key: [] for key in _forensic_keys}
+    if _forensic_keys:
+        for o in gc.get_objects():
+            try:
+                if torch.is_tensor(o) and getattr(o, "device", None) == device:
+                    key = (tuple(o.shape), str(o.dtype))
+                    if key in _forensic_copies:
+                        _forensic_copies[key].append(o)
+            except Exception:  # pylint: disable=broad-except
+                continue
+    for shape, dtype in _forensic_keys:
+        copies = _forensic_copies[(shape, dtype)]
+        if not copies:
+            continue
+        in_graph = sum(1 for t in copies if getattr(t, "grad_fn", None) is not None)
+        requires = sum(1 for t in copies if getattr(t, "requires_grad", False))
+        kinds = {}
+        for t in copies:
+            refs = gc.get_referrers(t)
+            if not refs:
+                kinds["<C++-held/no-python-ref>"] = kinds.get("<C++-held/no-python-ref>", 0) + 1
+                continue
+            for r in refs:
+                k = type(r).__name__
+                if isinstance(r, (list, tuple)):
+                    k += f"[{type(r[0]).__name__}]" if len(r) else "[]"
+                elif isinstance(r, dict):
+                    k += "[dict]"
+                kinds[k] = kinds.get(k, 0) + 1
+        logger.debug(
+            "[vram]   %s %s x%d: in-graph(grad_fn)=%d requires_grad=%d; python referrers: %s",
+            dtype,
+            tuple(shape),
+            len(copies),
+            in_graph,
+            requires,
+            kinds,
+        )
+        # attribution: name the actual container objects for copies that
+        # are NOT plain requires-grad params (the leaked ones). This runs
+        # inside OOM handlers: it must never raise (a census failure once
+        # replaced the containment and killed the whole run).
+        try:
+            shown = 0
+            for t in copies:
+                if getattr(t, "requires_grad", False):
+                    continue
+                for r in gc.get_referrers(t):
+                    if isinstance(r, (list, dict)):  # defaultdict subclasses dict
+                        rep = repr(r)
+                        if len(rep) > 160:
+                            rep = rep[:160] + "..."
+                        logger.debug("[vram]     copy %s held by %s: %s", str(tuple(t.shape)), type(r).__name__, rep)
+                        shown += 1
+                        break
+                if shown >= 6:
+                    break
+        except Exception as e:  # pylint: disable=broad-except
+            logger.debug("[vram]     attribution skipped (%s: %s)", type(e).__name__, e)

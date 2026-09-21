@@ -20,7 +20,7 @@ import transformers
 from torch.functional import F
 
 import auto_round.envs as envs
-from auto_round.data_type.base import activation_quantizer_for_layer, create_quantizer
+from auto_round.data_type.base import WeightQuantizationResult, activation_quantizer_for_layer, create_quantizer
 from auto_round.data_type.utils import quantize_bias_without_round, reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
 from auto_round.utils import (
@@ -34,6 +34,46 @@ from auto_round.utils import (
 if deepspeed_exists:
     from deepspeed import comm as dist
     from deepspeed.module_inject import LinearAllreduce, LinearLayer
+
+
+# Weight-element budget for row-blocked fake-quant forwards: layers whose
+# weight exceeds this many elements compute their quantized-weight math one
+# output-row block at a time, because the eager quant functions materialize
+# several full-size fp32 intermediates (~4.7GiB each on a 248k-vocab lm_head,
+# roughly 6x the weight bytes) that cannot share a 24GB GPU with the tuning
+# residents. Blocking is exact: quantization groups never straddle output
+# rows, so the per-block results and gradients equal the full-tensor
+# computation. Typical FFN projections stay on the fast whole-layer path
+# (compiled graph, single GEMM); the threshold sits far above their size on
+# purpose so they never take the blocked path.
+_ROW_BLOCKED_WEIGHT_ELEMS = 2**27
+
+
+class _GradScatterSlice(torch.autograd.Function):
+    """Row-window view of a tuning parameter with block-sized gradient memory.
+
+    Slicing a leaf parameter directly makes autograd materialize a dense
+    gradient the size of the whole parameter (SliceBackward starts from a full
+    zeros tensor), which is precisely the allocation that overflows a 24GB GPU
+    for a 248k-vocabulary lm_head. This view accumulates its gradient straight
+    into the parameter's ``.grad`` buffer instead, so every intermediate stays
+    the size of one row window."""
+
+    @staticmethod
+    def forward(ctx, param, g_start, g_end):
+        ctx.param = param
+        ctx.g_start = g_start
+        ctx.g_end = g_end
+        return param.detach()[g_start:g_end].clone()
+
+    @staticmethod
+    def backward(ctx, grad_out):
+        param = ctx.param
+        if param.grad is None:
+            param.grad = torch.zeros_like(param)
+        with torch.no_grad():
+            param.grad[ctx.g_start : ctx.g_end] += grad_out.to(param.grad.dtype)
+        return None, None, None
 
 
 def get_scale_shape(weight, group_size):
@@ -135,6 +175,7 @@ class WrapperLinear(torch.nn.Module):
             setattr(self, name, parameter)
         if cached_activation_quantizer is not None:
             self.orig_layer.__dict__.pop("_ar_activation_quantizer", None)
+        self._row_block_decision = None
         if deepspeed_exists:
             if type(self.orig_layer) in (torch.nn.Linear, LinearLayer):
                 self.orig_forward = self.linear_forward
@@ -213,6 +254,48 @@ class WrapperLinear(torch.nn.Module):
 
         setattr(self, name, p)
 
+    def _qdq_weight_block(
+        self,
+        weight,
+        value,
+        min_scale,
+        max_scale,
+        tensor_min=None,
+        tensor_max=None,
+        init_scale=None,
+        g_start=None,
+        g_end=None,
+        materialize=False,
+    ):
+        """Fake-quantize an explicit block of rows (see ``_qdq_weight``).
+
+        Split out so the row-blocked forward can bound the fp32 intermediates
+        of huge layers. Tunables are passed as per-window overrides; the
+        datatype state's per-group buffers (flat ``[rows * groups_per_row]``)
+        are sliced to the window by ``qdq_window`` (explicit ``tensor_min``/
+        ``tensor_max``/``init_scale`` arguments win over the state slices).
+        Groups never straddle row windows, so the windowed computation equals
+        the full-tensor one.
+        """
+        res = self.weight_quantizer.qdq_window(
+            weight,
+            tunables={"value": value, "min_scale": min_scale, "max_scale": max_scale},
+            g_start=g_start,
+            g_end=g_end,
+            tensor_min=tensor_min,
+            tensor_max=tensor_max,
+            init_scale=init_scale,
+            materialize=materialize,
+        )
+        weight_q = res.weight.to(weight.dtype)
+        return weight_q, res.scale, res.zero_point, res.metadata
+
+    def _slice_tunable(self, t, g_start, g_end):
+        """Slice a tuning parameter by group window, keeping scalars intact."""
+        if t is None or t.numel() == 1:
+            return t
+        return t[g_start:g_end]
+
     def _qdq_weight(self, value, min_scale, max_scale):
         """Quantizes and dequantizes weights with tuning parameters.
 
@@ -233,10 +316,155 @@ class WrapperLinear(torch.nn.Module):
             weight = weight.t()
 
         self.params.update(value=value, min_scale=min_scale, max_scale=max_scale)
-        weight_q = self.weight_qdq(weight.to(self.device)).weight.to(weight.dtype)
+        weight = weight.to(self.device)
+        if weight.dim() == 2 and self.row_block_active():
+            # the final quantize/dequantize of a huge layer runs the same
+            # fp32 intermediates as the forward; keep them block-sized too
+            _, in_features = weight.shape
+            group_size = self.orig_layer.group_size
+            groups_per_row = (in_features + group_size - 1) // group_size if 0 < group_size < in_features else 1
+            weight_q_parts = []
+
+            def _win(t, g0, g1):
+                sliced = self._slice_tunable(t, g0, g1)
+                if isinstance(sliced, torch.Tensor) and sliced.device != weight.device:
+                    return sliced.to(weight.device)
+                return sliced
+
+            for b_start, b_end in self.row_block_bounds():
+                g_start, g_end = b_start * groups_per_row, b_end * groups_per_row
+                wq, _, _, _ = self._qdq_weight_block(
+                    weight[b_start:b_end],
+                    _win(value, g_start, g_end),
+                    _win(min_scale, g_start, g_end),
+                    _win(max_scale, g_start, g_end),
+                    None,
+                    None,
+                    g_start=g_start,
+                    g_end=g_end,
+                )
+                weight_q_parts.append(wq)
+                del wq
+            weight_q = torch.cat(weight_q_parts, dim=0)
+        else:
+            weight_q = self.weight_qdq(weight).weight.to(weight.dtype)
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             weight_q = weight_q.t()
         return weight_q, None, None
+
+    def row_block_active(self):
+        """Compute (once) and return the row-blocked-forward decision.
+
+        Tune loops must ask this BEFORE the first forward so their loss loop
+        picks the per-block backward path instead of a full forward whose
+        graphs for every block stay alive at once."""
+        return self._use_row_blocked_output()
+
+    def _use_row_blocked_output(self):
+        """Whether the forward should compute the quantized weight one output-row
+        block at a time; decided once per wrapper."""
+        decision = getattr(self, "_row_block_decision", False)
+        if decision is None:
+            decision = self._compute_row_blocked_eligibility()
+            self._row_block_decision = decision
+            if decision:
+                logger.debug(
+                    "[tune] row-blocked weight forward for %s (%d elements)",
+                    getattr(self.orig_layer, "global_name", "layer"),
+                    self.orig_layer.weight.numel(),
+                )
+        return decision
+
+    def _compute_row_blocked_eligibility(self):
+        """Eligibility for row-blocked fake-quant forwards. Only plain Linear
+        layers with a weight beyond the element budget qualify: meta weights
+        are materialized whole by ``get_weight`` anyway, non-linear forwards
+        take un-sliced weights, k-quant super groups and per-tensor group
+        layouts (group_size 0) share scale across rows so blocking would
+        change the math."""
+        layer = self.orig_layer
+        if type(layer) is not torch.nn.Linear or self.orig_forward != self.linear_forward:
+            return False
+        weight = layer.weight
+        if weight.dim() != 2 or weight.device.type == "meta":
+            return False
+        # scheme fields are attached to every quantized layer (None when unset),
+        # so test the value, not the attribute's presence
+        if getattr(layer, "super_bits", None) is not None:
+            return False
+        group_size = getattr(layer, "group_size", -1)
+        if not isinstance(group_size, int) or group_size == 0:
+            return False
+        return weight.numel() > _ROW_BLOCKED_WEIGHT_ELEMS
+
+    def row_block_bounds(self):
+        """Output-row windows used by the row-blocked paths.
+
+        The window shrinks below the element budget when the GPU is nearly
+        full, so a block's fp32 intermediates always fit the free pool (about
+        six block-sized fp32 arrays are live in the quantize/backward math).
+        Boundaries always land on whole rows, so any window size reproduces
+        the full-tensor computation exactly."""
+        weight = self.orig_layer.weight
+        out_features, in_features = weight.shape
+        rows = max(1, _ROW_BLOCKED_WEIGHT_ELEMS // max(1, in_features))
+        if weight.is_cuda:
+            try:
+                free_bytes, _ = torch.cuda.mem_get_info(weight.device)
+            except (RuntimeError, ValueError):  # pragma: no cover - exotic devices
+                free_bytes = None
+            if free_bytes is not None:
+                # ~6 fp32 arrays of rows x in_features live per block; use half
+                # the free pool to leave room for transients and fragmentation
+                budget_rows = int(free_bytes * 0.5 // (in_features * 4 * 6))
+                rows = max(1024, min(rows, budget_rows))
+        return [(start, min(start + rows, out_features)) for start in range(0, out_features, rows)]
+
+    def _row_block_params(self, start, end):
+        """Sliced tuning parameters and weight for one output-row window."""
+        weight = self.orig_layer.weight.to(self.device)
+        _, in_features = weight.shape
+        group_size = self.orig_layer.group_size
+        groups_per_row = (in_features + group_size - 1) // group_size if 0 < group_size < in_features else 1
+        g_start, g_end = start * groups_per_row, end * groups_per_row
+        min_bound, max_bound = self.minmax_scale_bound
+        self.min_scale.data.clamp_(min_bound, max_bound)
+        self.max_scale.data.clamp_(min_bound, max_bound)
+        # min/max scales stay scalar when minmax tuning is off - only slice
+        # genuinely per-group parameters (same contract as _slice_tunable)
+        min_scale_arg = (
+            _GradScatterSlice.apply(self.min_scale, g_start, g_end) if self.min_scale.numel() > 1 else self.min_scale
+        )
+        max_scale_arg = (
+            _GradScatterSlice.apply(self.max_scale, g_start, g_end) if self.max_scale.numel() > 1 else self.max_scale
+        )
+        weight_q, *_ = self._qdq_weight_block(
+            weight[start:end],
+            _GradScatterSlice.apply(self.value, g_start, g_end),
+            min_scale_arg,
+            max_scale_arg,
+            g_start=g_start,
+            g_end=g_end,
+        )
+        return weight_q
+
+    def forward_rows(self, x, start, end, bias=None):
+        """Output columns ``[start:end)`` computed with the row-blocked fake-quant
+        math, keeping only this block's autograd graph alive. Tuning loops use
+        this to backward per block; the summed loss equals the full-tensor
+        loss because the MSE decomposes over output columns."""
+        block_bias = bias[start:end] if bias is not None else None
+        return self.linear_forward(x, self._row_block_params(start, end), block_bias)
+
+    def _row_blocked_output(self, x, bias):
+        """Forward with per-row-block fake-quant math (see ``_qdq_weight_block``).
+
+        Groups are laid out row-major in the flattened tuning parameters, so a
+        window of output rows maps to a consecutive window of groups; blocking
+        therefore reproduces the full-tensor computation exactly while the
+        fp32 intermediates stay bounded."""
+        outputs = [self.forward_rows(x, start, end, bias) for start, end in self.row_block_bounds()]
+        return torch.cat(outputs, dim=-1)
 
     def _qdq_act(self, x, act_min_scale=torch.tensor(1.0), act_max_scale=torch.tensor(1.0), act_max=None):
         """Quantizes and dequantizes activations.
@@ -297,12 +525,22 @@ class WrapperLinear(torch.nn.Module):
             return layer
 
         best_params = best_params or {}
-        v = best_params.get("value", torch.tensor(0.0)).to(self.device)
-        min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
-        max_scale = best_params.get("max_scale", torch.tensor(1.0)).to(self.device)
+        v = best_params.get("value", torch.tensor(0.0))
+        min_scale = best_params.get("min_scale", torch.tensor(1.0))
+        max_scale = best_params.get("max_scale", torch.tensor(1.0))
         # Preserve the dictionary captured by QDQ closures and restore all
         # algorithm parameters, including names unknown to the wrapper.
-        self.params.update({name: value.to(self.device) for name, value in best_params.items()})
+        # Huge layers keep their best-parameters on the host: moving the whole
+        # rounding parameter to the GPU beside its live copy and gradient
+        # buffers would overflow the card during the final quantize. The
+        # row-blocked path streams one window at a time instead.
+        if self.row_block_active():
+            self.params.update({name: value for name, value in best_params.items()})
+        else:
+            self.params.update({name: value.to(self.device) for name, value in best_params.items()})
+            v = v.to(self.device)
+            min_scale = min_scale.to(self.device)
+            max_scale = max_scale.to(self.device)
         self.params.update(value=v, min_scale=min_scale, max_scale=max_scale)
 
         if self.orig_layer.weight.device.type == "meta":
@@ -311,10 +549,51 @@ class WrapperLinear(torch.nn.Module):
             weight = self.orig_layer.weight
             if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
                 weight = weight.t()
-            result = self.weight_qdq(
-                weight.to(self.device),
-                materialize=True,
-            )
+            weight = weight.to(self.device)
+            if weight.dim() == 2 and self.row_block_active():
+                # huge layers materialize one row window at a time; the best
+                # parameters stay on the host and stream per window
+                _, in_features = weight.shape
+                group_size = self.orig_layer.group_size
+                groups_per_row = (in_features + group_size - 1) // group_size if 0 < group_size < in_features else 1
+
+                def _pwin(name, g0, g1, default):
+                    t = self.params.get(name, default)
+                    sliced = self._slice_tunable(t, g0, g1)
+                    if isinstance(sliced, torch.Tensor) and sliced.device != weight.device:
+                        return sliced.to(weight.device)
+                    return sliced
+
+                wq_parts, scale_parts, zp_parts, metadata_parts = [], [], [], []
+                for b_start, b_end in self.row_block_bounds():
+                    g_start, g_end = b_start * groups_per_row, b_end * groups_per_row
+                    wq, sc, zp, block_metadata = self._qdq_weight_block(
+                        weight[b_start:b_end],
+                        _pwin("value", g_start, g_end, torch.tensor(0.0)),
+                        _pwin("min_scale", g_start, g_end, torch.tensor(1.0)),
+                        _pwin("max_scale", g_start, g_end, torch.tensor(1.0)),
+                        None,
+                        None,
+                        g_start=g_start,
+                        g_end=g_end,
+                        materialize=True,
+                    )
+                    wq_parts.append(wq)
+                    scale_parts.append(sc)
+                    zp_parts.append(zp)
+                    metadata_parts.append(block_metadata)
+                    del wq, sc, zp
+                scale = torch.cat(scale_parts, dim=0) if isinstance(scale_parts[0], torch.Tensor) else scale_parts[0]
+                zp = torch.cat(zp_parts, dim=0) if isinstance(zp_parts[0], torch.Tensor) else zp_parts[0]
+                # per-datatype metadata (e.g. the NVFP-family scalar weight
+                # global scale) is block-invariant; keep the last seen value
+                metadata = metadata_parts[-1] if metadata_parts else None
+                result = WeightQuantizationResult(torch.cat(wq_parts, dim=0), scale, zp, metadata)
+            else:
+                result = self.weight_qdq(
+                    weight,
+                    materialize=True,
+                )
             self.weight_quantizer.apply_result(
                 self.orig_layer,
                 result,
@@ -433,7 +712,10 @@ class WrapperLinear(torch.nn.Module):
         """
         # logger.info(self.orig_layer.global_name)
         x = x.to(self.device)
-        weight_q, *_ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
+        row_blocked = self._use_row_blocked_output()
+        weight_q = None
+        if not row_blocked:
+            weight_q, *_ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
             # Run orig_layer's forward_pre_hooks (e.g., online Hadamard transform)
@@ -461,7 +743,11 @@ class WrapperLinear(torch.nn.Module):
         if self.enable_norm_bias_tuning:
             bias, _, _ = self._qdq_bias(bias, self.bias_v)
 
-        output = self.orig_forward(x, weight_q, bias).to(self.output_device)
+        if row_blocked:
+            output = self._row_blocked_output(x, bias)
+        else:
+            output = self.orig_forward(x, weight_q, bias)
+        output = output.to(self.output_device)
 
         # Execute post-hooks from orig_layer (e.g., v_proj per-head Hadamard
         # when online rotation is not fused into weights).
