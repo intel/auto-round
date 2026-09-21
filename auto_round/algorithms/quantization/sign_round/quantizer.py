@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import torch
@@ -22,6 +22,7 @@ from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
 from auto_round.compressors.utils import (
     IndexSampler,
     collect_best_params,
@@ -477,22 +478,15 @@ class SignRoundQuantizer(BaseQuantizer):
         tuning_cache = None
         # Only opt-in diffusion tuning can enter the CUDA staging path.
         cache_budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
-        use_tuning_cache = (
-            getattr(self.model_context, "is_diffusion", False)
-            and (cache_budget == "auto" or cache_budget > 0)
-            and self.compress_context.low_gpu_mem_usage
-            and str(device).startswith("cuda")
-            and len(device_manager.device_list) == 1
-            and (loss_device is None or torch.device(loss_device) == torch.device(device))
+        use_tuning_cache = DiffusionTuningCache.is_enabled(
+            self.model_context, self.compress_context, device, loss_device
         )
 
-        try:
+        with ExitStack() as cache_cleanup:
             for i in range(self.iters):
                 # Auto observes a complete forward/backward/optimizer iteration
                 # on the legacy path before allocating any extra GPU buffers.
                 if use_tuning_cache and i == (1 if cache_budget == "auto" else 0):
-                    from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
-
                     tuning_cache = DiffusionTuningCache.create(
                         block,
                         block_fwd,
@@ -504,6 +498,9 @@ class SignRoundQuantizer(BaseQuantizer):
                         cache_budget,
                         device,
                     )
+                    if tuning_cache is not None:
+                        # Buffers must survive backward and be released on exceptions too.
+                        cache_cleanup.callback(tuning_cache.close)
                 total_loss = 0
                 global_indices = index_sampler.next_batch()
                 if valid_token_mask:
@@ -511,15 +508,16 @@ class SignRoundQuantizer(BaseQuantizer):
 
                 for batch_start in range(0, len(global_indices), batch_size):
                     indices = global_indices[batch_start : batch_start + batch_size]
-                    staged = tuning_cache.get(indices) if tuning_cache is not None else None
-                    if staged is None:
-                        ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
-                        pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
-                    else:
-                        ref_output = staged[2]
-                        pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
-                    if loss_device is not None:
-                        pred_output = pred_output.to(loss_device)
+                    pred_output, ref_output = block_fwd.forward_with_reference(
+                        block,
+                        active_inputs,
+                        input_others,
+                        fp_outputs,
+                        indices,
+                        loss_device,
+                        _fwd_cache_device,
+                        tuning_cache,
+                    )
                     if (
                         block_ctx.block_index == block_ctx.block_cnt - 1
                         and self.enable_lfq
@@ -568,10 +566,6 @@ class SignRoundQuantizer(BaseQuantizer):
                         break
                 sync_gradients()
                 self._step(scaler, optimizer, lr_schedule)
-
-        finally:
-            if tuning_cache is not None:
-                tuning_cache.close()
 
         last_loss = total_loss
         best_iter = self.iters

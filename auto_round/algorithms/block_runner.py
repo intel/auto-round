@@ -255,6 +255,21 @@ class BlockForwardRunner:
 
         return outputs
 
+    def forward_with_reference(
+        self, block, inputs, input_others, outputs, indices, loss_device, cache_device=None, tuning_cache=None
+    ):
+        """Forward a tuning batch and its reference, using prefetch when available."""
+        staged = tuning_cache.get(indices) if tuning_cache is not None else None
+        if staged is None:
+            reference = torch.cat([outputs[i] for i in indices], dim=0).to(loss_device)
+            prediction = self.forward(block, inputs, input_others, indices, cache_device)
+        else:
+            reference = staged[2]
+            prediction = tuning_cache.forward(block, staged, cache_device)
+        if loss_device is not None:
+            prediction = prediction.to(loss_device)
+        return prediction, reference
+
     # ── Input selection ──────────────────────────────────────────────────────
 
     def select_batch(
