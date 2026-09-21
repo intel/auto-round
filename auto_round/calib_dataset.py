@@ -465,7 +465,9 @@ def get_github_code_clean_dataset(
         else:
             raise error
     calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
-    calib_dataset = calib_dataset.shuffle(seed=seed).take(nsamples * envs.AR_CALIB_DATA_MULTIPLIER)  ##TODO concat data'shuffle may have bugs
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(
+        nsamples * envs.AR_CALIB_DATA_MULTIPLIER
+    )  ##TODO concat data'shuffle may have bugs
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
