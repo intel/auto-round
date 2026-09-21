@@ -22,7 +22,6 @@ from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.algorithms.registry import register_pipeline_member
-from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
 from auto_round.compressors.utils import (
     IndexSampler,
     collect_best_params,
@@ -478,9 +477,13 @@ class SignRoundQuantizer(BaseQuantizer):
         tuning_cache = None
         # Only opt-in diffusion tuning can enter the CUDA staging path.
         cache_budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
-        use_tuning_cache = DiffusionTuningCache.is_enabled(
-            self.model_context, self.compress_context, device, loss_device
-        )
+        use_tuning_cache = False
+        if getattr(self.model_context, "is_diffusion", False) and cache_budget:
+            from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
+
+            use_tuning_cache = DiffusionTuningCache.is_enabled(
+                self.model_context, self.compress_context, device, loss_device
+            )
 
         for i in range(self.iters):
             # Auto observes a complete forward/backward/optimizer iteration
