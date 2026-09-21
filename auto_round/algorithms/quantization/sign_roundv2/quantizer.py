@@ -98,7 +98,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
 
             with autocast_ctx:
                 return torch.mean((torch.abs(pred_output.to(torch.float32) - ref_output.to(torch.float32)) * mask) ** 2)
-        return super()._get_loss(pred_output, ref_output, indices, mse_loss, device)
+        return super()._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
 
     def register_fp_input_forward_hooks(self, block):
         """Register FP-input hooks: imatrix."""
