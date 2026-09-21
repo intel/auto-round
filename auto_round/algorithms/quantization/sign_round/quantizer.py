@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
-from contextlib import ExitStack, nullcontext
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import torch
@@ -482,7 +482,7 @@ class SignRoundQuantizer(BaseQuantizer):
             self.model_context, self.compress_context, device, loss_device
         )
 
-        with ExitStack() as cache_cleanup:
+        try:
             for i in range(self.iters):
                 # Auto observes a complete forward/backward/optimizer iteration
                 # on the legacy path before allocating any extra GPU buffers.
@@ -498,9 +498,6 @@ class SignRoundQuantizer(BaseQuantizer):
                         cache_budget,
                         device,
                     )
-                    if tuning_cache is not None:
-                        # Buffers must survive backward and be released on exceptions too.
-                        cache_cleanup.callback(tuning_cache.close)
                 total_loss = 0
                 global_indices = index_sampler.next_batch()
                 if valid_token_mask:
@@ -566,6 +563,10 @@ class SignRoundQuantizer(BaseQuantizer):
                         break
                 sync_gradients()
                 self._step(scaler, optimizer, lr_schedule)
+
+        finally:
+            if tuning_cache is not None:
+                tuning_cache.close()
 
         last_loss = total_loss
         best_iter = self.iters
