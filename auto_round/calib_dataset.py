@@ -1106,9 +1106,11 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         if do_concat:
             dataset = concat_dataset_element(dataset)
 
-        dataset = dataset.filter(filter_func)
-        if name in data_lens:
-            dataset = select_dataset(dataset, range(data_lens[name]))
+        is_streaming = isinstance(dataset, IterableDataset)
+        if is_streaming:
+            dataset = dataset.filter(filter_func)
+            if name in data_lens:
+                dataset = select_dataset(dataset, range(data_lens[name]))
         if isinstance(dataset, IterableDataset):
             # A single dataset source never contributes more than `nsamples` rows to the
             # final combined dataset, so cap materialization here instead of fully consuming
@@ -1127,6 +1129,12 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                 new_features[k] = v
 
         dataset = dataset.cast(Features(new_features))
+        if not is_streaming:
+            # Cast before filtering/selecting creates row indices. Casting indexed
+            # Arrow slices can otherwise duplicate a full values buffer per row.
+            dataset = dataset.filter(filter_func)
+            if name in data_lens:
+                dataset = select_dataset(dataset, range(data_lens[name]))
         datasets.append(dataset)
 
     if len(datasets) == 1:
