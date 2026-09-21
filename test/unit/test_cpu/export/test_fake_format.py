@@ -166,6 +166,25 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
     assert not torch.equal(loaded_model.block.linear.qdq_input(roundtrip_activation), roundtrip_activation)
 
 
+def test_fake_format_normalizes_sharded_safetensors_index(tmp_path):
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    shard_name = "model-00001-of-00001.safetensors"
+    original_key = "model.layers.0.orig_layer.weight"
+    normalized_key = "model.layers.0.weight"
+    save_file({original_key: torch.ones(2, 2)}, tmp_path / shard_name)
+    with open(tmp_path / "model.safetensors.index.json", "w") as index_file:
+        json.dump({"metadata": {}, "weight_map": {original_key: shard_name}}, index_file)
+
+    _rewrite_saved_weights_without_orig_layer(str(tmp_path))
+
+    with safe_open(tmp_path / shard_name, framework="pt", device="cpu") as shard:
+        assert list(shard.keys()) == [normalized_key]
+    with open(tmp_path / "model.safetensors.index.json") as index_file:
+        assert json.load(index_file)["weight_map"] == {normalized_key: shard_name}
+
+
 class _TinyLoadModel(torch.nn.Module):
     def __init__(self, quantization_config):
         super().__init__()
@@ -321,6 +340,105 @@ def test_fake_format_still_saves_when_env_disabled(tmp_path):
     assert returned is not None
     assert os.path.exists(output_dir)
     assert os.path.exists(os.path.join(output_dir, "config.json"))
+
+
+def test_fake_format_meta_device_applies_post_save_source_fixes(tmp_path, monkeypatch):
+    model = _SaveableModel()
+    output_dir = str(tmp_path / "meta_device_model")
+    fixup_calls = []
+
+    monkeypatch.setattr("auto_round.export.formats.backends.fake.unsupported_meta_device", lambda model: True)
+    monkeypatch.setattr("auto_round.export.utils.save_config_artifact", lambda model, save_dir: None)
+    monkeypatch.setattr(
+        "auto_round.export.utils.apply_post_save_source_fixes",
+        lambda saved_model, save_dir: fixup_calls.append((saved_model, save_dir)),
+    )
+
+    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized(
+        output_dir=output_dir,
+        model=model,
+    )
+
+    assert fixup_calls == [(model, output_dir)]
+
+
+class _SaveableSafetensorsModel(torch.nn.Module):
+    """Minimal model whose ``save_pretrained`` writes real safetensors, so the
+    fp32-restore / MTP-copy post-processing in ``FakeFormat.save_quantized`` has
+    something to act on."""
+
+    def __init__(self, source_dir: str, norm_weight: torch.Tensor):
+        super().__init__()
+        self.linear = torch.nn.Linear(4, 3)
+        self.config = SimpleNamespace(_name_or_path=source_dir)
+        self.name_or_path = source_dir
+        self._norm_weight = norm_weight
+
+    def save_pretrained(self, output_dir):
+        from safetensors.torch import save_file
+
+        os.makedirs(output_dir, exist_ok=True)
+        # Simulate transformers downcasting the FP32 tensor to BF16 on save.
+        save_file(
+            {
+                "model.language_model.layers.0.linear_attn.norm.weight": self._norm_weight.to(torch.bfloat16),
+                "model.embed_tokens.weight": torch.randn(4, 4),
+            },
+            os.path.join(output_dir, "model.safetensors"),
+        )
+        with open(os.path.join(output_dir, "config.json"), "w") as config_file:
+            json.dump({}, config_file)
+
+
+def test_fake_format_restores_fp32_and_copies_mtp_tensors(tmp_path, monkeypatch):
+    """Qwen/Qwen3.5-0.8B-style checkpoints keep ``linear_attn.norm.weight`` in FP32
+    and MTP tensors that transformers does not load. The fake export path must
+    restore/copy both by default, not just the ``auto_round`` save path."""
+    from safetensors.torch import save_file
+
+    import auto_round.envs as envs
+
+    source_dir = str(tmp_path / "source")
+    os.makedirs(source_dir)
+    norm_weight = torch.tensor([1.0001, -2.0002, 3.0003, 4.0004], dtype=torch.float32)
+    mtp_weight = torch.randn(8, 4)
+    save_file(
+        {
+            "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,
+            "model.language_model.mtp.0.fc.weight": mtp_weight,
+        },
+        os.path.join(source_dir, "model.safetensors"),
+    )
+    monkeypatch.setattr(envs, "AR_DISABLE_COPY_MTP_WEIGHTS", False)
+
+    model = _SaveableSafetensorsModel(source_dir, norm_weight)
+    output_dir = str(tmp_path / "fake_qwen35")
+
+    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized(
+        output_dir=output_dir,
+        model=model,
+        inplace=False,
+        serialization_dict={
+            "bits": 4,
+            "group_size": 128,
+            "sym": True,
+            "data_type": "int",
+            "quant_method": "auto-round",
+            "packing_format": "auto_round:auto_gptq",
+            "to_quant_block_names": ["block"],
+            "supported_types": [torch.nn.Linear],
+        },
+    )
+
+    from safetensors import safe_open
+
+    with safe_open(os.path.join(output_dir, "model.safetensors"), framework="pt", device="cpu") as f:
+        restored = f.get_tensor("model.language_model.layers.0.linear_attn.norm.weight")
+    assert restored.dtype == torch.float32
+    assert torch.equal(restored, norm_weight)
+
+    with safe_open(os.path.join(output_dir, "model_extra_tensors.safetensors"), framework="pt", device="cpu") as f:
+        assert torch.equal(f.get_tensor("model.language_model.mtp.0.fc.weight"), mtp_weight)
 
 
 def test_fake_backend_accepts_mxfp_roundtrip_config():

@@ -25,6 +25,7 @@ from auto_round.utils.missing_tensors import (
     _normalize_tensor_name_for_warning,
     copy_missing_tensors_from_source,
     quantize_weight_rtn,
+    restore_fp32_tensors_from_source,
     split_fused_expert_tensors,
 )
 
@@ -858,3 +859,146 @@ class TestCopyMissingTensorsFromSource:
                 "Fused talker expert keys should not be treated as missing when "
                 "their per-expert 2D components are already saved"
             )
+
+
+# ===========================================================================
+#  restore_fp32_tensors_from_source: decoupled from MTP handling
+#
+#  Regression coverage for Qwen/Qwen3.5-0.8B-style checkpoints, which keep
+#  ``linear_attn.norm.weight`` in FP32 and additional ``mtp.*`` tensors that are
+#  absent from the saved output. Both must be handled by default, independent
+#  of each other and of ``AR_DISABLE_COPY_MTP_WEIGHTS``.
+# ===========================================================================
+
+
+class TestRestoreFp32DecoupledFromMtp:
+
+    def _write_qwen35_checkpoints(self, src: str, tgt: str) -> tuple[torch.Tensor, torch.Tensor]:
+        os.makedirs(src, exist_ok=True)
+        os.makedirs(tgt, exist_ok=True)
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003], dtype=torch.float32)
+        mtp_weight = torch.randn(32, 64)
+        _save_safetensors(
+            {
+                "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,
+                "model.language_model.mtp.0.fc.weight": mtp_weight,
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors(
+            {
+                # Downcast during save, as `model.save_pretrained` does under bf16 dtype.
+                "model.language_model.layers.0.linear_attn.norm.weight": norm_weight.to(torch.bfloat16),
+                "model.language_model.embed_tokens.weight": torch.randn(8, 64),
+            },
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+        return norm_weight, mtp_weight
+
+    def test_restore_fp32_tensors_from_source_runs_standalone(self, tmp_path):
+        """restore_fp32_tensors_from_source must fix FP32 precision loss on its own,
+        with no dependency on the missing-tensor (MTP) copy logic."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        norm_weight, _ = self._write_qwen35_checkpoints(src, tgt)
+
+        restore_fp32_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        restored = result["model.language_model.layers.0.linear_attn.norm.weight"]
+        assert restored.dtype == torch.float32
+        assert torch.equal(restored, norm_weight)
+        # The MTP-only tensor must remain untouched by the fp32-only restore.
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+
+    def test_fp32_restore_not_gated_by_mtp_disable_flag(self, tmp_path, monkeypatch):
+        """FP32 restoration must run by default even when AR_DISABLE_COPY_MTP_WEIGHTS
+        disables the (separate) missing-tensor copy, mirroring how `save_model` now
+        calls the two features independently."""
+        import auto_round.envs as envs
+        from auto_round.export.utils import save_model
+
+        src = str(tmp_path / "src")
+        os.makedirs(src)
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003], dtype=torch.float32)
+        _save_safetensors(
+            {
+                "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,
+                "model.language_model.mtp.0.fc.weight": torch.randn(32, 64),
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+
+        monkeypatch.setattr(envs, "AR_DISABLE_COPY_MTP_WEIGHTS", True)
+
+        class _FakeModel:
+            name_or_path = src
+
+            def save_pretrained(self, save_dir, max_shard_size=None, safe_serialization=None):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp_save_dir:
+            _save_safetensors(
+                {
+                    "model.language_model.layers.0.linear_attn.norm.weight": norm_weight.to(torch.bfloat16),
+                    "model.language_model.embed_tokens.weight": torch.randn(8, 64),
+                },
+                os.path.join(tmp_save_dir, "model.safetensors"),
+            )
+            _write_config(tmp_save_dir)
+
+            save_model(_FakeModel(), tmp_save_dir, immediate_saving=True)
+
+            result = _load_safetensors(os.path.join(tmp_save_dir, "model.safetensors"))
+            restored = result["model.language_model.layers.0.linear_attn.norm.weight"]
+            assert restored.dtype == torch.float32
+            assert torch.equal(restored, norm_weight)
+            # MTP copy is disabled, so the mtp tensor must NOT be copied.
+            assert not os.path.exists(os.path.join(tmp_save_dir, "model_extra_tensors.safetensors"))
+
+    def test_mtp_and_fp32_both_restored_when_enabled(self, tmp_path, monkeypatch):
+        """With the MTP-disable flag off (default), both fp32 restore and MTP tensor
+        copy must be applied together via save_model."""
+        import auto_round.envs as envs
+        from auto_round.export.utils import save_model
+
+        src = str(tmp_path / "src")
+        os.makedirs(src)
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003], dtype=torch.float32)
+        mtp_weight = torch.randn(32, 64)
+        _save_safetensors(
+            {
+                "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,
+                "model.language_model.mtp.0.fc.weight": mtp_weight,
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+
+        monkeypatch.setattr(envs, "AR_DISABLE_COPY_MTP_WEIGHTS", False)
+
+        class _FakeModel:
+            name_or_path = src
+
+            def save_pretrained(self, save_dir, max_shard_size=None, safe_serialization=None):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp_save_dir:
+            _save_safetensors(
+                {
+                    "model.language_model.layers.0.linear_attn.norm.weight": norm_weight.to(torch.bfloat16),
+                    "model.language_model.embed_tokens.weight": torch.randn(8, 64),
+                },
+                os.path.join(tmp_save_dir, "model.safetensors"),
+            )
+            _write_config(tmp_save_dir)
+
+            save_model(_FakeModel(), tmp_save_dir, immediate_saving=True)
+
+            result = _load_safetensors(os.path.join(tmp_save_dir, "model.safetensors"))
+            restored = result["model.language_model.layers.0.linear_attn.norm.weight"]
+            assert restored.dtype == torch.float32
+            assert torch.equal(restored, norm_weight)
+
+            extra = _load_safetensors(os.path.join(tmp_save_dir, "model_extra_tensors.safetensors"))
+            assert "model.language_model.mtp.0.fc.weight" in extra
+            torch.testing.assert_close(extra["model.language_model.mtp.0.fc.weight"], mtp_weight)
