@@ -365,7 +365,14 @@ def get_fineweb_edu_dataset(
 
 @register_dataset(["BAAI/CCI3-HQ", "CCI3-HQ"])
 def get_cci3_hq_dataset(
-    tokenizer, seqlen, dataset_name="BAAI/CCI3-HQ", split=None, seed=42, apply_chat_template=False, system_prompt=None
+    tokenizer,
+    seqlen,
+    dataset_name="BAAI/CCI3-HQ",
+    split=None,
+    seed=42,
+    apply_chat_template=False,
+    system_prompt=None,
+    nsamples=512,
 ):
     """Returns a dataloader for the specified dataset and split.
 
@@ -387,7 +394,7 @@ def get_cci3_hq_dataset(
     )
 
     calib_dataset = load_dataset("BAAI/CCI3-HQ", split="train", streaming=True)
-    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(nsamples * envs.AR_CALIB_DATA_MULTIPLIER)
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
@@ -402,6 +409,7 @@ def get_github_code_clean_dataset(
     seed=42,
     apply_chat_template=False,
     system_prompt=None,
+    nsamples=512,
 ):
     """Returns a dataloader for the specified dataset and split.
 
@@ -457,7 +465,7 @@ def get_github_code_clean_dataset(
         else:
             raise error
     calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
-    calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)  ##TODO concat data'shuffle may have bugs
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(nsamples * envs.AR_CALIB_DATA_MULTIPLIER)  ##TODO concat data'shuffle may have bugs
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
 
     return calib_dataset
@@ -472,6 +480,7 @@ def get_opencode_instruct_dataset(
     seed=42,
     apply_chat_template=False,
     system_prompt=None,
+    nsamples=512,
 ):
     """Return tokenized coding instructions and responses from OpenCodeInstruct."""
     split = "train" if split is None else split
@@ -487,7 +496,7 @@ def get_opencode_instruct_dataset(
     )
 
     dataset = load_dataset("nvidia/OpenCodeInstruct", split=split, streaming=True)
-    dataset = dataset.shuffle(seed=seed).take(10000)
+    dataset = dataset.shuffle(seed=seed).take(nsamples * envs.AR_CALIB_DATA_MULTIPLIER)
     samples = []
     for data in dataset:
         if apply_chat_template:
@@ -574,6 +583,7 @@ def get_ultrachat_dataset(
     seed=42,
     apply_chat_template=True,
     system_prompt=None,
+    nsamples=512,
 ):
     if split is None:
         split = "train_sft"
@@ -582,7 +592,7 @@ def get_ultrachat_dataset(
         raise ValueError("split must be one of {} for ultrachat_200k ".format(all_splits))
 
     dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split=split, streaming=True, trust_remote_code=True)
-    dataset = dataset.shuffle(seed=seed).take(20000)
+    dataset = dataset.shuffle(seed=seed).take(nsamples * envs.AR_CALIB_DATA_MULTIPLIER)
 
     def is_instruct_tokenizer(tokenizer):
         try:
@@ -623,6 +633,7 @@ def get_ultrafinweb_dataset(
     seed=42,
     apply_chat_template=True,
     system_prompt=None,
+    nsamples=512,
 ):
     if split is not None:
         if split not in ["en", "zh"]:
@@ -635,7 +646,7 @@ def get_ultrafinweb_dataset(
 
         # calib_dataset = concatenate_datasets([dataset_en, dataset_ch]) ##concat dasetset could not shuffle
 
-    calib_dataset = calib_dataset.shuffle(seed=seed).take(20000)
+    calib_dataset = calib_dataset.shuffle(seed=seed).take(nsamples * envs.AR_CALIB_DATA_MULTIPLIER)
 
     def get_default_tokenizer_function():
         def default_tokenizer_function(examples):
@@ -1422,6 +1433,14 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                         _FINEWEB_EDU_MIN_CANDIDATES,
                         data_lens.get(name, nsamples),
                     )
+                elif get_dataset in (
+                    get_cci3_hq_dataset,
+                    get_github_code_clean_dataset,
+                    get_opencode_instruct_dataset,
+                    get_ultrachat_dataset,
+                    get_ultrafinweb_dataset,
+                ):
+                    dataset_kwargs["nsamples"] = nsamples
                 dataset = get_dataset(**dataset_kwargs)
 
         if do_concat:

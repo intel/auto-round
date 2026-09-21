@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     AR_QUANTIZE_BAGEL_MOE_GEN: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
     AR_ALLOW_W8_ASYM: bool = False
+    AR_CALIB_DATA_MULTIPLIER: int = 100
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -65,6 +66,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_OMP_NUM_THREADS": lambda: os.getenv("AR_OMP_NUM_THREADS", None),
     "AR_DISABLE_OFFLOAD": lambda: os.getenv("AR_DISABLE_OFFLOAD", "0").lower() in ("1", "true", "yes"),
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
+    # Multiplier applied to nsamples to determine the candidate pool size for
+    # streaming calibration datasets. The pool is nsamples * AR_CALIB_DATA_MULTIPLIER.
+    "AR_CALIB_DATA_MULTIPLIER": lambda: int(os.getenv("AR_CALIB_DATA_MULTIPLIER", "100")),
     "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
     in ("1", "true", "yes"),
     # Device for the disk-streamed calibration forward pass in
