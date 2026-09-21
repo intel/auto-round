@@ -23,6 +23,7 @@ from auto_round.utils import (
     copy_missing_tensors_from_source,
     copy_python_files_from_model_cache,
     logger,
+    restore_fp32_tensors_from_source,
     unsupported_meta_device,
 )
 
@@ -318,6 +319,63 @@ def _restore_original_layer_types(save_dir: str, source_dir: str) -> None:
             json.dump(saved_config, f, indent=2)
 
 
+def _get_state_dict_for_export_dtype(model: nn.Module, dtype) -> dict | None:
+    """Return a state dict with float32 tensors cast to ``dtype``, or None if nothing needs casting.
+
+    Tuning may run the model in float32, e.g. when the device doesn't support bfloat16. The
+    exported config declares ``dtype``, so the saved tensors should use it too. Tensors of
+    modules the model keeps in float32 (``_keep_in_fp32_modules``) are left unchanged, as are
+    quantized (non-float32) tensors.
+    """
+    if dtype not in (torch.bfloat16, torch.float16):
+        return None
+    state_dict = model.state_dict()
+    if not any(tensor.dtype == torch.float32 for tensor in state_dict.values()):
+        return None
+
+    keep_in_fp32 = set()
+    for attribute in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+        names = getattr(model, attribute, None) or []
+        keep_in_fp32.update([names] if isinstance(names, str) else names)
+
+    return {
+        name: (
+            tensor.to(dtype)
+            if tensor.dtype == torch.float32 and not any(module_name in name for module_name in keep_in_fp32)
+            else tensor
+        )
+        for name, tensor in state_dict.items()
+    }
+
+
+def apply_post_save_source_fixes(model: nn.Module, save_dir: str) -> None:
+    """Restore checkpoint artifacts that ``save_pretrained`` does not preserve."""
+    source_dir = _resolve_model_source_dir(model)
+    if source_dir is None:
+        return
+
+    try:
+        restore_fp32_tensors_from_source(source_dir=source_dir, target_dir=save_dir)
+    except Exception as e:
+        logger.warning("Skipping restore of FP32 tensors from source checkpoint due to error: %s", e)
+
+    if not envs.AR_DISABLE_COPY_MTP_WEIGHTS:
+        try:
+            copy_missing_tensors_from_source(source_dir=source_dir, target_dir=save_dir)
+        except Exception as e:
+            logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
+
+    try:
+        _restore_original_layer_types(save_dir, source_dir)
+    except Exception as e:  # pragma: no cover - best-effort, never block export
+        logger.warning("Skipping restore of original layer_types due to error: %s", e)
+
+    try:
+        copy_python_files_from_model_cache(model, save_dir)
+    except Exception as e:
+        logger.warning("Skipping source model Python file copy due to error: %s", e)
+
+
 def save_model(
     model: nn.Module,
     save_dir: str,
@@ -355,30 +413,23 @@ def save_model(
         logger.info("Immediate saving mode: weights already saved by ShardWriter, saving configs only.")
         _save_model_configs(model, save_dir)
     else:
+        export_state_dict = _get_state_dict_for_export_dtype(model, dtype)
+        save_kwargs = {} if export_state_dict is None else {"state_dict": export_state_dict}
         try:
-            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+            model.save_pretrained(
+                save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization, **save_kwargs
+            )
         except (KeyError, TypeError) as e:
             # Some third-party configs fail during config serialization in save_pretrained.
             # Fall back to saving weights separately + config without diff.
             logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
             from safetensors.torch import save_file
 
-            state_dict = model.state_dict()
+            state_dict = model.state_dict() if export_state_dict is None else export_state_dict
             save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
             _save_model_configs(model, save_dir)
 
-    source_dir = _resolve_model_source_dir(model)
-
-    # Allow disabling copy_missing_tensors_from_source via env var AR_DISABLE_COPY_MTP_WEIGHTS, default enabled
-    if not envs.AR_DISABLE_COPY_MTP_WEIGHTS:
-        try:
-            if source_dir is not None:
-                copy_missing_tensors_from_source(
-                    source_dir=source_dir,
-                    target_dir=save_dir,
-                )
-        except Exception as e:
-            logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
+    apply_post_save_source_fixes(model, save_dir)
 
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
@@ -392,26 +443,10 @@ def save_model(
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
 
-    # transformers' PreTrainedConfig normalizes ``layer_types`` on load/save (via
-    # ``remap_legacy_layer_types`` and dataclass post-init), so ``model.save_pretrained``
-    # can rewrite the strings (e.g. hybrid-attention Qwen models). Restore the original
-    # ``layer_types`` from the source checkpoint so the exported config stays faithful.
-    if source_dir is not None:
-        try:
-            _restore_original_layer_types(save_dir, source_dir)
-        except Exception as e:  # pragma: no cover - best-effort, never block export
-            logger.warning("Skipping restore of original layer_types due to error: %s", e)
-
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-    try:
-        if source_dir is not None:
-            copy_python_files_from_model_cache(model, save_dir)
-    except Exception as e:
-        logger.warning("Skipping source model Python file copy due to error: %s", e)
 
 
 def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):

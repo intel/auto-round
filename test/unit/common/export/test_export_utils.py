@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 
 from auto_round.export.utils import (
+    _get_state_dict_for_export_dtype,
     _resolve_model_source_dir,
     _resolve_pipeline_source_dir,
     _save_model_configs,
@@ -349,6 +350,66 @@ class TestSaveModel:
             with open(config_path, "r") as f:
                 data = json.load(f)
             assert data["torch_dtype"] == "bfloat16"
+
+    def test_dtype_casts_float32_weights_passed_to_save_pretrained(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model = MagicMock()
+            model.dtype = torch.float32
+            model.config.quantization_config = None
+            model.state_dict.return_value = {
+                "linear.weight": torch.ones(2, 2, dtype=torch.float32),
+                "linear.qweight": torch.ones(2, 2, dtype=torch.float8_e4m3fn),
+            }
+            model._keep_in_fp32_modules = None
+            model._keep_in_fp32_modules_strict = None
+            with patch("auto_round.export.utils._resolve_model_source_dir", return_value=None):
+                save_model(model, tmpdir, dtype=torch.bfloat16, safe_serialization=False)
+            state_dict = model.save_pretrained.call_args.kwargs["state_dict"]
+            assert state_dict["linear.weight"].dtype == torch.bfloat16
+            assert state_dict["linear.qweight"].dtype == torch.float8_e4m3fn
+
+
+class _ExportDtypeModel(nn.Module):
+    _keep_in_fp32_modules = ["router"]
+
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(4, 4)
+        self.router = nn.Linear(4, 2)
+        self.register_buffer("qweight", torch.zeros(4, 4, dtype=torch.float8_e4m3fn))
+        self.register_buffer("indices", torch.zeros(4, dtype=torch.int32))
+
+
+class TestGetStateDictForExportDtype:
+    """Test _get_state_dict_for_export_dtype function."""
+
+    def test_casts_float32_tensors_to_export_dtype(self):
+        model = _ExportDtypeModel()
+        state_dict = _get_state_dict_for_export_dtype(model, torch.bfloat16)
+        assert state_dict["linear.weight"].dtype == torch.bfloat16
+        assert state_dict["linear.bias"].dtype == torch.bfloat16
+        # Quantized and integer tensors are unchanged.
+        assert state_dict["qweight"].dtype == torch.float8_e4m3fn
+        assert state_dict["indices"].dtype == torch.int32
+
+    def test_keeps_fp32_modules_in_float32(self):
+        model = _ExportDtypeModel()
+        state_dict = _get_state_dict_for_export_dtype(model, torch.float16)
+        assert state_dict["router.weight"].dtype == torch.float32
+        assert state_dict["linear.weight"].dtype == torch.float16
+
+    def test_does_not_modify_model(self):
+        model = _ExportDtypeModel()
+        _get_state_dict_for_export_dtype(model, torch.bfloat16)
+        assert model.linear.weight.dtype == torch.float32
+
+    @pytest.mark.parametrize("dtype", [None, torch.float32])
+    def test_returns_none_without_16bit_dtype(self, dtype):
+        assert _get_state_dict_for_export_dtype(_ExportDtypeModel(), dtype) is None
+
+    def test_returns_none_without_float32_tensors(self):
+        model = _ExportDtypeModel().to(torch.bfloat16)
+        assert _get_state_dict_for_export_dtype(model, torch.bfloat16) is None
 
 
 # ==============================================================================

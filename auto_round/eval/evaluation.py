@@ -516,20 +516,39 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
             if model is None:
                 return
         else:
-            if model is None:
-                # Model-free mode: load model from the saved output directory
+            # Evaluate the exported artifact for both regular and model-free flows.
+            # The in-memory regular model still contains quantization wrappers,
+            # while fake-format loading materializes FakeActQuantLinear modules.
+            if model is not None:
+                model_context = getattr(autoround, "model_context", None)
+                if model_context is not None and getattr(model_context, "model", None) is model:
+                    model_context.model = None
+                model = None
+                from auto_round.utils import clear_memory
+
+                clear_memory()
+
+            eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+            if getattr(autoround, "mllm", False):
+                from auto_round.utils.model import mllm_load_model
+
+                model, _, loaded_tokenizer, _ = mllm_load_model(
+                    eval_folder,
+                    device=device_str,
+                    torch_dtype=eval_model_dtype,
+                    trust_remote_code=not args.disable_trust_remote_code,
+                )
+                if tokenizer is None:
+                    tokenizer = loaded_tokenizer
+            else:
                 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-                eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
                 model = AutoModelForCausalLM.from_pretrained(
-                    eval_folder, device_map=args.device_map, torch_dtype=eval_model_dtype
+                    eval_folder, device_map=device_str, torch_dtype=eval_model_dtype
                 )
                 model.eval()
                 if tokenizer is None:
                     tokenizer = AutoTokenizer.from_pretrained(eval_folder)
-            else:
-                eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-                model = prepare_model_for_eval(model, args.device_map, eval_model_dtype)
 
         # Evaluate with model instance
         evaluate_with_model_instance(model, tokenizer, device_str, args)
