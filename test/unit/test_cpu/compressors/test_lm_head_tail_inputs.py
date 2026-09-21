@@ -15,7 +15,8 @@
 """Tests for lm_head chain-tail inputs (block-loop chain output -> final norm -> lm_head).
 
 Covers: row extraction from list/dict chain states, lm_head name resolution,
-the tail derivation (norm applied, width sanity, closed-form fallbacks), the
+the tail derivation (mocked capture through the model's own post-block code,
+RTN fallbacks), the
 early-stop override gate, and the outside-block lane consuming tail inputs
 without issuing capture passes.
 """
@@ -45,13 +46,14 @@ def _orchestrator_like(model):
         model_context=SimpleNamespace(model=model),
         _tail_fed_layers_=[],
         _lm_head_chain_tail_=None,
-        _lm_head_norm_name_=None,
+        _tail_stub_arity_=None,
+        _tail_lane_blocks_=[],
+        _offloader=None,
     )
     o._chain_hidden_rows = CompressionOrchestrator._chain_hidden_rows  # staticmethod: bind directly
     for name in (
-        "_resolve_lm_head_name_",
         "_lm_head_tail_inputs_",
-        "_discover_final_norm_",
+        "_mocked_tail_capture_",
         "_attach_tail_imatrix_",
         "_quantizer_requests_q_inputs_",
     ):
@@ -76,188 +78,6 @@ class TestChainHiddenRows:
     def test_nested_dict_under_hidden_states(self):
         rows = [torch.zeros(1, 4)]
         assert CompressionOrchestrator._chain_hidden_rows({"hidden_states": {"inner": rows}}) is rows
-
-
-class TestResolveLmHeadName:
-    def setup_method(self):
-        self.o = _orchestrator_like(_TinyModel())
-
-    def test_exact_leaf_match(self):
-        assert self.o._resolve_lm_head_name_(["lm_head"]) == "lm_head"
-
-    def test_dotted_leaf_match(self):
-        assert self.o._resolve_lm_head_name_(["model.lm_head", "other"]) == "model.lm_head"
-
-    def test_substring_fallback(self):
-        assert self.o._resolve_lm_head_name_(["proj.lm_head_w8"]) == "proj.lm_head_w8"
-
-    def test_none_when_absent(self):
-        assert self.o._resolve_lm_head_name_(["embed_tokens"]) is None
-        assert self.o._resolve_lm_head_name_([]) is None
-
-
-class TestLmHeadTailInputs:
-    def setup_method(self):
-        self.model = _TinyModel()
-        self.o = _orchestrator_like(self.model)
-        self.o._lm_head_norm_name_ = "model.norm"
-        # SignRound-style default: the quantized-input chain is requested
-        self.o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=True))
-
-    def _rows(self, scale=1.0):
-        return [torch.randn(1, 5, 8) * scale for _ in range(3)]
-
-    def test_norm_applied_to_fp_and_q_rows(self):
-        fp, q = self._rows(), self._rows(2.0)
-        self.o._lm_head_chain_tail_ = (q, fp)
-        out = self.o._lm_head_tail_inputs_("lm_head")
-        assert out is not None
-        norm = self.model.model.norm
-        with torch.no_grad():
-            expected_fp = [norm(r) for r in fp]
-            expected_q = [norm(r) for r in q]
-        for got, exp in zip(out[0], expected_fp):
-            assert torch.allclose(got, exp, atol=1e-6)
-        for got, exp in zip(out[1], expected_q):
-            assert torch.allclose(got, exp, atol=1e-6)
-
-    def test_norm_runs_on_weight_device_rows_park_on_host(self):
-        """Cross-device contract: the row handed to the norm sits on the norm's
-        weight device, the returned rows park on the host (the tune loop
-        streams them per micro-batch). Chain-tail rows can be cuda-resident
-        while the norm's weight lives elsewhere - mixing them crashes RMSNorm."""
-        fp, q = self._rows(), self._rows(2.0)
-        self.o._lm_head_chain_tail_ = (q, fp)
-        norm = self.model.model.norm
-        seen_devices = []
-        orig_forward = norm.forward
-
-        def recording_forward(x):
-            seen_devices.append(x.device)
-            return orig_forward(x)
-
-        norm.forward = recording_forward
-        try:
-            out = self.o._lm_head_tail_inputs_("lm_head")
-        finally:
-            norm.forward = orig_forward
-        assert out is not None
-        wdev = norm.weight.device
-        assert all(d == wdev for d in seen_devices), f"norm saw rows on {seen_devices}, weight on {wdev}"
-        assert all(r.device.type == "cpu" for r in out[0])
-        assert all(r.device.type == "cpu" for r in out[1])
-
-    def test_missing_tail_falls_back(self):
-        assert self.o._lm_head_tail_inputs_("lm_head") is None
-
-    def test_bad_row_format_falls_back(self):
-        self.o._lm_head_chain_tail_ = (None, "not-rows")
-        assert self.o._lm_head_tail_inputs_("lm_head") is None
-
-    def test_width_mismatch_falls_back(self):
-        self.model.model.norm = nn.RMSNorm(4)  # wrong width vs lm_head.in_features=8
-        self.o._lm_head_chain_tail_ = (self._rows(), self._rows())
-        assert self.o._lm_head_tail_inputs_("lm_head") is None
-
-    def test_missing_norm_falls_back(self):
-        self.o._lm_head_norm_name_ = None
-        self.o._lm_head_chain_tail_ = (self._rows(), self._rows())
-        assert self.o._lm_head_tail_inputs_("lm_head") is None
-
-    def test_malformed_q_rows_degrade_to_fp_only(self):
-        self.o._lm_head_chain_tail_ = (None, self._rows())
-        self.o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=True))
-        out = self.o._lm_head_tail_inputs_("lm_head")
-        assert out is not None and out[1] is None
-
-    def _capturing_logger(self):
-        import auto_round.compressors.orchestrator as orch_mod
-
-        records = []
-
-        class _Rec:
-            def info(self, msg, *a):
-                records.append((logging.INFO, msg % a if a else msg))
-
-            def warning(self, msg, *a):
-                records.append((logging.WARNING, msg % a if a else msg))
-
-        orig = orch_mod.logger
-        orch_mod.logger = _Rec()
-        return records, lambda: setattr(orch_mod, "logger", orig)
-
-    def test_q_absence_by_config_is_info_not_warning(self):
-        """RTN (iters=0) defaults enable_quanted_input=False: the missing q chain
-        is the configured path - no WARNING, just an info line."""
-        self.o._lm_head_chain_tail_ = (None, self._rows())
-        self.o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=False))
-        records, restore = self._capturing_logger()
-        try:
-            out = self.o._lm_head_tail_inputs_("lm_head")
-        finally:
-            restore()
-        assert out is not None and out[1] is None
-        assert all(lvl < logging.WARNING for lvl, _ in records)
-        assert any("disabled by config" in msg for _, msg in records)
-
-    def test_q_absence_when_requested_stays_warning(self):
-        self.o._lm_head_chain_tail_ = (None, self._rows())
-        self.o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=True))
-        records, restore = self._capturing_logger()
-        try:
-            self.o._lm_head_tail_inputs_("lm_head")
-        finally:
-            restore()
-        assert any(lvl == logging.WARNING and "cannot be honored" in msg for lvl, msg in records)
-
-    def test_structured_chain_state(self):
-        fp = {"hidden_states": self._rows()}
-        q = {"hidden_states": self._rows(2.0)}
-        self.o._lm_head_chain_tail_ = (q, fp)
-        out = self.o._lm_head_tail_inputs_("lm_head")
-        assert out is not None and len(out[0]) == 3
-
-
-class TestFinalNormDiscovery:
-    """The discovery must cover LayerNorm-with-bias finals (GPT-J/OPT class),
-    not just single-param RMSNorms (Qwen/LLaMA class)."""
-
-    def _disc(self, model, blocks):
-        return _orchestrator_like(model)._discover_final_norm_(blocks)
-
-    def test_layernorm_with_bias_final_is_found(self):
-        class _M(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.body = nn.Module()
-                self.body.blocks = nn.Module()  # block prefix marker
-                self.ln_f = nn.LayerNorm(8)
-                self.lm_head = nn.Linear(8, 16)
-
-        assert self._disc(_M(), [["body.blocks"]]) == "ln_f"
-
-    def test_rmsnorm_single_param_final_still_found(self):
-        class _M(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.body = nn.Module()
-                self.body.blocks = nn.Module()
-                self.norm = nn.RMSNorm(8)
-                self.lm_head = nn.Linear(8, 16)
-
-        assert self._disc(_M(), [["body.blocks"]]) == "norm"
-
-    def test_block_internal_norms_excluded(self):
-        class _M(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.body = nn.Module()
-                self.body.blocks = nn.Module()
-                self.body.blocks.ln_1 = nn.LayerNorm(8)
-                self.ln_f = nn.LayerNorm(8)
-                self.lm_head = nn.Linear(8, 16)
-
-        assert self._disc(_M(), [["body.blocks"]]) == "ln_f"
 
 
 class TestTailImatrix:
@@ -301,10 +121,12 @@ class TestLaneConsumesTailInputs:
     """The outside-block lane feeds lm_head from the tail and skips capture passes."""
 
     def _run_lane(self, monkeypatch):
-        model = _TinyModel()
+        model = _ForwardModel()
         o = _orchestrator_like(model)
         o._tail_fed_layers_ = ["lm_head"]
-        o._lm_head_norm_name_ = "model.norm"
+        o._tail_stub_arity_ = 1
+        o._tail_lane_blocks_ = ["model.layers.0", "model.layers.1"]
+        o._offloader = None
         fp, q = [torch.randn(1, 5, 8) for _ in range(2)], [torch.randn(1, 5, 8) for _ in range(2)]
         o._lm_head_chain_tail_ = (q, fp)
 
@@ -383,3 +205,371 @@ class TestLaneConsumesTailInputs:
             expected = sq if expected is None else expected + sq
         assert torch.allclose(lm.imatrix, expected, atol=1e-5)
         assert lm.imatrix_cnt == sum(r.numel() // r.shape[-1] for r in rows)
+
+
+class _ForwardModel(nn.Module):
+    """A runnable transformers-shaped model: ModuleList body, post-block tail, head."""
+
+    def __init__(self, hidden=8, vocab=16, n_layers=2, scale=None):
+        super().__init__()
+        self.hidden_size = hidden
+        self.model = nn.Module()
+        self.model.layers = nn.ModuleList([nn.Linear(hidden, hidden) for _ in range(n_layers)])
+        self.model.norm = nn.LayerNorm(hidden)
+        self.lm_head = nn.Linear(hidden, vocab, bias=False)
+        self.head_scale = scale  # minicpm3-style pre-head scalar (Class A glue)
+        self.hf_device_map = {}
+
+    def forward(self, input_ids, attention_mask=None, **kwargs):
+        hidden = self.model.embed(input_ids) if hasattr(self.model, "embed") else input_ids.float().unsqueeze(-1)
+        hidden = hidden.expand(-1, -1, self.hidden_size).clone()
+        for layer in self.model.layers:
+            out = layer(hidden)
+            hidden = out[0] if isinstance(out, tuple) else out
+        hidden = self.model.norm(hidden)
+        if self.head_scale is not None:
+            hidden = hidden / self.head_scale
+        return self.lm_head(hidden)
+
+
+def _capturing_logger_():
+    import auto_round.compressors.orchestrator as orch_mod
+
+    records = []
+
+    class _Rec:
+        def info(self, msg, *a):
+            records.append((logging.INFO, msg % a if a else msg))
+
+        def warning(self, msg, *a):
+            records.append((logging.WARNING, msg % a if a else msg))
+
+    orig = orch_mod.logger
+    orch_mod.logger = _Rec()
+    return records, lambda: setattr(orch_mod, "logger", orig)
+
+
+def _capture_orchestrator(model, arity=1, blocks=None):
+    o = SimpleNamespace(
+        model_context=SimpleNamespace(model=model),
+        _tail_fed_layers_=[],
+        _lm_head_chain_tail_=None,
+        _tail_stub_arity_=arity,
+        _tail_lane_blocks_=blocks if blocks is not None else ["model.layers.0", "model.layers.1"],
+        _offloader=None,
+    )
+    o._chain_hidden_rows = CompressionOrchestrator._chain_hidden_rows
+    o._quantizer_requests_q_inputs_ = MethodType(CompressionOrchestrator._quantizer_requests_q_inputs_, o)
+    for name in ("_lm_head_tail_inputs_", "_attach_tail_imatrix_", "_mocked_tail_capture_"):
+        setattr(o, name, MethodType(getattr(CompressionOrchestrator, name), o))
+    return o
+
+
+def _rows(n=3, b=1, s=4, h=8, gen=None):
+    gen = gen or torch.Generator().manual_seed(0)
+    return [torch.randn(b, s, h, generator=gen) for _ in range(n)]
+
+
+def _ids_like(rows):
+    return [torch.zeros(r.shape[0], r.shape[1], dtype=torch.long) for r in rows]
+
+
+class TestMockedTailCapture:
+    """The capture pass: stubs + injector + CaptureHead run the model's own post-block code."""
+
+    def test_captured_rows_match_the_models_own_norm(self):
+        model = _ForwardModel()
+        o = _capture_orchestrator(model)
+        fp = _rows()
+        out = o._mocked_tail_capture_("lm_head", fp, None, _ids_like(fp))
+        assert out is not None
+        with torch.no_grad():
+            expected = [model.model.norm(r) for r in fp]
+        for got, exp in zip(out[0], expected):
+            assert torch.allclose(got, exp, atol=1e-6)
+        assert out[1] is None
+
+    def test_captured_rows_include_pre_head_scalar_glue(self):
+        model = _ForwardModel(scale=16.0)
+        o = _capture_orchestrator(model)
+        fp = _rows()
+        out = o._mocked_tail_capture_("lm_head", fp, None, _ids_like(fp))
+        assert out is not None
+        with torch.no_grad():
+            expected = [model.model.norm(r) / 16.0 for r in fp]
+        for got, exp in zip(out[0], expected):
+            assert torch.allclose(got, exp, atol=1e-6)
+
+    def test_q_variant_captured_when_provided(self):
+        model = _ForwardModel()
+        o = _capture_orchestrator(model)
+        fp, q = _rows(), _rows()
+        out = o._mocked_tail_capture_("lm_head", fp, q, _ids_like(fp))
+        assert out is not None and out[1] is not None and len(out[1]) == len(fp)
+
+    def test_missing_smoke_metadata_returns_none(self):
+        o = _capture_orchestrator(_ForwardModel(), arity=None)
+        out = o._mocked_tail_capture_("lm_head", _rows(), None, _ids_like(_rows()))
+        assert out is None
+
+    def test_raising_model_returns_none_with_warning(self):
+        model = _ForwardModel()
+
+        def broken(*a, **k):
+            raise RuntimeError("boom")
+
+        model.forward = broken
+        o = _capture_orchestrator(model)
+        records, restore = _capturing_logger_()
+        try:
+            out = o._mocked_tail_capture_("lm_head", _rows(), None, _ids_like(_rows()))
+        finally:
+            restore()
+        assert out is None
+        assert any(lvl >= logging.WARNING and "falls back" in msg for lvl, msg in records)
+
+    def test_head_and_layers_restored_after_capture(self):
+        model = _ForwardModel()
+        layers_before = list(model.model.layers)
+        head_before = model.lm_head
+        o = _capture_orchestrator(model)
+        o._mocked_tail_capture_("lm_head", _rows(), None, _ids_like(_rows()))
+        assert model.lm_head is head_before
+        for before, after in zip(layers_before, model.model.layers):
+            assert before is after
+
+    def test_lm_head_tail_inputs_end_to_end(self):
+        model = _ForwardModel()
+        o = _capture_orchestrator(model)
+        o._lm_head_chain_tail_ = (None, _rows())
+        o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=False))
+        out = o._lm_head_tail_inputs_("lm_head", token_ids=_ids_like(_rows()))
+        assert out is not None
+        with torch.no_grad():
+            expected = [model.model.norm(r) for r in _rows()]
+        for got, exp in zip(out[0], expected):
+            assert torch.allclose(got, exp, atol=1e-6)
+
+    def test_missing_tail_falls_back(self):
+        o = _capture_orchestrator(_ForwardModel())
+        o._lm_head_chain_tail_ = None
+        records, restore = _capturing_logger_()
+        try:
+            out = o._lm_head_tail_inputs_("lm_head")
+        finally:
+            restore()
+        assert out is None
+        assert any("no chain tail" in msg for _, msg in records)
+
+    def test_bad_row_format_falls_back(self):
+        o = _capture_orchestrator(_ForwardModel())
+        o._lm_head_chain_tail_ = (None, {"hidden_states": "not-a-list"})
+        assert o._lm_head_tail_inputs_("lm_head") is None
+
+    def test_malformed_q_rows_degrade_to_fp_only(self):
+        model = _ForwardModel()
+        o = _capture_orchestrator(model)
+        o._lm_head_chain_tail_ = (None, _rows())
+        o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=False))
+        # q variant malformed relative to fp rows: capture proceeds fp-only
+        out = o._lm_head_tail_inputs_("lm_head", token_ids=_ids_like(_rows()))
+        assert out is not None and out[1] is None
+
+    def test_q_absence_by_config_is_info_not_warning(self):
+        model = _ForwardModel()
+        o = _capture_orchestrator(model)
+        o._lm_head_chain_tail_ = (None, _rows())
+        o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=False))
+        records, restore = _capturing_logger_()
+        try:
+            out = o._lm_head_tail_inputs_("lm_head", token_ids=_ids_like(_rows()))
+        finally:
+            restore()
+        assert out is not None and out[1] is None
+        assert any("disabled by config" in msg for lvl, msg in records if lvl == logging.INFO)
+        assert not any("cannot be honored" in msg for _, msg in records)
+
+    def test_q_absence_when_requested_stays_warning(self):
+        model = _ForwardModel()
+        o = _capture_orchestrator(model)
+        o._lm_head_chain_tail_ = (None, _rows())
+        o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=True))
+        records, restore = _capturing_logger_()
+        try:
+            out = o._lm_head_tail_inputs_("lm_head", token_ids=_ids_like(_rows()))
+        finally:
+            restore()
+        assert out is not None
+        assert any("cannot be honored" in msg for lvl, msg in records if lvl >= logging.WARNING)
+
+    def test_meta_chain_module_reloaded_via_offloader(self):
+        import torch.nn as nn
+
+        model = _ForwardModel()
+
+        class _FakeOffloader:
+            def __init__(self, model):
+                self.model = model
+                self.reloaded = []
+
+            def reload(self, model, name):
+                self.reloaded.append(name)
+                # fake the reload: swap meta parameters for real cpu ones
+                mod = None
+                for n, m in model.named_modules():
+                    if n == name:
+                        mod = m
+                for pname, p in list(mod.named_parameters(recurse=False)):
+                    if p.is_meta:
+                        setattr(mod, pname, nn.Parameter(torch.ones_like(p, device="cpu")))
+
+        offloader = _FakeOffloader(model)
+        with torch.no_grad():
+            model.model.norm.weight = nn.Parameter(torch.empty(8, device="meta"))
+        o = _capture_orchestrator(model)
+        o._offloader = offloader
+        fp = _rows()
+        out = o._mocked_tail_capture_("lm_head", fp, None, _ids_like(fp))
+        assert out is not None
+        assert any("norm" in n for n in offloader.reloaded)
+
+    def test_meta_chain_module_without_offloader_returns_none(self):
+        import torch.nn as nn
+
+        model = _ForwardModel()
+        with torch.no_grad():
+            model.model.norm.weight = nn.Parameter(torch.empty(8, device="meta"))
+        o = _capture_orchestrator(model)
+        o._offloader = None
+        out = o._mocked_tail_capture_("lm_head", _rows(), None, _ids_like(_rows()))
+        assert out is None
+
+    def test_negative_padding_ids_are_clamped(self):
+        model = _ForwardModel()
+        o = _capture_orchestrator(model)
+        fp = _rows(n=2)
+        ids = [torch.tensor([[-100, -100, 5, 7]]), torch.tensor([[3, -100, 9, 1]])]
+        out = o._mocked_tail_capture_("lm_head", fp, None, token_ids=ids)
+        assert out is not None and len(out[0]) == 2
+
+    def test_records_mismatch_returns_none(self):
+        model = _ForwardModel()
+
+        def once_then_silent(input_ids, attention_mask=None, **kwargs):
+            # forward that stops calling the head after the first sample
+            if not hasattr(model, "_calls"):
+                model._calls = 0
+            model._calls += 1
+            if model._calls > 1:
+                raise RuntimeError("simulated early stop before the head")
+            return _ForwardModel.forward(model, input_ids, attention_mask, **kwargs)
+
+        model.forward = once_then_silent
+        o = _capture_orchestrator(model)
+        layers_before = list(model.model.layers)
+        head_before = model.lm_head
+        out = o._mocked_tail_capture_("lm_head", _rows(n=2), None, _ids_like(_rows(n=2)))
+        assert out is None
+        # restore still happened on the failure path
+        assert model.lm_head is head_before
+        for before, after in zip(layers_before, model.model.layers):
+            assert before is after
+
+
+class TestTailLaneDecision:
+    """Init-time lane selection: smoke PASS -> tail-fed; FAIL -> capture walk + restrictions."""
+
+    @staticmethod
+    def _decider(model):
+        o = _orchestrator_like(model)
+        o.inplace = True
+        o.formats = []
+        o.compress_context = SimpleNamespace(is_immediate_packing=True, is_immediate_saving=False)
+        o._decide_tail_fed_lane_ = MethodType(CompressionOrchestrator._decide_tail_fed_lane_, o)
+        return o
+
+    def _model_with_blocks(self):
+        model = _TinyModel()
+        model.model.layers = nn.ModuleList([nn.Linear(8, 8) for _ in range(2)])
+        return model
+
+    def test_smoke_pass_selects_tail_fed_lane(self, monkeypatch):
+        import auto_round.compressors.orchestrator as orch_mod
+
+        calls = []
+
+        def fake_smoke(model, lm_head_name, block_names, seq_len=2):
+            calls.append((lm_head_name, list(block_names)))
+            return (True, 1)
+
+        monkeypatch.setattr(orch_mod, "tail_smoke_check", fake_smoke)
+        o = self._decider(self._model_with_blocks())
+        o._decide_tail_fed_lane_(["lm_head"], [["model.layers.0", "model.layers.1"]])
+        assert o._tail_fed_layers_ == ["lm_head"]
+        assert o._tail_stub_arity_ == 1
+        assert o._tail_lane_blocks_ == ["model.layers.0", "model.layers.1"]
+        # the tail-only relaxations stay granted on the pass path
+        assert o.inplace is True and o.compress_context.is_immediate_packing is True
+        assert calls == [("lm_head", ["model.layers.0", "model.layers.1"])]
+
+    def test_smoke_fail_keeps_capture_walk_and_restores_restrictions(self, monkeypatch):
+        import auto_round.compressors.orchestrator as orch_mod
+
+        monkeypatch.setattr(orch_mod, "tail_smoke_check", lambda *a, **k: (False, None))
+        o = self._decider(self._model_with_blocks())
+        records, restore = _capturing_logger_()
+        try:
+            o._decide_tail_fed_lane_(["lm_head"], [["model.layers.0", "model.layers.1"]])
+        finally:
+            restore()
+        assert o._tail_fed_layers_ == []
+        assert o._tail_stub_arity_ is None
+        # the relaxations granted on the tail-only premise are reverted
+        assert o.inplace is False
+        assert o.compress_context.is_immediate_packing is False
+        assert any(lvl >= logging.WARNING and "keeps the ordinary capture walk" in msg for lvl, msg in records)
+
+    def test_smoke_fail_reverts_immediate_saving_with_packing(self, monkeypatch):
+        import auto_round.compressors.orchestrator as orch_mod
+
+        monkeypatch.setattr(orch_mod, "tail_smoke_check", lambda *a, **k: (False, None))
+        o = self._decider(self._model_with_blocks())
+        o.compress_context.is_immediate_saving = True  # granted only while packing is on
+        o._decide_tail_fed_lane_(["lm_head"], [["model.layers.0"]])
+        # the granted pair reverts together: saving is never on while packing is off
+        assert o.compress_context.is_immediate_packing is False
+        assert o.compress_context.is_immediate_saving is False
+
+    def test_head_outside_plan_skips_smoke(self, monkeypatch):
+        import auto_round.compressors.orchestrator as orch_mod
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("smoke must not run when the head is outside the plan")
+
+        monkeypatch.setattr(orch_mod, "tail_smoke_check", fail_if_called)
+        o = self._decider(self._model_with_blocks())
+        o._decide_tail_fed_lane_(["other.layer"], [["model.layers.0", "model.layers.1"]])
+        assert o._tail_fed_layers_ == []
+        # relaxations granted elsewhere are left alone when the lane never engages
+        assert o.inplace is True and o.compress_context.is_immediate_packing is True
+
+
+class TestStreamShapeGuard:
+    """Stream-split tails must decline loudly instead of returning mangled rows."""
+
+    def test_wrong_width_rows_return_none(self):
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleList([nn.Linear(8, 8) for _ in range(2)])
+                self.lm_head = nn.Linear(8, 16)
+
+            def forward(self, input_ids, attention_mask=None, **kwargs):
+                hidden = input_ids.float().unsqueeze(-1).expand(-1, -1, 8).clone()
+                # ngram-style split: feed a narrower stream than the head input width
+                return self.lm_head(hidden[..., :4].reshape(-1, 4))
+
+        o = _capture_orchestrator(Model(), arity=1)
+        assert o._tail_lane_blocks_  # lane engaged
+        captured = o._mocked_tail_capture_("lm_head", [torch.randn(2, 8)], None, token_ids=None)
+        assert captured is None  # shape validation declined the capture

@@ -98,9 +98,7 @@ class TestLmHeadTailParityE2E:
         # ── capture arm: full-residency walk collects lm_head's inputs ──────
         spy_capture = _RowSpy()
         spy_capture.install(monkeypatch)
-        monkeypatch.setattr(
-            orchestrator_mod.CompressionOrchestrator, "_resolve_lm_head_name_", lambda self, names: None
-        )
+        monkeypatch.setattr(orchestrator_mod, "get_lm_head_name", lambda model: None)
         run_capture = _quantize_lmonly(tiny_gptj_model_path, _Loader(vocab))
         monkeypatch.undo()
 
@@ -137,3 +135,40 @@ class TestLmHeadTailParityE2E:
         w_tail = _lm_head_weight(run_tail.model)
         assert w_cap.shape == w_tail.shape
         assert torch.equal(w_cap, w_tail), (w_cap.float() - w_tail.float()).abs().max()
+
+    def test_smoke_failure_routes_to_capture_walk(self, tiny_gptj_model_path, monkeypatch, tmp_path):
+        """A failed smoke check keeps lm_head on the ordinary whole-model capture walk.
+
+        The tuned rows then come from the walk (like the capture arm above), not
+        from the mocked continuation, and the resulting quantized weights are
+        identical to that arm."""
+        from transformers import AutoConfig
+
+        vocab = AutoConfig.from_pretrained(tiny_gptj_model_path).vocab_size
+
+        # capture arm (lane bypassed at the name level): the reference behavior
+        spy_capture = _RowSpy()
+        spy_capture.install(monkeypatch)
+        monkeypatch.setattr(orchestrator_mod, "get_lm_head_name", lambda model: None)
+        run_capture = _quantize_lmonly(tiny_gptj_model_path, _Loader(vocab))
+        monkeypatch.undo()
+
+        # smoke-failure arm: the lane is selected but the smoke check declines
+        spy_smoke = _RowSpy()
+        spy_smoke.install(monkeypatch)
+        monkeypatch.setattr(orchestrator_mod, "tail_smoke_check", lambda *a, **k: (False, None))
+        run_smoke = _quantize_lmonly(tiny_gptj_model_path, _Loader(vocab))
+        monkeypatch.undo()
+
+        assert spy_capture.calls and spy_smoke.calls
+        cap_fp = next(iter(spy_capture.calls.values()))[0]
+        smoke_fp = next(iter(spy_smoke.calls.values()))[0]
+        assert cap_fp is not None and smoke_fp is not None
+        assert len(cap_fp) == len(smoke_fp)
+        for c, s in zip(cap_fp, smoke_fp):
+            assert c.shape == s.shape
+            assert torch.allclose(c.float(), s.float(), atol=1e-5)
+        w_cap = _lm_head_weight(run_capture.model)
+        w_smoke = _lm_head_weight(run_smoke.model)
+        assert w_cap.shape == w_smoke.shape
+        assert torch.equal(w_cap, w_smoke)
