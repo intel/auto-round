@@ -141,7 +141,7 @@ class SignRoundQuantizer(BaseQuantizer):
     ):
         autocast_ctx = (
             nullcontext()
-            if self.model_context.amp
+            if not self.model_context.amp
             else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
         )
         if valid_token_mask:
