@@ -504,7 +504,7 @@ class SignRoundQuantizer(BaseQuantizer):
 
             for batch_start in range(0, len(global_indices), batch_size):
                 indices = global_indices[batch_start : batch_start + batch_size]
-                pred_output, ref_output = block_fwd.forward_with_reference(
+                pred_output, ref_output = block_fwd.forward_tuning_batch(
                     block,
                     active_inputs,
                     input_others,

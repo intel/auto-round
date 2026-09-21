@@ -63,7 +63,7 @@ def test_prefetched_batch_preserves_input_structure(monkeypatch, shared, prefetc
     batch = cache._select([1])
     expected = cache.runner.forward(Block(), cache.inputs, cache.others, [1], "cpu")
     monkeypatch.setattr(cache, "get", lambda indices: batch if prefetched else None)
-    prediction, reference = cache.runner.forward_with_reference(
+    prediction, reference = cache.runner.forward_tuning_batch(
         Block(),
         cache.inputs,
         cache.others,

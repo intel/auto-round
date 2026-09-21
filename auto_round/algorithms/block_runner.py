@@ -255,7 +255,7 @@ class BlockForwardRunner:
 
         return outputs
 
-    def forward_with_reference(
+    def forward_tuning_batch(
         self, block, inputs, input_others, outputs, indices, loss_device, cache_device=None, tuning_cache=None
     ):
         """Forward a tuning batch and its reference, using prefetch when available."""
