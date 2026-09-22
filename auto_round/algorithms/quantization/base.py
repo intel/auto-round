@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 from auto_round.algorithms.base import BaseAlgorithm
 from auto_round.algorithms.quantization.config import QuantizationConfig
-from auto_round.data_type.base import create_quantizer
+from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 from auto_round.logger import logger
 from auto_round.utils import (
     check_to_quantized,
@@ -56,49 +56,6 @@ class BaseQuantizer(BaseAlgorithm):
 
     def can_compile_block_forward(self):
         return True
-
-    def build_weight_qdq(self, *, weight: torch.Tensor, default_qdq, parameters: dict[str, torch.Tensor]):
-        """Return the per-layer weight QDQ callable used for tuning and export.
-
-        Algorithms that need different QDQ behavior may override this method.
-        The returned callable accepts ``weight`` and keyword ``materialize=False``
-        and returns ``WeightQuantizationResult``. Bind settings in a closure and
-        add trainable tensors to ``parameters`` before returning. This per-layer
-        dictionary is also used by the optimizer and best-parameter restoration.
-        Read its entries at call time; do not replace the dictionary.
-
-        Args:
-            weight: Logical [out_features, in_features] weights on the tuning
-                device, including transposed Conv1D weights. Use only to create
-                parameters with the right shape/device; do not capture this
-                tensor in the returned closure.
-            default_qdq: Datatype function accepting weight, materialize=False,
-                and explicit datatype parameters. This builder binds the current
-                parameter dictionary to that function. Existing weight parameters
-                are datatype-dependent: value is a rounding offset, while
-                min_scale/max_scale adjust clipping bounds where supported.
-            parameters: Per-layer tensors collected for optimization. Add a
-                torch.nn.Parameter to train it; fixed settings belong in the
-                closure. Use distinct names that do not collide with wrapper
-                attributes. Read entries on each call to see restored best values.
-
-        Returns:
-            Callable qdq(weight, *, materialize=False). With materialize=True,
-            its WeightQuantizationResult must contain scale/zero-point/metadata
-            required by the chosen datatype's exporter. Preserve autograd during
-            training.
-
-        To customize, override this method and use ``weight`` to initialize
-        any new entries in ``parameters``. In the returned function, read those
-        entries and transform the input or explicitly pass the datatype options
-        you need. The implementation below is the default binding template.
-        """
-
-        def qdq(weight, *, materialize=False):
-            """Use current parameters during training and restored best values at export."""
-            return default_qdq(weight, materialize=materialize, **parameters)
-
-        return qdq
 
     # ── Calibration hook registration ─────────────────────────────────────────
     def register_fp_input_forward_hooks(self, block: torch.nn.Module) -> list:
@@ -137,22 +94,53 @@ class BaseQuantizer(BaseAlgorithm):
             if not check_to_quantized(module):
                 continue
             is_quantized = True
+            bits = getattr(module, "bits", None)
+            group_size = getattr(module, "group_size", None)
+            sym = getattr(module, "sym", None)
+            data_type = getattr(module, "data_type", None)
             super_bits = getattr(module, "super_bits", None)
             super_group_size = getattr(module, "super_group_size", None)
+            scale_dtype = self.scale_dtype
+            quant_dtype = data_type
+            if quant_dtype not in QUANT_FUNC_WITH_DTYPE:
+                quant_dtype = f"{quant_dtype}_{'sym' if sym else 'asym'}"
+            if not hasattr(self, "iters") or self.iters <= 0:  # pylint: disable=E1101
+                tmp_dtype = "rtn_" + quant_dtype
+                if tmp_dtype in QUANT_FUNC_WITH_DTYPE:
+                    quant_dtype = tmp_dtype
+            quant_func = QUANT_FUNC_WITH_DTYPE[quant_dtype]
             # float32 is used in RTN scale search; avoids caching a bf16 copy.
             weight_dtype = torch.float32 if super_group_size is not None else module.weight.dtype
-            quantizer = create_quantizer(module, disable_opt_rtn=True)
+            quant_kwargs = {
+                "bits": bits,
+                "group_size": group_size,
+                "super_bits": super_bits,
+                "super_group_size": super_group_size,
+                "scale_dtype": scale_dtype,
+            }
             try:
-                weight = module.weight.to(dtype=weight_dtype, device=device_manager.device)
-                quantizer.initialize(weight)
-                quantizer.write_back(module, weight)
+                weight, scale, zp = quant_func(
+                    module.weight.to(dtype=weight_dtype, device=device_manager.device),
+                    **quant_kwargs,
+                )
             except torch.OutOfMemoryError:
-                logger.error(traceback.format_exc())
-                logger.warning("falling back to CPU")
-                weight = module.weight.to("cpu")
-                quantizer.initialize(weight)
-                quantizer.write_back(module, weight)
-            del weight, quantizer
+                cuda_error_msg = traceback.format_exc()
+                try:
+                    logger.error(cuda_error_msg)
+                    logger.warning("falling back to CPU")
+                    weight, scale, zp = quant_func(module.weight.to("cpu"), **quant_kwargs)
+                except Exception:
+                    raise
+            module.weight.data.copy_(weight.cpu())
+            for param_name, val in zip(["scale", "zp"], [scale, zp]):
+                if isinstance(val, dict):
+                    for k, v in val.items():
+                        setattr(module, k if k == "scale" else f"w_{k}", v.cpu())
+                elif isinstance(val, torch.Tensor):
+                    setattr(module, param_name, val.cpu())
+                else:
+                    setattr(module, param_name, val)
+            del weight, scale, zp
             clear_memory()
         return is_quantized
 
@@ -244,7 +232,6 @@ class BaseQuantizer(BaseAlgorithm):
                 enable_torch_compile=self.compress_context.enable_torch_compile,
                 disable_opt_rtn=disable_opt_rtn,
                 iters=0,
-                weight_qdq_builder=self.build_weight_qdq,
             )
             layer = layer.unwrapper({})
         except torch.OutOfMemoryError:
@@ -261,7 +248,6 @@ class BaseQuantizer(BaseAlgorithm):
                     enable_round_tuning=False,
                     enable_torch_compile=self.compress_context.enable_torch_compile,
                     iters=0,
-                    weight_qdq_builder=self.build_weight_qdq,
                 )
                 layer = layer.unwrapper({})
             except Exception:
