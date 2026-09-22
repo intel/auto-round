@@ -12,15 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import auto_round.data_type.int
-import auto_round.data_type.mxfp
-import auto_round.data_type.fp8
-from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
-import auto_round.data_type.w4fp8
-from auto_round.data_type.utils import (
-    get_quant_func,
-    reshape_pad_tensor_by_group_size,
-    update_fused_layer_global_scales,
-)
-import auto_round.data_type.nvfp
-import auto_round.data_type.gguf
+
+QUANT_FUNC_WITH_DTYPE = {}
+
+
+def register_dtype(names):
+    """Class decorator to register a EXPORT subclass to the registry.
+
+    Decorator function used before a Pattern subclass.
+
+    Args:
+        names: A string. Define the export type.
+
+    Returns:
+        cls: The class of register.
+    """
+
+    def register(dtype):
+        if isinstance(names, (tuple, list)):
+            for name in names:
+                QUANT_FUNC_WITH_DTYPE[name] = dtype
+        else:
+            QUANT_FUNC_WITH_DTYPE[names] = dtype
+
+        return dtype
+
+    return register

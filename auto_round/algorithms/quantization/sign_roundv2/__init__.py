@@ -12,8 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.algorithms.quantization.sign_roundv2.quantizer import SignRoundV2Quantizer
+from auto_round.algorithms.quantization.sign_roundv2.quantizer import (
+    SignRoundDQWrapperLinear,
+    SignRoundOptimizedWrapperLinear,
+    SignRoundV2Quantizer,
+)
 
 __all__ = [
+    "SignRoundDQWrapperLinear",
+    "SignRoundOptimizedWrapperLinear",
     "SignRoundV2Quantizer",
 ]

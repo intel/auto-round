@@ -57,16 +57,21 @@ def test_fake_nvfp4_qdq_uses_saved_input_global_scale(monkeypatch):
 def test_fake_evaluation_wrapper_uses_saved_input_global_scale():
     captured_kwargs = {}
     linear = torch.nn.Linear(16, 4)
+    linear.act_bits = 4
+    linear.act_group_size = 16
+    linear.scale_dtype = torch.float32
+    linear.q_scale_thresh = 1e-5
+    linear.act_data_type = "nv_fp4_with_static_gs"
     linear.act_max_scale = torch.ones(1)
     linear.act_min_scale = torch.ones(1)
     linear.input_global_scale = torch.tensor([1.5], dtype=torch.float32)
 
-    class ActivationQuantizer:
-        def qdq(self, activation, **kwargs):
-            captured_kwargs.update(kwargs)
-            return activation
+    def quant_func(activation, **kwargs):
+        captured_kwargs.update(kwargs)
+        return activation, None, None
 
-    wrapper = WrapperWALayer(linear, enable_torch_compile=False, activation_quantizer=ActivationQuantizer())
+    linear.act_quant_func = quant_func
+    wrapper = WrapperWALayer(linear, enable_torch_compile=False)
 
     wrapper(torch.randn(2, 16))
 
@@ -75,14 +80,20 @@ def test_fake_evaluation_wrapper_uses_saved_input_global_scale():
 
 def test_fake_evaluation_wrapper_does_not_pass_global_scale_to_other_quantizers():
     linear = torch.nn.Linear(16, 4)
+    linear.act_bits = 8
+    linear.act_group_size = 16
+    linear.scale_dtype = torch.float32
+    linear.q_scale_thresh = 1e-5
+    linear.act_data_type = "int"
     linear.act_max_scale = torch.ones(1)
     linear.act_min_scale = torch.ones(1)
 
-    class ActivationQuantizer:
-        def qdq(self, activation, *, observed_max=None, min_scale=1.0, max_scale=1.0):
-            return activation
+    def quant_func(activation, *, global_scale=None, **kwargs):
+        assert global_scale is None
+        return activation, None, None
 
-    wrapper = WrapperWALayer(linear, enable_torch_compile=False, activation_quantizer=ActivationQuantizer())
+    linear.act_quant_func = quant_func
+    wrapper = WrapperWALayer(linear, enable_torch_compile=False)
 
     wrapper(torch.randn(2, 16))
 
