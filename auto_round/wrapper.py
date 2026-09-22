@@ -610,6 +610,9 @@ class WrapperWALayer(torch.nn.Module):
 
         max_scale = self.orig_layer.act_max_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
         min_scale = self.orig_layer.act_min_scale if math.isclose(act_scale, 1.0, rel_tol=1e-6) else act_scale
+        quant_kwargs = {}
+        if hasattr(self.orig_layer, "input_global_scale"):
+            quant_kwargs["global_scale"] = self.orig_layer.input_global_scale
         if act_max is None:
             x, _, _ = self.orig_layer.act_quant_func(
                 x,
@@ -620,6 +623,7 @@ class WrapperWALayer(torch.nn.Module):
                 data_type=self.orig_layer.act_data_type,
                 min_scale=min_scale,
                 max_scale=max_scale,
+                **quant_kwargs,
             )
         else:
             x, _, _ = self.orig_layer.act_quant_func(
@@ -630,6 +634,7 @@ class WrapperWALayer(torch.nn.Module):
                 q_scale_thresh=self.orig_layer.q_scale_thresh,
                 data_type=self.orig_layer.act_data_type,
                 act_max=act_max,
+                **quant_kwargs,
             )
         # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)
