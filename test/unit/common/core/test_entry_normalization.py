@@ -1,4 +1,6 @@
 import inspect
+import subprocess
+import sys
 
 import pytest
 
@@ -330,3 +332,22 @@ def test_awq_kwargs_without_awq_error_and_are_ignored(monkeypatch):
     assert isinstance(configs[0], SignRoundConfig)
     assert not hasattr(configs[0], "n_grid")
     assert any("AWQ" in message for message in errors)
+
+
+def test_signround_import_does_not_require_diffusion_cache():
+    code = """
+import builtins
+import sys
+
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == "auto_round.compressors.diffusion.tuning_cache" or name.split(".")[0] == "diffusers":
+        raise ModuleNotFoundError(name)
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+assert "auto_round.compressors.diffusion.tuning_cache" not in sys.modules
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr

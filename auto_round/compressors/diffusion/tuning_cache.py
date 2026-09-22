@@ -22,6 +22,7 @@ import torch
 from torch.utils._pytree import tree_flatten, tree_map
 
 from auto_round.logger import logger
+from auto_round.utils.device_manager import device_manager
 
 
 def _batch_plan(sampler, iters, batch_size):
@@ -71,6 +72,19 @@ class DiffusionTuningCache:
     activations/workspace. Pinned host memory is bounded by the two batch slots.
     The caller must close the cache after backward, including on early exit.
     """
+
+    @staticmethod
+    def is_enabled(model_context, compress_context, device, loss_device):
+        """Keep prefetch opt-in and limited to the existing diffusion CUDA path."""
+        budget = getattr(model_context, "diffusion_tuning_cache_size", 0)
+        return (
+            getattr(model_context, "is_diffusion", False)
+            and (budget == "auto" or budget > 0)
+            and compress_context.low_gpu_mem_usage
+            and str(device).startswith("cuda")
+            and len(device_manager.device_list) == 1
+            and (loss_device is None or torch.device(loss_device) == torch.device(device))
+        )
 
     @classmethod
     def create(cls, block, runner, inputs, others, outputs, sampler, iters, budget_gib, device):

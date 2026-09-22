@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import random
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -37,7 +38,8 @@ def test_prefetch_plan_preserves_sampler_and_rng(global_batch):
 
 
 @pytest.mark.parametrize("shared", [False, True])
-def test_prefetched_batch_preserves_input_structure(shared):
+@pytest.mark.parametrize("prefetched", [None, False, True])
+def test_prefetched_batch_preserves_input_structure(monkeypatch, shared, prefetched):
     class Block(torch.nn.Module):
         def forward(self, hidden_states, scale, temb, freqs):
             return hidden_states * scale + temb + freqs[0] + freqs[1]
@@ -60,5 +62,37 @@ def test_prefetched_batch_preserves_input_structure(shared):
     cache.outputs = [torch.ones(1, 2, 4) * i for i in range(3)]
     batch = cache._select([1])
     expected = cache.runner.forward(Block(), cache.inputs, cache.others, [1], "cpu")
-    torch.testing.assert_close(cache.forward(Block(), batch, "cpu"), expected)
-    torch.testing.assert_close(batch[2], cache.outputs[1])
+    monkeypatch.setattr(cache, "get", lambda indices: batch if prefetched else None)
+    prediction, reference = cache.runner.forward_tuning_batch(
+        Block(),
+        cache.inputs,
+        cache.others,
+        cache.outputs,
+        [1],
+        "cpu",
+        tuning_cache=cache if prefetched is not None else None,
+    )
+    torch.testing.assert_close(prediction, expected)
+    torch.testing.assert_close(reference, cache.outputs[1])
+
+
+@pytest.mark.parametrize(
+    "diffusion,budget,low_memory,device,devices,loss_device,expected",
+    [
+        (True, "auto", True, "cuda:0", ["cuda:0"], "cuda:0", True),
+        (True, 1, True, "cuda:0", ["cuda:0"], None, True),
+        (True, 0, True, "cuda:0", ["cuda:0"], "cuda:0", False),
+        (False, "auto", True, "cuda:0", ["cuda:0"], "cuda:0", False),
+        (True, "auto", False, "cuda:0", ["cuda:0"], "cuda:0", False),
+        (True, "auto", True, "cpu", ["cpu"], "cpu", False),
+        (True, "auto", True, "cuda:0", ["cuda:0", "cuda:1"], "cuda:0", False),
+        (True, "auto", True, "cuda:0", ["cuda:0"], "cuda:1", False),
+    ],
+)
+def test_tuning_cache_scope(monkeypatch, diffusion, budget, low_memory, device, devices, loss_device, expected):
+    from auto_round.compressors.diffusion import tuning_cache
+
+    monkeypatch.setattr(tuning_cache, "device_manager", SimpleNamespace(device_list=devices))
+    model = SimpleNamespace(is_diffusion=diffusion, diffusion_tuning_cache_size=budget)
+    compress = SimpleNamespace(low_gpu_mem_usage=low_memory)
+    assert DiffusionTuningCache.is_enabled(model, compress, device, loss_device) is expected
