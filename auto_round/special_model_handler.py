@@ -1183,7 +1183,7 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     config = getattr(model, "config", None)
     if not layers and is_moe_model_via_config(config):
         for name, _ in model.named_modules():
-            if name.endswith(".gate"):
+            if name.endswith((".gate", ".shared_expert_gate")):
                 layers.append(name)
 
     return list(dict.fromkeys(layers))
