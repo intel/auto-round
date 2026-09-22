@@ -81,6 +81,7 @@ class QuantizedAttentionImpl(torch.nn.Module):
         self.config = config
         self.granularity = normalize_fp8_granularity(granularity)
         self.attn_module = ref(attn_module)  # avoid circular references
+        self._original_impl = _get_original_attention_impl(config)
         # register query max
         device = next(attn_module.parameters()).device
         initial_max = torch.tensor([float("-inf")], device=device)
@@ -129,6 +130,17 @@ def _ct_hooked_attention(module: Module, *args, **kwargs):
         return ALL_ATTENTION_FUNCTIONS[_original_impl](module, *args, **kwargs)  # pylint: disable=E0601
 
 
+def _get_attention_config(module: Module, fallback_config: PretrainedConfig) -> PretrainedConfig:
+    module_config = getattr(module, "config", None)
+    if module_config is not None and hasattr(module_config, "_attn_implementation"):
+        return module_config
+    return fallback_config
+
+
+def _get_original_attention_impl(config: PretrainedConfig) -> str:
+    return getattr(config, "_auto_round_original_attn_impl", config._attn_implementation)
+
+
 def init_hooked_attention(module: Module, config, granularity: str = "tensor"):
     """
     Initialize `QuantizedAttentionImpl` and `QuantizedKVCache` instances
@@ -137,15 +149,17 @@ def init_hooked_attention(module: Module, config, granularity: str = "tensor"):
     :param model: parent model of attention module
     :param module: attention module to initialize with
     """
+    config = _get_attention_config(module, config)
     if not hasattr(module, ATTN_IMPL_ATTR_NAME):
-        module.register_module(ATTN_IMPL_ATTR_NAME, QuantizedAttentionImpl(config, module, granularity=granularity))
         if config._attn_implementation != HOOKED_ATTENTION_NAME:
             # assumes only one model at a time
             global _original_impl
             _original_impl = config._attn_implementation
+            config._auto_round_original_attn_impl = config._attn_implementation
             # Add new implementation to AttentionInterface(mapping)
             AttentionInterface.register(HOOKED_ATTENTION_NAME, _ct_hooked_attention)
             config._attn_implementation = HOOKED_ATTENTION_NAME
+        module.register_module(ATTN_IMPL_ATTR_NAME, QuantizedAttentionImpl(config, module, granularity=granularity))
 
     # initialize_hooked_kv_cache(model, module)
 
@@ -159,10 +173,10 @@ def prep_attention_module_for_calibration(module: torch.nn.Module, config, granu
 def clean_up_hooked_attention(module, model):
     if is_attention_module(module):
         clean_model_parameters_and_buffers_(module, (QUERY_MAX_NAME,))
-        # Cleanup phase: Restore the original attention implementation
-        if hasattr(model.config, "_attn_implementation") and hasattr(model, "_original_impl"):
-            model.config._attn_implementation = model._original_impl
-            del model._original_impl
+        config = _get_attention_config(module, model.config)
+        if hasattr(config, "_auto_round_original_attn_impl"):
+            config._attn_implementation = config._auto_round_original_attn_impl
+            del config._auto_round_original_attn_impl
 
 
 @contextlib.contextmanager
