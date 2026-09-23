@@ -852,7 +852,8 @@ class _ModelFreeCompressorCore:
         if self.is_streaming and not self.shard_names:
             from auto_round.utils.model_free_utils import _list_remote_weight_shards
 
-            self.shard_names = _list_remote_weight_shards(self.model_name_or_path)
+            subfolder = "transformer" if self.is_diffusion_model else None
+            self.shard_names = _list_remote_weight_shards(self.model_name_or_path, subfolder=subfolder)
         if not self.shard_names:
             raise FileNotFoundError(f"No safetensors or PyTorch weight files found for {self.model_name_or_path}")
 

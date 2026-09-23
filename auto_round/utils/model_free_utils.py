@@ -2432,11 +2432,14 @@ def _list_weight_shards(source_dir: str) -> list[str]:
     return []
 
 
-def _list_remote_weight_shards(model_name_or_path: str) -> list[str]:
+def _list_remote_weight_shards(model_name_or_path: str, subfolder: str | None = None) -> list[str]:
     """Return remote weight filenames for streaming repos without a weight index."""
     from huggingface_hub import list_repo_files
 
     repo_files = list_repo_files(model_name_or_path)
+    if subfolder:
+        prefix = subfolder.rstrip("/") + "/"
+        repo_files = [name for name in repo_files if name.startswith(prefix)]
     safetensors_files = sorted(
         name for name in repo_files if name.endswith(".safetensors") and not name.endswith(".index.json")
     )

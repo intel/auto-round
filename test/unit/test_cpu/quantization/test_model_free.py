@@ -127,13 +127,26 @@ def test_list_remote_weight_shards_prefers_safetensors(monkeypatch):
     assert _list_remote_weight_shards("org/model") == ["model.safetensors"]
 
 
+def test_list_remote_weight_shards_filters_diffusion_components(monkeypatch):
+    monkeypatch.setattr(
+        "huggingface_hub.list_repo_files",
+        lambda model_name_or_path: [
+            "transformer/model.safetensors",
+            "vae/diffusion_pytorch_model.safetensors",
+            "text_encoder/model.safetensors",
+        ],
+    )
+
+    assert _list_remote_weight_shards("org/model", subfolder="transformer") == ["transformer/model.safetensors"]
+
+
 def test_streaming_discovers_remote_single_weight_file(tmp_path, monkeypatch):
     compressor = _ModelFreeCompressorCore("org/single-file-model", str(tmp_path / "output"))
     compressor.is_streaming = True
     compressor.work_dir = str(tmp_path)
     monkeypatch.setattr(
         "auto_round.utils.model_free_utils._list_remote_weight_shards",
-        lambda model_name_or_path: ["model.safetensors"],
+        lambda model_name_or_path, subfolder=None: ["model.safetensors"],
     )
 
     compressor._discover_shards()

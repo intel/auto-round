@@ -1579,6 +1579,8 @@ def expand_layer_config_for_weight_renames(
         model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
 
     if to_model_names:
+        # get_reverse_checkpoint_conversion_mapping is intended.
+        # get_checkpoint_conversion_mapping cannot handle all cases correctly.
         reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
         key_mapping = {}
         for source_pattern, target_patterns in reversed(list(reverse_mapping.items())):

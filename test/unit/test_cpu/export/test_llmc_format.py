@@ -281,6 +281,23 @@ class TestLLMC:
         assert config["format"] == "mxfp4-pack-quantized"
         assert config["config_groups"]["group_0"]["targets"] == [target]
 
+    def test_bf16_default_w4a16_override_standard_flow(self, tiny_opt_model_path, tmp_path):
+        target = "model.decoder.layers.0.self_attn.q_proj"
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme="BF16",
+            layer_config={target: "W4A16"},
+            iters=0,
+            disable_opt_rtn=True,
+            disable_model_free=True,
+        )
+        _, output_dir = ar.quantize_and_save(output_dir=tmp_path, format="llm_compressor")
+        with open(os.path.join(output_dir, "config.json")) as config_file:
+            config = json.load(config_file)["quantization_config"]
+        assert config["format"] == "pack-quantized"
+        assert config["config_groups"]["group_0"]["targets"] == [target]
+        assert config["config_groups"]["group_0"]["weights"]["num_bits"] == 4
+
     def test_mxfp8_llmcompressor_format(self, tiny_opt_model_path, tmp_path):
         scheme = "mxfp8"
         ar = AutoRound(

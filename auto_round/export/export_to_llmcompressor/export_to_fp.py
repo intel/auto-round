@@ -138,6 +138,8 @@ def pack_layer(name, model, device=None):
 
 def _get_scheme(bits, data_type):
     """Determine the compressed-tensors format string for a given data type and bit-width."""
+    if data_type == "int" and bits in (4, 8):
+        return f"W{bits}A16"
     if is_mx_fp(data_type):
         return "MXFP4" if bits == 4 else "MXFP8"
     if is_nv_fp(data_type):
@@ -149,6 +151,8 @@ def _get_scheme(bits, data_type):
 
 def _get_group_format(bits, data_type):
     """Determine the compressed-tensors format string for a given data type and bit-width."""
+    if data_type == "int":
+        return "pack-quantized"
     if is_mx_fp(data_type):
         return "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
     if is_nv_fp(data_type):
