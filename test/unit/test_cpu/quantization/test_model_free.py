@@ -90,6 +90,26 @@ def test_model_free_preserves_explicit_scheme_overrides():
     assert compressor.default_scheme["sym"] is False
 
 
+def test_model_free_expands_layer_config_after_resolving_model_type(monkeypatch):
+    from auto_round.compressors.model_free import _ModelFreeCompressorCore
+
+    compressor = _ModelFreeCompressorCore("unused-model-path", "/tmp/unused-output")
+    compressor.config = {"model_type": "glm5_next"}
+    compressor.layer_config = {"model.layers.0.attn_hc.base": {"bits": 4}}
+    captured = {}
+
+    def _expand(layer_config, *, model_type, to_model_names):
+        captured.update(model_type=model_type, to_model_names=to_model_names)
+        return {**layer_config, "model.layers.0.hc_attn_base": {"bits": 4}}
+
+    monkeypatch.setattr("auto_round.utils.expand_layer_config_for_weight_renames", _expand)
+
+    compressor._resolve_model_type()
+
+    assert captured == {"model_type": "glm5_next", "to_model_names": False}
+    assert "model.layers.0.hc_attn_base" in compressor.layer_config
+
+
 def test_fallback_forwards_only_explicit_format():
     """Only an explicitly requested construction format reaches the fallback.
 

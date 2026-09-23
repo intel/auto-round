@@ -838,6 +838,14 @@ class _ModelFreeCompressorCore:
         if self.model_type:
             logger.info(f"Detected source model_type='{self.model_type}'.")
 
+        from auto_round.utils import expand_layer_config_for_weight_renames
+
+        self.layer_config = expand_layer_config_for_weight_renames(
+            self.layer_config,
+            model_type=self.model_type,
+            to_model_names=False,
+        )
+
     def _discover_shards(self) -> None:
         search_dir = self.work_dir if self.is_streaming else self.source_dir
         self.shard_names = _list_weight_shards(search_dir)

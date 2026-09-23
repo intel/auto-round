@@ -7,6 +7,7 @@ import torch
 import auto_round.utils.device as auto_round_utils
 from auto_round.utils.common import (
     compress_layer_names,
+    expand_layer_config_for_weight_renames,
     get_reverse_checkpoint_conversion_mapping,
     preserve_original_visual_block_name,
     revert_checkpoint_conversion_mapping,
@@ -143,6 +144,42 @@ def test_get_reverse_checkpoint_conversion_mapping_falls_back_to_central_registr
         )
         == "model.language_model.layers.0.self_attn.A_log"
     )
+
+
+def test_expand_layer_config_for_weight_renames_to_model_names(monkeypatch):
+    checkpoint_name = "model.layers.0.hc_attn_base"
+    model_name = "model.layers.0.attn_hc.base"
+    monkeypatch.setattr(
+        "auto_round.utils.common.get_checkpoint_conversion_mapping",
+        lambda model: {r"hc_attn_base$": "attn_hc.base"},
+    )
+
+    expanded = expand_layer_config_for_weight_renames(
+        {checkpoint_name: {"bits": 4}, model_name: {"bits": 8}},
+        model=SimpleNamespace(),
+        to_model_names=True,
+    )
+
+    assert expanded[checkpoint_name]["bits"] == 4
+    assert expanded[model_name]["bits"] == 8
+
+
+def test_expand_layer_config_for_weight_renames_to_checkpoint_names(monkeypatch):
+    model_name = "model.layers.0.attn_hc.base"
+    checkpoint_name = "model.layers.0.hc_attn_base"
+    monkeypatch.setattr(
+        "auto_round.utils.common.get_reverse_checkpoint_conversion_mapping",
+        lambda model: {r"attn_hc\.base$": "hc_attn_base"},
+    )
+
+    expanded = expand_layer_config_for_weight_renames(
+        {model_name: {"bits": 4}},
+        model_type="glm5_next",
+        to_model_names=False,
+    )
+
+    assert expanded[model_name]["bits"] == 4
+    assert expanded[checkpoint_name]["bits"] == 4
 
 
 def test_preserve_original_visual_block_name():

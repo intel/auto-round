@@ -39,6 +39,26 @@ def test_resolver_does_not_write_quantization_attributes_to_modules():
     assert not hasattr(model[0], "bits")
 
 
+def test_resolver_expands_checkpoint_layer_name_to_loaded_model_name(monkeypatch):
+    model = nn.Module()
+    model.model_side = nn.Linear(32, 32)
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+    monkeypatch.setattr(
+        "auto_round.utils.common.get_checkpoint_conversion_mapping",
+        lambda loaded_model: {r"checkpoint_side$": "model_side"},
+    )
+
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={"checkpoint_side": {"bits": 8}},
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+
+    assert resolved["model_side"]["bits"] == 8
+
+
 def test_extract_regex_config_keeps_pattern_separate_from_expanded_layers():
     model = nn.Sequential(nn.Linear(32, 32))
     scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
