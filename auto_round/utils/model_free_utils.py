@@ -2429,6 +2429,21 @@ def _list_weight_shards(source_dir: str) -> list[str]:
     bin_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".bin"))
     if len(bin_files) >= 1:
         return bin_files
+    return []
+
+
+def _list_remote_weight_shards(model_name_or_path: str) -> list[str]:
+    """Return remote weight filenames for streaming repos without a weight index."""
+    from huggingface_hub import list_repo_files
+
+    repo_files = list_repo_files(model_name_or_path)
+    safetensors_files = sorted(
+        name for name in repo_files if name.endswith(".safetensors") and not name.endswith(".index.json")
+    )
+    if safetensors_files:
+        return safetensors_files
+
+    return sorted(name for name in repo_files if name.endswith(".bin") and not name.endswith(".index.json"))
 
 
 def _is_weight_shard(fname: str) -> bool:
