@@ -147,21 +147,24 @@ def test_get_reverse_checkpoint_conversion_mapping_falls_back_to_central_registr
 
 
 def test_expand_layer_config_for_weight_renames_to_model_names(monkeypatch):
-    checkpoint_name = "model.layers.0.hc_attn_base"
-    model_name = "model.layers.0.attn_hc.base"
+    checkpoint_name = "language_model.model.layers.0.self_attn.q_proj"
+    model_name = "model.language_model.layers.0.self_attn.q_proj"
     monkeypatch.setattr(
-        "auto_round.utils.common.get_checkpoint_conversion_mapping",
-        lambda model: {r"hc_attn_base$": "attn_hc.base"},
+        "auto_round.utils.common.get_reverse_checkpoint_conversion_mapping",
+        lambda model: {
+            r"model.language_model": r"language_model",
+            r"language_model": r"language_model.model",
+        },
     )
 
     expanded = expand_layer_config_for_weight_renames(
-        {checkpoint_name: {"bits": 4}, model_name: {"bits": 8}},
+        {checkpoint_name: {"bits": 4}},
         model=SimpleNamespace(),
         to_model_names=True,
     )
 
     assert expanded[checkpoint_name]["bits"] == 4
-    assert expanded[model_name]["bits"] == 8
+    assert expanded[model_name]["bits"] == 4
 
 
 def test_expand_layer_config_for_weight_renames_to_checkpoint_names(monkeypatch):

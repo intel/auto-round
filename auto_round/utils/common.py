@@ -1552,9 +1552,8 @@ def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) 
             target_patterns = [target_patterns]
         for target_pattern in target_patterns:
             name, n_replace = re.subn(source_pattern, target_pattern, name)
-            # Early exit of the loop
             if n_replace > 0:
-                return name
+                break
     return name
 
 
@@ -1580,7 +1579,13 @@ def expand_layer_config_for_weight_renames(
         model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
 
     if to_model_names:
-        key_mapping = get_checkpoint_conversion_mapping(model)
+        reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
+        key_mapping = {}
+        for source_pattern, target_patterns in reversed(list(reverse_mapping.items())):
+            if isinstance(target_patterns, str):
+                target_patterns = [target_patterns]
+            for target_pattern in target_patterns:
+                key_mapping.setdefault(target_pattern, []).append(source_pattern)
         convert_name = lambda name: apply_checkpoint_conversion_mapping(name, key_mapping)
     else:
         key_mapping = get_reverse_checkpoint_conversion_mapping(model)
