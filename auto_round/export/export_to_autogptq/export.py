@@ -166,11 +166,13 @@ def pack_layer(name, model, backend, device=None):
     # so far can only pack layer on CPU
     qlayer.to("cpu")
     ##force to float32 to be compatible with torch 2.0
-    if sym and isinstance(zero, torch.Tensor):
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero.to("cpu")
-        zero = int(zero.flatten()[0])
-    else:
-        layer, scale, zero = layer.to("cpu"), scale.to("cpu"), zero
+    layer, scale = layer.to("cpu"), scale.to("cpu")
+    if isinstance(zero, torch.Tensor):
+        # Packing runs on CPU, so the zero point has to follow the weight and
+        # the scale there, whether or not the layer is symmetric.
+        zero = zero.to("cpu")
+        if sym:
+            zero = int(zero.flatten()[0])
     if isinstance(zero, torch.Tensor) and zero.dtype == torch.bfloat16:
         zero = zero.float()
     sig = inspect.signature(qlayer.pack)

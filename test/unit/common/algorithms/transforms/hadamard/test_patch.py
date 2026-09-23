@@ -179,14 +179,14 @@ class TestPatchWrapperLinearIdempotency:
 
         # Call the patched _qdq_act on a wrapper
         wrapper = _make_wrapper_linear()
-        # Activation QDQ is now owned by the datatype quantizer.
-        wrapper.activation_quantizer.qdq_with_scale = MagicMock(return_value=(torch.zeros(1, 8), None, None))
+        # Replace the wrapper's act_quant_func with a spy
+        wrapper.act_quant_func = MagicMock(return_value=(torch.zeros(1, 8), None, None))
         x = torch.ones(1, 8)
         act_min = torch.tensor(1.0)
         act_max = torch.tensor(1.0)
-        wrapper._qdq_act(x, act_min_scale=act_min, act_max_scale=act_max, act_max=act_max)
+        wrapper._qdq_act(x, act_min_scale=act_min, act_max_scale=act_max)
         # The mock should have been called with x * 2
-        called_args = wrapper.activation_quantizer.qdq_with_scale.call_args[0]
+        called_args = wrapper.act_quant_func.call_args[0]
         assert torch.equal(called_args[0], x * 2.0)
 
     def test_qdq_weight_falls_through_for_high_bits(self):
@@ -294,7 +294,6 @@ class TestPatchWrapperWALayerIdempotency:
         patch_wrapperwalayer_forward_to_apply_transform(inp_transform)
 
         wrapper = _make_wrapper_wa_layer()
-        wrapper.activation_quantizer.qdq = MagicMock(return_value=torch.zeros(1, 8))
         # Patch the orig_layer.forward to be a spy
         orig_forward_spy = MagicMock(return_value=torch.zeros(1, 8))
         wrapper.orig_layer.forward = orig_forward_spy
@@ -302,8 +301,8 @@ class TestPatchWrapperWALayerIdempotency:
         x = torch.ones(1, 8)
         wrapper(x)
 
-        # Datatype-owned activation QDQ receives the rotated input.
-        called_args = wrapper.activation_quantizer.qdq.call_args[0]
+        # The act_quant_func should have been called with x * 4
+        called_args = wrapper.orig_layer.act_quant_func.call_args[0]
         assert torch.equal(called_args[0], x * 4.0)
 
     def test_act_max_passed_when_present(self):
@@ -316,7 +315,6 @@ class TestPatchWrapperWALayerIdempotency:
 
         wrapper = _make_wrapper_wa_layer()
         wrapper.orig_layer.act_max = torch.tensor(2.0)
-        wrapper.activation_quantizer.qdq = MagicMock(return_value=torch.zeros(1, 8))
 
         orig_forward_spy = MagicMock(return_value=torch.zeros(1, 8))
         wrapper.orig_layer.forward = orig_forward_spy
@@ -324,7 +322,9 @@ class TestPatchWrapperWALayerIdempotency:
         x = torch.ones(1, 8)
         wrapper(x)
 
-        assert wrapper.activation_quantizer.qdq.call_args.kwargs["observed_max"] is not None
+        # tensor_max should be the act_max value
+        kwargs = wrapper.orig_layer.act_quant_func.call_args.kwargs
+        assert kwargs.get("tensor_max") is not None
 
 
 class TestPatchQuantLinearIdempotency:

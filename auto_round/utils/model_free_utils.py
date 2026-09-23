@@ -1227,7 +1227,8 @@ def _quantize_weight_nvfp4_e5m3(
     disable_opt_rtn: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Fake-quantize a 2D weight tensor to NVFP4 E5M3 and return its high-precision QDQ weight."""
-    from auto_round.data_type.base import create_quantizer
+    from auto_round.data_type.nvfp import nvfp4_v2, search_nvfp4_v2_scale
+    from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
     out_features, in_features = weight.shape
     if group_size != 16:
@@ -1239,13 +1240,11 @@ def _quantize_weight_nvfp4_e5m3(
         )
 
     weight_dev = weight.to(device)
-    quantizer = create_quantizer(
-        {"data_type": "nvfp4_v2", "bits": 4, "group_size": group_size, "sym": True, "scale_dtype": torch.float32},
-        iters=0,
-        disable_opt_rtn=disable_opt_rtn,
-    )
-    quantizer.initialize(weight_dev)
-    qdq_weight = quantizer.quantize(weight_dev)
+    max_scale = 1.0
+    if not disable_opt_rtn:
+        grouped = reshape_pad_tensor_by_group_size(weight_dev, group_size)[0]
+        max_scale = search_nvfp4_v2_scale(grouped)
+    qdq_weight, _, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size, max_scale=max_scale)
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
 
@@ -1280,7 +1279,8 @@ def _pack_weight_nvfp4_e5m3(
     disable_opt_rtn: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Pack FP4 E2M1 weights with unsigned E5M3 block scales."""
-    from auto_round.data_type.base import create_quantizer
+    from auto_round.data_type.nvfp import nvfp4_v2, search_nvfp4_v2_scale
+    from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 
     out_features, in_features = weight.shape
@@ -1289,13 +1289,11 @@ def _pack_weight_nvfp4_e5m3(
             f"NVFP4_E5M3 requires in_features divisible by group_size=16, got {in_features} for '{layer_name}'."
         )
     weight_dev = weight.to(device)
-    quantizer = create_quantizer(
-        {"data_type": "nvfp4_v2", "bits": 4, "group_size": group_size, "sym": True, "scale_dtype": torch.float32},
-        iters=0,
-        disable_opt_rtn=disable_opt_rtn,
-    )
-    quantizer.initialize(weight_dev)
-    scale = quantizer.qdq(weight_dev, materialize=True).scale
+    max_scale = 1.0
+    if not disable_opt_rtn:
+        grouped = reshape_pad_tensor_by_group_size(weight_dev, group_size)[0]
+        max_scale = search_nvfp4_v2_scale(grouped)
+    _, scale, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size, max_scale=max_scale)
     # nvfp4_v2 may return a flattened per-group scale layout (e.g. [N, 1]);
     # normalize to [out_features, in_features // group_size] before packing
     # so serialized .weight_scale keeps the expected 2D shape.

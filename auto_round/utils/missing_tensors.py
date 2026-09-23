@@ -121,7 +121,7 @@ def _restore_special_fp32_tensors(
                 os.remove(temporary_path)
 
     if tensors_to_restore:
-        tensor_summary = compress_layer_names([name.rsplit(".", 1)[0] for name in tensors_to_restore])
+        tensor_summary = compress_layer_names(list(tensors_to_restore))
         logger.info(
             f"Restored {len(tensors_to_restore)} tensor(s) from FP16/BF16 to their original FP32 values: "
             f"{tensor_summary}."

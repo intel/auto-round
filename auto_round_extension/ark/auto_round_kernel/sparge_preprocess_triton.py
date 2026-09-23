@@ -16,7 +16,11 @@ _APPLIED_TRITON_PREDICATED_CHECK = False
 
 
 def _apply_xpu_triton_workarounds() -> None:
-    """Patch triton's Intel compiler so JIT kernels avoid the rejected SPIR-V extension."""
+    """Patch triton's Intel compiler so JIT kernels avoid the rejected SPIR-V extension.
+
+    Triton 3.7.x can emit SPV_INTEL_predicated_io for non-LTS Intel GPU drivers,
+    but some level-zero loaders reject that extension at kernel-load time.
+    """
     global _APPLIED_TRITON_PREDICATED_CHECK
     if _APPLIED_TRITON_PREDICATED_CHECK:
         return
@@ -416,8 +420,9 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
         .contiguous()
     )
     final_tile_map = torch.zeros_like(pooled_prob, dtype=torch.bool)
-    final_tile_map[~sim_k_expand] = True
-    final_tile_map[~sim_q_expand] = True
+    # Boolean-mask assignment (`t[mask] = val`) is unreliable on XPU; use |= instead.
+    final_tile_map |= ~sim_k_expand
+    final_tile_map |= ~sim_q_expand
     final_tile_map = _fill_block_map_triton(final_tile_map, num_to_select, sorted_prob.indices)
     if causal_mask is not None:
         final_tile_map &= causal_mask.view(1, 1, ctx.num_q_tiles, num_k_route_blocks)

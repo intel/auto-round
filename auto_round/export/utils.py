@@ -319,6 +319,35 @@ def _restore_original_layer_types(save_dir: str, source_dir: str) -> None:
             json.dump(saved_config, f, indent=2)
 
 
+def _get_state_dict_for_export_dtype(model: nn.Module, dtype) -> dict | None:
+    """Return a state dict with float32 tensors cast to ``dtype``, or None if nothing needs casting.
+
+    Tuning may run the model in float32, e.g. when the device doesn't support bfloat16. The
+    exported config declares ``dtype``, so the saved tensors should use it too. Tensors of
+    modules the model keeps in float32 (``_keep_in_fp32_modules``) are left unchanged, as are
+    quantized (non-float32) tensors.
+    """
+    if dtype not in (torch.bfloat16, torch.float16):
+        return None
+    state_dict = model.state_dict()
+    if not any(tensor.dtype == torch.float32 for tensor in state_dict.values()):
+        return None
+
+    keep_in_fp32 = set()
+    for attribute in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+        names = getattr(model, attribute, None) or []
+        keep_in_fp32.update([names] if isinstance(names, str) else names)
+
+    return {
+        name: (
+            tensor.to(dtype)
+            if tensor.dtype == torch.float32 and not any(module_name in name for module_name in keep_in_fp32)
+            else tensor
+        )
+        for name, tensor in state_dict.items()
+    }
+
+
 def apply_post_save_source_fixes(model: nn.Module, save_dir: str) -> None:
     """Restore checkpoint artifacts that ``save_pretrained`` does not preserve."""
     source_dir = _resolve_model_source_dir(model)
@@ -384,15 +413,19 @@ def save_model(
         logger.info("Immediate saving mode: weights already saved by ShardWriter, saving configs only.")
         _save_model_configs(model, save_dir)
     else:
+        export_state_dict = _get_state_dict_for_export_dtype(model, dtype)
+        save_kwargs = {} if export_state_dict is None else {"state_dict": export_state_dict}
         try:
-            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+            model.save_pretrained(
+                save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization, **save_kwargs
+            )
         except (KeyError, TypeError) as e:
             # Some third-party configs fail during config serialization in save_pretrained.
             # Fall back to saving weights separately + config without diff.
             logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
             from safetensors.torch import save_file
 
-            state_dict = model.state_dict()
+            state_dict = model.state_dict() if export_state_dict is None else export_state_dict
             save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
             _save_model_configs(model, save_dir)
 

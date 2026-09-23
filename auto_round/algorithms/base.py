@@ -127,10 +127,6 @@ class BaseAlgorithm:
     def scheme(self) -> "QuantizationScheme | None":
         return self.__run_ctx.scheme if self.__run_ctx is not None else None
 
-    @property
-    def run_context(self) -> "QuantizationRunContext | None":
-        return self.__run_ctx
-
     # ── Derived convenience properties ────────────────────────────────────────
     @property
     def model(self) -> "torch.nn.Module | None":
