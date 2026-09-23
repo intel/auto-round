@@ -111,8 +111,7 @@ def resolve_within_directory(
     resolved = Path(os.path.normpath(base / name))
     if resolved != base and not resolved.is_relative_to(base):
         raise UnsafeCheckpointPathError(
-            f"{origin}: path {name!r} resolves to {str(resolved)!r}, outside {str(base)!r}; "
-            "refusing to open it"
+            f"{origin}: path {name!r} resolves to {str(resolved)!r}, outside {str(base)!r}; " "refusing to open it"
         )
     # A FIFO (or device node) is not a weight file, and opening one blocks the
     # reader until a writer shows up -- a trivially reachable denial of service
