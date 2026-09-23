@@ -132,7 +132,7 @@ def _ct_hooked_attention(module: Module, *args, **kwargs):
 
 def _get_attention_config(module: Module, fallback_config: PretrainedConfig) -> PretrainedConfig:
     module_config = getattr(module, "config", None)
-    if module_config is not None and hasattr(module_config, "_attn_implementation"):
+    if module_config is not None and getattr(module_config, "_attn_implementation", None) is not None:
         return module_config
     return fallback_config
 
