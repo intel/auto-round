@@ -26,7 +26,7 @@ from auto_round.utils import (
     restore_fp32_tensors_from_source,
     unsupported_meta_device,
 )
-from auto_round.utils.path_safety import resolve_within_directory
+from auto_round.utils.path_safety import UnsafeCheckpointPathError, resolve_within_directory
 
 
 def save_pretrained_artifact(artifact, output_dir: str, artifact_name: str = "artifact") -> bool:
@@ -207,6 +207,11 @@ def _copy_pipeline_artifacts(source_dir: str, output_dir: str, exclude_component
     for component_name in component_dirs:
         if component_name in exclude_components:
             continue
+        # Keys of model_index.json are pipeline kwargs; anything else would be joined as a path.
+        if not component_name.isidentifier():
+            raise UnsafeCheckpointPathError(
+                f"model_index.json: component name {component_name!r} is not a plain directory name"
+            )
         if is_local:
             src = os.path.join(source_dir, component_name)
             dst = os.path.join(output_dir, component_name)

@@ -17,10 +17,15 @@ Every read of an artifact-declared checkpoint file therefore goes through
 ``weight_map``), which enforces:
 
 * the declared name may not be absolute,
-* it must resolve to a path inside the base directory -- symlinks are followed
-  first, so a link pointing outside is rejected too, and
-* if it exists it must be a regular file, so a FIFO / device node declared by the
-  artifact cannot stall or divert the reader.
+* after lexical normalisation it must stay inside the base directory, and
+* if it exists it must be a regular file (symlinks followed), so a FIFO / device
+  node declared by the artifact cannot stall or divert the reader.
+
+Containment is checked on the declared *name*, not on symlink targets: the
+Hugging Face cache links every snapshot file to ``../../blobs/<sha>``, so
+rejecting out-of-directory link targets would reject every Hub download.  A
+symlink the artifact ships is trusted exactly like any other file it ships,
+which is also what ``transformers`` / ``safetensors`` do when loading it.
 
 Names whose target does not exist are returned as-is, so callers keep their
 existing missing-file handling.  Validation is deliberately paired with
@@ -61,8 +66,8 @@ def sanitize_shard_name(shard_name: Any, *, origin: str = "weight_map") -> str:
     """Validate one artifact-declared shard name without touching the filesystem.
 
     Rejects the cases where a join stops being a lookup *inside* the directory:
-    non-strings, empty names, embedded NUL bytes, and absolute paths.  ``..`` and
-    symlink escapes are caught by :func:`resolve_within_directory`, which is the
+    non-strings, empty names, embedded NUL bytes, and absolute paths.  ``..``
+    escapes are caught by :func:`resolve_within_directory`, which is the
     only place that knows the directory to compare against.
     """
     if not isinstance(shard_name, str) or not shard_name:
@@ -101,12 +106,12 @@ def resolve_within_directory(
             points at something that is not a regular file.
     """
     name = sanitize_shard_name(relative_path, origin=origin)
-    base = Path(base_dir)
-    resolved_base = base.resolve()
-    resolved = (base / name).resolve()
-    if resolved != resolved_base and not resolved.is_relative_to(resolved_base):
+    base = Path(os.path.abspath(base_dir))
+    # Callers open the returned normalised path, so ``link/..`` cannot be re-expanded by the OS.
+    resolved = Path(os.path.normpath(base / name))
+    if resolved != base and not resolved.is_relative_to(base):
         raise UnsafeCheckpointPathError(
-            f"{origin}: path {name!r} resolves to {str(resolved)!r}, outside {str(resolved_base)!r}; "
+            f"{origin}: path {name!r} resolves to {str(resolved)!r}, outside {str(base)!r}; "
             "refusing to open it"
         )
     # A FIFO (or device node) is not a weight file, and opening one blocks the

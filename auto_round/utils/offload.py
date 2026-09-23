@@ -249,13 +249,8 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
 
     single_bin = os.path.join(model_dir, "pytorch_model.bin")
     if os.path.exists(single_bin):
-        try:
-            # Only the key set is needed here, so a weights-only load is enough and
-            # keeps the checkpoint from executing arbitrary pickle payloads.
-            state_dict = torch.load(single_bin, map_location="cpu", weights_only=True)
-        except TypeError:
-            # weights_only not available in older PyTorch versions
-            state_dict = torch.load(single_bin, map_location="cpu")  # nosec
+        # No unrestricted fallback: this pickle comes from an untrusted artifact.
+        state_dict = torch.load(single_bin, map_location="cpu", weights_only=True)
         return {k: "pytorch_model.bin" for k in state_dict.keys()}
 
     raise FileNotFoundError(
@@ -318,11 +313,7 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
                 for name in tensor_names:
                     state_dict[name[len(prefix) :]] = f.get_tensor(name)
         else:
-            try:
-                full_state = torch.load(shard_path, map_location="cpu", weights_only=True)
-            except TypeError:
-                # weights_only not available in older PyTorch versions
-                full_state = torch.load(shard_path, map_location="cpu")  # nosec
+            full_state = torch.load(shard_path, map_location="cpu", weights_only=True)
             for name in tensor_names:
                 if name in full_state:
                     state_dict[name[len(prefix) :]] = full_state[name]

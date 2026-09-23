@@ -2101,12 +2101,8 @@ def _process_shard(
     quantize_func = compile_func(quantize_weight_rtn, device) if enable_torch_compile else quantize_weight_rtn
 
     if shard_path.endswith(".bin"):
-        # PyTorch pickle checkpoint — load with weights_only where supported.
-        try:
-            raw_tensors = torch.load(shard_path, map_location="cpu", weights_only=True)
-        except TypeError:
-            # weights_only not available in older PyTorch versions
-            raw_tensors = torch.load(shard_path, map_location="cpu")  # nosec
+        # No unrestricted fallback: this pickle comes from an untrusted artifact.
+        raw_tensors = torch.load(shard_path, map_location="cpu", weights_only=True)
         # Flatten nested state-dict wrappers if present.
         if not isinstance(raw_tensors, dict):
             raise ValueError(f"Expected a dict from {shard_path}, got {type(raw_tensors)}")

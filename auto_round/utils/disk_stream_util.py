@@ -66,7 +66,8 @@ class SafetensorsIndex:
     def tensor_shape(self, name: str) -> tuple[int, ...]:
         """Return a tensor's shape from its safetensors header without reading its payload."""
         shard_name = self.weight_map[name]
-        with safe_open(str(self.checkpoint_dir / shard_name), framework="pt") as f:
+        shard_path = resolve_within_directory(self.checkpoint_dir, shard_name)
+        with safe_open(str(shard_path), framework="pt") as f:
             return tuple(f.get_slice(name).get_shape())
 
     def read_tensors(self, names: list[str], device: str = "cpu") -> Dict[str, torch.Tensor]:
