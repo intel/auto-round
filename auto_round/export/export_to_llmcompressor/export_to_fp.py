@@ -412,6 +412,21 @@ def save_quantized_as_fp(
             static_kv_granularity=static_kv_granularity,
             static_attention_granularity=static_attention_granularity,
         )
+    elif bits >= 16:
+        if not scheme_groups:
+            raise ValueError(
+                "LLMCompressor export requires quantized layer overrides for a full-precision default scheme."
+            )
+        (layer_bits, layer_data_type), targets = next(iter(scheme_groups.items()))
+        scheme = _get_scheme(layer_bits, layer_data_type)
+        if scheme is None:
+            raise ValueError(f"Unsupported layer override data_type={layer_data_type} and bits={layer_bits}.")
+        quantization_config = initialize_quantization(
+            scheme=scheme, targets=targets, kv_cache_scheme=kv_cache_scheme, ignore=ignore
+        )
+        quantization_config.format = _get_group_format(layer_bits, layer_data_type)
+        quantization_config = quantization_config.to_dict()
+        quantization_config["provider"] = "auto-round"
     elif data_type == "nvfp4_v2":
         from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
 
