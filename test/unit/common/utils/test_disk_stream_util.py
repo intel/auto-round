@@ -154,6 +154,31 @@ class TestMaterializeModuleRoundTrip:
         materialize_module(block, "model.decoder.layers.0", index, device="cpu")
         assert torch.equal(block.self_attn.k_proj.weight.data, weight_before)
 
+    def test_checkpoint_backed_cpu_buffer_is_overwritten(self):
+        """Checkpoint data must replace a CPU buffer's constructor default."""
+
+        class _CpuBufferModule(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer_scalar = nn.Buffer(torch.ones(1))
+
+        with init_empty_weights():
+            module = _CpuBufferModule()
+        assert module.layer_scalar.device.type == "cpu"
+        assert torch.equal(module.layer_scalar, torch.ones(1))
+
+        class _FakeIndex:
+            def has_tensor(self, name):
+                return name == "block.layer_scalar"
+
+            def read_tensors(self, names, device="cpu"):
+                assert names == ["block.layer_scalar"]
+                return {"block.layer_scalar": torch.tensor([0.25])}
+
+        materialize_module(module, "block", _FakeIndex(), device="cpu")
+
+        assert torch.equal(module.layer_scalar, torch.tensor([0.25]))
+
 
 class TestMaterializeModuleDtype:
     """Regression coverage for the dtype-promotion bug: materialize_module used

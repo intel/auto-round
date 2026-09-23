@@ -964,11 +964,16 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
 
     targets = []  # (param_name, full_checkpoint_name, declared_meta_dtype)
     fused_targets = []  # (param_name, sliced_value)
+    buffer_names = {name for name, _ in module.named_buffers()}
     for name, tensor in list(module.named_parameters()) + list(module.named_buffers()):
-        if str(tensor.device) != "meta":
-            continue  # already materialized (e.g. shared/tied weights)
+        is_meta = str(tensor.device) == "meta"
+        is_checkpoint_backed_buffer = name in buffer_names
+        if not is_meta and not is_checkpoint_backed_buffer:
+            continue  # already materialized parameter (e.g. shared/tied weights)
         full_name = f"{module_name}.{name}".replace(".orig_layer.", ".")
         resolved_name = _resolve_checkpoint_name(index, full_name)
+        if not is_meta and resolved_name is None:
+            continue  # runtime buffer without a checkpoint counterpart
         if resolved_name is None:
             sliced = _fused_lookup(full_name, tensor.shape)
             if sliced is None:
