@@ -21,13 +21,10 @@ This verifies that:
 3. The forward pass produces correct results
 """
 
-from types import SimpleNamespace
-
 import pytest
 import torch
 from torch import nn
 
-from auto_round.modeling.fused_moe.grouped_experts import _batched_qdq_weights
 from auto_round.modeling.fused_moe.replace_modules import (
     ReplacementModuleBase,
     _apply_custom_replacements,
@@ -43,11 +40,6 @@ def _skip_if_no_linear_loop():
 
     if not is_linear_loop_available():
         pytest.skip("transformers MOE integration not available")
-
-
-def test_batched_qdq_falls_back_without_legacy_quant_function():
-    """Datatype-owned QDQ safely falls back when its private state cannot be fused."""
-    assert _batched_qdq_weights([SimpleNamespace()]) is None
 
 
 def test_linear_loop_registration():

@@ -14,6 +14,7 @@
 #include <string>
 #include <sycl/aliases.hpp>
 #include "bestla/bestla.h"
+#include "flash_attn_dtype.hpp"
 #ifdef ARK_XPU
 #include <sycl/sycl.hpp>
 #endif
@@ -47,14 +48,8 @@
 
 namespace ark {
 
-/// Flash Attention data type codes (matches Python side)
-enum class FlashAttnDtype : int {
-  FP16 = 0,
-  BF16 = 1,
-  FP32 = 2,
-  FP8_E4M3 = 3,
-  FP8_E5M2 = 4,
-};
+// FlashAttnDtype is defined in flash_attn_dtype.hpp so that dispatch-only
+// translation units such as ark.cpp do not pull in this heavy header.
 
 #if defined(ARK_SYCL_TLA)
 

@@ -58,7 +58,7 @@ Output formats
   ``quant_method="compressed-tensors"``, compatible with vLLM / llm-compressor.
 * **NVFP4_E5M3** → AutoRound format with packed ``.weight_packed`` and
     ``.weight_scale`` tensors; use ``format="fake"`` explicitly for high-precision
-    QDQ ``.weight`` tensors.
+    QDQ ``.weight`` tensors with metadata that restores runtime activation QDQ.
 
 Usage (CLI)
 -----------
@@ -1517,7 +1517,7 @@ class _ModelFreeCompressorCore:
 
         self._remove_stale_quantization_config_files()
         _remove_quantization_configs(self.config)
-        if self.format == "fake":
+        if self.format == "fake" and quantization_config.get("packing_format") != "auto_round:fake":
             with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
                 json.dump(self.config, f, indent=2)
             return
@@ -1642,6 +1642,13 @@ class _ModelFreeCompressorCore:
             packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
         else:
             packing_format = "fake" if self.format == "fake" else "auto_round:auto_gptq"
+        supports_opt_rtn = (
+            is_mx_fp(data_type)
+            or data_type == _NVFP4_E5M3_DATA_TYPE
+            or _layer_config_has_mxfp(self.layer_config)
+            or _layer_config_has_nvfp4(self.layer_config)
+        )
+        opt_rtn_enabled = supports_opt_rtn and not self.disable_opt_rtn
         if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
             if not self.disable_opt_rtn:
                 logger.info(
@@ -1649,7 +1656,7 @@ class _ModelFreeCompressorCore:
                     "2x scale, and 0.5x scale independently for each group. "
                     "Pass --disable_opt_rtn to use plain RTN."
                 )
-        else:
+        elif not supports_opt_rtn:
             logger.info(
                 "Integer WOQ model-free quantization uses plain RTN "
                 "(opt_rtn is disabled for INT WOQ to preserve accuracy)."
@@ -1659,6 +1666,7 @@ class _ModelFreeCompressorCore:
             f"Model-free quantization: {self.model_name_or_path}\n"
             f"  Scheme: {self.scheme_obj}\n"
             f"  Packing format: {packing_format}\n"
+            f"  Optimized RTN: {'enabled' if opt_rtn_enabled else 'disabled'}\n"
             f"  Output: {self.output_dir}\n"
             f"  Shards: {len(self.shard_names)}\n"
             f"  Shard parallelism: {self.shard_parallelism} ({shard_parallelism_source}, "

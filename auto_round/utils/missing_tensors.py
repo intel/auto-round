@@ -122,11 +122,101 @@ def _restore_special_fp32_tensors(
                 os.remove(temporary_path)
 
     if tensors_to_restore:
-        tensor_summary = compress_layer_names([name.rsplit(".", 1)[0] for name in tensors_to_restore])
+        tensor_summary = compress_layer_names(list(tensors_to_restore))
         logger.info(
             f"Restored {len(tensors_to_restore)} tensor(s) from FP16/BF16 to their original FP32 values: "
             f"{tensor_summary}."
         )
+
+
+def _resolve_tensor_shard_maps(
+    source_dir: str,
+    target_dir: str,
+) -> tuple[dict[str, str], dict[str, str]] | None:
+    """Resolve ``tensor_name -> shard_file`` maps for *source_dir* and *target_dir*.
+
+    Returns ``None`` when either checkpoint cannot be resolved (missing config,
+    unresolvable source repo, or no safetensors present), in which case callers
+    should skip whatever tensor-level processing they were about to do.
+    """
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        logger.warning("safetensors not available, skipping tensor comparison against source checkpoint")
+        return None
+
+    config_path = os.path.join(target_dir, "config.json")
+    if not os.path.exists(config_path):
+        return None
+
+    if not os.path.isdir(source_dir):
+        try:
+            from auto_round.utils.model import download_hf_model
+
+            source_dir = download_hf_model(source_dir)
+        except Exception as e:
+            logger.debug(f"Could not resolve source model path to check for missing tensors: {e}")
+            return None
+
+    if not source_dir or not os.path.isdir(source_dir):
+        return None
+
+    source_index_file = os.path.join(source_dir, "model.safetensors.index.json")
+    source_single_file = os.path.join(source_dir, "model.safetensors")
+
+    source_tensor_to_file: dict = {}
+    if os.path.exists(source_index_file):
+        with open(source_index_file) as f:
+            src_index = json.load(f)
+        # Shard names come from the source checkpoint's own index: validate them
+        # against source_dir, then resolve at the point of use below.
+        for tensor_name, shard_file in validate_weight_map(
+            src_index["weight_map"], source_dir, index_path=source_index_file
+        ).items():
+            source_tensor_to_file[tensor_name] = str(resolve_within_directory(source_dir, shard_file))
+    elif os.path.exists(source_single_file):
+        with safe_open(source_single_file, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                source_tensor_to_file[key] = source_single_file
+    else:
+        return None
+
+    saved_tensor_to_file: dict[str, str] = {}
+    saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
+    saved_single_file = os.path.join(target_dir, "model.safetensors")
+
+    if os.path.exists(saved_index_file):
+        with open(saved_index_file) as f:
+            saved_idx = json.load(f)
+        saved_tensor_to_file = {
+            tensor_name: os.path.join(target_dir, shard_file)
+            for tensor_name, shard_file in saved_idx["weight_map"].items()
+        }
+    elif os.path.exists(saved_single_file):
+        with safe_open(saved_single_file, framework="pt", device="cpu") as f:
+            saved_tensor_to_file = {tensor_name: saved_single_file for tensor_name in f.keys()}
+    else:
+        return None
+
+    return source_tensor_to_file, saved_tensor_to_file
+
+
+def restore_fp32_tensors_from_source(
+    source_dir: str,
+    target_dir: str,
+) -> None:
+    """Restore FP32 source tensors that were downcast to FP16/BF16 in the saved output.
+
+    This is independent of MTP/missing-tensor handling: it must run by default
+    whenever a source checkpoint can be resolved, regardless of whether
+    ``AR_DISABLE_COPY_MTP_WEIGHTS`` disables the (separate) missing-tensor copy
+    performed by :func:`copy_missing_tensors_from_source`.
+    """
+    maps = _resolve_tensor_shard_maps(source_dir, target_dir)
+    if maps is None:
+        return
+    source_tensor_to_file, saved_tensor_to_file = maps
+    _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file)
 
 
 def copy_missing_tensors_from_source(
@@ -173,70 +263,19 @@ def copy_missing_tensors_from_source(
         logger.warning("safetensors not available, skipping copy of missing tensors from source checkpoint")
         return
 
-    # ------------------------------------------------------------------ #
-    # Resolve source directory                                             #
-    # ------------------------------------------------------------------ #
-    config_path = os.path.join(target_dir, "config.json")
-    if not os.path.exists(config_path):
+    maps = _resolve_tensor_shard_maps(source_dir, target_dir)
+    if maps is None:
         return
+    source_tensor_to_file, saved_tensor_to_file = maps
 
-    if not os.path.isdir(source_dir):
-        try:
-            from auto_round.utils.model import download_hf_model
-
-            source_dir = download_hf_model(source_dir)
-        except Exception as e:
-            logger.debug(f"Could not resolve source model path to check for missing tensors: {e}")
-            return
-
-    if not source_dir or not os.path.isdir(source_dir):
-        return
-
-    # ------------------------------------------------------------------ #
-    # Build a mapping: tensor_name -> source shard file path               #
-    # ------------------------------------------------------------------ #
-    source_index_file = os.path.join(source_dir, "model.safetensors.index.json")
-    source_single_file = os.path.join(source_dir, "model.safetensors")
-
-    source_tensor_to_file: dict = {}
-    if os.path.exists(source_index_file):
-        with open(source_index_file) as f:
-            src_index = json.load(f)
-        # Shard names come from the source checkpoint's own index: validate them
-        # against source_dir, then resolve at the point of use below.
-        for tensor_name, shard_file in validate_weight_map(
-            src_index["weight_map"], source_dir, index_path=source_index_file
-        ).items():
-            source_tensor_to_file[tensor_name] = str(resolve_within_directory(source_dir, shard_file))
-    elif os.path.exists(source_single_file):
-        with safe_open(source_single_file, framework="pt", device="cpu") as f:
-            for key in f.keys():
-                source_tensor_to_file[key] = source_single_file
-    else:
-        return
-
-    # ------------------------------------------------------------------ #
-    # Collect tensor names already present in the saved output              #
-    # ------------------------------------------------------------------ #
-    saved_tensor_to_file: dict[str, str] = {}
-    saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
-    saved_single_file = os.path.join(target_dir, "model.safetensors")
-
-    if os.path.exists(saved_index_file):
-        with open(saved_index_file) as f:
-            saved_idx = json.load(f)
-        saved_tensor_to_file = {
-            tensor_name: os.path.join(target_dir, shard_file)
-            for tensor_name, shard_file in saved_idx["weight_map"].items()
-        }
-    elif os.path.exists(saved_single_file):
-        with safe_open(saved_single_file, framework="pt", device="cpu") as f:
-            saved_tensor_to_file = {tensor_name: saved_single_file for tensor_name in f.keys()}
-    else:
-        return
-
+    # Also restore FP32 tensors here so direct callers of this function keep
+    # getting the restore; ``restore_fp32_tensors_from_source`` is the
+    # preferred entry point and is safe to call again (no-op once restored).
     _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file)
     saved_tensor_names = set(saved_tensor_to_file)
+
+    saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
+    saved_single_file = os.path.join(target_dir, "model.safetensors")
 
     # ------------------------------------------------------------------ #
     # Identify missing tensors via block-prefix statistics                 #
