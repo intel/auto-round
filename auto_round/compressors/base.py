@@ -1341,9 +1341,7 @@ class BaseOrchestrator(object):
         if self.enable_torch_compile and device_manager.is_multi_device():
             self.enable_torch_compile = False
             self._torch_compile_off_reason = "multi-GPU execution is not compatible with torch.compile"
-            logger.warning_once(
-                "reset enable_torch_compile to `False` as %s", self._torch_compile_off_reason
-            )
+            logger.warning_once("reset enable_torch_compile to `False` as %s", self._torch_compile_off_reason)
 
         if self.enable_torch_compile:
             disabled_reason = self._torch_compile_disabled_reason()
