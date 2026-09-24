@@ -43,7 +43,7 @@ import torch
 
 sys.path.append(str(Path(__file__).resolve().parent))
 import auto_round_kernel as ark  # noqa: E402
-from ut_utils import get_ark, is_xpu_available, reference_sdpa, reference_sdpa_varlen  # noqa: E402
+from ut_utils import is_xpu_available, reference_sdpa  # noqa: E402
 
 
 def _graph_supported() -> bool:
