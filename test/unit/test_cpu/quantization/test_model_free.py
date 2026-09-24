@@ -68,6 +68,8 @@ from auto_round.utils.model_free_utils import (
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
     _handle_mxfp_source_tensors,
+    _list_remote_weight_shards,
+    _list_weight_shards,
     _looks_like_auto_scheme,
     _PatternMatcher,
     _process_shard,
@@ -88,6 +90,68 @@ def test_model_free_preserves_explicit_scheme_overrides():
     compressor._parse_scheme()
 
     assert compressor.default_scheme["sym"] is False
+
+
+def test_model_free_expands_layer_config_after_resolving_model_type(monkeypatch):
+    from auto_round.compressors.model_free import _ModelFreeCompressorCore
+
+    compressor = _ModelFreeCompressorCore("unused-model-path", "/tmp/unused-output")
+    compressor.config = {"model_type": "glm5_next"}
+    compressor.layer_config = {"model.layers.0.attn_hc.base": {"bits": 4}}
+    captured = {}
+
+    def _expand(layer_config, *, model_type, to_model_names):
+        captured.update(model_type=model_type, to_model_names=to_model_names)
+        return {**layer_config, "model.layers.0.hc_attn_base": {"bits": 4}}
+
+    monkeypatch.setattr("auto_round.utils.expand_layer_config_for_weight_renames", _expand)
+
+    compressor._resolve_model_type()
+
+    assert captured == {"model_type": "glm5_next", "to_model_names": False}
+    assert "model.layers.0.hc_attn_base" in compressor.layer_config
+
+
+def test_list_weight_shards_returns_empty_list_for_metadata_only_directory(tmp_path):
+    (tmp_path / "config.json").write_text("{}")
+
+    assert _list_weight_shards(str(tmp_path)) == []
+
+
+def test_list_remote_weight_shards_prefers_safetensors(monkeypatch):
+    monkeypatch.setattr(
+        "huggingface_hub.list_repo_files",
+        lambda model_name_or_path: ["pytorch_model.bin", "model.safetensors", "config.json"],
+    )
+
+    assert _list_remote_weight_shards("org/model") == ["model.safetensors"]
+
+
+def test_list_remote_weight_shards_filters_diffusion_components(monkeypatch):
+    monkeypatch.setattr(
+        "huggingface_hub.list_repo_files",
+        lambda model_name_or_path: [
+            "transformer/model.safetensors",
+            "vae/diffusion_pytorch_model.safetensors",
+            "text_encoder/model.safetensors",
+        ],
+    )
+
+    assert _list_remote_weight_shards("org/model", subfolder="transformer") == ["transformer/model.safetensors"]
+
+
+def test_streaming_discovers_remote_single_weight_file(tmp_path, monkeypatch):
+    compressor = _ModelFreeCompressorCore("org/single-file-model", str(tmp_path / "output"))
+    compressor.is_streaming = True
+    compressor.work_dir = str(tmp_path)
+    monkeypatch.setattr(
+        "auto_round.utils.model_free_utils._list_remote_weight_shards",
+        lambda model_name_or_path, subfolder=None: ["model.safetensors"],
+    )
+
+    compressor._discover_shards()
+
+    assert compressor.shard_names == ["model.safetensors"]
 
 
 def test_fallback_forwards_only_explicit_format():

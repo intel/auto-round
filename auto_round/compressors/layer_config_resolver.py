@@ -31,6 +31,7 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     compress_layer_names,
+    expand_layer_config_for_weight_renames,
     get_layer_names_in_block,
     infer_bits_by_data_type,
     to_standard_regex,
@@ -419,6 +420,7 @@ def resolve_layer_config(
     format: str = None,
 ) -> LayerConfig:
     """Resolve final per-layer configuration without writing model attributes."""
+    layer_config = expand_layer_config_for_weight_renames(layer_config, model=model, to_model_names=True)
     supported_types = tuple(SUPPORTED_LAYER_TYPES if supported_types is None else supported_types)
     inner_supported_types = tuple(
         INNER_SUPPORTED_LAYER_TYPES if inner_supported_types is None else inner_supported_types
@@ -489,6 +491,7 @@ def extract_regex_config(
     format: str = None,
 ) -> LayerConfig:
     """Resolve only the regex entries retained for export metadata."""
+    layer_config = expand_layer_config_for_weight_renames(layer_config, model=model, to_model_names=True)
     supported_types = tuple(SUPPORTED_LAYER_TYPES if supported_types is None else supported_types)
     inner_supported_types = tuple(
         INNER_SUPPORTED_LAYER_TYPES if inner_supported_types is None else inner_supported_types
