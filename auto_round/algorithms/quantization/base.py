@@ -55,6 +55,10 @@ class BaseQuantizer(BaseAlgorithm):
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
 
     def can_compile_block_forward(self):
+        from auto_round.utils.device_manager import device_manager
+
+        if device_manager.is_multi_device():
+            return False
         return True
 
     # ── Calibration hook registration ─────────────────────────────────────────
