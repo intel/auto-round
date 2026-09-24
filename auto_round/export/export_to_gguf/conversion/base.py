@@ -325,7 +325,7 @@ class ModelBase:
                 raise NotImplementedError(
                     "GGUF export does not support RRQ residual models "
                     "(packing_format='auto_round:rrq'). Use the standard INT2 base "
-                    "model (packing_format='auto_o_round') or a dedicated RRQ runtime instead. "
+                    "model (packing_format='auto_round') or a dedicated RRQ runtime instead. "
                     "Residual planes cannot be silently dropped."
                 )
 
