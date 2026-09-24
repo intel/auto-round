@@ -447,6 +447,40 @@ class TestFilterQuantizationConfig:
         filter_quantization_config(cfg)
         assert "amp" not in cfg
 
+    def test_granularity_without_dtype_removed(self):
+        cfg = {"static_kv_dtype": None, "static_kv_granularity": "tensor", "custom": "value"}
+        filter_quantization_config(cfg)
+        assert "static_kv_granularity" not in cfg
+
+    def test_granularity_missing_dtype_key_removed(self):
+        cfg = {"static_attention_granularity": "tensor", "custom": "value"}
+        filter_quantization_config(cfg)
+        assert "static_attention_granularity" not in cfg
+
+    def test_granularity_kept_with_dtype(self):
+        cfg = {
+            "static_kv_dtype": "fp8",
+            "static_kv_granularity": "head",
+            "static_attention_dtype": "fp8",
+            "static_attention_granularity": "tensor",
+            "custom": "value",
+        }
+        result = filter_quantization_config(cfg)
+        assert result["static_kv_granularity"] == "head"
+        assert result["static_attention_granularity"] == "tensor"
+        assert "custom" in result
+
+    def test_granularity_keys_are_independent(self):
+        cfg = {
+            "static_kv_dtype": "fp8",
+            "static_kv_granularity": "head",
+            "static_attention_granularity": "tensor",
+            "custom": "value",
+        }
+        result = filter_quantization_config(cfg)
+        assert result["static_kv_granularity"] == "head"
+        assert "static_attention_granularity" not in cfg
+
     def test_act_bits_handling(self):
         cfg = {"act_bits": 16, "act_data_type": "fp8", "custom": "value"}
         result = filter_quantization_config(cfg)
