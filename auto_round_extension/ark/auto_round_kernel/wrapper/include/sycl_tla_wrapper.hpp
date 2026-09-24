@@ -21,7 +21,6 @@
 
 #include <type_traits>
 
-#include "cutlass/util/device_memory.h"
 #include "cutlass/util/packed_stride.hpp"
 
 // FlashAttention-v2 (Xe) building blocks (from sycl-tla).
@@ -47,6 +46,7 @@
 // CUTLASS-SYCL/CuTe compat layer
 #include "cute/util/compat.hpp"
 #include "cute/tensor.hpp"
+#include "utils.hpp"
 
 // sycl-tla example utilities
 #include "helper.h"
@@ -65,6 +65,8 @@ namespace detail {
 
 // Import cute namespace for convenience in kernel builders
 using namespace cute;
+
+inline constexpr size_t kPrefillScratchLoc = 12;
 
 // Helper to get subgroup size from kernel
 template <typename Kernel, typename = void>
@@ -362,13 +364,16 @@ inline void run_prefill_impl(
 
   // Get workspace size and allocate
   size_t workspace_size = Kernel::get_workspace_size(args);
-  cutlass::device_memory::allocation<uint8_t> workspace(workspace_size);
+  void* workspace = DeviceMemoryPool::Instance()->get_scratch_mem(workspace_size, kPrefillScratchLoc, q);
 
   // Initialize workspace if needed
-  Kernel::initialize_workspace(args, workspace.get());
+  Kernel::initialize_workspace(args, workspace);
 
-  typename Kernel::Params params = Kernel::to_underlying_arguments(args, workspace.get());
-  launch_prefill_kernel<Kernel>(params).wait();
+  typename Kernel::Params params = Kernel::to_underlying_arguments(args, workspace);
+  launch_prefill_kernel<Kernel>(params);
+  // No host-side wait here: the caller (ARK wrapper / torch.xpu stream)
+  // is responsible for synchronization.  A blocking wait would also be
+  // illegal during torch.xpu CUDAGraph capture.
 }
 
 template <int HeadDim, bool Causal>
@@ -478,7 +483,9 @@ inline void run_decode_impl(
       {(float*)O_ptr, stride_O}};
 
   typename Kernel::Params params = Kernel::to_underlying_arguments(args);
-  launch_decode_kernel<Kernel>(params).wait();
+  launch_decode_kernel<Kernel>(params);
+  // No host-side wait: the caller handles synchronization via the torch
+  // stream.  A blocking wait here would abort torch.xpu graph capture.
 }
 
 template <int HeadDim, bool Causal>
