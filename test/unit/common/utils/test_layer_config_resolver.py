@@ -44,8 +44,8 @@ def test_resolver_expands_checkpoint_layer_name_to_loaded_model_name(monkeypatch
     model.model_side = nn.Linear(32, 32)
     scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
     monkeypatch.setattr(
-        "auto_round.utils.common.get_checkpoint_conversion_mapping",
-        lambda loaded_model: {r"checkpoint_side$": "model_side"},
+        "auto_round.utils.common.get_reverse_checkpoint_conversion_mapping",
+        lambda loaded_model: {r"model_side$": "checkpoint_side"},
     )
 
     resolved = resolve_layer_config(
