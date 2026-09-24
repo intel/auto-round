@@ -13,3 +13,4 @@
 # limitations under the License.
 
 from .export import save_quantized_as_autoround
+from .export_to_rrq import save_rrq_model, save_quantized_rrq, save_rrq_base_model, generate_rrq_residual
