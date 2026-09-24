@@ -290,9 +290,7 @@ class TestSDPALSEGraphCapture:
 
         g, out = _capture_graph(call)
         # out should be a tuple (O, LSE)
-        assert isinstance(out, (tuple, list)) and len(out) == 2, (
-            f"Expected (O, LSE) tuple, got {type(out)}"
-        )
+        assert isinstance(out, (tuple, list)) and len(out) == 2, f"Expected (O, LSE) tuple, got {type(out)}"
         o_out, lse_out = out[0], out[1]
 
         # --- mutate Q in-place, replay, verify both O and LSE ---
@@ -304,9 +302,7 @@ class TestSDPALSEGraphCapture:
 
         # Self-consistency: compare replay outputs to fresh eager call
         with torch.no_grad():
-            o_eager, lse_eager = ark.sdpa(
-                q, k, v, scale=scale, is_causal=True, return_lse=True
-            )
+            o_eager, lse_eager = ark.sdpa(q, k, v, scale=scale, is_causal=True, return_lse=True)
         torch.xpu.synchronize()
 
         o_diff = (o_out.float() - o_eager.float()).abs().max().item()
