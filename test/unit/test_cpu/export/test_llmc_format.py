@@ -17,6 +17,38 @@ from ...envs import is_compressed_tensors_available
 pytestmark = pytest.mark.skipif(not is_compressed_tensors_available(), reason="test requires compressed-tensors")
 
 
+@pytest.mark.parametrize("bits", [2, 3, 4, 5, 6, 7, 8])
+def test_llmc_fp_export_scheme_supports_weight_only_integer_widths(bits):
+    from auto_round.export.export_to_llmcompressor.export_to_fp import _get_scheme
+
+    assert _get_scheme(bits, "int", act_bits=16) == f"W{bits}A16"
+
+
+def test_llmc_fp_export_scheme_requires_weight_only_activations():
+    from auto_round.export.export_to_llmcompressor.export_to_fp import _get_scheme
+
+    assert _get_scheme(4, "int", act_bits=8) is None
+    assert _get_scheme(9, "int", act_bits=16) is None
+
+
+@pytest.mark.parametrize("data_type", ["fp", "float"])
+def test_llmc_format_accepts_full_precision_dtype_aliases(data_type, monkeypatch):
+    from types import SimpleNamespace
+
+    from auto_round.export.formats.backends.llm_compressor import LLMCompressorFormat
+    from auto_round.schemes import QuantizationScheme
+
+    monkeypatch.setattr(
+        "auto_round.export.export_to_llmcompressor.check_compressed_tensors_supported",
+        lambda **kwargs: None,
+    )
+    scheme = QuantizationScheme(bits=16, data_type=data_type, act_bits=16, act_data_type="float")
+
+    output_format = LLMCompressorFormat("llm_compressor", scheme, SimpleNamespace(mllm=False))
+
+    assert output_format.backend.output_format == "llm_compressor:mx_fp"
+
+
 class TestLLMCZpInt8:
     """pack_layer must hand compressed_tensors an int8 zero-point tensor:
     NeUQI stores zp as a float32 integral-valued tensor, and CT's packer

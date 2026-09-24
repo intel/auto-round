@@ -136,9 +136,9 @@ def pack_layer(name, model, device=None):
     release_layer_safely(layer)
 
 
-def _get_scheme(bits, data_type):
+def _get_scheme(bits, data_type, act_bits=16):
     """Determine the compressed-tensors format string for a given data type and bit-width."""
-    if data_type == "int" and bits in (4, 8):
+    if data_type == "int" and 2 <= bits <= 8 and act_bits >= 16:
         return f"W{bits}A16"
     if is_mx_fp(data_type):
         return "MXFP4" if bits == 4 else "MXFP8"
@@ -189,6 +189,7 @@ def _build_mixed_fp_quantization_config(
     ignore,
     global_bits,
     global_data_type,
+    global_act_bits,
     model,
     static_kv_dtype=None,
     static_attention_dtype=None,
@@ -203,7 +204,7 @@ def _build_mixed_fp_quantization_config(
     targets=["Linear"]) comes last. Top-level format is set to "mixed-precision".
 
     Args:
-        scheme_groups: dict mapping (bits, data_type) -> list of layer names
+        scheme_groups: dict mapping (bits, data_type, act_bits) -> list of layer names
         layer_config: per-layer quantization configs
         ignore: list of layers/patterns to ignore
         global_bits: global quantization bit-width
@@ -211,7 +212,7 @@ def _build_mixed_fp_quantization_config(
     Returns:
         quantization_config dict
     """
-    global_key = (global_bits, global_data_type)
+    global_key = (global_bits, global_data_type, global_act_bits)
 
     # Override groups first, default group last
     override_groups = []
@@ -225,12 +226,14 @@ def _build_mixed_fp_quantization_config(
 
     config_groups = {}
     group_formats = {}
-    for idx, ((lbits, ldata_type), layer_names) in enumerate(ordered):
+    for idx, ((lbits, ldata_type, lact_bits), layer_names) in enumerate(ordered):
         group_name = f"group_{idx}"
-        scheme = _get_scheme(lbits, ldata_type)
+        scheme = _get_scheme(lbits, ldata_type, lact_bits)
+        if scheme is None:
+            raise ValueError(f"Unsupported layer scheme: data_type={ldata_type}, bits={lbits}, act_bits={lact_bits}.")
         tmp_quantization_config = initialize_quantization(scheme=scheme)
         tmp_quantization_config = tmp_quantization_config.config_groups["group_0"]
-        is_default = (lbits, ldata_type) == global_key
+        is_default = (lbits, ldata_type, lact_bits) == global_key
         tmp_quantization_config.targets = ["Linear"] if is_default else layer_names
         config_groups[group_name] = tmp_quantization_config
         group_formats[group_name] = _get_group_format(lbits, ldata_type)
@@ -380,13 +383,16 @@ def save_quantized_as_fp(
     check_compressed_tensors_supported(raise_error=True)
 
     # Detect mixed precision by grouping quantized layers by (bits, data_type)
-    scheme_groups = {}  # (bits, data_type) -> list of layer names
+    scheme_groups = {}  # (bits, data_type, act_bits) -> list of layer names
     for name, cfg in layer_config.items():
         layer_bits = cfg.get("bits", bits)
         layer_dt = cfg.get("data_type", data_type)
         if layer_bits > 8:
             continue
-        key = (layer_bits, layer_dt)
+        layer_act_bits = cfg.get("act_bits")
+        if layer_act_bits is None:
+            layer_act_bits = act_bits if act_bits is not None else 16
+        key = (layer_bits, layer_dt, layer_act_bits)
         scheme_groups.setdefault(key, []).append(name)
 
     is_mixed = len(scheme_groups) > 1
@@ -410,6 +416,7 @@ def save_quantized_as_fp(
             ignore,
             bits,
             data_type,
+            act_bits if act_bits is not None else 16,
             model,
             static_kv_dtype=serialization_dict.get("static_kv_dtype", None),
             static_attention_dtype=serialization_dict.get("static_attention_dtype", None),
@@ -421,10 +428,12 @@ def save_quantized_as_fp(
             raise ValueError(
                 "LLMCompressor export requires quantized layer overrides for a full-precision default scheme."
             )
-        (layer_bits, layer_data_type), targets = next(iter(scheme_groups.items()))
-        scheme = _get_scheme(layer_bits, layer_data_type)
+        (layer_bits, layer_data_type, layer_act_bits), targets = next(iter(scheme_groups.items()))
+        scheme = _get_scheme(layer_bits, layer_data_type, layer_act_bits)
         if scheme is None:
-            raise ValueError(f"Unsupported layer override data_type={layer_data_type} and bits={layer_bits}.")
+            raise ValueError(
+                f"Unsupported layer override data_type={layer_data_type}, bits={layer_bits}, act_bits={layer_act_bits}."
+            )
         quantization_config = initialize_quantization(
             scheme=scheme, targets=targets, kv_cache_scheme=kv_cache_scheme, ignore=ignore
         )
@@ -437,7 +446,7 @@ def save_quantized_as_fp(
         quantization_config = initialize_nvfp4_e5m3_quantization(ignore=ignore)
         quantization_config["provider"] = "auto-round"
     else:
-        scheme = _get_scheme(bits, data_type)
+        scheme = _get_scheme(bits, data_type, act_bits if act_bits is not None else 16)
         if scheme is None:
             raise ValueError(f"Unsupported combination of data_type={data_type} and bits={bits}.")
 

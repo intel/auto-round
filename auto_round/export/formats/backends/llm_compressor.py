@@ -65,12 +65,14 @@ class LLMCompressorFormat(OutputFormat):
 
                 check_compressed_tensors_supported(raise_error=True)
                 self.output_format = "llm_compressor:nvfp4_v2"
-            elif scheme.is_nv_fp() or scheme.is_mx_fp() or (scheme.bits >= 16 and scheme.data_type == "fp"):
+            elif scheme.is_nv_fp() or scheme.is_mx_fp() or (scheme.bits >= 16 and scheme.data_type in ("fp", "float")):
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 check_compressed_tensors_supported(raise_error=True)
                 self.backend = LLMCompressorFormat(
-                    "mx_fp" if scheme.bits >= 16 and scheme.data_type == "fp" else scheme.data_type, scheme, ctx
+                    "mx_fp" if scheme.bits >= 16 and scheme.data_type in ("fp", "float") else scheme.data_type,
+                    scheme,
+                    ctx,
                 )
             elif scheme.is_dynamic_afp8() and scheme.is_block_wfp8():
                 self.backend = LLMCompressorFormat(BackendDataType.FP8_BLOCK.value, scheme, ctx)
@@ -109,9 +111,9 @@ class LLMCompressorFormat(OutputFormat):
         error_logs = []
         if scheme.bits not in [2, 3, 4, 5, 6, 7, 8, 16]:
             error_logs.append(f"bits={scheme.bits}")
-        if not re.search("mxfp|fp|nvfp|int", scheme.data_type):
+        if scheme.data_type != "float" and not re.search("mxfp|fp|nvfp|int", scheme.data_type):
             error_logs.append(f"data_type={scheme.data_type}")
-        if scheme.data_type == "fp" and scheme.bits not in (8, 16):
+        if scheme.data_type in ("fp", "float") and scheme.bits not in (8, 16):
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
         if scheme.data_type == "int" and scheme.bits not in [2, 3, 4, 5, 6, 7, 8]:
             error_logs.append(f"data_type={scheme.data_type}, bits={scheme.bits}")
