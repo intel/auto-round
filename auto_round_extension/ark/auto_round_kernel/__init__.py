@@ -949,6 +949,18 @@ def sdpa(
     return O
 
 
+def _xpu_capturing() -> bool:
+    """True if the current XPU stream is inside a torch.xpu graph capture.
+
+    Used to skip host-side device->host syncs (.item() / .cpu()) that are
+    illegal while a SyclTensor command graph is being recorded.
+    """
+    try:
+        return bool(torch.xpu.is_current_stream_capturing())
+    except Exception:
+        return False
+
+
 def sdpa_varlen(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -1015,12 +1027,17 @@ def sdpa_varlen(
     total_kv, Hkv, Dk = key.shape
     total_kv_v, Hkv2, Dv = value.shape
 
-    if total_q != cu_seqlens_q[-1].item():
-        raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()})")
-    if total_kv != cu_seqlens_k[-1].item():
-        raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
-    if total_kv_v != cu_seqlens_k[-1].item():
-        raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
+    if not _xpu_capturing():
+        # Cross-check flat layout against the cumulative sequence-length
+        # boundaries.  These .item() calls force a device->host sync, which is
+        # illegal while a command graph is being captured, so the check is
+        # skipped during capture (the caller must keep buffer geometry stable).
+        if total_q != int(cu_seqlens_q[-1].item()):
+            raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1]")
+        if total_kv != int(cu_seqlens_k[-1].item()):
+            raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1]")
+        if total_kv_v != int(cu_seqlens_k[-1].item()):
+            raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1]")
     if Hkv != Hkv2 or Dk != Dv:
         raise ValueError("K/V shape mismatch")
     if Dk != D:
@@ -1054,7 +1071,9 @@ def sdpa_varlen(
     O = torch.empty(total_q, Hq, D, dtype=value.dtype, device=query.device)
 
     if return_lse:
-        max_q = int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        # .item() is a device->host sync; illegal during graph capture.
+        max_q = max_seqlen_q if _xpu_capturing() else int(
+            (cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
         if max_seqlen_q < max_q:
             raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
         LSE = torch.full(
@@ -2273,7 +2292,9 @@ def sageattn_varlen(
     O = torch.empty(total_q, Hq, D, dtype=v.dtype, device=q.device)
 
     if return_lse:
-        max_q = int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        # .item() is a device->host sync; illegal during graph capture.
+        max_q = max_seqlen_q if _xpu_capturing() else int(
+            (cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
         if max_seqlen_q < max_q:
             raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
         LSE = torch.full(

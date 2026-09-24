@@ -368,7 +368,10 @@ inline void run_prefill_impl(
   Kernel::initialize_workspace(args, workspace.get());
 
   typename Kernel::Params params = Kernel::to_underlying_arguments(args, workspace.get());
-  launch_prefill_kernel<Kernel>(params).wait();
+  launch_prefill_kernel<Kernel>(params);
+  // No host-side wait here: the caller (ARK wrapper / torch.xpu stream)
+  // is responsible for synchronization.  A blocking wait would also be
+  // illegal during torch.xpu CUDAGraph capture.
 }
 
 template <int HeadDim, bool Causal>
@@ -478,7 +481,9 @@ inline void run_decode_impl(
       {(float*)O_ptr, stride_O}};
 
   typename Kernel::Params params = Kernel::to_underlying_arguments(args);
-  launch_decode_kernel<Kernel>(params).wait();
+  launch_decode_kernel<Kernel>(params);
+  // No host-side wait: the caller handles synchronization via the torch
+  // stream.  A blocking wait here would abort torch.xpu graph capture.
 }
 
 template <int HeadDim, bool Causal>
