@@ -272,8 +272,13 @@ def eval_with_vllm(args):
     if mp.get_start_method(allow_none=True) != "spawn":
         try:
             mp.set_start_method("spawn", force=True)
-        except RuntimeError:
-            pass
+        except RuntimeError as e:
+            if mp.get_start_method(allow_none=True) != "spawn":
+                raise RuntimeError(
+                    f"Failed to set multiprocessing start method to 'spawn' for vLLM evaluation "
+                    f"(current method: '{mp.get_start_method(allow_none=True)}'). "
+                    f"vLLM requires the 'spawn' start method to prevent CUDA re-initialization errors."
+                ) from e
 
     from lm_eval import evaluator  # pylint: disable=E0401
     from lm_eval.models.vllm_causallms import VLLM  # pylint: disable=E0401
