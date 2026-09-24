@@ -102,8 +102,8 @@ def download_audiocaps_csv():
     import requests
 
     url = "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
-    # Prefer AR_WORKSPACE environment variable for cache location when provided.
-    ar_workspace = os.environ.get("AR_WORKSPACE")
+    # Prefer the documented AR_WORK_SPACE (or the legacy AR_WORKSPACE) for the cache location when set.
+    ar_workspace = os.environ.get("AR_WORK_SPACE") or os.environ.get("AR_WORKSPACE")
     if ar_workspace:
         cache_dir = os.path.join(ar_workspace, "audiocaps_cache")
     else:
