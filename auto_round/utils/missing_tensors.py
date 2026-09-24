@@ -50,6 +50,7 @@ from auto_round.utils.model_free_utils import (
     quantize_weight_rtn,
     split_fused_expert_tensors,
 )
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
 
@@ -167,8 +168,12 @@ def _resolve_tensor_shard_maps(
     if os.path.exists(source_index_file):
         with open(source_index_file) as f:
             src_index = json.load(f)
-        for tensor_name, shard_file in src_index["weight_map"].items():
-            source_tensor_to_file[tensor_name] = os.path.join(source_dir, shard_file)
+        # Shard names come from the source checkpoint's own index: validate them
+        # against source_dir, then resolve at the point of use below.
+        for tensor_name, shard_file in validate_weight_map(
+            src_index["weight_map"], source_dir, index_path=source_index_file
+        ).items():
+            source_tensor_to_file[tensor_name] = str(resolve_within_directory(source_dir, shard_file))
     elif os.path.exists(source_single_file):
         with safe_open(source_single_file, framework="pt", device="cpu") as f:
             for key in f.keys():

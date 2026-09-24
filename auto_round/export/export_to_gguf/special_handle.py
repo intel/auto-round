@@ -21,6 +21,7 @@ from safetensors import safe_open
 from torch import Tensor
 
 from auto_round.utils import LazyImport, download_or_get_path
+from auto_round.utils.path_safety import resolve_within_directory
 
 gguf = LazyImport("gguf")
 
@@ -103,7 +104,7 @@ def get_tensor_from_file(dir_path, tensor_name):
         filename = "model.safetensors"
 
     # get tensor
-    f = safe_open(os.path.join(dir_path, filename), framework="pt")
+    f = safe_open(str(resolve_within_directory(dir_path, filename, origin=INDEX_FILE)), framework="pt")
     return f.get_tensor(tensor_name)
 
 

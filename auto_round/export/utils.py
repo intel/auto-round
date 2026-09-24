@@ -26,6 +26,7 @@ from auto_round.utils import (
     restore_fp32_tensors_from_source,
     unsupported_meta_device,
 )
+from auto_round.utils.path_safety import UnsafeCheckpointPathError, resolve_within_directory
 
 
 def save_pretrained_artifact(artifact, output_dir: str, artifact_name: str = "artifact") -> bool:
@@ -156,10 +157,12 @@ def _resolve_model_source_dir(model: nn.Module) -> str | None:
 
 
 def _copy_pipeline_artifact(model_dir: str, relative_path: str, output_dir: str) -> None:
-    target_path = os.path.join(output_dir, relative_path)
+    # ``relative_path`` comes from the pipeline's own model_index.json, so it must
+    # stay inside output_dir (write side) and model_dir (read side).
+    target_path = str(resolve_within_directory(output_dir, relative_path, origin="model_index.json"))
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     if is_local_pipeline_model_dir(model_dir):
-        source_path = os.path.join(model_dir, relative_path)
+        source_path = str(resolve_within_directory(model_dir, relative_path, origin="model_index.json"))
     else:
         from huggingface_hub import hf_hub_download
 
@@ -204,6 +207,11 @@ def _copy_pipeline_artifacts(source_dir: str, output_dir: str, exclude_component
     for component_name in component_dirs:
         if component_name in exclude_components:
             continue
+        # Keys of model_index.json are pipeline kwargs; anything else would be joined as a path.
+        if not component_name.isidentifier():
+            raise UnsafeCheckpointPathError(
+                f"model_index.json: component name {component_name!r} is not a plain directory name"
+            )
         if is_local:
             src = os.path.join(source_dir, component_name)
             dst = os.path.join(output_dir, component_name)

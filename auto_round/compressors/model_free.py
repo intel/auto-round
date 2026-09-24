@@ -152,6 +152,7 @@ from auto_round.utils.model_free_utils import (
     is_model_free_supported_scheme,
     preprocess_model_type_source_tensors,
 )
+from auto_round.utils.path_safety import resolve_within_directory
 
 # Backward-compat aliases for internal/private helper names used in tests and
 # downstream imports.
@@ -326,7 +327,7 @@ def _prefetch_shard(
             # colliding with quantized output shard names in output_dir.
             shard_cache_dir = os.path.join(work_dir, ".cache", "model_free_source_shards")
             return _download_single_shard(model_name_or_path, shard_name, shard_cache_dir)
-        path = os.path.join(source_dir, shard_name)
+        path = str(resolve_within_directory(source_dir, shard_name, origin="shard list"))
         return path if os.path.exists(path) else None
     except Exception as e:  # pragma: no cover
         logger.warning(f"Prefetch failed for {shard_name}: {e}")

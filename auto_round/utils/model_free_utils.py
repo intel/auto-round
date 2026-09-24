@@ -37,6 +37,11 @@ from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import _normalize_tensor_name_for_warning, to_standard_regex
 from auto_round.utils.device import clear_memory, compile_func
+from auto_round.utils.path_safety import (
+    resolve_within_directory,
+    sanitize_shard_name,
+    validate_weight_map,
+)
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
 _BLOCK_NAME_TO_IGNORE = ("shared_expert_gate.", ".gate.", "embed", "conv")
@@ -1595,7 +1600,7 @@ def _hydrate_missing_fp8_scales_from_index(
     hydrated = 0
     shard_prefix = f"[{shard_name}] " if shard_name else ""
     for target_shard, scale_names in scales_by_shard.items():
-        target_path = os.path.join(donor_dir, target_shard)
+        target_path = str(resolve_within_directory(donor_dir, target_shard, origin="weight_map"))
         if not os.path.exists(target_path):
             logger.warning(
                 f"{shard_prefix}Donor shard '{target_shard}' not found in '{donor_dir}' while hydrating "
@@ -1773,7 +1778,7 @@ def _hydrate_and_clean_modelopt_nvfp4_aux(
 
         hydrated = 0
         for target_shard, aux_names in wanted_by_shard.items():
-            target_path = os.path.join(donor_dir, target_shard)
+            target_path = str(resolve_within_directory(donor_dir, target_shard, origin="weight_map"))
             if not os.path.exists(target_path):
                 logger.warning(
                     f"{shard_prefix}Donor shard '{target_shard}' not found in '{donor_dir}' while hydrating "
@@ -2096,12 +2101,8 @@ def _process_shard(
     quantize_func = compile_func(quantize_weight_rtn, device) if enable_torch_compile else quantize_weight_rtn
 
     if shard_path.endswith(".bin"):
-        # PyTorch pickle checkpoint — load with weights_only where supported.
-        try:
-            raw_tensors = torch.load(shard_path, map_location="cpu", weights_only=True)
-        except TypeError:
-            # weights_only not available in older PyTorch versions
-            raw_tensors = torch.load(shard_path, map_location="cpu")  # nosec
+        # No unrestricted fallback: this pickle comes from an untrusted artifact.
+        raw_tensors = torch.load(shard_path, map_location="cpu", weights_only=True)
         # Flatten nested state-dict wrappers if present.
         if not isinstance(raw_tensors, dict):
             raise ValueError(f"Expected a dict from {shard_path}, got {type(raw_tensors)}")
@@ -2385,9 +2386,12 @@ def _list_weight_shards(source_dir: str) -> list[str]:
     def _shards_from_index(index_path: str) -> list[str]:
         with open(index_path) as f:
             index = json.load(f)
+        # Shard names are declared by the checkpoint's own index and are later
+        # joined onto source_dir / a shard cache dir, so contain them here.
+        weight_map = validate_weight_map(index["weight_map"], source_dir, index_path=index_path)
         seen: set[str] = set()
         shards: list[str] = []
-        for shard_file in index["weight_map"].values():
+        for shard_file in weight_map.values():
             if shard_file not in seen:
                 seen.add(shard_file)
                 shards.append(shard_file)
@@ -2451,13 +2455,13 @@ def _download_single_shard(
 ) -> str:
     """Download a single safetensors shard file. Returns the local path."""
     os.makedirs(local_dir, exist_ok=True)
-    local_path = os.path.join(local_dir, shard_filename)
+    local_path = os.path.join(local_dir, sanitize_shard_name(shard_filename, origin="shard list"))
     if os.path.exists(local_path):
         logger.info(f"Shard '{shard_filename}' already exists at '{local_path}', skipping download.")
         return local_path
 
     if os.path.isdir(model_name_or_path):
-        src = os.path.join(model_name_or_path, shard_filename)
+        src = str(resolve_within_directory(model_name_or_path, shard_filename, origin="shard list"))
         if os.path.exists(src):
             shutil.copy2(src, local_path)
             return local_path

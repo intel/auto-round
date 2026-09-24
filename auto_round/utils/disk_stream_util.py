@@ -22,6 +22,8 @@ import torch.nn as nn
 from accelerate.utils import set_module_tensor_to_device
 from safetensors import SafetensorError, safe_open
 
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,7 +45,12 @@ class SafetensorsIndex:
         index_path = self.checkpoint_dir / "model.safetensors.index.json"
         if index_path.exists():
             with open(index_path) as f:
-                self.weight_map: Dict[str, str] = json.load(f)["weight_map"]
+                # The shard names come from the checkpoint's own index, i.e. from the
+                # artifact being loaded -- validate them against the directory before
+                # anything downstream gets a chance to join and open them.
+                self.weight_map: Dict[str, str] = validate_weight_map(
+                    json.load(f)["weight_map"], self.checkpoint_dir, index_path=index_path
+                )
         else:
             # Small, unsharded checkpoint: one model.safetensors file.
             single_file = self.checkpoint_dir / "model.safetensors"
@@ -59,7 +66,8 @@ class SafetensorsIndex:
     def tensor_shape(self, name: str) -> tuple[int, ...]:
         """Return a tensor's shape from its safetensors header without reading its payload."""
         shard_name = self.weight_map[name]
-        with safe_open(str(self.checkpoint_dir / shard_name), framework="pt") as f:
+        shard_path = resolve_within_directory(self.checkpoint_dir, shard_name)
+        with safe_open(str(shard_path), framework="pt") as f:
             return tuple(f.get_slice(name).get_shape())
 
     def read_tensors(self, names: list[str], device: str = "cpu") -> Dict[str, torch.Tensor]:
@@ -71,7 +79,8 @@ class SafetensorsIndex:
 
         result: Dict[str, torch.Tensor] = {}
         for shard_name, shard_tensor_names in by_shard.items():
-            with safe_open(str(self.checkpoint_dir / shard_name), framework="pt") as f:
+            shard_path = resolve_within_directory(self.checkpoint_dir, shard_name)
+            with safe_open(str(shard_path), framework="pt") as f:
                 for name in shard_tensor_names:
                     tensor = f.get_tensor(name)
                     if device != "cpu":
