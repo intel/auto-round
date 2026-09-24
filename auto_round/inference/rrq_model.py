@@ -404,8 +404,7 @@ def load_rrq_model(
     from auto_round.inference.rrq_linear import set_rrq_bits, set_rrq_random_residual
 
     if residual_fraction is not None:
-        n_high = set_rrq_random_residual(
-        )
+        n_high = set_rrq_random_residual()
         logger.info(
             f"Built {replaced} RRQ layers; random residual: {n_high}/{replaced} at "
             f"{residual_high_bits}-bit, rest at {residual_low_bits}-bit "
