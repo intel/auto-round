@@ -1072,8 +1072,7 @@ def sdpa_varlen(
 
     if return_lse:
         # .item() is a device->host sync; illegal during graph capture.
-        max_q = max_seqlen_q if _xpu_capturing() else int(
-            (cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        max_q = max_seqlen_q if _xpu_capturing() else int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
         if max_seqlen_q < max_q:
             raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
         LSE = torch.full(
@@ -2293,8 +2292,7 @@ def sageattn_varlen(
 
     if return_lse:
         # .item() is a device->host sync; illegal during graph capture.
-        max_q = max_seqlen_q if _xpu_capturing() else int(
-            (cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        max_q = max_seqlen_q if _xpu_capturing() else int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
         if max_seqlen_q < max_q:
             raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
         LSE = torch.full(
