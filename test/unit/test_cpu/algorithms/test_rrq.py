@@ -1182,6 +1182,7 @@ class TestResolveActiveBits:
 
     def test_none_defaults_to_max_planes(self):
         from auto_round.inference.rrq_model import _resolve_active_bits
+
         # 4 planes x 2 bits -> 8-bit default.
         assert _resolve_active_bits(4, 2, None) == 8
         # 2 planes x 2 bits -> default 4-bit.
@@ -1189,18 +1190,20 @@ class TestResolveActiveBits:
 
     def test_explicit_valid_active_bits(self):
         from auto_round.inference.rrq_model import _resolve_active_bits
+
         assert _resolve_active_bits(4, 2, 2) == 2
         assert _resolve_active_bits(4, 2, 4) == 4
         assert _resolve_active_bits(4, 2, 8) == 8
 
     def test_rejects_invalid_active_bits(self):
         from auto_round.inference.rrq_model import _resolve_active_bits
+
         with pytest.raises(ValueError, match="active_bits must be one of"):
             _resolve_active_bits(4, 2, 3)
 
     def test_rejects_active_bits_above_max(self):
         from auto_round.inference.rrq_model import _resolve_active_bits
+
         # 2 planes x 2 bits = 4-bit max; 6-bit is out of range for this checkpoint.
         with pytest.raises(ValueError, match="exceeds the maximum supported"):
             _resolve_active_bits(2, 2, 6)
-
