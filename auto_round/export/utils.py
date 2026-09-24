@@ -507,6 +507,16 @@ def filter_quantization_config(quantization_config):
         if quantization_config[k] is None:
             quantization_config.pop(k)
 
+    # static_*_granularity only carries a value ("tensor") when the matching static
+    # dtype is set; without it the key is inert but misleads readers into thinking
+    # KV/attention quantization is configured.
+    for dtype_key, gran_key in (
+        ("static_kv_dtype", "static_kv_granularity"),
+        ("static_attention_dtype", "static_attention_granularity"),
+    ):
+        if quantization_config.get(dtype_key) is None:
+            quantization_config.pop(gran_key, None)
+
     if quantization_config.get("act_bits", 16) >= 16:
         quantization_config.pop("act_bits", None)
         quantization_config.pop("act_data_type", None)
