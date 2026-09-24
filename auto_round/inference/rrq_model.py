@@ -209,6 +209,34 @@ def _validate_base_matches_residual(base_config: dict, residual_config: dict) ->
         )
 
 
+_VALID_ACTIVE_BITS = (2, 4, 6, 8)
+
+
+def _resolve_active_bits(total_planes: int, bits: int, active_bits: int | None) -> int:
+    """Resolve the effective active bit-width, validated against the checkpoint.
+
+    ``active_bits=None`` means "use every plane the checkpoint holds" (i.e. the
+    maximum precision it encodes), so the same call is correct for a 4-bit
+    (2-plane) or an 8-bit (4-plane) residual model.  An explicit value must be
+    a valid RRQ effective bit-width (a multiple of ``bits`` in 2..8) and must
+    not exceed what the checkpoint actually contains.
+
+    Returns the resolved effective bit-width (a multiple of ``bits``).
+    """
+    max_bits = total_planes * bits
+    if active_bits is None:
+        active_bits = max_bits
+    if active_bits not in _VALID_ACTIVE_BITS:
+        raise ValueError(f"active_bits must be one of 2/4/6/8, got {active_bits}")
+    if active_bits > max_bits:
+        raise ValueError(
+            f"active_bits={active_bits} exceeds the maximum supported by this "
+            f"checkpoint ({total_planes} planes x {bits} bits = {max_bits} bits). "
+            f"Lower active_bits to <= {max_bits} or re-quantize with more residual planes."
+        )
+    return active_bits
+
+
 def load_rrq_model(
     base_model_dir: str,
     residual_model_dir: str,
@@ -273,18 +301,8 @@ def load_rrq_model(
     sym = bool(residual_q.get("sym", False))
     QuantLinear = _quant_linear_class(sym)
 
-    # Resolve active_bits: default to the max precision the checkpoint supports.
-    max_bits = total_planes * bits
-    if active_bits is None:
-        active_bits = max_bits
-    if active_bits not in {2, 4, 6, 8}:
-        raise ValueError(f"active_bits must be one of 2/4/6/8, got {active_bits}")
-    if active_bits > max_bits:
-        raise ValueError(
-            f"active_bits={active_bits} exceeds the maximum supported by this "
-            f"checkpoint ({total_planes} planes x {bits} bits = {max_bits} bits). "
-            f"Lower active_bits to <= {max_bits} or re-quantize with more residual planes."
-        )
+    active_bits = _resolve_active_bits(total_planes, bits, active_bits)
+    active_planes = active_bits // bits
 
     # Collect packed planes from both checkpoints (state dicts live on CPU).
     base_state = _load_state_dict(base_model_dir)
@@ -404,7 +422,13 @@ def load_rrq_model(
     from auto_round.inference.rrq_linear import set_rrq_bits, set_rrq_random_residual
 
     if residual_fraction is not None:
-        n_high = set_rrq_random_residual()
+        n_high = set_rrq_random_residual(
+            base_model,
+            fraction=residual_fraction,
+            seed=residual_seed,
+            high_bits=residual_high_bits,
+            low_bits=residual_low_bits,
+        )
         logger.info(
             f"Built {replaced} RRQ layers; random residual: {n_high}/{replaced} at "
             f"{residual_high_bits}-bit, rest at {residual_low_bits}-bit "
