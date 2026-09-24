@@ -61,19 +61,17 @@ requires_graph = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 
 
-def _capture_dense_sdpa(q, k, v, is_causal, scale):
-    """Warm up, then capture ark.sdpa into an XPUGraph.
+def _capture_graph(fn):
+    """Generic capture helper: warm up then capture ``fn`` into an XPUGraph.
 
     Returns (graph, output_tensor).  The output tensor lives in the
     XPU graph's capture pool and therefore retains a *stable* device
     address across replays, making it safe to compare after ``replay()``.
     """
-    # --- eager warm-up (populates allocator pools, JITs kernels, etc.) ---
     with torch.no_grad():
-        _ = ark.sdpa(q, k, v, is_causal=is_causal, scale=scale)
+        fn()
     torch.xpu.synchronize()
 
-    # --- capture ---
     g = torch.xpu.XPUGraph()
     side = torch.xpu.Stream()
     cur = torch.xpu.current_stream()
@@ -81,10 +79,20 @@ def _capture_dense_sdpa(q, k, v, is_causal, scale):
     with torch.no_grad(), torch.xpu.stream(side):
         torch.xpu.synchronize()
         with torch.xpu.graph(g):
-            out = ark.sdpa(q, k, v, is_causal=is_causal, scale=scale)
+            out = fn()
     cur.wait_stream(side)
     torch.xpu.synchronize()
     return g, out
+
+
+def _capture_dense_sdpa(q, k, v, is_causal, scale):
+    """Warm up, then capture ark.sdpa into an XPUGraph.
+
+    Returns (graph, output_tensor).  The output tensor lives in the
+    XPU graph's capture pool and therefore retains a *stable* device
+    address across replays, making it safe to compare after ``replay()``.
+    """
+    return _capture_graph(lambda: ark.sdpa(q, k, v, is_causal=is_causal, scale=scale))
 
 
 def _run_dense_case(b, hq, hkv, sq, skv, d, dtype, is_causal):
@@ -199,3 +207,112 @@ class TestSDPAVarlenGraphCapture:
     def test_capture_replay_smoke(self, dtype):
         """Capture + replay must not throw; numeric check TODO."""
         _run_varlen_capture(dtype, [128, 64, 96], [128, 64, 96])
+
+
+# ---------------------------------------------------------------------------
+# GEMM graph-capture smoke tests
+#
+# ``matmul_sycl_tla`` (dense float GEMM) shares the same
+# ``compat::set_default_queue`` code path as SDPA, so it must also be
+# graph-capture safe.  Verify capture → mutate input in-place → replay →
+# output matches a fresh eager call on the mutated inputs.
+# ---------------------------------------------------------------------------
+
+
+@requires_graph
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+class TestGEMMGraphCapture:
+    def test_capture_replay(self, dtype):
+        """Dense GEMM (matmul_sycl_tla) must survive capture + replay."""
+        M, N, K = 128, 256, 512
+        dev = "xpu:0"
+        A = torch.randn(M, K, device=dev, dtype=dtype)
+        B = torch.randn(N, K, device=dev, dtype=dtype)
+        bias = torch.randn(N, device=dev, dtype=dtype)
+
+        def call():
+            return ark.matmul_sycl_tla(A, B, bias)
+
+        with torch.no_grad():
+            _ = call()  # warm-up / JIT
+        torch.xpu.synchronize()
+
+        g, out = _capture_graph(lambda: ark.matmul_sycl_tla(A, B, bias))
+
+        # --- mutate inputs in-place, replay, compare to fresh eager ---
+        A.copy_(torch.randn_like(A))
+        bias.copy_(torch.randn_like(bias))
+        torch.xpu.synchronize()
+
+        g.replay()
+        torch.xpu.synchronize()
+
+        # Self-consistency: replay must match a fresh eager call on same inputs.
+        with torch.no_grad():
+            eager = ark.matmul_sycl_tla(A, B, bias)
+        torch.xpu.synchronize()
+        atol = 2e-2 if dtype == torch.bfloat16 else 1e-3
+        diff = (out.float() - eager.float()).abs().max().item()
+        assert diff < atol, f"GEMM graph replay mismatch: max_abs_diff={diff:.6f}"
+
+
+# ---------------------------------------------------------------------------
+# SDPA with LSE graph-capture tests
+#
+# return_lse=True allocates an LSE tensor inside ark.sdpa() during capture.
+# The LSE buffer lives in the capture pool and must be correctly updated on
+# each replay.
+# ---------------------------------------------------------------------------
+
+
+@requires_graph
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("head_dim", [64, 128])
+class TestSDPALSEGraphCapture:
+    def test_capture_replay_lse(self, dtype, head_dim):
+        """SDPA with return_lse=True must survive capture + replay.
+
+        LSE is allocated inside the capture region, so its buffer lives in
+        the graph pool and is stable across replays.
+        """
+        B, Hq, Hkv, Sq, Skv, D = 2, 8, 8, 128, 128, head_dim
+        scale = 1.0 / math.sqrt(D)
+        q = torch.randn(B, Sq, Hq, D, device="xpu:0", dtype=dtype)
+        k = torch.randn(B, Skv, Hkv, D, device="xpu:0", dtype=dtype)
+        v = torch.randn(B, Skv, Hkv, D, device="xpu:0", dtype=dtype)
+
+        def call():
+            return ark.sdpa(q, k, v, scale=scale, is_causal=True, return_lse=True)
+
+        with torch.no_grad():
+            _ = call()  # warm-up / JIT
+        torch.xpu.synchronize()
+
+        g, out = _capture_graph(call)
+        # out should be a tuple (O, LSE)
+        assert isinstance(out, (tuple, list)) and len(out) == 2, (
+            f"Expected (O, LSE) tuple, got {type(out)}"
+        )
+        o_out, lse_out = out[0], out[1]
+
+        # --- mutate Q in-place, replay, verify both O and LSE ---
+        q_new = torch.randn_like(q)
+        q.copy_(q_new)
+        torch.xpu.synchronize()
+        g.replay()
+        torch.xpu.synchronize()
+
+        # Self-consistency: compare replay outputs to fresh eager call
+        with torch.no_grad():
+            o_eager, lse_eager = ark.sdpa(
+                q, k, v, scale=scale, is_causal=True, return_lse=True
+            )
+        torch.xpu.synchronize()
+
+        o_diff = (o_out.float() - o_eager.float()).abs().max().item()
+        assert o_diff < 2e-2, f"LSE test: O mismatch after replay: {o_diff:.6f}"
+
+        # LSE is in fp32, should be bit-identical or very close
+        lse_diff = (lse_out.float() - lse_eager.float()).abs().max().item()
+        assert lse_diff < 1e-4, f"LSE graph replay mismatch: max_abs_diff={lse_diff:.6f}"
+        g.reset()
