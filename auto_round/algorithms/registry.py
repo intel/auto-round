@@ -76,6 +76,28 @@ def register_algorithm(
     alias_factories: dict[str, Callable[[], object]] | None = None,
     hidden: bool = False,
 ) -> None:
+    """Register (or merge into) a named algorithm in the global registry.
+
+    Can be called multiple times for the same name to merge attributes
+    (e.g. register the core behaviour, then later attach aliases that carry
+    their own factories).  Call at module-import time in the algorithm's
+    package ``__init__.py``.
+
+    Args:
+        name: Canonical algorithm name (e.g. ``"rrq"``).
+        aliases: Extra names that should resolve to this algorithm
+            (e.g. ``("rrq2",)``).  Combined with any aliases the canonical
+            entry already has.
+        config_factory: Zero-arg callable that returns an ``AlgorithmConfig``
+            instance.  Used when the canonical ``name`` is resolved.
+        summary: One-line description shown by ``--list_algs``.
+        alias_factories: Mapping of alias -> zero-arg callable for aliases
+            whose behaviour differs from the canonical name (e.g.
+            ``"rrq2"`` producing a 7-bit / 4-plane variant with a different
+            ``num_residual_planes`` default).
+        hidden: If True the algorithm is hidden from the ``--list_algs``
+            table but still usable via ``--algs``.
+    """
     key = name.strip().lower()
     entry = _ALG_REGISTRY.get(key)
     if entry is None:

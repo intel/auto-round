@@ -240,7 +240,9 @@ def start(recipe="default", argv=None):
     args = parser.parse_args(argv)
     args._api_format = args.format if format_was_explicit or args.model_free else None
 
-    # Auto-set scheme to W2A16 for RRQ format if user didn't specify --scheme
+    # RRQ only supports the W2A16 (2+2+2+2) pipeline. If the user selects the
+    # RRQ format without an explicit --scheme, auto-default to W2A16 so the
+    # CLI gives a sensible default instead of a confusing deep-error.
     if "auto_round:rrq" in (args.format or "").lower() and not scheme_was_explicit:
         args.scheme = "W2A16"
 
