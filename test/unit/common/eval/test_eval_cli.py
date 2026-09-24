@@ -730,3 +730,51 @@ class TestLoadGgufModelIfNeeded:
         assert gguf_file == "model.gguf"
         assert tokenizer is not None
         assert model is fake_model
+
+
+class TestEvalWithVllm:
+    """Tests for `eval_with_vllm`."""
+
+    def test_eval_with_vllm_configures_spawn_start_method(self, monkeypatch):
+        import multiprocessing as mp
+
+        called_set = []
+
+        def mock_get_start_method(allow_none=True):
+            return "fork"
+
+        def mock_set_start_method(method, force=False):
+            called_set.append((method, force))
+
+        monkeypatch.setattr(mp, "get_start_method", mock_get_start_method)
+        monkeypatch.setattr(mp, "set_start_method", mock_set_start_method)
+
+        mock_evaluator = MagicMock()
+        mock_evaluator.simple_evaluate.return_value = {}
+        mock_vllm_cls = MagicMock()
+
+        fake_lm_eval = SimpleNamespace(
+            evaluator=mock_evaluator,
+            models=SimpleNamespace(vllm_causallms=SimpleNamespace(VLLM=mock_vllm_cls)),
+            utils=SimpleNamespace(make_table=lambda res: "table"),
+        )
+        monkeypatch.setitem(sys.modules, "lm_eval", fake_lm_eval)
+        monkeypatch.setitem(sys.modules, "lm_eval.evaluator", mock_evaluator)
+        monkeypatch.setitem(sys.modules, "lm_eval.models.vllm_causallms", fake_lm_eval.models.vllm_causallms)
+        monkeypatch.setitem(sys.modules, "lm_eval.utils", fake_lm_eval.utils)
+
+        args = SimpleNamespace(
+            model_name="mock-model",
+            tasks="mmlu",
+            device_map="0",
+            eval_model_dtype="auto",
+            eval_bs=None,
+            disable_trust_remote_code=True,
+            add_bos_token=False,
+            mllm=False,
+            limit=1,
+        )
+
+        eval_cli.eval_with_vllm(args)
+
+        assert ("spawn", True) in called_set

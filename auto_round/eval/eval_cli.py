@@ -266,7 +266,14 @@ def eval(args):
 
 
 def eval_with_vllm(args):
+    import multiprocessing as mp
     import time
+
+    if mp.get_start_method(allow_none=True) != "spawn":
+        try:
+            mp.set_start_method("spawn", force=True)
+        except RuntimeError:
+            pass
 
     from lm_eval import evaluator  # pylint: disable=E0401
     from lm_eval.models.vllm_causallms import VLLM  # pylint: disable=E0401
