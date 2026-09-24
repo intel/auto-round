@@ -236,6 +236,9 @@ class OutputFormat(ABC):
     def is_fake(self) -> bool:
         return self.output_format == "fake"
 
+    def is_rrq(self) -> bool:
+        return "/rrq" in self.output_format or (self.backend is not None and self.backend.is_rrq())
+
     def is_gptq(self) -> bool:
         return "gptq" in self.output_format or (self.backend is not None and self.backend.is_gptq())
 

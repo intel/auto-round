@@ -19,6 +19,7 @@ class AlgRegistryEntry:
     config_factory: Callable[[], object] | None = None
     summary: str = ""
     alias_factories: dict[str, Callable[[], object]] = field(default_factory=dict)
+    hidden: bool = False
 
 
 _ALG_REGISTRY: dict[str, AlgRegistryEntry] = {}
@@ -37,6 +38,7 @@ def _ensure_builtin_algorithms_registered() -> None:
     # imports ordered preserves the help output and default algorithm order.
     for module_name in (
         "auto_round.algorithms.quantization.rtn.config",
+        "auto_round.algorithms.quantization.rrq.config",
         "auto_round.algorithms.quantization.sign_round.config",
         "auto_round.algorithms.transforms.awq.config",
         "auto_round.algorithms.transforms.svdquant.config",
@@ -54,6 +56,7 @@ def _ensure_pipeline_members_registered() -> None:
         return
     for module_name in (
         "auto_round.algorithms.quantization.rtn.quantizer",
+        "auto_round.algorithms.quantization.rrq.quantizer",
         "auto_round.algorithms.quantization.sign_round.quantizer",
         "auto_round.algorithms.quantization.sign_roundv2.quantizer",
         "auto_round.algorithms.quantization.adam_round.adam",
@@ -71,7 +74,30 @@ def register_algorithm(
     config_factory: Callable[[], object] | None = None,
     summary: str = "",
     alias_factories: dict[str, Callable[[], object]] | None = None,
+    hidden: bool = False,
 ) -> None:
+    """Register (or merge into) a named algorithm in the global registry.
+
+    Can be called multiple times for the same name to merge attributes
+    (e.g. register the core behaviour, then later attach aliases that carry
+    their own factories).  Call at module-import time in the algorithm's
+    package ``__init__.py``.
+
+    Args:
+        name: Canonical algorithm name (e.g. ``"rrq"``).
+        aliases: Extra names that should resolve to this algorithm
+            (e.g. ``("rrq2",)``).  Combined with any aliases the canonical
+            entry already has.
+        config_factory: Zero-arg callable that returns an ``AlgorithmConfig``
+            instance.  Used when the canonical ``name`` is resolved.
+        summary: One-line description shown by ``--list_algs``.
+        alias_factories: Mapping of alias -> zero-arg callable for aliases
+            whose behaviour differs from the canonical name (e.g.
+            ``"rrq2"`` producing a 7-bit / 4-plane variant with a different
+            ``num_residual_planes`` default).
+        hidden: If True the algorithm is hidden from the ``--list_algs``
+            table but still usable via ``--algs``.
+    """
     key = name.strip().lower()
     entry = _ALG_REGISTRY.get(key)
     if entry is None:
@@ -88,6 +114,8 @@ def register_algorithm(
     if alias_factories:
         entry.alias_factories.update({k.strip().lower(): v for k, v in alias_factories.items()})
     entry.aliases = merged_aliases
+    if hidden:
+        entry.hidden = True
 
     _ALIAS_TO_NAME[key] = key
     for alias in merged_aliases:

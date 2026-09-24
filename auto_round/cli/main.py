@@ -243,6 +243,7 @@ def start(recipe="default", argv=None):
     format_was_explicit = any(
         arg in {"--format", "--formats"} or arg.startswith(("--format=", "--formats=")) for arg in argv
     )
+    scheme_was_explicit = any(arg in {"--scheme"} or arg.startswith("--scheme=") for arg in argv)
 
     if _print_algorithm_help(argv):
         return
@@ -250,6 +251,12 @@ def start(recipe="default", argv=None):
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
     args._api_format = args.format if format_was_explicit or args.model_free else None
+
+    # RRQ only supports the W2A16 (2+2+2+2) pipeline. If the user selects the
+    # RRQ format without an explicit --scheme, auto-default to W2A16 so the
+    # CLI gives a sensible default instead of a confusing deep-error.
+    if "auto_round:rrq" in (args.format or "").lower() and not scheme_was_explicit:
+        args.scheme = "W2A16"
 
     # Apply recipe defaults for fields the user didn't set
     for key, value in recipe_defaults.items():
