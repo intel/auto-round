@@ -40,6 +40,12 @@ class RRQFormat(OutputFormat):
         self.output_format = "auto_round:rrq"
         self.backend = None  # RRQ doesn't delegate to a sub-backend
 
+    def is_supported_immediate_packing(self) -> bool:
+        return False
+
+    def is_supported_immediate_saving(self) -> bool:
+        return False
+
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         """No-op: residual planes are already packed by the quantizer.
 
