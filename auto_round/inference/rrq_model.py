@@ -212,7 +212,7 @@ def _validate_base_matches_residual(base_config: dict, residual_config: dict) ->
 def load_rrq_model(
     base_model_dir: str,
     residual_model_dir: str,
-    active_bits: int = 8,
+    active_bits: Optional[int] = None,
     device: Optional[str] = None,
     residual_fraction: Optional[float] = None,
     residual_seed: int = 0,
@@ -225,9 +225,12 @@ def load_rrq_model(
     Args:
         base_model_dir: Path to the exported INT2 base model (standard format).
         residual_model_dir: Path to the exported ``auto_round:rrq`` residual model
-            (three packed INT2 planes).
-        active_bits: Effective bit-width to start with (2, 4, 6, or 8). Ignored
-            when ``residual_fraction`` is set.
+            (packed INT2 residual planes).
+        active_bits: Effective bit-width to start with (2, 4, 6, or 8).
+            Must be a multiple of the per-plane bits (2) and <= total_planes * bits.
+            If ``None`` (default), uses the maximum supported bits derived from
+            the checkpoint (``total_planes * bits``).  Ignored when
+            ``residual_fraction`` is set.
         device: Target device (e.g. ``"cpu"``, ``"cuda"``).
         residual_fraction: If set, randomly give this fraction of layers the
             higher precision (``residual_high_bits``) and the rest
@@ -254,8 +257,6 @@ def load_rrq_model(
     import transformers
 
     device_obj = torch.device(device or "cpu")
-    if active_bits not in {2, 4, 6, 8}:
-        raise ValueError(f"active_bits must be one of 2/4/6/8, got {active_bits}")
 
     for d in (base_model_dir, residual_model_dir):
         if not os.path.isdir(d):
@@ -271,6 +272,19 @@ def load_rrq_model(
     group_size = residual_q.get("group_size", 128)
     sym = bool(residual_q.get("sym", False))
     QuantLinear = _quant_linear_class(sym)
+
+    # Resolve active_bits: default to the max precision the checkpoint supports.
+    max_bits = total_planes * bits
+    if active_bits is None:
+        active_bits = max_bits
+    if active_bits not in {2, 4, 6, 8}:
+        raise ValueError(f"active_bits must be one of 2/4/6/8, got {active_bits}")
+    if active_bits > max_bits:
+        raise ValueError(
+            f"active_bits={active_bits} exceeds the maximum supported by this "
+            f"checkpoint ({total_planes} planes x {bits} bits = {max_bits} bits). "
+            f"Lower active_bits to <= {max_bits} or re-quantize with more residual planes."
+        )
 
     # Collect packed planes from both checkpoints (state dicts live on CPU).
     base_state = _load_state_dict(base_model_dir)
@@ -387,17 +401,10 @@ def load_rrq_model(
             "Check that base_model_dir and residual_model_dir are compatible."
         )
 
-    from auto_round.inference.rrq_linear import set_rrq_bits
+    from auto_round.inference.rrq_linear import set_rrq_bits, set_rrq_random_residual
 
     if residual_fraction is not None:
-        from auto_round.inference.rrq_linear import set_rrq_random_residual
-
         n_high = set_rrq_random_residual(
-            base_model,
-            fraction=residual_fraction,
-            seed=residual_seed,
-            high_bits=residual_high_bits,
-            low_bits=residual_low_bits,
         )
         logger.info(
             f"Built {replaced} RRQ layers; random residual: {n_high}/{replaced} at "
