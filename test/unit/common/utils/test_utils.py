@@ -267,6 +267,22 @@ class TestPredefinedIgnoreLayersBlockFilter:
     @patch("auto_round.compressors.base.get_predefined_ignore_layers")
     @patch("auto_round.compressors.base.resolve_layer_config")
     @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
+    def test_none_ignore_layers_accepts_predefined_layers(self, mock_handle, mock_set_lc, mock_get_predefined):
+        mock_get_predefined.return_value = ["vision_tower", "mm_projector"]
+        mock_set_lc.return_value = {}
+        stub = self._make_compressor_stub(
+            predefined_ignore_layers=["vision_tower", "mm_projector"],
+            quant_block_list=[["model.layers"]],
+        )
+        stub.ignore_layers = None
+
+        stub.configure_layer_config()
+
+        assert stub.ignore_layers == "vision_tower,mm_projector"
+
+    @patch("auto_round.compressors.base.get_predefined_ignore_layers")
+    @patch("auto_round.compressors.base.resolve_layer_config")
+    @patch("auto_round.compressors.base._handle_special_schemes", return_value=None)
     def test_step3p5_ignore_layers_preserved(self, mock_handle, mock_set_lc, mock_get_predefined):
         """step3p5: short pattern names must not be dropped by block filter."""
         predefined = ["g_proj", "moe.gate", "eh_proj", "shared_head", "layers.45"]
