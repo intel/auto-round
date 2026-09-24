@@ -68,6 +68,76 @@ class RTNQuantizer(BaseQuantizer):
         return {}
 
 
+def _shard_rtn_searches(quantizer, block) -> tuple:
+    """Run the per-layer RTN/OptRTN iters=0 searches, sharded across the DDP devices.
+
+    Work-sharding on the engaged plan: layer i's search runs on
+    ``plan.devices[i % world]`` (the layer already moves to its tuning device
+    in the serial path, so this adds no extra weight traffic); the search
+    itself is deterministic given (weight, imatrix), so sharded results are
+    bit-identical to serial. Falls back to the serial single-device loop when
+    no plan is engaged or the world is 1. Returns (total_seconds, n_layers,
+    max_layer_seconds).
+    """
+    import time as _ptime
+
+    from auto_round.utils import set_module as _set_module
+
+    plan = getattr(quantizer, "_resolved_ddp_plan", None)
+    targets = [(n, m) for n, m in block.named_modules() if hasattr(m, "global_name") and check_to_quantized(m)]
+    if plan is None or getattr(plan, "world", 1) < 2 or len(targets) < 2:
+        _tq, _mx = 0.0, 0.0
+        for _n, m in targets:
+            _t0 = _ptime.perf_counter()
+            quantizer._quantize_layer_core(m)
+            _d = _ptime.perf_counter() - _t0
+            _tq += _d
+            _mx = max(_mx, _d)
+        return _tq, len(targets), _mx
+
+    world = plan.world
+    home = plan.devices[0]
+
+    def _one(dev, mod):
+        if dev.type == "cuda":
+            with torch.cuda.device(dev):
+                return quantizer._quantize_layer_core(mod, tuning_device=dev)
+        return quantizer._quantize_layer_core(mod, tuning_device=dev)
+
+    # round-robin: consecutive layers spread across the devices
+    jobs = [(plan.devices[i % world], n, m) for i, (n, m) in enumerate(targets)]
+    results: dict = {}
+
+    def _run(idx):
+        dev, n, m = jobs[idx]
+        results[idx] = _one(dev, m)
+
+    from auto_round.algorithms.quantization.sign_round.data_parallel import run_threaded_spawn
+
+    _t0 = _ptime.perf_counter()
+    run_threaded_spawn([lambda i=i: _run(i) for i in range(len(jobs))])
+    _tq = _ptime.perf_counter() - _t0
+
+    # place results home: back into the block and (when the quantizer carries
+    # the global model) into the model, matching the serial path's placement
+    model = getattr(quantizer, "model", None)
+    for idx, (dev, n, m) in enumerate(jobs):
+        q_layer = results[idx].to(home)
+        _replace_module(block, n, q_layer)
+        if isinstance(model, torch.nn.Module):
+            _set_module(model, q_layer.global_name, q_layer)
+    return _tq, len(targets), _tq / max(len(targets), 1)
+
+
+def _replace_module(block, dotted_name, new_module):
+    """Replace ``block.<dotted_name>`` with ``new_module``."""
+    parts = dotted_name.split(".")
+    parent = block
+    for p in parts[:-1]:
+        parent = getattr(parent, p)
+    setattr(parent, parts[-1], new_module)
+
+
 @register_pipeline_member(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):
 
@@ -133,8 +203,25 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             **kwargs: Reserved for forward-compatibility with future parameters.
         """
         # Normalize imatrix and quantize layers
+        import time as _ptime
+
+        _t0 = _ptime.perf_counter()
+        _n_norm = 0
         for name, m in block.named_modules():
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
-            if hasattr(m, "global_name") and check_to_quantized(m):
-                self.quantize_layer_outside_block(m)
+                _n_norm += 1
+        _tn = _ptime.perf_counter() - _t0
+        _tq, _n, _mx = _shard_rtn_searches(self, block)
+        from auto_round import envs as _envs
+
+        if getattr(_envs, "AR_PERF_COUNTERS", False):
+            logger.info(
+                "[perf] rtn phases: norm=%.2fs (n=%d) quant=%.2fs (n=%d, mean=%.0fms max=%.0fms)",
+                _tn,
+                _n_norm,
+                _tq,
+                _n,
+                1000 * _tq / max(_n, 1),
+                1000 * _mx,
+            )

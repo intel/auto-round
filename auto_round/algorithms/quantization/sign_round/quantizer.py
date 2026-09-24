@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 import torch
 from torch import autocast
 
+from auto_round.algorithms.block_runner import _cat_device_safe
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
@@ -27,6 +28,26 @@ from auto_round.compressors.utils import (
     collect_best_params,
 )
 from auto_round.logger import logger
+
+
+def _tune_phase_line(phases: dict, iters: int) -> str:
+    """Format the per-block tuning phase breakdown for AR_PERF_COUNTERS.
+
+    ``wrap`` = wrapper_block (params init, quant-func resolve + optional
+    per-wrapper torch.compile, SignRoundV2 init-scale search); ``prepare`` =
+    DDP engagement + tuning-param collection + optimizer/scheduler build;
+    ``loop`` = the iteration try/finally (overlaps the tune-ddp line at
+    iters>0); ``tail`` = best-params restore, clear_memory, unwrapping.
+    """
+    return "[perf] tune phases (iters=%d): wrap=%.2fs prepare=%.2fs loop=%.2fs tail=%.2fs" % (
+        iters,
+        phases.get("wrap", 0.0),
+        phases.get("prepare", 0.0),
+        phases.get("loop", 0.0),
+        phases.get("tail", 0.0),
+    )
+
+
 from auto_round.utils import (
     htcore,
     is_hpex_available,
@@ -35,7 +56,7 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
-from auto_round.utils.distributed import setup_ddp_if_needed_
+from auto_round.utils.distributed import is_distributed, setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
 if TYPE_CHECKING:
@@ -368,38 +389,76 @@ class SignRoundQuantizer(BaseQuantizer):
         active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
         nsamples = len(active_inputs) if isinstance(active_inputs, list) else self._count_samples(active_inputs)
 
+        from auto_round import envs as _envs
+        from auto_round.algorithms.quantization.sign_round.data_parallel import expect_pool_local
+        from auto_round.algorithms.quantization.sign_round.tune_parallel import TuneParallelContext
+
+        accel = None  # TuneParallelContext: engine-owned parallel lane; None = serial
+
+        import time as _ptime
+
+        _defer_wrap_search = TuneParallelContext.defer_wrap_searches()
+
+        _tp = {}
+        _phase_t0 = _ptime.perf_counter()
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
             self.enable_minmax_tuning,
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            defer_init_search=_defer_wrap_search,
         )
+        _tp["wrap"] = _ptime.perf_counter() - _phase_t0
+        _phase_t0 = _ptime.perf_counter()  # prepare: engagement + params + optimizer
 
-        round_params = []
-        minmax_params = []
-        # Group parameters by their effective lr so that mixed-bit configs
-        # (e.g. a 4-bit model with a few 2-bit layers) use a per-layer lr
-        # derived from each layer's own bit-width.
-        round_lr_groups: dict[float, list] = {}
-        minmax_lr_groups: dict[float, list] = {}
-        for n, m in block.named_modules():
-            if hasattr(m, "orig_layer"):
-                layer_bits = getattr(m.orig_layer, "bits", None)
-                layer_lr = self._config.compute_lr(layer_bits)
-                if layer_lr is None:
-                    layer_lr = self.lr
-                self._maybe_log_low_bit_lr(layer_bits)
-                layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
-                if layer_minmax_lr is None:
-                    layer_minmax_lr = self.minmax_lr
-                for key in m.params.keys():
-                    if "min" in key or "max" in key:
-                        minmax_params.append(m.params[key])
-                        minmax_lr_groups.setdefault(float(layer_minmax_lr), []).append(m.params[key])
-                    else:
-                        round_params.append(m.params[key])
-                        round_lr_groups.setdefault(float(layer_lr), []).append(m.params[key])
+        # shared engagement resolver (also used by the composer's collection
+        # pass). Resolve fresh here: this call runs POST-wrap, so the mirror
+        # pricing sees the wrapper's fp32 value params and the free-VRAM
+        # snapshot is current for THIS block (the composer's pre-wrap
+        # resolution is best-effort for collection sharding only).
+        accel = TuneParallelContext.create(
+            self,
+            block,
+            active_inputs,
+            fp_outputs,
+            device,
+            input_others=input_others,
+            nsamples=nsamples,
+        )
+        if accel is None and _defer_wrap_search:
+            # the resolver declined the parallel lane: fill the deferred
+            # searches serially on the home device (never enter tuning with
+            # init_scale unset)
+            from auto_round.algorithms.quantization.sign_round.data_parallel import run_deferred_wrap_searches
+
+            run_deferred_wrap_searches(block, None)
+
+        def _collect_tuning_params(mod):
+            """Collect (round, minmax) params + per-lr groups from a wrapped block."""
+            r_params, m_params = [], []
+            r_groups: dict[float, list] = {}
+            m_groups: dict[float, list] = {}
+            for _n, m in mod.named_modules():
+                if hasattr(m, "orig_layer"):
+                    layer_bits = getattr(m.orig_layer, "bits", None)
+                    layer_lr = self._config.compute_lr(layer_bits)
+                    if layer_lr is None:
+                        layer_lr = self.lr
+                    self._maybe_log_low_bit_lr(layer_bits)
+                    layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
+                    if layer_minmax_lr is None:
+                        layer_minmax_lr = self.minmax_lr
+                    for key in m.params.keys():
+                        if "min" in key or "max" in key:
+                            m_params.append(m.params[key])
+                            m_groups.setdefault(float(layer_minmax_lr), []).append(m.params[key])
+                        else:
+                            r_params.append(m.params[key])
+                            r_groups.setdefault(float(layer_lr), []).append(m.params[key])
+            return r_params, m_params, r_groups, m_groups
+
+        round_params, minmax_params, round_lr_groups, minmax_lr_groups = _collect_tuning_params(block)
 
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
@@ -473,8 +532,58 @@ class SignRoundQuantizer(BaseQuantizer):
             else None
         )
 
+        # ── Optional single-process data parallelism (AR_TUNE_DDP_WORLD) ─────
+        # (engagement, plan, mirrors and pool distribution ran inside
+        # TuneParallelContext.create; mirror optimizers + warm-up remain here)
+        if accel is not None:
+            accel.shards(nsamples, global_batch_size)
+            # mirror-side optimizers replicate the home group structure
+            accel.build_mirror_optimizers(
+                make_optimizer=lambda ps: self.optimizer(ps, lr=lr, weight_decay=0, **extra_kwargs),
+                make_schedule=lambda m_opt: (
+                    torch.optim.lr_scheduler.LinearLR(m_opt, start_factor=1.0, end_factor=0.0, total_iters=self.iters)
+                    if self.lr_scheduler is None
+                    else copy.deepcopy(self.lr_scheduler)
+                ),
+                collect_params_fn=_collect_tuning_params,
+            )
+
+            # the algorithm's tune step (forward + loss + backward): the SAME
+            # closure serves the context warm-up and the per-iteration fan-out
+            def _ddp_step(rep, shard, dev_r, rec):
+                expect_pool_local([fp_outputs[j] for j in shard], dev_r, "ddp-ref")
+                ref_r = torch.cat([fp_outputs[j].to(dev_r) for j in shard], dim=0)
+                # always device-local: parking a mirror's output on the
+                # primary GPU would both mismatch the loss and cost a
+                # cross-device copy every iteration
+                _t0 = _ptime.perf_counter()
+                pred_r = block_fwd.forward(rep, active_inputs, input_others, shard, dev_r)
+                # the masked loss divides by the shard's ELEMENT count
+                # (reduction="mean"), which is identical across the
+                # equal shards -- so the exchange's mean-of-shard-means
+                # reproduces the serial masked loss exactly
+                loss_r = self._get_loss(pred_r, ref_r, shard, mse_loss, dev_r, valid_token_mask)
+                rec.fwd = _ptime.perf_counter() - _t0
+                _t0 = _ptime.perf_counter()
+                loss_r.backward()
+                # NB: backward() returns after ENQUEUE; the device
+                # completion is forced by the loss .item() sum and the
+                # exchange's grad reads, so a tail of bwd GPU time
+                # surfaces in the exch wall below
+                rec.bwd = _ptime.perf_counter() - _t0
+                return loss_r
+
+            # warm-up runs inside the context: serial per replica (dynamo
+            # kernel compilation races from worker threads), grads discarded,
+            # fail-visible abort on any mirror failure
+            accel.warmup(_ddp_step, home_optimizer=optimizer)
+
+        _tp["prepare"] = _ptime.perf_counter() - _phase_t0
+        _phase_t0 = _ptime.perf_counter()  # loop
         tuning_cache = None
-        # Only opt-in diffusion tuning can enter the CUDA staging path.
+        # Only opt-in diffusion tuning can enter the CUDA staging path (the
+        # data-parallel lane never coexists with it: engagement requires a
+        # multi-device plan, the cache requires a single device).
         cache_budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
         use_tuning_cache = (
             getattr(self.model_context, "is_diffusion", False)
@@ -507,42 +616,63 @@ class SignRoundQuantizer(BaseQuantizer):
                     for n, m in block.named_modules():
                         m.cur_iter = i
                 total_loss = 0
-                global_indices = index_sampler.next_batch()
-                if valid_token_mask:
-                    num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
-                for batch_start in range(0, len(global_indices), batch_size):
-                    indices = global_indices[batch_start : batch_start + batch_size]
-                    staged = tuning_cache.get(indices) if tuning_cache is not None else None
-                    if staged is None:
-                        ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
-                        pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
-                    else:
-                        ref_output = staged[2]
-                        pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
-                    if loss_device is not None:
-                        pred_output = pred_output.to(loss_device)
-                    if (
-                        block_ctx.block_index == block_ctx.block_cnt - 1
-                        and self.enable_lfq
-                        and input_ids is not None
-                        and self._is_text_decoder_block(block_ctx.block_name)
-                    ):
-                        loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
-                    else:
-                        loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
-                    num_elm = 1 if num_elm <= 0 else num_elm
-                    total_loss += loss.item() / num_elm
+                if accel is not None:
+                    _shards, global_indices = accel.next_shards(index_sampler)
+                    if valid_token_mask is not None:
+                        # same global normalization as the serial path (reporting only)
+                        num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+                    _losses = accel.run_step(_ddp_step, _shards)
+                    # sync_grads: cross-replica gradient exchange. sign_exchange:
+                    # the update consumes only sign(mean-grad) and weight_decay is
+                    # 0, so exchanging int8 signs after the reduce is
+                    # bitwise-identical across replicas -- but a momentum buffer
+                    # would mix magnitudes back in, so gate on it.
+                    accel.sync_grads(sign_exchange=self.momentum is None or float(self.momentum) == 0.0)
+                    # report the global-batch mean (mean of equal-size shard
+                    # means == the serial global mean), normalized by the
+                    # valid-element count exactly like the serial path so
+                    # best-iter selection and dynamic_max_gap behave identically
+                    total_loss = accel.mean_loss(_losses, num_elm)
 
-                    if mid_iter_mem_check:
-                        # clear memory to avoid OOM due to memory fragmentation
-                        clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
+                else:
+                    global_indices = index_sampler.next_batch()
+                    if valid_token_mask:
+                        num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+                    for batch_start in range(0, len(global_indices), batch_size):
+                        indices = global_indices[batch_start : batch_start + batch_size]
+                        staged = tuning_cache.get(indices) if tuning_cache is not None else None
+                        if staged is None:
+                            ref_output = _cat_device_safe([fp_outputs[i] for i in indices], dim=0).to(loss_device)
+                            pred_output = block_fwd.forward(
+                                block, active_inputs, input_others, indices, _fwd_cache_device
+                            )
+                        else:
+                            ref_output = staged[2]
+                            pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
+                        if loss_device is not None:
+                            pred_output = pred_output.to(loss_device)
+                        if (
+                            block_ctx.block_index == block_ctx.block_cnt - 1
+                            and self.enable_lfq
+                            and input_ids is not None
+                            and self._is_text_decoder_block(block_ctx.block_name)
+                        ):
+                            loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
+                        else:
+                            loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
+                        num_elm = 1 if num_elm <= 0 else num_elm
+                        total_loss += loss.item() / num_elm
 
-                    self._scale_loss_and_backward(scaler, loss)
+                        if mid_iter_mem_check:
+                            # clear memory to avoid OOM due to memory fragmentation
+                            clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
 
-                    if mid_iter_mem_check:
-                        # clear memory to avoid OOM due to memory fragmentation
-                        clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
+                        self._scale_loss_and_backward(scaler, loss)
+
+                        if mid_iter_mem_check:
+                            # clear memory to avoid OOM due to memory fragmentation
+                            clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
 
                 if i == 0:
                     init_loss = total_loss
@@ -568,12 +698,24 @@ class SignRoundQuantizer(BaseQuantizer):
                 if not self.not_use_best_mse:
                     if 0 < self.dynamic_max_gap <= i - last_best_iter:
                         break
-                sync_gradients()
-                self._step(scaler, optimizer, lr_schedule)
+                if accel is not None:
+                    accel.step(lambda: self._step(scaler, optimizer, lr_schedule))
+                else:
+                    sync_gradients()
+                    self._step(scaler, optimizer, lr_schedule)
 
         finally:
             if tuning_cache is not None:
                 tuning_cache.close()
+            _tp["loop"] = _ptime.perf_counter() - _phase_t0
+            _phase_t0 = _ptime.perf_counter()  # tail
+            if accel is not None:
+                # engagement defines both; serial never enters this branch
+                accel.teardown()
+                _phase_t0 = _ptime.perf_counter()  # tail resumes after teardown
+
+        if accel is not None:
+            accel.log_perf(block)
 
         last_loss = total_loss
         best_iter = self.iters
@@ -602,6 +744,9 @@ class SignRoundQuantizer(BaseQuantizer):
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
         logger.infoclean(dump_info)
+        _tp["tail"] = _ptime.perf_counter() - _phase_t0
+        if getattr(_envs, "AR_PERF_COUNTERS", False):
+            logger.info(_tune_phase_line(_tp, self.iters))
         return best_params
 
     def quantize_layer_outside_block(

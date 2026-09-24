@@ -84,6 +84,7 @@ class WrapperLinear(torch.nn.Module):
         enable_round_tuning=True,
         enable_torch_compile=True,
         disable_opt_rtn=True,
+        defer_init_search=False,
         **kwargs,
     ):
         """Initializes the WrapperLinear module.
@@ -93,8 +94,13 @@ class WrapperLinear(torch.nn.Module):
             enable_minmax_tuning (bool): Whether to enable min-max scale tuning.
             enable_norm_bias_tuning (bool): Whether to enable normalization and tuning for the bias term.
             device (str): The computation device, such as 'cpu' or 'cuda'.
+            defer_init_search (bool): Skip the wrap-time init-scale search and
+                let the data-parallel lane run it on the replicas (mirrors-first).
+                Wrappers without a wrap-time search ignore this flag.
         """
         super(WrapperLinear, self).__init__()
+        self.defer_init_search = defer_init_search
+        self._init_search_deferred = False
         self.orig_layer = orig_layer
         self.orig_layer.iters = kwargs.pop("iters", 200)
         self.disable_opt_rtn = disable_opt_rtn
@@ -135,6 +141,16 @@ class WrapperLinear(torch.nn.Module):
     @property
     def bias(self):
         return self.orig_layer.bias
+
+    def run_deferred_init_search(self) -> None:
+        """Run the deferred init-scale search (base: nothing to search)."""
+
+    def _finalize_deferred_init(self, val=None) -> None:
+        """Apply a broadcast init-scale + clear the deferred flag (base: flag only)."""
+        self._init_search_deferred = False
+
+    def _compile_own_quant_func(self) -> None:
+        """Compile this wrapper's quant func on its own device (base: no-op)."""
 
     def _init_tuning_params_and_quant_func(self):
         """Initializes tuning parameters and quantization functions.
