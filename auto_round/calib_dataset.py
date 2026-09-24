@@ -21,12 +21,22 @@ import queue
 import random
 import ssl
 import sys
+import tempfile
 from importlib.metadata import PackageNotFoundError, version
 
 logging.getLogger("datasets").setLevel(logging.WARNING)
 
 import torch
-from datasets import Dataset, Features, IterableDataset, Sequence, Value, concatenate_datasets, load_dataset
+from datasets import (
+    Dataset,
+    Features,
+    IterableDataset,
+    Sequence,
+    Value,
+    concatenate_datasets,
+    load_dataset,
+    load_from_disk,
+)
 from packaging.version import Version
 from torch.utils.data import DataLoader
 
@@ -101,15 +111,16 @@ def _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamp
     return _get_dataset_impl(tokenizer, seqlen, _FINEWEB_EDU_MODELSCOPE_DATASET, seed, nsamples)
 
 
-def _preprocess_dataset_in_subprocess(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples):
+def _preprocess_dataset_in_subprocess(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples, output_path):
     """Run dataset preprocessing and report network failures to the parent process."""
     try:
-        _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+        dataset = _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+        dataset.save_to_disk(output_path)
     except Exception as error:
         network_error = _get_dataset_network_error(error)
         result_queue.put((_DATASET_RESULT_ERROR, str(network_error) if network_error is not None else None))
         raise
-    result_queue.put((_DATASET_RESULT_SUCCESS, None))
+    result_queue.put((_DATASET_RESULT_SUCCESS, output_path))
 
 
 def get_code_calibration_dataset(nsamples, datasets_version=None):
@@ -1211,47 +1222,49 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, n
             return _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples)
 
     # Run preprocessing in a subprocess so all temporary memory is freed on exit.
-    # The HuggingFace datasets cache is warmed up as a side effect.
     logger.info("Preprocessing calibration dataset in a subprocess to avoid memory leaks...")
 
     subprocess_network_error = None
-    try:
-        if os.name == "nt":
-            raise OSError("fork is not available on Windows")
-
-        # macOS crashes with SIGSEGV (exit code -11) when using "fork" after threads
-        # have been started (PyTorch, tokenizers, and HuggingFace datasets all use
-        # threads).  Use "spawn" on macOS, which is safe but requires pickling args.
-        mp_context = "spawn" if sys.platform == "darwin" else "fork"
-        ctx = multiprocessing.get_context(mp_context)
-        result_queue = ctx.Queue()
-        p = ctx.Process(
-            target=_preprocess_dataset_in_subprocess,
-            args=(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples),
-        )
-        p.start()
-        p.join()
-
+    with tempfile.TemporaryDirectory(prefix="auto_round_calib_") as temp_dir:
         try:
-            result_status, network_error_message = result_queue.get(timeout=1)
-        except queue.Empty:
-            result_status, network_error_message = None, None
-        result_queue.close()
-        result_queue.join_thread()
-        if p.exitcode != 0:
-            if result_status == _DATASET_RESULT_ERROR and network_error_message is not None:
-                subprocess_network_error = ConnectionError(network_error_message)
-            else:
-                raise RuntimeError(f"Dataset preprocessing subprocess exited with code {p.exitcode}")
+            if os.name == "nt":
+                raise OSError("fork is not available on Windows")
 
-    except Exception as e:
-        logger.warning(f"Subprocess dataset preprocessing failed ({e}), falling back to in-process mode.")
+            # macOS crashes with SIGSEGV (exit code -11) when using "fork" after threads
+            # have been started (PyTorch, tokenizers, and HuggingFace datasets all use
+            # threads).  Use "spawn" on macOS, which is safe but requires pickling args.
+            mp_context = "spawn" if sys.platform == "darwin" else "fork"
+            ctx = multiprocessing.get_context(mp_context)
+            result_queue = ctx.Queue()
+            p = ctx.Process(
+                target=_preprocess_dataset_in_subprocess,
+                args=(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples, os.path.join(temp_dir, "dataset")),
+            )
+            p.start()
+            p.join()
+
+            try:
+                result_status, result_value = result_queue.get(timeout=1)
+            except queue.Empty:
+                result_status, result_value = None, None
+            result_queue.close()
+            result_queue.join_thread()
+            if p.exitcode != 0:
+                if result_status == _DATASET_RESULT_ERROR and result_value is not None:
+                    subprocess_network_error = ConnectionError(result_value)
+                else:
+                    raise RuntimeError(f"Dataset preprocessing subprocess exited with code {p.exitcode}")
+            elif result_status == _DATASET_RESULT_SUCCESS:
+                return load_from_disk(result_value, keep_in_memory=True)
+            else:
+                raise RuntimeError("Dataset preprocessing subprocess returned no dataset")
+
+        except Exception as e:
+            logger.warning(f"Subprocess dataset preprocessing failed ({e}), falling back to in-process mode.")
 
     if subprocess_network_error is not None:
         return _fallback_to_fineweb_edu(subprocess_network_error, tokenizer, seqlen, dataset_name, seed, nsamples)
 
-    # (Re-)load the dataset in the main process.  When the subprocess
-    # succeeded the HF datasets cache makes this almost instant.
     try:
         return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
     except Exception as error:
