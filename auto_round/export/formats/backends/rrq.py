@@ -62,31 +62,41 @@ class RRQFormat(OutputFormat):
         serialization_dict=None,
         **kwargs,
     ):
-        """Save the RRQ residual model.
+        """Save the full RRQ model: a standard INT2 base model plus the residual artifact.
+
+        This delegates to :func:`~auto_round.export.export_to_autoround.export_to_rrq.save_rrq_model`,
+        which writes two artifacts under ``output_dir``::
+
+            {output_dir}/base/      standard INT2 ``auto_round`` model (plane 0)
+            {output_dir}/residual/  ``auto_round:rrq`` residual planes (1..K-1)
+
+        Ordering (residual before base) is handled inside ``save_rrq_model``, so
+        callers of the public ``quantize_and_save(format="auto_round:rrq")``
+        path never have to sequence the two exports themselves.
 
         Args:
-            output_dir: Output directory.
-            model: The model with RRQ-quantized layers.
-            tokenizer: Tokenizer (not used for RRQ residual export).
-            layer_config: Per-layer config (may be used to extract group_size/sym).
-            inplace: Whether to modify the model in place.
+            output_dir: Output directory; ``base/`` and ``residual/`` are created inside it.
+            model: The model with RRQ-quantized layers (after quantization).
+            tokenizer: Tokenizer saved alongside the base model.
+            layer_config: Per-layer configuration dict (used for the base export).
+            inplace: Whether the base export may modify the model in place.
             device: Device for computation.
-            serialization_dict: Serialization config from the compressor.
-            **kwargs: Additional kwargs (e.g. safe_serialization, max_shard_size).
+            serialization_dict: Serialization config dict (from the compressor).
+            **kwargs: Additional kwargs (e.g. ``safe_serialization``, ``max_shard_size``).
         """
-        from auto_round.export.export_to_autoround.export_to_rrq import save_quantized_rrq
+        from auto_round.export.export_to_autoround.export_to_rrq import save_rrq_model
 
-        # group_size / sym / num_planes are read from the model's RRQ layers
-        # (set during quantize).  Pass None so the model values win.
         safe_serialization = kwargs.pop("safe_serialization", True)
 
-        save_quantized_rrq(
+        save_rrq_model(
             output_dir=output_dir,
             model=model,
-            group_size=None,
-            sym=None,
-            num_planes=None,
+            tokenizer=tokenizer,
+            processor=kwargs.pop("processor", None),
+            layer_config=layer_config,
             device=device,
+            serialization_dict=serialization_dict,
+            inplace=inplace,
             safe_serialization=safe_serialization,
             **kwargs,
         )

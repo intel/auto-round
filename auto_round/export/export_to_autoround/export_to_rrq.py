@@ -283,19 +283,26 @@ def save_rrq_base_model(
     layer_config: dict = None,
     device: Union[str, torch.device] = "cpu",
     serialization_dict: dict = None,
+    tokenizer=None,
+    processor=None,
     safe_serialization: bool = True,
     **kwargs,
 ):
     """Save the RRQ base model (standard INT2) to disk.
 
     The base model is a standard INT2 quantized model compatible with existing
-    runtimes.  It uses the regular ``auto_round`` export path.
+    runtimes.  It uses the regular ``auto_round`` export path and stores the
+    base (plane-0) plane in ``layer.weight``/``layer.scale``/``layer.zp``
+    (standard quantized layout).  Unlike :func:`save_quantized_rrq`, it writes
+    the full model (architecture, tokenizer, ...) to ``output_dir``.
 
-    IMPORTANT: The standard ``auto_round`` export packs base layers in-place
-    (replacing ``nn.Linear`` with ``QuantLinear``), which drops the residual
-    buffers.  Export the residual model (``save_quantized_rrq``) *first*, then
-    call this to export the base model.  The base plane is stored in
-    ``layer.weight``/``layer.scale``/``layer.zp`` (standard format).
+    NOTE: This is a *low-level* helper.  Prefer :func:`save_rrq_model`, which
+    writes both the base and residual artifacts with the correct ordering in a
+    single call.  If you call the two low-level helpers directly, you **must**
+    call :func:`save_quantized_rrq` *before* this one: the standard
+    ``auto_round`` export packs the base layers in place (replacing
+    ``nn.Linear`` with ``QuantLinear``), which drops the ``rrq_*`` residual
+    buffers, so the residual artifact must already be on disk.
 
     Args:
         output_dir: Output directory for the base model.
@@ -303,6 +310,8 @@ def save_rrq_base_model(
         layer_config: Per-layer configuration dict.
         device: Device for computation.
         serialization_dict: Serialization config dict (from the compressor).
+        tokenizer: Tokenizer saved alongside the base model.
+        processor: Optional processor (e.g. for MLLMs) saved with the base model.
         safe_serialization: Use safetensors format (default True).
         **kwargs: Additional keyword arguments.
     """
@@ -311,6 +320,8 @@ def save_rrq_base_model(
     save_quantized_as_autoround(
         output_dir=output_dir,
         model=model,
+        tokenizer=tokenizer,
+        processor=processor,
         layer_config=layer_config,
         device=str(device),
         backend="auto_round",
@@ -318,6 +329,80 @@ def save_rrq_base_model(
         safe_serialization=safe_serialization,
         **kwargs,
     )
+
+
+def save_rrq_model(
+    output_dir: str,
+    model: nn.Module,
+    tokenizer=None,
+    processor=None,
+    layer_config: dict = None,
+    device: Union[str, torch.device] = "cpu",
+    serialization_dict: dict = None,
+    inplace: bool = True,
+    safe_serialization: bool = True,
+    **kwargs,
+):
+    """Save the full RRQ model in one call: an INT2 base model + residual artifact.
+
+    Produces two artifacts under ``output_dir``, with the export order handled
+    internally so callers (e.g. ``BaseCompressor.save_quantized``) do not have
+    to sequence the two low-level saves themselves::
+
+        {output_dir}/base/      standard INT2 ``auto_round`` model (plane 0)
+        {output_dir}/residual/  ``auto_round:rrq`` residual artifact (planes 1..K-1)
+
+    Ordering matters: the standard ``auto_round`` export packs the base layers
+    in place (replacing ``nn.Linear`` with ``QuantLinear``), which discards the
+    ``rrq_*`` residual buffers.  The residual planes are therefore saved
+    *first* (``save_quantized_rrq`` renames ``rrq_*_k`` -> ``*_k`` but leaves
+    the modules intact), and only then is the base model packed and exported.
+
+    Args:
+        output_dir: Output directory; ``base/`` and ``residual/`` are created inside it.
+        model: The model with RRQ-quantized layers (after ``quantize()``).
+        tokenizer: Tokenizer saved alongside the base model.
+        processor: Optional processor (e.g. for MLLMs) saved with the base model.
+        layer_config: Per-layer configuration dict for the base export.
+        device: Device for computation.
+        serialization_dict: Serialization config dict (from the compressor).
+        inplace: Whether to modify the model in place during the base export.
+        safe_serialization: Use safetensors format (default True).
+        **kwargs: Additional keyword arguments forwarded to the exporters
+            (e.g. ``max_shard_size``, ``save_fp32``).
+    """
+    import os
+
+    os.makedirs(output_dir, exist_ok=True)
+    base_dir = os.path.join(output_dir, "base")
+    residual_dir = os.path.join(output_dir, "residual")
+
+    # 1) Residual first: ``save_quantized_rrq`` only renames the ``rrq_*_k``
+    #    buffers to their on-disk ``*_k`` names and serializes them.  It does
+    #    NOT replace the modules, so the base plane (``weight``/``scale``/``zp``
+    #    on the ``nn.Linear``) is still intact for the base export below.
+    save_quantized_rrq(
+        output_dir=residual_dir,
+        model=model,
+        device=device,
+        safe_serialization=safe_serialization,
+        **kwargs,
+    )
+
+    # 2) Base second: the standard export packs the base layers in place, which
+    #    replaces the modules and drops the (now saved) residual buffers.
+    save_rrq_base_model(
+        output_dir=base_dir,
+        model=model,
+        layer_config=layer_config,
+        device=device,
+        serialization_dict=serialization_dict,
+        tokenizer=tokenizer,
+        processor=processor,
+        safe_serialization=safe_serialization,
+        **kwargs,
+    )
+    logger.info(f"RRQ model saved: base -> {base_dir}, residual -> {residual_dir}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
