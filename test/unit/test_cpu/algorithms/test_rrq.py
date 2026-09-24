@@ -697,6 +697,39 @@ class TestRRQSave:
         assert model.config.quantization_config["packing_format"] == RRQ_PACKING_FORMAT
         assert model.config.quantization_config["total_planes"] == 4
 
+    def test_save_rrq_model_ordering_residual_before_base(self, tmp_path, monkeypatch):
+        """save_rrq_model must save the residual model BEFORE the base model.
+
+        The base model packing (QuantLinear replacement) destroys the in-memory
+        RRQ buffers, so the residual artifact must be serialized first.
+        """
+        import auto_round.export.export_to_autoround.export_to_rrq as rrq_export
+
+        model, layer = self._make_quantized_model()
+
+        call_order = []
+
+        def _fake_save_residual(output_dir, model, **kwargs):
+            call_order.append("residual")
+            # Verify residual output dir is output_dir/residual
+            assert output_dir.endswith(os.path.join("residual")), f"Wrong residual dir: {output_dir}"
+
+        def _fake_save_base(output_dir, model, **kwargs):
+            call_order.append("base")
+            # Verify base output dir is output_dir/base
+            assert output_dir.endswith(os.path.join("base")), f"Wrong base dir: {output_dir}"
+            # Verify the residual buffers have NOT been consumed yet by base
+            # at this point they should have been renamed (already done by
+            # save_quantized_rrq) -- just confirm call ordering is preserved.
+
+        monkeypatch.setattr(rrq_export, "save_quantized_rrq", _fake_save_residual)
+        monkeypatch.setattr(rrq_export, "save_rrq_base_model", _fake_save_base)
+
+        out_dir = str(tmp_path / "rrq_combined")
+        rrq_export.save_rrq_model(out_dir, model)
+
+        assert call_order == ["residual", "base"], f"Wrong save order: {call_order}"
+
 
 class TestRRQValidation:
     """Tests for the base/residual config validation in load_rrq_model."""
