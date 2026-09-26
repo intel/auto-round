@@ -205,7 +205,13 @@ def _resolve_layer_config_presets(
     ignore_layer_patterns = set()
     if ignore_layers:
         ignore_layers = ignore_layers.replace(" ", "").split(",")
-        ignore_layers = [name + "." if name[-1].isdigit() else name for name in ignore_layers]
+        # "layers.1" -> "layers.1." so it does not also match "layers.10", but only when modules sit
+        # under that name; a layer whose own name ends with a digit (e.g. "fc1") is kept as is.
+        module_names = [n for n, _ in model.named_modules()]
+        ignore_layers = [
+            name + "." if name[-1].isdigit() and any(name + "." in n for n in module_names) else name
+            for name in ignore_layers
+        ]
         ignore_layer_patterns = set(ignore_layers)
 
     # 1. ignore_layers -> force 16
