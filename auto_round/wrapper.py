@@ -84,6 +84,7 @@ class WrapperLinear(torch.nn.Module):
         enable_round_tuning=True,
         enable_torch_compile=True,
         disable_opt_rtn=True,
+        enable_neuqi=False,
         **kwargs,
     ):
         """Initializes the WrapperLinear module.
@@ -98,6 +99,7 @@ class WrapperLinear(torch.nn.Module):
         self.orig_layer = orig_layer
         self.orig_layer.iters = kwargs.pop("iters", 200)
         self.disable_opt_rtn = disable_opt_rtn
+        self.enable_neuqi = enable_neuqi
         self.output_device = device
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.enable_minmax_tuning = enable_minmax_tuning
@@ -181,13 +183,50 @@ class WrapperLinear(torch.nn.Module):
             if clip_max_flat.numel() == self.weight_max.numel() and clip_min_flat.numel() == self.weight_min.numel():
                 self.weight_max = torch.minimum(self.weight_max, clip_max_flat)
                 self.weight_min = torch.maximum(self.weight_min, clip_min_flat)
+        # NeUQI frozen init (enable_neuqi on the tuning path): anchor
+        # the grid to the searched (scale, zp) instead of the raw per-group
+        # min/max. Placement mirrors the AWQ clip-as-init above; unsupported
+        # layouts (tuple group sizes, >=16 bits, non-int data types) keep the
+        # status-quo min/max grid. The zero-shot path needs no anchor -- its
+        # search runs inside the quant function dispatch itself.
+        self._neuqi_frozen_margins = False
+        if (
+            self.enable_neuqi
+            and self.enable_round_tuning
+            and weight_reshape is not None
+            and self.weight_min is not None
+            and self.orig_layer.bits < 16
+            and not isinstance(orig_layer.group_size, tuple)
+            and self.orig_layer.data_type == "int"
+        ):
+            if getattr(orig_layer, "awq_clip_max", None) is not None:
+                logger.warning_once(
+                    "enable_neuqi anchors the tuning grid to its own search result, which "
+                    "overrides the AWQ clip-as-init range on this layer; the clip is ignored."
+                )
+            from auto_round.data_type.neuqi import neuqi_anchor_margins
+
+            _wmin, _wmax = neuqi_anchor_margins(
+                weight_reshape,
+                self.orig_layer.bits,
+                orig_layer.group_size,
+                getattr(orig_layer, "imatrix", None),
+                self.device,
+                sym=bool(getattr(orig_layer, "sym", True)),
+            )
+            self._neuqi_frozen_margins = True
+            self.weight_min = _wmin.to(self.weight_min.dtype)
+            self.weight_max = _wmax.to(self.weight_max.dtype)
         self._init_params(
             "value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning and self.orig_layer.bits < 16
         )
         # Min-max scale initialization
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
-        self._init_params("min_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
-        self._init_params("max_scale", p_dtype, shape, 1.0, (self.enable_minmax_tuning and self.orig_layer.bits < 16))
+        _margins_tunable = (self.enable_minmax_tuning and self.orig_layer.bits < 16) and (
+            not self._neuqi_frozen_margins
+        )
+        self._init_params("min_scale", p_dtype, shape, 1.0, _margins_tunable)
+        self._init_params("max_scale", p_dtype, shape, 1.0, _margins_tunable)
 
         self.weight_quant_func, self.data_type = get_quant_func(
             orig_layer.data_type,
@@ -196,6 +235,7 @@ class WrapperLinear(torch.nn.Module):
             self.disable_opt_rtn,
             orig_layer.group_size,
             iters=orig_layer.iters,
+            enable_neuqi=self.enable_neuqi,
         )
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
