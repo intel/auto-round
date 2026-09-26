@@ -378,6 +378,11 @@ class _ExportDtypeModel(nn.Module):
         self.router = nn.Linear(4, 2)
         self.register_buffer("qweight", torch.zeros(4, 4, dtype=torch.float8_e4m3fn))
         self.register_buffer("indices", torch.zeros(4, dtype=torch.int32))
+        self.register_buffer("k_scale", torch.ones(1))
+        self.register_buffer("v_scale", torch.ones(1))
+        self.register_buffer("weight_zero_point", torch.zeros(1))
+        self.linear.register_buffer("input_scale", torch.ones(1))
+        self.linear.register_buffer("weight_scale", torch.ones(1))
 
 
 class TestGetStateDictForExportDtype:
@@ -397,6 +402,12 @@ class TestGetStateDictForExportDtype:
         state_dict = _get_state_dict_for_export_dtype(model, torch.float16)
         assert state_dict["router.weight"].dtype == torch.float32
         assert state_dict["linear.weight"].dtype == torch.float16
+
+    def test_keeps_quantization_scales_in_float32(self):
+        model = _ExportDtypeModel()
+        state_dict = _get_state_dict_for_export_dtype(model, torch.bfloat16)
+        for name in ("k_scale", "v_scale", "weight_zero_point", "linear.input_scale", "linear.weight_scale"):
+            assert state_dict[name].dtype == torch.float32, name
 
     def test_does_not_modify_model(self):
         model = _ExportDtypeModel()
