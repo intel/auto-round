@@ -498,6 +498,13 @@ class TestDeviceManagerSingleton:
         m = DeviceManager("cpu")
         assert m.is_multi_device() is False
 
+    def test_is_multi_device_true(self):
+        from auto_round.utils.device_manager import DeviceManager
+
+        m = DeviceManager("cpu")
+        m._device_list = ["cuda:0", "cuda:1"]
+        assert m.is_multi_device() is True
+
     def test_device_setter(self):
         from auto_round.utils.device_manager import DeviceManager
 
