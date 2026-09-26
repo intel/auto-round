@@ -336,6 +336,12 @@ class TestParseLayerConfigArg:
         result = parse_layer_config_arg('{"bits": 4, "group_size": 128}')
         assert result == {"bits": 4, "group_size": 128}
 
+    def test_regex_key_with_json_invalid_escapes(self):
+        from auto_round.utils.common import parse_layer_config_arg
+
+        result = parse_layer_config_arg(r'{"layers\.\d{1,2}\.mlp": {"bits": 8, "group_size": 64}}')
+        assert result == {r"layers\.\d{1,2}\.mlp": {"bits": 8, "group_size": 64}}
+
     def test_cli_friendly_dict_syntax(self):
         from auto_round.utils.common import parse_layer_config_arg
 
