@@ -38,6 +38,11 @@ from auto_round.utils import (
 DEFAULT_MAX_SHARD_SIZE = "5GB"
 
 
+# Parameter names that only exist once a module has been packed for export, and
+# that replace its floating-point ``weight``.
+PACKED_WEIGHT_NAMES = frozenset({"qweight", "weight_packed"})
+
+
 class ShardWriter:
     """
     Handles shard-saving of model parameters to disk with memory management.
@@ -418,24 +423,50 @@ class ShardWriter:
 
     def finalize(self) -> None:
         """Saves remaining weights, renames files, and writes the index JSON."""
+        # Adopt the shards of a run this one resumed from before deciding which
+        # weights are still missing, otherwise their tensors look unsaved here.
+        if envs.AR_RESUME_DIR and not self._existing_shards_discovered:
+            self._discover_existing_shards()
+            self._existing_shards_discovered = True
+
         # 1. Capture remaining weights not yet saved
         full_sd = self.model.state_dict()
         tie_word_embeddings = False
         if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
             tie_word_embeddings = self.model.config.tie_word_embeddings
 
+        # Modules whose packed tensors were already written, e.g. by a previous
+        # run this one resumed from. Such a module is skipped by tuning, so the
+        # model tree still holds its original floating-point weight under a name
+        # that never matches the packed one.
+        packed_layers = {
+            pname.rsplit(".", 1)[0] for pname in self._all_saved if pname.rsplit(".", 1)[-1] in PACKED_WEIGHT_NAMES
+        }
+
         finalize_skipped_meta_tensors = []
+        stale_unpacked_tensors = []
         for pname, tensor in full_sd.items():
             if pname in self._all_saved:
                 continue
             if tensor.device.type == "meta":
                 continue
             layer_name = ".".join(pname.split(".")[:-1])
+            if pname.rsplit(".", 1)[-1] == "weight" and layer_name in packed_layers:
+                # Writing it would put the module in the checkpoint twice: once
+                # packed and once as the stale floating-point weight.
+                stale_unpacked_tensors.append(pname)
+                continue
             if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
                 lm_head_module = get_module(self.model, self.lm_head_name)
                 lm_head_module.to("meta")  # Must to meta, otherwise model's saver will dump it again
                 continue
             self._add_tensor(pname, tensor.detach().to("cpu"))
+
+        if stale_unpacked_tensors:
+            logger.info(
+                f"Skipped {len(stale_unpacked_tensors)} unpacked weight(s) of already-packed modules, "
+                f"e.g. {stale_unpacked_tensors[:3]}."
+            )
 
         self._flush_shard()
 
