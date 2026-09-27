@@ -224,11 +224,20 @@ class OutputFormat(ABC):
         pass
 
     def immediate_pack(self, name: str, model: torch.nn.Module, device: torch.device, **kwargs):
+        import time as _time
+
+        _t0 = _time.perf_counter()
         m = get_module(model, name)
-        if not check_to_quantized(m):
+        ok = check_to_quantized(m)
+        import auto_round.export.export_to_autoround.export as _ar_export
+
+        _ar_export.PACK_PHASES["lookup"] += _time.perf_counter() - _t0
+        if not ok:
             return
 
+        _t1 = _time.perf_counter()
         self.pack_layer(name, model, device=device)
+        _ar_export.PACK_PHASES["dispatch"] += _time.perf_counter() - _t1
 
     def is_gguf(self) -> bool:
         return "gguf" in self.output_format

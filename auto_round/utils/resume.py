@@ -41,6 +41,24 @@ _Q_INPUT_NAME = "resume_q_input.pt"
 _INPUT_IDS_NAME = "resume_input_ids.pt"
 
 
+def snapshot_pool_refs(obj):
+    """Shallow-freeze a calibration pool's container structure for async save.
+
+    Copies the list/tuple/dict skeleton (cheap, synchronous) while passing
+    tensor REFERENCES through untouched: pool tensors are never mutated in
+    place (placement moves create new tensors and swap container entries), so
+    a frozen skeleton lets a background thread safely run ``_to_cpu_recursive``
+    + ``torch.save`` while the main thread continues tuning the next block.
+    """
+    if isinstance(obj, dict):
+        return {k: snapshot_pool_refs(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [snapshot_pool_refs(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(snapshot_pool_refs(v) for v in obj)
+    return obj
+
+
 def _to_cpu_recursive(obj):
     """`q_input` (SignRound's `enable_quanted_input` chain value) may be a
     plain Tensor or a nested list/tuple/dict of tensors depending on the
