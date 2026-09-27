@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import re
+import time as _ptime
 
 import torch
 import torch.nn as nn
@@ -21,6 +22,13 @@ from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.logger import logger
+
+
+def _rtn_phase_line(norm, quant, n, mean, max_):
+    """Format the zero-shot RTN phase breakdown for AR_PERF_COUNTERS."""
+    return "[perf] rtn phases: norm=%.2fs quant=%.2fs (n=%d, mean=%.3fs, max=%.3fs)" % (norm, quant, n, mean, max_)
+
+
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
@@ -140,16 +148,66 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             input_ids: Raw token IDs from the tokenizer (unused in RTN).
             **kwargs: Reserved for forward-compatibility with future parameters.
         """
-        # Normalize imatrix (cheap elementwise divides), then quantize the
-        # block's target modules - same-shape expert projections batched into
-        # single stacked search calls when the search is active
-        targets = []
-        for name, m in block.named_modules():
+        # Normalize imatrix first (cheap, serial), then quantize layers. The
+        # optimized RTN scale search is weight-local (weight + imatrix), so on a
+        # block whose layers sit on several devices the searches run in
+        # parallel, one worker per device.
+        import auto_round.envs as _envs
+        from auto_round.algorithms.quantization import search_dispatch
+
+        _perf = bool(getattr(_envs, "AR_PERF_COUNTERS", False))
+        _t_norm = _ptime.perf_counter()
+        for _name, m in block.named_modules():
             if hasattr(m, "imatrix"):
                 m.imatrix /= m.imatrix_cnt
-            if hasattr(m, "global_name") and check_to_quantized(m):
-                targets.append(m)
-        self._quantize_targets(targets)
+        _t_q0 = _ptime.perf_counter()
+        _n = 0
+        _q_max = 0.0
+        work = [m for _name, m in block.named_modules() if hasattr(m, "global_name") and check_to_quantized(m)]
+
+        def _quantize_counted(m):
+            nonlocal _n, _q_max
+            _l0 = _ptime.perf_counter() if _perf else 0.0
+            self.quantize_layer_outside_block(m)
+            if _perf:
+                _q_max = max(_q_max, _ptime.perf_counter() - _l0)
+            _n += 1
+
+        def _quantize_staged(name, m):
+            nonlocal _n, _q_max
+            _l0 = _ptime.perf_counter() if _perf else 0.0
+            w = self._quantize_layer_via_rtn(m, defer_search=True)
+            if _perf:
+                _q_max = max(_q_max, _ptime.perf_counter() - _l0)
+            _n += 1
+            return name, w
+
+        _batching_off = search_dispatch.batched_search_disabled()
+        if not _batching_off or not search_dispatch.multigpu_search_disabled():
+            from auto_round.algorithms.quantization.rtn.batched_search import run_batched_rtn_search
+
+            staged = []
+            for m in work:
+                name, w = _quantize_staged(getattr(m, "global_name", None) or "", m)
+                if w is not None:  # None = OOM fallback already finished it serially
+                    staged.append((name, w))
+            if _batching_off:
+                # batching disabled but idle-device spreading on: execute the
+                # searches PER-MODULE on borrowed workers (max_batch=1 ->
+                # singleton chunks, zero stacking -- same search per module as
+                # the serial lane, placed on any viable device). The strict
+                # serial baseline for A/B is AR_DISABLE_MULTIGPU_SEARCH=1.
+                run_batched_rtn_search(self.model, staged, max_batch=1)
+                search_dispatch.log_engaged_once("per-module rtn search (batching disabled, idle devices)")
+            else:
+                run_batched_rtn_search(self.model, staged)
+                search_dispatch.log_engaged_once("batched rtn search")
+        else:
+            for m in work:
+                _quantize_counted(m)
+        if _perf:
+            _t_q1 = _ptime.perf_counter()
+            logger.info("%s", _rtn_phase_line(_t_q0 - _t_norm, _t_q1 - _t_q0, _n, (_t_q1 - _t_q0) / max(_n, 1), _q_max))
 
     def _split_expert_batches(self, targets: list):
         """Partition same-shape expert projections into batchable groups.

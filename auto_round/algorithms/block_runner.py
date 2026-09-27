@@ -192,6 +192,10 @@ class BlockForwardRunner:
             Normalized output tensor on ``cache_device`` (or ``self.cache_device``).
         """
         out_device = cache_device if cache_device is not None else self.cache_device
+        # Per-chunk calibration-data placement (--calibration_data_device): list mode (indices is
+        # None -- the cat at the end of indices-mode requires same-device outputs)
+        # and only when the caller did not pin a device for this call.
+        placement = getattr(self, "pool_placement", None) if cache_device is None and indices is None else None
         is_returned_list = True
         if indices is not None:
             is_returned_list = False
@@ -233,7 +237,11 @@ class BlockForwardRunner:
                     for key, value in batch_output_dict.items():
                         output_dict.setdefault(key, []).append(value.to(out_device))
                 output = [output]
-            outputs.extend(item.to(out_device) for item in output)
+            if placement is not None:
+                base = len(outputs)
+                outputs.extend(item.to(placement.device_for_index(base + j)) for j, item in enumerate(output))
+            else:
+                outputs.extend(item.to(out_device) for item in output)
             del raw_output, batch_output_dict, output, batch_inputs, batch_others
 
         if not outputs:
@@ -256,6 +264,25 @@ class BlockForwardRunner:
         return outputs
 
     # ── Input selection ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _gather_same_device(values, target_device):
+        """Ensure per-sample tensors are same-device before torch.cat.
+
+        With sharded calibration-data placement (--calibration_data_device)
+        a selected batch can span several park
+        devices; gather onto ``target_device`` (the compute device) in that
+        case. Uniform-device selections are returned untouched -- byte-identical
+        to the single-device behavior. Structured values (diffusion ``freqs``
+        can be nested lists) pass through: the single-device lane never moves
+        them either.
+        """
+        if not values or not all(hasattr(v, "device") for v in values):
+            return values
+        first = values[0].device
+        if all(v.device == first for v in values):
+            return values
+        return [v.to(target_device) for v in values]
 
     def select_batch(
         self,
@@ -383,14 +410,20 @@ class BlockForwardRunner:
                         selected_inputs[key] = val
                 else:
                     if isinstance(val, list):
-                        selected_inputs[key] = torch.cat([val[i] for i in indices], dim=batch_dim)
+                        batch_vals = self._gather_same_device([val[i] for i in indices], self.device)
+                        selected_inputs[key] = torch.cat(batch_vals, dim=batch_dim)
                     elif isinstance(val, torch.Tensor):
-                        selected_inputs[key] = torch.index_select(val, batch_dim, indices)
+                        # relocate indices like the input_others branch below:
+                        # under spread pool placement a sharded tensor key can
+                        # live on a park device while indices stay on the
+                        # sampler's CPU device
+                        selected_inputs[key] = torch.index_select(val, batch_dim, indices.to(device=val.device))
                     else:
                         selected_inputs[key] = val
         else:
             if isinstance(inputs, list):
-                selected_inputs = torch.cat([inputs[i] for i in indices], dim=batch_dim)
+                batch_vals = self._gather_same_device([inputs[i] for i in indices], self.device)
+                selected_inputs = torch.cat(batch_vals, dim=batch_dim)
             else:
                 selected_inputs = torch.index_select(inputs, batch_dim, indices)
 
@@ -408,7 +441,7 @@ class BlockForwardRunner:
                 else:
                     selected_others[key] = val
             elif isinstance(val, list):
-                batch_vals = [val[i] for i in indices]
+                batch_vals = self._gather_same_device([val[i] for i in indices], self.device)
                 if len(batch_vals) == 1:
                     selected_others[key] = batch_vals[0]
                 else:
