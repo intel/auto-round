@@ -129,22 +129,21 @@ class ShardWriter:
         shard numbering instead of colliding with them, and ``finalize()``'s
         index covers tensors from both processes.
 
-        Only files still in the pre-``finalize()`` temp naming
-        (``model-shard-NNNNN.<ext>``) are considered: once ``finalize()`` runs
-        it renames everything to the final HF layout, so a directory with no
-        such temp files means either nothing has been flushed yet, or a prior
-        run already finished -- neither should be treated as in-progress
-        shards to adopt.
+        Include both temporary and final checkpoint names: the resume manifest
+        remains live until the export steps after ``finalize()`` succeed.
         """
         output_dir = self.output_dir
         if not os.path.isdir(output_dir):
             return
         pattern = re.compile(rf"^model-shard-(\d+)\.{re.escape(self.shard_suffix)}$")
+        final_pattern = re.compile(rf"^model-(\d+)-of-\d+\.{re.escape(self.shard_suffix)}$")
         found = []
         for fname in os.listdir(output_dir):
-            m = pattern.match(fname)
+            m = pattern.match(fname) or final_pattern.match(fname)
             if m:
                 found.append((int(m.group(1)), fname))
+            elif fname == f"model.{self.shard_suffix}":
+                found.append((1, fname))
         if not found:
             return
         found.sort()
@@ -153,7 +152,7 @@ class ShardWriter:
             params = self._read_shard_tensor_names(path)
             self.shard_meta.append({"tmp_file": fname, "params": params, "dir": output_dir})
             self._all_saved.update(params)
-        self.shard_counter = found[-1][0]
+        self.shard_counter = max(len(found), found[-1][0])
         logger.info(
             f"ShardWriter: discovered {len(found)} already-flushed shard(s) in {output_dir} "
             f"from a previous run; resuming shard numbering from {self.shard_counter}."
@@ -326,11 +325,9 @@ class ShardWriter:
                 self._add_tensor(sub_name, sub_tensor)
             return
 
-        # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
-        if self.reverse_weight_transforms is not None:
-            name = revert_name_with_weight_transforms(name, self.reverse_weight_transforms)
-        else:
-            name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
+        name = self._checkpoint_name(name)
+        if name in self._all_saved or name in self.current_shard_tensors:
+            return
 
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()
@@ -350,6 +347,12 @@ class ShardWriter:
         else:
             self.current_shard_tensors[name] = tensor
             self.current_shard_size += t_size
+
+    def _checkpoint_name(self, name: str) -> str:
+        """Use the serialized namespace for both saving and resume comparisons."""
+        if self.reverse_weight_transforms is not None:
+            return revert_name_with_weight_transforms(name, self.reverse_weight_transforms)
+        return revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
 
     def _handle_tied_weights(self):
         """
@@ -446,12 +449,13 @@ class ShardWriter:
         finalize_skipped_meta_tensors = []
         stale_unpacked_tensors = []
         for pname, tensor in full_sd.items():
-            if pname in self._all_saved:
+            checkpoint_name = self._checkpoint_name(pname)
+            if pname in self._all_saved or checkpoint_name in self._all_saved:
                 continue
             if tensor.device.type == "meta":
                 continue
             layer_name = ".".join(pname.split(".")[:-1])
-            if pname.rsplit(".", 1)[-1] == "weight" and layer_name in packed_layers:
+            if pname.rsplit(".", 1)[-1] == "weight" and checkpoint_name.rsplit(".", 1)[0] in packed_layers:
                 # Writing it would put the module in the checkpoint twice: once
                 # packed and once as the stale floating-point weight.
                 stale_unpacked_tensors.append(pname)

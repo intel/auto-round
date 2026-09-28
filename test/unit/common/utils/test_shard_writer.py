@@ -15,6 +15,7 @@
 import os
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from auto_round.compressors.shard_writer import ShardWriter
@@ -199,7 +200,12 @@ def test_oversized_tensor_does_not_leave_tiny_preceding_shard(tmp_path, monkeypa
     assert set(writer.current_shard_tensors) == set()
 
 
-def test_finalize_skips_unpacked_weight_of_resumed_packed_module(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shard_name", ["model-shard-00001.bin", "model.bin", "model-00001-of-00002.bin"])
+@pytest.mark.parametrize("mapped", [False, True])
+@pytest.mark.parametrize("safe_serialization", [False, True])
+def test_finalize_skips_unpacked_weight_of_resumed_packed_module(
+    tmp_path, monkeypatch, shard_name, mapped, safe_serialization
+):
     """A module packed before a crash must not be written again as fp weights.
 
     The resumed run skips tuning for that module, so the model tree still holds
@@ -209,30 +215,52 @@ def test_finalize_skips_unpacked_weight_of_resumed_packed_module(tmp_path, monke
     """
     from auto_round import envs
 
-    # A shard flushed by the crashed run, holding the packed tensors.
-    torch.save(
+    if safe_serialization:
+        from safetensors.torch import load_file, save_file
+
+        save = save_file
+        load = load_file
+        shard_name = shard_name.replace(".bin", ".safetensors")
+    else:
+        save = torch.save
+        load = torch.load
+
+    multiple_shards = "-of-" in shard_name
+    suffix = "safetensors" if safe_serialization else "bin"
+    prefix = "saved_blocks" if mapped else "transformer_blocks"
+    # A shard flushed by the crashed run, possibly already renamed by finalize.
+    save(
         {
-            "transformer_blocks.0.linear.qweight": torch.zeros(4, 1, dtype=torch.int32),
-            "transformer_blocks.0.linear.scales": torch.ones(4, 1),
-            "transformer_blocks.0.linear.bias": torch.zeros(4),
+            f"{prefix}.0.linear.qweight": torch.zeros(4, 1, dtype=torch.int32),
+            f"{prefix}.0.linear.scales": torch.ones(4, 1),
+            f"{prefix}.0.linear.bias": torch.full((4,), 7.0),
         },
-        os.path.join(tmp_path, "model-shard-00001.bin"),
+        os.path.join(tmp_path, shard_name),
     )
+    if multiple_shards:
+        save({"completed.qweight": torch.ones(2)}, str(tmp_path / f"model-00002-of-00002.{suffix}"))
 
     monkeypatch.setattr(envs, "AR_RESUME_DIR", str(tmp_path))
 
     model = _DiffusionStyleModel()
     writer = _make_writer(model, str(tmp_path), monkeypatch)
+    writer.use_safetensors = safe_serialization
+    writer.shard_suffix = suffix
+    if mapped:
+        writer.reverse_checkpoint_conversion_mapping = {r"^transformer_blocks": "saved_blocks"}
     writer.finalize()
 
     saved = {}
     for name in os.listdir(tmp_path):
-        if name.endswith(".bin"):
-            saved.update(torch.load(os.path.join(tmp_path, name), map_location="cpu"))
+        if name.endswith(f".{suffix}"):
+            saved.update(load(os.path.join(tmp_path, name)))
 
-    assert "transformer_blocks.0.linear.qweight" in saved
+    assert f"{prefix}.0.linear.qweight" in saved
     assert (
-        "transformer_blocks.0.linear.weight" not in saved
+        f"{prefix}.0.linear.weight" not in saved
     ), "the packed module must not also be saved as a floating-point weight"
+    assert torch.equal(saved[f"{prefix}.0.linear.bias"], torch.full((4,), 7.0))
+    if multiple_shards:
+        assert torch.equal(saved["completed.qweight"], torch.ones(2))
     # Modules that were never packed are still saved.
     assert "proj_out.weight" in saved
