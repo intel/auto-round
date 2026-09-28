@@ -145,6 +145,21 @@ class BaseQuantizer(BaseAlgorithm):
         return is_quantized
 
     # ── Abstract quantization interface ───────────────────────────────────────
+    def parallel_constraints(self) -> dict:
+        """Declare eligibility facts for the single-process data-parallel lane.
+
+        The parallel engine consumes the declaration; algorithm internals stay
+        quantizer internals: ``scaler_active`` reports a gradient scaler that
+        replicas could not keep in sync, ``enable_lfq`` reports LFQ layers whose
+        handling is single-device. Families without a scaler probe report
+        ``scaler_active=False`` (e.g. RTN / OptimizedRTN have no ``_get_scaler``).
+        """
+        scaler_fn = getattr(self, "_get_scaler", None)
+        return {
+            "scaler_active": (scaler_fn() is not None) if callable(scaler_fn) else False,
+            "enable_lfq": bool(getattr(self, "enable_lfq", False)),
+        }
+
     def quantize_block(
         self,
         block: "torch.nn.Module",
@@ -199,6 +214,17 @@ class BaseQuantizer(BaseAlgorithm):
         """
         self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
 
+    @staticmethod
+    def _worker_threads_run_eager() -> bool:
+        """Search worker threads must construct/call quant callables eager."""
+        try:
+            from auto_round.algorithms.quantization.search_dispatch import worker_threads_run_eager
+
+            return worker_threads_run_eager()
+        except Exception as e:  # pragma: no cover - import cycles / diagnostics
+            logger.debug("worker-eager flag unavailable (%s); assuming main thread", e)
+            return False
+
     @torch.no_grad()
     def _quantize_layer_core(
         self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None, tuning_device=None
@@ -236,7 +262,8 @@ class BaseQuantizer(BaseAlgorithm):
                 enable_minmax_tuning=False,
                 enable_norm_bias_tuning=False,
                 enable_round_tuning=False,
-                enable_torch_compile=self.compress_context.enable_torch_compile,
+                enable_torch_compile=self.compress_context.enable_torch_compile
+                and not self._worker_threads_run_eager(),
                 disable_opt_rtn=disable_opt_rtn,
                 enable_neuqi=getattr(self.config, "enable_neuqi", False),
                 iters=0,
@@ -254,7 +281,8 @@ class BaseQuantizer(BaseAlgorithm):
                     enable_minmax_tuning=False,
                     enable_norm_bias_tuning=False,
                     enable_round_tuning=False,
-                    enable_torch_compile=self.compress_context.enable_torch_compile,
+                    enable_torch_compile=self.compress_context.enable_torch_compile
+                    and not self._worker_threads_run_eager(),
                     disable_opt_rtn=disable_opt_rtn,
                     enable_neuqi=getattr(self.config, "enable_neuqi", False),
                     iters=0,

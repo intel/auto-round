@@ -179,8 +179,8 @@ def block_forward(
     # kwarg (e.g. an entry recorded on the primary GPU while the replica
     # lives elsewhere) silently overrides the staged first-arg inside this
     # function and crashes cross-device inside the block forward -- serial
-    # runs never notice because every tensor shares one device. Move the
-    # stragglers onto the block's device AND name them (fail-visible).
+    # runs with a single shared device stay unaffected. Move the stragglers
+    # onto the block's device AND name them (fail-visible).
     try:
         _block_dev = next(block.parameters()).device
     except StopIteration:  # pragma: no cover - param-less blocks

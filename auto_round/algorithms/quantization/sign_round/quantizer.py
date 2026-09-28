@@ -390,14 +390,14 @@ class SignRoundQuantizer(BaseQuantizer):
         nsamples = len(active_inputs) if isinstance(active_inputs, list) else self._count_samples(active_inputs)
 
         from auto_round import envs as _envs
-        from auto_round.algorithms.quantization.sign_round.data_parallel import expect_pool_local
-        from auto_round.algorithms.quantization.sign_round.tune_parallel import TuneParallelContext
+        from auto_round.algorithms.parallel.data_parallel import expect_pool_local
+        from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
 
         accel = None  # TuneParallelContext: engine-owned parallel lane; None = serial
 
         import time as _ptime
 
-        _defer_wrap_search = TuneParallelContext.defer_wrap_searches()
+        _defer_wrap_search = TuneParallelContext.defer_wrap_searches(self)
 
         _tp = {}
         _phase_t0 = _ptime.perf_counter()
@@ -408,7 +408,7 @@ class SignRoundQuantizer(BaseQuantizer):
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
             enable_neuqi=getattr(self.config, "enable_neuqi", False),
-            defer_init_search=_defer_wrap_search,
+            defer_search=_defer_wrap_search,
         )
         _tp["wrap"] = _ptime.perf_counter() - _phase_t0
         _phase_t0 = _ptime.perf_counter()  # prepare: engagement + params + optimizer
@@ -429,9 +429,9 @@ class SignRoundQuantizer(BaseQuantizer):
         )
         if accel is None and _defer_wrap_search:
             # the resolver declined the parallel lane: fill the deferred
-            # searches serially on the home device (never enter tuning with
-            # init_scale unset)
-            from auto_round.algorithms.quantization.sign_round.data_parallel import run_deferred_wrap_searches
+            # searches serially on the home device (tuning requires
+            # init_scale set)
+            from auto_round.algorithms.parallel.data_parallel import run_deferred_wrap_searches
 
             run_deferred_wrap_searches(block, None)
 
@@ -501,6 +501,12 @@ class SignRoundQuantizer(BaseQuantizer):
         mse_reduction = "mean"
         if self.gradient_accumulate_steps != 1:
             mse_reduction = "sum"
+        _use_ddp = accel is not None
+        if _use_ddp:
+            # replicas may chunk their shards into batch_size micro-batches,
+            # so per-forward losses are SUMS everywhere in the lane; the
+            # element count normalizes (partition-invariant)
+            mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
         init_loss = None
@@ -510,8 +516,12 @@ class SignRoundQuantizer(BaseQuantizer):
         global_batch_size = batch_size * self.gradient_accumulate_steps
         global_batch_size = min(nsamples, global_batch_size)
         # Compute num_elm once before the loop (used to normalise the accumulated loss).
-        # We assume the block input and output shape is same
-        if self.gradient_accumulate_steps != 1 and not valid_token_mask:
+        # We assume the block input and output shape is same. The DDP lane needs it
+        # even at accumulation==1: its per-forward losses are always SUMS, so without
+        # the element count the reported lane loss is the raw global sum (element-count
+        # times the serial mean) -- gradient signs are unaffected but best-iter
+        # logging and any serial-vs-lane comparison would silently diverge in scale.
+        if (self.gradient_accumulate_steps != 1 or _use_ddp) and not valid_token_mask:
             whole_indices = torch.arange(global_batch_size)
             if isinstance(active_inputs, list):  # dict for diffusion, tricky setting, not sure whether it's correct
                 num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
@@ -533,7 +543,7 @@ class SignRoundQuantizer(BaseQuantizer):
             else None
         )
 
-        # ── Optional single-process data parallelism (AR_TUNE_DDP_WORLD) ─────
+        # ── Optional single-process data parallelism (--parallel_quantization) ─
         # (engagement, plan, mirrors and pool distribution ran inside
         # TuneParallelContext.create; mirror optimizers + warm-up remain here)
         if accel is not None:
@@ -554,25 +564,44 @@ class SignRoundQuantizer(BaseQuantizer):
             def _ddp_step(rep, shard, dev_r, rec):
                 expect_pool_local([fp_outputs[j] for j in shard], dev_r, "ddp-ref")
                 ref_r = torch.cat([fp_outputs[j].to(dev_r) for j in shard], dim=0)
-                # always device-local: parking a mirror's output on the
-                # primary GPU would both mismatch the loss and cost a
-                # cross-device copy every iteration
+                # per-forward activations are capped at the serial micro-batch
+                # size: a replica whose shard exceeds batch_size (small world,
+                # accumulated global batch) processes it in batch_size chunks
+                # with a sum-reduced loss per chunk, exactly like the serial
+                # accumulation loop -- grads accumulate across chunks and the
+                # exchange sees the shard's full sum
+                _mb = max(1, int(getattr(self.calibration_context, "batch_size", len(shard)) or len(shard)))
+                chunks = [shard[i : i + _mb] for i in range(0, len(shard), _mb)] if len(shard) > _mb else [shard]
+                loss_total = None
+                _bwd_t = 0.0
                 _t0 = _ptime.perf_counter()
-                pred_r = block_fwd.forward(rep, active_inputs, input_others, shard, dev_r)
-                # the masked loss divides by the shard's ELEMENT count
-                # (reduction="mean"), which is identical across the
-                # equal shards -- so the exchange's mean-of-shard-means
-                # reproduces the serial masked loss exactly
-                loss_r = self._get_loss(pred_r, ref_r, shard, mse_loss, dev_r, valid_token_mask)
-                rec.fwd = _ptime.perf_counter() - _t0
-                _t0 = _ptime.perf_counter()
-                loss_r.backward()
+                for ci, chunk in enumerate(chunks):
+                    # always device-local: parking a mirror's output on the
+                    # primary GPU would both mismatch the loss and cost a
+                    # cross-device copy every iteration
+                    pred_c = block_fwd.forward(rep, active_inputs, input_others, chunk, dev_r)
+                    # sum-reduced: the loss is a SUM over the chunk's elements;
+                    # mean_loss normalizes by the global element count, so the
+                    # shard sums add up to the serial global sum regardless of
+                    # how many chunks each replica took
+                    loss_c = self._get_loss(
+                        pred_c, ref_r[ci * _mb : ci * _mb + len(chunk)], chunk, mse_loss, dev_r, valid_token_mask
+                    )
+                    # backward per chunk (like the serial accumulation loop)
+                    # so each chunk's graph frees before the next forward --
+                    # the per-forward activation cap is the whole point
+                    _tb = _ptime.perf_counter()
+                    loss_c.backward()
+                    _bwd_t += _ptime.perf_counter() - _tb
+                    loss_total = loss_c.detach() if loss_total is None else loss_total + loss_c.detach()
+                _all_t = _ptime.perf_counter() - _t0
+                rec.fwd = _all_t - _bwd_t
+                rec.bwd = _bwd_t
                 # NB: backward() returns after ENQUEUE; the device
                 # completion is forced by the loss .item() sum and the
                 # exchange's grad reads, so a tail of bwd GPU time
                 # surfaces in the exch wall below
-                rec.bwd = _ptime.perf_counter() - _t0
-                return loss_r
+                return loss_total
 
             # warm-up runs inside the context: serial per replica (dynamo
             # kernel compilation races from worker threads), grads discarded,
@@ -583,8 +612,8 @@ class SignRoundQuantizer(BaseQuantizer):
         _phase_t0 = _ptime.perf_counter()  # loop
         tuning_cache = None
         # Only opt-in diffusion tuning can enter the CUDA staging path (the
-        # data-parallel lane never coexists with it: engagement requires a
-        # multi-device plan, the cache requires a single device).
+        # lanes are mutually exclusive: engagement requires a multi-device
+        # plan, the cache requires a single device).
         cache_budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
         use_tuning_cache = (
             getattr(self.model_context, "is_diffusion", False)
@@ -623,6 +652,15 @@ class SignRoundQuantizer(BaseQuantizer):
                     if valid_token_mask is not None:
                         # same global normalization as the serial path (reporting only)
                         num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+                        if self.gradient_accumulate_steps == 1:
+                            # serial keeps MEAN reduction at accumulation==1,
+                            # so its masked report is mean/valid-count (a
+                            # double normalization the lane must reproduce:
+                            # its per-forward losses are always sums)
+                            num_elm *= sum(int(active_inputs[j].numel()) for j in global_indices)
+                    # without a mask, num_elm keeps its pre-loop value (the
+                    # element count over the whole global batch), matching the
+                    # serial accumulation normalization
                     _losses = accel.run_step(_ddp_step, _shards)
                     # sync_grads: cross-replica gradient exchange. sign_exchange:
                     # the update consumes only sign(mean-grad) and weight_decay is
@@ -630,11 +668,13 @@ class SignRoundQuantizer(BaseQuantizer):
                     # bitwise-identical across replicas -- but a momentum buffer
                     # would mix magnitudes back in, so gate on it.
                     accel.sync_grads(sign_exchange=self.momentum is None or float(self.momentum) == 0.0)
-                    # report the global-batch mean (mean of equal-size shard
-                    # means == the serial global mean), normalized by the
+                    # report the global-batch mean, normalized by the
                     # valid-element count exactly like the serial path so
                     # best-iter selection and dynamic_max_gap behave identically
-                    total_loss = accel.mean_loss(_losses, num_elm)
+                    # sum-reduced shard losses always in the lane: they add
+                    # up to the serial global sum, so only the element count
+                    # divides (no world divisor) regardless of accumulation
+                    total_loss = accel.mean_loss(_losses, num_elm, divide_world=not _use_ddp)
 
                 else:
                     global_indices = index_sampler.next_batch()
@@ -711,7 +751,7 @@ class SignRoundQuantizer(BaseQuantizer):
             _tp["loop"] = _ptime.perf_counter() - _phase_t0
             _phase_t0 = _ptime.perf_counter()  # tail
             if accel is not None:
-                # engagement defines both; serial never enters this branch
+                # engagement defines both; this branch is parallel-only
                 accel.teardown()
                 _phase_t0 = _ptime.perf_counter()  # tail resumes after teardown
 

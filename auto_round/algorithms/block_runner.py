@@ -528,8 +528,8 @@ class BlockForwardRunner:
                 # tuple-of-tensors kwargs (transformers v5 passes rope as
                 # ``position_embeddings=(cos, sin)`` with a per-sample batch
                 # dim). Slice each element like the tensor branch; elements
-                # that are NOT per-sample (e.g. broadcast [1, S, D] tables)
-                # fail the select and pass through unsliced, preserving their
+                # that are shared across samples (e.g. broadcast [1, S, D]
+                # tables) fail the select and pass through unsliced, preserving their
                 # broadcast behavior. Without this, shard/batch forwards
                 # smaller than the cached batch crash in apply_rotary_pos_emb
                 # (hidden batch N vs cos batch full).

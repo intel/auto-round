@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import math
 from functools import lru_cache
 from math import ceil
@@ -191,6 +192,18 @@ def get_quant_func(
     )
 
 
+def _search_int_clamped(weight_reshape, bits, imatrix, q_scale_thresh=1e-5):
+    """Optimized int init-scale search with the degenerate-zero clamp (stable callable)."""
+    from auto_round.data_type.int import search_scales
+
+    init_scale = search_scales(weight_reshape, bits, imatrix)
+    return torch.where(
+        init_scale < 0,
+        torch.clamp(init_scale, max=-q_scale_thresh),
+        torch.clamp(init_scale, min=q_scale_thresh),
+    )
+
+
 def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5):
     """Resolve the SignRound optimized ``(scale_search_fn, quant_func)`` for a data type.
 
@@ -211,20 +224,15 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
         return None, None
     if dt.startswith("int"):
         # The optimized int init-scale search is symmetric-only; asym int uses
-        # the standard tensor_min/tensor_max range instead.
+        # the standard tensor_min/tensor_max range instead. The clamp binds via
+        # functools.partial (a stable callable: same threshold resolves to the
+        # same key) so batched-search keying (_fn_key) can merge same-config
+        # modules into one stacked call.
         if "asym" in dt:
             return None, None
         from auto_round.data_type.int import quant_tensor_sym, search_scales
 
-        def search_int(weight_reshape, bits, imatrix):
-            init_scale = search_scales(weight_reshape, bits, imatrix)
-            return torch.where(
-                init_scale < 0,
-                torch.clamp(init_scale, max=-q_scale_thresh),
-                torch.clamp(init_scale, min=q_scale_thresh),
-            )
-
-        return search_int, quant_tensor_sym
+        return functools.partial(_search_int_clamped, q_scale_thresh=q_scale_thresh), quant_tensor_sym
     if dt.startswith("mx"):
         from auto_round.data_type.mxfp import quant_mx, search_mx_scale
 
@@ -234,6 +242,19 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
 
         return search_nvfp4_scale, nv_fp4
     return None, None
+
+
+def resolve_optimized_init_scale_fn(data_type: str, q_scale_thresh: float = 1e-5):
+    """Resolve the per-group init-scale search callable for a data type.
+
+    Returns the exact callable ``search_optimized_init_scale`` would invoke --
+    ``(weight_reshape, bits, imatrix) -> init_scale`` -- or ``None`` for data
+    types without an optimized path. The resolved callable can be staged and
+    invoked later (batched wrap searches) with identical semantics, so future
+    dispatch changes travel with the caller automatically.
+    """
+    search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
+    return search_fn
 
 
 def search_optimized_init_scale(
@@ -291,10 +312,12 @@ def reshape_imatrix_for_weight(imatrix, weight_reshape: torch.Tensor, group_size
     """
     if imatrix is None or not isinstance(imatrix, torch.Tensor):
         return torch.ones_like(weight_reshape)
-    imatrix = imatrix.reshape(1, -1)
+    # relocate the RAW column first: moving the expanded copy after the fact
+    # would pay a weight-sized cross-device transfer for sharded placements
+    imatrix = imatrix.reshape(1, -1).to(weight_reshape.device)
     imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
     imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)
-    return imatrix.reshape(weight_reshape.shape).to(weight_reshape.device)
+    return imatrix.reshape(weight_reshape.shape)
 
 
 def compute_optimized_init_scale(

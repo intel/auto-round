@@ -33,26 +33,25 @@ one ``step_fn(rep, shard, dev, record)`` closure -- forward, loss, backward --
 and the context runs it serially for the warm-up and threaded for the loop.
 """
 
-import logging
 import time as _ptime
 from typing import Any, Callable, List, Optional, Sequence, Tuple
 
 import torch
 
-from auto_round.algorithms.quantization.sign_round.data_parallel import (
+from auto_round.algorithms.parallel.data_parallel import (
     ReplicaGroup,
+    _quantizer_policy,
     block_has_tuning_entries,
     distribute_pool,
     expect_pool_local,
-    gather_block_for_mirroring_,
+    parallel_state,
     pre_wrap_shard_candidate,
     resolve_tune_ddp_plan_,
     run_deferred_wrap_searches,
     sharded_nograd_forward,
 )
 from auto_round.compressors.utils import shard_samplers
-
-logger = logging.getLogger(__name__)
+from auto_round.logger import logger
 
 
 class _null_scope:
@@ -106,6 +105,14 @@ class TuneParallelContext:
         self._samplers: Optional[List[Any]] = None
         self._pending_sync = False
         self.perf: dict = {}
+        # collect-forward concurrency cap (from the run's ParallelPolicy;
+        # 0 = uncapped) -- see collect_forward(hook_pass=True)
+        self.collect_forward_cap: int = 0
+        # per-block mirror pool (None until the first sharded collection pass;
+        # the iters=0 lane reuses it for the searches and the cascade -- see
+        # the tune ADOPTS the pool's mirrors when aligned, or the composer
+        # releases it before the post-quantize steps)
+        self.pool = None
 
     # ── P3: collection phase (composer-owned) ────────────────────────────────
 
@@ -115,8 +122,8 @@ class TuneParallelContext:
 
         Uses the SAME engagement resolver as the tune
         (:func:`data_parallel.resolve_tune_ddp_plan_`, cached on the quantizer)
-        so the collection gates can never diverge from what the tune later
-        engages -- plus two collection-specific gates: the runner must use the
+        so the collection gates stay identical to what the tune later engages
+        -- plus two collection-specific gates: the runner must use the
         plain tensor output layout, and the block class must not be a
         multi-output registry entry (sharding clears ``last_output_dict``,
         which those blocks need to feed the next block). ``devices is None``
@@ -141,19 +148,20 @@ class TuneParallelContext:
             plan = resolve_tune_ddp_plan_(composer.block_quantizer, block, fp_inputs, None, home, log=False)
         except RuntimeError:
             # the resolver raises when a requested world is ineligible
-            # (requirement semantics) -- never swallow that here: silently
-            # continuing with serial collection would invalidate the request
+            # (requirement semantics) -- let it propagate: silently continuing
+            # with serial collection would invalidate the request
             raise
         except Exception as e:  # pragma: no cover - resolver reachability on odd hosts
             logger.warning("[tune-ddp] collection sharding declined: resolver unreachable (%s)", e)
             return ctx
         ctx.devices = plan.devices if plan.world > 1 else None
+        ctx.collect_forward_cap = _quantizer_policy(composer.block_quantizer).collect_forward_cap
         return ctx
 
     def distribute_pools(self, fp_inputs, q_inputs) -> None:
         """Distribute the calibration pool so each DDP device owns its sample
-        shard (matching the tune shards); shard-local reads never cross
-        devices; serial consumers use device-safe cats."""
+        shard (matching the tune shards); shard-local reads stay device-local;
+        serial consumers use device-safe cats."""
         if not self.devices:
             return
         if isinstance(fp_inputs, list) and fp_inputs:
@@ -181,12 +189,39 @@ class TuneParallelContext:
         Mergeable stats (imatrix, act_max) are folded from the mirrors back
         into the home, so those hook passes may shard.
 
-        ``hook_pass=True`` caps the concurrent shards at 4: forward hooks
-        force dynamo graph breaks, leaving the compiled runner as
-        python-bound eager sections that GIL-convoy under many threads.
+        ``hook_pass=True`` optionally caps the concurrent shards via the
+        policy's ``collect_forward_cap`` (from AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES,
+        default 0 = no cap): forward
+        hooks force dynamo graph breaks, leaving the compiled runner as
+        python-bound eager sections that can GIL-convoy under many threads.
         """
         if self.devices is None or not allow_shard:
             return block_forward(block, inputs, input_others, cache_device=out_dev)
+        # The pool is ALWAYS built at the full device width and reused by
+        # every sharding-eligible pass; a hook pass capped below the world
+        # only limits WHICH pool replicas run -- sharded_nograd_forward slices
+        # the replica subset in place.
+        world = len(self.devices)
+        cap = int(self.collect_forward_cap or 0)
+        n = len(inputs) if isinstance(inputs, (list, tuple)) else 0
+        pool = None
+        if world >= 2 and isinstance(block, torch.nn.Module):
+            # ceil/floor split: any n >= world shards (a remainder lands on
+            # an earlier replica); n < world runs below the pool's width and
+            # stays serial
+            if n >= world:
+                if self.pool is None:
+                    from auto_round.algorithms.parallel.data_parallel import MirrorPool
+
+                    _t0 = _ptime.perf_counter()
+                    self.pool = MirrorPool(block, self.devices)
+                    logger.debug(
+                        "[tune-ddp] pool build (first sharded pass): world=%d build=%.2fs "
+                        "(per-device deepcopy + relocate)",
+                        world,
+                        _ptime.perf_counter() - _t0,
+                    )
+                pool = self.pool
         return sharded_nograd_forward(
             block_forward,
             block,
@@ -195,16 +230,39 @@ class TuneParallelContext:
             out_dev,
             self.devices,
             merge_stats=True,
-            max_devices=4 if hook_pass else 0,
+            max_devices=cap if hook_pass else 0,
+            pool=pool,
         )
+
+    def ensure_pool(self, block) -> None:
+        """Build the per-block mirror pool if absent (block-wide, not tied to
+        any single pass's forward eligibility): the searches and the tune
+        consume it even when a collection pass fell back serial."""
+        if self.pool is None and self.devices and len(self.devices) >= 2:
+            from auto_round.algorithms.parallel.data_parallel import MirrorPool
+
+            _t0 = _ptime.perf_counter()
+            self.pool = MirrorPool(block, self.devices)
+            logger.debug(
+                "[tune-ddp] pool build: world=%d build=%.2fs (per-device deepcopy + relocate)",
+                len(self.devices),
+                _ptime.perf_counter() - _t0,
+            )
+
+    def release_pool(self) -> None:
+        """Drop the per-block mirror pool (adoption transfers ownership to the
+        ReplicaGroup; this clears the ctx-side references only)."""
+        if self.pool is not None:
+            self.pool.release()
+            self.pool = None
 
     # ── P1: tune phase (quantizer-owned) ─────────────────────────────────────
 
     @staticmethod
-    def defer_wrap_searches() -> bool:
+    def defer_wrap_searches(quantizer) -> bool:
         """Engine policy: should the wrap-time searches defer until the
         mirrors exist (so they can run round-robin on the replicas)?"""
-        return pre_wrap_shard_candidate()
+        return pre_wrap_shard_candidate(quantizer)
 
     @classmethod
     def create(
@@ -221,48 +279,57 @@ class TuneParallelContext:
 
         Resolves the plan fresh (this call runs POST-wrap, so the mirror
         pricing sees the wrapper's fp32 value params and the free-VRAM
-        snapshot is current for THIS block), gathers the block onto the home
-        device, distributes the calibration pool, builds the persistent
+        snapshot is current for THIS block), distributes the calibration
+        pool, builds the persistent
         replica group and runs the deferred wrap-time searches on the mirrors
         (before any forward -- the warm-up and the tune loop both need
         init_scale present).
         """
         # drop the composer's pre-wrap plan: the post-wrap resolution below is
         # authoritative for the tune
-        quantizer._resolved_ddp_plan = None
+        _st = parallel_state(quantizer)
+        if _st is not None:
+            _st.plan = None
         plan = resolve_tune_ddp_plan_(quantizer, block, active_inputs, fp_outputs, device)
         if plan.enabled and not isinstance(fp_outputs, list):
             # the composer may have resolved before reference outputs existed;
             # non-list outputs (diffusion-style) cannot be pool-distributed
             logger.info("[tune-ddp] declining: reference outputs are not a list")
             plan = type(plan)(1, plan.devices[:1], plan.shard_size)
-            quantizer._resolved_ddp_plan = plan
+            parallel_state(quantizer, create=True).plan = plan
         if not plan.enabled:
             return None
         # All-float pinned blocks (a 'bits':16 'data_type':'float' layer_config
         # pin) carry no tuning parameters: the serial path's empty-params
         # guard no-ops them, so the parallel lane would only pay mirror
-        # setup + pool distribution for nothing (and the serial early-return
-        # never tears the group down). Decline before mirror setup.
+        # setup + pool distribution for nothing (the serial early-return also
+        # leaves the group intact). Decline before mirror setup.
         if not block_has_tuning_entries(block):
             logger.info("[tune-ddp] declining: no tuning parameters in this block (all-float pinned); serial path")
             return None
 
-        # the source block must sit whole on the home device before
-        # mirroring (data-driven multi-GPU may have sharded its leaves)
-        gather_block_for_mirroring_(block, plan.devices[0])
+        # Placement contract: the resolver declined (or raised) when the
+        # block's weights span several CUDA devices, so the source block
+        # already sits whole on the home device and every mirror will sit
+        # whole on exactly one device.
         # distributed calibration pool: shard-local tune reads; each
         # device owns a contiguous 1/world slice of the samples
         distribute_pool(active_inputs, plan.devices)
         distribute_pool(fp_outputs, plan.devices)
 
         _t0 = _ptime.perf_counter()
-        group = ReplicaGroup(block, plan)
+        group = cls._adopt_or_build_group_(quantizer, block, plan)
+        # phase boundary: mirror construction (adopt or deepcopy) moves
+        # weights/stats cross-device; drain before the deferred searches
+        from auto_round.algorithms.parallel.rtn_sharding import _sync_pool_devices as _spb
+
+        _spb(plan.devices)
         ctx = cls()
         ctx.quantizer = quantizer
         ctx.block = block
         ctx.plan = plan
         ctx.group = group
+        ctx.collect_forward_cap = _quantizer_policy(quantizer).collect_forward_cap
         ctx.active_inputs = active_inputs
         ctx.input_others = input_others
         ctx.fp_outputs = fp_outputs
@@ -283,6 +350,117 @@ class TuneParallelContext:
         # the warm-up and the tune loop both need init_scale present)
         run_deferred_wrap_searches(block, group)
         return ctx
+
+    @staticmethod
+    def _adoption_stat_targets_(block):
+        """(name, stat-holder) pairs for the pre-adoption stats distribution.
+
+        Names must be WRAPPER-level (the pool's pre-wrap layer map has no
+        ``.orig_layer`` children): wrappers that register ``orig_layer`` as a
+        child module also yield it from ``named_modules`` carrying the very
+        same stats object -- skip those duplicates or the mirror lookup
+        KeyErrors on real models (wrappers register orig_layer as a module,
+        e.g. Qwen3.8's linear_attn.out_proj).
+        """
+        targets = []
+        for n, m in block.named_modules():
+            if n.endswith(".orig_layer"):
+                continue  # duplicate of the parent wrapper entry (same object)
+            if hasattr(m, "orig_layer") or hasattr(m, "imatrix"):
+                targets.append((n, getattr(m, "orig_layer", m)))
+        return targets
+
+    @staticmethod
+    def _adopt_or_build_group_(quantizer, block, plan):
+        """Adopt the collection MirrorPool's resident mirrors when aligned
+        (wrap-in-place, zero second weight copy); otherwise deepcopy.
+
+        Adoption path: the pool mirrors carry the block's weights already;
+        the engagement wraps each mirror with the SAME wrapper call the home
+        block received (deterministic init from identical weights + the
+        distributed home stats), so the replicas match the deepcopy
+        construction exactly. The pool then transfers ownership; its
+        ``release()`` only drops references.
+        """
+        _st_adopt = parallel_state(quantizer)
+        pool = _st_adopt.pool if _st_adopt is not None else None
+        if pool is None or pool.block is not block or list(pool.devices) != list(plan.devices):
+            return ReplicaGroup(block, plan)
+
+        # home stats (imatrix etc.) read through the wrappers must reach the
+        # mirror layers before their wrap consumes them
+        from auto_round.algorithms.parallel.data_parallel import ReplicaGroup as _RG
+        from auto_round.algorithms.parallel.rtn_sharding import _distribute_search_stats
+
+        targets = TuneParallelContext._adoption_stat_targets_(block)
+        if targets:
+            _distribute_search_stats(pool, block, targets)
+            # phase boundary: the wraps below read the distributed stats on
+            # their own devices; drain the copies first
+            from auto_round.algorithms.parallel.rtn_sharding import _sync_pool_devices
+
+            _sync_pool_devices(pool.devices)
+
+        # stale collection hooks on mirror layers: clear everything, then
+        # re-register exactly the hooks the home ORIG layers carry now
+        # (rotation included; removed stats hooks stay removed)
+        home_hooks = {}
+        for n, m in block.named_modules():
+            ol = getattr(m, "orig_layer", None)
+            if ol is not None:
+                fwd = dict(getattr(ol, "_forward_hooks", None) or {})
+                pre = dict(getattr(ol, "_forward_pre_hooks", None) or {})
+                if fwd or pre:
+                    fwd_wk = dict(getattr(ol, "_forward_hooks_with_kwargs", None) or {})
+                    pre_wk = dict(getattr(ol, "_forward_pre_hooks_with_kwargs", None) or {})
+                    home_hooks[n] = (fwd, pre, fwd_wk, pre_wk)
+        for r in range(pool.world):
+            rep = pool.reps[r]
+            if rep is block:
+                continue
+            for name, _m in targets:
+                lm = pool.mirror_layer(r, name)
+                lm._forward_hooks.clear()
+                lm._forward_pre_hooks.clear()
+                if hasattr(lm, "_forward_hooks_with_kwargs"):
+                    lm._forward_hooks_with_kwargs.clear()
+                if hasattr(lm, "_forward_pre_hooks_with_kwargs"):
+                    lm._forward_pre_hooks_with_kwargs.clear()
+            # non-target modules carry no collection/rotation hooks by
+            # construction (both register on quantization targets only)
+            for n, (fwd, pre, fwd_wk, pre_wk) in home_hooks.items():
+                try:
+                    lm = pool.mirror_layer(r, n)
+                except KeyError:
+                    continue
+                for k, h in fwd.items():
+                    lm.register_forward_hook(h, with_kwargs=bool(fwd_wk.get(k, False)))
+                for k, h in pre.items():
+                    lm.register_forward_pre_hook(h, with_kwargs=bool(pre_wk.get(k, False)))
+
+        # wrap each mirror in place with the same wrapper call home received
+        # (pool.devices == plan.devices, so reps[r] lives on plan.devices[r])
+        _defer = TuneParallelContext.defer_wrap_searches(quantizer)
+        for r in range(1, pool.world):
+            quantizer.wrapper_block(
+                pool.reps[r],
+                quantizer.enable_minmax_tuning,
+                quantizer.enable_norm_bias_tuning,
+                enable_torch_compile=getattr(quantizer.compress_context, "enable_torch_compile", False),
+                device=pool.devices[r],
+                enable_neuqi=getattr(quantizer.config, "enable_neuqi", False),
+                defer_search=_defer,
+            )
+        parallel_state(quantizer, create=True).pool_used = True
+        # OWNERSHIP TRANSFER: the group now owns the mirrors. Clearing the
+        # parallel-state pool ref tells the composer to drop the ctx pool too -- the
+        # adopted mirrors carry the tune's LAST optimizer state, while home
+        # is unwrapped with the BEST params, so the Step-6 cascade runs on
+        # the canonical home block.
+        _st_clear = parallel_state(quantizer)
+        if _st_clear is not None:
+            _st_clear.pool = None
+        return _RG.adopt(block, plan, pool.reps[1:])
 
     @property
     def world(self) -> int:
@@ -418,8 +596,16 @@ class TuneParallelContext:
             global_indices = [j for sh in shards for j in sh]
             return shards, global_indices
         global_indices = index_sampler.next_batch()
-        _shard = len(global_indices) // self.group.world
-        shards = [global_indices[r * _shard : (r + 1) * _shard] for r in range(self.group.world)]
+        n = len(global_indices)
+        world = self.group.world
+        # ceil/floor split: sum-reduced losses make uneven shards exact, so
+        # any global batch size shards -- a remainder sample lands on an
+        # earlier replica and every sample is kept
+        sizes = [n // world + (1 if r < n % world else 0) for r in range(world)]
+        bounds = [0]
+        for _sz in sizes:
+            bounds.append(bounds[-1] + _sz)
+        shards = [global_indices[bounds[r] : bounds[r + 1]] for r in range(world)]
         return shards, global_indices
 
     def run_step(self, step_fn: Callable, shards: Sequence[Sequence[int]]) -> List[Optional[torch.Tensor]]:
@@ -430,10 +616,10 @@ class TuneParallelContext:
         (detached here) and fills ``record.fwd/.bwd`` for the perf split.
         """
         if self._pending_sync:
-            # a previous run_step's gradients were never exchanged: the
+            # a previous run_step's gradients went unexchanged: the
             # replicas have already stepped apart (each optimizer consumed
-            # its own shard's gradient) -- fail visibly instead of tuning N
-            # diverging models in lockstep
+            # its own shard's gradient) -- fail visibly before the replicas
+            # diverge
             logger.error(
                 "[tune-ddp] %s: run_step called twice without an intervening sync_grads -- "
                 "replica gradients were never exchanged; tuning is diverging",
@@ -469,12 +655,18 @@ class TuneParallelContext:
         self.perf["exch"].append(_ptime.perf_counter() - _t0)
         self._pending_sync = False
 
-    def mean_loss(self, losses: Sequence[Optional[torch.Tensor]], num_elm) -> float:
-        """Report the global-batch mean (mean of equal-size shard means ==
-        the serial global mean), normalized by the valid-element count
-        exactly like the serial path."""
+    def mean_loss(self, losses: Sequence[Optional[torch.Tensor]], num_elm, divide_world: bool = True) -> float:
+        """Report the global-batch mean, normalized by the valid-element count
+        exactly like the serial path.
+
+        ``divide_world=True`` divides mean-reduced shard losses by the world
+        (equal-size shard means average to the global mean). ``False`` fits
+        sum-reduced shard losses (the DDP lane's micro-batch chunks): the
+        shard sums already add up to the serial global sum, so only the
+        element count divides."""
         _ne = 1 if num_elm <= 0 else num_elm
-        return sum(l.item() for l in losses if l is not None) / self.group.world / _ne
+        _total = sum(l.item() for l in losses if l is not None)
+        return _total / self.group.world / _ne if divide_world else _total / _ne
 
     def step(self, home_step_fn: Callable[[], None]) -> None:
         """Run the home step and every mirror step in parallel threads (home

@@ -41,6 +41,7 @@ from auto_round.algorithms.config_resolver import (
     resolve_shared_config_values,
     split_quantization_configs,
 )
+from auto_round.algorithms.parallel.data_parallel import parallel_state
 from auto_round.algorithms.utils import _has_nvfp4_layer
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
@@ -379,7 +380,7 @@ class AlgorithmComposer:
         """TuneParallelContext for the collection phase (P3): mirror devices
         for sharding the no-grad collection forwards, with the same engagement
         resolver as the tune so the gates can never diverge."""
-        from auto_round.algorithms.quantization.sign_round.tune_parallel import TuneParallelContext
+        from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
 
         return TuneParallelContext.for_collection(self, block, fp_inputs)
 
@@ -405,12 +406,13 @@ class AlgorithmComposer:
         Mergeable stats (imatrix, act_max) are folded from the mirrors back
         into the home, so those hook passes may shard.
 
-        ``hook_pass=True`` caps the concurrent shards at 4: forward hooks
+        ``hook_pass=True`` may cap the concurrent shards (env-driven; default
+        no cap): forward hooks
         force dynamo graph breaks, leaving the compiled runner as
         python-bound eager sections that GIL-convoy under many threads.
         """
         if self._coll_ctx is None:
-            from auto_round.algorithms.quantization.sign_round.tune_parallel import TuneParallelContext
+            from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
 
             self._coll_ctx = TuneParallelContext()
         return self._coll_ctx.collect_forward(
@@ -463,12 +465,12 @@ class AlgorithmComposer:
         """
         self.last_collect_wall = 0.0
         block_forward_fn = self.block_forward
-        from auto_round.algorithms.quantization.sign_round.tune_parallel import TuneParallelContext
+        from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
 
         self._coll_ctx = self._collection_context(block, fp_inputs)
         # distributed calibration pool: each DDP device owns its sample
-        # shard (matching the tune shards), so shard-local reads never
-        # cross devices; serial consumers use device-safe cats
+        # shard (matching the tune shards), so shard-local reads stay
+        # device-local; serial consumers use device-safe cats
         self._coll_ctx.distribute_pools(fp_inputs, q_inputs)
 
         # ── Step 0: Layer-wise rotation (before any reference/calibration) ────
@@ -550,31 +552,84 @@ class AlgorithmComposer:
             clear_memory(fp_inputs)
         else:
             clear_memory()
+        # ── Step 3.6: mirror-pool handoff ──────────────────────────────────────
+        # The collection passes may have left a per-block mirror pool alive
+        # (built once, reused across the collection forwards). At iters=0 the
+        # RTN/OptRTN searches reuse those resident mirrors (zero search
+        # traffic) and the cascade forwards run on them afterwards; at
+        # iters>0 the pool is dropped here -- the tune lane builds its own
+        # ReplicaGroup mirrors, one resident set at a time.
+        from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
+        from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+
+        # pool readers: the RTN family (plain RTN shards its per-module
+        # minmax quantizes onto the mirrors; OptimizedRTN subclasses it and
+        # adds the batched search lane) and the SignRound family
+        # (create/adoption at ANY iters -- including iters=0, where the
+        # deferred wrap searches still go mirrors-first). NOTE: this ensure
+        # is only the SAFETY NET for when no collection pass was
+        # shard-eligible -- ref-collect sharding builds the pool lazily for
+        # EVERY lane and is untouched by this gate.
+        _pool_consumer = isinstance(self.block_quantizer, (RTNQuantizer, SignRoundQuantizer))
+        if _pool_consumer and getattr(self._coll_ctx, "devices", None) and len(self._coll_ctx.devices) >= 2:
+            self._coll_ctx.ensure_pool(block)
+        _pool = getattr(self._coll_ctx, "pool", None)
+        if _pool is not None:
+            # both consumers adopt resident mirrors: the OptimizedRTN iters=0
+            # searches run on them, and the SignRound tune wraps them in
+            # place (ReplicaGroup.adopt -- no second weight copy). A pool the
+            # consumer declined (flag unset after quantize_block) is released
+            # before the post-quantize steps below.
+            _state = parallel_state(self.block_quantizer, create=True)
+            _state.pool = _pool
+            _state.pool_used = False
         # ── Step 4: quantize_block ──────────────────────────────────────────────
         # When quantized input is available from the previous block, use it;
         # otherwise fall back to the FP input.
         effective_input = q_inputs if q_inputs is not None else fp_inputs
-        self.block_quantizer.quantize_block(
-            block,
-            effective_input,
-            input_others,
-            reference_output,
-            q_inputs,
-            block_ctx,
-            input_ids=input_ids,
-        )
+        try:
+            self.block_quantizer.quantize_block(
+                block,
+                effective_input,
+                input_others,
+                reference_output,
+                q_inputs,
+                block_ctx,
+                input_ids=input_ids,
+            )
 
-        # ── Step 5: post_quantize_block ─────────────────────────────────────────
-        for pre in self.preprocessors:
-            pre.post_quantize_block(block_ctx)
+            # Pool disposition before the post-quantize steps:
+            # - the consumer dropped the pool ref (tune adoption: the group
+            #   owns the mirrors now, and they hold the tune's LAST state
+            #   while home was unwrapped with the BEST params) -> the ctx
+            #   must drop the pool; the Step-6 cascade runs on the canonical
+            #   home block;
+            # - the consumer kept the pool and USED it (OptRTN iters=0: its
+            #   sync made the mirrors exactly-home) -> keep for the cascade;
+            # - unconsumed (declined lane / vanished plan) -> release.
+            _state = parallel_state(self.block_quantizer)
+            if _pool is not None and (_state is None or _state.pool is None or not _state.pool_used):
+                self._coll_ctx.release_pool()
+                _pool = None
 
-        # ── Step 6: Collect quantized-block outputs for the next block ──────────
-        if self.block_quantizer.enable_quanted_input:
-            with torch.no_grad():
-                new_q_input = self._collect_forward_timed(block, effective_input, input_others)
-                new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input
-        else:
-            new_q_input = None
+            # ── Step 5: post_quantize_block ─────────────────────────────────────
+            for pre in self.preprocessors:
+                pre.post_quantize_block(block_ctx)
+
+            # ── Step 6: Collect quantized-block outputs for the next block ──────
+            if self.block_quantizer.enable_quanted_input:
+                with torch.no_grad():
+                    new_q_input = self._collect_forward_timed(block, effective_input, input_others)
+                    new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input
+            else:
+                new_q_input = None
+        finally:
+            # the pool is block-scoped: drop it even on failures so the tune
+            # lane's ReplicaGroup and the next block's pool each start clean
+            _state = parallel_state(self.block_quantizer)
+            if _state is not None:
+                _state.pool = None
+            self._coll_ctx.release_pool()
 
         return new_q_input, reference_next_input
 

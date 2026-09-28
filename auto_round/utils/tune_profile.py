@@ -70,12 +70,12 @@ class TuneProfiler:
     def gpu_totals(self) -> DefaultDict[str, float]:
         """Resolve deferred CUDA events; syncs once. Seconds per stage.
 
-        Syncs EVERY CUDA device, not just the profiler's home: stage events
+        Syncs EVERY CUDA device (the profiler's home included): stage events
         can be recorded on (or wait behind work enqueued to) mirror streams
         -- e.g. the source-side casts of a reduced-precision gradient
         transport -- and a home-only synchronize leaves those events
         un-resolved, which elapsed_time treats as a hard error. A pair that
-        is somehow still pending is skipped rather than crashing the run.
+        is somehow still pending is skipped; the run continues.
         """
         totals: DefaultDict[str, float] = defaultdict(float)
         if self._use_events and self._events:

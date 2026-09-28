@@ -86,6 +86,26 @@ def _ensure_gc_probe():
         _GC_PAUSE_ACC["on"] = True
 
 
+def _reset_dynamo_caches_(compress_context) -> None:
+    """Drop the previous block's pinned dynamo artifacts at the block boundary.
+
+    Each block's torch.compile tracing leaves FX-graph example tensors and
+    shape-env TrackedFake entries pinned in dynamo's caches (~GB-class per
+    block, growing). Blocks compile fresh wrappers anyway, so the previous
+    block's compiled artifacts only hold memory. Inductor's compiled
+    kernel caches persist across the reset, so re-tracing the repeated
+    shapes of the next block stays cheap (no autotune/codegen re-run).
+    """
+    if not getattr(compress_context, "enable_torch_compile", False):
+        return
+    try:
+        import torch._dynamo as _dynamo
+
+        _dynamo.reset()
+    except Exception as e:  # pragma: no cover - the block loop stays intact
+        logger.warning("dynamo cache reset at block end failed (%s)", e)
+
+
 class CompressionOrchestrator(BaseOrchestrator):
 
     def __init__(
@@ -356,18 +376,17 @@ class CompressionOrchestrator(BaseOrchestrator):
             q_input = new_q_input
             _perf["memmgmt"] = time.perf_counter() - _perf_t0
 
-            # ── Infrastructure: hook removal, device cleanup, logging ─────────
-            _perf_t0 = time.perf_counter()
-            if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
-                accelerate.hooks.remove_hook_from_submodules(m)
-            mv_module_from_gpu(m)
-            clear_memory(device_list=device_manager.device_list)
-            memory_monitor.log_summary()
-            _perf["clean"] = time.perf_counter() - _perf_t0
-
-            # ── Infrastructure: immediate_pack / shard write ──────────────────
+            # ── Infrastructure: immediate_pack (BEFORE the GPU move) ─────────
+            # Pack while the weights still sit on their tune devices: CPU-side
+            # packing degrades to a python per-column qzeros loop that is
+            # orders of magnitude slower than the on-device math, and the
+            # packed artifacts land on host by construction. The layer-config
+            # read is hoisted out of the module loop -- the property rebuilds
+            # a copy of the whole compression plan per access, which becomes
+            # the entire pack wall when read per module.
             _perf_t0 = time.perf_counter()
             if self.compress_context.is_immediate_packing:
+                _layer_cfg = self.layer_config
                 for _n, _mod in m.named_modules():
                     if hasattr(_mod, "bits") and check_to_quantized(_mod):
                         from auto_round.compressors.utils import immediate_pack as _immediate_pack
@@ -377,8 +396,17 @@ class CompressionOrchestrator(BaseOrchestrator):
                             module_name = f"{n}.{_n}"
                         if module_name is None:
                             continue
-                        _immediate_pack(module_name, self.layer_config)
+                        _immediate_pack(module_name, _layer_cfg)
             _perf["pack"] = time.perf_counter() - _perf_t0
+
+            # ── Infrastructure: hook removal, device cleanup, logging ─────────
+            _perf_t0 = time.perf_counter()
+            if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
+                accelerate.hooks.remove_hook_from_submodules(m)
+            mv_module_from_gpu(m)
+            clear_memory(device_list=device_manager.device_list)
+            memory_monitor.log_summary()
+            _perf["clean"] = time.perf_counter() - _perf_t0
 
             input_ids = next_input_ids
 
@@ -452,6 +480,10 @@ class CompressionOrchestrator(BaseOrchestrator):
                 # as its chained hidden-state input, which is exactly what
                 # needs to be persisted here.
                 resume_state.mark_block_done(n, q_input, input_ids)
+            # block boundary (inside the loop, per block): drop the previous
+            # block's pinned dynamo artifacts, and optionally dump the
+            # live-tensor census for VRAM tracing
+            _reset_dynamo_caches_(self.compress_context)
         if pbar is not None:
             pbar.update(1)
 

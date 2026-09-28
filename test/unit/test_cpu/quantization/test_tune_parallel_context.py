@@ -21,12 +21,14 @@ resolver is covered by test_ddp_core on the live quantize_block path.
 """
 
 import logging
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 import torch
 
-from auto_round.algorithms.quantization.sign_round.tune_parallel import TuneParallelContext
+from auto_round.algorithms.parallel import tune_parallel as tune_parallel_mod
+from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
 
 
 class _FakeGroup:
@@ -49,6 +51,19 @@ class _FakeGroup:
 
     def teardown(self):
         self.torn_down = True
+
+
+class _FixedSampler:
+    """Yields a fixed global-index schedule (list of lists) in order."""
+
+    def __init__(self, draws):
+        self._draws = list(draws)
+        self._i = 0
+
+    def next_batch(self):
+        out = self._draws[self._i]
+        self._i += 1
+        return out
 
 
 def _make_tune_ctx(world=2, nsamples=8, shard_size=2):
@@ -92,6 +107,12 @@ class TestMeanLoss:
         losses = [torch.tensor(4.0), torch.tensor(6.0)]
         assert ctx.mean_loss(losses, num_elm=2) == pytest.approx(2.5)  # (4+6)/2/2
 
+    def test_sum_reduced_accounting(self):
+        ctx = _make_tune_ctx(world=2)
+        losses = [torch.tensor(6.0), torch.tensor(10.0)]
+        # sum-reduced: shard sums add to the global sum (16) / num_elm=2 -> 8.0
+        assert ctx.mean_loss(losses, num_elm=2, divide_world=False) == pytest.approx(8.0)
+
     def test_num_elm_nonpositive_treated_as_one(self):
         ctx = _make_tune_ctx(world=2)
         assert ctx.mean_loss([torch.tensor(2.0), torch.tensor(4.0)], num_elm=0) == pytest.approx(3.0)
@@ -114,21 +135,23 @@ class TestRunStep:
         assert ctx.perf["fwd"] == [0.25]
         assert ctx.perf["bwd"] == [0.5]
 
-    def test_forgotten_sync_guard_fires_on_second_run_step(self, caplog):
+    def test_forgotten_sync_guard_fires_on_second_run_step(self):
         ctx = _make_tune_ctx(world=2)
-        with caplog.at_level(logging.ERROR, logger="auto_round.algorithms.quantization.sign_round.tune_parallel"):
+        # the module logs through the shared 'autoround' logger (propagate=False),
+        # which caplog cannot capture -- spy on the module attribute instead
+        with mock.patch.object(tune_parallel_mod, "logger") as lg:
             ctx.run_step(self._step_fn, [[1], [2]])
             ctx.run_step(self._step_fn, [[3], [4]])
-        assert any("without an intervening sync_grads" in r.message for r in caplog.records)
+        assert any("without an intervening sync_grads" in str(c) for c in lg.error.call_args_list)
 
-    def test_guard_silent_after_sync(self, caplog):
+    def test_guard_silent_after_sync(self):
         ctx = _make_tune_ctx(world=2)
         ctx.params_per_replica = [[], []]
-        with caplog.at_level(logging.ERROR, logger="auto_round.algorithms.quantization.sign_round.tune_parallel"):
+        with mock.patch.object(tune_parallel_mod, "logger") as lg:
             ctx.run_step(self._step_fn, [[1], [2]])
             ctx.sync_grads(sign_exchange=True)
             ctx.run_step(self._step_fn, [[3], [4]])
-        assert not any("without an intervening sync_grads" in r.message for r in caplog.records)
+        assert not any("without an intervening sync_grads" in str(c) for c in lg.error.call_args_list)
         assert ctx.group.sync_calls == [([[], []], True)]
 
 
@@ -171,37 +194,56 @@ class TestCollectionContext:
         ctx = TuneParallelContext()
         ctx.devices = [torch.device("cpu"), torch.device("cpu")]
         with mock.patch(
-            "auto_round.algorithms.quantization.sign_round.tune_parallel.sharded_nograd_forward",
+            "auto_round.algorithms.parallel.tune_parallel.sharded_nograd_forward",
             return_value="sharded",
         ) as snf:
             assert ctx.collect_forward("bf", "blk", "inp", "oth") == "sharded"
-        snf.assert_called_once_with("bf", "blk", "inp", "oth", None, ctx.devices, merge_stats=True, max_devices=0)
+        snf.assert_called_once_with(
+            "bf", "blk", "inp", "oth", None, ctx.devices, merge_stats=True, pool=None, max_devices=0
+        )
 
-    def test_collect_forward_hook_pass_caps_at_four(self):
+    def test_collect_forward_hook_pass_cap_from_policy(self):
         ctx = TuneParallelContext()
         ctx.devices = [torch.device("cpu")] * 8
         with mock.patch(
-            "auto_round.algorithms.quantization.sign_round.tune_parallel.sharded_nograd_forward",
+            "auto_round.algorithms.parallel.tune_parallel.sharded_nograd_forward",
             return_value="sharded",
         ) as snf:
             ctx.collect_forward("bf", "blk", "inp", "oth", hook_pass=True)
-        assert snf.call_args.kwargs["max_devices"] == 4
+            # default: no cap (full-width hook passes)
+            assert snf.call_args.kwargs["max_devices"] == 0
+            # the cap is set on the context (folded from the env into the
+            # ParallelPolicy at the entry)
+            ctx.collect_forward_cap = 2
+            ctx.collect_forward("bf", "blk", "inp", "oth", hook_pass=True)
+            assert snf.call_args.kwargs["max_devices"] == 2
+            # non-hook passes stay uncapped
+            ctx.collect_forward("bf", "blk", "inp", "oth", hook_pass=False)
+            assert snf.call_args.kwargs["max_devices"] == 0
+
+    def test_capped_hook_pass_keeps_the_pool(self):
+        """The cap limits WHICH pool replicas run, never pool eligibility:
+        the full-width pool is passed through with max_devices set."""
+        ctx = TuneParallelContext()
+        ctx.devices = [torch.device("cpu")] * 8
+        ctx.collect_forward_cap = 2
+        sentinel = object()
+        ctx.pool = sentinel
+        blk = torch.nn.Linear(2, 2)  # pool eligibility requires a real Module
+        with mock.patch(
+            "auto_round.algorithms.parallel.tune_parallel.sharded_nograd_forward",
+            return_value="sharded",
+        ) as snf:
+            assert ctx.collect_forward("bf", blk, [1] * 8, "oth", hook_pass=True) == "sharded"
+        assert snf.call_args.kwargs["pool"] is sentinel
+        assert snf.call_args.kwargs["max_devices"] == 2
 
     def test_distribute_pools_noop_without_devices(self):
         ctx = TuneParallelContext()
         pool = [torch.zeros(1), torch.zeros(1)]
-        with mock.patch("auto_round.algorithms.quantization.sign_round.tune_parallel.distribute_pool") as dp:
+        with mock.patch("auto_round.algorithms.parallel.tune_parallel.distribute_pool") as dp:
             ctx.distribute_pools(pool, None)
         dp.assert_not_called()
-
-
-class TestDeferWrapSearches:
-    def test_passthrough_of_engine_policy(self):
-        with mock.patch(
-            "auto_round.algorithms.quantization.sign_round.tune_parallel.pre_wrap_shard_candidate",
-            return_value=True,
-        ):
-            assert TuneParallelContext.defer_wrap_searches() is True
 
 
 @pytest.fixture()
@@ -209,7 +251,6 @@ def _autoround_log_propagate():
     """Temporarily enable propagation on the ``autoround`` logger so pytest's
     caplog fixture (handler at the root logger) can capture warnings; the
     logger is configured with propagate=False in production."""
-    import logging
 
     _logger = logging.getLogger("autoround")
     original = _logger.propagate
@@ -354,8 +395,8 @@ class TestEngagedLaneE2E:
     def _engage_plan(self, monkeypatch):
         import torch as _t
 
-        import auto_round.algorithms.quantization.sign_round.tune_parallel as tp
-        from auto_round.algorithms.quantization.sign_round.data_parallel import DDPPlan
+        import auto_round.algorithms.parallel.tune_parallel as tp
+        from auto_round.algorithms.parallel.data_parallel import DDPPlan
 
         plan = DDPPlan(world=2, devices=[_t.device("cpu"), _t.device("cpu")], shard_size=1)
 
@@ -365,11 +406,10 @@ class TestEngagedLaneE2E:
         monkeypatch.setattr(tp, "resolve_tune_ddp_plan_", _resolve)
 
     def test_engaged_lane_consensus(self, monkeypatch, caplog, _autoround_log_propagate):
-        import logging
 
         import torch as _t
 
-        import auto_round.algorithms.quantization.sign_round.data_parallel as dp
+        import auto_round.algorithms.parallel.data_parallel as dp
         import auto_round.algorithms.quantization.sign_round.quantizer as v1
 
         # teardown snapshot: capture the consensus state at the last moment
@@ -395,7 +435,7 @@ class TestEngagedLaneE2E:
         fp_inputs, fp_outputs = self._pools()
         q = self._quantizer()
 
-        with caplog.at_level(logging.ERROR, logger="auto_round.algorithms.quantization.sign_round.tune_parallel"):
+        with caplog.at_level(logging.ERROR, logger="auto_round.algorithms.parallel.tune_parallel"):
             q.quantize_block(
                 block,
                 fp_inputs,
@@ -420,7 +460,6 @@ class TestEngagedLaneE2E:
         assert not _t.equal(replicas[0]["l1"], _t.full((2,), 2.0))
 
     def test_serial_lane_still_runs_without_engagement(self, monkeypatch, caplog, _autoround_log_propagate):
-        import logging
 
         import auto_round.algorithms.quantization.sign_round.quantizer as v1
 
@@ -445,6 +484,228 @@ class TestEngagedLaneE2E:
         assert out == {}
         assert not any("without an intervening sync_grads" in r.message for r in caplog.records)
 
+    def test_block_end_dynamo_reset_helper(self, monkeypatch):
+        """The block-boundary helper resets dynamo caches only under compile."""
+        import types as _types
+
+        import torch._dynamo as _dynamo_mod
+
+        from auto_round.compressors.orchestrator import _reset_dynamo_caches_
+
+        called = []
+        monkeypatch.setattr(_dynamo_mod, "reset", lambda: called.append(1))
+        _reset_dynamo_caches_(__import__("types").SimpleNamespace(enable_torch_compile=False))
+        assert not called  # compile off: no reset, no import cost
+        _reset_dynamo_caches_(__import__("types").SimpleNamespace(enable_torch_compile=True))
+        assert called == [1]
+
+    def test_adoption_stat_targets_skip_wrapper_child_names(self):
+        """Wrappers that register orig_layer as a child module make
+        named_modules yield '<w>.orig_layer' carrying the same stats object;
+        the adoption stats distribution must use wrapper-level names only
+        (the pool's pre-wrap layer map has no such children) -- regression:
+        KeyError('<wrapper>.orig_layer') on a real model whose wrappers
+        register ``orig_layer`` as a child module."""
+        import torch as _t
+
+        from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
+
+        class _W(_t.nn.Module):
+            def __init__(self, orig):
+                super().__init__()
+                self.orig_layer = orig  # registered as a CHILD MODULE
+
+            def forward(self, x):
+                return self.orig_layer(x)
+
+        orig = _t.nn.Linear(4, 4, bias=False)
+        orig.imatrix = _t.ones(4)  # stats live on the orig layer
+        block = _t.nn.Module()
+        block.linear_attn = _t.nn.Module()
+        block.linear_attn.out_proj = _W(orig)  # registers 'linear_attn.out_proj.orig_layer' as a grandchild
+        targets = TuneParallelContext._adoption_stat_targets_(block)
+        names = [n for n, _m in targets]
+        assert "linear_attn.out_proj" in names
+        assert "linear_attn.out_proj.orig_layer" not in names
+        # the surviving entry reads the stats through the wrapper
+        holder = dict(targets)["linear_attn.out_proj"]
+        assert holder is orig and hasattr(holder, "imatrix")
+
+    def test_adoption_hook_sync_keeps_rotation_drops_stale(self):
+        """The adoption helper re-syncs mirror-layer hooks from the home
+        block's CURRENT state: rotation hooks (registered pre-quantization
+        and still live on the home layers) survive onto the mirrors; stale
+        collection hooks that home already removed are dropped."""
+        import torch as _t
+
+        from auto_round.algorithms.parallel.data_parallel import DDPPlan, MirrorPool
+        from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
+
+        class _Lin(_t.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = _t.nn.Parameter(_t.randn(4, 4))
+
+            def forward(self, x):
+                return x @ self.weight
+
+        class _B(_t.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lin = _Lin()
+                self.lin.global_name = "m.lin"
+                self.lin.to_quantized = True
+
+            def forward(self, x):
+                return self.lin(x)
+
+        rot_seen = []
+
+        def _rot_hook(mod, args):
+            rot_seen.append(1)
+            return (args[0] + 0.0,)
+
+        class _W(_t.nn.Module):
+            """Minimal wrapper: nests the layer as orig_layer (hook lives there)."""
+
+            def __init__(self, orig):
+                super().__init__()
+                self.orig_layer = orig
+
+            def forward(self, x):
+                return self.orig_layer(x)
+
+        block = _B()
+        block.lin.register_forward_pre_hook(_rot_hook)  # rotation-style hook
+        plan = DDPPlan(world=2, devices=[_t.device("cpu", 0), _t.device("cpu", 1)], shard_size=1)
+        pool = MirrorPool(block, plan.devices)
+        rep1 = pool.reps[1]
+        assert rep1 is not block
+
+        def _stale(mod, args):
+            return None
+
+        rep1.lin.register_forward_pre_hook(_stale)  # stale collection residue
+
+        # home gets wrapped (as quantize_block would) BEFORE engagement
+        block.lin = _W(block.lin)
+
+        wraps = []
+
+        class _Q:
+            enable_minmax_tuning = False
+            enable_norm_bias_tuning = False
+            compress_context = None
+            config = None
+
+            def wrapper_block(self, b, *a, **k):
+                wraps.append(b)
+                b.lin = _W(b.lin)  # real minimal wrap of the mirror's layer
+                return ["lin"], []
+
+        q = _Q()
+        q.parallel_state = SimpleNamespace(plan=None, pool=pool, pool_used=False)
+        group = TuneParallelContext._adopt_or_build_group_(q, block, plan)
+        # wrapped each mirror in place, adopted the pool's replica
+        assert wraps == [rep1]
+        assert group.mirrors == [rep1]
+        assert q.parallel_state.pool_used is True
+        # mirror hooks now match home EXACTLY: rotation kept, stale dropped
+        # (the hook lives on the layer NESTED in the wrapper)
+        assert list(rep1.lin.orig_layer._forward_pre_hooks.values()) == [_rot_hook]
+        # and the surviving hook actually fires through the wrapper
+        x = _t.randn(2, 4)
+        n0 = len(rot_seen)
+        with _t.no_grad():
+            block(x)
+            rep1(x)
+        assert len(rot_seen) == n0 + 2
+
+    def test_adoption_reuses_pool_mirrors_with_loss_parity(self, monkeypatch, _autoround_log_propagate):
+        """engage_ ADOPTS the collection MirrorPool: mirrors are wrapped in
+        place (quantizer.wrapper_block per mirror), skipping the second
+        deepcopy, and the DP tune runs the identical loss trajectory as the
+        deepcopy lane under pinned draws."""
+        import torch as _t
+
+        import auto_round.algorithms.parallel.data_parallel as dp
+        import auto_round.algorithms.parallel.tune_parallel as tp
+        import auto_round.algorithms.quantization.sign_round.quantizer as v1
+        from auto_round.algorithms.parallel.data_parallel import DDPPlan, MirrorPool
+
+        monkeypatch.setattr(
+            tp, "shard_samplers", lambda ns, world, bpr: [_FixedSampler([[0], [1]]), _FixedSampler([[2], [3]])]
+        )
+        monkeypatch.setattr(v1, "collect_best_params", lambda block, cache_device: {})
+        monkeypatch.setattr(v1, "unwrapper_block", lambda block, best_params: None)
+
+        plan = DDPPlan(world=2, devices=[_t.device("cpu", 0), _t.device("cpu", 1)], shard_size=1)
+
+        def _resolve(quantizer, block, fp_inputs, fp_outputs, home, world=None, log=True):
+            return plan
+
+        monkeypatch.setattr(tp, "resolve_tune_ddp_plan_", _resolve)
+        block_ctx = type("BC", (), {"block_index": 0, "block_cnt": 1, "block_name": "b0"})()
+
+        loss_records = []
+
+        def _loss_spy(pred, ref, indices, mse_loss, dev, mask):
+            val = mse_loss(pred, ref)
+            loss_records.append((tuple(indices), val.item()))
+            return val
+
+        def _run_dp(with_pool):
+            q = self._quantizer()
+            q._get_loss = _loss_spy
+            # the adoption helper reads these directly; shadow the base
+            # properties (config is None on the harness fake)
+            q.enable_minmax_tuning = False
+            q.enable_norm_bias_tuning = False
+            blk = self._block()
+            pools = self._pools()
+            wraps = []
+            _orig_wb = q.wrapper_block
+
+            def _wb(b, *a, **k):
+                wraps.append(id(b))
+                return _orig_wb(b, *a, **k)
+
+            q.wrapper_block = _wb
+            if with_pool:
+                q.parallel_state = SimpleNamespace(plan=None, pool=MirrorPool(blk, plan.devices), pool_used=False)
+            n = len(loss_records)
+            q.quantize_block(blk, pools[0], {}, pools[1], None, block_ctx, None)
+            return loss_records[n:], wraps, q
+
+        baseline, wraps_base, _q_base = _run_dp(False)
+
+        # from here on, adoption replaces the deepcopy mirror maker
+        def _no_deepcopy(self_, block, dev):
+            raise AssertionError("adoption lane must not deepcopy mirrors")
+
+        monkeypatch.setattr(dp.ReplicaGroup, "_make_mirror", _no_deepcopy)
+        adopted, wraps_ado, q_ado = _run_dp(True)
+
+        assert len(baseline) == len(adopted) and len(baseline) % 2 == 0
+        # the replicas' record ORDER within an iteration races across
+        # threads (same as the sibling parity test): group per iteration,
+        # compare draw SETS and mean losses
+        for it, (b_it, a_it) in enumerate(zip(zip(*[iter(baseline)] * 2), zip(*[iter(adopted)] * 2))):
+            assert {idx for idx, _ in b_it} == {idx for idx, _ in a_it}, f"iter {it}: draw sets differ"
+            b_mean = sum(v for _, v in b_it) / 2
+            a_mean = sum(v for _, v in a_it) / 2
+            assert abs(b_mean - a_mean) < 1e-6, f"iter {it}: deepcopy {b_mean} vs adopted {a_mean}"
+        # the adoption lane wrapped each mirror in place: one EXTRA wrapper
+        # call per non-home replica on top of quantize_block's own home wrap
+        assert len(wraps_ado) == len(wraps_base) + 1
+        assert q_ado.parallel_state.pool_used is True
+        # OWNERSHIP TRANSFER regression pin (review R4-1): adoption must
+        # clear the quantizer-side pool ref so the composer drops the ctx
+        # pool; the Step-6 cascade then runs on the home block only (the
+        # adopted mirrors hold the tune's LAST state; home was unwrapped
+        # with BEST)
+        assert q_ado.parallel_state.pool is None
+
     def test_serial_dp_loss_parity_with_controlled_draws(self, monkeypatch, _autoround_log_propagate):
         """Per-iteration serial-vs-dp loss parity when the draws are pinned.
 
@@ -458,20 +719,10 @@ class TestEngagedLaneE2E:
         """
         import torch as _t
 
+        import auto_round.algorithms.parallel.tune_parallel as tp
         import auto_round.algorithms.quantization.sign_round.quantizer as v1
-        import auto_round.algorithms.quantization.sign_round.tune_parallel as tp
 
         loss_records = []  # (indices tuple, mse value) per _get_loss call
-
-        class _FixedSampler:
-            def __init__(self, draws):
-                self._draws = list(draws)
-                self._i = 0
-
-            def next_batch(self):
-                out = self._draws[self._i]
-                self._i += 1
-                return out
 
         # dp draws: iter1 rep0=[0] rep1=[2]; iter2 rep0=[1] rep1=[3]
         # serial draws (same global indices, same order): iter1 [0,2]; iter2 [1,3]
@@ -482,7 +733,11 @@ class TestEngagedLaneE2E:
 
         def _loss_spy(pred, ref, indices, mse_loss, dev, mask):
             val = mse_loss(pred, ref)
-            loss_records.append((tuple(indices), val.item()))
+            # record the per-ELEMENT mean: the engaged lane sum-reduces shard
+            # losses (normalizing later), the serial lane mean-reduces batches;
+            # both arms must compare at the same scale
+            scale = max(pred.numel(), 1) if getattr(mse_loss, "reduction", "mean") == "sum" else 1
+            loss_records.append((tuple(indices), val.item() / scale))
             return val
 
         monkeypatch.setattr(v1, "collect_best_params", lambda block, cache_device: {})

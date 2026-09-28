@@ -62,6 +62,9 @@ class CompressContext(BaseContext):
         self.static_attention_dtype = static_attention_dtype
         self.static_kv_granularity = static_kv_granularity
         self.static_attention_granularity = static_attention_granularity
+        # Resolved --parallel_quantization policy (ParallelPolicy or None = off);
+        # set once at the CLI entry, read by the data-parallel engine
+        self.parallel_policy = kwargs.pop("parallel_policy", None)
 
     def clear_memory(self, tensor=None):
         """Clear GPU/CPU memory only when ``low_gpu_mem_usage`` is enabled."""

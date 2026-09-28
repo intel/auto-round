@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
-
 import torch
 import torch.nn as nn
 
+from auto_round.algorithms.parallel.rtn_sharding import _shard_rtn_searches
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.registry import register_pipeline_member
@@ -28,8 +27,6 @@ from auto_round.utils import (
 from auto_round.utils.device_manager import device_manager
 
 _EXPERT_BATCH_MAX_ELEMS = 2**28  # ~1 GiB fp32 stacked weights per batched call
-
-_EXPERT_RE = re.compile(r"^(?P<parent>.*)\.experts\.\d+\.(?P<proj>[^.]+)$")
 
 
 @register_pipeline_member(RTNConfig)
@@ -70,80 +67,21 @@ class RTNQuantizer(BaseQuantizer):
             dict: Empty dict — zero-shot RTN has no tunable parameters to track.
         """
 
+        from auto_round.algorithms.parallel.data_parallel import parallel_state
+
+        _st = parallel_state(self)
+        plan = _st.plan if _st is not None else None
+        if plan is not None and getattr(plan, "world", 1) >= 2:
+            # hundreds of independent per-module quantizes: shard them across
+            # the resident collection mirrors exactly like the OptRTN lane
+            # (all-singles job plan; plain minmax semantics via the explicit
+            # disable flag), results written back home
+            _shard_rtn_searches(self, block, disable_opt_rtn=True)
+            return {}
         for _name, m in block.named_modules():
             if check_to_quantized(m):
                 self._quantize_layer_via_rtn(m, disable_opt_rtn=True)
         return {}
-
-
-def _shard_rtn_searches(quantizer, block) -> tuple:
-    """Run the per-layer RTN/OptRTN iters=0 searches, sharded across the DDP devices.
-
-    Work-sharding on the engaged plan: layer i's search runs on
-    ``plan.devices[i % world]`` (the layer already moves to its tuning device
-    in the serial path, so this adds no extra weight traffic); the search
-    itself is deterministic given (weight, imatrix), so sharded results are
-    bit-identical to serial. Falls back to the serial single-device loop when
-    no plan is engaged or the world is 1. Returns (total_seconds, n_layers,
-    max_layer_seconds).
-    """
-    import time as _ptime
-
-    from auto_round.utils import set_module as _set_module
-
-    plan = getattr(quantizer, "_resolved_ddp_plan", None)
-    targets = [(n, m) for n, m in block.named_modules() if hasattr(m, "global_name") and check_to_quantized(m)]
-    if plan is None or getattr(plan, "world", 1) < 2 or len(targets) < 2:
-        _tq, _mx = 0.0, 0.0
-        for _n, m in targets:
-            _t0 = _ptime.perf_counter()
-            quantizer._quantize_layer_core(m)
-            _d = _ptime.perf_counter() - _t0
-            _tq += _d
-            _mx = max(_mx, _d)
-        return _tq, len(targets), _mx
-
-    world = plan.world
-    home = plan.devices[0]
-
-    def _one(dev, mod):
-        if dev.type == "cuda":
-            with torch.cuda.device(dev):
-                return quantizer._quantize_layer_core(mod, tuning_device=dev)
-        return quantizer._quantize_layer_core(mod, tuning_device=dev)
-
-    # round-robin: consecutive layers spread across the devices
-    jobs = [(plan.devices[i % world], n, m) for i, (n, m) in enumerate(targets)]
-    results: dict = {}
-
-    def _run(idx):
-        dev, n, m = jobs[idx]
-        results[idx] = _one(dev, m)
-
-    from auto_round.algorithms.quantization.sign_round.data_parallel import run_threaded_spawn
-
-    _t0 = _ptime.perf_counter()
-    run_threaded_spawn([lambda i=i: _run(i) for i in range(len(jobs))])
-    _tq = _ptime.perf_counter() - _t0
-
-    # place results home: back into the block and (when the quantizer carries
-    # the global model) into the model, matching the serial path's placement
-    model = getattr(quantizer, "model", None)
-    for idx, (dev, n, m) in enumerate(jobs):
-        q_layer = results[idx].to(home)
-        _replace_module(block, n, q_layer)
-        if isinstance(model, torch.nn.Module):
-            _set_module(model, q_layer.global_name, q_layer)
-    return _tq, len(targets), _tq / max(len(targets), 1)
-
-
-def _replace_module(block, dotted_name, new_module):
-    """Replace ``block.<dotted_name>`` with ``new_module``."""
-    parts = dotted_name.split(".")
-    parent = block
-    for p in parts[:-1]:
-        parent = getattr(parent, p)
-    setattr(parent, parts[-1], new_module)
 
 
 @register_pipeline_member(OptimizedRTNConfig)
@@ -213,9 +151,9 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         # Normalize imatrix (cheap elementwise divides), then quantize the
         # block's target modules - same-shape expert projections batched into
         # single stacked search calls when the search is active. With a DDP
-        # plan engaged (world >= 2), the searches run sharded across the
-        # replica devices instead (per-layer round-robin; expert batching is
-        # a serial-lane optimization there).
+        # plan engaged (world >= 2), the same job plan (expert batches +
+        # singles, ``_rtn_search_jobs``) executes round-robin across the
+        # plan's replica devices.
         import time as _ptime
 
         _t0 = _ptime.perf_counter()
@@ -226,7 +164,10 @@ class OptimizedRTNQuantizer(RTNQuantizer):
                 _n_norm += 1
         _tn = _ptime.perf_counter() - _t0
 
-        plan = getattr(self, "_resolved_ddp_plan", None)
+        from auto_round.algorithms.parallel.data_parallel import parallel_state
+
+        _st = parallel_state(self)
+        plan = _st.plan if _st is not None else None
         if plan is not None and getattr(plan, "world", 1) >= 2:
             _tq, _n, _mx = _shard_rtn_searches(self, block)
         else:
@@ -238,7 +179,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             self._quantize_targets(targets)
             _tq = _ptime.perf_counter() - _ts
             _n = len(targets)
-            # batched lane: per-layer max is not tracked (stacked searches)
+            # batched lane: per-layer max is unavailable (stacked searches)
             _mx = _tq / max(_n, 1)
         from auto_round import envs as _envs
 
@@ -254,62 +195,30 @@ class OptimizedRTNQuantizer(RTNQuantizer):
             )
 
     def _split_expert_batches(self, targets: list):
-        """Partition same-shape expert projections into batchable groups.
+        """Delegate to the engine's shared grouping primitive; the algorithm
+        declares the NeUQI grid input that makes asym searches batchable."""
+        from auto_round.algorithms.parallel.rtn_sharding import split_expert_batches
 
-        Experts of one layer share weight shapes (e.g. 192 x ``[1536, 4096]``
-        gate/up/down projections). The per-group search is row-independent, so
-        a whole group can be quantized in one call by stacking weights along
-        the output dim - same results as per-module calls, one search's worth
-        of per-module overhead instead of 192.
-        """
-        grouped = {}
-        singles = []
-        for m in targets:
-            match = _EXPERT_RE.match(getattr(m, "global_name", "") or "")
-            if (
-                match is None
-                or type(m) is not nn.Linear
-                or not isinstance(getattr(m, "group_size", None), int)
-                or getattr(m, "group_size", None) <= 0
-                or getattr(m, "super_bits", None) is not None
-                or getattr(m, "data_type", "int") != "int"
-                or m.weight.shape[1] % m.group_size != 0  # not row-divisible: keep per-module
-                or getattr(m, "act_bits", 16) <= 8  # act-quant layers need the per-module wrapper path
-            ):
-                singles.append(m)
-                continue
-            key = (
-                match["parent"],
-                match["proj"],
-                tuple(m.weight.shape),
-                m.bits,
-                m.group_size,
-                bool(getattr(m, "sym", False)),
-            )
-            grouped.setdefault(key, []).append(m)
-        batches = []
-        for g in grouped.values():
-            if len(g) >= 2:
-                batches.append(g)
-            else:
-                singles.extend(g)  # singleton groups must stay per-module, never dropped
-        return batches, singles
+        return split_expert_batches(
+            targets, enable_neuqi=bool(getattr(getattr(self, "config", None), "enable_neuqi", False))
+        )
 
     def _expert_search_active(self) -> bool:
-        """Whether the optimized-RTN NeUQI search runs for expert modules.
+        """Whether the optimized-RTN search runs for batchable modules.
 
         Mirrors the MoE heuristic in ``_quantize_layer_via_rtn``: experts skip
         the search unless explicitly forced on (``enable_opt_rtn``), so batching
         must not change that decision - only batch when the search would run.
-        Both symmetry classes search under ``enable_neuqi`` (asym: joint
-        (scale, zp); sym: two-stage scale), so both batch.
+        The optimized int search itself is sym-only (asym int resolves to no
+        search fn); both NeUQI grids and the plain opt-RTN sym search ride the
+        same stable callable, so BOTH batch.
         """
         cfg = self.config
         if bool(getattr(cfg, "disable_opt_rtn", False)):
             return False
         if getattr(cfg, "orig_disable_opt_rtn", None) is None and getattr(self.model_context, "is_moe_model", False):
             return False
-        return bool(getattr(cfg, "enable_neuqi", False))
+        return True
 
     def _quantize_expert_batch(self, mods: list, device) -> list:
         """Quantize same-shape expert projections in one stacked search call.
@@ -330,16 +239,28 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         # q_scale_thresh than the fp16 default
         scale_dtype = getattr(m0, "scale_dtype", torch.float16)
         q_scale_thresh = 1e-8 if scale_dtype == torch.float32 else 1e-5
-        resolved_dtype = "opt_rtn_int_sym_neuqi" if sym else "opt_rtn_int_asym"
-        try:
-            if sym:
-                from auto_round.data_type.neuqi import quant_tensor_opt_rtn_sym_neuqi
-            else:
-                from auto_round.data_type.neuqi import quant_tensor_opt_rtn_asym
-        except ImportError:
-            return list(mods)
+        # route by the CONFIG's search semantics: the batch lane was born
+        # under NeUQI, but a plain --enable_opt_rtn run must batch the PLAIN
+        # sym search (mixed routing inside one block silently changed
+        # quality), and plain asym uses min/max init (zero search work) and
+        # stays on the per-module path
+        neuqi = bool(getattr(self.config, "enable_neuqi", False))
+        if sym and neuqi:
+            resolved_dtype = "opt_rtn_int_sym_neuqi"
+            from auto_round.data_type.neuqi import quant_tensor_opt_rtn_sym_neuqi as sym_search_fn
+        elif sym:
+            resolved_dtype = "opt_rtn_int_sym"
+            from auto_round.data_type.int import quant_tensor_opt_rtn_sym as sym_search_fn
+        else:
+            if not neuqi:
+                return list(mods)  # plain asym: min/max init, no search to batch
+            resolved_dtype = "opt_rtn_int_asym"
+            from auto_round.data_type.neuqi import quant_tensor_opt_rtn_asym as sym_search_fn
 
-        max_elems = _EXPERT_BATCH_MAX_ELEMS
+        from auto_round import envs as _envs
+
+        _gb = getattr(_envs, "AR_SEARCH_BATCH_GB", None)
+        max_elems = int(_gb * (2**30) // 4) if _gb else _EXPERT_BATCH_MAX_ELEMS
         per_call = max(1, max_elems // m0.weight.numel())
         # divisibility is guaranteed by _split_expert_batches; re-checked here
         # so a direct call can never half-write a chunk before bailing out
@@ -367,28 +288,17 @@ class OptimizedRTNQuantizer(RTNQuantizer):
                 if dev.type == "cuda":
                     torch.cuda.synchronize(dev)
 
-                if sym:
-                    # returns follow the quant_tensor_opt_rtn_sym conventions: the
-                    # zero point is the scalar nmax
-                    qdq, scale, zp = quant_tensor_opt_rtn_sym_neuqi(
-                        weights,
-                        bits=bits,
-                        group_size=g,
-                        v=0.0,
-                        q_scale_thresh=q_scale_thresh,
-                        imatrix=imat,
-                        scale_dtype=scale_dtype,
-                    )
-                else:
-                    qdq, scale, zp = quant_tensor_opt_rtn_asym(
-                        weights,
-                        bits=bits,
-                        group_size=g,
-                        v=0.0,
-                        q_scale_thresh=q_scale_thresh,
-                        imatrix=imat,
-                        scale_dtype=scale_dtype,
-                    )
+                # both sym variants follow the quant_tensor_opt_rtn_sym
+                # conventions: the zero point is the scalar nmax
+                qdq, scale, zp = sym_search_fn(
+                    weights,
+                    bits=bits,
+                    group_size=g,
+                    v=0.0,
+                    q_scale_thresh=q_scale_thresh,
+                    imatrix=imat,
+                    scale_dtype=scale_dtype,
+                )
 
                 if dev.type == "cuda":
                     torch.cuda.synchronize(dev)
@@ -418,24 +328,44 @@ class OptimizedRTNQuantizer(RTNQuantizer):
         return mods[written:]
 
     def _quantize_targets(self, targets: list) -> None:
+        # note: the device-local-search lineage (batched_search.run_batched_rtn_search)
+        # supersedes this lane's staging when it rebases; the shared engine core
+        # already lives in search_dispatch.py
         """Quantize a block's target modules; same-shape expert groups in one
         stacked search call each (row-independent search: results identical to
         per-module calls)."""
         if not targets:
             return
-        batches = []
-        if self._expert_search_active():
-            batches, targets = self._split_expert_batches(targets)
-            if batches:
-                n_batched = sum(len(b) for b in batches)
-                logger.info(
-                    "[OptRTN] expert batching: %d expert modules in %d batched groups.",
-                    n_batched,
-                    len(batches),
-                )
+        batches, singles = self._rtn_search_jobs(targets)
+        if batches:
+            from auto_round.algorithms.quantization.search_dispatch import log_engaged_once
+
+            log_engaged_once("batched rtn search")
         device = device_manager.device
         for b in batches:
             for m in self._quantize_expert_batch(b, device):
                 self.quantize_layer_outside_block(m)  # unwritten remainder: per-module fallback
-        for m in targets:
+        for m in singles:
             self.quantize_layer_outside_block(m)
+
+    def _rtn_search_jobs(self, targets: list) -> tuple:
+        """Plan the block's search jobs: ``(batched expert groups, single modules)``.
+
+        The one planning primitive shared by every execution lane: the serial
+        lane (``_quantize_targets`` on the device-manager device) and the DDP
+        sharded lane (``_shard_rtn_searches`` round-robin over the plan
+        devices) consume the same split, so batch grouping can never drift
+        between lanes. Expert-shaped same-key groups become stacked batch
+        jobs when the expert search is active; everything else stays
+        per-module. Returns ``([], list(targets))`` when batching is off --
+        either algorithmically (search inactive) or via the
+        ``AR_DISABLE_BATCHED_SEARCH`` kill switch, which must reach EVERY
+        batching site including this one.
+        """
+        from auto_round import envs as _envs
+
+        if getattr(_envs, "AR_DISABLE_BATCHED_SEARCH", False):
+            return [], list(targets)
+        if self._expert_search_active():
+            return self._split_expert_batches(targets)
+        return [], list(targets)
