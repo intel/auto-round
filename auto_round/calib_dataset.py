@@ -1126,7 +1126,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
 
         if isinstance(dataset, IterableDataset):
             # Filter and limit the stream before materializing it in memory.
-            dataset = dataset.filter(filter_func)
+            dataset = dataset.filter(filter_func, num_proc=1)
             if name in data_lens:
                 dataset = select_dataset(dataset, range(data_lens[name]))
             # select_dataset may have already materialized the requested rows.
@@ -1137,7 +1137,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
             # Cast before filter/select creates indices, avoiding a full values
             # buffer conversion for each indexed Arrow row.
             dataset = cast_dataset_columns(dataset)
-            dataset = dataset.filter(filter_func)
+            dataset = dataset.filter(filter_func, num_proc=1)
             if name in data_lens:
                 dataset = select_dataset(dataset, range(data_lens[name]))
         datasets.append(dataset)
