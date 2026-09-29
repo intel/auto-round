@@ -282,7 +282,7 @@ def quant_mx(
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2.0, shared_exp.float())
-    tensor = tensor / scale + v #max 1.92
+    tensor = tensor / scale + v  # max 1.92
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
@@ -343,9 +343,7 @@ def quant_mx_uint(
     elif mantissa_rounding == "floor":
         tensor = torch.sign(tensor) * floor_ste(torch.abs(tensor))
     elif mantissa_rounding == "stochastic":
-        tensor = torch.sign(tensor) * floor_ste(
-            torch.abs(tensor) + torch.rand_like(tensor, requires_grad=False)
-        )
+        tensor = torch.sign(tensor) * floor_ste(torch.abs(tensor) + torch.rand_like(tensor, requires_grad=False))
     else:
         raise ValueError("mantissa_rounding only supports even, nearest, floor or stochastic.")
     unsigned_code = torch.clamp(tensor + zero_point, min=0, max=maxq)
@@ -353,7 +351,6 @@ def quant_mx_uint(
     tensor = (unsigned_code - zero_point) / element_scale * scale
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), zero_point
-
 
 
 def quant_mx_rceil(
