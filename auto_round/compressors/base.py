@@ -1255,6 +1255,9 @@ class BaseOrchestrator(object):
         if not ignore_user_override and getattr(self, "_torch_compile_user_specified", False):
             return None
 
+        if device_manager.is_multi_device():
+            return "multi-device execution is not compatible with torch.compile"
+
         quantize_config = getattr(self, "quantize_config", None)
         if quantize_config is None:
             return None
@@ -1284,9 +1287,6 @@ class BaseOrchestrator(object):
 
             if model is None or not is_moe_model(model):
                 return f"`iters`={iters} is below {MIN_ITERS_FOR_TORCH_COMPILE}"
-
-        if device_manager.is_multi_device():
-            return "multi-GPU execution is not compatible with torch.compile"
 
         return None
 
@@ -1335,12 +1335,12 @@ class BaseOrchestrator(object):
                 self._torch_compile_off_reason = arch_reason
                 logger.warning_once("reset enable_torch_compile to `False` as %s", arch_reason)
 
-        # Multi-device execution (e.g. multiple GPUs via device_map) is incompatible
+        # Multi-device execution (e.g. multiple devices via device_map) is incompatible
         # with torch.compile because PyTorch AOTAutograd backward pass cannot enter
         # contextvars.Context concurrently from multiple engine threads.
         if self.enable_torch_compile and device_manager.is_multi_device():
             self.enable_torch_compile = False
-            self._torch_compile_off_reason = "multi-GPU execution is not compatible with torch.compile"
+            self._torch_compile_off_reason = "multi-device execution is not compatible with torch.compile"
             logger.warning_once("reset enable_torch_compile to `False` as %s", self._torch_compile_off_reason)
 
         if self.enable_torch_compile:
