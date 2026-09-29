@@ -859,6 +859,7 @@ class TestMultiDeviceTorchCompileRestrictions:
     def test_compiled_block_forward_prevented_on_multi_device(self, monkeypatch):
         """Block-forward compilation must be blocked when multiple devices are active."""
         from types import SimpleNamespace
+
         from auto_round.algorithms.composer import AlgorithmComposer
         from auto_round.algorithms.quantization.base import BaseQuantizer
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
