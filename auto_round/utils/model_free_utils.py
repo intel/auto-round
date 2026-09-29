@@ -3822,7 +3822,7 @@ def preprocess_model_type_source_tensors(
     """Apply model-type-specific source tensor normalization."""
     model_type = (model_type or "").lower()
     quantization_config = quantization_config or {}
-    is_deepseek_v4 = model_type == "deepseek_v4"
+    is_deepseek_v4 = model_type in ("deepseek_v4", "deepseek_v41")
     is_deepseek_v32_ue8m0 = (
         model_type == "deepseek_v32"
         and quantization_config.get("quant_method") == "fp8"
@@ -3835,6 +3835,10 @@ def preprocess_model_type_source_tensors(
     entries: list[tuple[str, str, bool]] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
+            continue
+        if ".engram." in name:
+            # Engram conditional memory (deepseek_v41): FP8 n-gram tables and N=4
+            # micro projections are not quantizable Linears -- keep source keys/values.
             continue
         layer_name = name[: -len(".weight")]
         scale_candidates = [f"{layer_name}.scale"]
