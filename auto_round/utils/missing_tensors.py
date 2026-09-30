@@ -526,6 +526,20 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     if qconfig is None:
         return missing_tensors_dict
 
+    # GLM-5.3 draft layers are stored after the ordinary decoder layers, without
+    # an "mtp" component in their names. vLLM needs their original FP weights.
+    with open(os.path.join(target_dir, "config.json")) as f:
+        model_config = json.load(f)
+    draft_prefixes = ()
+    if model_config.get("model_type") == "glm5_next":
+        text_config = model_config.get("text_config") or model_config
+        first_draft = text_config.get("num_hidden_layers")
+        draft_count = text_config.get("num_nextn_predict_layers", model_config.get("num_nextn_predict_layers", 0))
+        if isinstance(first_draft, int) and isinstance(draft_count, int) and first_draft >= 0 and draft_count > 0:
+            draft_prefixes = tuple(
+                f"model.language_model.layers.{i}." for i in range(first_draft, first_draft + draft_count)
+            )
+
     global_bits = qconfig["bits"]
     global_group_size = qconfig["group_size"]
     global_sym = qconfig["sym"]
@@ -637,6 +651,8 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         # If extra_config explicitly covers this layer, trust its decision
         if _is_covered_by_extra_config(layer_name):
             return not _is_fp_layer(layer_cfg)
+        if draft_prefixes and k.startswith(draft_prefixes):
+            return False
         # Fall back to BLOCK_NAME_TO_IGNORE heuristic
         if any(block in k for block in BLOCK_NAME_TO_IGNORE):
             return False
