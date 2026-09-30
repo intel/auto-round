@@ -323,6 +323,36 @@ def tune(args):
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
+    _parallel = str(getattr(args, "parallel_quantization", "off") or "off").strip().lower()
+    _parallel_policy = None
+    if _parallel != "off":
+        import torch
+
+        from auto_round import envs as _envs
+        from auto_round.algorithms.parallel.data_parallel import (
+            ParallelPolicy,
+            resolve_parallel_world,
+        )
+
+        _n = torch.cuda.device_count()
+        _world = resolve_parallel_world(_parallel, _n, iters=int(getattr(args, "iters", 0) or 0))
+        _parallel_policy = ParallelPolicy(
+            world=_world,
+            source="auto" if _parallel == "auto" else "explicit",
+            collect_forward_cap=int(getattr(_envs, "AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES", 0) or 0),
+        )
+        if _parallel == "auto" and _world < _n:
+            # only `auto` adds information here (the reduction from the
+            # visible count); an explicit N either validates silently or
+            # raises, and the engagement line reports the resolved plan
+            logger.info(
+                "[tune-ddp] --parallel_quantization auto -> world=%d (largest power of two <= %d visible "
+                "devices; %d unused)",
+                _world,
+                _n,
+                _n - _world,
+            )
+
     if args.enable_torch_compile is False:
         logger.info("`torch.compile` is explicitly disabled with `--disable_torch_compile`.")
 
@@ -451,6 +481,11 @@ def tune(args):
             layer_config=layer_config,
         ),
     )
+
+    if _parallel_policy is not None:
+        # the resolved --parallel_quantization policy is set on the compress
+        # context; the data-parallel engine reads it from there
+        autoround.compress_context.parallel_policy = _parallel_policy
 
     model, folders = autoround.quantize_and_save(  # pylint: disable=no-member
         args.output_dir,

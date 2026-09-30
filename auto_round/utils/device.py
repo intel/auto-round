@@ -102,7 +102,12 @@ def _bump_dynamo_cache_limit(min_size: Optional[int] = None):
             min_size = envs.AR_DYNAMO_CACHE_SIZE_LIMIT
         from torch._dynamo import config as _dynamo_config
 
-        for attr in ("cache_size_limit", "accumulated_cache_size_limit", "recompile_limit"):
+        for attr in (
+            "cache_size_limit",
+            "accumulated_cache_size_limit",
+            "recompile_limit",
+            "accumulated_recompile_limit",  # newer torch: process-wide cap (binds on MoE shape zoos)
+        ):
             if hasattr(_dynamo_config, attr) and getattr(_dynamo_config, attr) < min_size:
                 setattr(_dynamo_config, attr, min_size)
     except Exception:  # pragma: no cover - best effort
@@ -895,7 +900,9 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
     return 1.0, False  # Default ratio for non-MoE models
 
 
-def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size: int) -> tuple[dict, float]:
+def estimate_tuning_block_mem(
+    block: torch.nn.Module, input_ids: Any, batch_size: int
+) -> tuple[dict, float, float, float]:
     """
     Calculates the memory consumption of a specific block in the model.
 
@@ -940,7 +947,10 @@ def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size
 
     for name, module in block.named_modules():
         if check_to_quantized(module):
-            enable_act_quant = module.act_bits <= 8
+            # wrapper-safe: SignRound(V2) wrappers expose `bits` but keep
+            # `act_bits` on the wrapped orig_layer; plain modules read their
+            # own attr; anything else defaults to no activation quantization
+            enable_act_quant = getattr(getattr(module, "orig_layer", module), "act_bits", 16) <= 8
             layer_name = name
             param_size = module.weight.nbytes
             param_memory_gb = param_size / 1024**3
@@ -1764,3 +1774,25 @@ def dispatch_model_by_all_available_devices(
     device_map = infer_auto_device_map(model, max_memory=new_max_memory, no_split_module_classes=no_split_modules)
     model = dispatch_model(model, device_map=device_map)
     return model
+
+
+def probe_usable_bytes(device_key):
+    """Corrected free bytes on a cuda device (raw free + reserved-but-unallocated)."""
+    try:
+        dev = torch.device(str(device_key))
+        if dev.type != "cuda" or dev.index is None or not torch.cuda.is_available():
+            return None
+        free, _total = torch.cuda.mem_get_info(dev.index)
+        free += torch.cuda.memory_reserved(dev.index) - torch.cuda.memory_allocated(dev.index)
+        return max(free, 0)
+    except (ValueError, RuntimeError, AttributeError) as e:
+        logger.debug("[device] free-memory probe failed for %s (%s)", device_key, e)
+        return None
+
+
+def _short_device_key(dev: str) -> str:
+    """'cuda:0' -> '0', 'cpu' -> 'cpu' (memory-monitor grammar; pool-placement twin)."""
+    d = str(dev)
+    if d.startswith("cuda:"):
+        return d.split(":", 1)[1]
+    return d

@@ -18,6 +18,7 @@ import os
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
+    AR_PERF_COUNTERS: bool = False
     AR_LOG_LEVEL: str = "INFO"
     AR_USE_MODELSCOPE: bool = "False"
     AR_MODEL_FREE_SHARD_PARALLELISM: Optional[int] = None
@@ -38,6 +39,30 @@ if TYPE_CHECKING:
     AR_QUANTIZE_BAGEL_MOE_GEN: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
     AR_ALLOW_W8_ASYM: bool = False
+    AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES: int = 0
+
+
+def _get_non_negative_int_env(name: str, default: int) -> int:
+    """Read a non-negative integer env var; fail fast on malformed values."""
+
+    def _read() -> int:
+        v = os.getenv(name, str(default))
+        if not v.isdigit():
+            raise ValueError(f"{name} must be a non-negative integer, got {v!r}")
+        return int(v)
+
+    return _read()
+
+
+def _get_optional_positive_float_env(name: str) -> Optional[float]:
+    """Optional positive-float env; unset -> None, invalid/negative raise."""
+    v = os.getenv(name)
+    if v is None:
+        return None
+    fv = float(v)
+    if fv <= 0:
+        raise ValueError(f"{name} must be a positive float, got {v!r}")
+    return fv
 
 
 def _get_optional_positive_int_env(name: str) -> Optional[int]:
@@ -58,6 +83,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # this is used for configuring the default logging level
     "AR_LOG_LEVEL": lambda: os.getenv("AR_LOG_LEVEL", "INFO").upper(),
     "AR_ENABLE_COMPILE_PACKING": lambda: os.getenv("AR_ENABLE_COMPILE_PACKING", "0").lower() in ("1", "true", "yes"),
+    # Emit [perf] phase-breakdown log lines (per-block load/tune/pack/write/clean/offload
+    # in the data-driven loop; per-block mirrors/warmup/fwd/bwd/exch/step/teardown for DDP tuning).
+    "AR_PERF_COUNTERS": lambda: os.getenv("AR_PERF_COUNTERS", "0").lower() in ("1", "true", "yes"),
     "AR_USE_MODELSCOPE": lambda: os.getenv("AR_USE_MODELSCOPE", "False").lower() in ["1", "true"],
     "AR_WORK_SPACE": lambda: os.getenv("AR_WORK_SPACE", "ar_work_space").lower(),
     "AR_ENABLE_UNIFY_MOE_INPUT_SCALE": lambda: os.getenv("AR_ENABLE_UNIFY_MOE_INPUT_SCALE", "False").lower()
@@ -179,9 +207,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     #                Benchmarks (A100, W4G128 tuning fwd+bwd) show "auto" matches or beats a
     #                fixed 16 on every Qwen3-MoE preset (e.g. 35B-A3B: 108 ms vs 156 ms).
     #   <int > 0>  - fixed group size. Fusing every active expert at once builds a working set
-    #                that grows with the expert count; past a point that costs peak memory on
-    #                GPU and cache locality on CPU (measured: fusing 64 experts halved CPU
-    #                calibration throughput, and doubled the GPU calibration peak).
+    #                that grows with the expert count; past a point that costs peak
+    #                memory on GPU and cache locality on CPU.
     #   0 or <0    - disable chunking/tiling: "fuse everything" in one group (e.g. set -1 to turn it off).
     # Results are identical for any value -- rows stay independent. A fixed count and "auto"
     # are both torch.compile-friendly (constant fused shape -> no per-count recompile).
@@ -220,6 +247,20 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_NEUQI_COARSE": lambda: int(v) if (v := os.getenv("AR_NEUQI_COARSE")) is not None else None,
     "AR_NEUQI_FINE": lambda: int(v) if (v := os.getenv("AR_NEUQI_FINE")) is not None else None,
     "AR_NEUQI_BACKEND": lambda: os.getenv("AR_NEUQI_BACKEND", "auto").lower(),
+    # Batched weight-local searches (search_dispatch.py): stacking same-key modules
+    # into one search call, one worker thread per weight device. Kill switch and
+    # per-batch element budget override (GiB of fp32 stacked weights).
+    "AR_DISABLE_BATCHED_SEARCH": lambda: os.getenv("AR_DISABLE_BATCHED_SEARCH", "False").strip().lower()
+    in ("1", "true", "yes"),
+    "AR_SEARCH_BATCH_GB": lambda: _get_optional_positive_float_env("AR_SEARCH_BATCH_GB"),
+    # Cap the number of devices a hook-carrying sharded collection forward runs
+    # on concurrently (hook passes keep compiled runners python-bound between
+    # graph sections, which can convoy on the GIL). Only lower this on hosts
+    # where hook-carrying passes convoy. Values above the engaged world are
+    # no-ops. Default 0 = no cap.
+    "AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES": lambda: _get_non_negative_int_env(
+        "AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES", 0
+    ),
 }
 
 

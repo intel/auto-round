@@ -182,6 +182,11 @@ export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
+### AR_PERF_COUNTERS
+- **描述**：输出 `[perf]` 阶段耗时日志——数据驱动循环的每块 `load/tune/pack/write/clean/offload`，
+  以及 `--parallel_quantization` 调优的每块 `mirrors/warmup/fwd/bwd/exch/step/teardown`。
+- **默认**：关闭
+
 ### AR_AUTO_SCHEME_NSAMPLES
 - **描述**：控制 AutoScheme 评分时使用的校准样本数默认值，仅在 `AutoScheme.nsamples` 未显式设置时生效。
 - **默认值**：未设置 → 16
@@ -360,6 +365,36 @@ else:
 3. **中国用户**：建议设置 `AR_USE_MODELSCOPE=true` 以获得更好的模型下载速度
 4. **性能优化**：如有足够算力，可启用 `AR_ENABLE_COMPILE_PACKING=1`
 5. **自定义工作目录**：将 `AR_WORK_SPACE` 设置为磁盘空间充足的目录
+
+### AR_DISABLE_BATCHED_SEARCH
+- **描述**：禁用批量量化搜索机制：SignRoundV2 的封装期 init-scale 搜索（iters>0）将完全串行（GGUF DQ scale 搜索始终逐模块内联执行）、逐模块地在权重所在设备上执行。批量化将设备/形状/配置相同的模块堆叠为一次调用，逐模块结果比特级一致；设置该变量可回退到串行循环（例如用于调试，或二分定位疑似与批量化相关的差异）。堆叠也会改变瞬态显存占用（见 `AR_SEARCH_BATCH_GB`）。
+- **默认值**：`0`（启用批量化）
+- **有效取值**：`0` / `1`
+- **用法**：批量/并行搜索机制的总开关。
+
+```bash
+AR_DISABLE_BATCHED_SEARCH=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_SEARCH_BATCH_GB
+- **描述**：以 GiB（每次批量调用的堆叠 fp32 权重大小）覆盖批量量化搜索的元素预算（默认约 1 GiB，与专家批量搜索使用的固定预算一致）。仅作用于 iters>0 的封装期 init 搜索（本 PR 中 iters=0 的专家批量搜索使用自己的固定预算）。该搜索受带宽限制，更大的批次通常不会缩短耗时；仅在显存紧张的卡上缩小瞬态占用或实验批次大小时使用。
+- **默认值**：未设置（固定约 1 GiB 预算）
+- **有效取值**：正浮点数（GiB）
+- **用法**：在显存紧张的多设备运行中缩小批次。
+
+```bash
+AR_SEARCH_BATCH_GB=0.5 python -m auto_round --model ... --device_map 0,1
+```
+
+### AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES
+- **描述**：限制携带 hook 的分片采集前向并发使用的设备数（hook 前向会使编译后的执行器在图分段之间退回 Python 绑定，可能在 GIL 上形成串行瓶颈）。仅在 hook 前向出现串行瓶颈的主机上才需要调低；在验证机台上至 world=8 未复现。大于已启用 world 的值等效于不限制。
+- **默认值**：`0`（不限制）
+- **取值**：非负整数
+- **用法**：在弱 CPU 主机上限制并发分片前向线程数。
+
+```bash
+AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES=2 python -m auto_round --model ... --parallel_quantization 8
+```
 
 ## 注意事项
 

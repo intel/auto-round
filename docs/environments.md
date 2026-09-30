@@ -182,6 +182,10 @@ export AR_DYNAMO_CACHE_SIZE_LIMIT=32
 export AR_MODEL_FREE_SHARD_PARALLELISM=4
 ```
 
+#- `AR_PERF_COUNTERS` (default off): emit `[perf]` phase-breakdown log lines -- per-block
+  `load/tune/pack/write/clean/offload` in the data-driven loop and per-block
+  `mirrors/warmup/fwd/bwd/exch/step/teardown` for `--parallel_quantization` tuning.
+
 ### AR_AUTO_SCHEME_NSAMPLES
 - **Description**: Controls the default number of calibration samples used by AutoScheme scoring when `AutoScheme.nsamples` is not explicitly set.
 - **Default**: unset → 16
@@ -360,6 +364,36 @@ else:
 3. **Chinese Users**: Consider setting `AR_USE_MODELSCOPE=true` for better model download performance
 4. **Performance Optimization**: Enable `AR_ENABLE_COMPILE_PACKING=1` if you have sufficient computational resources
 5. **Custom Workspace**: Set `AR_WORK_SPACE` to a directory with sufficient disk space for model processing
+
+### AR_DISABLE_BATCHED_SEARCH
+- **Description**: Disables the batched quantization-search machinery: SignRoundV2 wrap-time init-scale searches (iters>0) then run fully serially (the GGUF DQ scale search always runs inline per module), one module at a time, on the device hosting each weight. Batching stacks modules sharing device/shape/config into one call with bit-identical per-module results; set this to fall back to the serial loop (e.g. for debugging or bisecting a suspected batching-related difference). Stacking also changes the transient VRAM envelope (see `AR_SEARCH_BATCH_GB`).
+- **Default**: `0` (batching enabled)
+- **Valid Values**: `0` / `1`
+- **Usage**: Kill switch for the batched/parallel search machinery.
+
+```bash
+AR_DISABLE_BATCHED_SEARCH=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_SEARCH_BATCH_GB
+- **Description**: Overrides the element budget of the batched quantization searches in GiB of stacked fp32 weights per batched call (default ~1 GiB, matching the fixed budget used by the expert batching). Applies to the iters>0 wrapper init search (the iters=0 expert batching keeps its own fixed budget in this PR). The searches are bandwidth-bound, so larger batches rarely reduce wall time; use this only to shrink transient VRAM on tight cards or to experiment with batch sizes.
+- **Default**: unset (fixed ~1 GiB budget)
+- **Valid Values**: positive float (GiB)
+- **Usage**: Shrink batches on memory-tight multi-device runs.
+
+```bash
+AR_SEARCH_BATCH_GB=0.5 python -m auto_round --model ... --device_map 0,1
+```
+
+### AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES
+- **Description**: Caps the number of devices a hook-carrying sharded collection forward runs on concurrently (hook passes keep compiled runners python-bound between graph sections, which can convoy on the GIL). Only lower this on hosts where hook-carrying passes convoy; not reproduced on the validation rig up to world=8. Values above the engaged world are no-ops.
+- **Default**: `0` (no cap)
+- **Valid Values**: non-negative integer
+- **Usage**: Limit concurrent shard-forward threads on weak-CPU hosts.
+
+```bash
+AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES=2 python -m auto_round --model ... --parallel_quantization 8
+```
 
 ## Notes
 

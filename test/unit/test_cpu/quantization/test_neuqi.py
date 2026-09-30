@@ -1592,9 +1592,45 @@ class TestExpertBatching:
         filtering, shape/act-quant/symmetry segregation."""
         q = self._quantizer()
 
-        # gating: off -> inactive; disable_opt_rtn -> inactive
-        assert self._quantizer(enable_neuqi=False)._expert_search_active() is False
+        # gating: the optimized sym search batches under BOTH the NeUQI grids
+        # and the plain opt-RTN search (same stable callable); disable_opt_rtn
+        # and the un-forced MoE default keep it inactive
+        assert self._quantizer(enable_neuqi=False)._expert_search_active() is True
+        assert self._quantizer(enable_neuqi=True)._expert_search_active() is True
         assert self._quantizer(enable_neuqi=True, disable_opt_rtn=True)._expert_search_active() is False
+
+        # plain (neuqi-off) sym batch routes to the PLAIN opt-RTN search
+        import auto_round.data_type.int as _int_mod
+        import auto_round.data_type.neuqi as _neuqi_mod
+
+        calls = {"plain": 0, "neuqi": 0}
+        _orig_plain = _int_mod.quant_tensor_opt_rtn_sym
+        _orig_neuqi = _neuqi_mod.quant_tensor_opt_rtn_sym_neuqi
+
+        def _spy_plain(*a, **k):
+            calls["plain"] += 1
+            return _orig_plain(*a, **k)
+
+        def _spy_neuqi(*a, **k):
+            calls["neuqi"] += 1
+            return _orig_neuqi(*a, **k)
+
+        _int_mod.quant_tensor_opt_rtn_sym = _spy_plain
+        _neuqi_mod.quant_tensor_opt_rtn_sym_neuqi = _spy_neuqi
+        try:
+            g1 = self._expert("blk.mlp.gate_proj", sym=True)
+            u1 = self._expert("blk.mlp.up_proj", sym=True)
+            self._quantizer(enable_neuqi=False)._quantize_expert_batch([g1, u1], torch.device("cpu"))
+        finally:
+            _int_mod.quant_tensor_opt_rtn_sym = _orig_plain
+            _neuqi_mod.quant_tensor_opt_rtn_sym_neuqi = _orig_neuqi
+        assert calls["plain"] >= 1 and calls["neuqi"] == 0
+
+        # dense modules stay per-module (same-shape pairs share one device)
+        g1 = self._expert("blk.mlp.gate_proj")
+        u1 = self._expert("blk.mlp.up_proj")
+        batches, singles = q._split_expert_batches([g1, u1])
+        assert batches == [] and set(singles) == {g1, u1}
 
         # non-expert and odd-shaped modules stay single
         dense = self._expert("blk.mlp.gate_proj")

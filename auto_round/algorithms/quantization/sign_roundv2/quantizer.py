@@ -25,6 +25,7 @@ from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQua
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer
+
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
@@ -38,6 +39,7 @@ from auto_round.data_type.utils import (
     get_optimized_quant_func,
     reshape_imatrix_for_weight,
     reshape_pad_tensor_by_group_size,
+    resolve_optimized_init_scale_fn,
     revert_tensor_by_pad,
     round_ste,
     search_optimized_init_scale,
@@ -100,29 +102,108 @@ def _dq_asym_group_size(bits: int) -> int:
 
 class SignRoundOptimizedWrapperLinear(WrapperLinear):
     minmax_scale_bound = (0.0, 2.0)
+    # Opt-in protocol for wrapper_block: the init-scale search is weight-local
+    # and row-independent, so same-shape modules can be searched as one stacked
+    # batch (bit-identical per module, far fewer python/launch round-trips).
+    supports_batched_search = True
 
-    def _init_tuning_params_and_quant_func(self):
-        super()._init_tuning_params_and_quant_func()
+    def _init_tuning_params_and_quant_func(self, defer_search: bool = False):
+        super()._init_tuning_params_and_quant_func(defer_search=defer_search)
 
         layer = self.orig_layer
         data_type = layer.data_type
-        weight_reshape = self._prepare_init_scale_weight()
-        imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
-
-        self.init_scale = search_optimized_init_scale(
-            weight_reshape, data_type, layer.bits, imatrix, self.q_scale_thresh
-        )
         self.weight_quant_func = get_optimized_quant_func(data_type)
-        if self.init_scale is None or self.weight_quant_func is None:
+        if self.weight_quant_func is None:
             raise ValueError(
                 f"SignRound optimized path does not support data_type={data_type!r}; "
                 "expected a symmetric int / mx / nv type."
             )
-
         self.data_type = data_type
+        self.init_scale = None
+        self._deferred_search_inputs = None
+        if defer_search:
+            # metadata-only staging: NO tensors are snapshotted at wrap time.
+            # The search derives its inputs at consume time from this wrapper's
+            # own orig_layer, so it runs device-locally wherever the wrapper
+            # lives (DDP mirrors included) by construction -- the weight is a
+            # real parameter relocated with the module, and the imatrix is
+            # expanded chunk-time with device relocation inside the helper.
+            # init_scale stays unset until the search/finalize fills it --
+            # readers must use getattr(self, "init_scale", None).
+            search_fn = resolve_optimized_init_scale_fn(data_type, self.q_scale_thresh)
+            if search_fn is None:
+                raise ValueError(
+                    f"SignRound optimized path does not support data_type={data_type!r}; "
+                    "expected a symmetric int / mx / nv type."
+                )
+            self._deferred_search_inputs = (data_type, layer.bits, self.q_scale_thresh, search_fn)
+            self._init_search_deferred = True
+            return
+
+        self._run_init_scale_search()
+        self._compile_own_quant_func()
+
+    def _run_init_scale_search(self):
+        """Run the optimized init-scale search (deterministic given weight + imatrix)."""
+        layer = self.orig_layer
+        weight_reshape = self._prepare_init_scale_weight()
+        imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
+        self.init_scale = search_optimized_init_scale(
+            weight_reshape, layer.data_type, layer.bits, imatrix, self.q_scale_thresh
+        )
+        if self.init_scale is None:
+            raise ValueError(
+                f"SignRound optimized path does not support data_type={layer.data_type!r}; "
+                "expected a symmetric int / mx / nv type."
+            )
         if hasattr(layer, "imatrix"):
             del layer.imatrix
+
+    def prepare_batched_search(self):
+        """Derive the batched-search inputs NOW from this wrapper's own layer.
+
+        Device-local by construction: the weight_reshape follows orig_layer's
+        placement (a real parameter moved with the module), and the raw
+        imatrix is expanded chunk-time by the helper (which relocates it).
+        Returns ``(weight_reshape, bits, imatrix_raw, search_fn)``; callable
+        exactly once per deferral (consume clears the staged metadata).
+        """
+        if self._deferred_search_inputs is None:
+            raise RuntimeError(
+                f"{type(self).__name__}.prepare_batched_search() called with no staged inputs; "
+                "the deferred search was already consumed"
+            )
+        _data_type, bits, _thresh, search_fn = self._deferred_search_inputs
+        return self._prepare_init_scale_weight(), bits, getattr(self.orig_layer, "imatrix", None), search_fn
+
+    def _run_deferred_search_now(self):
+        """Run the deferred search per-module (fallback when batching is off)."""
+        weight, bits, imatrix_raw, search_fn = self.prepare_batched_search()
+        imatrix = reshape_imatrix_for_weight(imatrix_raw, weight, self.orig_layer.group_size)
+        self.init_scale = search_fn(weight, bits, imatrix)
+        self._deferred_search_inputs = None
+        if hasattr(self.orig_layer, "imatrix"):
+            del self.orig_layer.imatrix
+
+    def finalize_batched_search(self, init_scale) -> None:
+        """Adopt a search result computed on a stacked same-shape batch."""
+        self.init_scale = init_scale
+        self._deferred_search_inputs = None
+
+    def _finalize_deferred_init(self, val=None) -> None:
+        if getattr(self, "init_scale", None) is None:
+            if val is None:
+                raise ValueError("deferred init-scale search produced no scale")
+            self.init_scale = val
+        if hasattr(self.orig_layer, "imatrix"):
+            del self.orig_layer.imatrix
+        self._compile_own_quant_func()
+        self._init_search_deferred = False
+
+    def _compile_own_quant_func(self) -> None:
         if self.enable_torch_compile:
+            # eager original kept for the worker-thread swap (see wrapper.py)
+            self._eager_weight_quant_func = self.weight_quant_func
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
     def _prepare_init_scale_weight(self) -> torch.Tensor:
@@ -174,7 +255,9 @@ class SignRoundDQWrapperLinear(WrapperLinear):
         self.prev_d_scale = None
         self.prev_d_wmin = None
 
-    def _init_tuning_params_and_quant_func(self):
+    def _init_tuning_params_and_quant_func(self, defer_search: bool = False):
+        # the DQ scale search stays inline; the parameter keeps the base-class
+        # call signature uniform (staged batching applies to the optimized path)
         super()._init_tuning_params_and_quant_func()
         # The double-quant search path is data-dependent and kept un-compiled,
         # while ``weight_quant_func`` is the compilable pure-math half.

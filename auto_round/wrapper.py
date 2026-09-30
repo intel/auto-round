@@ -74,6 +74,9 @@ class WrapperLinear(torch.nn.Module):
     """
 
     minmax_scale_bound = (0.0, 1.0)
+    # subclass opt-in: wrap-time searches that are weight-local and row-independent
+    # can run as one stacked same-shape batch (search_dispatch); False on the base
+    supports_batched_search = False
 
     def __init__(
         self,
@@ -85,6 +88,7 @@ class WrapperLinear(torch.nn.Module):
         enable_torch_compile=True,
         disable_opt_rtn=True,
         enable_neuqi=False,
+        defer_search=False,
         **kwargs,
     ):
         """Initializes the WrapperLinear module.
@@ -94,8 +98,15 @@ class WrapperLinear(torch.nn.Module):
             enable_minmax_tuning (bool): Whether to enable min-max scale tuning.
             enable_norm_bias_tuning (bool): Whether to enable normalization and tuning for the bias term.
             device (str): The computation device, such as 'cpu' or 'cuda'.
+            defer_search (bool): Skip the wrap-time init-scale search and stage
+                its inputs for a batched same-shape run later (search_dispatch);
+                the data-parallel lane additionally broadcasts the deterministic
+                result to every replica (mirrors-first). Wrappers without a
+                wrap-time search ignore this flag.
         """
         super(WrapperLinear, self).__init__()
+        self.defer_search = defer_search
+        self._init_search_deferred = False
         self.orig_layer = orig_layer
         self.orig_layer.iters = kwargs.pop("iters", 200)
         self.disable_opt_rtn = disable_opt_rtn
@@ -118,7 +129,9 @@ class WrapperLinear(torch.nn.Module):
             self.q_scale_thresh = 1e-8
         else:
             self.q_scale_thresh = 1e-5
-        self._init_tuning_params_and_quant_func()
+        # consumed here, keeping subclass **kwargs clean; forwarded to the
+        # search init (staging for batched same-shape wrap searches)
+        self._init_tuning_params_and_quant_func(defer_search=bool(self.defer_search))
         if deepspeed_exists:
             if type(self.orig_layer) in (torch.nn.Linear, LinearLayer):
                 self.orig_forward = self.linear_forward
@@ -138,7 +151,17 @@ class WrapperLinear(torch.nn.Module):
     def bias(self):
         return self.orig_layer.bias
 
-    def _init_tuning_params_and_quant_func(self):
+    def _run_deferred_search_now(self):
+        """Run the deferred init-scale search (base: nothing to search)."""
+
+    def _finalize_deferred_init(self, val=None) -> None:
+        """Apply a broadcast init-scale + clear the deferred flag (base: flag only)."""
+        self._init_search_deferred = False
+
+    def _compile_own_quant_func(self) -> None:
+        """Compile this wrapper's quant func on its own device (base: no-op)."""
+
+    def _init_tuning_params_and_quant_func(self, defer_search: bool = False):
         """Initializes tuning parameters and quantization functions.
 
         This method sets up required parameters and functions for weight quantization,
@@ -238,6 +261,11 @@ class WrapperLinear(torch.nn.Module):
             enable_neuqi=self.enable_neuqi,
         )
         if self.enable_torch_compile:
+            # keep the eager original beside the compiled closure: mirror
+            # copies carry home-pinned compiled closures (wrong-device guards
+            # -> per-device re-specialization), so worker threads swap to the
+            # eager original via this stable attribute
+            self._eager_weight_quant_func = self.weight_quant_func
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
         if self.enable_act_quant:
@@ -249,6 +277,7 @@ class WrapperLinear(torch.nn.Module):
                 iters=orig_layer.iters,
             )
             if self.enable_torch_compile:
+                self._eager_act_quant_func = self.act_quant_func
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
             self._init_params(
                 "act_max_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING or (not orig_layer.act_dynamic)
@@ -839,6 +868,23 @@ def wrapper_block(
     """
     quantized_layers = []
     unquantized_layers = []
+
+    from auto_round.algorithms.quantization import search_dispatch
+
+    _defer_batch = (
+        bool(getattr(wrapper_cls, "supports_batched_search", False)) and not search_dispatch.batched_search_disabled()
+    )
+    # the data-parallel caller passes defer_search itself (mirrors-first: the
+    # replicas own the consumption); the engine-initiated path consumes below
+    caller_deferred = bool(kwargs.get("defer_search", False))
+    _defer_any = _defer_batch or caller_deferred
+    if _defer_batch and not caller_deferred:
+        # engine-initiated deferral: set the flag in ONE dict -- the caller may
+        # already pass defer_search=False explicitly (the serial tune lane does),
+        # and stacking **kwargs with **extra would duplicate the keyword
+        kwargs["defer_search"] = True
+    deferred_wrappers = []
+
     for n, m in block.named_modules():
         if type(m) in SUPPORTED_LAYER_TYPES:
             if not check_to_quantized(m):
@@ -853,6 +899,8 @@ def wrapper_block(
                 **kwargs,
             )
             set_module(block, n, new_m)
+            if _defer_any:
+                deferred_wrappers.append(new_m)
             quantized_layers.append(n)
 
         elif enable_norm_bias_tuning:
@@ -870,6 +918,20 @@ def wrapper_block(
                     set_module(block, n, new_m)
                 else:
                     logger.warning_once(f"{m.__class__.__name__} is not supported")
+    if deferred_wrappers:
+        deferred_wrappers = [w for w in deferred_wrappers if getattr(w, "_deferred_search_inputs", None) is not None]
+        if deferred_wrappers and not caller_deferred:
+            # engine-initiated: stacked same-shape batches per (device, shape,
+            # config, search fn); singletons and the kill switch fall back to
+            # the identical per-module call
+            if not search_dispatch.run_batched_wrap_search(deferred_wrappers):
+                for w in deferred_wrappers:
+                    w._run_deferred_search_now()
+            for w in deferred_wrappers:
+                # engine-initiated wrappers finalize here (the caller-initiated
+                # data-parallel lane runs its own broadcast + finalize)
+                w._finalize_deferred_init()
+
     return quantized_layers, unquantized_layers
 
 
