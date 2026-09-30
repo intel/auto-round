@@ -3812,6 +3812,12 @@ def _expand_e8m0_block_scale(
     )
 
 
+# Name fragment identifying the DeepSeek-V4.1 Engram n-gram lookup table. Its
+# ``.weight``/``.scale`` pair must be exported under the source key and dtype; see
+# ``preprocess_model_type_source_tensors``.
+_DEEPSEEK_ENGRAM_TABLE = ".engram.embed."
+
+
 def preprocess_model_type_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
     model_type: str | None,
@@ -3822,7 +3828,7 @@ def preprocess_model_type_source_tensors(
     """Apply model-type-specific source tensor normalization."""
     model_type = (model_type or "").lower()
     quantization_config = quantization_config or {}
-    is_deepseek_v4 = model_type == "deepseek_v4"
+    is_deepseek_v4 = model_type in ("deepseek_v4", "deepseek_v41")
     is_deepseek_v32_ue8m0 = (
         model_type == "deepseek_v32"
         and quantization_config.get("quant_method") == "fp8"
@@ -3835,6 +3841,14 @@ def preprocess_model_type_source_tensors(
     entries: list[tuple[str, str, bool]] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
+            continue
+        if _DEEPSEEK_ENGRAM_TABLE in name:
+            # Engram conditional memory (deepseek_v41) stores its n-gram lookup table as
+            # ``.weight`` (float8_e4m3fn) + ``.scale`` (ue8m0). That pair is not a Linear:
+            # inference engines read it in the source representation, and the table has
+            # hundreds of millions of rows, so neither renaming nor dequantizing is an
+            # option -- keep key and value verbatim. ``engram.wkv`` and the other Engram
+            # projections are ordinary Linears and must flow through the regular path.
             continue
         layer_name = name[: -len(".weight")]
         scale_candidates = [f"{layer_name}.scale"]
