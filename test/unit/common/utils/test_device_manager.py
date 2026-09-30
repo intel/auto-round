@@ -498,6 +498,13 @@ class TestDeviceManagerSingleton:
         m = DeviceManager("cpu")
         assert m.is_multi_device() is False
 
+    def test_is_multi_device_true(self):
+        from auto_round.utils.device_manager import DeviceManager
+
+        m = DeviceManager("cpu")
+        m._device_list = ["cuda:0", "cuda:1"]
+        assert m.is_multi_device() is True
+
     def test_device_setter(self):
         from auto_round.utils.device_manager import DeviceManager
 
@@ -800,3 +807,84 @@ class TestClearMemoryHelper:
             _clear_memory_for_cpu_and_cuda(tensor=tensor_list, device_list=None)
         # After the call, the local list elements should be set to None
         assert all(t is None for t in tensor_list)
+
+
+# ---------------------------------------------------------------------------
+# Multi-device torch.compile restrictions
+# ---------------------------------------------------------------------------
+class TestMultiDeviceTorchCompileRestrictions:
+    def test_explicit_torch_compile_disabled_on_multi_device(self, monkeypatch):
+        """Explicit enable_torch_compile=True must be overridden when multiple devices are active."""
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+        from auto_round.compressors.base import BaseOrchestrator
+        from auto_round.utils.device_manager import device_manager
+
+        orch = BaseOrchestrator.__new__(BaseOrchestrator)
+        orch.quantize_config = RTNConfig()
+        orch.scheme = "W4A16"
+        orch.model_context = None
+        orch.model = None
+
+        monkeypatch.setattr(device_manager, "_device_list", ["cuda:0", "cuda:1"])
+        assert device_manager.is_multi_device() is True
+
+        orch._apply_torch_compile_constraints(enable_torch_compile=True)
+        assert orch.enable_torch_compile is False
+        assert orch._torch_compile_off_reason == "multi-device execution is not compatible with torch.compile"
+
+    def test_multi_device_restriction_honored_with_auto_scheme(self, monkeypatch):
+        """Multi-device restriction is a hard constraint that must precede AutoScheme early-return."""
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+        from auto_round.auto_scheme import AutoScheme
+        from auto_round.compressors.base import BaseOrchestrator
+        from auto_round.utils.device_manager import device_manager
+
+        orch = BaseOrchestrator.__new__(BaseOrchestrator)
+        orch.quantize_config = RTNConfig()
+        orch.scheme = AutoScheme(avg_bits=4.0, options=["W4A16"])
+        orch.is_auto_scheme = True
+        orch.model_context = None
+        orch.model = None
+
+        monkeypatch.setattr(device_manager, "_device_list", ["cuda:0", "cuda:1"])
+        assert device_manager.is_multi_device() is True
+
+        orch._apply_torch_compile_constraints(enable_torch_compile=True)
+        assert orch.enable_torch_compile is False
+        assert orch._torch_compile_off_reason == "multi-device execution is not compatible with torch.compile"
+
+        reason = orch._torch_compile_disabled_reason(ignore_user_override=True)
+        assert reason == "multi-device execution is not compatible with torch.compile"
+
+    def test_compiled_block_forward_prevented_on_multi_device(self, monkeypatch):
+        """Block-forward compilation must be blocked when multiple devices are active."""
+        from types import SimpleNamespace
+
+        from auto_round.algorithms.composer import AlgorithmComposer
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+        from auto_round.utils.device_manager import device_manager
+
+        quantizer = BaseQuantizer(RTNConfig())
+
+        # Single device: BaseQuantizer allows block-forward compilation
+        monkeypatch.setattr(device_manager, "_device_list", ["cpu"])
+        assert device_manager.is_multi_device() is False
+        assert quantizer.can_compile_block_forward() is True
+
+        # Multi device: BaseQuantizer blocks block-forward compilation
+        monkeypatch.setattr(device_manager, "_device_list", ["cuda:0", "cuda:1"])
+        assert device_manager.is_multi_device() is True
+        assert quantizer.can_compile_block_forward() is False
+
+        # In AlgorithmComposer, multi-device ensures BlockForwardRunner compilation is disabled
+        dummy_orch = SimpleNamespace(
+            compress_context=SimpleNamespace(enable_torch_compile=True),
+            rotation_configs=(),
+            layer_config={},
+            data_type="int",
+            model_context=None,
+        )
+        composer = AlgorithmComposer([SignRoundConfig()], orchestrator=dummy_orch)
+        assert composer.block_forward.enable_torch_compile is False

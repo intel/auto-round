@@ -1255,6 +1255,9 @@ class BaseOrchestrator(object):
         if not ignore_user_override and getattr(self, "_torch_compile_user_specified", False):
             return None
 
+        if device_manager.is_multi_device():
+            return "multi-device execution is not compatible with torch.compile"
+
         quantize_config = getattr(self, "quantize_config", None)
         if quantize_config is None:
             return None
@@ -1331,6 +1334,14 @@ class BaseOrchestrator(object):
                 self.enable_torch_compile = False
                 self._torch_compile_off_reason = arch_reason
                 logger.warning_once("reset enable_torch_compile to `False` as %s", arch_reason)
+
+        # Multi-device execution (e.g. multiple devices via device_map) is incompatible
+        # with torch.compile because PyTorch AOTAutograd backward pass cannot enter
+        # contextvars.Context concurrently from multiple engine threads.
+        if self.enable_torch_compile and device_manager.is_multi_device():
+            self.enable_torch_compile = False
+            self._torch_compile_off_reason = "multi-device execution is not compatible with torch.compile"
+            logger.warning_once("reset enable_torch_compile to `False` as %s", self._torch_compile_off_reason)
 
         if self.enable_torch_compile:
             disabled_reason = self._torch_compile_disabled_reason()
