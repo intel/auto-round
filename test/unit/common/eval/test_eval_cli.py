@@ -13,6 +13,7 @@
 # limitations under the License.
 """CPU-only pytest coverage for `auto_round.eval.eval_cli`."""
 
+import multiprocessing as mp
 import os
 import sys
 from types import SimpleNamespace
@@ -461,6 +462,121 @@ class TestEvalWithVllm:
             eval_cli.eval_with_vllm(args)
 
         assert os.environ.get("CUDA_VISIBLE_DEVICES") == "fake-env"
+
+    def test_eval_with_vllm_configures_spawn_start_method(self, monkeypatch):
+        called_set = []
+
+        def mock_get_start_method(allow_none=True):
+            return "fork"
+
+        def mock_set_start_method(method, force=False):
+            called_set.append((method, force))
+
+        monkeypatch.setattr(mp, "get_start_method", mock_get_start_method)
+        monkeypatch.setattr(mp, "set_start_method", mock_set_start_method)
+
+        fake_vllm_causallms = type(sys)("lm_eval.models.vllm_causallms")
+        fake_vllm_causallms.VLLM = type("VLLM", (), {"__init__": lambda *args, **kwargs: None})
+        monkeypatch.setitem(sys.modules, "lm_eval.models.vllm_causallms", fake_vllm_causallms)
+
+        monkeypatch.setattr(eval_cli, "get_major_device", lambda: "cuda")
+        monkeypatch.setattr(eval_cli, "get_device_and_parallelism", lambda device: ("cuda", False))
+        monkeypatch.setattr(eval_cli, "get_model_dtype", lambda dtype, default="auto": "auto")
+        monkeypatch.setattr(
+            "lm_eval.evaluator.simple_evaluate",
+            lambda **kwargs: {"results": {"mmlu": {}}, "versions": {}, "n-shot": {}, "higher_is_better": {}},
+        )
+
+        args = SimpleNamespace(
+            model_name="mock-model",
+            tasks="mmlu",
+            device_map="0",
+            eval_model_dtype="auto",
+            eval_bs=None,
+            disable_trust_remote_code=True,
+            add_bos_token=False,
+            mllm=False,
+            limit=1,
+            vllm_args=None,
+        )
+
+        with patch("auto_round.utils.DEVICE_ENVIRON_VARIABLE_MAPPING", {"cuda": "CUDA_VISIBLE_DEVICES"}):
+            eval_cli.eval_with_vllm(args)
+
+        assert ("spawn", True) in called_set
+
+    def test_eval_with_vllm_already_spawn_noop(self, monkeypatch):
+        called_set = []
+
+        def mock_get_start_method(allow_none=True):
+            return "spawn"
+
+        def mock_set_start_method(method, force=False):
+            called_set.append((method, force))
+
+        monkeypatch.setattr(mp, "get_start_method", mock_get_start_method)
+        monkeypatch.setattr(mp, "set_start_method", mock_set_start_method)
+
+        fake_vllm_causallms = type(sys)("lm_eval.models.vllm_causallms")
+        fake_vllm_causallms.VLLM = type("VLLM", (), {"__init__": lambda *args, **kwargs: None})
+        monkeypatch.setitem(sys.modules, "lm_eval.models.vllm_causallms", fake_vllm_causallms)
+
+        monkeypatch.setattr(eval_cli, "get_major_device", lambda: "cuda")
+        monkeypatch.setattr(eval_cli, "get_device_and_parallelism", lambda device: ("cuda", False))
+        monkeypatch.setattr(eval_cli, "get_model_dtype", lambda dtype, default="auto": "auto")
+        monkeypatch.setattr(
+            "lm_eval.evaluator.simple_evaluate",
+            lambda **kwargs: {"results": {"mmlu": {}}, "versions": {}, "n-shot": {}, "higher_is_better": {}},
+        )
+
+        args = SimpleNamespace(
+            model_name="mock-model",
+            tasks="mmlu",
+            device_map="0",
+            eval_model_dtype="auto",
+            eval_bs=None,
+            disable_trust_remote_code=True,
+            add_bos_token=False,
+            mllm=False,
+            limit=1,
+            vllm_args=None,
+        )
+
+        with patch("auto_round.utils.DEVICE_ENVIRON_VARIABLE_MAPPING", {"cuda": "CUDA_VISIBLE_DEVICES"}):
+            eval_cli.eval_with_vllm(args)
+
+        assert called_set == []
+
+    def test_eval_with_vllm_spawn_failure_raises(self, monkeypatch):
+        def mock_get_start_method(allow_none=True):
+            return "fork"
+
+        def mock_set_start_method(method, force=False):
+            raise RuntimeError("context has already been set")
+
+        monkeypatch.setattr(mp, "get_start_method", mock_get_start_method)
+        monkeypatch.setattr(mp, "set_start_method", mock_set_start_method)
+
+        monkeypatch.setattr(eval_cli, "get_major_device", lambda: "cuda")
+        monkeypatch.setattr(eval_cli, "get_device_and_parallelism", lambda device: ("cuda", False))
+        monkeypatch.setattr(eval_cli, "get_model_dtype", lambda dtype, default="auto": "auto")
+
+        args = SimpleNamespace(
+            model_name="mock-model",
+            tasks="mmlu",
+            device_map="0",
+            eval_model_dtype="auto",
+            eval_bs=None,
+            disable_trust_remote_code=True,
+            add_bos_token=False,
+            mllm=False,
+            limit=1,
+            vllm_args=None,
+        )
+
+        with patch("auto_round.utils.DEVICE_ENVIRON_VARIABLE_MAPPING", {"cuda": "CUDA_VISIBLE_DEVICES"}):
+            with pytest.raises(RuntimeError, match="Failed to set multiprocessing start method to 'spawn'"):
+                eval_cli.eval_with_vllm(args)
 
 
 class TestEvalTaskByTask:
