@@ -27,16 +27,10 @@
 
 ## 🚀 What is AutoRound?
 
-[//]: # (AutoRound is an advanced quantization toolkit designed for Large Language Models &#40;LLMs&#41; and Vision-Language Models &#40;VLMs&#41;. )
-
-[//]: # (It achieves high accuracy at ultra-low bit widths &#40;2–4 bits&#41; with minimal tuning by leveraging **sign-gradient descent** and providing broad hardware compatibility. )
-
-[//]: # (See our papers [SignRoundV1]&#40;https://arxiv.org/pdf/2309.05516&#41; and [SignRoundV2]&#40;http://arxiv.org/abs/2512.04746&#41; for more details. For usage instructions, please refer to the [User Guide]&#40;./docs/step_by_step.md&#41;.)
-
 AutoRound is an easy-to-use post-training quantization toolkit for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
 It supports several practical low-bit and adaptive-bit quantization algorithms, with a particular focus on [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2](http://arxiv.org/abs/2512.04746).
 AutoRound is designed to deliver strong accuracy at ultra-low bit widths while keeping quantization costs reasonable. It supports widely used data types and quantization schemes, including WNA16, MXFP4, NVFP4, and FP8, as well as low-bit model formats such as GGUF.
-It integrates with popular ecosystems including Hugging Face Transformers, vLLM, and SGLang, and supports deployment across Intel CPUs and XPUs, Gaudi accelerators, and NVIDIA GPUs.
+It integrates with popular ecosystems including Transformers, vLLM, and SGLang, and supports deployment across Intel CPUs and XPUs, Gaudi accelerators, and NVIDIA GPUs.
 For usage details, please refer to the [User Guide](./docs/step_by_step.md).
 
 
