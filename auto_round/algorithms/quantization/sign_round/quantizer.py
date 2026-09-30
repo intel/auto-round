@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import time as _ptime
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import torch
 from torch import autocast
 
+from auto_round.algorithms.block_runner import BlockForwardRunner
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
@@ -25,8 +27,44 @@ from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import (
     IndexSampler,
     collect_best_params,
+    snapshot_best_params,
 )
 from auto_round.logger import logger
+
+
+def _tune_phase_line(phases: dict, iters: int) -> str:
+    """Format the per-block tuning phase breakdown for AR_PERF_COUNTERS.
+
+    ``wrap`` = wrapper_block (params init, quant-func resolve + optional
+    per-wrapper torch.compile, SignRoundV2 init-scale search -- batched
+    same-shape when eligible); ``prepare`` = tuning-param collection +
+    optimizer/scheduler build + sampler setup; ``loop`` = the iteration
+    try/finally; ``tail`` = best-params restore, clear_memory, unwrapping.
+    The optional ``loop`` split appears when counters ran: ``sampler`` =
+    index draw, ``snap`` = best-params snapshots, ``step`` = gradient
+    sync + optimizer step, ``serial: fwd+loss+bwd`` = the inline forward,
+    loss (incl. the .item() drain) and backward of every serial batch.
+    """
+    line = "[perf] tune phases (iters=%d): wrap=%.2fs prepare=%.2fs loop=%.2fs tail=%.2fs" % (
+        iters,
+        phases.get("wrap", 0.0),
+        phases.get("prepare", 0.0),
+        phases.get("loop", 0.0),
+        phases.get("tail", 0.0),
+    )
+    if "lp_sampler" in phases:
+        line += " (loop: sampler=%.2fs snap=%.2fs step=%.2fs rest=%.2fs" % (
+            phases["lp_sampler"],
+            phases["lp_snap"],
+            phases["lp_step"],
+            phases["lp_rest"],
+        )
+        if phases.get("lp_serial", 0.0):
+            line += " serial: fwd+loss+bwd=%.2fs" % phases["lp_serial"]
+        line += ")"
+    return line
+
+
 from auto_round.utils import (
     htcore,
     is_hpex_available,
@@ -368,6 +406,19 @@ class SignRoundQuantizer(BaseQuantizer):
         active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
         nsamples = len(active_inputs) if isinstance(active_inputs, list) else self._count_samples(active_inputs)
 
+        import auto_round.envs as _envs
+
+        _tune_perf = (
+            {"wrap": 0.0, "prepare": 0.0, "loop": 0.0, "tail": 0.0}
+            if getattr(_envs, "AR_PERF_COUNTERS", False)
+            else None
+        )
+        _loop_perf = (
+            {"sampler": 0.0, "snap": 0.0, "step": 0.0, "s_fwd": 0.0, "s_loss": 0.0, "s_bwd": 0.0}
+            if _tune_perf is not None
+            else None
+        )
+        _tp0 = _ptime.perf_counter()
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
             self.enable_minmax_tuning,
@@ -376,6 +427,9 @@ class SignRoundQuantizer(BaseQuantizer):
             device=device,
             enable_neuqi=getattr(self.config, "enable_neuqi", False),
         )
+        if _tune_perf is not None:
+            _tune_perf["wrap"] = _ptime.perf_counter() - _tp0
+            _tp1 = _ptime.perf_counter()
 
         round_params = []
         minmax_params = []
@@ -486,6 +540,45 @@ class SignRoundQuantizer(BaseQuantizer):
             and (loss_device is None or torch.device(loss_device) == torch.device(device))
         )
 
+        if _tune_perf is not None:
+            _tune_perf["prepare"] = _ptime.perf_counter() - _tp1
+            _tp2 = _ptime.perf_counter()
+        # iters>0 hot-pool strategy (loop-amortized; the iters=0 lane streams
+        # its pools once and never reaches these pulls): each pool moves in
+        # bulk onto the device that reads it every iteration -- the input
+        # pool onto the entry device (BlockForwardRunner.device, where the
+        # forward gathers each batch), the fp reference pool onto the loss
+        # device. Both gates charge ACTUAL data: exact tuning state from the
+        # wrapper walker, and (input pull) the routed-buffer budget proven on
+        # the mapped-streaming lane -- tokens x top_k hidden rows as in/out
+        # accumulators plus the backward grad (x6), which reproduces the
+        # measured 12.7 GiB loop retention on hy3 from shapes alone. Declined
+        # pulls keep the per-batch gather (measured ~1-2 s/block).
+        self.maybe_adapt_moe_implementation(block, active_inputs, batch_size)
+        _entry_dev = str(getattr(block_fwd, "device", device)) if block_fwd is not None else str(device)
+        if isinstance(active_inputs, list):
+            active_inputs = self.pull_tuning_pool(
+                active_inputs,
+                _entry_dev,
+                block,
+                batch_size,
+                "tune] block input activations",
+                charge_activation=True,
+            )
+        # the diffusion tuning cache requires its pools on the host (it
+        # stages batches to the GPU itself via pinned slots); a bulk pull
+        # onto the loss device would put the cached reference outputs on
+        # cuda and the cache would decline every batch signature
+        if fp_outputs and loss_device is not None and not use_tuning_cache:
+            fp_outputs = self.pull_tuning_pool(
+                fp_outputs,
+                loss_device,
+                block,
+                batch_size,
+                "tune] fp reference outputs",
+                charge_activation=False,
+            )
+
         try:
             for i in range(self.iters):
                 # Auto observes a complete forward/backward/optimizer iteration
@@ -508,21 +601,39 @@ class SignRoundQuantizer(BaseQuantizer):
                     for n, m in block.named_modules():
                         m.cur_iter = i
                 total_loss = 0
+                if _loop_perf is not None:
+                    _smp_t0 = _ptime.perf_counter()
                 global_indices = index_sampler.next_batch()
                 if valid_token_mask:
                     num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+                if _loop_perf is not None:
+                    _loop_perf["sampler"] += _ptime.perf_counter() - _smp_t0
 
                 for batch_start in range(0, len(global_indices), batch_size):
                     indices = global_indices[batch_start : batch_start + batch_size]
+                    if _loop_perf is not None:
+                        _sf_t0 = _ptime.perf_counter()
                     staged = tuning_cache.get(indices) if tuning_cache is not None else None
                     if staged is None:
-                        ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
+                        # fp_outputs may be sharded across park devices
+                        # (--calibration_data_device): gather onto one device
+                        # before cat. Uniform-device selections are returned
+                        # untouched (byte-identical to the single-device path);
+                        # tensors are immutable, so concurrent gather is safe.
+                        _sel = [fp_outputs[i] for i in indices]
+                        _gather = BlockForwardRunner._gather_same_device(
+                            _sel, str(loss_device) if loss_device is not None else str(_sel[0].device)
+                        )
+                        ref_output = torch.cat(_gather, dim=0).to(loss_device)
                         pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
                     else:
                         ref_output = staged[2]
                         pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
                     if loss_device is not None:
                         pred_output = pred_output.to(loss_device)
+                    if _loop_perf is not None:
+                        _loop_perf["s_fwd"] += _ptime.perf_counter() - _sf_t0
+                        _sl_t0 = _ptime.perf_counter()
                     if (
                         block_ctx.block_index == block_ctx.block_cnt - 1
                         and self.enable_lfq
@@ -534,12 +645,17 @@ class SignRoundQuantizer(BaseQuantizer):
                         loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
                     num_elm = 1 if num_elm <= 0 else num_elm
                     total_loss += loss.item() / num_elm
+                    if _loop_perf is not None:
+                        _loop_perf["s_loss"] += _ptime.perf_counter() - _sl_t0
+                        _sb_t0 = _ptime.perf_counter()
 
                     if mid_iter_mem_check:
                         # clear memory to avoid OOM due to memory fragmentation
                         clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
 
                     self._scale_loss_and_backward(scaler, loss)
+                    if _loop_perf is not None:
+                        _loop_perf["s_bwd"] += _ptime.perf_counter() - _sb_t0
 
                     if mid_iter_mem_check:
                         # clear memory to avoid OOM due to memory fragmentation
@@ -550,31 +666,41 @@ class SignRoundQuantizer(BaseQuantizer):
                 current_lr = optimizer.param_groups[0]["lr"]
                 logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
+                if _loop_perf is not None:
+                    _snap_t0 = _ptime.perf_counter()
                 if total_loss < best_loss:
                     best_loss = total_loss
                     if not self.not_use_best_mse:
                         best_params = (
                             tuning_cache.collect_best_params()
                             if tuning_cache is not None and tuning_cache.best is not None
-                            else collect_best_params(block, self.compress_context.cache_device)
+                            else snapshot_best_params(block, self.compress_context.cache_device)
                         )
                         last_best_iter = i
                 if self.not_use_best_mse and i == self.iters - 1:
                     best_params = (
                         tuning_cache.collect_best_params()
                         if tuning_cache is not None and tuning_cache.best is not None
-                        else collect_best_params(block, self.compress_context.cache_device)
+                        else snapshot_best_params(block, self.compress_context.cache_device)
                     )
 
+                if _loop_perf is not None:
+                    _loop_perf["snap"] += _ptime.perf_counter() - _snap_t0
+                    _stp_t0 = _ptime.perf_counter()
                 if not self.not_use_best_mse:
                     if 0 < self.dynamic_max_gap <= i - last_best_iter:
                         break
                 sync_gradients()
                 self._step(scaler, optimizer, lr_schedule)
+                if _loop_perf is not None:
+                    _loop_perf["step"] += _ptime.perf_counter() - _stp_t0
 
         finally:
             if tuning_cache is not None:
                 tuning_cache.close()
+        if _tune_perf is not None:
+            _tune_perf["loop"] = _ptime.perf_counter() - _tp2
+            _tp3 = _ptime.perf_counter()
 
         last_loss = total_loss
         best_iter = self.iters
@@ -597,6 +723,24 @@ class SignRoundQuantizer(BaseQuantizer):
             logger.info(f"Unquantized layers: {unquantized_layer_names}")
         with torch.no_grad():
             unwrapper_block(block, best_params)
+
+        if _tune_perf is not None:
+            _tune_perf["tail"] = _ptime.perf_counter() - _tp3
+            _serial = _loop_perf["s_fwd"] + _loop_perf["s_loss"] + _loop_perf["s_bwd"]
+            _rest = max(
+                _tune_perf["loop"] - _loop_perf["sampler"] - _loop_perf["snap"] - _loop_perf["step"] - _serial,
+                0.0,
+            )
+            _tune_perf.update(
+                {
+                    "lp_sampler": _loop_perf["sampler"],
+                    "lp_snap": _loop_perf["snap"],
+                    "lp_step": _loop_perf["step"],
+                    "lp_rest": _rest,
+                    "lp_serial": _serial,
+                }
+            )
+            logger.info("%s", _tune_phase_line(_tune_perf, self.iters))
 
         if self.config.is_act_nv_fp:
             # enable moe experts act_max automatic generation for WrapperWALayer
@@ -854,7 +998,13 @@ class SignRoundQuantizer(BaseQuantizer):
         The scaled loss.
         """
         scale_loss = loss * 1000
-        scale_loss.backward()
+        try:
+            scale_loss.backward()
+        except torch.OutOfMemoryError:
+            from auto_round.algorithms.quantization.search_dispatch import dump_oom_tensor_census_
+
+            dump_oom_tensor_census_("tune backward")
+            raise
         if is_hpex_available():
             htcore.mark_step()
         return scale_loss

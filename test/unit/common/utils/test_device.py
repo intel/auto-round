@@ -765,9 +765,9 @@ class TestEstimateTuningBlockMem:
         input_ids = [torch.randn(1, 5)]
 
         result = estimate_tuning_block_mem(block, input_ids, 1)
-        assert (
-            len(result) == 4
-        )  # layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory
+        assert len(result) == 6
+        # layer_memory_dict, layer_activation_memory, block_input_output_memory,
+        # additional_memory, per_device_activation, per_device_experts
 
 
 class TestIsGaudi2:

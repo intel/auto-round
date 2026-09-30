@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import traceback
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -200,7 +200,9 @@ class BaseQuantizer(BaseAlgorithm):
         self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
 
     @torch.no_grad()
-    def _quantize_layer_via_rtn(self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None) -> None:
+    def _quantize_layer_via_rtn(
+        self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None, defer_search: bool = False
+    ) -> "torch.nn.Module":
         """Quantize one layer with RTN (with optional optimized scale/zp search)."""
         layer_name = layer.global_name
         layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
@@ -234,8 +236,17 @@ class BaseQuantizer(BaseAlgorithm):
                 enable_neuqi=getattr(self.config, "enable_neuqi", False),
                 iters=0,
             )
+            if defer_search:
+                # staged for the batched zero-shot search driver: the wrapper
+                # (with its resolved quant func) is returned without running
+                # the search; the caller finishes via unwrapper({}) or the
+                # batched call + _apply_qdq + set_module
+                return layer
             layer = layer.unwrapper({})
         except torch.OutOfMemoryError:
+            from auto_round.algorithms.quantization.search_dispatch import dump_oom_tensor_census_
+
+            dump_oom_tensor_census_("rtn layer search")
             cuda_error_msg = traceback.format_exc()
             layer = layer.orig_layer if hasattr(layer, "orig_layer") else layer
             try:
@@ -281,6 +292,58 @@ class BaseQuantizer(BaseAlgorithm):
         if all(m.all().item() for m in masks):
             return None
         return masks
+
+    # ── Tune-loop memory policy hooks (override to customize) ─────────────────
+
+    def maybe_adapt_moe_implementation(self, block: "torch.nn.Module", tensors: Any, batch_size: int) -> None:
+        """Switch the MoE experts implementation to the per-expert loop when the
+        grouped path's working set is not expected to fit next to the tuning
+        state (``AR_MOE_EXPERTS_IMPL=auto``; explicit values are honored as-is).
+
+        Runs once per run; no-op for blocks without grouped expert stacks.
+        The decision reads only the block's wrapper layout, the batch size, and
+        the fleet's free memory, so algorithms rarely need to override this.
+        """
+        from auto_round.algorithms.quantization.tune_memory import _maybe_auto_linear_loop_for_tuning
+
+        _maybe_auto_linear_loop_for_tuning(
+            block,
+            tensors,
+            batch_size,
+            getattr(self, "iters", 0),
+            getattr(getattr(self, "model_context", None), "config", None),
+            self.model,
+        )
+
+    def pull_tuning_pool(
+        self,
+        pool: Any,
+        target_device: str,
+        block: "torch.nn.Module",
+        batch_size: int,
+        label: str,
+        charge_activation: bool = True,
+    ) -> Any:
+        """Bulk-move a calibration pool onto the device that reads it every
+        iteration when its footprint fits next to the working set; a declined
+        pull keeps the per-batch gather.
+
+        Algorithms with pool-placement constraints of their own (e.g. a
+        host-pinned cache) can skip or override this hook for their pools.
+        """
+        from auto_round.algorithms.quantization.tune_memory import _pull_pool_if_fits
+
+        config = getattr(getattr(self, "model_context", None), "config", None)
+        return _pull_pool_if_fits(
+            pool,
+            str(target_device),
+            block,
+            batch_size,
+            getattr(self, "iters", 0),
+            label,
+            charge_activation=charge_activation,
+            config=config,
+        )
 
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
         """Place a block on the correct device(s) for quantization.

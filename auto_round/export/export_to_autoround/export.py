@@ -17,6 +17,7 @@ import functools
 import inspect
 import json
 import os
+import time
 from dataclasses import fields
 from enum import Enum
 from typing import Callable, Union
@@ -140,6 +141,11 @@ def pack_qact_layer(name, model):
     qlayer.to(device)
 
 
+# Per-phase pack accounting (read by the orchestrator's AR_PERF_COUNTERS
+# summary): buffer allocation vs pack math vs device round trips.
+PACK_PHASES = {"lookup": 0.0, "dispatch": 0.0, "ctor": 0.0, "pack": 0.0, "moves": 0.0, "count": 0}
+
+
 def pack_layer(layer_name, model, backend, device=None):
     """
     Packs a model layer for quantization based on its type and configuration.
@@ -157,11 +163,13 @@ def pack_layer(layer_name, model, backend, device=None):
     Returns:
         None: The function modifies the model in place.
     """
+    _t_entry = time.perf_counter()
     layer = get_module(model, layer_name)
     if hasattr(layer, "orig_layer"):
         layer = layer.orig_layer
 
     if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
+        PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
         return
 
     # A resumed disk-streamed run only
@@ -174,12 +182,20 @@ def pack_layer(layer_name, model, backend, device=None):
     # from) and would be redundant even if it didn't, since the on-disk
     # export for this layer is already complete.
     if layer.weight.device.type == "meta":
+        PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
         return
 
     if int(layer.act_bits) <= 8:
-        return pack_qact_layer(layer_name, model)
+        PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
+        PACK_PHASES["count"] += 1
+        _t_pack = time.perf_counter()
+        try:
+            return pack_qact_layer(layer_name, model)
+        finally:
+            PACK_PHASES["pack"] += time.perf_counter() - _t_pack
 
     if not check_to_quantized(layer):
+        PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
         return
 
     orig_device = layer.weight.device
@@ -203,6 +219,8 @@ def pack_layer(layer_name, model, backend, device=None):
         out_features = layer.weight.shape[1]
     bias = layer.bias is not None
 
+    PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
+    _t_ctor = time.perf_counter()
     new_layer = QuantLinear(  ##pylint: disable=E1123
         bits, group_size, in_features, out_features, bias=bias, weight_dtype=layer.weight.dtype
     )
@@ -211,6 +229,9 @@ def pack_layer(layer_name, model, backend, device=None):
     qlayer = new_layer
     import auto_round_extension.torch.qlinear_torch
 
+    PACK_PHASES["ctor"] += time.perf_counter() - _t_ctor
+    PACK_PHASES["count"] += 1
+
     if (
         sym
         and isinstance(zp, torch.Tensor)
@@ -218,6 +239,7 @@ def pack_layer(layer_name, model, backend, device=None):
     ):
         zp = int(zp.flatten()[0])
 
+    _t_pack = time.perf_counter()
     qlayer.to("cpu")
     # Force to float32 to be compatible with torch 2.0
     sig = inspect.signature(qlayer.pack)
@@ -226,7 +248,10 @@ def pack_layer(layer_name, model, backend, device=None):
         qlayer.pack(layer, scale, device=device)
     else:
         qlayer.pack(layer, scale, zp, None, device=device)
+    PACK_PHASES["pack"] += time.perf_counter() - _t_pack
+    _t_mv = time.perf_counter()
     qlayer.to(orig_device)
+    PACK_PHASES["moves"] += time.perf_counter() - _t_mv
 
     # Inject rotation buffers right after packing so that
     # ShardWriter.save_module() captures them before offloading to meta.
