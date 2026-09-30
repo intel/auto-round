@@ -378,10 +378,13 @@ def _maybe_truncate_debug_layers(config) -> bool:
     # hard-coding one name.
     targets = [config]
     seen = {id(config)}
-    for value in list(getattr(config, "__dict__", {}).values()):
-        if hasattr(value, "num_hidden_layers") and id(value) not in seen:
-            targets.append(value)
-            seen.add(id(value))
+    for cfg in targets:
+        for value in list(getattr(cfg, "__dict__", {}).values()):
+            if id(value) not in seen and (
+                isinstance(value, transformers.PretrainedConfig) or hasattr(value, "num_hidden_layers")
+            ):
+                targets.append(value)
+                seen.add(id(value))
 
     changed = False
     for cfg in targets:
