@@ -84,7 +84,7 @@ class BlockContext:
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
-def _release_pool_inplace(obj):
+def _release_pool_inplace(obj: Any) -> None:
     """Release a calibration pool's tensors by mutating its containers in place.
 
     The pool object is shared with the orchestrator (which holds it as the
@@ -447,7 +447,7 @@ class AlgorithmComposer:
         # the forwards below, so the iters>0 activation budget can fall back to
         # pure arg shapes when config spellings are unknown (arch-agnostic).
         try:
-            from auto_round.algorithms.quantization.sign_round.quantizer import _ensure_routed_shape_recorders_
+            from auto_round.algorithms.quantization.tune_memory import _ensure_routed_shape_recorders_
 
             _ensure_routed_shape_recorders_(block)
         except Exception as e:  # pragma: no cover - diagnostics only

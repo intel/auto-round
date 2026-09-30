@@ -283,7 +283,7 @@ class WrapperLinear(torch.nn.Module):
 
         setattr(self, name, p)
 
-    def _apply_qdq(self, qdq_weight, scale, zp):
+    def _apply_qdq(self, qdq_weight: torch.Tensor, scale: "torch.Tensor | dict", zp: "torch.Tensor | dict") -> None:
         """Write a quantize-dequantized result back onto the original layer.
 
         The single source of the unwrapper's write-back conventions (weight
@@ -297,7 +297,7 @@ class WrapperLinear(torch.nn.Module):
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             shape = qdq_weight.t().shape
 
-        def _set_dict_attr(attr_dict, attr_name):
+        def _set_dict_attr(attr_dict: dict, attr_name: str) -> None:
             for key in attr_dict.keys():
                 if key == attr_name:
                     setattr(self.orig_layer, attr_name, attr_dict[key].reshape(shape[0], -1).to("cpu"))
@@ -336,7 +336,13 @@ class WrapperLinear(torch.nn.Module):
             assert global_scale.numel() == 1
             self.orig_layer.weight_global_scale = global_scale.to("cpu")
 
-    def _quant_call_kwargs(self, value, min_scale, max_scale, imatrix_override=None):
+    def _quant_call_kwargs(
+        self,
+        value: torch.Tensor,
+        min_scale: torch.Tensor,
+        max_scale: torch.Tensor,
+        imatrix_override: torch.Tensor | None = None,
+    ) -> dict:
         """Assemble the weight_quant_func call kwargs from wrapper + layer state.
 
         Single source of the quant-call contract, shared by the serial
@@ -910,7 +916,7 @@ def wrapper_block(
     )
     deferred_wrappers = []
 
-    def _wrap_one(n, m, kind):
+    def _wrap_one(n: str, m: torch.nn.Module, kind: str) -> torch.nn.Module:
         if kind == "norm":
             if m.__class__.__name__ in NORM_MAPPING.keys():
                 wrapper_layer_class = NORM_MAPPING[m.__class__.__name__]

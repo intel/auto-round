@@ -13,7 +13,7 @@
 # limitations under the License.
 import os
 import random
-from typing import Union
+from typing import Any, Union
 
 import torch
 from torch.amp import autocast
@@ -229,7 +229,7 @@ def collect_best_params(block, cache_device="cpu"):
     return params
 
 
-def collect_best_params_local(block):
+def collect_best_params_local(block: torch.nn.Module) -> dict[str, Any]:
     """Best-params snapshot duplicated on each parameter's own device.
 
     With a CPU cache device this is not used (host parking is the point of
@@ -257,7 +257,7 @@ def collect_best_params_local(block):
         return collect_best_params(block, "cpu")
 
 
-def snapshot_best_params(block, cache_device="cpu"):
+def snapshot_best_params(block: torch.nn.Module, cache_device: "str | torch.device" = "cpu") -> dict[str, Any]:
     """Collect the best-params snapshot, keeping multi-device blocks on-device.
 
     A CPU ``cache_device`` (``low_gpu_mem_usage``) keeps the historical host

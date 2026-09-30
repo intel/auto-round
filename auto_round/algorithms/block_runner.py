@@ -266,7 +266,7 @@ class BlockForwardRunner:
     # ── Input selection ──────────────────────────────────────────────────────
 
     @staticmethod
-    def _gather_same_device(values, target_device):
+    def _gather_same_device(values: Any, target_device: str) -> Any:
         """Ensure per-sample tensors are same-device before torch.cat.
 
         With sharded calibration-data placement (--calibration_data_device)

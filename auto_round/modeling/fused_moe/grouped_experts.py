@@ -1070,7 +1070,7 @@ def _run_routes(
         ranges.append((start, start + c))
         start += c
 
-    def _run_slot(slot_name: str, groups, inp: torch.Tensor) -> torch.Tensor:
+    def _run_slot(slot_name: str, groups: list[tuple[torch.device, list[int]]], inp: torch.Tensor) -> torch.Tensor:
         """Grouped GEMM for one slot; returns a full (num_valid, out) buffer on the input device."""
         out_buf = None
         for dev, positions in groups:

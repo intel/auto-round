@@ -24,7 +24,7 @@ from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.logger import logger
 
 
-def _rtn_phase_line(norm, quant, n, mean, max_):
+def _rtn_phase_line(norm: float, quant: float, n: int, mean: float, max_: float) -> str:
     """Format the zero-shot RTN phase breakdown for AR_PERF_COUNTERS."""
     return "[perf] rtn phases: norm=%.2fs quant=%.2fs (n=%d, mean=%.3fs, max=%.3fs)" % (norm, quant, n, mean, max_)
 

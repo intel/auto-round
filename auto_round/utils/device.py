@@ -58,7 +58,7 @@ DEVICE_ENVIRON_VARIABLE_MAPPING = {
 
 
 ################ Check available sys.module to decide behavior #################
-def probe_usable_bytes(device_key):
+def probe_usable_bytes(device_key: str) -> int | None:
     """Corrected free bytes on a cuda device (raw free + reserved-but-unallocated)."""
     try:
         dev = torch.device(str(device_key))
@@ -789,7 +789,7 @@ def _allocate_layers_to_devices(
     sorted_layers = sorted(remaining.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
     num_devices = len(gpu_devices)
 
-    def find_best_device(layer_name, estimated_memory, layer_idx, strict=False):
+    def find_best_device(layer_name: str, estimated_memory: float, layer_idx: int, strict: bool = False) -> str | None:
         """Find the best device for a layer.
 
         strict=True returns None when no device has budget left (used by the
@@ -900,7 +900,7 @@ def get_first_available_attr(obj, attr_names: list[str], default=None):
     return default
 
 
-def get_moe_memory_ratio(block: torch.nn.Module, config=None) -> float:
+def get_moe_memory_ratio(block: torch.nn.Module, config: Any = None) -> float:
     """
     Calculate the memory ratio for MoE (Mixture of Experts) models.
 
@@ -974,7 +974,12 @@ def get_moe_memory_ratio(block: torch.nn.Module, config=None) -> float:
     return 1.0, False  # Default ratio for non-MoE models
 
 
-def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size: int, config=None) -> tuple:
+def estimate_tuning_block_mem(
+    block: torch.nn.Module,
+    input_ids: Any,
+    batch_size: int,
+    config: Any = None,
+) -> tuple[dict[str, Any], float, float, float, dict[str, float], dict[str, int]]:
     """
     Calculates the memory consumption of a specific block in the model.
 

@@ -30,6 +30,7 @@ import contextlib
 import threading
 import time
 from collections import OrderedDict
+from typing import Any, Callable, Iterable, Iterator
 
 import torch
 
@@ -37,9 +38,14 @@ import auto_round.envs as envs
 from auto_round.logger import logger
 from auto_round.utils.device import probe_usable_bytes
 from auto_round.utils.oom import dump_oom_tensor_census_  # re-exported for existing call sites
+from auto_round.wrapper import WrapperLinear
 
 
-def group_items_by_device(items, device_of, none_key="uncategorized"):
+def group_items_by_device(
+    items: Iterable[Any],
+    device_of: Callable[[Any], str | None],
+    none_key: str = "uncategorized",
+) -> "OrderedDict[str, list[tuple[int, Any]]]":
     """Group ``(index, item)`` pairs by ``device_of(item)`` preserving input order.
 
     Args:
@@ -61,11 +67,11 @@ def group_items_by_device(items, device_of, none_key="uncategorized"):
 
 
 @contextlib.contextmanager
-def _null_ctx():
+def _null_ctx() -> Iterator[None]:
     yield
 
 
-def _device_worker_ctx(key: str):
+def _device_worker_ctx(key: str) -> contextlib.AbstractContextManager:
     """Launch-context for a worker thread pinned to one accelerator family.
 
     cuda/xpu workers get the family's device context so ops land on the weight
@@ -88,7 +94,11 @@ def _device_worker_ctx(key: str):
     return _null_ctx()
 
 
-def run_items_by_device(groups, fn, use_cuda_ctx=True):
+def run_items_by_device(
+    groups: "OrderedDict[str, list[tuple[int, Any]]]",
+    fn: Callable[[int, Any], Any],
+    use_cuda_ctx: bool = True,
+) -> None:
     """Run ``fn(item)`` for every grouped item, one worker thread per device group.
 
     A single group is executed inline on the calling thread. Any exception raised
@@ -113,7 +123,7 @@ def run_items_by_device(groups, fn, use_cuda_ctx=True):
     error_lock = threading.Lock()
     threads = []
 
-    def _worker(device_key, indexed_items):
+    def _worker(device_key: str, indexed_items: list[tuple[int, Any]]) -> None:
         try:
             key = str(device_key)
             with _device_worker_ctx(key) if use_cuda_ctx else _null_ctx():
@@ -142,12 +152,14 @@ def run_items_by_device(groups, fn, use_cuda_ctx=True):
         raise first_error[0]
 
 
-def multigpu_search_disabled():
+def multigpu_search_disabled() -> bool:
     """Kill switch for running batched searches on idle devices."""
     return bool(envs.AR_DISABLE_MULTIGPU_SEARCH)
 
 
-def pick_search_worker_devices(working_set_bytes, home_device=None, margin_bytes=512 * 2**20):
+def pick_search_worker_devices(
+    working_set_bytes: int, home_device: str | None = None, margin_bytes: int = 512 * 2**20
+) -> list[str]:
     """Viable worker devices for a batched search chunk, in device-index order.
 
     The searches are weight-local (weight + imatrix only), so a chunk may run on
@@ -183,7 +195,7 @@ def pick_search_worker_devices(working_set_bytes, home_device=None, margin_bytes
 _ENGAGED_LOGGED = set()
 
 
-def log_engaged_once(label):
+def log_engaged_once(label: str) -> None:
     """Log the batching engagement once per process (INFO, no counters).
 
     Detailed per-block counters are intentionally not emitted here; they belong
@@ -195,16 +207,16 @@ def log_engaged_once(label):
     logger.info("[batched-search] %s: running weight-local searches with one worker per device", label)
 
 
-def batched_search_disabled():
+def batched_search_disabled() -> bool:
     """Kill switch for the batched search machinery (stacking + per-device workers)."""
     return bool(envs.AR_DISABLE_BATCHED_SEARCH)
 
 
-def _wrap_batch_device_of(inputs):
+def _wrap_batch_device_of(inputs: tuple[Any, ...]) -> str:
     return str(inputs[0].device)
 
 
-def _fn_key(fn):
+def _fn_key(fn: Callable[..., Any]) -> str | tuple[Any, ...]:
     """Stable, safe key term for a resolved search callable.
 
     Plain functions key by identity location (same function = same behavior);
@@ -242,7 +254,7 @@ def _fn_key(fn):
 _NON_STACKABLE_SEARCH_NAMES = {"search_nvfp4_scale", "opt_rtn_fast_nvfp4"}
 
 
-def _search_fn_stackable(fn):
+def _search_fn_stackable(fn: Callable[..., Any]) -> bool:
     """Whether a resolved search/quant callable is safe to call on a stacked batch.
 
     The nv-fp4 init-scale search internally flattens its scale buffer
@@ -256,7 +268,7 @@ def _search_fn_stackable(fn):
     return getattr(fn, "__name__", "") not in _NON_STACKABLE_SEARCH_NAMES
 
 
-def _wrap_batch_key(inputs):
+def _wrap_batch_key(inputs: tuple[Any, ...]) -> tuple[Any, ...]:
     weight, _data_type, bits, imatrix_raw, thresh, search_fn = inputs
     return (
         str(weight.device),
@@ -269,7 +281,7 @@ def _wrap_batch_key(inputs):
     )
 
 
-def _materialize_wrap_imatrix(chunk, stacked_w):
+def _materialize_wrap_imatrix(chunk: list[WrapperLinear], stacked_w: torch.Tensor) -> torch.Tensor:
     """Chunk-time imatrix stack from the staged RAW column vectors.
 
     None means uniform importance: an all-None chunk (the default tuning
@@ -291,7 +303,7 @@ def _materialize_wrap_imatrix(chunk, stacked_w):
 _WRAP_BATCH_MAX_ELEMS = 2**28  # ~1 GiB fp32 stacked weights per batched call (matches the NeUQI expert batching)
 
 
-def _wrap_batch_max_elems():
+def _wrap_batch_max_elems() -> int:
     """Element budget per stacked batch; AR_SEARCH_BATCH_GB overrides in GiB of fp32 weights.
 
     Invalid values raise (the env parser's ValueError) instead of silently
@@ -303,7 +315,7 @@ def _wrap_batch_max_elems():
     return _WRAP_BATCH_MAX_ELEMS
 
 
-def _batch_cap(group, device_key, max_batch):
+def _batch_cap(group: list[WrapperLinear], device_key: str, max_batch: int | None) -> int:
     """Modules per stacked batch: explicit cap > free-VRAM probe > 64, capped by the element budget."""
     if max_batch is not None:
         return max(1, max_batch)
@@ -322,7 +334,7 @@ def _batch_cap(group, device_key, max_batch):
     return max(1, min(probe_cap, elem_cap))
 
 
-def run_batched_wrap_search(deferred_wrappers, max_batch=None):
+def run_batched_wrap_search(deferred_wrappers: list[WrapperLinear], max_batch: int | None = None) -> bool:
     """Run deferred weight-local wrap searches on stacked same-shape batches.
 
     Wrappers stage ``(weight_reshape, data_type, bits, imatrix, q_scale_thresh,
@@ -360,7 +372,7 @@ def run_batched_wrap_search(deferred_wrappers, max_batch=None):
     stats = {dev: {"modules": 0, "batches": 0, "singletons": 0} for dev in device_groups}
 
     @torch.no_grad()
-    def _run_one(wrapper):
+    def _run_one(wrapper: WrapperLinear) -> None:
         inputs = wrapper._deferred_search_inputs
         if inputs is None:
             return
@@ -370,7 +382,7 @@ def run_batched_wrap_search(deferred_wrappers, max_batch=None):
         imatrix = reshape_imatrix_for_weight(imatrix_raw, weight, wrapper.orig_layer.group_size)
         wrapper.finalize_batched_search(search_fn(weight, bits, imatrix))
 
-    def _chunk_worker_set(stacked_w, stacked_im, home_key):
+    def _chunk_worker_set(stacked_w: torch.Tensor, stacked_im: torch.Tensor | None, home_key: str) -> list[str]:
         """Viable executing devices for one stacked chunk.
 
         The wrap-init searches are weight-local (stacked weights + imatrix
@@ -383,7 +395,7 @@ def run_batched_wrap_search(deferred_wrappers, max_batch=None):
         return pick_search_worker_devices(ws_bytes, home_device=home_key)
 
     @torch.no_grad()
-    def _run_device(device_key, wrappers):
+    def _run_device(device_key: str, wrappers: list[WrapperLinear]) -> None:
         _t0 = time.perf_counter()
         _rr = 0  # chunk round-robin over the viable workers
         by_key = OrderedDict()

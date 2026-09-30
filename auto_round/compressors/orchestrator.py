@@ -17,7 +17,7 @@ import os
 import threading
 import time
 from functools import partial
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
 import accelerate
 import torch
@@ -78,15 +78,15 @@ class _OneDeepWriter:
     tensors; no VRAM) so they can overlap the main thread's GPU work.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._t = None
         self._exc = None
 
-    def dispatch(self, fn):
+    def dispatch(self, fn: Callable[[], Any]) -> None:
         self.join()
         self._exc = None
 
-        def _run():
+        def _run() -> None:
             try:
                 fn()
             except BaseException as e:  # noqa: B036 - re-raised in join()
@@ -95,7 +95,7 @@ class _OneDeepWriter:
         self._t = threading.Thread(target=_run, name="one-deep-writer", daemon=True)
         self._t.start()
 
-    def join(self):
+    def join(self) -> None:
         if self._t is None:
             return
         t, self._t = self._t, None
@@ -213,7 +213,9 @@ class CompressionOrchestrator(BaseOrchestrator):
             first_input_name=first_input_name,
         )
 
-    def _attach_pool_placement(self, block, input_ids, q_input=None, input_others=None) -> None:
+    def _attach_pool_placement(
+        self, block: torch.nn.Module, input_ids: Any, q_input: Any = None, input_others: Any = None
+    ) -> None:
         """Resolve calibration-data placement for the upcoming block and attach it.
 
         No-op (placement cleared) whenever the policy is off, the lane is
@@ -550,7 +552,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                     # mark_block_done below must only fire on durable writes).
                     _bg_write_m = m
 
-                    def _bg_write(_m=_bg_write_m):
+                    def _bg_write(_m: Any = _bg_write_m) -> None:
                         self.shard_writer.write(_m, is_finalize=False)
                         if resume_state is not None:
                             self.shard_writer._flush_shard()

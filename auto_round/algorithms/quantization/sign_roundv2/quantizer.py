@@ -107,7 +107,7 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
     # batch (bit-identical per module, far fewer python/launch round-trips).
     supports_batched_search = True
 
-    def _init_tuning_params_and_quant_func(self, defer_search: bool = False):
+    def _init_tuning_params_and_quant_func(self, defer_search: bool = False) -> None:
         super()._init_tuning_params_and_quant_func()
 
         layer = self.orig_layer
@@ -149,14 +149,14 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
-    def _run_deferred_search_now(self):
+    def _run_deferred_search_now(self) -> None:
         """Run the staged search per-module (fallback when batching is off)."""
         weight, _data_type, bits, imatrix_raw, _thresh, search_fn = self._deferred_search_inputs
         imatrix = reshape_imatrix_for_weight(imatrix_raw, weight, self.orig_layer.group_size)
         self.init_scale = search_fn(weight, bits, imatrix)
         self._deferred_search_inputs = None
 
-    def finalize_batched_search(self, init_scale):
+    def finalize_batched_search(self, init_scale: "torch.Tensor | list[torch.Tensor]") -> None:
         """Adopt a search result computed on a stacked same-shape batch."""
         self.init_scale = init_scale
         self._deferred_search_inputs = None

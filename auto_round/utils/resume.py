@@ -28,7 +28,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 
@@ -41,7 +41,7 @@ _Q_INPUT_NAME = "resume_q_input.pt"
 _INPUT_IDS_NAME = "resume_input_ids.pt"
 
 
-def snapshot_pool_refs(obj):
+def snapshot_pool_refs(obj: Any) -> Any:
     """Shallow-freeze a calibration pool's container structure for async save.
 
     Copies the list/tuple/dict skeleton (cheap, synchronous) while passing

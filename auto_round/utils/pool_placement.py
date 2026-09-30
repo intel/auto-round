@@ -41,7 +41,7 @@ accelerator families the resolver returns ``None`` (policy inactive, pools keep
 their today placement) rather than guessing at unprobed capacities.
 """
 
-from typing import Callable, List, Optional, Sequence
+from typing import Any, Callable, List, Optional, Sequence
 
 import torch
 
@@ -60,9 +60,9 @@ class PoolPlacement:
         """Device for output chunk ``i`` (deterministic, wraps for over-long pools)."""
         return self.plan[i % len(self.plan)]
 
-    def counts(self) -> dict:
+    def counts(self) -> dict[str, int]:
         """Chunks per device (diagnostics)."""
-        out: dict = {}
+        out: dict[str, int] = {}
         for d in self.plan:
             out[d] = out.get(d, 0) + 1
         return out
@@ -97,11 +97,11 @@ def _spread_plan(devices: Sequence[str], capacities: Sequence[int], n_chunks: in
     return plan
 
 
-def _bytes_by_device(obj) -> tuple:
+def _bytes_by_device(obj: Any) -> tuple[dict[str, int], int]:
     """(device_str -> bytes, total bytes) for tensor leaves of a nested pool object."""
-    per_device: dict = {}
+    per_device: dict[str, int] = {}
 
-    def _walk(o):
+    def _walk(o: Any) -> None:
         if isinstance(o, torch.Tensor):
             key = str(o.device)
             per_device[key] = per_device.get(key, 0) + int(o.numel()) * o.element_size()
@@ -124,7 +124,9 @@ def _short_device_key(dev: str) -> str:
     return d
 
 
-def calib_data_line(inputs, aux, plan, outputs_bytes: int, n_chunks: int, primary: str) -> str:
+def calib_data_line(
+    inputs: Sequence[Any], aux: Any, plan: Optional[PoolPlacement], outputs_bytes: int, n_chunks: int, primary: str
+) -> str:
     """One-line calibration-data summary in the memory-monitor format:
 
     ``'input': 8.12GB, 'output': 8.12GB, 'aux': 0.12GB, 'per_device': {'0': 2.03GB, '1': 2.03GB, 'cpu': 0.12GB}``
@@ -136,7 +138,7 @@ def calib_data_line(inputs, aux, plan, outputs_bytes: int, n_chunks: int, primar
     planned placement (the plan, or all-primary under today's behavior).
     Per-device totals combine parked + planned.
     """
-    per_device: dict = {}
+    per_device: dict[str, int] = {}
     input_total = 0
     for obj in inputs:
         by_dev, total = _bytes_by_device(obj)
@@ -168,7 +170,7 @@ def calib_data_line(inputs, aux, plan, outputs_bytes: int, n_chunks: int, primar
     )
 
 
-def _tensor_bytes(obj) -> int:
+def _tensor_bytes(obj: Any) -> int:
     """Total bytes of tensor leaves in a nested list/tuple/dict pool object."""
     if isinstance(obj, torch.Tensor):
         return int(obj.numel()) * obj.element_size()
@@ -179,7 +181,7 @@ def _tensor_bytes(obj) -> int:
     return 0
 
 
-def _pool_chunk_count(obj) -> int:
+def _pool_chunk_count(obj: Any) -> int:
     """Number of per-sample chunks in a pool object (length of first list found)."""
     if isinstance(obj, (list, tuple)):
         tensor_like = [v for v in obj if isinstance(v, torch.Tensor)]
@@ -198,7 +200,7 @@ def _pool_chunk_count(obj) -> int:
     return 0
 
 
-def _move_pool_to(obj, target: str):
+def _move_pool_to(obj: Any, target: str) -> Any:
     """Recursively move a pool's tensors onto ``target`` in place (skip locals)."""
     if isinstance(obj, torch.Tensor):
         return obj.to(target) if str(obj.device) != target else obj
@@ -215,7 +217,9 @@ def _move_pool_to(obj, target: str):
     return obj
 
 
-def consolidate_pool_onto(objs, target: str, block, batch_size: int, reserved_bytes: int = 0, iters: int = 0) -> str:
+def consolidate_pool_onto(
+    objs: Sequence[Any], target: str, block: torch.nn.Module, batch_size: int, reserved_bytes: int = 0, iters: int = 0
+) -> str:
     """Consolidate the incoming calibration pools onto the compute device.
 
     Returns ``'local'`` (already on target), ``'consolidated'`` (moved in one
@@ -254,7 +258,7 @@ def consolidate_pool_onto(objs, target: str, block, batch_size: int, reserved_by
         return "spread"
     devices = set()
 
-    def _collect(o):
+    def _collect(o: Any) -> None:
         if isinstance(o, torch.Tensor):
             devices.add(str(o.device))
         elif isinstance(o, dict):
@@ -429,7 +433,9 @@ _RESERVE_BYTES = int(0.25 * 2**30)
 _WORKING_FLOOR_BYTES = int(0.125 * 2**30)
 
 
-def _activation_bytes_for(block, pool, batch_size, iters, config) -> dict:
+def _activation_bytes_for(
+    block: torch.nn.Module, pool: Any, batch_size: int, iters: int, config: Any
+) -> dict[str, int]:
     """Per-device activation budget charged into every device's headroom.
 
     The tune loop's forward/backward graph executes on EVERY device the
@@ -441,7 +447,7 @@ def _activation_bytes_for(block, pool, batch_size, iters, config) -> dict:
     if iters <= 0:
         return {}
     try:
-        from auto_round.algorithms.quantization.sign_round.quantizer import _activation_bytes_by_device
+        from auto_round.algorithms.quantization.tune_memory import _activation_bytes_by_device
 
         got = _activation_bytes_by_device(block, pool, batch_size, config)
         return {str(d): int(b) for d, b in got.items()} if got else {}
@@ -450,7 +456,7 @@ def _activation_bytes_for(block, pool, batch_size, iters, config) -> dict:
         return {}
 
 
-def _state_bytes_by_device(block) -> dict:
+def _state_bytes_by_device(block: torch.nn.Module) -> dict[str, int]:
     """In-loop tuning state per device: params homed there x 14 B (actual walk).
 
     Same layout constant as :func:`placement_need_bytes` (fp32 value + grad +
@@ -462,7 +468,7 @@ def _state_bytes_by_device(block) -> dict:
     snapshot ask failing at 5.5 MiB free on a card the resolve gate had
     treated as empty).
     """
-    out: dict = {}
+    out: dict[str, int] = {}
     try:
         for p in block.parameters():
             out[str(p.device)] = out.get(str(p.device), 0) + p.numel() * 14
@@ -472,9 +478,9 @@ def _state_bytes_by_device(block) -> dict:
     return out
 
 
-def _dominant_param_esize(block) -> int:
+def _dominant_param_esize(block: torch.nn.Module) -> int:
     """Element size (bytes) of the block's dominant parameter dtype."""
-    counts: dict = {}
+    counts: dict[int, int] = {}
     try:
         for p in block.parameters():
             counts[p.element_size()] = counts.get(p.element_size(), 0) + p.numel()
@@ -484,7 +490,7 @@ def _dominant_param_esize(block) -> int:
     return max(counts, key=lambda k: counts[k]) if counts else 2
 
 
-def _widest_out_and_hidden(block):
+def _widest_out_and_hidden(block: torch.nn.Module) -> tuple[int, Optional[int]]:
     """(widest out_features, modal in_features) over the block's Linear/Conv1D."""
     """
     The modal in_features approximates the hidden size (every attention/mlp
@@ -495,7 +501,7 @@ def _widest_out_and_hidden(block):
     """
     import transformers
 
-    in_counts: dict = {}
+    in_counts: dict[int, int] = {}
     widest = 0
     for m in block.modules():
         w = getattr(m, "weight", None)
@@ -513,7 +519,7 @@ def _widest_out_and_hidden(block):
     return widest, hidden
 
 
-def _working_allowance_bytes(block, pool, batch_size: int) -> int:
+def _working_allowance_bytes(block: torch.nn.Module, pool: Any, batch_size: int) -> int:
     """Simultaneous-transient allowance for one collection/tune batch."""
     """
     First principles: at any instant during a block forward, the transients
@@ -555,7 +561,9 @@ def _working_allowance_bytes(block, pool, batch_size: int) -> int:
         return _WORKING_FLOOR_BYTES
 
 
-def placement_need_bytes(block, pool, batch_size: int, iters: int = 0, primary: str = None) -> int:
+def placement_need_bytes(
+    block: torch.nn.Module, pool: Any, batch_size: int, iters: int = 0, primary: Optional[str] = None
+) -> int:
     """Candidate-device working-set need for the placement gates, first principles.
 
     The earlier port reused ``estimate_tuning_block_mem`` (mapped-placement
@@ -617,16 +625,16 @@ def placement_need_bytes(block, pool, batch_size: int, iters: int = 0, primary: 
 
 
 def resolve_placement_for_pool(
-    pool,
+    pool: Any,
     chains: int,
     primary: str,
     candidate_devices: Sequence[str],
-    block=None,
+    block: Optional[torch.nn.Module] = None,
     batch_size: int = 8,
     mode: str = "auto",
     iters: int = 0,
-    consumer: str = None,
-    config=None,
+    consumer: Optional[str] = None,
+    config: Any = None,
 ) -> Optional[PoolPlacement]:
     """Resolve placement from a live pool object (orchestrator entry point).
 

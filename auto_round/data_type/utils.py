@@ -15,7 +15,7 @@
 import math
 from functools import lru_cache
 from math import ceil
-from typing import List, Union
+from typing import Any, Callable, List, Union
 
 import torch
 from torch.nn import Linear, Module
@@ -191,7 +191,7 @@ def get_quant_func(
     )
 
 
-def _int_search_with_thresh(search_scales, q_scale_thresh):
+def _int_search_with_thresh(search_scales: Any, q_scale_thresh: float) -> "Callable[..., torch.Tensor]":
     """Stable partial for the clamped int init-scale search.
 
     A module-level partial (captures visible as ``keywords``) instead of a
@@ -200,7 +200,9 @@ def _int_search_with_thresh(search_scales, q_scale_thresh):
     """
     import functools
 
-    def _clamped(weight_reshape, bits, imatrix, *, _thresh):
+    def _clamped(
+        weight_reshape: torch.Tensor, bits: int, imatrix: "torch.Tensor | None", *, _thresh: float
+    ) -> torch.Tensor:
         init_scale = search_scales(weight_reshape, bits, imatrix)
         return torch.where(
             init_scale < 0,
@@ -248,7 +250,9 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
     return None, None
 
 
-def resolve_optimized_init_scale_fn(data_type: str, q_scale_thresh: float = 1e-5):
+def resolve_optimized_init_scale_fn(
+    data_type: str, q_scale_thresh: float = 1e-5
+) -> "Callable[..., torch.Tensor] | None":
     """Resolve the per-group init-scale search callable for a data type.
 
     Returns the exact callable ``search_optimized_init_scale`` would invoke --
