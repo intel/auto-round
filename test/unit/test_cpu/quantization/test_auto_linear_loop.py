@@ -26,7 +26,7 @@ class _Cfg:
 
 class TestAutoLinearLoop(unittest.TestCase):
     def setUp(self):
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
 
         self.q = q
         q._MOE_IMPL_AUTO_LINEAR_LOOP_DONE = False

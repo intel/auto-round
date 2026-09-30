@@ -17,6 +17,7 @@
 import queue
 import random
 import threading
+from typing import Any
 
 import torch
 from torch.utils._pytree import tree_flatten, tree_map
@@ -54,7 +55,7 @@ def _signature(batch):
     return spec, signature
 
 
-def _signature_decline_reason(batch):
+def _signature_decline_reason(batch: Any) -> str | None:
     """First offending leaf that makes :func:`_signature` return None."""
     try:
         from torch.utils._pytree import tree_flatten_with_path

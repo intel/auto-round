@@ -29,13 +29,15 @@ masks the original error.
 """
 
 from contextlib import contextmanager
+from types import FrameType, ModuleType, TracebackType
+from typing import Any, Iterator
 
 import torch
 
 from auto_round.logger import logger
 
 
-def _shape_key(shape) -> tuple:
+def _shape_key(shape: torch.Size | tuple[int, ...]) -> tuple[int | str, ...]:
     """Shape as a hashable key; symbolic dims (SymInt) fall back to a string form."""
     try:
         return tuple(int(d) for d in shape)
@@ -44,7 +46,9 @@ def _shape_key(shape) -> tuple:
         return (str(tuple(shape)),)
 
 
-def _group_tensors_by_shape(objs) -> tuple:
+def _group_tensors_by_shape(
+    objs: list[Any],
+) -> tuple[list[tuple[tuple[str, str, tuple[int | str, ...]], list[int]]], int]:
     """(device, dtype, shape) -> [count, bytes] over accelerator tensors; sorted by bytes.
 
     Covers every non-cpu accelerator (cuda, hpu, xpu, mps, ...): the census
@@ -53,7 +57,7 @@ def _group_tensors_by_shape(objs) -> tuple:
 
     skipped = 0
 
-    groups: dict = {}
+    groups: dict[tuple[str, str, tuple[int | str, ...]], list[int]] = {}
     for obj in objs:
         try:
             if not isinstance(obj, torch.Tensor) or obj.device.type in ("cpu", "meta"):
@@ -73,10 +77,12 @@ def _group_tensors_by_shape(objs) -> tuple:
     return sorted(groups.items(), key=lambda kv: -kv[1][1]), skipped
 
 
-def _representatives(groups, objs):
+def _representatives(
+    groups: list[tuple[tuple[str, str, tuple[int | str, ...]], list[int]]], objs: list[Any]
+) -> Iterator[tuple[torch.Tensor, tuple[tuple[str, str, tuple[int | str, ...]], list[int]]]]:
     """One representative tensor per group, drawn from a single scan."""
     wanted = {g[0] for g in groups}  # group keys are (device, dtype, shape)
-    seen = {}
+    seen: dict[tuple[str, str, tuple[int | str, ...]], torch.Tensor] = {}
     for obj in objs:
         try:
             if not isinstance(obj, torch.Tensor) or obj.device.type in ("cpu", "meta"):
@@ -92,7 +98,7 @@ def _representatives(groups, objs):
             yield seen[gk], (gk, meta)
 
 
-def _is_census_noise(ref, skip_ids):
+def _is_census_noise(ref: Any, skip_ids: set[int]) -> bool:
     """Referrers that are the census's own structures or whole-heap scans."""
     if id(ref) in skip_ids:
         return True
@@ -105,7 +111,7 @@ def _is_census_noise(ref, skip_ids):
     return False
 
 
-def _describe_frame(frame, target):
+def _describe_frame(frame: FrameType, target: Any) -> str:
     """Frame as '<func> (<file>:<line>)' plus the local names holding target."""
     try:
         code = frame.f_code
@@ -124,7 +130,7 @@ def _describe_frame(frame, target):
         return "frame"
 
 
-def _attr_name_of(owner, target):
+def _attr_name_of(owner: Any, target: Any) -> str | None:
     """The attribute of ``owner`` (if any) that holds ``target`` by identity."""
     try:
         d = getattr(owner, "__dict__", None)
@@ -137,7 +143,7 @@ def _attr_name_of(owner, target):
     return None
 
 
-def _describe(obj, depth=0):
+def _describe(obj: Any, depth: int = 0) -> str:
     """One-line description of a holder object."""
     import types
 
@@ -156,7 +162,7 @@ def _describe(obj, depth=0):
     return f"{mod}.{name}" if mod and mod != "builtins" else name
 
 
-def _describe_referrers(tensor, skip_ids, limit=6, depth=0):
+def _describe_referrers(tensor: torch.Tensor, skip_ids: set[int], limit: int = 6, depth: int = 0) -> list[str]:
     """Holders of ``tensor``; small containers are unwrapped one more level."""
     import gc as _gc
 
@@ -211,7 +217,7 @@ def dump_oom_tensor_census_(context: str = "") -> None:
         logger.error("[oom] tensor census failed (%s)", e)
 
 
-def _dump_census(gc, context=""):
+def _dump_census(gc: ModuleType, context: str = "") -> None:
     idx = "?"  # bound before the loop so the handler below can always name it
     if context:
         logger.error("[oom] tensor census (context: %s)", context)
@@ -227,7 +233,7 @@ def _dump_census(gc, context=""):
         except Exception as e:  # pragma: no cover - allocator stats are cuda-only
             logger.debug("[oom] allocator stats unavailable for cuda:%s (%s)", idx, e)
         objs = gc.get_objects()
-        per_device: dict = {}
+        per_device: dict[str, int] = {}
         top, _skipped = _group_tensors_by_shape(objs)
         for (_dev, _dt, _shape), (_cnt, _nb) in top:
             per_device[_dev] = per_device.get(_dev, 0) + _nb
@@ -258,7 +264,7 @@ def _is_oom(exc: BaseException) -> bool:
 
 
 @contextmanager
-def oom_census(context: str = ""):
+def oom_census(context: str = "") -> Iterator[None]:
     """Census-on-OOM context manager: plug around any frame, upstream code included.
 
     .. code-block:: python
@@ -294,7 +300,7 @@ def install_oom_census_hook() -> bool:
     prior_sys = sys.excepthook
     prior_the = threading.excepthook
 
-    def _sys_hook(tp, val, tb):
+    def _sys_hook(tp: type[BaseException], val: BaseException, tb: TracebackType | None) -> None:
         try:
             if _is_oom(val):
                 dump_oom_tensor_census_("uncaught")
@@ -302,7 +308,7 @@ def install_oom_census_hook() -> bool:
             logger.error("[oom] census hook failed while reporting (%s)", e)
         prior_sys(tp, val, tb)
 
-    def _the_hook(args):
+    def _the_hook(args: threading.ExceptHookArgs) -> None:
         try:
             if _is_oom(args.exc_value):
                 name = args.thread.name if args.thread is not None else "?"

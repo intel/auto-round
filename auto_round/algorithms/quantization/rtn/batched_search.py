@@ -26,6 +26,7 @@ drift apart.
 """
 
 from collections import OrderedDict
+from typing import Any, Callable
 
 import torch
 
@@ -40,9 +41,10 @@ from auto_round.algorithms.quantization.search_dispatch import (
 )
 from auto_round.logger import logger
 from auto_round.utils import set_module
+from auto_round.wrapper import WrapperLinear
 
 
-def _staged_weight(wrapper):
+def _staged_weight(wrapper: WrapperLinear) -> torch.Tensor:
     """The weight exactly as _qdq_weight would pass it to the quant func."""
     weight = wrapper.orig_layer.weight
     import transformers
@@ -52,7 +54,7 @@ def _staged_weight(wrapper):
     return weight
 
 
-def _staged_imatrix(wrapper, weight):
+def _staged_imatrix(wrapper: WrapperLinear, weight: torch.Tensor) -> torch.Tensor | None:
     """The RAW per-column imatrix (or None) -- expansion happens chunk-time.
 
     Staging the expanded full-size copy would pin N x weight bytes across the
@@ -64,7 +66,7 @@ def _staged_imatrix(wrapper, weight):
     return getattr(wrapper.orig_layer, "imatrix", None)
 
 
-def _expand_imatrix(im, weight, group_size):
+def _expand_imatrix(im: torch.Tensor | None, weight: torch.Tensor, group_size: int) -> torch.Tensor | None:
     """Expand one module's raw imatrix to its full weight shape (chunk-time).
 
     Mirrors the quant funcs' own imatrix handling exactly (data_type/int.py):
@@ -101,7 +103,7 @@ def _expand_imatrix(im, weight, group_size):
     return im
 
 
-def _extra_quant_kwargs_key(wrapper):
+def _extra_quant_kwargs_key(wrapper: WrapperLinear) -> tuple[tuple[str, str], ...] | None:
     """Per-module _extra_quant_kwargs hook values as a hashable key term.
 
     Any wrapper subclass defining the hook injects arbitrary per-module kwargs
@@ -114,7 +116,22 @@ def _extra_quant_kwargs_key(wrapper):
     return tuple(sorted((str(k), repr(v)) for k, v in hook().items()))
 
 
-def _staged_key(wrapper, weight, imatrix):
+def _staged_key(wrapper: WrapperLinear, weight: torch.Tensor, imatrix: torch.Tensor | None) -> tuple[
+    str,
+    tuple[int, ...],
+    str,
+    int | None,
+    int | None,
+    bool | None,
+    float,
+    bool,
+    str | tuple[Any, ...],
+    str,
+    int | None,
+    int | None,
+    float | None,
+    tuple[tuple[str, str], ...] | None,
+]:
     layer = wrapper.orig_layer
     # The stacked call assembles quant kwargs once from chunk[0], so every
     # per-layer kwarg _quant_call_kwargs injects must be part of the key:
@@ -143,7 +160,7 @@ def _staged_key(wrapper, weight, imatrix):
     )
 
 
-def swap_wrapper_callables_to_eager(wrapper):
+def swap_wrapper_callables_to_eager(wrapper: WrapperLinear) -> Callable[[], None] | None:
     """Point compiled wrapper callables at their eager originals.
 
     Returns a restore fn or None. ``unwrapper({})`` may call BOTH the
@@ -168,7 +185,7 @@ def swap_wrapper_callables_to_eager(wrapper):
     if not restores:
         return None
 
-    def _restore():
+    def _restore() -> None:
         for attr, fn in restores:
             setattr(wrapper, attr, fn)
 
@@ -176,7 +193,9 @@ def swap_wrapper_callables_to_eager(wrapper):
 
 
 @torch.no_grad()
-def run_batched_rtn_search(model, staged, max_batch=None):
+def run_batched_rtn_search(
+    model: torch.nn.Module, staged: list[tuple[str, WrapperLinear]], max_batch: int | None = None
+) -> None:
     """Finish deferred zero-shot wrappers on stacked same-shape batches.
 
     Args:
@@ -224,7 +243,7 @@ def run_batched_rtn_search(model, staged, max_batch=None):
             for start in range(0, len(group), cap):
                 chunks.append((dev, group[start : start + cap]))
 
-    def _chunk_working_set(chunk):
+    def _chunk_working_set(chunk: list[dict[str, Any]]) -> int:
         e0 = chunk[0]
         per = (e0["weight"].numel() + (e0["im"].numel() if e0["im"] is not None else 0)) * 4 * 4
         return per * len(chunk)
@@ -248,13 +267,13 @@ def run_batched_rtn_search(model, staged, max_batch=None):
         _workers = ", ".join(f"'{_short_device_key(w)}': {len(cs)}" for w, cs in buckets.items())
         logger.debug("[rtn-batch] %d modules in %d chunks over workers {%s}", _n_mods, _n_chunks, _workers)
 
-    def _worker_of(chunk):
+    def _worker_of(chunk: list[dict[str, Any]]) -> str:
         for wk, cs in buckets.items():
             if any(c is chunk for c in cs):
                 return str(wk)
         return str(chunk[0]["weight"].device)  # not found (should not happen): stay home
 
-    def _unwrap_with_cpu_fallback(w, name):
+    def _unwrap_with_cpu_fallback(w: WrapperLinear, name: str) -> torch.nn.Module:
         """unwrapper({}) under the serial lane's OOM->CPU contract.
 
         The per-module search can OOM on the device exactly like the serial
@@ -284,7 +303,7 @@ def run_batched_rtn_search(model, staged, max_batch=None):
             return layer.unwrapper({})
 
     @torch.no_grad()
-    def _run_chunk(chunk, worker, threaded=False):
+    def _run_chunk(chunk: list[dict[str, Any]], worker: str, threaded: bool = False) -> None:
         w0 = chunk[0]["w"]
         dev = str(chunk[0]["weight"].device)
         worker = str(worker)
@@ -386,7 +405,7 @@ def run_batched_rtn_search(model, staged, max_batch=None):
                 _run_chunk(c, _worker_of(c))
 
 
-def _relocate_tensor_kwargs(kwargs: dict, device: str) -> dict:
+def _relocate_tensor_kwargs(kwargs: dict[str, Any], device: str) -> dict[str, Any]:
     """Move accelerator-valued kwargs onto the compute device.
 
     The weight-local searches normally run on the weight's own device, so
@@ -401,7 +420,7 @@ def _relocate_tensor_kwargs(kwargs: dict, device: str) -> dict:
     return kwargs
 
 
-def _split_leading(result, n):
+def _split_leading(result: Any, n: int) -> list[Any]:
     """Split a quant result along the (possibly flattened) leading batch dim.
 
     Stacked calls may return per-module rows flattened into the leading dim

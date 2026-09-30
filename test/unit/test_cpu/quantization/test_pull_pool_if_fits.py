@@ -16,7 +16,7 @@ from unittest import mock
 
 import torch
 
-from auto_round.algorithms.quantization.sign_round.quantizer import _pull_pool_if_fits
+from auto_round.algorithms.quantization.tune_memory import _pull_pool_if_fits
 
 _GB = 2**30
 
@@ -87,16 +87,14 @@ class TestPullPoolIfFits(unittest.TestCase):
         # 12 GiB (tokens x top_k x hidden x 6, from the pr/streaming formula)
         # -> declines; with no MoE activation cost the same numbers pull
         with mock.patch(
-            "auto_round.algorithms.quantization.sign_round.quantizer._block_activation_bytes",
+            "auto_round.algorithms.quantization.tune_memory._block_activation_bytes",
             return_value=int(12 * _GIB),
         ):
             pool = [_FakeTensor("cuda:2", numel=_GIB // 4) for _ in range(4)]
             block = _FakeBlock([])
             out = _run(pool, block, free=15.9 * _GIB, target="cuda:0", label="tune-input", charge_activation=True)
             self.assertTrue(all(t.moved_to is None for t in out))
-        with mock.patch(
-            "auto_round.algorithms.quantization.sign_round.quantizer._block_activation_bytes", return_value=0
-        ):
+        with mock.patch("auto_round.algorithms.quantization.tune_memory._block_activation_bytes", return_value=0):
             pool2 = [_FakeTensor("cuda:2", numel=_GIB // 4) for _ in range(4)]
             out2 = _run(pool2, block, free=15.9 * _GIB, target="cuda:0", label="tune-input", charge_activation=True)
             self.assertTrue(all(t.moved_to == torch.device("cuda:0") for t in out2))
@@ -109,7 +107,7 @@ class TestPullPoolIfFits(unittest.TestCase):
 
         import torch.nn as nn
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
 
         class _MoeMLP(nn.Module):
 
@@ -156,7 +154,7 @@ class TestPullPoolIfFits(unittest.TestCase):
         # broad except silently killed the whole activation model)
         from types import SimpleNamespace
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
         from auto_round import envs
 
         blk = SimpleNamespace(modules=lambda: iter([]), named_modules=lambda: iter([]))
@@ -172,7 +170,7 @@ class TestPullPoolIfFits(unittest.TestCase):
         # env-stale grouped one
         from types import SimpleNamespace
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
         from auto_round import envs
 
         blk = SimpleNamespace(modules=lambda: iter([]), named_modules=lambda: iter([]))
@@ -188,7 +186,7 @@ class TestPullPoolIfFits(unittest.TestCase):
 
         import torch.nn as nn
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
 
         class _MoeMLP(nn.Module):
 
@@ -231,7 +229,7 @@ class TestPullPoolIfFits(unittest.TestCase):
         import torch
         import torch.nn as nn
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
 
         class _MoeMLP(nn.Module):
 
@@ -268,7 +266,7 @@ class TestPullPoolIfFits(unittest.TestCase):
         import torch
         import torch.nn as nn
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
 
         blk = nn.Module()
         lin = nn.Linear(4, 4)  # weight 16 + bias 4 = 20 elems on cpu
@@ -290,7 +288,7 @@ class TestPullPoolIfFits(unittest.TestCase):
         # the working 5x3090 lane and falsely switched it to linear_loop
         from types import SimpleNamespace
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
         import auto_round.utils.device as dev_mod
 
         blk = SimpleNamespace(modules=lambda: iter([SimpleNamespace(num_experts=8)]))
@@ -315,7 +313,7 @@ class TestPullPoolIfFits(unittest.TestCase):
 
         import torch.nn as nn
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
 
         class _MoeMLP(nn.Module):
 
@@ -353,7 +351,7 @@ class TestPullPoolIfFits(unittest.TestCase):
 
         import torch.nn as nn
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
 
         GB = 2**30
 
@@ -394,7 +392,7 @@ class TestPullPoolIfFits(unittest.TestCase):
         # (measured loop retention: 12.7 GiB of batch cats + routed caches)
         import torch.nn as nn
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
 
         class _Experts(nn.Module):  # routed container (hy3 mlp.experts)
             num_experts = 192
@@ -409,7 +407,7 @@ class TestPullPoolIfFits(unittest.TestCase):
         # config absent + module attrs absent -> recorded (top_k, rows) decides
         import torch.nn as nn
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
 
         class _Experts(nn.Module):
             num_experts = 192
@@ -426,7 +424,7 @@ class TestPullPoolIfFits(unittest.TestCase):
         # routed alone would undercharge it -- max covers both
         import torch.nn as nn
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as q
+        import auto_round.algorithms.quantization.tune_memory as q
 
         class _Experts(nn.Module):
             num_experts = 192
@@ -494,10 +492,43 @@ class TestTuningStateBytes(unittest.TestCase):
         # nowhere but present in a .params dict; identity-excluded from the count
         value = torch.zeros_like(block.weight)
         block.params = {"value": value}
-        from auto_round.algorithms.quantization.sign_round.quantizer import _tuning_state_bytes
+        from auto_round.algorithms.quantization.tune_memory import _tuning_state_bytes
 
         # cpu target: logical params = 20 (weight 16 + bias 4), value excluded
         self.assertEqual(_tuning_state_bytes(block, "cpu"), 20 * 14)
+
+
+class TestBaseQuantizerHooks(unittest.TestCase):
+    """The base-quantizer policy hooks delegate to tune_memory with self context."""
+
+    def test_hooks_delegate_to_tune_memory(self):
+        import auto_round.algorithms.quantization.tune_memory as tm
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+        class _Q(BaseQuantizer):
+            def __init__(self):
+                super().__init__(RTNConfig())
+
+        q = _Q()
+        q.iters = 7
+        block = torch.nn.Linear(2, 2)
+        seen = {}
+
+        def fake_adapt(block, tensors, batch_size, iters, config, model):
+            seen["adapt"] = (iters, block)
+
+        def fake_pull(pool, target_dev, blk, batch_size, iters, label, charge_activation, config):
+            seen["pull"] = (iters, label, charge_activation)
+            return "moved"
+
+        with mock.patch.object(tm, "_maybe_auto_linear_loop_for_tuning", side_effect=fake_adapt):
+            with mock.patch.object(tm, "_pull_pool_if_fits", side_effect=fake_pull):
+                q.maybe_adapt_moe_implementation(block, [], 8)
+                out = q.pull_tuning_pool([1], "cuda:0", block, 8, "test] pool", charge_activation=False)
+        self.assertEqual(seen["adapt"], (7, block))
+        self.assertEqual(seen["pull"], (7, "test] pool", False))
+        self.assertEqual(out, "moved")
 
 
 if __name__ == "__main__":
