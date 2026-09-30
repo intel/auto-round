@@ -32,10 +32,10 @@ stages:
         strategy:
           matrix:
             Qwen3_W4A16:
-              model_name: 'Qwen/Qwen3-0.6B'
+              model_name: 'openbmb/MiniCPM5-1B'
               scheme: 'W4A16'
             Qwen3_FP8_STATIC:
-              model_name: 'Qwen/Qwen3-0.6B'
+              model_name: 'openbmb/MiniCPM5-1B'
               scheme: 'FP8_STATIC'
 
         steps:
