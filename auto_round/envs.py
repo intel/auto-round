@@ -210,6 +210,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Exposed on the CLI as ``--num_hidden_layers``. The resulting model is a
     # partial model and must not be used for a real/production quantization run.
     "AR_DEBUG_LAYER_NUM": lambda: _get_optional_positive_int_env("AR_DEBUG_LAYER_NUM"),
+    # NeUQI joint (scale, zero-point) search knobs: coarse/fine candidate
+    # counts (shared by both symmetry classes), backend selection for the
+    # zero-point sweep (auto|eager|compile|triton; latches down permanently
+    # on failure), and the sweep/knobs are otherwise internal (layout and
+    # candidate batching are device-automatic).
+    # unset -> None so the search entries can apply their backend-aware
+    # defaults (wide 256/64 on Triton/compile lanes, narrow 64/32 on eager)
+    "AR_NEUQI_COARSE": lambda: int(v) if (v := os.getenv("AR_NEUQI_COARSE")) is not None else None,
+    "AR_NEUQI_FINE": lambda: int(v) if (v := os.getenv("AR_NEUQI_FINE")) is not None else None,
+    "AR_NEUQI_BACKEND": lambda: os.getenv("AR_NEUQI_BACKEND", "auto").lower(),
 }
 
 

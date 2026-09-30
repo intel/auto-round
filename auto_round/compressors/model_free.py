@@ -152,6 +152,7 @@ from auto_round.utils.model_free_utils import (
     is_model_free_supported_scheme,
     preprocess_model_type_source_tensors,
 )
+from auto_round.utils.path_safety import resolve_within_directory
 
 # Backward-compat aliases for internal/private helper names used in tests and
 # downstream imports.
@@ -326,7 +327,7 @@ def _prefetch_shard(
             # colliding with quantized output shard names in output_dir.
             shard_cache_dir = os.path.join(work_dir, ".cache", "model_free_source_shards")
             return _download_single_shard(model_name_or_path, shard_name, shard_cache_dir)
-        path = os.path.join(source_dir, shard_name)
+        path = str(resolve_within_directory(source_dir, shard_name, origin="shard list"))
         return path if os.path.exists(path) else None
     except Exception as e:  # pragma: no cover
         logger.warning(f"Prefetch failed for {shard_name}: {e}")
@@ -838,9 +839,24 @@ class _ModelFreeCompressorCore:
         if self.model_type:
             logger.info(f"Detected source model_type='{self.model_type}'.")
 
+        from auto_round.utils import expand_layer_config_for_weight_renames
+
+        self.layer_config = expand_layer_config_for_weight_renames(
+            self.layer_config,
+            model_type=self.model_type,
+            to_model_names=False,
+        )
+
     def _discover_shards(self) -> None:
         search_dir = self.work_dir if self.is_streaming else self.source_dir
         self.shard_names = _list_weight_shards(search_dir)
+        if self.is_streaming and not self.shard_names:
+            from auto_round.utils.model_free_utils import _list_remote_weight_shards
+
+            subfolder = "transformer" if self.is_diffusion_model else None
+            self.shard_names = _list_remote_weight_shards(self.model_name_or_path, subfolder=subfolder)
+        if not self.shard_names:
+            raise FileNotFoundError(f"No safetensors or PyTorch weight files found for {self.model_name_or_path}")
 
     def _build_cross_shard_deps(self) -> None:
         """Build cross-shard FP8 scale_inv dependency map from index.json.

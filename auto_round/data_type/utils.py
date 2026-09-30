@@ -103,7 +103,7 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[i
 
 
 def get_quant_func(
-    dtype: str, bits: int, sym: bool, disable_opt_rtn=False, group_size=None, iters=200
+    dtype: str, bits: int, sym: bool, disable_opt_rtn=False, group_size=None, iters=200, enable_neuqi=False
 ) -> tuple[callable, str]:
     """Retrieve the quantization function based on data type, bit width, and symmetry.
 
@@ -117,6 +117,12 @@ def get_quant_func(
         sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
         disable_opt_rtn(bool): whether to disable optimized rtn.
         group_size (tuple): The block size for weight quantization (e.g., (128, 128)).
+        enable_neuqi (bool): Opt into the NeUQI grid search (arXiv 2505.17595).
+            For ``sym=False`` the joint (scale, zero-point) search replaces the
+            plain min/max initialization on the optimized path; for ``sym=True``
+            the two-stage symmetric scale search
+            (``opt_rtn_int_sym_neuqi``) replaces the uniform ``search_scales``
+            grid. ``False`` (default) keeps the incumbent behavior byte-identical.
 
     Returns:
         function: The quantization function corresponding to the specified parameters.
@@ -136,6 +142,15 @@ def get_quant_func(
     if not disable_opt_rtn and iters == 0:
         rtn_data_type = "opt_rtn_" + dtype
         data_types = [rtn_data_type, pad_bits(rtn_data_type), pad_sym(rtn_data_type), pad_sym(pad_bits(rtn_data_type))]
+        if not enable_neuqi and not sym:
+            # the joint NeUQI search is opt-in: without it the asymmetric
+            # optimized path has no search (the integer zero point breaks the
+            # scale-only grid) and resolves to the plain min/max function
+            data_types = [dt for dt in data_types if not dt.endswith("_asym") and not dt.endswith(f"_asym{bits}")]
+        if sym and enable_neuqi:
+            # two-stage symmetric scale search (NeUQI grid machinery, zero point
+            # fixed at 0) -- preferred over the uniform search_scales grid
+            data_types = [f"{rtn_data_type}_sym_neuqi"] + data_types
         for data_type in data_types:
             from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 

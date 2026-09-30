@@ -29,6 +29,7 @@ from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, monkey_patch_model
+from auto_round.utils.path_safety import UnsafeCheckpointPathError
 from auto_round.utils.weight_handler import (
     _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
@@ -605,6 +606,9 @@ def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list = Non
     for name, value in model_index.items():
         if name.startswith("_") or not isinstance(value, list) or len(value) < 2:
             continue
+        # The chosen name becomes a read subfolder and later an output subfolder.
+        if not name.isidentifier():
+            raise UnsafeCheckpointPathError(f"model_index.json: component name {name!r} is not a plain directory name")
         # Load component config.json
         if is_local:
             cfg_path = os.path.join(model_dir_or_repo, name, "config.json")

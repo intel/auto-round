@@ -26,6 +26,7 @@ from auto_round.utils import (
     restore_fp32_tensors_from_source,
     unsupported_meta_device,
 )
+from auto_round.utils.path_safety import UnsafeCheckpointPathError, resolve_within_directory
 
 
 def save_pretrained_artifact(artifact, output_dir: str, artifact_name: str = "artifact") -> bool:
@@ -156,10 +157,12 @@ def _resolve_model_source_dir(model: nn.Module) -> str | None:
 
 
 def _copy_pipeline_artifact(model_dir: str, relative_path: str, output_dir: str) -> None:
-    target_path = os.path.join(output_dir, relative_path)
+    # ``relative_path`` comes from the pipeline's own model_index.json, so it must
+    # stay inside output_dir (write side) and model_dir (read side).
+    target_path = str(resolve_within_directory(output_dir, relative_path, origin="model_index.json"))
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     if is_local_pipeline_model_dir(model_dir):
-        source_path = os.path.join(model_dir, relative_path)
+        source_path = str(resolve_within_directory(model_dir, relative_path, origin="model_index.json"))
     else:
         from huggingface_hub import hf_hub_download
 
@@ -204,6 +207,11 @@ def _copy_pipeline_artifacts(source_dir: str, output_dir: str, exclude_component
     for component_name in component_dirs:
         if component_name in exclude_components:
             continue
+        # Keys of model_index.json are pipeline kwargs; anything else would be joined as a path.
+        if not component_name.isidentifier():
+            raise UnsafeCheckpointPathError(
+                f"model_index.json: component name {component_name!r} is not a plain directory name"
+            )
         if is_local:
             src = os.path.join(source_dir, component_name)
             dst = os.path.join(output_dir, component_name)
@@ -319,13 +327,22 @@ def _restore_original_layer_types(save_dir: str, source_dir: str) -> None:
             json.dump(saved_config, f, indent=2)
 
 
+# Quantization metadata (weight/input/kv-cache scales and zero points) is part of the
+# checkpoint contract and must keep its own dtype, so it is never cast to the export dtype.
+_QUANT_PARAM_SUFFIXES = ("_scale", "_scales", "_scale_inv", "_zero_point", "_zeros", "_zp")
+
+
+def _is_quant_param(name: str) -> bool:
+    return name.endswith(_QUANT_PARAM_SUFFIXES)
+
+
 def _get_state_dict_for_export_dtype(model: nn.Module, dtype) -> dict | None:
     """Return a state dict with float32 tensors cast to ``dtype``, or None if nothing needs casting.
 
     Tuning may run the model in float32, e.g. when the device doesn't support bfloat16. The
     exported config declares ``dtype``, so the saved tensors should use it too. Tensors of
     modules the model keeps in float32 (``_keep_in_fp32_modules``) are left unchanged, as are
-    quantized (non-float32) tensors.
+    quantized (non-float32) tensors and quantization scales/zero points.
     """
     if dtype not in (torch.bfloat16, torch.float16):
         return None
@@ -338,14 +355,12 @@ def _get_state_dict_for_export_dtype(model: nn.Module, dtype) -> dict | None:
         names = getattr(model, attribute, None) or []
         keep_in_fp32.update([names] if isinstance(names, str) else names)
 
-    return {
-        name: (
-            tensor.to(dtype)
-            if tensor.dtype == torch.float32 and not any(module_name in name for module_name in keep_in_fp32)
-            else tensor
-        )
-        for name, tensor in state_dict.items()
-    }
+    def _should_cast(name: str, tensor: torch.Tensor) -> bool:
+        if tensor.dtype != torch.float32 or _is_quant_param(name):
+            return False
+        return not any(module_name in name for module_name in keep_in_fp32)
+
+    return {name: (tensor.to(dtype) if _should_cast(name, tensor) else tensor) for name, tensor in state_dict.items()}
 
 
 def apply_post_save_source_fixes(model: nn.Module, save_dir: str) -> None:
@@ -498,6 +513,16 @@ def filter_quantization_config(quantization_config):
     for k in list(quantization_config.keys()):
         if quantization_config[k] is None:
             quantization_config.pop(k)
+
+    # static_*_granularity only carries a value ("tensor") when the matching static
+    # dtype is set; without it the key is inert but misleads readers into thinking
+    # KV/attention quantization is configured.
+    for dtype_key, gran_key in (
+        ("static_kv_dtype", "static_kv_granularity"),
+        ("static_attention_dtype", "static_attention_granularity"),
+    ):
+        if quantization_config.get(dtype_key) is None:
+            quantization_config.pop(gran_key, None)
 
     if quantization_config.get("act_bits", 16) >= 16:
         quantization_config.pop("act_bits", None)

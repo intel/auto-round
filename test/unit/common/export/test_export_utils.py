@@ -378,6 +378,11 @@ class _ExportDtypeModel(nn.Module):
         self.router = nn.Linear(4, 2)
         self.register_buffer("qweight", torch.zeros(4, 4, dtype=torch.float8_e4m3fn))
         self.register_buffer("indices", torch.zeros(4, dtype=torch.int32))
+        self.register_buffer("k_scale", torch.ones(1))
+        self.register_buffer("v_scale", torch.ones(1))
+        self.register_buffer("weight_zero_point", torch.zeros(1))
+        self.linear.register_buffer("input_scale", torch.ones(1))
+        self.linear.register_buffer("weight_scale", torch.ones(1))
 
 
 class TestGetStateDictForExportDtype:
@@ -397,6 +402,12 @@ class TestGetStateDictForExportDtype:
         state_dict = _get_state_dict_for_export_dtype(model, torch.float16)
         assert state_dict["router.weight"].dtype == torch.float32
         assert state_dict["linear.weight"].dtype == torch.float16
+
+    def test_keeps_quantization_scales_in_float32(self):
+        model = _ExportDtypeModel()
+        state_dict = _get_state_dict_for_export_dtype(model, torch.bfloat16)
+        for name in ("k_scale", "v_scale", "weight_zero_point", "linear.input_scale", "linear.weight_scale"):
+            assert state_dict[name].dtype == torch.float32, name
 
     def test_does_not_modify_model(self):
         model = _ExportDtypeModel()
@@ -446,6 +457,40 @@ class TestFilterQuantizationConfig:
         cfg = {"amp": None, "custom": "value"}
         filter_quantization_config(cfg)
         assert "amp" not in cfg
+
+    def test_granularity_without_dtype_removed(self):
+        cfg = {"static_kv_dtype": None, "static_kv_granularity": "tensor", "custom": "value"}
+        filter_quantization_config(cfg)
+        assert "static_kv_granularity" not in cfg
+
+    def test_granularity_missing_dtype_key_removed(self):
+        cfg = {"static_attention_granularity": "tensor", "custom": "value"}
+        filter_quantization_config(cfg)
+        assert "static_attention_granularity" not in cfg
+
+    def test_granularity_kept_with_dtype(self):
+        cfg = {
+            "static_kv_dtype": "fp8",
+            "static_kv_granularity": "head",
+            "static_attention_dtype": "fp8",
+            "static_attention_granularity": "tensor",
+            "custom": "value",
+        }
+        result = filter_quantization_config(cfg)
+        assert result["static_kv_granularity"] == "head"
+        assert result["static_attention_granularity"] == "tensor"
+        assert "custom" in result
+
+    def test_granularity_keys_are_independent(self):
+        cfg = {
+            "static_kv_dtype": "fp8",
+            "static_kv_granularity": "head",
+            "static_attention_granularity": "tensor",
+            "custom": "value",
+        }
+        result = filter_quantization_config(cfg)
+        assert result["static_kv_granularity"] == "head"
+        assert "static_attention_granularity" not in cfg
 
     def test_act_bits_handling(self):
         cfg = {"act_bits": 16, "act_data_type": "fp8", "custom": "value"}

@@ -120,6 +120,16 @@ class SignRoundConfig(QuantizationConfig):
             action="boolean_optional",
             help="Enable last-block LM cross-entropy (LFQ) loss for the final transformer block (experimental).",
         )
+        registry.add_argument(
+            "--enable_neuqi",
+            field="enable_neuqi",
+            action="store_true",
+            help=(
+                "Enable the NeUQI grid search (arXiv 2505.17595): the tuning grid is anchored to "
+                "the searched (scale, zero-point) result once at layer init and frozen during "
+                "tuning (joint search for asym layers, two-stage scale search for sym layers)."
+            ),
+        )
 
     def __init__(
         self,
@@ -140,6 +150,7 @@ class SignRoundConfig(QuantizationConfig):
         optimizer: str | None = None,  # TODO later wenhuach delete this
         enable_adam: bool = False,  # TODO later  wenhuach delete this
         enable_lfq: bool = False,
+        enable_neuqi: bool = False,
         **kwargs,
     ) -> None:
         """Initialize a SignRound configuration.
@@ -170,11 +181,18 @@ class SignRoundConfig(QuantizationConfig):
                 quantized output of previous blocks during calibration.
             optimizer: Optional optimizer name override.
             enable_adam: Whether to use the Adam-based SignRound variant.
+            enable_neuqi: Opt into the NeUQI grid search (arXiv 2505.17595):
+                the joint (scale, integer zero-point) search runs once at
+                layer init and anchors the tuning grid to the winner, frozen
+                during tuning (the two-stage symmetric scale search for sym
+                layers). The search grid sizes are tunable via
+                ``AR_NEUQI_COARSE`` and ``AR_NEUQI_FINE``.
             **kwargs: Common quantization arguments forwarded to
                 QuantizationConfig, such as bits, group_size, sym,
                 data_type, and activation quantization fields.
         """
         super().__init__(**kwargs)
+        self.enable_neuqi = enable_neuqi
         self.gradient_accumulate_steps = gradient_accumulate_steps
         self.iters = iters
         if self.iters < 0:

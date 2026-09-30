@@ -57,6 +57,7 @@ import torch
 
 from auto_round.logger import logger
 from auto_round.utils.model import get_module
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 
 __all__ = ["OffloadManager"]
 
@@ -226,7 +227,9 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
             index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(index_path):
         with open(index_path) as f:
-            return json.load(f)["weight_map"]
+            # Shard names are declared by the checkpoint itself; validate them
+            # before any caller joins one onto model_dir.
+            return validate_weight_map(json.load(f)["weight_map"], model_dir, index_path=index_path)
 
     single_path = os.path.join(model_dir, "model.safetensors")
     if os.path.exists(single_path):
@@ -242,11 +245,12 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
             bin_index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(bin_index_path):
         with open(bin_index_path) as f:
-            return json.load(f)["weight_map"]
+            return validate_weight_map(json.load(f)["weight_map"], model_dir, index_path=bin_index_path)
 
     single_bin = os.path.join(model_dir, "pytorch_model.bin")
     if os.path.exists(single_bin):
-        state_dict = torch.load(single_bin, map_location="cpu")
+        # No unrestricted fallback: this pickle comes from an untrusted artifact.
+        state_dict = torch.load(single_bin, map_location="cpu", weights_only=True)
         return {k: "pytorch_model.bin" for k in state_dict.keys()}
 
     raise FileNotFoundError(
@@ -301,7 +305,7 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
 
     state_dict = {}
     for shard_file, tensor_names in shard_to_tensors.items():
-        shard_path = os.path.join(model_dir, shard_file)
+        shard_path = str(resolve_within_directory(model_dir, shard_file))
         if shard_file.endswith(".safetensors"):
             from safetensors import safe_open
 
@@ -309,7 +313,7 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
                 for name in tensor_names:
                     state_dict[name[len(prefix) :]] = f.get_tensor(name)
         else:
-            full_state = torch.load(shard_path, map_location="cpu")
+            full_state = torch.load(shard_path, map_location="cpu", weights_only=True)
             for name in tensor_names:
                 if name in full_state:
                     state_dict[name[len(prefix) :]] = full_state[name]

@@ -983,6 +983,7 @@ class BaseOrchestrator(object):
 
     def configure_layer_config(self, enable_gguf_official_mixed: bool | None = True) -> None:
         """Build ``self.layer_config`` from the resolved scheme on the patched model."""
+        self.ignore_layers = self.ignore_layers or ""
         # External callers (e.g. llm-compressor's AutoRoundModifier) may invoke this
         # method directly without going through the normal post_init()/_scheme_post_init()
         # sequence. Make sure the scheme is resolved first so `self.scheme_context` (and
