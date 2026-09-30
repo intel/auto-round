@@ -964,7 +964,7 @@ class TestSetAttr:
 
         set_attr(model, "inner.new_attr", "new_value")
 
-        assert getattr(model.inner, "new_attr") == "new_value"
+        assert model.inner.new_attr == "new_value"
 
     def test_set_attr_missing_parent(self):
         """Test set_attr does not raise when the parent path doesn't exist."""

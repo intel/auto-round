@@ -356,10 +356,4 @@ class WQLinear_GEMM(nn.Module):
         return out.reshape(out_shape)
 
     def extra_repr(self) -> str:
-        return "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
-            self.in_features,
-            self.out_features,
-            self.bias is not None,
-            self.w_bit,
-            self.group_size,
-        )
+        return f"in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}, w_bit={self.w_bit}, group_size={self.group_size}"

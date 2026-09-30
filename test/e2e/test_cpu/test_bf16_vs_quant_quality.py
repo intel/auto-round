@@ -39,7 +39,6 @@ from test.e2e.test_cpu.conftest import (  # noqa: E402
     quantize_and_save,
     record,
 )
-from typing import Dict, Optional
 
 import pytest
 
@@ -75,7 +74,7 @@ def _case_id(model_id: str, scheme: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _evaluate_bf16(model_id: str, tasks: str, limit: int) -> Dict[str, Optional[float]]:
+def _evaluate_bf16(model_id: str, tasks: str, limit: int) -> dict[str, float | None]:
     """Run ``lm-eval`` on the bf16 model and return a {task: acc} dict."""
     from auto_round.eval.evaluation import simple_evaluate_user_model
     from auto_round.utils import llm_load_model

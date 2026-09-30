@@ -190,7 +190,6 @@ class QuantLinear(nn.Module):
         if input_global_scale is not None:
             # TODO: the shape of `input_global_scale` is [] in some cases — need to investigate why.
             self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
-        return
 
 
 def pack_fp4_to_uint8(scaled_tensor: torch.Tensor):

@@ -92,7 +92,7 @@ def _state_dict_has_meta_tensor(model: nn.Module) -> bool:
     return False
 
 
-def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict = None) -> bool:
+def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict | None = None) -> bool:
     """Determine if the model was saved via ShardWriter (immediate saving mode).
 
     Resolution order:
@@ -106,9 +106,7 @@ def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict = None) 
             return True
     if unsupported_meta_device(model):
         return True
-    if _state_dict_has_meta_tensor(model):
-        return True
-    return False
+    return _state_dict_has_meta_tensor(model)
 
 
 def is_local_pipeline_model_dir(model_dir: str) -> bool:
@@ -507,8 +505,8 @@ def filter_quantization_config(quantization_config):
     default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
     default_dict["minmax_lr"] = default_dict["lr"]
 
-    for key in default_dict:
-        if key in quantization_config and default_dict[key] == quantization_config[key]:
+    for key, default_value in default_dict.items():
+        if key in quantization_config and default_value == quantization_config[key]:
             quantization_config.pop(key)
     for k in list(quantization_config.keys()):
         if quantization_config[k] is None:
@@ -536,9 +534,7 @@ def filter_quantization_config(quantization_config):
         if callable(key):
             quantization_config.pop(key)
         elif isinstance(quantization_config[key], (list, tuple)):
-            if any([callable(item) for item in quantization_config[key]]):
-                quantization_config.pop(key)
-            elif len(quantization_config[key]) == 0:
+            if any(callable(item) for item in quantization_config[key]) or len(quantization_config[key]) == 0:
                 quantization_config.pop(key)
         if key in clean_list and key in quantization_config:
             quantization_config.pop(key)

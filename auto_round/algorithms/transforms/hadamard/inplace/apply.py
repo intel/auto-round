@@ -9,7 +9,6 @@ The entry point is :func:`apply_hadamard_rotation`.
 
 import gc
 import typing
-from typing import Dict, Union
 
 import torch
 import tqdm
@@ -280,10 +279,10 @@ def _rotate_weights(
     model,
     mapping: RotationMapping,
     use_fast_had: bool = True,
-    group_size: int = None,
+    group_size: int | None = None,
     compute_device: torch.device = None,
-    had_dict: dict = None,
-    preset: str = None,
+    had_dict: dict | None = None,
+    preset: str | None = None,
     fuse_online_to_weight: bool = True,
 ) -> None:
     """Apply Hadamard rotation to all weights.
@@ -657,9 +656,9 @@ def _register_online_hooks(
     mapping: RotationMapping,
     fp32_had: bool = False,
     use_fast_had: bool = True,
-    group_size: int = None,
-    had_dict: dict = None,
-    preset: str = None,
+    group_size: int | None = None,
+    had_dict: dict | None = None,
+    preset: str | None = None,
     fuse_online_to_weight: bool = True,
 ):
     """Register online Hadamard pre-forward hooks on ``down_proj`` and ``o_proj``.
@@ -710,8 +709,8 @@ def _register_online_hooks(
     attn_o_suffix = mapping.attn_o.split(".")[-1]
 
     # Suffixes for Q/K/V and gate/up (for online input Had hooks)
-    attn_qkv_suffixes = set(attr.split(".")[-1] for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v))
-    mlp_in_suffixes = set(attr.split(".")[-1] for attr in mapping.mlp_in)
+    attn_qkv_suffixes = {attr.split(".")[-1] for attr in (mapping.attn_q, mapping.attn_k, mapping.attn_v)}
+    mlp_in_suffixes = {attr.split(".")[-1] for attr in mapping.mlp_in}
 
     # --- Build hook factories ---
     def _make_down_proj_hook():
@@ -807,12 +806,12 @@ def _register_online_hooks(
 
 def apply_rotation_transform(
     model,
-    group_size: int = None,
+    group_size: int | None = None,
     allow_online_rotation: bool = True,
-    rotation_matrix: Union[str, torch.Tensor, Dict[int, torch.Tensor], None] = None,
+    rotation_matrix: str | torch.Tensor | dict[int, torch.Tensor] | None = None,
     compute_device: torch.device | str = None,
     fp32_had: bool = False,
-    fuse_online_to_weight: bool = None,
+    fuse_online_to_weight: bool | None = None,
 ):
     """Fuse layer norms, rotate weights, and register online Hadamard hooks.
 

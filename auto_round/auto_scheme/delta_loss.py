@@ -19,9 +19,9 @@ import json
 import math
 import os
 import time
+from collections.abc import Iterable
 from dataclasses import asdict
 from functools import wraps
-from typing import Iterable, Optional, Union
 
 import torch
 from accelerate import dispatch_model
@@ -194,11 +194,11 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 """
                 if torch.isnan(grad).any() or torch.isnan(x_diff).any():
                     self.act_cnt -= 1
-                    return None
+                    return
 
-                self.act_score += torch.abs((grad * x_diff.to(grad.device))).sum().item()
+                self.act_score += torch.abs(grad * x_diff.to(grad.device)).sum().item()
                 self.mix_score = self.weight_score + self.act_score
-                return None
+                return
 
             if qdq_x.requires_grad:
                 qdq_x.register_hook(save_grad)
@@ -210,7 +210,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
             return
         device = self.device
         with torch.no_grad():
-            qdq_w, _, _ = super(AutoSchemeWrapperLinear, self)._qdq_weight(
+            qdq_w, _, _ = super()._qdq_weight(
                 torch.tensor(0, device=device), torch.tensor(1.0, device=device), torch.tensor(1.0, device=device)
             )
         self._score_qdq_cpu = qdq_w.detach().to("cpu")
@@ -280,7 +280,6 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 w_diff = weight.to(grad.device) - self._score_qdq_cpu.to(grad.device)
                 self.weight_score += torch.abs(grad.to(w_diff.device) * w_diff).sum().item()
                 self.mix_score = self.weight_score + self.act_score
-                return None
 
             qdq_w.register_hook(save_grad)
         return qdq_w, 1.0, None
@@ -357,9 +356,8 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         def save_grad(grad):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
-            self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
+            self.weight_score += torch.abs(grad.to(torch.float32) * w_diff.to(grad.device)).sum().item()
             self.mix_score = self.weight_score + self.act_score
-            return None
 
         self.qdq_w.requires_grad_(True)
         self.orig_layer.weight.requires_grad_(False)
@@ -395,11 +393,11 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
                 """
                 if torch.isnan(grad).any() or torch.isnan(x_diff).any():
                     self.act_cnt -= 1
-                    return None
+                    return
 
-                self.act_score += torch.abs((grad * x_diff.to(grad.device))).sum().item()
+                self.act_score += torch.abs(grad * x_diff.to(grad.device)).sum().item()
                 self.mix_score = self.weight_score + self.act_score
-                return None
+                return
 
             if qdq_x.requires_grad:
                 qdq_x.register_hook(save_grad)
@@ -450,9 +448,8 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             # TODO strange, grad could be in CPU
-            self.weight_score += torch.abs((grad.to(w_diff.device).to(torch.float32) * w_diff)).sum().item()
+            self.weight_score += torch.abs(grad.to(w_diff.device).to(torch.float32) * w_diff).sum().item()
             self.mix_score = self.weight_score + self.act_score
-            return None
 
         self.qdq_w.requires_grad_(True)
         self.orig_layer.weight.requires_grad_(False)
@@ -506,9 +503,8 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         def save_grad(grad):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
-            self.weight_score += torch.abs((grad.to(torch.float32) * w_diff.to(grad.device))).sum().item()
+            self.weight_score += torch.abs(grad.to(torch.float32) * w_diff.to(grad.device)).sum().item()
             self.mix_score = self.weight_score + self.act_score
-            return None
 
         self.qdq_w.requires_grad_(True)
         self.orig_layer.weight.requires_grad_(False)
@@ -620,9 +616,7 @@ def cal_imatrix_low_gpu(model, dataloader, major_device):
         clear_memory(device_list=major_device)
 
     all_move_device_hooks = []
-    i = 0
     for block_name in block_names:
-        i += 1
         block_module = get_module(model, block_name)
         hook_move_gpu = block_module.register_forward_pre_hook(move_to_gpu_hook)
 
@@ -651,7 +645,7 @@ class MyCustomError(Exception):
         super().__init__(message)
 
 
-def prepare_model_low_gpu(model, block_inputs: dict = None, pbar=None, major_device="cpu", disk_index=None):
+def prepare_model_low_gpu(model, block_inputs: dict | None = None, pbar=None, major_device="cpu", disk_index=None):
     """Wrap every block's forward so that, for one calibration batch, it (1) moves itself to
     ``major_device`` on demand, (2) records its own inputs into ``block_inputs`` (on CPU) so
     they can be replayed later, and (3) moves itself back to CPU once done.
@@ -1199,12 +1193,12 @@ def get_score_for_scheme(
     low_gpu_mem_usage=True,
     major_device="cpu",
     batch_size=1,
-    offload_context: Optional[OffloadManager] = None,
+    offload_context: OffloadManager | None = None,
     processor=None,
     is_vlm: bool = False,
     force_mllm: bool = False,
-    model_name: Optional[str] = None,
-    scheme_tag: Optional[str] = None,
+    model_name: str | None = None,
+    scheme_tag: str | None = None,
     disk_index=None,
 ):
     """Wrap every quantizable layer in ``quant_layer_names`` with a scoring wrapper, run
@@ -1612,7 +1606,7 @@ def get_score_for_scheme(
     return scores_dict
 
 
-def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None):
+def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int | None = None):
     """
     Args:
         layers: A dict mapping each layer name to a list of candidate options.
@@ -1632,7 +1626,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
     # the entire path on every transition, which becomes quadratic for large
     # models; linked nodes keep each transition O(1) and are expanded only once.
     dp: dict[int, tuple[float, tuple]] = {0: (0.0, ())}
-    for layer_name, opts in layers.items():
+    for opts in layers.values():
         new_dp: dict[int, tuple[float, tuple]] = {}
         for cur_params, (cur_loss, cur_path) in dp.items():
             for opt in opts:
@@ -1675,7 +1669,7 @@ def choose_bits_per_layer_with_path(layers: dict, P: int, max_states: int = None
                 step = (n - 1) / (max_states - 1)
                 selected: dict[int, tuple[float, tuple]] = {}
                 for i in range(max_states):
-                    idx = int(round(i * step))
+                    idx = round(i * step)
                     if idx >= n:
                         idx = n - 1
                     k = sorted_keys[idx]
@@ -2534,7 +2528,7 @@ def _score_scheme_worker(args):
 
 def _gen_layer_config(
     auto_scheme: AutoScheme,
-    model: Union[str, torch.nn.Module],
+    model: str | torch.nn.Module,
     quant_layer_names: Iterable[str],
     fixed_layer_scheme: dict[str, dict],
     min_avg_bit_scheme,
@@ -2548,7 +2542,7 @@ def _gen_layer_config(
     processor=None,
     is_vlm: bool = False,
     disk_index=None,
-    export_format: str = None,
+    export_format: str | None = None,
 ):
     """Score every candidate scheme in ``auto_scheme.options`` against ``quant_layer_names``
     and return per-layer per-scheme losses used by the caller to pick a final bit-width
@@ -3607,7 +3601,7 @@ def _enforce_w8_symmetric_entries(layer_config: dict, allow_w8_asym: bool = Fals
 @register_scheme_methods(("default", "DeltaLoss"))
 def gen_layer_config(
     auto_scheme: AutoScheme,
-    model: Union[str, torch.nn.Module],
+    model: str | torch.nn.Module,
     quant_layer_names: Iterable[str],
     fixed_layer_scheme: dict[str, dict],
     dataset: str = "pile-10k",
@@ -3617,7 +3611,7 @@ def gen_layer_config(
     low_gpu_mem_usage=True,
     min_avg_bit_scheme=None,
     processor=None,
-    export_format: str = None,
+    export_format: str | None = None,
     **kwargs,
 ):
     """Public AutoScheme entry.
