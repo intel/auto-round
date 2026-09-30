@@ -282,13 +282,75 @@ def quant_mx(
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2.0, shared_exp.float())
-    tensor = tensor / scale + v
+    tensor = tensor / scale + v  # max 1.92
     tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
     tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * scale
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
+
+
+@register_dtype("mx_uint")
+def quant_mx_uint(
+    tensor,
+    bits=4,
+    group_size=-1,
+    v=0,
+    max_scale=1.0,
+    init_scale=1.0,
+    mantissa_rounding="even",
+    data_type="mx_fp",
+    **kwargs,
+):
+    """Quantize signed values and encode them as MX unsigned integer codes.
+
+    Each group shares an E8M0 (power-of-two) scale. The signed quantization
+    range is ``[-2**(bits - 1), 2**(bits - 1) - 1]`` and a fixed zero-point of
+    ``2**(bits - 1)`` maps it to ``[0, 2**bits - 1]``. For UINT4 this maps
+    signed codes [-8, 7] to stored codes [0, 15] with zero-point 8.
+    """
+    if bits <= 0:
+        raise ValueError(f"bits must be positive, but got {bits}.")
+
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    init_scale = 1.0 if init_scale is None else init_scale
+    orig_dtype = tensor.dtype
+    tensor = tensor.to(torch.float32)
+
+    maxq = 2**bits - 1
+    zero_point = 2 ** (bits - 1)
+    max_val = torch.amax(torch.abs(tensor), dim=-1, keepdim=True)
+    if isinstance(max_scale, torch.Tensor):
+        max_val = max_val * init_scale * max_scale.unsqueeze(dim=-1).to(tensor.device)
+    else:
+        max_val = max_val * init_scale * max_scale
+
+    # Match mx_int: the shared scale normalizes each group near [-2, 2),
+    # while element_scale converts that normalized value to signed integers.
+    safe_max = torch.where(max_val > 0, max_val, torch.ones_like(max_val))
+    shared_exp = floor_ste(torch.log2(safe_max))
+    shared_exp = torch.where(max_val > 0, shared_exp, torch.zeros_like(shared_exp))
+    scale_emax = 2.0 ** float(8 - 1) - 1
+    shared_exp = shared_exp.clamp(min=-scale_emax, max=scale_emax)
+
+    scale = torch.pow(2.0, shared_exp.float())
+    tensor = tensor / scale + v
+    element_scale = 2.0 ** float(bits - 2)
+    tensor = tensor * element_scale
+    if mantissa_rounding in ("even", "nearest"):
+        tensor = round_ste(tensor)
+    elif mantissa_rounding == "floor":
+        tensor = torch.sign(tensor) * floor_ste(torch.abs(tensor))
+    elif mantissa_rounding == "stochastic":
+        tensor = torch.sign(tensor) * floor_ste(torch.abs(tensor) + torch.rand_like(tensor, requires_grad=False))
+    else:
+        raise ValueError("mantissa_rounding only supports even, nearest, floor or stochastic.")
+    unsigned_code = torch.clamp(tensor + zero_point, min=0, max=maxq)
+
+    tensor = (unsigned_code - zero_point) / element_scale * scale
+    tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
+    return tensor.to(orig_dtype), shared_exp.to(orig_dtype), zero_point
 
 
 def quant_mx_rceil(
@@ -413,6 +475,9 @@ for key in MXFP_FORMAT_CACHE.keys():
 QUANT_FUNC_WITH_DTYPE["mx_fp_rceil"] = quant_mx_rceil
 QUANT_FUNC_WITH_DTYPE["mx_fp4_rceil_v2"] = quant_mx_rceil_v2
 QUANT_FUNC_WITH_DTYPE["opt_rtn_mx_fp"] = quant_mx_opt_rtn
+QUANT_FUNC_WITH_DTYPE["mx_uint"] = quant_mx_uint
+QUANT_FUNC_WITH_DTYPE["mx_uint4"] = quant_mx_uint
+QUANT_FUNC_WITH_DTYPE["mxuint4"] = quant_mx_uint
 
 if __name__ == "__main__":
     data = torch.tensor([0.0, 0.25, 0.4, 0.75, 1.25, 1.4, 1.75, 2.5, 2.9, 3.5, 5.0, 5.1])
