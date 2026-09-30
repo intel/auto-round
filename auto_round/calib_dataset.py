@@ -113,6 +113,8 @@ def _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamp
 
 def _preprocess_dataset_in_subprocess(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples, output_path):
     """Run dataset preprocessing and report network failures to the parent process."""
+    # The parent's OpenMP thread pool does not survive fork; keep torch single-threaded here.
+    torch.set_num_threads(1)
     try:
         dataset = _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
         dataset.save_to_disk(output_path)
@@ -1007,7 +1009,6 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
     dataset_names = dataset_name.split(",")
 
     def cast_dataset_columns(dataset):
-        dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
         features = dict(dataset.features)
         features["input_ids"] = Sequence(Value("int64"))
         features["attention_mask"] = Sequence(Value("int8"))
@@ -1140,6 +1141,9 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
             dataset = dataset.filter(filter_func)
             if name in data_lens:
                 dataset = select_dataset(dataset, range(data_lens[name]))
+        # Format last: tensorizing whole batches during filter/select would run torch ops that
+        # are not fork-safe (libgomp) in the preprocessing subprocess.
+        dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
         datasets.append(dataset)
 
     if len(datasets) == 1:
