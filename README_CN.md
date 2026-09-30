@@ -16,6 +16,7 @@
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
+<a href="https://pepy.tech/projects/auto-round" style="text-decoration:none;"><img src="https://static.pepy.tech/badge/auto-round" alt="PyPI Downloads"></a>
 
 &nbsp;&nbsp;&nbsp;&nbsp;[English](README.md) | 简体中文
 
@@ -26,7 +27,10 @@
 
 ## 🚀 AutoRound 是什么？
 
-AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设计的先进量化工具包。它能在 **极低比特（2–4 bits）** 下实现较高的模型精度，所需调参极少。其核心是采用**符号梯度下降法（sign-gradient descent）**。此外，该工具还具备良好的硬件兼容性。更多细节详见论文 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)。使用方法请参阅 [用户指南](./docs/step_by_step.md).
+AutoRound 是一个面向大语言模型（LLMs）和视觉-语言模型（VLMs）的易用型训练后量化工具包。它支持多种实用的低比特和自适应比特量化算法，特别是主推的 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)算法。
+AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精度表现。它支持常用的数据类型和量化方案，包括 WNA16、MXFP4、NVFP4 和 FP8，以及 GGUF 等低比特模型格式。
+它已集成到 Transformers、vLLM 和 SGLang 等主流生态中，并支持在 Intel CPU、XPU、Gaudi 加速器以及 NVIDIA GPU 上部署。
+更多使用细节请参阅[用户指南](./docs/step_by_step_CN.md)。
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
