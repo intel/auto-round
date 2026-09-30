@@ -13,14 +13,14 @@
 # limitations under the License.
 
 import os
-from functools import lru_cache
+from functools import cache
 
 import torch
 
 from auto_round.logger import logger
 
 
-@lru_cache(maxsize=None)
+@cache
 def is_distributed():
     import torch.distributed as dist
 

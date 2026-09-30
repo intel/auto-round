@@ -3,9 +3,9 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger(__name__)
 
 LOG_DIR = Path("/auto-round/log_dir")
 OUTPUT_BASE_DIR = Path("/auto-round/.azure-pipelines/scripts/performance")
@@ -13,10 +13,10 @@ OUTPUT_BASE_DIR = Path("/auto-round/.azure-pipelines/scripts/performance")
 
 @dataclass
 class QuantMetrics:
-    tuning_time_s: Optional[float] = None
-    peak_ram_gb: Optional[float] = None
-    peak_vram_gb: Optional[float] = None
-    output_size_gb: Optional[float] = None
+    tuning_time_s: float | None = None
+    peak_ram_gb: float | None = None
+    peak_vram_gb: float | None = None
+    output_size_gb: float | None = None
 
 
 def get_dir_size_gb(path: Path) -> float:
@@ -31,7 +31,7 @@ def parse_log_file(log_file: Path) -> QuantMetrics:
     metrics = QuantMetrics()
 
     if not log_file.exists():
-        logging.warning(f"Log file not found: {log_file}")
+        logger.warning(f"Log file not found: {log_file}")
         return metrics
 
     content = log_file.read_text(encoding="utf-8")
@@ -50,7 +50,7 @@ def parse_log_file(log_file: Path) -> QuantMetrics:
     return metrics
 
 
-def get_tuning_info() -> Dict[str, Dict[str, QuantMetrics]]:
+def get_tuning_info() -> dict[str, dict[str, QuantMetrics]]:
     summary = {}
     model_list = ["Qwen/Qwen3-0.6B"]
 
@@ -60,7 +60,7 @@ def get_tuning_info() -> Dict[str, Dict[str, QuantMetrics]]:
             log_file = LOG_DIR / f"perf_test_{test_mode}.log"
             output_dir = OUTPUT_BASE_DIR / test_mode
 
-            logging.info(f"Processing {log_file}...")
+            logger.info(f"Processing {log_file}...")
 
             metrics = parse_log_file(log_file)
             metrics.output_size_gb = get_dir_size_gb(output_dir)
@@ -70,15 +70,13 @@ def get_tuning_info() -> Dict[str, Dict[str, QuantMetrics]]:
     return summary
 
 
-def compare_metric(
-    metric_name: str, current: Optional[float], baseline: Optional[float], tolerance: float = 0.1
-) -> bool:
+def compare_metric(metric_name: str, current: float | None, baseline: float | None, tolerance: float = 0.1) -> bool:
     if current is None or baseline is None:
-        logging.error(f"  [-] {metric_name}: Incomplete data (Current: {current}, Baseline: {baseline})")
+        logger.error(f"  [-] {metric_name}: Incomplete data (Current: {current}, Baseline: {baseline})")
         return False
 
     if baseline == 0:
-        logging.warning(f"  [!] {metric_name}: Baseline is 0, cannot calculate ratio.")
+        logger.warning(f"  [!] {metric_name}: Baseline is 0, cannot calculate ratio.")
         return False
 
     ratio = current / baseline
@@ -87,10 +85,10 @@ def compare_metric(
     msg = f"  [*] {metric_name:<20}: Current = {current:<8} | Baseline = {baseline:<8} (Diff: {diff_percent:+.2f}%)"
 
     if 1.0 - tolerance <= ratio <= 1.0 + tolerance:
-        logging.info(f"{msg} -> PASS")
+        logger.info(f"{msg} -> PASS")
         return True
     else:
-        logging.error(f"{msg} -> FAIL")
+        logger.error(f"{msg} -> FAIL")
         return False
 
 
@@ -99,8 +97,8 @@ def check_performance():
     all_passed = True
 
     for model, modes in summary.items():
-        logging.info(f"\nEvaluating Model: {model}")
-        logging.info("-" * 60)
+        logger.info(f"\nEvaluating Model: {model}")
+        logger.info("-" * 60)
 
         current: QuantMetrics = modes.get("current", QuantMetrics())
         baseline: QuantMetrics = modes.get("baseline", QuantMetrics())
@@ -117,11 +115,11 @@ def check_performance():
         if not compare_metric("Output Size (GB)", current.output_size_gb, baseline.output_size_gb, tolerance=0.01):
             all_passed = False
 
-    logging.info("=" * 60)
+    logger.info("=" * 60)
     if all_passed:
-        logging.info("✅ Performance check passed: All metrics are within acceptable limits.")
+        logger.info("✅ Performance check passed: All metrics are within acceptable limits.")
     else:
-        logging.error("❌ Performance check failed: Current metrics exceed acceptable limits compared to baseline.")
+        logger.error("❌ Performance check failed: Current metrics exceed acceptable limits compared to baseline.")
         sys.exit(1)
 
 

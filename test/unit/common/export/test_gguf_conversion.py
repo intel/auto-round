@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 """Comprehensive unit tests for GGUF conversion modules with low coverage.
 
 Tests conversion modules that have 0% coverage in the test suite, covering
@@ -343,9 +340,11 @@ class TestMimoConversion:
         obj.tensor_map.mapping = {"tensor": ("KEY", "tensor_name")}
 
         # Mock super().prepare_tensors() to skip the base class work
-        with patch("auto_round.export.export_to_gguf.conversion.base.ModelBase.prepare_tensors"):
-            with pytest.raises(ValueError, match="Unprocessed experts"):
-                obj.prepare_tensors()
+        with (
+            patch("auto_round.export.export_to_gguf.conversion.base.ModelBase.prepare_tensors"),
+            pytest.raises(ValueError, match="Unprocessed experts"),
+        ):
+            obj.prepare_tensors()
 
 
 # ==============================================================================
@@ -813,9 +812,11 @@ class TestOlmoConversion:
         obj._experts = [{"unprocessed.tensor": None}]
         obj.tensor_map.mapping = {"tensor": ("KEY", "tensor_name")}
 
-        with patch("auto_round.export.export_to_gguf.conversion.base.ModelBase.prepare_tensors"):
-            with pytest.raises(ValueError, match="Unprocessed experts"):
-                obj.prepare_tensors()
+        with (
+            patch("auto_round.export.export_to_gguf.conversion.base.ModelBase.prepare_tensors"),
+            pytest.raises(ValueError, match="Unprocessed experts"),
+        ):
+            obj.prepare_tensors()
 
 
 # ==============================================================================
@@ -1387,9 +1388,11 @@ class TestSmallThinkerConversion:
         obj._experts = [{"unprocessed.tensor": None}]
         obj.tensor_map.mapping = {"tensor": ("KEY", "tensor_name")}
 
-        with patch("auto_round.export.export_to_gguf.conversion.base.ModelBase.prepare_tensors"):
-            with pytest.raises(ValueError, match="Unprocessed experts"):
-                obj.prepare_tensors()
+        with (
+            patch("auto_round.export.export_to_gguf.conversion.base.ModelBase.prepare_tensors"),
+            pytest.raises(ValueError, match="Unprocessed experts"),
+        ):
+            obj.prepare_tensors()
 
     def test_smallthinker_set_gguf_parameters_expert_gating(self):
         """Test expert gating function is set correctly."""
@@ -3044,9 +3047,11 @@ class TestMistral3Conversion:
             },
         )
         obj.rope_parameters = {"rope_type": "linear", "mscale_all_dim": 1.0, "llama_4_scaling_beta": 0.5}
-        with patch.object(cls.__mro__[1], "set_gguf_parameters", lambda self: None):
-            with pytest.raises(AssertionError, match="rope_type must be 'yarn'"):
-                obj.set_gguf_parameters()
+        with (
+            patch.object(cls.__mro__[1], "set_gguf_parameters", lambda self: None),
+            pytest.raises(AssertionError, match="rope_type must be 'yarn'"),
+        ):
+            obj.set_gguf_parameters()
 
 
 # ==============================================================================
@@ -5686,9 +5691,11 @@ class TestBertConversion:
 
         obj = _make_mock_model(BertModel)
         obj.cls_out_labels = None
-        with patch.object(BertModel.__mro__[1], "set_gguf_parameters", lambda self: None):
-            with patch.object(obj, "_try_set_pooling_type"):
-                obj.set_gguf_parameters()
+        with (
+            patch.object(BertModel.__mro__[1], "set_gguf_parameters", lambda self: None),
+            patch.object(obj, "_try_set_pooling_type"),
+        ):
+            obj.set_gguf_parameters()
         obj.gguf_writer.add_causal_attention.assert_called_once_with(False)
 
     def test_bert_set_gguf_parameters_with_classifier_labels(self):
@@ -5697,9 +5704,11 @@ class TestBertConversion:
 
         obj = _make_mock_model(BertModel)
         obj.cls_out_labels = {"0": "NEGATIVE", "1": "POSITIVE"}
-        with patch.object(BertModel.__mro__[1], "set_gguf_parameters", lambda self: None):
-            with patch.object(obj, "_try_set_pooling_type"):
-                obj.set_gguf_parameters()
+        with (
+            patch.object(BertModel.__mro__[1], "set_gguf_parameters", lambda self: None),
+            patch.object(obj, "_try_set_pooling_type"),
+        ):
+            obj.set_gguf_parameters()
         obj.gguf_writer.add_classifier_output_labels.assert_called_once_with(["NEGATIVE", "POSITIVE"])
 
     def test_bert_filter_tensors_strips_bert_prefix(self):

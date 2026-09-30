@@ -5,7 +5,7 @@ import torch.nn as nn
 # ================= simple multimodal model =================
 class TextEncoder(nn.Module):
     def __init__(self, input_size, hidden_size):
-        super(TextEncoder, self).__init__()
+        super().__init__()
         self.fc = nn.Linear(input_size, hidden_size)
 
     def forward(self, x):
@@ -14,7 +14,7 @@ class TextEncoder(nn.Module):
 
 class VisionEncoder(nn.Module):
     def __init__(self, input_size, hidden_size):
-        super(VisionEncoder, self).__init__()
+        super().__init__()
         self.fc = nn.Linear(input_size, hidden_size)
 
     def forward(self, x):
@@ -31,7 +31,7 @@ class VisionEncoderModuleList(nn.ModuleList):
 
 class SimpleMultimodalModel(nn.Module):
     def __init__(self, text_input_size, image_input_size, hidden_size, num_text_encoders, num_image_encoders):
-        super(SimpleMultimodalModel, self).__init__()
+        super().__init__()
         self.text_encoders = TextEncoderModuleList(
             [TextEncoder(text_input_size, hidden_size) for _ in range(num_text_encoders)]
         )
@@ -56,7 +56,7 @@ class SimpleMultimodalModel(nn.Module):
 # ================= simple MoE model =================
 class Expert(nn.Module):
     def __init__(self, input_size, hidden_size):
-        super(Expert, self).__init__()
+        super().__init__()
         self.fc = nn.Linear(input_size, hidden_size)
 
     def forward(self, x):
@@ -73,7 +73,7 @@ class ExpertModuleList(nn.ModuleList):
 
 class NestedMoEModel(nn.Module):
     def __init__(self, input_size, hidden_size, num_groups, experts_per_group):
-        super(NestedMoEModel, self).__init__()
+        super().__init__()
         self.expert_groups = ExpertModuleList(
             [
                 ExpertGroupModuleList([Expert(input_size, hidden_size) for _ in range(experts_per_group)])

@@ -15,7 +15,6 @@
 import math
 from functools import lru_cache
 from math import ceil
-from typing import List, Union
 
 import torch
 from torch.nn import Linear, Module
@@ -26,7 +25,7 @@ from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import check_to_quantized, logger
 
 
-def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: Union[int, list], val: float = 0.0):
+def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int | list, val: float = 0.0):
     """Reshapes and pads the tensor to ensure that it can be quantized in groups of `group_size`.
 
     This function adjusts the
@@ -71,7 +70,7 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: Union[int, 
         return data_new, orig_shape, pad_len
 
 
-def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[int, list]):
+def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: int | list):
     """Reverts the tensor to its original shape by removing padding.
 
     This function removes the padding added during reshaping and returns the tensor to
@@ -467,7 +466,7 @@ def update_fused_layer_global_scales(
 
     global_scale_name = f"{base_name}_global_scale"
 
-    def _collect_scales(mods: List[Module]) -> List[torch.Tensor]:
+    def _collect_scales(mods: list[Module]) -> list[torch.Tensor]:
         """Collect valid global_scale tensors from modules."""
         scales = []
         for m in mods:
@@ -488,7 +487,7 @@ def update_fused_layer_global_scales(
         """Check for MoE expert naming: w1 (gate) and w3 (up)."""
         return all(hasattr(module, projection) for projection in ("w1", "w3"))
 
-    def _update_global_scales(modules: List[Module]):
+    def _update_global_scales(modules: list[Module]):
         """Update global scales for a list of modules."""
         scales = _collect_scales(modules)
         if not scales:
@@ -544,7 +543,7 @@ def update_block_global_scale_if_needed(block, data_type, group_size):
             has_nvfp = True
             if not hasattr(m, "weight_global_scale"):
                 weight_global_scale = calculate_gparam(m.weight, module_group_size)
-                setattr(m, "weight_global_scale", weight_global_scale)
+                m.weight_global_scale = weight_global_scale
 
     if not has_nvfp:
         return
