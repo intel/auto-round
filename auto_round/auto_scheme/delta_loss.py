@@ -1452,7 +1452,8 @@ def get_score_for_scheme(
                     batch_checkpoint=batch_checkpoint,
                 )
             except Exception as exc:  # noqa: BLE001
-                if not is_vlm:
+                # Memory exhaustion does not indicate incompatible text inputs.
+                if not is_vlm or isinstance(exc, (torch.OutOfMemoryError, MemoryError)):
                     raise
                 logger.warning(
                     f"Text-only calibration failed on VLM ({exc}); "
@@ -1552,7 +1553,8 @@ def get_score_for_scheme(
             try:
                 _run_forward_loop(_build_calib_dataloader())
             except Exception as exc:  # noqa: BLE001
-                if not is_vlm:
+                # Memory exhaustion does not indicate incompatible text inputs.
+                if not is_vlm or isinstance(exc, (torch.OutOfMemoryError, MemoryError)):
                     raise
                 logger.warning(
                     f"Text-only calibration failed on VLM ({exc}); "
