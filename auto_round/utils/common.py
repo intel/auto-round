@@ -1083,6 +1083,8 @@ def parse_layer_config_arg(s: str) -> dict:
             escaped.append(ch)
             index += 1
 
+        return "".join(escaped)
+
     s = strip_matching_quotes(s)
 
     # 1. Prefer strict JSON.
