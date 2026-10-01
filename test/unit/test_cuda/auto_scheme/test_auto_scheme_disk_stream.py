@@ -30,7 +30,6 @@ import torch
 from auto_round import AutoRound, AutoScheme
 from auto_round.utils.disk_stream_util import build_meta_model, free_module, materialize_module, total_resident_bytes
 
-
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="test requires CUDA")
 
 

@@ -32,7 +32,6 @@ import torch
 
 from auto_round import AutoRound
 
-
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="test requires CUDA")
 
 
