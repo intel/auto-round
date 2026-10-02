@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import math
 import os
 import re
 from collections import OrderedDict
@@ -149,26 +150,34 @@ class ShardWriter:
         found.sort()
         for _, fname in found:
             path = os.path.join(output_dir, fname)
-            params = self._read_shard_tensor_names(path)
+            params, numel, size_bytes = self._read_shard_metadata(path)
             self.shard_meta.append({"tmp_file": fname, "params": params, "dir": output_dir})
             self._all_saved.update(params)
+            self.total_param_elems += numel
+            self.total_param_size_bytes += size_bytes
         self.shard_counter = max(len(found), found[-1][0])
         logger.info(
             f"ShardWriter: discovered {len(found)} already-flushed shard(s) in {output_dir} "
             f"from a previous run; resuming shard numbering from {self.shard_counter}."
         )
 
-    def _read_shard_tensor_names(self, path: str) -> list[str]:
-        """Read only the tensor-name header of an already-flushed shard file,
-        without materializing any tensor data."""
+    def _read_shard_metadata(self, path: str) -> tuple[list[str], int, int]:
+        """Read tensor names, element count and bytes without materializing data."""
         if self.use_safetensors:
             from safetensors import safe_open
 
             with safe_open(path, framework="pt") as f:
-                return list(f.keys())
+                params = list(f.keys())
+                numel = sum(math.prod(f.get_slice(name).get_shape()) for name in params)
+            # A validated safetensors file stores all tensor bytes after its
+            # eight-byte header length and JSON header, with no gaps or padding.
+            with open(path, "rb") as f:
+                header_size = int.from_bytes(f.read(8), "little")
+            size_bytes = os.path.getsize(path) - 8 - header_size
+            return params, numel, size_bytes
         else:
             sd = torch.load(path, map_location="meta")
-            return list(sd.keys())
+            return list(sd.keys()), sum(t.numel() for t in sd.values()), sum(t.nbytes for t in sd.values())
 
     @property
     def output_dir(self) -> str:

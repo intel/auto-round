@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 from types import SimpleNamespace
 
@@ -238,7 +239,14 @@ def test_finalize_skips_unpacked_weight_of_resumed_packed_module(
         os.path.join(tmp_path, shard_name),
     )
     if multiple_shards:
-        save({"completed.qweight": torch.ones(2)}, str(tmp_path / f"model-00002-of-00002.{suffix}"))
+        save(
+            {
+                "completed.qweight": torch.ones(2, dtype=torch.int16),
+                "completed.scale": torch.tensor(1.0, dtype=torch.float64),
+                "completed.empty": torch.empty(0, 3, dtype=torch.bfloat16),
+            },
+            str(tmp_path / f"model-00002-of-00002.{suffix}"),
+        )
 
     monkeypatch.setattr(envs, "AR_RESUME_DIR", str(tmp_path))
 
@@ -261,6 +269,12 @@ def test_finalize_skips_unpacked_weight_of_resumed_packed_module(
     ), "the packed module must not also be saved as a floating-point weight"
     assert torch.equal(saved[f"{prefix}.0.linear.bias"], torch.full((4,), 7.0))
     if multiple_shards:
-        assert torch.equal(saved["completed.qweight"], torch.ones(2))
+        assert torch.equal(saved["completed.qweight"], torch.ones(2, dtype=torch.int16))
     # Modules that were never packed are still saved.
     assert "proj_out.weight" in saved
+
+    # The index covers recovered packed tensors as well as newly written weights.
+    with open(tmp_path / f"model.{suffix}.index.json", encoding="utf-8") as index_file:
+        index = json.load(index_file)
+    assert index["metadata"]["total_parameters"] == sum(tensor.numel() for tensor in saved.values())
+    assert index["metadata"]["total_size"] == sum(tensor.nbytes for tensor in saved.values())
