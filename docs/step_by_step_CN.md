@@ -61,10 +61,11 @@ pip install auto-round
 ## 2 准备标定数据集
 
 ### 默认数据集
-**对于中国大陆用户推荐使用 ModelScope 中的 swift/pile-val-backup 以解决 Huggingface 不能访问的问题**
+**如果无法访问 Hugging Face，建议安装 `modelscope`、设置 `AR_USE_MODELSCOPE=1`，并使用 `fineweb-edu` 数据集。**
 
 默认标定数据集为 Hugging Face 上的 [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) ，该数据集会自动从 Huggingface Hub 下载。同时也支持使用以下数据集：
-- ModelScope 中的 `swift/pile-val-backup`：用于解决 HF 访问问题
+- Hugging Face 上的 [`fineweb-edu`](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)。如果无法访问 Hugging Face，
+  可安装 `modelscope`、设置 `AR_USE_MODELSCOPE=1`，并使用同一别名从 [ModelScope 镜像](https://modelscope.cn/datasets/AI-ModelScope/fineweb-edu) 加载
 - `BAAI/CCI3-HQ`：用于中文场景
 - `codeparrot/github-code-clean`：用于代码场景
 - `HuggingFaceH4/ultrachat_200k`：用于对话数据
@@ -161,7 +162,7 @@ AutoRound 支持多种量化配置：
 
 **MLX 格式(实验性功能)**：面向 Apple Silicon (M1/M2/M3/...)，可直接被 [`mlx-lm`](https://github.com/ml-explore/mlx-lm)（纯文本 LLM）或 [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm)（多模态 VLM）加载推理。
 - 支持 **2、3、4、5、6、8 bits**（其中 5/6 bits 是 MLX 独有，GPTQ/AWQ 没有标准打包格式）。
-- 原生支持 **混合 bit / 混合 group_size**：通过 `layer_config` 或 AutoScheme（如 `--target_bits 3.5 --options "..."`），按层覆盖会写入 `config.json["quantization"]`，
+- 原生支持 **混合 bit / 混合 group_size**：通过 `layer_config` 或 AutoScheme（如 `--schemes "..." --bits 3.5`），按层覆盖会写入 `config.json["quantization"]`，
 - `--format mlx` 导出原生 MLX checkpoint；`--format auto_round:mlx` 则让 HuggingFace `transformers` + AutoRound 加载它（在 Darwin 上 post-init 会把每层重新打包成 MLX 的 `QuantLinear`）。
 - 已经问题: 没有支持嵌入层的量化
 
@@ -481,11 +482,13 @@ AutoScheme 自动生成自适应的混合比特/混合数据类型量化方案�
 - **`--iters 0`**：基于 RTN 的 量化方案，速度快（秒到分钟级）。
 - **`--iters 200`**：调优感知的量化方案，更精确但慢很多。
 
+传入多个 `--schemes` 即启用 AutoScheme；此时 `--bits` 为目标平均 bits。
+
 ~~~bash
 auto_round \
   --model_name  $model_name \
-  --avg_bits 6 \
-  --options "mxfp4,mxfp8" \
+  --schemes "mxfp4,mxfp8" \
+  --bits 6 \
   --ignore_scale_zp_bits \
   --iters 0 \
   --format fake 
@@ -493,17 +496,15 @@ auto_round \
 
 #### API 用法
 ~~~python
-avg_bits= 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("W2A16G64", "W4A16","W8A16"))
-ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, schemes=("W2A16G64", "W4A16","W8A16"), bits=3.0, iters=0, nsamples=1)
 ar.quantize_and_save()
 ~~~
 
 
 #### AutoScheme 超参数说明
-`avg_bits(float)`：模型整体的目标平均 bits；计算时仅计入待量化的层。
+`bits(float)`：模型整体的目标平均 bits；计算时仅计入待量化的层。未提供 `schemes` 时，`bits` 为普通权重量化位宽，必须为整数。
 
-`options(Union[str, list[Union[QuantizationScheme, str]]])`：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。
+`schemes(Union[str, list[Union[QuantizationScheme, str]]])`：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。传入 `schemes` 即启用 AutoScheme。
 
 `ignore_scale_zp_bits(bool)`：仅支持 API 调用场景。用于决定在计算平均 bit 时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
 
@@ -521,30 +522,33 @@ ar.quantize_and_save()
 
 示例代码如下：
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 shared_layers = [
     ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
     ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
     ("fc1", "fc2"),
 ]
-target_bits = 5.0
 model_name = "Qwen/Qwen3-0.6B"
-scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
-ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, schemes=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
 ```
 
 此外，若需为特定的层固定量化方案，可使用 AutoRound API 中的`layer_config`参数，用法示例如下：
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 model_name = "Qwen/Qwen3-8B"
-avg_bits = 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_S"), ignore_scale_zp_bits=True)
 layer_config = {"lm_head": "GGUF:Q6_K"}
 
-ar = AutoRound(model=model_name, scheme=scheme, layer_config=layer_config, iters=0)
+ar = AutoRound(
+    model=model_name,
+    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    bits=3.0,
+    ignore_scale_zp_bits=True,
+    layer_config=layer_config,
+    iters=0,
+)
 ar.quantize_and_save()
 ```
 
@@ -585,6 +589,8 @@ AutoScheme 目前还**不支持对嵌入层（Embedding layer）进行自动量�
 AutoRound 还提供优化版 RTN（Round-To-Nearest，就近舍入）模式，无需标定数据即可实现快速基线量化。**启用方式为 `iters=0`**。同时为获得更好的效果，推荐搭配 `group_size=32` 。RTN 与 OPT RTN 模式的精度对比详见[《精度对比报告》](./opt_rtn.md)。
 
 对于 GGUF 格式，我们参考 llamacpp 的思路，优化了 RTN 算法。若需使用原始（非优化）RTN 算法，开启 `--disable_opt_rtn` 即可。
+
+在优化路径上开启 `--enable_neuqi` 即可启用 **NeUQI** 网格搜索（[arXiv 2505.17595](https://arxiv.org/abs/2505.17595)）：非对称层执行联合 (scale, 整数 zero-point) 搜索，对称层执行两阶段带符号 scale 搜索，在零样本路径（`iters=0`）上二者均以激活 imatrix 加权（imatrix 会自动采集；`iters > 0` 时锚点在调优路径采集到 imatrix 时使用它，否则不加权）。当 `iters > 0` 时，搜索结果将作为 SignRound 调优网格的锚点（frozen init）。网格规模可通过 `AR_NEUQI_COARSE`/`AR_NEUQI_FINE` 调整（参见[《环境变量》](./environments_CN.md)）；未显式指定时的默认值与后端相关（仅在 Triton/torch.compile 路径使用宽网格）。精度与耗时结果详见[《NeUQI 精度验证》](./neuqi_acc.md)。
 
 #### 命令行使用
 
@@ -915,9 +921,16 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 - 将 `seqlen` 降至 512（**部分场景可能出现大幅精度损失**）
 - 将 `bs` 降至 4（**仅有轻微精度损失**）
 
-Windows 上默认关闭 `torch.compile`，因为 TorchInductor 需要 MSVC 的 `cl.exe` 编译器。Windows 用户可在
+Windows 上默认关闭 `torch.compile`，因为 TorchInductor 需要兼容的编译工具链。Windows 用户可在
 Python API 中传入 `enable_torch_compile=True`，或使用命令行参数 `--enable_torch_compile` 强制开启。其他
 平台如需关闭，可传入 `enable_torch_compile=False` 或使用 `--disable_torch_compile`。
+
+在 Windows 上使用 NVIDIA GPU 时，请先在与 AutoRound 相同的 Python 环境中安装支持 CUDA 的 PyTorch
+及兼容版本的 `triton-windows`，然后再开启编译。请按照
+[Triton for Windows 安装指南](https://github.com/triton-lang/triton-windows) 中的 PyTorch/Triton 版本对应表、
+GPU 支持范围和编译器要求配置环境，不要直接为旧版 PyTorch 安装最新版 Triton。
+仅设置 `--enable_torch_compile` 不会安装这些依赖；出现 `TritonMissing` 错误说明编译环境仍需配置。
+在满足这些前提条件之前，请保持编译关闭。
 
 #### 开启 lm-head 层量化
 该配置目前**仅支持 AutoRound 原生格式的推理**，命令行启用方式如下：

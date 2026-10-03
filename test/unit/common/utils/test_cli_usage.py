@@ -334,6 +334,43 @@ def test_run_opt_rtn_uses_recipe(monkeypatch):
     assert args.nsamples == 128
 
 
+def test_model_free_cli_disable_opt_rtn(monkeypatch):
+    from auto_round import AutoRound
+    from auto_round.cli import main as cli_main
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    captured = {}
+    monkeypatch.setattr(cli_main, "tune", lambda args: captured.setdefault("args", args))
+
+    cli_main.start(
+        argv=[
+            "dummy-model",
+            "--scheme",
+            "NVFP4_E5M3",
+            "--model_free",
+            "--disable_opt_rtn",
+        ]
+    )
+
+    args = captured["args"]
+    configs = AlgorithmHandler.build_configs(args, cli_main._extract_common_quantization_kwargs(args))
+    compressor = AutoRound(
+        args.model,
+        scheme=args.scheme,
+        alg_configs=configs[-1],
+        model_free=args.model_free,
+        device_map="cpu",
+        enable_torch_compile=False,
+    )
+
+    assert args.model_free is True
+    assert args.iters == 0
+    assert args.disable_opt_rtn is True
+    assert configs[-1].disable_opt_rtn is True
+    assert type(compressor).__name__ == "ModelFreeCompressor"
+    assert compressor.disable_opt_rtn is True
+
+
 def test_unknown_algorithm_help_exits_with_suggestion(monkeypatch):
     from auto_round.cli import main as cli_main
 
@@ -584,13 +621,6 @@ def test_svdquant_cli_defaults_compose_before_signround():
     assert isinstance(configs[1], SignRoundConfig)
 
 
-def _normalize_options(raw):
-    if raw is None:
-        return None
-    flat = ",".join(raw)
-    return ",".join(p.strip() for p in flat.split(",") if p.strip())
-
-
 def _normalize_shared_layers(raw):
     if raw is None:
         return None
@@ -608,14 +638,45 @@ def _normalize_shared_layers(raw):
     return normalized_groups or None
 
 
-def test_options_comma_space_separated():
-    """--options accepts comma-separated and space-separated values."""
+def test_schemes_comma_space_separated():
+    """--schemes accepts comma-separated and space-separated values."""
+    from auto_round.cli.main import _normalize_scheme_list
     from auto_round.cli.parser import build_quantize_parser
 
     p = build_quantize_parser()
-    assert _normalize_options(p.parse_args(["--avg_bits", "4", "--options", "W4A16,W8A16"]).options) == "W4A16,W8A16"
-    assert _normalize_options(p.parse_args(["--avg_bits", "4", "--options", "W4A16", "W8A16"]).options) == "W4A16,W8A16"
-    assert p.parse_args(["--model", "dummy"]).options is None
+    assert _normalize_scheme_list(p.parse_args(["--bits", "4", "--schemes", "W4A16,W8A16"]).schemes) == "W4A16,W8A16"
+    assert _normalize_scheme_list(p.parse_args(["--bits", "4", "--schemes", "W4A16", "W8A16"]).schemes) == "W4A16,W8A16"
+    assert p.parse_args(["--model", "dummy"]).schemes is None
+
+
+def test_legacy_auto_scheme_flags_alias_and_hidden():
+    """--options/--avg_bits/--target_bits alias --schemes/--bits but are hidden from --help."""
+    import io
+
+    from auto_round.cli.main import _normalize_scheme_list
+    from auto_round.cli.parser import build_quantize_parser
+
+    p = build_quantize_parser()
+    # legacy flags store into the canonical dests (bits / schemes)
+    args = p.parse_args(["--avg_bits", "4", "--options", "W4A16,W8A16"])
+    assert args.bits == 4.0
+    assert _normalize_scheme_list(args.schemes) == "W4A16,W8A16"
+    args = p.parse_args(["--target_bits", "3.5", "--option", "W2A16", "W4A16"])
+    assert args.bits == 3.5
+    assert _normalize_scheme_list(args.schemes) == "W2A16,W4A16"
+    # singular aliases
+    assert p.parse_args(["--bit", "8"]).bits == 8.0
+
+    help_text = io.StringIO()
+    import contextlib
+
+    with contextlib.redirect_stdout(help_text):
+        p.print_help()
+    help_text = help_text.getvalue()
+    for flag in ("--options", "--option", "--avg_bits", "--target_bits"):
+        assert flag not in help_text
+    for flag in ("--schemes", "--bits", "--bit"):
+        assert flag in help_text
 
 
 def test_shared_layers_normalize():

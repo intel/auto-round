@@ -600,6 +600,7 @@ def woqgemm(
     weight_type,
     scale_type,
     asym,
+    out: torch.Tensor | None = None,
 ):
     _validate_packed_blob(B, n, k, groupsize, compute_type, weight_type, scale_type, asym)
     m = A.shape[0]
@@ -607,7 +608,18 @@ def woqgemm(
     ct = cvtstr_dtype(compute_type)
     wt = cvtstr_dtype(weight_type)
     st = cvtstr_dtype(scale_type)
-    C = torch.zeros(m, n, dtype=A.dtype, device=A.device)
+    if out is None:
+        C = torch.zeros(m, n, dtype=A.dtype, device=A.device)
+    else:
+        if out.shape != (m, n):
+            raise ValueError(f"out must have shape {(m, n)}, got {tuple(out.shape)}")
+        if out.dtype != A.dtype:
+            raise ValueError(f"out dtype must be {A.dtype}, got {out.dtype}")
+        if out.device != A.device:
+            raise ValueError(f"out device must be {A.device}, got {out.device}")
+        if not out.is_contiguous():
+            raise ValueError("out must be contiguous")
+        C = out
     stream = get_stream(A)
     lib.woqgemm(
         stream,
@@ -617,7 +629,7 @@ def woqgemm(
         A.contiguous().data_ptr(),
         cvt_dtype(A.dtype),
         B.contiguous().data_ptr(),
-        C.contiguous().data_ptr(),
+        C.data_ptr(),
         bias.contiguous().data_ptr(),
         groupsize,
         ct,
@@ -937,6 +949,18 @@ def sdpa(
     return O
 
 
+def _xpu_capturing() -> bool:
+    """True if the current XPU stream is inside a torch.xpu graph capture.
+
+    Used to skip host-side device->host syncs (.item() / .cpu()) that are
+    illegal while a SyclTensor command graph is being recorded.
+    """
+    try:
+        return bool(torch.xpu.is_current_stream_capturing())
+    except Exception:
+        return False
+
+
 def sdpa_varlen(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -1003,12 +1027,17 @@ def sdpa_varlen(
     total_kv, Hkv, Dk = key.shape
     total_kv_v, Hkv2, Dv = value.shape
 
-    if total_q != cu_seqlens_q[-1].item():
-        raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()})")
-    if total_kv != cu_seqlens_k[-1].item():
-        raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
-    if total_kv_v != cu_seqlens_k[-1].item():
-        raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
+    if not _xpu_capturing():
+        # Cross-check flat layout against the cumulative sequence-length
+        # boundaries.  These .item() calls force a device->host sync, which is
+        # illegal while a command graph is being captured, so the check is
+        # skipped during capture (the caller must keep buffer geometry stable).
+        if total_q != int(cu_seqlens_q[-1].item()):
+            raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1]")
+        if total_kv != int(cu_seqlens_k[-1].item()):
+            raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1]")
+        if total_kv_v != int(cu_seqlens_k[-1].item()):
+            raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1]")
     if Hkv != Hkv2 or Dk != Dv:
         raise ValueError("K/V shape mismatch")
     if Dk != D:
@@ -1042,7 +1071,8 @@ def sdpa_varlen(
     O = torch.empty(total_q, Hq, D, dtype=value.dtype, device=query.device)
 
     if return_lse:
-        max_q = int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        # .item() is a device->host sync; illegal during graph capture.
+        max_q = max_seqlen_q if _xpu_capturing() else int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
         if max_seqlen_q < max_q:
             raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
         LSE = torch.full(
@@ -2146,10 +2176,12 @@ from .sparse_attention import (
     _sequence_mean_native_layout,
     _slice_sequence_native_layout,
     _to_hnd,
+    block_sparse_sdpa,
     sage_sparse,
     sparge_block_map_to_mask,
     sparge_preprocess_topk,
     sparge_sage2_attn_meansim_topk_xpu,
+    sparge_sage2_attn_meansim_topk_xpu_sdpa,
 )
 
 
@@ -2259,7 +2291,8 @@ def sageattn_varlen(
     O = torch.empty(total_q, Hq, D, dtype=v.dtype, device=q.device)
 
     if return_lse:
-        max_q = int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        # .item() is a device->host sync; illegal during graph capture.
+        max_q = max_seqlen_q if _xpu_capturing() else int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
         if max_seqlen_q < max_q:
             raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
         LSE = torch.full(
@@ -3868,6 +3901,19 @@ if torch.xpu.is_available():
     except ImportError as _e:
         print(f"ARK is unable to load XPU lib: {_e}")
 
+# Activation fused HMT + MXFP4 quantization (XPU). Imported last so the lib
+# handles above are already bound when the submodule looks them up.
+from .mxfp4_hadamard import (  # noqa: E402
+    HADAMARD_DIM,
+    HADAMARD_DIM_128,
+    MAX_LANES_PER_ROW,
+    SUPPORTED_HADAMARD_DIMS,
+    get_hadamard_matrix,
+    mxfp4_hadamard_quant,
+    mxfp4_hadamard_quant_reference,
+    mxfp4_quant_reference,
+    mxfp4_stream_reference,
+)
 
 if __name__ == "__main__":
     print(cpu_lib is None, xpu_lib is None)

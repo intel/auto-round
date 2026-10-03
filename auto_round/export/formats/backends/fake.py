@@ -14,6 +14,7 @@
 
 import copy
 import glob
+import json
 import os
 from typing import Any, Callable, Union
 
@@ -21,8 +22,8 @@ import torch
 
 from auto_round.export.formats.base import OutputFormat
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
-from auto_round.utils import copy_python_files_from_model_cache, unsupported_meta_device
+from auto_round.schemes import QuantizationScheme, is_nv_fp
+from auto_round.utils import unsupported_meta_device
 
 
 def _serialize_quantization_config_value(value):
@@ -55,6 +56,7 @@ def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
         return
 
     safetensor_files = sorted(glob.glob(os.path.join(output_dir, "*.safetensors")))
+    rewrote_safetensors = False
     for file_path in safetensor_files:
         try:
             from safetensors.torch import load_file as safe_load_file
@@ -64,8 +66,23 @@ def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
             normalized, changed = _normalize_state_dict_keys(state)
             if changed:
                 safe_save_file(normalized, file_path)
+                rewrote_safetensors = True
         except Exception as exc:
             logger.warning("Failed to normalize safetensors keys for %s: %s", file_path, exc)
+
+    index_path = os.path.join(output_dir, "model.safetensors.index.json")
+    if rewrote_safetensors and os.path.exists(index_path):
+        try:
+            with open(index_path) as index_file:
+                index = json.load(index_file)
+            weight_map = index.get("weight_map", {})
+            normalized_weight_map, changed = _normalize_state_dict_keys(weight_map)
+            if changed:
+                index["weight_map"] = normalized_weight_map
+                with open(index_path, "w") as index_file:
+                    json.dump(index, index_file, indent=2)
+        except Exception as exc:
+            logger.warning("Failed to normalize safetensors index keys for %s: %s", index_path, exc)
 
     bin_files = sorted(glob.glob(os.path.join(output_dir, "*.bin")))
     for file_path in bin_files:
@@ -78,6 +95,18 @@ def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
                 torch.save(normalized, file_path)
         except Exception as exc:
             logger.warning("Failed to normalize pytorch checkpoint keys for %s: %s", file_path, exc)
+
+
+def _materialize_fake_input_global_scales(model: torch.nn.Module) -> None:
+    """Persist calibrated NVFP activation scales in fake-format checkpoints."""
+    for layer in model.modules():
+        if not is_nv_fp(getattr(layer, "act_data_type", "") or "") or "input_global_scale" in layer._buffers:
+            continue
+        input_global_scale = getattr(layer, "input_global_scale", None)
+        if not isinstance(input_global_scale, torch.Tensor):
+            continue
+        delattr(layer, "input_global_scale")
+        layer.register_buffer("input_global_scale", input_global_scale.to(torch.float32))
 
 
 @OutputFormat.register("fake")
@@ -134,22 +163,26 @@ class FakeFormat(OutputFormat):
 
         if not has_meta_device:
             model = model.to("cpu")
+            if has_fake_act_quant:
+                _materialize_fake_input_global_scales(model)
             model.save_pretrained(output_dir)
-        elif hasattr(model, "config") and model.config is not None:
-            model.config.save_pretrained(output_dir)
+        else:
+            from auto_round.export.utils import save_config_artifact
+
+            save_config_artifact(model, output_dir)
 
         # Some save flows write wrapper keys first; normalize to plain Linear keys
         # so HF loading does not report UNEXPECTED/MISSING pairs.
         if has_fake_act_quant:
             _rewrite_saved_weights_without_orig_layer(output_dir)
 
+        from auto_round.export.utils import apply_post_save_source_fixes
+
+        apply_post_save_source_fixes(model, output_dir)
+
         if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
             tokenizer.save_pretrained(output_dir)
         processor = kwargs.get("processor", None)
         if processor is not None:
             processor.save_pretrained(output_dir)
-        try:
-            copy_python_files_from_model_cache(model, output_dir)
-        except Exception as e:
-            logger.warning("Skipping source model Python file copy due to error: %s", e)
         return model

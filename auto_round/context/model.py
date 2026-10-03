@@ -295,11 +295,12 @@ class ModelContext(BaseContext):
         """Whether to build a meta skeleton instead of a full CPU load.
 
         Deliberately narrow: this only targets ``transformers>=5`` models whose experts are
-        stored as a *fused* 3D ``nn.Parameter``. For those, the checkpoint holds one 2D
-        tensor per expert, ``from_pretrained`` stacks them into the fused parameter, and
-        AutoRound then has to split it back into per-expert ``nn.Linear`` to quantize it --
-        and splitting real tensors needs the fused tensor and its per-expert copies alive
-        at once, i.e. ~2x one experts module on top of an already fully resident model.
+        stored as a *fused* 3D ``nn.Parameter``. The fused parameter may be produced by a
+        Transformers checkpoint converter from per-expert 2D tensors, or already be stored
+        as 3D ``gate_up_proj``/``down_proj`` tensors in the checkpoint. AutoRound has to
+        split either layout back into per-expert ``nn.Linear`` modules to quantize it, and
+        splitting real tensors needs the fused tensor and its per-expert copies alive at
+        once, i.e. ~2x one experts module on top of an already fully resident model.
 
         Building on meta makes that unfuse allocation-free and lets the tuning loop
         materialize one block at a time from the checkpoint. Every other model (dense, or
@@ -323,21 +324,27 @@ class ModelContext(BaseContext):
         if config is None:
             return False
 
-        from auto_round.modeling.fused_moe.moe_experts_interface import config_has_fused_moe_experts
+        from auto_round.modeling.fused_moe.moe_experts_interface import (
+            _config_model_types,
+            config_has_fused_moe_experts,
+        )
         from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+        from auto_round.utils.disk_stream_util import checkpoint_has_native_fused_moe_experts
 
-        if not config_has_fused_moe_experts(config):
-            return False
         # Families with a dedicated replacement drive their own (already memory-aware)
         # materialization; do not reroute them through the meta skeleton.
-        model_type = getattr(config, "model_type", None)
-        if model_type in BUILTIN_MODULES:
-            logger.debug("meta-skeleton load skipped: %s has a dedicated MoE replacement", model_type)
+        dedicated_model_type = next(
+            (model_type for model_type in _config_model_types(config) if model_type in BUILTIN_MODULES), None
+        )
+        if dedicated_model_type is not None:
+            logger.debug("meta-skeleton load skipped: %s has a dedicated MoE replacement", dedicated_model_type)
             return False
 
         checkpoint_dir = self._resolve_local_checkpoint_dir()
         if checkpoint_dir is None:
             logger.debug("meta-skeleton load skipped: %s is not addressable as a local directory", self.model)
+            return False
+        if not config_has_fused_moe_experts(config) and not checkpoint_has_native_fused_moe_experts(checkpoint_dir):
             return False
         self.disk_stream_model_dir = checkpoint_dir
         logger.info(

@@ -50,6 +50,17 @@ export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 export AR_USE_MODELSCOPE=true
 ```
 
+### AR_QUANTIZE_BAGEL_MOE_GEN
+
+- **Description**: Enables quantization of BAGEL's `*_moe_gen` image-generation experts. By default, AutoRound keeps these modules in BF16 because quantizing them has been observed to reduce image-generation quality. BAGEL's normal transformer attention and MLP layers are still quantized by default.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, or `"yes"` (case-insensitive) for enabling; any other value keeps `*_moe_gen` in BF16
+- **Usage**: Enable only when experimenting with the checkpoint-size and image-quality tradeoff
+
+```bash
+export AR_QUANTIZE_BAGEL_MOE_GEN=1
+```
+
 ### AR_WORK_SPACE
 - **Description**: Sets the workspace directory for AutoRound operations
 - **Default**: `"ar_work_space"`
@@ -117,6 +128,36 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 
 ```bash
 export AR_SEARCH_SCALE_RATIO=0.75
+```
+
+### AR_NEUQI_COARSE
+- **Description**: Number of coarse-stage candidates in the NeUQI grid search (`--enable_neuqi`, arXiv 2505.17595). The coarse stage scans a wide log-spaced grid; the fine stage refines around the winner (`AR_NEUQI_FINE`). Applies to both the asymmetric joint (scale, zero-point) search and the symmetric two-stage scale search.
+- **Default**: `256` on accelerated backends (Triton/torch.compile), `64` on the eager sweep — the eager path evaluates ~coarse x fine candidates per group, so it narrows the unpinned default (measured quality is flat between the two grids)
+- **Valid Values**: positive integer
+- **Usage**: Lower for faster searches at the cost of grid coverage.
+
+```bash
+export AR_NEUQI_COARSE=128
+```
+
+### AR_NEUQI_FINE
+- **Description**: Number of fine-stage candidates in the NeUQI grid search, refined around the coarse winner. See `AR_NEUQI_COARSE`.
+- **Default**: `64` on accelerated backends (Triton/torch.compile), `32` on the eager sweep
+- **Valid Values**: positive integer
+- **Usage**: Lower for faster searches at the cost of final resolution.
+
+```bash
+export AR_NEUQI_FINE=32
+```
+
+### AR_NEUQI_BACKEND
+- **Description**: Backend override for the NeUQI candidate sweep. `auto` picks the fastest available (extension Triton kernel, then torch.compile-fused, then eager) and latches down permanently on the first kernel failure. `eager`/`compile`/`triton` force one backend for debugging or benchmarking.
+- **Default**: `auto`
+- **Valid Values**: `auto`, `eager`, `compile`, `triton`
+- **Usage**: Escape hatch for driver/hardware incompatibilities; `auto` is recommended.
+
+```bash
+export AR_NEUQI_BACKEND=eager
 ```
 
 ### AR_DYNAMO_CACHE_SIZE_LIMIT

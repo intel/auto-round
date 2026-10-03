@@ -45,6 +45,19 @@ def get_e2m1_tensor(device):
     return _DEVICE_E2M1_TENSORS[device_str]
 
 
+def pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:
+    """Pack pairs of E2M1 values into uint8, with the first value in the low nibble."""
+    rows, columns = x.shape
+    assert columns % 2 == 0, f"Expected an even number of columns, got {columns}"
+
+    values = get_e2m1_tensor(x.device)
+    magnitude = torch.argmin(torch.abs(torch.abs(x).unsqueeze(-1) - values), dim=-1)
+    indices = magnitude + (torch.signbit(x).to(torch.long) << 3)
+    pairs = indices.reshape(-1, 2)
+    packed = (pairs[:, 0] | (pairs[:, 1] << 4)).to(torch.uint8)
+    return packed.reshape(rows, columns // 2)
+
+
 def unpack_fp4_from_uint8(
     a: torch.Tensor, m: int, n: int, dtype: Optional[torch.dtype] = torch.bfloat16
 ) -> torch.Tensor:

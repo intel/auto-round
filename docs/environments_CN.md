@@ -50,6 +50,17 @@ export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 export AR_USE_MODELSCOPE=true
 ```
 
+### AR_QUANTIZE_BAGEL_MOE_GEN
+
+- **描述**：启用 BAGEL `*_moe_gen` 图像生成专家层的量化。AutoRound 默认将这些模块保留为 BF16，因为实际测试发现量化它们可能降低图像生成质量。BAGEL 的普通 transformer attention 和 MLP 层默认仍会量化。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"` 或 `"yes"`（不区分大小写）表示启用；其他值会让 `*_moe_gen` 保持 BF16
+- **用途**：仅在研究 checkpoint 大小与图像质量之间的取舍时启用
+
+```bash
+export AR_QUANTIZE_BAGEL_MOE_GEN=1
+```
+
 ### AR_WORK_SPACE
 - **描述**：设置 AutoRound 操作的工作目录
 - **默认值**：`"ar_work_space"`
@@ -117,6 +128,36 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 
 ```bash
 export AR_SEARCH_SCALE_RATIO=0.75
+```
+
+### AR_NEUQI_COARSE
+- **描述**：NeUQI 网格搜索（`--enable_neuqi`，arXiv 2505.17595）粗阶段的候选数量。粗阶段扫描较宽的对数网格，细阶段在胜者附近细化（`AR_NEUQI_FINE`）。同时作用于非对称联合 (scale, zero-point) 搜索与对称两阶段 scale 搜索。
+- **默认值**：加速后端（Triton/torch.compile）为 `256`，eager 扫描为 `64` —— eager 路径每 group 需评估约 coarse x fine 个候选，因此未显式指定时使用更窄的默认网格（两种网格的实测质量持平）
+- **取值**：正整数
+- **用法**：调低可加快搜索，代价是网格覆盖范围变小。
+
+```bash
+export AR_NEUQI_COARSE=128
+```
+
+### AR_NEUQI_FINE
+- **描述**：NeUQI 网格搜索细阶段的候选数量，在粗阶段胜者附近细化。参见 `AR_NEUQI_COARSE`。
+- **默认值**：加速后端（Triton/torch.compile）为 `64`，eager 扫描为 `32`
+- **取值**：正整数
+- **用法**：调低可加快搜索，代价是最终分辨率下降。
+
+```bash
+export AR_NEUQI_FINE=32
+```
+
+### AR_NEUQI_BACKEND
+- **描述**：NeUQI 候选扫描的后端覆盖。`auto` 选择最快的可用后端（扩展 Triton 内核 → torch.compile 融合 → eager），并在内核首次失败时永久回退。`eager`/`compile`/`triton` 强制指定后端，用于调试或基准测试。
+- **默认值**：`auto`
+- **取值**：`auto`、`eager`、`compile`、`triton`
+- **用法**：驱动/硬件兼容性逃生口；推荐使用 `auto`。
+
+```bash
+export AR_NEUQI_BACKEND=eager
 ```
 
 ### AR_DYNAMO_CACHE_SIZE_LIMIT

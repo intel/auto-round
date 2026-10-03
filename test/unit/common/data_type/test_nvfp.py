@@ -38,6 +38,7 @@ from auto_round.data_type.nvfp import (
     ref_fp4_quant,
     ref_nvfp4_quant,
     search_nvfp4_scale,
+    search_nvfp4_v2_scale,
 )
 from auto_round.data_type.utils import update_fused_layer_global_scales
 
@@ -191,12 +192,12 @@ class TestFusedLayerGlobalScales:
         projection.weight_global_scale = torch.tensor([scale])
         return projection
 
-    def test_fused_projections_share_minimum_scale_by_default(self, monkeypatch):
+    @pytest.mark.parametrize("projection_names", [("q_proj", "k_proj", "v_proj"), ("to_q", "to_k", "to_v")])
+    def test_fused_projections_share_minimum_scale_by_default(self, monkeypatch, projection_names):
         monkeypatch.delenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", raising=False)
         attention = nn.Module()
-        attention.q_proj = self._projection(3.0)
-        attention.k_proj = self._projection(1.0)
-        attention.v_proj = self._projection(2.0)
+        for name, scale in zip(projection_names, [3.0, 1.0, 2.0]):
+            setattr(attention, name, self._projection(scale))
         mlp = nn.Module()
         mlp.gate_proj = self._projection(4.0)
         mlp.up_proj = self._projection(0.5)
@@ -204,21 +205,23 @@ class TestFusedLayerGlobalScales:
         update_fused_layer_global_scales(attention)
         update_fused_layer_global_scales(mlp)
 
-        assert all(
-            proj.weight_global_scale.item() == 1.0 for proj in (attention.q_proj, attention.k_proj, attention.v_proj)
-        )
+        assert all(getattr(attention, name).weight_global_scale.item() == 1.0 for name in projection_names)
         assert all(proj.weight_global_scale.item() == 0.5 for proj in (mlp.gate_proj, mlp.up_proj))
 
-    def test_fused_projection_scale_update_can_be_disabled(self, monkeypatch):
-        monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "0")
+    @pytest.mark.parametrize(
+        "projection_names,is_cross_attention",
+        [(("q_proj", "k_proj", "v_proj"), False), (("to_q", "to_k", "to_v"), False), (("to_q", "to_k", "to_v"), True)],
+    )
+    def test_fused_projection_scales_are_preserved(self, monkeypatch, projection_names, is_cross_attention):
+        monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1" if is_cross_attention else "0")
         attention = nn.Module()
-        attention.q_proj = self._projection(3.0)
-        attention.k_proj = self._projection(1.0)
-        attention.v_proj = self._projection(2.0)
+        attention.is_cross_attention = is_cross_attention
+        for name, scale in zip(projection_names, [3.0, 1.0, 2.0]):
+            setattr(attention, name, self._projection(scale))
 
         update_fused_layer_global_scales(attention)
 
-        assert [proj.weight_global_scale.item() for proj in (attention.q_proj, attention.k_proj, attention.v_proj)] == [
+        assert [getattr(attention, name).weight_global_scale.item() for name in projection_names] == [
             3.0,
             1.0,
             2.0,
@@ -302,6 +305,24 @@ class TestSearchNvfp4Scale:
         tensor = torch.randn(8, 16, dtype=torch.float32)
         with pytest.raises(TypeError):
             search_nvfp4_scale(tensor, qw=None)
+
+
+class TestSearchNvfp4V2Scale:
+    def test_search_does_not_increase_weighted_mse(self):
+        torch.manual_seed(1)
+        tensor = torch.randn(8, 16, dtype=torch.float32)
+        qw = torch.rand_like(tensor) + 0.1
+
+        scales = search_nvfp4_v2_scale(tensor, qw=qw)
+        baseline, _, _ = nvfp4_v2(tensor, group_size=16)
+        optimized, _, _ = nvfp4_v2(tensor, group_size=16, max_scale=scales)
+
+        baseline_loss = ((baseline - tensor).square() * qw).sum()
+        optimized_loss = ((optimized - tensor).square() * qw).sum()
+        assert scales.shape == (tensor.shape[0],)
+        assert torch.all(scales >= 0.5)
+        assert torch.all(scales <= 1.51)
+        assert optimized_loss <= baseline_loss
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +416,16 @@ class TestNvFp4WithStaticGs:
         tm = torch.tensor([1.0, 5.0, 0.5])
         q, s, z = nv_fp4_with_static_gs(t, tensor_max=tm)
         assert q.shape == t.shape
+
+    def test_explicit_global_scale_is_used(self):
+        t = torch.tensor([[0.25, -1.0] * 8], dtype=torch.float32)
+        global_scale = torch.ones(1, dtype=torch.float32)
+
+        q, scale, _ = nv_fp4_with_static_gs(t, global_scale=global_scale)
+        expected_q, expected_scale = ref_nvfp4_quant(t, global_scale, block_size=16)
+
+        torch.testing.assert_close(q, expected_q)
+        torch.testing.assert_close(scale, expected_scale)
 
     def test_empty_tensor(self):
         t = torch.empty(0, 16, dtype=torch.bfloat16)

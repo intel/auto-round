@@ -29,6 +29,14 @@ def copy_missing_tensors_from_source(*args, **kwargs):
     return _copy_missing_tensors_from_source(*args, **kwargs)
 
 
+def restore_fp32_tensors_from_source(*args, **kwargs):
+    from auto_round.utils.missing_tensors import (
+        restore_fp32_tensors_from_source as _restore_fp32_tensors_from_source,
+    )
+
+    return _restore_fp32_tensors_from_source(*args, **kwargs)
+
+
 import transformers
 from packaging.version import Version
 

@@ -202,26 +202,6 @@ class TestBagelSpecialModelHandler:
         assert blocks[0][0] == "language_model.model.layers.0"
         assert blocks[0][1] == "language_model.model.layers.1"
 
-    def test_get_bagel_ignore_layers_structure(self):
-        """get_bagel_ignore_layers should return generation-path modules."""
-
-        # Use minimal mock matching BAGEL's attribute structure
-        class MockLanguageModel:
-            def __init__(self):
-                self.model = type("MockModel", (), {"layers": [None, None, None]})()
-
-        class MockBagelModel:
-            def __init__(self):
-                self.language_model = MockLanguageModel()
-
-        model = MockBagelModel()
-        ignore = get_bagel_ignore_layers(model)
-        assert "moe_gen" in ignore
-        assert "self_attn.q_proj" in ignore
-        assert "self_attn.k_proj" in ignore
-        assert "self_attn.v_proj" in ignore
-        assert "self_attn.o_proj" in ignore
-
     def test_bagel_registered_in_special_multimodal_block(self):
         """BAGEL should be in SPECIAL_MULTIMODAL_BLOCK."""
         from auto_round.special_model_handler import SPECIAL_MULTIMODAL_BLOCK

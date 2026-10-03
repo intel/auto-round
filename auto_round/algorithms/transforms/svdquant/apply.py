@@ -29,8 +29,8 @@ from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 from auto_round.algorithms.transforms.svdquant.residual import (
     ActivationQuantScheme,
     ResidualQuantScheme,
+    compute_svd_factors,
     iterate_residual_decomposition,
-    truncated_svd,
 )
 from auto_round.algorithms.transforms.svdquant.smooth import (
     SmoothCandidate,
@@ -45,11 +45,32 @@ from auto_round.algorithms.transforms.svdquant.smooth_adapters import SmoothSear
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils.device_manager import device_manager
 from auto_round.utils.model import map_nested_tensors
 
 _SCHEME_ATTRS = set(QuantizationScheme.get_attributes())
 _RUNTIME_QUANT_ATTRS = {"scale_dtype", "weight_global_scale", "tuning_device"}
 _MXFP4_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
+
+
+def _select_svd_driver(device: torch.device) -> str | None:
+    """Select a CUDA driver once using a small matrix on the execution device."""
+    if device.type != "cuda" or torch.version.cuda is None:
+        return None
+    probe = torch.tensor([[1.0, 2.0], [3.0, 5.0]], device=device, dtype=torch.float32)
+    for driver in ("gesvda", "gesvdj", "gesvd"):
+        try:
+            torch.linalg.svd(probe, full_matrices=False, driver=driver)
+            torch.cuda.synchronize(device)
+        except torch.OutOfMemoryError:
+            raise
+        except RuntimeError as exc:
+            if driver == "gesvd":
+                raise
+            logger.debug("SVDQuant driver %s probe failed: %s", driver, exc)
+            continue
+        logger.info("SVDQuant selected SVD driver %s on %s.", driver, device)
+        return driver
 
 
 def _detach_to_cpu(value: Any) -> Any:
@@ -114,6 +135,7 @@ class SVDQuantTransform(BasePreprocessor):
 
     def __init__(self, config: SVDQuantConfig) -> None:
         super().__init__(config)
+        self._svd_driver = None
         self._configured_block_names: tuple[str, ...] = ()
         self._block_groups: dict[str, list[SmoothSearchGroup]] = {}
         self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
@@ -133,6 +155,11 @@ class SVDQuantTransform(BasePreprocessor):
         nblocks = getattr(orchestrator, "nblocks", 1)
         if nblocks != 1:
             raise ValueError(f"SVDQuant requires nblocks=1, got nblocks={nblocks}.")
+        # One CLI command owns one compressor, including dual-transformer pipelines.
+        # Rebinding algorithms for another transformer must reuse its SVD driver.
+        if not hasattr(orchestrator, "_svdquant_svd_driver"):
+            orchestrator._svdquant_svd_driver = _select_svd_driver(torch.device(device_manager.device))
+        self._svd_driver = orchestrator._svdquant_svd_driver
         quant_block_list = getattr(orchestrator, "quant_block_list", None) or ()
         self._configured_block_names = tuple(
             block_name for block_group in quant_block_list for block_name in block_group
@@ -395,7 +422,7 @@ class SVDQuantTransform(BasePreprocessor):
         stacked = torch.cat(weights, dim=0)
         output_sizes = [projection.out_features for projection in group.projections]
         rank = min(self.config.rank, *stacked.shape)
-        _, down, up = truncated_svd(stacked, rank)
+        down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver)
         low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
         deployed_down = down.to(low_rank_dtype)
         deployed_up = up.to(low_rank_dtype)
@@ -430,7 +457,7 @@ class SVDQuantTransform(BasePreprocessor):
         rank = min(self.config.rank, *stacked.shape)
         low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
         if self.config.residual_iters == 1:
-            _, down, up = truncated_svd(stacked, rank)
+            down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver)
             deployed_down = down.to(low_rank_dtype)
             deployed_up = up.to(low_rank_dtype)
             low_rank = deployed_up.float() @ deployed_down.float()
@@ -463,7 +490,7 @@ class SVDQuantTransform(BasePreprocessor):
         best_error = float("inf")
         activation_scheme = self._group_activation_quant_scheme(group)
         for iteration in range(1, self.config.residual_iters + 1):
-            _, down, up = truncated_svd(stacked - quantized_residual, rank)
+            down, up = compute_svd_factors(stacked - quantized_residual, rank, driver=self._svd_driver)
             deployed_down = down.to(low_rank_dtype)
             deployed_up = up.to(low_rank_dtype)
             low_rank = deployed_up.float() @ deployed_down.float()
@@ -522,7 +549,7 @@ class SVDQuantTransform(BasePreprocessor):
         low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
 
         if self.config.residual_iters == 1:
-            _, down, up = truncated_svd(stacked, rank)
+            down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver)
             deployed_down = down.to(low_rank_dtype)
             deployed_up = up.to(low_rank_dtype)
             deployed_low_rank = deployed_up.float() @ deployed_down.float()
@@ -542,6 +569,7 @@ class SVDQuantTransform(BasePreprocessor):
                 early_stop=self.config.residual_early_stop,
                 residual_dtype=group.projections[0].weight.dtype,
                 low_rank_dtype=low_rank_dtype,
+                driver=self._svd_driver,
             )
             deployed_down = result.down
             deployed_up = result.up

@@ -28,7 +28,10 @@ typedef uintptr_t torch_ptr;
 #include "xpu_wrapper.hpp"
 #include "sycl_s8_wrapper.hpp"
 #include "utils.hpp"
+#include "xpu_mxfp4_hadamard.hpp"
 #if ARK_SYCL_TLA
+#include "xpu_mxfp4_hadamard_xmx.hpp"
+// Only include declarations, implementations are in separate .cpp files
 #include "sycl_tla_common.hpp"
 #endif
 #else
@@ -529,6 +532,98 @@ static void sage_sparse(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V,
   throw std::invalid_argument("ark::sage_sparse: unsupported head_dim; supported values are 64 and 128");
 }
 
+static void block_sparse_sdpa(torch_ptr stream, torch_ptr Q, torch_ptr K, torch_ptr V, torch_ptr O, torch_ptr mask,
+                              torch_ptr lut, torch_ptr valid_block_num, int num_q_blocks, int num_k_blocks,
+                              int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h, int q_stride_b,
+                              int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d,
+                              int v_stride_s, int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d,
+                              int o_stride_h, int o_stride_b, int q_dtype, int batch, int num_heads_q,
+                              int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
+                              bool is_causal) {
+  if (q_dtype != (int)FlashAttnDtype::FP16 && q_dtype != (int)FlashAttnDtype::BF16) {
+    throw std::invalid_argument("ark::block_sparse_sdpa: q_dtype must be FP16 or BF16");
+  }
+  if (mask && is_causal) {
+    throw std::invalid_argument("ark::block_sparse_sdpa: mask and is_causal cannot both be set");
+  }
+  if (!lut || !valid_block_num) {
+    throw std::invalid_argument("ark::block_sparse_sdpa: lut and valid_block_num must be provided");
+  }
+  auto matches_block_size = [](int seq_len, int num_blocks, int block_size) {
+    return block_size > 0 && num_blocks == ((seq_len + block_size - 1) / block_size);
+  };
+  const bool key_block_is_64 = matches_block_size(seq_len_kv, num_k_blocks, 64);
+  if (!key_block_is_64) {
+    throw std::invalid_argument("ark::block_sparse_sdpa: only key block size 64 is supported");
+  }
+  const bool is_bf16 = (q_dtype == (int)FlashAttnDtype::BF16);
+  if (head_dim == 64) {
+    if (!matches_block_size(seq_len_q, num_q_blocks, 64)) {
+      throw std::invalid_argument("ark::block_sparse_sdpa: head_dim=64 requires query block size 64");
+    }
+    if (is_bf16) {
+      ark::sdpa_impl_bf16_sparse_sdpa_d64(
+          (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+          (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+          q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+          v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+          seq_len_kv, head_dim, softmax_scale, is_causal);
+    } else {
+      ark::sdpa_impl_fp16_sparse_sdpa_d64(
+          (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+          (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+          q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+          v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+          seq_len_kv, head_dim, softmax_scale, is_causal);
+    }
+    return;
+  }
+  if (head_dim == 128) {
+    if (matches_block_size(seq_len_q, num_q_blocks, 256)) {
+      if (q_tile_override != 256) {
+        throw std::invalid_argument(
+            "ark::block_sparse_sdpa: head_dim=128 query block size 256 requires q_tile_override=256");
+      }
+      if (is_bf16) {
+        ark::sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
+            (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+            (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+            q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+            v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+            seq_len_kv, head_dim, softmax_scale, is_causal);
+      } else {
+        ark::sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
+            (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+            (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+            q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+            v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+            seq_len_kv, head_dim, softmax_scale, is_causal);
+      }
+      return;
+    }
+    if (matches_block_size(seq_len_q, num_q_blocks, 64)) {
+      if (is_bf16) {
+        ark::sdpa_impl_bf16_sparse_sdpa_row_linear(
+            (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+            (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+            q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+            v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+            seq_len_kv, head_dim, softmax_scale, is_causal);
+      } else {
+        ark::sdpa_impl_fp16_sparse_sdpa_row_linear(
+            (sycl::queue*)stream, (void*)Q, (void*)K, (void*)V, (void*)O, (void*)mask, (void*)lut,
+            (void*)valid_block_num, num_q_blocks, num_k_blocks, q_tile_override, q_stride_s, q_stride_d, q_stride_h,
+            q_stride_b, k_stride_s, k_stride_d, k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h,
+            v_stride_b, o_stride_s, o_stride_d, o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q,
+            seq_len_kv, head_dim, softmax_scale, is_causal);
+      }
+      return;
+    }
+    throw std::invalid_argument("ark::block_sparse_sdpa: head_dim=128 supports query block sizes 64 and 256 only");
+  }
+  throw std::invalid_argument("ark::block_sparse_sdpa: unsupported head_dim; supported values are 64 and 128");
+}
+
 static void moe_gemm_wrapper(torch_ptr stream, torch_ptr activations, torch_ptr weights, torch_ptr scales,
                              torch_ptr outputs, int dtype, int N, int K, torch_ptr num_tokens_per_expert,
                              int num_experts) {
@@ -773,6 +868,143 @@ static void sage_dynamic_quant_v_layout(torch_ptr stream, torch_ptr input, torch
     ark::XpuWrapper::sage_dynamic_quant_v_strided<sycl::half>(q, in_ptr, out_ptr, scale_ptr, batch, num_heads, seq,
                                                               n_seq_blk, head_dim, block_size, stride_dim, stride_seq,
                                                               stride_head, stride_batch);
+  }
+}
+
+#if defined(ARK_SYCL_TLA)
+// Scratch-pool slot for the ``[D, D]`` Hadamard staging buffer the XMX path
+// below needs in the activation dtype. ``DeviceMemoryPool`` (``utils.hpp``)
+// hands out one grow-on-demand slab per (slot, device UUID, context, queue)
+// key, reused across every later call on that queue; slots 0-10 are already
+// claimed (see the slot table on ``DeviceMemoryPool::MaxLocNum``), so this one
+// takes 11 rather than aliasing a live scratch buffer.
+constexpr size_t kHadamardStagingScratchLoc = 11;
+
+// Body of the XMX path, templated over the activation dtype
+// (``cute::half_t`` / ``cute::bfloat16_t``) so the FP16 and BF16 entry points
+// share a single implementation.
+//
+// ``h_ptr`` is the caller's FP32 Hadamard matrix; the staging buffer holds its
+// transpose in ``T``, which is the layout the ``C = A @ B^T`` GEMM needs (see
+// ``convert_hadamard_to_dtype``). Every call rewrites all ``D * D`` elements,
+// so reusing one slab across calls with different matrices is safe: the two
+// launches that touch it go to the same queue, and the extension's queues are
+// in-order (see the note in `DeviceMemoryPool::get_scratch_ptr`).
+template <typename T>
+static void xmx_hadamard_quant_impl(sycl::queue* q, torch_ptr x, const float* h_ptr, uint8_t* codes_ptr,
+                                    uint8_t* scale_ptr, int64_t total_groups) {
+  constexpr size_t kElems =
+      static_cast<size_t>(XpuMxfp4Hadamard::kHadamardDim) * static_cast<size_t>(XpuMxfp4Hadamard::kHadamardDim);
+  // The request size is a compile-time constant, so the slab is allocated on
+  // the first call for a queue and then never grows -- the pool's grow path
+  // (which frees the old slab in place) is unreachable from here.
+  auto* pool = DeviceMemoryPool::Instance();
+  auto* h_t = static_cast<T*>(pool->get_scratch_mem(sizeof(T) * kElems, kHadamardStagingScratchLoc, q));
+  if (h_t == nullptr) {
+    throw std::runtime_error("ark::mxfp4_hadamard_quant: failed to acquire the Hadamard staging buffer");
+  }
+  ark::xmx_hadamard_detail::convert_hadamard_to_dtype<T>(q, h_ptr, h_t);
+  ark::xmx_hadamard_detail::mxfp4_hadamard_quant_xmx<T>(q, reinterpret_cast<const T*>(x), h_t, codes_ptr, scale_ptr,
+                                                        total_groups);
+}
+#endif  // ARK_SYCL_TLA
+
+// Activation-only fused kernel: normalized Hadamard + MXFP4 quant.
+// x:         [num_rows, k]      FP16 or BF16
+// hadamard:  [D, D]             FP32, row major, already normalized by 1/sqrt(D)
+// hadamard_dim: D, one of 32 (GEMM activations), 64, 128 (attention head dim),
+//            256 or 512. The quantization group stays at 32 for all of them, so
+//            a D = 128 row yields 4 MXFP4 groups. Every D > 32 implements the
+//            FWHT path only.
+// use_fwht:  true when hadamard is the normalized Sylvester matrix, which is the
+//            only matrix the butterfly network implements. The caller decides so
+//            that the hot path does not pay for a device-side comparison.
+// use_xmx:   opt-in XMX path (requires an ARK_SYCL_TLA build). Uses the
+//            relaxed numerical contract of xpu_mxfp4_hadamard_xmx.hpp (H stored
+//            in the activation dtype, DPAS accumulation); tolerance-based, not
+//            bit-exact. D = 32 only.
+// use_quant_only: strip the Hadamard transform and quantize the raw activation
+//            (quant-only baseline: byte-identical traffic to the fused path, so
+//            the bandwidth ratio isolates the cost of the transform). Ignored
+//            on the XMX path.
+// use_stream_only: strip the transform *and* the quantization math, keeping the
+//            loads, the packing shape and the stores (traffic-matched roofline
+//            baseline). Mutually exclusive with use_quant_only.
+// out_codes: [num_rows, k / 2]  uint8, two packed FP4 codes per byte
+// out_scale: [num_rows, k / 32] uint8, one E8M0 exponent per 32-element group
+static void mxfp4_hadamard_quant(torch_ptr stream, torch_ptr x, torch_ptr hadamard, torch_ptr out_codes,
+                                 torch_ptr out_scale, int64_t num_rows, int64_t k, int in_dtype, bool use_fwht,
+                                 bool use_xmx, bool use_quant_only, int64_t hadamard_dim, bool use_stream_only) {
+  if (!stream) {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: stream must not be null");
+  }
+  if (!x || !hadamard || !out_codes || !out_scale) {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: input/output pointers must not be null");
+  }
+  if (num_rows <= 0 || k <= 0) {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: num_rows and k must be positive");
+  }
+  if (k % ark::XpuMxfp4Hadamard::kGroupSize != 0) {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: k must be a multiple of 32");
+  }
+  if (use_quant_only && use_stream_only) {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: use_quant_only and use_stream_only are exclusive");
+  }
+  const bool baseline = use_quant_only || use_stream_only;
+  // The baselines run on the flat [total_groups, 32] view, so the transform
+  // dimension is irrelevant to them and is not validated in that case.
+  if (!baseline) {
+    if (!ark::XpuMxfp4Hadamard::is_supported_hadamard_dim(hadamard_dim)) {
+      throw std::invalid_argument("ark::mxfp4_hadamard_quant: hadamard_dim must be 32, 64, 128, 256 or 512");
+    }
+    if (k % hadamard_dim != 0) {
+      throw std::invalid_argument("ark::mxfp4_hadamard_quant: k must be a multiple of hadamard_dim");
+    }
+    if (hadamard_dim > ark::XpuMxfp4Hadamard::kGroupSize) {
+      if (!use_fwht) {
+        throw std::invalid_argument("ark::mxfp4_hadamard_quant: hadamard_dim > 32 requires the Sylvester matrix");
+      }
+      if (use_xmx) {
+        throw std::invalid_argument("ark::mxfp4_hadamard_quant: use_xmx is not supported for hadamard_dim > 32");
+      }
+    }
+  }
+  auto* q = (sycl::queue*)stream;
+  auto* h_ptr = (const float*)hadamard;
+  auto* codes_ptr = (uint8_t*)out_codes;
+  auto* scale_ptr = (uint8_t*)out_scale;
+  const auto dtype = (BTLA_DTYPE)in_dtype;
+  const int64_t total_groups = num_rows * (k / ark::XpuMxfp4Hadamard::kGroupSize);
+
+  if (use_xmx && !baseline) {
+#if defined(ARK_SYCL_TLA)
+    // XMX path: H is converted to the activation dtype (lossless) and the
+    // transform runs on DPAS. x (sycl bf16/half) is layout-identical to
+    // cute::bfloat16_t / cute::half_t, so the pointers are reinterpreted.
+    if (dtype == BTLA_DTYPE::F16) {
+      xmx_hadamard_quant_impl<cute::half_t>(q, x, h_ptr, codes_ptr, scale_ptr, total_groups);
+    } else if (dtype == BTLA_DTYPE::BF16) {
+      xmx_hadamard_quant_impl<cute::bfloat16_t>(q, x, h_ptr, codes_ptr, scale_ptr, total_groups);
+    } else {
+      throw std::invalid_argument("ark::mxfp4_hadamard_quant: only FP16 and BF16 activations are supported");
+    }
+#else
+    (void)total_groups;
+    throw std::runtime_error("ark::mxfp4_hadamard_quant: use_xmx requires an ARK_SYCL_TLA build");
+#endif
+    return;
+  }
+
+  if (dtype == BTLA_DTYPE::F16) {
+    ark::XpuMxfp4Hadamard::mxfp4_hadamard_quant<sycl::half>(q, (const sycl::half*)x, h_ptr, codes_ptr, scale_ptr,
+                                                            num_rows, k, use_fwht, use_quant_only, hadamard_dim,
+                                                            use_stream_only);
+  } else if (dtype == BTLA_DTYPE::BF16) {
+    ark::XpuMxfp4Hadamard::mxfp4_hadamard_quant<sycl::ext::oneapi::bfloat16>(
+        q, (const sycl::ext::oneapi::bfloat16*)x, h_ptr, codes_ptr, scale_ptr, num_rows, k, use_fwht,
+        use_quant_only, hadamard_dim, use_stream_only);
+  } else {
+    throw std::invalid_argument("ark::mxfp4_hadamard_quant: only FP16 and BF16 activations are supported");
   }
 }
 
@@ -1410,6 +1642,7 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("head_dim"), pybind11::arg("softmax_scale"), pybind11::arg("is_causal"),
         pybind11::arg("tensor_layout"), pybind11::arg("lse") = 0);
   m.def("sage_sparse", &ark::sage_sparse);
+  m.def("block_sparse_sdpa", &ark::block_sparse_sdpa);
   // Low-level SAGE PVi8 API: input Q/K/V are pre-quantized int8 with qscale/kscale/vscale.
   m.def("sage_pvi8", &ark::sage_pvi8, pybind11::arg("stream"), pybind11::arg("Q"), pybind11::arg("K"),
         pybind11::arg("V"), pybind11::arg("O"), pybind11::arg("mask"),
@@ -1424,6 +1657,11 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("sage_compute_seq_mean_bias_layout", &ark::sage_compute_seq_mean_bias_layout);
   m.def("sage_dynamic_quant_layout", &ark::sage_dynamic_quant_layout);
   m.def("sage_dynamic_quant_v_layout", &ark::sage_dynamic_quant_v_layout);
+  m.def("mxfp4_hadamard_quant", &ark::mxfp4_hadamard_quant, pybind11::arg("stream"), pybind11::arg("x"),
+        pybind11::arg("hadamard"), pybind11::arg("out_codes"), pybind11::arg("out_scale"),
+        pybind11::arg("num_rows"), pybind11::arg("k"), pybind11::arg("in_dtype"), pybind11::arg("use_fwht") = true,
+        pybind11::arg("use_xmx") = false, pybind11::arg("use_quant_only") = false,
+        pybind11::arg("hadamard_dim") = 32, pybind11::arg("use_stream_only") = false);
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
   m.def("moe_decode_release_scratch", &ark::moe_decode_release_scratch);

@@ -923,7 +923,11 @@ class TestRandomHadamardCache:
         m1 = get_or_create_random_hadamard(8)
         clear_random_hadamard_cache()
         m2 = get_or_create_random_hadamard(8)
-        assert not torch.equal(m1, m2)
+        # Clearing the cache must force a freshly-built matrix object. We assert
+        # object identity rather than value inequality: a "random" Hadamard only
+        # randomizes ``dim`` sign bits (H @ diag(±1)), so for dim=8 two draws
+        # collide with probability 1/256, which would flake a value-based check.
+        assert m1 is not m2
 
     def test_device_transfer(self):
         clear_random_hadamard_cache()

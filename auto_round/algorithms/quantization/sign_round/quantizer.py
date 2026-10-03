@@ -141,7 +141,7 @@ class SignRoundQuantizer(BaseQuantizer):
     ):
         autocast_ctx = (
             nullcontext()
-            if self.model_context.amp
+            if not self.model_context.amp
             else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
         )
         if valid_token_mask:
@@ -374,6 +374,7 @@ class SignRoundQuantizer(BaseQuantizer):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            enable_neuqi=getattr(self.config, "enable_neuqi", False),
         )
 
         round_params = []
@@ -666,6 +667,7 @@ class SignRoundQuantizer(BaseQuantizer):
             enable_minmax_tuning=self.enable_minmax_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            enable_neuqi=getattr(self.config, "enable_neuqi", False),
         ).to(device)
         round_params = []
         minmax_params = []

@@ -35,8 +35,13 @@ import torch
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
-from auto_round.utils.common import to_standard_regex
+from auto_round.utils.common import _normalize_tensor_name_for_warning, to_standard_regex
 from auto_round.utils.device import clear_memory, compile_func
+from auto_round.utils.path_safety import (
+    resolve_within_directory,
+    sanitize_shard_name,
+    validate_weight_map,
+)
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
 _BLOCK_NAME_TO_IGNORE = ("shared_expert_gate.", ".gate.", "embed", "conv")
@@ -99,22 +104,8 @@ _WARNING_INDEX_PLACEHOLDER = "<idx>"
 _KEEP_FUSED_EXPERT_MODEL_TYPES: frozenset[str] = frozenset({"inkling_mm_model"})
 
 
-def _normalize_tensor_name_for_warning(name: str, numeric_replacement: str = _WARNING_INDEX_PLACEHOLDER) -> str:
-    """Normalize tensor names for warning_once deduplication.
-
-    Replace standalone numeric path segments (e.g. ``layers.12.experts.3``)
-    and bracket indices (e.g. ``layers[12]``) with a fixed placeholder
-    (``<idx>`` by default) so warning keys are stable across different
-    layer/expert ids.
-    """
-    parts = name.split(".")
-    normalized_parts = []
-    for part in parts:
-        if part.isdigit():
-            normalized_parts.append(numeric_replacement)
-            continue
-        normalized_parts.append(re.sub(r"\[(\d+)\]", f"[{numeric_replacement}]", part))
-    return ".".join(normalized_parts)
+# _normalize_tensor_name_for_warning moved to auto_round.utils.common to
+# avoid circular imports; keep compatibility by importing it from there.
 
 
 def _parse_fused_proj_token(token: str) -> tuple[str, str]:
@@ -1238,9 +1229,11 @@ def _quantize_weight_nvfp4_e5m3(
     layer_name: str,
     group_size: int = 16,
     device: str = "cpu",
+    disable_opt_rtn: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Fake-quantize a 2D weight tensor to NVFP4 E5M3 and return its high-precision QDQ weight."""
-    from auto_round.data_type.nvfp import nvfp4_v2
+    from auto_round.data_type.nvfp import nvfp4_v2, search_nvfp4_v2_scale
+    from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
     out_features, in_features = weight.shape
     if group_size != 16:
@@ -1252,7 +1245,11 @@ def _quantize_weight_nvfp4_e5m3(
         )
 
     weight_dev = weight.to(device)
-    qdq_weight, _, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size)
+    max_scale = 1.0
+    if not disable_opt_rtn:
+        grouped = reshape_pad_tensor_by_group_size(weight_dev, group_size)[0]
+        max_scale = search_nvfp4_v2_scale(grouped)
+    qdq_weight, _, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size, max_scale=max_scale)
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
 
@@ -1284,9 +1281,11 @@ def _pack_weight_nvfp4_e5m3(
     layer_name: str,
     group_size: int = 16,
     device: str = "cpu",
+    disable_opt_rtn: bool = False,
 ) -> dict[str, torch.Tensor]:
     """Pack FP4 E2M1 weights with unsigned E5M3 block scales."""
-    from auto_round.data_type.nvfp import nvfp4_v2
+    from auto_round.data_type.nvfp import nvfp4_v2, search_nvfp4_v2_scale
+    from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 
     out_features, in_features = weight.shape
@@ -1295,7 +1294,11 @@ def _pack_weight_nvfp4_e5m3(
             f"NVFP4_E5M3 requires in_features divisible by group_size=16, got {in_features} for '{layer_name}'."
         )
     weight_dev = weight.to(device)
-    _, scale, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size)
+    max_scale = 1.0
+    if not disable_opt_rtn:
+        grouped = reshape_pad_tensor_by_group_size(weight_dev, group_size)[0]
+        max_scale = search_nvfp4_v2_scale(grouped)
+    _, scale, _ = nvfp4_v2(weight_dev, bits=4, group_size=group_size, max_scale=max_scale)
     # nvfp4_v2 may return a flattened per-group scale layout (e.g. [N, 1]);
     # normalize to [out_features, in_features // group_size] before packing
     # so serialized .weight_scale keeps the expected 2D shape.
@@ -1405,6 +1408,7 @@ def _quantize_single_tensor(
                 layer_name=layer_name,
                 group_size=group_size,
                 device=device,
+                disable_opt_rtn=disable_opt_rtn,
             )
             logger.debug(f"Quantized (NVFP4_E5M3): {layer_name} (bits=4, group_size={group_size})")
             return layer_name, out, layer_name, None
@@ -1596,7 +1600,7 @@ def _hydrate_missing_fp8_scales_from_index(
     hydrated = 0
     shard_prefix = f"[{shard_name}] " if shard_name else ""
     for target_shard, scale_names in scales_by_shard.items():
-        target_path = os.path.join(donor_dir, target_shard)
+        target_path = str(resolve_within_directory(donor_dir, target_shard, origin="weight_map"))
         if not os.path.exists(target_path):
             logger.warning(
                 f"{shard_prefix}Donor shard '{target_shard}' not found in '{donor_dir}' while hydrating "
@@ -1652,6 +1656,57 @@ def _modelopt_nvfp4_bases_from_weight_map(weight_map: dict[str, str]) -> set[str
         and name[: -len(".scale2")] in weight_map
         and f"{name[: -len('.scale2')]}.scale" in weight_map
     }
+
+
+def get_fp_scale(scale_e8m0: torch.Tensor) -> torch.Tensor:
+    """Convert biased E8M0 exponents to floating-point scales."""
+    exponent = scale_e8m0.view(torch.uint8).to(torch.int16) - 127
+    return torch.pow(2.0, exponent.to(torch.float32))
+
+
+def dequant_mxfp4(
+    data_lp: torch.Tensor,
+    scale_e8m0: torch.Tensor,
+    elem_dtype: str,
+    block_size: int,
+    target_dtype: torch.dtype,
+    scale_dtype: torch.dtype | None = None,
+    return_scale: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """Dequantize packed MXFP4 data to ``target_dtype``."""
+    from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
+
+    original_shape = data_lp.shape
+    last_dim = original_shape[-1]
+    data_lp = data_lp.reshape(-1, last_dim)
+    result_shape = original_shape[:-1] + (last_dim * 2,)
+    assert data_lp.is_contiguous(), f"Data must be contiguous, got {data_lp.stride()}"
+    assert elem_dtype == "fp4_e2m1", f"Expected 'fp4_e2m1', got {elem_dtype}"
+
+    rows, half_columns = data_lp.shape
+    data_hp = unpack_fp4_from_uint8(data_lp, rows, half_columns * 2, dtype=target_dtype)
+    data_hp = data_hp.reshape(-1, block_size)
+
+    if scale_dtype is None:
+        scale_dtype = target_dtype
+    scale = get_fp_scale(scale_e8m0).reshape(-1, 1).to(scale_dtype)
+    if return_scale:
+        return data_hp.reshape(result_shape), scale
+
+    return (data_hp * scale).reshape(result_shape)
+
+
+def dequant_mx_fp8(
+    weight_fp8: torch.Tensor,
+    scale_e8m0: torch.Tensor,
+    block_size: int,
+    target_dtype: torch.dtype,
+) -> torch.Tensor:
+    """Dequantize MXFP8 data using its per-block E8M0 scales."""
+    original_shape = weight_fp8.shape
+    weight = weight_fp8.to(torch.bfloat16).reshape(-1, block_size)
+    scale = get_fp_scale(scale_e8m0).reshape(-1, 1)
+    return (weight * scale).reshape(original_shape).to(target_dtype)
 
 
 def _hydrate_and_clean_modelopt_nvfp4_aux(
@@ -1723,7 +1778,7 @@ def _hydrate_and_clean_modelopt_nvfp4_aux(
 
         hydrated = 0
         for target_shard, aux_names in wanted_by_shard.items():
-            target_path = os.path.join(donor_dir, target_shard)
+            target_path = str(resolve_within_directory(donor_dir, target_shard, origin="weight_map"))
             if not os.path.exists(target_path):
                 logger.warning(
                     f"{shard_prefix}Donor shard '{target_shard}' not found in '{donor_dir}' while hydrating "
@@ -1773,21 +1828,17 @@ def _dequant_mxfp_tensors(
 ) -> dict[str, torch.Tensor]:
     """Dequantize llm-compressor MXFP8 / MXFP4 weight tensors to bfloat16.
 
-    Detection is purely by *name* and *dtype*, reusing the dequant kernels in
-    :mod:`auto_round_extension.vllm_ext`:
+    Detection is purely by *name* and *dtype*:
 
     * ``<layer>.weight`` (``float8_e4m3fn``) + ``<layer>.weight_scale`` → MXFP8,
-      dequantized via :func:`~auto_round_extension.vllm_ext.mxfp8_qdq_utils.dequant_mx_fp8`.
+    dequantized via :func:`dequant_mx_fp8`.
     * ``<layer>.weight_packed`` (``uint8``) + ``<layer>.weight_scale`` → MXFP4,
-      dequantized via :func:`~auto_round_extension.vllm_ext.mxfp4_qdq_utils.to_dtype`.
+    dequantized via :func:`dequant_mxfp4`.
 
     The dequantized weight is written back under ``<layer>.weight`` and the
     scale (and any ``weight_packed``) tensor is removed, so the downstream RTN
     path can requantize the layer to the requested target scheme.
     """
-    from auto_round_extension.vllm_ext.mxfp4_qdq_utils import to_dtype
-    from auto_round_extension.vllm_ext.mxfp8_qdq_utils import dequant_mx_fp8
-
     # Tuple layout: (layer_name, weight_key, scale_key, bits)
     entries = _collect_mxfp_source_entries(raw_tensors)
 
@@ -1831,14 +1882,14 @@ def _dequant_mxfp_tensors(
                 shard_prefix=shard_prefix,
                 op_name="MXFP dequant",
                 tensor_label=layer_name,
-                on_device=lambda weight=weight, scale=scale: to_dtype(
+                on_device=lambda weight=weight, scale=scale: dequant_mxfp4(
                     data_lp=weight.view(torch.uint8).contiguous().to(dequant_device, non_blocking=True),
                     scale_e8m0=scale.to(dequant_device, non_blocking=True),
                     elem_dtype="fp4_e2m1",
                     block_size=32,
                     target_dtype=torch.bfloat16,
                 ).to("cpu"),
-                on_cpu=lambda weight=weight, scale=scale: to_dtype(
+                on_cpu=lambda weight=weight, scale=scale: dequant_mxfp4(
                     data_lp=weight.view(torch.uint8).contiguous(),
                     scale_e8m0=scale,
                     elem_dtype="fp4_e2m1",
@@ -2050,12 +2101,8 @@ def _process_shard(
     quantize_func = compile_func(quantize_weight_rtn, device) if enable_torch_compile else quantize_weight_rtn
 
     if shard_path.endswith(".bin"):
-        # PyTorch pickle checkpoint — load with weights_only where supported.
-        try:
-            raw_tensors = torch.load(shard_path, map_location="cpu", weights_only=True)
-        except TypeError:
-            # weights_only not available in older PyTorch versions
-            raw_tensors = torch.load(shard_path, map_location="cpu")  # nosec
+        # No unrestricted fallback: this pickle comes from an untrusted artifact.
+        raw_tensors = torch.load(shard_path, map_location="cpu", weights_only=True)
         # Flatten nested state-dict wrappers if present.
         if not isinstance(raw_tensors, dict):
             raise ValueError(f"Expected a dict from {shard_path}, got {type(raw_tensors)}")
@@ -2339,9 +2386,12 @@ def _list_weight_shards(source_dir: str) -> list[str]:
     def _shards_from_index(index_path: str) -> list[str]:
         with open(index_path) as f:
             index = json.load(f)
+        # Shard names are declared by the checkpoint's own index and are later
+        # joined onto source_dir / a shard cache dir, so contain them here.
+        weight_map = validate_weight_map(index["weight_map"], source_dir, index_path=index_path)
         seen: set[str] = set()
         shards: list[str] = []
-        for shard_file in index["weight_map"].values():
+        for shard_file in weight_map.values():
             if shard_file not in seen:
                 seen.add(shard_file)
                 shards.append(shard_file)
@@ -2381,6 +2431,24 @@ def _list_weight_shards(source_dir: str) -> list[str]:
     bin_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".bin"))
     if len(bin_files) >= 1:
         return bin_files
+    return []
+
+
+def _list_remote_weight_shards(model_name_or_path: str, subfolder: str | None = None) -> list[str]:
+    """Return remote weight filenames for streaming repos without a weight index."""
+    from huggingface_hub import list_repo_files
+
+    repo_files = list_repo_files(model_name_or_path)
+    if subfolder:
+        prefix = subfolder.rstrip("/") + "/"
+        repo_files = [name for name in repo_files if name.startswith(prefix)]
+    safetensors_files = sorted(
+        name for name in repo_files if name.endswith(".safetensors") and not name.endswith(".index.json")
+    )
+    if safetensors_files:
+        return safetensors_files
+
+    return sorted(name for name in repo_files if name.endswith(".bin") and not name.endswith(".index.json"))
 
 
 def _is_weight_shard(fname: str) -> bool:
@@ -2405,13 +2473,13 @@ def _download_single_shard(
 ) -> str:
     """Download a single safetensors shard file. Returns the local path."""
     os.makedirs(local_dir, exist_ok=True)
-    local_path = os.path.join(local_dir, shard_filename)
+    local_path = os.path.join(local_dir, sanitize_shard_name(shard_filename, origin="shard list"))
     if os.path.exists(local_path):
         logger.info(f"Shard '{shard_filename}' already exists at '{local_path}', skipping download.")
         return local_path
 
     if os.path.isdir(model_name_or_path):
-        src = os.path.join(model_name_or_path, shard_filename)
+        src = str(resolve_within_directory(model_name_or_path, shard_filename, origin="shard list"))
         if os.path.exists(src):
             shutil.copy2(src, local_path)
             return local_path
@@ -3021,12 +3089,18 @@ def _derive_dominant_int_scheme(
         return None
 
     (bits, group_size, sym, data_type), _ = counter.most_common(1)[0]
-    return {
+    dominant = {
         "bits": bits,
         "group_size": group_size,
         "sym": sym,
         "data_type": data_type,
     }
+    if data_type == _NVFP4_E5M3_DATA_TYPE:
+        for act_key in ("act_bits", "act_data_type", "act_group_size", "act_sym", "act_dynamic"):
+            value = scheme.get(act_key)
+            if value is not None:
+                dominant[act_key] = value
+    return dominant
 
 
 def _build_quantization_config(
@@ -3111,6 +3185,7 @@ def _build_quantization_config(
         dominant = _derive_dominant_int_scheme(quantized_layers, layer_config, default_scheme)
         if dominant is not None:
             default_scheme = dominant
+            data_type = (default_scheme.get("data_type") or "int").lower()
 
     from auto_round.version import __version__
 
