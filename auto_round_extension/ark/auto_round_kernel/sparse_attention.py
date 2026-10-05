@@ -22,9 +22,7 @@ from . import (
 )
 from . import sagev1 as _dense_sagev1
 from . import sagev1_pvi8 as _dense_sagev1_pvi8
-from . import (
-    sdpa,
-)
+from . import sdpa
 
 
 def _get_xpu_sparse_kernel_backend() -> str:
