@@ -722,7 +722,9 @@ def iterative_wls_quant_search_chunk(
         quant_data = torch.empty_like(chunk)
         diff = torch.empty_like(chunk)
 
-        rmin = torch.min(chunk, dim=1, keepdim=True)[0]
+        # Like llama.cpp's make_qkx2_quants, keep 0 in the range so the min is never
+        # positive: the packed K-quant formats can only store non-negative mins (-rmin).
+        rmin = torch.min(chunk, dim=1, keepdim=True)[0].clamp_(max=0)
         rmax = torch.max(chunk, dim=1, keepdim=True)[0]
         sum_w = torch.sum(chunk_weights, dim=1, keepdim=True)
         sum_x = torch.sum(chunk_weights * chunk, dim=1, keepdim=True)
