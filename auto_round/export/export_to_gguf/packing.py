@@ -375,14 +375,14 @@ def make_q3_quants(data, bits, do_rmse=False, v=0):
                 sl2[tmp_replace_idx] += w_tmp[tmp_replace_idx] * new_L[tmp_replace_idx] * new_L[tmp_replace_idx]
 
                 # Further check condition for improvement
-                replace_idx &= (sl2 > 0) & (slx * slx * suml2 > sumlx * sumlx * sl2)
+                replace_idx &= tmp_replace_idx & (sl2 > 0) & (slx * slx * suml2 > sumlx * sumlx * sl2)
 
                 # Update L in-place
                 L_tmp[replace_idx] = new_L[replace_idx]
 
-                # Update global sums
-                sumlx = slx
-                suml2 = sl2
+                # Update global sums only where the new value was accepted
+                sumlx = torch.where(replace_idx, slx, sumlx)
+                suml2 = torch.where(replace_idx, sl2, suml2)
 
         # Compute final scale and return quantized L
         return sumlx * get_reciprocal(suml2), L.to(torch.uint8)
