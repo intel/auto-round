@@ -562,6 +562,47 @@ class TestGGUF:
         assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"
 
 
+class TestGGUFQ5K:
+    """Q5_K blocks must round-trip through gguf's reference dequantizer."""
+
+    def _dequantize(self, packed, qtype, shape):
+        gguf_quants = pytest.importorskip("gguf.quants")
+        from gguf import GGMLQuantizationType
+
+        return torch.from_numpy(gguf_quants.dequantize(packed, GGMLQuantizationType[qtype.upper()])).reshape(shape)
+
+    def test_q5_k_pack_matches_fake_quant(self):
+        from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
+        from auto_round.export.export_to_gguf.packing import ggml_quant
+
+        torch.manual_seed(0)
+        tensor = torch.randn(4, 256)
+        qdq, scales, mins = quant_tensor_gguf_asym_dq(tensor, bits=5, scale_dtype=torch.float32)
+        packed = ggml_quant(
+            qdq.clone(),
+            "q5_k",
+            scale=scales["scale"],
+            wmin=mins["wmin"],
+            d_scale=scales["d_scale"],
+            d_wmin=mins["d_wmin"],
+            device="cpu",
+        )
+        dequantized = self._dequantize(packed, "q5_k", tensor.shape)
+        torch.testing.assert_close(dequantized, qdq, atol=1e-2, rtol=0)
+
+    def test_q5_k_pack_without_stored_params_uses_5_bits(self):
+        from auto_round.export.export_to_gguf.packing import ggml_quant
+
+        torch.manual_seed(0)
+        tensor = torch.randn(4, 256)
+        mse = {}
+        for qtype in ("q4_k", "q5_k"):
+            packed = ggml_quant(tensor.clone(), qtype, device="cpu")
+            mse[qtype] = ((self._dequantize(packed, qtype, tensor.shape) - tensor) ** 2).mean().item()
+        # One extra bit should roughly quarter the error.
+        assert mse["q5_k"] < mse["q4_k"] / 2, mse
+
+
 class TestGGUFZeroBlock:
     """All-zero blocks (e.g. padded/unused vocab rows in an embedding tensor) must
     quantize with scale d=0.0, not NaN. A single NaN fp16 `d` in an exported GGUF
