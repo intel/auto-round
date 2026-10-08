@@ -48,7 +48,6 @@ from .utils.dataset_utils import (
     auto_detect_text_field_from_sample,
     extract_text_from_sample,
     normalize_dataset_spec,
-    parse_dataset_spec,
 )
 
 CALIB_DATASETS = {}
