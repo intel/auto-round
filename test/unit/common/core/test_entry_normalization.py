@@ -26,6 +26,7 @@ def test_diffusion_cache_cli_and_entry_routing(value, expected):
 
 def test_split_entry_kwargs_partitions_owned_fields():
     processor = object()
+    pipeline_call_kwargs = {"height": 256, "width": 256, "num_frames": 9, "output_type": "latent"}
 
     grouped = _split_entry_kwargs(
         {
@@ -36,6 +37,7 @@ def test_split_entry_kwargs_partitions_owned_fields():
             "num_inference_steps": 20,
             "calib_num_inference_steps": 8,
             "diffusion_tuning_cache_size": 2,
+            "pipeline_call_kwargs": pipeline_call_kwargs,
         }
     )
 
@@ -46,6 +48,7 @@ def test_split_entry_kwargs_partitions_owned_fields():
     assert grouped["diffusion"]["num_inference_steps"] == 20
     assert grouped["diffusion"]["calib_num_inference_steps"] == 8
     assert grouped["diffusion"]["diffusion_tuning_cache_size"] == 2
+    assert grouped["diffusion"]["pipeline_call_kwargs"] is pipeline_call_kwargs
 
 
 def test_split_entry_kwargs_ignores_unknown_fields(monkeypatch):
