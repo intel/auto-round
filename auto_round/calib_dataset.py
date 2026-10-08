@@ -460,7 +460,7 @@ def get_github_code_clean_dataset(
                 "💡 This dataset uses an old script-based format. To load it, please install `datasets<=3.6.0`:\n\n"
             )
         else:
-            raise error
+            raise
     calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
     calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)  ##TODO concat data'shuffle may have bugs
     calib_dataset = calib_dataset.map(tokenizer_function, batched=True)
@@ -584,7 +584,7 @@ def get_ultrachat_dataset(
         split = "train_sft"
     all_splits = ["train_sft", "test_sft", "train_gen", "test_gen"]
     if split not in all_splits:
-        raise ValueError("split must be one of {} for ultrachat_200k ".format(all_splits))
+        raise ValueError(f"split must be one of {all_splits} for ultrachat_200k ")
 
     dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split=split, streaming=True, trust_remote_code=True)
     dataset = dataset.shuffle(seed=seed).take(20000)
@@ -765,8 +765,8 @@ def get_mbpp_dataset(
     if isinstance(splits, str):
         splits = splits.split("+")
 
-    for split in splits:
-        dataset = load_dataset(dataset_name, split=split)
+    for split_name in splits:
+        dataset = load_dataset(dataset_name, split=split_name)
         for data in dataset:
             samples.append({"text": data["text"] + data["code"]})
     random.Random(seed).shuffle(samples)
@@ -1021,9 +1021,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
             return False
         input_ids = example["input_ids"][:seqlen]
         input_ids_list = input_ids.tolist()
-        if len(input_ids_list) > 1 and seqlen > 2 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
-            return False
-        return True
+        return not (len(input_ids_list) > 1 and seqlen > 2 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2)
 
     def concat_dataset_element(dataset):
         input_ids, concat_input_ids = [eg["input_ids"] for eg in dataset], []
@@ -1085,9 +1083,9 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                 if key == "num":
                     data_lens[name] = int(values[0])
                 if key == "concat":
-                    do_concat = False if (len(values) > 0 and values[0].lower() == "false") else True
+                    do_concat = not (len(values) > 0 and values[0].lower() == "false")
                 if key == "apply_chat_template":
-                    apply_chat_template = False if (len(values) > 0 and values[0].lower() == "false") else True
+                    apply_chat_template = not (len(values) > 0 and values[0].lower() == "false")
                 if key == "system_prompt":
                     system_prompt = values[0]
                     apply_chat_template = True
@@ -1095,15 +1093,15 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
             get_dataset = CALIB_DATASETS.get("local")
         else:
             calib_name = name
-            if name not in CALIB_DATASETS.keys():
+            if name not in CALIB_DATASETS:
                 calib_name = name.split("/")[-1]
-                for key in CALIB_DATASETS.keys():
+                for key in CALIB_DATASETS:
                     if calib_name in key:
                         calib_name = key
                         break
             get_dataset = CALIB_DATASETS.get(calib_name)
         if get_dataset is None:
-            filtered_keys = [k for k in CALIB_DATASETS.keys() if "/" not in k]
+            filtered_keys = [k for k in CALIB_DATASETS if "/" not in k]
             raise ValueError(
                 f"Dataset '{name}' is not found. Please choose from the supported datasets: {filtered_keys}."
             )

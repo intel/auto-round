@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Union
 
 import torch
 
@@ -21,7 +20,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_
 from auto_round.utils import get_reciprocal
 
 
-def search_scales(data: torch.Tensor, bits: int, qw: Union[None, torch.Tensor, float] = None) -> torch.Tensor:
+def search_scales(data: torch.Tensor, bits: int, qw: None | torch.Tensor | float = None) -> torch.Tensor:
     # Maximum absolute value for symmetric quantization
     nmax = int(2.0 ** (bits - 1))
 

@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List
 
 from auto_round.utils import matches_any_regex, to_standard_regex
 
 
-def generate_ignore_regex_list(regex_config: Dict[str, Dict], layer_config: Dict[str, Dict]) -> List[str]:
+def generate_ignore_regex_list(regex_config: dict[str, dict], layer_config: dict[str, dict]) -> list[str]:
     """
     Generate ignore regex list for llm_compressor based on regex_config and layer_config.
 
@@ -34,7 +33,7 @@ def generate_ignore_regex_list(regex_config: Dict[str, Dict], layer_config: Dict
         List[str]: List of regex patterns to ignore during quantization.
     """
     prefix = "re:"
-    ignore_regex: List[str] = []
+    ignore_regex: list[str] = []
 
     # Step 1: Add regex_config keys with bits >= 16
     for key, cfg in regex_config.items():

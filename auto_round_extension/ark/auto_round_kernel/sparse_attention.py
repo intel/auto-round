@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 import warnings
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import torch
 
@@ -415,7 +415,7 @@ def sageattn(
     v: torch.Tensor,
     tensor_layout: str = "HND",
     is_causal: bool = False,
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
     return_lse: bool = False,
     kernel: str = "v1_pvhalf",
     **kwargs,
@@ -497,7 +497,7 @@ def _normalize_sparse_mask(
 
 
 def _normalize_per_head_hparam(
-    value: float | int | torch.Tensor,
+    value: float | torch.Tensor,
     num_heads: int,
     device: torch.device,
     name: str,
@@ -823,7 +823,7 @@ def _prefix_protection_requested() -> bool:
 
 
 def _get_explicit_protected_prefix(
-    ctx: "_SpargePreprocessContext",
+    ctx: _SpargePreprocessContext,
 ) -> tuple[int, int]:
     protected_tokens = _get_protected_kv_tokens()
     protected_sparse_blocks = _get_protected_kv_blocks()
@@ -845,7 +845,7 @@ def _get_explicit_protected_prefix(
 
 
 def _get_prefix_protection_blocks(
-    ctx: "_SpargePreprocessContext",
+    ctx: _SpargePreprocessContext,
     *,
     raw_block_count: int,
     tile_block_count: int,

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -74,7 +74,7 @@ def _get_compressor_class(model_type: str, base_cls: type) -> type:
     return combined
 
 
-def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, "QuantizationConfig"]:
+def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, QuantizationConfig]:
     from auto_round.algorithms.config_resolver import split_quantization_configs
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
@@ -151,7 +151,7 @@ def _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwa
     return model_type, ctor_kwargs
 
 
-def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, base_kwargs) -> type:
+def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, base_kwargs) -> type:
     from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
     from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
@@ -193,9 +193,7 @@ def _select_rtn_compressor_base_cls(quant_config: "RTNConfig", scheme, format, b
                 # the plain min/max initialization ignores it
                 if getattr(quant_config, "enable_neuqi", False):
                     enable_imatrix = True
-            elif data_type == "int" and (bits is None or bits < 8):
-                enable_imatrix = True
-            elif is_weight_scheme(scheme):
+            elif (data_type == "int" and (bits is None or bits < 8)) or is_weight_scheme(scheme):
                 enable_imatrix = True
 
     act_bits = resolved_attrs.get("act_bits")
@@ -277,7 +275,7 @@ def _iter_registered_alg_configs() -> list[tuple[str, type]]:
     return result
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _discover_alg_config_fields(config_cls: type) -> frozenset:
     """Discover accepted config fields without maintaining per-algorithm lists."""
     from pydantic import BaseModel
@@ -508,7 +506,7 @@ def _prepare_entry_kwargs(alg_configs, direct_kwargs):
     return configs, runtime_kwargs
 
 
-class _CompressorBuilder(object):
+class _CompressorBuilder:
     """Algorithm-config-driven entry point (``scheme`` + ``alg_configs``).
 
     This is the internal pipeline entry: it resolves the algorithm config(s),
@@ -519,7 +517,7 @@ class _CompressorBuilder(object):
     """
 
     @classmethod
-    def _resolve_config(cls, config: Union[str, object, list]) -> Union[object, list[object]]:
+    def _resolve_config(cls, config: str | object | list) -> object | list[object]:
         """Convert string alias(es) to the corresponding config instance(s) with default parameters."""
         from auto_round.algorithms.registry import resolve_alg_config
 
@@ -531,24 +529,24 @@ class _CompressorBuilder(object):
 
     def __new__(
         cls,
-        model: Union[torch.nn.Module, str],
+        model: torch.nn.Module | str,
         scheme="W4A16",
-        alg_configs: Union[str, object, list[Union[str, object]]] = None,
+        alg_configs: str | object | list[str | object] = None,
         tokenizer=None,
         platform="hf",
         format=None,
         dataset="NeelNanda/pile-10k",
         low_gpu_mem_usage: bool = False,
-        device_map: Union[str, torch.device, int, dict] = 0,
-        iters: int = None,
+        device_map: str | torch.device | int | dict = 0,
+        iters: int | None = None,
         enable_torch_compile: bool = False,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         layer_config=None,
-        nsamples: int = None,
-        seqlen: int = None,
+        nsamples: int | None = None,
+        seqlen: int | None = None,
         **kwargs,
-    ) -> "BaseCompressor":
+    ) -> BaseCompressor:
         from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
         from auto_round.algorithms.registry import normalize_algorithm_config
@@ -728,28 +726,28 @@ class AutoRound:
 
     def __new__(
         cls,
-        model: Union[torch.nn.Module, str],
+        model: torch.nn.Module | str,
         tokenizer=None,
         platform: str = "hf",
-        scheme: Union[str, dict, QuantizationScheme, "AutoScheme"] = "W4A16",
-        schemes: Union[str, list, tuple, None] = None,
-        bits: Union[int, float, None] = None,
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
+        scheme: str | dict | QuantizationScheme | AutoScheme = "W4A16",
+        schemes: str | list | tuple | None = None,
+        bits: float | None = None,
+        layer_config: dict[str, str | dict | QuantizationScheme] | None = None,
+        dataset: str | list | tuple | torch.utils.data.DataLoader | None = None,
         iters: int | None = None,
         seqlen: int = 2048,
         nsamples: int = 128,
         batch_size: int = 8,
         gradient_accumulate_steps: int | None = None,
         low_gpu_mem_usage: bool = False,
-        device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: Optional[bool] = None,
+        device_map: str | torch.device | int | dict = 0,
+        enable_torch_compile: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         alg_configs=None,
         algorithm: str | None = None,
         **kwargs,
-    ) -> "BaseCompressor":
+    ) -> BaseCompressor:
         direct_kwargs = dict(kwargs)
         legacy_device = direct_kwargs.pop("device", None)
         if legacy_device is not None:

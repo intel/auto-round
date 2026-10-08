@@ -19,10 +19,11 @@ import re
 import shutil
 import sys
 import tempfile
+from collections.abc import Callable
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from threading import Lock
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
 import cpuinfo
 import psutil
@@ -80,7 +81,7 @@ def _use_hpu_compile_mode():
     return TORCH_VERSION_AT_LEAST_2_4 and not is_hpu_lazy_mode()
 
 
-def _bump_dynamo_cache_limit(min_size: Optional[int] = None):
+def _bump_dynamo_cache_limit(min_size: int | None = None):
     """Raise torch._dynamo cache/recompile limits.
 
     The same quant function (e.g. ``quant_tensor_sym``) is reused across
@@ -109,9 +110,7 @@ def _bump_dynamo_cache_limit(min_size: Optional[int] = None):
         pass
 
 
-def compile_func(
-    fun: Union[torch.nn.Module, Callable], device: Union[str, torch.device, int]
-) -> Union[torch.nn.Module, Callable]:
+def compile_func(fun: torch.nn.Module | Callable, device: str | torch.device | int) -> torch.nn.Module | Callable:
     """Compile a function on the specified device.
 
     The shared dynamo cache-limit bump lives in :func:`_bump_dynamo_cache_limit`;
@@ -162,11 +161,9 @@ def is_tbb_available():  # pragma: no cover
         return False
     if not _is_tbb_configured():
         logger.warning_once(
-            (
-                "TBB is installed but not configured correctly. \n"
-                "Please add the TBB library path to `LD_LIBRARY_PATH`, "
-                "for example: `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/`."
-            )
+            "TBB is installed but not configured correctly. \n"
+            "Please add the TBB library path to `LD_LIBRARY_PATH`, "
+            "for example: `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/`."
         )
         return False
     return True
@@ -180,9 +177,7 @@ def can_pack_with_numba():  # pragma: no cover
     if not is_numba_available():
         logger.warning_once("Numba is not installed, please install it with `pip install numba`.")
         return False
-    if not is_tbb_available():
-        return False
-    return True
+    return is_tbb_available()
 
 
 ## check hpex
@@ -416,7 +411,7 @@ class fake_triton_for_hpu(ContextDecorator):
         return False
 
 
-class CpuInfo(object):
+class CpuInfo:
     """Get CPU Info."""
 
     def __init__(self):
@@ -596,7 +591,7 @@ def set_tuning_device_for_layer(model, name: str, device: str) -> None:
 
 
 def set_non_auto_device_map(
-    model: torch.nn.Module, device_map: Union[str, int, dict], quant_layer_names: Union[None, list, tuple] = None
+    model: torch.nn.Module, device_map: str | int | dict, quant_layer_names: None | list | tuple = None
 ) -> None:
     if not device_map or device_map == "auto" or isinstance(device_map, int):
         return
@@ -1174,7 +1169,7 @@ def partition_dict_numbers(number_dict, n):
     #  - Assign each item to the group with the current smallest sum
     # Complexity: O(m log n) which scales well for large m (layers)
     groups_sums = [0.0] * n
-    groups = [dict() for _ in range(n)]
+    groups = [{} for _ in range(n)]
 
     # Sort items descending by size
     items_sorted = sorted(items, key=lambda kv: kv[1], reverse=True)
@@ -1242,7 +1237,7 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
     for device in device_list:
         if device.startswith("hpu") and len(device_list) > 1:
             logger.warning_once("Auto-scheme does not support multiple HPUs.")
-        if device.startswith("cpu") or device.startswith("hpu"):
+        if device.startswith(("cpu", "hpu")):
             continue
         gpu_devices.append(device)
     num_devices = len(gpu_devices)
@@ -1260,11 +1255,9 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
                 params_dict[n] = in_features * out_features
 
             res_list = partition_dict_numbers(params_dict, num_devices)
-            device_index = 0
-            for res in res_list:
+            for device_index, res in enumerate(res_list):
                 for key in res.keys():
                     set_tuning_device_for_layer(block_module, key, gpu_devices[device_index])
-                device_index += 1
 
 
 if __name__ == "__main__":
@@ -1292,7 +1285,7 @@ if __name__ == "__main__":
         print(f"Group {i + 1}: {group}, Sum: {sum(group.values())}")
 
 
-def parse_available_devices(device_map: Union[str, torch.device, int, dict, None] = None) -> list:
+def parse_available_devices(device_map: str | torch.device | int | dict | None = None) -> list:
     """
     Parse the device map and return a list of all available devices.
 
@@ -1404,7 +1397,7 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
     raise TypeError(f"Unsupported device_map type: {type(device_map)}")
 
 
-@lru_cache(maxsize=None)
+@functools.cache
 def is_gaudi2():
     try:
         import habana_frameworks.torch.utils.experimental as htexp
@@ -1602,7 +1595,7 @@ def dump_mem_usage(msg: str = "", log_level: str = "info"):
 # This function is designed for Auto Scheme and Diffusion Pipeline,
 # which requires dispatching the whole model on all available devices.
 def dispatch_model_by_all_available_devices(
-    model: torch.nn.Module, device_map: Union[str, int, dict, None]
+    model: torch.nn.Module, device_map: str | int | dict | None
 ) -> torch.nn.Module:
     # Important Notice: This dispatch does not follow dict device_map, just extract all available devices and use them
     device_type = get_major_device()

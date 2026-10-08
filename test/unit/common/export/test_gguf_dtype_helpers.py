@@ -195,7 +195,7 @@ class TestUseMoreBits:
         from auto_round.export.export_to_gguf.gguf_dtype import _use_more_bits
 
         # 8 layers: first 8/8=1 layer uses more bits
-        for i in range(0, 1):
+        for i in range(1):
             assert _use_more_bits(i, 8) is True
 
     def test_last_eighth(self):

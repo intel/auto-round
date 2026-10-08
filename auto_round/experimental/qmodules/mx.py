@@ -13,8 +13,6 @@
 # limitations under the License.
 
 
-from typing import Optional, Union
-
 import torch
 
 from auto_round.data_type.utils import get_quant_func
@@ -57,9 +55,9 @@ class MXQuantLinearBase(QModuleBase):
         in_features,
         out_features,
         config: QuantizationScheme,
-        weight: Optional[torch.Tensor] = None,
-        weight_scale: Optional[torch.Tensor] = None,
-        bias: Union[torch.Tensor, bool, None] = None,
+        weight: torch.Tensor | None = None,
+        weight_scale: torch.Tensor | None = None,
+        bias: torch.Tensor | bool | None = None,
         dtype=torch.bfloat16,
     ):
         super().__init__()
@@ -109,7 +107,7 @@ class MXQuantLinearBase(QModuleBase):
                 ),
             )
 
-    def initialize_weights(self, weight: Optional[torch.Tensor]) -> torch.Tensor:
+    def initialize_weights(self, weight: torch.Tensor | None) -> torch.Tensor:
         """
         Initialize weights. This method should be overridden by subclasses.
         """
@@ -169,7 +167,7 @@ class MXQuantLinearBase(QModuleBase):
         return out
 
     @classmethod
-    def from_original(cls, config: Optional[QuantizationScheme], original_layer: torch.nn.Linear):
+    def from_original(cls, config: QuantizationScheme | None, original_layer: torch.nn.Linear):
         """
         Create an `MXQuantLinear` layer from an original linear layer.
         """
@@ -193,7 +191,7 @@ class MXFP4QuantLinear(MXQuantLinearBase):
         self.weight_name = "weight_packed"
         super().__init__(*args, **kwargs)
 
-    def initialize_weights(self, weight: Optional[torch.Tensor]) -> torch.Tensor:
+    def initialize_weights(self, weight: torch.Tensor | None) -> torch.Tensor:
         weight_dtype = torch.uint8
         weight_in_features = self.in_features // 2
         return torch.zeros((self.out_features, weight_in_features), dtype=weight_dtype) if weight is None else weight
@@ -219,7 +217,7 @@ class MXINT4QuantLinear(MXQuantLinearBase):
         self.weight_name = "weight_packed"
         super().__init__(*args, **kwargs)
 
-    def initialize_weights(self, weight: Optional[torch.Tensor]) -> torch.Tensor:
+    def initialize_weights(self, weight: torch.Tensor | None) -> torch.Tensor:
         weight_dtype = torch.uint8
         weight_in_features = self.in_features // 2
         return torch.zeros((self.out_features, weight_in_features), dtype=weight_dtype) if weight is None else weight
@@ -236,7 +234,7 @@ class MXINT4QuantLinear(MXQuantLinearBase):
         return unpacked_data
 
     @classmethod
-    def from_original(cls, config: Optional[QuantizationScheme], original_layer: torch.nn.Linear):
+    def from_original(cls, config: QuantizationScheme | None, original_layer: torch.nn.Linear):
         """
         Create an `MXQuantLinear` layer from an original linear layer.
         """
@@ -260,7 +258,7 @@ class MXFP8QuantLinear(MXQuantLinearBase):
         self.weight_name = "weight"
         super().__init__(*args, **kwargs)
 
-    def initialize_weights(self, weight: Optional[torch.Tensor]) -> torch.Tensor:
+    def initialize_weights(self, weight: torch.Tensor | None) -> torch.Tensor:
         weight_dtype = torch.float8_e4m3fn
         weight_in_features = self.in_features
         return torch.zeros((self.out_features, weight_in_features), dtype=weight_dtype) if weight is None else weight

@@ -26,7 +26,8 @@ Extension points for new calibration strategies:
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import torch
 

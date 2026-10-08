@@ -134,8 +134,8 @@ class TestSplitFusedExpertTensors:
         }
         result = split_fused_expert_tensors(tensors)
         assert set(result.keys()) == set(tensors.keys())
-        for k in tensors:
-            assert torch.equal(result[k], tensors[k])
+        for k, v in tensors.items():
+            assert torch.equal(result[k], v)
 
     def test_warns_on_3d_tensor_with_unsupported_parent(self, caplog, _autoround_log_propagate):
         tensors = {

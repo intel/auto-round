@@ -94,15 +94,17 @@ class TestOotReplaceWithFp8Linear:
         model = _NoLinear()
         config = _QuantConfigStub(dequantize=False)
 
-        with patch("transformers.integrations.finegrained_fp8.FP8Linear"):
-            with patch(
+        with (
+            patch("transformers.integrations.finegrained_fp8.FP8Linear"),
+            patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
-            ):
-                with patch("transformers.integrations.finegrained_fp8.logger") as mock_logger:
-                    result = oot_replace_with_fp8_linear(model, quantization_config=config)
-                    assert result is model
-                    assert mock_logger.warning.called
+            ),
+            patch("transformers.integrations.finegrained_fp8.logger") as mock_logger,
+        ):
+            result = oot_replace_with_fp8_linear(model, quantization_config=config)
+            assert result is model
+            assert mock_logger.warning.called
 
     def test_replaces_linear_modules(self):
         """All ``nn.Linear`` children should be replaced with the FP8 class."""
@@ -113,21 +115,23 @@ class TestOotReplaceWithFp8Linear:
         def _make_module(*args, **kwargs):
             return nn.Linear(8, 8)
 
-        with patch(
-            "transformers.integrations.finegrained_fp8.FP8Linear",
-            side_effect=_make_module,
-        ):
-            with patch(
+        with (
+            patch(
+                "transformers.integrations.finegrained_fp8.FP8Linear",
+                side_effect=_make_module,
+            ),
+            patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
-            ):
-                with patch(
-                    "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
-                    return_value=False,
-                ):
-                    result = oot_replace_with_fp8_linear(model, quantization_config=config)
-                    # FP8Linear was called for each nn.Linear child.
-                    assert result is model
+            ),
+            patch(
+                "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
+                return_value=False,
+            ),
+        ):
+            result = oot_replace_with_fp8_linear(model, quantization_config=config)
+            # FP8Linear was called for each nn.Linear child.
+            assert result is model
 
     def test_with_modules_to_not_convert(self):
         """Names listed in ``modules_to_not_convert`` are skipped."""
@@ -135,19 +139,21 @@ class TestOotReplaceWithFp8Linear:
         model = _TinyModel(with_bias=True)
         config = _QuantConfigStub(dequantize=False)
 
-        with patch("transformers.integrations.finegrained_fp8.FP8Linear") as mock_fp8:
-            with patch(
+        with (
+            patch("transformers.integrations.finegrained_fp8.FP8Linear") as mock_fp8,
+            patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=False,
-            ):
-                oot_replace_with_fp8_linear(
-                    model,
-                    modules_to_not_convert=["fc1"],
-                    quantization_config=config,
-                )
-                # No replacement calls should have happened
-                # because should_convert_module returned False everywhere.
-                assert not mock_fp8.called
+            ),
+        ):
+            oot_replace_with_fp8_linear(
+                model,
+                modules_to_not_convert=["fc1"],
+                quantization_config=config,
+            )
+            # No replacement calls should have happened
+            # because should_convert_module returned False everywhere.
+            assert not mock_fp8.called
 
     def test_pre_quantized(self):
         """The ``pre_quantized=True`` path passes ``dtype=None`` instead of
@@ -162,23 +168,25 @@ class TestOotReplaceWithFp8Linear:
             captured_kwargs.append(kwargs)
             return nn.Linear(8, 8)
 
-        with patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture):
-            with patch(
+        with (
+            patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture),
+            patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
-            ):
-                with patch(
-                    "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
-                    return_value=True,
-                ):
-                    oot_replace_with_fp8_linear(
-                        model,
-                        quantization_config=config,
-                        pre_quantized=True,
-                    )
-                    # Every captured call must include ``dtype=None``.
-                    for kw in captured_kwargs:
-                        assert kw.get("dtype") is None
+            ),
+            patch(
+                "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
+                return_value=True,
+            ),
+        ):
+            oot_replace_with_fp8_linear(
+                model,
+                quantization_config=config,
+                pre_quantized=True,
+            )
+            # Every captured call must include ``dtype=None``.
+            for kw in captured_kwargs:
+                assert kw.get("dtype") is None
 
     def test_bias_kwarg_name_pre_v5_4(self):
         """On transformers < 5.4, the bias flag is passed as ``bias``."""
@@ -191,23 +199,25 @@ class TestOotReplaceWithFp8Linear:
             captured_kwargs.append(kwargs)
             return nn.Linear(8, 8)
 
-        with patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture):
-            with patch(
+        with (
+            patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture),
+            patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
-            ):
-                with patch(
-                    "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
-                    return_value=False,
-                ):
-                    oot_replace_with_fp8_linear(model, quantization_config=config)
-                    # At least one replacement happened.
-                    assert len(captured_kwargs) >= 1
-                    for kw in captured_kwargs:
-                        # On pre-5.4, ``bias`` is the kwarg (not ``has_bias``).
-                        assert "bias" in kw
-                        assert "has_bias" not in kw
-                        assert kw["bias"] is True
+            ),
+            patch(
+                "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
+                return_value=False,
+            ),
+        ):
+            oot_replace_with_fp8_linear(model, quantization_config=config)
+            # At least one replacement happened.
+            assert len(captured_kwargs) >= 1
+            for kw in captured_kwargs:
+                # On pre-5.4, ``bias`` is the kwarg (not ``has_bias``).
+                assert "bias" in kw
+                assert "has_bias" not in kw
+                assert kw["bias"] is True
 
     def test_bias_kwarg_name_v5_4_plus(self):
         """On transformers >= 5.4, the bias flag is passed as ``has_bias``."""
@@ -220,21 +230,23 @@ class TestOotReplaceWithFp8Linear:
             captured_kwargs.append(kwargs)
             return nn.Linear(8, 8)
 
-        with patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture):
-            with patch(
+        with (
+            patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture),
+            patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
-            ):
-                with patch(
-                    "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
-                    return_value=True,
-                ):
-                    oot_replace_with_fp8_linear(model, quantization_config=config)
-                    assert len(captured_kwargs) >= 1
-                    for kw in captured_kwargs:
-                        assert "has_bias" in kw
-                        assert "bias" not in kw
-                        assert kw["has_bias"] is True
+            ),
+            patch(
+                "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
+                return_value=True,
+            ),
+        ):
+            oot_replace_with_fp8_linear(model, quantization_config=config)
+            assert len(captured_kwargs) >= 1
+            for kw in captured_kwargs:
+                assert "has_bias" in kw
+                assert "bias" not in kw
+                assert kw["has_bias"] is True
 
     def test_no_bias_flag_passed_correctly(self):
         """When the linear module has ``bias=False``, the OOT function must
@@ -249,19 +261,21 @@ class TestOotReplaceWithFp8Linear:
             captured_kwargs.append(kwargs)
             return nn.Linear(8, 8)
 
-        with patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture):
-            with patch(
+        with (
+            patch("transformers.integrations.finegrained_fp8.FP8Linear", side_effect=_capture),
+            patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
-            ):
-                with patch(
-                    "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
-                    return_value=False,
-                ):
-                    oot_replace_with_fp8_linear(model, quantization_config=config)
-                    assert len(captured_kwargs) >= 1
-                    for kw in captured_kwargs:
-                        assert kw.get("bias") is False
+            ),
+            patch(
+                "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
+                return_value=False,
+            ),
+        ):
+            oot_replace_with_fp8_linear(model, quantization_config=config)
+            assert len(captured_kwargs) >= 1
+            for kw in captured_kwargs:
+                assert kw.get("bias") is False
 
     def test_returns_self(self):
         """The function returns the (mutated) model object."""
@@ -272,20 +286,22 @@ class TestOotReplaceWithFp8Linear:
         def _make_module(*args, **kwargs):
             return nn.Linear(8, 8)
 
-        with patch(
-            "transformers.integrations.finegrained_fp8.FP8Linear",
-            side_effect=_make_module,
-        ):
-            with patch(
+        with (
+            patch(
+                "transformers.integrations.finegrained_fp8.FP8Linear",
+                side_effect=_make_module,
+            ),
+            patch(
                 "transformers.integrations.finegrained_fp8.should_convert_module",
                 return_value=True,
-            ):
-                with patch(
-                    "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
-                    return_value=True,
-                ):
-                    result = oot_replace_with_fp8_linear(model, quantization_config=config)
-                    assert result is model
+            ),
+            patch(
+                "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5_4_0",
+                return_value=True,
+            ),
+        ):
+            result = oot_replace_with_fp8_linear(model, quantization_config=config)
+            assert result is model
 
 
 # ---------------------------------------------------------------------------
@@ -333,23 +349,27 @@ class TestApplyFp8ExpertReplacementPatch:
     def test_no_cuda_does_nothing(self):
         """On a non-CUDA host the function must be a no-op without raising."""
 
-        with patch("torch.cuda.is_available", return_value=False):
-            with patch(
+        with (
+            patch("torch.cuda.is_available", return_value=False),
+            patch(
                 "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5",
                 return_value=True,
-            ):
-                # Should not raise.
-                assert apply_fp8_expert_replacement_patch() is None
+            ),
+        ):
+            # Should not raise.
+            assert apply_fp8_expert_replacement_patch() is None
 
     def test_old_transformers_does_nothing(self):
         """With transformers < 5 the function must be a no-op."""
 
-        with patch("torch.cuda.is_available", return_value=True):
-            with patch(
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch(
                 "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5",
                 return_value=False,
-            ):
-                assert apply_fp8_expert_replacement_patch() is None
+            ),
+        ):
+            assert apply_fp8_expert_replacement_patch() is None
 
     def test_import_error_is_swallowed(self):
         """If the local import of ``transformers.integrations.finegrained_fp8``
@@ -365,14 +385,16 @@ class TestApplyFp8ExpertReplacementPatch:
                 raise ImportError("boom")
             return real_import(name, globals, locals, fromlist, level)
 
-        with patch("torch.cuda.is_available", return_value=True):
-            with patch(
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch(
                 "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5",
                 return_value=True,
-            ):
-                with patch("builtins.__import__", side_effect=fake_import):
-                    # Should not raise despite the ImportError.
-                    assert apply_fp8_expert_replacement_patch() is None
+            ),
+            patch("builtins.__import__", side_effect=fake_import),
+        ):
+            # Should not raise despite the ImportError.
+            assert apply_fp8_expert_replacement_patch() is None
 
     def test_replaces_upstream_replace_with_fp8_linear(self):
         """When transformers >= 5 and CUDA is available, the upstream
@@ -385,13 +407,15 @@ class TestApplyFp8ExpertReplacementPatch:
 
         original = upstream.replace_with_fp8_linear
         try:
-            with patch("torch.cuda.is_available", return_value=True):
-                with patch(
+            with (
+                patch("torch.cuda.is_available", return_value=True),
+                patch(
                     "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5",
                     return_value=True,
-                ):
-                    apply_fp8_expert_replacement_patch()
-                    assert upstream.replace_with_fp8_linear is fp8q.oot_replace_with_fp8_linear
+                ),
+            ):
+                apply_fp8_expert_replacement_patch()
+                assert upstream.replace_with_fp8_linear is fp8q.oot_replace_with_fp8_linear
         finally:
             upstream.replace_with_fp8_linear = original
 
@@ -408,13 +432,15 @@ class TestApplyFp8ExpertReplacementPatch:
 
         original = FineGrainedFP8HfQuantizer.validate_environment
         try:
-            with patch("torch.cuda.is_available", return_value=True):
-                with patch(
+            with (
+                patch("torch.cuda.is_available", return_value=True),
+                patch(
                     "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5",
                     return_value=True,
-                ):
-                    apply_fp8_expert_replacement_patch()
-                    assert FineGrainedFP8HfQuantizer.validate_environment is fp8q.oot_validate_environment
+                ),
+            ):
+                apply_fp8_expert_replacement_patch()
+                assert FineGrainedFP8HfQuantizer.validate_environment is fp8q.oot_validate_environment
         finally:
             FineGrainedFP8HfQuantizer.validate_environment = original
 
@@ -463,9 +489,11 @@ class TestPatchBehaviorMatrix:
     def test_all_combinations_no_raise(self, cuda_available, transformers_v5):
         """Every combination of gating conditions must not raise."""
 
-        with patch("torch.cuda.is_available", return_value=cuda_available):
-            with patch(
+        with (
+            patch("torch.cuda.is_available", return_value=cuda_available),
+            patch(
                 "auto_round.modeling.fp8_quant.is_transformers_version_greater_or_equal_5",
                 return_value=transformers_v5,
-            ):
-                assert apply_fp8_expert_replacement_patch() is None
+            ),
+        ):
+            assert apply_fp8_expert_replacement_patch() is None

@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Mapping
+from collections.abc import Mapping
 
 import pytest
 
