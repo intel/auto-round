@@ -103,6 +103,20 @@ def test_update_module_applies_replacements_for_gguf(monkeypatch):
     assert calls == [(model, {"gguf_export": True})]
 
 
+def test_make_q3_quants_rmse_scale_matches_levels():
+    """The refined Q3_K sub-block scale must be the least-squares fit for the returned levels,
+    sum(w*x*L) / sum(w*L*L) with w = x**2, as in llama.cpp's make_q3_quants."""
+    from auto_round.export.export_to_gguf.packing import make_q3_quants
+
+    torch.manual_seed(0)
+    data = torch.randn(4, 16, 16)
+    scales, levels = make_q3_quants(data.clone(), bits=3, do_rmse=True)
+    levels = levels.to(torch.int8).float()
+    weights = data**2
+    expected = (weights * data * levels).sum(-1) / (weights * levels * levels).sum(-1)
+    torch.testing.assert_close(scales, expected)
+
+
 class TestGGUF:
 
     @classmethod
