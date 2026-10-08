@@ -943,7 +943,7 @@ def q5_k_quant_block(
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
 
         blocks.reshape(blocks.shape[0], -1)
-        blocks, scales, mins = quant_tensor_gguf_asym_dq(blocks, bits=4, scale_dtype=torch.float32, imatrix=imatrix)
+        blocks, scales, mins = quant_tensor_gguf_asym_dq(blocks, bits=5, scale_dtype=torch.float32, imatrix=imatrix)
         scales, d_scale = scales["scale"], scales["d_scale"]
         mins, d_wmin = mins["wmin"], mins["d_wmin"]
 
@@ -975,7 +975,7 @@ def q5_k_quant_block(
     output_scale[:, :4] |= (q_scales[:, 4:] >> 4) << 6
     output_scale[:, 4:8] |= (q_mins[:, 4:] >> 4) << 6
 
-    output_qs = all_L[:, ::2] | (all_L[:, 1::2] << 4)
+    output_qs = (all_L[:, ::2] & 0xF) | (all_L[:, 1::2] << 4)
     output_qh = all_L >> 4 << torch.arange(8, device=all_L.device).reshape(1, 8, 1)
     output_qh = np.bitwise_or.reduce(output_qh.cpu().numpy(), axis=1, dtype=np.uint8).astype(
         np.uint8
