@@ -685,11 +685,10 @@ class SVDQuantTransform(BasePreprocessor):
             pattern in name or pattern in full_name for pattern in self._target_modules
         ):
             return False
-        if self.config.exclude_modules and any(
-            pattern in name or pattern in full_name for pattern in self.config.exclude_modules
-        ):
-            return False
-        return True
+        return not (
+            self.config.exclude_modules
+            and any(pattern in name or pattern in full_name for pattern in self.config.exclude_modules)
+        )
 
     @staticmethod
     def _new_linear_like(module: torch.nn.Linear, weight: torch.Tensor, bias: torch.Tensor | None):

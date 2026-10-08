@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-from typing import Optional, Union
+import sys
 
 from auto_round.logger import logger
 from auto_round.utils import dispatch_model_block_wise
@@ -57,9 +57,9 @@ def _normalize_model_eval_dtype(model, eval_model_dtype):
 def simple_evaluate_user_model(
     user_model,
     tokenizer,
-    batch_size: Optional[int] = 1,
-    limit: Optional[Union[int, float]] = None,
-    max_batch_size: Optional[int] = 64,
+    batch_size: int | None = 1,
+    limit: float | None = None,
+    max_batch_size: int | None = 64,
     eval_model_dtype="auto",
     add_bos_token: bool = False,
     mllm: bool = False,
@@ -98,11 +98,11 @@ def simple_evaluate_user_model(
 
 def simple_evaluate(
     model,
-    model_args: Optional[Union[str, dict]] = None,
-    batch_size: Optional[int] = None,
-    limit: Optional[Union[int, float]] = None,
-    max_batch_size: Optional[int] = None,
-    device: Optional[str] = None,
+    model_args: str | dict | None = None,
+    batch_size: int | None = None,
+    limit: float | None = None,
+    max_batch_size: int | None = None,
+    device: str | None = None,
     **kwargs,
 ):
     import lm_eval  # pylint: disable=E0401
@@ -141,7 +141,7 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
             logger.error(
                 "Quantized model is meta and diffusers doesn't support loading auto-round quantized model now. Exit."
             )
-            exit(0)
+            sys.exit(0)
         pipe = autoround.pipe
         pipe.to(model.dtype)
         pipe.transformer = model
@@ -336,7 +336,7 @@ def evaluate_with_model_instance(model, tokenizer, device_str, args):
             fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def evaluate_with_model_path(eval_folder, device_str, autoround, args):
@@ -412,7 +412,7 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
@@ -516,20 +516,39 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
             if model is None:
                 return
         else:
-            if model is None:
-                # Model-free mode: load model from the saved output directory
+            # Evaluate the exported artifact for both regular and model-free flows.
+            # The in-memory regular model still contains quantization wrappers,
+            # while fake-format loading materializes FakeActQuantLinear modules.
+            if model is not None:
+                model_context = getattr(autoround, "model_context", None)
+                if model_context is not None and getattr(model_context, "model", None) is model:
+                    model_context.model = None
+                model = None
+                from auto_round.utils import clear_memory
+
+                clear_memory()
+
+            eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+            if getattr(autoround, "mllm", False):
+                from auto_round.utils.model import mllm_load_model
+
+                model, _, loaded_tokenizer, _ = mllm_load_model(
+                    eval_folder,
+                    device=device_str,
+                    torch_dtype=eval_model_dtype,
+                    trust_remote_code=not args.disable_trust_remote_code,
+                )
+                if tokenizer is None:
+                    tokenizer = loaded_tokenizer
+            else:
                 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-                eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
                 model = AutoModelForCausalLM.from_pretrained(
-                    eval_folder, device_map=args.device_map, torch_dtype=eval_model_dtype
+                    eval_folder, device_map=device_str, torch_dtype=eval_model_dtype
                 )
                 model.eval()
                 if tokenizer is None:
                     tokenizer = AutoTokenizer.from_pretrained(eval_folder)
-            else:
-                eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-                model = prepare_model_for_eval(model, args.device_map, eval_model_dtype)
 
         # Evaluate with model instance
         evaluate_with_model_instance(model, tokenizer, device_str, args)

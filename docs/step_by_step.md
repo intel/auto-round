@@ -639,6 +639,8 @@ AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibrat
 
 For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. To use the original (pure) RTN algorithm instead, enable the `--disable_opt_rtn` option.
 
+Passing `--enable_neuqi` opts the optimized path into the **NeUQI** grid search ([arXiv 2505.17595](https://arxiv.org/abs/2505.17595)): asymmetric layers run a joint (scale, integer zero-point) search and symmetric layers a two-stage signed scale search, both weighted by the activation imatrix on the zero-shot path, which is collected automatically (with `iters > 0` the anchor uses the imatrix when the tuning path collects one, running unweighted otherwise). With `iters > 0`, the search result anchors the SignRound tuning grid (frozen init). Grid sizes are tunable via `AR_NEUQI_COARSE`/`AR_NEUQI_FINE` (see [environments](./environments.md)); the unpinned default is backend-aware (wide only on the Triton/torch.compile lanes). Accuracy and wall-time results are shown in [NeUQI accuracy validation](./neuqi_acc.md).
+
 #### CLI Usage
 
 Two dedicated CLI entry points are provided as shortcuts:
@@ -993,9 +995,16 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
     - or combine them
 
-  `torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC `cl.exe` compiler. Windows
+  `torch.compile` is disabled by default on Windows because TorchInductor needs a compatible compiler toolchain. Windows
   users can pass `enable_torch_compile=True` to the Python API or use `--enable_torch_compile` to force enable it. On
   other platforms, pass `enable_torch_compile=False` or use `--disable_torch_compile` to opt out.
+
+  For NVIDIA GPUs on Windows, install a CUDA-enabled PyTorch build and a compatible `triton-windows` version in the
+  same Python environment as AutoRound before enabling compilation. Follow the
+  [Triton for Windows installation guide](https://github.com/triton-lang/triton-windows) for the PyTorch/Triton version
+  matrix, supported GPUs, and compiler requirements. Do not simply install the newest Triton version with an older
+  PyTorch build. Enabling `--enable_torch_compile` alone does not install these dependencies; a `TritonMissing` error
+  means the compilation environment still needs attention. Keep compilation disabled until the prerequisites are met.
 
 
 - **Enable quantized lm-head:**

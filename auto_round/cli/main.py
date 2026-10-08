@@ -255,6 +255,8 @@ def start(recipe="default", argv=None):
     for key, value in recipe_defaults.items():
         if getattr(args, key, None) is None:
             setattr(args, key, value)
+    if args.model_free:
+        args.iters = 0
 
     tune(args)
 

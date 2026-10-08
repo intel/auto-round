@@ -15,14 +15,14 @@
 import logging
 import re
 import subprocess
-from functools import lru_cache
+from functools import cache
 
 import torch
 
 logger = logging.getLogger(__name__)
 
 
-@lru_cache(maxsize=None)
+@cache
 def is_oneapi_ge_2026() -> bool:
     try:
         output = subprocess.check_output(
@@ -41,7 +41,7 @@ B70_DEVICE_ID = "0xe223"
 B70_IDENTIFIERS = (B70_DEVICE_ID, "b70")
 
 
-@lru_cache(maxsize=None)
+@cache
 def is_b70(device: int = 0) -> bool:
     try:
         pro = torch.xpu.get_device_properties(device)

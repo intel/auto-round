@@ -16,9 +16,11 @@ import inspect
 import json
 import os
 import re
+import sys
 from collections import UserDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 import psutil
 import torch
@@ -29,6 +31,7 @@ from auto_round import envs
 from auto_round.export.export_to_gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, monkey_patch_model
+from auto_round.utils.path_safety import UnsafeCheckpointPathError
 from auto_round.utils.weight_handler import (
     _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
@@ -190,7 +193,7 @@ def check_diffusers_installed():  # pragma: no cover
         return True
     except ImportError:
         logger.error("Please install diffusers via 'pip install diffusers'" " to run diffusion model")
-        exit(-1)
+        sys.exit(-1)
 
 
 def check_start_with_block_name(name: str, block_name_to_quantize: list):
@@ -210,7 +213,7 @@ def check_start_with_block_name(name: str, block_name_to_quantize: list):
     return False
 
 
-def download_or_get_path(repo_id: str, platform: str = None) -> str:
+def download_or_get_path(repo_id: str, platform: str | None = None) -> str:
     from auto_round import envs
 
     if platform is None:
@@ -225,7 +228,7 @@ def download_or_get_path(repo_id: str, platform: str = None) -> str:
         return download_hf_model(repo_id)
 
 
-def download_modelscope_model(repo_id: str, local_dir: str = None, cache_dir: str = None):
+def download_modelscope_model(repo_id: str, local_dir: str | None = None, cache_dir: str | None = None):
     from modelscope.utils.file_utils import get_modelscope_cache_dir  # pylint: disable=E0401
 
     system_cache = cache_dir if cache_dir is not None else get_modelscope_cache_dir()
@@ -377,10 +380,13 @@ def _maybe_truncate_debug_layers(config) -> bool:
     # hard-coding one name.
     targets = [config]
     seen = {id(config)}
-    for value in list(getattr(config, "__dict__", {}).values()):
-        if hasattr(value, "num_hidden_layers") and id(value) not in seen:
-            targets.append(value)
-            seen.add(id(value))
+    for cfg in targets:
+        for value in list(getattr(cfg, "__dict__", {}).values()):
+            if id(value) not in seen and (
+                isinstance(value, transformers.PretrainedConfig) or hasattr(value, "num_hidden_layers")
+            ):
+                targets.append(value)
+                seen.add(id(value))
 
     changed = False
     for cfg in targets:
@@ -440,7 +446,7 @@ def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
     trust_remote_code: bool = True,
-    model_dtype: str = None,
+    model_dtype: str | None = None,
     device: str = "cpu",
     **kwargs,
 ):
@@ -567,7 +573,7 @@ def llm_load_model(
     return model, tokenizer
 
 
-def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list = None) -> tuple:
+def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list | None = None) -> tuple:
     """Find model/processor subfolders from a pipeline's model_index.json.
 
     Works for both local directories and remote HF repos.
@@ -605,6 +611,9 @@ def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list = Non
     for name, value in model_index.items():
         if name.startswith("_") or not isinstance(value, list) or len(value) < 2:
             continue
+        # The chosen name becomes a read subfolder and later an output subfolder.
+        if not name.isidentifier():
+            raise UnsafeCheckpointPathError(f"model_index.json: component name {name!r} is not a plain directory name")
         # Load component config.json
         if is_local:
             cfg_path = os.path.join(model_dir_or_repo, name, "config.json")
@@ -643,7 +652,7 @@ def mllm_load_model(
     torch_dtype: str = "auto",
     use_auto_mapping: bool = True,
     trust_remote_code: bool = True,
-    model_dtype: str = None,
+    model_dtype: str | None = None,
     **kwargs,
 ):
     from auto_round.special_model_handler import MISTRAL_3_2_MODELS
@@ -877,7 +886,7 @@ def mllm_load_model(
                 else:
                     raise
 
-            if any([name in model.name_or_path for name in MISTRAL_3_2_MODELS]):
+            if any(name in model.name_or_path for name in MISTRAL_3_2_MODELS):
                 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
 
                 if os.path.isdir(pretrained_model_name_or_path):
@@ -891,7 +900,7 @@ def mllm_load_model(
                 tokenizer = AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=trust_remote_code,
-                    fix_mistral_regex=True if model_type in FIX_MISTRAL_REGEX_MODEL_TYPE_LIST else False,
+                    fix_mistral_regex=model_type in FIX_MISTRAL_REGEX_MODEL_TYPE_LIST,
                     **processor_load_kwargs,
                 )
                 processor = AutoProcessor.from_pretrained(
@@ -955,12 +964,12 @@ def _attach_diffusion_pipeline_fn(pipe):
 def diffusion_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
-    device: Union[str, torch.device] = "cpu",
-    torch_dtype: Union[str, torch.dtype] = "auto",
+    device: str | torch.device = "cpu",
+    torch_dtype: str | torch.dtype = "auto",
     use_auto_mapping: bool = False,
     trust_remote_code: bool = True,
-    model_dtype: str = None,
-    default_torch_dtype: Union[str, torch.dtype] = "auto",
+    model_dtype: str | None = None,
+    default_torch_dtype: str | torch.dtype = "auto",
     **kwargs,
 ):
     from functools import partial
@@ -1081,8 +1090,8 @@ def diffusion_load_model(
     _attach_diffusion_pipeline_fn(pipe)
 
     # meta model uses model.config.save_pretrained for config saving
-    setattr(model.config, "save_pretrained", partial(config_save_pretrained, model.config, "config.json", model=model))
-    setattr(pipe.config, "save_pretrained", partial(config_save_pretrained, pipe.config, "model_index.json"))
+    model.config.save_pretrained = partial(config_save_pretrained, model.config, "config.json", model=model)
+    pipe.config.save_pretrained = partial(config_save_pretrained, pipe.config, "model_index.json")
 
     def model_save_pretrained(model, save_directory, **kwargs):
         super(model.__class__, model).save_pretrained(save_directory, **kwargs)
@@ -1092,7 +1101,7 @@ def diffusion_load_model(
             writer.write(json.dumps(dict(model.config), indent=2, sort_keys=True) + "\n")
 
     # non-meta model uses model.save_pretrained for model and config saving
-    setattr(model, "save_pretrained", partial(model_save_pretrained, model))
+    model.save_pretrained = partial(model_save_pretrained, model)
 
     for comp_name in pipe.components:
         comp = getattr(pipe, comp_name, None)
@@ -1103,21 +1112,19 @@ def diffusion_load_model(
             and isinstance(comp, torch.nn.Module)
         ):
             comp._autoround_checkpoint_subfolder = comp_name
-            setattr(
-                comp.config, "save_pretrained", partial(config_save_pretrained, comp.config, "config.json", model=comp)
-            )
-            setattr(comp, "save_pretrained", partial(model_save_pretrained, comp))
+            comp.config.save_pretrained = partial(config_save_pretrained, comp.config, "config.json", model=comp)
+            comp.save_pretrained = partial(model_save_pretrained, comp)
 
     return pipe, model.to(device)
 
 
 def load_model(
-    pretrained_model_name_or_path: Union[str, torch.nn.Module],
+    pretrained_model_name_or_path: str | torch.nn.Module,
     platform: str = "hf",
-    model_dtype: str = None,
+    model_dtype: str | None = None,
     trust_remote_code: bool = True,
     device: str = "cpu",
-    use_auto_mapping: bool = None,
+    use_auto_mapping: bool | None = None,
     use_model_replacements: bool = False,
     **kwargs,
 ) -> tuple:
@@ -1248,7 +1255,7 @@ _is_mllm_model_cache: dict = {}
 _LLM_ONLY_MODEL_TYPES = {"bagel"}
 
 
-def get_model_name_or_path(model_or_path: Union[str, torch.nn.Module]) -> Optional[str]:
+def get_model_name_or_path(model_or_path: str | torch.nn.Module) -> str | None:
     if isinstance(model_or_path, str):
         return model_or_path
     return getattr(model_or_path, "_name_or_path", None) or getattr(model_or_path, "name_or_path", None)
@@ -1272,14 +1279,14 @@ _CODE_MODEL_FAMILIES = {
 _CODE_MODEL_TASKS = {"code-generation", "software-engineering", "text-to-code"}
 
 
-def _match_code_model_name(value) -> Optional[str]:
+def _match_code_model_name(value) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     value = re.split(r"[/\\]", value.rstrip("/\\"))[-1]
     value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
     token_matches = _CODE_MODEL_TOKENS.intersection(re.findall(r"[a-z]+", value.lower()))
     if token_matches:
-        return sorted(token_matches)[0]
+        return min(token_matches)
     components = re.findall(r"[a-z0-9]+", value.lower())
     for family in sorted(_CODE_MODEL_FAMILIES):
         if any(component == family or re.fullmatch(rf"{family}\d+", component) for component in components):
@@ -1325,7 +1332,7 @@ def _get_code_model_match(model_or_path, config=None):
     return None
 
 
-def is_code_model(model_or_path: Union[str, torch.nn.Module], config=None) -> bool:
+def is_code_model(model_or_path: str | torch.nn.Module, config=None) -> bool:
     """Return whether a pure-text model is explicitly specialized for code."""
     match = _get_code_model_match(model_or_path, config)
     if match is None:
@@ -1334,7 +1341,7 @@ def is_code_model(model_or_path: Union[str, torch.nn.Module], config=None) -> bo
     return True
 
 
-def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
+def is_mllm_model(model_or_path: str | torch.nn.Module, platform: str | None = None):
     from auto_round.utils.common import MM_KEYS
 
     model_path = get_model_name_or_path(model_or_path)
@@ -1361,29 +1368,27 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
     # Only try to download if the path looks like a HF repo id (not a local filesystem path).
     # Skip download for absolute paths or relative paths that contain current/parent dir markers.
     # model_path is None for a model or pipeline built in-process, which has no name or path
-    _is_local_path = isinstance(model_path, str) and (
-        os.path.isabs(model_path) or model_path.startswith("./") or model_path.startswith("../")
-    )
+    _is_local_path = isinstance(model_path, str) and (os.path.isabs(model_path) or model_path.startswith(("./", "../")))
     if model_path and not os.path.isdir(model_path) and not _is_local_path:
         model_path = download_or_get_path(model_path, platform=platform)
 
     result = False
     if isinstance(model_path, str):
-        if os.path.exists(os.path.join(model_path, "preprocessor_config.json")):
-            result = True
-        elif os.path.exists(os.path.join(model_path, "processor_config.json")):
+        if os.path.exists(os.path.join(model_path, "preprocessor_config.json")) or os.path.exists(
+            os.path.join(model_path, "processor_config.json")
+        ):
             result = True
         elif os.path.exists(os.path.join(model_path, "config.json")):
             with open(os.path.join(model_path, "config.json")) as f:
                 config = json.load(f)
             for key in config.keys():
-                if any([k in key for k in MM_KEYS]):
+                if any(k in key for k in MM_KEYS):
                     result = True
                     break
 
     if not result and isinstance(model_or_path, torch.nn.Module):
         for name, module in model_or_path.named_modules():
-            if any([k in name for k in MM_KEYS]):
+            if any(k in name for k in MM_KEYS):
                 result = True
                 break
 
@@ -1394,7 +1399,7 @@ def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = No
     return result
 
 
-def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
+def is_gguf_model(model_path: str | torch.nn.Module) -> bool:
     is_gguf_file = False
     if isinstance(model_path, str):
         if os.path.isfile(model_path) and model_path.endswith(".gguf"):
@@ -1411,7 +1416,7 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
 MODULAR_PIPELINE_INDEX_NAME = "modular_model_index.json"
 
 
-def _find_pipeline_index_file(model_dir_or_repo: str) -> Optional[str]:
+def _find_pipeline_index_file(model_dir_or_repo: str) -> str | None:
     """Return the pipeline index file of a diffusers directory or repo, if it has one.
 
     Standard pipelines ship ``model_index.json``, Modular Diffusers pipelines ship
@@ -1449,7 +1454,7 @@ def _get_modular_pipeline_class():
         return None
 
 
-def is_diffusion_model(model_or_path: Union[str, object], trust_remote_code: bool = True) -> bool:
+def is_diffusion_model(model_or_path: str | object, trust_remote_code: bool = True) -> bool:
     from auto_round.utils.common import LazyImport
 
     # Then check if model_index.json exists for diffusion pipeline,
@@ -1743,8 +1748,8 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
 def get_layer_names_in_block(
     model: torch.nn.Module,
     supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D),
-    quant_block_list: list = None,
-    class_names: tuple = None,
+    quant_block_list: list | None = None,
+    class_names: tuple | None = None,
 ) -> list[str]:
     """Retrieves the names of layers within each block of the model.
 
@@ -1777,7 +1782,7 @@ def set_nested_attr(module, attr_name: str, value):
     attrs = attr_name.split(".")
     for attr in attrs[:-1]:
         if not hasattr(module, attr):
-            return None  # No need to set act_max for fp layers
+            return  # No need to set act_max for fp layers
         module = getattr(module, attr)
     setattr(module, attrs[-1], value)
 
@@ -1881,7 +1886,7 @@ def _to_model_dtype(model, model_dtype):
                 model = cast_model_dtype(model, torch.float32)
         except Exception:
             logger.error("please use more device to fit the device or just use one device")
-            exit()
+            sys.exit()
     return model
 
 
@@ -1979,10 +1984,7 @@ def unsupported_meta_device(model):
             if param.device.type == "meta" or target_device.type == "meta":
                 return True
     if target_device.type == "meta":
-        if hasattr(model, "path"):
-            return False
-        else:
-            return True
+        return not hasattr(model, "path")
     return False
 
 
@@ -2013,11 +2015,11 @@ def to_device(input, device=torch.device("cpu")):
         return None
     if isinstance(input, torch.Tensor):
         return input.to(device)
-    if isinstance(input, dict) or isinstance(input, UserDict):
+    if isinstance(input, (dict, UserDict)):
         for inp in input.keys():
             input[inp] = to_device(input[inp], device)
 
-    elif isinstance(input, list) or isinstance(input, tuple):
+    elif isinstance(input, (list, tuple)):
         if len(input) == 0:
             return input
         input_res = []
@@ -2143,9 +2145,7 @@ def is_moe_model_via_config(config) -> bool:
         config_str = str(config).lower()
     except Exception:
         config_str = str(config.to_dict()).lower() if hasattr(config, "to_dict") else ""
-    if "moe" in config_str or "expert" in config_str:
-        return True
-    return False
+    return "moe" in config_str or "expert" in config_str
 
 
 def to_dtype(input, dtype=torch.float32):
@@ -2162,11 +2162,11 @@ def to_dtype(input, dtype=torch.float32):
         return None
     if isinstance(input, torch.Tensor):
         return input.to(dtype)
-    if isinstance(input, dict) or isinstance(input, UserDict):
+    if isinstance(input, (dict, UserDict)):
         for inp in input.keys():
             input[inp] = to_dtype(input[inp], dtype)
 
-    elif isinstance(input, list) or isinstance(input, tuple):
+    elif isinstance(input, (list, tuple)):
         if len(input) == 0:
             return input
         input_res = []
@@ -2231,9 +2231,7 @@ def set_amax_for_uncalibrated_experts(
                     )
             return uncalibrated_experts
         # Flatten all tensors to 1D before concatenation
-        device = amax_values[0].device
-        dtype = amax_values[0].dtype
-        flat_values = [t.reshape(-1).to(device=device, dtype=dtype) for t in amax_values]
+        flat_values = [t.reshape(-1) for t in amax_values]
         all_values = torch.cat(flat_values)
         set_amax_value = torch.max(all_values)
         set_amax_value = set_amax_value.unsqueeze(0) if set_amax_value.dim() == 0 else set_amax_value
@@ -2306,7 +2304,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                     )
                 except AttributeError as e:
                     # Provide more helpful debugging information
-                    expert_types = list(set(type(expert).__name__ for expert in sub_module.experts))
+                    expert_types = list({type(expert).__name__ for expert in sub_module.experts})
                     raise AttributeError(
                         f"Failed to access attribute '{linear_name}' on experts. "
                         f"MoE module type: {type(sub_module).__name__}, "
@@ -2542,7 +2540,7 @@ def find_matching_blocks(model, all_blocks, to_quant_block_names):
     if not to_quant_block_names:
         return all_blocks
     to_quant_block_list = to_quant_block_names
-    if isinstance(to_quant_block_names, list) or isinstance(to_quant_block_names, tuple):
+    if isinstance(to_quant_block_names, (list, tuple)):
         return to_quant_block_names
     if isinstance(to_quant_block_names, str):
         to_quant_block_list = [name.strip() for name in to_quant_block_names.split(",")]
@@ -2573,18 +2571,12 @@ def is_separate_lm_head(model: torch.nn.Module) -> bool:
     if "model.safetensors.index.json" in os.listdir(dir_path):
         with open(os.path.join(dir_path, "model.safetensors.index.json")) as f:
             index_mapping = json.load(f)
-            if lm_head_name in index_mapping["weight_map"]:
-                return True
-            else:
-                return False
+            return lm_head_name in index_mapping["weight_map"]
     else:
         from safetensors import safe_open
 
         f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
-        if lm_head_name in f.keys():
-            return True
-        else:
-            return False
+        return lm_head_name in f.keys()
 
 
 def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
@@ -2597,18 +2589,12 @@ def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
     if "model.safetensors.index.json" in os.listdir(dir_path):
         with open(os.path.join(dir_path, "model.safetensors.index.json")) as f:
             index_mapping = json.load(f)
-            if tensor_name in index_mapping["weight_map"]:
-                return True
-            else:
-                return False
+            return tensor_name in index_mapping["weight_map"]
     else:
         from safetensors import safe_open
 
         f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
-        if tensor_name in f.keys():
-            return True
-        else:
-            return False
+        return tensor_name in f.keys()
 
 
 def handle_generation_config(model: torch.nn.Module):
@@ -2726,10 +2712,12 @@ def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
     # rename index.json
     idx = os.path.join(path, "model.safetensors.index.json")
     if os.path.exists(idx):
-        d = json.load(open(idx))
+        with open(idx) as f:
+            d = json.load(f)
         d["weight_map"] = {k: v.replace("model-", prefix + "-") for k, v in d["weight_map"].items()}
         new_idx = os.path.join(path, f"{prefix}.safetensors.index.json")
-        json.dump(d, open(new_idx, "w"), indent=2)
+        with open(new_idx, "w") as f:
+            json.dump(d, f, indent=2)
         os.remove(idx)
 
 
@@ -2886,7 +2874,7 @@ class _ShardedEmbedding(torch.nn.Module):
     def weight(self):
         # Exposed so callers that read ``embedding.weight.device`` keep working (the forward
         # re-routes ids to the correct shard regardless of which device they arrive on).
-        return getattr(self, "shard_0")
+        return self.shard_0
 
     def forward(self, input_ids: "torch.Tensor") -> "torch.Tensor":
         flat = input_ids.reshape(-1)

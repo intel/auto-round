@@ -13,14 +13,15 @@
 # limitations under the License.
 import json
 import os
+from collections.abc import Iterable
 from functools import partial
-from typing import Iterable
 
 import torch
 from safetensors import safe_open
 from torch import Tensor
 
 from auto_round.utils import LazyImport, download_or_get_path
+from auto_round.utils.path_safety import resolve_within_directory
 
 gguf = LazyImport("gguf")
 
@@ -54,8 +55,9 @@ def granite_moe_modify_tensors(cls, original_modify_tensors, data_torch, name, b
         (
             projection
             for projection in _GRANITE_AGGREGATED_EXPERT_TENSORS
-            if name.endswith(f"block_sparse_moe.experts.{projection}")
-            or name.endswith(f"block_sparse_moe.experts.{projection}.weight")
+            if name.endswith(
+                (f"block_sparse_moe.experts.{projection}", f"block_sparse_moe.experts.{projection}.weight")
+            )
         ),
         None,
     )
@@ -103,7 +105,7 @@ def get_tensor_from_file(dir_path, tensor_name):
         filename = "model.safetensors"
 
     # get tensor
-    f = safe_open(os.path.join(dir_path, filename), framework="pt")
+    f = safe_open(str(resolve_within_directory(dir_path, filename, origin=INDEX_FILE)), framework="pt")
     return f.get_tensor(tensor_name)
 
 
@@ -141,7 +143,7 @@ def gptoss_generate_extra_tensors(cls) -> Iterable[tuple[str, Tensor]]:
         return blocks0, blocks1
 
     for name, data_torch in cls.get_tensors():
-        if GPTOSS_RELOAD and (name.endswith("mlp.experts.down_proj") or name.endswith("mlp.experts.gate_up_proj")):
+        if GPTOSS_RELOAD and name.endswith(("mlp.experts.down_proj", "mlp.experts.gate_up_proj")):
             block_name = name + "_blocks"
             block_data_torch = get_tensor_from_file(cls.model.name_or_path, block_name)
             blocks0, blocks1 = repack(block_name, block_data_torch, blocks0, blocks1)

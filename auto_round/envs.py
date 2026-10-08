@@ -15,25 +15,26 @@
 # For detailed usage and configuration guide, see: docs/environments.md
 
 import os
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     AR_LOG_LEVEL: str = "INFO"
     AR_USE_MODELSCOPE: bool = "False"
-    AR_MODEL_FREE_SHARD_PARALLELISM: Optional[int] = None
-    AUTO_ROUND_CACHE: Optional[str] = None
+    AR_MODEL_FREE_SHARD_PARALLELISM: int | None = None
+    AUTO_ROUND_CACHE: str | None = None
     AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
     AR_DISABLE_GGUF_MTP_EXPORT: bool = False
-    LLAMA_CPP_ROOT: Optional[str] = None
-    AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
-    AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
-    AR_AUTO_SCHEME_CACHE: Optional[str] = None
+    LLAMA_CPP_ROOT: str | None = None
+    AR_AUTO_SCHEME_NSAMPLES: int | None = None
+    AR_AUTO_SCHEME_BATCH_SIZE: int | None = None
+    AR_AUTO_SCHEME_CACHE: str | None = None
     AR_AUTO_SCHEME_NO_SERIAL_FALLBACK: bool = False
     AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = True
     AR_NVFP4_E5M3_CACHE_HP_WEIGHT: bool = False
     AR_DISK_STREAM_MODEL: bool = False
     AR_DISABLE_META_LOAD: bool = False
-    AR_RESUME_DIR: Optional[str] = None
+    AR_RESUME_DIR: str | None = None
     AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
     AR_QUANTIZE_BAGEL_MOE_GEN: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
@@ -41,7 +42,7 @@ if TYPE_CHECKING:
     AR_CALIB_DATA_MULTIPLIER: int = 100
 
 
-def _get_optional_positive_int_env(name: str) -> Optional[int]:
+def _get_optional_positive_int_env(name: str) -> int | None:
     """Read an optional env var that must be a positive integer when set."""
     raw = os.getenv(name)
     if raw is None:
@@ -60,7 +61,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_LOG_LEVEL": lambda: os.getenv("AR_LOG_LEVEL", "INFO").upper(),
     "AR_ENABLE_COMPILE_PACKING": lambda: os.getenv("AR_ENABLE_COMPILE_PACKING", "0").lower() in ("1", "true", "yes"),
     "AR_USE_MODELSCOPE": lambda: os.getenv("AR_USE_MODELSCOPE", "False").lower() in ["1", "true"],
-    "AR_WORK_SPACE": lambda: os.getenv("AR_WORK_SPACE", "ar_work_space").lower(),
+    "AR_WORK_SPACE": lambda: os.getenv("AR_WORK_SPACE", "ar_work_space"),
     "AR_ENABLE_UNIFY_MOE_INPUT_SCALE": lambda: os.getenv("AR_ENABLE_UNIFY_MOE_INPUT_SCALE", "False").lower()
     in ["1", "true"],
     "AR_OMP_NUM_THREADS": lambda: os.getenv("AR_OMP_NUM_THREADS", None),
@@ -214,6 +215,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Exposed on the CLI as ``--num_hidden_layers``. The resulting model is a
     # partial model and must not be used for a real/production quantization run.
     "AR_DEBUG_LAYER_NUM": lambda: _get_optional_positive_int_env("AR_DEBUG_LAYER_NUM"),
+    # NeUQI joint (scale, zero-point) search knobs: coarse/fine candidate
+    # counts (shared by both symmetry classes), backend selection for the
+    # zero-point sweep (auto|eager|compile|triton; latches down permanently
+    # on failure), and the sweep/knobs are otherwise internal (layout and
+    # candidate batching are device-automatic).
+    # unset -> None so the search entries can apply their backend-aware
+    # defaults (wide 256/64 on Triton/compile lanes, narrow 64/32 on eager)
+    "AR_NEUQI_COARSE": lambda: int(v) if (v := os.getenv("AR_NEUQI_COARSE")) is not None else None,
+    "AR_NEUQI_FINE": lambda: int(v) if (v := os.getenv("AR_NEUQI_FINE")) is not None else None,
+    "AR_NEUQI_BACKEND": lambda: os.getenv("AR_NEUQI_BACKEND", "auto").lower(),
 }
 
 

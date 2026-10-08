@@ -32,7 +32,7 @@ repos:
           ]
 
   - repo: https://github.com/psf/black-pre-commit-mirror
-    rev: 26.5.1
+    rev: 26.10.0
     hooks:
       - id: black
         files: (.*\.py)$
@@ -52,7 +52,7 @@ repos:
           - black==26.5.1
 
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.2
+    rev: v2.4.3
     hooks:
       - id: codespell
         args: [-w]
@@ -61,26 +61,26 @@ repos:
           - tomli
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1.48.0
+    rev: typos-dict-v0.14.2
     hooks:
       - id: typos
         exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
 
   - repo: https://github.com/pycqa/isort
-    rev: 8.0.1
+    rev: 9.0.2
     hooks:
       - id: isort
         exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.20
+    rev: v0.16.10
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix, --no-cache]
         exclude: ^auto_round/export/export_to_gguf/conversion/.*\.py$
 
   - repo: https://github.com/tcort/markdown-link-check
-    rev: v3.14.2
+    rev: v3.15.0
     hooks:
       - id: markdown-link-check
         args: [-q, -c .azure-pipelines/scripts/codeScan/markdown-link-check/markdown-link-check.json]

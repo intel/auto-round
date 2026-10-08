@@ -21,12 +21,22 @@ import queue
 import random
 import ssl
 import sys
+import tempfile
 from importlib.metadata import PackageNotFoundError, version
 
 logging.getLogger("datasets").setLevel(logging.WARNING)
 
 import torch
-from datasets import Dataset, Features, IterableDataset, Sequence, Value, concatenate_datasets, load_dataset
+from datasets import (
+    Dataset,
+    Features,
+    IterableDataset,
+    Sequence,
+    Value,
+    concatenate_datasets,
+    load_dataset,
+    load_from_disk,
+)
 from packaging.version import Version
 from torch.utils.data import DataLoader
 
@@ -109,15 +119,18 @@ def _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamp
     return _get_dataset_impl(tokenizer, seqlen, _FINEWEB_EDU_MODELSCOPE_DATASET, seed, nsamples)
 
 
-def _preprocess_dataset_in_subprocess(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples):
+def _preprocess_dataset_in_subprocess(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples, output_path):
     """Run dataset preprocessing and report network failures to the parent process."""
+    # The parent's OpenMP thread pool does not survive fork; keep torch single-threaded here.
+    torch.set_num_threads(1)
     try:
-        _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+        dataset = _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+        dataset.save_to_disk(output_path)
     except Exception as error:
         network_error = _get_dataset_network_error(error)
         result_queue.put((_DATASET_RESULT_ERROR, str(network_error) if network_error is not None else None))
         raise
-    result_queue.put((_DATASET_RESULT_SUCCESS, None))
+    result_queue.put((_DATASET_RESULT_SUCCESS, output_path))
 
 
 def get_code_calibration_dataset(nsamples, datasets_version=None):
@@ -463,7 +476,7 @@ def get_github_code_clean_dataset(
                 "💡 This dataset uses an old script-based format. To load it, please install `datasets<=3.6.0`:\n\n"
             )
         else:
-            raise error
+            raise
     calib_dataset = concatenate_datasets([dataset_mit, dataset_apache])
     calib_dataset = calib_dataset.shuffle(seed=seed).take(
         nsamples * envs.AR_CALIB_DATA_MULTIPLIER
@@ -591,7 +604,7 @@ def get_ultrachat_dataset(
         split = "train_sft"
     all_splits = ["train_sft", "test_sft", "train_gen", "test_gen"]
     if split not in all_splits:
-        raise ValueError("split must be one of {} for ultrachat_200k ".format(all_splits))
+        raise ValueError(f"split must be one of {all_splits} for ultrachat_200k ")
 
     dataset = load_dataset("HuggingFaceH4/ultrachat_200k", split=split, streaming=True, trust_remote_code=True)
     dataset = dataset.shuffle(seed=seed).take(nsamples * envs.AR_CALIB_DATA_MULTIPLIER)
@@ -773,8 +786,8 @@ def get_mbpp_dataset(
     if isinstance(splits, str):
         splits = splits.split("+")
 
-    for split in splits:
-        dataset = load_dataset(dataset_name, split=split)
+    for split_name in splits:
+        dataset = load_dataset(dataset_name, split=split_name)
         for data in dataset:
             samples.append({"text": data["text"] + data["code"]})
     random.Random(seed).shuffle(samples)
@@ -1263,6 +1276,12 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
 
     dataset_names = dataset_name.split(",")
 
+    def cast_dataset_columns(dataset):
+        features = dict(dataset.features)
+        features["input_ids"] = Sequence(Value("int64"))
+        features["attention_mask"] = Sequence(Value("int8"))
+        return dataset.cast(Features(features))
+
     def filter_func(example):
         if isinstance(example["input_ids"], list):
             example["input_ids"] = torch.tensor(example["input_ids"])
@@ -1270,9 +1289,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
             return False
         input_ids = example["input_ids"][:seqlen]
         input_ids_list = input_ids.tolist()
-        if len(input_ids_list) > 1 and seqlen > 2 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2:
-            return False
-        return True
+        return not (len(input_ids_list) > 1 and seqlen > 2 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2)
 
     def concat_dataset_element(dataset):
         input_ids, concat_input_ids = [eg["input_ids"] for eg in dataset], []
@@ -1337,11 +1354,11 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                     split = values[0].split("+")
                 elif key == "num":
                     data_lens[name] = int(values[0])
-                elif key == "concat":
-                    do_concat = False if (len(values) > 0 and values[0].lower() == "false") else True
-                elif key == "apply_chat_template":
-                    apply_chat_template = False if (len(values) > 0 and values[0].lower() == "false") else True
-                elif key == "system_prompt":
+                if key == "concat":
+                    do_concat = not (len(values) > 0 and values[0].lower() == "false")
+                if key == "apply_chat_template":
+                    apply_chat_template = not (len(values) > 0 and values[0].lower() == "false")
+                if key == "system_prompt":
                     system_prompt = values[0]
                     apply_chat_template = True
                 elif key == "fields":
@@ -1391,9 +1408,9 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                 )
         else:
             calib_name = name
-            if name not in CALIB_DATASETS.keys():
+            if name not in CALIB_DATASETS:
                 calib_name = name.split("/")[-1]
-                for key in CALIB_DATASETS.keys():
+                for key in CALIB_DATASETS:
                     if calib_name in key:
                         calib_name = key
                         break
@@ -1448,27 +1465,25 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         if do_concat:
             dataset = concat_dataset_element(dataset)
 
-        dataset = dataset.filter(filter_func)
-        if name in data_lens:
-            dataset = select_dataset(dataset, range(data_lens[name]))
         if isinstance(dataset, IterableDataset):
-            # A single dataset source never contributes more than `nsamples` rows to the
-            # final combined dataset, so cap materialization here instead of fully consuming
-            # the (much larger) internal `.take(...)` pool used by streaming dataset loaders.
-            # This avoids needless downloads/shard resolution for large remote datasets
-            # (e.g. BAAI/CCI3-HQ) when only a small subset of samples is actually needed.
-            dataset = Dataset.from_list(list(itertools.islice(dataset, nsamples)))
+            # Filter and limit the stream before materializing it in memory.
+            dataset = dataset.filter(filter_func)
+            if name in data_lens:
+                dataset = select_dataset(dataset, range(data_lens[name]))
+            # select_dataset may have already materialized the requested rows.
+            if isinstance(dataset, IterableDataset):
+                dataset = Dataset.from_list(list(itertools.islice(dataset, nsamples)))
+            dataset = cast_dataset_columns(dataset)
+        else:
+            # Cast before filter/select creates indices, avoiding a full values
+            # buffer conversion for each indexed Arrow row.
+            dataset = cast_dataset_columns(dataset)
+            dataset = dataset.filter(filter_func)
+            if name in data_lens:
+                dataset = select_dataset(dataset, range(data_lens[name]))
+        # Format last: tensorizing whole batches during filter/select would run torch ops that
+        # are not fork-safe (libgomp) in the preprocessing subprocess.
         dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
-        new_features = {}
-        for k, v in dataset.features.items():
-            if k == "input_ids":
-                new_features[k] = Sequence(Value("int64"))
-            elif k == "attention_mask":
-                new_features[k] = Sequence(Value("int8"))
-            else:
-                new_features[k] = v
-
-        dataset = dataset.cast(Features(new_features))
         datasets.append(dataset)
 
     if len(datasets) == 1:
@@ -1558,47 +1573,49 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, n
             return _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples)
 
     # Run preprocessing in a subprocess so all temporary memory is freed on exit.
-    # The HuggingFace datasets cache is warmed up as a side effect.
     logger.info("Preprocessing calibration dataset in a subprocess to avoid memory leaks...")
 
     subprocess_network_error = None
-    try:
-        if os.name == "nt":
-            raise OSError("fork is not available on Windows")
-
-        # macOS crashes with SIGSEGV (exit code -11) when using "fork" after threads
-        # have been started (PyTorch, tokenizers, and HuggingFace datasets all use
-        # threads).  Use "spawn" on macOS, which is safe but requires pickling args.
-        mp_context = "spawn" if sys.platform == "darwin" else "fork"
-        ctx = multiprocessing.get_context(mp_context)
-        result_queue = ctx.Queue()
-        p = ctx.Process(
-            target=_preprocess_dataset_in_subprocess,
-            args=(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples),
-        )
-        p.start()
-        p.join()
-
+    with tempfile.TemporaryDirectory(prefix="auto_round_calib_") as temp_dir:
         try:
-            result_status, network_error_message = result_queue.get(timeout=1)
-        except queue.Empty:
-            result_status, network_error_message = None, None
-        result_queue.close()
-        result_queue.join_thread()
-        if p.exitcode != 0:
-            if result_status == _DATASET_RESULT_ERROR and network_error_message is not None:
-                subprocess_network_error = ConnectionError(network_error_message)
-            else:
-                raise RuntimeError(f"Dataset preprocessing subprocess exited with code {p.exitcode}")
+            if os.name == "nt":
+                raise OSError("fork is not available on Windows")
 
-    except Exception as e:
-        logger.warning(f"Subprocess dataset preprocessing failed ({e}), falling back to in-process mode.")
+            # macOS crashes with SIGSEGV (exit code -11) when using "fork" after threads
+            # have been started (PyTorch, tokenizers, and HuggingFace datasets all use
+            # threads).  Use "spawn" on macOS, which is safe but requires pickling args.
+            mp_context = "spawn" if sys.platform == "darwin" else "fork"
+            ctx = multiprocessing.get_context(mp_context)
+            result_queue = ctx.Queue()
+            p = ctx.Process(
+                target=_preprocess_dataset_in_subprocess,
+                args=(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples, os.path.join(temp_dir, "dataset")),
+            )
+            p.start()
+            p.join()
+
+            try:
+                result_status, result_value = result_queue.get(timeout=1)
+            except queue.Empty:
+                result_status, result_value = None, None
+            result_queue.close()
+            result_queue.join_thread()
+            if p.exitcode != 0:
+                if result_status == _DATASET_RESULT_ERROR and result_value is not None:
+                    subprocess_network_error = ConnectionError(result_value)
+                else:
+                    raise RuntimeError(f"Dataset preprocessing subprocess exited with code {p.exitcode}")
+            elif result_status == _DATASET_RESULT_SUCCESS:
+                return load_from_disk(result_value, keep_in_memory=True)
+            else:
+                raise RuntimeError("Dataset preprocessing subprocess returned no dataset")
+
+        except Exception as e:
+            logger.warning(f"Subprocess dataset preprocessing failed ({e}), falling back to in-process mode.")
 
     if subprocess_network_error is not None:
         return _fallback_to_fineweb_edu(subprocess_network_error, tokenizer, seqlen, dataset_name, seed, nsamples)
 
-    # (Re-)load the dataset in the main process.  When the subprocess
-    # succeeded the HF datasets cache makes this almost instant.
     try:
         return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
     except Exception as error:

@@ -9,13 +9,14 @@
 
 <h3> Advanced Quantization Toolkit for LLMs</h3>
 
-[![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.15.0-green)](https://github.com/intel/auto-round/releases)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.16.0-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
+<a href="https://pepy.tech/projects/auto-round" style="text-decoration:none;"><img src="https://static.pepy.tech/badge/auto-round" alt="PyPI Downloads"></a>
 
 &nbsp;&nbsp;&nbsp;&nbsp;English | [简体中文](README_CN.md)
 
@@ -26,9 +27,12 @@
 
 ## 🚀 What is AutoRound?
 
-AutoRound is an advanced quantization toolkit designed for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
-It achieves high accuracy at ultra-low bit widths (2–4 bits) with minimal tuning by leveraging **sign-gradient descent** and providing broad hardware compatibility. 
-See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2](http://arxiv.org/abs/2512.04746) for more details. For usage instructions, please refer to the [User Guide](./docs/step_by_step.md).
+AutoRound is an easy-to-use post-training quantization toolkit for Large Language Models (LLMs) and Vision-Language Models (VLMs). 
+It supports several practical low-bit and adaptive-bit quantization algorithms, with a particular focus on [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2](http://arxiv.org/abs/2512.04746).
+AutoRound is designed to deliver strong accuracy at ultra-low bit widths while keeping quantization costs reasonable. It supports widely used data types and quantization schemes, including WNA16, MXFP4, NVFP4, and FP8, as well as low-bit model formats such as GGUF.
+It integrates with popular ecosystems including Transformers, vLLM, and SGLang, and supports deployment across Intel CPUs and XPUs, Gaudi accelerators, and NVIDIA GPUs.
+For usage details, please refer to the [User Guide](./docs/step_by_step.md).
+
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -41,6 +45,8 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 * [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.
 
+* [2026/09] The **NeUQI** grid search ([arXiv 2505.17595](https://arxiv.org/abs/2505.17595)) is available for calibration-free quantization: `--enable_neuqi` with `--iters 0` runs a joint (scale, zero-point) search for asymmetric layers and a two-stage scale search for symmetric layers, and anchors the tuning grid when `iters > 0`. [*Results*](./docs/neuqi_acc.md)
+
 * [2026/08] We experimentally support **algorithm composition** (e.g., `--algs awq,signround` or `--algs hadamard,awq,signround`) to improve accuracy [*Overview*](./docs/algorithm_combinations.md). We welcome any practical, deployable algorithms that are ready for real-world use. Feel free to submit a PR or leave a comment in Issues.
 
 * [2026/06] AutoScheme has been refined to improve accuracy for gguf format. See [AutoScheme Accuracy](./docs/auto_scheme_acc.md) for details. This enhancement incurs additional tuning cost.
@@ -51,7 +57,7 @@ See our papers [SignRoundV1](https://arxiv.org/pdf/2309.05516) and [SignRoundV2]
 
 * [2025/12] The **SignRoundV2** paper is available. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 
-* [2025/10] A AutoScheme is available to generate mixed-bit recipes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
+* [2025/10] AutoScheme is available to generate mixed-bit recipes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
 
 * [2025/08] An **improved INT2** algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/alg_202508.md)
   
@@ -78,7 +84,7 @@ Support **AutoRound, AutoAWQ, AutoGPTQ, and GGUF** for maximum compatibility. De
 Automatically configure in minutes, with about 1.1X-1.5X the model’s BF16 RAM size as overhead. Accuracy [results](./docs/auto_scheme_acc.md) and [user guide](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme).
 
 ✅ **Optimized Round-to-Nearest Mode**
-Use `--iters 0` for fast quantization with some accuracy drop for 4 bits. Details are shown in [opt_rtn mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#opt-rtn-mode)
+Use `--iters 0` for fast quantization with some accuracy drop for 4 bits; an optional NeUQI grid search (`--enable_neuqi`) improves the zero-shot scales. Details are shown in [opt_rtn mode](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#opt-rtn-mode)
 
 ✅ **Affordable Quantization Cost**
 Quantize 7B models in about 10 minutes on a single GPU. Details are shown in [quantization costs](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#quantization-costs)

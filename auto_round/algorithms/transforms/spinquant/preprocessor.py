@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -92,7 +92,7 @@ class SpinQuantConfig(BaseRotationConfig):
     # and R4 uses rotation_size instead of intermediate_size.
     # R2 always uses head_dim, R3 does not support custom size.
     # This follows the same convention as Quark's rotation_size.
-    rotation_size: Optional[int] = None
+    rotation_size: int | None = None
 
     # Rotation matrix type for R1–R4
     # - False (default): deterministic Hadamard (same matrix every time, no need to persist)
@@ -130,7 +130,7 @@ class SpinQuantConfig(BaseRotationConfig):
 
     # Numerics
     dtype: torch.dtype = torch.float32
-    device: Optional[str] = None
+    device: str | None = None
 
     def __post_init__(self):
         if self.device is None:
@@ -205,7 +205,7 @@ class SpinQuantPreprocessor:
     original but with weight distributions better suited for quantisation.
     """
 
-    def __init__(self, model: nn.Module, config: Optional[SpinQuantConfig] = None) -> None:
+    def __init__(self, model: nn.Module, config: SpinQuantConfig | None = None) -> None:
         self.model = model
         self.config = config or SpinQuantConfig()
 
@@ -242,7 +242,7 @@ class SpinQuantPreprocessor:
     # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
-    def preprocess(self, dataloader: Optional[Any] = None) -> nn.Module:
+    def preprocess(self, dataloader: Any | None = None) -> nn.Module:
         logger.info("[SpinQuant] Starting preprocessing...")
         logger.info(
             f"[SpinQuant] Model architecture info: hidden_size={self.hidden_size}, "
@@ -337,7 +337,7 @@ class SpinQuantPreprocessor:
     # Layer-wise API (for block-lifecycle / block-wise quantization)
     # ------------------------------------------------------------------
 
-    def prepare(self, dataloader: Optional[Any] = None) -> None:
+    def prepare(self, dataloader: Any | None = None) -> None:
         """Global preparation for layer-wise (block-wise) rotation.
 
         Performs all lightweight, non-destructive steps:
@@ -874,7 +874,7 @@ class SpinQuantPreprocessor:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def _get_embed_tokens(self) -> Optional[nn.Module]:
+    def _get_embed_tokens(self) -> nn.Module | None:
         """Get embedding module, supporting both model.embed_tokens and model.model.embed_tokens."""
         for attr_path in ("embed_tokens", "model.embed_tokens"):
             parts = attr_path.split(".")
@@ -909,7 +909,7 @@ class SpinQuantPreprocessor:
                         yield layer
                     return
 
-    def _get_lm_head(self) -> Optional[nn.Module]:
+    def _get_lm_head(self) -> nn.Module | None:
         """Get LM head module."""
         return getattr(self.model, "lm_head", None)
 
@@ -1386,7 +1386,7 @@ class SpinQuantPreprocessor:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _get_rotation_tensor(self, name: str) -> Optional[torch.Tensor]:
+    def _get_rotation_tensor(self, name: str) -> torch.Tensor | None:
         if hasattr(self.model, name):
             tensor = getattr(self.model, name)
             if isinstance(tensor, (nn.Parameter, torch.Tensor)):

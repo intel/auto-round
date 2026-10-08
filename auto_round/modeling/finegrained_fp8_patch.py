@@ -133,7 +133,7 @@ class Fp8Quantize(ConversionOps):
 
     def convert(self, input_dict: torch.Tensor, **kwargs) -> dict[str, torch.Tensor]:
         # Unpack single key/value (value may be wrapped in a list)
-        target_keys, value = tuple(input_dict.items())[0]
+        target_keys, value = next(iter(input_dict.items()))
         value = value[0]
 
         # Resolve block size (support dict-like or attr-like quant_config)
@@ -152,10 +152,8 @@ class Fp8Quantize(ConversionOps):
         # Enforce exact tiling like your original
         if rows % block_m != 0 or cols % block_n != 0:
             raise ValueError(
-                (
-                    f"Matrix dimensions ({rows}, {cols}) must be divisible by block sizes"
-                    f" ({block_m}, {block_n}). for {target_keys}"
-                )
+                f"Matrix dimensions ({rows}, {cols}) must be divisible by block sizes"
+                f" ({block_m}, {block_n}). for {target_keys}"
             )
 
         # Leading dims can be empty (2D) or include num_experts/... (3D+)

@@ -334,6 +334,43 @@ def test_run_opt_rtn_uses_recipe(monkeypatch):
     assert args.nsamples == 128
 
 
+def test_model_free_cli_disable_opt_rtn(monkeypatch):
+    from auto_round import AutoRound
+    from auto_round.cli import main as cli_main
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    captured = {}
+    monkeypatch.setattr(cli_main, "tune", lambda args: captured.setdefault("args", args))
+
+    cli_main.start(
+        argv=[
+            "dummy-model",
+            "--scheme",
+            "NVFP4_E5M3",
+            "--model_free",
+            "--disable_opt_rtn",
+        ]
+    )
+
+    args = captured["args"]
+    configs = AlgorithmHandler.build_configs(args, cli_main._extract_common_quantization_kwargs(args))
+    compressor = AutoRound(
+        args.model,
+        scheme=args.scheme,
+        alg_configs=configs[-1],
+        model_free=args.model_free,
+        device_map="cpu",
+        enable_torch_compile=False,
+    )
+
+    assert args.model_free is True
+    assert args.iters == 0
+    assert args.disable_opt_rtn is True
+    assert configs[-1].disable_opt_rtn is True
+    assert type(compressor).__name__ == "ModelFreeCompressor"
+    assert compressor.disable_opt_rtn is True
+
+
 def test_unknown_algorithm_help_exits_with_suggestion(monkeypatch):
     from auto_round.cli import main as cli_main
 

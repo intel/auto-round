@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 
 from auto_round.export.utils import (
+    _get_state_dict_for_export_dtype,
     _resolve_model_source_dir,
     _resolve_pipeline_source_dir,
     _save_model_configs,
@@ -350,6 +351,77 @@ class TestSaveModel:
                 data = json.load(f)
             assert data["torch_dtype"] == "bfloat16"
 
+    def test_dtype_casts_float32_weights_passed_to_save_pretrained(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model = MagicMock()
+            model.dtype = torch.float32
+            model.config.quantization_config = None
+            model.state_dict.return_value = {
+                "linear.weight": torch.ones(2, 2, dtype=torch.float32),
+                "linear.qweight": torch.ones(2, 2, dtype=torch.float8_e4m3fn),
+            }
+            model._keep_in_fp32_modules = None
+            model._keep_in_fp32_modules_strict = None
+            with patch("auto_round.export.utils._resolve_model_source_dir", return_value=None):
+                save_model(model, tmpdir, dtype=torch.bfloat16, safe_serialization=False)
+            state_dict = model.save_pretrained.call_args.kwargs["state_dict"]
+            assert state_dict["linear.weight"].dtype == torch.bfloat16
+            assert state_dict["linear.qweight"].dtype == torch.float8_e4m3fn
+
+
+class _ExportDtypeModel(nn.Module):
+    _keep_in_fp32_modules = ["router"]
+
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(4, 4)
+        self.router = nn.Linear(4, 2)
+        self.register_buffer("qweight", torch.zeros(4, 4, dtype=torch.float8_e4m3fn))
+        self.register_buffer("indices", torch.zeros(4, dtype=torch.int32))
+        self.register_buffer("k_scale", torch.ones(1))
+        self.register_buffer("v_scale", torch.ones(1))
+        self.register_buffer("weight_zero_point", torch.zeros(1))
+        self.linear.register_buffer("input_scale", torch.ones(1))
+        self.linear.register_buffer("weight_scale", torch.ones(1))
+
+
+class TestGetStateDictForExportDtype:
+    """Test _get_state_dict_for_export_dtype function."""
+
+    def test_casts_float32_tensors_to_export_dtype(self):
+        model = _ExportDtypeModel()
+        state_dict = _get_state_dict_for_export_dtype(model, torch.bfloat16)
+        assert state_dict["linear.weight"].dtype == torch.bfloat16
+        assert state_dict["linear.bias"].dtype == torch.bfloat16
+        # Quantized and integer tensors are unchanged.
+        assert state_dict["qweight"].dtype == torch.float8_e4m3fn
+        assert state_dict["indices"].dtype == torch.int32
+
+    def test_keeps_fp32_modules_in_float32(self):
+        model = _ExportDtypeModel()
+        state_dict = _get_state_dict_for_export_dtype(model, torch.float16)
+        assert state_dict["router.weight"].dtype == torch.float32
+        assert state_dict["linear.weight"].dtype == torch.float16
+
+    def test_keeps_quantization_scales_in_float32(self):
+        model = _ExportDtypeModel()
+        state_dict = _get_state_dict_for_export_dtype(model, torch.bfloat16)
+        for name in ("k_scale", "v_scale", "weight_zero_point", "linear.input_scale", "linear.weight_scale"):
+            assert state_dict[name].dtype == torch.float32, name
+
+    def test_does_not_modify_model(self):
+        model = _ExportDtypeModel()
+        _get_state_dict_for_export_dtype(model, torch.bfloat16)
+        assert model.linear.weight.dtype == torch.float32
+
+    @pytest.mark.parametrize("dtype", [None, torch.float32])
+    def test_returns_none_without_16bit_dtype(self, dtype):
+        assert _get_state_dict_for_export_dtype(_ExportDtypeModel(), dtype) is None
+
+    def test_returns_none_without_float32_tensors(self):
+        model = _ExportDtypeModel().to(torch.bfloat16)
+        assert _get_state_dict_for_export_dtype(model, torch.bfloat16) is None
+
 
 # ==============================================================================
 # get_autogptq_packing_qlinear
@@ -385,6 +457,40 @@ class TestFilterQuantizationConfig:
         cfg = {"amp": None, "custom": "value"}
         filter_quantization_config(cfg)
         assert "amp" not in cfg
+
+    def test_granularity_without_dtype_removed(self):
+        cfg = {"static_kv_dtype": None, "static_kv_granularity": "tensor", "custom": "value"}
+        filter_quantization_config(cfg)
+        assert "static_kv_granularity" not in cfg
+
+    def test_granularity_missing_dtype_key_removed(self):
+        cfg = {"static_attention_granularity": "tensor", "custom": "value"}
+        filter_quantization_config(cfg)
+        assert "static_attention_granularity" not in cfg
+
+    def test_granularity_kept_with_dtype(self):
+        cfg = {
+            "static_kv_dtype": "fp8",
+            "static_kv_granularity": "head",
+            "static_attention_dtype": "fp8",
+            "static_attention_granularity": "tensor",
+            "custom": "value",
+        }
+        result = filter_quantization_config(cfg)
+        assert result["static_kv_granularity"] == "head"
+        assert result["static_attention_granularity"] == "tensor"
+        assert "custom" in result
+
+    def test_granularity_keys_are_independent(self):
+        cfg = {
+            "static_kv_dtype": "fp8",
+            "static_kv_granularity": "head",
+            "static_attention_granularity": "tensor",
+            "custom": "value",
+        }
+        result = filter_quantization_config(cfg)
+        assert result["static_kv_granularity"] == "head"
+        assert "static_attention_granularity" not in cfg
 
     def test_act_bits_handling(self):
         cfg = {"act_bits": 16, "act_data_type": "fp8", "custom": "value"}

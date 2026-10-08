@@ -216,8 +216,9 @@ class DeviceMemoryPool {
   // weight-repack and activation-sum buffers
   // (`moe_decode_detail::kInt4RepackScratchLoc` / `kActGroupSumScratchLoc`);
   // slot 11 is the XMX Hadamard staging buffer
-  // (`kHadamardStagingScratchLoc` in `ark.cpp`).
-  static constexpr int MaxLocNum = 12;
+  // (`kHadamardStagingScratchLoc` in `ark.cpp`); slot 12 is the SYCL-TLA
+  // prefill workspace (`kPrefillScratchLoc` in `sycl_tla_wrapper.hpp`).
+  static constexpr int MaxLocNum = 13;
   using SizeMap = std::unordered_map<size_t, size_t>;
   using PtrMap = std::unordered_map<size_t, int8_t*>;
 

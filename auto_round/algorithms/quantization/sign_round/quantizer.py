@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+from collections.abc import Callable
 from contextlib import nullcontext
-from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch import autocast
@@ -135,13 +136,13 @@ class SignRoundQuantizer(BaseQuantizer):
         ref_output: torch.Tensor,
         indices: torch.Tensor,
         loss_func: Callable,
-        device: Union[str, torch.device] = "cpu",
-        valid_token_mask: Optional[torch.Tensor] = None,
+        device: str | torch.device = "cpu",
+        valid_token_mask: torch.Tensor | None = None,
         input_ids=None,
     ):
         autocast_ctx = (
             nullcontext()
-            if self.model_context.amp
+            if not self.model_context.amp
             else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
         )
         if valid_token_mask:
@@ -374,7 +375,7 @@ class SignRoundQuantizer(BaseQuantizer):
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
-            weight_qdq_builder=self.build_weight_qdq,
+            enable_neuqi=getattr(self.config, "enable_neuqi", False),
         )
 
         round_params = []
@@ -504,6 +505,9 @@ class SignRoundQuantizer(BaseQuantizer):
                         cache_budget,
                         device,
                     )
+                if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
+                    for n, m in block.named_modules():
+                        m.cur_iter = i
                 total_loss = 0
                 global_indices = index_sampler.next_batch()
                 if valid_token_mask:
@@ -605,10 +609,10 @@ class SignRoundQuantizer(BaseQuantizer):
     def quantize_layer_outside_block(
         self,
         layer: "torch.nn.Module",
-        fp_inputs: Optional[list[torch.Tensor]] = None,
-        q_inputs: Optional[list[torch.Tensor]] = None,
-        disable_opt_rtn: Optional[bool] = None,
-        input_ids: Optional[list[torch.Tensor]] = None,
+        fp_inputs: list[torch.Tensor] | None = None,
+        q_inputs: list[torch.Tensor] | None = None,
+        disable_opt_rtn: bool | None = None,
+        input_ids: list[torch.Tensor] | None = None,
     ):
         """Quantize a single layer that lives outside a transformer block.
 
@@ -664,7 +668,7 @@ class SignRoundQuantizer(BaseQuantizer):
             enable_minmax_tuning=self.enable_minmax_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
-            weight_qdq_builder=self.build_weight_qdq,
+            enable_neuqi=getattr(self.config, "enable_neuqi", False),
         ).to(device)
         round_params = []
         minmax_params = []
@@ -672,7 +676,7 @@ class SignRoundQuantizer(BaseQuantizer):
             if "min" in key or "max" in key:
                 minmax_params.append(wrapper_linear.params[key])
             else:
-                round_params.append(wrapper_linear.params[key])
+                round_params.append(wrapper_linear.value)
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = f"quantized {layer_name}"
             logger.info(dump_info)
@@ -838,7 +842,7 @@ class SignRoundQuantizer(BaseQuantizer):
 
     def _get_scaler(self):
         """Returns scaler, in SignRound, no need to use scaler."""
-        return None
+        return
 
     def _scale_loss_and_backward(self, scaler: Any, loss: torch.Tensor) -> torch.Tensor:
         """Scales the loss and performs backward pass.

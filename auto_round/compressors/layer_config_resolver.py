@@ -31,36 +31,12 @@ from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
     compress_layer_names,
+    expand_layer_config_for_weight_renames,
     get_layer_names_in_block,
     infer_bits_by_data_type,
     to_standard_regex,
 )
 from auto_round.utils.model import get_module
-
-
-def normalize_layer_config_entry(item: Union[str, dict, "QuantizationScheme"], layer_name: str) -> dict:
-    """Resolve one public layer override through the existing preset machinery."""
-    from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
-
-    scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
-    if isinstance(item, str):
-        config = asdict(preset_name_to_scheme(item.upper()))
-    elif isinstance(item, QuantizationScheme):
-        config = asdict(item)
-    elif isinstance(item, dict):
-        item = {k: v for k, v in item.items() if k != "in_blocks"}
-        scheme_name = item.pop("scheme", None)
-        config = asdict(preset_name_to_scheme(scheme_name.upper())) if scheme_name is not None else {}
-        invalid = set(item) - set(scheme_keys + ("fixed_by_user",))
-        if invalid:
-            raise ValueError(f"Invalid keys {invalid} in layer_config for '{layer_name}'. Allowed keys: {scheme_keys}")
-        config.update(item)
-    else:
-        raise TypeError(
-            f"Unsupported type for layer_config[{layer_name}]: {type(item)}. "
-            "Expected str, dict, or QuantizationScheme."
-        )
-    return {key: value for key, value in config.items() if value is not None}
 
 
 def apply_layer_config_special_cases(
@@ -195,6 +171,34 @@ def _resolve_layer_config_presets(
     bits-inference, and default-filling."""
     from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
 
+    def normalize_item(item: Union[str, dict, "QuantizationScheme"], layer_name: str) -> dict:
+        """Convert config entry into dict and validate keys."""
+        if isinstance(item, str):
+            config = asdict(preset_name_to_scheme(item.upper()))
+        elif isinstance(item, QuantizationScheme):
+            config = asdict(item)
+        elif isinstance(item, dict):
+            # "in_blocks" is an internal bookkeeping key injected by LLM-Compressor;
+            # silently drop it before validation.
+            item = {k: v for k, v in item.items() if k != "in_blocks"}
+            scheme_name = item.pop("scheme", None)
+            config = asdict(preset_name_to_scheme(scheme_name.upper())) if scheme_name is not None else {}
+            invalid = set(item) - set(scheme_keys + ("fixed_by_user", "scale_dtype"))
+            if invalid:
+                raise ValueError(
+                    f"Invalid keys {invalid} in layer_config for '{layer_name}'. " f"Allowed keys: {scheme_keys}"
+                )
+            config.update(item)
+        else:
+            raise TypeError(
+                f"Unsupported type for layer_config[{layer_name}]: {type(item)}. "
+                f"Expected str, dict, or QuantizationScheme."
+            )
+        # Clean up
+        config = {k: v for k, v in config.items() if v is not None}
+        config["fixed_by_user"] = True
+        return config
+
     extra_scheme_keys = ("scale_dtype",)
     scheme_keys = tuple(f.name for f in fields(QuantizationScheme)) + ("scale_dtype",)
     layer_config = copy.deepcopy(layer_config) or {}
@@ -215,7 +219,7 @@ def _resolve_layer_config_presets(
         }
 
     # 2. normalize
-    layer_config = {k: {**normalize_layer_config_entry(v, k), "fixed_by_user": True} for k, v in layer_config.items()}
+    layer_config = {k: normalize_item(v, k) for k, v in layer_config.items()}
     # entries whose sym was set by the user (dict key or a QuantizationScheme
     # object) rather than inherited from the default scheme below
     explicit_sym = {name for name, cfg in layer_config.items() if "sym" in cfg}
@@ -413,9 +417,10 @@ def resolve_layer_config(
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
     fill_default_value: bool = True,
-    format: str = None,
+    format: str | None = None,
 ) -> LayerConfig:
     """Resolve final per-layer configuration without writing model attributes."""
+    layer_config = expand_layer_config_for_weight_renames(layer_config, model=model, to_model_names=True)
     supported_types = tuple(SUPPORTED_LAYER_TYPES if supported_types is None else supported_types)
     inner_supported_types = tuple(
         INNER_SUPPORTED_LAYER_TYPES if inner_supported_types is None else inner_supported_types
@@ -483,9 +488,10 @@ def extract_regex_config(
     inner_supported_types=None,
     ignore_layers: str = "",
     fill_default_value: bool = True,
-    format: str = None,
+    format: str | None = None,
 ) -> LayerConfig:
     """Resolve only the regex entries retained for export metadata."""
+    layer_config = expand_layer_config_for_weight_renames(layer_config, model=model, to_model_names=True)
     supported_types = tuple(SUPPORTED_LAYER_TYPES if supported_types is None else supported_types)
     inner_supported_types = tuple(
         INNER_SUPPORTED_LAYER_TYPES if inner_supported_types is None else inner_supported_types
@@ -539,8 +545,7 @@ def apply_plan_to_model(model, plan: ResolvedQuantizationConfig) -> None:
         # (``AttributeError`` on the norm's next forward). Scope the reset to the
         # same modules that receive the plan below.
         is_quant_target = (
-            isinstance(module, SUPPORTED_LAYER_TYPES)
-            or isinstance(module, torch.nn.Embedding)
+            isinstance(module, (SUPPORTED_LAYER_TYPES, torch.nn.Embedding))
             or module.__class__.__name__ in INNER_SUPPORTED_LAYER_TYPES
         )
         if module_name != "" and not is_quant_target:
