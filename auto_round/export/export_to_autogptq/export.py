@@ -16,8 +16,9 @@ import copy
 import inspect
 import json
 import os
+from collections.abc import Callable
 from dataclasses import fields
-from typing import Any, Callable, Dict, Union
+from typing import Any
 
 # MIT License
 #
@@ -83,7 +84,7 @@ BLOCK_PATTERNS = [  ## copy from transformers optimum
 from auto_round.export.export_to_autoround.utils import check_neq_config
 
 
-def convert_to_autogptq_dynamic(regex_config: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def convert_to_autogptq_dynamic(regex_config: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """
     Convert AutoRound-style regex_config into AutoGPTQ-style QuantizerConfig.dynamic.
 
@@ -101,7 +102,7 @@ def convert_to_autogptq_dynamic(regex_config: Dict[str, Dict[str, Any]]) -> Dict
         elif bits < 16:
             converted[f"+:{regex}"] = {"bits": bits}
             for key in GPTQ_REQUIRED_CONFIG_KEYS:  # only save keys gptq supported
-                converted[f"+:{regex}"][key] = regex_config[name][key]
+                converted[f"+:{regex}"][key] = cfg[key]
         else:
             # skip quantization
             converted[f"-:{regex}"] = {}
@@ -190,12 +191,12 @@ def pack_layer(name, model, backend, device=None):
 def save_quantized_as_autogptq(
     output_dir: str,
     model: torch.nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    device: Union[str, torch.device] = "cpu",
+    device: str | torch.device = "cpu",
     backend: str = "auto_gptq:exllamav2",
-    serialization_dict: dict = None,
+    serialization_dict: dict | None = None,
     **kwargs,
 ) -> torch.nn.Module:
     """Export the model to autogptq format to easily leverage cuda kernel."""

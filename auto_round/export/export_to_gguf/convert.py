@@ -37,9 +37,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterator
 from functools import partial
 from itertools import chain
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -101,7 +102,7 @@ def wrapper_model_instance(
 
 
 def _need_low_cpu_mem(low_cpu_mem_usage):
-    if not low_cpu_mem_usage:
+    if not low_cpu_mem_usage:  # noqa: SIM103
         return False
 
     # process = psutil.Process(os.getpid())
@@ -130,7 +131,7 @@ def get_moe_name(cls, name, new_name):
 
     tensor_type = cls.tensor_map.get_type(new_name_tmp).name
     experts_name = name_tmp.split(".")[-1]
-    for k, v in type_mapping.items():
+    for v in type_mapping.values():
         if experts_name in v:
             idx = v.index(experts_name)
             name = name.replace(experts_name, type_mapping[tensor_type][idx])
@@ -534,11 +535,7 @@ def _pack_spec_moe_output(cls, data_torch, data_qtype, moe_output, modify_name, 
 
 def get_qtype_by_layer_config(layer_config, name, data_qtype, *, explicit_only=False):
     name = name[: -len(".weight")]
-    if name not in layer_config and name.endswith("embed_tokens"):
-        embedding_names = [key for key in layer_config if key.endswith("embed_tokens")]
-        if len(embedding_names) == 1:
-            name = embedding_names[0]
-    elif name == "token_embd":
+    if (name not in layer_config and name.endswith("embed_tokens")) or name == "token_embd":
         embedding_names = [key for key in layer_config if key.endswith("embed_tokens")]
         if len(embedding_names) == 1:
             name = embedding_names[0]
@@ -856,7 +853,7 @@ def prepare_tensors(cls):
 
         modify_name = _special_name_handle(cls, checkpoint_name)
         restored_outputs_completed = False
-        for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):
+        for new_name, data_torch in cls.modify_tensors(data_torch, modify_name, bid):  # noqa: B020
             restored_outputs_completed = True
             if _gguf_writer_has_tensor(cls.gguf_writer, new_name):
                 logger.debug("%s already added to gguf_writer, skip", new_name)
@@ -1012,9 +1009,8 @@ def prepare_tensors(cls):
                     gguf.GGMLQuantizationType.Q2_K,
                     gguf.GGMLQuantizationType.Q3_K,
                     gguf.GGMLQuantizationType.Q4_K,
+                    gguf.GGMLQuantizationType.Q5_K,
                 ]:
-                    data_qtype = gguf.GGMLQuantizationType.Q5_0
-                elif data_qtype == gguf.GGMLQuantizationType.Q5_K:
                     data_qtype = gguf.GGMLQuantizationType.Q5_0
                 elif data_qtype == gguf.GGMLQuantizationType.Q6_K:
                     data_qtype = gguf.GGMLQuantizationType.Q8_0

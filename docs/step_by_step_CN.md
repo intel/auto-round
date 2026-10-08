@@ -921,9 +921,16 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 - 将 `seqlen` 降至 512（**部分场景可能出现大幅精度损失**）
 - 将 `bs` 降至 4（**仅有轻微精度损失**）
 
-Windows 上默认关闭 `torch.compile`，因为 TorchInductor 需要 MSVC 的 `cl.exe` 编译器。Windows 用户可在
+Windows 上默认关闭 `torch.compile`，因为 TorchInductor 需要兼容的编译工具链。Windows 用户可在
 Python API 中传入 `enable_torch_compile=True`，或使用命令行参数 `--enable_torch_compile` 强制开启。其他
 平台如需关闭，可传入 `enable_torch_compile=False` 或使用 `--disable_torch_compile`。
+
+在 Windows 上使用 NVIDIA GPU 时，请先在与 AutoRound 相同的 Python 环境中安装支持 CUDA 的 PyTorch
+及兼容版本的 `triton-windows`，然后再开启编译。请按照
+[Triton for Windows 安装指南](https://github.com/triton-lang/triton-windows) 中的 PyTorch/Triton 版本对应表、
+GPU 支持范围和编译器要求配置环境，不要直接为旧版 PyTorch 安装最新版 Triton。
+仅设置 `--enable_torch_compile` 不会安装这些依赖；出现 `TritonMissing` 错误说明编译环境仍需配置。
+在满足这些前提条件之前，请保持编译关闭。
 
 #### 开启 lm-head 层量化
 该配置目前**仅支持 AutoRound 原生格式的推理**，命令行启用方式如下：

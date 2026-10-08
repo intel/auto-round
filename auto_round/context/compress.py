@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Callable, Optional, Union
+from collections.abc import Callable
 
 import torch
 
@@ -36,10 +36,10 @@ class CompressContext(BaseContext):
         enable_torch_compile: bool = True,
         is_immediate_packing: bool = False,
         is_immediate_saving: bool = False,
-        formats: Union[list, str] = None,
+        formats: list | str | None = None,
         output_dir: str = "./compressed_models",
-        static_kv_dtype: Optional[torch.dtype] = None,  # TODO later this should be scheme wenhuach
-        static_attention_dtype: Optional[torch.dtype] = None,
+        static_kv_dtype: torch.dtype | None = None,  # TODO later this should be scheme wenhuach
+        static_attention_dtype: torch.dtype | None = None,
         static_kv_granularity: str = "tensor",
         static_attention_granularity: str = "tensor",
         **kwargs,

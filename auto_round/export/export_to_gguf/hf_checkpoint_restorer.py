@@ -15,9 +15,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable, Iterator
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Callable, Iterator
 
 import torch
 

@@ -22,6 +22,35 @@ import pytest
 import torch
 
 
+@pytest.mark.parametrize("depth", [0, 1, 2, 3])
+def test_debug_layers_reaches_nested_configs(monkeypatch, depth):
+    from transformers import PretrainedConfig
+
+    from auto_round.utils.model import _maybe_truncate_debug_layers
+
+    monkeypatch.setenv("AR_DEBUG_LAYER_NUM", "2")
+    decoder = PretrainedConfig(num_hidden_layers=28)
+    config = decoder
+    for _ in range(depth):
+        config = PretrainedConfig(text_config=config)
+    assert _maybe_truncate_debug_layers(config)
+    assert decoder.num_hidden_layers == 2
+    assert not _maybe_truncate_debug_layers(config)
+
+
+def test_debug_layers_handles_shared_and_cyclic_configs(monkeypatch):
+    from transformers import PretrainedConfig
+
+    from auto_round.utils.model import _maybe_truncate_debug_layers
+
+    monkeypatch.setenv("AR_DEBUG_LAYER_NUM", "2")
+    decoder = PretrainedConfig(num_hidden_layers=1)
+    config = PretrainedConfig(text_config=decoder, shared_config=decoder)
+    decoder.parent_config = config
+    assert not _maybe_truncate_debug_layers(config)
+    assert decoder.num_hidden_layers == 1
+
+
 class TestGetBlockNames:
     """Test get_block_names function."""
 
@@ -964,7 +993,7 @@ class TestSetAttr:
 
         set_attr(model, "inner.new_attr", "new_value")
 
-        assert getattr(model.inner, "new_attr") == "new_value"
+        assert model.inner.new_attr == "new_value"
 
     def test_set_attr_missing_parent(self):
         """Test set_attr does not raise when the parent path doesn't exist."""

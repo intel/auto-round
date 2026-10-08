@@ -15,7 +15,8 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from auto_round.compressors.config_resolution.contracts import (
     FormatResolution,

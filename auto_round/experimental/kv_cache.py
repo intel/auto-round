@@ -19,7 +19,7 @@
 import contextlib
 from enum import Enum
 from functools import partial
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import torch
 from transformers.cache_utils import DynamicCache
@@ -37,10 +37,10 @@ from auto_round.experimental.utils import (
 from auto_round.utils import logger
 
 __all__ = [
-    "initialize_quantized_kv_cache",
-    "prep_attention_module_for_calibration",
     "freeze_module_quantization_",
+    "initialize_quantized_kv_cache",
     "kvcache_quant_context",
+    "prep_attention_module_for_calibration",
 ]
 
 
@@ -71,7 +71,7 @@ class KVCacheScaleType(Enum):
 
 
 # NOTE: Using _ suffix to denote l is modified in place
-def _pad_and_append_at_idx_(lst: List, idx: int, val: Any) -> list:
+def _pad_and_append_at_idx_(lst: list, idx: int, val: Any) -> list:
     """
     Append value val to list lst at index idx, right padding if necessary
     Needed because user may ignore some layers in configuration, meaning
@@ -107,7 +107,7 @@ class QuantizedKVParameterCache(DynamicCache):
     def __new__(cls, *args, **kwargs):
         """Singleton"""
         if cls._instance is None:
-            cls._instance = super(QuantizedKVParameterCache, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, dtype: torch.dtype | str = torch.float8_e4m3fn, granularity: str = "tensor"):
@@ -125,10 +125,10 @@ class QuantizedKVParameterCache(DynamicCache):
             super().__init__()
 
             # each index corresponds to layer_idx of the attention layer
-            self.k_scales: List[torch.Tensor] = []
-            self.v_scales: List[torch.Tensor] = []
-            self.k_amax: List[float] = []
-            self.v_amax: List[float] = []
+            self.k_scales: list[torch.Tensor] = []
+            self.v_scales: list[torch.Tensor] = []
+            self.k_amax: list[float] = []
+            self.v_amax: list[float] = []
             self._initialized = True
 
     def update(
@@ -136,8 +136,8 @@ class QuantizedKVParameterCache(DynamicCache):
         key_states: torch.Tensor,
         value_states: torch.Tensor,
         layer_idx: int,
-        cache_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        cache_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Get the k_scale and v_scale and output the quant-dequant key_states and value_states
         """
@@ -155,7 +155,7 @@ class QuantizedKVParameterCache(DynamicCache):
 
         return keys_to_return, values_to_return
 
-    def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
+    def get_seq_length(self, layer_idx: int | None = 0) -> int:
         """
         Returns the sequence length of the cached states.
         A layer index can be optionally passed.
@@ -173,12 +173,12 @@ class QuantizedKVParameterCache(DynamicCache):
 
     def reset_states(self):
         """reset the kv states (used in calibration)"""
-        self.key_cache: List[torch.Tensor] = []
-        self.value_cache: List[torch.Tensor] = []
+        self.key_cache: list[torch.Tensor] = []
+        self.value_cache: list[torch.Tensor] = []
         # Used in `generate` to keep tally of how many tokens the cache has seen
         self._seen_tokens = 0
-        self._quantized_key_cache: List[torch.Tensor] = []
-        self._quantized_value_cache: List[torch.Tensor] = []
+        self._quantized_key_cache: list[torch.Tensor] = []
+        self._quantized_value_cache: list[torch.Tensor] = []
 
     def reset(self):
         """
@@ -253,7 +253,7 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
             )
 
     quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype, granularity=granularity)
-    setattr(module, "kv_cache", quantized_kv_cache)
+    module.kv_cache = quantized_kv_cache
     logger.debug(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
     if quantized_kv_cache.is_nvfp4:
         # Global scales are only registered once calibration has observed KV
@@ -266,14 +266,14 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
 
 
 def calibrate_kv_cache_input_hook(
-    module: torch.nn.Module, args: Any, kwargs: Dict[str, Any]
-) -> Tuple[Tuple[Any, ...], Dict[str, Any]]:
+    module: torch.nn.Module, args: Any, kwargs: dict[str, Any]
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
     """
     Hook to update inputs to attention layers when running
     kv_cache quantization. Will update the passed in
     kv_cache to singleton QuantizedKVParameterCache.
     """
-    kv_cache = getattr(module, "kv_cache")
+    kv_cache = module.kv_cache
     #  Start from transformers 4.55.2, the `past_key_value` was renamed to `past_key_values`.
     # https://github.com/huggingface/transformers/blob/52c6c1bb6e27ca87c4faede34a4c2a7404c17c4d/src/transformers/models/llama/modeling_llama.py#L279-L280
     if "past_key_values" in kwargs:
@@ -316,7 +316,7 @@ def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output:
     """
     Hook to update k_scale and v_scale parameters when running kv_cache quantization.
     """
-    kv_cache = getattr(module, "kv_cache")
+    kv_cache = module.kv_cache
     if kv_cache.is_nvfp4:
         layer_idx = module.layer_idx
         k_amax = kv_cache.k_amax[layer_idx] if layer_idx < len(kv_cache.k_amax) else 0.0

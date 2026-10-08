@@ -15,8 +15,9 @@
 import copy
 import os
 import re
+from collections.abc import Callable
 from dataclasses import fields
-from typing import Any, Callable, Union
+from typing import Any
 
 import torch
 import transformers
@@ -176,11 +177,11 @@ class GGUFFormat(OutputFormat):
         self,
         output_dir: str,
         model: torch.nn.Module = None,
-        tokenizer: Callable = None,
-        layer_config: dict = None,
+        tokenizer: Callable | None = None,
+        layer_config: dict | None = None,
         inplace: bool = True,
-        device: Union[str, torch.device] = "cpu",
-        serialization_dict: dict = None,
+        device: str | torch.device = "cpu",
+        serialization_dict: dict | None = None,
         **kwargs,
     ) -> torch.nn.Module:
         from auto_round.export.export_to_gguf.export import save_quantized_as_gguf
@@ -203,7 +204,7 @@ class GGUFFormat(OutputFormat):
         scheme: QuantizationScheme,
         model,
         platform: str,
-        formats: Union[str, list[str]] = None,
+        formats: str | list[str] | None = None,
         model_type=ModelType.TEXT,
     ) -> QuantizationScheme:
         import argparse
@@ -285,9 +286,9 @@ class GGUFFormat(OutputFormat):
         name: str,
         model: torch.nn.Module,
         device: torch.device,
-        output_dir: str = None,
+        output_dir: str | None = None,
         mllm: bool = False,
-        layer_config: dict = None,
+        layer_config: dict | None = None,
         tokenizer=None,
         processor=None,
         image_processor=None,
@@ -376,9 +377,7 @@ def _search_gguf_type(gguf_type):
 
 def gguf_type_fallback(gguf_type: str) -> str:
     gguf_type = gguf_type.lower()
-    if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
-        gguf_type = "gguf:q5_0"
-    elif gguf_type == "gguf:q5_k":
+    if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k", "gguf:q5_k"):
         gguf_type = "gguf:q5_0"
     elif gguf_type == "gguf:q6_k":
         gguf_type = "gguf:q8_0"
@@ -473,9 +472,7 @@ def _get_digital_in_layer_name(layer_name):
 
 def _gguf_type_fallback(gguf_type: str) -> str:
     gguf_type = gguf_type.lower()
-    if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k"):
-        gguf_type = "gguf:q5_0"
-    elif gguf_type == "gguf:q5_k":
+    if gguf_type in ("gguf:q2_k", "gguf:q3_k", "gguf:q4_k", "gguf:q5_k"):
         gguf_type = "gguf:q5_0"
     elif gguf_type == "gguf:q6_k":
         gguf_type = "gguf:q8_0"
@@ -749,7 +746,7 @@ def get_layer_config_by_gguf_format(layer_config, target_gguf_format: str, model
         base_target_bits = int(inner_gguf_format[6])
 
     def _resolve_gguf_name(layer_name):
-        if model_type != ModelType.TEXT and any([key in layer_name for key in MM_MODULE_KEYS]):
+        if model_type != ModelType.TEXT and any(key in layer_name for key in MM_MODULE_KEYS):
             gguf_layer_name = tensor_map_vision.get_name(layer_name)
             if gguf_layer_name is None:
                 for key in MM_MODULE_KEYS:

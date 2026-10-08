@@ -19,7 +19,7 @@ R4 rotation uses a forward_pre_hook on ``down_proj`` that applies block Hadamard
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -35,7 +35,7 @@ logger = logging.getLogger("autoround.spinquant")
 def register_spinquant_hooks(
     model: nn.Module,
     config: Any,
-    compute_device: Optional[torch.device] = None,
+    compute_device: torch.device | None = None,
     head_dim: int = 0,
     intermediate_size: int = 0,
     r4_rotation_size: int = 0,
@@ -262,7 +262,7 @@ def remove_spinquant_hooks(handles: list[Any]) -> None:
 def apply_spinquant_in_place(
     model: nn.Module,
     config: Any,
-    dataloader: Optional[Any] = None,
+    dataloader: Any | None = None,
 ) -> nn.Module:
     """Apply SpinQuant rotations to a model **in-place**.
 

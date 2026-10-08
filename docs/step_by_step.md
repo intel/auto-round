@@ -956,9 +956,16 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
     - or combine them
 
-  `torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC `cl.exe` compiler. Windows
+  `torch.compile` is disabled by default on Windows because TorchInductor needs a compatible compiler toolchain. Windows
   users can pass `enable_torch_compile=True` to the Python API or use `--enable_torch_compile` to force enable it. On
   other platforms, pass `enable_torch_compile=False` or use `--disable_torch_compile` to opt out.
+
+  For NVIDIA GPUs on Windows, install a CUDA-enabled PyTorch build and a compatible `triton-windows` version in the
+  same Python environment as AutoRound before enabling compilation. Follow the
+  [Triton for Windows installation guide](https://github.com/triton-lang/triton-windows) for the PyTorch/Triton version
+  matrix, supported GPUs, and compiler requirements. Do not simply install the newest Triton version with an older
+  PyTorch build. Enabling `--enable_torch_compile` alone does not install these dependencies; a `TritonMissing` error
+  means the compilation environment still needs attention. Keep compilation disabled until the prerequisites are met.
 
 
 - **Enable quantized lm-head:**

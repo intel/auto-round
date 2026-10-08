@@ -29,7 +29,7 @@ The dataclass also provides a behavioural helper:
 """
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from auto_round.compressors.base import BaseOrchestrator
@@ -53,7 +53,7 @@ class CalibrationContext:
     # blocks_requiring_input_ids: list = field(default_factory=list)
     #
 
-    batch_dim: Optional[int] = None
+    batch_dim: int | None = None
 
     # ── Calibration parameters ─────────────────────────────────────────────
     batch_size: int = 8

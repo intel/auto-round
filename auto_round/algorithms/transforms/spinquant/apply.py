@@ -120,7 +120,7 @@ class SpinQuantRotation(BaseRotation, SerializerMixin):
         model: torch.nn.Module,
         data_type: str = "mx_fp",
         **kwargs: Any,
-    ) -> "SpinQuantRotation":
+    ) -> SpinQuantRotation:
         """Prepare for layer-wise rotation: init R matrices only.
 
         Creates a :class:`SpinQuantPreprocessor`, calls its

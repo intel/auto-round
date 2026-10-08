@@ -92,7 +92,7 @@ def _state_dict_has_meta_tensor(model: nn.Module) -> bool:
     return False
 
 
-def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict = None) -> bool:
+def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict | None = None) -> bool:
     """Determine if the model was saved via ShardWriter (immediate saving mode).
 
     Resolution order:
@@ -106,9 +106,7 @@ def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict = None) 
             return True
     if unsupported_meta_device(model):
         return True
-    if _state_dict_has_meta_tensor(model):
-        return True
-    return False
+    return _state_dict_has_meta_tensor(model)
 
 
 def is_local_pipeline_model_dir(model_dir: str) -> bool:
@@ -327,13 +325,22 @@ def _restore_original_layer_types(save_dir: str, source_dir: str) -> None:
             json.dump(saved_config, f, indent=2)
 
 
+# Quantization metadata (weight/input/kv-cache scales and zero points) is part of the
+# checkpoint contract and must keep its own dtype, so it is never cast to the export dtype.
+_QUANT_PARAM_SUFFIXES = ("_scale", "_scales", "_scale_inv", "_zero_point", "_zeros", "_zp")
+
+
+def _is_quant_param(name: str) -> bool:
+    return name.endswith(_QUANT_PARAM_SUFFIXES)
+
+
 def _get_state_dict_for_export_dtype(model: nn.Module, dtype) -> dict | None:
     """Return a state dict with float32 tensors cast to ``dtype``, or None if nothing needs casting.
 
     Tuning may run the model in float32, e.g. when the device doesn't support bfloat16. The
     exported config declares ``dtype``, so the saved tensors should use it too. Tensors of
     modules the model keeps in float32 (``_keep_in_fp32_modules``) are left unchanged, as are
-    quantized (non-float32) tensors.
+    quantized (non-float32) tensors and quantization scales/zero points.
     """
     if dtype not in (torch.bfloat16, torch.float16):
         return None
@@ -346,14 +353,12 @@ def _get_state_dict_for_export_dtype(model: nn.Module, dtype) -> dict | None:
         names = getattr(model, attribute, None) or []
         keep_in_fp32.update([names] if isinstance(names, str) else names)
 
-    return {
-        name: (
-            tensor.to(dtype)
-            if tensor.dtype == torch.float32 and not any(module_name in name for module_name in keep_in_fp32)
-            else tensor
-        )
-        for name, tensor in state_dict.items()
-    }
+    def _should_cast(name: str, tensor: torch.Tensor) -> bool:
+        if tensor.dtype != torch.float32 or _is_quant_param(name):
+            return False
+        return not any(module_name in name for module_name in keep_in_fp32)
+
+    return {name: (tensor.to(dtype) if _should_cast(name, tensor) else tensor) for name, tensor in state_dict.items()}
 
 
 def apply_post_save_source_fixes(model: nn.Module, save_dir: str) -> None:
@@ -500,8 +505,8 @@ def filter_quantization_config(quantization_config):
     default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
     default_dict["minmax_lr"] = default_dict["lr"]
 
-    for key in default_dict:
-        if key in quantization_config and default_dict[key] == quantization_config[key]:
+    for key, default_value in default_dict.items():
+        if key in quantization_config and default_value == quantization_config[key]:
             quantization_config.pop(key)
     for k in list(quantization_config.keys()):
         if quantization_config[k] is None:
@@ -529,9 +534,7 @@ def filter_quantization_config(quantization_config):
         if callable(key):
             quantization_config.pop(key)
         elif isinstance(quantization_config[key], (list, tuple)):
-            if any([callable(item) for item in quantization_config[key]]):
-                quantization_config.pop(key)
-            elif len(quantization_config[key]) == 0:
+            if any(callable(item) for item in quantization_config[key]) or len(quantization_config[key]) == 0:
                 quantization_config.pop(key)
         if key in clean_list and key in quantization_config:
             quantization_config.pop(key)

@@ -15,8 +15,8 @@
 import copy
 import json
 import os
+from collections.abc import Callable
 from dataclasses import fields
-from typing import Callable, Union
 
 import torch
 import transformers
@@ -202,16 +202,16 @@ def pack_layer(layer_name, model, data_type, device=None, unsqueeze=False):
 def save_quantized_as_autoround(
     output_dir: str,
     model: torch.nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    backend: str = None,
-    device: Union[str, torch.device] = "cpu",
-    serialization_dict: dict = None,
+    backend: str | None = None,
+    device: str | torch.device = "cpu",
+    serialization_dict: dict | None = None,
     quant_method: str = "auto-round",
     **kwargs,
 ):
-    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
+    safe_serialization = kwargs.get("safe_serialization", True)
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
     quantization_config = serialization_dict

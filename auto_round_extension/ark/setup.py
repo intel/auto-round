@@ -71,9 +71,7 @@ def detect_oneapi_version():
     Returns a string like '2025.3' or None if detection fails.
     """
     try:
-        result = subprocess.run(
-            ["icx", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
-        )
+        result = subprocess.run(["icx", "--version"], capture_output=True, text=True, check=True)
         match = re.search(r"Compiler\s+(\d{4}\.\d+)", result.stdout)
         if match:
             return match.group(1)
@@ -354,7 +352,7 @@ setup(
     version=get_build_version(),
     description="Auto Round Kernel binary package",
     author_email="yu.luo@intel.com",
-    long_description=open("README.md", "r", encoding="utf-8").read(),
+    long_description=Path("README.md").read_text(encoding="utf-8"),
     long_description_content_type="text/markdown",
     keywords="quantization,auto-around,LLM,kernel",
     license="Apache 2.0",
