@@ -42,8 +42,7 @@ Example::
 
 import re
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Union
 
 # ---------------------------------------------------------------------------
 # CalibDataset dataclass
