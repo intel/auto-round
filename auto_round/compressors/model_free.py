@@ -110,7 +110,7 @@ import tempfile
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, fields
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 from safetensors import safe_open
@@ -545,14 +545,14 @@ class _ModelFreeCompressorCore:
         self,
         model_name_or_path: str,
         output_dir: str,
-        scheme: Union[str, QuantizationScheme] = "W4A16",
-        layer_config: Optional[dict] = None,
+        scheme: str | QuantizationScheme = "W4A16",
+        layer_config: dict | None = None,
         ignore_layers: str = "",
-        format: Optional[str] = None,
+        format: str | None = None,
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
-        enable_torch_compile: Optional[bool] = None,
+        enable_torch_compile: bool | None = None,
         disable_opt_rtn: bool = False,
     ) -> None:
         # --- raw inputs ---
@@ -790,7 +790,7 @@ class _ModelFreeCompressorCore:
             if incompatible:
                 # Group by class for a cleaner warning message
                 incompatible_layers = []
-                for cls, layers in incompatible.items():
+                for layers in incompatible.values():
                     incompatible_layers.extend(layers)
                 summary = ", ".join(f"{cls}({len(layers)})" for cls, layers in sorted(incompatible.items()))
                 self.ignore_patterns.extend(incompatible_layers)
@@ -1758,11 +1758,11 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
     def __init__(
         self,
         model_name_or_path: str,
-        output_dir: Optional[str] = None,
-        scheme: Union[str, QuantizationScheme] = "W4A16",
-        layer_config: Optional[dict] = None,
+        output_dir: str | None = None,
+        scheme: str | QuantizationScheme = "W4A16",
+        layer_config: dict | None = None,
         ignore_layers: str = "",
-        format: Optional[str] = None,
+        format: str | None = None,
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
@@ -1770,7 +1770,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         tokenizer: Any = None,
         device_map: Any = None,
         low_cpu_mem_usage: bool = True,
-        enable_torch_compile: Optional[bool] = None,
+        enable_torch_compile: bool | None = None,
         disable_opt_rtn: bool = False,
         **kwargs,
     ) -> None:
@@ -1811,7 +1811,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
         # Compressor-role state (mirrors BaseCompressor attributes used by
         # AutoRound's post-processing code)
-        self._output_dir_override: Optional[str] = None  # set by quantize_and_save
+        self._output_dir_override: str | None = None  # set by quantize_and_save
         self.model = None
         self.tokenizer = tokenizer
         self.model_free = True
@@ -1857,9 +1857,9 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
         # AutoScheme (two-phase delta-loss selection) state.
         self._auto_scheme_resolved = False
-        self._auto_scheme_family: Optional[str] = None
+        self._auto_scheme_family: str | None = None
 
-    def _fallback_to_base_compressor(self, save_format: Optional[str] = None):
+    def _fallback_to_base_compressor(self, save_format: str | None = None):
         from auto_round.autoround import AutoRound
 
         logger.info(

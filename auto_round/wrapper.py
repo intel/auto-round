@@ -95,7 +95,7 @@ class WrapperLinear(torch.nn.Module):
             enable_norm_bias_tuning (bool): Whether to enable normalization and tuning for the bias term.
             device (str): The computation device, such as 'cpu' or 'cuda'.
         """
-        super(WrapperLinear, self).__init__()
+        super().__init__()
         self.orig_layer = orig_layer
         self.orig_layer.iters = kwargs.pop("iters", 200)
         self.disable_opt_rtn = disable_opt_rtn
@@ -112,7 +112,7 @@ class WrapperLinear(torch.nn.Module):
             from auto_round.data_type.nvfp import calculate_gparam
 
             weight_global_scale = calculate_gparam(self.orig_layer.weight, self.orig_layer.group_size)
-            setattr(self, "weight_global_scale", weight_global_scale)
+            self.weight_global_scale = weight_global_scale
             self.weight_global_scale = self.weight_global_scale.to(self.orig_layer.weight.device)
         if hasattr(self.orig_layer, "scale_dtype") and self.orig_layer.scale_dtype == torch.float32:
             self.q_scale_thresh = 1e-8
@@ -332,7 +332,7 @@ class WrapperLinear(torch.nn.Module):
             weight_q = weight_q.t()
         return weight_q, scale, zp
 
-    def _qdq_act(self, x, act_min_scale=torch.tensor(1.0), act_max_scale=torch.tensor(1.0), act_max=None):
+    def _qdq_act(self, x, act_min_scale=None, act_max_scale=None, act_max=None):
         """Quantizes and dequantizes activations.
 
         Args:
@@ -343,6 +343,10 @@ class WrapperLinear(torch.nn.Module):
         Returns:
             tuple: Quantized activation, scale, and zero point.
         """
+        if act_min_scale is None:
+            act_min_scale = torch.tensor(1.0)
+        if act_max_scale is None:
+            act_max_scale = torch.tensor(1.0)
         act_max_scale.data.clamp_(0, 1.0)
         act_min_scale.data.clamp_(0, 1.0)
         env_act_scale = envs.AR_ACT_SCALE  # fixed activation ratio,prioritize to use this one if set
@@ -608,7 +612,7 @@ class WrapperLinear(torch.nn.Module):
 class WrapperWALayer(torch.nn.Module):
 
     def __init__(self, orig_layer, enable_torch_compile=True, device="cpu"):
-        super(WrapperWALayer, self).__init__()
+        super().__init__()
         self.orig_layer = orig_layer
         self.enable_torch_compile = enable_torch_compile
         self.device = device
@@ -692,7 +696,7 @@ class WrapperLayerNorm(torch.nn.Module):
     """
 
     def __init__(self, orig_layer, bit=4, group_size=-1, device="cpu"):
-        super(WrapperLayerNorm, self).__init__()
+        super().__init__()
         self.orig_layer = orig_layer
         self.bits = bit
         self.group_size = group_size
@@ -743,7 +747,7 @@ class WrapperLlamaNorm(torch.nn.Module):
     """
 
     def __init__(self, orig_layer, bit=4, group_size=-1, device="cpu"):
-        super(WrapperLlamaNorm, self).__init__()
+        super().__init__()
         self.orig_layer = orig_layer
         self.bits = bit
         self.group_size = group_size
@@ -803,7 +807,7 @@ class WrapperMultiblock(torch.nn.Module):
     """
 
     def __init__(self, module_list):
-        super(WrapperMultiblock, self).__init__()
+        super().__init__()
         self.layers = torch.nn.ModuleList(module_list)
 
     def forward(self, x, *args, **kwargs):
@@ -811,7 +815,7 @@ class WrapperMultiblock(torch.nn.Module):
         for idx, decoder_layer in enumerate(self.layers):
             layer_outputs = decoder_layer(hidden_states, *args, **kwargs)
             hidden_states = layer_outputs
-            if isinstance(hidden_states, tuple) or isinstance(hidden_states, list):
+            if isinstance(hidden_states, (tuple, list)):
                 hidden_states = layer_outputs[0]
         return hidden_states
 
@@ -857,7 +861,7 @@ def wrapper_block(
 
         elif enable_norm_bias_tuning:
             if "norm" in m.__class__.__name__.lower():
-                if m.__class__.__name__ in NORM_MAPPING.keys():
+                if m.__class__.__name__ in NORM_MAPPING:
                     wrapper_layer_class = NORM_MAPPING[m.__class__.__name__]
                     new_m = wrapper_layer_class(m, device=device)
                     set_module(block, n, new_m)

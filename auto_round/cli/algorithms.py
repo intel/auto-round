@@ -127,7 +127,7 @@ def _merge_parameter(merged, parameter):
     if not overlapping_options and merged.dest != parameter.dest:
         return None
     if merged.dest != parameter.dest or _argument_compatibility_key(merged) != _argument_compatibility_key(parameter):
-        option = sorted(overlapping_options)[0] if overlapping_options else merged.dest
+        option = min(overlapping_options) if overlapping_options else merged.dest
         raise ValueError(f"incompatible shared CLI argument {option!r}")
     kwargs = dict(merged.argparse_kwargs)
     kwargs["default"] = argparse.SUPPRESS

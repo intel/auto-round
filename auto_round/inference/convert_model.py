@@ -11,10 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import itertools
 import os
 import re
 from types import SimpleNamespace
-from typing import Union
 
 import torch
 import torch.nn as nn
@@ -70,7 +70,7 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
         modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
-            if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
+            if any(re.search(re.compile(n), layer_name) for n in modules_to_not_convert):
                 layer_configs[layer_name] = {"bits": 16, "act_bits": 16}
     return layer_configs
 
@@ -101,9 +101,9 @@ def get_keys_to_not_convert(model):
     tied_params = find_tied_parameters(tied_model)
     # For compatibility with Accelerate < 0.18
     if isinstance(tied_params, dict):
-        tied_keys = sum(list(tied_params.values()), []) + list(tied_params.keys())
+        tied_keys = list(itertools.chain.from_iterable(tied_params.values())) + list(tied_params.keys())
     else:
-        tied_keys = sum(tied_params, [])
+        tied_keys = list(itertools.chain.from_iterable(tied_params))
     has_tied_params = len(tied_keys) > 0
 
     # If there is not tied weights, we want to keep the lm_head（output_embedding) in full precision
@@ -369,7 +369,7 @@ def get_layer_config(model, quantization_config):
             quantization_config.modules_in_block_to_quantize
         )  # Flatten the list
         for layer_name in layer_names:
-            if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
+            if not any(re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
 
     # Expand GPTQ 'dynamic' config (regex-based)
@@ -408,7 +408,7 @@ def get_layer_config(model, quantization_config):
     return layer_configs
 
 
-def get_device(obj: Union[torch.Tensor, nn.Module]) -> torch.device:
+def get_device(obj: torch.Tensor | nn.Module) -> torch.device:
     if isinstance(obj, torch.Tensor):
         return obj.device
     return next(obj.parameters()).device
@@ -601,7 +601,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
     )
 
 
-def infer_target_device(device_map: Union[dict, int, str, None] = None) -> str:
+def infer_target_device(device_map: dict | int | str | None = None) -> str:
     """Infers the target device from a device_map.
 
     Args:

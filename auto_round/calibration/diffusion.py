@@ -23,6 +23,7 @@ and customises:
 
 import inspect
 import os
+import sys
 
 import torch
 from tqdm import tqdm
@@ -134,7 +135,7 @@ class DiffusionCalibrator(LLMCalibrator):
                 "Please use model path for quantization or "
                 "move the pipeline object to GPU/XPU before passing them into API."
             )
-            exit(-1)
+            sys.exit(-1)
 
         target_device = device_manager.device
         self._cpu_offload_mode = _prepare_pipeline_for_calibration(
@@ -189,7 +190,7 @@ class DiffusionCalibrator(LLMCalibrator):
                 f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
                 f"dataset or decease the sequence length"
             )
-            exit(-1)
+            sys.exit(-1)
         elif total_cnt < nsamples:
             logger.warning(
                 f"Insufficient number of samples collected may affect the quantization. "

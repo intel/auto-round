@@ -30,7 +30,7 @@ Supported schemes: W2A16, W3A16, W4A16, W5A16, W6A16, W8A16
 import copy
 import json
 import os
-from typing import Callable, Union
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -600,11 +600,11 @@ def pack_layer(name, model, device=None, **kwargs):
 def save_quantized_as_mlx(
     output_dir: str,
     model: nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    device: Union[str, torch.device] = "cpu",
-    serialization_dict: dict = None,
+    device: str | torch.device = "cpu",
+    serialization_dict: dict | None = None,
     **kwargs,
 ) -> nn.Module:
     """Save quantized model in MLX-compatible format.

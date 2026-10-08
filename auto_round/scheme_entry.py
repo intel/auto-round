@@ -25,7 +25,7 @@ routing preview/validation helpers the entry uses before a compressor exists.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 from auto_round.logger import logger
 from auto_round.schemes import parse_scheme
@@ -118,7 +118,7 @@ def eager_validate_scheme(config, scheme=None, format=None) -> None:
     temp_config.check_config()  # raises ValueError / NotImplementedError if invalid
 
 
-def is_weight_scheme(scheme: Union[str, dict, object]) -> bool:
+def is_weight_scheme(scheme: str | dict | object) -> bool:
     if isinstance(scheme, str):
         return scheme.upper().startswith("W")
     if isinstance(scheme, dict):
@@ -134,7 +134,7 @@ def is_weight_scheme(scheme: Union[str, dict, object]) -> bool:
     return False
 
 
-def is_gguf_k_target(value: Union[str, "AutoScheme", object]) -> bool:
+def is_gguf_k_target(value: str | AutoScheme | object) -> bool:
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
     if isinstance(value, str):

@@ -17,9 +17,9 @@ import functools
 import inspect
 import json
 import os
+from collections.abc import Callable
 from dataclasses import fields
 from enum import Enum
-from typing import Callable, Union
 
 import torch
 import torch.nn as nn
@@ -242,12 +242,12 @@ def pack_layer(layer_name, model, backend, device=None):
 def save_quantized_as_autoround(
     output_dir: str,
     model: torch.nn.Module,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace=True,
     backend="auto_round:exllamav2",
-    device: Union[str, torch.device] = "cpu",
-    serialization_dict: dict = None,
+    device: str | torch.device = "cpu",
+    serialization_dict: dict | None = None,
     **kwargs,
 ):
     """
@@ -279,7 +279,7 @@ def save_quantized_as_autoround(
     ):
         backend = backend.replace("auto_round", "auto_round:auto_gptq")
 
-    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
+    safe_serialization = kwargs.get("safe_serialization", True)
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 

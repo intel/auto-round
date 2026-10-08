@@ -51,7 +51,7 @@ import sys
 import tempfile
 from collections import defaultdict
 from functools import partial
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 
@@ -190,7 +190,7 @@ def _clear_module_weights(
 # =====================================================================
 
 
-def _resolve_model_dir(model_dir: str, revision: Optional[str] = None) -> str:
+def _resolve_model_dir(model_dir: str, revision: str | None = None) -> str:
     """Resolve a model name/path to a local directory containing weight files."""
     if os.path.isdir(model_dir):
         return model_dir
@@ -371,11 +371,11 @@ class OffloadManager:
         self,
         enabled: bool = True,
         mode: str = "offload",
-        model_dir: Optional[str] = None,
+        model_dir: str | None = None,
         offload_dir_prefix: str = "ar_offload",
         cache_numel: bool = False,
         retain_saved_entries: bool = False,
-        model_revision: Optional[str] = None,
+        model_revision: str | None = None,
     ):
         from auto_round import envs
 
@@ -391,7 +391,7 @@ class OffloadManager:
         self.retain_saved_entries = retain_saved_entries
 
         # Disk state (offload mode)
-        self._tempdir: Optional[str] = None
+        self._tempdir: str | None = None
         self._saved: dict[str, dict] = {}  # name -> {"save_path": str}
 
         # Cached weight map for clean mode (avoids repeated disk I/O)
@@ -399,12 +399,12 @@ class OffloadManager:
 
         # Hook state (for add_offload_hooks/remove_offload_hooks transparent offloading)
         self._hook_handles: list = []
-        self._model_ref: Optional[torch.nn.Module] = None
+        self._model_ref: torch.nn.Module | None = None
         self._module_names: list[str] = []
-        self._last_loaded: Optional[str] = None
+        self._last_loaded: str | None = None
 
         # Ensure-style state (for wrapping loops)
-        self._current_loaded: Optional[str] = None
+        self._current_loaded: str | None = None
 
     # ------------------------------------------------------------------
     # Context manager
@@ -426,7 +426,7 @@ class OffloadManager:
     def __call__(
         self,
         model: torch.nn.Module,
-        names: Union[str, list[str], list[list[str]]],
+        names: str | list[str] | list[list[str]],
         *,
         skip_if_saved: bool = False,
         overwrite: bool = False,
@@ -450,7 +450,7 @@ class OffloadManager:
     def offload(
         self,
         model: torch.nn.Module,
-        names: Union[str, list[str], list[list[str]]],
+        names: str | list[str] | list[list[str]],
         *,
         skip_if_saved: bool = False,
         overwrite: bool = False,
@@ -508,7 +508,7 @@ class OffloadManager:
             logger.info(f"offload done, freed {total_gb:.2f} GB")
         return total_gb
 
-    def _check_disk_space(self, model: torch.nn.Module, names: Union[str, list[str], list[list[str]]]) -> bool:
+    def _check_disk_space(self, model: torch.nn.Module, names: str | list[str] | list[list[str]]) -> bool:
         """Check whether there is enough disk space to offload the given modules.
 
         Args:
@@ -576,7 +576,7 @@ class OffloadManager:
             self._save_to_disk(name, module)
         self._clear(module, block_name=name)
 
-    def reload(self, model: torch.nn.Module, names: Union[str, list[str], None] = None) -> None:
+    def reload(self, model: torch.nn.Module, names: str | list[str] | None = None) -> None:
         """Reload previously offloaded module(s).
 
         For ``"offload"`` mode: loads from the temp directory, then
@@ -692,7 +692,7 @@ class OffloadManager:
         clear_memory()
         logger.info("module weights cleared")
 
-    def remove_offload_hooks(self, model: torch.nn.Module, names: Optional[list[str]] = None) -> None:
+    def remove_offload_hooks(self, model: torch.nn.Module, names: list[str] | None = None) -> None:
         """Remove hooks and reload all managed modules.
 
         Args:
@@ -1007,7 +1007,7 @@ class OffloadManager:
         return False
 
     @staticmethod
-    def _flatten_names(names: Union[list[str], list[list[str]]]) -> list[str]:
+    def _flatten_names(names: list[str] | list[list[str]]) -> list[str]:
         """Flatten a potentially nested list of names."""
         flat = []
         for item in names:
