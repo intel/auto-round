@@ -31,6 +31,7 @@ from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear, pack_f
 from auto_round.export.svdquant_nunchaku import (
     IdentitySVDQuantModelAdapter,
     SVDQuantModelAdapter,
+    _export_key,
     _source_records,
     _validate_adapter_provenance,
 )
@@ -124,6 +125,8 @@ def collect_svdquant_omni_tensors(
     tensors, ranks = {}, set()
     for record in records:
         validate_nvfp4_scheme(record.scheme)
+        if record.omitted_suffixes - {"bias"}:
+            raise ValueError(f"{record.prefix}: cannot omit required Omni tensors")
         weight, down, up = record.residual_weight, record.lora_down, record.lora_up
         smooth = record.smooth.float()
         n, k = weight.shape
@@ -161,10 +164,13 @@ def collect_svdquant_omni_tensors(
             proj_down=(down.float() * smooth).T.bfloat16(),
             proj_up=up.bfloat16(),
             smooth_factor=smooth.reciprocal().bfloat16(),
-            bias=torch.zeros(n, dtype=torch.bfloat16) if record.bias is None else record.bias.bfloat16(),
         )
+        if record.bias is not None:
+            values["bias"] = record.bias.bfloat16()
         for suffix, value in values.items():
-            key = f"{record.prefix}.{suffix}"
+            if suffix in record.omitted_suffixes:
+                continue
+            key = _export_key(record, suffix)
             if key in tensors:
                 raise ValueError(f"duplicate Omni tensor key {key!r}")
             value = value.detach().cpu().contiguous()

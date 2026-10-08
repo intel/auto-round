@@ -50,12 +50,23 @@ class SVDQuantOmniFormat(SVDQuantNunchakuFormat):
         serialization_dict=None,
         *,
         adapter=None,
+        model_adapter=None,
         **kwargs,
     ):
+        if adapter is not None and model_adapter is not None:
+            raise TypeError("Pass only one of model_adapter and adapter.")
         if output_dir is None:
             return model
         from auto_round.export.svdquant_omni import save_svdquant_omni
 
         self._validate_svd_layer_overrides(model, layer_config)
+        if adapter is None:
+            adapter = model_adapter
+        # Nunchaku's named adapters and transform-selected mapping describe a
+        # different runtime ABI; do not resolve or inherit them for Omni.
+        if isinstance(adapter, str):
+            if adapter.strip().lower() not in {"auto", "identity"}:
+                raise ValueError("svdquant_omni requires an Omni-compatible adapter object, not Nunchaku adapter names")
+            adapter = None
         save_svdquant_omni(model, output_dir, device=device, adapter=adapter)
         return model
