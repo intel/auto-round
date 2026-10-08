@@ -631,3 +631,29 @@ class TestGGUFZeroBlock:
         d = np.ascontiguousarray(packed.reshape(2, 210)[:, -2:]).view(np.float16)
         assert not np.isnan(d).any(), f"packed Q6_K d scales contain NaN: {d}"
         assert d[0] == 0.0
+
+
+class TestGGUFPositiveGroup:
+    """K-quant groups whose values are all positive must keep 0 in the range (as llama.cpp
+    does), because Q2_K/Q4_K/Q5_K can only store non-negative mins."""
+
+    @pytest.mark.parametrize("qtype, bits", [("q2_k", 2), ("q4_k", 4)])
+    def test_all_positive_groups(self, qtype, bits):
+        gguf_quants = pytest.importorskip("gguf.quants")
+        from gguf import GGMLQuantizationType
+
+        from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
+        from auto_round.export.export_to_gguf.packing import ggml_quant
+
+        torch.manual_seed(0)
+        tensor = torch.randn(2, 256)
+        tensor[1] = torch.rand(256) + 0.5
+
+        qdq, _, _ = quant_tensor_gguf_asym_dq(tensor.clone(), bits=bits, scale_dtype=torch.float32)
+        # With 0 kept in the range the MSE is about 0.014 (2-bit) or 0.0007 (4-bit);
+        # with a positive min that cannot be stored it is above 0.06.
+        assert ((qdq[1] - tensor[1]) ** 2).mean() < 0.03
+
+        packed = ggml_quant(tensor.clone(), qtype, device="cpu")
+        dequantized = gguf_quants.dequantize(packed, GGMLQuantizationType[qtype.upper()])
+        torch.testing.assert_close(torch.from_numpy(dequantized).reshape(tensor.shape), qdq, atol=1e-2, rtol=0)
