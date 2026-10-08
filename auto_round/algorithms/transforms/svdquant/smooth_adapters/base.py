@@ -112,6 +112,8 @@ def generic_linear_groups(
     *,
     consumed: set[int] | None = None,
 ) -> list[SmoothSearchGroup]:
+    from auto_round.data_type.utils import get_fused_attention_projection_names
+
     consumed = set(consumed or ())
     groups = []
     # Explicit self-attention metadata establishes that Q/K/V share an input.
@@ -119,8 +121,11 @@ def generic_linear_groups(
     for local_name, attention in block.named_modules():
         if getattr(attention, "is_cross_attention", None) is not False:
             continue
-        paths = tuple(f"{local_name}.{name}" if local_name else name for name in ("to_q", "to_k", "to_v"))
-        projections = tuple(getattr(attention, name, None) for name in ("to_q", "to_k", "to_v"))
+        projection_names = get_fused_attention_projection_names(attention)
+        if not projection_names:
+            continue
+        paths = tuple(f"{local_name}.{name}" if local_name else name for name in projection_names)
+        projections = tuple(getattr(attention, name) for name in projection_names)
         if not all(
             isinstance(module, torch.nn.Linear) and id(module) not in consumed and is_target(path, module)
             for path, module in zip(paths, projections)

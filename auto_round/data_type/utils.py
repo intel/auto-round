@@ -444,6 +444,17 @@ def get_gaudi_fp8_ste_func():
 
 # please refer from https://github.com/vllm-project/llm-compressor/blob/
 # 29f4d5644b48e9c8ebb7e36d5be9f7c92747ceb7/src/llmcompressor/modifiers/utils/helpers.py#L11
+def get_fused_attention_projection_names(module: Module) -> tuple[str, ...]:
+    """Return the QKV projection names recognized by fused-scale synchronization."""
+    if all(hasattr(module, name) for name in ("q_proj", "k_proj", "v_proj")):
+        return ("q_proj", "k_proj", "v_proj")
+    if not getattr(module, "is_cross_attention", False) and all(
+        hasattr(module, name) for name in ("to_q", "to_k", "to_v")
+    ):
+        return ("to_q", "to_k", "to_v")
+    return ()
+
+
 def update_fused_layer_global_scales(
     submodule: Module,
     base_name: str = "weight",
@@ -477,9 +488,6 @@ def update_fused_layer_global_scales(
                     scales.append(scale.reshape(1))
         return scales
 
-    def _is_attention_module(module: Module):
-        return all(hasattr(module, projection) for projection in ("q_proj", "k_proj", "v_proj"))
-
     def _is_mlp_module(module: Module):
         return all(hasattr(module, projection) for projection in ("gate_proj", "up_proj"))
 
@@ -509,16 +517,9 @@ def update_fused_layer_global_scales(
                 setattr(proj, global_scale_name, global_scale.clone().to(proj_scale.device))
 
     # ---------------- Attention ----------------
-    if _is_attention_module(submodule):
-        _update_global_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
-        return
-
-    # Diffusers self-attention (e.g. Wan) uses to_q/to_k/to_v. Cross-attention
-    # Q consumes different inputs from K/V and must not join their scale group.
-    if not getattr(submodule, "is_cross_attention", False) and all(
-        hasattr(submodule, projection) for projection in ("to_q", "to_k", "to_v")
-    ):
-        _update_global_scales([submodule.to_q, submodule.to_k, submodule.to_v])
+    projection_names = get_fused_attention_projection_names(submodule)
+    if projection_names:
+        _update_global_scales([getattr(submodule, name) for name in projection_names])
         return
 
     # ---------------- MLP ----------------
