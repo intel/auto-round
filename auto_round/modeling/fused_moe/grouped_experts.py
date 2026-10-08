@@ -221,9 +221,7 @@ def _projection_is_supported(layer: nn.Module) -> bool:
         # forward hook on each expert Linear, and the grouped path -- which multiplies the
         # weights directly and never calls ``Linear.forward`` -- would silently skip them,
         # leaving every expert without ``act_max`` (breaking static-act export, e.g. NVFP4).
-        if layer._forward_pre_hooks or layer._forward_hooks:
-            return False
-        return True
+        return not (layer._forward_pre_hooks or layer._forward_hooks)
     if not _is_wrapper_linear(layer):
         return False
     orig = layer.orig_layer
@@ -231,9 +229,7 @@ def _projection_is_supported(layer: nn.Module) -> bool:
         return False  # Conv1D / LinearAllreduce need their own forward
     if orig._forward_pre_hooks or orig._forward_hooks:
         return False  # e.g. online Hadamard rotation must run per layer
-    if getattr(layer, "enable_act_quant", False) and not _act_quant_is_row_independent(layer):
-        return False
-    return True
+    return not (getattr(layer, "enable_act_quant", False) and not _act_quant_is_row_independent(layer))
 
 
 def _compute_device(layer: nn.Module) -> torch.device:

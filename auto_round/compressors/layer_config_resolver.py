@@ -417,7 +417,7 @@ def resolve_layer_config(
     enable_gguf_official_mixed: bool = True,
     is_mllm: bool = False,
     fill_default_value: bool = True,
-    format: str = None,
+    format: str | None = None,
 ) -> LayerConfig:
     """Resolve final per-layer configuration without writing model attributes."""
     layer_config = expand_layer_config_for_weight_renames(layer_config, model=model, to_model_names=True)
@@ -488,7 +488,7 @@ def extract_regex_config(
     inner_supported_types=None,
     ignore_layers: str = "",
     fill_default_value: bool = True,
-    format: str = None,
+    format: str | None = None,
 ) -> LayerConfig:
     """Resolve only the regex entries retained for export metadata."""
     layer_config = expand_layer_config_for_weight_renames(layer_config, model=model, to_model_names=True)
@@ -545,8 +545,7 @@ def apply_plan_to_model(model, plan: ResolvedQuantizationConfig) -> None:
         # (``AttributeError`` on the norm's next forward). Scope the reset to the
         # same modules that receive the plan below.
         is_quant_target = (
-            isinstance(module, SUPPORTED_LAYER_TYPES)
-            or isinstance(module, torch.nn.Embedding)
+            isinstance(module, (SUPPORTED_LAYER_TYPES, torch.nn.Embedding))
             or module.__class__.__name__ in INNER_SUPPORTED_LAYER_TYPES
         )
         if module_name != "" and not is_quant_target:

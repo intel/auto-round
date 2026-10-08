@@ -34,7 +34,7 @@ class AlgorithmParameter:
 
 
 class _MutuallyExclusiveParameterRegistry:
-    def __init__(self, registry: "AlgorithmParameterRegistry", group_id: int) -> None:
+    def __init__(self, registry: AlgorithmParameterRegistry, group_id: int) -> None:
         self._registry = registry
         self._group_id = group_id
 

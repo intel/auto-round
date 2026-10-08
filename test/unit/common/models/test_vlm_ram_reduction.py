@@ -167,11 +167,10 @@ class TestDiffusionMultiDeviceDispatch:
         pipe = FakePipe()
         pipe.components = {"transformer": pipe.transformer, "vae": pipe.vae}
 
-        with patch("torch.cuda.is_available", return_value=False):
-            with patch("torch.cuda.device_count", return_value=0):
-                # Single device path (falls back to pipe.to)
-                result = dispatch_model_by_all_available_devices(pipe, "cpu")
-                assert result is pipe
+        with patch("torch.cuda.is_available", return_value=False), patch("torch.cuda.device_count", return_value=0):
+            # Single device path (falls back to pipe.to)
+            result = dispatch_model_by_all_available_devices(pipe, "cpu")
+            assert result is pipe
 
     def test_multi_device_respects_non_main_memory(self):
         """With multiple devices, memory reservation must be computed for non-main components."""

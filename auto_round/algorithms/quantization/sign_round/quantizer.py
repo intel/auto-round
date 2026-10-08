@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+from collections.abc import Callable
 from contextlib import nullcontext
-from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch import autocast
@@ -135,8 +136,8 @@ class SignRoundQuantizer(BaseQuantizer):
         ref_output: torch.Tensor,
         indices: torch.Tensor,
         loss_func: Callable,
-        device: Union[str, torch.device] = "cpu",
-        valid_token_mask: Optional[torch.Tensor] = None,
+        device: str | torch.device = "cpu",
+        valid_token_mask: torch.Tensor | None = None,
         input_ids=None,
     ):
         autocast_ctx = (
@@ -608,10 +609,10 @@ class SignRoundQuantizer(BaseQuantizer):
     def quantize_layer_outside_block(
         self,
         layer: "torch.nn.Module",
-        fp_inputs: Optional[list[torch.Tensor]] = None,
-        q_inputs: Optional[list[torch.Tensor]] = None,
-        disable_opt_rtn: Optional[bool] = None,
-        input_ids: Optional[list[torch.Tensor]] = None,
+        fp_inputs: list[torch.Tensor] | None = None,
+        q_inputs: list[torch.Tensor] | None = None,
+        disable_opt_rtn: bool | None = None,
+        input_ids: list[torch.Tensor] | None = None,
     ):
         """Quantize a single layer that lives outside a transformer block.
 
@@ -841,7 +842,7 @@ class SignRoundQuantizer(BaseQuantizer):
 
     def _get_scaler(self):
         """Returns scaler, in SignRound, no need to use scaler."""
-        return None
+        return
 
     def _scale_loss_and_backward(self, scaler: Any, loss: torch.Tensor) -> torch.Tensor:
         """Scales the loss and performs backward pass.

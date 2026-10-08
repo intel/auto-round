@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import math
+import sys
 from logging import getLogger
 
 import numpy as np
@@ -30,7 +31,7 @@ try:
 except ImportError as e:
     if torch.xpu.is_available():
         logger.error("please make sure your triton version is same with `pytorch-triton-xpu` library ")
-        exit(-1)
+        sys.exit(-1)
     triton_import_exception = e
 
     def error_raiser_triton(*args, **kwargs):
@@ -154,7 +155,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         else:
             shape = scales_t.shape
             value = 0
-            for j in range(0, (32 // self.bits)):
+            for j in range(32 // self.bits):
                 value |= zeros << (self.bits * j)
             qzeros = np.ones((shape[0], shape[1] // 32 * self.bits), dtype=np.uint32) * value
             qzeros = qzeros.astype(np.int32)
@@ -210,7 +211,7 @@ class QuantLinear(nn.Module, TritonModuleMixin):
         logger.info(f"Found {len(kn_values)} unique KN Linear values.")
         logger.info("Warming up autotune cache ...")
         with torch.no_grad():
-            for m in tqdm(range(0, math.ceil(math.log2(seqlen)) + 1)):
+            for m in tqdm(range(math.ceil(math.log2(seqlen)) + 1)):
                 m = 2**m
                 for (k, n), (
                     qweight,

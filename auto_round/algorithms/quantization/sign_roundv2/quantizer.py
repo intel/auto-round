@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Callable
 from contextlib import nullcontext
 from functools import partial
-from typing import TYPE_CHECKING, Callable, Union
+from typing import TYPE_CHECKING
 
 import torch
 import transformers
@@ -25,6 +26,7 @@ from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQua
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer
+
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
@@ -154,9 +156,8 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
                 weight_reshape = torch.clamp(weight_reshape, clip_min, clip_max)
             else:
                 logger.warning_once(
-                    "SignRoundV2: ignoring AWQ clip range with shapes %s/%s incompatible with "
-                    "grouped weight shape %s."
-                    % (tuple(clip_min.shape), tuple(clip_max.shape), tuple(weight_reshape.shape))
+                    f"SignRoundV2: ignoring AWQ clip range with shapes {tuple(clip_min.shape)}/{tuple(clip_max.shape)} "
+                    f"incompatible with grouped weight shape {tuple(weight_reshape.shape)}."
                 )
         return weight_reshape
 
@@ -365,7 +366,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         ref_output: torch.Tensor,
         indices: torch.Tensor,
         mse_loss: Callable,
-        device: Union[str, torch.device] = "cpu",
+        device: str | torch.device = "cpu",
         valid_token_mask: list[torch.Tensor] | None = None,
     ):
         if self._use_outlier_suppressed_loss:

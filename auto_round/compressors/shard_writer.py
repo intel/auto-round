@@ -16,7 +16,7 @@ import json
 import os
 import re
 from collections import OrderedDict
-from typing import Optional, Union
+from typing import Optional
 
 import torch
 
@@ -59,7 +59,7 @@ class ShardWriter:
         self,
         model: torch.nn.Module,
         bits: int,
-        max_shard_size: Optional[Union[int, str]] = None,
+        max_shard_size: int | str | None = None,
         safe_serialization: bool = True,
     ) -> None:
         if ShardWriter._initialized:
@@ -218,7 +218,7 @@ class ShardWriter:
                 logger.warning("safetensors not installed; falling back to torch.save.")
         return False
 
-    def save_module(self, m: torch.nn.Module, name: str = None) -> None:
+    def save_module(self, m: torch.nn.Module, name: str | None = None) -> None:
         """Extracts and accumulates tensors from a module."""
         prefix = name if name is not None else getattr(m, "global_name", "model")
         sd = m.state_dict()
@@ -483,7 +483,7 @@ class ShardWriter:
         logger.info(f"model has been saved to {self.output_dir}")
 
     @torch.no_grad()
-    def write(self, m: torch.nn.Module = None, name: str = None, is_finalize: bool = False) -> None:
+    def write(self, m: torch.nn.Module = None, name: str | None = None, is_finalize: bool = False) -> None:
         if m is None and name is None and not is_finalize and not is_finalize:
             raise ValueError("Must specify either name or m")
         if m is None and name is not None:

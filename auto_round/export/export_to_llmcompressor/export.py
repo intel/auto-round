@@ -15,8 +15,7 @@
 import copy
 import math
 import os
-from collections.abc import Mapping
-from typing import Callable, Union
+from collections.abc import Callable, Mapping
 
 import torch
 
@@ -234,8 +233,8 @@ def pack_layer(name, model, device=None):
     weight_device = layer.weight.device
 
     scheme = construct_ct_scheme(layer)
-    setattr(layer, "quantization_scheme", scheme)
-    setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale.to(weight_device)))
+    layer.quantization_scheme = scheme
+    layer.weight_scale = torch.nn.Parameter(layer.scale.to(weight_device))
     # AutoRound zp is the UNSIGNED level convention (q in [0, 2^b-1],
     # W = (q - zp) * s); compressed-tensors packs the SIGNED convention (q in
     # [-2^(b-1), 2^(b-1)-1], zp added BEFORE the clamp into that range - see
@@ -304,7 +303,7 @@ def pack_layer(name, model, device=None):
             )
         zp = zp.to(torch.int8)
 
-    setattr(layer, "weight_zero_point", torch.nn.Parameter(zp.to(weight_device), requires_grad=False))
+    layer.weight_zero_point = torch.nn.Parameter(zp.to(weight_device), requires_grad=False)
     delattr(layer, "scale")
 
     _compress_and_set_format(layer, scheme, device)
@@ -314,11 +313,11 @@ def pack_layer(name, model, device=None):
 def save_quantized_as_llmcompressor(
     output_dir: str,
     model: torch.nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    device: Union[str, torch.device] = "cpu",
-    serialization_dict: dict = None,
+    device: str | torch.device = "cpu",
+    serialization_dict: dict | None = None,
     **kwargs,
 ) -> torch.nn.Module:
     """

@@ -11,7 +11,8 @@ Core algorithm: SGD with Cayley transform to maintain orthogonality constraints.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 import torch
 from torch.optim.optimizer import Optimizer
