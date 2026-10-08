@@ -78,7 +78,7 @@ def _quantize_and_save(
     fmt: str,
     sym: bool = True,
     group_size: int = 128,
-    layer_config: dict = None,
+    layer_config: dict | None = None,
 ):
     """Run AutoRound RTN quantization on Qwen3-0.6B and export to ``fmt``."""
     ar = AutoRound(

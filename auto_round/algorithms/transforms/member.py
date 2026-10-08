@@ -57,7 +57,7 @@ class RotationPreprocessor(BasePreprocessor):
 
     def __init__(self, config: Any) -> None:
         super().__init__(config)
-        self._rotation: "BaseRotation | None" = None
+        self._rotation: BaseRotation | None = None
         # Set once :meth:`rotate_model` decides layer-wise preparation succeeded.
         self._layerwise_active: bool = False
 
@@ -65,7 +65,7 @@ class RotationPreprocessor(BasePreprocessor):
     # Lazy rotation construction
     # ------------------------------------------------------------------
     @property
-    def rotation(self) -> "BaseRotation":
+    def rotation(self) -> BaseRotation:
         """The concrete :class:`BaseRotation` for this member (built lazily)."""
         if self._rotation is None:
             from auto_round.algorithms.transforms import normalize_rotation_config
@@ -93,9 +93,9 @@ class RotationPreprocessor(BasePreprocessor):
     # ------------------------------------------------------------------
     def rotate_model(
         self,
-        model: "torch.nn.Module",
+        model: torch.nn.Module,
         data_type: str = "mx_fp",
-    ) -> "torch.nn.Module":
+    ) -> torch.nn.Module:
         """Rotate *model* up-front, or prepare layer-wise rotation matrices.
 
         Whether to rotate per-block is taken solely from the rotation config's
@@ -129,7 +129,7 @@ class RotationPreprocessor(BasePreprocessor):
     # ------------------------------------------------------------------
     # Per-block entry (compress_block step 0)
     # ------------------------------------------------------------------
-    def on_block_ready(self, block: "torch.nn.Module", ctx: "BlockContext") -> None:
+    def on_block_ready(self, block: torch.nn.Module, ctx: BlockContext) -> None:
         """Rotate the block about to be quantized (layer-wise mode only).
 
         No-op unless :meth:`rotate_model` prepared layer-wise rotation. Iterates
@@ -158,7 +158,7 @@ class RotationPreprocessor(BasePreprocessor):
     # Helpers
     # ------------------------------------------------------------------
     @staticmethod
-    def _iter_layers(block: "torch.nn.Module", block_index: int):
+    def _iter_layers(block: torch.nn.Module, block_index: int):
         """Yield ``(decoder_layer, layer_idx)`` for every layer inside *block*.
 
         ``block_index`` is the global index of the *first* layer in this block.

@@ -38,9 +38,8 @@ class TestCosmos3ForwardMode:
     def test_forward_mode_cleanup_on_exception(self):
         from auto_round.special_model_handler import _cosmos3_forward_mode, _cosmos3_forward_state
 
-        with pytest.raises(RuntimeError):
-            with _cosmos3_forward_mode():
-                raise RuntimeError("simulated error")
+        with pytest.raises(RuntimeError), _cosmos3_forward_mode():
+            raise RuntimeError("simulated error")
         assert not getattr(_cosmos3_forward_state, "active", False)
 
     def test_forward_mode_nested_context(self):
@@ -591,12 +590,14 @@ class TestCosmos3DiffusionLoadModel:
 
         tmpdir = self._write_model_index("DDPMScheduler")
         try:
-            with patch("auto_round.special_model_handler.load_cosmos3_diffusion") as mock_cosmos:
-                with patch("auto_round.utils.common.LazyImport", return_value=MagicMock()):
-                    try:
-                        diffusion_load_model(tmpdir)
-                    except Exception:
-                        pass
-                    mock_cosmos.assert_not_called()
+            with (
+                patch("auto_round.special_model_handler.load_cosmos3_diffusion") as mock_cosmos,
+                patch("auto_round.utils.common.LazyImport", return_value=MagicMock()),
+            ):
+                try:
+                    diffusion_load_model(tmpdir)
+                except Exception:
+                    pass
+                mock_cosmos.assert_not_called()
         finally:
             shutil.rmtree(tmpdir)

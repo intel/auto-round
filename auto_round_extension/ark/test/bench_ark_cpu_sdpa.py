@@ -201,8 +201,10 @@ def _run_case(shape: Shape, route: Route, route_names: dict[int, str], warmup: i
     ark_ms, torch_ms = _measure_pair(ark_call, torch_call, warmup, runs)
     return (
         torch_ms / ark_ms,
-        f"{shape.name:<22}{route.name:<18}{shape.label:<24}{resolved_name:<12}"
-        f"{ark_ms:>10.3f}{torch_ms:>14.3f}{torch_ms / ark_ms:>10.2f}x",
+        (
+            f"{shape.name:<22}{route.name:<18}{shape.label:<24}{resolved_name:<12}"
+            f"{ark_ms:>10.3f}{torch_ms:>14.3f}{torch_ms / ark_ms:>10.2f}x"
+        ),
     )
 
 

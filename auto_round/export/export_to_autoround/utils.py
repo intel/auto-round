@@ -13,12 +13,11 @@
 # limitations under the License.
 
 from dataclasses import fields
-from typing import List
 
 from auto_round.schemes import QuantizationScheme
 
 
-def check_neq_config(config: dict, **expected) -> List[str]:
+def check_neq_config(config: dict, **expected) -> list[str]:
     """
     Compare a config dict against expected values.
     Ensures all required keys are present in both config and expected.

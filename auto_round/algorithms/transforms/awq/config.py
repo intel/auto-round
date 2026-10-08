@@ -310,7 +310,7 @@ class AWQConfig(QuantizationConfig):
     def finalize_scheme(self) -> None:
         """Adjust AWQ state that depends on the resolved run scheme."""
         data_type = self.data_type
-        is_gguf_double_quant = bool(data_type) and (data_type.endswith("_dq") or data_type.endswith("float_zp"))
+        is_gguf_double_quant = bool(data_type) and data_type.endswith(("_dq", "float_zp"))
         if self.apply_clip and is_gguf_double_quant:
             logger.warning(
                 "AWQ weight clipping (apply_clip=True) is not supported for GGUF "

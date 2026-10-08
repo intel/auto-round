@@ -31,7 +31,7 @@ from auto_round.modeling.fused_moe.moe_experts_interface import (
     resolve_experts_implementation,
 )
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     "ReplacementModuleBase",
     "apply_replacements",
     "materialize_model_",

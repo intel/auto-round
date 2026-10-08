@@ -126,7 +126,7 @@ def download_audiocaps_csv():
         logger.info(f"AudioCaps dataset cached at: {cache_file}")
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to download AudioCaps from {url}: {e}") from e
-    except IOError as e:
+    except OSError as e:
         raise RuntimeError(f"Failed to write AudioCaps cache to {cache_file}: {e}") from e
 
     return cache_file
@@ -146,7 +146,7 @@ TORCH_VERSION_AT_LEAST_2_5 = torch_version_at_least("2.5.0")
 TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
 
-class LazyImport(object):
+class LazyImport:
     """Lazy import python module till use."""
 
     def __init__(self, module_name):
@@ -407,7 +407,7 @@ def monkey_patch_transformers():
     if parsed_version >= version.parse("5.0.0"):
         from transformers.initialization import no_init_weights
 
-        setattr(transformers.modeling_utils, "no_init_weights", no_init_weights)
+        transformers.modeling_utils.no_init_weights = no_init_weights
     if parsed_version >= version.parse("5.2.0"):
         # transformers 5.2.0 added Transpose.convert() which calls get_parameter() on
         # quantized buffer tensors (weight_packed, weight_scale), causing AttributeError.
@@ -728,11 +728,11 @@ class SupportedFormats:
         self._support_list = self._support_format + self._gguf_format
 
     def __contains__(self, key):
-        return True if key in self._support_list else False
+        return key in self._support_list
 
     def __str__(self):
         # Return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
-        return "(%s)" % ", ".join(self._support_list)
+        return f"({', '.join(self._support_list)})"
 
     def __getitem__(self, key):
         return self._support_list[key]
