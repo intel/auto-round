@@ -5,7 +5,7 @@ set -xe
 
 CONDA_ENV_NAME="unittest_cuda"
 PYTHON_VERSION="3.12"
-TORCH_VERSION="2.14.0"
+TORCH_VERSION="2.14.1"
 
 REPO_PATH=$(git rev-parse --show-toplevel)
 LOG_DIR=${REPO_PATH}/ut_log_dir
