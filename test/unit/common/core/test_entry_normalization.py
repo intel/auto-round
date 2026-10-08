@@ -26,7 +26,12 @@ def test_diffusion_cache_cli_and_entry_routing(value, expected):
 
 def test_split_entry_kwargs_partitions_owned_fields():
     processor = object()
-    pipeline_call_kwargs = {"height": 256, "width": 256, "num_frames": 9, "output_type": "latent"}
+    pipeline_call_kwargs = {
+         "height": 256,
+         "width": 256,
+         "num_frames": 9,
+         "output_type": "latent",
+    }
 
     grouped = _split_entry_kwargs(
         {
