@@ -23,7 +23,7 @@
 import copy
 import json
 import os
-from typing import Callable, Union
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -61,7 +61,7 @@ def _collect_modules_to_not_convert(
     model: torch.nn.Module,
     layer_config: dict,
     regex_config: dict,
-    to_quant_block_names: list = None,
+    to_quant_block_names: list | None = None,
 ) -> list:
     """Collect all module names that should not be converted (not quantized).
 
@@ -148,11 +148,11 @@ def pack_layer(name, model, backend, device=None):
 def save_quantized_as_autoawq(
     output_dir: str,
     model: torch.nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    device: Union[str, torch.device] = "cpu",
-    serialization_dict: dict = None,
+    device: str | torch.device = "cpu",
+    serialization_dict: dict | None = None,
     **kwargs,
 ) -> torch.nn.Module:
     """Export the model to autogptq format to easily leverage cuda kernel."""

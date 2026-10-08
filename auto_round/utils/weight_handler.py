@@ -59,10 +59,10 @@ Quick Start Guide:
 
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from contextlib import ContextDecorator
 from dataclasses import fields
 from enum import Enum, auto
-from typing import Callable, Dict, Optional, Set, Type
 
 import psutil
 import torch
@@ -179,7 +179,6 @@ class WeightTypeHandler(ABC):
         Returns:
             True if the module is of this weight type, False otherwise.
         """
-        pass
 
     def attach_weight_shape(self, module: torch.nn.Module):
         """Optional helper to attach weight shape information to the module for detection."""
@@ -209,12 +208,11 @@ class WeightTypeHandler(ABC):
         Returns:
             A new high-precision layer with dequantized weights.
         """
-        pass
 
 
 # --- Handler Registry ---
 
-_WEIGHT_TYPE_HANDLERS: Dict[ModuleWeightType, WeightTypeHandler] = {}
+_WEIGHT_TYPE_HANDLERS: dict[ModuleWeightType, WeightTypeHandler] = {}
 
 
 def register_weight_type_handler(weight_type: ModuleWeightType):
@@ -232,7 +230,7 @@ def register_weight_type_handler(weight_type: ModuleWeightType):
             ...
     """
 
-    def decorator(handler_cls: Type[WeightTypeHandler]):
+    def decorator(handler_cls: type[WeightTypeHandler]):
         if not issubclass(handler_cls, WeightTypeHandler):
             raise TypeError(f"Handler {handler_cls.__name__} must be a subclass of WeightTypeHandler")
         _WEIGHT_TYPE_HANDLERS[weight_type] = handler_cls()
@@ -241,7 +239,7 @@ def register_weight_type_handler(weight_type: ModuleWeightType):
     return decorator
 
 
-def get_handler(weight_type: ModuleWeightType) -> Optional[WeightTypeHandler]:
+def get_handler(weight_type: ModuleWeightType) -> WeightTypeHandler | None:
     """Get the registered handler for a weight type.
 
     Args:
@@ -253,7 +251,7 @@ def get_handler(weight_type: ModuleWeightType) -> Optional[WeightTypeHandler]:
     return _WEIGHT_TYPE_HANDLERS.get(weight_type)
 
 
-def get_all_handlers() -> Dict[ModuleWeightType, WeightTypeHandler]:
+def get_all_handlers() -> dict[ModuleWeightType, WeightTypeHandler]:
     """Get all registered weight type handlers.
 
     Returns:
@@ -265,7 +263,7 @@ def get_all_handlers() -> Dict[ModuleWeightType, WeightTypeHandler]:
 # ============================================================================
 # Section 2: PUBLIC API - Detection and Conversion Functions
 # ============================================================================
-def detect_weight_type(module: torch.nn.Module) -> Optional[ModuleWeightType]:
+def detect_weight_type(module: torch.nn.Module) -> ModuleWeightType | None:
     """Detect the weight type of a module or model.
 
     First checks if the module itself has a quantized_weight_type attribute.
@@ -290,7 +288,7 @@ def detect_weight_type(module: torch.nn.Module) -> Optional[ModuleWeightType]:
 
 
 # --- Model Marking Functions ---
-def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightType]:
+def check_and_mark_quantized_module(model: torch.nn.Module) -> set[ModuleWeightType]:
     """Check if model contains quantized layers and mark them accordingly.
 
     This function scans the model (including the model itself) for quantized layers using
@@ -303,7 +301,7 @@ def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightT
     Returns:
         A set of detected ModuleWeightType values. Empty set if no quantized layers found.
     """
-    detected_types: Set[ModuleWeightType] = set()
+    detected_types: set[ModuleWeightType] = set()
     for weight_type, handler in _WEIGHT_TYPE_HANDLERS.items():
         # Check model itself first
         if handler.detect_layer(model):
@@ -332,7 +330,7 @@ def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightT
     return detected_types
 
 
-def is_quantized_input_module(model: torch.nn.Module) -> Optional[ModuleWeightType]:
+def is_quantized_input_module(model: torch.nn.Module) -> ModuleWeightType | None:
     """Check if a model has quantized input weights and return the weight type.
 
     This traverses all submodules to check for the `quantized_weight_type` attribute
@@ -485,7 +483,7 @@ def _pad_block_fp8_weight_naive(
 
 @with_thread_limits()
 def _dequant_fp8_linear_weight(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list = None, data_type: str = None
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list | None = None, data_type: str | None = None
 ) -> torch.Tensor:
     """Core dequantization logic for block-wise FP8 weights."""
     dtype = torch.bfloat16

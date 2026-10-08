@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-from typing import Optional, Union
+import sys
 
 from auto_round.logger import logger
 from auto_round.utils import dispatch_model_block_wise
@@ -57,9 +57,9 @@ def _normalize_model_eval_dtype(model, eval_model_dtype):
 def simple_evaluate_user_model(
     user_model,
     tokenizer,
-    batch_size: Optional[int] = 1,
-    limit: Optional[Union[int, float]] = None,
-    max_batch_size: Optional[int] = 64,
+    batch_size: int | None = 1,
+    limit: float | None = None,
+    max_batch_size: int | None = 64,
     eval_model_dtype="auto",
     add_bos_token: bool = False,
     mllm: bool = False,
@@ -98,11 +98,11 @@ def simple_evaluate_user_model(
 
 def simple_evaluate(
     model,
-    model_args: Optional[Union[str, dict]] = None,
-    batch_size: Optional[int] = None,
-    limit: Optional[Union[int, float]] = None,
-    max_batch_size: Optional[int] = None,
-    device: Optional[str] = None,
+    model_args: str | dict | None = None,
+    batch_size: int | None = None,
+    limit: float | None = None,
+    max_batch_size: int | None = None,
+    device: str | None = None,
     **kwargs,
 ):
     import lm_eval  # pylint: disable=E0401
@@ -141,7 +141,7 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
             logger.error(
                 "Quantized model is meta and diffusers doesn't support loading auto-round quantized model now. Exit."
             )
-            exit(0)
+            sys.exit(0)
         pipe = autoround.pipe
         pipe.to(model.dtype)
         pipe.transformer = model
@@ -336,7 +336,7 @@ def evaluate_with_model_instance(model, tokenizer, device_str, args):
             fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def evaluate_with_model_path(eval_folder, device_str, autoround, args):
@@ -412,7 +412,7 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):

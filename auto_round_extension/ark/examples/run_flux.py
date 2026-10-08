@@ -420,23 +420,9 @@ def prepare_block_benchmark_state():
         img_ids = img_ids[0]
     image_rotary_emb = transformer.pos_embed(torch.cat((text_ids, img_ids), dim=0))
 
-    with torch.no_grad():
-        with transformer.cache_context("cond"):
-            if benchmark_block_kind == "single":
-                for block in joint_blocks:
-                    encoder_hidden_states, hidden_states = block(
-                        hidden_states=hidden_states,
-                        encoder_hidden_states=encoder_hidden_states,
-                        temb=temb,
-                        image_rotary_emb=image_rotary_emb,
-                        joint_attention_kwargs=joint_attention_kwargs,
-                    )
-            preceding_blocks = (
-                joint_blocks[:benchmark_block_index]
-                if benchmark_block_kind == "joint"
-                else single_blocks[:benchmark_block_index]
-            )
-            for block in preceding_blocks:
+    with torch.no_grad(), transformer.cache_context("cond"):
+        if benchmark_block_kind == "single":
+            for block in joint_blocks:
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -444,6 +430,19 @@ def prepare_block_benchmark_state():
                     image_rotary_emb=image_rotary_emb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
+        preceding_blocks = (
+            joint_blocks[:benchmark_block_index]
+            if benchmark_block_kind == "joint"
+            else single_blocks[:benchmark_block_index]
+        )
+        for block in preceding_blocks:
+            encoder_hidden_states, hidden_states = block(
+                hidden_states=hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                temb=temb,
+                image_rotary_emb=image_rotary_emb,
+                joint_attention_kwargs=joint_attention_kwargs,
+            )
 
     return {
         "block": target_block,

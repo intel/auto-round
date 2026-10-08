@@ -1,9 +1,9 @@
+import builtins
 import os
 import re
 import subprocess
 import sys
 from functools import lru_cache
-from io import open
 
 from setuptools import find_packages, setup
 
@@ -11,10 +11,10 @@ os.environ["CC"] = "g++"
 os.environ["CXX"] = "g++"
 try:
     filepath = "./auto_round/version.py"
-    with open(filepath) as version_file:
+    with builtins.open(filepath) as version_file:
         (__version__,) = re.findall('__version__ = "(.*)"', version_file.read())
 except Exception as error:
-    assert False, "Error: Could not open '%s' due %s\n" % (filepath, error)
+    assert False, f"Error: Could not open '{filepath}' due {error}\n"
 
 # All BUILD_* flags are initially set to `False` and
 # will be updated to `True` if the corresponding environment check passes.
@@ -40,7 +40,7 @@ def get_build_version():
     # it avoids the sdist/wheel version mismatch that occurs because git is not
     # available inside the extracted sdist directory.
     if os.path.exists("PKG-INFO"):
-        with open("PKG-INFO", encoding="utf-8") as f:
+        with builtins.open("PKG-INFO", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("Version:"):
                     return line.split(":", 1)[1].strip()
@@ -103,7 +103,7 @@ def is_cpu_env():
 
 def fetch_requirements(path):
     requirements = []
-    with open(path, "r") as fd:
+    with builtins.open(path, "r") as fd:
         requirements = [r.strip() for r in fd]
     return requirements
 
@@ -162,13 +162,16 @@ if __name__ == "__main__":
     install_requires = INSTALL_CFG.get("install_requires", [])
     extras_require = INSTALL_CFG.get("extras_require", {})
 
+    with builtins.open("README.md", "r", encoding="utf-8") as f:
+        long_description = f.read()
+
     setup(
         name=package_name,
         author="Intel AIPT Team",
         version=get_build_version(),
         author_email="wenhua.cheng@intel.com, weiwei1.zhang@intel.com, heng.guo@intel.com",
         description="Repository of AutoRound: Advanced Weight-Only Quantization Algorithm for LLMs",
-        long_description=open("README.md", "r", encoding="utf-8").read(),
+        long_description=long_description,
         long_description_content_type="text/markdown",
         keywords="quantization,auto-around,LLM,SignRound",
         license="Apache 2.0",

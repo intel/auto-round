@@ -67,7 +67,7 @@ class TestAutoRoundMarlinBackend:
             print(f"{group_size}!!!!!!!!!!!!!!!!!")
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-            bits, group_size, sym = 4, group_size, True
+            bits, sym = 4, True
             autoround = AutoRound(
                 model,
                 tokenizer,
@@ -97,7 +97,7 @@ class TestAutoRoundMarlinBackend:
             print(f"{group_size}!!!!!!!!!!!!!!!!!")
             model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype="auto", trust_remote_code=True)
             tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
-            bits, group_size, sym = 4, group_size, True
+            bits, sym = 4, True
             autoround = AutoRound(
                 model,
                 tokenizer,

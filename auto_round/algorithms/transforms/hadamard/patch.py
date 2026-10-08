@@ -31,9 +31,9 @@ from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear, pack_f
 from auto_round.wrapper import WrapperLinear, WrapperWALayer
 
 __all__ = [
+    "patch_quantlinear",
     "patch_wrapperlinear_to_apply_transform",
     "patch_wrapperwalayer_forward_to_apply_transform",
-    "patch_quantlinear",
 ]
 
 
@@ -81,7 +81,7 @@ def patch_wrapperlinear_to_apply_transform(
 
     _orig_qdq_act = WrapperLinear._qdq_act
 
-    def _qdq_act_patched(self, x, act_min_scale=torch.tensor(1.0), act_max_scale=torch.tensor(1.0), act_max=None):
+    def _qdq_act_patched(self, x, act_min_scale=None, act_max_scale=None, act_max=None):
         x = inp_transform(x)
 
         return _orig_qdq_act(self, x, act_min_scale=act_min_scale, act_max_scale=act_max_scale, act_max=act_max)
@@ -191,7 +191,6 @@ def patch_quantlinear(w_transform) -> None:
 
         # add transform weight
         self.register_buffer("hadamard_matrix", w_transform.weight.to(device))
-        return
 
     QuantLinear.pack = _pack_patched
     QuantLinear._pack_patched = True
