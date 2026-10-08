@@ -461,21 +461,20 @@ class AlgorithmComposer:
                         for h in q_hooks:
                             h.remove()
 
-        # ── Step 3.5: MoE scale alignment + global scale update ─────────────────
-        # Run after weight transforms, including zero-calibration RTN, and before
-        # quantization. Activation alignment still requires calibration inputs.
-        act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
-        data_type = self.scheme.data_type if self.scheme else "int"
-        group_size = self.scheme.group_size if self.scheme else -1
-        act_data_type = self.scheme.act_data_type if self.scheme else data_type
-        if act_data_type is not None or not act_dynamic:
-            from auto_round.compressors.utils import is_nv_fp
-            from auto_round.data_type.utils import update_block_global_scale_if_needed
-            from auto_round.utils import set_amax_for_all_moe_layers
+            # ── Step 3.5: MoE scale alignment + global scale update ─────────────────
+            # Must run after calibration hooks (act_max collected) and before quantize_block.
+            act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
+            data_type = self.scheme.data_type if self.scheme else "int"
+            group_size = self.scheme.group_size if self.scheme else -1
+            act_data_type = self.scheme.act_data_type if self.scheme else data_type
+            if act_data_type is not None or not act_dynamic:
+                from auto_round.compressors.utils import is_nv_fp
+                from auto_round.data_type.utils import update_block_global_scale_if_needed
+                from auto_round.utils import set_amax_for_all_moe_layers
 
-            if fp_inputs is not None and (is_nv_fp(act_data_type) or not act_dynamic):
-                set_amax_for_all_moe_layers(block, attr_name="act_max")
-            update_block_global_scale_if_needed(block, data_type, group_size)
+                if is_nv_fp(act_data_type) or not act_dynamic:
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
+                update_block_global_scale_if_needed(block, data_type, group_size)
 
         if q_inputs is not None and fp_inputs is not q_inputs:
             clear_memory(fp_inputs)
