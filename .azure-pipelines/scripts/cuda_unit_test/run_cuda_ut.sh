@@ -86,7 +86,7 @@ function setup_basic_test_env() {
     uv pip install -r test/unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet timm
     uv pip install -U pytest-cov pytest-timeout
-    uv pip install kernels==0.17.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.16.1/setup.py#L93
+    uv pip install kernels==0.17.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.19.0/setup.py#L94
     uv pip uninstall torch torchvision
     uv pip install torch==2.14.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
