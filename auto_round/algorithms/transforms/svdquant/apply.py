@@ -711,7 +711,9 @@ class SVDQuantTransform(BasePreprocessor):
 
     @staticmethod
     def _copy_quant_attrs(src: torch.nn.Module, dst: torch.nn.Module, suffix: str) -> None:
-        for attr in _SCHEME_ATTRS | _RUNTIME_QUANT_ATTRS:
+        # The residual has different weights (and may be smoothed), so its
+        # NVFP4 global scale must be calculated again before quantization.
+        for attr in (_SCHEME_ATTRS | _RUNTIME_QUANT_ATTRS) - {"weight_global_scale"}:
             if hasattr(src, attr):
                 setattr(dst, attr, getattr(src, attr))
         if getattr(dst, "bits", None) == 4 and getattr(dst, "data_type", None) in _MXFP4_ALIASES:
