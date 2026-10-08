@@ -13,7 +13,8 @@
 # limitations under the License.
 
 import re
-from typing import Any, Callable, Union
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -157,9 +158,11 @@ class LLMCompressorFormat(OutputFormat):
         if scheme.act_bits <= 8 and (not scheme.is_act_standard_fp() or scheme.act_dynamic):
             if scheme.act_data_type == "nvfp4_v2":
                 return None, scheme, layer_config, quant_block_list
-            if (scheme.is_act_nv_fp() and "static_gs" in scheme.act_data_type) or scheme.is_act_mx_fp():
-                return None, scheme, layer_config, quant_block_list
-            elif scheme.is_dynamic_afp8() and scheme.is_block_wfp8():
+            if (
+                (scheme.is_act_nv_fp() and "static_gs" in scheme.act_data_type)
+                or scheme.is_act_mx_fp()
+                or (scheme.is_dynamic_afp8() and scheme.is_block_wfp8())
+            ):
                 return None, scheme, layer_config, quant_block_list
             else:
                 bits, group_size, sym, act_bits = 8, -1, True, 8
@@ -189,15 +192,11 @@ class LLMCompressorFormat(OutputFormat):
             from auto_round.export.export_to_llmcompressor.export_to_static_fp import pack_layer
 
             return pack_layer(layer_name, model, self.get_backend_name(), device=device)
-        elif re.search(f"{BackendDataType.INT8.value}", self.output_format):
-            from auto_round.export.export_to_llmcompressor.export import pack_layer
-
-            return pack_layer(layer_name, model, device=device)
-        elif re.search(f"{BackendDataType.FP8_BLOCK.value}", self.output_format):
-            from auto_round.export.export_to_llmcompressor.export import pack_layer
-
-            return pack_layer(layer_name, model, device=device)
-        elif re.search(f"{BackendDataType.WINT_A16.value}", self.output_format):
+        elif (
+            re.search(f"{BackendDataType.INT8.value}", self.output_format)
+            or re.search(f"{BackendDataType.FP8_BLOCK.value}", self.output_format)
+            or re.search(f"{BackendDataType.WINT_A16.value}", self.output_format)
+        ):
             from auto_round.export.export_to_llmcompressor.export import pack_layer
 
             return pack_layer(layer_name, model, device=device)
@@ -209,11 +208,11 @@ class LLMCompressorFormat(OutputFormat):
         self,
         output_dir: str,
         model: torch.nn.Module = None,
-        tokenizer: Callable = None,
-        layer_config: dict = None,
+        tokenizer: Callable | None = None,
+        layer_config: dict | None = None,
         inplace: bool = True,
-        device: Union[str, torch.device] = "cpu",
-        serialization_dict: dict = None,
+        device: str | torch.device = "cpu",
+        serialization_dict: dict | None = None,
         **kwargs,
     ) -> torch.nn.Module:
         backend = self.get_backend_name()

@@ -289,16 +289,18 @@ class TestApplyHadamardRotation:
             fuse_online_to_weight=None,
         )
         model = nn.Linear(8, 8)
-        with patch(
-            "auto_round.algorithms.transforms.hadamard.dispatcher.resolve_hadamard_backend",
-            return_value="transform",
-        ):
-            with patch(
+        with (
+            patch(
+                "auto_round.algorithms.transforms.hadamard.dispatcher.resolve_hadamard_backend",
+                return_value="transform",
+            ),
+            patch(
                 "auto_round.algorithms.transforms.hadamard.dispatcher._to_config",
                 return_value=fake_cfg,
-            ):
-                with pytest.raises(ValueError, match="only supports hadamard or random_hadamard"):
-                    apply_hadamard_rotation(model, fake_cfg, "mx_fp", compute_device="cpu")
+            ),
+            pytest.raises(ValueError, match="only supports hadamard or random_hadamard"),
+        ):
+            apply_hadamard_rotation(model, fake_cfg, "mx_fp", compute_device="cpu")
 
     def test_rotation_config_stored_on_model(self):
         """After apply, ``_rotation_config`` is set on the model (inplace path)."""

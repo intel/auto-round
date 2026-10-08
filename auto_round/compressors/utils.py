@@ -123,7 +123,7 @@ def block_forward(
     amp_dtype: torch.dtype = torch.float16,
     device: torch.device = torch.device("cpu"),
     output_return_id: int = 0,
-) -> Union[torch.Tensor, dict]:
+) -> torch.Tensor | dict:
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -178,7 +178,7 @@ def block_forward(
             output = block(**input_others)
     else:
         output = block(**input_others)
-    if isinstance(output_return_id, int) and (isinstance(output, list) or isinstance(output, tuple)):
+    if isinstance(output_return_id, int) and isinstance(output, (list, tuple)):
         output = output[output_return_id]
     return output
 
@@ -195,11 +195,11 @@ def check_skippable_keywords(key):
 
 
 def check_need_act_calibration(
-    is_act_dynamic: Union[bool, None],
-    act_data_type: Union[str, None] = None,
-    act_bits: Union[int, None] = 16,
-    static_kv_dtype: Union[str, None] = None,
-    static_attention_dtype: Union[str, None] = None,
+    is_act_dynamic: bool | None,
+    act_data_type: str | None = None,
+    act_bits: int | None = 16,
+    static_kv_dtype: str | None = None,
+    static_attention_dtype: str | None = None,
 ) -> bool:
     if static_kv_dtype is not None or static_attention_dtype is not None:
         return True
@@ -208,9 +208,7 @@ def check_need_act_calibration(
     # None is dynamic
     if is_act_dynamic is not None and not is_act_dynamic:
         return True
-    if act_data_type is not None and "static" in act_data_type:
-        return True
-    return False
+    return act_data_type is not None and "static" in act_data_type
 
 
 def collect_best_params(block, cache_device="cpu"):
@@ -485,11 +483,7 @@ def _get_diffusion_save_folder_name(format) -> str:
     formats = compress_context.formats
     # Use a subfolder only if there are multiple formats
     if len(formats) > 1:
-        return (
-            os.path.join(compress_context.output_dir, sanitized_format, "transformer")
-            if compress_context.is_immediate_saving
-            else os.path.join(compress_context.output_dir, sanitized_format, "transformer")
-        )
+        return os.path.join(compress_context.output_dir, sanitized_format, "transformer")
 
     # if use is_immediate_saving, we need to save model in self.output_dir/transformer folder
     return (

@@ -22,8 +22,8 @@ if TYPE_CHECKING:
     from auto_round.compressors.orchestrator import CompressionOrchestrator
 
 __all__ = [
-    "BaseOrchestrator",
     "BaseCompressor",  # backward-compat alias
+    "BaseOrchestrator",
     "CompressionOrchestrator",
     "ModelFreeCompressor",
 ]

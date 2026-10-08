@@ -381,7 +381,7 @@ class TestParseLayerConfigArg:
     def test_invalid_input_raises(self):
         from auto_round.utils.common import parse_layer_config_arg
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             parse_layer_config_arg("")
 
     def test_multi_key_unquoted_dict(self):

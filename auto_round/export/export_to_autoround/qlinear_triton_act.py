@@ -171,7 +171,7 @@ class QuantLinear(nn.Module):
             zeros -= 1
             shape = scales_t.shape
             value = 0
-            for j in range(0, (32 // self.bits)):
+            for j in range(32 // self.bits):
                 value |= zeros << (self.bits * j)
             qzeros = np.ones((shape[0], shape[1] // 32 * self.bits), dtype=np.uint32) * value
             qzeros = qzeros.astype(np.int32)

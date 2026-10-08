@@ -26,9 +26,10 @@ import os
 import re
 import shutil
 import warnings
+from collections.abc import Callable
 from dataclasses import fields
 from functools import lru_cache
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
 import torch
 
@@ -282,7 +283,7 @@ def quantize_weight_rtn(
     bits: int,
     group_size: int,
     sym: bool = True,
-    device: Optional[torch.device] = None,
+    device: torch.device | None = None,
     disable_opt_rtn: bool = True,
     *,
     packing: str,
@@ -458,13 +459,13 @@ class _PatternMatcher:
     """Precompile ignore and layer-config patterns for shard processing."""
 
     __slots__ = (
-        "_ignore_re",
-        "_skip_re",
-        "_layer_config",
-        "_default_scheme",
         "_compiled_lc",
+        "_default_scheme",
         "_ignore_cache",
+        "_ignore_re",
+        "_layer_config",
         "_scheme_cache",
+        "_skip_re",
     )
 
     def __init__(
@@ -964,7 +965,7 @@ def _dequantize_with_device_fallback(
     return on_cpu()
 
 
-def _normalize_scheme(scheme: Union[str, QuantizationScheme]) -> QuantizationScheme:
+def _normalize_scheme(scheme: str | QuantizationScheme) -> QuantizationScheme:
     """Convert *scheme* to a :class:`QuantizationScheme` instance.
 
     Raises ``ValueError`` for unknown preset names and ``TypeError`` for
@@ -1046,7 +1047,7 @@ def _fused_expert_layer_name(tensor_name: str) -> str:
 def _quantize_moe_fused_expert_weight(
     tensor_name: str,
     tensor: torch.Tensor,
-    matcher: "_PatternMatcher",
+    matcher: _PatternMatcher,
     device: str = "cpu",
     disable_opt_rtn: bool = False,
 ) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
@@ -1339,7 +1340,7 @@ def _declared_int_packing(sym: bool) -> str:
 def _quantize_single_tensor(
     tensor_name: str,
     tensor: torch.Tensor,
-    matcher: "_PatternMatcher",
+    matcher: _PatternMatcher,
     device: str = "cpu",
     quantize_func: Callable = quantize_weight_rtn,
     disable_opt_rtn: bool = False,
@@ -1908,7 +1909,7 @@ def _dequant_mxfp_tensors(
 
 def _handle_mxfp_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
-    matcher: "_PatternMatcher",
+    matcher: _PatternMatcher,
     source_state: dict[str, int] | None = None,
     device: str = "cpu",
     shard_name: str | None = None,
@@ -2050,13 +2051,13 @@ def _dequant_fp8_tensors(
 
 def _process_shard(
     shard_path: str,
-    default_scheme: dict = None,
-    layer_config: dict = None,
-    ignore_patterns: list[str] = None,
+    default_scheme: dict | None = None,
+    layer_config: dict | None = None,
+    ignore_patterns: list[str] | None = None,
     device: str = "cpu",
     *,
     shard_name: str | None = None,
-    matcher: "_PatternMatcher | None" = None,
+    matcher: _PatternMatcher | None = None,
     fp8_block_size: list | None = None,
     model_type: str | None = None,
     source_quantization_config: dict | None = None,
@@ -2153,9 +2154,7 @@ def _process_shard(
     # so the saved model exports them in full precision.
     preserved_prefixes: set[str] = set()
     for tname in raw_tensors:
-        if (
-            tname.endswith(".weight") or tname.endswith(".weight_packed") or tname.endswith(".qweight")
-        ) and matcher.should_skip(tname):
+        if tname.endswith((".weight", ".weight_packed", ".qweight")) and matcher.should_skip(tname):
             preserved_prefixes.add(tname.rsplit(".", 1)[0])
 
     preserved_tensors: dict[str, torch.Tensor] = {}
@@ -2459,7 +2458,7 @@ def _is_weight_shard(fname: str) -> bool:
     """
     if fname.endswith(".index.json"):
         return False
-    return fname.endswith(".safetensors") or fname.endswith(".bin")
+    return fname.endswith((".safetensors", ".bin"))
 
 
 # Keep old name as an alias for backward compatibility.
@@ -2800,7 +2799,7 @@ def _build_mxfp_autoround_quantization_config(
     quantized_layers: list[str],
     ignored_layers: list[str],
     layer_config: dict | None = None,
-    block_name_to_quantize: Optional[str] = None,
+    block_name_to_quantize: str | None = None,
 ) -> dict:
     """Build an auto-round style quantization_config for MXFP4 / MXFP8.
 
@@ -3071,7 +3070,7 @@ def _derive_dominant_int_scheme(
         layer_config=layer_config,
         default_scheme=fallback,
     )
-    counter: "Counter[tuple]" = Counter()
+    counter: Counter[tuple] = Counter()
     for layer in quantized_layers:
         scheme = temp_matcher.resolve_scheme(f"{layer}.weight")
         if scheme is None:
@@ -3109,7 +3108,7 @@ def _build_quantization_config(
     ignore_patterns: list[str],
     quantized_layers: list[str],
     ignored_layers: list[str],
-    block_name_to_quantize: Optional[str] = None,
+    block_name_to_quantize: str | None = None,
     format: str = "auto_round",
 ) -> dict:
     """Build a quantization_config dict compatible with auto-round format."""
@@ -3268,8 +3267,8 @@ def _build_quantization_config(
 
 
 def _apply_scheme_overrides(
-    scheme: Union[str, QuantizationScheme],
-    scheme_overrides: Optional[dict] = None,
+    scheme: str | QuantizationScheme,
+    scheme_overrides: dict | None = None,
 ) -> QuantizationScheme:
     """Return the effective scheme after applying non-None overrides."""
     scheme_obj = copy.deepcopy(_normalize_scheme(scheme))
@@ -3285,7 +3284,7 @@ def _apply_scheme_overrides(
 
 def _validate_supported_scheme(
     scheme_obj: QuantizationScheme,
-    scheme_input: Union[str, QuantizationScheme],
+    scheme_input: str | QuantizationScheme,
 ) -> None:
     """Raise ``ValueError`` if *scheme_obj* is not supported by model-free.
 
@@ -3378,8 +3377,8 @@ def _validate_supported_scheme(
 
 
 def is_model_free_supported_scheme(
-    scheme: Union[str, QuantizationScheme],
-    scheme_overrides: Optional[dict] = None,
+    scheme: str | QuantizationScheme,
+    scheme_overrides: dict | None = None,
 ) -> bool:
     """Return True if *scheme* can be quantized via model-free mode.
 
@@ -3477,7 +3476,7 @@ def _validate_auto_scheme_options(auto_scheme: Any) -> str:
 
 def _convert_auto_scheme_layer_config(
     generated: dict[str, dict],
-    preferred_base_scheme: Union[str, QuantizationScheme, None] = None,
+    preferred_base_scheme: str | QuantizationScheme | None = None,
 ) -> tuple[QuantizationScheme, dict[str, dict], list[str]]:
     """Convert an AutoScheme-generated ``layer_config`` into model-free inputs.
 
@@ -3496,7 +3495,7 @@ def _convert_auto_scheme_layer_config(
     scheme_keys = {f.name for f in fields(QuantizationScheme)}
     per_layer: dict[str, dict] = {}
     fp16_layers: list[str] = []
-    counter: "Counter[tuple]" = Counter()
+    counter: Counter[tuple] = Counter()
 
     for name, cfg in generated.items():
         if not isinstance(cfg, dict):
@@ -3524,9 +3523,9 @@ def _convert_auto_scheme_layer_config(
         # the quantization kernels ("mxfp8" / "MXFP4" → "mx_fp").
         if data_type_raw:
             dt_lower = data_type_raw.lower()
-            if dt_lower.startswith("mxfp") or dt_lower.startswith("mx_fp"):
+            if dt_lower.startswith(("mxfp", "mx_fp")):
                 clean["data_type"] = "mx_fp"
-            elif dt_lower.startswith("nvfp") or dt_lower.startswith("nv_fp"):
+            elif dt_lower.startswith(("nvfp", "nv_fp")):
                 clean["data_type"] = "nv_fp"
 
         if bits >= 16:

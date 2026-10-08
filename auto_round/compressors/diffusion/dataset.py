@@ -18,7 +18,6 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
-from typing import Dict, Optional
 
 import pandas as pd
 import torch
@@ -27,7 +26,7 @@ from transformers import set_seed
 
 from auto_round.utils import download_audiocaps_csv, logger
 
-DIFFUSION_DATASET: Dict[str, Dataset] = {}
+DIFFUSION_DATASET: dict[str, Dataset] = {}
 
 
 COCO_URL = {
@@ -228,7 +227,7 @@ class Text2ImgDataset(Dataset):
         self,
         dataset_path: str,
         nsamples: int = 128,
-        dataframe: Optional[pd.DataFrame] = None,
+        dataframe: pd.DataFrame | None = None,
     ) -> None:
         super().__init__()
         self.captions = []
@@ -272,7 +271,7 @@ class Text2ImgDataset(Dataset):
     def __len__(self):
         return len(self.captions)
 
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, i) -> dict[str, torch.Tensor]:
         if self.image_paths is not None:
             return self.caption_ids[i], self.captions[i], self.image_paths[i]
         return self.caption_ids[i], self.captions[i]
@@ -312,7 +311,7 @@ class AudioCapsDataset(Dataset):
     def __len__(self):
         return len(self.captions)
 
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, i) -> dict[str, torch.Tensor]:
         return self.caption_ids[i], self.captions[i]
 
 

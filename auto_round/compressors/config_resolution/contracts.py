@@ -15,14 +15,15 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any
 
 from auto_round.schemes import QuantizationScheme
 
 LayerConfig = Mapping[str, Mapping[str, Any]]
-BlockGroups = Tuple[Tuple[str, ...], ...]
+BlockGroups = tuple[tuple[str, ...], ...]
 
 
 def _deepcopy_mapping_proxy(value: MappingProxyType, memo: dict) -> MappingProxyType:
@@ -40,7 +41,7 @@ def _deepcopy_mapping_proxy(value: MappingProxyType, memo: dict) -> MappingProxy
 copy._deepcopy_dispatch[MappingProxyType] = _deepcopy_mapping_proxy
 
 
-def freeze_mapping(value: Optional[LayerConfig]) -> LayerConfig:
+def freeze_mapping(value: LayerConfig | None) -> LayerConfig:
     """Return an isolated, read-only snapshot of a layer configuration mapping.
 
     Per-layer configuration values are usually dicts (e.g. ``{"bits": 4}``), but some
@@ -57,7 +58,7 @@ def freeze_mapping(value: Optional[LayerConfig]) -> LayerConfig:
     return MappingProxyType(frozen)
 
 
-def thaw_mapping(value: Optional[LayerConfig]) -> dict:
+def thaw_mapping(value: LayerConfig | None) -> dict:
     """Return a fully mutable, deep-copyable plain-dict snapshot of a frozen mapping.
 
     This is the inverse of :func:`freeze_mapping` and should be used instead of
@@ -71,7 +72,7 @@ def thaw_mapping(value: Optional[LayerConfig]) -> dict:
     return result
 
 
-def freeze_block_groups(value: Optional[Tuple[Tuple[str, ...], ...]]) -> Optional[BlockGroups]:
+def freeze_block_groups(value: tuple[tuple[str, ...], ...] | None) -> BlockGroups | None:
     """Freeze the two-dimensional block grouping used by model traversal."""
     if value is None:
         return None
@@ -81,7 +82,7 @@ def freeze_block_groups(value: Optional[Tuple[Tuple[str, ...], ...]]) -> Optiona
 @dataclass(frozen=True)
 class ResolvedScheme:
     _value: QuantizationScheme
-    preset_name: Optional[str] = None
+    preset_name: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_value", copy.deepcopy(self._value))
@@ -92,17 +93,17 @@ class ResolvedScheme:
         return copy.deepcopy(self._value)
 
     @classmethod
-    def from_scheme(cls, value: QuantizationScheme, preset_name: Optional[str] = None) -> "ResolvedScheme":
+    def from_scheme(cls, value: QuantizationScheme, preset_name: str | None = None) -> ResolvedScheme:
         return cls(_value=value, preset_name=preset_name)
 
 
 @dataclass(frozen=True)
 class FormatResolution:
-    formats: Tuple[Any, ...]
+    formats: tuple[Any, ...]
     scheme: ResolvedScheme
     layer_config_patch: LayerConfig = field(default_factory=lambda: MappingProxyType({}))
     scale_dtype: Any = None
-    quant_block_list: Optional[BlockGroups] = None
+    quant_block_list: BlockGroups | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "formats", tuple(self.formats))
@@ -113,12 +114,12 @@ class FormatResolution:
 @dataclass(frozen=True)
 class ResolvedQuantizationConfig:
     scheme: ResolvedScheme
-    formats: Tuple[Any, ...]
+    formats: tuple[Any, ...]
     layer_config: LayerConfig
     regex_config: LayerConfig = field(default_factory=lambda: MappingProxyType({}))
     has_qlayer_outside_block: bool = False
     scale_dtype: Any = None
-    quant_block_list: Optional[BlockGroups] = None
+    quant_block_list: BlockGroups | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "formats", tuple(self.formats))

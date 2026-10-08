@@ -28,7 +28,6 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 import torch
 
@@ -172,7 +171,7 @@ class ResumeState:
 
 
 def compute_run_signature(
-    model_dir: Optional[str],
+    model_dir: str | None,
     scheme_desc: str,
     dataset_desc: str,
     nsamples: int,

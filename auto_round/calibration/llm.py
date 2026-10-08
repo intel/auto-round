@@ -18,9 +18,10 @@ Implements ``try_cache_inter_data_gpucpu`` / ``cache_inter_data`` /
 ``self.compressor.X``.
 """
 
+import sys
 import traceback
+from collections.abc import Callable
 from functools import partial
-from typing import Callable
 
 import accelerate
 import torch
@@ -270,7 +271,7 @@ class LLMCalibrator(Calibrator):
 
             except torch.OutOfMemoryError as e:
                 if cannot_calibrate_on_cpu:
-                    raise e
+                    raise
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.info("switch to cpu to cache block inputs")
@@ -411,13 +412,13 @@ class LLMCalibrator(Calibrator):
             elif isinstance(data, str):
                 if self.tokenizer is None:
                     logger.error("please provide tokenizer for string input")
-                    exit(-1)
+                    sys.exit(-1)
                 data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
-            elif isinstance(data, tuple) or isinstance(data, list):
+            elif isinstance(data, (tuple, list)):
                 data_new = to_device(data, self.model.device)
                 input_ids = data_new[0]
             else:
@@ -498,7 +499,7 @@ class LLMCalibrator(Calibrator):
 
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new, **kwargs)
-                elif isinstance(data_new, tuple) or isinstance(data_new, list):
+                elif isinstance(data_new, (tuple, list)):
                     self.model(*data_new, **kwargs)
                 else:
                     self.model(**data_new, **kwargs)
@@ -520,9 +521,9 @@ class LLMCalibrator(Calibrator):
                     "When quantization encounters tensor shape mismatch error, "
                     "you can try to avoid it with batch_size=1"
                 )
-                raise error
+                raise
             except Exception as error:
-                raise error
+                raise
 
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
             if total_cnt >= nsamples:
@@ -532,7 +533,7 @@ class LLMCalibrator(Calibrator):
                 f"no data has been cached, please provide more data with sequence length "
                 f">={self.seqlen} in the dataset or decease the sequence length"
             )
-            exit(-1)
+            sys.exit(-1)
         elif total_cnt < nsamples:
             logger.warning_once(
                 f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
@@ -579,17 +580,13 @@ class LLMCalibrator(Calibrator):
                                 " or try to set the `batch_size` to 1 and "
                                 "`gradient_accumulate_steps` to your current batch size."
                             )
-                            exit(-1)
+                            sys.exit(-1)
 
             if hidden_states is not None:
                 kwargs["hidden_states"] = hidden_states
 
-            for key in kwargs.keys():
-                if (
-                    isinstance(kwargs[key], torch.Tensor)
-                    or isinstance(kwargs[key], list)
-                    or isinstance(kwargs[key], tuple)
-                ):
+            for key, value in kwargs.items():
+                if isinstance(value, (torch.Tensor, list, tuple)):
                     if (
                         self.has_variable_block_shape
                         and name not in self.blocks_requiring_input_ids
@@ -597,7 +594,7 @@ class LLMCalibrator(Calibrator):
                     ):
                         continue
                     if key not in self.inputs[name].keys():  # initialization
-                        data = to_device(kwargs[key], device=torch.device("cpu"))
+                        data = to_device(value, device=torch.device("cpu"))
                         if data is None or key in self.shared_cache_keys:
                             self.inputs[name][key] = data
                             continue
@@ -610,7 +607,7 @@ class LLMCalibrator(Calibrator):
                             else:
                                 self.inputs[name][key] = [data]
                     else:  # append cache inputs
-                        new_data = post_process_cache_data(self.batch_size, kwargs[key], key)
+                        new_data = post_process_cache_data(self.batch_size, value, key)
                         if new_data is None:  # shareable args or NoneType
                             if key in self.shared_cache_keys:
                                 # Shared keys are normally the same across samples.  However
@@ -618,7 +615,7 @@ class LLMCalibrator(Calibrator):
                                 # varies per image because each image has a different patch count.
                                 # Upgrade from shared (raw value) to per-sample list storage so
                                 # each sample gets its own positional embeddings.
-                                raw_new = to_device(kwargs[key], device=torch.device("cpu"))
+                                raw_new = to_device(value, device=torch.device("cpu"))
                                 stored = self.inputs[name].get(key)
                                 if isinstance(stored, list):
                                     stored.append(raw_new)
@@ -636,9 +633,9 @@ class LLMCalibrator(Calibrator):
                                 self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=self.batch_dim)))
                             else:
                                 self.inputs[name][key].append(new_data)
-                elif isinstance(kwargs[key], (str, bool, type(None))):
+                elif isinstance(value, (str, bool, type(None))):
                     if key not in self.inputs[name].keys():
-                        self.inputs[name][key] = kwargs[key]
+                        self.inputs[name][key] = value
                 else:
                     # Parameters not to be cached
                     if check_skippable_keywords(key):
@@ -653,7 +650,7 @@ class LLMCalibrator(Calibrator):
                 if hidden_states is not None:
                     kwargs.pop("hidden_states", None)
                     if positional_inputs:
-                        return m.orig_forward(hidden_states=hidden_states, *positional_inputs, **kwargs)
+                        return m.orig_forward(*positional_inputs, hidden_states=hidden_states, **kwargs)
                     else:
                         return m.orig_forward(hidden_states, **kwargs)
                 else:

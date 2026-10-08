@@ -15,7 +15,6 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Dict, Type
 
 import torch
 from tqdm import tqdm
@@ -124,7 +123,7 @@ def is_custom_model(model: torch.nn.Module) -> bool:
 def _find_first_moe_block(model: torch.nn.Module) -> tuple[str, torch.nn.Module] | tuple[None, None]:
     """Return ``(name, module)`` of the first experts-like module, or ``(None, None)``."""
     for name, module in model.named_modules():
-        if name.endswith(".experts") or name.endswith(".moe"):
+        if name.endswith((".experts", ".moe")):
             return name, module
     return None, None
 
@@ -226,7 +225,7 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
     """
 
     # Registry: module class name -> replacement module class
-    _replacement_registry: Dict[str, Type["ReplacementModuleBase"]] = {}
+    _replacement_registry: dict[str, type["ReplacementModuleBase"]] = {}
     supports_gguf_fused_moe: bool = False
 
     def __init_subclass__(cls, **kwargs):
@@ -263,7 +262,7 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
         self._materialized = False
 
     @classmethod
-    def get_replacement_class(cls, module_class_name: str) -> Type["ReplacementModuleBase"]:
+    def get_replacement_class(cls, module_class_name: str) -> type["ReplacementModuleBase"]:
         """Get replacement class for a given module class name."""
         return cls._replacement_registry.get(module_class_name)
 
@@ -292,7 +291,6 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
     @abstractmethod
     def original_module_class(cls) -> str:
         """Return the class name of the module this replaces."""
-        pass
 
     @classmethod
     @abstractmethod
@@ -302,7 +300,6 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
         config,
     ) -> "ReplacementModuleBase":
         """Create replacement module from original module."""
-        pass
 
     def materialize_weights(self):
         """Materialize weights if needed."""
@@ -316,7 +313,6 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
         Subclasses should override this method to implement
         weight materialization logic.
         """
-        pass
 
     def release_original_module(self) -> None:
         """Release reference to the original module to free memory."""
@@ -467,7 +463,7 @@ class ModuleReplacementTracker:
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(ModuleReplacementTracker, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -476,9 +472,9 @@ class ModuleReplacementTracker:
             return
 
         # Map from replacement module id to original module
-        self._replacement_to_original: Dict[int, torch.nn.Module] = {}
+        self._replacement_to_original: dict[int, torch.nn.Module] = {}
         # Map from module name to ReplacedModuleInfo
-        self._name_to_info: Dict[str, ReplacedModuleInfo] = {}
+        self._name_to_info: dict[str, ReplacedModuleInfo] = {}
 
         ModuleReplacementTracker._initialized = True
 
