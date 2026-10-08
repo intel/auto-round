@@ -536,7 +536,7 @@ class _CompressorBuilder:
         tokenizer=None,
         platform="hf",
         format=None,
-        dataset: Optional[Union[str, "CalibDataset", list, tuple, torch.utils.data.DataLoader]] = None,
+        dataset: Optional[Union[str, CalibDataset, list, tuple, torch.utils.data.DataLoader]] = None,
         low_gpu_mem_usage: bool = False,
         device_map: str | torch.device | int | dict = 0,
         iters: int | None = None,

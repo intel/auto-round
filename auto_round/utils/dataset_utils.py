@@ -83,14 +83,14 @@ class CalibDataset:
     """
 
     name: str
-    split: Optional[Union[str, List[str]]] = None
-    num: Optional[int] = None
+    split: str | list[str] | None = None
+    num: int | None = None
     concat: bool = False
-    fields: Optional[Union[str, List[str]]] = None
-    template: Optional[str] = None
+    fields: str | list[str] | None = None
+    template: str | None = None
     separator: str = "\n\n"
     apply_chat_template: bool = False
-    system_prompt: Optional[str] = None
+    system_prompt: str | None = None
     timeout: int = 300
 
     def to_spec_string(self) -> str:
@@ -156,7 +156,7 @@ class CalibDataset:
 #: Priority-ordered list of column names commonly used for text content in
 #: HuggingFace datasets.  The first match (in this order) wins when multiple
 #: candidates are present.
-TEXT_FIELD_PRIORITY: List[str] = [
+TEXT_FIELD_PRIORITY: list[str] = [
     "text",
     "content",
     "prompt",
@@ -297,7 +297,7 @@ def auto_detect_text_field(dataset, sample_size: int = 10) -> str:
     return best_field
 
 
-def auto_detect_text_field_from_sample(sample: Dict[str, Any]) -> str:
+def auto_detect_text_field_from_sample(sample: dict[str, Any]) -> str:
     """Auto-detect the most likely text field from a single sample dict.
 
     Uses the same priority logic as :func:`auto_detect_text_field` but operates
@@ -348,9 +348,9 @@ def auto_detect_text_field_from_sample(sample: Dict[str, Any]) -> str:
 
 
 def extract_text_from_sample(
-    sample: Dict[str, Any],
-    fields: Optional[Union[str, List[str]]] = None,
-    template: Optional[str] = None,
+    sample: dict[str, Any],
+    fields: str | list[str] | None = None,
+    template: str | None = None,
     separator: str = "\n\n",
 ) -> str:
     """Extract a text string from a single dataset sample.
@@ -408,7 +408,7 @@ def extract_text_from_sample(
 
     # --- Normalize fields to a list ------------------------------------------
     if fields is None:
-        field_list: Optional[List[str]] = None
+        field_list: list[str] | None = None
     elif isinstance(fields, str):
         field_list = [fields]
     else:
@@ -454,7 +454,7 @@ def extract_text_from_sample(
 # ---------------------------------------------------------------------------
 
 
-def normalize_dataset_spec(dataset: Union[str, "CalibDataset", list, tuple]) -> Union[str, list, tuple]:
+def normalize_dataset_spec(dataset: Union[str, "CalibDataset", list, tuple]) -> str | list | tuple:
     """Normalize a dataset specification to a spec string or pass through raw data.
 
     Accepts a ``CalibDataset`` instance, a plain string, or a list/tuple.
@@ -522,14 +522,14 @@ _SPEC_KEYS = {
 
 def build_dataset_spec(
     name: str,
-    split: Optional[Union[str, List[str]]] = None,
-    num: Optional[int] = None,
+    split: str | list[str] | None = None,
+    num: int | None = None,
     concat: bool = False,
-    fields: Optional[Union[str, List[str]]] = None,
-    template: Optional[str] = None,
+    fields: str | list[str] | None = None,
+    template: str | None = None,
     separator: str = "\n\n",
     apply_chat_template: bool = False,
-    system_prompt: Optional[str] = None,
+    system_prompt: str | None = None,
     timeout: int = 300,
 ) -> str:
     """Build a dataset spec string from individual parameters.
@@ -605,7 +605,7 @@ def build_dataset_spec(
     return ":".join(parts)
 
 
-def parse_dataset_spec(spec: str) -> Dict[str, Any]:
+def parse_dataset_spec(spec: str) -> dict[str, Any]:
     """Parse a dataset spec string into a structured dict.
 
     The spec string format is::
@@ -642,7 +642,7 @@ def parse_dataset_spec(spec: str) -> Dict[str, Any]:
          'template': None, 'separator': '\\n\\n',
          'apply_chat_template': False, 'system_prompt': None}
     """
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "name": spec,
         "split": None,
         "num": None,

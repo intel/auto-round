@@ -1002,9 +1002,7 @@ def _get_generic_dataset(
     # Load the dataset
     if is_local:
         # Local file: use json or text loader (always full load)
-        if dataset_name.endswith(".json"):
-            calib_dataset = load_dataset("json", data_files=dataset_name, split=split or "train")
-        elif dataset_name.endswith(".jsonl"):
+        if dataset_name.endswith(".json") or dataset_name.endswith(".jsonl"):
             calib_dataset = load_dataset("json", data_files=dataset_name, split=split or "train")
         elif dataset_name.endswith(".txt"):
             calib_dataset = load_dataset("text", data_files=dataset_name, split=split or "train")
