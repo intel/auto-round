@@ -575,7 +575,7 @@ class _CompressorBuilder:
         configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
         preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
         is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
-        if is_svdquant:
+        if is_svdquant and "svdquant_omni" not in {name.strip().lower() for name in (format or "").split(",")}:
             format = "svdquant_nunchaku"
 
         # Any preprocessor that requires calibration data (e.g. AWQ, SVDQuant

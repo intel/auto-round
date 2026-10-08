@@ -15,8 +15,7 @@
 """Convert logical SVDQuant records to vLLM-Omni's NVFP4 tensor layout.
 
 Model adapters own naming and fusion. The default adapter preserves names.
-Tuned residuals retain their scales; unquantized residuals use RTN. This
-standalone exporter does not register a standard AutoRound backend.
+Tuned NVFP4 residuals retain their scales; untuned NVFP4 residuals use RTN.
 """
 
 from __future__ import annotations
@@ -36,6 +35,33 @@ from auto_round.export.svdquant_nunchaku import (
     _validate_adapter_provenance,
 )
 from auto_round.wrapper import WrapperWALayer
+
+
+def validate_nvfp4_scheme(scheme) -> bool:
+    """Require the NVFP4 W4A4 scheme supported by Omni's SVDQuant runtime."""
+    aliases = frozenset({"nv_fp", "nv_fp4", "nv_fp4_with_static_gs"})
+    rules = dict(
+        data_type=aliases,
+        bits=4,
+        group_size=16,
+        sym=True,
+        act_data_type=aliases,
+        act_bits=4,
+        act_group_size=16,
+        act_sym=True,
+        act_dynamic=True,
+    )
+    for name, expected in rules.items():
+        actual = getattr(scheme, name, None)
+        if isinstance(expected, frozenset):
+            valid = isinstance(actual, str) and actual in expected
+        else:
+            valid = type(actual) is type(expected) and actual == expected
+        if not valid:
+            raise ValueError(
+                f"svdquant_omni only supports NVFP4 W4A4 group16: " f"got {name}={actual!r}, expected {expected!r}"
+            )
+    return True
 
 
 @torch.inference_mode()
@@ -88,6 +114,8 @@ def collect_svdquant_omni_tensors(
     """Serialize adapter-selected projections without assuming a model architecture."""
     adapter = adapter or IdentitySVDQuantModelAdapter()
     sources = _source_records(model)
+    for source in sources:
+        validate_nvfp4_scheme(source.scheme)
     records = tuple(adapter.map_modules(model, sources))
     if not records:
         raise ValueError("model adapter produced no SVDQuant export records")
@@ -95,6 +123,7 @@ def collect_svdquant_omni_tensors(
     adapter.validate_records(sources, records)
     tensors, ranks = {}, set()
     for record in records:
+        validate_nvfp4_scheme(record.scheme)
         weight, down, up = record.residual_weight, record.lora_down, record.lora_up
         smooth = record.smooth.float()
         n, k = weight.shape
@@ -115,14 +144,9 @@ def collect_svdquant_omni_tensors(
         scale = global_scale = None
         if any(hasattr(residual, "scale") for residual in residuals):
             if not all(
-                getattr(residual, "data_type", "").removesuffix("_rceil") in {"nv_fp4", "nv_fp4_with_static_gs"}
-                and getattr(residual, "bits", None) == 4
-                and getattr(residual, "group_size", None) == 16
-                and hasattr(residual, "scale")
-                and hasattr(residual, "weight_global_scale")
-                for residual in residuals
+                hasattr(residual, "scale") and hasattr(residual, "weight_global_scale") for residual in residuals
             ):
-                raise ValueError("tuned Omni residuals require NVFP4 scales, bits=4 and group_size=16")
+                raise ValueError("tuned Omni residuals require NVFP4 scale and weight_global_scale")
             global_scale = residuals[0].weight_global_scale.to(device).float().reshape(1)
             if not all(
                 torch.equal(global_scale, residual.weight_global_scale.to(device).float().reshape(1))

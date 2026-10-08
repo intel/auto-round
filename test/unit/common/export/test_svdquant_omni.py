@@ -16,7 +16,9 @@
 
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
+import pytest
 import torch
 from safetensors.torch import load_file
 
@@ -24,12 +26,16 @@ from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.data_type.nvfp import nv_fp4
 from auto_round.export.svdquant_nunchaku import IdentitySVDQuantModelAdapter
 from auto_round.export.svdquant_omni import save_svdquant_omni
+from auto_round.formats import get_formats
+from auto_round.schemes import PRESET_SCHEMES
 
 
 def test_omni_tensor_layout_and_adapter_mapping(tmp_path):
     model = torch.nn.Module()
     model.config = {"_name_or_path": tmp_path}
     residual = torch.nn.Linear(32, 16, dtype=torch.bfloat16)
+    for name, value in PRESET_SCHEMES["NVFP4"].to_dict().items():
+        setattr(residual, name, value)
     down = torch.nn.Linear(32, 8, bias=False, dtype=torch.bfloat16)
     up = torch.nn.Linear(8, 16, bias=False, dtype=torch.bfloat16)
     model.projection = SVDQuantLinear(residual, down, up, torch.full((32,), 2, dtype=torch.bfloat16))
@@ -47,7 +53,9 @@ def test_omni_tensor_layout_and_adapter_mapping(tmp_path):
             quantized, residual.scale, _ = nv_fp4(residual.weight.float(), global_scale=residual.weight_global_scale)
             residual.weight.data = quantized.bfloat16()
         output = tmp_path / prefix
-        tensors = load_file(save_svdquant_omni(model, output, adapter=adapter))
+        output_format = get_formats("svdquant_omni", SimpleNamespace(scheme="NVFP4"))[0]
+        assert output_format.save_quantized(output, model=model, adapter=adapter) is model
+        tensors = load_file(output / "diffusion_pytorch_model.safetensors")
         assert set(tensors) == {
             *(
                 f"{prefix}.{suffix}"
@@ -90,3 +98,50 @@ def test_omni_tensor_layout_and_adapter_mapping(tmp_path):
             "act_unsigned": False,
             "modules_to_not_convert": ["unquantized"],
         }
+
+
+def test_omni_format_rejects_incompatible_schemes(tmp_path, monkeypatch):
+    output_format = get_formats("svdquant_omni", SimpleNamespace(scheme="NVFP4"))[0]
+    assert output_format.output_format == "svdquant_omni"
+    assert not output_format.is_supported_immediate_packing()
+    assert not output_format.is_supported_immediate_saving()
+    for preset in ("MXFP4", "W4A16", "NVFP4_E5M3"):
+        with pytest.raises(ValueError, match="NVFP4 W4A4 group16"):
+            get_formats("svdquant_omni", SimpleNamespace(scheme=preset))
+    for field, value in (("bits", 8), ("group_size", 32), ("act_bits", 16), ("act_dynamic", False)):
+        scheme = PRESET_SCHEMES["NVFP4"].copy()
+        setattr(scheme, field, value)
+        with pytest.raises(ValueError, match=field):
+            output_format.check_scheme_args(scheme)
+    model = torch.nn.Module()
+    residual = torch.nn.Linear(32, 16)
+    for name, value in PRESET_SCHEMES["MXFP4"].to_dict().items():
+        setattr(residual, name, value)
+    model.projection = SVDQuantLinear(
+        residual, torch.nn.Linear(32, 8, bias=False), torch.nn.Linear(8, 16, bias=False), torch.ones(32)
+    )
+    with pytest.raises(ValueError, match="NVFP4 W4A4 group16"):
+        save_svdquant_omni(model, tmp_path / "invalid")
+    with pytest.raises(ValueError, match="incompatible residual scheme"):
+        output_format._validate_svd_layer_overrides(model, {"projection": "MXFP4"})
+
+    from auto_round import AutoRound
+    from auto_round.algorithms.quantization.rtn.config import RTNConfig
+    from auto_round.algorithms.transforms.svdquant import SVDQuantConfig
+
+    created = {}
+
+    class FakeCompressor:
+        def __init__(self, config, **kwargs):
+            created.update(kwargs)
+
+    monkeypatch.setattr("auto_round.autoround._build_model_type_ctor_kwargs", lambda *args, **kwargs: ("llm", {}))
+    monkeypatch.setattr("auto_round.autoround._get_compressor_class", lambda model_type, base_cls: FakeCompressor)
+    for format in ("svdquant_omni", "svdquant_omni,fake"):
+        AutoRound(
+            "dummy-model",
+            scheme="NVFP4",
+            format=format,
+            alg_configs=[SVDQuantConfig(smooth_enabled=False), RTNConfig(disable_opt_rtn=True)],
+        )
+        assert created["format"] == format
