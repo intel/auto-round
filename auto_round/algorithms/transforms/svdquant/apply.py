@@ -168,7 +168,8 @@ class SVDQuantTransform(BasePreprocessor):
 
     def prepare_run(self, composer=None) -> None:
         self._block_groups.clear()
-        self._grouping_backend = self._resolve_grouping_backend()
+        formats = getattr(self.compress_context, "formats", None) or ()
+        self._grouping_backend = "omni" if any(fmt.format_name == "svdquant_omni" for fmt in formats) else None
         if self.model is None:
             return
         if self._grouping_backend == "omni":
@@ -185,21 +186,6 @@ class SVDQuantTransform(BasePreprocessor):
             sum(len(groups) for groups in self._block_groups.values()),
             len(self._block_groups),
         )
-
-    def _resolve_grouping_backend(self) -> str | None:
-        """Select the inference grouping contract once, before discovering blocks."""
-        formats = getattr(self.compress_context, "formats", None) or ()
-        if isinstance(formats, str):
-            format_names = set(formats.replace(" ", "").split(","))
-        else:
-            format_names = {getattr(output_format, "format_name", output_format) for output_format in formats}
-        if "svdquant_omni" not in format_names:
-            return None
-        if "svdquant_nunchaku" in format_names:
-            raise ValueError("Choose one SVDQuant inference format per quantization run: Omni or Nunchaku.")
-        if self.config.model_adapter not in {None, "auto", "identity"}:
-            raise ValueError("svdquant_omni selects its own grouping; do not specify a Nunchaku model adapter.")
-        return "omni"
 
     def _resolve_model_adapter(self, model: torch.nn.Module | None, block: torch.nn.Module | None = None) -> str:
         model_adapter = self.config.model_adapter or "auto"

@@ -23,7 +23,6 @@ from auto_round import envs
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import check_to_quantized, logger
-from auto_round.utils.attention import get_fused_attention_projection_names
 
 
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int | list, val: float = 0.0):
@@ -478,6 +477,9 @@ def update_fused_layer_global_scales(
                     scales.append(scale.reshape(1))
         return scales
 
+    def _is_attention_module(module: Module):
+        return all(hasattr(module, projection) for projection in ("q_proj", "k_proj", "v_proj"))
+
     def _is_mlp_module(module: Module):
         return all(hasattr(module, projection) for projection in ("gate_proj", "up_proj"))
 
@@ -507,9 +509,16 @@ def update_fused_layer_global_scales(
                 setattr(proj, global_scale_name, global_scale.clone().to(proj_scale.device))
 
     # ---------------- Attention ----------------
-    projection_names = get_fused_attention_projection_names(submodule)
-    if projection_names:
-        _update_global_scales([getattr(submodule, name) for name in projection_names])
+    if _is_attention_module(submodule):
+        _update_global_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
+        return
+
+    # Diffusers self-attention (e.g. Wan) uses to_q/to_k/to_v. Cross-attention
+    # Q consumes different inputs from K/V and must not join their scale group.
+    if not getattr(submodule, "is_cross_attention", False) and all(
+        hasattr(submodule, projection) for projection in ("to_q", "to_k", "to_v")
+    ):
+        _update_global_scales([submodule.to_q, submodule.to_k, submodule.to_v])
         return
 
     # ---------------- MLP ----------------
