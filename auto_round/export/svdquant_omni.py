@@ -14,7 +14,7 @@
 
 """Convert logical SVDQuant records to vLLM-Omni's NVFP4 tensor layout.
 
-Model adapters own naming and fusion. The default adapter preserves names.
+The default export fuses shared-input self-attention QKV for Omni's loaders.
 Tuned NVFP4 residuals retain their scales; untuned NVFP4 residuals use RTN.
 """
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import torch
@@ -36,6 +37,50 @@ from auto_round.export.svdquant_nunchaku import (
     _validate_adapter_provenance,
 )
 from auto_round.wrapper import WrapperWALayer
+
+
+def _fuse_qkv_records(model, records):
+    """Join already grouped QKV; never recompute their low-rank decomposition."""
+    by_name = {record.prefix: record for record in records}
+    consumed, fused = set(), []
+    for name, attention in model.named_modules():
+        if getattr(attention, "is_cross_attention", None) is not False:
+            continue
+        for names, target in ((("to_q", "to_k", "to_v"), "to_qkv"), (("q_proj", "k_proj", "v_proj"), "qkv_proj")):
+            prefixes = tuple(f"{name}.{suffix}" if name else suffix for suffix in names)
+            if not all(prefix in by_name for prefix in prefixes):
+                continue
+            group = tuple(by_name[prefix] for prefix in prefixes)
+            first = group[0]
+            if not all(
+                torch.equal(first.lora_down, record.lora_down) and torch.equal(first.smooth, record.smooth)
+                for record in group[1:]
+            ):
+                raise ValueError(f"{name}: Omni QKV export requires shared low-rank input and smoothing parameters")
+            bias = None
+            if any(record.bias is not None for record in group):
+                bias = torch.cat(
+                    [
+                        (
+                            record.bias
+                            if record.bias is not None
+                            else record.residual_weight.new_zeros(record.residual_weight.shape[0])
+                        )
+                        for record in group
+                    ]
+                )
+            fused.append(
+                replace(
+                    first,
+                    prefix=f"{name}.{target}" if name else target,
+                    residual_weight=torch.cat([record.residual_weight for record in group]),
+                    lora_up=torch.cat([record.lora_up for record in group]),
+                    bias=bias,
+                    sources=tuple(source for record in group for source in record.sources),
+                )
+            )
+            consumed.update(prefixes)
+    return tuple(record for record in records if record.prefix not in consumed) + tuple(fused)
 
 
 def validate_nvfp4_scheme(scheme) -> bool:
@@ -55,7 +100,17 @@ def validate_nvfp4_scheme(scheme) -> bool:
     for name, expected in rules.items():
         actual = getattr(scheme, name, None)
         if isinstance(expected, frozenset):
-            valid = isinstance(actual, str) and actual in expected
+            # Quantization wrappers persist the selected function's registry
+            # name; these RTN implementations retain the same NVFP4 format.
+            dtype = (
+                {
+                    "rtn_nv_fp4_with_static_gs": "nv_fp4_with_static_gs",
+                    "opt_rtn_nv_fp4": "nv_fp4",
+                }.get(actual, actual)
+                if isinstance(actual, str)
+                else actual
+            )
+            valid = isinstance(dtype, str) and dtype in expected
         else:
             valid = type(actual) is type(expected) and actual == expected
         if not valid:
@@ -113,11 +168,14 @@ def collect_svdquant_omni_tensors(
     model: torch.nn.Module, *, device: str = "cpu", adapter: SVDQuantModelAdapter | None = None
 ) -> tuple[dict, dict]:
     """Serialize adapter-selected projections without assuming a model architecture."""
+    fuse_qkv = adapter is None
     adapter = adapter or IdentitySVDQuantModelAdapter()
     sources = _source_records(model)
     for source in sources:
         validate_nvfp4_scheme(source.scheme)
     records = tuple(adapter.map_modules(model, sources))
+    if fuse_qkv:
+        records = _fuse_qkv_records(model, records)
     if not records:
         raise ValueError("model adapter produced no SVDQuant export records")
     _validate_adapter_provenance(sources, records)
