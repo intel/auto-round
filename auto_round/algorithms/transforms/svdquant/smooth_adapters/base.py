@@ -112,40 +112,8 @@ def generic_linear_groups(
     *,
     consumed: set[int] | None = None,
 ) -> list[SmoothSearchGroup]:
-    from auto_round.data_type.utils import get_fused_attention_projection_names
-
-    consumed = set(consumed or ())
+    consumed = consumed or set()
     groups = []
-    # Explicit self-attention metadata establishes that Q/K/V share an input.
-    # Keep cross-attention and modules without this contract layer-wise.
-    for local_name, attention in block.named_modules():
-        if getattr(attention, "is_cross_attention", None) is not False:
-            continue
-        projection_names = get_fused_attention_projection_names(attention)
-        if not projection_names:
-            continue
-        paths = tuple(f"{local_name}.{name}" if local_name else name for name in projection_names)
-        projections = tuple(getattr(attention, name) for name in projection_names)
-        if not all(
-            isinstance(module, torch.nn.Linear) and id(module) not in consumed and is_target(path, module)
-            for path, module in zip(paths, projections)
-        ):
-            continue
-        if len({module.in_features for module in projections}) != 1 or len({id(module) for module in projections}) != 3:
-            continue
-        names = tuple(module_global_name(block, path) for path in paths)
-        groups.append(
-            SmoothSearchGroup(
-                key=module_global_name(block, f"{local_name}.qkv" if local_name else "qkv"),
-                projection_names=names,
-                projections=projections,
-                projection_input_key=names[0],
-                projection_input_module=projections[0],
-                evaluation_input_key=module_global_name(block, local_name),
-                evaluation_module=attention,
-            )
-        )
-        consumed.update(id(module) for module in projections)
     for local_name, module in block.named_modules():
         if not local_name or id(module) in consumed or not is_target(local_name, module):
             continue

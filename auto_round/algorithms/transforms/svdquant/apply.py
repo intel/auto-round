@@ -172,7 +172,9 @@ class SVDQuantTransform(BasePreprocessor):
         self._resolve_model_adapter(self.model)
         for block_name in self._configured_block_names:
             block = self.model.get_submodule(block_name)
-            self._block_groups[block_name] = discover_svdquant_groups(block, self._is_target)
+            self._block_groups[block_name] = discover_svdquant_groups(
+                block, self._is_target, model_adapter=self.config.model_adapter
+            )
         logger.info(
             "SVDQuant: resolved %d projection groups across %d blocks.",
             sum(len(groups) for groups in self._block_groups.values()),
@@ -222,7 +224,7 @@ class SVDQuantTransform(BasePreprocessor):
         block_name = str(getattr(block, "global_name", ""))
         groups = self._block_groups.get(block_name)
         if groups is None:
-            groups = discover_svdquant_groups(block, self._is_target)
+            groups = discover_svdquant_groups(block, self._is_target, model_adapter=self.config.model_adapter)
             self._block_groups[block_name] = groups
         self._smooth_calibration = {
             group.key: SmoothGroupCalibration(group, self.config.smooth_max_calibration_calls) for group in groups
@@ -259,7 +261,7 @@ class SVDQuantTransform(BasePreprocessor):
         self._resolve_model_adapter(ctx.model, block)
         groups = self._block_groups.get(block_name)
         if groups is None:
-            groups = discover_svdquant_groups(block, self._is_target)
+            groups = discover_svdquant_groups(block, self._is_target, model_adapter=self.config.model_adapter)
             self._block_groups[block_name] = groups
 
         if self.config.smooth_enabled:

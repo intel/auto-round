@@ -22,11 +22,16 @@ from auto_round.algorithms.transforms.svdquant.smooth_adapters.base import (
     generic_linear_groups,
 )
 from auto_round.algorithms.transforms.svdquant.smooth_adapters.flux import discover_flux_groups, supports_flux_block
+from auto_round.algorithms.transforms.svdquant.smooth_adapters.omni import discover_omni_groups
 from auto_round.algorithms.transforms.svdquant.smooth_adapters.sdxl import discover_sdxl_groups, supports_sdxl_block
 
 
-def discover_svdquant_groups(block: torch.nn.Module, is_target: TargetPredicate) -> list[SmoothSearchGroup]:
+def discover_svdquant_groups(
+    block: torch.nn.Module, is_target: TargetPredicate, *, model_adapter: str | None = None
+) -> list[SmoothSearchGroup]:
     """Discover shared-input projection groups for one quantization block."""
+    if model_adapter == "omni":
+        return discover_omni_groups(block, is_target)
     if supports_flux_block(block):
         return discover_flux_groups(block, is_target)
     if supports_sdxl_block(block):
