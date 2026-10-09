@@ -136,6 +136,7 @@ class SVDQuantTransform(BasePreprocessor):
     def __init__(self, config: SVDQuantConfig) -> None:
         super().__init__(config)
         self._svd_driver = None
+        self._grouping_backend = None
         self._configured_block_names: tuple[str, ...] = ()
         self._block_groups: dict[str, list[SmoothSearchGroup]] = {}
         self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
@@ -167,12 +168,19 @@ class SVDQuantTransform(BasePreprocessor):
 
     def prepare_run(self, composer=None) -> None:
         self._block_groups.clear()
+        formats = getattr(self.compress_context, "formats", None) or ()
+        self._grouping_backend = "omni" if any(fmt.format_name == "svdquant_omni" for fmt in formats) else None
         if self.model is None:
             return
-        self._resolve_model_adapter(self.model)
+        if self._grouping_backend == "omni":
+            self._target_modules = self.config.target_modules
+        else:
+            self._resolve_model_adapter(self.model)
         for block_name in self._configured_block_names:
             block = self.model.get_submodule(block_name)
-            self._block_groups[block_name] = discover_svdquant_groups(block, self._is_target)
+            self._block_groups[block_name] = discover_svdquant_groups(
+                block, self._is_target, grouping_backend=self._grouping_backend
+            )
         logger.info(
             "SVDQuant: resolved %d projection groups across %d blocks.",
             sum(len(groups) for groups in self._block_groups.values()),
@@ -217,12 +225,13 @@ class SVDQuantTransform(BasePreprocessor):
     def register_fp_input_forward_hooks(self, block) -> list:
         if not self.config.smooth_enabled:
             return []
-        self._resolve_model_adapter(self.model, block)
+        if self._grouping_backend != "omni":
+            self._resolve_model_adapter(self.model, block)
         self._clear_smooth_calibration()
         block_name = str(getattr(block, "global_name", ""))
         groups = self._block_groups.get(block_name)
         if groups is None:
-            groups = discover_svdquant_groups(block, self._is_target)
+            groups = discover_svdquant_groups(block, self._is_target, grouping_backend=self._grouping_backend)
             self._block_groups[block_name] = groups
         self._smooth_calibration = {
             group.key: SmoothGroupCalibration(group, self.config.smooth_max_calibration_calls) for group in groups
@@ -256,10 +265,11 @@ class SVDQuantTransform(BasePreprocessor):
             raise ValueError(f"SVDQuant requires one block at a time, got {ctx.block_names!r}.")
         block_name = ctx.block_name
         block = ctx.model.get_submodule(block_name)
-        self._resolve_model_adapter(ctx.model, block)
+        if self._grouping_backend != "omni":
+            self._resolve_model_adapter(ctx.model, block)
         groups = self._block_groups.get(block_name)
         if groups is None:
-            groups = discover_svdquant_groups(block, self._is_target)
+            groups = discover_svdquant_groups(block, self._is_target, grouping_backend=self._grouping_backend)
             self._block_groups[block_name] = groups
 
         if self.config.smooth_enabled:
@@ -711,7 +721,9 @@ class SVDQuantTransform(BasePreprocessor):
 
     @staticmethod
     def _copy_quant_attrs(src: torch.nn.Module, dst: torch.nn.Module, suffix: str) -> None:
-        for attr in _SCHEME_ATTRS | _RUNTIME_QUANT_ATTRS:
+        # The residual has different weights (and may be smoothed), so its
+        # NVFP4 global scale must be calculated again before quantization.
+        for attr in (_SCHEME_ATTRS | _RUNTIME_QUANT_ATTRS) - {"weight_global_scale"}:
             if hasattr(src, attr):
                 setattr(dst, attr, getattr(src, attr))
         if getattr(dst, "bits", None) == 4 and getattr(dst, "data_type", None) in _MXFP4_ALIASES:
