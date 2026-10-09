@@ -23,6 +23,7 @@ from auto_round import envs
 from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import check_to_quantized, logger
+from auto_round.utils.attention import get_fused_attention_projection_names
 
 
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int | list, val: float = 0.0):
@@ -444,17 +445,6 @@ def get_gaudi_fp8_ste_func():
 
 # please refer from https://github.com/vllm-project/llm-compressor/blob/
 # 29f4d5644b48e9c8ebb7e36d5be9f7c92747ceb7/src/llmcompressor/modifiers/utils/helpers.py#L11
-def get_fused_attention_projection_names(module: Module) -> tuple[str, ...]:
-    """Return the QKV projection names recognized by fused-scale synchronization."""
-    if all(hasattr(module, name) for name in ("q_proj", "k_proj", "v_proj")):
-        return ("q_proj", "k_proj", "v_proj")
-    if not getattr(module, "is_cross_attention", False) and all(
-        hasattr(module, name) for name in ("to_q", "to_k", "to_v")
-    ):
-        return ("to_q", "to_k", "to_v")
-    return ()
-
-
 def update_fused_layer_global_scales(
     submodule: Module,
     base_name: str = "weight",

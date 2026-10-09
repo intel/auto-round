@@ -22,7 +22,7 @@ from auto_round.algorithms.transforms.svdquant.smooth_adapters.base import (
     generic_linear_groups,
     module_global_name,
 )
-from auto_round.data_type.utils import get_fused_attention_projection_names
+from auto_round.utils.attention import get_fused_attention_projection_names
 
 
 def discover_omni_groups(block: torch.nn.Module, is_target: TargetPredicate) -> list[SmoothSearchGroup]:
@@ -30,20 +30,25 @@ def discover_omni_groups(block: torch.nn.Module, is_target: TargetPredicate) -> 
     groups = []
     consumed = set()
     for local_name, attention in block.named_modules():
-        if getattr(attention, "is_cross_attention", None) is not False:
+        if getattr(attention, "is_cross_attention", None) is True:
             continue
         projection_names = get_fused_attention_projection_names(attention)
         if not projection_names:
             continue
         paths = tuple(f"{local_name}.{name}" if local_name else name for name in projection_names)
         projections = tuple(getattr(attention, name) for name in projection_names)
-        if not all(
-            isinstance(module, torch.nn.Linear) and id(module) not in consumed and is_target(path, module)
-            for path, module in zip(paths, projections)
-        ):
+        selected = tuple(
+            isinstance(module, torch.nn.Linear) and is_target(path, module) for path, module in zip(paths, projections)
+        )
+        if not any(selected) or any(id(module) in consumed for module in projections):
             continue
+        key = module_global_name(block, local_name)
+        if getattr(attention, "is_cross_attention", None) is not False:
+            raise ValueError(f"Omni QKV grouping requires explicit is_cross_attention=False for {key!r}.")
+        if not all(selected):
+            raise ValueError(f"Omni fused QKV requires all three projections to be selected Linear layers: {key!r}.")
         if len({module.in_features for module in projections}) != 1 or len({id(module) for module in projections}) != 3:
-            continue
+            raise ValueError(f"Omni fused QKV requires distinct projections with matching input widths: {key!r}.")
         names = tuple(module_global_name(block, path) for path in paths)
         groups.append(
             SmoothSearchGroup(
