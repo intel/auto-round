@@ -530,14 +530,17 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
                     if tokenizer is None:
                         tokenizer = loaded_tokenizer
                 else:
-                    from transformers import AutoModelForCausalLM, AutoTokenizer
+                    from auto_round.utils.model import llm_load_model
 
-                    model = AutoModelForCausalLM.from_pretrained(
-                        eval_folder, device_map=device_str, torch_dtype=eval_model_dtype
+                    model, loaded_tokenizer = llm_load_model(
+                        eval_folder,
+                        device=device_str,
+                        torch_dtype=eval_model_dtype,
+                        trust_remote_code=not args.disable_trust_remote_code,
                     )
                     model.eval()
                     if tokenizer is None:
-                        tokenizer = AutoTokenizer.from_pretrained(eval_folder)
+                        tokenizer = loaded_tokenizer
 
         # Evaluate with model instance
         evaluate_with_model_instance(model, tokenizer, device_str, args)
