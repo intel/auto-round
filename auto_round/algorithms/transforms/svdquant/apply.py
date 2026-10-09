@@ -136,6 +136,7 @@ class SVDQuantTransform(BasePreprocessor):
     def __init__(self, config: SVDQuantConfig) -> None:
         super().__init__(config)
         self._svd_driver = None
+        self._grouping_backend = None
         self._configured_block_names: tuple[str, ...] = ()
         self._block_groups: dict[str, list[SmoothSearchGroup]] = {}
         self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
@@ -173,7 +174,7 @@ class SVDQuantTransform(BasePreprocessor):
         for block_name in self._configured_block_names:
             block = self.model.get_submodule(block_name)
             self._block_groups[block_name] = discover_svdquant_groups(
-                block, self._is_target, model_adapter=self.config.model_adapter
+                block, self._is_target, grouping_backend=self._grouping_backend
             )
         logger.info(
             "SVDQuant: resolved %d projection groups across %d blocks.",
@@ -182,6 +183,21 @@ class SVDQuantTransform(BasePreprocessor):
         )
 
     def _resolve_model_adapter(self, model: torch.nn.Module | None, block: torch.nn.Module | None = None) -> str:
+        formats = getattr(self.compress_context, "formats", None) or ()
+        if isinstance(formats, str):
+            format_names = set(formats.replace(" ", "").split(","))
+        else:
+            format_names = {getattr(output_format, "format_name", output_format) for output_format in formats}
+        self._grouping_backend = "omni" if "svdquant_omni" in format_names else None
+        if self._grouping_backend == "omni":
+            if "svdquant_nunchaku" in format_names:
+                raise ValueError("Choose one SVDQuant inference format per quantization run: Omni or Nunchaku.")
+            if self.config.model_adapter not in {None, "auto", "identity"}:
+                raise ValueError("svdquant_omni selects its own grouping; do not specify a Nunchaku model adapter.")
+            self._target_modules = self.config.target_modules
+            if model is not None:
+                model._autoround_svdquant_model_adapter = "identity"
+            return "identity"
         model_adapter = self.config.model_adapter or "auto"
         if model_adapter == "auto":
             from auto_round.export.svdquant_adapters import detect_svdquant_model_adapter
@@ -224,7 +240,7 @@ class SVDQuantTransform(BasePreprocessor):
         block_name = str(getattr(block, "global_name", ""))
         groups = self._block_groups.get(block_name)
         if groups is None:
-            groups = discover_svdquant_groups(block, self._is_target, model_adapter=self.config.model_adapter)
+            groups = discover_svdquant_groups(block, self._is_target, grouping_backend=self._grouping_backend)
             self._block_groups[block_name] = groups
         self._smooth_calibration = {
             group.key: SmoothGroupCalibration(group, self.config.smooth_max_calibration_calls) for group in groups
@@ -261,7 +277,7 @@ class SVDQuantTransform(BasePreprocessor):
         self._resolve_model_adapter(ctx.model, block)
         groups = self._block_groups.get(block_name)
         if groups is None:
-            groups = discover_svdquant_groups(block, self._is_target, model_adapter=self.config.model_adapter)
+            groups = discover_svdquant_groups(block, self._is_target, grouping_backend=self._grouping_backend)
             self._block_groups[block_name] = groups
 
         if self.config.smooth_enabled:

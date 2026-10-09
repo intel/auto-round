@@ -27,10 +27,10 @@ from auto_round.algorithms.transforms.svdquant.smooth_adapters.sdxl import disco
 
 
 def discover_svdquant_groups(
-    block: torch.nn.Module, is_target: TargetPredicate, *, model_adapter: str | None = None
+    block: torch.nn.Module, is_target: TargetPredicate, *, grouping_backend: str | None = None
 ) -> list[SmoothSearchGroup]:
     """Discover shared-input projection groups for one quantization block."""
-    if model_adapter == "omni":
+    if grouping_backend == "omni":
         return discover_omni_groups(block, is_target)
     if supports_flux_block(block):
         return discover_flux_groups(block, is_target)

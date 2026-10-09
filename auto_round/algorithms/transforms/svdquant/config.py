@@ -102,8 +102,8 @@ class SVDQuantConfig(QuantizationConfig):
             "--svdquant-model-adapter",
             field="model_adapter",
             default="auto",
-            choices=["auto", "identity", "flux", "sdxl", "omni"],
-            help="SVDQuant grouping adapter; use omni for vLLM-Omni fused QKV compatibility.",
+            choices=["auto", "identity", "flux", "sdxl"],
+            help="Architecture adapter used by SVDQuant export.",
         )
 
     def __init__(
