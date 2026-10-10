@@ -629,6 +629,8 @@ class SVDQuantTransform(BasePreprocessor):
             )
             lora_down.weight.copy_(down)
             lora_up.weight.copy_(up)
+            lora_down.requires_grad_(projection.weight.requires_grad)
+            lora_up.requires_grad_(projection.weight.requires_grad)
             self._mark_unquantized(lora_down)
             self._mark_unquantized(lora_up)
             self._copy_quant_attrs(projection, residual, suffix=".residual_linear")
@@ -710,8 +712,11 @@ class SVDQuantTransform(BasePreprocessor):
             device=module.weight.device,
         )
         residual.weight.copy_(weight.to(module.weight.dtype))
+        # Preserve freezing: cached NVFP4 scales must not acquire an autograd graph.
+        residual.weight.requires_grad_(module.weight.requires_grad)
         if bias is not None:
             residual.bias.copy_(bias.detach().to(module.weight.dtype))
+            residual.bias.requires_grad_(module.bias.requires_grad)
         return residual
 
     @staticmethod
