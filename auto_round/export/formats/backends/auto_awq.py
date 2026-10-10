@@ -38,13 +38,23 @@ def mark_awq_unservable_layers(model, layer_config: dict, default_dict: dict) ->
     ``layer_config`` may hold raw user entries at format-resolution time
     (partial dicts, preset strings, not-yet-expanded regex keys) or fully
     resolved per-layer dicts at plan time; both are tolerated.
+
+    Layers the user explicitly configured for quantization (exact name or
+    expanded regex entry) are honored: they keep their configuration, are
+    flagged with ``AWQ_USER_FORCED_ATTR`` so the AWQ packers do not skip them,
+    and only get a warning that the shape may fail on the AWQ GEMM path.
     """
     if model is None or default_dict["data_type"] != "int":
         return layer_config
-    from auto_round.export.export_to_awq.utils import awq_gemm_kernel_supported
+    from auto_round.export.export_to_awq.utils import (
+        AWQ_USER_FORCED_ATTR,
+        awq_gemm_kernel_supported,
+        awq_user_forced_quantization,
+    )
 
     scheme_bits, scheme_group_size = default_dict["bits"], default_dict["group_size"]
     skipped_layers = []
+    user_forced_layers = []
     for name, module in model.named_modules():
         if not (type(module) in SUPPORTED_LAYER_TYPES or module.__class__.__name__ in INNER_SUPPORTED_LAYER_TYPES):
             continue
@@ -61,6 +71,13 @@ def mark_awq_unservable_layers(model, layer_config: dict, default_dict: dict) ->
         if not isinstance(group_size, int) or group_size <= 0:
             continue
         if awq_gemm_kernel_supported(module.in_features, module.out_features, bits, group_size):
+            continue
+        if awq_user_forced_quantization(cfg):
+            # The user explicitly configured this layer for quantization;
+            # keep the configuration and flag the module so the packers
+            # attempt packing despite the unservable shape.
+            setattr(module, AWQ_USER_FORCED_ATTR, True)
+            user_forced_layers.append(name)
             continue
         if layer_config is None:
             layer_config = {}
@@ -80,6 +97,15 @@ def mark_awq_unservable_layers(model, layer_config: dict, default_dict: dict) ->
             f"group_size {scheme_group_size} or out_features not divisible by 64, "
             "which the AWQ GEMM kernel cannot serve); they are exported in fp16 and listed "
             f"in `modules_to_not_convert`: {compressed_skipped_layers}"
+        )
+    compressed_user_forced = compress_layer_names(user_forced_layers)
+    if compressed_user_forced:
+        logger.warning_once(
+            "some layers are quantized per their explicit `layer_config` entry but their "
+            "shapes cannot be served by the AWQ GEMM kernel (in/out features not divisible "
+            "by group_size or out_features not divisible by 64); they are packed as "
+            "configured and may fail on the AWQ GEMM path in serving stacks such as vLLM: "
+            f"{compressed_user_forced}"
         )
     return layer_config
 

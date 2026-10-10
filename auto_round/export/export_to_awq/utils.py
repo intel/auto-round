@@ -71,6 +71,29 @@ def awq_gemm_kernel_supported(in_features: int, out_features: int, bits: int, gr
     return in_features % group_size == 0 and out_features % group_size == 0 and out_features % 64 == 0
 
 
+# Module attribute flag set on layers the user explicitly configured for
+# quantization even though the AWQ GEMM kernel cannot serve their shape.
+# Packers check this flag to honor the explicit setting instead of skipping.
+AWQ_USER_FORCED_ATTR = "_ar_awq_user_forced"
+
+
+def awq_user_forced_quantization(cfg) -> bool:
+    """Whether a ``layer_config`` entry explicitly keeps this layer quantized.
+
+    User-supplied entries (exact names or expanded regex matches) carry
+    ``fixed_by_user=True`` once normalized; entries AutoRound filled in from
+    the default scheme carry ``fixed_by_user=False``. At format-resolution
+    time user entries can still be raw (a dict missing the flag, a preset
+    string, or a QuantizationScheme), so any present entry counts as user
+    intent unless it explicitly says ``fixed_by_user=False``.
+    """
+    if not cfg:
+        return False
+    if not hasattr(cfg, "get"):
+        return True
+    return cfg.get("fixed_by_user", True) is not False
+
+
 def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
     shifts = torch.arange(0, 32, bits, device=qzeros.device)
 

@@ -880,6 +880,46 @@ def test_awq_format_excludes_unservable_layers():
     assert "q_proj" not in ctx.layer_config
 
 
+def test_awq_format_honors_explicit_layer_config():
+    """At format-resolution time a raw user entry (no fixed_by_user flag yet)
+    counts as explicit configuration: the unservable layer is not marked fp16
+    and is flagged for the packers."""
+    from types import SimpleNamespace
+
+    import torch.nn as nn
+
+    from auto_round.export.export_to_awq.utils import AWQ_USER_FORCED_ATTR
+    from auto_round.export.formats.backends.auto_awq import AutoAWQFormat
+    from auto_round.schemes import preset_name_to_scheme
+    from auto_round.utils import get_module
+
+    class ToyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.in_proj_ba = nn.Linear(256, 64)  # OC=64 < group_size -> unservable
+            self.mlp_bad = nn.Linear(96, 256)  # IC=96 % 128 != 0 -> unservable, no user entry
+
+    model = ToyModel()
+    scheme = preset_name_to_scheme("W4A16")
+    scheme.act_data_type = scheme.act_data_type or "fp16"
+    scheme.act_dynamic = False if scheme.act_dynamic is None else scheme.act_dynamic
+    ctx = SimpleNamespace(
+        model=model,
+        layer_config={"in_proj_ba": {"bits": 4}},
+        mllm=False,
+        quant_block_list=None,
+    )
+    output_format = AutoAWQFormat("auto_awq", scheme, ctx)
+    output_format.check_and_reset_format(scheme, ctx)
+
+    # The explicit entry is honored
+    assert ctx.layer_config["in_proj_ba"]["bits"] == 4
+    assert getattr(get_module(model, "in_proj_ba"), AWQ_USER_FORCED_ATTR, False)
+    # The layer without a user entry is still marked fp16
+    assert ctx.layer_config["mlp_bad"]["bits"] == 16
+    assert not getattr(get_module(model, "mlp_bad"), AWQ_USER_FORCED_ATTR, False)
+
+
 def test_awq_pack_layer_skips_unservable_layer():
     """pack_layer must not AWQ-pack a layer whose shape the GEMM kernel cannot serve."""
     import torch.nn as nn
@@ -933,7 +973,11 @@ def test_awq_export_lists_unservable_layers(tmp_path):
     layer.bits = 4
     layer.group_size = 128
     layer.sym = True
-    layer_config = {"in_proj_ba": {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}}
+    # fixed_by_user=False mirrors what resolve_layer_config writes for
+    # default-filled entries (a user entry would carry True).
+    layer_config = {
+        "in_proj_ba": {"bits": 4, "group_size": 128, "sym": True, "data_type": "int", "fixed_by_user": False}
+    }
     serialization_dict = {"bits": 4, "group_size": 128, "sym": True}
 
     save_quantized_as_autoawq(
@@ -949,31 +993,118 @@ def test_awq_export_lists_unservable_layers(tmp_path):
     assert type(get_module(model, "in_proj_ba")) is nn.Linear
 
 
-def test_awq_unservable_mark_survives_regex_layer_config():
-    """Regex layer_config entries expand over the fp16 mark; the post-expansion
-    re-mark must re-pin unservable layers without leaking the mark to siblings
-    (regex expansion shares one dict object across all matches)."""
+def test_awq_export_packs_user_forced_layer(tmp_path):
+    """A layer_config entry the user explicitly set for quantization is honored:
+    the unservable layer is packed anyway and does not land in
+    modules_to_not_convert."""
+    import torch.nn as nn
+
+    from auto_round.export.export_to_awq.export import save_quantized_as_autoawq
+    from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+    from auto_round.utils import get_module
+
+    class ToyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.in_proj_ba = nn.Linear(256, 64)  # OC=64 < group_size -> unservable
+            self.q_proj = nn.Linear(256, 256)
+            self.dtype = torch.float32
+
+        def save_pretrained(self, save_dir, **kwargs):
+            os.makedirs(save_dir, exist_ok=True)
+
+    model = ToyModel()
+    layer = get_module(model, "in_proj_ba")
+    layer.bits = 4
+    layer.group_size = 128
+    layer.sym = True
+    # The quantizer stores scale/zp as (out_features, num_groups); pack_layer
+    # transposes them before handing them to the packer.
+    layer.scale = torch.ones(64, 2)
+    layer.zp = torch.zeros(64, 2)
+    layer_config = {
+        "in_proj_ba": {"bits": 4, "group_size": 128, "sym": True, "data_type": "int", "fixed_by_user": True}
+    }
+    serialization_dict = {"bits": 4, "group_size": 128, "sym": True}
+
+    save_quantized_as_autoawq(
+        str(tmp_path),
+        model=model,
+        layer_config=layer_config,
+        inplace=True,
+        serialization_dict=serialization_dict,
+    )
+
+    assert "in_proj_ba" not in serialization_dict["modules_to_not_convert"]
+    assert isinstance(get_module(model, "in_proj_ba"), WQLinear_GEMM)
+
+
+def test_awq_explicit_layer_config_overrides_unservable_mark():
+    """Explicit layer_config entries keep unservable layers quantized.
+
+    A user-supplied entry (exact name or expanded regex) counts as user
+    intent: the AWQ unservable marking must leave it untouched instead of
+    forcing fp16, and flag the module for the packers. Layers without a user
+    entry are still marked fp16."""
     import torch.nn as nn
 
     from auto_round.compressors.config_resolution import ResolvedScheme
     from auto_round.compressors.layer_config_resolver import resolve_layer_config
+    from auto_round.export.export_to_awq.utils import AWQ_USER_FORCED_ATTR
     from auto_round.schemes import preset_name_to_scheme
+    from auto_round.utils import get_module
 
     class ToyModel(nn.Module):
         def __init__(self):
             super().__init__()
             self.q_proj = nn.Linear(256, 256)  # servable
             self.in_proj_ba = nn.Linear(256, 64)  # OC=64 < group_size -> unservable
+            self.mlp_bad = nn.Linear(96, 256)  # IC=96 % 128 != 0 -> unservable, not user-configured
 
     model = ToyModel()
     scheme = ResolvedScheme.from_scheme(preset_name_to_scheme("W4A16"))
     resolved = resolve_layer_config(
         model=model,
         scheme=scheme,
-        layer_config={"proj": {"bits": 4}},  # regex matches both layers
+        layer_config={"proj": {"bits": 4}},  # regex matches q_proj and in_proj_ba
         format="auto_awq",
     )
-    assert resolved["in_proj_ba"]["bits"] == 16
-    assert resolved["in_proj_ba"]["data_type"] == "fp"
-    # The regex-matched sibling must not be polluted by the shared dict
+    # The user-configured unservable layer keeps its quantized setting
+    assert resolved["in_proj_ba"]["bits"] == 4
+    assert getattr(get_module(model, "in_proj_ba"), AWQ_USER_FORCED_ATTR, False)
+    # The regex-matched sibling is servable and untouched as before
     assert resolved["q_proj"]["bits"] == 4
+    # The unservable layer without a user entry is still marked fp16
+    assert resolved["mlp_bad"]["bits"] == 16
+    assert resolved["mlp_bad"]["data_type"] == "fp"
+    assert not getattr(get_module(model, "mlp_bad"), AWQ_USER_FORCED_ATTR, False)
+
+
+def test_awq_pack_layer_packs_user_forced_layer():
+    """pack_layer must AWQ-pack an unservable layer flagged by an explicit
+    layer_config entry (AWQ_USER_FORCED_ATTR)."""
+    import torch.nn as nn
+
+    from auto_round.export.export_to_awq.export import pack_layer
+    from auto_round.export.export_to_awq.utils import AWQ_USER_FORCED_ATTR, WQLinear_GEMM
+    from auto_round.utils import get_module
+
+    class ToyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.in_proj_ba = nn.Linear(256, 64)
+
+    model = ToyModel()
+    layer = get_module(model, "in_proj_ba")
+    # Simulate a layer that went through quantization (attrs set by the
+    # quantizer); scale/zp are stored as (out_features, num_groups).
+    layer.bits = 4
+    layer.group_size = 128
+    layer.sym = True
+    layer.scale = torch.ones(64, 2)
+    layer.zp = torch.zeros(64, 2)
+    setattr(layer, AWQ_USER_FORCED_ATTR, True)
+
+    pack_layer("in_proj_ba", model, backend="auto_awq")
+
+    assert isinstance(get_module(model, "in_proj_ba"), WQLinear_GEMM)

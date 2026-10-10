@@ -29,7 +29,12 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from auto_round.export.export_to_awq.utils import WQLinear_GEMM, awq_gemm_kernel_supported
+from auto_round.export.export_to_awq.utils import (
+    AWQ_USER_FORCED_ATTR,
+    WQLinear_GEMM,
+    awq_gemm_kernel_supported,
+    awq_user_forced_quantization,
+)
 from auto_round.export.utils import (
     filter_quantization_config,
     is_immediate_saving_mode,
@@ -125,16 +130,22 @@ def pack_layer(name, model, backend, device=None):
     group_size = getattr(layer, "group_size", None)
     in_features = getattr(layer, "in_features", None)
     out_features = getattr(layer, "out_features", None)
-    if (
-        group_size is None
-        or in_features is None
-        or out_features is None
-        or not awq_gemm_kernel_supported(in_features, out_features, bits, group_size)
-    ):
-        # Layers missing AWQ packing attributes (e.g. Conv1D) or whose shape the
-        # GEMM kernel cannot serve stay in full precision.
+    if group_size is None or in_features is None or out_features is None:
+        # Layers missing AWQ packing attributes (e.g. Conv1D) stay in full precision.
         logger.warning_once(f"skipping {name}: its shape cannot be served by the AWQ GEMM kernel")
         return
+    if not awq_gemm_kernel_supported(in_features, out_features, bits, group_size):
+        if getattr(layer, AWQ_USER_FORCED_ATTR, False):
+            # The user explicitly configured this layer for quantization;
+            # honor it and pack anyway.
+            logger.warning_once(
+                f"{name}: quantized per explicit `layer_config` but its shape "
+                "cannot be served by the AWQ GEMM kernel; packing as configured"
+            )
+        else:
+            # The GEMM kernel cannot serve this shape; keep it in full precision.
+            logger.warning_once(f"skipping {name}: its shape cannot be served by the AWQ GEMM kernel")
+            return
     sym = layer.sym
     linear_layer = get_module(model, name)
     scale, zp = linear_layer.scale, linear_layer.zp
@@ -197,7 +208,9 @@ def save_quantized_as_autoawq(
     # Layers the AWQ GEMM kernel cannot serve (e.g. out_features not divisible by
     # group_size, as in Gated-DeltaNet in_proj_ba) must stay in full precision;
     # packing them crashes serving stacks such as vLLM. They are reported via
-    # modules_to_not_convert below. This also covers the split
+    # modules_to_not_convert below. Layers the user explicitly configured for
+    # quantization in layer_config are exempt: their setting is honored and they
+    # are packed as requested. This also covers the split
     # quantize() -> save_quantized(format="auto_awq") flow, where format
     # resolution (and the fp16 downgrade in check_and_reset_format) happens only
     # after the layer has already been quantized.
@@ -223,7 +236,11 @@ def save_quantized_as_autoawq(
             if group_size is None:
                 group_size = cfg_get("group_size") or serialization_dict.get("group_size")
             if not awq_gemm_kernel_supported(layer.in_features, layer.out_features, bits, group_size):
-                unservable_layers.add(name)
+                if awq_user_forced_quantization(cfg):
+                    # Flag so pack_layer attempts packing despite the shape.
+                    setattr(layer, AWQ_USER_FORCED_ATTR, True)
+                else:
+                    unservable_layers.add(name)
         if unservable_layers:
             logger.warning_once(
                 f"{len(unservable_layers)} layer(s) cannot be served by the AWQ GEMM kernel "
