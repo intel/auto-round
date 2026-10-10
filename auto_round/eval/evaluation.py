@@ -541,6 +541,11 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
                     model.eval()
                     if tokenizer is None:
                         tokenizer = loaded_tokenizer
+            elif not args.eval_task_by_task:
+                # eval_task_by_task dispatches by itself; HFLM never moves a passed-in model.
+                model = prepare_model_for_eval(
+                    model, device_manager.device_map, get_model_dtype(args.eval_model_dtype, "auto")
+                )
 
         # Evaluate with model instance
         evaluate_with_model_instance(model, tokenizer, device_str, args)
