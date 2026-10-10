@@ -29,8 +29,6 @@ Reference implementations:
 
 from __future__ import annotations
 
-import inspect
-import re
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -46,63 +44,22 @@ from auto_round.algorithms.transforms.awq.mappings import (
     resolve_mappings,
 )
 from auto_round.algorithms.transforms.awq.qdq import QDQTool
-from auto_round.algorithms.transforms.base import BasePreprocessor
-from auto_round.data_type.utils import (
-    reshape_pad_tensor_by_group_size,
-    revert_tensor_by_pad,
+from auto_round.algorithms.transforms.awq.smooth import (
+    AWQSmoothStrategy,
+    compute_layer_means,
+    fold_scales_into_smooth_layer,
+    get_grid_search_params,
+    smooth_group_from_mapping,
 )
+from auto_round.algorithms.transforms.base import BasePreprocessor
+from auto_round.algorithms.transforms.smoothing.calibration import clear_caches
+from auto_round.algorithms.transforms.smoothing.engine import SmoothEngine
+from auto_round.algorithms.transforms.smoothing.errors import NoFiniteCandidateError
 from auto_round.logger import logger
 from auto_round.utils.model import move_to_device
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
-
-
-# Known normalization classes whose ``forward`` computes
-# ``output = (1 + weight) * x_norm`` (Gemma-style "unit-offset" RMSNorm) rather
-# than the standard ``output = weight * x_norm``. Folding an AWQ smoothing scale
-# ``s`` into such a layer requires ``weight <- (1 + weight) / s - 1`` instead of
-# ``weight <- weight / s``; using the wrong fold silently breaks AWQ's output
-# invariance and severely degrades accuracy (e.g. Qwen3.5, Gemma2/3, Qwen3-Next).
-_UNIT_OFFSET_RMSNORM_NAMES = frozenset(
-    {
-        "GemmaRMSNorm",
-        "Gemma2RMSNorm",
-        "Gemma3RMSNorm",
-        "Gemma3TextRMSNorm",
-        "Qwen3_5RMSNorm",
-        "Qwen3_5MoeRMSNorm",
-        "Qwen3NextRMSNorm",
-    }
-)
-
-# Detects ``1 + self.weight`` / ``self.weight + 1`` in a norm's forward source.
-_UNIT_OFFSET_SRC_RE = re.compile(r"1(\.0)?\s*\+\s*self\.weight|self\.weight(\.float\(\))?\s*\+\s*1")
-
-# Cache the unit-offset decision per norm class to avoid repeated source parsing.
-_unit_offset_cache: dict[type, bool] = {}
-
-
-def _rmsnorm_has_unit_offset(module: torch.nn.Module) -> bool:
-    """Return True if ``module`` applies a Gemma-style ``(1 + weight)`` gain.
-
-    Uses a fast class-name allowlist, falling back to source inspection of the
-    module's ``forward`` so newly-added Gemma-style norms are detected without a
-    code change. Result is cached per class.
-    """
-    cls = type(module)
-    cached = _unit_offset_cache.get(cls)
-    if cached is not None:
-        return cached
-    result = cls.__name__ in _UNIT_OFFSET_RMSNORM_NAMES
-    if not result:
-        try:
-            src = inspect.getsource(cls.forward)
-            result = bool(_UNIT_OFFSET_SRC_RE.search(src))
-        except (OSError, TypeError):
-            result = False
-    _unit_offset_cache[cls] = result
-    return result
 
 
 def _slice_seq_tensor(v: Any, actual_seq: int, seqlen: int) -> Any:
@@ -375,9 +332,13 @@ class AWQTransform(BasePreprocessor):
             )
         if not active_mappings:
             return
-        self._smooth_block(block_name, active_mappings)
-        if self.apply_clip:
-            self._clip_block(block_name, active_mappings)
+        try:
+            self._smooth_block(block_name, active_mappings)
+            if self.apply_clip:
+                self._clip_block(block_name, active_mappings)
+        except BaseException:
+            self.post_quantize_block(ctx)
+            raise
         modified = []
         for mapping in active_mappings:
             modified.extend(mapping.balance_names)
@@ -409,9 +370,7 @@ class AWQTransform(BasePreprocessor):
         """Idempotent global teardown.  Safe to call inside try/finally."""
         if self._finalized:
             return
-        self._activation_stats.clear()
-        self._parent_args_cache.clear()
-        self._clip_input_feat.clear()
+        clear_caches(self._activation_stats, self._parent_args_cache, self._clip_input_feat, scope="AWQ")
         self._finalized = True
         logger.debug("AWQ: finalize_quantization complete.")
 
@@ -643,9 +602,7 @@ class AWQTransform(BasePreprocessor):
                 x_mean = (act_sum / act_count).to(torch.float32)
                 del act_sum
 
-                best_scales = self._grid_search_scales(mapping, x_mean)
-                if best_scales is not None:
-                    self._apply_scales(mapping, best_scales)
+                self._grid_search_scales(mapping, x_mean, apply=True)
 
             if n_passes > 1:
                 logger.debug("AWQ: completed smooth pass %d/%d for block '%s'", smooth_pass + 1, n_passes, block_prefix)
@@ -659,19 +616,7 @@ class AWQTransform(BasePreprocessor):
                 self._parent_args_cache.pop(mapping.parent, None)
 
     def _get_grid_search_params(self) -> list[tuple[float, bool]]:
-        """Return (ratio, use_duo_scaling) tuples for the grid search."""
-        match self.duo_scaling:
-            case "both":
-                n = max(int(self.n_grid / 2), 2)
-                return [(idx / (n - 1), duo) for idx in range(n) for duo in [False, True]]
-            case False:
-                n = max(self.n_grid, 2)
-                return [(idx / (n - 1), False) for idx in range(n)]
-            case True:
-                n = max(self.n_grid, 3)
-                return [(0.0, False)] + [(idx / (n - 2), True) for idx in range(n - 1)]
-            case _:
-                raise ValueError(f"Unexpected duo_scaling value: {self.duo_scaling!r}")
+        return get_grid_search_params(self.n_grid, self.duo_scaling)
 
     @staticmethod
     def _normalize_group_size(group_size: int | None, fallback: int) -> int:
@@ -685,109 +630,28 @@ class AWQTransform(BasePreprocessor):
 
     @staticmethod
     def _compute_layer_means(layers: list[torch.nn.Module], group_size: int) -> torch.Tensor:
-        """Per-channel mean of normalised weights across all balance layers."""
-        weight = torch.cat([m.weight.detach().float() for m in layers], dim=0)
-        org_shape = weight.shape
-        gs = AWQTransform._normalize_group_size(group_size, org_shape[1])
-        weight, _, pad_len = reshape_pad_tensor_by_group_size(weight, gs)
-        w_scale = weight.abs() / (weight.abs().amax(dim=1, keepdim=True) + 1e-6)
-        w_scale = revert_tensor_by_pad(w_scale, orig_shape=org_shape, pad_len=pad_len)
-        return w_scale.mean(0)
+        return compute_layer_means(layers, group_size)
 
     @torch.no_grad()
     def _grid_search_scales(
         self,
         mapping: ResolvedMapping,
         x_mean: torch.Tensor,
+        *,
+        apply: bool = False,
     ) -> torch.Tensor | None:
-        """Find the best scaling ratio for *mapping* via output-based loss."""
-        device = mapping.balance_layers[0].weight.device
-        x_mean = x_mean.to(device)
-
-        bl_params = {bl: self._qdq_tool.resolve_params(bl) for bl in mapping.balance_layers}
-        group_size = self._normalize_group_size(bl_params[mapping.balance_layers[0]]["group_size"], -1)
-        if self.duo_scaling is not False:
-            w_mean = self._compute_layer_means(mapping.balance_layers, group_size).to(device)
-
-        parent_kwargs_list = self._parent_args_cache.get(mapping.parent, [])
-        use_parent_forward = len(parent_kwargs_list) > 0
-
-        if use_parent_forward:
-            fp16_outputs = self._run_parent_samples(
-                mapping.parent,
-                parent_kwargs_list,
-                offload_to_cpu=self._smooth_batch_size is not None,
-            )
-            if not fp16_outputs or all(f.numel() == 0 for f in fp16_outputs):
-                use_parent_forward = False
-
-        orig_state = {bl: bl.weight.data.clone() for bl in mapping.balance_layers}
-        if not use_parent_forward:
-            orig_weights = orig_state  # same reference is fine
-
-        # Resolve each balance layer's quant functions once, then reuse them in
-        # the grid-search loop. Normal AWQ flow requires one mapping to have
-        # compatible quant params, but keeping this per-layer avoids hidden
-        # coupling to the first layer and makes direct calls robust.
-        bl_quant_funcs = {bl: self._qdq_tool.resolve_quant_funcs(bl_params[bl]) for bl in mapping.balance_layers}
-
-        best_error = float("inf")
-        best_scales = None
-        best_ratio = -1
-
-        for ratio, use_duo in self._get_grid_search_params():
-            if use_duo:
-                scales = (x_mean.pow(ratio) / (w_mean.pow(1 - ratio) + 1e-4)).clamp(min=1e-4)
-            else:
-                scales = x_mean.pow(ratio).clamp(min=1e-4).view(-1)
-            scales = scales / (scales.max() * scales.min()).sqrt()
-            scales[torch.isinf(scales)] = 1
-            scales[torch.isnan(scales)] = 1
-            scales_view = scales.view(1, -1).to(device)
-
-            if use_parent_forward:
-                # Quantize each balance layer's smoothed weight and write the
-                # de-smoothed result back, so the parent forward below sees the
-                # weights the layer would actually compute with.
-                for bl in mapping.balance_layers:
-                    quant_func, opt_quant_func = bl_quant_funcs[bl]
-                    w_qdq = self._qdq_tool.qdq(
-                        orig_state[bl] * scales_view,
-                        bl_params[bl],
-                        quant_func=quant_func,
-                        opt_quant_func=opt_quant_func,
-                        imatrix=getattr(bl, "imatrix", None),
-                    )
-                    bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
-
-                total_loss = self._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
-                for bl in mapping.balance_layers:
-                    bl.weight.data.copy_(orig_state[bl])
-            else:
-                total_loss = 0.0
-                for bl in mapping.balance_layers:
-                    quant_func, opt_quant_func = bl_quant_funcs[bl]
-                    w_orig = orig_weights[bl].to(device)
-                    w_qdq = self._qdq_tool.qdq(
-                        w_orig * scales_view,
-                        bl_params[bl],
-                        quant_func=quant_func,
-                        opt_quant_func=opt_quant_func,
-                        imatrix=getattr(bl, "imatrix", None),
-                    )
-                    total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
-
-            if total_loss < best_error:
-                best_error = total_loss
-                best_scales = scales.clone()
-                best_ratio = ratio
-
-        if best_ratio < 0:
-            logger.warning("AWQ: grid search failed for '%s': no finite error.", mapping.smooth_name)
-            return None
-
-        logger.debug("AWQ '%s': best_ratio=%.2f, best_error=%.3e", mapping.smooth_name, best_ratio, best_error)
-        return best_scales
+        """Search through the shared engine; optionally fold the selected scale."""
+        engine = SmoothEngine()
+        group = smooth_group_from_mapping(mapping)
+        strategy = AWQSmoothStrategy(self, mapping)
+        with engine.session(strategy):
+            try:
+                result = engine.search(group, x_mean, strategy)
+            except NoFiniteCandidateError:
+                return None
+            if apply:
+                engine.apply(group, strategy, result)
+            return result.candidate[1].clone()
 
     def _iter_parent_calls(self, stored_args: tuple, stored_kwargs: dict):
         """Yield full or microbatched parent-call args from one cached calibration batch."""
@@ -908,29 +772,7 @@ class AWQTransform(BasePreprocessor):
     @staticmethod
     @torch.no_grad()
     def _fold_scales_into_smooth_layer(smooth: torch.nn.Module, scales: torch.Tensor) -> None:
-        """Divide a smooth layer's output by ``scales`` to offset balance scaling.
-
-        Dispatches on the smooth layer's weight layout:
-
-        * 1-D norm weight with a Gemma-style ``(1 + weight)`` gain: folded as
-          ``weight <- (1 + weight) / s - 1`` to preserve output invariance.
-        * 1-D standard norm weight: folded as ``weight <- weight / s``.
-        * 2-D linear weight: its trailing ``s.numel()`` output rows are divided.
-
-        Any bias is always divided by ``s``.
-        """
-        s = scales.to(smooth.weight.device)
-        weight = smooth.weight.data
-        if weight.ndim == 1:
-            if _rmsnorm_has_unit_offset(smooth):
-                weight.copy_((1.0 + weight) / s - 1.0)
-            else:
-                weight.div_(s)
-        else:
-            weight[-s.size(0) :].div_(s.view(-1, 1))
-
-        if getattr(smooth, "bias", None) is not None:
-            smooth.bias.data.div_(s)
+        fold_scales_into_smooth_layer(smooth, scales)
 
     # ── Weight clipping (search best per-group clip + hard-clamp) ─────────────
 

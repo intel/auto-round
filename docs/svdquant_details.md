@@ -305,3 +305,38 @@ image.save("sdxl-svdquant-mxfp4.png")
 - More residual iterations repeat decomposition and QDQ work.
 - A smoke image validates loading and numerical stability, not dataset-level
   generation quality.
+
+### Shared smoothing infrastructure
+
+SVDQuant uses `auto_round.algorithms.transforms.smoothing` for bounded calibration capture,
+nested input replay, deployment-scale validation, candidate selection, output-error reduction,
+and temporary module restoration. Alpha/Beta candidates, low-rank decomposition and residual
+quantization remain SVDQuant strategies. Existing configuration and smooth import paths remain
+available. AWQ and SVDQuant each provide an algorithm-specific smoothing strategy.
+
+Shared search keeps the first exact tie for both AWQ and SVDQuant. Only
+`InvalidSmoothCandidateError` and nonfinite scores are skipped; execution
+errors, including OOM, propagate. `NoFiniteCandidateError` identifies an
+all-invalid search. Common logging and cleanup utilities restore trial weights
+and modules and remove calibration hooks after failed trials or replay.
+Statistics, candidate formulas, output selection, loss reduction and deployment
+remain algorithm-specific. AWQ now shares search and lifecycle utilities;
+its statistics, mappings, folding and clipping remain in AWQ. Residual iteration
+ties also retain the first result and do not trigger early stopping.
+
+Sharing these utilities does not establish support for an AWQ + SVDQuant
+pipeline. Such a pipeline needs fresh calibration after a preceding transform
+changes internal activations, and model mappings must account for replaced
+modules. Smooth groups and shared low-rank groups are separate concerns.
+
+Both algorithms use `SmoothEngine` with a structural `SmoothStrategy` protocol:
+`prepare(group, calibration)`, `candidates()`, `score(candidate)`,
+`apply(candidate)` and `clear()`. A new algorithm supplies its own strategy
+and `SmoothGroup`; the engine needs no algorithm registration or conditional
+branches. Calibration and candidate types are strategy-specific. Use `run()`
+for one group, or `session()`, `search()` and `apply()` for separate phases.
+SVDQuant searches all groups before constructing and installing replacements;
+AWQ searches and folds each mapping in order. Strategy cleanup releases owned
+state without clearing calibration shared by other groups. Model adapters
+still discover groups, and SVDQuant retains its equal-input-width validation.
+When SVDQuant smoothing is disabled, it bypasses the engine entirely.

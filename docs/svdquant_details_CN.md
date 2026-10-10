@@ -294,3 +294,31 @@ image.save("sdxl-svdquant-mxfp4.png")
 - Smooth 搜索会针对每组 Alpha/Beta 候选重放所有保留 calls。
 - 增加 residual iterations 会重复执行分解和 QDQ。
 - Smoke 图片只能验证加载和数值稳定性，不能代替数据集级的生成质量评估。
+
+### 公共 smoothing 基础设施
+
+SVDQuant 使用 `auto_round.algorithms.transforms.smoothing` 完成有界校准输入捕获、
+嵌套输入 replay、部署 scale 校验、候选选择、输出误差归约及临时模块恢复。
+Alpha/Beta 候选、低秩分解和残差量化仍由 SVDQuant 实现。现有配置和 smooth 导入路径继续可用。
+AWQ 和 SVDQuant 各自提供算法专属的 smoothing 策略。
+
+公共搜索对 AWQ 和 SVDQuant 均保留第一个误差完全相同的候选。仅跳过
+`InvalidSmoothCandidateError` 和非有限评分；执行错误（包括 OOM）向上传播。
+`NoFiniteCandidateError` 表示全部候选无效。公共日志与清理工具确保候选或 replay
+失败后恢复临时权重与模块，并移除校准 hooks。
+统计、候选公式、输出选择、loss 归约和部署方式仍分别保留。
+AWQ 现已共享搜索与生命周期工具；统计、mapping、folding 和 clipping 仍由 AWQ 管理。
+残差迭代平局也保留较早的结果，且不会因平局触发 early-stop。
+
+共享这些工具不意味着已支持 AWQ + SVDQuant 联合 pipeline。当前置变换改变内部激活时，
+联合 pipeline 需要重新校准，模型 mapping 也需要适配被替换的模块。
+共享 smooth scale 的分组与共享低秩因子的分组是不同的职责。
+
+两个算法均通过 `SmoothEngine` 和结构化 `SmoothStrategy` 协议接入：
+`prepare(group, calibration)`、`candidates()`、`score(candidate)`、
+`apply(candidate)` 和 `clear()`。扩展新算法只需提供自己的策略与 `SmoothGroup`，
+无需在公共引擎中注册算法或增加条件分支。校准数据和候选类型由策略决定。
+单组可以调用 `run()`；需要分阶段时使用 `session()`、`search()` 和 `apply()`。
+SVDQuant 先搜索所有组，再构建并安装替换模块；AWQ 按 mapping 顺序搜索和 folding。
+策略清理仅释放自身状态，不清空其他组共享的校准数据。模型 adapter 继续负责发现分组，
+SVDQuant 保留输入维度一致的校验。关闭 SVDQuant smoothing 时完全绕过公共引擎。
