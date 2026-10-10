@@ -71,12 +71,6 @@ def awq_gemm_kernel_supported(in_features: int, out_features: int, bits: int, gr
     return in_features % group_size == 0 and out_features % group_size == 0 and out_features % 64 == 0
 
 
-# Module attribute flag set on layers the user explicitly configured for
-# quantization even though the AWQ GEMM kernel cannot serve their shape.
-# Packers check this flag to honor the explicit setting instead of skipping.
-AWQ_USER_FORCED_ATTR = "_ar_awq_user_forced"
-
-
 def awq_user_forced_quantization(cfg) -> bool:
     """Whether a ``layer_config`` entry explicitly keeps this layer quantized.
 
@@ -86,12 +80,30 @@ def awq_user_forced_quantization(cfg) -> bool:
     time user entries can still be raw (a dict missing the flag, a preset
     string, or a QuantizationScheme), so any present entry counts as user
     intent unless it explicitly says ``fixed_by_user=False``.
+
+    After ``apply_plan_to_model`` the same flag is also available on the
+    module itself as ``layer.fixed_by_user``; see ``awq_layer_user_forced``.
     """
     if not cfg:
         return False
     if not hasattr(cfg, "get"):
         return True
     return cfg.get("fixed_by_user", True) is not False
+
+
+def awq_layer_user_forced(layer, cfg=None) -> bool:
+    """Whether a quantized module explicitly keeps an AWQ-unservable shape quantized.
+
+    Reads ``layer.fixed_by_user`` written by ``apply_plan_to_model``. A module
+    without the flag falls back to its ``layer_config`` entry when given, and
+    otherwise follows the same rule as ``awq_user_forced_quantization`` for a
+    plan entry missing the key (e.g. lm_head added via ``quant_lm_head``), so
+    the marking step and the packers agree.
+    """
+    flag = getattr(layer, "fixed_by_user", None)
+    if flag is not None:
+        return bool(flag)
+    return cfg is None or awq_user_forced_quantization(cfg)
 
 
 def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):

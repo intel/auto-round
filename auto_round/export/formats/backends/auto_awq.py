@@ -40,14 +40,15 @@ def mark_awq_unservable_layers(model, layer_config: dict, default_dict: dict) ->
     resolved per-layer dicts at plan time; both are tolerated.
 
     Layers the user explicitly configured for quantization (exact name or
-    expanded regex entry) are honored: they keep their configuration, are
-    flagged with ``AWQ_USER_FORCED_ATTR`` so the AWQ packers do not skip them,
-    and only get a warning that the shape may fail on the AWQ GEMM path.
+    expanded regex entry, ``fixed_by_user != False``) are honored: they keep
+    their configuration, the packers pick the flag up from
+    ``layer.fixed_by_user`` (written by ``apply_plan_to_model``, see
+    ``awq_layer_user_forced``), and only a warning is logged that the shape
+    may fail on the AWQ GEMM path.
     """
     if model is None or default_dict["data_type"] != "int":
         return layer_config
     from auto_round.export.export_to_awq.utils import (
-        AWQ_USER_FORCED_ATTR,
         awq_gemm_kernel_supported,
         awq_user_forced_quantization,
     )
@@ -74,9 +75,8 @@ def mark_awq_unservable_layers(model, layer_config: dict, default_dict: dict) ->
             continue
         if awq_user_forced_quantization(cfg):
             # The user explicitly configured this layer for quantization;
-            # keep the configuration and flag the module so the packers
-            # attempt packing despite the unservable shape.
-            setattr(module, AWQ_USER_FORCED_ATTR, True)
+            # keep the configuration. fixed_by_user is applied to the module
+            # by apply_plan_to_model, which the packers consult.
             user_forced_layers.append(name)
             continue
         if layer_config is None:

@@ -206,11 +206,11 @@ def pack_layer(layer_name, model, backend, device=None):
         # The AWQ GEMM kernel rejects shapes that violate its divisibility
         # constraints (e.g. out_features < group_size in Gated-DeltaNet
         # projections); keep such layers in full precision unless the user
-        # explicitly configured them for quantization (AWQ_USER_FORCED_ATTR).
-        from auto_round.export.export_to_awq.utils import AWQ_USER_FORCED_ATTR, awq_gemm_kernel_supported
+        # explicitly configured them for quantization (fixed_by_user).
+        from auto_round.export.export_to_awq.utils import awq_gemm_kernel_supported, awq_layer_user_forced
 
-        if not awq_gemm_kernel_supported(in_features, out_features, bits, group_size) and not getattr(
-            layer, AWQ_USER_FORCED_ATTR, False
+        if not awq_gemm_kernel_supported(in_features, out_features, bits, group_size) and not awq_layer_user_forced(
+            layer
         ):
             logger.warning_once(f"skipping {layer_name}: its shape cannot be served by the AWQ GEMM kernel")
             return

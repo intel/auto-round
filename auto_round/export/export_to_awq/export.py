@@ -30,10 +30,9 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from auto_round.export.export_to_awq.utils import (
-    AWQ_USER_FORCED_ATTR,
     WQLinear_GEMM,
     awq_gemm_kernel_supported,
-    awq_user_forced_quantization,
+    awq_layer_user_forced,
 )
 from auto_round.export.utils import (
     filter_quantization_config,
@@ -135,7 +134,7 @@ def pack_layer(name, model, backend, device=None):
         logger.warning_once(f"skipping {name}: its shape cannot be served by the AWQ GEMM kernel")
         return
     if not awq_gemm_kernel_supported(in_features, out_features, bits, group_size):
-        if getattr(layer, AWQ_USER_FORCED_ATTR, False):
+        if awq_layer_user_forced(layer):
             # The user explicitly configured this layer for quantization;
             # honor it and pack anyway.
             logger.warning_once(
@@ -236,10 +235,7 @@ def save_quantized_as_autoawq(
             if group_size is None:
                 group_size = cfg_get("group_size") or serialization_dict.get("group_size")
             if not awq_gemm_kernel_supported(layer.in_features, layer.out_features, bits, group_size):
-                if awq_user_forced_quantization(cfg):
-                    # Flag so pack_layer attempts packing despite the shape.
-                    setattr(layer, AWQ_USER_FORCED_ATTR, True)
-                else:
+                if not awq_layer_user_forced(layer, cfg):
                     unservable_layers.add(name)
         if unservable_layers:
             logger.warning_once(

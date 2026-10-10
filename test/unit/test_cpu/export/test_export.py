@@ -882,16 +882,13 @@ def test_awq_format_excludes_unservable_layers():
 
 def test_awq_format_honors_explicit_layer_config():
     """At format-resolution time a raw user entry (no fixed_by_user flag yet)
-    counts as explicit configuration: the unservable layer is not marked fp16
-    and is flagged for the packers."""
+    counts as explicit configuration: the unservable layer is not marked fp16."""
     from types import SimpleNamespace
 
     import torch.nn as nn
 
-    from auto_round.export.export_to_awq.utils import AWQ_USER_FORCED_ATTR
     from auto_round.export.formats.backends.auto_awq import AutoAWQFormat
     from auto_round.schemes import preset_name_to_scheme
-    from auto_round.utils import get_module
 
     class ToyModel(nn.Module):
         def __init__(self):
@@ -914,10 +911,8 @@ def test_awq_format_honors_explicit_layer_config():
 
     # The explicit entry is honored
     assert ctx.layer_config["in_proj_ba"]["bits"] == 4
-    assert getattr(get_module(model, "in_proj_ba"), AWQ_USER_FORCED_ATTR, False)
     # The layer without a user entry is still marked fp16
     assert ctx.layer_config["mlp_bad"]["bits"] == 16
-    assert not getattr(get_module(model, "mlp_bad"), AWQ_USER_FORCED_ATTR, False)
 
 
 def test_awq_pack_layer_skips_unservable_layer():
@@ -940,6 +935,8 @@ def test_awq_pack_layer_skips_unservable_layer():
     layer.sym = True
     layer.scale = torch.ones(2, 64)
     layer.zp = torch.zeros(2, 64)
+    # apply_plan_to_model writes fixed_by_user=False for default-filled layers
+    layer.fixed_by_user = False
 
     pack_layer("in_proj_ba", model, backend="auto_awq")
 
@@ -991,6 +988,8 @@ def test_awq_export_lists_unservable_layers(tmp_path):
     assert "in_proj_ba" in serialization_dict["modules_to_not_convert"]
     # Not packed into an AWQ layer
     assert type(get_module(model, "in_proj_ba")) is nn.Linear
+    # Export reads fixed_by_user but never writes it onto modules
+    assert not hasattr(get_module(model, "in_proj_ba"), "fixed_by_user")
 
 
 def test_awq_export_packs_user_forced_layer(tmp_path):
@@ -1039,20 +1038,67 @@ def test_awq_export_packs_user_forced_layer(tmp_path):
     assert isinstance(get_module(model, "in_proj_ba"), WQLinear_GEMM)
 
 
+def test_awq_unservable_lm_head_via_quant_lm_head_is_packed():
+    """quant_lm_head=True adds lm_head from the default scheme without a
+    fixed_by_user key, so the marking step keeps it quantized and no flag is
+    applied to the module. pack_layer must follow the same rule and pack it,
+    otherwise it would be neither packed nor listed in modules_to_not_convert
+    on paths that call pack_layer without the export prescan."""
+    import torch.nn as nn
+
+    from auto_round.compressors.config_resolution import ResolvedScheme
+    from auto_round.compressors.layer_config_resolver import resolve_layer_config
+    from auto_round.export.export_to_awq.export import pack_layer
+    from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+    from auto_round.schemes import preset_name_to_scheme
+    from auto_round.utils import get_module
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = nn.Linear(256, 256)
+
+    class ToyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = nn.ModuleList([Block()])
+            self.lm_head = nn.Linear(256, 96)  # 96 % 32 == 0 but 96 % 64 != 0 -> AWQ-unservable only
+
+    model = ToyModel()
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=ResolvedScheme.from_scheme(preset_name_to_scheme("W4A16")),
+        layer_config={},
+        quant_block_list=[["layers.0"]],
+        quant_lm_head=True,
+        format="auto_awq",
+    )
+    assert resolved["lm_head"]["bits"] == 4
+    assert "fixed_by_user" not in resolved["lm_head"]
+
+    layer = get_module(model, "lm_head")
+    layer.bits = 4
+    layer.group_size = 128
+    layer.sym = True
+    layer.scale = torch.ones(96, 2)
+    layer.zp = torch.zeros(96, 2)
+
+    pack_layer("lm_head", model, backend="auto_awq")
+
+    assert isinstance(get_module(model, "lm_head"), WQLinear_GEMM)
+
+
 def test_awq_explicit_layer_config_overrides_unservable_mark():
     """Explicit layer_config entries keep unservable layers quantized.
 
     A user-supplied entry (exact name or expanded regex) counts as user
     intent: the AWQ unservable marking must leave it untouched instead of
-    forcing fp16, and flag the module for the packers. Layers without a user
-    entry are still marked fp16."""
+    forcing fp16. Layers without a user entry are still marked fp16."""
     import torch.nn as nn
 
     from auto_round.compressors.config_resolution import ResolvedScheme
     from auto_round.compressors.layer_config_resolver import resolve_layer_config
-    from auto_round.export.export_to_awq.utils import AWQ_USER_FORCED_ATTR
     from auto_round.schemes import preset_name_to_scheme
-    from auto_round.utils import get_module
 
     class ToyModel(nn.Module):
         def __init__(self):
@@ -1071,22 +1117,21 @@ def test_awq_explicit_layer_config_overrides_unservable_mark():
     )
     # The user-configured unservable layer keeps its quantized setting
     assert resolved["in_proj_ba"]["bits"] == 4
-    assert getattr(get_module(model, "in_proj_ba"), AWQ_USER_FORCED_ATTR, False)
     # The regex-matched sibling is servable and untouched as before
     assert resolved["q_proj"]["bits"] == 4
     # The unservable layer without a user entry is still marked fp16
     assert resolved["mlp_bad"]["bits"] == 16
     assert resolved["mlp_bad"]["data_type"] == "fp"
-    assert not getattr(get_module(model, "mlp_bad"), AWQ_USER_FORCED_ATTR, False)
 
 
 def test_awq_pack_layer_packs_user_forced_layer():
-    """pack_layer must AWQ-pack an unservable layer flagged by an explicit
-    layer_config entry (AWQ_USER_FORCED_ATTR)."""
+    """pack_layer must AWQ-pack an unservable layer the user explicitly
+    configured for quantization (fixed_by_user, applied to the module by
+    apply_plan_to_model)."""
     import torch.nn as nn
 
     from auto_round.export.export_to_awq.export import pack_layer
-    from auto_round.export.export_to_awq.utils import AWQ_USER_FORCED_ATTR, WQLinear_GEMM
+    from auto_round.export.export_to_awq.utils import WQLinear_GEMM
     from auto_round.utils import get_module
 
     class ToyModel(nn.Module):
@@ -1103,7 +1148,7 @@ def test_awq_pack_layer_packs_user_forced_layer():
     layer.sym = True
     layer.scale = torch.ones(64, 2)
     layer.zp = torch.zeros(64, 2)
-    setattr(layer, AWQ_USER_FORCED_ATTR, True)
+    layer.fixed_by_user = True
 
     pack_layer("in_proj_ba", model, backend="auto_awq")
 
