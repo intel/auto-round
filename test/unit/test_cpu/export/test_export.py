@@ -815,3 +815,165 @@ def test_save_model_writes_diffusers_config(tmp_path):
         config = json.load(f)
     assert config["_class_name"] == "SD3Transformer2DModel"
     assert config["quantization_config"] == {"quant_method": "auto-round", "bits": 4}
+
+
+def test_awq_gemm_kernel_supported():
+    """AWQ GEMM kernel divisibility contract (IC/OC % group_size, OC % 64)."""
+    from auto_round.export.export_to_awq.utils import awq_gemm_kernel_supported
+
+    # Canonical servable shapes
+    assert awq_gemm_kernel_supported(2048, 2048, 4, 128)
+    assert awq_gemm_kernel_supported(256, 128, 4, 128)
+    # out_features < group_size, e.g. DeltaNet in_proj_ba (OC=32/64, gs=128)
+    assert not awq_gemm_kernel_supported(256, 64, 4, 128)
+    assert not awq_gemm_kernel_supported(256, 32, 4, 128)
+    # in_features not a multiple of group_size
+    assert not awq_gemm_kernel_supported(96, 256, 4, 128)
+    # OC % 64 (cta_N tile) still binds when group_size is small
+    assert not awq_gemm_kernel_supported(64, 96, 4, 32)
+    assert awq_gemm_kernel_supported(64, 192, 4, 32)
+    # Bit widths without a servable packing layout are rejected
+    assert not awq_gemm_kernel_supported(256, 256, 8, 128)
+    assert not awq_gemm_kernel_supported(256, 256, None, 128)
+    # Per-channel group_size is left to the caller
+    assert awq_gemm_kernel_supported(256, 256, 4, -1)
+    assert awq_gemm_kernel_supported(256, 64, 4, -1)
+
+
+def test_awq_format_excludes_unservable_layers():
+    """Layers the AWQ GEMM kernel cannot serve are marked fp16 during format resolution."""
+    from types import SimpleNamespace
+
+    import torch.nn as nn
+
+    from auto_round.export.formats.backends.auto_awq import AutoAWQFormat
+    from auto_round.schemes import preset_name_to_scheme
+
+    class ToyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = nn.Linear(256, 256)
+            self.in_proj_ba = nn.Linear(256, 64)  # OC=64 < group_size -> unservable
+            self.in_proj_b = nn.Linear(96, 256)  # IC=96 % 128 != 0 -> unservable
+            self.mlp_up = nn.Linear(256, 96)  # OC=96 % 64 != 0 -> unservable
+
+    model = ToyModel()
+    scheme = preset_name_to_scheme("W4A16")
+    # Fields normally filled by scheme resolution
+    scheme.act_data_type = scheme.act_data_type or "fp16"
+    scheme.act_dynamic = False if scheme.act_dynamic is None else scheme.act_dynamic
+    ctx = SimpleNamespace(
+        model=model,
+        layer_config={},
+        mllm=False,
+        quant_block_list=None,
+    )
+    output_format = AutoAWQFormat("auto_awq", scheme, ctx)
+    output_format.check_and_reset_format(scheme, ctx)
+
+    # None of the shapes are caught by _check_divisible_by_32 (all % 32 == 0),
+    # so any fp16 mark comes from the AWQ kernel constraint check.
+    assert ctx.layer_config["in_proj_ba"]["bits"] == 16
+    assert ctx.layer_config["in_proj_ba"]["data_type"] == "fp"
+    assert ctx.layer_config["in_proj_b"]["bits"] == 16
+    assert ctx.layer_config["mlp_up"]["bits"] == 16
+    assert "q_proj" not in ctx.layer_config
+
+
+def test_awq_pack_layer_skips_unservable_layer():
+    """pack_layer must not AWQ-pack a layer whose shape the GEMM kernel cannot serve."""
+    import torch.nn as nn
+
+    from auto_round.export.export_to_awq.export import pack_layer
+    from auto_round.utils import get_module
+
+    class ToyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.in_proj_ba = nn.Linear(256, 64)
+
+    model = ToyModel()
+    layer = get_module(model, "in_proj_ba")
+    # Simulate a layer that went through quantization (attrs set by the quantizer)
+    layer.bits = 4
+    layer.group_size = 128
+    layer.sym = True
+    layer.scale = torch.ones(2, 64)
+    layer.zp = torch.zeros(2, 64)
+
+    pack_layer("in_proj_ba", model, backend="auto_awq")
+
+    assert type(get_module(model, "in_proj_ba")) is nn.Linear
+
+
+def test_awq_export_lists_unservable_layers(tmp_path):
+    """Layers the AWQ GEMM kernel cannot serve land in modules_to_not_convert.
+
+    Covers the split quantize() -> save_quantized(format="auto_awq") flow where
+    the layer was already quantized before the format check ran.
+    """
+    import torch.nn as nn
+
+    from auto_round.export.export_to_awq.export import save_quantized_as_autoawq
+    from auto_round.utils import get_module
+
+    class ToyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.in_proj_ba = nn.Linear(256, 64)  # OC=64 < group_size -> unservable
+            self.q_proj = nn.Linear(256, 256)
+            self.dtype = torch.float32
+
+        def save_pretrained(self, save_dir, **kwargs):
+            os.makedirs(save_dir, exist_ok=True)
+
+    model = ToyModel()
+    # Simulate a layer that already went through quantization
+    layer = get_module(model, "in_proj_ba")
+    layer.bits = 4
+    layer.group_size = 128
+    layer.sym = True
+    layer_config = {"in_proj_ba": {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}}
+    serialization_dict = {"bits": 4, "group_size": 128, "sym": True}
+
+    save_quantized_as_autoawq(
+        str(tmp_path),
+        model=model,
+        layer_config=layer_config,
+        inplace=True,
+        serialization_dict=serialization_dict,
+    )
+
+    assert "in_proj_ba" in serialization_dict["modules_to_not_convert"]
+    # Not packed into an AWQ layer
+    assert type(get_module(model, "in_proj_ba")) is nn.Linear
+
+
+def test_awq_unservable_mark_survives_regex_layer_config():
+    """Regex layer_config entries expand over the fp16 mark; the post-expansion
+    re-mark must re-pin unservable layers without leaking the mark to siblings
+    (regex expansion shares one dict object across all matches)."""
+    import torch.nn as nn
+
+    from auto_round.compressors.config_resolution import ResolvedScheme
+    from auto_round.compressors.layer_config_resolver import resolve_layer_config
+    from auto_round.schemes import preset_name_to_scheme
+
+    class ToyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = nn.Linear(256, 256)  # servable
+            self.in_proj_ba = nn.Linear(256, 64)  # OC=64 < group_size -> unservable
+
+    model = ToyModel()
+    scheme = ResolvedScheme.from_scheme(preset_name_to_scheme("W4A16"))
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={"proj": {"bits": 4}},  # regex matches both layers
+        format="auto_awq",
+    )
+    assert resolved["in_proj_ba"]["bits"] == 16
+    assert resolved["in_proj_ba"]["data_type"] == "fp"
+    # The regex-matched sibling must not be polluted by the shared dict
+    assert resolved["q_proj"]["bits"] == 4

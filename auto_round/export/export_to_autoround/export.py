@@ -201,6 +201,17 @@ def pack_layer(layer_name, model, backend, device=None):
     elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
+
+    if "awq" in backend:
+        # The AWQ GEMM kernel rejects shapes that violate its divisibility
+        # constraints (e.g. out_features < group_size in Gated-DeltaNet
+        # projections); keep such layers in full precision.
+        from auto_round.export.export_to_awq.utils import awq_gemm_kernel_supported
+
+        if not awq_gemm_kernel_supported(in_features, out_features, bits, group_size):
+            logger.warning_once(f"skipping {layer_name}: its shape cannot be served by the AWQ GEMM kernel")
+            return
+
     bias = layer.bias is not None
 
     new_layer = QuantLinear(  ##pylint: disable=E1123

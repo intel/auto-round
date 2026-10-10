@@ -29,7 +29,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+from auto_round.export.export_to_awq.utils import WQLinear_GEMM, awq_gemm_kernel_supported
 from auto_round.export.utils import (
     filter_quantization_config,
     is_immediate_saving_mode,
@@ -42,6 +42,7 @@ from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
+    compress_layer_names,
     copy_python_files_from_model_cache,
     extract_block_names_to_str,
     get_block_names,
@@ -117,12 +118,23 @@ def pack_layer(name, model, backend, device=None):
     if type(layer) not in SUPPORTED_LAYER_TYPES:  ##already packed
         return
 
-    bits = layer.bits
-
-    if bits > 8:
+    bits = getattr(layer, "bits", None)
+    if bits is None or bits > 8:
         return
 
-    group_size = layer.group_size
+    group_size = getattr(layer, "group_size", None)
+    in_features = getattr(layer, "in_features", None)
+    out_features = getattr(layer, "out_features", None)
+    if (
+        group_size is None
+        or in_features is None
+        or out_features is None
+        or not awq_gemm_kernel_supported(in_features, out_features, bits, group_size)
+    ):
+        # Layers missing AWQ packing attributes (e.g. Conv1D) or whose shape the
+        # GEMM kernel cannot serve stay in full precision.
+        logger.warning_once(f"skipping {name}: its shape cannot be served by the AWQ GEMM kernel")
+        return
     sym = layer.sym
     linear_layer = get_module(model, name)
     scale, zp = linear_layer.scale, linear_layer.zp
@@ -182,9 +194,49 @@ def save_quantized_as_autoawq(
 
     names = list(layer_config.keys())
 
+    # Layers the AWQ GEMM kernel cannot serve (e.g. out_features not divisible by
+    # group_size, as in Gated-DeltaNet in_proj_ba) must stay in full precision;
+    # packing them crashes serving stacks such as vLLM. They are reported via
+    # modules_to_not_convert below. This also covers the split
+    # quantize() -> save_quantized(format="auto_awq") flow, where format
+    # resolution (and the fp16 downgrade in check_and_reset_format) happens only
+    # after the layer has already been quantized.
+    unservable_layers = set()
+    meta_device = unsupported_meta_device(model)
+    if not meta_device:
+        for name in names:
+            layer = get_module(compressed_model, name)
+            if (
+                type(layer) not in SUPPORTED_LAYER_TYPES
+                or not hasattr(layer, "in_features")
+                or not hasattr(layer, "out_features")
+            ):
+                continue
+            cfg = layer_config.get(name, {})
+            cfg_get = cfg.get if hasattr(cfg, "get") else (lambda *a, **k: None)
+            bits = getattr(layer, "bits", None)
+            if bits is None:
+                bits = cfg_get("bits") or serialization_dict.get("bits")
+            if not isinstance(bits, int) or bits > 8:
+                continue
+            group_size = getattr(layer, "group_size", None)
+            if group_size is None:
+                group_size = cfg_get("group_size") or serialization_dict.get("group_size")
+            if not awq_gemm_kernel_supported(layer.in_features, layer.out_features, bits, group_size):
+                unservable_layers.add(name)
+        if unservable_layers:
+            logger.warning_once(
+                f"{len(unservable_layers)} layer(s) cannot be served by the AWQ GEMM kernel "
+                "(in/out features not divisible by group_size or out_features not divisible by 64) "
+                "and are kept in full precision: "
+                f"{compress_layer_names(sorted(unservable_layers))}"
+            )
+
     backend = None
-    if not unsupported_meta_device(model):
+    if not meta_device:
         for name in tqdm(names, desc="packing", leave=True):
+            if name in unservable_layers:
+                continue
             pack_layer(name, compressed_model, backend, device)
     if output_dir is None:
         return model
@@ -207,6 +259,8 @@ def save_quantized_as_autoawq(
     quantization_config["quant_method"] = "awq"
     quantization_config["zero_point"] = not quantization_config["sym"]
     quantization_config["version"] = "gemm"
+    if unservable_layers:
+        modules_to_not_convert = sorted(set(modules_to_not_convert) | unservable_layers)
     quantization_config["modules_to_not_convert"] = modules_to_not_convert
     ##check module quantized in block, this may have bug for mixed precision quantization
     filter_quantization_config(quantization_config)

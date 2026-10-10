@@ -54,6 +54,23 @@ from auto_round.utils.bit_packing import (
 SUPPORTED_AWQ_BITS = (4, 5, 6, 7)
 
 
+def awq_gemm_kernel_supported(in_features: int, out_features: int, bits: int, group_size: int) -> bool:
+    """Whether the AWQ GEMM kernel can serve a layer of the given shape.
+
+    The kernel requires ``in_features`` and ``out_features`` to be multiples of
+    ``group_size`` (``IC/OC is not multiple of Group size``) and ``out_features``
+    to be a multiple of the 64-wide CTA tile. Bit widths outside
+    ``SUPPORTED_AWQ_BITS`` have no servable packing layout. A non-positive
+    ``group_size`` (per-channel quantization) is treated as servable here;
+    per-channel compatibility is validated elsewhere.
+    """
+    if bits not in SUPPORTED_AWQ_BITS:
+        return False
+    if not isinstance(group_size, int) or group_size <= 0:
+        return True
+    return in_features % group_size == 0 and out_features % group_size == 0 and out_features % 64 == 0
+
+
 def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
     shifts = torch.arange(0, 32, bits, device=qzeros.device)
 

@@ -48,6 +48,7 @@ def apply_layer_config_special_cases(
     quant_block_list,
     quant_lm_head,
     gguf_name,
+    export_to_awq=False,
 ) -> tuple[dict, bool, str | None, bool]:
     """Apply lm-head, shape-divisibility, and block-membership layer rules."""
     from auto_round.utils.model import get_lm_head_name
@@ -72,6 +73,14 @@ def apply_layer_config_special_cases(
                 if m.weight.shape[0] % 32 or m.weight.shape[1] % 32:
                     layer_config.setdefault(n, copy.deepcopy(default_dict))
                     layer_config[n].update({"bits": 16, "data_type": "fp", "fixed_by_user": True})
+
+    if export_to_awq and not gguf_name:
+        # Re-mark after regex/partial layer_config entries are expanded: the same
+        # marking already ran at format-resolution time, but raw user entries can
+        # overwrite it during expansion.
+        from auto_round.export.formats.backends.auto_awq import mark_awq_unservable_layers
+
+        layer_config = mark_awq_unservable_layers(model, layer_config, default_dict)
 
     if (is_nv_fp(default_dict["data_type"]) or is_mx_fp(default_dict["data_type"])) and not gguf_name:
         skipped_layers = []
@@ -459,6 +468,7 @@ def resolve_layer_config(
         quant_block_list,
         quant_lm_head,
         gguf_name,
+        export_to_awq="awq" in (format or ""),
     )
     if gguf_name:
         from auto_round.export.formats.backends.gguf import apply_gguf_layer_defaults
