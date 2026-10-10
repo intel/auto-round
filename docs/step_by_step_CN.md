@@ -106,6 +106,42 @@ pip install auto-round
 
 **启用对话模板**：可使用 `--dataset NeelNanda/pile-10k:apply_chat_template` 在分词前为标定数据应用对话模板，这在指令式模型的生成任务中比较常用。若需自定义系统提示词，可使用 `--dataset 'NeelNanda/pile-10k:apply_chat_template:system_prompt="你是一个乐于助人的智能助手。"'`
 
+**通用数据集加载**：任何 HuggingFace 数据集都可以直接使用，无需预先注册。文本字段会通过检查列名和采样值自动检测。例如：
+`--dataset my-org/my-dataset:split=train:num=512`
+
+**字段选择**：使用 `fields` 参数显式指定文本列。单个字段：
+`--dataset my-org/my-dataset:fields=text`。多个字段会用分隔符拼接：
+`--dataset my-org/my-dataset:fields=question+answer`
+
+**模板**：使用 `template` 配合 `{field}` 占位符从多列构建自定义文本。同时设置时优先于 `fields`。
+`--dataset 'my-org/my-dataset:template={question} {answer}'`
+
+**分隔符**：拼接多个字段时可自定义分隔符（默认 `"\n\n"`）：
+`--dataset 'my-org/my-dataset:fields=q+a:separator=\n'`
+
+**超时**：对于流式数据集，可设置 `timeout`（秒）限制数据收集时间。若超时前无法收集到足够样本，会记录警告并使用已收集的样本。
+`--dataset my-org/my-dataset:timeout=600`
+
+**CalibDataset（API）**：编程式使用时，`CalibDataset` 数据类提供了类型化的接口：
+
+    ~~~python
+    from auto_round.utils.dataset_utils import CalibDataset
+    from auto_round import AutoRound
+
+    # 单字段
+    spec = CalibDataset("my-org/my-dataset", split="train", num=1000, fields="text")
+
+    # 多字段拼接
+    spec = CalibDataset("my-org/my-dataset", fields=["question", "answer"], separator="\n")
+
+    # 模板
+    spec = CalibDataset("my-org/my-dataset", template="{question} {answer}")
+
+    # 直接传入 AutoRound
+    ar = AutoRound(model="Qwen/Qwen3-8B", dataset=spec, scheme="W4A16")
+    ar.quantize_and_save()
+    ~~~
+
 注意：如果没有开启拼接选项，长度小于 args.seqlen 的样本会被舍弃。
 
 数据集之间请用英文逗号`,`分隔；单个数据集的参数请用英文冒号`:`分隔；同一参数的多个取值请用英文加号`+`连接。
