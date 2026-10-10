@@ -295,7 +295,7 @@ _MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
 _FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32"}
 
 
-def _is_mxfp4_model(model_path, trust_remote_code=True):
+def _is_mxfp4_model(model_path, trust_remote_code=False):
     """Check if a model is an MXFP4 quantized model supported for direct loading.
 
     Only checks when transformers >= 5.0.0. Returns False immediately for older versions,
@@ -324,7 +324,7 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
     return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
 
 
-def _is_fp8_model(model_path, trust_remote_code=True):
+def _is_fp8_model(model_path, trust_remote_code=False):
     """Check if a model is an FP8 quantized model supported for direct loading.
 
     Only checks when transformers >= 4.56.0. Returns False immediately for older versions,
@@ -445,7 +445,7 @@ def install_debug_layer_config_patch() -> None:
 def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     model_dtype: str | None = None,
     device: str = "cpu",
     **kwargs,
@@ -651,7 +651,7 @@ def mllm_load_model(
     device: str = "cpu",
     torch_dtype: str = "auto",
     use_auto_mapping: bool = True,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     model_dtype: str | None = None,
     **kwargs,
 ):
@@ -967,7 +967,7 @@ def diffusion_load_model(
     device: str | torch.device = "cpu",
     torch_dtype: str | torch.dtype = "auto",
     use_auto_mapping: bool = False,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     model_dtype: str | None = None,
     default_torch_dtype: str | torch.dtype = "auto",
     **kwargs,
@@ -1002,7 +1002,7 @@ def diffusion_load_model(
     if model_type == "nextstep":
         from auto_round.special_model_handler import load_next_step_diffusion
 
-        pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
+        pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str, trust_remote_code)
         return pipe, pipe.model
 
     # A special case for Cosmos3: model_index.json _class_name may not match
@@ -1122,7 +1122,7 @@ def load_model(
     pretrained_model_name_or_path: str | torch.nn.Module,
     platform: str = "hf",
     model_dtype: str | None = None,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     device: str = "cpu",
     use_auto_mapping: bool | None = None,
     use_model_replacements: bool = False,
@@ -1454,7 +1454,7 @@ def _get_modular_pipeline_class():
         return None
 
 
-def is_diffusion_model(model_or_path: str | object, trust_remote_code: bool = True) -> bool:
+def is_diffusion_model(model_or_path: str | object, trust_remote_code: bool = False) -> bool:
     from auto_round.utils.common import LazyImport
 
     # Then check if model_index.json exists for diffusion pipeline,
@@ -3278,8 +3278,8 @@ def find_layers_from_config(model_dir: str, class_names: list[str] | None = None
     for prefix, config_dir in dirs:
         try:
             with torch.device("meta"):
-                config = AutoConfig.from_pretrained(config_dir, trust_remote_code=True)
-                model = AutoModel.from_config(config, trust_remote_code=True)
+                config = AutoConfig.from_pretrained(config_dir, trust_remote_code=False)
+                model = AutoModel.from_config(config, trust_remote_code=False)
         except Exception as e:
             logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Warning: {e}")
             continue  # skip silently

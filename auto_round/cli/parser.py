@@ -226,8 +226,18 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     rt.set_defaults(enable_torch_compile=None)
     rt.add_argument(
-        "--disable_trust_remote_code", action="store_true", help="Disable trust_remote_code when loading models."
+        "--trust_remote_code",
+        dest="disable_trust_remote_code",
+        action="store_false",
+        help="Allow executing custom code shipped with the model repo. Only use for trusted models.",
     )
+    rt.add_argument(
+        "--disable_trust_remote_code",
+        dest="disable_trust_remote_code",
+        action="store_true",
+        help="Deprecated: remote code is disabled by default.",
+    )
+    rt.set_defaults(disable_trust_remote_code=True)
     rt.add_argument(
         "--layer_config", default=None, type=str, help="Per-layer quantization overrides encoded as JSON-like text."
     )

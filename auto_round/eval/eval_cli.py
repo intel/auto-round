@@ -72,11 +72,18 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "Specify specific tasks like 'mmlu,wikitext' for custom evaluation.",
         )
         self.add_argument(
-            "--disable_trust_remote_code",
-            action="store_true",
-            help="Disable trusting remote code when loading models. "
-            "Use for security if you don't trust the model source.",
+            "--trust_remote_code",
+            dest="disable_trust_remote_code",
+            action="store_false",
+            help="Allow executing custom code shipped with the model repo. Only use for trusted models.",
         )
+        self.add_argument(
+            "--disable_trust_remote_code",
+            dest="disable_trust_remote_code",
+            action="store_true",
+            help="Deprecated: remote code is disabled by default.",
+        )
+        self.set_defaults(disable_trust_remote_code=True)
         self.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
         self.add_argument(
             "--eval_bs", "--bs", "--batch_size", default=None, type=int, help="The batch size for evaluation"
@@ -360,7 +367,7 @@ def eval_task_by_task(
     batch_size=None,
     limit=None,
     max_batch_size=64,
-    trust_remote_code=True,
+    trust_remote_code=False,
     eval_model_dtype=None,
     retry_times=3,
     mllm=False,

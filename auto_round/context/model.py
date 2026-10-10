@@ -66,7 +66,7 @@ class ModelContext(BaseContext):
         tokenizer: Any = None,
         platform: str = "hf",
         model_dtype: str | torch.dtype | None = None,
-        trust_remote_code: bool = True,
+        trust_remote_code: bool = False,
         config: AutoConfig | None = None,
         amp: bool = True,
         need_calib: bool = True,
