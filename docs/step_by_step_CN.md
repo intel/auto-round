@@ -191,6 +191,20 @@ AutoRound 支持多种量化配置：
 
 为优化运行性能，量化前建议配置 AutoRound 的环境变量。关于日志级别、ModelScope 集成、工作区设置等可用的环境变量等更多细节，可参考[环境变量指南](./environments.md)。
 
+### 加载包含自定义代码的模型（`trust_remote_code`）
+
+出于安全考虑，AutoRound 默认**不会**执行模型仓库中附带的自定义 Python 代码（`trust_remote_code=False`，与 Hugging Face Transformers 保持一致）。依赖自定义建模/分词器代码的模型（即 `config.json`、`tokenizer_config.json` 等文件中包含 `auto_map` 字段）需要显式开启：
+
+```bash
+auto-round --model <model_name_or_path> --scheme "W4A16" --trust_remote_code
+```
+
+```python
+ar = AutoRound("<model_name_or_path>", scheme="W4A16", trust_remote_code=True)
+```
+
+> **警告：** 开启 `trust_remote_code` 会在当前进程中执行模型仓库内的任意代码。请仅对来源可信且代码已审查的模型开启。旧参数 `--disable_trust_remote_code` 已弃用，不再生效。
+
 ### 命令行用法
 
 

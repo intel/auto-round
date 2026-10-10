@@ -339,7 +339,7 @@ class BaseOrchestrator:
 
         # Model related
         model_dtype = kwargs.pop("model_dtype", None)
-        trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
+        trust_remote_code = kwargs.pop("trust_remote_code", False)
         quant_nontext_module = kwargs.pop("quant_nontext_module", False)
         device = kwargs.pop("device", None)
         if device is not None:

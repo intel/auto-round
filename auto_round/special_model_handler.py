@@ -395,7 +395,7 @@ def _handle_special_model(model):
 
 
 def update_module(
-    model, formats: list[OutputFormat] | None = None, trust_remote_code: bool = True, cleanup_original: bool = True
+    model, formats: list[OutputFormat] | None = None, trust_remote_code: bool = False, cleanup_original: bool = True
 ):
     gguf_export = formats is not None and any(format_.is_gguf() for format_ in formats)
     model = apply_replacements(model, gguf_export=gguf_export)
@@ -1322,7 +1322,7 @@ def _attach_gemma4_unified_rotary_emb(model):
         object.__setattr__(layer, "_gemma4_config_ref", text_model.config)
 
 
-def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
+def load_next_step_diffusion(pretrained_model_name_or_path, device_str, trust_remote_code=False):
     try:
         from models.gen_pipeline import NextStepPipeline  # pylint: disable=E0401
     except ImportError:
@@ -1333,9 +1333,11 @@ def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     from transformers import AutoModel, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(
-        pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True
+        pretrained_model_name_or_path, local_files_only=True, trust_remote_code=trust_remote_code
     )
-    model = AutoModel.from_pretrained(pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True)
+    model = AutoModel.from_pretrained(
+        pretrained_model_name_or_path, local_files_only=True, trust_remote_code=trust_remote_code
+    )
     # The model is loaded onto the device because more than one block requires input data.
     pipe = NextStepPipeline(tokenizer=tokenizer, model=model).to(device=device_str, dtype=torch.bfloat16)
 

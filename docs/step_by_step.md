@@ -203,6 +203,20 @@ CPU, Intel GPU, HPU and CUDA for both quantization and inference. The **MLX form
 
 Before starting quantization, you may want to configure AutoRound's environment variables for optimal performance. For detailed information about available environment variables (logging levels, ModelScope integration, workspace settings, etc.), please refer to the [Environment Variables Guide](./environments.md).
 
+### Loading Models with Custom Code (`trust_remote_code`)
+
+For security, AutoRound does **not** execute custom Python code shipped inside a model repository by default (`trust_remote_code=False`, consistent with Hugging Face Transformers). Models that rely on custom modeling/tokenizer code (i.e. `auto_map` entries in `config.json`, `tokenizer_config.json`, etc.) must be explicitly opted in:
+
+```bash
+auto-round --model <model_name_or_path> --scheme "W4A16" --trust_remote_code
+```
+
+```python
+ar = AutoRound("<model_name_or_path>", scheme="W4A16", trust_remote_code=True)
+```
+
+> **Warning:** Enabling `trust_remote_code` runs arbitrary code from the model repository in your process. Only enable it for models from sources you trust and whose code you have reviewed. The legacy `--disable_trust_remote_code` flag is deprecated and has no effect.
+
 ### Command Line Usage
 
 

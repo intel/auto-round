@@ -480,7 +480,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
         vllm_args.mllm = getattr(args, "mllm", None)
         vllm_args.limit = getattr(args, "limit", None)
         vllm_args.eval_model_dtype = getattr(args, "eval_model_dtype", None)
-        vllm_args.disable_trust_remote_code = getattr(args, "disable_trust_remote_code", False)
+        vllm_args.disable_trust_remote_code = getattr(args, "disable_trust_remote_code", True)
         vllm_args.add_bos_token = getattr(args, "add_bos_token", False)
         vllm_args.seed = getattr(args, "seed", 42)
         vllm_args.num_fewshot = getattr(args, "num_fewshot", None)

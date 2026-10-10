@@ -809,7 +809,7 @@ def _auto_config_for_dir(checkpoint_dir: str):
     try:
         from transformers import AutoConfig
 
-        return AutoConfig.from_pretrained(checkpoint_dir, trust_remote_code=True, local_files_only=True)
+        return AutoConfig.from_pretrained(checkpoint_dir, trust_remote_code=False, local_files_only=True)
     except Exception as exc:  # pragma: no cover - config-less ops still work
         logger.debug("could not load config for converter ops from %s: %s", checkpoint_dir, exc)
         return None
@@ -1117,7 +1117,7 @@ def unfuse_meta_moe_(model: nn.Module) -> list[str]:
     return unfused
 
 
-def build_meta_model(model_name: str, trust_remote_code: bool = True, unfuse_moe: bool = True):
+def build_meta_model(model_name: str, trust_remote_code: bool = False, unfuse_moe: bool = True):
     """Build a meta-device model skeleton (~0 RAM) plus its tokenizer and a
     SafetensorsIndex for on-demand materialization, instead of AutoRound's own
     ``llm_load_model(model_name, device_map="cpu")`` which fully materializes the
