@@ -896,23 +896,26 @@ def to_standard_regex(pattern: str) -> str:
     '.*mlp.*gate.*'
     """
     # Heuristic: if pattern contains regex meta characters, assume partial regex
-    meta_chars = {".*", "^", "$", "|", "(", ")", "[", "]", "?", "+"}
+    meta_chars = {".*", "^", "$", "|", "(", ")", "[", "]", "?", "+", "\\"}
     has_regex = any(tok in pattern for tok in meta_chars)
     if not has_regex:
         # Escape literal dots, etc., and wrap with .* for substring matching
         pattern = re.escape(pattern)
         regex = f".*{pattern}.*"
     else:
-        # Only escape bare dots that are not already part of regex constructs
-        # Avoid double escaping .* sequences
+        # Only escape bare dots that are not already part of regex constructs:
+        # keep escape sequences (e.g. "\\.", "\\d") and quantified dots
+        # (".*", ".+", ".?", ".{n}") unchanged.
         tmp = []
         i = 0
         while i < len(pattern):
+            if pattern[i] == "\\" and i + 1 < len(pattern):
+                tmp.append(pattern[i : i + 2])  # keep escape sequence
+                i += 2
+                continue
             if pattern[i] == ".":
-                if i + 1 < len(pattern) and pattern[i + 1] == "*":
-                    tmp.append(".*")  # keep regex token
-                    i += 2
-                    continue
+                if i + 1 < len(pattern) and pattern[i + 1] in "*+?{":
+                    tmp.append(".")  # keep regex token
                 else:
                     tmp.append("\\.")  # escape bare dot
             else:

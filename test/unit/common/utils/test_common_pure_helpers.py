@@ -228,6 +228,17 @@ class TestToStandardRegex:
         # Must not raise when compiled
         _re.compile(to_standard_regex("plain_text"))
 
+    def test_regex_tokens_and_escapes_kept(self):
+        import re as _re
+
+        from auto_round.utils.common import to_standard_regex
+
+        name = "model.layers.3.mlp.gate"
+        for pattern in ("layers.+mlp", r"layers\.[0-9]+\.mlp", r"model\.layers\.3"):
+            assert _re.search(to_standard_regex(pattern), name), pattern
+        # Bare dots are still literal.
+        assert not _re.search(to_standard_regex("mlp.gate"), "mlpXgate")
+
 
 # ---------------------------------------------------------------------------
 # matches_any_regex
