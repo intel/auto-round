@@ -54,6 +54,58 @@ from auto_round.utils.bit_packing import (
 SUPPORTED_AWQ_BITS = (4, 5, 6, 7)
 
 
+def awq_gemm_kernel_supported(in_features: int, out_features: int, bits: int, group_size: int) -> bool:
+    """Whether the AWQ GEMM kernel can serve a layer of the given shape.
+
+    The kernel requires ``in_features`` and ``out_features`` to be multiples of
+    ``group_size`` (``IC/OC is not multiple of Group size``) and ``out_features``
+    to be a multiple of the 64-wide CTA tile. Bit widths outside
+    ``SUPPORTED_AWQ_BITS`` have no servable packing layout. A non-positive
+    ``group_size`` (per-channel quantization) is treated as servable here;
+    per-channel compatibility is validated elsewhere.
+    """
+    if bits not in SUPPORTED_AWQ_BITS:
+        return False
+    if not isinstance(group_size, int) or group_size <= 0:
+        return True
+    return in_features % group_size == 0 and out_features % group_size == 0 and out_features % 64 == 0
+
+
+def awq_user_forced_quantization(cfg) -> bool:
+    """Whether a ``layer_config`` entry explicitly keeps this layer quantized.
+
+    User-supplied entries (exact names or expanded regex matches) carry
+    ``fixed_by_user=True`` once normalized; entries AutoRound filled in from
+    the default scheme carry ``fixed_by_user=False``. At format-resolution
+    time user entries can still be raw (a dict missing the flag, a preset
+    string, or a QuantizationScheme), so any present entry counts as user
+    intent unless it explicitly says ``fixed_by_user=False``.
+
+    After ``apply_plan_to_model`` the same flag is also available on the
+    module itself as ``layer.fixed_by_user``; see ``awq_layer_user_forced``.
+    """
+    if not cfg:
+        return False
+    if not hasattr(cfg, "get"):
+        return True
+    return cfg.get("fixed_by_user", True) is not False
+
+
+def awq_layer_user_forced(layer, cfg=None) -> bool:
+    """Whether a quantized module explicitly keeps an AWQ-unservable shape quantized.
+
+    Reads ``layer.fixed_by_user`` written by ``apply_plan_to_model``. A module
+    without the flag falls back to its ``layer_config`` entry when given, and
+    otherwise follows the same rule as ``awq_user_forced_quantization`` for a
+    plan entry missing the key (e.g. lm_head added via ``quant_lm_head``), so
+    the marking step and the packers agree.
+    """
+    flag = getattr(layer, "fixed_by_user", None)
+    if flag is not None:
+        return bool(flag)
+    return cfg is None or awq_user_forced_quantization(cfg)
+
+
 def unpack_awq(qweight: torch.Tensor, qzeros: torch.Tensor, bits: int):
     shifts = torch.arange(0, 32, bits, device=qzeros.device)
 
