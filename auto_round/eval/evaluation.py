@@ -516,39 +516,31 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
             if model is None:
                 return
         else:
-            # Evaluate the exported artifact for both regular and model-free flows.
-            # The in-memory regular model still contains quantization wrappers,
-            # while fake-format loading materializes FakeActQuantLinear modules.
-            if model is not None:
-                model_context = getattr(autoround, "model_context", None)
-                if model_context is not None and getattr(model_context, "model", None) is model:
-                    model_context.model = None
-                model = None
-                from auto_round.utils import clear_memory
+            if model is None:
+                eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+                if getattr(autoround, "mllm", False):
+                    from auto_round.utils.model import mllm_load_model
 
-                clear_memory()
+                    model, _, loaded_tokenizer, _ = mllm_load_model(
+                        eval_folder,
+                        device=device_str,
+                        torch_dtype=eval_model_dtype,
+                        trust_remote_code=not args.disable_trust_remote_code,
+                    )
+                    if tokenizer is None:
+                        tokenizer = loaded_tokenizer
+                else:
+                    from auto_round.utils.model import llm_load_model
 
-            eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-            if getattr(autoround, "mllm", False):
-                from auto_round.utils.model import mllm_load_model
-
-                model, _, loaded_tokenizer, _ = mllm_load_model(
-                    eval_folder,
-                    device=device_str,
-                    torch_dtype=eval_model_dtype,
-                    trust_remote_code=not args.disable_trust_remote_code,
-                )
-                if tokenizer is None:
-                    tokenizer = loaded_tokenizer
-            else:
-                from transformers import AutoModelForCausalLM, AutoTokenizer
-
-                model = AutoModelForCausalLM.from_pretrained(
-                    eval_folder, device_map=device_str, torch_dtype=eval_model_dtype
-                )
-                model.eval()
-                if tokenizer is None:
-                    tokenizer = AutoTokenizer.from_pretrained(eval_folder)
+                    model, loaded_tokenizer = llm_load_model(
+                        eval_folder,
+                        device=device_str,
+                        torch_dtype=eval_model_dtype,
+                        trust_remote_code=not args.disable_trust_remote_code,
+                    )
+                    model.eval()
+                    if tokenizer is None:
+                        tokenizer = loaded_tokenizer
 
         # Evaluate with model instance
         evaluate_with_model_instance(model, tokenizer, device_str, args)
