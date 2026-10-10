@@ -99,6 +99,35 @@ def _make_auto_round_config(bits=4, group_size=128, sym=True, block_name_to_quan
 # ===========================================================================
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_glm_nextn_missing_weights_remain_full_precision(tmp_path, nested):
+    """Draft-layer weights absent from the model must survive checkpoint copying."""
+    src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+    os.makedirs(src)
+    os.makedirs(tgt)
+    name = "model.language_model.layers.45.mlp.experts.0.down_proj.weight"
+    weight = torch.randn(32, 128, dtype=torch.bfloat16)
+    _save_safetensors({name: weight}, os.path.join(src, "model.safetensors"))
+    _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+    config = _make_auto_round_config()
+    config["model_type"] = "glm5_next"
+    text_config = {"num_hidden_layers": 45, "num_nextn_predict_layers": 1}
+    if nested:
+        config["text_config"] = text_config
+    else:
+        config.update(text_config)
+    with open(os.path.join(tgt, "config.json"), "w") as f:
+        json.dump(config, f)
+    copy_missing_tensors_from_source(src, tgt)
+    restored = _load_safetensors(os.path.join(tgt, "model_extra_tensors.safetensors"))
+    assert name in restored
+    assert restored[name].dtype == weight.dtype
+    assert torch.equal(restored[name], weight)
+    with open(os.path.join(tgt, "config.json")) as f:
+        updated = json.load(f)
+    assert updated["quantization_config"]["extra_config"][name.removesuffix(".weight")]["bits"] == 16
+
+
 class TestSplitFusedExpertTensors:
 
     def test_normalize_tensor_name_for_warning(self):
