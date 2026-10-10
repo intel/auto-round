@@ -246,6 +246,46 @@ class TestEvalArgumentForwarding:
         mock_load.assert_called_once_with(str(tmp_path), device="cpu", torch_dtype="auto", trust_remote_code=False)
         mock_evaluate.assert_called_once_with(loaded_model, loaded_tokenizer, "cpu", args)
 
+    def _run_fake_eval_with_in_memory_model(self, tmp_path, args):
+        from auto_round.eval.evaluation import run_model_evaluation
+
+        model = MagicMock()
+        tokenizer = MagicMock()
+        prepared_model = MagicMock()
+
+        with patch("auto_round.utils.model.detect_model_type", return_value="llm"), patch(
+            "auto_round.utils.device_manager.device_manager", SimpleNamespace(device_map="0")
+        ), patch("auto_round.utils.device_manager.get_device_and_parallelism", return_value=("cpu", False)), patch(
+            "auto_round.utils.get_library_version", return_value="test"
+        ), patch(
+            "auto_round.utils.model.llm_load_model"
+        ) as mock_load, patch(
+            "auto_round.eval.evaluation.prepare_model_for_eval", return_value=prepared_model
+        ) as mock_prepare, patch(
+            "auto_round.eval.evaluation.evaluate_with_model_instance"
+        ) as mock_evaluate:
+            run_model_evaluation(model, tokenizer, SimpleNamespace(), str(tmp_path), ["fake"], args)
+
+        mock_load.assert_not_called()
+        return model, tokenizer, prepared_model, mock_prepare, mock_evaluate
+
+    def test_run_model_evaluation_fake_in_memory_model_is_dispatched(self, tmp_path):
+        args = _make_eval_args()
+        _, tokenizer, prepared_model, mock_prepare, mock_evaluate = self._run_fake_eval_with_in_memory_model(
+            tmp_path, args
+        )
+
+        mock_prepare.assert_called_once()
+        assert mock_prepare.call_args.args[1] == "0"
+        mock_evaluate.assert_called_once_with(prepared_model, tokenizer, "cpu", args)
+
+    def test_run_model_evaluation_fake_in_memory_model_task_by_task_skips_dispatch(self, tmp_path):
+        args = _make_eval_args(eval_task_by_task=True)
+        model, tokenizer, _, mock_prepare, mock_evaluate = self._run_fake_eval_with_in_memory_model(tmp_path, args)
+
+        mock_prepare.assert_not_called()
+        mock_evaluate.assert_called_once_with(model, tokenizer, "cpu", args)
+
     def test_run_eval_task_by_task_forwards_eval_generation_arguments(self):
         from auto_round.cli.main import run_eval
 
