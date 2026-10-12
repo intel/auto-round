@@ -2692,6 +2692,8 @@ def _validate_moe_quant_args(
         if zeros is not None:
             raise ValueError("zeros must be None for FP8 weights")
         weight_dtype = ARK_DT.float8_e4m3 if weights.dtype == torch.float8_e4m3fn else ARK_DT.float8_e5m2
+        if scale_dtype is not None:
+            raise ValueError("scale_dtype is only supported as 'fp8_e8m0' for MXFP4 weights")
         scale_dtype_id = cvt_dtype(activations.dtype)
         if not scales.is_contiguous():
             scales = scales.contiguous()
