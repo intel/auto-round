@@ -2460,7 +2460,7 @@ def moe_gemm_decode(
     weight_bits: int = 4,
     group_size: int = 128,
     asym: bool = False,
-    scale_dtype: Optional[str] = None,
+    scale_dtype: str | None = None,
 ) -> torch.Tensor:
     """MoE GEMV optimized for the decode phase.
 
@@ -2628,7 +2628,7 @@ def _validate_moe_quant_args(
     weight_bits: int,
     group_size: int,
     asym: bool,
-    scale_dtype: Optional[str],
+    scale_dtype: str | None,
     api_name: str,
 ):
     """Shared validation/normalisation for quantized MoE entry points.
@@ -4018,7 +4018,7 @@ def moe_gemm_prefill_hmt_mxfp4_mxfp4(
     weights: torch.Tensor,
     weight_scales: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
-    hadamard_matrix: Optional[torch.Tensor] = None,
+    hadamard_matrix: torch.Tensor | None = None,
     *,
     output_dtype: torch.dtype = torch.bfloat16,
     group_size: int = 32,
@@ -4193,7 +4193,7 @@ def moe(
     weight_bits: int = 4,
     group_size: int = 128,
     asym: bool = False,
-    scale_dtype: Optional[str] = None,
+    scale_dtype: str | None = None,
     phase: str = "auto",
     decode_threshold: int | None = None,
 ) -> torch.Tensor:
