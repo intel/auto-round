@@ -3703,13 +3703,13 @@ def moe_gemm_w4a8(
     wscales: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     *,
-    rescale_block_size: Optional[int] = None,
+    rescale_block_size: int | None = None,
     phase: str = "auto",
-    activation_scale: Optional[torch.Tensor] = None,
-    out_dtype: Optional[torch.dtype] = None,
-    row_to_token: Optional[torch.Tensor] = None,
-    routing_weights: Optional[torch.Tensor] = None,
-    output_rows: Optional[int] = None,
+    activation_scale: torch.Tensor | None = None,
+    out_dtype: torch.dtype | None = None,
+    row_to_token: torch.Tensor | None = None,
+    routing_weights: torch.Tensor | None = None,
+    output_rows: int | None = None,
 ) -> torch.Tensor:
     """W4A8 MoE GEMM: int4 weights (pre-converted to int8), int8 compute.
 
@@ -3944,7 +3944,7 @@ def moe_w4a8(
     weights: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     *,
-    scales: Optional[torch.Tensor] = None,
+    scales: torch.Tensor | None = None,
     group_size: int = 128,
     rescale_group_size: int = -1,
     phase: str = "auto",
