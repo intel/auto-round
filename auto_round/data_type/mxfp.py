@@ -228,6 +228,23 @@ def quant_mx_opt_rtn(
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
+def compute_mx_v_scale(scaled_tensor, ebits, mbits):
+    """Compute per-element v step-scale so that |v|=0.5 maps to the rounding boundary, as in INT.
+
+    The FP-element step at a given level is 2^(private_exp - (mbits-2)); steps <= 1 are clamped to 1.
+    """
+    abs_t = torch.abs(scaled_tensor)
+    if ebits != 0:
+        min_exp = -(2.0 ** float(ebits - 1)) + 2
+        private_exp = torch.floor(torch.log2(abs_t + (abs_t == 0).to(abs_t.dtype))).clamp(min=min_exp)
+    else:
+        private_exp = torch.zeros_like(abs_t)
+    step = torch.pow(2.0, private_exp - float(mbits - 2))
+    # Below line is commented out to allow steps <= 1.0
+    # step = torch.where(step <= 1.0, torch.ones_like(step), step)
+    return step.detach()
+
+
 def quant_mx(
     tensor,
     bits=4,
@@ -280,9 +297,15 @@ def quant_mx(
     shared_exp = (shared_exp - emax).clamp(min=-scale_emax, max=scale_emax)
 
     scale = torch.pow(2.0, shared_exp.float())
-    tensor = tensor / scale + v  # max 1.92
-    tensor = torch.clamp(tensor, min=-max_norm, max=max_norm)
-    tensor = quant_element(tensor, ebits, mbits, max_norm, mantissa_rounding)
+    scaled = tensor / scale
+    if isinstance(v, torch.Tensor) and v.shape == scaled.shape:
+        with torch.no_grad():
+            v_scale = compute_mx_v_scale(scaled.clamp(-max_norm, max_norm), ebits, mbits)
+        scaled = scaled + v * v_scale.to(v.dtype)
+    else:
+        scaled = scaled + v
+    scaled = torch.clamp(scaled, min=-max_norm, max=max_norm)
+    tensor = quant_element(scaled, ebits, mbits, max_norm, mantissa_rounding)
 
     tensor = tensor * scale
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
