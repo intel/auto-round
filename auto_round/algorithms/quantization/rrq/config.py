@@ -62,6 +62,7 @@ class RRQConfig(RTNConfig):
         enable_lfq: bool = False,
         num_residual_planes: int = 3,
         disable_opt_rtn: bool | None = True,
+        enable_neuqi: bool = False,
         **kwargs,
     ):
         # Enforce fixed values (None means "not provided", use default)
@@ -109,7 +110,7 @@ class RRQConfig(RTNConfig):
         # CLI may pass None (user didn't specify the flag), so force it to True.
         if disable_opt_rtn is None:
             disable_opt_rtn = True
-        super().__init__(disable_opt_rtn=disable_opt_rtn, **kwargs)
+        super().__init__(disable_opt_rtn=disable_opt_rtn, enable_neuqi=enable_neuqi, **kwargs)
 
         self.iters = int(self._rrq_iters or 0)
         self.lr = self._rrq_lr
