@@ -36,6 +36,7 @@ from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import IndexSampler, collect_best_params
 from auto_round.data_type.utils import get_quant_func
+from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized
 from auto_round.utils.model import set_module
 

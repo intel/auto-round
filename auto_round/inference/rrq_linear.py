@@ -56,12 +56,12 @@ class RRQLinear(nn.Module):
 
     def __init__(
         self,
-        in_features: int = None,
-        out_features: int = None,
+        in_features: int | None = None,
+        out_features: int | None = None,
         num_planes: int = 4,
         bits: int = 2,
         bias: bool = True,
-        base: nn.Module = None,
+        base: nn.Module | None = None,
         residual_planes=None,
     ) -> None:
         super().__init__()
