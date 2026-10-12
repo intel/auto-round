@@ -53,11 +53,7 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 * [2026/10] 我们现在展示：**W2A16** 的精度会随着调优成本的增加而稳步提升。详细精度数据见 [W2A16 精度数据](./docs/alg_202508.md)。
 
-* [2026/09] 我们将 MoE量化速度提升了 3 倍以上，并显著降低了 RAM 使用量。详细结果请参阅[文档](./docs/moe.md)。请注意，该优化可能会引入一些回归问题或其他问题。
-
-* [2026/09] 现在支持在 CUDA 设备上通过 vLLM 和 Transformers 使用 5/6/7-bit WOQ 模型，感谢 Humming Kernel 的支持。
-
-* [2026/09] 我们实验性地支持**递归残差量化（RRQ）**。单个 checkpoint 即可在加载时选择 2/4/6/8-bit（以及逐层混合精度），无需重新量化：[*论文*](https://arxiv.org/abs/2608.04048)。
+* [2026/10] 我们实验性地支持**递归残差量化（RRQ）**。单个 checkpoint 即可在加载时选择 2/4/6/8-bit（以及逐层混合精度），无需重新量化：[*论文*](https://arxiv.org/abs/2608.04048)。
   ```bash
   # 量化：输出目录中同时产出 base/ 和 residual/
   python -m auto_round.cli.main \
@@ -69,6 +65,10 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
   model = load_rrq_model("./out/Qwen/Qwen3-0.6B/8bit", active_bits=4)
   ```
   注意：该功能仍处于实验阶段，尚不支持生产级部署场景。
+
+* [2026/09] 我们将 MoE量化速度提升了 3 倍以上，并显著降低了 RAM 使用量。详细结果请参阅[文档](./docs/moe.md)。请注意，该优化可能会引入一些回归问题或其他问题。
+
+* [2026/09] 现在支持在 CUDA 设备上通过 vLLM 和 Transformers 使用 5/6/7-bit WOQ 模型，感谢 Humming Kernel 的支持。
 
 * [2026/09] 面向免标定量化的 **NeUQI** 网格搜索（[arXiv 2505.17595](https://arxiv.org/abs/2505.17595)）现已可用：`--enable_neuqi` 配合 `--iters 0` 时，非对称层执行联合 (scale, zero-point) 搜索、对称层执行两阶段 scale 搜索；`iters > 0` 时搜索结果将作为调优网格的锚点：[*结果*](./docs/neuqi_acc.md)。
 
