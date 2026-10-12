@@ -39,7 +39,6 @@ from test.e2e.test_cpu.conftest import (  # noqa: E402
     quantize_and_save,
     record,
 )
-from typing import List
 
 import pytest
 import torch

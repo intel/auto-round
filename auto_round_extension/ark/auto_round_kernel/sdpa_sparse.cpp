@@ -21,6 +21,7 @@
 
 #include <sycl/sycl.hpp>
 #include "sycl_tla_sdpa_sparse.hpp"
+#include "sdpa_sparse_kernel_declarations.hpp"
 
 namespace ark {
 
@@ -30,48 +31,41 @@ namespace {
 
 using KernelLauncher = int (*)(detail::Options const& options);
 
-int launch_prefill_kernel_f16_128_sparse_sage(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128<cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
+// The launcher bodies live one variant per translation unit; see the sparse
+// section of sdpa_generation.cmake. Causal never carries a mask, and the sparse
+// path never uses cached KV, which matches the behaviour of the runtime
+// selection these replaced.
+#define ARK_SPARSE_SAGE_LAUNCHER(shape, dtype)                                                      \
+  do {                                                                                              \
+    if (is_causal) return detail::launch_sage_sparse_##shape##_##dtype##_causal;                     \
+    if (has_mask) return detail::launch_sage_sparse_##shape##_##dtype##_noncausal_masked;            \
+    return detail::launch_sage_sparse_##shape##_##dtype##_noncausal_unmasked;                        \
+  } while (0)
 
-int launch_prefill_kernel_f16_128_sparse_sage_qtile64(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64<cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_f16_64_sparse_sage(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_64<cute::int8_t, cute::int8_t, cute::half_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128<cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_128_sparse_sage_qtile64(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_128_qtile64<cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-int launch_prefill_kernel_bf16_64_sparse_sage(detail::Options const& options) {
-  return detail::launch_sparse_sage_prefill_kernel_64<cute::int8_t, cute::int8_t, cute::bfloat16_t>(options);
-}
-
-KernelLauncher select_sparse_sage_prefill_launcher(BTLA_DTYPE pv_dtype, int head_dim, int q_tile_override) {
+KernelLauncher select_sparse_sage_prefill_launcher(BTLA_DTYPE pv_dtype, int head_dim, int q_tile_override,
+                                                   bool is_causal, bool has_mask) {
+  if (is_causal && has_mask) {
+    return nullptr;
+  }
   switch (head_dim) {
     case 128:
       if (q_tile_override == 64) {
-        return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage_qtile64
-                                            : launch_prefill_kernel_f16_128_sparse_sage_qtile64;
+        if (pv_dtype == BTLA_DTYPE::BF16) ARK_SPARSE_SAGE_LAUNCHER(128_qtile64, i8bf16);
+        ARK_SPARSE_SAGE_LAUNCHER(128_qtile64, i8half);
       }
       if (q_tile_override != 0 && q_tile_override != 256) return nullptr;
-      return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_128_sparse_sage
-                                          : launch_prefill_kernel_f16_128_sparse_sage;
+      if (pv_dtype == BTLA_DTYPE::BF16) ARK_SPARSE_SAGE_LAUNCHER(128, i8bf16);
+      ARK_SPARSE_SAGE_LAUNCHER(128, i8half);
     case 64:
       if (q_tile_override != 0 && q_tile_override != 128) return nullptr;
-      return pv_dtype == BTLA_DTYPE::BF16 ? launch_prefill_kernel_bf16_64_sparse_sage
-                                          : launch_prefill_kernel_f16_64_sparse_sage;
+      if (pv_dtype == BTLA_DTYPE::BF16) ARK_SPARSE_SAGE_LAUNCHER(64, i8bf16);
+      ARK_SPARSE_SAGE_LAUNCHER(64, i8half);
     default:
       return nullptr;
   }
 }
+
+#undef ARK_SPARSE_SAGE_LAUNCHER
 
 detail::Options make_common_options(void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, int q_stride_s,
                                     int q_stride_d, int q_stride_h, int q_stride_b, int k_stride_s, int k_stride_d,
@@ -144,7 +138,8 @@ void sparse_sage_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
   options.num_k_blocks = num_k_blocks;
   compat::set_default_queue(*q);
 
-  KernelLauncher launcher = select_sparse_sage_prefill_launcher(pv_dtype, head_dim, effective_q_tile_override);
+  KernelLauncher launcher =
+      select_sparse_sage_prefill_launcher(pv_dtype, head_dim, effective_q_tile_override, is_causal, mask != nullptr);
   if (launcher == nullptr) {
     throw std::runtime_error("Unsupported sparse_sage_prefill config");
   }

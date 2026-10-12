@@ -39,8 +39,8 @@ namespace moe_mxfp_bdpas_detail {
 
 using namespace cute;
 
-inline constexpr size_t kMetadataScratchLoc = 12;
-inline constexpr size_t kWorkspaceScratchLoc = 13;
+inline constexpr size_t kMetadataScratchLoc = 13;
+inline constexpr size_t kWorkspaceScratchLoc = 14;
 
 class UnpackMXFP4WeightToFP8Kernel;
 class TransposeActivationScaleKernel;

@@ -50,7 +50,6 @@ class LinearGlm4MoeLiteMoE(nn.Module):
         top_k_index: torch.Tensor,
         top_k_weights: torch.Tensor,
     ) -> torch.Tensor:
-        """ """
         return sequential_moe_forward(hidden_states, top_k_index, top_k_weights, self.experts, self.num_experts)
 
     def route_tokens_to_experts(self, router_logits):

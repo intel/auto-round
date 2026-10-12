@@ -107,7 +107,7 @@ def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: 
             module.register_parameter(name, torch.nn.Parameter(new_val))
     else:
         logger.warning_once(
-            "Parameter %s not found in module %s, creating new parameter." % (name, module.__class__.__name__)
+            f"Parameter {name} not found in module {module.__class__.__name__}, creating new parameter."
         )
         module.register_parameter(name, torch.nn.Parameter(new_val))
 

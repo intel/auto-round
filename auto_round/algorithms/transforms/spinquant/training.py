@@ -47,8 +47,9 @@ from __future__ import annotations
 import copy
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -164,7 +165,7 @@ def create_dual_optimizer(
     model: nn.Module,
     lr: float = 1e-4,
     smooth_lr: float = 1e-3,
-) -> Optional[AdamAndSGDG]:
+) -> AdamAndSGDG | None:
     """Create the Adam (smooth) + SGDG (rotation) dual optimiser.
 
     Returns ``None`` if no trainable parameters are found.
@@ -215,8 +216,8 @@ def run_training_loop(
     max_iters: int = 200,
     loss_type: str = "kl_top",
     kl_top_k: int = 1000,
-    compute_loss_fn: Optional[Callable] = None,
-    on_step_end: Optional[Callable[[int, float, float], None]] = None,
+    compute_loss_fn: Callable | None = None,
+    on_step_end: Callable[[int, float, float], None] | None = None,
     log_interval: int = 50,
 ) -> TrainingResult:
     """Run the SpinQuant rotation training loop.
@@ -338,7 +339,7 @@ class SpinQuantTrainingHook:
         self.model = model
         self.config = config or SpinQuantConfig()
         self.enabled = enabled
-        self.preprocessor: Optional[SpinQuantPreprocessor] = None
+        self.preprocessor: SpinQuantPreprocessor | None = None
 
     def preprocess(self, dataloader: Any) -> nn.Module:
         """Execute SpinQuant preprocessing."""
@@ -482,11 +483,11 @@ class RotationTrainerConfig:
 
     # ----------  Misc  ----------
     dtype: torch.dtype = torch.float32
-    device: Optional[str] = None
+    device: str | None = None
     log_interval: int = 50  # print every N steps
     eval_interval: int = 0  # 0 = never
     save_interval: int = 0  # 0 = never
-    checkpoint_dir: Optional[str] = None
+    checkpoint_dir: str | None = None
 
     def __post_init__(self):
         if self.device is None:
@@ -604,9 +605,9 @@ class RotationTrainer:
     def __init__(
         self,
         model: nn.Module,
-        config: Optional[RotationTrainerConfig] = None,
-        callbacks: Optional[list[RotationTrainerCallback]] = None,
-        compute_loss_fn: Optional[Callable[[torch.Tensor, torch.Tensor, RotationTrainerConfig], torch.Tensor]] = None,
+        config: RotationTrainerConfig | None = None,
+        callbacks: list[RotationTrainerCallback] | None = None,
+        compute_loss_fn: Callable[[torch.Tensor, torch.Tensor, RotationTrainerConfig], torch.Tensor] | None = None,
     ) -> None:
         from auto_round.algorithms.transforms.spinquant.preprocessor import (
             SpinQuantConfig,
@@ -640,7 +641,7 @@ class RotationTrainer:
 
         # Training components (created lazily)
         self.optimizer = None
-        self._original_model: Optional[nn.Module] = None
+        self._original_model: nn.Module | None = None
         self._hook_handles: list[Any] = []
         self._rotated_modules: set[nn.Module] = set()
         self._loss_buffer: list[float] = []
@@ -756,7 +757,7 @@ class RotationTrainer:
         self._preprocessor._cleanup()
         return self.model
 
-    def save_checkpoint(self, path: Optional[str] = None) -> str:
+    def save_checkpoint(self, path: str | None = None) -> str:
         """Save rotation + smooth params to disk."""
         if path is None:
             path = f"{self.config.checkpoint_dir or '.'}/spinquant_ckpt_step{self.state['step']}.pt"

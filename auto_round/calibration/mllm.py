@@ -22,6 +22,8 @@ MLLM-specific runtime state (``template`` / ``extra_data_dir`` /
 ``self.compressor``.
 """
 
+import sys
+
 import torch
 
 from auto_round.calibration.llm import LLMCalibrator
@@ -65,7 +67,7 @@ class MLLMCalibrator(LLMCalibrator):
 
         if hasattr(self.model, "name_or_path"):
             name = self.model.name_or_path
-            if any([m in name for m in MISTRAL_3_2_MODELS]):
+            if any(m in name for m in MISTRAL_3_2_MODELS):
                 self.template = "mistral3_2"
 
         template_name = self.template
@@ -207,6 +209,6 @@ class MLLMCalibrator(LLMCalibrator):
 
         if total_cnt == 0:
             logger.error("no data has been cached, please provide more data")
-            exit(-1)
+            sys.exit(-1)
         elif total_cnt < nsamples:
             logger.warning(f"Insufficient number of samples: required {nsamples}, but only {total_cnt} were processed.")

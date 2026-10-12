@@ -165,7 +165,7 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
             zeros = int(min(max(zeros - 1, 0), self.maxq))
             shape = scales_t.shape
             value = 0
-            for j in range(0, (32 // self.bits)):
+            for j in range(32 // self.bits):
                 value |= zeros << (self.bits * j)
             qzeros = torch.ones((shape[0], shape[1] // 32 * self.bits), dtype=torch.int32) * value
             self.qzeros = qzeros.cpu()

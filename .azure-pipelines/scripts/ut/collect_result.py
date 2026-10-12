@@ -181,8 +181,10 @@ class ReportGenerator:
             self._format_subheader(),
             *(self._format_row(r) for r in results),
             self.SEPARATOR,
-            f"Total: {stats['total']}, Passed: {stats['passed']}, "
-            f"Failed: {stats['failed']}, Skipped: {stats['skipped']}",
+            (
+                f"Total: {stats['total']}, Passed: {stats['passed']}, "
+                f"Failed: {stats['failed']}, Skipped: {stats['skipped']}"
+            ),
             self.SEPARATOR,
             "",
         ]

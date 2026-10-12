@@ -23,7 +23,7 @@ This module owns:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -115,8 +115,8 @@ class BlockForwardRunner:
         self,
         batch_dim: int = 0,
         batch_size: int = 8,
-        device: Union[str, "torch.device"] = "cpu",
-        cache_device: Union[str, "torch.device"] = "cpu",
+        device: str | torch.device = "cpu",
+        cache_device: str | torch.device = "cpu",
         amp: bool = True,
         amp_dtype: torch.dtype | None = None,
         is_diffusion: bool = False,
@@ -144,7 +144,7 @@ class BlockForwardRunner:
     # ── Factory ──────────────────────────────────────────────────────────────
 
     @classmethod
-    def from_orchestrator(cls, orchestrator: "BaseOrchestrator", enable_torch_compile=True) -> "BlockForwardRunner":
+    def from_orchestrator(cls, orchestrator: BaseOrchestrator, enable_torch_compile=True) -> BlockForwardRunner:
         """Create from an orchestrator instance (called once at orchestrator init)."""
         model_ctx = getattr(orchestrator, "model_context", None)
         is_diffusion = getattr(model_ctx, "is_diffusion", False) if model_ctx else False
@@ -170,7 +170,7 @@ class BlockForwardRunner:
 
     def forward(
         self,
-        block: "torch.nn.Module",
+        block: torch.nn.Module,
         inputs: list[torch.Tensor] | dict,
         input_others: dict,
         indices: torch.Tensor | None = None,
@@ -310,7 +310,7 @@ class BlockForwardRunner:
         else:
             return inputs.shape[self.batch_dim]
 
-    def _normalize_output(self, output: Any, block: "torch.nn.Module" = None) -> torch.Tensor:
+    def _normalize_output(self, output: Any, block: torch.nn.Module = None) -> torch.Tensor:
         """Normalize block output to a single tensor."""
         if isinstance(output, torch.Tensor):
             return output
@@ -343,7 +343,7 @@ class BlockForwardRunner:
             return first
         raise TypeError(f"Block output[0] must be tensor, got {type(first).__name__}.")
 
-    def _get_output_dict(self, output: Any, block: "torch.nn.Module" = None) -> dict[str, torch.Tensor] | None:
+    def _get_output_dict(self, output: Any, block: torch.nn.Module = None) -> dict[str, torch.Tensor] | None:
         if isinstance(output, torch.Tensor) or not isinstance(output, (tuple, list)):
             return None
         block_cls_name = block.__class__.__name__ if block is not None else None

@@ -16,7 +16,7 @@ import gc
 import os
 import time
 from functools import partial
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional
 
 import accelerate
 import torch
@@ -69,15 +69,15 @@ class CompressionOrchestrator(BaseOrchestrator):
 
     def __init__(
         self,
-        config: Union[object, list[object]],  # TODO rename this to alg_config wenhuach
-        model: Union[torch.nn.Module, str],
+        config: object | list[object],  # TODO rename this to alg_config wenhuach
+        model: torch.nn.Module | str,
         tokenizer: Any = None,
         platform: str = "hf",
-        format: Union[str, list, None] = None,
-        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
+        format: str | list | None = None,
+        dataset: str | list | tuple | torch.utils.data.DataLoader | None = None,
         low_gpu_mem_usage: bool = False,
-        device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: Optional[bool] = None,
+        device_map: str | torch.device | int | dict = 0,
+        enable_torch_compile: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         **kwargs,
@@ -126,8 +126,8 @@ class CompressionOrchestrator(BaseOrchestrator):
         self,
         block_names: list,
         nsamples: int,
-        layer_names: Optional[list] = None,
-        last_cache_name: Optional[str] = None,
+        layer_names: list | None = None,
+        last_cache_name: str | None = None,
     ) -> Any:
         """Thin wrapper around ``self.calibration.collect``.
 
@@ -520,7 +520,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         self.alg_composer.finalize_run()
 
         remain_layer_names = []
-        block_name_set = set(name for block in all_blocks for name in block)
+        block_name_set = {name for block in all_blocks for name in block}
         for n, m in self.model.named_modules():
             if not check_to_quantized(m):
                 continue
@@ -605,7 +605,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         all_q_inputs = None
         # Leave it to gguf itself to handle
         if has_gguf and self.alg_composer.need_quanted_input():  # pylint: disable=E1101
-            is_quantized_embedding = self.alg_composer.compress_embedding_layer()  #
+            is_quantized_embedding = self.alg_composer.compress_embedding_layer()
             clear_memory()
             if is_quantized_embedding:
                 all_inputs = copy.deepcopy(self.inputs)
@@ -985,8 +985,8 @@ class CompressionOrchestrator(BaseOrchestrator):
         self,
         block: torch.nn.Module,
         inputs: Any,
-        q_input: Union[torch.Tensor, dict, None] = None,
-        device: Union[str, torch.device] = "cpu",
+        q_input: torch.Tensor | dict | None = None,
+        device: str | torch.device = "cpu",
         auto_offload: bool = True,
         reference_output=None,
     ) -> Any:

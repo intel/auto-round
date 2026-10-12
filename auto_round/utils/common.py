@@ -13,12 +13,14 @@
 # limitations under the License.
 from __future__ import annotations
 
+import copy
 import importlib
 import os
 import re
 import sys
 from dataclasses import dataclass
 from functools import lru_cache, wraps
+from types import SimpleNamespace
 from typing import Any
 
 import torch
@@ -100,8 +102,8 @@ def download_audiocaps_csv():
     import requests
 
     url = "https://raw.githubusercontent.com/cdjkim/audiocaps/master/dataset2.0/train.csv"
-    # Prefer AR_WORKSPACE environment variable for cache location when provided.
-    ar_workspace = os.environ.get("AR_WORKSPACE")
+    # Prefer the documented AR_WORK_SPACE (or the legacy AR_WORKSPACE) for the cache location when set.
+    ar_workspace = os.environ.get("AR_WORK_SPACE") or os.environ.get("AR_WORKSPACE")
     if ar_workspace:
         cache_dir = os.path.join(ar_workspace, "audiocaps_cache")
     else:
@@ -124,7 +126,7 @@ def download_audiocaps_csv():
         logger.info(f"AudioCaps dataset cached at: {cache_file}")
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to download AudioCaps from {url}: {e}") from e
-    except IOError as e:
+    except OSError as e:
         raise RuntimeError(f"Failed to write AudioCaps cache to {cache_file}: {e}") from e
 
     return cache_file
@@ -144,7 +146,7 @@ TORCH_VERSION_AT_LEAST_2_5 = torch_version_at_least("2.5.0")
 TORCH_VERSION_AT_LEAST_2_4 = torch_version_at_least("2.4.0")
 
 
-class LazyImport(object):
+class LazyImport:
     """Lazy import python module till use."""
 
     def __init__(self, module_name):
@@ -405,7 +407,7 @@ def monkey_patch_transformers():
     if parsed_version >= version.parse("5.0.0"):
         from transformers.initialization import no_init_weights
 
-        setattr(transformers.modeling_utils, "no_init_weights", no_init_weights)
+        transformers.modeling_utils.no_init_weights = no_init_weights
     if parsed_version >= version.parse("5.2.0"):
         # transformers 5.2.0 added Transpose.convert() which calls get_parameter() on
         # quantized buffer tensors (weight_packed, weight_scale), causing AttributeError.
@@ -726,11 +728,11 @@ class SupportedFormats:
         self._support_list = self._support_format + self._gguf_format
 
     def __contains__(self, key):
-        return True if key in self._support_list else False
+        return key in self._support_list
 
     def __str__(self):
         # Return "(%s)" % ', '.join(self._support_format + ("gguf:q*_0", "gguf:q*_1", "gguf:q*_k_s"))
-        return "(%s)" % ", ".join(self._support_list)
+        return f"({', '.join(self._support_list)})"
 
     def __getitem__(self, key):
         return self._support_list[key]
@@ -1080,6 +1082,8 @@ def parse_layer_config_arg(s: str) -> dict:
                 in_string = False
             escaped.append(ch)
             index += 1
+
+        return "".join(escaped)
 
     s = strip_matching_quotes(s)
 
@@ -1550,7 +1554,52 @@ def apply_checkpoint_conversion_mapping(name: str, key_mapping: dict[str, str]) 
             target_patterns = [target_patterns]
         for target_pattern in target_patterns:
             name, n_replace = re.subn(source_pattern, target_pattern, name)
-            # Early exit of the loop
             if n_replace > 0:
-                return name
+                break
     return name
+
+
+def expand_layer_config_for_weight_renames(
+    layer_config: dict | None,
+    *,
+    model=None,
+    model_type: str | None = None,
+    to_model_names: bool,
+) -> dict:
+    """Add layer-config aliases across Transformers checkpoint renames.
+
+    Existing keys always win over generated aliases. Regular model workflows
+    use ``to_model_names=True`` because matching happens against
+    ``model.named_modules()``; model-free workflows use checkpoint-side names
+    from the source shards and therefore set it to ``False``.
+    """
+    expanded = copy.deepcopy(layer_config) if layer_config else {}
+    if not expanded:
+        return expanded
+
+    if model is None:
+        model = SimpleNamespace(config=SimpleNamespace(model_type=model_type))
+
+    if to_model_names:
+        # get_reverse_checkpoint_conversion_mapping is intended.
+        # get_checkpoint_conversion_mapping cannot handle all cases correctly.
+        reverse_mapping = get_reverse_checkpoint_conversion_mapping(model)
+        key_mapping = {}
+        for source_pattern, target_patterns in reversed(list(reverse_mapping.items())):
+            if isinstance(target_patterns, str):
+                target_patterns = [target_patterns]
+            for target_pattern in target_patterns:
+                key_mapping.setdefault(target_pattern, []).append(source_pattern)
+        convert_name = lambda name: apply_checkpoint_conversion_mapping(name, key_mapping)
+    else:
+        key_mapping = get_reverse_checkpoint_conversion_mapping(model)
+        convert_name = lambda name: revert_checkpoint_conversion_mapping(name, key_mapping)
+
+    if not key_mapping:
+        return expanded
+
+    for name, config in list(expanded.items()):
+        converted_name = convert_name(name)
+        if converted_name != name:
+            expanded.setdefault(converted_name, copy.deepcopy(config))
+    return expanded

@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from torch import Tensor
 
 from .base import ModelBase, TextModel, MmprojModel, gguf, logger
+from auto_round.utils.path_safety import resolve_within_directory
 
 
 @ModelBase.register("MiniMaxText01ForCausalLM")
@@ -32,7 +33,8 @@ class MiniMaxText01Model(TextModel):
 
         embeddings_tensor_name = "model.embed_tokens.weight"
         embeddings_shard_name = weight_map[embeddings_tensor_name]
-        with gguf.utility.SafetensorsLocal(self.dir_model / embeddings_shard_name) as model_shard:
+        embeddings_shard_path = resolve_within_directory(self.dir_model, embeddings_shard_name)
+        with gguf.utility.SafetensorsLocal(embeddings_shard_path) as model_shard:
             embeddings_data = model_shard[embeddings_tensor_name]
 
         embeddings_weights_dtype = LazyTorchTensor._dtype_str_map[embeddings_data.dtype]

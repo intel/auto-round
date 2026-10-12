@@ -50,6 +50,7 @@ from auto_round.utils.model_free_utils import (
     quantize_weight_rtn,
     split_fused_expert_tensors,
 )
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
 
 
@@ -121,7 +122,7 @@ def _restore_special_fp32_tensors(
                 os.remove(temporary_path)
 
     if tensors_to_restore:
-        tensor_summary = compress_layer_names([name.rsplit(".", 1)[0] for name in tensors_to_restore])
+        tensor_summary = compress_layer_names(list(tensors_to_restore))
         logger.info(
             f"Restored {len(tensors_to_restore)} tensor(s) from FP16/BF16 to their original FP32 values: "
             f"{tensor_summary}."
@@ -167,8 +168,12 @@ def _resolve_tensor_shard_maps(
     if os.path.exists(source_index_file):
         with open(source_index_file) as f:
             src_index = json.load(f)
-        for tensor_name, shard_file in src_index["weight_map"].items():
-            source_tensor_to_file[tensor_name] = os.path.join(source_dir, shard_file)
+        # Shard names come from the source checkpoint's own index: validate them
+        # against source_dir, then resolve at the point of use below.
+        for tensor_name, shard_file in validate_weight_map(
+            src_index["weight_map"], source_dir, index_path=source_index_file
+        ).items():
+            source_tensor_to_file[tensor_name] = str(resolve_within_directory(source_dir, shard_file))
     elif os.path.exists(source_single_file):
         with safe_open(source_single_file, framework="pt", device="cpu") as f:
             for key in f.keys():
@@ -531,9 +536,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     # Pre-compile all valid regex patterns once to avoid repeated re.compile() calls
     # for every tensor lookup (O(N×M) → O(M) compile + O(N×M) match).
     _compiled_patterns: list = []
-    for pattern in extra_config:
+    for pattern, pattern_cfg in extra_config.items():
         try:
-            _compiled_patterns.append((_re.compile(pattern), pattern, extra_config[pattern]))
+            _compiled_patterns.append((_re.compile(pattern), pattern, pattern_cfg))
         except _re.error as exc:
             logger.warning(
                 "Invalid regex key in extra_config ignored during pre-compilation: %r (%s)",
@@ -625,7 +630,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                 if isinstance(block_name_to_quantize, list)
                 else [b.strip() for b in block_name_to_quantize.split(",") if b.strip()]
             )
-            if not any(k.startswith(b + ".") or k.startswith(b + "[") for b in blocks):
+            if not any(k.startswith((b + ".", b + "[")) for b in blocks):
                 return False
         layer_name = k[: -len(".weight")]
         layer_cfg = _resolve_layer_cfg(layer_name)

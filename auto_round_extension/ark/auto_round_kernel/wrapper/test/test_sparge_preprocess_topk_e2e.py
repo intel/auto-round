@@ -16,7 +16,16 @@ from auto_round_kernel.xpu_loader import ensure_xpu_lib
 
 
 def ensure_sparse_binding() -> None:
-    ensure_xpu_lib(required_symbols=("sage_sparse",))
+    ensure_xpu_lib(
+        required_symbols=("sage_sparse",),
+        search_roots=(
+            REPO_PARENT / "auto_round_kernel",
+            REPO_PARENT / "auto_round_kernel" / "xbuild_diffuser",
+            REPO_PARENT / "auto_round_kernel" / "xbuild",
+            REPO_PARENT / "auto_round_kernel" / "xbuild_bf16_v2",
+            REPO_PARENT / "auto_round_kernel" / "ark-xbuild",
+        ),
+    )
 
 
 def _to_layout(tensor: torch.Tensor, tensor_layout: str) -> torch.Tensor:
@@ -264,6 +273,74 @@ def run_case(
         assert torch.equal(crafted_meta["block_map"], crafted_meta["raw_block_map"])
 
 
+def run_lut_roundtrip_case(*, num_heads_q: int = 40, q_blocks: int = 8, k_blocks: int = 32) -> None:
+    """Regression test for the XPU boolean-mask assignment bug.
+
+    torch-xpu-ops' boolean-mask in-place assignment (`tensor[mask] = value`) silently
+    misses entries on 4-D int64/bool tensors of these sizes, which used to leave 0s in
+    ``_block_map_lut_torch``'s ``filled_matrix`` and produce **-1** LUT entries. Those
+    -1s then drove the ``scatter_`` in ``_lut_to_block_map`` out of bounds
+    (``ScatterGatherKernels.cpp:233``). The LUT must be non-negative and the
+    block_map -> lut -> block_map round-trip must be lossless.
+    """
+    from auto_round_kernel.sparse_attention import _block_map_lut_torch, _lut_to_block_map
+
+    device = torch.device("xpu")
+    torch.manual_seed(1234)
+    block_map = torch.rand(1, num_heads_q, q_blocks, k_blocks, device=device) < 0.5
+    lut, valid_block_num = _block_map_lut_torch(block_map)
+    torch.xpu.synchronize()
+
+    assert lut.dtype == torch.int32
+    assert valid_block_num.dtype == torch.int32
+    assert tuple(lut.shape) == tuple(block_map.shape)
+    # Regression: on XPU this was -1 because the masked assignment silently failed.
+    assert int(lut.min().item()) >= 0, f"lut must be non-negative, got min={int(lut.min().item())}"
+    assert int(valid_block_num.max().item()) <= k_blocks
+
+    reconstructed = _lut_to_block_map(lut, valid_block_num)
+    torch.xpu.synchronize()
+    assert torch.equal(reconstructed, block_map), "block_map -> lut -> block_map round-trip must be lossless"
+
+
+def run_fill_block_map_case() -> None:
+    """Regression test for the vectorized ``_fill_block_map_torch``.
+
+    The naive implementation looped ``for rank in range(k_blocks)`` (thousands of
+    sequential kernel launches at long sequences); the vectorized rewrite must be
+    exactly equivalent. Runs on CPU against a reference loop implementation.
+    """
+    from auto_round_kernel.sparse_attention import _fill_block_map_torch
+
+    def reference_loop(final_map, num_to_select, sorted_indices):
+        k_blocks = final_map.shape[-1]
+        filled = final_map.clone()
+        column_ids = torch.arange(k_blocks, device=final_map.device).view(1, 1, 1, k_blocks)
+        target_new = torch.maximum(num_to_select, torch.ones_like(num_to_select))
+        added = torch.zeros_like(num_to_select)
+        for rank in range(k_blocks):
+            idx_match = column_ids == sorted_indices[..., rank : rank + 1]
+            is_new = idx_match & ~filled
+            should_add = (added < target_new).unsqueeze(-1)
+            newly_selected = should_add & is_new
+            filled |= newly_selected
+            added = added + newly_selected.any(dim=-1).to(added.dtype)
+        return filled
+
+    for shape in [(1, 4, 8, 32), (1, 40, 8, 32), (1, 40, 128, 512), (2, 16, 64, 128)]:
+        b, h, q, k = shape
+        for seed in range(4):
+            torch.manual_seed(seed)
+            probs = torch.rand(shape)
+            _, sorted_indices = torch.sort(probs, dim=-1, descending=True)
+            num_to_select = torch.randint(0, k + 1, (b, h, q), dtype=torch.int64)
+            final_map = torch.rand(shape) < 0.1  # some blocks already forced
+            assert torch.equal(
+                _fill_block_map_torch(final_map, num_to_select, sorted_indices),
+                reference_loop(final_map, num_to_select, sorted_indices),
+            ), f"vectorized _fill_block_map_torch differs from reference at shape={shape} seed={seed}"
+
+
 def run_causal_decoupled_wrapper_case(*, tensor_layout: str) -> None:
     device = torch.device("xpu")
     batch = 1
@@ -410,6 +487,8 @@ def main() -> None:
             num_heads_kv=1,
         )
         run_causal_decoupled_wrapper_case(tensor_layout=tensor_layout)
+    run_lut_roundtrip_case()
+    run_fill_block_map_case()
 
 
 if __name__ == "__main__":

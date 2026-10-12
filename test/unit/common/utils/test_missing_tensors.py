@@ -134,8 +134,8 @@ class TestSplitFusedExpertTensors:
         }
         result = split_fused_expert_tensors(tensors)
         assert set(result.keys()) == set(tensors.keys())
-        for k in tensors:
-            assert torch.equal(result[k], tensors[k])
+        for k, v in tensors.items():
+            assert torch.equal(result[k], v)
 
     def test_warns_on_3d_tensor_with_unsupported_parent(self, caplog, _autoround_log_propagate):
         tensors = {
@@ -479,7 +479,7 @@ class TestCopyMissingTensorsFromSource:
         copy_missing_tensors_from_source(src, tgt)
         assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
 
-    def test_restores_fp32_tensor_saved_as_fp16(self, tmp_path):
+    def test_restores_fp32_tensor_saved_as_fp16(self, tmp_path, caplog, _autoround_log_propagate):
         src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
         os.makedirs(src)
         os.makedirs(tgt)
@@ -501,6 +501,7 @@ class TestCopyMissingTensorsFromSource:
         copy_missing_tensors_from_source(src, tgt)
 
         result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        assert "model.special.weight" in caplog.text
         assert result["model.special.weight"].dtype == torch.float32
         assert torch.equal(result["model.special.weight"], original)
         assert torch.equal(result["model.unchanged.weight"], torch.tensor([9.0], dtype=torch.float32))

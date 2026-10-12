@@ -13,8 +13,6 @@
 # limitations under the License.
 
 
-from typing import Optional, Union
-
 import torch
 
 from auto_round.data_type.nvfp import get_reciprocal, ref_nvfp4_quant
@@ -59,9 +57,9 @@ class NVFP4QuantLinear(QModuleBase):
         in_features: int,
         out_features: int,
         config: QuantizationScheme,
-        weight: Optional[torch.Tensor] = None,
-        weight_scale: Optional[torch.Tensor] = None,
-        bias: Union[torch.Tensor, bool, None] = None,
+        weight: torch.Tensor | None = None,
+        weight_scale: torch.Tensor | None = None,
+        bias: torch.Tensor | bool | None = None,
         dtype=torch.bfloat16,
     ):
         super().__init__()
@@ -145,7 +143,7 @@ class NVFP4QuantLinear(QModuleBase):
         self._convert_global_scale_to_float32(state_dict, "input_global_scale")
         return super().load_state_dict(state_dict, strict, assign)
 
-    def initialize_weights(self, weight: Optional[torch.Tensor]) -> torch.Tensor:
+    def initialize_weights(self, weight: torch.Tensor | None) -> torch.Tensor:
         """
         Initialize weights.
         """
@@ -199,7 +197,7 @@ class NVFP4QuantLinear(QModuleBase):
         return out
 
     @classmethod
-    def from_original(cls, config: Optional[QuantizationScheme], original_layer: torch.nn.Linear):
+    def from_original(cls, config: QuantizationScheme | None, original_layer: torch.nn.Linear):
         """
         Create an `NVFPQuantLinear` layer from an original linear layer.
         """

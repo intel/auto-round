@@ -28,6 +28,8 @@ if 'NO_LOCAL_GGUF' not in os.environ:
 import gguf
 from gguf.vocab import MistralTokenizerType, MistralVocab
 
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
+
 try:
     from mistral_common.tokens.tokenizers.base import TokenizerVersion # type: ignore[import-not-found, ty:unresolved-import]
     from mistral_common.tokens.tokenizers.multimodal import DATASET_MEAN as _MISTRAL_COMMON_DATASET_MEAN, DATASET_STD as _MISTRAL_COMMON_DATASET_STD # type: ignore[import-not-found, ty:unresolved-import]
@@ -240,6 +242,7 @@ class ModelBase:
                     weight_map = index.get("weight_map")
                     if weight_map is None or not isinstance(weight_map, dict):
                         raise ValueError(f"Can't load 'weight_map' from {index_name!r}")
+                    weight_map = validate_weight_map(weight_map, self.dir_model, index_path=index_file)
                     tensor_names_from_index.update(weight_map.keys())
                     part_dict: dict[str, None] = dict.fromkeys(weight_map.values(), None) # ty: ignore[invalid-assignment]
                     part_names = sorted(part_dict.keys())
@@ -250,11 +253,12 @@ class ModelBase:
 
         for part_name in part_names:
             logger.debug(f"gguf: indexing model part '{part_name}'")
+            part_path = resolve_within_directory(self.dir_model, part_name)
             ctx: ContextManager[Any]
             if is_safetensors:
-                ctx = cast(ContextManager[Any], gguf.utility.SafetensorsLocal(self.dir_model / part_name))
+                ctx = cast(ContextManager[Any], gguf.utility.SafetensorsLocal(part_path))
             else:
-                ctx = contextlib.nullcontext(torch.load(str(self.dir_model / part_name), map_location="cpu", mmap=True, weights_only=True))
+                ctx = contextlib.nullcontext(torch.load(str(part_path), map_location="cpu", mmap=True, weights_only=True))
 
             with ctx as model_part:
                 assert model_part is not None

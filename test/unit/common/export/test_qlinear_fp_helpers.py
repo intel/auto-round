@@ -67,7 +67,7 @@ class TestQuantLinearInit:
         )
         assert layer.weight_global_scale.shape == (1,)
         # act_bits > 8 -> input_global_scale NOT registered
-        assert not hasattr(layer, "input_global_scale") or layer.input_global_scale is None or True
+        assert not hasattr(layer, "input_global_scale") or layer.input_global_scale is None
 
     def test_construction_4bit_nv_act_global(self):
         from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear

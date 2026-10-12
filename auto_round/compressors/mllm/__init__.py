@@ -17,10 +17,10 @@ from auto_round.compressors.mllm.processor import PROCESSORS, BasicProcessor, re
 from auto_round.compressors.mllm.template import TEMPLATES, Template, get_template
 
 __all__ = [
-    "BasicProcessor",
     "MLLM_DATASET",
     "PROCESSORS",
     "TEMPLATES",
+    "BasicProcessor",
     "Template",
     "get_mllm_dataloader",
     "get_template",

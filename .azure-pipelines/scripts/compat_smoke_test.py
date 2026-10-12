@@ -21,7 +21,7 @@ print(f"auto_round imported from: {auto_round.__file__}")
 print(f"auto_round {auto_round.__version__} imported successfully (AutoRound={AutoRound.__name__})")
 
 # Verify the console_scripts entry point was installed and is runnable.
-result = subprocess.run(["auto-round", "--help"], capture_output=True, text=True)
+result = subprocess.run(["auto-round", "--help"], capture_output=True, text=True, check=False)
 if result.returncode != 0:
     sys.stderr.write(result.stdout)
     sys.stderr.write(result.stderr)

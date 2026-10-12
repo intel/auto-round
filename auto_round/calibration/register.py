@@ -18,17 +18,15 @@ Mirrors the same pattern used elsewhere in the codebase (e.g.
 decorating its class with ``@register_calibrator("my_kind")``.
 """
 
-from typing import Type
-
 from auto_round.calibration.base import Calibrator
 
-CALIBRATORS: dict[str, Type[Calibrator]] = {}
+CALIBRATORS: dict[str, type[Calibrator]] = {}
 
 
 def register_calibrator(name: str):
     """Class decorator: register a ``Calibrator`` subclass under ``name``."""
 
-    def _wrap(cls: Type[Calibrator]) -> Type[Calibrator]:
+    def _wrap(cls: type[Calibrator]) -> type[Calibrator]:
         if not issubclass(cls, Calibrator):
             raise TypeError(f"{cls.__name__} must subclass auto_round.calibration.base.Calibrator")
         cls.name = name
@@ -40,7 +38,7 @@ def register_calibrator(name: str):
     return _wrap
 
 
-def get_calibrator(name: str) -> Type[Calibrator]:
+def get_calibrator(name: str) -> type[Calibrator]:
     """Look up a registered calibrator class by name."""
     if name not in CALIBRATORS:
         raise KeyError(f"No calibrator registered under '{name}'. " f"Known: {sorted(CALIBRATORS.keys())}")

@@ -9,13 +9,14 @@
 
 <h3> 面向 LLM 的先进量化算法</h3>
 
-[![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.15.0-green)](https://github.com/intel/auto-round/releases)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.16.0-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
+<a href="https://pepy.tech/projects/auto-round" style="text-decoration:none;"><img src="https://static.pepy.tech/badge/auto-round" alt="PyPI Downloads"></a>
 
 &nbsp;&nbsp;&nbsp;&nbsp;[English](README.md) | 简体中文
 
@@ -26,7 +27,10 @@
 
 ## 🚀 AutoRound 是什么？
 
-AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设计的先进量化工具包。它能在 **极低比特（2–4 bits）** 下实现较高的模型精度，所需调参极少。其核心是采用**符号梯度下降法（sign-gradient descent）**。此外，该工具还具备良好的硬件兼容性。更多细节详见论文 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)。使用方法请参阅 [用户指南](./docs/step_by_step.md).
+AutoRound 是一个面向大语言模型（LLMs）和视觉-语言模型（VLMs）的易用型训练后量化工具包。它支持多种实用的低比特和自适应比特量化算法，特别是主推的 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)算法。
+AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精度表现。它支持常用的数据类型和量化方案，包括 WNA16、MXFP4、NVFP4 和 FP8，以及 GGUF 等低比特模型格式。
+它已集成到 Transformers、vLLM 和 SGLang 等主流生态中，并支持在 Intel CPU、XPU、Gaudi 加速器以及 NVIDIA GPU 上部署。
+更多使用细节请参阅[用户指南](./docs/step_by_step_CN.md)。
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -38,6 +42,8 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 * [2026/09] 我们将 MoE量化速度提升了 3 倍以上，并显著降低了 RAM 使用量。详细结果请参阅[文档](./docs/moe.md)。请注意，该优化可能会引入一些回归问题或其他问题。
 
 * [2026/09] 现在支持在 CUDA 设备上通过 vLLM 和 Transformers 使用 5/6/7-bit WOQ 模型，感谢 Humming Kernel 的支持。
+
+* [2026/09] 面向免标定量化的 **NeUQI** 网格搜索（[arXiv 2505.17595](https://arxiv.org/abs/2505.17595)）现已可用：`--enable_neuqi` 配合 `--iters 0` 时，非对称层执行联合 (scale, zero-point) 搜索、对称层执行两阶段 scale 搜索；`iters > 0` 时搜索结果将作为调优网格的锚点：[*结果*](./docs/neuqi_acc.md)。
 
 * [2026/08] 我们实验性地支持**算法组合**（例如 `--algs awq,signround` 或 `--algs hadamard,awq,signround`），以提升精度：[*总览*](./docs/algorithm_combinations_CN.md). 我们欢迎能真正落地的任何算法组合，欢迎提交 PR 或在 Issues 中留言。
 

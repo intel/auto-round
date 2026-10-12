@@ -458,7 +458,7 @@ def get_lib(A: torch.Tensor):
 
 
 # A: mxk,  B: nxk, bias: n or [1, n]
-def matmul_sycl_tla(A: torch.Tensor, B: torch.Tensor, bias: Optional[torch.Tensor] = None):
+def matmul_sycl_tla(A: torch.Tensor, B: torch.Tensor, bias: torch.Tensor | None = None):
     if A.device.type != "xpu" or B.device.type != "xpu":
         raise NotImplementedError("matmul_sycl_tla is only supported on XPU")
     if A.ndim != 2 or B.ndim != 2:
@@ -952,6 +952,18 @@ def sdpa(
     return O
 
 
+def _xpu_capturing() -> bool:
+    """True if the current XPU stream is inside a torch.xpu graph capture.
+
+    Used to skip host-side device->host syncs (.item() / .cpu()) that are
+    illegal while a SyclTensor command graph is being recorded.
+    """
+    try:
+        return bool(torch.xpu.is_current_stream_capturing())
+    except Exception:
+        return False
+
+
 def sdpa_varlen(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -1018,12 +1030,17 @@ def sdpa_varlen(
     total_kv, Hkv, Dk = key.shape
     total_kv_v, Hkv2, Dv = value.shape
 
-    if total_q != cu_seqlens_q[-1].item():
-        raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()})")
-    if total_kv != cu_seqlens_k[-1].item():
-        raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
-    if total_kv_v != cu_seqlens_k[-1].item():
-        raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
+    if not _xpu_capturing():
+        # Cross-check flat layout against the cumulative sequence-length
+        # boundaries.  These .item() calls force a device->host sync, which is
+        # illegal while a command graph is being captured, so the check is
+        # skipped during capture (the caller must keep buffer geometry stable).
+        if total_q != int(cu_seqlens_q[-1].item()):
+            raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1]")
+        if total_kv != int(cu_seqlens_k[-1].item()):
+            raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1]")
+        if total_kv_v != int(cu_seqlens_k[-1].item()):
+            raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1]")
     if Hkv != Hkv2 or Dk != Dv:
         raise ValueError("K/V shape mismatch")
     if Dk != D:
@@ -1057,7 +1074,8 @@ def sdpa_varlen(
     O = torch.empty(total_q, Hq, D, dtype=value.dtype, device=query.device)
 
     if return_lse:
-        max_q = int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        # .item() is a device->host sync; illegal during graph capture.
+        max_q = max_seqlen_q if _xpu_capturing() else int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
         if max_seqlen_q < max_q:
             raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
         LSE = torch.full(
@@ -1709,7 +1727,7 @@ class ArkCpuPackedKVHandle:
         num_heads_kv: int | None = None,
         *,
         is_causal: bool = False,
-        scale: Optional[float] = None,
+        scale: float | None = None,
         tensor_layout: str = "HND",
     ) -> torch.Tensor:
         del num_heads_kv
@@ -1742,7 +1760,7 @@ def ark_cpu_packed_kv_descriptor(
 def ark_cpu_packed_kv_alloc_from_descriptor(
     descriptor,
     *,
-    dtype: Optional[torch.dtype] = None,
+    dtype: torch.dtype | None = None,
     device: str = "cpu",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_elems_desc"):
@@ -1783,10 +1801,10 @@ def ark_cpu_packed_kv_alloc(
 
 
 def ark_cpu_packed_kv_info(
-    batch: Optional[int] = None,
-    num_heads_kv: Optional[int] = None,
-    capacity: Optional[int] = None,
-    head_dim: Optional[int] = None,
+    batch: int | None = None,
+    num_heads_kv: int | None = None,
+    capacity: int | None = None,
+    head_dim: int | None = None,
     *,
     dtype: torch.dtype = torch.float16,
     descriptor=None,
@@ -2012,7 +2030,7 @@ def ark_cpu_bestla_sdpa_packed(
     num_heads_kv: int,
     *,
     is_causal: bool = False,
-    scale: Optional[float] = None,
+    scale: float | None = None,
     tensor_layout: str = "HND",
 ) -> torch.Tensor:
     """Internal/experimental BestLA mixed-precision SDPA over a packed K/V cache.
@@ -2066,7 +2084,7 @@ def ark_cpu_bestla_sdpa_packed_from_descriptor(
     seq_len_kv: int,
     *,
     is_causal: bool = False,
-    scale: Optional[float] = None,
+    scale: float | None = None,
     tensor_layout: str = "HND",
 ) -> torch.Tensor:
     """Descriptor-based internal/experimental packed BestLA SDPA forward."""
@@ -2107,7 +2125,7 @@ def sageattn(
     v: torch.Tensor,
     tensor_layout: str = "HND",
     is_causal: bool = False,
-    sm_scale: Optional[float] = None,
+    sm_scale: float | None = None,
     return_lse: bool = False,
     kernel: str = "v1_pvhalf",
     **kwargs,
@@ -2161,10 +2179,12 @@ from .sparse_attention import (
     _sequence_mean_native_layout,
     _slice_sequence_native_layout,
     _to_hnd,
+    block_sparse_sdpa,
     sage_sparse,
     sparge_block_map_to_mask,
     sparge_preprocess_topk,
     sparge_sage2_attn_meansim_topk_xpu,
+    sparge_sage2_attn_meansim_topk_xpu_sdpa,
 )
 
 
@@ -2274,7 +2294,8 @@ def sageattn_varlen(
     O = torch.empty(total_q, Hq, D, dtype=v.dtype, device=q.device)
 
     if return_lse:
-        max_q = int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        # .item() is a device->host sync; illegal during graph capture.
+        max_q = max_seqlen_q if _xpu_capturing() else int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
         if max_seqlen_q < max_q:
             raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
         LSE = torch.full(
@@ -2434,8 +2455,8 @@ def moe_gemm_decode(
     weights: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     *,
-    scales: Optional[torch.Tensor] = None,
-    zeros: Optional[torch.Tensor] = None,
+    scales: torch.Tensor | None = None,
+    zeros: torch.Tensor | None = None,
     weight_bits: int = 4,
     group_size: int = 128,
     asym: bool = False,
@@ -2602,8 +2623,8 @@ def _validate_moe_quant_args(
     weights: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     *,
-    scales: Optional[torch.Tensor],
-    zeros: Optional[torch.Tensor],
+    scales: torch.Tensor | None,
+    zeros: torch.Tensor | None,
     weight_bits: int,
     group_size: int,
     asym: bool,
@@ -2790,17 +2811,17 @@ class MoeSymmetricGemm:
     weights_ptr: int
     scales_ptr: int
     zeros_ptr: int = 0
-    decode_expert_id_per_token: Optional[torch.Tensor] = None
+    decode_expert_id_per_token: torch.Tensor | None = None
 
     @classmethod
     def prepare(
         cls,
         weights: torch.Tensor,
-        scales: Optional[torch.Tensor],
+        scales: torch.Tensor | None,
         *,
         weight_bits: int = 4,
         group_size: int = 128,
-        activation_dtype: Optional[torch.dtype] = None,
+        activation_dtype: torch.dtype | None = None,
         max_decode_tokens: int = 0,
     ) -> "MoeSymmetricGemm":
         """Prepare the symmetric quantized MoE GEMM fast path.
@@ -2903,8 +2924,8 @@ class MoeSymmetricGemm:
         activations: torch.Tensor,
         num_tokens_per_expert: torch.Tensor,
         *,
-        outputs: Optional[torch.Tensor] = None,
-        expert_id_per_token: Optional[torch.Tensor] = None,
+        outputs: torch.Tensor | None = None,
+        expert_id_per_token: torch.Tensor | None = None,
     ) -> torch.Tensor:
         total_tokens = int(activations.shape[0])
         if outputs is None:
@@ -2942,8 +2963,8 @@ class MoeSymmetricGemm:
         activations: torch.Tensor,
         num_tokens_per_expert: torch.Tensor,
         *,
-        outputs: Optional[torch.Tensor] = None,
-        workspace: Optional[torch.Tensor] = None,
+        outputs: torch.Tensor | None = None,
+        workspace: torch.Tensor | None = None,
     ) -> torch.Tensor:
         total_tokens = int(activations.shape[0])
         if outputs is None:
@@ -2981,10 +3002,10 @@ class MoeSymmetricGemm:
         num_tokens_per_expert: torch.Tensor,
         *,
         phase: str = "auto",
-        decode_threshold: Optional[int] = None,
-        outputs: Optional[torch.Tensor] = None,
-        expert_id_per_token: Optional[torch.Tensor] = None,
-        workspace: Optional[torch.Tensor] = None,
+        decode_threshold: int | None = None,
+        outputs: torch.Tensor | None = None,
+        expert_id_per_token: torch.Tensor | None = None,
+        workspace: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if phase not in _MOE_VALID_PHASES:
             raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
@@ -3013,10 +3034,10 @@ class MoeSymmetricGemm:
         num_tokens_per_expert: torch.Tensor,
         *,
         phase: str = "auto",
-        decode_threshold: Optional[int] = None,
-        outputs: Optional[torch.Tensor] = None,
-        expert_id_per_token: Optional[torch.Tensor] = None,
-        workspace: Optional[torch.Tensor] = None,
+        decode_threshold: int | None = None,
+        outputs: torch.Tensor | None = None,
+        expert_id_per_token: torch.Tensor | None = None,
+        workspace: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return self.moe(
             activations,
@@ -3034,7 +3055,7 @@ def moe_gemm(
     weights: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     *,
-    scales: Optional[torch.Tensor] = None,
+    scales: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """MOE GEMM (Mixture of Experts Grouped GEMM).
 
@@ -3286,13 +3307,13 @@ def moe_gemm_prefill(
     weights: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     *,
-    scales: Optional[torch.Tensor] = None,
-    zeros: Optional[torch.Tensor] = None,
+    scales: torch.Tensor | None = None,
+    zeros: torch.Tensor | None = None,
     weight_bits: int = 4,
     group_size: int = 128,
     asym: bool = False,
-    scale_scheme: Optional[str] = None,
-    scale_dtype: Optional[str] = None,
+    scale_scheme: str | None = None,
+    scale_dtype: str | None = None,
 ) -> torch.Tensor:
     """MoE Grouped GEMM optimized for the prefill phase, supporting all weight
     encodings of ``moe_gemm_decode`` (FP16/BF16, INT8 sym/asym, INT4 sym/asym,
@@ -4167,14 +4188,14 @@ def moe(
     weights: torch.Tensor,
     num_tokens_per_expert: torch.Tensor,
     *,
-    scales: Optional[torch.Tensor] = None,
-    zeros: Optional[torch.Tensor] = None,
+    scales: torch.Tensor | None = None,
+    zeros: torch.Tensor | None = None,
     weight_bits: int = 4,
     group_size: int = 128,
     asym: bool = False,
     scale_dtype: Optional[str] = None,
     phase: str = "auto",
-    decode_threshold: Optional[int] = None,
+    decode_threshold: int | None = None,
 ) -> torch.Tensor:
     """Unified MoE GEMM entry point that dispatches to decode or prefill.
 

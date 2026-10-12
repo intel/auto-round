@@ -16,12 +16,10 @@ class TestAutoRoundXPU:
     @classmethod
     def setup_class(self):
         self.device = "xpu"
-        pass
 
     @classmethod
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
-        pass
 
     @pytest.fixture(autouse=True)
     def _save_dir(self, tmp_path):
