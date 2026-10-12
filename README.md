@@ -41,11 +41,7 @@ For usage details, please refer to the [User Guide](./docs/step_by_step.md).
 
 ## 🆕 What's New
 
-* [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.
-
-* [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.
-
-* [2026/09] We experimentally support **Recurrent Residual Quantization (RRQ)**. A single checkpoint serves 2/4/6/8-bit — and per-layer mixed precision — selectable at load time without re-quantizing: [*Paper*](https://arxiv.org/abs/2608.04048).
+* [2026/10] We experimentally support **Recurrent Residual Quantization (RRQ)**. A single checkpoint serves 2/4/6/8-bit — and per-layer mixed precision — selectable at load time without re-quantizing: [*Paper*](https://arxiv.org/abs/2608.04048).
   ```bash
   # Quantize: produces both base/ and residual/ in the output dir
   python -m auto_round.cli.main \
@@ -57,6 +53,10 @@ For usage details, please refer to the [User Guide](./docs/step_by_step.md).
   model = load_rrq_model("./out/Qwen/Qwen3-0.6B/8bit", active_bits=4)
   ```
   Note: this is an experimental feature and production-level deployments are not yet supported.
+
+* [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.
+
+* [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.
 
 * [2026/09] The **NeUQI** grid search ([arXiv 2505.17595](https://arxiv.org/abs/2505.17595)) is available for calibration-free quantization: `--enable_neuqi` with `--iters 0` runs a joint (scale, zero-point) search for asymmetric layers and a two-stage scale search for symmetric layers, and anchors the tuning grid when `iters > 0`. [*Results*](./docs/neuqi_acc.md)
 
