@@ -238,7 +238,6 @@ class TestAutoRound:
         )
         autoround.quantize()
 
-    #
     def test_signround(self, tiny_opt_model_path, dataloader):
         model_name = tiny_opt_model_path
         bits, group_size, sym = 4, -1, False

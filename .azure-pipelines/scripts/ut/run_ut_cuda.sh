@@ -5,7 +5,7 @@ set -xe
 
 CONDA_ENV_NAME="unittest_cuda"
 PYTHON_VERSION="3.12"
-TORCH_VERSION="2.14.0"
+TORCH_VERSION="2.14.1"
 
 REPO_PATH=$(git rev-parse --show-toplevel)
 LOG_DIR=${REPO_PATH}/ut_log_dir
@@ -101,7 +101,7 @@ function run_unit_test() {
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git@master#subdirectory=gguf-py'
     uv pip install -r unit/test_cuda/requirements.txt
     uv pip install -r unit/test_cuda/requirements_diffusion.txt
-    uv pip install -U transformers chardet
+    uv pip install -U transformers chardet timm
     uv pip uninstall torch torchvision
     uv pip install torch==${TORCH_VERSION} torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test

@@ -381,14 +381,14 @@ def get_tiny_model(
                         config = json.load(f)
                     _reduce_config_layers(config, num_layers, num_experts)
                     _apply_config_overrides(config, config_overrides)
-                    return getattr(getattr(diffusers_module, mod_name), "from_config")(config)
+                    return getattr(diffusers_module, mod_name).from_config(config)
                 else:
                     config = transformers.AutoConfig.from_pretrained(
                         os.path.join(local_dir, folder_name, "config.json")
                     )
                     _reduce_config_layers(config, num_layers, num_experts)
                     _apply_config_overrides(config, config_overrides)
-                    return getattr(getattr(transformers_module, mod_name), "_from_config")(config)
+                    return getattr(transformers_module, mod_name)._from_config(config)
 
             with open(os.path.join(local_dir, "model_index.json"), "r", encoding="utf-8") as f:
                 model_index = json.load(f)
@@ -452,7 +452,7 @@ def get_tiny_model(
         return sliced
 
     kwargs["dtype"] = "auto" if "auto" not in kwargs else kwargs["dtype"]
-    kwargs["trust_remote_code"] = True if "trust_remote_code" not in kwargs else kwargs["trust_remote_code"]
+    kwargs["trust_remote_code"] = kwargs.get("trust_remote_code", True)
     if is_mllm:
         model, processor, tokenizer, image_processor = mllm_load_model(model_name_or_path, **kwargs)
         if hasattr(model.config, "vision_config"):

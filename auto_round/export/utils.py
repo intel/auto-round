@@ -23,8 +23,10 @@ from auto_round.utils import (
     copy_missing_tensors_from_source,
     copy_python_files_from_model_cache,
     logger,
+    restore_fp32_tensors_from_source,
     unsupported_meta_device,
 )
+from auto_round.utils.path_safety import UnsafeCheckpointPathError, resolve_within_directory
 
 
 def save_pretrained_artifact(artifact, output_dir: str, artifact_name: str = "artifact") -> bool:
@@ -90,7 +92,7 @@ def _state_dict_has_meta_tensor(model: nn.Module) -> bool:
     return False
 
 
-def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict = None) -> bool:
+def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict | None = None) -> bool:
     """Determine if the model was saved via ShardWriter (immediate saving mode).
 
     Resolution order:
@@ -104,9 +106,7 @@ def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict = None) 
             return True
     if unsupported_meta_device(model):
         return True
-    if _state_dict_has_meta_tensor(model):
-        return True
-    return False
+    return _state_dict_has_meta_tensor(model)
 
 
 def is_local_pipeline_model_dir(model_dir: str) -> bool:
@@ -155,10 +155,12 @@ def _resolve_model_source_dir(model: nn.Module) -> str | None:
 
 
 def _copy_pipeline_artifact(model_dir: str, relative_path: str, output_dir: str) -> None:
-    target_path = os.path.join(output_dir, relative_path)
+    # ``relative_path`` comes from the pipeline's own model_index.json, so it must
+    # stay inside output_dir (write side) and model_dir (read side).
+    target_path = str(resolve_within_directory(output_dir, relative_path, origin="model_index.json"))
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
     if is_local_pipeline_model_dir(model_dir):
-        source_path = os.path.join(model_dir, relative_path)
+        source_path = str(resolve_within_directory(model_dir, relative_path, origin="model_index.json"))
     else:
         from huggingface_hub import hf_hub_download
 
@@ -203,6 +205,11 @@ def _copy_pipeline_artifacts(source_dir: str, output_dir: str, exclude_component
     for component_name in component_dirs:
         if component_name in exclude_components:
             continue
+        # Keys of model_index.json are pipeline kwargs; anything else would be joined as a path.
+        if not component_name.isidentifier():
+            raise UnsafeCheckpointPathError(
+                f"model_index.json: component name {component_name!r} is not a plain directory name"
+            )
         if is_local:
             src = os.path.join(source_dir, component_name)
             dst = os.path.join(output_dir, component_name)
@@ -318,6 +325,70 @@ def _restore_original_layer_types(save_dir: str, source_dir: str) -> None:
             json.dump(saved_config, f, indent=2)
 
 
+# Quantization metadata (weight/input/kv-cache scales and zero points) is part of the
+# checkpoint contract and must keep its own dtype, so it is never cast to the export dtype.
+_QUANT_PARAM_SUFFIXES = ("_scale", "_scales", "_scale_inv", "_zero_point", "_zeros", "_zp")
+
+
+def _is_quant_param(name: str) -> bool:
+    return name.endswith(_QUANT_PARAM_SUFFIXES)
+
+
+def _get_state_dict_for_export_dtype(model: nn.Module, dtype) -> dict | None:
+    """Return a state dict with float32 tensors cast to ``dtype``, or None if nothing needs casting.
+
+    Tuning may run the model in float32, e.g. when the device doesn't support bfloat16. The
+    exported config declares ``dtype``, so the saved tensors should use it too. Tensors of
+    modules the model keeps in float32 (``_keep_in_fp32_modules``) are left unchanged, as are
+    quantized (non-float32) tensors and quantization scales/zero points.
+    """
+    if dtype not in (torch.bfloat16, torch.float16):
+        return None
+    state_dict = model.state_dict()
+    if not any(tensor.dtype == torch.float32 for tensor in state_dict.values()):
+        return None
+
+    keep_in_fp32 = set()
+    for attribute in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+        names = getattr(model, attribute, None) or []
+        keep_in_fp32.update([names] if isinstance(names, str) else names)
+
+    def _should_cast(name: str, tensor: torch.Tensor) -> bool:
+        if tensor.dtype != torch.float32 or _is_quant_param(name):
+            return False
+        return not any(module_name in name for module_name in keep_in_fp32)
+
+    return {name: (tensor.to(dtype) if _should_cast(name, tensor) else tensor) for name, tensor in state_dict.items()}
+
+
+def apply_post_save_source_fixes(model: nn.Module, save_dir: str) -> None:
+    """Restore checkpoint artifacts that ``save_pretrained`` does not preserve."""
+    source_dir = _resolve_model_source_dir(model)
+    if source_dir is None:
+        return
+
+    try:
+        restore_fp32_tensors_from_source(source_dir=source_dir, target_dir=save_dir)
+    except Exception as e:
+        logger.warning("Skipping restore of FP32 tensors from source checkpoint due to error: %s", e)
+
+    if not envs.AR_DISABLE_COPY_MTP_WEIGHTS:
+        try:
+            copy_missing_tensors_from_source(source_dir=source_dir, target_dir=save_dir)
+        except Exception as e:
+            logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
+
+    try:
+        _restore_original_layer_types(save_dir, source_dir)
+    except Exception as e:  # pragma: no cover - best-effort, never block export
+        logger.warning("Skipping restore of original layer_types due to error: %s", e)
+
+    try:
+        copy_python_files_from_model_cache(model, save_dir)
+    except Exception as e:
+        logger.warning("Skipping source model Python file copy due to error: %s", e)
+
+
 def save_model(
     model: nn.Module,
     save_dir: str,
@@ -355,30 +426,23 @@ def save_model(
         logger.info("Immediate saving mode: weights already saved by ShardWriter, saving configs only.")
         _save_model_configs(model, save_dir)
     else:
+        export_state_dict = _get_state_dict_for_export_dtype(model, dtype)
+        save_kwargs = {} if export_state_dict is None else {"state_dict": export_state_dict}
         try:
-            model.save_pretrained(save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization)
+            model.save_pretrained(
+                save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization, **save_kwargs
+            )
         except (KeyError, TypeError) as e:
             # Some third-party configs fail during config serialization in save_pretrained.
             # Fall back to saving weights separately + config without diff.
             logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
             from safetensors.torch import save_file
 
-            state_dict = model.state_dict()
+            state_dict = model.state_dict() if export_state_dict is None else export_state_dict
             save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
             _save_model_configs(model, save_dir)
 
-    source_dir = _resolve_model_source_dir(model)
-
-    # Allow disabling copy_missing_tensors_from_source via env var AR_DISABLE_COPY_MTP_WEIGHTS, default enabled
-    if not envs.AR_DISABLE_COPY_MTP_WEIGHTS:
-        try:
-            if source_dir is not None:
-                copy_missing_tensors_from_source(
-                    source_dir=source_dir,
-                    target_dir=save_dir,
-                )
-        except Exception as e:
-            logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
+    apply_post_save_source_fixes(model, save_dir)
 
     config_path = os.path.join(save_dir, "config.json")
     if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
@@ -392,26 +456,10 @@ def save_model(
         with open(config_path, "w") as file:
             json.dump(data, file, indent=2)
 
-    # transformers' PreTrainedConfig normalizes ``layer_types`` on load/save (via
-    # ``remap_legacy_layer_types`` and dataclass post-init), so ``model.save_pretrained``
-    # can rewrite the strings (e.g. hybrid-attention Qwen models). Restore the original
-    # ``layer_types`` from the source checkpoint so the exported config stays faithful.
-    if source_dir is not None:
-        try:
-            _restore_original_layer_types(save_dir, source_dir)
-        except Exception as e:  # pragma: no cover - best-effort, never block export
-            logger.warning("Skipping restore of original layer_types due to error: %s", e)
-
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
             json.dump(model.config.quantization_config, f, indent=2)
-
-    try:
-        if source_dir is not None:
-            copy_python_files_from_model_cache(model, save_dir)
-    except Exception as e:
-        logger.warning("Skipping source model Python file copy due to error: %s", e)
 
 
 def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
@@ -457,12 +505,22 @@ def filter_quantization_config(quantization_config):
     default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
     default_dict["minmax_lr"] = default_dict["lr"]
 
-    for key in default_dict:
-        if key in quantization_config and default_dict[key] == quantization_config[key]:
+    for key, default_value in default_dict.items():
+        if key in quantization_config and default_value == quantization_config[key]:
             quantization_config.pop(key)
     for k in list(quantization_config.keys()):
         if quantization_config[k] is None:
             quantization_config.pop(k)
+
+    # static_*_granularity only carries a value ("tensor") when the matching static
+    # dtype is set; without it the key is inert but misleads readers into thinking
+    # KV/attention quantization is configured.
+    for dtype_key, gran_key in (
+        ("static_kv_dtype", "static_kv_granularity"),
+        ("static_attention_dtype", "static_attention_granularity"),
+    ):
+        if quantization_config.get(dtype_key) is None:
+            quantization_config.pop(gran_key, None)
 
     if quantization_config.get("act_bits", 16) >= 16:
         quantization_config.pop("act_bits", None)
@@ -476,9 +534,7 @@ def filter_quantization_config(quantization_config):
         if callable(key):
             quantization_config.pop(key)
         elif isinstance(quantization_config[key], (list, tuple)):
-            if any([callable(item) for item in quantization_config[key]]):
-                quantization_config.pop(key)
-            elif len(quantization_config[key]) == 0:
+            if any(callable(item) for item in quantization_config[key]) or len(quantization_config[key]) == 0:
                 quantization_config.pop(key)
         if key in clean_list and key in quantization_config:
             quantization_config.pop(key)

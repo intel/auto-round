@@ -13,7 +13,7 @@ from auto_round import AutoRound
 
 def quantize_model(model, output_dir, scheme, iters=0, ignore_layers="self_attn,router,lm_head,mlp.gate"):
     """Helper function to quantize the model with the given scheme."""
-    disable_opt_rtn = True if iters == 0 else False
+    disable_opt_rtn = iters == 0
     autoround = AutoRound(
         model,
         scheme=scheme,

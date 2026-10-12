@@ -13,14 +13,12 @@
 # limitations under the License.
 """Pure helpers for shaping cached block inputs."""
 
-from typing import Tuple
-
 import torch
 
 from auto_round.utils import clear_memory, to_device, to_dtype
 from auto_round.utils.device_manager import device_manager
 
-__all__ = ["split_inputs", "preprocess_block_inputs"]
+__all__ = ["preprocess_block_inputs", "split_inputs"]
 
 
 def split_inputs(
@@ -29,7 +27,7 @@ def split_inputs(
     *,
     is_diffusion: bool,
     shared_cache_keys: tuple = (),
-) -> Tuple[object, dict]:
+) -> tuple[object, dict]:
     """Split a captured ``inputs`` dict into ``(input_ids, input_others)``.
 
     Mirrors the original ``Compressor._split_inputs`` exactly:
@@ -71,7 +69,7 @@ def preprocess_block_inputs(
     model_context,
     compress_context,
     first_input_name: str = "input_ids",
-) -> Tuple[object, dict]:
+) -> tuple[object, dict]:
     """Move/cast cached block inputs onto the calibration cache device.
 
     Mirrors the original ``Compressor._preprocess_block_inputs`` exactly.

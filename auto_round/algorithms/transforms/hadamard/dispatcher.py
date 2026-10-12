@@ -28,7 +28,7 @@ Routing is controlled by :class:`RotationConfig.backend`:
 
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import Any
 
 import torch
 
@@ -41,7 +41,7 @@ __all__ = ["apply_hadamard_rotation", "resolve_hadamard_backend"]
 
 
 def _to_config(
-    rotation_config: Union[str, dict, RotationConfig, None],
+    rotation_config: str | dict | RotationConfig | None,
     data_type: str,
 ) -> RotationConfig:
     """Normalise *rotation_config* and return a :class:`RotationConfig` instance."""
@@ -88,7 +88,7 @@ def resolve_hadamard_backend(config: RotationConfig, data_type: str) -> str:
 
 def apply_hadamard_rotation(
     model: torch.nn.Module,
-    rotation_config: Union[str, dict, RotationConfig, None],
+    rotation_config: str | dict | RotationConfig | None,
     data_type: str,
     compute_device: torch.device | str = None,
 ) -> (torch.nn.Module, Any):
@@ -138,7 +138,7 @@ def apply_hadamard_rotation(
             compute_device=compute_device,
         )
         # Stash config object for downstream (export / serialization).
-        setattr(model, "_rotation_config", config)
+        model._rotation_config = config
         return model, hooks
 
     elif backend == "transform":

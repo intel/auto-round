@@ -30,9 +30,6 @@ stages:
       timeoutInMinutes: 20
       strategy:
         matrix:
-          Python310_Linux:
-            python_version: '3.10'
-            vmImage: 'ubuntu-latest'
           Python311_Linux:
             python_version: '3.11'
             vmImage: 'ubuntu-latest'
@@ -49,9 +46,6 @@ stages:
             python_version: '3.14t'
             vmImage: 'ubuntu-latest'
 
-          Python310_Windows:
-            python_version: '3.10'
-            vmImage: 'windows-latest'
           Python311_Windows:
             python_version: '3.11'
             vmImage: 'windows-latest'

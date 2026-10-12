@@ -42,9 +42,8 @@ from auto_round.algorithms.config_resolver import (
     split_quantization_configs,
 )
 from auto_round.algorithms.utils import _has_nvfp4_layer
-from auto_round.data_type.base import canonical_data_type, prepare_data_type_block
 from auto_round.logger import logger
-from auto_round.utils import check_to_quantized, clear_memory
+from auto_round.utils import clear_memory
 from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
@@ -71,7 +70,7 @@ class BlockContext:
     ``ValueError`` with a user-readable message.
     """
 
-    model: "torch.nn.Module"
+    model: torch.nn.Module
     block_names: list[str]  # scheduling group; len > 1 when nblocks > 1
     block_name: str  # = block_names[0] for single-block; descriptive label for multi
     block_index: int  # 0-based index within the current all_blocks group
@@ -99,7 +98,7 @@ class AlgorithmComposer:
         composer = AlgorithmComposer(configs, compressor=self)
     """
 
-    def __init__(self, configs: list, orchestrator: "BaseOrchestrator" = None) -> None:
+    def __init__(self, configs: list, orchestrator: BaseOrchestrator = None) -> None:
         """Build the pipeline from a list of algorithm config instances.
 
         Resolution rules:
@@ -211,6 +210,10 @@ class AlgorithmComposer:
                     ", ".join(blockers),
                 )
 
+            if _has_nvfp4_layer(orchestrator):
+                can_compile_block_forward = False
+                logger.info("Block-forward torch.compile is disabled because at least one quantized layer uses NVFP4.")
+
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
                 BlockForwardRunner.from_orchestrator(orchestrator, enable_torch_compile=can_compile_block_forward)
@@ -237,20 +240,36 @@ class AlgorithmComposer:
 
     # ── Internal hook helpers (act_max calibration) ───────────────────────────
 
-    def _register_act_max_hooks(self, block: "torch.nn.Module") -> list:
+    def _register_act_max_hooks(self, block: torch.nn.Module) -> list:
         """Register per-module act_max tracking hooks for static activation quantization.
 
         Returns a list of hook handles that the caller must remove when done.
         """
-        from auto_round.data_type.base import cache_activation_quantizer
+        from auto_round.compressors.utils import is_nv_fp
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+
+        is_act_nv_fp = getattr(self.block_quantizer.config, "is_act_nv_fp", False)
 
         def collect_act_max(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
             if input.numel() == 0:
                 return
-            quantizer = cache_activation_quantizer(module)
-            if quantizer is not None:
-                module.act_max = quantizer.observe(input, getattr(module, "act_max", None))
+            module_act_data_type = getattr(module, "act_data_type", None) or getattr(module, "data_type", None)
+            is_module_act_nv_fp = is_nv_fp(module_act_data_type) if module_act_data_type else is_act_nv_fp
+            input, _, _ = reshape_pad_tensor_by_group_size(input, module.act_group_size)
+            act_max = torch.max(torch.abs(input), dim=-1).values
+            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
+                module.act_max = act_max
+                if is_module_act_nv_fp:
+                    max_val = act_max.max()
+                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+                return
+            act_max = act_max.to(module.act_max.device)
+            if is_module_act_nv_fp:
+                max_val = torch.max(act_max.max(), module.act_max.max())
+                module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+            else:
+                module.act_max = torch.max(act_max, module.act_max)
 
         def should_collect(name, module):
             from auto_round.compressors.utils import check_need_act_calibration
@@ -259,8 +278,8 @@ class AlgorithmComposer:
             if isinstance(module, tuple(SUPPORTED_LAYER_TYPES)):
                 return (
                     hasattr(module, "act_dynamic")
+                    and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
                     and check_to_quantized(module)
-                    and bool(getattr(cache_activation_quantizer(module), "requires_calibration", False))
                 )
             if hasattr(module, "bits"):
                 act_dynamic = getattr(module, "act_dynamic", True)
@@ -268,8 +287,8 @@ class AlgorithmComposer:
                 act_bits = getattr(module, "act_bits", 16)
                 return (
                     module.bits <= 8
+                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
                     and check_to_quantized(module)
-                    and bool(getattr(cache_activation_quantizer(module), "requires_calibration", False))
                 )
             return False
 
@@ -282,7 +301,7 @@ class AlgorithmComposer:
                 handles.append(module.register_forward_hook(collect_act_max))
         return handles
 
-    def _get_fp_act_hooks(self, block: "torch.nn.Module") -> list:
+    def _get_fp_act_hooks(self, block: torch.nn.Module) -> list:
         """Register FP-input act_max + quantizer forward hooks."""
         if not self.need_quanted_input():
             # If having q_input, act_max will be collected in q_input forward hook,
@@ -293,13 +312,13 @@ class AlgorithmComposer:
         handles.extend(self.block_quantizer.register_fp_input_forward_hooks(block))
         return handles
 
-    def _get_q_act_hooks(self, block: "torch.nn.Module") -> list:
+    def _get_q_act_hooks(self, block: torch.nn.Module) -> list:
         """Register Q-input act_max + quantizer forward hooks."""
         handles = self._register_act_max_hooks(block)
         handles.extend(self.block_quantizer.register_qinput_forward_hooks(block))
         return handles
 
-    def _attach_act_max_for_outside_layer(self, layer: "torch.nn.Module", fp_inputs, q_inputs) -> None:
+    def _attach_act_max_for_outside_layer(self, layer: torch.nn.Module, fp_inputs, q_inputs) -> None:
         """Compute and attach act_max for an outside-block layer from cached inputs.
 
         Mirrors the hook-based act_max collection done for in-block layers, but
@@ -311,27 +330,45 @@ class AlgorithmComposer:
             q_inputs: Optional list of quantized input tensors; used instead of
                 ``fp_inputs`` when provided.
         """
-        from auto_round.data_type.base import cache_activation_quantizer
+        from auto_round.compressors.utils import is_nv_fp
+        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
         target_input = q_inputs or fp_inputs
-        quantizer = cache_activation_quantizer(layer)
-        if quantizer is None:
-            return
+        act_group_size = layer.act_group_size
+        if act_group_size is None:
+            act_group_size = layer.group_size
+        act_data_type = layer.act_data_type
+        if act_data_type is None:
+            act_data_type = layer.data_type
+        is_act_nv_fp_flag = is_nv_fp(act_data_type) if act_data_type else False
 
         for inp in target_input:
             if isinstance(inp, (tuple, list)):
                 inp = inp[0]
             if inp.numel() == 0:
                 continue
-            layer.act_max = quantizer.observe(inp, getattr(layer, "act_max", None))
+            inp, _, _ = reshape_pad_tensor_by_group_size(inp, act_group_size)
+            act_max = torch.max(torch.abs(inp), dim=-1).values
+
+            if not hasattr(layer, "act_max") or layer.act_max.numel() == 0:
+                layer.act_max = act_max
+                if is_act_nv_fp_flag:
+                    max_val = act_max.max()
+                    layer.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+                continue
+
+            act_max = act_max.to(layer.act_max.device)
+            if is_act_nv_fp_flag:
+                max_val = torch.max(act_max.max(), layer.act_max.max())
+                layer.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
+            else:
+                layer.act_max = torch.max(act_max, layer.act_max)
 
     def need_quanted_input(self):
         for preprocessor in self.preprocessors:
             if getattr(preprocessor, "enable_quanted_input", False):
                 return True
-        if getattr(self.block_quantizer, "enable_quanted_input", False):
-            return True
-        return False
+        return bool(getattr(self.block_quantizer, "enable_quanted_input", False))
 
     def compress_embedding_layer(self):
         return self.block_quantizer.quantize_embedding_layer()
@@ -432,26 +469,12 @@ class AlgorithmComposer:
             act_data_type = self.scheme.act_data_type if self.scheme else data_type
             if act_data_type is not None or not act_dynamic:
                 from auto_round.compressors.utils import is_nv_fp
+                from auto_round.data_type.utils import update_block_global_scale_if_needed
                 from auto_round.utils import set_amax_for_all_moe_layers
 
                 if is_nv_fp(act_data_type) or not act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
-
-                runtimes_by_datatype = {}
-                for name, module in block.named_modules():
-                    if not check_to_quantized(module):
-                        continue
-                    module_data_type = getattr(module, "data_type", data_type)
-                    try:
-                        canonical_id = canonical_data_type(module_data_type)
-                    except LookupError:
-                        continue
-                    runtimes_by_datatype.setdefault(canonical_id, {})[name] = {
-                        "data_type": module_data_type,
-                        "group_size": getattr(module, "group_size", group_size),
-                    }
-                for canonical_id, runtimes in runtimes_by_datatype.items():
-                    prepare_data_type_block(canonical_id, block, runtimes)
+                update_block_global_scale_if_needed(block, data_type, group_size)
 
         if q_inputs is not None and fp_inputs is not q_inputs:
             clear_memory(fp_inputs)
@@ -487,7 +510,7 @@ class AlgorithmComposer:
 
     def compress_layer_outside_block(
         self,
-        layer: "torch.nn.Module",
+        layer: torch.nn.Module,
         fp_inputs=None,
         q_inputs=None,
         disable_opt_rtn=None,  # TODO wenhuach rename this to search_init_scale
@@ -512,7 +535,7 @@ class AlgorithmComposer:
         if fp_inputs is not None:
             from auto_round.compressors.utils import is_nv_fp
 
-            act_data_type = getattr(layer, "act_data_type")
+            act_data_type = layer.act_data_type
             if act_data_type is None:
                 act_data_type = "fp"
             act_dynamic = getattr(layer, "act_dynamic", True)
@@ -544,7 +567,7 @@ class AlgorithmComposer:
         """
         return list(self.preprocessors) + list(self._rotation_members) + [self.block_quantizer]
 
-    def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
+    def dispatch_block(self, block: torch.nn.Module, input_ids, input_others: dict):
         """Dispatch block to device(s) via the pipeline's algorithms.
 
         Iterates all members; if exactly one overrides the default dispatch_block,
@@ -572,7 +595,7 @@ class AlgorithmComposer:
             return overriders[0].dispatch_block(block, input_ids, input_others)
         return self.block_quantizer.dispatch_block(block, input_ids, input_others)
 
-    def prepare_run(self, composer: "AlgorithmComposer" = None):
+    def prepare_run(self, composer: AlgorithmComposer = None):
         for alg in self.members():
             alg.prepare_run(composer=self)
 
@@ -601,7 +624,7 @@ class AlgorithmComposer:
             return getattr(self.block_quantizer.config, "data_type", "mx_fp")
         return "mx_fp"
 
-    def apply_model_transforms(self, model: "torch.nn.Module") -> "torch.nn.Module":
+    def apply_model_transforms(self, model: torch.nn.Module) -> torch.nn.Module:
         """Apply model-level pre-quantisation transforms (rotation) to *model*.
 
         Generic entry point invoked once by the orchestrator before calibration

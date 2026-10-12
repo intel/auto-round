@@ -13,6 +13,10 @@
 # limitations under the License.
 """Tests for ``auto_round/export/export_to_autogptq/export.py``."""
 
+import pytest
+import torch
+
+from auto_round.export.export_to_autogptq import export as autogptq_export
 from auto_round.export.export_to_autogptq.export import (
     BLOCK_PATTERNS,
     GPTQ_REQUIRED_CONFIG_KEYS,
@@ -126,3 +130,65 @@ class TestConvertFromAutogptqDynamic:
 
     def test_empty(self):
         assert convert_from_autogptq_dynamic({}) == {}
+
+
+# ---------------------------------------------------------------------------
+# pack_layer
+# ---------------------------------------------------------------------------
+class TestPackLayerDevices:
+    """Packing runs on CPU, so every tensor handed to ``pack`` must be there."""
+
+    @staticmethod
+    def _build_model(sym: bool):
+        layer = torch.nn.Linear(8, 8, bias=False)
+        layer.bits = 4
+        layer.group_size = 8
+        layer.sym = sym
+        layer.scale = torch.ones(8, 1)
+        layer.zp = torch.zeros(8, 1)
+
+        model = torch.nn.Module()
+        model.add_module("linear", layer)
+        return model, layer
+
+    @staticmethod
+    def _stub_qlinear(recorded):
+        class _StubQuantLinear(torch.nn.Module):
+            def __init__(self, bits, group_size, in_features, out_features, bias, g_idx=True):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.zeros(out_features, in_features), requires_grad=False)
+
+            def pack(self, layer, scale, zero, g_idx=None, device=None):
+                recorded["zero"] = zero
+
+        return _StubQuantLinear
+
+    @pytest.mark.parametrize("sym", [True, False])
+    def test_zero_point_is_moved_to_cpu(self, monkeypatch, sym):
+        model, layer = self._build_model(sym)
+        recorded = {}
+
+        monkeypatch.setattr(
+            autogptq_export,
+            "get_autogptq_packing_qlinear",
+            lambda *args, **kwargs: self._stub_qlinear(recorded),
+        )
+
+        moved_to_cpu = []
+        original_to = torch.Tensor.to
+
+        def spy_to(self, *args, **kwargs):
+            if self is layer.zp and args and args[0] == "cpu":
+                moved_to_cpu.append(True)
+            return original_to(self, *args, **kwargs)
+
+        monkeypatch.setattr(torch.Tensor, "to", spy_to)
+
+        autogptq_export.pack_layer("linear", model, backend="auto_gptq:exllamav2", device="cpu")
+
+        assert moved_to_cpu, "the zero point was never moved to CPU"
+        zero = recorded["zero"]
+        if sym:
+            assert isinstance(zero, int)
+        else:
+            assert zero.device.type == "cpu"

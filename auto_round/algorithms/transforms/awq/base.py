@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import sys
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -278,13 +279,13 @@ class AWQTransform(BasePreprocessor):
                 "AWQ does not support nblocks > 1 (got nblocks=%s). ",
                 nblocks,
             )
-            exit(-1)
+            sys.exit(-1)
 
     def can_compile_block_forward(self) -> bool:
         """AWQ installs per-block calibration hooks that trigger Dynamo recompiles."""
         return False
 
-    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
+    def prepare_run(self, composer: AlgorithmComposer = None) -> None:
         """Resolve model-wide mappings and group them by transformer block."""
         model = self.model
 
@@ -347,7 +348,7 @@ class AWQTransform(BasePreprocessor):
             return self._register_awq_hooks(self.model_context.model, block, block_name)
         return []
 
-    def pre_quantize_block(self, ctx: "BlockContext") -> None:
+    def pre_quantize_block(self, ctx: BlockContext) -> None:
         """Apply AWQ smoothing for this block and mark modified params.
 
         Called after the reference forward (activation stats collected) and
@@ -382,7 +383,7 @@ class AWQTransform(BasePreprocessor):
             modified.extend(mapping.balance_names)
             modified.append(mapping.smooth_name)
 
-    def post_quantize_block(self, ctx: "BlockContext") -> None:
+    def post_quantize_block(self, ctx: BlockContext) -> None:
         """Release per-block AWQ caches to free memory."""
         block_mappings = self._block_mappings.get(ctx.block_name, [])
         if not block_mappings:
@@ -608,9 +609,7 @@ class AWQTransform(BasePreprocessor):
         """AWQ smoothing is all-or-nothing for layers sharing one smooth scale."""
         if self._mapping_has_ignored_layer(mapping):
             return False
-        if self._mapping_has_mixed_quant_params(mapping):
-            return False
-        return True
+        return not self._mapping_has_mixed_quant_params(mapping)
 
     def _smooth_block(self, block_prefix: str, block_mappings: list) -> None:
         """Run grid search and apply AWQ scales for one block.
@@ -730,7 +729,7 @@ class AWQTransform(BasePreprocessor):
         # the grid-search loop. Normal AWQ flow requires one mapping to have
         # compatible quant params, but keeping this per-layer avoids hidden
         # coupling to the first layer and makes direct calls robust.
-        bl_quantizers = {bl: self._qdq_tool.resolve_quantizer(bl_params[bl]) for bl in mapping.balance_layers}
+        bl_quant_funcs = {bl: self._qdq_tool.resolve_quant_funcs(bl_params[bl]) for bl in mapping.balance_layers}
 
         best_error = float("inf")
         best_scales = None
@@ -751,11 +750,12 @@ class AWQTransform(BasePreprocessor):
                 # de-smoothed result back, so the parent forward below sees the
                 # weights the layer would actually compute with.
                 for bl in mapping.balance_layers:
-                    quantizer = bl_quantizers[bl]
+                    quant_func, opt_quant_func = bl_quant_funcs[bl]
                     w_qdq = self._qdq_tool.qdq(
                         orig_state[bl] * scales_view,
                         bl_params[bl],
-                        quantizer=quantizer,
+                        quant_func=quant_func,
+                        opt_quant_func=opt_quant_func,
                         imatrix=getattr(bl, "imatrix", None),
                     )
                     bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
@@ -766,12 +766,13 @@ class AWQTransform(BasePreprocessor):
             else:
                 total_loss = 0.0
                 for bl in mapping.balance_layers:
-                    quantizer = bl_quantizers[bl]
+                    quant_func, opt_quant_func = bl_quant_funcs[bl]
                     w_orig = orig_weights[bl].to(device)
                     w_qdq = self._qdq_tool.qdq(
                         w_orig * scales_view,
                         bl_params[bl],
-                        quantizer=quantizer,
+                        quant_func=quant_func,
+                        opt_quant_func=opt_quant_func,
                         imatrix=getattr(bl, "imatrix", None),
                     )
                     total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
@@ -1030,8 +1031,8 @@ class AWQTransform(BasePreprocessor):
         # group size and drop super-block (double-quant) params, which the clip
         # path does not apply.
         clip_params = {**params, "group_size": gs, "super_bits": None, "super_group_size": None}
-        quantizer = self._qdq_tool.resolve_quantizer(clip_params)
-        if quantizer is None:
+        quant_func, _ = self._qdq_tool.resolve_quant_funcs(clip_params)
+        if quant_func is None:
             return None
 
         feat = input_feat.to(device).reshape(-1, in_features)
@@ -1070,7 +1071,7 @@ class AWQTransform(BasePreprocessor):
                 max_val = org_max_val * shrink
                 cur_w = torch.clamp(w_b, min_val, max_val)
                 cur_w_flat = cur_w.reshape(cur_w.shape[0], n_group * gs)
-                q_w = self._qdq_tool.qdq(cur_w_flat, clip_params, quantizer=quantizer).reshape(cur_w.shape)
+                q_w = self._qdq_tool.qdq(cur_w_flat, clip_params, quant_func=quant_func).reshape(cur_w.shape)
                 cur_out = (feat * q_w).sum(dim=-1)
                 err = (cur_out - org_out).pow(2).mean(dim=1).view(min_errs.shape)
                 improved = err < min_errs

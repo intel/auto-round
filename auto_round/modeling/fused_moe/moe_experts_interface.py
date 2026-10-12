@@ -122,8 +122,6 @@ class _ExpertContainer(nn.Module):
     which matches the standard checkpoint format without any hooks.
     """
 
-    pass
-
 
 def _install_compact_expert_repr(module: nn.Module) -> None:
     """Install compact __repr__ on the module's class.

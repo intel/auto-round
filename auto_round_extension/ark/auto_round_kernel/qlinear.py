@@ -89,7 +89,7 @@ def convert_dtype_torch2str(dtype):
     elif isinstance(dtype, str) and dtype in ["int8", "fp32", "fp16", "bf16"]:
         return dtype
     else:
-        assert False, "Unsupported pytorch dtype {} to str dtype".format(dtype)
+        assert False, f"Unsupported pytorch dtype {dtype} to str dtype"
 
 
 class QuantLinear(nn.Module):
@@ -164,12 +164,9 @@ class QuantLinear(nn.Module):
             self.bias = None
 
     def extra_repr(self) -> str:
-        return "in_features={}, out_features={}, bias={}, w_bit={}, group_size={}".format(
-            self.infeatures,
-            self.outfeatures,
-            self.bias is not None,
-            self.bits,
-            self.group_size,
+        return (
+            f"in_features={self.infeatures}, out_features={self.outfeatures}, bias={self.bias is not None}, "
+            f"w_bit={self.bits}, group_size={self.group_size}"
         )
 
     def post_init(self):
@@ -563,14 +560,10 @@ class QuantLinearFP8(nn.Module):
         return outputs.to(raw_input_dtype).view(out_shape)
 
     def extra_repr(self) -> str:
-        return "in_features={}, out_features={}, bias={}, bits={}, " "group_size={}, data_type={}".format(
-            self.infeatures,
-            self.outfeatures,
-            self.bias is not None,
-            self.bits,
-            self.group_size,
-            self.data_type,
+        return (
+            f"in_features={self.infeatures}, out_features={self.outfeatures}, bias={self.bias is not None}, bits={self.bits}, "
+            f"group_size={self.group_size}, data_type={self.data_type}"
         )
 
 
-__all__ = ["QuantLinear", "QuantLinearGPTQ", "QuantLinearAWQ", "QuantLinearFP8"]
+__all__ = ["QuantLinear", "QuantLinearAWQ", "QuantLinearFP8", "QuantLinearGPTQ"]

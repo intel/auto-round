@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 #
 # Copyright (c) 2026 Intel Corporation
 #
@@ -348,8 +347,8 @@ def benchmark_sagev1_varlen_case(
         head_dim,
         dtype,
         device,
-        min_seq_q=1 if total_q > batch else 1,
-        min_seq_kv=1 if total_kv > batch else 1,
+        min_seq_q=1,
+        min_seq_kv=1,
     )
 
     scale = 1.0 / math.sqrt(head_dim)

@@ -45,7 +45,7 @@ def _update_inputs(inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
 
     model_context = ModelContext()
     if model_context.is_diffusion:
-        input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
+        input_id_str = [key for key in inputs if "hidden_state" in key]
         if input_id_str == ["hidden_states"]:
             if q_inputs is not None:
                 q_inputs = q_inputs.pop("hidden_states", None)
@@ -70,7 +70,7 @@ def _update_inputs(inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
 
 def _split_inputs_diffusion(inputs: dict) -> tuple[dict, dict]:
     """Split inputs for diffusion models that only have hidden_states."""
-    input_id_str = [key for key in inputs.keys() if "hidden_state" in key]
+    input_id_str = [key for key in inputs if "hidden_state" in key]
     if input_id_str == ["hidden_states"]:
         input_ids = inputs.pop("hidden_states", None)
         input_others = inputs

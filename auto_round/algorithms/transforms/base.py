@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -97,7 +97,7 @@ class BaseRotation(ABC):
     """
 
     # Registry populated by subclasses via ``BaseRotation.register``.
-    _REGISTRY: dict[str, type["BaseRotation"]] = {}
+    _REGISTRY: dict[str, type[BaseRotation]] = {}
 
     def __init__(self, config: BaseRotationConfig) -> None:
         self.config = config
@@ -144,7 +144,7 @@ class BaseRotation(ABC):
         model: torch.nn.Module,
         data_type: str = "mx_fp",
         **kwargs: Any,
-    ) -> "BaseRotation":
+    ) -> BaseRotation:
         """Prepare for layer-wise rotation without modifying model weights.
 
         Called once when the rotation config has ``layerwise=True``.
@@ -205,7 +205,6 @@ class BaseRotation(ABC):
         Args:
             model: The fully-rotated model.
         """
-        pass
 
     # ------------------------------------------------------------------
     # Factory
@@ -229,7 +228,7 @@ class BaseRotation(ABC):
         return _decorator
 
     @classmethod
-    def from_config(cls, config: BaseRotationConfig) -> "BaseRotation":
+    def from_config(cls, config: BaseRotationConfig) -> BaseRotation:
         """Instantiate the correct ``BaseRotation`` subclass for *config*.
 
         The algorithm is looked up by ``config.algorithm`` in the registry.

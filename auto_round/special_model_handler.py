@@ -14,9 +14,10 @@
 import importlib
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 
 import torch
 
@@ -394,7 +395,7 @@ def _handle_special_model(model):
 
 
 def update_module(
-    model, formats: list[OutputFormat] = None, trust_remote_code: bool = True, cleanup_original: bool = True
+    model, formats: list[OutputFormat] | None = None, trust_remote_code: bool = True, cleanup_original: bool = True
 ):
     gguf_export = formats is not None and any(format_.is_gguf() for format_ in formats)
     model = apply_replacements(model, gguf_export=gguf_export)
@@ -1183,7 +1184,7 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     config = getattr(model, "config", None)
     if not layers and is_moe_model_via_config(config):
         for name, _ in model.named_modules():
-            if name.endswith(".gate"):
+            if name.endswith((".gate", ".shared_expert_gate")):
                 layers.append(name)
 
     return list(dict.fromkeys(layers))

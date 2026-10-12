@@ -20,6 +20,19 @@ from diffusers.models.transformers.transformer_flux import FluxAttention, _get_q
 from wan_sparse_patch import _parse_bool_env, _parse_optional_int_env, ensure_ark_sparse_binding
 
 
+def _parse_sparse_kernel_env(name: str = "FLUX_SPARSE_KERNEL", default: str = "int8") -> str:
+    value = os.getenv(name, default).strip().lower()
+    aliases = {
+        "int8": "int8",
+        "qks8": "int8",
+        "bf16": "bf16",
+    }
+    normalized = aliases.get(value)
+    if normalized is None:
+        raise ValueError(f"{name} must be one of: int8, bf16")
+    return normalized
+
+
 def _normalize_attention_mask(
     attn_mask: torch.Tensor | None,
     batch: int,
@@ -90,6 +103,7 @@ class FluxSparseAttnProcessor:
         q_tile_override: int,
         sparse_q_block_tokens: int | None,
         sparse_k_block_tokens: int | None,
+        sparse_kernel: str,
     ):
         self.original_processor = original_processor
         self.stats = stats
@@ -100,6 +114,7 @@ class FluxSparseAttnProcessor:
         self.q_tile_override = q_tile_override
         self.sparse_q_block_tokens = sparse_q_block_tokens
         self.sparse_k_block_tokens = sparse_k_block_tokens
+        self.sparse_kernel = sparse_kernel
         self._warned_runtime_fallback = False
 
     @staticmethod
@@ -192,22 +207,40 @@ class FluxSparseAttnProcessor:
                 seq_kv=key.shape[1],
                 device=query.device,
             )
-            hidden_states, sparsity = ark.sparge_sage2_attn_meansim_topk_xpu(
-                query,
-                key,
-                value,
-                attn_mask=mask,
-                is_causal=False,
-                smooth_k=self.smooth_k,
-                simthreshd1=-1.0,
-                topk=self.topk,
-                attention_sink=self.attention_sink,
-                tensor_layout="NHD",
-                q_tile_override=self.q_tile_override,
-                sparse_q_block_tokens=self.sparse_q_block_tokens,
-                sparse_k_block_tokens=self.sparse_k_block_tokens,
-                return_sparsity=True,
-            )
+            if self.sparse_kernel == "bf16":
+                hidden_states, sparsity = ark.sparge_sage2_attn_meansim_topk_xpu_sdpa(
+                    query,
+                    key,
+                    value,
+                    attn_mask=mask,
+                    is_causal=False,
+                    smooth_k=self.smooth_k,
+                    simthreshd1=-1.0,
+                    topk=self.topk,
+                    attention_sink=self.attention_sink,
+                    tensor_layout="NHD",
+                    q_tile_override=self.q_tile_override,
+                    sparse_q_block_tokens=self.sparse_q_block_tokens,
+                    sparse_k_block_tokens=self.sparse_k_block_tokens,
+                    return_sparsity=True,
+                )
+            else:
+                hidden_states, sparsity = ark.sparge_sage2_attn_meansim_topk_xpu(
+                    query,
+                    key,
+                    value,
+                    attn_mask=mask,
+                    is_causal=False,
+                    smooth_k=self.smooth_k,
+                    simthreshd1=-1.0,
+                    topk=self.topk,
+                    attention_sink=self.attention_sink,
+                    tensor_layout="NHD",
+                    q_tile_override=self.q_tile_override,
+                    sparse_q_block_tokens=self.sparse_q_block_tokens,
+                    sparse_k_block_tokens=self.sparse_k_block_tokens,
+                    return_sparsity=True,
+                )
             self.stats.sparse_calls += 1
             self.stats.sparse_sparsity_sum += float(sparsity)
 
@@ -270,8 +303,15 @@ def patch_flux_sparse_attention(
     q_tile_override: int = 0,
     sparse_q_block_tokens: int | None = None,
     sparse_k_block_tokens: int | None = None,
+    sparse_kernel: str = "int8",
 ):
-    ensure_ark_sparse_binding()
+    ensure_ark_sparse_binding(
+        required_symbols=(
+            ("block_sparse_sdpa", "sage_dynamic_quant_layout")
+            if sparse_kernel == "bf16"
+            else ("sage_sparse", "sage_dynamic_quant_layout")
+        )
+    )
     originals: list[tuple[FluxAttention, object]] = []
     stats = FluxSparseAttentionStats()
 
@@ -289,6 +329,7 @@ def patch_flux_sparse_attention(
                     q_tile_override=q_tile_override,
                     sparse_q_block_tokens=sparse_q_block_tokens,
                     sparse_k_block_tokens=sparse_k_block_tokens,
+                    sparse_kernel=sparse_kernel,
                 )
             )
             originals.append((module, original))
@@ -310,4 +351,5 @@ def patch_flux_sparse_attention_from_env(transformer):
         q_tile_override=int(os.getenv("FLUX_SPARSE_Q_TILE_OVERRIDE", "0")),
         sparse_q_block_tokens=_parse_optional_int_env("FLUX_SPARSE_Q_BLOCK_TOKENS"),
         sparse_k_block_tokens=_parse_optional_int_env("FLUX_SPARSE_K_BLOCK_TOKENS"),
+        sparse_kernel=_parse_sparse_kernel_env(),
     )

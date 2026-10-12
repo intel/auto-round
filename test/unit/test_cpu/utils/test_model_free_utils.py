@@ -686,6 +686,35 @@ class TestQuantizeWeightMXFP:
 
 
 # ===========================================================================
+#  NVFP4 E5M3 optimized RTN
+# ===========================================================================
+
+
+def test_nvfp4_e5m3_model_free_honors_opt_rtn_toggle(monkeypatch):
+    from auto_round.data_type import nvfp
+
+    search_mock = Mock(wraps=nvfp.search_nvfp4_v2_scale)
+    monkeypatch.setattr(nvfp, "search_nvfp4_v2_scale", search_mock)
+    matcher = _matcher(
+        default={
+            "bits": 4,
+            "group_size": 16,
+            "sym": True,
+            "data_type": "nvfp4_v2",
+            "_output_format": "fake",
+        }
+    )
+    weight = torch.randn(4, 32, dtype=torch.bfloat16)
+
+    _quantize_single_tensor("layer.weight", weight, matcher, disable_opt_rtn=False)
+    search_mock.assert_called_once()
+
+    search_mock.reset_mock()
+    _quantize_single_tensor("layer.weight", weight, matcher, disable_opt_rtn=True)
+    search_mock.assert_not_called()
+
+
+# ===========================================================================
 #  _build_mxfp_quantization_config (non-MoE, structural tests)
 # ===========================================================================
 

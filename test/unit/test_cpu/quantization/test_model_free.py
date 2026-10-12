@@ -68,6 +68,8 @@ from auto_round.utils.model_free_utils import (
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
     _handle_mxfp_source_tensors,
+    _list_remote_weight_shards,
+    _list_weight_shards,
     _looks_like_auto_scheme,
     _PatternMatcher,
     _process_shard,
@@ -88,6 +90,68 @@ def test_model_free_preserves_explicit_scheme_overrides():
     compressor._parse_scheme()
 
     assert compressor.default_scheme["sym"] is False
+
+
+def test_model_free_expands_layer_config_after_resolving_model_type(monkeypatch):
+    from auto_round.compressors.model_free import _ModelFreeCompressorCore
+
+    compressor = _ModelFreeCompressorCore("unused-model-path", "/tmp/unused-output")
+    compressor.config = {"model_type": "glm5_next"}
+    compressor.layer_config = {"model.layers.0.attn_hc.base": {"bits": 4}}
+    captured = {}
+
+    def _expand(layer_config, *, model_type, to_model_names):
+        captured.update(model_type=model_type, to_model_names=to_model_names)
+        return {**layer_config, "model.layers.0.hc_attn_base": {"bits": 4}}
+
+    monkeypatch.setattr("auto_round.utils.expand_layer_config_for_weight_renames", _expand)
+
+    compressor._resolve_model_type()
+
+    assert captured == {"model_type": "glm5_next", "to_model_names": False}
+    assert "model.layers.0.hc_attn_base" in compressor.layer_config
+
+
+def test_list_weight_shards_returns_empty_list_for_metadata_only_directory(tmp_path):
+    (tmp_path / "config.json").write_text("{}")
+
+    assert _list_weight_shards(str(tmp_path)) == []
+
+
+def test_list_remote_weight_shards_prefers_safetensors(monkeypatch):
+    monkeypatch.setattr(
+        "huggingface_hub.list_repo_files",
+        lambda model_name_or_path: ["pytorch_model.bin", "model.safetensors", "config.json"],
+    )
+
+    assert _list_remote_weight_shards("org/model") == ["model.safetensors"]
+
+
+def test_list_remote_weight_shards_filters_diffusion_components(monkeypatch):
+    monkeypatch.setattr(
+        "huggingface_hub.list_repo_files",
+        lambda model_name_or_path: [
+            "transformer/model.safetensors",
+            "vae/diffusion_pytorch_model.safetensors",
+            "text_encoder/model.safetensors",
+        ],
+    )
+
+    assert _list_remote_weight_shards("org/model", subfolder="transformer") == ["transformer/model.safetensors"]
+
+
+def test_streaming_discovers_remote_single_weight_file(tmp_path, monkeypatch):
+    compressor = _ModelFreeCompressorCore("org/single-file-model", str(tmp_path / "output"))
+    compressor.is_streaming = True
+    compressor.work_dir = str(tmp_path)
+    monkeypatch.setattr(
+        "auto_round.utils.model_free_utils._list_remote_weight_shards",
+        lambda model_name_or_path, subfolder=None: ["model.safetensors"],
+    )
+
+    compressor._discover_shards()
+
+    assert compressor.shard_names == ["model.safetensors"]
 
 
 def test_fallback_forwards_only_explicit_format():
@@ -499,6 +563,62 @@ def test_int_model_free_fake_export_has_no_quantization_config(tmp_path):
         assert "quantization_config" not in json.load(f)
 
 
+def test_nvfp4_e5m3_model_free_fake_export_preserves_activation_config(tmp_path):
+    tensors = {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir, output_dir=output_dir, scheme="NVFP4_E5M3", format="fake"
+    )
+    compressor.run()
+
+    assert "model.layers.0.self_attn.q_proj.weight" in _read_output_keys(output_dir)
+    quantization_config = _read_qconfig(output_dir)
+    assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["act_data_type"] == "nvfp4_v2"
+    with open(os.path.join(output_dir, "config.json")) as config_file:
+        assert json.load(config_file)["quantization_config"] == quantization_config
+
+    from types import SimpleNamespace
+
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    from auto_round.experimental.qmodules.fake import FakeActQuantLinear
+    from auto_round.inference.convert_model import convert_hf_model
+
+    config = LlamaConfig(
+        hidden_size=32, intermediate_size=64, num_hidden_layers=1, num_attention_heads=2, vocab_size=64
+    )
+    model = LlamaForCausalLM(config)
+    model.config.quantization_config = SimpleNamespace(**quantization_config)
+    model, used_backends = convert_hf_model(model, target_device="cpu")
+    layer = model.model.layers[0].self_attn.q_proj
+    assert used_backends == ["auto_round:fake"]
+    assert isinstance(layer, FakeActQuantLinear)
+    activation = torch.randn(2, 32)
+    assert not torch.equal(layer.qdq_input(activation), activation)
+
+
+def test_mixed_nvfp4_e5m3_fake_export_preserves_activation_config(tmp_path):
+    tensors = {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="BF16",
+        layer_config={"model.layers.0.self_attn.q_proj": {"scheme": "NVFP4_E5M3"}},
+        format="fake",
+    )
+    compressor.run()
+
+    quantization_config = _read_qconfig(output_dir)
+    assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["act_data_type"] == "nvfp4_v2"
+
+
 def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
     tensors = {
         "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),
@@ -690,6 +810,39 @@ def test_model_free_legacy_nvfp4_is_normalized_and_passthrough(tmp_path):
 
 
 class TestModelFreeQuantize:
+    @pytest.mark.parametrize(
+        "disable_opt_rtn,expected_status",
+        [(False, "enabled"), (True, "disabled")],
+    )
+    def test_nvfp4_e5m3_startup_summary_reports_opt_rtn_status(
+        self, tmp_path, monkeypatch, disable_opt_rtn, expected_status
+    ):
+        tensors = {"model.decoder.layers.0.self_attn.q_proj.weight": torch.randn(4, 16)}
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, tensors)
+        output_dir = str(tmp_path / "output")
+        info_mock = Mock()
+        monkeypatch.setattr("auto_round.compressors.model_free.logger.info", info_mock)
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="NVFP4_E5M3",
+            format="fake",
+            disable_opt_rtn=disable_opt_rtn,
+            device="cpu",
+            enable_torch_compile=False,
+        )
+        monkeypatch.setattr(core, "_process_all_shards", Mock(side_effect=RuntimeError("stop after summary")))
+
+        with pytest.raises(RuntimeError, match="stop after summary"):
+            core.run()
+
+        startup_summary = next(
+            call.args[0]
+            for call in info_mock.call_args_list
+            if call.args and isinstance(call.args[0], str) and call.args[0].startswith("Model-free quantization:")
+        )
+        assert f"Optimized RTN: {expected_status}" in startup_summary
+
     def test_basic(self, tmp_path):
         model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
         output_dir = str(tmp_path / "output")

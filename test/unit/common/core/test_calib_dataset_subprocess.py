@@ -138,3 +138,30 @@ def test_subprocess_network_error_falls_back_without_retrying_source(monkeypatch
     assert result is fallback_dataset
     assert isinstance(fallback[0][0], ConnectionError)
     assert fallback[0][1] == "source"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fork is unavailable on Windows")
+def test_subprocess_returns_saved_dataset_without_reprocessing(monkeypatch, tmp_path):
+    import auto_round.calib_dataset as cd
+
+    parent_pid = os.getpid()
+    output_path = tmp_path / "output_path"
+    original_save = Dataset.save_to_disk
+
+    def save_dataset(dataset, path):
+        output_path.write_text(path)
+        return original_save(dataset, path)
+
+    def build_dataset(*args):
+        assert os.getpid() != parent_pid, "dataset rebuilt in parent process"
+        return Dataset.from_dict({"input_ids": [[1, 2]], "attention_mask": [[1, 1]]})
+
+    monkeypatch.setattr(cd, "_get_dataset_impl", build_dataset)
+    monkeypatch.setattr(cd.Dataset, "save_to_disk", save_dataset)
+    monkeypatch.setattr(cd.envs, "AR_DISABLE_DATASET_SUBPROCESS", False)
+
+    result = cd.get_dataset(tokenizer=None, seqlen=2)
+
+    assert result[0]["input_ids"] == [1, 2]
+    assert not os.path.exists(output_path.read_text())
+    assert result[0]["attention_mask"] == [1, 1]
