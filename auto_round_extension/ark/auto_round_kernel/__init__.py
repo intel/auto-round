@@ -3706,6 +3706,8 @@ def moe_gemm_prefill_mxfp8_mxfp4(
         weights = weights.contiguous()
     if not weight_scales.is_contiguous():
         weight_scales = weight_scales.contiguous()
+    if num_tokens_per_expert.device != activations.device:
+        raise ValueError("num_tokens_per_expert must be on the same device as activations")
     if num_tokens_per_expert.dtype != torch.int32:
         num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
     if not num_tokens_per_expert.is_contiguous():
