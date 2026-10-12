@@ -162,7 +162,7 @@ def _build_quant_plane(
     in_features: int,
     out_features: int,
     has_bias: bool,
-    bias: Optional[torch.Tensor],
+    bias: torch.Tensor | None,
     device: torch.device,
 ) -> nn.Module:
     """Build one ``QuantLinear`` plane from its packed tensors (on ``device``)."""
@@ -240,9 +240,9 @@ def _resolve_active_bits(total_planes: int, bits: int, active_bits: int | None) 
 def load_rrq_model(
     base_model_dir: str,
     residual_model_dir: str,
-    active_bits: Optional[int] = None,
-    device: Optional[str] = None,
-    residual_fraction: Optional[float] = None,
+    active_bits: int | None = None,
+    device: str | None = None,
+    residual_fraction: float | None = None,
     residual_seed: int = 0,
     residual_high_bits: int = 4,
     residual_low_bits: int = 2,

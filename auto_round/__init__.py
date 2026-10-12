@@ -42,15 +42,15 @@ __all__ = [
     "AutoScheme",
     "OptimizedRTNConfig",
     "QuantizationScheme",
-    "RTNConfig",
     "RRQConfig",
+    "RTNConfig",
     "RotationConfig",
     "SignRoundConfig",
     "SignRoundV2Config",
     "SpinQuantConfig",
     "__version__",
-    "load_rrq_model",
     "generate_rrq_residual",
+    "load_rrq_model",
 ]
 
 

@@ -196,7 +196,7 @@ def save_quantized_rrq(
     group_size: int = None,
     sym: bool = None,
     num_planes: int = None,
-    device: Union[str, torch.device] = "cpu",
+    device: str | torch.device = "cpu",
     safe_serialization: bool = True,
     **kwargs,
 ):
@@ -281,7 +281,7 @@ def save_rrq_base_model(
     output_dir: str,
     model: nn.Module,
     layer_config: dict = None,
-    device: Union[str, torch.device] = "cpu",
+    device: str | torch.device = "cpu",
     serialization_dict: dict = None,
     tokenizer=None,
     processor=None,
@@ -337,7 +337,7 @@ def save_rrq_model(
     tokenizer=None,
     processor=None,
     layer_config: dict = None,
-    device: Union[str, torch.device] = "cpu",
+    device: str | torch.device = "cpu",
     serialization_dict: dict = None,
     inplace: bool = True,
     safe_serialization: bool = True,
@@ -493,7 +493,7 @@ def generate_rrq_residual(
     output_dir: str,
     group_size: int = 128,
     sym: bool = False,
-    device: Union[str, torch.device] = "cpu",
+    device: str | torch.device = "cpu",
     safe_serialization: bool = True,
 ):
     """Generate an RRQ residual model from an existing INT2 base model + FP weights.

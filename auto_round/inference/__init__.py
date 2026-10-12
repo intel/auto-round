@@ -14,4 +14,4 @@
 from auto_round.inference.convert_model import convert_hf_model, infer_target_device, post_init
 from auto_round.inference.rrq_model import load_rrq_model
 
-__all__ = ["convert_hf_model", "infer_target_device", "post_init", "load_rrq_model"]
+__all__ = ["convert_hf_model", "infer_target_device", "load_rrq_model", "post_init"]
