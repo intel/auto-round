@@ -86,6 +86,7 @@ import contextlib
 import math
 import os
 import sys
+from typing import Optional
 
 import torch
 
@@ -162,15 +163,12 @@ def _quant_act_skip_reason() -> str:
 _QUANT_ACT_SKIP = _quant_act_skip_reason()
 
 print(
-    "[moe-w4a8-perf] xpu_available=%s  xpu_lib=%s  has_moe_gemm_w4a8=%s"
-    % (
-        _xpu_available(),
-        "loaded" if ark.xpu_lib is not None else "None",
-        hasattr(ark.xpu_lib, "moe_gemm_w4a8") if ark.xpu_lib is not None else False,
-    )
+    f"[moe-w4a8-perf] xpu_available={_xpu_available()}  "
+    f"xpu_lib={'loaded' if ark.xpu_lib is not None else 'None'}  "
+    f"has_moe_gemm_w4a8={hasattr(ark.xpu_lib, 'moe_gemm_w4a8') if ark.xpu_lib is not None else False}"
 )
 if _W4A8_SKIP:
-    print("[moe-w4a8-perf] suite will SKIP. reason: %s" % _W4A8_SKIP)
+    print(f"[moe-w4a8-perf] suite will SKIP. reason: {_W4A8_SKIP}")
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +218,7 @@ def _env_override(**overrides):
                 os.environ[name] = value
 
 
-def _xpu_time_ms(fn, warmup: int = None, iters: int = None) -> float:
+def _xpu_time_ms(fn, warmup: int | None = None, iters: int | None = None) -> float:
     """Time ``fn`` on XPU using device events; returns the median ms per call.
 
     ``warmup`` / ``iters`` default to the module-level ``WARMUP`` / ``ITERS``
