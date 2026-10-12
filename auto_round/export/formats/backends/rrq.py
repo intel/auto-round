@@ -55,7 +55,7 @@ class RRQFormat(OutputFormat):
         (``rrq_*_k`` -> ``*_k``) and the ``quantization_config`` attach happen in
         :meth:`save_quantized`.
         """
-        return None
+        return
 
     def save_quantized(
         self,

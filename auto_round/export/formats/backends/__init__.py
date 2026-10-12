@@ -30,8 +30,8 @@ __all__ = [
     "FP8Format",
     "FakeFormat",
     "GGUFFormat",
-    "RRQFormat",
     "LLMCompressorFormat",
     "MLXFormat",
+    "RRQFormat",
     "SVDQuantNunchakuFormat",
 ]
