@@ -32,7 +32,7 @@ def _run_sglang_worker(model_path, connection):
         import sglang as sgl
         from sglang.srt.server_args import ServerArgs
 
-        fields = {field.name for field in dataclasses.fields(ServerArgs)}
+        fields = set(ServerArgs.__annotations__.keys())
         engine_kwargs = {"model_path": model_path, "mem_fraction_static": 0.5}
         if "disable_piecewise_cuda_graph" in fields:
             engine_kwargs["disable_piecewise_cuda_graph"] = True
