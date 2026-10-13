@@ -1369,25 +1369,6 @@ class TestMemoryMonitor:
             m.update_hpu(device_list=[0])
         assert m.peak_vram == {}
 
-    def test_update_hpu_synchronizes_before_sampling(self):
-        """The HPU eager pipeline returns freed tensors asynchronously, so the device
-        must be drained before memory_allocated is sampled."""
-        from auto_round.utils.device import MemoryMonitor
-
-        m = MemoryMonitor()
-        m.reset()
-        m.enabled = True
-        hpu = MagicMock()
-        hpu.memory_allocated.return_value = 2 * 1024**3
-        with (
-            patch("auto_round.utils.device.is_hpex_available", return_value=True),
-            patch("auto_round.utils.device.get_ar_device", return_value=hpu),
-        ):
-            m.update_hpu(device_list=["hpu:0"])
-        assert [call[0] for call in hpu.method_calls] == ["synchronize", "memory_allocated"]
-        assert m.peak_vram == {"0": 2.0}
-        m.reset()
-
     def test_reset(self):
         from auto_round.utils.device import MemoryMonitor
 

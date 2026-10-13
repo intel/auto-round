@@ -37,6 +37,9 @@ function setup_environment() {
     export HF_HUB_DISABLE_PROGRESS_BARS=1
     export UV_NO_PROGRESS=1
     export UV_SYSTEM_PYTHON=1
+    # With the HPU eager pipeline, frees are returned asynchronously and the allocator high-water
+    # mark (gated as Peak VRAM) depends on host/device timing. Both builds run with it disabled.
+    export PT_HPU_EAGER_PIPELINE_ENABLE=0
 
     log_info "Creating log directory: ${LOG_DIR}"
     mkdir -p "${LOG_DIR}"
@@ -74,9 +77,9 @@ function run_performance_test() {
 
     (
         cd "${PERF_SCRIPT_DIR}"
-        log_info "Executing auto-round for ${scheme}. Logging to ${log_file}, peak RAM to ${metrics_file}"
-        # measure_peak.py runs the auto-round CLI in-process and records the kernel RSS
-        # high-water mark, so both builds are measured the same way.
+        log_info "Executing auto-round for ${scheme}. Logging to ${log_file}, peak memory to ${metrics_file}"
+        # measure_peak.py runs the auto-round CLI in-process and records RSS/allocator
+        # high-water marks, so both builds are measured the same way.
         python measure_peak.py --output "${metrics_file}" -- \
             --model_name "${model_name}" \
             --scheme "${scheme}" \

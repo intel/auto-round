@@ -18,7 +18,6 @@ class QuantMetrics:
     peak_ram_gb: float | None = None
     peak_vram_gb: float | None = None
     output_size_gb: float | None = None
-    vram_high_water_gb: float | None = None
 
 
 def get_dir_size_gb(path: Path) -> float:
@@ -43,24 +42,18 @@ def parse_log_file(log_file: Path) -> QuantMetrics:
     if time_matches:
         metrics.tuning_time_s = round(float(time_matches[-1]), 4)
 
-    # auto-round samples VRAM per block after synchronizing the device, which is deterministic,
-    # whereas the allocator high-water mark on HPU varies with eager-pipeline timing.
-    vram_matches = re.findall(r"'peak_vram':\s*([\d.]+)\s*GB", content)
-    if vram_matches:
-        metrics.peak_vram_gb = round(float(vram_matches[-1]), 4)
-
     return metrics
 
 
 def parse_peak_memory(metrics_file: Path, metrics: QuantMetrics) -> None:
-    """Read the peak RAM recorded by measure_peak.py instead of auto-round's sampled log summary."""
+    """Read high-water marks recorded by measure_peak.py instead of auto-round's sampled log summary."""
     if not metrics_file.exists():
         logger.warning(f"Metrics file not found: {metrics_file}")
         return
 
     data = json.loads(metrics_file.read_text(encoding="utf-8"))
     metrics.peak_ram_gb = data.get("peak_ram_gb")
-    metrics.vram_high_water_gb = data.get("vram_high_water_gb")
+    metrics.peak_vram_gb = data.get("peak_vram_gb")
 
 
 def get_tuning_info() -> dict[str, dict[str, QuantMetrics]]:
@@ -145,11 +138,6 @@ def check_performance():
             "Peak VRAM (GB)", current.peak_vram_gb, baseline.peak_vram_gb, tolerance=0.03, abs_tolerance=0.25
         ):
             all_passed = False
-
-        logger.info(
-            f"  [i] {'VRAM high-water (GB)':<20}: Current = {current.vram_high_water_gb} | "
-            f"Baseline = {baseline.vram_high_water_gb} (info only, includes in-block transient peaks)"
-        )
 
         if not compare_metric("Output Size (GB)", current.output_size_gb, baseline.output_size_gb, tolerance=0.01):
             all_passed = False
