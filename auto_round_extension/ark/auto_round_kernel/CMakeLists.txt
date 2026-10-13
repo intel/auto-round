@@ -94,6 +94,9 @@ endif()
 list(APPEND libs bestla)
 
 file(GLOB SRCS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
+if(NOT ARK_XPU OR NOT ARK_SYCL_TLA)
+  list(REMOVE_ITEM SRCS ${CMAKE_CURRENT_SOURCE_DIR}/sycl_tla_moe_prefill_hmt_mxfp4_mxfp4.cpp)
+endif()
 if(NOT ARK_XPU)
     list(APPEND SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/ark/cpu/mha_dense.cpp
