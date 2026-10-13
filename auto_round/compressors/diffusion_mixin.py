@@ -434,6 +434,9 @@ class DiffusionMixin:
         primary_model = self.model_context.model
         primary_layer_config = self.layer_config
         primary_quant_block_list = self.quant_block_list
+        primary_plan = getattr(self, "compression_plan", None)
+        primary_format_resolution = getattr(self, "_format_resolution", None)
+        primary_block_names = self.to_quant_block_names
         self._quantized_transformers = {}
         completed = False
         try:
@@ -445,6 +448,11 @@ class DiffusionMixin:
                 self.model_context.quantized = False
                 self._post_init_done = False
                 self.calibration = None
+                # Discover blocks and rebuild the plan for this model, rather
+                # than retaining paths or format patches from the primary.
+                self.quant_block_list = None
+                self.to_quant_block_names = None
+                self.__dict__.pop("_format_resolution", None)
                 self.post_init()
                 self._defer_multi_transformer_serialization()
                 model, layer_config = self._quantize_zero_shot()
@@ -454,6 +462,13 @@ class DiffusionMixin:
         finally:
             self.model_context.model = primary_model
             self.model_context.quantized = completed
+            if primary_plan is not None:
+                self.compression_plan = primary_plan
+            if primary_format_resolution is not None:
+                self._format_resolution = primary_format_resolution
+            else:
+                self.__dict__.pop("_format_resolution", None)
+            self.to_quant_block_names = primary_block_names
             self.layer_config = primary_layer_config
             self.quant_block_list = primary_quant_block_list
             context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving = saved_flags

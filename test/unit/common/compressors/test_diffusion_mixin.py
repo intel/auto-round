@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
+from auto_round.compressors.base import BaseCompressor
 from auto_round.compressors.diffusion_mixin import DiffusionMixin
 from auto_round.context.model import ModelContext
 
@@ -145,7 +146,8 @@ class TestFindAdditionalTransformers:
         assert result[0][0] == "transformer_2"
 
     def test_zero_shot_quantizes_both_transformers(self):
-        primary, secondary = torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)
+        primary = torch.nn.ModuleDict({"blocks": torch.nn.ModuleList([torch.nn.Linear(4, 4)])})
+        secondary = torch.nn.ModuleDict({"layers": torch.nn.ModuleList([torch.nn.Linear(4, 4) for _ in range(2)])})
         pipe = SimpleNamespace(
             components=["transformer", "transformer_2"], transformer=primary, transformer_2=secondary
         )
@@ -155,12 +157,22 @@ class TestFindAdditionalTransformers:
             low_cpu_mem_usage=False, is_immediate_packing=False, is_immediate_saving=False
         )
         comp.need_calib = False
-        comp.layer_config = {"bits": 8}
-        comp.quant_block_list = []
-        comp.post_init = MagicMock()
+        comp.quant_block_list = [["blocks.0"]]
+        comp.to_quant_block_names = "blocks"
+        comp._scheme_resolved = True
+        comp.is_auto_scheme = False
+
+        def configure_layer_config(**kwargs):
+            comp.layer_config = {name: {"bits": 8} for group in comp.quant_block_list for name in group}
+
+        comp.configure_layer_config = configure_layer_config
+        comp.post_init = lambda: BaseCompressor._scheme_post_init(comp)
         quantized_models = []
 
         def quantize_zero_shot():
+            expected = [["blocks.0"]] if comp.model_context.model is primary else [["layers.0", "layers.1"]]
+            assert comp.quant_block_list == expected
+            assert set(comp.layer_config) == set(expected[0])
             quantized_models.append(comp.model_context.model)
             return comp.model_context.model, comp.layer_config
 
@@ -168,8 +180,12 @@ class TestFindAdditionalTransformers:
         model, config = comp.quantize()
         assert quantized_models == [primary, secondary]
         assert model is comp.model_context.model is primary
-        assert config == {"bits": 8}
-        assert comp._quantized_transformers == {"transformer_2": (secondary, config)}
+        assert config == {"blocks.0": {"bits": 8}}
+        assert comp.quant_block_list == [["blocks.0"]]
+        assert comp.to_quant_block_names == "blocks"
+        assert comp._quantized_transformers == {
+            "transformer_2": (secondary, {"layers.0": {"bits": 8}, "layers.1": {"bits": 8}})
+        }
         assert comp.model_context.quantized
 
 
