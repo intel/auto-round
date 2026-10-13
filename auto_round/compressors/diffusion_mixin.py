@@ -193,24 +193,6 @@ class DiffusionMixin:
         self.compress_context.is_immediate_packing = False
         self.compress_context.is_immediate_saving = False
 
-    def _capture_transformer_quantization_state(self) -> dict:
-        """Snapshot the plan and metadata used by initialization and export."""
-        return {
-            "compression_plan": getattr(self, "compression_plan", None),
-            "_alg_composer": getattr(self, "_alg_composer", None),
-            "_post_init_done": getattr(self, "_post_init_done", None),
-            "calibration": getattr(self, "calibration", None),
-            "_format_resolution": getattr(self, "_format_resolution", None),
-            "to_quant_block_names": self.to_quant_block_names,
-        }
-
-    def _restore_transformer_quantization_state(self, state: dict) -> None:
-        for name, value in state.items():
-            if name in ("compression_plan", "_format_resolution", "_alg_composer", "_post_init_done") and value is None:
-                self.__dict__.pop(name, None)
-            else:
-                setattr(self, name, value)
-
     def _align_device_and_dtype_for_secondary(self, transformer_name: str):
         """Dispatch a secondary transformer without changing component dtypes."""
         pipe = getattr(self.model_context, "pipe", None)
@@ -349,6 +331,8 @@ class DiffusionMixin:
 
         # Store primary transformer state
         primary_model = self.model
+        primary_layer_config = dict(self.layer_config) if self.layer_config else {}
+        primary_quant_block_list = list(self.quant_block_list) if self.quant_block_list else []
         quantized_extras = {}
 
         # Quantize primary transformer
@@ -363,7 +347,6 @@ class DiffusionMixin:
             clear_memory(device_list=device_manager.device_list)
             self._inputs_cached = True
         super().quantize()
-        primary_state = self._capture_transformer_quantization_state()
 
         # Clear stale hf_device_map so cache_inter_data can re-dispatch for next transformer
         if hasattr(primary_model, "hf_device_map"):
@@ -380,9 +363,6 @@ class DiffusionMixin:
             # Calibrators snapshot the active model at construction time. Recreate
             # it so transformer_2 block hooks are not installed on the primary model.
             self.calibration = None
-            self.quant_block_list = None
-            self.to_quant_block_names = None
-            self.__dict__.pop("_format_resolution", None)
 
             # Dispatch the pipeline for the secondary transformer without recasting it.
             if self.need_calib:
@@ -425,14 +405,15 @@ class DiffusionMixin:
             super().quantize()
 
             # Store quantized transformer
-            quantized_extras[comp_name] = (self.model_context.model, self._capture_transformer_quantization_state())
+            quantized_extras[comp_name] = (self.model_context.model, dict(self.layer_config))
             # Also update the pipeline to reference the quantized transformer
             setattr(self.model_context.pipe, comp_name, self.model_context.model)
 
         # Restore primary transformer state
         self.model_context.model = primary_model
         self.model_context.quantized = True
-        self._restore_transformer_quantization_state(primary_state)
+        self.layer_config = primary_layer_config
+        self.quant_block_list = primary_quant_block_list
         self._quantized_transformers = quantized_extras
         self.compress_context.low_cpu_mem_usage = orig_low_cpu
         self.compress_context.is_immediate_packing = orig_immediate_packing
@@ -490,30 +471,28 @@ class DiffusionMixin:
                 else output_dir
             )
             if name in quantized_transformers:
-                # Export with the secondary's complete plan, then restore the primary.
+                # Save secondary quantized transformer
                 saved_model = self.model_context.model
-                saved_state = self._capture_transformer_quantization_state()
+                saved_lc = self.layer_config
                 saved_immediate_saving = self.compress_context.is_immediate_saving
-                self.model_context.model, state = quantized_transformers[name]
+                self.model_context.model, self.layer_config = quantized_transformers[name]
                 saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
-                try:
-                    self._restore_transformer_quantization_state(state)
+                if has_multiple_quantized_transformers:
                     self.compress_context.is_immediate_saving = False
                     if saved_subfolder is not None:
                         delattr(self.model_context.model, "_autoround_pipeline_subfolder")
-                    compressed_model = super().save_quantized(
-                        output_dir=target_output_dir,
-                        format=_format,
-                        inplace=inplace,
-                        return_folders=False,
-                        **kwargs,
-                    )
-                finally:
-                    self.compress_context.is_immediate_saving = saved_immediate_saving
-                    if saved_subfolder is not None:
-                        self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
-                    self.model_context.model = saved_model
-                    self._restore_transformer_quantization_state(saved_state)
+                compressed_model = super().save_quantized(
+                    output_dir=target_output_dir,
+                    format=_format,
+                    inplace=inplace,
+                    return_folders=False,
+                    **kwargs,
+                )
+                self.compress_context.is_immediate_saving = saved_immediate_saving
+                if saved_subfolder is not None:
+                    self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
+                self.model_context.model = saved_model
+                self.layer_config = saved_lc
             elif val is self.model_context.model:
                 # Save primary quantized transformer
                 saved_immediate_saving = self.compress_context.is_immediate_saving

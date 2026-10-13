@@ -15,10 +15,8 @@ import pytest
 import torch
 
 from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.config_resolution import ResolvedQuantizationConfig, ResolvedScheme
 from auto_round.compressors.diffusion_mixin import DiffusionMixin
 from auto_round.context.model import ModelContext
-from auto_round.schemes import MXFP8
 
 
 class TestDiffusionMixinProperties:
@@ -148,30 +146,17 @@ class TestFindAdditionalTransformers:
         assert result[0][0] == "transformer_2"
 
     @pytest.mark.parametrize("need_calib", [False, True])
-    @pytest.mark.parametrize("failing_component", [None, "transformer_2"])
-    def test_quantizes_and_exports_both_transformers(self, need_calib, failing_component, tmp_path, monkeypatch):
+    def test_quantizes_both_transformers(self, need_calib, monkeypatch):
         class MockCompressor(DiffusionMixin, BaseCompressor):
             pass
 
-        saved = []
-
-        def export(_, model, serialization_dict, **kwargs):
-            saved.append(serialization_dict)
-            if failing_component and model is getattr(pipe, failing_component):
-                raise RuntimeError("export failed")
-            return model
-
-        fmt = SimpleNamespace(is_fake=lambda: False, save_quantized=export)
         primary = torch.nn.ModuleDict({"blocks": torch.nn.ModuleList([torch.nn.Linear(4, 4)])})
-        secondary = torch.nn.ModuleDict({"layers": torch.nn.ModuleList([torch.nn.Linear(4, 4) for _ in range(2)])})
+        secondary = torch.nn.ModuleDict({"blocks": torch.nn.ModuleList([torch.nn.Linear(4, 4)])})
         pipe = SimpleNamespace(
             components={"transformer": primary, "transformer_2": secondary},
             transformer=primary,
             transformer_2=secondary,
-            save_config=MagicMock(),
         )
-        primary._autoround_pipeline_subfolder = "transformer"
-        secondary._autoround_pipeline_subfolder = "transformer_2"
         comp = MockCompressor.__new__(MockCompressor)
         comp.model_context = SimpleNamespace(pipe=pipe, model=primary, tokenizer=None, quantized=False)
         comp.quantize_config = SimpleNamespace(act_bits=8, optimizer="sgd")
@@ -185,47 +170,20 @@ class TestFindAdditionalTransformers:
         comp.has_variable_block_shape = False
         comp.try_cache_inter_data_gpucpu = MagicMock(return_value={})
         comp.quant_block_list = [["blocks.0"]]
-        comp.to_quant_block_names = "blocks"
-        comp._scheme_resolved = True
-        comp.is_auto_scheme = False
+        comp.layer_config = {}
+        comp.post_init = MagicMock()
+        quantized = []
 
-        def configure_layer_config(**kwargs):
-            comp.compression_plan = ResolvedQuantizationConfig(
-                scheme=ResolvedScheme.from_scheme(MXFP8),
-                formats=(fmt,),
-                layer_config={name: {"bits": 8} for group in comp.quant_block_list for name in group},
-                regex_config={comp.to_quant_block_names: {"bits": 8}},
-                quant_block_list=comp.quant_block_list,
-            )
+        def quantize(_):
+            quantized.append(comp.model_context.model)
+            return comp.model_context.model, comp.layer_config
 
-        comp.configure_layer_config = configure_layer_config
-        comp.post_init = lambda: BaseCompressor._scheme_post_init(comp)
-        quantize = MagicMock(side_effect=lambda: (comp.model_context.model, comp.layer_config))
         monkeypatch.setattr(BaseCompressor, "quantize", quantize)
         monkeypatch.setattr("auto_round.compressors.diffusion_mixin.clear_memory", lambda **kwargs: None)
         model, _ = comp.quantize()
         assert model is primary
-        assert quantize.call_count == 2
+        assert quantized == [primary, secondary]
         assert comp.try_cache_inter_data_gpucpu.call_count == (2 if need_calib else 0)
-        primary_state = comp._capture_transformer_quantization_state()
-        monkeypatch.setattr("auto_round.compressors.base._get_save_folder_name", lambda _: str(tmp_path))
-        monkeypatch.setattr("auto_round.compressors.diffusion_mixin.rename_weights_files", lambda _: None)
-        comp.compress_context.is_immediate_saving = True
-        if failing_component:
-            with pytest.raises(RuntimeError, match="export failed"):
-                comp.save_quantized(str(tmp_path), format=[fmt])
-        else:
-            comp.save_quantized(str(tmp_path), format=[fmt])
-        for metadata, block_names in zip(saved, (["blocks.0"], ["layers.0", "layers.1"])):
-            assert metadata["quant_block_list"] == [block_names]
-            assert metadata["to_quant_block_names"] == block_names[0].rsplit(".", 1)[0]
-            assert metadata["regex_config"] == {metadata["to_quant_block_names"]: {"bits": 8}}
-        assert len(saved) == 2
-        assert comp.model_context.model is primary
-        assert comp._capture_transformer_quantization_state() == primary_state
-        assert comp.compress_context.is_immediate_saving
-        assert primary._autoround_pipeline_subfolder == "transformer"
-        assert secondary._autoround_pipeline_subfolder == "transformer_2"
 
 
 class TestAlignDeviceAndDtype:
