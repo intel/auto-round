@@ -260,7 +260,7 @@ class DiffusionMixin:
 
         # Zero-shot (RTN) path: no calibration data needed
         if not self.need_calib:
-            return self._quantize_zero_shot()
+            return self._quantize_all_transformers_zero_shot()
 
         # Get block names and call cache_inter_data to populate self.inputs
         if bool(self.quant_block_list):
@@ -419,6 +419,45 @@ class DiffusionMixin:
         self.calib_num_inference_steps = orig_steps
 
         return self.model_context.model, self.layer_config
+
+    def _quantize_all_transformers_zero_shot(self) -> tuple[torch.nn.Module, dict]:
+        """Quantize every transformer even when no calibration is required."""
+        additional = self._find_additional_transformers()
+        if not additional:
+            return self._quantize_zero_shot()
+
+        logger.info("Detected multi-transformer diffusion pipeline, quantizing all transformers without calibration")
+        context = self.compress_context
+        saved_flags = (context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving)
+        context.low_cpu_mem_usage = False
+        self._defer_multi_transformer_serialization()
+        primary_model = self.model_context.model
+        primary_layer_config = self.layer_config
+        primary_quant_block_list = self.quant_block_list
+        self._quantized_transformers = {}
+        completed = False
+        try:
+            primary_model, primary_layer_config = self._quantize_zero_shot()
+            primary_quant_block_list = self.quant_block_list
+            for comp_name, transformer in additional:
+                logger.info(f"Quantizing {comp_name}")
+                self.model_context.model = transformer
+                self.model_context.quantized = False
+                self._post_init_done = False
+                self.calibration = None
+                self.post_init()
+                self._defer_multi_transformer_serialization()
+                model, layer_config = self._quantize_zero_shot()
+                self._quantized_transformers[comp_name] = (model, dict(layer_config))
+                setattr(self.model_context.pipe, comp_name, model)
+            completed = True
+        finally:
+            self.model_context.model = primary_model
+            self.model_context.quantized = completed
+            self.layer_config = primary_layer_config
+            self.quant_block_list = primary_quant_block_list
+            context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving = saved_flags
+        return primary_model, primary_layer_config
 
     def save_quantized(
         self,

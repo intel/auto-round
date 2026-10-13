@@ -144,6 +144,34 @@ class TestFindAdditionalTransformers:
         assert len(result) == 1
         assert result[0][0] == "transformer_2"
 
+    def test_zero_shot_quantizes_both_transformers(self):
+        primary, secondary = torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)
+        pipe = SimpleNamespace(
+            components=["transformer", "transformer_2"], transformer=primary, transformer_2=secondary
+        )
+        comp = DiffusionMixin.__new__(DiffusionMixin)
+        comp.model_context = SimpleNamespace(pipe=pipe, model=primary, quantized=False)
+        comp.compress_context = SimpleNamespace(
+            low_cpu_mem_usage=False, is_immediate_packing=False, is_immediate_saving=False
+        )
+        comp.need_calib = False
+        comp.layer_config = {"bits": 8}
+        comp.quant_block_list = []
+        comp.post_init = MagicMock()
+        quantized_models = []
+
+        def quantize_zero_shot():
+            quantized_models.append(comp.model_context.model)
+            return comp.model_context.model, comp.layer_config
+
+        comp._quantize_zero_shot = quantize_zero_shot
+        model, config = comp.quantize()
+        assert quantized_models == [primary, secondary]
+        assert model is comp.model_context.model is primary
+        assert config == {"bits": 8}
+        assert comp._quantized_transformers == {"transformer_2": (secondary, config)}
+        assert comp.model_context.quantized
+
 
 class TestAlignDeviceAndDtype:
     """Test _align_device_and_dtype_for_secondary logic."""
