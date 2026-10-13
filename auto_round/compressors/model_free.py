@@ -1832,6 +1832,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             model=model_name_or_path,
             iters=0,
             disable_opt_rtn=disable_opt_rtn,
+            # Forward the user's torch.compile choice so the fallback compressor
+            # honors an explicit --enable_torch_compile request. ``None`` keeps the
+            # fallback's default situational policy (auto-disable for RTN/OPT-RTN).
+            enable_torch_compile=enable_torch_compile,
             tokenizer=tokenizer,
             scheme=copy.deepcopy(scheme),
             layer_config=copy.deepcopy(layer_config),
