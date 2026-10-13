@@ -61,6 +61,7 @@ class QDQTool:
         self.layer_config: dict | None = None
         self.disable_opt_rtn: bool | None = None
         self.use_v2_scale_search: bool = False
+        self.v2_scale_search: str = "full"
 
     # ── runtime wiring ────────────────────────────────────────────────────────
     @staticmethod
@@ -80,6 +81,7 @@ class QDQTool:
             awq_disable_opt_rtn = getattr(block_config, "disable_opt_rtn", False)
         self.disable_opt_rtn = bool(awq_disable_opt_rtn)
         self.use_v2_scale_search = self._block_quantizer_is_signroundv2(composer)
+        self.v2_scale_search = getattr(awq_config, "v2_scale_search", "full")
 
     @staticmethod
     def _block_quantizer_is_signroundv2(block_quantizer_or_composer) -> bool:
@@ -129,7 +131,7 @@ class QDQTool:
             iters=0,
         )
         opt_quant_func = None
-        if self.use_v2_scale_search and params["sym"]:
+        if self.use_v2_scale_search and self.v2_scale_search != "off" and params["sym"]:
             opt_quant_func = get_optimized_quant_func(params["data_type"])
         return quant_func, opt_quant_func
 
@@ -143,6 +145,7 @@ class QDQTool:
         quant_func=None,
         opt_quant_func=None,
         imatrix: torch.Tensor | None = None,
+        init_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Quantize-dequantize ``weight`` under the resolved ``params``.
 
@@ -151,7 +154,8 @@ class QDQTool:
         the dispatched ``quant_func``; a non-``None`` ``opt_quant_func`` enables
         the SignRoundV2 optimized init-scale path for this weight. Used for
         both the scale grid-search and the clip-search -- reference/loss only,
-        it never mutates stored weights.
+        it never mutates stored weights. ``init_scale`` lets the ``reuse``
+        policy supply a scale computed once before the AWQ smoothing loop.
         """
         if quant_func is None:
             quant_func, opt_quant_func = self.resolve_quant_funcs(params)
@@ -175,9 +179,10 @@ class QDQTool:
 
         active_quant_func = quant_func
         if opt_quant_func is not None:
-            init_scale = compute_optimized_init_scale(
-                weight, params["data_type"], params["bits"], params["group_size"], imatrix=imatrix
-            )
+            if init_scale is None:
+                init_scale = compute_optimized_init_scale(
+                    weight, params["data_type"], params["bits"], params["group_size"], imatrix=imatrix
+                )
             if init_scale is not None:
                 quant_kwargs["init_scale"] = init_scale
                 quant_kwargs["imatrix"] = imatrix if isinstance(imatrix, torch.Tensor) else torch.ones_like(weight)
