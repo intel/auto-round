@@ -207,6 +207,36 @@ class TestCpuARDevice:
 
 
 # ---------------------------------------------------------------------------
+# HpuARDevice
+# ---------------------------------------------------------------------------
+class TestHpuARDevice:
+    def test_synchronize_uses_hpu_module_not_accelerator(self):
+        """torch.accelerator may report "hpu" while rejecting synchronize on it, so
+        HpuARDevice must call torch.hpu.synchronize() (which takes no index)."""
+        from auto_round.utils.device_manager import HpuARDevice
+
+        accelerator = MagicMock()
+        accelerator.synchronize.side_effect = RuntimeError(
+            "Backend doesn't support synchronizing all streams on device."
+        )
+        hpu_module = MagicMock()
+        d = HpuARDevice()
+        d._module = accelerator
+        with patch.object(HpuARDevice, "get_device_module", return_value=hpu_module):
+            d.synchronize()
+            d.synchronize(index=0)
+        accelerator.synchronize.assert_not_called()
+        assert hpu_module.synchronize.call_count == 2
+        hpu_module.synchronize.assert_called_with()
+
+    def test_synchronize_noop_without_hpu_module(self):
+        from auto_round.utils.device_manager import HpuARDevice
+
+        with patch.object(HpuARDevice, "get_device_module", return_value=None):
+            assert HpuARDevice().synchronize() is None
+
+
+# ---------------------------------------------------------------------------
 # Helpers: normalize_default_device_map, _normalize_device_type
 # ---------------------------------------------------------------------------
 class TestNormalizeDefaultDeviceMap:

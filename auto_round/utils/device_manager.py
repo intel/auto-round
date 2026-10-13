@@ -544,6 +544,15 @@ class HpuARDevice(ARDevice):
             except Exception:
                 pass
 
+    def synchronize(self, index: int | None = None) -> None:
+        # Newer PyTorch reports "hpu" via torch.accelerator, so ``self._module`` may be
+        # torch.accelerator, whose synchronize the HPU backend rejects ("Backend doesn't support
+        # synchronizing all streams on device"). torch.hpu.synchronize() takes no index because
+        # an HPU process owns a single device.
+        fn = getattr(self.get_device_module(self.type), "synchronize", None)
+        if callable(fn):
+            fn()  # pylint: disable=E1102
+
     def is_available(self) -> bool:
         return _hpu_available()
 
