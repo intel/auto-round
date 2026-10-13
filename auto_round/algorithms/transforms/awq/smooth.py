@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING
 import torch
 
 from auto_round.algorithms.transforms.smoothing.groups import SmoothGroup
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.data_type.utils import (
+    compute_optimized_init_scale,
+    reshape_pad_tensor_by_group_size,
+    revert_tensor_by_pad,
+)
 
 if TYPE_CHECKING:
     from auto_round.algorithms.transforms.awq.base import AWQTransform
@@ -128,6 +132,24 @@ class AWQSmoothStrategy:
         # coupling to the first layer and makes direct calls robust.
         bl_quant_funcs = {bl: owner._qdq_tool.resolve_quant_funcs(bl_params[bl]) for bl in mapping.balance_layers}
 
+        reused_init_scales = {}
+        if owner._qdq_tool.v2_scale_search == "reuse":
+            for bl in mapping.balance_layers:
+                _, opt_quant_func = bl_quant_funcs[bl]
+                if opt_quant_func is None:
+                    continue
+                # Reuse the scale found for the original balance-layer weight.
+                # This deliberately avoids rerunning the optimized search for
+                # every AWQ smoothing candidate; the final V2 quantizer still
+                # performs its normal scale search on the transformed weight.
+                reused_init_scales[bl] = compute_optimized_init_scale(
+                    orig_state[bl],
+                    bl_params[bl]["data_type"],
+                    bl_params[bl]["bits"],
+                    bl_params[bl]["group_size"],
+                    imatrix=getattr(bl, "imatrix", None),
+                )
+
         def candidates():
             for ratio, use_duo in owner._get_grid_search_params():
                 if use_duo:
@@ -154,6 +176,7 @@ class AWQSmoothStrategy:
                         quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
                         imatrix=getattr(bl, "imatrix", None),
+                        init_scale=reused_init_scales.get(bl),
                     )
                     bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
 
@@ -171,6 +194,7 @@ class AWQSmoothStrategy:
                         quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
                         imatrix=getattr(bl, "imatrix", None),
+                        init_scale=reused_init_scales.get(bl),
                     )
                     total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
 
