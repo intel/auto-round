@@ -264,106 +264,188 @@ class DiffusionMixin:
             return super().try_cache_inter_data_gpucpu(*args, **kwargs)
 
     def quantize(self) -> tuple[torch.nn.Module, dict]:
-        """Quantize diffusion transformers with shared calibration/RTN orchestration."""
-        self.post_init()
-        additional = self._find_additional_transformers()
-        if additional:
-            return self._quantize_all_transformers(additional)
+        """Quantize the diffusion model.
 
-        if self.need_calib:
+        Overrides the parent to use diffusion-specific cache_inter_data instead of
+        the LLM-specific calib path.  The diffusion pipeline forward is used to collect
+        block inputs (via _replace_forward hooks), then those inputs are passed to the
+        standard CalibCompressor quantization loop.
+
+        For dual-transformer pipelines (e.g. WAN with transformer + transformer_2),
+        this method quantizes all transformers sequentially.
+        """
+        from auto_round.utils import find_matching_blocks, get_block_names
+        from auto_round.utils.common import flatten_list
+
+        self.post_init()
+
+        additional = self._find_additional_transformers()
+        # Single-transformer RTN needs no pipeline calibration.
+        if not self.need_calib and not additional:
+            return self._quantize_zero_shot()
+
+        # Get block names and call cache_inter_data to populate self.inputs
+        if bool(self.quant_block_list):
+            all_blocks = self.quant_block_list
+        else:
+            all_blocks = get_block_names(self.model_context.model)
+        if len(all_blocks) == 0:
+            logger.warning("could not find blocks, exit with original model")
+            return self.model, self.layer_config
+
+        if not self.has_variable_block_shape:
+            to_cache_block_names = [block[0] for block in all_blocks]
+        else:
+            to_cache_block_names = flatten_list(all_blocks)
+
+        if not additional:
+            # Single-transformer path: let calib() own pipeline dispatch.
             pipe = self.model_context.pipe
             device_map = getattr(self.compress_context, "device_map", None)
             if device_map is not None and not is_auto_device_mapping(device_map) and not isinstance(device_map, int):
                 target_device = get_major_device(device_map)
+                # Skip if the transformer is already on the target device to avoid
+                # redundant full-model transfer that exhausts GPU memory.
                 transformer = getattr(pipe, "transformer", None) or getattr(pipe, "unet", None)
                 param = next(transformer.parameters(), None) if transformer else None
                 skip_move = param is not None and get_major_device(str(param.device)) == target_device
                 if not skip_move:
                     pipe.to(target_device)
-        return self._quantize_active_transformer()
 
-    def _quantize_active_transformer(self) -> tuple[torch.nn.Module, dict]:
-        """Collect inputs when required, then run the existing quantization loop."""
-        if not self.need_calib:
-            return self._quantize_zero_shot()
+            logger.info("start to cache block inputs")
+            all_inputs = self.try_cache_inter_data_gpucpu(
+                to_cache_block_names,
+                self.calibration_context.nsamples,
+                layer_names=[],
+            )
+            self.inputs = all_inputs
+            if getattr(self.calibration, "_cpu_offload_mode", None) == "model":
+                from accelerate.hooks import remove_hook_from_submodules
 
-        from auto_round.utils import get_block_names
-        from auto_round.utils.common import flatten_list
+                remove_hook_from_submodules(self.model_context.model)
+            clear_memory()
+            self._inputs_cached = True
+            return super().quantize()
 
-        all_blocks = self.quant_block_list or get_block_names(self.model_context.model)
-        if not all_blocks:
-            logger.warning("could not find blocks, exit with original model")
-            return self.model, self.layer_config
-        to_cache_block_names = (
-            flatten_list(all_blocks) if self.has_variable_block_shape else [block[0] for block in all_blocks]
-        )
-        logger.info("start to cache block inputs")
-        self.inputs = self.try_cache_inter_data_gpucpu(
-            to_cache_block_names, self.calibration_context.nsamples, layer_names=[]
-        )
-        if getattr(self.calibration, "_cpu_offload_mode", None) == "model":
-            from accelerate.hooks import remove_hook_from_submodules
-
-            remove_hook_from_submodules(self.model_context.model)
-        clear_memory(device_list=device_manager.device_list)
-        self._inputs_cached = True
-        return super().quantize()
-
-    def _quantize_all_transformers(self, additional) -> tuple[torch.nn.Module, dict]:
-        """Share model switching, initialization and restoration across algorithms."""
+        # Dual-transformer path: quantize all transformers sequentially
         logger.info("Detected multi-transformer diffusion pipeline, quantizing all transformers")
-        context = self.compress_context
-        saved_flags = (context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving)
-        orig_steps = getattr(self, "calib_num_inference_steps", None)
-        primary_model = self.model_context.model
-        primary_state = self._capture_transformer_quantization_state()
-        self._quantized_transformers = {}
-        self._quantized_transformer_states = {}
-        completed = False
-        try:
-            context.low_cpu_mem_usage = False
-            if self.need_calib and orig_steps is not None and orig_steps < 2:
-                logger.warning("Increasing calib_num_inference_steps to 2 for multi-transformer calibration.")
-                self.calib_num_inference_steps = 2
-                if self.calibration is not None:
-                    self.calibration.calib_num_inference_steps = 2
-            self._defer_multi_transformer_serialization()
-            primary_model, _ = self._quantize_active_transformer()
-            primary_state = self._capture_transformer_quantization_state()
-            if self.need_calib and hasattr(primary_model, "hf_device_map"):
-                delattr(primary_model, "hf_device_map")
 
-            for comp_name, transformer in additional:
-                logger.info(f"Quantizing {comp_name}")
-                self.model_context.model = transformer
-                self.model_context.quantized = False
-                self._post_init_done = False
-                self.calibration = None
-                self._inputs_cached = False
-                # Secondary transformers may use different block paths/counts.
-                self.quant_block_list = None
-                self.to_quant_block_names = None
-                self.__dict__.pop("_format_resolution", None)
-                if self.need_calib:
-                    self._align_device_and_dtype_for_secondary(comp_name)
-                self.post_init()
-                self._defer_multi_transformer_serialization()
-                model, layer_config = self._quantize_active_transformer()
-                self._quantized_transformers[comp_name] = (model, dict(layer_config))
-                self._quantized_transformer_states[comp_name] = self._capture_transformer_quantization_state()
-                setattr(self.model_context.pipe, comp_name, model)
-            completed = True
-        finally:
-            self.model_context.model = primary_model
-            self.model_context.quantized = completed
-            self._restore_transformer_quantization_state(primary_state)
-            self._inputs_cached = False
-            context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving = saved_flags
-            if orig_steps is not None:
-                self.calib_num_inference_steps = orig_steps
-                if self.calibration is not None:
-                    self.calibration.calib_num_inference_steps = orig_steps
-        return primary_model, self.layer_config
+        # Ensure at least 2 calibration inference steps so both transformers are exercised.
+        orig_steps = getattr(self, "calib_num_inference_steps", None) or 8
+        if self.need_calib and orig_steps < 2:
+            logger.warning(
+                f"calib_num_inference_steps={orig_steps} is too low for dual-transformer "
+                f"quantization — increasing to 2 so all transformers receive calibration data."
+            )
+            self.calib_num_inference_steps = 2
+
+        # Disable low_cpu_mem_usage so quantized models stay in memory during multi-transformer
+        # quantization.
+        orig_low_cpu = self.compress_context.low_cpu_mem_usage
+        orig_immediate_packing = self.compress_context.is_immediate_packing
+        orig_immediate_saving = self.compress_context.is_immediate_saving
+        self.compress_context.low_cpu_mem_usage = False
+        # Keep the primary transformer executable for the later transformer_2
+        # calibration pass. The llm_compressor QuantLinear produced by immediate
+        # packing is an export container and intentionally has no forward method.
+        self._defer_multi_transformer_serialization()
+
+        # Store primary transformer state
+        primary_model = self.model
+        quantized_extras = {}
+        quantized_states = {}
+
+        # Quantize primary transformer
+        if self.need_calib:
+            logger.info("start to cache block inputs for primary transformer")
+            all_inputs = self.try_cache_inter_data_gpucpu(
+                to_cache_block_names,
+                self.calibration_context.nsamples,
+                layer_names=[],
+            )
+            self.inputs = all_inputs
+            clear_memory(device_list=device_manager.device_list)
+            self._inputs_cached = True
+        super().quantize()
+        primary_state = self._capture_transformer_quantization_state()
+
+        # Clear stale hf_device_map so cache_inter_data can re-dispatch for next transformer
+        if hasattr(primary_model, "hf_device_map"):
+            delattr(primary_model, "hf_device_map")
+
+        # Quantize additional transformers
+        for comp_name, transformer in additional:
+            logger.info(f"Quantizing {comp_name}")
+
+            # Reset quantization state for new transformer
+            self.model_context.model = transformer
+            self.model_context.quantized = False
+            self._post_init_done = False
+            # Calibrators snapshot the active model at construction time. Recreate
+            # it so transformer_2 block hooks are not installed on the primary model.
+            self.calibration = None
+            self.quant_block_list = None
+            self.to_quant_block_names = None
+            self.__dict__.pop("_format_resolution", None)
+
+            # Dispatch the pipeline for the secondary transformer without recasting it.
+            if self.need_calib:
+                self._align_device_and_dtype_for_secondary(comp_name)
+
+            # Re-run post_init to set up quantizer for new model
+            self.post_init()
+            # post_init recomputes immediate packing/saving from the output format.
+            # Reassert the multi-transformer deferral before pipeline calibration.
+            self._defer_multi_transformer_serialization()
+
+            # Get block names for new transformer
+            all_blocks = get_block_names(self.model_context.model)
+            self.quant_block_list = find_matching_blocks(self.model_context.model, all_blocks, None)
+
+            # Get new block names for caching
+            if bool(self.quant_block_list):
+                all_blocks = self.quant_block_list
+            else:
+                all_blocks = get_block_names(self.model_context.model)
+            if len(all_blocks) == 0:
+                logger.warning(f"could not find blocks in {comp_name}, skipping")
+                continue
+
+            if not self.has_variable_block_shape:
+                to_cache_block_names = [block[0] for block in all_blocks]
+            else:
+                to_cache_block_names = flatten_list(all_blocks)
+
+            if self.need_calib:
+                logger.info(f"start to cache block inputs for {comp_name}")
+                all_inputs = self.try_cache_inter_data_gpucpu(
+                    to_cache_block_names,
+                    self.calibration_context.nsamples,
+                    layer_names=[],
+                )
+                self.inputs = all_inputs
+                clear_memory(device_list=device_manager.device_list)
+                self._inputs_cached = True
+            super().quantize()
+
+            # Store quantized transformer
+            quantized_extras[comp_name] = (self.model_context.model, dict(self.layer_config))
+            quantized_states[comp_name] = self._capture_transformer_quantization_state()
+            # Also update the pipeline to reference the quantized transformer
+            setattr(self.model_context.pipe, comp_name, self.model_context.model)
+
+        # Restore primary transformer state
+        self.model_context.model = primary_model
+        self.model_context.quantized = True
+        self._restore_transformer_quantization_state(primary_state)
+        self._quantized_transformers = quantized_extras
+        self._quantized_transformer_states = quantized_states
+        self.compress_context.low_cpu_mem_usage = orig_low_cpu
+        self.compress_context.is_immediate_packing = orig_immediate_packing
+        self.compress_context.is_immediate_saving = orig_immediate_saving
+        self.calib_num_inference_steps = orig_steps
+
+        return self.model_context.model, self.layer_config
 
     def save_quantized(
         self,
@@ -443,22 +525,20 @@ class DiffusionMixin:
                 # Save primary quantized transformer
                 saved_immediate_saving = self.compress_context.is_immediate_saving
                 saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
-                try:
-                    if has_multiple_quantized_transformers:
-                        self.compress_context.is_immediate_saving = False
-                        if saved_subfolder is not None:
-                            delattr(self.model_context.model, "_autoround_pipeline_subfolder")
-                    compressed_model = super().save_quantized(
-                        output_dir=target_output_dir,
-                        format=_format,
-                        inplace=inplace,
-                        return_folders=False,
-                        **kwargs,
-                    )
-                finally:
-                    self.compress_context.is_immediate_saving = saved_immediate_saving
+                if has_multiple_quantized_transformers:
+                    self.compress_context.is_immediate_saving = False
                     if saved_subfolder is not None:
-                        self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
+                        delattr(self.model_context.model, "_autoround_pipeline_subfolder")
+                compressed_model = super().save_quantized(
+                    output_dir=target_output_dir,
+                    format=_format,
+                    inplace=inplace,
+                    return_folders=False,
+                    **kwargs,
+                )
+                self.compress_context.is_immediate_saving = saved_immediate_saving
+                if saved_subfolder is not None:
+                    self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
             elif val is not None and hasattr(val, "save_pretrained"):
                 val.save_pretrained(sub_module_path)
                 continue

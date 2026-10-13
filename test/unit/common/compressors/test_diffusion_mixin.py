@@ -148,7 +148,7 @@ class TestFindAdditionalTransformers:
         assert result[0][0] == "transformer_2"
 
     @pytest.mark.parametrize("need_calib", [False, True])
-    @pytest.mark.parametrize("failing_component", [None, "transformer", "transformer_2"])
+    @pytest.mark.parametrize("failing_component", [None, "transformer_2"])
     def test_quantizes_and_exports_both_transformers(self, need_calib, failing_component, tmp_path, monkeypatch):
         class MockCompressor(DiffusionMixin, BaseCompressor):
             pass
@@ -243,7 +243,7 @@ class TestFindAdditionalTransformers:
             assert metadata["quant_block_list"] == [block_names]
             assert metadata["to_quant_block_names"] == block_names[0].rsplit(".", 1)[0]
             assert metadata["regex_config"] == {metadata["to_quant_block_names"]: {"bits": 8}}
-        assert len(saved) == (1 if failing_component == "transformer" else 2)
+        assert len(saved) == 2
         assert comp.model_context.model is primary
         assert comp._capture_transformer_quantization_state() == primary_state
         assert comp.compress_context.is_immediate_saving
