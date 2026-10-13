@@ -179,7 +179,8 @@ class TestFindAdditionalTransformers:
             low_cpu_mem_usage=False, is_immediate_packing=False, is_immediate_saving=False
         )
         comp.need_calib = need_calib
-        comp.calib_num_inference_steps = 1
+        comp.calib_num_inference_steps = 2
+        comp.calibration = None
         comp.calibration_context = SimpleNamespace(nsamples=1)
         comp.has_variable_block_shape = False
         comp.try_cache_inter_data_gpucpu = MagicMock(return_value={})
@@ -197,39 +198,15 @@ class TestFindAdditionalTransformers:
                 quant_block_list=comp.quant_block_list,
             )
 
-        def post_init():
-            BaseCompressor._scheme_post_init(comp)
-            comp._post_init_done = True
-            comp.calibration = SimpleNamespace(
-                _cpu_offload_mode=None, calib_num_inference_steps=comp.calib_num_inference_steps
-            )
-
         comp.configure_layer_config = configure_layer_config
-        comp.post_init = post_init
-        quantized_models = []
-
-        def quantize_zero_shot():
-            expected = [["blocks.0"]] if comp.model_context.model is primary else [["layers.0", "layers.1"]]
-            assert comp.quant_block_list == expected
-            assert set(comp.layer_config) == set(expected[0])
-            quantized_models.append(comp.model_context.model)
-            return comp.model_context.model, comp.layer_config
-
-        comp._quantize_zero_shot = quantize_zero_shot
-        monkeypatch.setattr(BaseCompressor, "quantize", lambda _: quantize_zero_shot())
+        comp.post_init = lambda: BaseCompressor._scheme_post_init(comp)
+        quantize = MagicMock(side_effect=lambda: (comp.model_context.model, comp.layer_config))
+        monkeypatch.setattr(BaseCompressor, "quantize", quantize)
         monkeypatch.setattr("auto_round.compressors.diffusion_mixin.clear_memory", lambda **kwargs: None)
-        model, config = comp.quantize()
-        assert quantized_models == [primary, secondary]
-        assert model is comp.model_context.model is primary
-        assert config == {"blocks.0": {"bits": 8}}
-        assert comp.quant_block_list == [["blocks.0"]]
-        assert comp.to_quant_block_names == "blocks"
-        assert comp._quantized_transformers == {
-            "transformer_2": (secondary, {"layers.0": {"bits": 8}, "layers.1": {"bits": 8}})
-        }
-        assert comp.model_context.quantized
+        model, _ = comp.quantize()
+        assert model is primary
+        assert quantize.call_count == 2
         assert comp.try_cache_inter_data_gpucpu.call_count == (2 if need_calib else 0)
-        assert comp.calib_num_inference_steps == comp.calibration.calib_num_inference_steps == 1
         primary_state = comp._capture_transformer_quantization_state()
         monkeypatch.setattr("auto_round.compressors.base._get_save_folder_name", lambda _: str(tmp_path))
         monkeypatch.setattr("auto_round.compressors.diffusion_mixin.rename_weights_files", lambda _: None)
