@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 import json
 import math
 import os
@@ -256,6 +257,10 @@ class DiffusionMixin:
         from auto_round.utils import find_matching_blocks, get_block_names
         from auto_round.utils.common import flatten_list
 
+        # Keep the caller's model-independent layer overrides. ``post_init``
+        # expands them to concrete names for the primary transformer, so they
+        # must be restored before initializing another model component.
+        initial_layer_config = copy.deepcopy(self.layer_config)
         self.post_init()
 
         additional = self._find_additional_transformers()
@@ -318,16 +323,19 @@ class DiffusionMixin:
             )
             self.calib_num_inference_steps = 2
 
-        # Disable low_cpu_mem_usage so quantized models stay in memory during multi-transformer
-        # quantization.
+        # Calibration of the later transformer may execute the primary model,
+        # so keep it in memory and defer export-only packing. Zero-shot RTN
+        # does not need the primary model for calibration and can use its
+        # regular low-memory/offline serialization path.
         orig_low_cpu = self.compress_context.low_cpu_mem_usage
         orig_immediate_packing = self.compress_context.is_immediate_packing
         orig_immediate_saving = self.compress_context.is_immediate_saving
-        self.compress_context.low_cpu_mem_usage = False
-        # Keep the primary transformer executable for the later transformer_2
-        # calibration pass. The llm_compressor QuantLinear produced by immediate
-        # packing is an export container and intentionally has no forward method.
-        self._defer_multi_transformer_serialization()
+        if self.need_calib:
+            self.compress_context.low_cpu_mem_usage = False
+            # Keep the primary transformer executable for the later transformer_2
+            # calibration pass. The llm_compressor QuantLinear produced by immediate
+            # packing is an export container and intentionally has no forward method.
+            self._defer_multi_transformer_serialization()
 
         # Store primary transformer state
         primary_model = self.model
@@ -364,9 +372,16 @@ class DiffusionMixin:
             # Calibrators snapshot the active model at construction time. Recreate
             # it so transformer_2 block hooks are not installed on the primary model.
             self.calibration = None
+            self.layer_config = initial_layer_config or {}
+            self.regex_config = {}
+            self.has_qlayer_outside_block = False
             self.quant_block_list = None
             self.to_quant_block_names = None
             self.__dict__.pop("_format_resolution", None)
+            if not self.need_calib:
+                # Immediate saving uses a writer bound to the active model and
+                # its pipeline subfolder; create a fresh one for this component.
+                self.shard_writer = None
 
             # Dispatch the pipeline for the secondary transformer without recasting it.
             if self.need_calib:
@@ -376,7 +391,8 @@ class DiffusionMixin:
             self.post_init()
             # post_init recomputes immediate packing/saving from the output format.
             # Reassert the multi-transformer deferral before pipeline calibration.
-            self._defer_multi_transformer_serialization()
+            if self.need_calib:
+                self._defer_multi_transformer_serialization()
 
             # Get block names for new transformer
             all_blocks = get_block_names(self.model_context.model)

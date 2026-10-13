@@ -171,7 +171,7 @@ class TestFindAdditionalTransformers:
         comp.model_context = SimpleNamespace(pipe=pipe, model=primary, tokenizer=None, quantized=False)
         comp.quantize_config = SimpleNamespace(act_bits=8, optimizer="sgd")
         comp.compress_context = SimpleNamespace(
-            low_cpu_mem_usage=False, is_immediate_packing=False, is_immediate_saving=False
+            low_cpu_mem_usage=True, is_immediate_packing=True, is_immediate_saving=True
         )
         comp.need_calib = need_calib
         comp.calib_num_inference_steps = 2
@@ -181,6 +181,8 @@ class TestFindAdditionalTransformers:
         comp.try_cache_inter_data_gpucpu = MagicMock(return_value={})
         comp.quant_block_list = [["blocks.0"]]
         comp.to_quant_block_names = "blocks"
+        user_layer_config = {"self_attn": {"bits": 6}}
+        comp.layer_config = user_layer_config
         comp._scheme_resolved = True
         comp.is_auto_scheme = False
 
@@ -194,6 +196,10 @@ class TestFindAdditionalTransformers:
             )
 
         def post_init():
+            if comp.model_context.model is secondary:
+                assert comp.layer_config == user_layer_config
+                assert comp.regex_config == {}
+                assert comp.has_qlayer_outside_block is False
             BaseCompressor._scheme_post_init(comp)
             comp._post_init_done = True
 
@@ -205,6 +211,9 @@ class TestFindAdditionalTransformers:
             expected = [["blocks.0"]] if comp.model_context.model is primary else [["layers.0", "layers.1"]]
             assert comp.quant_block_list == expected
             assert set(comp.layer_config) == set(expected[0])
+            assert comp.compress_context.low_cpu_mem_usage is (not need_calib)
+            assert comp.compress_context.is_immediate_packing is (not need_calib)
+            assert comp.compress_context.is_immediate_saving is (not need_calib)
             quantized.append(comp.model_context.model)
             return comp.model_context.model, comp.layer_config
 
