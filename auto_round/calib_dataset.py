@@ -989,7 +989,7 @@ def select_dataset(dataset, indices):
         return dataset
 
 
-def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512):
+def _get_dataset_impl(tokenizer, seqlen, dataset_name="HuggingFaceH4/ultrachat_200k", seed=42, nsamples=512):
     """Internal implementation: generate a dataset for calibration.
 
     Args:
@@ -997,7 +997,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         seqlen (int): The exact sequence length. samples < seqlen will be dropped,
                       samples longer than seqlen will be truncated
         dataset_name (str, optional): The name of the dataset or datasets separated by commas.
-                                     Defaults to "NeelNanda/pile-10k".
+                                     Defaults to "HuggingFaceH4/ultrachat_200k".
         split (str, optional): The data split to use. Defaults to None.
         seed (int, optional): The random seed for reproducibility. Defaults to 42.
         nsamples (int, optional): The total number of samples to include. Defaults to 512.
@@ -1194,7 +1194,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
     return dataset_final
 
 
-def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512):
+def get_dataset(tokenizer, seqlen, dataset_name="HuggingFaceH4/ultrachat_200k", seed=42, nsamples=512):
     """Generate a dataset for calibration.
 
     Uses a subprocess for preprocessing to ensure all temporary memory is fully
@@ -1273,7 +1273,7 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, n
         return _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples)
 
 
-def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, nsamples=512):
+def get_dataloader(tokenizer, seqlen, dataset_name="HuggingFaceH4/ultrachat_200k", seed=42, bs=8, nsamples=512):
     """Generate a DataLoader for calibration using specified parameters.
 
     Args:
@@ -1281,7 +1281,7 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
         seqlen (int): The exact sequence length. samples < seqlen will be dropped,
                       samples longer than seqlen will be truncated
         dataset_name (str, optional): The name of the dataset or datasets separated by commas.
-                                     Defaults to "NeelNanda/pile-10k".
+                                     Defaults to "HuggingFaceH4/ultrachat_200k".
         split (str, optional): The data split to use. Defaults to None.
         seed (int, optional): The random seed for reproducibility. Defaults to 42.
         bs (int, optional): The batch size. Defaults to 4.

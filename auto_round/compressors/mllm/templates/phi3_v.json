@@ -3,5 +3,5 @@
     "replace_tokens": ["<image>", "<|image_1|>"],
     "processor": "hf",
     "extra_encode" : false,
-    "default_dataset": "NeelNanda/pile-10k"
+    "default_dataset": "HuggingFaceH4/ultrachat_200k"
 }

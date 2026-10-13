@@ -258,7 +258,7 @@ class BaseOrchestrator:
         from auto_round.calibration.state import CalibrationContext
 
         dataset_was_explicitly_set = dataset is not None
-        self.dataset = dataset if dataset_was_explicitly_set else "NeelNanda/pile-10k"
+        self.dataset = dataset if dataset_was_explicitly_set else "HuggingFaceH4/ultrachat_200k"
         batch_size = min(kwargs.pop("batch_size", 8), nsamples)
         self.calibration_context = CalibrationContext(
             nsamples=nsamples if nsamples is not None else 128,
@@ -508,7 +508,7 @@ class BaseOrchestrator:
 
         self.need_calib = self._check_need_calib()
         calibrator_kind = self._get_calibrator_kind()
-        # The default pile dataset is model-adaptive for pure-text LLMs. Any
+        # The default calibration dataset is model-adaptive for pure-text LLMs. Any
         # non-default dataset remains untouched.
         if self.need_calib and not dataset_was_explicitly_set and calibrator_kind == "llm":
             from auto_round.calib_dataset import get_code_calibration_dataset
@@ -1374,7 +1374,7 @@ class BaseOrchestrator:
         if dataset is not None:
             return dataset
 
-        return "NeelNanda/pile-10k"
+        return "HuggingFaceH4/ultrachat_200k"
 
     def post_init(self) -> None:
         """One-time initialization that requires a loaded model.

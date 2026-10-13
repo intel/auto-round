@@ -7,7 +7,7 @@ adjustments to default parameters
 
 ### API Usage (Gaudi2/CPU/GPU) Recommended
 
-By default, AutoRound only quantizes the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
+By default, AutoRound only quantizes the text module of VLMs and uses `HuggingFaceH4/ultrachat_200k` for calibration. To
 quantize the entire model, you can enable `quant_nontext_module` by setting it to True, though support for this feature
 is limited.
 
@@ -17,12 +17,12 @@ from auto_round import AutoRound  # same as llm, AutoRound can determine mllm au
 model_name = "Qwen/Qwen2-VL-2B-Instruct"
 
 ## quantize the model
-autoround = AutoRound(model_name, scheme="W4A16", dataset="NeelNanda/pile-10k", quant_nontext_module=False)
+autoround = AutoRound(model_name, scheme="W4A16", dataset="HuggingFaceH4/ultrachat_200k", quant_nontext_module=False)
 output_dir = "./tmp_autoround"
 autoround.quantize_and_save(output_dir, format="auto_round")
 ```
 
-- `dataset`: the dataset for quantization training. Currently only support NeelNanda/pile-10k, llava_conv_58k,
+- `dataset`: the dataset for quantization training. Currently only support HuggingFaceH4/ultrachat_200k, NeelNanda/pile-10k, llava_conv_58k,
   llava_instruct_80k and llava_instruct_150k. Please note that the feasibility of the Llava calibration dataset has only been validated on five models so far.
 
 - `quant_nontext_module`: whether to quantize non-text module, e.g. vision component.
@@ -81,7 +81,7 @@ by default.
 <details>
 <summary style="font-size:17px;">Calibration Dataset</summary>
 
-For mllm, we used **text-only** calibration dataset (NeelNanda/pile-10k) as our default. If the model type does not
+For mllm, we used **text-only** calibration dataset (HuggingFaceH4/ultrachat_200k) as our default. If the model type does not
 support plain text calibration(e.g. Llama-3.2-vision), it will also automatically switch to llava dataset and adjust the
 hyperparameters.
 
@@ -103,7 +103,7 @@ from auto_round.compressors.mllm.processor import PROCESSORS
 from auto_round.compressors.mllm.template import _register_template
 
 model_type = model.config.model_type
-_register_template(model_type=model_type, default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
+_register_template(model_type=model_type, default_dataset="HuggingFaceH4/ultrachat_200k", processor=PROCESSORS["hf"])
 ```
 
 #### Processor

@@ -61,8 +61,9 @@ pip install auto-round
 
 ### Default Dataset
 
-The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in huggingface is adopted as the default
+The [HuggingFaceH4/ultrachat_200k](https://huggingface.co/datasets/HuggingFaceH4/ultrachat_200k) in huggingface is adopted as the default
 calibration data and will be downloaded automatically from the datasets Hub. Other available datasets include:
+- [`NeelNanda/pile-10k`](https://huggingface.co/datasets/NeelNanda/pile-10k) from Hugging Face
 - [`fineweb-edu`](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) from Hugging Face. If Hugging Face is
   inaccessible, install `modelscope`, set `AR_USE_MODELSCOPE=1`, and use the same alias to load the
   [ModelScope mirror](https://modelscope.cn/datasets/AI-ModelScope/fineweb-edu)

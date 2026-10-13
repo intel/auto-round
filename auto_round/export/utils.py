@@ -487,7 +487,7 @@ def filter_quantization_config(quantization_config):
         "amp": True,
         "batch_size": 8,
         "data_type": int,
-        "dataset": "NeelNanda/pile-10k",
+        "dataset": "HuggingFaceH4/ultrachat_200k",
         "enable_minmax_tuning": True,
         "enable_norm_bias_tuning": False,
         "enable_quanted_input": True,

@@ -250,7 +250,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`enable_deterministic_algorithms` (bool)**: Whether to enable deterministic algorithms for reproducibility (default is `False`).
 
 ##### Calibration Dataset
-- **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
+- **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"HuggingFaceH4/ultrachat_200k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
 - I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AUTO_ROUND_CACHE/datasets/coco2014` when `AUTO_ROUND_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
 - **`nsamples` (int)**: Number of samples for tuning (default is `128`).
 - **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
@@ -320,7 +320,7 @@ ar.quantize_and_save()
 
 **This feature is experimental and may be subject to changes**.
 
-By default, AutoRound only quantize the text module of VLMs and uses `NeelNanda/pile-10k` for calibration. To
+By default, AutoRound only quantize the text module of VLMs and uses `HuggingFaceH4/ultrachat_200k` for calibration. To
 quantize the entire model, you can enable `quant_nontext_module` by setting it to True, though support for this feature
 is limited. For more information, please refer to the AutoRound [readme](auto_round/compressors/mllm/README.md).
 

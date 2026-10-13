@@ -63,7 +63,8 @@ pip install auto-round
 ### 默认数据集
 **如果无法访问 Hugging Face，建议安装 `modelscope`、设置 `AR_USE_MODELSCOPE=1`，并使用 `fineweb-edu` 数据集。**
 
-默认标定数据集为 Hugging Face 上的 [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) ，该数据集会自动从 Huggingface Hub 下载。同时也支持使用以下数据集：
+默认标定数据集为 Hugging Face 上的 [HuggingFaceH4/ultrachat_200k](https://huggingface.co/datasets/HuggingFaceH4/ultrachat_200k) ，该数据集会自动从 Huggingface Hub 下载。同时也支持使用以下数据集：
+- Hugging Face 上的 [`NeelNanda/pile-10k`](https://huggingface.co/datasets/NeelNanda/pile-10k)
 - Hugging Face 上的 [`fineweb-edu`](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)。如果无法访问 Hugging Face，
   可安装 `modelscope`、设置 `AR_USE_MODELSCOPE=1`，并使用同一别名从 [ModelScope 镜像](https://modelscope.cn/datasets/AI-ModelScope/fineweb-edu) 加载
 - `BAAI/CCI3-HQ`：用于中文场景

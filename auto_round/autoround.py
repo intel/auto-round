@@ -536,7 +536,7 @@ class _CompressorBuilder:
         tokenizer=None,
         platform="hf",
         format=None,
-        dataset="NeelNanda/pile-10k",
+        dataset="HuggingFaceH4/ultrachat_200k",
         low_gpu_mem_usage: bool = False,
         device_map: str | torch.device | int | dict = 0,
         iters: int | None = None,

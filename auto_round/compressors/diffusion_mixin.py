@@ -89,7 +89,7 @@ class DiffusionMixin:
         self.pipeline_call_kwargs = dict(kwargs.pop("pipeline_call_kwargs", {}) or {})
 
         # Use video-domain calibration prompts by default for diffusion models.
-        if kwargs.get("dataset") in (None, "NeelNanda/pile-10k"):
+        if kwargs.get("dataset") in (None, "HuggingFaceH4/ultrachat_200k"):
             kwargs["dataset"] = "opens2v"
 
         iters = kwargs.get("iters", None)

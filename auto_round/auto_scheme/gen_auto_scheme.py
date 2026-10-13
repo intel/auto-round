@@ -94,7 +94,7 @@ class GenScheme:
         model: torch.nn.Module,
         quant_layer_names: Iterable[str],
         fixed_layer_scheme: dict[str, dict],
-        dataset: str = "pile-10k",
+        dataset: str = "HuggingFaceH4/ultrachat_200k",
         device_map: str | torch.device | int | dict | None = None,
         tokenizer=None,
         enable_torch_compile=True,
