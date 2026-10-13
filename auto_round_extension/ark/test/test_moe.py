@@ -175,6 +175,32 @@ class TestMoEGemmPrefillHMTMXFP4MXFP4:
         expected = torch.full((total_tokens, N), 12.0, dtype=torch.float32, device="xpu")
         torch.testing.assert_close(output.float(), expected, rtol=0, atol=0)
 
+    def test_custom_hadamard_rejected(self):
+        from auto_round_kernel.mxfp4_hadamard import get_hadamard_matrix
+
+        num_experts = 2
+        total_tokens = 4
+        N = 16
+        K = 64
+
+        activations = torch.ones(total_tokens, K, dtype=torch.bfloat16, device="xpu")
+        weights = torch.zeros((num_experts, N, K // 2), dtype=torch.uint8, device="xpu")
+        weight_scales = torch.full((num_experts, N, K // 32), 127, dtype=torch.uint8, device="xpu")
+        num_tokens_per_expert = torch.tensor([2, 2], dtype=torch.int32, device="xpu")
+        hadamard = get_hadamard_matrix(32, "xpu").clone()
+        hadamard[0, 1] = -hadamard[0, 1]
+
+        with pytest.raises(NotImplementedError, match="Sylvester FWHT"):
+            ark.moe_gemm_prefill_hmt_mxfp4_mxfp4(
+                activations,
+                weights,
+                weight_scales,
+                num_tokens_per_expert,
+                hadamard,
+                output_dtype=torch.bfloat16,
+                group_size=32,
+            )
+
 
 @pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
 @pytest.mark.skipif(not has_moe_gemm(), reason="MOE GEMM kernel not built (need ARK_SYCL_TLA=ON)")

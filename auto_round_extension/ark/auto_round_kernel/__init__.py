@@ -4034,7 +4034,8 @@ def moe_gemm_prefill_hmt_mxfp4_mxfp4(
     the FWHT kernel, then feeds the packed activations into the native
     MXFP4 x MXFP4 grouped GEMM.
     ``weights`` are packed FP4 E2M1 ``[E, N, K // 2]`` with E8M0 scales
-    ``[E, N, K // group_size]``.
+    ``[E, N, K // group_size]``. Custom Hadamard matrices are rejected so this
+    MoE path cannot silently fall back to the slower generic HMT implementation.
     """
     from .mxfp4_hadamard import _validate_hadamard, is_default_hadamard
 
@@ -4064,8 +4065,8 @@ def moe_gemm_prefill_hmt_mxfp4_mxfp4(
     else:
         hadamard_dim = _validate_hadamard(hadamard_matrix, check_finite=False)
         use_fwht = is_default_hadamard(hadamard_matrix)
-        if not use_fwht and hadamard_dim != HADAMARD_DIM:
-            raise NotImplementedError(f"hadamard_dim {hadamard_dim} supports the normalized Sylvester matrix only")
+        if not use_fwht:
+            raise NotImplementedError("moe_gemm_prefill_hmt_mxfp4_mxfp4 supports the normalized Sylvester FWHT only")
 
     total_tokens, K = activations.shape
     num_experts, N, K_packed = weights.shape

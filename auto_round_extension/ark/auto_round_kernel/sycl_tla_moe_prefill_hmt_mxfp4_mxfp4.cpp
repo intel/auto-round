@@ -27,8 +27,8 @@ void moe_gemm_prefill_hmt_mxfp4_mxfp4_impl(sycl::queue* q, void* activations, vo
   if (!ark::XpuMxfp4Hadamard::is_supported_hadamard_dim(hadamard_dim)) {
     throw std::invalid_argument("moe_gemm_prefill_hmt_mxfp4_mxfp4: unsupported hadamard_dim");
   }
-  if (!use_fwht && hadamard_dim != ark::XpuMxfp4Hadamard::kHadamardDim) {
-    throw std::invalid_argument("moe_gemm_prefill_hmt_mxfp4_mxfp4: custom Hadamard is supported only for D=32");
+  if (!use_fwht) {
+    throw std::invalid_argument("moe_gemm_prefill_hmt_mxfp4_mxfp4: only the normalized Sylvester FWHT path is supported");
   }
 
   auto* workspace_bytes = static_cast<uint8_t*>(activation_workspace);
