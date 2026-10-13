@@ -31,7 +31,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 auto-round --model <model> --scheme <scheme> --format fake \
-  --enable_alg_ext --algorithm auto_round \
+  --algorithm auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 # AWQ + RTN / AWQ + AutoRound / AWQ + 启用算法扩展的 AutoRound
@@ -44,11 +44,11 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 auto-round --model <model> --scheme <scheme> --format fake \
-  --enable_alg_ext --algorithm awq,auto_round \
+  --algorithm awq,auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 ```
 
-表中 `AR2` 表示启用 `--enable_alg_ext` 的 AutoRound，`AWQ_AR2` 表示 AWQ 后接启用 `--enable_alg_ext` 的 AutoRound。准确率列以百分制展示，例如原始值 `0.7058` 写作 `70.58`。
+表中 `AR2` 表示启用 `--algorithm auto_round_v2`（原 `--enable_alg_ext`）的 AutoRound，`AWQ_AR2` 表示 AWQ 后接启用同一算法扩展的 AutoRound。准确率列以百分制展示，例如原始值 `0.7058` 写作 `70.58`。
 
 AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply_clip`，否则不包含 AWQ weight clipping。
 
@@ -260,6 +260,6 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 
 ## 总结
 
-AWQ 更适合量化误差对 activation-aware weight smoothing 敏感的 scheme，例如 MXFP4。它可以提升 scheme 准确率，尤其是与启用 `--enable_alg_ext` 的 AutoRound 组合时。
+AWQ 更适合量化误差对 activation-aware weight smoothing 敏感的 scheme，例如 MXFP4。它可以提升 scheme 准确率，尤其是与启用算法扩展（`--algorithm auto_round_v2`）的 AutoRound 组合时。
 
 AWQ 不会给最终量化模型增加持续性内存开销，并且与终端量化算法正交，因此可以与 RTN、AutoRound 或 AutoRound2 组合，而不改变这些算法本身的核心量化逻辑。

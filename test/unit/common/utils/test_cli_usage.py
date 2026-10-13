@@ -709,3 +709,186 @@ def test_parse_max_shard_size():
     parser = build_quantize_parser()
     assert parser.parse_args([]).max_shard_size is None
     assert parser.parse_args(["--max_shard_size", "1GB"]).max_shard_size == "1GB"
+
+
+# ---------------------------------------------------------------------------
+# `auto_round_v2` and the deprecated `--enable_alg_ext`
+# ---------------------------------------------------------------------------
+
+
+def _build_cli_configs(argv):
+    """Build algorithm configs exactly like the quantize CLI does."""
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.main import _extract_common_quantization_kwargs
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(["--model", "dummy-model"] + list(argv))
+    if getattr(args, "iters", None) is None:
+        args.iters = 200
+    return AlgorithmHandler.build_configs(args, _extract_common_quantization_kwargs(args))
+
+
+def test_cli_auto_round_v2_selects_a_single_signround_v2_config():
+    from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
+
+    configs = _build_cli_configs(["--algorithm", "auto_round_v2"])
+
+    # auto_round_v2 must not drag in the implicit `auto_round` fallback, which
+    # would chain two block quantizers back to back.
+    assert [type(config).__name__ for config in configs] == ["SignRoundV2Config"]
+    assert isinstance(configs[0], SignRoundV2Config)
+    assert configs[0].enable_alg_ext is True
+
+
+@pytest.mark.parametrize("alias", ["auto_round_v2", "auto_roundv2", "sign_round_v2", "signroundv2"])
+def test_auto_round_v2_aliases_resolve_to_the_new_algorithm(alias):
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    assert AlgorithmHandler.resolve_alias(alias) == "auto_round_v2"
+
+
+def test_cli_auto_round_v2_composes_with_awq():
+    configs = _build_cli_configs(["--algorithm", "awq,auto_round_v2"])
+
+    assert [type(config).__name__ for config in configs] == ["AWQConfig", "SignRoundV2Config"]
+
+
+def test_cli_auto_round_v2_degrades_to_rtn_without_iters():
+    configs = _build_cli_configs(["--algorithm", "auto_round_v2", "--iters", "0"])
+
+    assert [type(config).__name__ for config in configs] == ["RTNConfig"]
+
+
+def test_deprecated_enable_alg_ext_still_selects_the_v2_algorithm():
+    from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
+    from auto_round.algorithms.registry import normalize_algorithm_config
+
+    configs = _build_cli_configs(["--enable_alg_ext"])
+
+    assert [type(config).__name__ for config in configs] == ["SignRoundConfig"]
+    assert configs[0].enable_alg_ext is True
+    # The entry point rewrites SignRoundConfig + enable_alg_ext into the v2 config,
+    # which is what keeps the deprecated switch equivalent to the new spelling.
+    assert isinstance(normalize_algorithm_config(configs[0]), SignRoundV2Config)
+
+
+def test_v2_config_keeps_the_extension_enabled_however_it_is_built():
+    from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
+    from auto_round.algorithms.registry import normalize_algorithm_config
+
+    # normalize_algorithm_config rewrites __class__ without calling __init__.
+    coerced = normalize_algorithm_config(SignRoundConfig(iters=1, enable_alg_ext=True))
+    assert isinstance(coerced, SignRoundV2Config)
+    assert coerced.enable_alg_ext is True
+
+    # A direct assignment must not be able to switch the extension off either:
+    # the SignRoundV2 quantizer branches on this flag.
+    direct = SignRoundV2Config(iters=1)
+    direct.enable_alg_ext = False
+    assert direct.enable_alg_ext is True
+
+
+def test_enable_alg_ext_is_advertised_as_deprecated_in_help():
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    v1_help = AlgorithmHandler.format_detail("auto_round")
+    assert "--enable_alg_ext" in v1_help
+    assert "Deprecated" in v1_help
+    assert "auto_round_v2" in v1_help
+
+    # v2 always has the extension on, so the switch must not be offered again
+    # with a help text telling the user to select `--algorithm auto_round_v2`.
+    v2_help = AlgorithmHandler.format_detail("auto_round_v2")
+    assert "--enable_alg_ext" not in v2_help
+    assert "--iters" in v2_help
+
+
+def test_list_alg_includes_auto_round_v2():
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    assert "auto_round_v2" in AlgorithmHandler.format_listing()
+
+
+# ---------------------------------------------------------------------------
+# `auto_round --help`
+# ---------------------------------------------------------------------------
+
+
+def test_bare_help_prints_the_concise_overview(capsys, monkeypatch):
+    from auto_round.cli import main as cli_main
+
+    monkeypatch.setattr(sys, "argv", ["auto_round", "--help"])
+    cli_main.run()
+    overview = capsys.readouterr().out
+
+    assert "common arguments" in overview
+    assert "auto_round quantize --help" in overview
+    assert "--algorithm auto_round_v2" in overview
+    # A curated subset, not the full quantize argument list.
+    assert len(overview.splitlines()) < 100
+    for noisy_flag in ("--svdquant-rank", "--kl_top_k", "--static_kv_dtype", "--target_bits"):
+        assert noisy_flag not in overview
+
+
+@pytest.mark.parametrize("argv", [["auto_round", "quantize", "--help"], ["auto_round", "help", "quantize"]])
+def test_explicit_quantize_help_still_prints_every_argument(capsys, monkeypatch, argv):
+    from auto_round.cli import main as cli_main
+
+    monkeypatch.setattr(sys, "argv", argv)
+    try:
+        cli_main.run()
+    except SystemExit as exc:  # `quantize --help` exits through argparse with code 0
+        assert exc.code in (0, None)
+    help_text = capsys.readouterr().out
+
+    assert "auto_round quantize" in help_text
+    for flag in ("--svdquant-rank", "--kl_top_k", "--static_kv_dtype", "--enable_alg_ext"):
+        assert flag in help_text
+    assert "auto_round_v2" in help_text
+
+
+def test_algorithm_help_is_still_reported_for_the_new_algorithm(capsys, monkeypatch):
+    from auto_round.cli import main as cli_main
+
+    monkeypatch.setattr(sys, "argv", ["auto_round", "--algorithm", "auto_round_v2", "--help"])
+    cli_main.run()
+    help_text = capsys.readouterr().out
+
+    assert "algorithm(s): auto_round_v2" in help_text
+    assert "--iters" in help_text
+
+
+def test_overview_entries_all_resolve_to_documented_quantize_flags():
+    from auto_round.cli.main import _OVERVIEW_ARGUMENTS, _overview_parser
+
+    parser = _overview_parser()
+    rendered = {action.dest for action in parser._actions}
+    missing = [dest for dest, _ in _OVERVIEW_ARGUMENTS if dest not in rendered]
+
+    assert not missing, f"overview entries missing from the quantize parser: {missing}"
+    for action in parser._actions:
+        assert action.help not in (None, argparse.SUPPRESS), f"{action.dest} has no help text"
+
+
+def test_every_quantize_flag_has_help_text():
+    from auto_round.cli.parser import build_quantize_parser
+
+    undocumented = [action.option_strings for action in build_quantize_parser()._actions if not action.help]
+
+    assert undocumented == []
+
+
+def test_quantize_help_has_no_empty_algorithm_group():
+    import contextlib
+    import io
+
+    from auto_round.cli.parser import build_quantize_parser
+
+    help_text = io.StringIO()
+    with contextlib.redirect_stdout(help_text):
+        build_quantize_parser().print_help()
+    help_text = help_text.getvalue()
+
+    # `auto_round_v2` reuses the SignRound switches, so it must not add a bare header.
+    assert "Algorithm: auto_round:" in help_text
+    assert "Algorithm: auto_round_v2:" not in help_text

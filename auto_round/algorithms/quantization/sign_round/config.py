@@ -80,7 +80,8 @@ class SignRoundConfig(QuantizationConfig):
             field="enable_alg_ext",
             default=False,
             action="boolean_optional",
-            help="Enable experimental SignRound extension.",
+            help="(Deprecated) Enable the experimental SignRound algorithm extension. "
+            "Use `--algorithm auto_round_v2` instead.",
         )
         registry.add_argument(
             "--not_use_best_mse",
@@ -171,8 +172,11 @@ class SignRoundConfig(QuantizationConfig):
                 bias terms.
             gradient_accumulate_steps: Number of gradient accumulation
                 steps used per optimization update.
-            enable_alg_ext: Whether to enable the experimental SignRound
-                extension implementation.
+            enable_alg_ext: Deprecated. Whether to enable the experimental
+                SignRound extension implementation. Selecting the
+                ``auto_round_v2`` algorithm is the supported way to turn it on;
+                this switch is kept for backward compatibility and is
+                normalized to :class:`SignRoundV2Config`.
             not_use_best_mse: Whether to skip restoring the best-MSE
                 checkpoint during tuning.
             dynamic_max_gap: Maximum dynamic gap used by adaptive tuning
@@ -294,7 +298,33 @@ class AdamRoundConfig(SignRoundConfig):
 
 
 class SignRoundV2Config(SignRoundConfig):
-    pass
+    """SignRound with the algorithm extension (the former ``enable_alg_ext``) enabled.
+
+    The extension is intrinsic to this config, so ``enable_alg_ext`` reads as
+    ``True`` no matter how the config was built — including the ``__class__``
+    rewrite performed by :func:`normalize_algorithm_config` and direct attribute
+    assignment, both of which bypass ``__init__``. Select this config with
+    ``--algorithm auto_round_v2`` (CLI) or ``alg_configs="auto_round_v2"``
+    (Python API); the deprecated ``--enable_alg_ext`` switch is not redeclared
+    for it on the CLI.
+    """
+
+    @classmethod
+    def get_registered_args(cls) -> AlgorithmParameterRegistry:
+        """Declare the SignRound flags, minus the deprecated ``--enable_alg_ext`` switch."""
+        registry = super().get_registered_args()
+        registry.parameters = [parameter for parameter in registry.parameters if parameter.field != "enable_alg_ext"]
+        return registry
+
+    @property
+    def enable_alg_ext(self) -> bool:
+        """Always ``True``: the algorithm extension cannot be disabled for this config."""
+        return True
+
+    @enable_alg_ext.setter
+    def enable_alg_ext(self, value: bool) -> None:
+        # The extension is not optional here, so the assigned value is dropped.
+        pass
 
 
 register_algorithm(
@@ -302,4 +332,12 @@ register_algorithm(
     aliases=("auto_round", "autoround", "sign_round", "signround"),
     config_factory=SignRoundConfig,
     summary="SignRound-style iterative block quantization.",
+)
+
+
+register_algorithm(
+    "auto_round_v2",
+    aliases=("auto_round_v2", "auto_roundv2", "sign_round_v2", "signroundv2"),
+    config_factory=SignRoundV2Config,
+    summary="SignRound with the algorithm extension (the former `enable_alg_ext`) enabled.",
 )

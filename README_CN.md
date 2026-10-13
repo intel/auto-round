@@ -63,11 +63,11 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 * [2026/03] 支持**MTP层量化** 
  
-* [2025/12] 发布 **SignRoundV2** 论文。如果要复现论文成果，可启用 `enable_alg_ext`，并使用 **AutoScheme** API 对模型进行混合精度量化。相关链接：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评估说明*](./docs/alg_202508.md)。
+* [2025/12] 发布 **SignRoundV2** 论文。如果要复现论文成果，可启用算法扩展（`--algorithm auto_round_v2`，原 `enable_alg_ext`），并使用 **AutoScheme** API 对模型进行混合精度量化。相关链接：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评估说明*](./docs/alg_202508.md)。
 
 * [2025/11] **LLM-Compressor** 已支持 AutoRound 算法。相关链接：[*使用方法*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md)，[*vLLM 博客*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html)，[*RedHat 博客*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor)，[*X 推文*](https://x.com/vllm_project/status/1998710451312771532)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336)，[*LinkedIn*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg)，[*微信*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg)，[*知乎*](https://zhuanlan.zhihu.com/p/1982167638315664412)。
 
-* [2025/11] 推出 **增强版 GGUF** 量化算法，启用 `--enable_alg_ext` 即可。相关链接：[*Accuracy*](./docs/gguf_alg_ext_acc.md)。
+* [2025/11] 推出 **增强版 GGUF** 量化算法，启用算法扩展（`--algorithm auto_round_v2`，原 `--enable_alg_ext`）即可。相关链接：[*Accuracy*](./docs/gguf_alg_ext_acc.md)。
 
 * [2025/10] **SGLang** 已集成 AutoRound。相关链接：[*使用方法*](https://docs.sglang.io/advanced_features/quantization.html#using-auto-round)，[*LMSYS 博客*](https://lmsys.org/blog/2025-11-13-AutoRound/)，[*X 推文*](https://x.com/lmsysorg/status/1991977019220148650?s=20)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196)，[*LinkedIn*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472)。
 
@@ -75,7 +75,7 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 * [2025/09] 新增对 **MXFP4** 和 **NVFP4** 数据类型的支持。相关链接：[*Accuracy*](./docs/mxnv_acc.md)。
 
-* [2025/08] 提供 **改进版 INT2** 算法，启用 `--enable_alg_ext` 即可。相关链接：[*Accuracy*](./docs/alg_202508.md)。
+* [2025/08] 提供 **改进版 INT2** 算法，启用算法扩展（`--algorithm auto_round_v2`，原 `--enable_alg_ext`）即可。相关链接：[*Accuracy*](./docs/alg_202508.md)。
 
 * [2025/07] 新增 **GGUF** 格式导出。相关链接：[*使用方法*](./docs/step_by_step.md#gguf-format)。
 
@@ -211,7 +211,7 @@ auto-round-fast \
 
 </details>
 
-小结：对于 ​**W4A16 量化，我们建议使用默认的 auto-round；而 W2A16 量化我们则推荐启用 ​`enable_alg_ext`​ 参数的 auto-round-best​**。当然，您也可以根据自身需求和手头上的算力灵活调整配置。
+小结：对于 ​**W4A16 量化，我们建议使用默认的 auto-round；而 W2A16 量化我们则推荐启用 ​`--algorithm auto_round_v2`​ 的 auto-round-best​**。当然，您也可以根据自身需求和手头上的算力灵活调整配置。
 
 ### API 用法
 
@@ -249,8 +249,8 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### 算法相关设置
 
-- ​**​`enable_alg_ext`​**​（bool）：[实验性功能] 仅在 `iters > 0`​ 时生效。在特定 scheme（如 MXFP4 / W2A16）下启用算法扩展，可显著提升量化效果。默认值为 `False`。
-- **`alg_configs`**（str | Config | list）：选择一个或多个算法，例如 `"awq"`、`"auto_round"` 或 `['auto_round', 'quarot']`。预处理算法按照列表顺序执行，block quantizer 始终最后执行。算法专用参数可以通过对应的 config 对象传入，例如 `SignRoundConfig(iters=50)`。
+- ​**​`enable_alg_ext`​**​（bool）：[已弃用] 请改用 `auto_round_v2` 算法。[实验性功能] 仅在 `iters > 0`​ 时生效。在特定 scheme（如 MXFP4 / W2A16）下启用算法扩展，可显著提升量化效果。默认值为 `False`。
+- **`alg_configs`**（str | Config | list）：选择一个或多个算法，例如 `"awq"`、`"auto_round"`、`"auto_round_v2"` 或 `['auto_round', 'quarot']`。预处理算法按照列表顺序执行，block quantizer 始终最后执行。算法专用参数可以通过对应的 config 对象传入，例如 `SignRoundConfig(iters=50)`。
 - ​**​`disable_opt_rtn`​**​（bool | None）：是否对特定方案（如 GGUF 与权重量化方案）禁用优化的 RTN 模式。优化的 RTN 模式需要标定数据和更多的算力来提升精度。默认值为 `None`：在大多数情况下，为提升精度，算法会自动采用优化的 RTN 模式（即 `False`）；仅在已知存在兼容性问题时，才会自动禁用（即 `True`）
 
 

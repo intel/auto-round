@@ -27,6 +27,119 @@ from auto_round.cli.parser import (
 from auto_round.compressors.config_resolution import ConfigResolutionError
 from auto_round.logger import logger
 
+# Flags surfaced by `auto_round --help`. Entries are (dest, shown option strings):
+# the overview is a curated subset, so a few flags list only their primary name
+# instead of every alias. The full list stays behind `auto_round quantize --help`.
+_OVERVIEW_ARGUMENTS: tuple[tuple[str, int], ...] = (
+    ("model", 0),
+    ("model_name", 1),
+    ("scheme", 1),
+    ("algorithm", 1),
+    ("bits", 1),
+    ("group_size", 1),
+    ("iters", 1),
+    ("nsamples", 1),
+    ("seqlen", 1),
+    ("batch_size", 1),
+    ("device_map", 1),
+    ("format", 1),
+    ("output_dir", 1),
+    ("asym", 1),
+    ("ignore_layers", 1),
+    ("tasks", 1),
+)
+
+_OVERVIEW_DESCRIPTION = """\
+AutoRound command line interface: quantize, evaluate and inspect models.
+
+commands:
+  quantize      Quantize a model. This is the default command, so
+                `auto_round --model <path> ...` works without naming it.
+  list          List the supported quantization schemes/formats or algorithms.
+  eval          Evaluate a quantized or original model.
+  help [topic]  Show this overview, or the help of `quantize`/`list`/`eval`.
+
+examples:
+  auto_round --model facebook/opt-125m --bits 4 --group_size 128
+  auto_round --model Qwen/Qwen3-0.6B --algorithm auto_round_v2 --iters 200
+  auto_round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round_v2
+  auto_round --model <model> --schemes W2A16,W4A16 --bits 3 --ignore_scale_zp_bits
+  auto_round eval --model <quantized_model> --tasks lambada_openai
+  auto_round list alg
+
+This is only the commonly used subset of the quantize arguments.
+"""
+
+_OVERVIEW_EPILOG = """\
+see also:
+  auto_round quantize --help            every quantize argument
+  auto_round --algorithm <name> --help  the flags of one algorithm
+  auto_round list alg                   the supported algorithms
+  auto_round list format                the supported output formats
+"""
+
+
+def _overview_parser(prog: str = "auto_round") -> argparse.ArgumentParser:
+    """Build the display-only parser behind the `auto_round --help` overview.
+
+    The curated flags are redeclared from the real quantize parser rather than
+    hard-coded, so the overview cannot drift from the actual help strings and
+    defaults. Only rendering matters here: this parser never parses anything.
+    """
+    full = build_quantize_parser(prog=prog)
+    by_dest: dict[str, argparse.Action] = {}
+    for action in full._actions:
+        if action.help is argparse.SUPPRESS:
+            # Hidden legacy aliases (e.g. --avg_bits, which also has dest="bits")
+            # must not shadow the documented flag they alias.
+            continue
+        by_dest.setdefault(action.dest, action)
+
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        add_help=False,
+        usage="auto_round [<command>] [options]",
+        description=_OVERVIEW_DESCRIPTION,
+        epilog=_OVERVIEW_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    group = parser.add_argument_group("common arguments")
+    for dest, shown_options in _OVERVIEW_ARGUMENTS:
+        action = by_dest.get(dest)
+        if action is None:
+            continue
+        if not action.option_strings:
+            group.add_argument(dest, nargs="?", help=action.help)
+            continue
+        options = list(action.option_strings[:shown_options]) if shown_options else list(action.option_strings)
+        kwargs = {"help": action.help}
+        if action.nargs == 0:
+            # A boolean switch: render it as one instead of as a value-taking flag.
+            if isinstance(action, argparse.BooleanOptionalAction):
+                group.add_argument(*options[:1], action=argparse.BooleanOptionalAction, **kwargs)
+            else:
+                group.add_argument(*options, action="store_true", default=argparse.SUPPRESS, **kwargs)
+        else:
+            kwargs["default"] = argparse.SUPPRESS
+            if action.metavar is not None:
+                kwargs["metavar"] = action.metavar
+            if action.nargs is not None:
+                kwargs["nargs"] = action.nargs
+            if action.choices is not None:
+                kwargs["choices"] = action.choices
+            group.add_argument(*options, **kwargs)
+    return parser
+
+
+def _print_overview_help() -> None:
+    """Print the concise top-level `auto_round --help` overview."""
+    _overview_parser().print_help()
+
+
+def _requests_overview_help(argv: list[str]) -> bool:
+    """True for a bare `auto_round --help`/`-h` that names no subcommand or topic."""
+    return bool(argv) and all(token in ("-h", "--help") for token in argv)
+
 
 def _extract_common_quantization_kwargs(args) -> dict:
     """Map parsed CLI args back to QuantizationConfig constructor kwargs.
@@ -291,6 +404,12 @@ def tune(args):
             "To disable it, use `--disable_low_cpu_mem_usage`."
         )
 
+    if getattr(args, "enable_alg_ext", False):
+        logger.warning(
+            "`--enable_alg_ext` is deprecated; use `--algorithm auto_round_v2` instead. "
+            "Both select the same algorithm and remain equivalent."
+        )
+
     if args.format is None:
         args.format = "auto_round"
 
@@ -541,12 +660,15 @@ def _print_help(topic=None):
     if topic == "eval":
         build_eval_parser(prog="auto_round eval").print_help()
         return
-    build_root_parser().print_help()
+    _print_overview_help()
 
 
 def run():
     try:
         argv = list(sys.argv[1:])
+        if _requests_overview_help(argv):
+            _print_overview_help()
+            return
         command, command_argv = _normalize_cli_invocation(argv)
 
         if command == "help":

@@ -172,7 +172,8 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--alg_configs",
         default=None,
         type=str,
-        help="Comma-separated algorithms such as 'awq' or 'awq,auto_round'.",
+        help="Comma-separated algorithms such as 'awq', 'auto_round' or 'auto_round_v2' "
+        "(the former `--enable_alg_ext`). Run `auto_round list alg` for the full list.",
     )
     rt.add_argument("--output_dir", default="./tmp_autoround", type=str, help="Directory to save quantized artifacts.")
     rt.add_argument(

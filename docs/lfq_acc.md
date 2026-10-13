@@ -1,5 +1,5 @@
 
-iters 200 enable_alg_ext  is turned on  Qwen3-8B
+iters 200 with the algorithm extension turned on (`--algorithm auto_round_v2`, formerly `enable_alg_ext`), Qwen3-8B
 
 lfq causes large drop, maybe some bugs in our implementation
 

@@ -48,13 +48,19 @@ def _has_custom_register_args(config_cls: type) -> bool:
 
 
 def _fallback_parameter_registry(config_cls: type) -> AlgorithmParameterRegistry:
-    """Derive simple CLI arguments from a config that has no custom registration."""
+    """Derive simple CLI arguments from a config that has no custom registration.
+
+    A config may describe its derived flags through ``cli_field_help`` (a
+    ``{constructor parameter: help text}`` mapping); otherwise the flags show up
+    in ``--help`` without a description.
+    """
     registry = AlgorithmParameterRegistry()
     init = config_cls.__init__
     try:
         type_hints = get_type_hints(init)
     except (NameError, TypeError):
         type_hints = {}
+    field_help = getattr(config_cls, "cli_field_help", {})
 
     for name, parameter in inspect.signature(init).parameters.items():
         if name in {"self", "algorithm"} or parameter.kind in (
@@ -74,6 +80,8 @@ def _fallback_parameter_registry(config_cls: type) -> AlgorithmParameterRegistry
             args = [arg for arg in get_args(annotation) if arg is not type(None)]
             value_type = args[0] if origin is not None and args else annotation
             kwargs = {"type": value_type, "default": argparse.SUPPRESS}
+        if field_help.get(name):
+            kwargs["help"] = field_help[name]
         registry.add_argument(f"--{name}", field=name, **kwargs)
     return registry
 
@@ -157,6 +165,39 @@ def _add_registered_arguments(group, registry: AlgorithmParameterRegistry) -> No
         _add_parameter(target, parameter)
 
 
+# Algorithms that supply the block-quantization tuning step themselves. Selecting
+# any of them must not append the implicit `auto_round` fallback below.
+_BLOCK_QUANTIZER_ALGORITHMS = frozenset({"rtn", "auto_round", "auto_round_v2"})
+
+# `auto_round_v2` is a SignRound variant: with zero tuning iterations there is
+# nothing to tune, so it degrades to RTN exactly like `auto_round`.
+_ITERS_ZERO_ALGORITHMS = {"auto_round": "rtn", "auto_round_v2": "rtn"}
+
+
+def _find_merge_target(merged_parameters, locations, group_name, parameter) -> int | None:
+    """Find an already-declared parameter that ``parameter`` should merge into.
+
+    Option strings are matched before the destination. A mutually exclusive pair
+    (e.g. ``--enable_minmax_tuning`` / ``--no-enable_minmax_tuning``) declares two
+    actions that share one ``dest``, so matching on ``dest`` alone would report a
+    conflict between the two halves of the same pair when a second algorithm
+    redeclares it. Parameters that share only a ``dest`` are merged when their
+    parsing semantics are identical, which keeps genuinely incompatible
+    re-declarations (same option string, different semantics) an error.
+    """
+    for index, item in enumerate(merged_parameters):
+        if locations[index][0] != group_name and set(item.option_strings) & set(parameter.option_strings):
+            return index
+    for index, item in enumerate(merged_parameters):
+        if (
+            locations[index][0] != group_name
+            and item.dest == parameter.dest
+            and _argument_compatibility_key(item) == _argument_compatibility_key(parameter)
+        ):
+            return index
+    return None
+
+
 class AlgorithmHandler:
     """Generic discovery, argparse adaptation, and config construction."""
 
@@ -194,17 +235,7 @@ class AlgorithmHandler:
                 for parameter in registry.parameters:
                     if _check_existing_parser_argument(parser, parameter, fallback=fallback):
                         continue
-                    existing_index = next(
-                        (
-                            index
-                            for index, item in enumerate(merged_parameters)
-                            if locations[index][0] != group_name
-                            and (
-                                item.dest == parameter.dest or set(item.option_strings) & set(parameter.option_strings)
-                            )
-                        ),
-                        None,
-                    )
+                    existing_index = _find_merge_target(merged_parameters, locations, group_name, parameter)
                     if existing_index is not None:
                         merged = _merge_parameter(merged_parameters[existing_index], parameter)
                         merged_parameters[existing_index] = merged
@@ -216,6 +247,12 @@ class AlgorithmHandler:
                     locations.append((group_name, len(parameters_by_group[group_name]) - 1))
 
         for group_name, parameters in parameters_by_group.items():
+            if not parameters:
+                # Every flag of this algorithm is already declared by an earlier
+                # group with identical semantics (e.g. `auto_round_v2` reuses the
+                # SignRound switches), so an empty group would only add a blank
+                # header to `--help`.
+                continue
             group = parser.add_argument_group(group_name)
             registry = AlgorithmParameterRegistry()
             registry.parameters = parameters
@@ -231,10 +268,10 @@ class AlgorithmHandler:
 
         canonical = resolve_algorithm_names(names, ignore_unknown=True)
         seen = set(canonical)
-        if not ({"rtn", "auto_round"} & seen):
+        if not (_BLOCK_QUANTIZER_ALGORITHMS & seen):
             canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
-            canonical = ["rtn" if name == "auto_round" else name for name in canonical]
+            canonical = [_ITERS_ZERO_ALGORITHMS.get(name, name) for name in canonical]
 
         configs = []
         built_configs = {}
@@ -302,6 +339,9 @@ class AlgorithmHandler:
         cls.add_group(canonical, group)
         for action in group._group_actions:
             flags = ", ".join(action.option_strings)
-            default = f" (default: {action.default})" if action.default is not None else ""
+            if action.default is None or action.default is argparse.SUPPRESS:
+                default = ""
+            else:
+                default = f" (default: {action.default})"
             lines.append(f"  {flags}: {action.help or ''}{default}")
         return "\n".join(lines)

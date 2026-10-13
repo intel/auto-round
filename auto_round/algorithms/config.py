@@ -89,6 +89,11 @@ class AlgorithmConfig:
 
     cli_include_common_args: ClassVar[bool] = True
 
+    #: Optional per-field help text for configs whose CLI arguments are derived
+    #: from their constructor signature instead of ``register_args`` (see the
+    #: CLI fallback registry). Keyed by constructor parameter name.
+    cli_field_help: ClassVar[dict[str, str]] = {}
+
     @classmethod
     def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
         """Register algorithm-specific parameters. The default declares none."""

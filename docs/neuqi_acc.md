@@ -1,6 +1,6 @@
 ### NeUQI Accuracy Validation
 
-**NeUQI** ([arXiv 2505.17595](https://arxiv.org/abs/2505.17595)) is a calibration-free grid search for the optimized-RTN path, enabled with `--enable_neuqi`: asymmetric layers run a joint (scale, integer zero-point) search, symmetric layers a two-stage signed scale search; on the zero-shot path both are weighted by the activation imatrix (collected automatically), and with `iters > 0` the anchor uses the activation imatrix when the tuning path collects one (SignRoundV2's `enable_alg_ext`), running unweighted otherwise. With `iters > 0`, the search result anchors the SignRound tuning grid (frozen init).
+**NeUQI** ([arXiv 2505.17595](https://arxiv.org/abs/2505.17595)) is a calibration-free grid search for the optimized-RTN path, enabled with `--enable_neuqi`: asymmetric layers run a joint (scale, integer zero-point) search, symmetric layers a two-stage signed scale search; on the zero-shot path both are weighted by the activation imatrix (collected automatically), and with `iters > 0` the anchor uses the activation imatrix when the tuning path collects one (the `auto_round_v2` algorithm, formerly `enable_alg_ext`), running unweighted otherwise. With `iters > 0`, the search result anchors the SignRound tuning grid (frozen init).
 
 #### Protocol
 
@@ -17,7 +17,7 @@ KL divergence between the BF16 base model and the dequantized W4A16 checkpoint o
 - The symmetric two-stage search **strictly dominates the incumbent search**: −4.1% mean KL, −32% wall time, and better agreement at every quantile.
 - There is no incumbent asymmetric search — `--enable_neuqi` adds the optimized-init capability for asymmetric layers; the quality ladder is flat from 64/32 to 256/64, so the [backend-aware default](./environments.md) narrows the eager sweep to 64/32 at no measured cost.
 
-#### Results — iters > 0 (SignRoundV2 tuning, `enable_alg_ext`)
+#### Results — iters > 0 (SignRoundV2 tuning, `--algorithm auto_round_v2`)
 
 | recipe | mean | median | p90 | p99 | top1 | top5 | wall |
 |:--|--:|--:|--:|--:|--:|--:|--:|

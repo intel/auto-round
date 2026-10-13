@@ -31,7 +31,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 auto-round --model <model> --scheme <scheme> --format fake \
-  --enable_alg_ext --algorithm auto_round \
+  --algorithm auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 # AWQ + RTN / AWQ + AutoRound / AWQ + AutoRound with algorithm extension
@@ -44,11 +44,11 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 auto-round --model <model> --scheme <scheme> --format fake \
-  --enable_alg_ext --algorithm awq,auto_round \
+  --algorithm awq,auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 ```
 
-In the result tables, `AR2` denotes AutoRound with `--enable_alg_ext`, and `AWQ_AR2` denotes AWQ followed by AutoRound with `--enable_alg_ext`. Accuracy columns are reported as percentages, so a raw score such as `0.7058` is shown as `70.58`.
+In the result tables, `AR2` denotes AutoRound with `--algorithm auto_round_v2` (formerly `--enable_alg_ext`), and `AWQ_AR2` denotes AWQ followed by AutoRound with the same algorithm extension. Accuracy columns are reported as percentages, so a raw score such as `0.7058` is shown as `70.58`.
 
 The AWQ rows use the default AWQ smoothing flow. They do not include AWQ weight clipping unless `--awq_apply_clip` is explicitly enabled.
 
@@ -656,6 +656,6 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
 
 ## Summary
 
-AWQ is most useful for schemes where quantization is sensitive to activation-aware weight smoothing, such as MXFP4. It can improve scheme accuracy, especially when combined with AutoRound plus `--enable_alg_ext`.
+AWQ is most useful for schemes where quantization is sensitive to activation-aware weight smoothing, such as MXFP4. It can improve scheme accuracy, especially when combined with AutoRound plus the algorithm extension (`--algorithm auto_round_v2`).
 
 AWQ does not add persistent memory overhead to the quantized model and is orthogonal to terminal quantization algorithms, so it can be composed with RTN, AutoRound, or AutoRound2 without changing their core quantization logic.
