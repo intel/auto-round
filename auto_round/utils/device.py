@@ -1508,6 +1508,9 @@ class MemoryMonitor:
             device_list = list(range(count)) if count > 0 else [0]
         elif not isinstance(device_list, (list, tuple)):
             device_list = [device_list]
+        # With the HPU eager pipeline, freed tensors are only returned once the device has run the
+        # queued ops, so an unsynchronized sample depends on how far the host has run ahead.
+        hpu.synchronize()
         for device in device_list:
             if str(device) == "cpu":
                 continue

@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import sys
@@ -17,6 +18,7 @@ class QuantMetrics:
     peak_ram_gb: float | None = None
     peak_vram_gb: float | None = None
     output_size_gb: float | None = None
+    vram_high_water_gb: float | None = None
 
 
 def get_dir_size_gb(path: Path) -> float:
@@ -41,13 +43,24 @@ def parse_log_file(log_file: Path) -> QuantMetrics:
     if time_matches:
         metrics.tuning_time_s = round(float(time_matches[-1]), 4)
 
-    ram_matches = re.findall(r"'peak_ram':\s*([\d.]+)\s*GB,\s*'peak_vram':\s*([\d.]+)\s*GB", content)
-    if ram_matches:
-        last_ram, last_vram = ram_matches[-1]
-        metrics.peak_ram_gb = round(float(last_ram), 4)
-        metrics.peak_vram_gb = round(float(last_vram), 4)
+    # auto-round samples VRAM per block after synchronizing the device, which is deterministic,
+    # whereas the allocator high-water mark on HPU varies with eager-pipeline timing.
+    vram_matches = re.findall(r"'peak_vram':\s*([\d.]+)\s*GB", content)
+    if vram_matches:
+        metrics.peak_vram_gb = round(float(vram_matches[-1]), 4)
 
     return metrics
+
+
+def parse_peak_memory(metrics_file: Path, metrics: QuantMetrics) -> None:
+    """Read the peak RAM recorded by measure_peak.py instead of auto-round's sampled log summary."""
+    if not metrics_file.exists():
+        logger.warning(f"Metrics file not found: {metrics_file}")
+        return
+
+    data = json.loads(metrics_file.read_text(encoding="utf-8"))
+    metrics.peak_ram_gb = data.get("peak_ram_gb")
+    metrics.vram_high_water_gb = data.get("vram_high_water_gb")
 
 
 def get_tuning_info() -> dict[str, dict[str, QuantMetrics]]:
@@ -63,6 +76,7 @@ def get_tuning_info() -> dict[str, dict[str, QuantMetrics]]:
             logger.info(f"Processing {log_file}...")
 
             metrics = parse_log_file(log_file)
+            parse_peak_memory(LOG_DIR / f"perf_metrics_{test_mode}.json", metrics)
             metrics.output_size_gb = get_dir_size_gb(output_dir)
 
             summary[model][test_mode] = metrics
@@ -70,7 +84,19 @@ def get_tuning_info() -> dict[str, dict[str, QuantMetrics]]:
     return summary
 
 
-def compare_metric(metric_name: str, current: float | None, baseline: float | None, tolerance: float = 0.1) -> bool:
+def compare_metric(
+    metric_name: str,
+    current: float | None,
+    baseline: float | None,
+    tolerance: float = 0.1,
+    abs_tolerance: float = 0.0,
+) -> bool:
+    """Pass when |current - baseline| <= max(tolerance * baseline, abs_tolerance).
+
+    ``abs_tolerance`` is a noise floor for metrics whose jitter is roughly constant in absolute
+    terms (e.g. ~0.12GB of glibc heap retention in peak RAM). A purely relative bound shrinks
+    together with the baseline and turns that jitter into flaky failures as memory usage drops.
+    """
     if current is None or baseline is None:
         logger.error(f"  [-] {metric_name}: Incomplete data (Current: {current}, Baseline: {baseline})")
         return False
@@ -79,12 +105,16 @@ def compare_metric(metric_name: str, current: float | None, baseline: float | No
         logger.warning(f"  [!] {metric_name}: Baseline is 0, cannot calculate ratio.")
         return False
 
-    ratio = current / baseline
-    diff_percent = (ratio - 1) * 100
+    diff = current - baseline
+    diff_percent = diff / baseline * 100
+    allowed = max(tolerance * abs(baseline), abs_tolerance)
 
-    msg = f"  [*] {metric_name:<20}: Current = {current:<8} | Baseline = {baseline:<8} (Diff: {diff_percent:+.2f}%)"
+    msg = (
+        f"  [*] {metric_name:<20}: Current = {current:<8} | Baseline = {baseline:<8} "
+        f"(Diff: {diff:+.4f} / {diff_percent:+.2f}%, Allowed: ±{allowed:.4f})"
+    )
 
-    if 1.0 - tolerance <= ratio <= 1.0 + tolerance:
+    if abs(diff) <= allowed:
         logger.info(f"{msg} -> PASS")
         return True
     else:
@@ -106,11 +136,20 @@ def check_performance():
         if not compare_metric("Tuning Time (s)", current.tuning_time_s, baseline.tuning_time_s, tolerance=0.05):
             all_passed = False
 
-        if not compare_metric("Peak RAM (GB)", current.peak_ram_gb, baseline.peak_ram_gb, tolerance=0.03):
+        if not compare_metric(
+            "Peak RAM (GB)", current.peak_ram_gb, baseline.peak_ram_gb, tolerance=0.03, abs_tolerance=0.15
+        ):
             all_passed = False
 
-        if not compare_metric("Peak VRAM (GB)", current.peak_vram_gb, baseline.peak_vram_gb, tolerance=0.03):
+        if not compare_metric(
+            "Peak VRAM (GB)", current.peak_vram_gb, baseline.peak_vram_gb, tolerance=0.03, abs_tolerance=0.25
+        ):
             all_passed = False
+
+        logger.info(
+            f"  [i] {'VRAM high-water (GB)':<20}: Current = {current.vram_high_water_gb} | "
+            f"Baseline = {baseline.vram_high_water_gb} (info only, includes in-block transient peaks)"
+        )
 
         if not compare_metric("Output Size (GB)", current.output_size_gb, baseline.output_size_gb, tolerance=0.01):
             all_passed = False

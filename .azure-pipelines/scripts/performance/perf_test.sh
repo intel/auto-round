@@ -68,13 +68,16 @@ function install_auto_round() {
 function run_performance_test() {
     local test_mode=$1
     local log_file="${LOG_DIR}/perf_test_${test_mode}.log"
+    local metrics_file="${LOG_DIR}/perf_metrics_${test_mode}.json"
 
     log_group_start "Run ${test_mode} performance test (${scheme})..."
 
     (
         cd "${PERF_SCRIPT_DIR}"
-        log_info "Executing auto-round for ${scheme}. Logging to ${log_file}"
-        auto-round \
+        log_info "Executing auto-round for ${scheme}. Logging to ${log_file}, peak RAM to ${metrics_file}"
+        # measure_peak.py runs the auto-round CLI in-process and records the kernel RSS
+        # high-water mark, so both builds are measured the same way.
+        python measure_peak.py --output "${metrics_file}" -- \
             --model_name "${model_name}" \
             --scheme "${scheme}" \
             --iters "${ITERS}" \
