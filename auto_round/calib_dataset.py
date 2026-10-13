@@ -603,7 +603,7 @@ def get_ultrachat_dataset(
         apply_chat_template = True
     elif not is_instruct and apply_chat_template:
         logger.info("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
-    apply_chat_template = False
+        apply_chat_template = False
 
     def tokenize_example_batch(examples):
         if not apply_chat_template:
