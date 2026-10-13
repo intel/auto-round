@@ -795,10 +795,10 @@ class TestNeuqiSymSharedCoarse:
 
         def spy_launch(dn, q, fracs, invf, nm):
             spy_launch.called = True
-            return None  # decline -> per-candidate fallback
+            # implicit None: decline -> per-candidate fallback
 
         spy_launch.called = False
-        monkeypatch.setattr(N, "_sym_coarse_pass_shared", lambda *a, **k: (None if not spy_launch.called else None))
+        monkeypatch.setattr(N, "_sym_coarse_pass_shared", lambda *a, **k: None)
         # direct wiring check: the core calls _sym_coarse_pass_shared at all
         real = N._sym_coarse_pass_shared
 
@@ -996,7 +996,7 @@ class TestNeuqiAsymSharedCoarse:
 
         def wrapper(data_, qw_, s0_, coarse_, maxq_):
             wrapper.called = True
-            return None  # decline -> batched fallback still correct
+            # implicit None: decline -> batched fallback still correct
 
         wrapper.called = False
         monkeypatch.setattr(N, "_zp_coarse_pass_shared", wrapper)
@@ -1520,7 +1520,7 @@ class TestExpertBatching:
 
         cfg = OptimizedRTNConfig(bits=4, group_size=32, sym=False, enable_neuqi=enable_neuqi)
         cfg.disable_opt_rtn = disable_opt_rtn
-        cfg.orig_disable_opt_rtn = False if not disable_opt_rtn else True
+        cfg.orig_disable_opt_rtn = bool(disable_opt_rtn)
         q = OptimizedRTNQuantizer(cfg)
         if is_moe:
             # model_context is a read-only property backed by the run ctx;

@@ -613,11 +613,11 @@ def neuqi_search_scale_zero(data, bits, qw=None, q_scale_thresh=1e-5, coarse_n=N
     if coarse_n is None:
         coarse_n = envs.AR_NEUQI_COARSE or d_coarse
         if coarse_n < 2:
-            raise ValueError("AR_NEUQI_COARSE=%d is too small; need at least 2 candidates." % coarse_n)
+            raise ValueError(f"AR_NEUQI_COARSE={coarse_n} is too small; need at least 2 candidates.")
     if fine_n is None:
         fine_n = envs.AR_NEUQI_FINE or d_fine
         if fine_n < 2:
-            raise ValueError("AR_NEUQI_FINE=%d is too small; need at least 2 candidates." % fine_n)
+            raise ValueError(f"AR_NEUQI_FINE={fine_n} is too small; need at least 2 candidates.")
     _log_search_engaged(coarse_n, fine_n)
     if torch.is_tensor(data):
         ensure_sweep_warmup(data.device)
@@ -1197,11 +1197,11 @@ def neuqi_search_scale_sym(data, bits, qw=None, q_scale_thresh=1e-5, coarse_n=No
         # default is backend-aware (wide only on the accelerated lanes)
         coarse_n = envs.AR_NEUQI_COARSE or d_coarse
         if coarse_n < 2:
-            raise ValueError("AR_NEUQI_COARSE=%d is too small; need at least 2 candidates." % coarse_n)
+            raise ValueError(f"AR_NEUQI_COARSE={coarse_n} is too small; need at least 2 candidates.")
     if fine_n is None:
         fine_n = envs.AR_NEUQI_FINE or d_fine
         if fine_n < 2:
-            raise ValueError("AR_NEUQI_FINE=%d is too small; need at least 2 candidates." % fine_n)
+            raise ValueError(f"AR_NEUQI_FINE={fine_n} is too small; need at least 2 candidates.")
     _log_sym_search_engaged(coarse_n, fine_n)
     ensure_sym_search_warmup(data.device)
 

@@ -265,7 +265,8 @@ class TestLLMC:
 
         from safetensors import safe_open
 
-        config = json.load(open(os.path.join(quantized_model_path, "config.json")))
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            config = json.load(f)
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "channel"
@@ -289,7 +290,8 @@ class TestLLMC:
 
         import json
 
-        config = json.load(open(os.path.join(quantized_model_path, "config.json")))
+        with open(os.path.join(quantized_model_path, "config.json")) as f:
+            config = json.load(f)
         assert "group_0" in config["quantization_config"]["config_groups"]
         assert config["quantization_config"]["config_groups"]["group_0"]["input_activations"]["num_bits"] == 8
         assert config["quantization_config"]["config_groups"]["group_0"]["weights"]["strategy"] == "tensor"

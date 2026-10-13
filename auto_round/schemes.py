@@ -15,7 +15,7 @@ import copy
 from copy import deepcopy
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Union
 
 import torch
 
@@ -144,15 +144,15 @@ from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_DTYPES, contain_any_mm_keys, infer_bits_by_data_type
 
 __all__ = [
-    "QuantizationScheme",
-    "BackendDataType",
-    "GGUF_SCHEME_FACTS",
     "GGUF_PRESET_ALIASES",
-    "is_standard_fp",
-    "is_mx_fp",
-    "is_nv_fp",
-    "is_mx_int",
+    "GGUF_SCHEME_FACTS",
+    "BackendDataType",
+    "QuantizationScheme",
     "get_gguf_scheme",
+    "is_mx_fp",
+    "is_mx_int",
+    "is_nv_fp",
+    "is_standard_fp",
     "preset_name_to_scheme",
 ]
 
@@ -200,14 +200,14 @@ class QuantizationScheme:
     group_size: int = 128
     sym: bool = True
     data_type: str = "int"
-    act_bits: Optional[int] = None
-    act_group_size: Optional[int] = None
-    act_sym: Optional[bool] = None
-    act_data_type: Optional[str] = None
-    act_dynamic: Optional[bool] = None
-    super_bits: Optional[int] = None
-    super_group_size: Optional[int] = None
-    rotation_config: Optional[dict] = None
+    act_bits: int | None = None
+    act_group_size: int | None = None
+    act_sym: bool | None = None
+    act_data_type: str | None = None
+    act_dynamic: bool | None = None
+    super_bits: int | None = None
+    super_group_size: int | None = None
+    rotation_config: dict | None = None
 
     @classmethod
     def empty(cls):
@@ -375,7 +375,7 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
     return scheme_args
 
 
-def scheme_to_preset_name(scheme: Union[str, QuantizationScheme]) -> str:
+def scheme_to_preset_name(scheme: str | QuantizationScheme) -> str:
     """Get preset scheme name from a QuantizationScheme instance."""
     if isinstance(scheme, str):
         name = scheme.upper()
@@ -423,8 +423,8 @@ def _reconcile_bits_and_dtype(config: dict, prefix: str = ""):
 
 
 def _override_scheme_with_user_specify(
-    scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any], return_str=True
-) -> Union[str, QuantizationScheme]:
+    scheme: str | dict | QuantizationScheme, user_scheme_overrides: dict[str, Any], return_str=True
+) -> str | QuantizationScheme:
     """
     Updates a base quantization scheme with user-provided overrides.
     Handles GGUF formatting and synchronizes weight/activation parameters.
@@ -518,8 +518,8 @@ def format_allows_w8_asym(format: str | None) -> bool:
 def parse_scheme(
     scheme: Union[str, dict, QuantizationScheme, "AutoScheme"],
     user_scheme_overrides: dict[str, Any],
-    format: str = None,
-) -> tuple[Union[str, QuantizationScheme], bool, dict[str, Any]]:
+    format: str | None = None,
+) -> tuple[str | QuantizationScheme, bool, dict[str, Any]]:
     """
     Parses the final scheme.
     """
@@ -978,14 +978,12 @@ def _handle_special_schemes(
                     layer_config[n] = {"bits": 4, "data_type": "int"}
                 elif n != lm_head_name and mllm:
                     layer_config[n] = {"bits": 16}
-                elif n != lm_head_name:
-                    layer_config[n] = {"bits": 8, "data_type": "int"}
-                elif n == lm_head_name and quant_lm_head:
+                elif n != lm_head_name or quant_lm_head:
                     layer_config[n] = {"bits": 8, "data_type": "int"}
     return layer_config
 
 
-def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
+def get_gguf_scheme(scheme: str | QuantizationScheme) -> str:
     if scheme is None:
         return ""
     if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):

@@ -18,8 +18,8 @@
 
 import contextlib
 import inspect
+from collections.abc import Callable
 from functools import partial
-from typing import Callable, Optional
 from weakref import ref
 
 import torch
@@ -41,9 +41,9 @@ from auto_round.utils import logger
 
 __all__ = [
     "QuantizedAttentionImpl",
+    "attention_quant_ctx",
     "init_hooked_attention",
     "is_attention_calibration_tensor_name",
-    "attention_quant_ctx",
 ]
 
 

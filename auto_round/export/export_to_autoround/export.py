@@ -17,9 +17,9 @@ import functools
 import inspect
 import json
 import os
+from collections.abc import Callable
 from dataclasses import fields
 from enum import Enum
-from typing import Callable, Union
 
 import torch
 import torch.nn as nn
@@ -201,6 +201,20 @@ def pack_layer(layer_name, model, backend, device=None):
     elif type(layer) == transformers.pytorch_utils.Conv1D:
         in_features = layer.weight.shape[0]
         out_features = layer.weight.shape[1]
+
+    if "awq" in backend:
+        # The AWQ GEMM kernel rejects shapes that violate its divisibility
+        # constraints (e.g. out_features < group_size in Gated-DeltaNet
+        # projections); keep such layers in full precision unless the user
+        # explicitly configured them for quantization (fixed_by_user).
+        from auto_round.export.export_to_awq.utils import awq_gemm_kernel_supported, awq_layer_user_forced
+
+        if not awq_gemm_kernel_supported(in_features, out_features, bits, group_size) and not awq_layer_user_forced(
+            layer
+        ):
+            logger.warning_once(f"skipping {layer_name}: its shape cannot be served by the AWQ GEMM kernel")
+            return
+
     bias = layer.bias is not None
 
     new_layer = QuantLinear(  ##pylint: disable=E1123
@@ -242,12 +256,12 @@ def pack_layer(layer_name, model, backend, device=None):
 def save_quantized_as_autoround(
     output_dir: str,
     model: torch.nn.Module,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace=True,
     backend="auto_round:exllamav2",
-    device: Union[str, torch.device] = "cpu",
-    serialization_dict: dict = None,
+    device: str | torch.device = "cpu",
+    serialization_dict: dict | None = None,
     **kwargs,
 ):
     """
@@ -279,7 +293,7 @@ def save_quantized_as_autoround(
     ):
         backend = backend.replace("auto_round", "auto_round:auto_gptq")
 
-    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
+    safe_serialization = kwargs.get("safe_serialization", True)
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 

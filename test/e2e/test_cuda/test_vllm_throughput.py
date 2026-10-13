@@ -51,7 +51,6 @@ from test.e2e.test_cuda.conftest import (  # noqa: E402
     make_bench_prompts,
     quantize_and_save,
 )
-from typing import List
 
 import pytest
 import torch

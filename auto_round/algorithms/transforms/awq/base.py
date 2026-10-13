@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import sys
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -278,13 +279,13 @@ class AWQTransform(BasePreprocessor):
                 "AWQ does not support nblocks > 1 (got nblocks=%s). ",
                 nblocks,
             )
-            exit(-1)
+            sys.exit(-1)
 
     def can_compile_block_forward(self) -> bool:
         """AWQ installs per-block calibration hooks that trigger Dynamo recompiles."""
         return False
 
-    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
+    def prepare_run(self, composer: AlgorithmComposer = None) -> None:
         """Resolve model-wide mappings and group them by transformer block."""
         model = self.model
 
@@ -347,7 +348,7 @@ class AWQTransform(BasePreprocessor):
             return self._register_awq_hooks(self.model_context.model, block, block_name)
         return []
 
-    def pre_quantize_block(self, ctx: "BlockContext") -> None:
+    def pre_quantize_block(self, ctx: BlockContext) -> None:
         """Apply AWQ smoothing for this block and mark modified params.
 
         Called after the reference forward (activation stats collected) and
@@ -382,7 +383,7 @@ class AWQTransform(BasePreprocessor):
             modified.extend(mapping.balance_names)
             modified.append(mapping.smooth_name)
 
-    def post_quantize_block(self, ctx: "BlockContext") -> None:
+    def post_quantize_block(self, ctx: BlockContext) -> None:
         """Release per-block AWQ caches to free memory."""
         block_mappings = self._block_mappings.get(ctx.block_name, [])
         if not block_mappings:
@@ -608,9 +609,7 @@ class AWQTransform(BasePreprocessor):
         """AWQ smoothing is all-or-nothing for layers sharing one smooth scale."""
         if self._mapping_has_ignored_layer(mapping):
             return False
-        if self._mapping_has_mixed_quant_params(mapping):
-            return False
-        return True
+        return not self._mapping_has_mixed_quant_params(mapping)
 
     def _smooth_block(self, block_prefix: str, block_mappings: list) -> None:
         """Run grid search and apply AWQ scales for one block.

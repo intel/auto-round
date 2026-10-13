@@ -536,9 +536,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     # Pre-compile all valid regex patterns once to avoid repeated re.compile() calls
     # for every tensor lookup (O(N×M) → O(M) compile + O(N×M) match).
     _compiled_patterns: list = []
-    for pattern in extra_config:
+    for pattern, pattern_cfg in extra_config.items():
         try:
-            _compiled_patterns.append((_re.compile(pattern), pattern, extra_config[pattern]))
+            _compiled_patterns.append((_re.compile(pattern), pattern, pattern_cfg))
         except _re.error as exc:
             logger.warning(
                 "Invalid regex key in extra_config ignored during pre-compilation: %r (%s)",
@@ -630,7 +630,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                 if isinstance(block_name_to_quantize, list)
                 else [b.strip() for b in block_name_to_quantize.split(",") if b.strip()]
             )
-            if not any(k.startswith(b + ".") or k.startswith(b + "[") for b in blocks):
+            if not any(k.startswith((b + ".", b + "[")) for b in blocks):
                 return False
         layer_name = k[: -len(".weight")]
         layer_cfg = _resolve_layer_cfg(layer_name)

@@ -124,7 +124,7 @@ if triton is not None:
             qwt = tl.load(qw_ptr + c_off[:, None] * G + g_off[None, :], mask=cm[:, None] & gm[None, :], other=0.0)
         else:
             qwt = tl.zeros((BC, GP), dtype=tl.float32) + 1.0
-        for k in range(0, K):
+        for k in range(K):
             sc = tl.load(scales_ptr + c_off * K + k, mask=cm, other=1.0)  # [BC]
             x = d / sc[:, None]
             r = _rint_f32(x)
@@ -144,7 +144,7 @@ if triton is not None:
                     best = tl.where(better, acc, best)
                     bz = tl.where(better, z, bz)
             else:
-                for z in range(0, NZ):
+                for z in range(NZ):
                     q = tl.minimum(tl.maximum(r + z, 0.0), MAXQ)
                     err = sc[:, None] * (q - z) - d
                     loss2 = err * err * qwt
@@ -190,7 +190,7 @@ if triton is not None:
         best = tl.zeros((BC,), dtype=tl.float32) + float("inf")
         bk = tl.zeros((BC,), dtype=tl.int32)
         bmir = tl.zeros((BC,), dtype=tl.int32)
-        for k in range(0, K):
+        for k in range(K):
             sc = tl.load(scales_ptr + c_off * K + k, mask=cm, other=1.0)  # [BC]
             x = d / sc[:, None]
             fl = tl.floor(x)
@@ -264,7 +264,7 @@ if triton is not None:
         best = tl.zeros((BC,), dtype=tl.float32) + float("inf")
         bk = tl.zeros((BC,), dtype=tl.int32)
         bz = tl.zeros((BC,), dtype=tl.int32)
-        for k in range(0, K):
+        for k in range(K):
             f = tl.load(fracs_ptr + k)
             invf = tl.load(invf_ptr + k)
             x = d * invf
@@ -285,7 +285,7 @@ if triton is not None:
                     l_best = tl.where(better, acc, l_best)
                     l_bz = tl.where(better, z, l_bz)
             else:
-                for z in range(0, MAXQ + 1):
+                for z in range(MAXQ + 1):
                     q = tl.minimum(tl.maximum(r + z, 0.0), MAXQ)
                     err = f * (q - z) - d
                     loss2 = err * err * qwt
@@ -469,7 +469,7 @@ if triton is not None:
         best = tl.zeros((BC,), dtype=tl.float32) + float("inf")
         bk = tl.zeros((BC,), dtype=tl.int32)
         bmir = tl.zeros((BC,), dtype=tl.int32)
-        for k in range(0, K):
+        for k in range(K):
             f = tl.load(fracs_ptr + k)
             invf = tl.load(invf_ptr + k)
             x = d * invf

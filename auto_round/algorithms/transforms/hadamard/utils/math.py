@@ -28,7 +28,7 @@ from pathlib import Path
 import torch
 from safetensors import safe_open
 
-__all__ = ["deterministic_hadamard_matrix", "random_hadamard_matrix", "is_pow2"]
+__all__ = ["deterministic_hadamard_matrix", "is_pow2", "random_hadamard_matrix"]
 
 # Precomputed Hadamard matrices for non-power-of-2 sizes.
 _HADAMARD_MATRICES_PATH: Path = Path(__file__).parent / "hadamards.safetensors"

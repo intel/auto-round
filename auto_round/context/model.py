@@ -15,7 +15,8 @@
 import gc
 import importlib
 import os
-from typing import Any, Callable, Optional, Union
+from collections.abc import Callable
+from typing import Any
 
 import torch
 import transformers
@@ -61,12 +62,12 @@ class ModelContext(BaseContext):
 
     def __init__(
         self,
-        model: Union[torch.nn.Module, str, None] = None,
+        model: torch.nn.Module | str | None = None,
         tokenizer: Any = None,
         platform: str = "hf",
-        model_dtype: Optional[Union[str, torch.dtype]] = None,
+        model_dtype: str | torch.dtype | None = None,
         trust_remote_code: bool = True,
-        config: Optional[AutoConfig] = None,
+        config: AutoConfig | None = None,
         amp: bool = True,
         need_calib: bool = True,
         is_act_quantize: bool = False,
@@ -219,7 +220,7 @@ class ModelContext(BaseContext):
                 if config is None:
                     config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
                 self._import_custom_moe_replacements(config)
-            except (OSError, EnvironmentError, ValueError) as e:
+            except (OSError, ValueError) as e:
                 logger.debug(
                     "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
                     "Proceeding without config-based checks.",
@@ -353,7 +354,7 @@ class ModelContext(BaseContext):
         )
         return True
 
-    def _resolve_local_checkpoint_dir(self) -> Optional[str]:
+    def _resolve_local_checkpoint_dir(self) -> str | None:
         """Return a local directory holding the checkpoint shards, or ``None``.
 
         ``SafetensorsIndex`` reads shards by path, so a hub repo id has to be resolved to
@@ -449,7 +450,7 @@ class ModelContext(BaseContext):
             gate = getattr(module, "gate", None)
             top_k = getattr(gate, "top_k", None)
             if top_k is not None:
-                setattr(module, "top_k", top_k)
+                module.top_k = top_k
 
     def _set_amp_dtype(self) -> None:
         """Sets the automatic mixed precision (AMP) data type for the model based on the device and configuration.

@@ -14,7 +14,7 @@
 import json
 import math
 import os
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 
@@ -63,8 +63,8 @@ class DiffusionMixin:
         guidance_scale: float = 7.5,
         num_inference_steps: int = 50,
         calib_num_inference_steps: int = 8,
-        generator_seed: Optional[int] = None,
-        diffusion_tuning_cache_size: Union[float, str] = 0,
+        generator_seed: int | None = None,
+        diffusion_tuning_cache_size: float | str = 0,
         **kwargs,
     ) -> None:
         if num_inference_steps < 1:
@@ -422,8 +422,8 @@ class DiffusionMixin:
 
     def save_quantized(
         self,
-        output_dir: Optional[str] = None,
-        format: Optional[Union[str, list]] = None,
+        output_dir: str | None = None,
+        format: str | list | None = None,
         inplace: bool = True,
         return_folders: bool = False,
         **kwargs,

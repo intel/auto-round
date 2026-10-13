@@ -16,7 +16,7 @@ import copy
 import json
 import os
 import sys
-from typing import Callable, Union
+from collections.abc import Callable
 
 import torch
 import transformers
@@ -41,7 +41,7 @@ from auto_round.utils import (
 )
 
 
-def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: str = None) -> None:
+def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: str | None = None) -> None:
     """
     Packs a model layer for quantization based on its type and configuration.
 
@@ -179,21 +179,19 @@ def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
     if is_gaudi2():
         quantization_config["fp8_dtype_flavor"] = _GAUDI2_FP8_DTYPE_FLAVOR
         logger.warning_once(
-            (
-                "Running on Intel Gaudi2 hardware."
-                f" Setting FP8 dtype flavor to {_GAUDI2_FP8_DTYPE_FLAVOR} for compatibility."
-            )
+            "Running on Intel Gaudi2 hardware."
+            f" Setting FP8 dtype flavor to {_GAUDI2_FP8_DTYPE_FLAVOR} for compatibility."
         )
 
 
 def save_quantized_as_static_fp(
     output_dir: str,
     model: torch.nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    device: Union[str, torch.device] = "cpu",
-    serialization_dict: dict = None,
+    device: str | torch.device = "cpu",
+    serialization_dict: dict | None = None,
     **kwargs,
 ) -> torch.nn.Module:
     """
@@ -217,7 +215,7 @@ def save_quantized_as_static_fp(
     Raises:
         ValueError: If the backend is not supported.
     """
-    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
+    safe_serialization = kwargs.get("safe_serialization", True)
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 

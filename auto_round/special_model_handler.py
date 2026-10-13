@@ -14,9 +14,10 @@
 import importlib
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 
 import torch
 
@@ -394,7 +395,7 @@ def _handle_special_model(model):
 
 
 def update_module(
-    model, formats: list[OutputFormat] = None, trust_remote_code: bool = True, cleanup_original: bool = True
+    model, formats: list[OutputFormat] | None = None, trust_remote_code: bool = True, cleanup_original: bool = True
 ):
     gguf_export = formats is not None and any(format_.is_gguf() for format_ in formats)
     model = apply_replacements(model, gguf_export=gguf_export)

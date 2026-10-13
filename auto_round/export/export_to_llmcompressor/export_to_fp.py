@@ -17,7 +17,7 @@ import inspect
 import json
 import os
 import sys
-from typing import Callable, Union
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -94,7 +94,7 @@ def pack_layer(name, model, device=None):
             from auto_round.data_type.nvfp import calculate_gparam
 
             input_global_scale = calculate_gparam(layer.act_max, layer.group_size)  # , model.device
-            setattr(layer, "input_global_scale", input_global_scale)
+            layer.input_global_scale = input_global_scale
             delattr(layer, "act_max")
 
     # QuantLinear = get_fp_qlinear(backend, bits, group_size, sym)
@@ -303,12 +303,12 @@ def _resolve_kv_cache_scheme(
 def save_quantized_as_fp(
     output_dir: str,
     model: torch.nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    device: Union[str, torch.device] = "cpu",
-    backend: str = None,
-    serialization_dict: dict = None,
+    device: str | torch.device = "cpu",
+    backend: str | None = None,
+    serialization_dict: dict | None = None,
     **kwargs,
 ) -> torch.nn.Module:
     """
@@ -336,7 +336,7 @@ def save_quantized_as_fp(
     data_type = serialization_dict.get("data_type", None)
     act_bits = serialization_dict.get("act_bits", None)
     act_data_type = serialization_dict.get("act_data_type", None)
-    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
+    safe_serialization = kwargs.get("safe_serialization", True)
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
     processor = kwargs.get("processor", None)
@@ -360,7 +360,7 @@ def save_quantized_as_fp(
                     from auto_round.data_type.nvfp import calculate_gparam
 
                     input_global_scale = calculate_gparam(layer.act_max, layer.group_size, model.device)
-                    setattr(layer, "input_global_scale", input_global_scale)
+                    layer.input_global_scale = input_global_scale
                     delattr(layer, "act_max")
         # update fused input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -460,7 +460,7 @@ def save_quantized_as_fp(
             attention_config = _get_attention_config(model, static_attention_granularity)
         else:
             attention_config = None
-        setattr(quantization_config, "format", format)
+        quantization_config.format = format
         quantization_config = quantization_config.to_dict()
         quantization_config["provider"] = "auto-round"
         _configure_gaudi2_fp8_dtype(quantization_config)

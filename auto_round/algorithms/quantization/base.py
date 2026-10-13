@@ -125,12 +125,9 @@ class BaseQuantizer(BaseAlgorithm):
                 )
             except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
-                try:
-                    logger.error(cuda_error_msg)
-                    logger.warning("falling back to CPU")
-                    weight, scale, zp = quant_func(module.weight.to("cpu"), **quant_kwargs)
-                except Exception:
-                    raise
+                logger.error(cuda_error_msg)
+                logger.warning("falling back to CPU")
+                weight, scale, zp = quant_func(module.weight.to("cpu"), **quant_kwargs)
             module.weight.data.copy_(weight.cpu())
             for param_name, val in zip(["scale", "zp"], [scale, zp]):
                 if isinstance(val, dict):
@@ -238,23 +235,20 @@ class BaseQuantizer(BaseAlgorithm):
         except torch.OutOfMemoryError:
             cuda_error_msg = traceback.format_exc()
             layer = layer.orig_layer if hasattr(layer, "orig_layer") else layer
-            try:
-                logger.error(cuda_error_msg)
-                logger.warning("falling back to CPU.")
-                layer.to("cpu")
-                layer = WrapperLinear(
-                    layer,
-                    enable_minmax_tuning=False,
-                    enable_norm_bias_tuning=False,
-                    enable_round_tuning=False,
-                    enable_torch_compile=self.compress_context.enable_torch_compile,
-                    disable_opt_rtn=disable_opt_rtn,
-                    enable_neuqi=getattr(self.config, "enable_neuqi", False),
-                    iters=0,
-                )
-                layer = layer.unwrapper({})
-            except Exception:
-                raise
+            logger.error(cuda_error_msg)
+            logger.warning("falling back to CPU.")
+            layer.to("cpu")
+            layer = WrapperLinear(
+                layer,
+                enable_minmax_tuning=False,
+                enable_norm_bias_tuning=False,
+                enable_round_tuning=False,
+                enable_torch_compile=self.compress_context.enable_torch_compile,
+                disable_opt_rtn=disable_opt_rtn,
+                enable_neuqi=getattr(self.config, "enable_neuqi", False),
+                iters=0,
+            )
+            layer = layer.unwrapper({})
         set_module(self.model, layer_name, layer)
 
     def _compute_valid_token_mask(self, input_ids: list) -> "list | None":

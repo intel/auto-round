@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 
@@ -31,8 +30,8 @@ class FakeActQuantLinear(QModuleBase):
         in_features: int,
         out_features: int,
         config: QuantizationScheme,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
         dtype: torch.dtype = torch.bfloat16,
     ):
         super().__init__()

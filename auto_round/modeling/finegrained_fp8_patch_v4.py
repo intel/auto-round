@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # Copied from https://github.com/huggingface/transformers/blob/v4.57.3/src/transformers/integrations/finegrained_fp8.py
-from typing import Optional
 
 from transformers.utils import is_accelerate_available, is_torch_available, logging
 
@@ -48,7 +47,7 @@ class FP8Linear(nn.Linear):
         out_features: int,
         bias: bool = False,
         dtype=None,
-        block_size: Optional[tuple[int, int]] = None,
+        block_size: tuple[int, int] | None = None,
         device=None,
         activation_scheme="dynamic",
     ):

@@ -106,7 +106,7 @@ from auto_round.algorithms.transforms.spinquant.serialize import (
     save_spinquant_config,
 )
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     # -- Registry algorithm (unified apply_rotation() entry) --
     "SpinQuantRotation",
     # -- Preprocessor (QuaRot, recommended) --

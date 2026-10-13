@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 #
 # Copyright (c) 2026 Intel Corporation
 #
@@ -150,16 +149,11 @@ _PREFILL_SKIP = _prefill_skip_reason()
 _QUANT_PREFILL_SKIP = _quantized_prefill_skip_reason()
 
 # Surface diagnostics on collection
-print(
-    "[moe-prefill-perf] xpu_available=%s  xpu_lib=%s  has_moe_gemm=%s"
-    % (
-        _xpu_available(),
-        "loaded" if ark.xpu_lib is not None else "None",
-        hasattr(ark.xpu_lib, "moe_gemm") if ark.xpu_lib is not None else False,
-    )
-)
+_xpu_lib_state = "loaded" if ark.xpu_lib is not None else "None"
+_has_prefill = hasattr(ark.xpu_lib, "moe_gemm") if ark.xpu_lib is not None else False
+print(f"[moe-prefill-perf] xpu_available={_xpu_available()}  xpu_lib={_xpu_lib_state}  has_moe_gemm={_has_prefill}")
 if _PREFILL_SKIP:
-    print("[moe-prefill-perf] suite will SKIP. reason: %s" % _PREFILL_SKIP)
+    print(f"[moe-prefill-perf] suite will SKIP. reason: {_PREFILL_SKIP}")
 
 
 # ---------------------------------------------------------------------------

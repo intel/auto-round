@@ -173,10 +173,8 @@ def apply_fp8_expert_replacement_patch():
             auto_round_logger.debug("Applied FP8 expert replacement patch to transformers.")
             OriginalFineGrainedFP8HfQuantizer.validate_environment = oot_validate_environment
             auto_round_logger.debug(
-                (
-                    "Patched FineGrainedFP8HfQuantizer.validate_environment to bypass device "
-                    "capability check for loading FP8 models on unsupported GPUs."
-                )
+                "Patched FineGrainedFP8HfQuantizer.validate_environment to bypass device "
+                "capability check for loading FP8 models on unsupported GPUs."
             )
         except ImportError as e:
             auto_round_logger.warning(f"Could not apply FP8 expert replacement patch as {e}.")

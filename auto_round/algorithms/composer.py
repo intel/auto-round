@@ -70,7 +70,7 @@ class BlockContext:
     ``ValueError`` with a user-readable message.
     """
 
-    model: "torch.nn.Module"
+    model: torch.nn.Module
     block_names: list[str]  # scheduling group; len > 1 when nblocks > 1
     block_name: str  # = block_names[0] for single-block; descriptive label for multi
     block_index: int  # 0-based index within the current all_blocks group
@@ -98,7 +98,7 @@ class AlgorithmComposer:
         composer = AlgorithmComposer(configs, compressor=self)
     """
 
-    def __init__(self, configs: list, orchestrator: "BaseOrchestrator" = None) -> None:
+    def __init__(self, configs: list, orchestrator: BaseOrchestrator = None) -> None:
         """Build the pipeline from a list of algorithm config instances.
 
         Resolution rules:
@@ -240,7 +240,7 @@ class AlgorithmComposer:
 
     # ── Internal hook helpers (act_max calibration) ───────────────────────────
 
-    def _register_act_max_hooks(self, block: "torch.nn.Module") -> list:
+    def _register_act_max_hooks(self, block: torch.nn.Module) -> list:
         """Register per-module act_max tracking hooks for static activation quantization.
 
         Returns a list of hook handles that the caller must remove when done.
@@ -301,7 +301,7 @@ class AlgorithmComposer:
                 handles.append(module.register_forward_hook(collect_act_max))
         return handles
 
-    def _get_fp_act_hooks(self, block: "torch.nn.Module") -> list:
+    def _get_fp_act_hooks(self, block: torch.nn.Module) -> list:
         """Register FP-input act_max + quantizer forward hooks."""
         if not self.need_quanted_input():
             # If having q_input, act_max will be collected in q_input forward hook,
@@ -312,13 +312,13 @@ class AlgorithmComposer:
         handles.extend(self.block_quantizer.register_fp_input_forward_hooks(block))
         return handles
 
-    def _get_q_act_hooks(self, block: "torch.nn.Module") -> list:
+    def _get_q_act_hooks(self, block: torch.nn.Module) -> list:
         """Register Q-input act_max + quantizer forward hooks."""
         handles = self._register_act_max_hooks(block)
         handles.extend(self.block_quantizer.register_qinput_forward_hooks(block))
         return handles
 
-    def _attach_act_max_for_outside_layer(self, layer: "torch.nn.Module", fp_inputs, q_inputs) -> None:
+    def _attach_act_max_for_outside_layer(self, layer: torch.nn.Module, fp_inputs, q_inputs) -> None:
         """Compute and attach act_max for an outside-block layer from cached inputs.
 
         Mirrors the hook-based act_max collection done for in-block layers, but
@@ -334,10 +334,10 @@ class AlgorithmComposer:
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
 
         target_input = q_inputs or fp_inputs
-        act_group_size = getattr(layer, "act_group_size")
+        act_group_size = layer.act_group_size
         if act_group_size is None:
             act_group_size = layer.group_size
-        act_data_type = getattr(layer, "act_data_type")
+        act_data_type = layer.act_data_type
         if act_data_type is None:
             act_data_type = layer.data_type
         is_act_nv_fp_flag = is_nv_fp(act_data_type) if act_data_type else False
@@ -368,9 +368,7 @@ class AlgorithmComposer:
         for preprocessor in self.preprocessors:
             if getattr(preprocessor, "enable_quanted_input", False):
                 return True
-        if getattr(self.block_quantizer, "enable_quanted_input", False):
-            return True
-        return False
+        return bool(getattr(self.block_quantizer, "enable_quanted_input", False))
 
     def compress_embedding_layer(self):
         return self.block_quantizer.quantize_embedding_layer()
@@ -512,7 +510,7 @@ class AlgorithmComposer:
 
     def compress_layer_outside_block(
         self,
-        layer: "torch.nn.Module",
+        layer: torch.nn.Module,
         fp_inputs=None,
         q_inputs=None,
         disable_opt_rtn=None,  # TODO wenhuach rename this to search_init_scale
@@ -537,7 +535,7 @@ class AlgorithmComposer:
         if fp_inputs is not None:
             from auto_round.compressors.utils import is_nv_fp
 
-            act_data_type = getattr(layer, "act_data_type")
+            act_data_type = layer.act_data_type
             if act_data_type is None:
                 act_data_type = "fp"
             act_dynamic = getattr(layer, "act_dynamic", True)
@@ -569,7 +567,7 @@ class AlgorithmComposer:
         """
         return list(self.preprocessors) + list(self._rotation_members) + [self.block_quantizer]
 
-    def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
+    def dispatch_block(self, block: torch.nn.Module, input_ids, input_others: dict):
         """Dispatch block to device(s) via the pipeline's algorithms.
 
         Iterates all members; if exactly one overrides the default dispatch_block,
@@ -597,7 +595,7 @@ class AlgorithmComposer:
             return overriders[0].dispatch_block(block, input_ids, input_others)
         return self.block_quantizer.dispatch_block(block, input_ids, input_others)
 
-    def prepare_run(self, composer: "AlgorithmComposer" = None):
+    def prepare_run(self, composer: AlgorithmComposer = None):
         for alg in self.members():
             alg.prepare_run(composer=self)
 
@@ -626,7 +624,7 @@ class AlgorithmComposer:
             return getattr(self.block_quantizer.config, "data_type", "mx_fp")
         return "mx_fp"
 
-    def apply_model_transforms(self, model: "torch.nn.Module") -> "torch.nn.Module":
+    def apply_model_transforms(self, model: torch.nn.Module) -> torch.nn.Module:
         """Apply model-level pre-quantisation transforms (rotation) to *model*.
 
         Generic entry point invoked once by the orchestrator before calibration

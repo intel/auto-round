@@ -56,8 +56,8 @@ class RTNConfig(QuantizationConfig):
     def __init__(
         self,
         *,
-        disable_opt_rtn: bool = None,
-        enable_opt_rtn: bool = None,
+        disable_opt_rtn: bool | None = None,
+        enable_opt_rtn: bool | None = None,
         enable_neuqi: bool = False,
         **kwargs,
     ) -> None:
