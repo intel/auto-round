@@ -331,8 +331,6 @@ class DiffusionMixin:
 
         # Store primary transformer state
         primary_model = self.model
-        primary_layer_config = dict(self.layer_config) if self.layer_config else {}
-        primary_quant_block_list = list(self.quant_block_list) if self.quant_block_list else []
         quantized_extras = {}
 
         # Quantize primary transformer
@@ -347,6 +345,9 @@ class DiffusionMixin:
             clear_memory(device_list=device_manager.device_list)
             self._inputs_cached = True
         super().quantize()
+        primary_plan = self.compression_plan
+        primary_block_names = self.to_quant_block_names
+        primary_format_resolution = getattr(self, "_format_resolution", None)
 
         # Clear stale hf_device_map so cache_inter_data can re-dispatch for next transformer
         if hasattr(primary_model, "hf_device_map"):
@@ -363,6 +364,9 @@ class DiffusionMixin:
             # Calibrators snapshot the active model at construction time. Recreate
             # it so transformer_2 block hooks are not installed on the primary model.
             self.calibration = None
+            self.quant_block_list = None
+            self.to_quant_block_names = None
+            self.__dict__.pop("_format_resolution", None)
 
             # Dispatch the pipeline for the secondary transformer without recasting it.
             if self.need_calib:
@@ -405,15 +409,24 @@ class DiffusionMixin:
             super().quantize()
 
             # Store quantized transformer
-            quantized_extras[comp_name] = (self.model_context.model, dict(self.layer_config))
+            quantized_extras[comp_name] = (
+                self.model_context.model,
+                self.compression_plan,
+                self.to_quant_block_names,
+                getattr(self, "_format_resolution", None),
+            )
             # Also update the pipeline to reference the quantized transformer
             setattr(self.model_context.pipe, comp_name, self.model_context.model)
 
         # Restore primary transformer state
         self.model_context.model = primary_model
         self.model_context.quantized = True
-        self.layer_config = primary_layer_config
-        self.quant_block_list = primary_quant_block_list
+        self.compression_plan = primary_plan
+        self.to_quant_block_names = primary_block_names
+        if primary_format_resolution is None:
+            self.__dict__.pop("_format_resolution", None)
+        else:
+            self._format_resolution = primary_format_resolution
         self._quantized_transformers = quantized_extras
         self.compress_context.low_cpu_mem_usage = orig_low_cpu
         self.compress_context.is_immediate_packing = orig_immediate_packing
@@ -473,9 +486,16 @@ class DiffusionMixin:
             if name in quantized_transformers:
                 # Save secondary quantized transformer
                 saved_model = self.model_context.model
-                saved_lc = self.layer_config
+                saved_plan = self.compression_plan
+                saved_block_names = self.to_quant_block_names
+                saved_format_resolution = getattr(self, "_format_resolution", None)
                 saved_immediate_saving = self.compress_context.is_immediate_saving
-                self.model_context.model, self.layer_config = quantized_transformers[name]
+                (
+                    self.model_context.model,
+                    self.compression_plan,
+                    self.to_quant_block_names,
+                    self._format_resolution,
+                ) = quantized_transformers[name]
                 saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
                 if has_multiple_quantized_transformers:
                     self.compress_context.is_immediate_saving = False
@@ -492,7 +512,12 @@ class DiffusionMixin:
                 if saved_subfolder is not None:
                     self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
                 self.model_context.model = saved_model
-                self.layer_config = saved_lc
+                self.compression_plan = saved_plan
+                self.to_quant_block_names = saved_block_names
+                if saved_format_resolution is None:
+                    self.__dict__.pop("_format_resolution", None)
+                else:
+                    self._format_resolution = saved_format_resolution
             elif val is self.model_context.model:
                 # Save primary quantized transformer
                 saved_immediate_saving = self.compress_context.is_immediate_saving
