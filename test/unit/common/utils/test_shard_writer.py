@@ -189,6 +189,22 @@ def test_default_max_shard_size_is_fixed(tmp_path, monkeypatch):
     assert default_writer.max_shard_size == 5 * 1024**3
 
 
+@pytest.mark.parametrize("immediate_saving", [False, True])
+def test_diffusion_shard_writer_uses_active_component_directory(tmp_path, monkeypatch, immediate_saving):
+    ShardWriter.reset()
+    compress_context = SimpleNamespace(
+        formats=[_FormatStub()], output_dir=str(tmp_path), is_immediate_saving=immediate_saving
+    )
+    model_context = SimpleNamespace(is_diffusion=True)
+    monkeypatch.setattr(CompressContext, "get_context", classmethod(lambda cls: compress_context))
+    monkeypatch.setattr(ModelContext, "get_context", classmethod(lambda cls: model_context))
+    model = _DiffusionStyleModel()
+    model._autoround_pipeline_subfolder = "transformer_2"
+    writer = ShardWriter(model, bits=4, safe_serialization=False)
+
+    assert writer.output_dir == os.path.join(str(tmp_path), "transformer_2", "")
+
+
 def test_oversized_tensor_does_not_leave_tiny_preceding_shard(tmp_path, monkeypatch):
     writer = _make_writer(_DiffusionStyleModel(), str(tmp_path), monkeypatch)
     writer.max_shard_size = 1024

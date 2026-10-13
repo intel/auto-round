@@ -485,12 +485,10 @@ def _get_diffusion_save_folder_name(format) -> str:
     if len(formats) > 1:
         return os.path.join(compress_context.output_dir, sanitized_format, "transformer")
 
-    # if use is_immediate_saving, we need to save model in self.output_dir/transformer folder
-    return (
-        os.path.join(compress_context.output_dir, "transformer")
-        if compress_context.is_immediate_saving
-        else compress_context.output_dir
-    )
+    # ShardWriter appends the active model's pipeline component subfolder.
+    # Return the pipeline root here so immediate shards land beside the
+    # component config written by DiffusionMixin.save_quantized().
+    return compress_context.output_dir
 
 
 def _get_save_folder_name(format, *args, **kwargs) -> str:
