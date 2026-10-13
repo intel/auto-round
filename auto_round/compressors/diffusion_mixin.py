@@ -201,9 +201,6 @@ class DiffusionMixin:
             "_post_init_done": getattr(self, "_post_init_done", None),
             "calibration": getattr(self, "calibration", None),
             "_format_resolution": getattr(self, "_format_resolution", None),
-            "layer_config": self.layer_config,
-            "quant_block_list": self.quant_block_list,
-            "regex_config": getattr(self, "regex_config", None),
             "to_quant_block_names": self.to_quant_block_names,
         }
 
@@ -353,7 +350,6 @@ class DiffusionMixin:
         # Store primary transformer state
         primary_model = self.model
         quantized_extras = {}
-        quantized_states = {}
 
         # Quantize primary transformer
         if self.need_calib:
@@ -429,8 +425,7 @@ class DiffusionMixin:
             super().quantize()
 
             # Store quantized transformer
-            quantized_extras[comp_name] = (self.model_context.model, dict(self.layer_config))
-            quantized_states[comp_name] = self._capture_transformer_quantization_state()
+            quantized_extras[comp_name] = (self.model_context.model, self._capture_transformer_quantization_state())
             # Also update the pipeline to reference the quantized transformer
             setattr(self.model_context.pipe, comp_name, self.model_context.model)
 
@@ -439,7 +434,6 @@ class DiffusionMixin:
         self.model_context.quantized = True
         self._restore_transformer_quantization_state(primary_state)
         self._quantized_transformers = quantized_extras
-        self._quantized_transformer_states = quantized_states
         self.compress_context.low_cpu_mem_usage = orig_low_cpu
         self.compress_context.is_immediate_packing = orig_immediate_packing
         self.compress_context.is_immediate_saving = orig_immediate_saving
@@ -500,10 +494,9 @@ class DiffusionMixin:
                 saved_model = self.model_context.model
                 saved_state = self._capture_transformer_quantization_state()
                 saved_immediate_saving = self.compress_context.is_immediate_saving
-                self.model_context.model = quantized_transformers[name][0]
+                self.model_context.model, state = quantized_transformers[name]
                 saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
                 try:
-                    state = self._quantized_transformer_states[name]
                     self._restore_transformer_quantization_state(state)
                     self.compress_context.is_immediate_saving = False
                     if saved_subfolder is not None:
