@@ -21,6 +21,7 @@ by offloading block weights to disk during gradient computation.
 
 import json
 import shutil
+import sys
 
 import pytest
 import torch
@@ -119,6 +120,23 @@ class TestOffloadManager:
         assert torch.allclose(model[0].weight.data, original_weight)
         assert len(mgr._saved) == 0
         assert mgr._tempdir is None  # auto-cleaned
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc/self/maps is Linux-only")
+    def test_reload_does_not_keep_temp_file_mapped(self, tmp_path, monkeypatch):
+        """Regression test for https://github.com/intel/auto-round/issues/2467.
+        """
+        monkeypatch.setenv("AR_WORK_SPACE", str(tmp_path))
+        model = torch.nn.Sequential(torch.nn.Linear(32, 32))
+        mgr = OffloadManager(enabled=True, mode="offload")
+        mgr.offload(model, "0")
+        tempdir = mgr._tempdir
+        assert tempdir is not None
+
+        mgr.reload(model, "0")
+
+        with open("/proc/self/maps") as f:
+            maps = f.read()
+        assert tempdir not in maps, f"reload left the deleted offload file mmap'd: {tempdir}"
 
     def test_reload_all_auto_cleans(self):
         """Test that reload() with no names auto-cleans all temp files."""
