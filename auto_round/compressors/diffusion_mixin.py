@@ -506,12 +506,18 @@ class DiffusionMixin:
                 saved_block_names = self.to_quant_block_names
                 saved_format_resolution = getattr(self, "_format_resolution", None)
                 saved_immediate_saving = self.compress_context.is_immediate_saving
+                secondary_model, secondary_plan, secondary_block_names, secondary_format_resolution = (
+                    quantized_transformers[name]
+                )
                 (
                     self.model_context.model,
                     self.compression_plan,
                     self.to_quant_block_names,
-                    self._format_resolution,
-                ) = quantized_transformers[name]
+                ) = (secondary_model, secondary_plan, secondary_block_names)
+                if secondary_format_resolution is None:
+                    self.__dict__.pop("_format_resolution", None)
+                else:
+                    self._format_resolution = secondary_format_resolution
                 saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
                 if has_multiple_quantized_transformers:
                     self.compress_context.is_immediate_saving = False

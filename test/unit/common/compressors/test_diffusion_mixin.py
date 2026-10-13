@@ -155,6 +155,8 @@ class TestFindAdditionalTransformers:
         saved = []
 
         def export(_, model, serialization_dict, **kwargs):
+            if model is secondary:
+                assert not hasattr(comp, "_format_resolution")
             saved.append(serialization_dict)
             return model
 
