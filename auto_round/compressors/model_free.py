@@ -875,9 +875,13 @@ class _ModelFreeCompressorCore:
 
     def _discover_shards(self) -> None:
         search_dir = self.work_dir if self.is_streaming else self.source_dir
-        # Streamed source names must never be inferred from partially written output shards.
-        self.shard_names = [] if self.is_streaming else _list_weight_shards(search_dir)
-        if self.is_streaming:
+        # Source indices live in the isolated metadata cache; never infer streamed
+        # source names from output shards, or include remote files outside the index.
+        has_source_index = any(
+            name.endswith((".safetensors.index.json", ".bin.index.json")) for name in os.listdir(search_dir)
+        )
+        self.shard_names = _list_weight_shards(search_dir) if not self.is_streaming or has_source_index else []
+        if self.is_streaming and not has_source_index:
             from auto_round.utils.model_free_utils import _list_remote_weight_shards
 
             subfolder = self.diffusion_component if self.is_diffusion_model else None

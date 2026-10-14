@@ -2209,3 +2209,35 @@ def test_streaming_worker_receives_disable_opt_rtn(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "_merge_shard_task_result", lambda result: None)
     core._process_all_shards_streaming_pipeline()
     assert received == [True]
+
+
+@pytest.mark.parametrize("component", ["transformer", "transformer_2"])
+@pytest.mark.parametrize(
+    "index_name",
+    ["model.safetensors.index.json", "diffusion_pytorch_model.safetensors.index.json", "pytorch_model.bin.index.json"],
+)
+def test_streaming_discovery_prefers_source_index(tmp_path, monkeypatch, component, index_name):
+    from unittest.mock import Mock
+
+    metadata = tmp_path / "metadata" / component
+    metadata.mkdir(parents=True)
+    suffix = ".bin" if index_name.endswith(".bin.index.json") else ".safetensors"
+    shards = [f"source-b{suffix}", f"source-a{suffix}"]
+    index = {"weight_map": {"blocks.1.weight": shards[0], "blocks.0.weight": shards[1], "blocks.1.bias": shards[0]}}
+    (metadata / index_name).write_text(json.dumps(index))
+    output = tmp_path / "output"
+    component_output = output / component
+    component_output.mkdir(parents=True)
+    (component_output / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blocks.0.weight": "partial-output.safetensors"}})
+    )
+    core = _ModelFreeCompressorCore("org/wan", str(output), enable_torch_compile=False)
+    core.is_streaming = True
+    core.is_diffusion_model = True
+    core.diffusion_component = component
+    core.work_dir = str(metadata)
+    remote = Mock(return_value=[f"{component}/{name}" for name in shards] + [f"{component}/backup{suffix}"])
+    monkeypatch.setattr("auto_round.utils.model_free_utils._list_remote_weight_shards", remote)
+    core._discover_shards()
+    assert core.shard_names == shards
+    remote.assert_not_called()
