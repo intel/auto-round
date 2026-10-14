@@ -497,6 +497,7 @@ def _dot_natural_key(name: str):
                 parts.append((1, text, int(trailing)) if trailing else (1, text))
         return parts
 
+
 @cache
 def _wildcard_concat_converters_for(model_type):
     """Wildcard shard-concat converters registered for one family.
