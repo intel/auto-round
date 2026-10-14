@@ -1770,9 +1770,9 @@ class TestNVFP4ToMXFP4:
         source = {**_nvfp4_source_tensors(_NV_MLP), **_ct_fp8_tensors(_NV_ATTN)}
         model_dir = _make_model_dir(tmp_path, _cfg_with_qc(_CT_MIXED_QC), source)
         output_dir = str(tmp_path / "out")
-        AutoRound(
-            model=model_dir, layer_config="nvfp4->mxfp4", device_map="cpu", **scheme_kwargs
-        ).quantize_and_save(output_dir, format="llm_compressor")
+        AutoRound(model=model_dir, layer_config="nvfp4->mxfp4", device_map="cpu", **scheme_kwargs).quantize_and_save(
+            output_dir, format="llm_compressor"
+        )
         tensors = _read_output_tensors(output_dir)
         _assert_mxfp4_layer(tensors, _NV_MLP)
         _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight", f"{_NV_ATTN}.weight_scale"])
