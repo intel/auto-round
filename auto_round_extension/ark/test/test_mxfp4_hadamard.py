@@ -67,12 +67,15 @@ from auto_round_kernel.mxfp4_hadamard import (
 )
 
 XPU_AVAILABLE = hasattr(torch, "xpu") and torch.xpu.is_available()
-MXFP4_HADAMARD_AVAILABLE = auto_round_kernel.xpu_lib is not None and hasattr(
-    auto_round_kernel.xpu_lib, "mxfp4_hadamard_quant"
+CRI_SYCL_TARGETS = {"cri", "intel_gpu_cri"}
+MXFP4_HADAMARD_AVAILABLE = (
+    auto_round_kernel.xpu_lib is not None
+    and getattr(auto_round_kernel.xpu_lib, "sycl_target", None) in CRI_SYCL_TARGETS
+    and hasattr(auto_round_kernel.xpu_lib, "mxfp4_hadamard_quant")
 )
 requires_xpu = pytest.mark.skipif(
     not XPU_AVAILABLE or not MXFP4_HADAMARD_AVAILABLE,
-    reason="XPU is not available or the MXFP4 Hadamard kernel was not built",
+    reason="XPU is not available or the MXFP4 Hadamard kernel was not built for CRI",
 )
 
 SHAPES = [(1, 32), (1, 128), (17, 256)]

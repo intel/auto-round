@@ -1707,6 +1707,7 @@ PYBIND11_MODULE(PY_NAME, m) {
         pybind11::arg("num_rows"), pybind11::arg("k"), pybind11::arg("in_dtype"), pybind11::arg("use_fwht") = true,
         pybind11::arg("use_xmx") = false, pybind11::arg("use_quant_only") = false,
         pybind11::arg("hadamard_dim") = 32, pybind11::arg("use_stream_only") = false);
+    m.attr("sycl_target") = ARK_SYCL_TARGET_NAME;
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
   m.def("moe_decode_release_scratch", &ark::moe_decode_release_scratch);

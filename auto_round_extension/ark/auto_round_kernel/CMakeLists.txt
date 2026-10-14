@@ -188,7 +188,14 @@ if(ARK_RESCALE)
 endif()
 
 if(ARK_XPU AND ARK_SYCL_TLA)
-  target_compile_definitions(${PY_NAME} PRIVATE ARK_SYCL_TLA=1 CUTLASS_ENABLE_SYCL=1 SYCL_INTEL_TARGET=1)
+  target_compile_definitions(
+    ${PY_NAME}
+    PRIVATE
+      ARK_SYCL_TLA=1
+      CUTLASS_ENABLE_SYCL=1
+      SYCL_INTEL_TARGET=1
+      ARK_SYCL_TARGET_NAME="${DPCPP_SYCL_TARGET}"
+  )
   if(ARK_MXFP_BDPAS_CUTLASS_DIR)
     if(NOT EXISTS "${ARK_MXFP_BDPAS_CUTLASS_DIR}/include/cutlass/gemm/collective/xe_array_mma_blockscaled_native.hpp")
       message(FATAL_ERROR "ARK_MXFP_BDPAS_CUTLASS_DIR must point to a CUTLASS tree with Xe block-scaled grouped GEMM headers")
