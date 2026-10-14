@@ -40,6 +40,8 @@ weights with ``fake`` format):
 
 * Preset names: ``MXFP4``, ``MXFP8``.
 * ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
+* ``NVFP2MXFP``: auto-detect the NVFP4 layers of an NVFP4 source checkpoint and
+  convert only those to MXFP4; every other layer is kept as-is.
 
 **NVFP4 E5M3** (``auto_round`` or ``fake`` format):
 
@@ -125,6 +127,8 @@ from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.model_free_utils import (
     _LM_HEAD_PATTERNS,
+    _NVFP2MXFP_SCHEME,
+    _NVFP_SOURCE_ONLY_KEY,
     _apply_scheme_overrides,
     _build_cross_shard_pairs_from_weight_map,
     _build_quantization_config,
@@ -183,6 +187,7 @@ SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
     "MXFP8",
     "NVFP4_E5M3",
     "BF16",
+    "NVFP2MXFP",
 )
 
 # Allowed ``bits`` values for integer WOQ.
@@ -554,11 +559,14 @@ class _ModelFreeCompressorCore:
         quant_nontext_module: bool = False,
         enable_torch_compile: bool | None = None,
         disable_opt_rtn: bool = False,
+        nvfp_source_only: bool = False,
     ) -> None:
         # --- raw inputs ---
         self.model_name_or_path = model_name_or_path
         self.output_dir = output_dir
         self.scheme_input = scheme
+        # NVFP2MXFP: convert only the NVFP4 layers of the source checkpoint to MXFP4.
+        self.nvfp_source_only = nvfp_source_only or (isinstance(scheme, str) and scheme.upper() == _NVFP2MXFP_SCHEME)
         self.layer_config_input = layer_config
         self.ignore_layers_input = ignore_layers
         self.format = format or "auto_round"
@@ -648,6 +656,12 @@ class _ModelFreeCompressorCore:
         ds = asdict(self.scheme_obj)
         self.default_scheme = {k: v for k, v in ds.items() if v is not None}
         self.default_scheme["_output_format"] = self.format
+        if self.nvfp_source_only:
+            if not is_mx_fp((self.scheme_obj.data_type or "").lower()):
+                raise ValueError(
+                    f"{_NVFP2MXFP_SCHEME} requires an MXFP target scheme, got data_type='{self.scheme_obj.data_type}'."
+                )
+            self.default_scheme[_NVFP_SOURCE_ONLY_KEY] = True
 
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
@@ -1680,6 +1694,7 @@ class _ModelFreeCompressorCore:
         logger.info(
             f"Model-free quantization: {self.model_name_or_path}\n"
             f"  Scheme: {self.scheme_obj}\n"
+            f"  NVFP4 source layers only ({_NVFP2MXFP_SCHEME}): {self.nvfp_source_only}\n"
             f"  Packing format: {packing_format}\n"
             f"  Optimized RTN: {'enabled' if opt_rtn_enabled else 'disabled'}\n"
             f"  Output: {self.output_dir}\n"
@@ -1705,6 +1720,12 @@ class _ModelFreeCompressorCore:
             raise RuntimeError(
                 "Model-free quantization did not complete all weight shards; resume state was retained for: "
                 f"{', '.join(missing_shards)}"
+            )
+
+        if self.nvfp_source_only and not self.all_quantized_layers:
+            logger.warning(
+                f"{_NVFP2MXFP_SCHEME}: no NVFP4 layers were detected in '{self.model_name_or_path}'; "
+                "all layers were kept as-is."
             )
 
         # ---- write outputs ----
@@ -1772,6 +1793,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         low_cpu_mem_usage: bool = True,
         enable_torch_compile: bool | None = None,
         disable_opt_rtn: bool = False,
+        nvfp_source_only: bool = False,
         **kwargs,
     ) -> None:
         import copy
@@ -1807,6 +1829,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             quant_nontext_module=quant_nontext_module,
             enable_torch_compile=enable_torch_compile,
             disable_opt_rtn=disable_opt_rtn,
+            nvfp_source_only=nvfp_source_only,
         )
 
         # Compressor-role state (mirrors BaseCompressor attributes used by
@@ -1865,6 +1888,12 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
     def _fallback_to_base_compressor(self, save_format: str | None = None):
         from auto_round.autoround import AutoRound
+
+        if self.nvfp_source_only:
+            raise ValueError(
+                f"Scheme '{_NVFP2MXFP_SCHEME}' is only supported in model-free mode with formats "
+                f"'auto_round', 'auto_round:auto_gptq' or 'llm_compressor' (requested: '{save_format or self.format}')."
+            )
 
         logger.info(
             "Model-free mode cannot export this request directly; "

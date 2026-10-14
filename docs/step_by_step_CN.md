@@ -640,32 +640,21 @@ ar.quantize_and_save(output_dir, format="auto_round")
 <details>
   <summary>Model-free 并行量化基准（分钟向上取整）</summary>
 
-时间归一化规则：所有 `mm:ss` 均向上取整到分钟。例如：`4:20 -> 5`、`15:45 -> 16`、`9:07 -> 10`、`7:29 -> 8`、`4:09 -> 5`。
+免模型模式会用多进程并行量化多个权重分片（shard），并行度通过环境变量 `AR_MODEL_FREE_SHARD_PARALLELISM` 设置，详见[环境变量指南](./environments_CN.md#ar_model_free_shard_parallelism)：
+- **默认（未设置）**：`shard_count // 4`，最小 1、最大 10。例如：8 个 shard 对应 2 个 worker，40 个 shard 及以上对应 10 个 worker。
+- **手动设置**：例如 `export AR_MODEL_FREE_SHARD_PARALLELISM=20`，实际并行度不超过 shard 总数。
+- 并行度越高通常越快，但峰值显存（以及内存）会随之上升，资源受限时请调小。
 
-| 模型 | 设备 | 方案 | 并行度 | 峰值显存 (G) | 耗时（分钟，向上取整） |
-|---|---|---|---:|---:|---:|
-| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 | 2 | N/A |
-| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 10 | 8 | 7 |
-| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 | 2 | 17 |
-| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 10 | 8 | 5 |
-| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 1 | 2 | 60 |
-| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 10 | 27 | 16 |
-| zai-org/GLM-5.2 | B200 | W4A16 | 1 | 3 | 30 |
-| zai-org/GLM-5.2 | B200 | W4A16 | 10 | 16 | 10 |
-| zai-org/GLM-5.2 | B200 | W4A16 | 20 | 32 | 8 |
-| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 | 2 | 18 |
-| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 10 | 10 | 5 |
-| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 | 6 | 80 |
-| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 10 | 50 | 13 |
+耗时均向上取整到分钟。
 
-| 模型 | 方案 | 对比 | 耗时变化（分钟） | 加速比 | 时间节省 | 峰值显存变化 |
-|---|---|---|---|---:|---:|---|
-| Qwen3-235B | W4A16 | 并行 1 -> 10 | 17 -> 5 | 3.40x | 70.6% | 2G -> 8G |
-| GLM-5.2 | MXFP4-Mixed | 并行 1 -> 10 | 60 -> 16 | 3.75x | 73.3% | 2G -> 27G |
-| GLM-5.2 | W4A16 | 并行 1 -> 10 | 30 -> 10 | 3.00x | 66.7% | 3G -> 16G |
-| GLM-5.2 | W4A16 | 并行 1 -> 20 | 30 -> 8 | 3.75x | 73.3% | 3G -> 32G |
-| MiniMax-M2.7 | W4A16 | 并行 1 -> 10 | 18 -> 5 | 3.60x | 72.2% | 2G -> 10G |
-| DeepSeek-V4-Pro | W4A16 | 并行 1 -> 10 | 80 -> 13 | 6.15x | 83.8% | 6G -> 50G |
+| 模型 | 设备 | 方案 | 并行度 | 耗时（分钟） | 加速比 | 峰值显存 (G) |
+|---|---|---|---|---|---:|---|
+| Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 -> 10 | N/A -> 7 | N/A | 2 -> 8 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 -> 10 | 17 -> 5 | 3.40x | 2 -> 8 |
+| GLM-5.2 | B200 | MXFP4-Mixed | 1 -> 10 | 60 -> 16 | 3.75x | 2 -> 27 |
+| GLM-5.2 | B200 | W4A16 | 1 -> 10 / 20 | 30 -> 10 / 8 | 3.00x / 3.75x | 3 -> 16 / 32 |
+| MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 -> 10 | 18 -> 5 | 3.60x | 2 -> 10 |
+| DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 -> 10 | 80 -> 13 | 6.15x | 6 -> 50 |
 
 结论：在 model-free 量化中，提高并行度通常可带来约 `3x-6x` 的耗时加速，但峰值显存会明显上升。
 
@@ -701,6 +690,35 @@ ar.quantize_and_save(output_dir, format="auto_round")
 | `MXFP8` | 8 | 32 | mxfp8-quantized |
 
 需要特殊打包内核的 scheme（`W3A16`、`FPW8A16`、`BF16`、`MXINT4`、`NVFP4`、`FP8_BLOCK`、`FP8_STATIC`、`INT8_W8A8`、`GGUF:*` 等）**不被支持**，传入会抛 `ValueError`。这些请使用标准 AutoRound 流程。
+
+**NVFP4 源模型 → MXFP4（实验性）**
+
+目标：将已发布的 NVFP4 checkpoint 转换为 MXFP4，在没有原生 NVFP4 硬件加速路径但支持 MXFP4 的 Intel GPU 上，高效地提供 4-bit 精度大语言模型的高吞吐推理服务。
+
+免模型量化模式支持以已经 NVFP4 量化的 checkpoint 作为输入：NVFP4 权重会逐分片反量化为 BF16，再重新量化为目标 scheme（例如 `--scheme MXFP4`）。若某层的目标 scheme 本身就是 NVFP4，则打包张量会原样透传。支持情况取决于源模型的张量布局：
+
+| 源布局 | 张量 | 状态 |
+| --- | --- | --- |
+| ModelOpt HF 导出（NVFP4） | `.weight`（uint8）+ `.weight_scale`（FP8）+ `.weight_scale_2` + `.input_scale` | 支持 |
+| ModelOpt / TensorRT-LLM 融合 MoE（NVFP4），如 `inkling_mm_model` | `X`（uint8）+ `X.scale` + `X.scale2`（可能位于不同分片） | 支持 |
+| compressed-tensors（NVFP4） | `.weight_packed` + `.weight_scale` + `.weight_global_scale` + `.input_global_scale` | 支持 |
+| ModelOpt FP8 层（NVFP4 + FP8 混合） | `.weight`（FP8）+ per-tensor `.weight_scale`（FP32）+ `.input_scale` | **不支持** —— TODO：per-tensor FP8 未被反量化，这些层保持 FP8 并带有过期的 scale，且未在输出的 `quantization_config` 中描述 |
+| AMD Quark（NVFP4） | Quark 导出布局 | **未验证** —— TODO：尚无 Quark 专用处理与测试 |
+
+常见 checkpoint 的支持状态：
+
+| 模型 | 源格式 | 状态 |
+| --- | --- | --- |
+| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors，NVFP4 | 预期可用 —— TODO：端到端精度验证 |
+| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt，NVFP4 + FP8 | 有限支持 —— NVFP4 层可用；TODO：反量化 per-tensor FP8 层 |
+| `amd/MiniMax-M2.7-NVFP4` | Quark，NVFP4 | 未验证 —— TODO：增加 Quark NVFP4 支持与测试 |
+| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt，NVFP4 | 预期可用 —— TODO：端到端精度验证 |
+
+使用 `--scheme NVFP2MXFP` 可**仅**将 NVFP4 层转换为 MXFP4，无需手动列出这些层：每个分片中的 NVFP4 层会被自动检测，其余层（BF16、`lm_head`、router 等）保持原样，并在 `quantization_config` 中记录为未量化。该 scheme 始终以免模型模式运行。
+
+```bash
+auto_round nvidia/MiniMax-M2.7-NVFP4 --scheme NVFP2MXFP --format llm_compressor --output_dir ./mxfp4-model
+```
 
 #### 命令行用法
 

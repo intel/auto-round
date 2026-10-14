@@ -726,6 +726,20 @@ def test_model_free_legacy_nvfp4_is_normalized_and_passthrough(tmp_path):
     assert "model.layers.0.self_attn.q_proj" in quantized
     assert prefix not in ignored
 
+
+def test_model_free_llmc_nvfp4_is_not_renormalized(tmp_path):
+    prefix = "model.layers.0.mlp.down_proj"
+    tensors = _nvfp4_source_tensors(prefix)
+    tensors[f"{prefix}.weight_global_scale"] = torch.tensor([4.0], dtype=torch.float32)
+    shard_path = str(tmp_path / "shard.safetensors")
+    save_file(tensors, shard_path)
+
+    layer_config = {prefix: {"bits": 4, "group_size": 16, "sym": True, "data_type": "nv_fp"}}
+    output, _, _ = _process_shard(shard_path, _DEFAULT_SCHEME, layer_config, [])
+
+    # llm-compressor global scales are already in the expected convention.
+    assert torch.allclose(output[f"{prefix}.weight_global_scale"], torch.tensor([4.0], dtype=torch.float32))
+
     def test_ignores_and_skips(self, tmp_path):
         shard_path = str(tmp_path / "shard.safetensors")
         save_file(
@@ -1259,6 +1273,79 @@ class TestModelFreeMXFP:
         # lm_head stays full precision
         assert "lm_head.weight" in keys
         assert "lm_head.weight_packed" not in keys
+
+
+def _nvfp4_source_tensors(prefix, out_features=32, in_features=64):
+    return {
+        f"{prefix}.weight_packed": torch.randint(0, 256, (out_features, in_features // 2), dtype=torch.uint8),
+        f"{prefix}.weight_scale": torch.ones((out_features, in_features // 16)).to(torch.float8_e4m3fn),
+        f"{prefix}.weight_global_scale": torch.tensor([1.0], dtype=torch.float32),
+        f"{prefix}.input_global_scale": torch.tensor([1.0], dtype=torch.float32),
+    }
+
+
+class TestNVFP2MXFP:
+    """NVFP2MXFP: only NVFP4 source layers are converted to MXFP4."""
+
+    _NVFP_LAYER = "model.layers.0.mlp.down_proj"
+    _BF16_LAYER = "model.layers.0.self_attn.q_proj"
+
+    def _make_source(self, tmp_path):
+        tensors = _nvfp4_source_tensors(self._NVFP_LAYER)
+        tensors[f"{self._BF16_LAYER}.weight"] = torch.randn(64, 64, dtype=torch.bfloat16)
+        tensors["lm_head.weight"] = torch.randn(128, 64, dtype=torch.bfloat16)
+        return _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+
+    def test_is_supported_preset(self):
+        assert is_model_free_supported_scheme("NVFP2MXFP")
+
+    @require_compressed_tensors
+    @pytest.mark.parametrize("fmt", ["llm_compressor", "auto_round"])
+    def test_only_nvfp_layers_converted(self, tmp_path, fmt):
+        model_dir = self._make_source(tmp_path)
+        output_dir = str(tmp_path / "output")
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir, output_dir=output_dir, scheme="NVFP2MXFP", format=fmt
+        ).run()
+
+        keys = _read_output_keys(output_dir)
+        # NVFP4 layer -> MXFP4 (uint8 E8M0 scale, no global scales)
+        assert f"{self._NVFP_LAYER}.weight_packed" in keys
+        assert f"{self._NVFP_LAYER}.weight_scale" in keys
+        assert f"{self._NVFP_LAYER}.weight_global_scale" not in keys
+        assert f"{self._NVFP_LAYER}.input_global_scale" not in keys
+        with safe_open(os.path.join(output_dir, "model.safetensors"), framework="pt") as sf:
+            assert sf.get_tensor(f"{self._NVFP_LAYER}.weight_scale").dtype == torch.uint8
+        # Non-NVFP layers are kept as-is
+        assert f"{self._BF16_LAYER}.weight" in keys
+        assert f"{self._BF16_LAYER}.weight_packed" not in keys
+        assert "lm_head.weight" in keys
+
+        qc = _read_qconfig(output_dir)
+        if fmt == "llm_compressor":
+            assert qc["format"] == "mxfp4-pack-quantized"
+            assert self._BF16_LAYER in qc["ignore"]
+        else:
+            assert qc["data_type"] == "mx_fp"
+            assert qc["bits"] == 4
+            assert qc["extra_config"][self._BF16_LAYER]["bits"] == 16
+
+    @require_compressed_tensors
+    def test_autoround_entry(self, tmp_path):
+        model_dir = self._make_source(tmp_path)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="NVFP2MXFP", device_map="cpu").quantize_and_save(
+            output_dir, format="llm_compressor"
+        )
+        keys = _read_output_keys(output_dir)
+        assert f"{self._NVFP_LAYER}.weight_packed" in keys
+        assert f"{self._BF16_LAYER}.weight" in keys
+        assert f"{self._BF16_LAYER}.weight_packed" not in keys
+
+    def test_disable_model_free_rejected(self, tmp_path):
+        model_dir = self._make_source(tmp_path)
+        with pytest.raises(ValueError, match="NVFP2MXFP"):
+            AutoRound(model=model_dir, scheme="NVFP2MXFP", disable_model_free=True, device_map="cpu")
 
 
 # ===========================================================================

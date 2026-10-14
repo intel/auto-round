@@ -651,32 +651,21 @@ Model-free mode performs calibration-free WOQ quantization **without loading the
 <details>
   <summary>Model-free Parallelism Benchmarks (Rounded Minutes)</summary>
 
-Runtime normalization: all `mm:ss` values are rounded up to the next full minute. For example, `4:20 -> 5`, `15:45 -> 16`, `9:07 -> 10`, `7:29 -> 8`, `4:09 -> 5`.
+Model-free mode quantizes multiple weight shards in parallel worker processes. Set the parallelism with the `AR_MODEL_FREE_SHARD_PARALLELISM` environment variable (see the [Environment Variables Guide](./environments.md#ar_model_free_shard_parallelism)):
+- **Default (unset)**: `shard_count // 4`, min 1, max 10. For example, 8 shards use 2 workers and 40+ shards use 10 workers.
+- **Manual**: e.g. `export AR_MODEL_FREE_SHARD_PARALLELISM=20`. The effective value never exceeds the shard count.
+- Higher parallelism is usually faster but increases peak GPU (and host) memory; lower it when resources are tight.
 
-| Model | Device | Scheme | Parallelism | Peak Memory (G) | Runtime (min, rounded up) |
-|---|---|---|---:|---:|---:|
-| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 | 2 | N/A |
-| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 10 | 8 | 7 |
-| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 | 2 | 17 |
-| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 10 | 8 | 5 |
-| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 1 | 2 | 60 |
-| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 10 | 27 | 16 |
-| zai-org/GLM-5.2 | B200 | W4A16 | 1 | 3 | 30 |
-| zai-org/GLM-5.2 | B200 | W4A16 | 10 | 16 | 10 |
-| zai-org/GLM-5.2 | B200 | W4A16 | 20 | 32 | 8 |
-| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 | 2 | 18 |
-| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 10 | 10 | 5 |
-| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 | 6 | 80 |
-| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 10 | 50 | 13 |
+Runtimes are rounded up to the next full minute.
 
-| Model | Scheme | Comparison | Runtime Change (min) | Speedup | Time Saved | Peak Memory Change |
-|---|---|---|---|---:|---:|---|
-| Qwen3-235B | W4A16 | Parallelism 1 -> 10 | 17 -> 5 | 3.40x | 70.6% | 2G -> 8G |
-| GLM-5.2 | MXFP4-Mixed | Parallelism 1 -> 10 | 60 -> 16 | 3.75x | 73.3% | 2G -> 27G |
-| GLM-5.2 | W4A16 | Parallelism 1 -> 10 | 30 -> 10 | 3.00x | 66.7% | 3G -> 16G |
-| GLM-5.2 | W4A16 | Parallelism 1 -> 20 | 30 -> 8 | 3.75x | 73.3% | 3G -> 32G |
-| MiniMax-M2.7 | W4A16 | Parallelism 1 -> 10 | 18 -> 5 | 3.60x | 72.2% | 2G -> 10G |
-| DeepSeek-V4-Pro | W4A16 | Parallelism 1 -> 10 | 80 -> 13 | 6.15x | 83.8% | 6G -> 50G |
+| Model | Device | Scheme | Parallelism | Runtime (min) | Speedup | Peak Memory (G) |
+|---|---|---|---|---|---:|---|
+| Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 -> 10 | N/A -> 7 | N/A | 2 -> 8 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 -> 10 | 17 -> 5 | 3.40x | 2 -> 8 |
+| GLM-5.2 | B200 | MXFP4-Mixed | 1 -> 10 | 60 -> 16 | 3.75x | 2 -> 27 |
+| GLM-5.2 | B200 | W4A16 | 1 -> 10 / 20 | 30 -> 10 / 8 | 3.00x / 3.75x | 3 -> 16 / 32 |
+| MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 -> 10 | 18 -> 5 | 3.60x | 2 -> 10 |
+| DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 -> 10 | 80 -> 13 | 6.15x | 6 -> 50 |
 
 Key takeaway: model-free quantization usually gets about `3x-6x` runtime speedup with higher parallelism, while peak memory usage increases significantly.
 
@@ -712,6 +701,35 @@ You can also pass a custom `QuantizationScheme(bits=N, group_size=G, sym=True/Fa
 | `MXFP8` | 8 | 32 | mxfp8-quantized |
 
 Schemes that require special packing kernels (`W3A16`, `FPW8A16`, `BF16`, `MXINT4`, `NVFP4`, `FP8_BLOCK`, `FP8_STATIC`, `INT8_W8A8`, `GGUF:*`, ...) are **not** supported in model-free mode and will raise `ValueError`.  Use the regular AutoRound flow for those.
+
+**NVFP4 source checkpoints → MXFP4 (experimental)**
+
+Goal: efficiently serve 4-bit LLMs with high throughput on Intel GPUs, which support MXFP4 but have no native NVFP4 acceleration path, by converting published NVFP4 checkpoints to MXFP4.
+
+Model-free mode can take an already NVFP4-quantized checkpoint as input: NVFP4 weights are dequantized to BF16 shard-by-shard and then re-quantized to the target scheme (e.g. `--scheme MXFP4`). If the target layer scheme is NVFP4 itself, the packed tensors are passed through unchanged. Support depends on the source tensor layout:
+
+| Source layout | Tensors | Status |
+| --- | --- | --- |
+| ModelOpt HF export (NVFP4) | `.weight` (uint8) + `.weight_scale` (FP8) + `.weight_scale_2` + `.input_scale` | Supported |
+| ModelOpt / TensorRT-LLM fused MoE (NVFP4), e.g. `inkling_mm_model` | `X` (uint8) + `X.scale` + `X.scale2` (may live in different shards) | Supported |
+| compressed-tensors (NVFP4) | `.weight_packed` + `.weight_scale` + `.weight_global_scale` + `.input_global_scale` | Supported |
+| ModelOpt FP8 layers (mixed NVFP4 + FP8) | `.weight` (FP8) + per-tensor `.weight_scale` (FP32) + `.input_scale` | **Not supported** — TODO: per-tensor FP8 is not dequantized; these layers stay FP8 with stale scales and are not described in the output `quantization_config` |
+| AMD Quark (NVFP4) | Quark export layout | **Not verified** — TODO: no dedicated Quark handling or tests |
+
+Status of commonly requested checkpoints:
+
+| Model | Source format | Status |
+| --- | --- | --- |
+| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors, NVFP4 | Expected to work — TODO: end-to-end accuracy validation |
+| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt, NVFP4 + FP8 | Limited — NVFP4 layers work; TODO: dequantize per-tensor FP8 layers |
+| `amd/MiniMax-M2.7-NVFP4` | Quark, NVFP4 | Not verified — TODO: add Quark NVFP4 support and tests |
+| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt, NVFP4 | Expected to work — TODO: end-to-end accuracy validation |
+
+Use `--scheme NVFP2MXFP` to convert **only** the NVFP4 layers to MXFP4 without listing them manually: NVFP4 layers are detected automatically in each shard, and every other layer (BF16, `lm_head`, router, ...) is kept as-is and recorded as unquantized in `quantization_config`. This scheme always runs in model-free mode.
+
+```bash
+auto_round nvidia/MiniMax-M2.7-NVFP4 --scheme NVFP2MXFP --format llm_compressor --output_dir ./mxfp4-model
+```
 
 #### CLI Usage
 

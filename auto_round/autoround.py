@@ -620,10 +620,15 @@ class _CompressorBuilder:
         # Runs before the model-free early return so both routes enforce the
         # same config-level constraints (e.g. the format-scoped 8-bit asym rule).
         eager_validate_scheme(quant_config, scheme, format=format)
+        # NVFP2MXFP converts only the NVFP4 layers of the source checkpoint and
+        # is implemented exclusively by the model-free path.
+        is_nvfp2mxfp = isinstance(scheme, str) and scheme.upper() == "NVFP2MXFP"
+        if is_nvfp2mxfp and route_decision_kwargs.get("disable_model_free", False):
+            raise ValueError("Scheme 'NVFP2MXFP' is only supported in model-free mode.")
         # NOTE: the W8-asym opt-in is the AR_ALLOW_W8_ASYM environment
         # variable, read directly by parse_scheme and the generation-time
         # gates; nothing is threaded through the compressor here.
-        if is_model_free_route(
+        if is_nvfp2mxfp or is_model_free_route(
             model, route_scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs
         ):
             # Direct scheme fields are consumed into ``quant_config`` during
@@ -636,7 +641,8 @@ class _CompressorBuilder:
                 layer_config,
                 tokenizer,
                 device_map,
-                announced_via_flag=bool(route_kwargs.get("model_free", False)),
+                announced_via_flag=bool(route_kwargs.get("model_free", False)) or is_nvfp2mxfp,
+                nvfp_source_only=is_nvfp2mxfp,
                 dataset=dataset,
                 nsamples=nsamples,
                 seqlen=seqlen,

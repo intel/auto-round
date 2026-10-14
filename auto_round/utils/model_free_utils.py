@@ -45,6 +45,10 @@ from auto_round.utils.path_safety import (
 )
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
+# Model-free-only scheme: convert every NVFP4 source layer to MXFP4 and keep all other layers as-is.
+_NVFP2MXFP_SCHEME = "NVFP2MXFP"
+# default_scheme flag restricting quantization to layers stored as NVFP4 in the source checkpoint.
+_NVFP_SOURCE_ONLY_KEY = "_nvfp_source_only"
 _BLOCK_NAME_TO_IGNORE = ("shared_expert_gate.", ".gate.", "embed", "conv")
 _SUPPORTED_MXFP_BITS = (4, 8)
 _SUPPORTED_INT_BITS = (2, 4, 8)
@@ -65,6 +69,7 @@ SUPPORTED_PRESET_SCHEMES = (
     "MXFP8",
     "NVFP4_E5M3",
     "BF16",
+    _NVFP2MXFP_SCHEME,
 )
 
 
@@ -459,6 +464,7 @@ class _PatternMatcher:
     """Precompile ignore and layer-config patterns for shard processing."""
 
     __slots__ = (
+        "_allowed_layers",
         "_compiled_lc",
         "_default_scheme",
         "_ignore_cache",
@@ -488,6 +494,16 @@ class _PatternMatcher:
 
         self._ignore_cache: dict[str, bool] = {}
         self._scheme_cache: dict[str, dict | None] = {}
+        self._allowed_layers: set[str] | None = None
+
+    @property
+    def nvfp_source_only(self) -> bool:
+        return bool(self._default_scheme.get(_NVFP_SOURCE_ONLY_KEY))
+
+    def restrict_to_layers(self, layers: set[str]) -> None:
+        """Treat every layer outside *layers* as ignored (unless explicitly listed in layer_config)."""
+        self._allowed_layers = set(layers)
+        self._ignore_cache.clear()
 
     @staticmethod
     def _build_ignore_regex(patterns: list[str]) -> re.Pattern | None:
@@ -511,6 +527,9 @@ class _PatternMatcher:
         if layer_name in self._layer_config:
             self._ignore_cache[tensor_name] = False
             return False
+        if self._allowed_layers is not None and layer_name not in self._allowed_layers:
+            self._ignore_cache[tensor_name] = True
+            return True
         result = bool(self._ignore_re and self._ignore_re.search(layer_name))
         self._ignore_cache[tensor_name] = result
         return result
@@ -569,6 +588,34 @@ def _collect_mxfp_source_entries(raw_tensors: dict[str, torch.Tensor]) -> list[t
     return entries
 
 
+def _collect_nvfp4_source_layers(raw_tensors: dict[str, torch.Tensor]) -> set[str]:
+    """Return names of layers stored as NVFP4 in a shard.
+
+    Expects llm-compressor naming (run after :func:`_normalize_nvfp4_source_tensors`):
+    ``<layer>.weight_packed`` + ``<layer>.weight_scale`` with a global scale or an FP8
+    block scale (MXFP4 uses uint8 E8M0 scales without a global scale). ModelOpt bare
+    tensors ``X`` with ``X.scale`` / ``X.scale2`` siblings are detected as layer ``X``.
+    """
+    layers: set[str] = set()
+    for name, tensor in raw_tensors.items():
+        if tensor.dtype not in (torch.uint8, torch.int8):
+            continue
+        if name.endswith(".weight_packed"):
+            layer_name = name[: -len(".weight_packed")]
+            scale = raw_tensors.get(f"{layer_name}.weight_scale")
+            if scale is None:
+                continue
+            if (
+                f"{layer_name}.weight_global_scale" in raw_tensors
+                or f"{layer_name}.input_global_scale" in raw_tensors
+                or scale.dtype == torch.float8_e4m3fn
+            ):
+                layers.add(layer_name)
+        elif f"{name}.scale" in raw_tensors and f"{name}.scale2" in raw_tensors:
+            layers.add(name)
+    return layers
+
+
 def _normalize_nvfp4_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
     shard_name: str | None = None,
@@ -597,8 +644,9 @@ def _normalize_nvfp4_source_tensors(
         has_new_global = (
             f"{layer_name}.weight_global_scale" in raw_tensors or f"{layer_name}.input_global_scale" in raw_tensors
         )
-        has_new_packed = f"{layer_name}.weight_packed" in raw_tensors
-        if has_legacy_global or has_new_global or has_new_packed:
+        has_legacy_packed = name.endswith(".weight") and f"{layer_name}.weight_packed" not in raw_tensors
+        # Layers already in llm-compressor naming need no normalization.
+        if has_legacy_global or (has_legacy_packed and has_new_global):
             candidates.append(layer_name)
 
     if not candidates:
@@ -615,20 +663,16 @@ def _normalize_nvfp4_source_tensors(
         if weight_packed_key not in raw_tensors and weight_key in raw_tensors:
             raw_tensors[weight_packed_key] = raw_tensors.pop(weight_key).view(torch.uint8).contiguous()
 
+        # ModelOpt scales (amax / (448 * 6)) are the reciprocal of llm-compressor global scales.
         if weight_scale_2_key in raw_tensors and weight_global_scale_key not in raw_tensors:
-            raw_tensors[weight_global_scale_key] = raw_tensors.pop(weight_scale_2_key)
+            raw_tensors[weight_global_scale_key] = _reciprocal_global_scale(raw_tensors.pop(weight_scale_2_key))
         elif weight_scale_2_key in raw_tensors:
             raw_tensors.pop(weight_scale_2_key)
 
         if input_scale_key in raw_tensors and input_global_scale_key not in raw_tensors:
-            raw_tensors[input_global_scale_key] = raw_tensors.pop(input_scale_key)
+            raw_tensors[input_global_scale_key] = _reciprocal_global_scale(raw_tensors.pop(input_scale_key))
         elif input_scale_key in raw_tensors:
             raw_tensors.pop(input_scale_key)
-
-        if weight_global_scale_key in raw_tensors:
-            raw_tensors[weight_global_scale_key] = _reciprocal_global_scale(raw_tensors[weight_global_scale_key])
-        if input_global_scale_key in raw_tensors:
-            raw_tensors[input_global_scale_key] = _reciprocal_global_scale(raw_tensors[input_global_scale_key])
 
         converted_layers.append(layer_name)
 
@@ -2186,6 +2230,15 @@ def _process_shard(
         index_dir=index_dir,
         donor_shard_dir=donor_shard_dir,
     )
+
+    # NVFP2MXFP: only layers stored as NVFP4 in the source are quantized; all
+    # other layers are treated as ignored. Must run before NVFP4 dequantization.
+    if matcher.nvfp_source_only:
+        nvfp_layers = _collect_nvfp4_source_layers(raw_tensors)
+        matcher.restrict_to_layers(nvfp_layers)
+        shard_prefix = f"[{shard_name}] " if shard_name else ""
+        logger.info(f"{shard_prefix}Detected {len(nvfp_layers)} NVFP4 source layer(s) to convert.")
+
     raw_tensors = _dequant_modelopt_nvfp4_tensors(raw_tensors, device=device, shard_name=shard_name)
 
     # 1.5) model-type-specific low-precision dequantization (e.g. kimi_k25 INT4)
@@ -3317,7 +3370,7 @@ def _validate_supported_scheme(
         # name is provided.  Variants such as MXFP4_RCEIL / MXFP8_RCEIL use a
         # different activation format; silently mapping them to "MXFP4" /
         # "MXFP8" in the output config would misrepresent the requested scheme.
-        if isinstance(scheme_input, str) and scheme_input.upper() not in ("MXFP4", "MXFP8"):
+        if isinstance(scheme_input, str) and scheme_input.upper() not in ("MXFP4", "MXFP8", _NVFP2MXFP_SCHEME):
             raise ValueError(
                 f"Model-free mode only supports MXFP preset names 'MXFP4' and 'MXFP8', "
                 f"but got '{scheme_input}'. "
