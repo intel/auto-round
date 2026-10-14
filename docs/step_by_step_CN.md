@@ -73,6 +73,7 @@ pip install auto-round
 - `mbpp`：用于代码场景
 - `nvidia/OpenCodeInstruct`：用于代码指令数据
 - `openbmb/Ultra-FineWeb`
+- `qwedsacf/competition_math`：用于数学场景（会拼接 `problem` 与 `solution` 字段，并默认将较短的样本打包成完整的 `seqlen` 序列）
 
 ### 自定义数据集
 **建议用户还是尽量不使用 padding 的数据**。虽然对于 padding 过的数据我们有做特殊处理，但是目前验证的比较少。
@@ -102,7 +103,7 @@ pip install auto-round
 
 **数据集组合**：可使用 `--dataset` 参数组合不同数据集并设置其他的参数。示例代码 `--dataset ./tmp.json,NeelNanda/pile-10k:num=256,mbpp:num=128`。此参数同时支持本地标定文件和 Hugging Face 数据集，同时还可用 `split = split1+split2` 指定某个数据集的多个拆分子集。
 
-**样本拼接**：可使用 `--dataset NeelNanda/pile-10k:concat=True` 拼接标定样本。在该模式下，会先将所有样本拼接成完整文本，再按 seqlen 长度切分出来。
+**样本拼接**：可使用 `--dataset NeelNanda/pile-10k:concat=True` 拼接标定样本。在该模式下，会先将所有样本拼接成完整文本，再按 seqlen 长度切分出来。对于通用加载器（任意 HuggingFace 数据集，或通过 `fields`/`template` 指定的数据集），`concat=True` 会改为执行“样本级拼接”：不断累积整条样本直到缓冲区达到 `seqlen`，输出一条完整长度的序列后清空缓冲区，下一条样本重新开始拼接。这样可以避免单条样本短于 `seqlen` 的数据集（例如 `qwedsacf/competition_math`）被长度过滤丢弃。
 
 **启用对话模板**：可使用 `--dataset NeelNanda/pile-10k:apply_chat_template` 在分词前为标定数据应用对话模板，这在指令式模型的生成任务中比较常用。若需自定义系统提示词，可使用 `--dataset 'NeelNanda/pile-10k:apply_chat_template:system_prompt="你是一个乐于助人的智能助手。"'`
 

@@ -73,6 +73,8 @@ calibration data and will be downloaded automatically from the datasets Hub. Oth
 - `mbpp` for code
 - `nvidia/OpenCodeInstruct` for code instruction data
 - `openbmb/Ultra-FineWeb`
+- `qwedsacf/competition_math` for math (the `problem` and `solution` fields are concatenated, and short
+  samples are packed into full `seqlen` sequences by default)
 
 ### Customized Dataset
 
@@ -107,6 +109,11 @@ and huggingface dataset are supported. You could specify splits of a dataset by 
 **Samples concatenation**: An optional setting allows users to concatenate calibration samples
 using `--dataset NeelNanda/pile-10k:concat=True`.
 All samples will be concatenated first, then split into chunks of seqlen length.
+For the generic loader (any HuggingFace dataset, or one specified with `fields`/`template`),
+`concat=True` performs sample-level packing instead: whole samples are accumulated until the buffer
+reaches `seqlen`, a full-length sequence is emitted, and the buffer is reset so the next sample starts
+a fresh concatenation. This prevents datasets whose individual samples are shorter than `seqlen`
+(e.g. `qwedsacf/competition_math`) from being dropped by the length filter.
 
 **Apply chat template**: Using `--dataset NeelNanda/pile-10k:apply_chat_template` enables application of a chat template
 to the calibration data before tokenization. This is commonly used for instruct-style models during generation. To

@@ -313,7 +313,7 @@ def auto_detect_text_field_from_sample(sample: dict[str, Any]) -> str:
         ValueError: If no suitable text field can be found.
     """
     if len(sample) == 1:
-        return list(sample.keys())[0]
+        return next(iter(sample.keys()))
 
     for candidate in TEXT_FIELD_PRIORITY:
         if candidate in sample:
@@ -437,7 +437,7 @@ def extract_text_from_sample(
         return str(val)
 
     # --- Fallback: first string column ---------------------------------------
-    for key, val in sample.items():
+    for val in sample.values():
         if isinstance(val, str) and len(val.strip()) > 0:
             return val
         if isinstance(val, (list, tuple)) and _is_text_list(val):

@@ -588,6 +588,102 @@ def get_opencode_instruct_dataset(
     return calib_dataset
 
 
+@register_dataset(["qwedsacf/competition_math", "competition_math"])
+def get_competition_math_dataset(
+    tokenizer,
+    seqlen,
+    dataset_name="qwedsacf/competition_math",
+    split=None,
+    seed=42,
+    apply_chat_template=False,
+    system_prompt=None,
+    nsamples=512,
+):
+    """Return a calibration dataset built from the competition_math corpus.
+
+    Each sample concatenates the ``problem`` and ``solution`` fields. Because the
+    individual problem/solution pairs are much shorter than typical calibration
+    sequence lengths (e.g. 2048), the tokenized samples are packed together into
+    full ``seqlen``-length sequences instead of being dropped by the downstream
+    length filter.
+
+    Args:
+        tokenizer: The tokenizer to be used for tokenization.
+        seqlen: The maximum/target sequence length.
+        dataset_name: Dataset identifier (defaults to ``qwedsacf/competition_math``).
+        split: The data split to use. Defaults to ``train``.
+        seed: The random seed for shuffling.
+        apply_chat_template: Whether to apply the tokenizer's chat template.
+        system_prompt: Optional system prompt for the chat template.
+        nsamples: Number of calibration samples requested. The candidate pool is
+            ``nsamples * AR_CALIB_DATA_MULTIPLIER`` before packing.
+
+    Returns:
+        A HuggingFace ``Dataset`` of packed, tokenized calibration sequences.
+    """
+    split = "train" if split is None else split
+    if isinstance(split, list):
+        if len(split) != 1:
+            raise ValueError("competition_math supports only one split at a time.")
+        split = split[0]
+
+    tokenizer_function = get_tokenizer_function(
+        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
+    )
+
+    # competition_math is small; load it fully instead of streaming.
+    # Always use the canonical Hub repo id (the short "competition_math" alias
+    # is only a registry key, not a valid Hub dataset name).
+    dataset = load_dataset("qwedsacf/competition_math", split=split, trust_remote_code=False)
+    dataset = dataset.shuffle(seed=seed)
+    max_candidates = nsamples * envs.AR_CALIB_DATA_MULTIPLIER
+    if len(dataset) > max_candidates:
+        dataset = dataset.select(range(max_candidates))
+
+    samples = []
+    for data in dataset:
+        problem = (data.get("problem") or "").strip()
+        solution = (data.get("solution") or "").strip()
+        if not problem and not solution:
+            continue
+        if apply_chat_template:
+            messages = []
+            if system_prompt is not None and system_prompt != "":
+                messages.append({"role": "system", "content": system_prompt})
+            messages.extend(
+                [
+                    {"role": "user", "content": problem},
+                    {"role": "assistant", "content": solution},
+                ]
+            )
+            try:
+                text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            except Exception:
+                logger.warning("Failed to apply chat template. removing the system role in chat history.")
+                messages = [message for message in messages if message["role"] != "system"]
+                text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            samples.append({"text": text})
+        else:
+            samples.append({"text": f"{problem}\n\n{solution}"})
+    random.Random(seed).shuffle(samples)
+
+    calib_dataset = Dataset.from_list(samples)
+    calib_dataset = calib_dataset.map(
+        tokenizer_function,
+        batched=True,
+        new_fingerprint=_make_map_fingerprint(
+            calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
+        ),
+    )
+
+    # Sample-level concat by default: pack whole samples until each reaches
+    # seqlen, then reset, so short problem/solution pairs are not dropped by the
+    # downstream length filter.
+    calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen)
+
+    return calib_dataset
+
+
 @register_dataset(["HuggingFaceH4/ultrachat_200k", "ultrachat_200k"])
 def get_ultrachat_dataset(
     tokenizer,
@@ -943,6 +1039,48 @@ def get_local_dataset(
     return calib_dataset
 
 
+def _concat_samples_to_seqlen(calib_dataset, seqlen):
+    """Pack whole samples together until each reaches ``seqlen`` tokens.
+
+    Unlike the continuous packing in :func:`concat_dataset_element` (where a
+    sample's leftover tokens carry over into the next sequence, splitting
+    samples across boundaries), this packs *whole* samples into a buffer and,
+    once the buffer reaches ``seqlen``, emits a single ``seqlen``-length
+    sequence and resets the buffer. The next sample therefore starts a fresh
+    concatenation; any trailing buffer shorter than ``seqlen`` is dropped.
+
+    Args:
+        calib_dataset: A tokenized ``Dataset`` with an ``input_ids`` column.
+        seqlen: Target sequence length for each packed sample.
+
+    Returns:
+        A new ``Dataset`` with packed ``input_ids`` / ``attention_mask`` columns.
+    """
+    packed = []
+    buffer_ids = []
+    for example in calib_dataset:
+        ids = example["input_ids"]
+        if isinstance(ids, torch.Tensor):
+            ids = ids.tolist()
+        buffer_ids.extend(ids)
+        if len(buffer_ids) >= seqlen:
+            trimmed = buffer_ids[:seqlen]
+            packed.append({"input_ids": trimmed, "attention_mask": [1] * seqlen})
+            # Reset: the next sample starts a fresh concatenation.
+            buffer_ids = []
+
+    if not packed:
+        logger.warning(
+            "Sample-level concat produced no full-length sequences (all samples "
+            "shorter than seqlen=%d combined did not reach it). Returning the "
+            "original dataset unpacked.",
+            seqlen,
+        )
+        return calib_dataset
+
+    return Dataset.from_list(packed)
+
+
 def _get_generic_dataset(
     tokenizer,
     seqlen,
@@ -957,6 +1095,7 @@ def _get_generic_dataset(
     streaming=True,
     nsamples=None,
     timeout=300,
+    concat=False,
 ):
     """Generic dataset loader that works with any HuggingFace dataset.
 
@@ -987,6 +1126,10 @@ def _get_generic_dataset(
         timeout: Timeout in seconds for streaming collection. If the dataset
             cannot provide enough samples within this time, a warning is
             logged and the collected samples are used.
+        concat: When True, pack whole samples together until each reaches
+            ``seqlen`` tokens (resetting after every full sequence), so that
+            datasets whose individual samples are shorter than ``seqlen`` are
+            not dropped by the downstream length filter.
 
     Returns:
         A tokenized HuggingFace Dataset.
@@ -1047,7 +1190,7 @@ def _get_generic_dataset(
                     if split in calib_dataset:
                         calib_dataset = calib_dataset[split]
                     else:
-                        calib_dataset = calib_dataset[list(calib_dataset.keys())[0]]
+                        calib_dataset = calib_dataset[next(iter(calib_dataset.keys()))]
 
     # Determine the text field
     if fields is None and template is None:
@@ -1081,7 +1224,10 @@ def _get_generic_dataset(
 
     if use_streaming:
         # --- Streaming mode: collect samples until nsamples or timeout ---
-        target = nsamples if nsamples is not None else 10000
+        # Over-collect by AR_CALIB_DATA_MULTIPLIER (same as registered datasets)
+        # so that enough samples survive the downstream seqlen filter in
+        # ``_get_dataset_impl`` (short samples < seqlen are dropped there).
+        target = nsamples * envs.AR_CALIB_DATA_MULTIPLIER if nsamples is not None else 10000
         start_time = time.time()
         collected_texts = []
         total_scanned = 0
@@ -1178,6 +1324,10 @@ def _get_generic_dataset(
             calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
         ),
     )
+
+    # Pack short samples into full seqlen-length sequences when requested.
+    if concat:
+        calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen)
 
     return calib_dataset
 
@@ -1402,7 +1552,10 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                     separator=separator,
                     nsamples=nsamples,
                     timeout=timeout,
+                    concat=do_concat,
                 )
+                # Packing already handled inside the generic loader.
+                do_concat = False
         else:
             calib_name = name
             if name not in CALIB_DATASETS:
@@ -1428,7 +1581,10 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                     separator=separator,
                     nsamples=nsamples,
                     timeout=timeout,
+                    concat=do_concat,
                 )
+                # Packing already handled inside the generic loader.
+                do_concat = False
             else:
                 if get_dataset is None:
                     filtered_keys = [k for k in CALIB_DATASETS.keys() if "/" not in k]
@@ -1453,6 +1609,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                     get_cci3_hq_dataset,
                     get_github_code_clean_dataset,
                     get_opencode_instruct_dataset,
+                    get_competition_math_dataset,
                     get_ultrachat_dataset,
                     get_ultrafinweb_dataset,
                 ):

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-    from auto_round.compressors.base import BaseCompressor as BaseCompressor
+    from auto_round.compressors.base import BaseCompressor
 
 
 # ---------------------------------------------------------------------------
