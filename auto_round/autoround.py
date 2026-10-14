@@ -620,33 +620,23 @@ class _CompressorBuilder:
         # Runs before the model-free early return so both routes enforce the
         # same config-level constraints (e.g. the format-scoped 8-bit asym rule).
         eager_validate_scheme(quant_config, scheme, format=format)
-        # layer_config source data type conversions (e.g. "nvfp4->mxfp4") only touch the
-        # matching source layers and are implemented exclusively by the model-free path.
-        from auto_round.utils.model_free_utils import _split_source_dtype_map
-
-        source_dtype_map, _ = _split_source_dtype_map(layer_config)
-        if source_dtype_map and route_decision_kwargs.get("disable_model_free", False):
-            conversions = [f"{src}->{dst.lower()}" for src, dst in source_dtype_map.items()]
-            raise ValueError(f"layer_config {conversions} is only supported in model-free mode.")
         # NOTE: the W8-asym opt-in is the AR_ALLOW_W8_ASYM environment
         # variable, read directly by parse_scheme and the generation-time
         # gates; nothing is threaded through the compressor here.
-        if source_dtype_map or is_model_free_route(
+        if is_model_free_route(
             model, route_scheme, model_free_iters, model_free_disable_opt_rtn, route_decision_kwargs
         ):
             # Direct scheme fields are consumed into ``quant_config`` during
             # entry normalization. Pass the fully resolved scheme onward so
             # model-free export does not silently fall back to preset defaults.
-            # Source conversions keep the raw scheme so an unset (default) one can be told apart.
-            keep_raw_scheme = bool(source_dtype_map) or (hasattr(scheme, "options") and hasattr(scheme, "avg_bits"))
-            model_free_scheme = scheme if keep_raw_scheme else route_scheme
+            model_free_scheme = scheme if hasattr(scheme, "options") and hasattr(scheme, "avg_bits") else route_scheme
             return _build_model_free_compressor(
                 model,
                 model_free_scheme,
                 layer_config,
                 tokenizer,
                 device_map,
-                announced_via_flag=bool(route_kwargs.get("model_free", False)) or bool(source_dtype_map),
+                announced_via_flag=bool(route_kwargs.get("model_free", False)),
                 dataset=dataset,
                 nsamples=nsamples,
                 seqlen=seqlen,
@@ -718,8 +708,7 @@ class AutoRound:
         alg_configs: Algorithm alias, config instance, or sequence of either.
             Use config instances to provide algorithm-specific options, such
             as ``SignRoundConfig(iters=50)`` or ``AWQConfig(apply_clip=True)``.
-        layer_config: Optional per-layer quantization overrides, or a source data type
-            conversion string such as ``"nvfp4->mxfp4"`` (model-free only).
+        layer_config: Optional per-layer quantization overrides.
         dataset: Calibration dataset name, samples, or dataloader.
         seqlen: Calibration sequence length.
         nsamples: Number of calibration samples.
@@ -744,7 +733,7 @@ class AutoRound:
         scheme: str | dict | QuantizationScheme | AutoScheme = "W4A16",
         schemes: str | list | tuple | None = None,
         bits: float | None = None,
-        layer_config: dict[str, str | dict | QuantizationScheme] | str | None = None,
+        layer_config: dict[str, str | dict | QuantizationScheme] | None = None,
         dataset: str | list | tuple | torch.utils.data.DataLoader | None = None,
         iters: int | None = None,
         seqlen: int = 2048,

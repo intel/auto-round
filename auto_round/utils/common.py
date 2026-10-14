@@ -1022,7 +1022,7 @@ def is_transformers_version_greater_or_equal_4():
 import json
 
 
-def parse_layer_config_arg(s: str) -> dict | str:
+def parse_layer_config_arg(s: str) -> dict:
     def strip_matching_quotes(token: str) -> str:
         token = token.strip().replace("“", '"').replace("”", '"')
         if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
@@ -1086,13 +1086,6 @@ def parse_layer_config_arg(s: str) -> dict | str:
         return "".join(escaped)
 
     s = strip_matching_quotes(s)
-
-    # Source data type conversions such as "nvfp4->mxfp4" stay a string; validated by the model-free path.
-    if "{" not in s and ("->" in s or s.rstrip().endswith("-")):
-        from auto_round.utils.model_free_utils import _split_source_dtype_map
-
-        _split_source_dtype_map(s)
-        return s.strip()
 
     # 1. Prefer strict JSON.
     try:

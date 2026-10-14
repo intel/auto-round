@@ -45,9 +45,6 @@ from auto_round.utils.path_safety import (
 )
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
-# Implemented source data type conversions (``layer_config="nvfp4->mxfp4"``): source -> allowed targets.
-_SOURCE_DTYPE_CONVERSIONS: dict[str, tuple[str, ...]] = {"nvfp4": ("MXFP4",)}
-_NVFP4_TO_MXFP4 = "nvfp4->mxfp4"
 # default_scheme flag restricting quantization to layers stored as NVFP4 in the source checkpoint.
 _NVFP_SOURCE_ONLY_KEY = "_nvfp_source_only"
 _BLOCK_NAME_TO_IGNORE = ("shared_expert_gate.", ".gate.", "embed", "conv")
@@ -71,59 +68,6 @@ SUPPORTED_PRESET_SCHEMES = (
     "NVFP4_E5M3",
     "BF16",
 )
-
-
-def _split_source_dtype_map(layer_config: Any) -> tuple[dict[str, str], Any]:
-    """Parse a source data type conversion string such as ``"nvfp4->mxfp4"``.
-
-    Returns ``(source_dtype_map, remaining_layer_config)`` where ``source_dtype_map``
-    maps a source data type to an upper-case target preset name, e.g. ``{"nvfp4": "MXFP4"}``.
-    Any non-string *layer_config* is returned unchanged as an ordinary per-layer config.
-    """
-    if not isinstance(layer_config, str):
-        return {}, layer_config
-    source_map: dict[str, str] = {}
-    for pair in filter(None, (p.strip() for p in layer_config.split(","))):
-        source, sep, target = (part.strip() for part in pair.partition("->"))
-        if not sep or not source or not target:
-            raise ValueError(
-                f"Invalid layer_config conversion '{pair}', expected 'source->target' such as "
-                f"'{_NVFP4_TO_MXFP4}'. Quote the value in the shell, otherwise '>' is treated as a redirection."
-            )
-        source, target = source.lower(), target.upper()
-        allowed = _SOURCE_DTYPE_CONVERSIONS.get(source)
-        if allowed is None:
-            raise NotImplementedError(
-                f"Converting '{source}' source layers ('{source}->{target.lower()}') is not supported yet. "
-                f"Supported: {[f'{s}->{t.lower()}' for s, ts in _SOURCE_DTYPE_CONVERSIONS.items() for t in ts]}."
-            )
-        if target not in allowed:
-            raise ValueError(
-                f"'{source}' source layers can only be converted to {[t.lower() for t in allowed]}, "
-                f"got '{target.lower()}'."
-            )
-        source_map[source] = target
-    if not source_map:
-        raise ValueError(f"Empty layer_config conversion string {layer_config!r}.")
-    return source_map, None
-
-
-def _resolve_source_conversion_scheme(scheme: Any, source_map: dict[str, str]) -> str:
-    """Return the target scheme for a source data type conversion.
-
-    Every non-converted layer is kept as-is, so *scheme* must be full precision (``BF16``)
-    or unset (``None`` / the default ``W4A16``).
-    """
-    is_unset = scheme is None or (isinstance(scheme, str) and scheme.upper() == "W4A16")
-    if not is_unset and not _is_full_precision_default(scheme):
-        raise ValueError(
-            f"layer_config {[f'{s}->{t.lower()}' for s, t in source_map.items()]} keeps every other layer "
-            f"unchanged; use scheme 'BF16' (or leave it unset) instead of '{scheme}'."
-        )
-    targets = set(source_map.values())
-    if len(targets) != 1:
-        raise NotImplementedError(f"Converting source data types to different targets {targets} is not supported.")
-    return targets.pop()
 
 
 # ---------------------------------------------------------------------------
@@ -580,12 +524,22 @@ class _PatternMatcher:
         if layer_name in self._layer_config:
             self._ignore_cache[tensor_name] = False
             return False
-        if self._allowed_layers is not None and layer_name not in self._allowed_layers:
+        if (
+            self._allowed_layers is not None
+            and layer_name not in self._allowed_layers
+            and not self._matches_layer_config(layer_name)
+        ):
             self._ignore_cache[tensor_name] = True
             return True
         result = bool(self._ignore_re and self._ignore_re.search(layer_name))
         self._ignore_cache[tensor_name] = result
         return result
+
+    def _matches_layer_config(self, layer_name: str) -> bool:
+        return any(
+            (compiled is not None and compiled.search(layer_name)) or (plain is not None and plain in layer_name)
+            for compiled, plain, _ in self._compiled_lc
+        )
 
     def should_skip(self, tensor_name: str) -> bool:
         return bool(self._skip_re.search(tensor_name))
@@ -2039,7 +1993,7 @@ def _handle_mxfp_source_tensors(
     Returns:
         ``(raw_tensors, passthrough_tensors, passthrough_layers)``.
     """
-    # nvfp4->mxfp4 keeps source MXFP layers untouched; they flow through as ignored tensors.
+    # NVFP4 source -> MXFP4 keeps source MXFP layers untouched; they flow through as ignored tensors.
     if getattr(matcher, "nvfp_source_only", False):
         return raw_tensors, {}, []
 
@@ -2095,7 +2049,7 @@ def _dequant_fp8_tensors(
     """Dequantize DeepSeek-V3-style FP8 weight tensors to float32.
 
     With ``hydrate_only`` the cross-shard ``weight_scale_inv`` tensors are hydrated but the
-    FP8 weights are kept as-is (nvfp4->mxfp4).
+    FP8 weights are kept as-is (NVFP4 source -> MXFP4).
 
     Handles the **DeepSeek-V3 FP8** convention: weight dtype ``float8_e4m3fn``
     paired with a ``.weight_scale_inv`` tensor (per-block float32 scales, NOT
@@ -2307,8 +2261,8 @@ def _process_shard(
         donor_shard_dir=donor_shard_dir,
     )
 
-    # nvfp4->mxfp4: only layers stored as NVFP4 in the source are quantized; all
-    # other layers are treated as ignored. Must run before NVFP4 dequantization.
+    # NVFP4 source -> MXFP4: only NVFP4 source layers (plus layer_config matches) are quantized;
+    # all other layers are treated as ignored. Must run before NVFP4 dequantization.
     if matcher.nvfp_source_only:
         nvfp_layers = _collect_nvfp4_source_layers(raw_tensors)
         matcher.restrict_to_layers(nvfp_layers)
@@ -3253,8 +3207,8 @@ def _build_quantization_config(
 ) -> dict:
     """Build a quantization_config dict compatible with auto-round format.
 
-    ``source_quant_config`` (nvfp4->mxfp4 only) is the source checkpoint's quantization config; its
-    NVFP4 groups are rewritten to MXFP4 and every other group (e.g. FP8) is kept as-is.
+    ``source_quant_config`` (NVFP4 source -> MXFP4 only) is the source checkpoint's quantization config;
+    its NVFP4 groups are rewritten to MXFP4 and every other group (e.g. FP8) is kept as-is.
     """
     # MXFP (mx_fp) supports two output styles depending on *format*:
     #   - "llm_compressor" → compressed-tensors / llm-compressor style config
@@ -3321,7 +3275,7 @@ def _build_quantization_config(
         )
         source_ct = _source_config_to_ct(source_quant_config)
         if source_ct:
-            qconfig = _rewrite_nvfp4_groups_as_mxfp(qconfig, source_ct, ignored_layers)
+            qconfig = _rewrite_nvfp4_groups_as_mxfp(qconfig, source_ct, ignored_layers, quantized_layers)
         return qconfig
 
     # When the default is full-precision (BF16/FP16) but INT layers were
@@ -3410,11 +3364,12 @@ def _build_quantization_config(
 
 
 # ---------------------------------------------------------------------------
-# nvfp4->mxfp4: rewrite the source quantization config (mixed-precision sources)
+# NVFP4 source -> MXFP4: rewrite the source quantization config (mixed-precision sources)
 # ---------------------------------------------------------------------------
-# Overall nvfp4->mxfp4 flow (layer_config "nvfp4->mxfp4"):
+# Overall flow (scheme MXFP4 + model-free on a source detected as NVFP4, see _detect_nvfp4_source):
 #   1. Shard processing (_process_shard): layers stored as NVFP4 are detected from tensor names and
-#      converted to MXFP4; every other layer (BF16, FP8, kv-cache scales, ...) is copied as-is.
+#      converted to MXFP4; layers matched by layer_config are quantized as configured; every other
+#      layer (BF16, FP8, kv-cache scales, ...) is copied as-is.
 #   2. Config (_build_quantization_config, llm_compressor format only):
 #      a. _load_source_quant_config: config.json quantization_config, else hf_quant_config.json & co.
 #      b. _source_config_to_ct: compressed-tensors is used as-is; ModelOpt / Quark are converted to
@@ -3636,16 +3591,50 @@ def _source_config_to_ct(qc: dict | None) -> dict | None:
     return None
 
 
-def _rewrite_nvfp4_groups_as_mxfp(mxfp_qconfig: dict, source_ct: dict, ignored_layers: list[str]) -> dict:
-    """Replace the NVFP4 groups of *source_ct* with the MXFP4 scheme and keep every other group as-is."""
-    mxfp_group = next(iter(mxfp_qconfig["config_groups"].values()))
-    mxfp_format = mxfp_qconfig.get("format")
-    source_format = source_ct.get("format")
+def _detect_nvfp4_source(model_name_or_path: str, source_quant_config: dict | None) -> str | None:
+    """Return why the source checkpoint looks NVFP4-quantized, or None.
 
+    Relies on the model name and the source quantization config (config.json / hf_quant_config.json & co.)
+    because the first shards may not contain any NVFP4 tensor.
+    """
+    if "nvfp4" in os.path.basename(str(model_name_or_path).rstrip("/\\")).lower():
+        return f"model name '{model_name_or_path}'"
+    qc = source_quant_config or {}
+    # Covers compressed-tensors "nvfp4-pack-quantized" and ModelOpt quant_algo "NVFP4".
+    if "nvfp4" in json.dumps(qc, default=str).lower():
+        return "source quantization config"
+    groups = qc.get("config_groups") if isinstance(qc.get("config_groups"), dict) else {}
+    if any(isinstance(g, dict) and _is_nvfp4_ct_group(g) for g in groups.values()):
+        return "source quantization config"
+    if str(qc.get("quant_method") or "").lower() == "quark":
+        layer_cfgs = [qc.get("global_quant_config"), *(qc.get("layer_quant_config") or {}).values()]
+        if any(_is_nvfp4_ct_group(_quark_layer_to_ct_group(cfg)[1] or {}) for cfg in layer_cfgs):
+            return "source quantization config"
+    return None
+
+
+def _rewrite_nvfp4_groups_as_mxfp(
+    mxfp_qconfig: dict, source_ct: dict, ignored_layers: list[str], quantized_layers: list[str] | None = None
+) -> dict:
+    """Replace the NVFP4 groups of *source_ct* with the MXFP4 scheme and keep every other group as-is.
+
+    Quantized layers outside the source NVFP4 groups (selected via layer_config) get extra groups.
+    """
+    mxfp_groups = mxfp_qconfig["config_groups"]
+    # The default (catch-all) group targets "Linear"; layer_config override groups list explicit layers.
+    default_name = next((n for n, g in mxfp_groups.items() if g.get("targets") == ["Linear"]), next(iter(mxfp_groups)))
+    mxfp_format = mxfp_qconfig.get("format")
+
+    def _with_format(name: str) -> dict:
+        group = copy.deepcopy(mxfp_groups[name])
+        group["format"] = group.get("format") or mxfp_format
+        return group
+
+    source_format = source_ct.get("format")
     config_groups: dict[str, dict] = {}
     for name, group in source_ct["config_groups"].items():
         if _is_nvfp4_ct_group(group):
-            group = {**copy.deepcopy(mxfp_group), "targets": group.get("targets"), "format": mxfp_format}
+            group = {**_with_format(default_name), "targets": group.get("targets")}
         elif not group.get("format") and source_format != "mixed-precision":
             group = {**group, "format": source_format}
         config_groups[name] = group
@@ -3653,8 +3642,24 @@ def _rewrite_nvfp4_groups_as_mxfp(mxfp_qconfig: dict, source_ct: dict, ignored_l
         logger.warning("Source quantization config has no NVFP4 group; writing a plain MXFP4 config.")
         return mxfp_qconfig
 
+    extras: dict[str, list[str]] = {}
+    for layer_name in dict.fromkeys(quantized_layers or []):
+        if _is_nvfp4_ct_group(_lookup_ct_group(source_ct, layer_name) or {}):
+            continue
+        owner = next(
+            (n for n, g in mxfp_groups.items() if n != default_name and layer_name in (g.get("targets") or [])),
+            default_name,
+        )
+        extras.setdefault(owner, []).append(layer_name)
+    for owner, layers in extras.items():
+        name = f"group_{len(config_groups)}"
+        while name in config_groups:
+            name += "_extra"
+        config_groups[name] = {**_with_format(owner), "targets": layers}
+    extra_layers = {layer for layers in extras.values() for layer in layers}
+
     # NVFP4 source layers that were not converted (e.g. dequantized lm_head) are now unquantized.
-    ignore = list(source_ct.get("ignore") or [])
+    ignore = [p for p in source_ct.get("ignore") or [] if p not in extra_layers]
     for layer_name in dict.fromkeys(ignored_layers):
         group = _lookup_ct_group(source_ct, layer_name)
         if group is not None and _is_nvfp4_ct_group(group) and layer_name not in ignore:

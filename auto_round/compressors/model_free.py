@@ -40,9 +40,9 @@ weights with ``fake`` format):
 
 * Preset names: ``MXFP4``, ``MXFP8``.
 * ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
-* ``layer_config="nvfp4->mxfp4"`` (CLI ``--scheme BF16 --layer_config "nvfp4->mxfp4"``):
-  auto-detect the NVFP4 layers of an NVFP4 source checkpoint and convert only those to
-  MXFP4; every other layer is kept as-is.
+* NVFP4 source checkpoints (detected from the model name or the source quantization config) with
+  scheme ``MXFP4``: only the NVFP4 layers are converted to MXFP4 (plus any layer matched by
+  ``layer_config``); every other layer is kept as-is.
 
 **NVFP4 E5M3** (``auto_round`` or ``fake`` format):
 
@@ -128,12 +128,12 @@ from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.model_free_utils import (
     _LM_HEAD_PATTERNS,
-    _NVFP4_TO_MXFP4,
     _NVFP_SOURCE_ONLY_KEY,
     _apply_scheme_overrides,
     _build_cross_shard_pairs_from_weight_map,
     _build_quantization_config,
     _convert_auto_scheme_layer_config,
+    _detect_nvfp4_source,
     _download_metadata_files,
     _download_single_shard,
     _get_model_cache_status,
@@ -149,9 +149,7 @@ from auto_round.utils.model_free_utils import (
     _normalize_scheme,
     _PatternMatcher,
     _process_shard,
-    _resolve_source_conversion_scheme,
     _resolve_source_dir,
-    _split_source_dtype_map,
     _validate_auto_scheme_options,
     _validate_supported_scheme,
     _write_index_file,
@@ -567,12 +565,9 @@ class _ModelFreeCompressorCore:
         # --- raw inputs ---
         self.model_name_or_path = model_name_or_path
         self.output_dir = output_dir
-        # Source data type conversion string, e.g. "nvfp4->mxfp4": convert only those source layers.
-        self.source_dtype_map, layer_config = _split_source_dtype_map(layer_config)
-        if self.source_dtype_map:
-            scheme = _resolve_source_conversion_scheme(scheme, self.source_dtype_map)
         self.scheme_input = scheme
-        self.nvfp_source_only = "nvfp4" in self.source_dtype_map
+        # Set by _detect_nvfp4_source_model(): convert only the NVFP4 source layers to MXFP4.
+        self.nvfp_source_only = False
         self.layer_config_input = layer_config
         self.ignore_layers_input = ignore_layers
         self.format = format or "auto_round"
@@ -645,11 +640,6 @@ class _ModelFreeCompressorCore:
                 f"Model-free mode only supports {self.SUPPORTED_FORMATS} format, "
                 f"got '{self.format}'. Please use --format auto_round."
             )
-        if self.nvfp_source_only and format_lower != "llm_compressor":
-            raise ValueError(
-                f"layer_config '{_NVFP4_TO_MXFP4}' currently only supports format 'llm_compressor', "
-                f"got '{self.format}'."
-            )
 
     def _parse_scheme(self) -> None:
         scheme_in = self.scheme_input
@@ -667,13 +657,33 @@ class _ModelFreeCompressorCore:
         ds = asdict(self.scheme_obj)
         self.default_scheme = {k: v for k, v in ds.items() if v is not None}
         self.default_scheme["_output_format"] = self.format
-        if self.nvfp_source_only:
-            if not is_mx_fp((self.scheme_obj.data_type or "").lower()):
-                raise ValueError(
-                    f"layer_config '{_NVFP4_TO_MXFP4}' requires an MXFP target scheme, "
-                    f"got data_type='{self.scheme_obj.data_type}'."
-                )
-            self.default_scheme[_NVFP_SOURCE_ONLY_KEY] = True
+
+    def _detect_nvfp4_source_model(self) -> None:
+        """With an MXFP4 scheme on an NVFP4 source, convert only the NVFP4 layers (plus layer_config matches)."""
+        data_type = (self.scheme_obj.data_type or "").lower()
+        if not (is_mx_fp(data_type) and self.scheme_obj.bits == 4):
+            return
+        reason = _detect_nvfp4_source(
+            self.model_name_or_path,
+            _load_source_quant_config(
+                self.work_dir if self.is_streaming else self.source_dir, self.source_quantization_config
+            ),
+        )
+        if reason is None:
+            return
+        format_lower = self.format.lower().replace(" ", "").split(",")[0]
+        if format_lower != "llm_compressor":
+            raise ValueError(
+                f"Detected an NVFP4 source model ({reason}); converting its NVFP4 layers to MXFP4 "
+                f"currently only supports format 'llm_compressor', got '{self.format}'."
+            )
+        logger.warning(
+            f"Detected NVFP4 layers in the source model ({reason}). Only the NVFP4 layers will be quantized "
+            "to MXFP4; all other layers (BF16, FP8, ...) are kept as-is. To quantize additional layers, "
+            "set them explicitly via layer_config."
+        )
+        self.nvfp_source_only = True
+        self.default_scheme[_NVFP_SOURCE_ONLY_KEY] = True
 
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
@@ -1671,6 +1681,7 @@ class _ModelFreeCompressorCore:
 
         # ---- source resolution ----
         self._resolve_source()
+        self._detect_nvfp4_source_model()
         self._check_conv1d_and_embedding()
         self._apply_predefined_ignore_layers()
         self._detect_fp8_source()
@@ -1713,7 +1724,7 @@ class _ModelFreeCompressorCore:
         logger.info(
             f"Model-free quantization: {self.model_name_or_path}\n"
             f"  Scheme: {self.scheme_obj}\n"
-            f"  NVFP4 source layers only ({_NVFP4_TO_MXFP4}): {self.nvfp_source_only}\n"
+            f"  NVFP4 source layers only: {self.nvfp_source_only}\n"
             f"  Packing format: {packing_format}\n"
             f"  Optimized RTN: {'enabled' if opt_rtn_enabled else 'disabled'}\n"
             f"  Output: {self.output_dir}\n"
@@ -1743,7 +1754,7 @@ class _ModelFreeCompressorCore:
 
         if self.nvfp_source_only and not self.all_quantized_layers:
             logger.warning(
-                f"{_NVFP4_TO_MXFP4}: no NVFP4 layers were detected in '{self.model_name_or_path}'; "
+                f"No NVFP4 layers were found in the shards of '{self.model_name_or_path}'; "
                 "all layers were kept as-is."
             )
 
@@ -1905,12 +1916,6 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
     def _fallback_to_base_compressor(self, save_format: str | None = None):
         from auto_round.autoround import AutoRound
-
-        if self.nvfp_source_only:
-            raise ValueError(
-                f"layer_config '{_NVFP4_TO_MXFP4}' is only supported in model-free mode with format "
-                f"'llm_compressor' (requested: '{save_format or self.format}')."
-            )
 
         logger.info(
             "Model-free mode cannot export this request directly; "
@@ -2152,8 +2157,6 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         elif _is_full_precision_default(self.scheme_input) and _layer_config_has_nvfp4(self.layer_config_input):
             # BF16 default with NVFP4_E5M3 layer_config overrides.
             _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
-        if self.nvfp_source_only:
-            _accepted_formats = {"llm_compressor"}
         if format not in _accepted_formats:
             logger.warning(
                 f"Format '{format}' is not supported by model-free mode for scheme '{self.scheme_input}'; "
