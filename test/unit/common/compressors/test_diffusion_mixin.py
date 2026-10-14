@@ -167,3 +167,53 @@ class TestAlignDeviceAndDtype:
         comp = MockCompressor()
         # Should not raise
         comp._align_device_and_dtype_for_secondary("transformer")
+
+
+@pytest.mark.parametrize("fail_secondary", [False, True])
+def test_zero_shot_quantizes_secondary_and_restores_primary(monkeypatch, fail_secondary):
+    primary = torch.nn.Linear(4, 4)
+    secondary = torch.nn.Linear(4, 4)
+    calls = []
+
+    class Compressor(DiffusionMixin):
+        def __init__(self):
+            self.model_context = SimpleNamespace(
+                model=primary,
+                pipe=SimpleNamespace(
+                    components=["transformer", "transformer_2"], transformer=primary, transformer_2=secondary
+                ),
+            )
+            self.compress_context = SimpleNamespace(
+                low_cpu_mem_usage=True, is_immediate_packing=True, is_immediate_saving=True
+            )
+            self.layer_config = {"primary": {}}
+            self.quant_block_list = [["primary"]]
+
+        def post_init(self):
+            self.layer_config = {"secondary": {}}
+            self.compress_context.is_immediate_packing = True
+            self.compress_context.is_immediate_saving = True
+
+        def _quantize_zero_shot(self):
+            assert not self.compress_context.is_immediate_packing
+            assert not self.compress_context.is_immediate_saving
+            calls.append(self.model_context.model)
+            if fail_secondary and self.model_context.model is secondary:
+                raise RuntimeError("secondary failed")
+
+    monkeypatch.setattr("auto_round.utils.get_block_names", lambda _: [["secondary"]])
+    monkeypatch.setattr("auto_round.utils.find_matching_blocks", lambda model, blocks, pattern: blocks)
+    comp = Compressor()
+    if fail_secondary:
+        with pytest.raises(RuntimeError, match="secondary failed"):
+            comp._quantize_all_transformers_zero_shot()
+    else:
+        comp._quantize_all_transformers_zero_shot()
+        assert comp._quantized_transformers == {"transformer_2": (secondary, {"secondary": {}})}
+    assert calls == [primary, secondary]
+    assert comp.model_context.model is primary
+    assert comp.layer_config == {"primary": {}}
+    assert comp.quant_block_list == [["primary"]]
+    assert comp.compress_context.low_cpu_mem_usage
+    assert comp.compress_context.is_immediate_packing
+    assert comp.compress_context.is_immediate_saving

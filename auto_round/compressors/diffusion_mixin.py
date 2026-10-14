@@ -260,7 +260,7 @@ class DiffusionMixin:
 
         # Zero-shot (RTN) path: no calibration data needed
         if not self.need_calib:
-            return self._quantize_zero_shot()
+            return self._quantize_all_transformers_zero_shot()
 
         # Get block names and call cache_inter_data to populate self.inputs
         if bool(self.quant_block_list):
@@ -419,6 +419,46 @@ class DiffusionMixin:
         self.calib_num_inference_steps = orig_steps
 
         return self.model_context.model, self.layer_config
+
+    def _quantize_all_transformers_zero_shot(self):
+        """Quantize every transformer without running pipeline calibration."""
+        from auto_round.utils import find_matching_blocks, get_block_names
+
+        additional = self._find_additional_transformers()
+        if not additional:
+            return self._quantize_zero_shot()
+
+        primary_model = self.model_context.model
+        primary_blocks = self.quant_block_list
+        context = self.compress_context
+        original_flags = (context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving)
+        context.low_cpu_mem_usage = False
+        self._defer_multi_transformer_serialization()
+        extras = {}
+        primary_config = self.layer_config
+        try:
+            self._quantize_zero_shot()
+            primary_config = dict(self.layer_config)
+            for name, transformer in additional:
+                logger.info(f"Quantizing {name} without calibration")
+                self.model_context.model = transformer
+                self.model_context.quantized = False
+                self._post_init_done = False
+                self.calibration = None
+                self.post_init()
+                self._defer_multi_transformer_serialization()
+                self.quant_block_list = find_matching_blocks(transformer, get_block_names(transformer), None)
+                self._quantize_zero_shot()
+                extras[name] = (self.model_context.model, dict(self.layer_config))
+                setattr(self.model_context.pipe, name, self.model_context.model)
+            self._quantized_transformers = extras
+        finally:
+            self.model_context.model = primary_model
+            self.layer_config = primary_config
+            self.quant_block_list = primary_blocks
+            context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving = original_flags
+        self.model_context.quantized = True
+        return primary_model, self.layer_config
 
     def save_quantized(
         self,

@@ -2006,3 +2006,58 @@ class TestMXFPAutoRoundFormat:
         assert extra["lm_head"]["data_type"] == "mx_fp"
         keys = _read_output_keys(output_dir)
         assert "lm_head.weight_packed" in keys
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_diffusion_quantizes_both_transformers(tmp_path, monkeypatch, streaming):
+    import shutil
+
+    import auto_round.compressors.model_free as module
+
+    root = _make_diffusion_model_dir(tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS)
+    shutil.copytree(os.path.join(root, "transformer"), os.path.join(root, "transformer_2"))
+    output = tmp_path / "output"
+    if streaming:
+        monkeypatch.setattr(module, "_get_model_cache_status", lambda _: (False, "test"))
+    core = _ModelFreeCompressorCore(
+        model_name_or_path=root,
+        output_dir=str(output),
+        scheme="MXFP8",
+        device="cpu",
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    core.run()
+    for name in ("transformer", "transformer_2"):
+        config = json.loads((output / name / "config.json").read_text())
+        assert config["quantization_config"]["bits"] == 8
+        tensors = {}
+        for shard in (output / name).glob("*.safetensors"):
+            with safe_open(shard, framework="pt") as f:
+                tensors.update({key: f.get_tensor(key) for key in f.keys()})
+        for key in _TRANSFORMER_TENSORS:
+            if key.endswith(".weight"):
+                assert tensors[key].dtype == torch.float8_e4m3fn
+                assert tensors[key.replace(".weight", ".weight_scale")].dtype == torch.uint8
+    assert (output / "vae" / "config.json").exists()
+    assert not (output / "transformer" / ".cache" / "model_free_resume.json").exists()
+
+
+@pytest.mark.parametrize("component", ["transformer", "transformer_2"])
+def test_streaming_download_uses_transformer_subfolder(tmp_path, monkeypatch, component):
+    import auto_round.compressors.model_free as module
+
+    downloads = []
+
+    def download(repo, filename, cache_dir):
+        downloads.append((repo, filename))
+        path = tmp_path / "download" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"weights")
+        return str(path)
+
+    monkeypatch.setattr(module, "_download_single_shard", download)
+    path = module._prefetch_shard("org/wan", "model.safetensors", str(tmp_path), "", True, component)
+    assert downloads == [("org/wan", f"{component}/model.safetensors")]
+    assert path == str(tmp_path / ".cache" / "model_free_source_shards" / "model.safetensors")
+    assert os.path.isfile(path)
