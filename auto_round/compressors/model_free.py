@@ -763,7 +763,7 @@ class _ModelFreeCompressorCore:
                 "(snapshot_download with weight ignore patterns), then fetch "
                 "weight shards on demand (hf_hub_download)."
             )
-            self.work_dir = self.output_dir
+            self.work_dir = os.path.join(self.output_dir, ".cache", "model_free_metadata")
             _download_metadata_files(self.model_name_or_path, self.work_dir)
             transformer_work_dir = os.path.join(self.work_dir, "transformer")
             if (
@@ -875,8 +875,9 @@ class _ModelFreeCompressorCore:
 
     def _discover_shards(self) -> None:
         search_dir = self.work_dir if self.is_streaming else self.source_dir
-        self.shard_names = _list_weight_shards(search_dir)
-        if self.is_streaming and not self.shard_names:
+        # Streamed source names must never be inferred from partially written output shards.
+        self.shard_names = [] if self.is_streaming else _list_weight_shards(search_dir)
+        if self.is_streaming:
             from auto_round.utils.model_free_utils import _list_remote_weight_shards
 
             subfolder = self.diffusion_component if self.is_diffusion_model else None
@@ -1478,6 +1479,7 @@ class _ModelFreeCompressorCore:
                                 quant_output_dir=self._quant_output_dir,
                                 total_shards=total_shards,
                                 enable_torch_compile=self.enable_torch_compile,
+                                disable_opt_rtn=self.disable_opt_rtn,
                                 # Keep donor shards alive for recipient hydration.
                                 cleanup_source_shard=not is_donor,
                                 donor_tensors_to_exclude=donor_tensors,
@@ -1605,11 +1607,6 @@ class _ModelFreeCompressorCore:
     def _copy_metadata_files(self) -> None:
         if self.diffusion_component != "transformer":
             return
-        if self.is_streaming:
-            # Metadata was downloaded directly to output_dir (or output_dir/transformer/
-            # for diffusion models) — nothing to copy or clean up.
-            return
-
         if self.is_diffusion_model:
             # For diffusion models, copy root-level metadata files and
             # sub-component directories (vae, scheduler, tokenizer, …) to
@@ -1629,10 +1626,11 @@ class _ModelFreeCompressorCore:
                     shutil.copy2(src, dst)
             return
 
-        for fname in os.listdir(self.source_dir):
+        metadata_dir = self.work_dir if self.is_streaming else self.source_dir
+        for fname in os.listdir(metadata_dir):
             if _is_weight_shard(fname) or _is_stale_quantization_metadata(fname):
                 continue
-            src = os.path.join(self.source_dir, fname)
+            src = os.path.join(metadata_dir, fname)
             dst = os.path.join(self.output_dir, fname)
             if os.path.isdir(src):
                 if not os.path.exists(dst):
