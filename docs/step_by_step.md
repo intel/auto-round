@@ -725,16 +725,18 @@ Status of commonly requested checkpoints:
 | `amd/MiniMax-M2.7-NVFP4` | Quark, NVFP4 | Not verified (TODO) |
 | `thinkingmachines/Inkling-Small-NVFP4` | Special format (`inkling_mm_model`), NVFP4 | Not verified (TODO) |
 
-Use `--scheme NVFP2MXFP` to convert **only** the NVFP4 layers to MXFP4 without listing them manually:
+Use `--scheme BF16 --layer_config "nvfp4->mxfp4"` to convert **only** the NVFP4 layers to MXFP4 without listing them manually:
 
 - **NVFP4 layers**: detected automatically in each shard and converted to MXFP4.
 - **Unquantized layers** (BF16, `lm_head`, router, ...): kept as-is and recorded as unquantized in `quantization_config`.
 - **FP8 layers** (mixed-precision sources, e.g. FP8 attention + NVFP4 MLP): kept as-is. The source quantization config (compressed-tensors; ModelOpt and Quark configs are first converted to compressed-tensors) is reused with only its NVFP4 groups rewritten to MXFP4, so the output is a `mixed-precision` `quantization_config` (use `--format llm_compressor`).
 - Unrecognized source configs trigger a warning and are skipped.
-- This scheme always runs in model-free mode.
+- Always runs in model-free mode. `--scheme` must be `BF16` or left unset (other layers are never re-quantized).
+- Quote the value: unquoted, the shell treats `>` as an output redirection. The Python API equivalent is `layer_config="nvfp4->mxfp4"` (a string; dict keys such as `{"nvfp4": ...}` are treated as ordinary layer names).
+- Currently only `nvfp4->mxfp4` is supported; other conversions such as `fp8->mxfp8` raise `NotImplementedError`.
 
 ```bash
-auto_round nvidia/MiniMax-M2.7-NVFP4 --scheme NVFP2MXFP --format llm_compressor --output_dir ./mxfp4-model
+auto_round nvidia/MiniMax-M2.7-NVFP4 --scheme BF16 --layer_config "nvfp4->mxfp4" --format llm_compressor --output_dir ./mxfp4-model
 ```
 
 #### CLI Usage

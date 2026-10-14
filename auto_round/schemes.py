@@ -907,8 +907,6 @@ PRESET_SCHEMES = {
     "FP8_STATIC": FP8_STATIC,
     "BF16": BF16,
     "W4A16_MIXED": W4A16,
-    # Model-free only: convert NVFP4 source layers to MXFP4, keep the other layers as-is.
-    "NVFP2MXFP": MXFP4,
     "INT4": INT4,
     "INT8": INT8,
     "INT8_W8A8": INT8,

@@ -229,7 +229,11 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--disable_trust_remote_code", action="store_true", help="Disable trust_remote_code when loading models."
     )
     rt.add_argument(
-        "--layer_config", default=None, type=str, help="Per-layer quantization overrides encoded as JSON-like text."
+        "--layer_config",
+        default=None,
+        type=str,
+        help="Per-layer quantization overrides encoded as JSON-like text, or quoted source data type "
+        'conversions such as "nvfp4->mxfp4" (model-free, other layers kept as-is).',
     )
     rt.add_argument(
         "--shared_layers",

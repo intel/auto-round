@@ -714,16 +714,18 @@ ar.quantize_and_save(output_dir, format="auto_round")
 | `amd/MiniMax-M2.7-NVFP4` | Quark，NVFP4 | 未验证（TODO） |
 | `thinkingmachines/Inkling-Small-NVFP4` | 特殊格式（`inkling_mm_model`），NVFP4 | 未验证（TODO） |
 
-使用 `--scheme NVFP2MXFP` 可**仅**将 NVFP4 层转换为 MXFP4，无需手动列出这些层：
+使用 `--scheme BF16 --layer_config "nvfp4->mxfp4"` 可**仅**将 NVFP4 层转换为 MXFP4，无需手动列出这些层：
 
 - **NVFP4 层**：在每个分片中自动检测，并转换为 MXFP4。
 - **非量化层**（BF16、`lm_head`、router 等）：保持原样，并在 `quantization_config` 中记录为未量化。
 - **FP8 层**（混合精度源模型，例如 FP8 attention + NVFP4 MLP）：保持原样。直接复用源模型的量化配置（compressed-tensors；ModelOpt 与 Quark 配置会先转换为 compressed-tensors 格式），仅将其中的 NVFP4 分组改写为 MXFP4，输出为 `mixed-precision` 的 `quantization_config`（请使用 `--format llm_compressor`）。
 - 无法识别的源配置会给出警告并跳过。
-- 该 scheme 始终以免模型模式运行。
+- 始终以免模型模式运行。`--scheme` 必须为 `BF16` 或不设置（其他层不会被重新量化）。
+- 参数值请加引号：不加引号时 shell 会把 `>` 当作输出重定向。对应的 Python API 写法为 `layer_config="nvfp4->mxfp4"`（字符串；`{"nvfp4": ...}` 这类 dict key 仍按普通层名处理）。
+- 目前仅支持 `nvfp4->mxfp4`；`fp8->mxfp8` 等其他转换会抛出 `NotImplementedError`。
 
 ```bash
-auto_round nvidia/MiniMax-M2.7-NVFP4 --scheme NVFP2MXFP --format llm_compressor --output_dir ./mxfp4-model
+auto_round nvidia/MiniMax-M2.7-NVFP4 --scheme BF16 --layer_config "nvfp4->mxfp4" --format llm_compressor --output_dir ./mxfp4-model
 ```
 
 #### 命令行用法
