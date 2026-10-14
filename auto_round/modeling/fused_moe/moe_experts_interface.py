@@ -426,6 +426,10 @@ def _detect_expert_projections(module: nn.Module, module_name: str = "") -> dict
         if proj_name in three_dim:
             detected[proj_name] = config
 
+    # Known 3D parameters that are *never* fused expert GEMMs and must never be split,
+    # regardless of the module path (e.g. ``scale_shift_table`` on WanTransformer3DModel).
+    _NON_EXPERT_3D_PARAMS = frozenset(["scale_shift_table"])
+
     # If no known pattern matched, fall back to treating an unknown 3D parameter as a
     # future expert projection -- but ONLY when this module is actually a fused-MoE
     # experts container (by path). This is the stable signal: an expert projection
@@ -434,9 +438,13 @@ def _detect_expert_projections(module: nn.Module, module_name: str = "") -> dict
     # e.g. gemma-4 unified's ``model.embed_vision.pos_embedding``
     # ``(mm_posemb_size, 2, mm_embed_dim)`` -> ``embed_vision.{i}.pos_embedding.weight``.
     # When ``module_name`` is unavailable we cannot verify the container, so stay
-    # permissive to preserve the previous behaviour.
+    # permissive to preserve the previous behaviour -- but still honour the explicit
+    # non-expert denylist in both cases.
     if not detected and (not module_name or _module_name_is_experts_container(module_name)):
         for name in three_dim:
+            if name in _NON_EXPERT_3D_PARAMS:
+                logger.debug(f"Skipping known non-expert 3D parameter: {name}")
+                continue
             logger.debug(f"Discovered unknown 3D projection: {name}")
             detected[name] = {"is_input_proj": True, "output_multiplier": 1}
     elif not detected:
