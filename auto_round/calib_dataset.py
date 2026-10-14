@@ -619,7 +619,7 @@ def get_ultrachat_dataset(
     return dataset
 
 
-@register_dataset(["openbmb/Ultra-FineWeb", "openbmb/Ultra-FineWeb"])
+@register_dataset("openbmb/Ultra-FineWeb")
 def get_ultrafinweb_dataset(
     tokenizer,
     seqlen,
@@ -784,7 +784,7 @@ def get_mbpp_dataset(
     return calib_dataset
 
 
-@register_dataset(["audiocaps", "AudioCaps"])
+@register_dataset("audiocaps")
 def get_audiocaps_dataset(
     tokenizer,
     seqlen,
