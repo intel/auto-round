@@ -497,28 +497,6 @@ def _dot_natural_key(name: str):
                 parts.append((1, text, int(trailing)) if trailing else (1, text))
         return parts
 
-
-def _is_shard_wildcard_source(source: str) -> bool:
-    """True when the ``*`` in a wildcard concat source marks numbered on-disk *shards*.
-
-    The merge/split of a wildcard ``Concatenate`` is only valid when ``*`` enumerates
-    checkpoint shards of a *single* logical weight, e.g. Qwen3-Next "Flash" PLE n-gram
-    embeddings ``...ngram_embedding.shard_*.weight``. There the ``*`` lives inside a
-    partial token (``shard_*``) that is otherwise meaningless on its own.
-
-    A *bare* ``*`` path segment instead denotes a genuine module list of distinct
-    submodules (e.g. gemma-4 vision ``model.embed_vision.*.pos_embedding.weight``). Such
-    a converter must NOT be treated as a shard merge/split: the merged model-side tensor
-    is the real parameter and has to be saved as-is, not re-split into fake per-index
-    shards the original checkpoint never had.
-    """
-    for token in source.split("."):
-        if "*" in token:
-            # Keep partial-token wildcards (``shard_*``), reject bare module-list ``*``.
-            return token != "*"
-    return False
-
-
 @cache
 def _wildcard_concat_converters_for(model_type):
     """Wildcard shard-concat converters registered for one family.
@@ -562,10 +540,7 @@ def _wildcard_concat_converters_for(model_type):
         target = entry.target_patterns[0].rstrip("$")
         if "*" not in source or "*" in target:
             continue
-        # Only ``shard_*`` style wildcards enumerate shards of one logical weight;
-        # skip genuine module-list ``*`` indices (e.g. gemma-4 ``embed_vision.*``).
-        if not _is_shard_wildcard_source(source):
-            continue
+
         converters.append((target, source, getattr(entry.operations[0], "dim", 0), getattr(entry, "force_cpu", False)))
     return tuple(converters)
 
@@ -608,11 +583,7 @@ def _wildcard_split_converters_for(model_type):
         target = entry.target_patterns[0].rstrip("$")
         if "*" not in source or "*" in target:
             continue
-        # Only ``shard_*`` style wildcards enumerate shards of one logical weight;
-        # skip genuine module-list ``*`` indices (e.g. gemma-4 ``embed_vision.*``) so a
-        # real merged parameter is never re-split into shards the checkpoint never had.
-        if not _is_shard_wildcard_source(source):
-            continue
+
         op = entry.operations[0]
         converters.append((target, source, getattr(op, "dim", 0), getattr(op, "num_shards_attribute", None)))
     return tuple(converters)
