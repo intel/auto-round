@@ -182,35 +182,83 @@ def register_dataset(name):
     return register
 
 
-def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=None):
+def render_chat_sample(tokenizer, text, system_prompt=None, tools=None):
+    """Render a single conversation to a string with the chat template.
+
+    Args:
+        tokenizer: The tokenizer providing ``apply_chat_template``.
+        text: Either a plain user string or a list of chat messages (dicts with
+            ``role``/``content``).
+        system_prompt: Optional global system prompt. It is only prepended when
+            the conversation does not already start with its own system turn.
+        tools: Optional tool definitions for this conversation, passed to
+            ``apply_chat_template(..., tools=...)``.
+
+    Returns:
+        The rendered chat string.
+    """
+    message = []
+    is_full_conversation = isinstance(text, list) and len(text) > 0 and isinstance(text[0], dict)
+
+    # Respect a per-sample system prompt: if the conversation already starts
+    # with its own system message, do not prepend the global system_prompt
+    # (otherwise the rendered text would contain two system turns).
+    has_own_system = is_full_conversation and text[0].get("role") == "system"
+    if system_prompt is not None and system_prompt != "" and not has_own_system:
+        message.append({"role": "system", "content": system_prompt})
+
+    if is_full_conversation:
+        message += text
+    else:
+        message.append({"role": "user", "content": text})
+
+    sample_tools = tools or None
+
+    # For full multi-turn conversations ending in an assistant reply we want
+    # the whole trace as calibration text (including tool_calls / tool
+    # responses), so we do not append a generation prompt.
+    add_generation_prompt = not (is_full_conversation and message[-1].get("role") == "assistant")
+
+    template_kwargs = {"tokenize": False, "add_generation_prompt": add_generation_prompt}
+    if sample_tools is not None:
+        template_kwargs["tools"] = sample_tools
+
+    try:
+        return tokenizer.apply_chat_template(message, **template_kwargs)
+    except Exception:
+        logger.warning("Failed to apply chat template. removing the system role in chat history.")
+        message_modified = [msg for msg in message if msg["role"] != "system"]
+        try:
+            return tokenizer.apply_chat_template(message_modified, **template_kwargs)
+        except Exception:
+            # Last resort: drop tools in case the template does not support them.
+            template_kwargs.pop("tools", None)
+            return tokenizer.apply_chat_template(message_modified, **template_kwargs)
+
+
+def apply_chat_template_to_samples(samples, tokenizer, seqlen, system_prompt=None, tools=None):
+    """Render samples with the tokenizer chat template.
+
+    Args:
+        samples: A list where each item is either a plain user string or a list
+            of chat messages (dicts with ``role``/``content``).
+        tokenizer: The tokenizer providing ``apply_chat_template``.
+        seqlen: Maximum sequence length for tokenization.
+        system_prompt: Optional system prompt prepended to each conversation.
+        tools: Optional per-sample tool definitions aligned with ``samples``
+            (a list the same length as ``samples``; each entry is the ``tools``
+            list for that conversation, or ``None``). Passed to
+            ``apply_chat_template(..., tools=...)`` so agent/tool-calling data
+            keeps its tool schema. When the conversation already contains the
+            final assistant turn (full multi-turn agent traces), the generation
+            prompt is not appended.
+    """
     rendered_messages = []
     # if system_prompt is None: ## remove system prompt as models like deepseek don't recommend using it
     #     system_prompt = "You are a helpful assistant."
-    for text in samples:
-        message = []
-        if system_prompt is not None and system_prompt != "":
-            message.append({"role": "system", "content": system_prompt})
-
-        if isinstance(text, list) and isinstance(text[0], dict):
-            message += text
-        else:
-            message.append({"role": "user", "content": text})
-        try:
-            chat_templated = tokenizer.apply_chat_template(
-                message,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        except Exception:
-            logger.warning("Failed to apply chat template. removing the system role in chat history.")
-            message_modified = [msg for msg in message if msg["role"] != "system"]
-            chat_templated = tokenizer.apply_chat_template(
-                message_modified,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-
-        rendered_messages.append(chat_templated)
+    for idx, text in enumerate(samples):
+        sample_tools = tools[idx] if (tools is not None and idx < len(tools)) else None
+        rendered_messages.append(render_chat_sample(tokenizer, text, system_prompt, sample_tools))
     example = tokenizer(rendered_messages, truncation=True, max_length=seqlen)
     return example
 
@@ -732,6 +780,238 @@ def get_ultrachat_dataset(
 
     dataset = dataset.map(tokenize_example_batch, batched=True)
     return dataset
+
+
+@register_dataset(["openbmb/UltraData-SFT-Agent-2609", "UltraData-SFT-Agent-2609"])
+def get_ultradata_agent_dataset(
+    tokenizer,
+    seqlen,
+    dataset_name="openbmb/UltraData-SFT-Agent-2609",
+    split=None,
+    seed=42,
+    apply_chat_template=True,
+    system_prompt=None,
+    nsamples=512,
+):
+    """Agent/tool-calling calibration dataset.
+
+    Each sample carries a ``messages`` conversation (system/user/assistant with
+    ``tool_calls``/tool turns) and a ``tools`` schema list. The chat template is
+    rendered with ``tools=`` so the quantized model sees full tool-calling
+    traces. ``apply_chat_template`` is forced on because the raw ``messages``
+    structure is only meaningful once templated.
+
+    The dataset ships multiple configs (``Code-Agent``, ``Search-Agent``,
+    ``General-Agent``, ``Tool-Use``); all of them are loaded and interleaved so
+    calibration covers the full range of agent behaviors.
+
+    Length-aware sampling: conversations in this dataset can be very long. A
+    sample whose *messages alone* already exceed ``seqlen`` would have its actual
+    conversation content truncated, so such samples are deprioritized. We first
+    collect samples whose rendered messages fit within ``seqlen`` (even if
+    ``messages + tools`` exceeds it, since only the tool schema overflows); only
+    if there are not enough of those do we fall back to the oversized ones.
+    """
+    if split is None:
+        split = "train"
+
+    # Always load from the canonical Hub repo id, regardless of whether the user
+    # passed the full name or the short alias ("UltraData-SFT-Agent-2609").
+    hub_repo_id = "openbmb/UltraData-SFT-Agent-2609"
+
+    # This dataset is split into multiple configs; mix them all so the quantized
+    # model sees the full range of agent behaviors (code / search / general /
+    # tool-use). We avoid ``interleave_datasets`` on purpose: the configs have
+    # slightly different ``tools`` feature schemas (e.g. an extra ``title`` key),
+    # which makes HF feature alignment fail. Since we only read ``messages`` and
+    # ``tools`` and render them ourselves, we scan each config independently and
+    # then balance the final selection across configs.
+    configs = ["Code-Agent", "Search-Agent", "General-Agent", "Tool-Use"]
+    sub_datasets = []
+    for cfg in configs:
+        try:
+            d = load_dataset(hub_repo_id, cfg, split=split, streaming=True)
+            d = d.shuffle(seed=seed, buffer_size=1000)
+            sub_datasets.append(d)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to load config '%s' of %s: %s", cfg, hub_repo_id, e)
+
+    if not sub_datasets:
+        raise ValueError(f"Could not load any config of {hub_repo_id} (tried {configs}).")
+
+    if not apply_chat_template:
+        logger.info(
+            "apply_chat_template=False is ignored for %s; agent/tool data requires chat templating.", hub_repo_id
+        )
+
+    # target = nsamples * envs.AR_CALIB_DATA_MULTIPLIER
+    target = nsamples*2
+    n_cfg = len(sub_datasets)
+    # Per-config quota so every config contributes a balanced share. Collect a
+    # bit extra per config so that, if one config is short, others can cover the
+    # shortfall during the balanced round-robin selection below.
+    per_cfg_quota = -(-target // n_cfg)  # ceil(target / n_cfg)
+    # Safety bound per config: don't scan a whole (huge) config looking for
+    # short-enough samples when they are scarce.
+    max_scan_per_cfg = target
+
+    # The per-sample system prompt in this dataset is very long and pushes most
+    # samples past ``seqlen``. Drop it with high probability so the bulk of the
+    # calibration data reflects the actual conversation/tool content, while a
+    # small fraction still keeps the system prompt so the model sees that format.
+    drop_system_prob = 0.99
+    rng = random.Random(seed)
+
+    def _maybe_drop_system(messages):
+        """Drop a leading system message with probability ``drop_system_prob``."""
+        if (
+            messages
+            and isinstance(messages[0], dict)
+            and messages[0].get("role") == "system"
+            and rng.random() < drop_system_prob
+        ):
+            return messages[1:]
+        return messages
+
+    def _token_len(text):
+        return len(tokenizer(text, add_special_tokens=False)["input_ids"])
+
+    def _approx_word_count(messages):
+        """Cheap whitespace-split length estimate of the raw conversation.
+
+        Token count is almost always >= whitespace word count (subword / code /
+        JSON only increase it), and the chat template only adds more tokens. So
+        if this estimate already exceeds ``seqlen`` the templated sample is
+        definitely longer than ``seqlen`` and we can skip the expensive
+        ``apply_chat_template`` + tokenization entirely.
+        """
+        count = 0
+        for msg in messages:
+            content = msg.get("content")
+            if content:
+                count += len(content.split())
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                count += len(str(tool_calls).split())
+        return count
+
+    def _build_length_conversation(messages):
+        """Build the message list used for the messages-only length check.
+
+        Mirrors the system-prompt handling of ``render_chat_sample`` (tools are
+        excluded here on purpose: we filter on the messages-only length).
+        """
+        conv = []
+        has_own_system = len(messages) > 0 and isinstance(messages[0], dict) and messages[0].get("role") == "system"
+        if system_prompt is not None and system_prompt != "" and not has_own_system:
+            conv.append({"role": "system", "content": system_prompt})
+        conv += messages
+        return conv
+
+    def _batch_msg_lengths(conversations):
+        """Batch-render conversations and return their token lengths.
+
+        Uses a single batched ``apply_chat_template(..., tokenize=True)`` call so
+        rendering + tokenization happen in one shot instead of per sample.
+        ``add_generation_prompt=False`` because these are full traces and the few
+        generation-prompt tokens are negligible for a length filter.
+        """
+        if not conversations:
+            return []
+        try:
+            encoded = tokenizer.apply_chat_template(conversations, tokenize=True, add_generation_prompt=False)
+            return [len(ids) for ids in encoded]
+        except Exception:
+            # Fallback: per-sample, dropping the system role if the template fails.
+            lengths = []
+            for conv in conversations:
+                try:
+                    ids = tokenizer.apply_chat_template(conv, tokenize=True, add_generation_prompt=False)
+                except Exception:
+                    conv2 = [m for m in conv if m.get("role") != "system"]
+                    ids = tokenizer.apply_chat_template(conv2, tokenize=True, add_generation_prompt=False)
+                lengths.append(len(ids))
+            return lengths
+
+    # Scan each config separately. Store raw (messages, tools) and only render
+    # the finally selected samples with tools, so we don't pay the cost of fully
+    # rendering the (large, mostly unused) fallback pool. The accurate length
+    # check is done in a single batched template call per config.
+    preferred_by_cfg = [[] for _ in sub_datasets]  # messages fit within seqlen
+    fallback_by_cfg = [[] for _ in sub_datasets]  # messages exceed seqlen (gets truncated)
+
+    for i, d in enumerate(sub_datasets):
+        scanned = 0
+        candidates = []  # (messages, tools) that passed the cheap word-count filter
+        for sample in d:
+            if len(candidates) >= per_cfg_quota or scanned >= max_scan_per_cfg:
+                break
+            scanned += 1
+            messages = sample["messages"]
+            tools = sample.get("tools") if isinstance(sample, dict) else sample["tools"]
+
+            # Decide once (at read time) whether to drop the long system prompt,
+            # so word-count, length check and final render all stay consistent.
+            messages = _maybe_drop_system(messages)
+
+            # Fast path: if even the raw whitespace word count exceeds seqlen, the
+            # sample is definitely too long -> skip rendering/tokenizing.
+            if _approx_word_count(messages) > seqlen:
+                if len(fallback_by_cfg[i]) < per_cfg_quota:
+                    fallback_by_cfg[i].append((messages, tools))
+                continue
+            candidates.append((messages, tools))
+
+        # Batched accurate length check for this config's candidates.
+        lengths = _batch_msg_lengths([_build_length_conversation(m) for m, _ in candidates])
+        for (messages, tools), length in zip(candidates, lengths):
+            if length <= seqlen:
+                preferred_by_cfg[i].append((messages, tools))
+            elif len(fallback_by_cfg[i]) < per_cfg_quota:
+                fallback_by_cfg[i].append((messages, tools))
+
+    def _round_robin_take(pools, limit, already):
+        """Pull items round-robin across per-config pools until ``limit``."""
+        out = []
+        idx = [0] * len(pools)
+        while already + len(out) < limit and any(idx[i] < len(pools[i]) for i in range(len(pools))):
+            for i in range(len(pools)):
+                if already + len(out) >= limit:
+                    break
+                if idx[i] < len(pools[i]):
+                    out.append(pools[i][idx[i]])
+                    idx[i] += 1
+        return out
+
+    # Balanced selection: round-robin across configs' preferred pools first,
+    # then top up (still round-robin) from the fallback pools if short.
+    selected = _round_robin_take(preferred_by_cfg, target, 0)
+    n_preferred = len(selected)
+    if len(selected) < target:
+        selected += _round_robin_take(fallback_by_cfg, target, len(selected))
+        if len(selected) > n_preferred:
+            logger.info(
+                "%s: only %d samples fit messages<=seqlen; topping up with %d oversized samples.",
+                hub_repo_id,
+                n_preferred,
+                len(selected) - n_preferred,
+            )
+
+    # Global shuffle so configs/tiers are mixed across the calibration set.
+    random.Random(seed).shuffle(selected)
+
+    # Render the final selection with tools included.
+    texts = [render_chat_sample(tokenizer, messages, system_prompt, tools=tools) for messages, tools in selected]
+
+    import datasets
+
+    calib_dataset = datasets.Dataset.from_list([{"text": t} for t in texts])
+    calib_dataset = calib_dataset.map(
+        lambda examples: tokenizer(examples["text"], truncation=True, max_length=seqlen),
+        batched=True,
+        remove_columns=["text"],
+    )
+    return calib_dataset
 
 
 @register_dataset("openbmb/Ultra-FineWeb")
@@ -1612,6 +1892,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                     get_competition_math_dataset,
                     get_ultrachat_dataset,
                     get_ultrafinweb_dataset,
+                    get_ultradata_agent_dataset,
                 ):
                     dataset_kwargs["nsamples"] = nsamples
                 dataset = get_dataset(**dataset_kwargs)
