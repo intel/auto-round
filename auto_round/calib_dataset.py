@@ -911,27 +911,35 @@ def get_ultradata_agent_dataset(
     def _batch_msg_lengths(conversations):
         """Batch-render conversations and return their token lengths.
 
-        Uses a single batched ``apply_chat_template(..., tokenize=True)`` call so
-        rendering + tokenization happen in one shot instead of per sample.
+        We render to strings first (``tokenize=False`` on a batch reliably
+        returns a list[str]) and then tokenize the strings in one batched call.
+        This avoids the version-dependent return type of
+        ``apply_chat_template(batch, tokenize=True)`` (which can be a dict-like
+        ``BatchEncoding`` and make per-sample length extraction wrong).
         ``add_generation_prompt=False`` because these are full traces and the few
         generation-prompt tokens are negligible for a length filter.
         """
         if not conversations:
             return []
         try:
-            encoded = tokenizer.apply_chat_template(conversations, tokenize=True, add_generation_prompt=False)
-            return [len(ids) for ids in encoded]
+            rendered = tokenizer.apply_chat_template(
+                conversations, tokenize=False, add_generation_prompt=False
+            )
         except Exception:
             # Fallback: per-sample, dropping the system role if the template fails.
-            lengths = []
+            rendered = []
             for conv in conversations:
                 try:
-                    ids = tokenizer.apply_chat_template(conv, tokenize=True, add_generation_prompt=False)
+                    rendered.append(
+                        tokenizer.apply_chat_template(conv, tokenize=False, add_generation_prompt=False)
+                    )
                 except Exception:
                     conv2 = [m for m in conv if m.get("role") != "system"]
-                    ids = tokenizer.apply_chat_template(conv2, tokenize=True, add_generation_prompt=False)
-                lengths.append(len(ids))
-            return lengths
+                    rendered.append(
+                        tokenizer.apply_chat_template(conv2, tokenize=False, add_generation_prompt=False)
+                    )
+        enc = tokenizer(rendered, add_special_tokens=False)
+        return [len(ids) for ids in enc["input_ids"]]
 
     # Scan each config separately. Store raw (messages, tools) and only render
     # the finally selected samples with tools, so we don't pay the cost of fully
