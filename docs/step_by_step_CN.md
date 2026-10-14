@@ -691,30 +691,36 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 需要特殊打包内核的 scheme（`W3A16`、`FPW8A16`、`BF16`、`MXINT4`、`NVFP4`、`FP8_BLOCK`、`FP8_STATIC`、`INT8_W8A8`、`GGUF:*` 等）**不被支持**，传入会抛 `ValueError`。这些请使用标准 AutoRound 流程。
 
-**NVFP4 源模型 → MXFP4（实验性）**
+**NVFP4 源模型 → MXFP4**
 
-目标：将已发布的 NVFP4 checkpoint 转换为 MXFP4，在没有原生 NVFP4 硬件加速路径但支持 MXFP4 的 Intel GPU 上，高效地提供 4-bit 精度大语言模型的高吞吐推理服务。
+目标：将已发布的 NVFP4 checkpoint 转换为 MXFP4，以便在支持 MXFP4、但没有原生 NVFP4 加速路径的 Intel GPU 上，高吞吐地部署 4-bit 大语言模型。
 
-免模型量化模式支持以已经 NVFP4 量化的 checkpoint 作为输入：NVFP4 权重会逐分片反量化为 BF16，再重新量化为目标 scheme（例如 `--scheme MXFP4`）。若某层的目标 scheme 本身就是 NVFP4，则打包张量会原样透传。支持情况取决于源模型的张量布局：
+支持的源张量布局：
 
 | 源布局 | 张量 | 状态 |
 | --- | --- | --- |
-| ModelOpt HF 导出（NVFP4） | `.weight`（uint8）+ `.weight_scale`（FP8）+ `.weight_scale_2` + `.input_scale` | 支持 |
-| ModelOpt / TensorRT-LLM 融合 MoE（NVFP4），如 `inkling_mm_model` | `X`（uint8）+ `X.scale` + `X.scale2`（可能位于不同分片） | 支持 |
 | compressed-tensors（NVFP4） | `.weight_packed` + `.weight_scale` + `.weight_global_scale` + `.input_global_scale` | 支持 |
-| ModelOpt FP8 层（NVFP4 + FP8 混合） | `.weight`（FP8）+ per-tensor `.weight_scale`（FP32）+ `.input_scale` | **不支持** —— TODO：per-tensor FP8 未被反量化，这些层保持 FP8 并带有过期的 scale，且未在输出的 `quantization_config` 中描述 |
-| AMD Quark（NVFP4） | Quark 导出布局 | **未验证** —— TODO：尚无 Quark 专用处理与测试 |
+| ModelOpt / Quark（NVFP4） | `.weight`（uint8）+ `.weight_scale`（FP8）+ `.weight_scale_2` + `.input_scale` | 支持 |
+| `inkling_mm_model` 类型 | `X`（uint8）+ `X.scale` + `X.scale2`（可能位于不同分片） | 支持 |
 
 常见 checkpoint 的支持状态：
 
 | 模型 | 源格式 | 状态 |
 | --- | --- | --- |
-| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors，NVFP4 | 预期可用 —— TODO：端到端精度验证 |
-| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt，NVFP4 + FP8 | 有限支持 —— NVFP4 层可用；TODO：反量化 per-tensor FP8 层 |
-| `amd/MiniMax-M2.7-NVFP4` | Quark，NVFP4 | 未验证 —— TODO：增加 Quark NVFP4 支持与测试 |
-| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt，NVFP4 | 预期可用 —— TODO：端到端精度验证 |
+| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors，NVFP4 | 已验证 |
+| `RedHatAI/Qwen3.8-27B-NVFP4` | compressed-tensors，NVFP4 + FP8 | 未验证（TODO） |
+| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt，NVFP4 + FP8 | 未验证（TODO） |
+| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt，NVFP4 | 未验证（TODO） |
+| `amd/MiniMax-M2.7-NVFP4` | Quark，NVFP4 | 未验证（TODO） |
+| `thinkingmachines/Inkling-Small-NVFP4` | 特殊格式（`inkling_mm_model`），NVFP4 | 未验证（TODO） |
 
-使用 `--scheme NVFP2MXFP` 可**仅**将 NVFP4 层转换为 MXFP4，无需手动列出这些层：每个分片中的 NVFP4 层会被自动检测，其余层（BF16、`lm_head`、router 等）保持原样，并在 `quantization_config` 中记录为未量化。该 scheme 始终以免模型模式运行。
+使用 `--scheme NVFP2MXFP` 可**仅**将 NVFP4 层转换为 MXFP4，无需手动列出这些层：
+
+- **NVFP4 层**：在每个分片中自动检测，并转换为 MXFP4。
+- **非量化层**（BF16、`lm_head`、router 等）：保持原样，并在 `quantization_config` 中记录为未量化。
+- **FP8 层**（混合精度源模型，例如 FP8 attention + NVFP4 MLP）：保持原样。直接复用源模型的量化配置（compressed-tensors；ModelOpt 与 Quark 配置会先转换为 compressed-tensors 格式），仅将其中的 NVFP4 分组改写为 MXFP4，输出为 `mixed-precision` 的 `quantization_config`（请使用 `--format llm_compressor`）。
+- 无法识别的源配置会给出警告并跳过。
+- 该 scheme 始终以免模型模式运行。
 
 ```bash
 auto_round nvidia/MiniMax-M2.7-NVFP4 --scheme NVFP2MXFP --format llm_compressor --output_dir ./mxfp4-model

@@ -702,30 +702,36 @@ You can also pass a custom `QuantizationScheme(bits=N, group_size=G, sym=True/Fa
 
 Schemes that require special packing kernels (`W3A16`, `FPW8A16`, `BF16`, `MXINT4`, `NVFP4`, `FP8_BLOCK`, `FP8_STATIC`, `INT8_W8A8`, `GGUF:*`, ...) are **not** supported in model-free mode and will raise `ValueError`.  Use the regular AutoRound flow for those.
 
-**NVFP4 source checkpoints → MXFP4 (experimental)**
+**NVFP4 source checkpoints → MXFP4**
 
-Goal: efficiently serve 4-bit LLMs with high throughput on Intel GPUs, which support MXFP4 but have no native NVFP4 acceleration path, by converting published NVFP4 checkpoints to MXFP4.
+Goal: convert published NVFP4 checkpoints to MXFP4 to serve 4-bit LLMs with high throughput on Intel GPUs, which support MXFP4 but have no native NVFP4 acceleration path.
 
-Model-free mode can take an already NVFP4-quantized checkpoint as input: NVFP4 weights are dequantized to BF16 shard-by-shard and then re-quantized to the target scheme (e.g. `--scheme MXFP4`). If the target layer scheme is NVFP4 itself, the packed tensors are passed through unchanged. Support depends on the source tensor layout:
+Supported source tensor layouts:
 
 | Source layout | Tensors | Status |
 | --- | --- | --- |
-| ModelOpt HF export (NVFP4) | `.weight` (uint8) + `.weight_scale` (FP8) + `.weight_scale_2` + `.input_scale` | Supported |
-| ModelOpt / TensorRT-LLM fused MoE (NVFP4), e.g. `inkling_mm_model` | `X` (uint8) + `X.scale` + `X.scale2` (may live in different shards) | Supported |
 | compressed-tensors (NVFP4) | `.weight_packed` + `.weight_scale` + `.weight_global_scale` + `.input_global_scale` | Supported |
-| ModelOpt FP8 layers (mixed NVFP4 + FP8) | `.weight` (FP8) + per-tensor `.weight_scale` (FP32) + `.input_scale` | **Not supported** — TODO: per-tensor FP8 is not dequantized; these layers stay FP8 with stale scales and are not described in the output `quantization_config` |
-| AMD Quark (NVFP4) | Quark export layout | **Not verified** — TODO: no dedicated Quark handling or tests |
+| ModelOpt / Quark (NVFP4) | `.weight` (uint8) + `.weight_scale` (FP8) + `.weight_scale_2` + `.input_scale` | Supported |
+| `inkling_mm_model` type | `X` (uint8) + `X.scale` + `X.scale2` (may live in different shards) | Supported |
 
 Status of commonly requested checkpoints:
 
 | Model | Source format | Status |
 | --- | --- | --- |
-| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors, NVFP4 | Expected to work — TODO: end-to-end accuracy validation |
-| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt, NVFP4 + FP8 | Limited — NVFP4 layers work; TODO: dequantize per-tensor FP8 layers |
-| `amd/MiniMax-M2.7-NVFP4` | Quark, NVFP4 | Not verified — TODO: add Quark NVFP4 support and tests |
-| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt, NVFP4 | Expected to work — TODO: end-to-end accuracy validation |
+| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors, NVFP4 | Verified |
+| `RedHatAI/Qwen3.8-27B-NVFP4` | compressed-tensors, NVFP4 + FP8 | Not verified (TODO) |
+| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt, NVFP4 + FP8 | Not verified (TODO) |
+| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt, NVFP4 | Not verified (TODO) |
+| `amd/MiniMax-M2.7-NVFP4` | Quark, NVFP4 | Not verified (TODO) |
+| `thinkingmachines/Inkling-Small-NVFP4` | Special format (`inkling_mm_model`), NVFP4 | Not verified (TODO) |
 
-Use `--scheme NVFP2MXFP` to convert **only** the NVFP4 layers to MXFP4 without listing them manually: NVFP4 layers are detected automatically in each shard, and every other layer (BF16, `lm_head`, router, ...) is kept as-is and recorded as unquantized in `quantization_config`. This scheme always runs in model-free mode.
+Use `--scheme NVFP2MXFP` to convert **only** the NVFP4 layers to MXFP4 without listing them manually:
+
+- **NVFP4 layers**: detected automatically in each shard and converted to MXFP4.
+- **Unquantized layers** (BF16, `lm_head`, router, ...): kept as-is and recorded as unquantized in `quantization_config`.
+- **FP8 layers** (mixed-precision sources, e.g. FP8 attention + NVFP4 MLP): kept as-is. The source quantization config (compressed-tensors; ModelOpt and Quark configs are first converted to compressed-tensors) is reused with only its NVFP4 groups rewritten to MXFP4, so the output is a `mixed-precision` `quantization_config` (use `--format llm_compressor`).
+- Unrecognized source configs trigger a warning and are skipped.
+- This scheme always runs in model-free mode.
 
 ```bash
 auto_round nvidia/MiniMax-M2.7-NVFP4 --scheme NVFP2MXFP --format llm_compressor --output_dir ./mxfp4-model
