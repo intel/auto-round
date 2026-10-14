@@ -422,7 +422,11 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         # In RTN mode (iters == 0), force blockwise quantization to avoid
         # full-model materialization and linear CPU RAM growth.
-        logger.info("Zero-shot mode (no calibration data needed): using blockwise quantization.")
+        opt_rtn_status = "disabled" if self.disable_opt_rtn else "enabled"
+        logger.info(
+            "No calibration data needed: using blockwise quantization. "
+            f"Optimized RTN scale search: {opt_rtn_status}."
+        )
 
         tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
         if tied_weights_keys is None:
