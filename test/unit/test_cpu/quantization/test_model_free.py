@@ -1636,7 +1636,7 @@ class TestNVFP4ToMXFP4:
         _assert_mxfp4_layer(tensors, _NV_MLP)
         _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight", "model.layers.0.self_attn.k_proj.k_scale"])
         assert qc["format"] == "mxfp4-pack-quantized"
-        _assert_mxfp4_group(next(iter(qc["config_groups"].values())), ["Linear"])
+        _assert_mxfp4_group(next(iter(qc["config_groups"].values())), [_NV_MLP])
         assert qc["kv_cache_scheme"]["num_bits"] == 8 and qc["kv_cache_scheme"]["type"] == "float"
         attn_ignore = [t for t in qc["ignore"] if t.startswith("re:")]
         assert attn_ignore and re.match(attn_ignore[0][3:], _NV_ATTN)
@@ -1655,7 +1655,7 @@ class TestNVFP4ToMXFP4:
         _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight"])
         assert qc["quant_method"] == "compressed-tensors"
         assert qc["format"] == "mxfp4-pack-quantized"
-        _assert_mxfp4_group(next(iter(qc["config_groups"].values())), ["Linear"])
+        _assert_mxfp4_group(next(iter(qc["config_groups"].values())), [_NV_MLP])
         assert qc["ignore"] == [_NV_ATTN, "lm_head"]
         assert "kv_cache_scheme" not in qc or qc["kv_cache_scheme"] is None
 
@@ -1753,7 +1753,22 @@ class TestNVFP4ToMXFP4:
 
         _assert_mxfp4_layer(tensors, _NV_MLP)
         assert qc["format"] == "mxfp4-pack-quantized"
+        assert next(iter(qc["config_groups"].values()))["targets"] == [_NV_MLP]
         assert _NV_ATTN in qc["ignore"]
+
+    @require_compressed_tensors
+    def test_non_ct_moe_source_targets_routed_experts(self, tmp_path):
+        experts = [f"model.layers.0.block_sparse_moe.experts.{i}.w1" for i in range(2)]
+        source = {k: v for e in experts for k, v in _modelopt_nvfp4_tensors(e).items()}
+        source[f"{_NV_ATTN}.weight"] = torch.randn(64, 64, dtype=torch.bfloat16)
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_MODELOPT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        for expert in experts:
+            _assert_mxfp4_layer(tensors, expert)
+        targets = next(iter(qc["config_groups"].values()))["targets"]
+        assert "Linear" not in targets
+        assert sorted(targets) == sorted(experts + ["RoutedExperts"])
 
     @pytest.mark.parametrize(
         "qc",

@@ -2727,6 +2727,26 @@ def _add_routed_experts_if_moe(targets: list[str], layer_names: list[str]) -> li
     return targets
 
 
+def _is_mxfp_ct_group(group: dict) -> bool:
+    weights = group.get("weights") or {}
+    return (
+        weights.get("type") == "float"
+        and weights.get("num_bits") in _SUPPORTED_MXFP_BITS
+        and (weights.get("group_size") == 32)
+    )
+
+
+def _explicit_mxfp_targets(qconfig: dict, quantized_layers: list[str]) -> dict:
+    """Replace the ``"Linear"`` catch-all of MXFP groups with the quantized layer names (+ ``RoutedExperts``)."""
+    groups = qconfig.get("config_groups") or {}
+    covered = {t for g in groups.values() if g.get("targets") != ["Linear"] for t in g.get("targets") or []}
+    layers = [name for name in dict.fromkeys(quantized_layers) if name not in covered]
+    for group in groups.values():
+        if group.get("targets") == ["Linear"] and _is_mxfp_ct_group(group) and layers:
+            group["targets"] = _add_routed_experts_if_moe(list(layers), layers)
+    return qconfig
+
+
 def _get_mxfp_group_scheme_and_format(
     group_bits: int,
     group_data_type: str,
@@ -3276,6 +3296,11 @@ def _build_quantization_config(
         source_ct = _source_config_to_ct(source_quant_config)
         if source_ct:
             qconfig = _rewrite_nvfp4_groups_as_mxfp(qconfig, source_ct, ignored_layers, quantized_layers)
+        # Only a compressed-tensors source vouches for its "Linear" catch-all; otherwise list the layers for vLLM.
+        if source_quant_config is not None and str(source_quant_config.get("quant_method") or "").lower() != (
+            "compressed-tensors"
+        ):
+            qconfig = _explicit_mxfp_targets(qconfig, quantized_layers)
         return qconfig
 
     # When the default is full-precision (BF16/FP16) but INT layers were
