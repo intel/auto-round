@@ -556,18 +556,12 @@ class TestCompetitionMathChatTemplate:
     def test_chat_template_applied_once_per_sample(self, monkeypatch):
         import auto_round.calib_dataset as calib_dataset
 
-        rows = Dataset.from_dict(
-            {"problem": ["p1", "p2", "p3"], "solution": ["s1", "s2", "s3"]}
-        )
+        rows = Dataset.from_dict({"problem": ["p1", "p2", "p3"], "solution": ["s1", "s2", "s3"]})
         monkeypatch.setattr(calib_dataset, "load_dataset", lambda *a, **k: rows)
 
         tok = self._ChatTokenizer()
-        calib_dataset.get_competition_math_dataset(
-            tok, seqlen=4, split="train", apply_chat_template=True, nsamples=3
-        )
+        calib_dataset.get_competition_math_dataset(tok, seqlen=4, split="train", apply_chat_template=True, nsamples=3)
 
         # Exactly one render per sample in the loop; the .map() tokenization must
         # NOT re-apply the template (regression guard for double application).
         assert tok.chat_calls == 3
-
-

@@ -1725,7 +1725,9 @@ def select_dataset(dataset, indices):
         return dataset
 
 
-def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512, trust_remote_code=False):
+def _get_dataset_impl(
+    tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512, trust_remote_code=False
+):
     """Internal implementation: generate a dataset for calibration.
 
     Args:

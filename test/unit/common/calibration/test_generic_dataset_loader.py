@@ -356,9 +356,7 @@ class TestMessageRecords:
 # ---------------------------------------------------------------------------
 class TestSampleFiltering:
     def test_empty_samples_filtered_non_streaming(self, tokenizer, monkeypatch):
-        table = Dataset.from_dict(
-            {"text": ["a valid sentence here", "   ", "", "another valid line"]}
-        )
+        table = Dataset.from_dict({"text": ["a valid sentence here", "   ", "", "another valid line"]})
         monkeypatch.setattr(cd, "load_dataset", _make_load_dataset(table))
 
         ds = cd._get_generic_dataset(
@@ -485,4 +483,3 @@ class TestGetDatasetIntegration:
 
         assert len(ds) >= 1
         assert "input_ids" in ds.column_names
-
