@@ -73,10 +73,10 @@ pip install auto-round
 - `mbpp`：用于代码场景
 - `nvidia/OpenCodeInstruct`：用于代码指令数据
 - `openbmb/Ultra-FineWeb`
-- `openbmb/UltraData-SFT-Agent-2609`：用于智能体/工具调用（tool-calling）数据。每个样本都包含一个 `messages` 对话
+- `openbmb/UltraData-SFT-Agent-2609`（实验性）：用于智能体/工具调用（tool-calling）数据。每个样本都包含一个 `messages` 对话
   （含 `tool_calls`/tool 轮次）以及 `tools` 工具 schema，并通过聊天模板渲染（始终启用 `apply_chat_template`），
   因此量化模型可以看到完整的工具调用轨迹。该数据集的所有配置（`Code-Agent`、`Search-Agent`、`General-Agent`、`Tool-Use`）都会被加载并交错混合
-- `qwedsacf/competition_math`：用于数学场景（会拼接 `problem` 与 `solution` 字段，并默认将较短的样本打包成完整的 `seqlen` 序列）
+- `qwedsacf/competition_math`（实验性）：用于数学场景（会拼接 `problem` 与 `solution` 字段，并默认将较短的样本打包成完整的 `seqlen` 序列）
 
 ### 自定义数据集
 **建议用户还是尽量不使用 padding 的数据**。虽然对于 padding 过的数据我们有做特殊处理，但是目前验证的比较少。

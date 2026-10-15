@@ -73,11 +73,11 @@ calibration data and will be downloaded automatically from the datasets Hub. Oth
 - `mbpp` for code
 - `nvidia/OpenCodeInstruct` for code instruction data
 - `openbmb/Ultra-FineWeb`
-- `openbmb/UltraData-SFT-Agent-2609` for agent/tool-calling data. Each sample carries a `messages` conversation
+- `openbmb/UltraData-SFT-Agent-2609` (experimental) for agent/tool-calling data. Each sample carries a `messages` conversation
   (with `tool_calls`/tool turns) and a `tools` schema that is rendered through the chat template (`apply_chat_template`
   is always enabled), so the quantized model sees full tool-calling traces. All configs (`Code-Agent`, `Search-Agent`,
   `General-Agent`, `Tool-Use`) are loaded and interleaved
-- `qwedsacf/competition_math` for math (the `problem` and `solution` fields are concatenated, and short
+- `qwedsacf/competition_math` (experimental) for math (the `problem` and `solution` fields are concatenated, and short
   samples are packed into full `seqlen` sequences by default)
 
 ### Customized Dataset
