@@ -761,7 +761,6 @@ def get_ultrachat_dataset(
 
     is_instruct = is_instruct_tokenizer(tokenizer)
 
-
     if not is_instruct and apply_chat_template:
         logger.info("Tokenizer is not an instruct/chat model, but apply_chat_template=True. Setting to False.")
         apply_chat_template = False
