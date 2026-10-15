@@ -96,7 +96,7 @@ class TestDatasetNetworkErrors:
         )
 
         assert result is fallback_dataset
-        load_dataset.assert_called_once_with(tokenizer, 128, "AI-ModelScope/fineweb-edu", 42, 2)
+        load_dataset.assert_called_once_with(tokenizer, 128, "AI-ModelScope/fineweb-edu", 42, 2, False)
         assert "Automatically switching" in warning.call_args.args[0]
 
     def test_closed_http_client_is_treated_as_network_error(self):
@@ -497,3 +497,71 @@ class TestGetDatasetImpl:
         )
 
         assert dataset.column_names == ["source", "input_ids", "attention_mask"]
+
+
+# ---------------------------------------------------------------------------
+# _concat_samples_to_seqlen (sample-level packing of short traces)
+# ---------------------------------------------------------------------------
+class TestConcatSamplesToSeqlen:
+    def test_packs_short_samples_into_full_length(self):
+        import auto_round.calib_dataset as calib_dataset
+
+        # Four samples of length 3 packed into seqlen=6 -> two full-length rows.
+        ds = Dataset.from_dict({"input_ids": [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]})
+        packed = calib_dataset._concat_samples_to_seqlen(ds, seqlen=6)
+        assert len(packed) == 2
+        for row in packed:
+            assert len(row["input_ids"]) == 6
+            assert len(row["attention_mask"]) == 6
+
+    def test_oversized_sample_emits_single_sequence(self):
+        import auto_round.calib_dataset as calib_dataset
+
+        ds = Dataset.from_dict({"input_ids": [list(range(10))]})
+        packed = calib_dataset._concat_samples_to_seqlen(ds, seqlen=4)
+        assert len(packed) == 1
+        assert len(packed[0]["input_ids"]) == 4
+
+    def test_all_short_returns_original_unpacked(self):
+        import auto_round.calib_dataset as calib_dataset
+
+        # Single short sample can never reach seqlen -> original returned.
+        ds = Dataset.from_dict({"input_ids": [[1, 2]]})
+        packed = calib_dataset._concat_samples_to_seqlen(ds, seqlen=8)
+        assert packed is ds
+
+
+# ---------------------------------------------------------------------------
+# competition_math: chat template rendered once (not twice)
+# ---------------------------------------------------------------------------
+class TestCompetitionMathChatTemplate:
+    class _ChatTokenizer:
+        name_or_path = "fake-chat"
+        bos_token_id = 1
+        eos_token_id = 2
+
+        def __init__(self):
+            self.chat_calls = 0
+
+        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False, **kwargs):
+            self.chat_calls += 1
+            return " ".join(f"{m['role']}:{m['content']}" for m in messages)
+
+        def __call__(self, texts, truncation=True, max_length=None, **kwargs):
+            if isinstance(texts, str):
+                texts = [texts]
+            input_ids = [[ord(c) for c in t][:max_length] for t in texts]
+            return {"input_ids": input_ids, "attention_mask": [[1] * len(x) for x in input_ids]}
+
+    def test_chat_template_applied_once_per_sample(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        rows = Dataset.from_dict({"problem": ["p1", "p2", "p3"], "solution": ["s1", "s2", "s3"]})
+        monkeypatch.setattr(calib_dataset, "load_dataset", lambda *a, **k: rows)
+
+        tok = self._ChatTokenizer()
+        calib_dataset.get_competition_math_dataset(tok, seqlen=4, split="train", apply_chat_template=True, nsamples=3)
+
+        # Exactly one render per sample in the loop; the .map() tokenization must
+        # NOT re-apply the template (regression guard for double application).
+        assert tok.chat_calls == 3

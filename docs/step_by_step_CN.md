@@ -73,6 +73,10 @@ pip install auto-round
 - `mbpp`：用于代码场景
 - `nvidia/OpenCodeInstruct`：用于代码指令数据
 - `openbmb/Ultra-FineWeb`
+- `openbmb/UltraData-SFT-Agent-2609`（实验性）：用于智能体/工具调用（tool-calling）数据。每个样本都包含一个 `messages` 对话
+  （含 `tool_calls`/tool 轮次）以及 `tools` 工具 schema，并通过聊天模板渲染（始终启用 `apply_chat_template`），
+  因此量化模型可以看到完整的工具调用轨迹。该数据集的所有配置（`Code-Agent`、`Search-Agent`、`General-Agent`、`Tool-Use`）都会被加载并交错混合
+- `qwedsacf/competition_math`（实验性）：用于数学场景（会拼接 `problem` 与 `solution` 字段，并默认将较短的样本打包成完整的 `seqlen` 序列）
 
 ### 自定义数据集
 **建议用户还是尽量不使用 padding 的数据**。虽然对于 padding 过的数据我们有做特殊处理，但是目前验证的比较少。
@@ -102,9 +106,47 @@ pip install auto-round
 
 **数据集组合**：可使用 `--dataset` 参数组合不同数据集并设置其他的参数。示例代码 `--dataset ./tmp.json,NeelNanda/pile-10k:num=256,mbpp:num=128`。此参数同时支持本地标定文件和 Hugging Face 数据集，同时还可用 `split = split1+split2` 指定某个数据集的多个拆分子集。
 
-**样本拼接**：可使用 `--dataset NeelNanda/pile-10k:concat=True` 拼接标定样本。在该模式下，会先将所有样本拼接成完整文本，再按 seqlen 长度切分出来。
+**样本拼接**：可使用 `--dataset NeelNanda/pile-10k:concat=True` 拼接标定样本。在该模式下，会先将所有样本拼接成完整文本，再按 seqlen 长度切分出来。对于通用加载器（任意 HuggingFace 数据集，或通过 `fields`/`template` 指定的数据集），`concat=True` 会改为执行“样本级拼接”：不断累积整条样本直到缓冲区达到 `seqlen`，输出一条完整长度的序列后清空缓冲区，下一条样本重新开始拼接。这样可以避免单条样本短于 `seqlen` 的数据集（例如 `qwedsacf/competition_math`）被长度过滤丢弃。
 
 **启用对话模板**：可使用 `--dataset NeelNanda/pile-10k:apply_chat_template` 在分词前为标定数据应用对话模板，这在指令式模型的生成任务中比较常用。若需自定义系统提示词，可使用 `--dataset 'NeelNanda/pile-10k:apply_chat_template:system_prompt="你是一个乐于助人的智能助手。"'`
+
+**通用数据集加载**（实验性）：任何 HuggingFace 数据集都可以直接使用，无需预先注册。文本字段会通过检查列名和采样值自动检测。例如：
+`--dataset my-org/my-dataset:split=train:num=512`
+
+> **注意**：通用数据集加载（包括 `fields`、`template`、`separator`、`timeout`、自动字段检测，以及下文的 `CalibDataset` API）为**实验性**功能，其行为和接口在未来版本中可能发生变化。
+
+**字段选择**：使用 `fields` 参数显式指定文本列。单个字段：
+`--dataset my-org/my-dataset:fields=text`。多个字段会用分隔符拼接：
+`--dataset my-org/my-dataset:fields=question+answer`
+
+**模板**：使用 `template` 配合 `{field}` 占位符从多列构建自定义文本。同时设置时优先于 `fields`。
+`--dataset 'my-org/my-dataset:template={question} {answer}'`
+
+**分隔符**：拼接多个字段时可自定义分隔符（默认 `"\n\n"`）：
+`--dataset 'my-org/my-dataset:fields=q+a:separator=\n'`
+
+**超时**：对于流式数据集，可设置 `timeout`（秒）限制数据收集时间。若超时前无法收集到足够样本，会记录警告并使用已收集的样本。
+`--dataset my-org/my-dataset:timeout=600`
+
+**CalibDataset（API）**：编程式使用时，`CalibDataset` 数据类提供了类型化的接口：
+
+    ~~~python
+    from auto_round.utils.dataset_utils import CalibDataset
+    from auto_round import AutoRound
+
+    # 单字段
+    spec = CalibDataset("my-org/my-dataset", split="train", num=1000, fields="text")
+
+    # 多字段拼接
+    spec = CalibDataset("my-org/my-dataset", fields=["question", "answer"], separator="\n")
+
+    # 模板
+    spec = CalibDataset("my-org/my-dataset", template="{question} {answer}")
+
+    # 直接传入 AutoRound
+    ar = AutoRound(model="Qwen/Qwen3-8B", dataset=spec, scheme="W4A16")
+    ar.quantize_and_save()
+    ~~~
 
 注意：如果没有开启拼接选项，长度小于 args.seqlen 的样本会被舍弃。
 

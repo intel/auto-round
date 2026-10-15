@@ -73,6 +73,12 @@ calibration data and will be downloaded automatically from the datasets Hub. Oth
 - `mbpp` for code
 - `nvidia/OpenCodeInstruct` for code instruction data
 - `openbmb/Ultra-FineWeb`
+- `openbmb/UltraData-SFT-Agent-2609` (experimental) for agent/tool-calling data. Each sample carries a `messages` conversation
+  (with `tool_calls`/tool turns) and a `tools` schema that is rendered through the chat template (`apply_chat_template`
+  is always enabled), so the quantized model sees full tool-calling traces. All configs (`Code-Agent`, `Search-Agent`,
+  `General-Agent`, `Tool-Use`) are loaded and interleaved
+- `qwedsacf/competition_math` (experimental) for math (the `problem` and `solution` fields are concatenated, and short
+  samples are packed into full `seqlen` sequences by default)
 
 ### Customized Dataset
 
@@ -107,11 +113,58 @@ and huggingface dataset are supported. You could specify splits of a dataset by 
 **Samples concatenation**: An optional setting allows users to concatenate calibration samples
 using `--dataset NeelNanda/pile-10k:concat=True`.
 All samples will be concatenated first, then split into chunks of seqlen length.
+For the generic loader (any HuggingFace dataset, or one specified with `fields`/`template`),
+`concat=True` performs sample-level packing instead: whole samples are accumulated until the buffer
+reaches `seqlen`, a full-length sequence is emitted, and the buffer is reset so the next sample starts
+a fresh concatenation. This prevents datasets whose individual samples are shorter than `seqlen`
+(e.g. `qwedsacf/competition_math`) from being dropped by the length filter.
 
 **Apply chat template**: Using `--dataset NeelNanda/pile-10k:apply_chat_template` enables application of a chat template
 to the calibration data before tokenization. This is commonly used for instruct-style models during generation. To
 customize the system prompt,
 use:`--dataset 'NeelNanda/pile-10k:apply_chat_template:system_prompt="You are a helpful assistant."'`
+
+**Generic dataset loading** (experimental): Any HuggingFace dataset can be used directly without prior registration. The text field
+is auto-detected by inspecting column names and sampling values. For example:
+`--dataset my-org/my-dataset:split=train:num=512`
+
+> **Note**: Generic dataset loading (including `fields`, `template`, `separator`, `timeout`, auto field detection, and the
+> `CalibDataset` API below) is **experimental** and its behavior/interface may change in future releases.
+
+**Field selection**: Use `fields` to explicitly specify the text column(s). A single field:
+`--dataset my-org/my-dataset:fields=text`. Multiple fields are concatenated with a separator:
+`--dataset my-org/my-dataset:fields=question+answer`
+
+**Template**: Use `template` with `{field}` placeholders to build custom text from multiple columns.
+Takes precedence over `fields` when both are set.
+`--dataset 'my-org/my-dataset:template={question} {answer}'`
+
+**Separator**: When concatenating multiple fields, customize the separator (default `"\n\n"`):
+`--dataset 'my-org/my-dataset:fields=q+a:separator=\n'`
+
+**Timeout**: For streaming datasets, set `timeout` (seconds) to bound data collection. If the dataset
+cannot provide enough samples within the timeout, a warning is logged and the collected samples are used.
+`--dataset my-org/my-dataset:timeout=600`
+
+**CalibDataset (API)**: For programmatic usage, the `CalibDataset` dataclass provides a typed interface:
+
+    ~~~python
+    from auto_round.utils.dataset_utils import CalibDataset
+    from auto_round import AutoRound
+
+    # Single field
+    spec = CalibDataset("my-org/my-dataset", split="train", num=1000, fields="text")
+
+    # Multiple fields concatenated
+    spec = CalibDataset("my-org/my-dataset", fields=["question", "answer"], separator="\n")
+
+    # Template
+    spec = CalibDataset("my-org/my-dataset", template="{question} {answer}")
+
+    # Pass directly to AutoRound
+    ar = AutoRound(model="Qwen/Qwen3-8B", dataset=spec, scheme="W4A16")
+    ar.quantize_and_save()
+    ~~~
 
 Note: If the concatenation option is not enabled, samples shorter than args.seqlen will be dropped.
 
