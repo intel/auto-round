@@ -845,7 +845,7 @@ def get_ultradata_agent_dataset(
         )
 
     # target = nsamples * envs.AR_CALIB_DATA_MULTIPLIER
-    target = nsamples*2
+    target = nsamples * 2
     n_cfg = len(sub_datasets)
     # Per-config quota so every config contributes a balanced share. Collect a
     # bit extra per config so that, if one config is short, others can cover the
@@ -922,22 +922,16 @@ def get_ultradata_agent_dataset(
         if not conversations:
             return []
         try:
-            rendered = tokenizer.apply_chat_template(
-                conversations, tokenize=False, add_generation_prompt=False
-            )
+            rendered = tokenizer.apply_chat_template(conversations, tokenize=False, add_generation_prompt=False)
         except Exception:
             # Fallback: per-sample, dropping the system role if the template fails.
             rendered = []
             for conv in conversations:
                 try:
-                    rendered.append(
-                        tokenizer.apply_chat_template(conv, tokenize=False, add_generation_prompt=False)
-                    )
+                    rendered.append(tokenizer.apply_chat_template(conv, tokenize=False, add_generation_prompt=False))
                 except Exception:
                     conv2 = [m for m in conv if m.get("role") != "system"]
-                    rendered.append(
-                        tokenizer.apply_chat_template(conv2, tokenize=False, add_generation_prompt=False)
-                    )
+                    rendered.append(tokenizer.apply_chat_template(conv2, tokenize=False, add_generation_prompt=False))
         enc = tokenizer(rendered, add_special_tokens=False)
         return [len(ids) for ids in enc["input_ids"]]
 
