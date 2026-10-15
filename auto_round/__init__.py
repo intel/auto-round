@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from auto_round.autoround import AutoRound, AutoRoundAdam, AutoRoundDiffusion, AutoRoundLLM, AutoRoundMLLM
+from auto_round.calibration.dataset_utils import CalibDataset
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import (
     AdamRoundConfig,
@@ -39,6 +40,7 @@ __all__ = [
     "AutoRoundLLM",
     "AutoRoundMLLM",
     "AutoScheme",
+    "CalibDataset",
     "OptimizedRTNConfig",
     "QuantizationScheme",
     "RTNConfig",

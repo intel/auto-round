@@ -83,7 +83,7 @@ calibration data and will be downloaded automatically from the datasets Hub. Oth
 ### Customized Dataset
 
 - Option 1: Pass a local json file path to dataset argument
-- Option 2: Register your dataset following the [code](../auto_round/calib_dataset.py) and pass the new dataset and
+- Option 2: Register your dataset following the [code](../auto_round/calibration/calib_dataset.py) and pass the new dataset and
   split args to initialize AutoRound object, e.g. autoround=Autoround(dataset="NeelNanda/pile-10k:train", ...)
 - Option 3: pass list of string or list of input_ids to dataset.
 
@@ -149,8 +149,7 @@ cannot provide enough samples within the timeout, a warning is logged and the co
 **CalibDataset (API)**: For programmatic usage, the `CalibDataset` dataclass provides a typed interface:
 
     ~~~python
-    from auto_round.utils.dataset_utils import CalibDataset
-    from auto_round import AutoRound
+    from auto_round import AutoRound, CalibDataset
 
     # Single field
     spec = CalibDataset("my-org/my-dataset", split="train", num=1000, fields="text")
