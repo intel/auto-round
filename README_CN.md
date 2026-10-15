@@ -24,9 +24,9 @@
 </a>
 </p>
 
-&nbsp;&nbsp;&nbsp;&nbsp;[English](README.md) | 简体中文
+&nbsp;&nbsp;&nbsp;&nbsp;简体中文 | [English](README.md)
 
-[User Guide](./docs/step_by_step.md) | [用户指南](./docs/step_by_step_CN.md)&nbsp;&nbsp; 
+[用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
 ---
 <div align="left">
