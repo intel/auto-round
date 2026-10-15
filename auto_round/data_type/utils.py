@@ -489,6 +489,10 @@ def update_fused_layer_global_scales(
 
     def _update_global_scales(modules: list[Module]):
         """Update global scales for a list of modules."""
+        from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
+
+        # SVDQuant keeps the quantized projection inside its residual branch.
+        modules = [module.residual_linear if isinstance(module, SVDQuantLinear) else module for module in modules]
         scales = _collect_scales(modules)
         if not scales:
             return
