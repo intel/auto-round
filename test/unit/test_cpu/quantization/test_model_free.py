@@ -2006,3 +2006,238 @@ class TestMXFPAutoRoundFormat:
         assert extra["lm_head"]["data_type"] == "mx_fp"
         keys = _read_output_keys(output_dir)
         assert "lm_head.weight_packed" in keys
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_diffusion_quantizes_both_transformers(tmp_path, monkeypatch, streaming):
+    import shutil
+
+    import auto_round.compressors.model_free as module
+
+    root = _make_diffusion_model_dir(tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS)
+    shutil.copytree(os.path.join(root, "transformer"), os.path.join(root, "transformer_2"))
+    secondary_tensors = {key: -tensor * 2 for key, tensor in _TRANSFORMER_TENSORS.items()}
+    save_file(secondary_tensors, os.path.join(root, "transformer_2", "model.safetensors"))
+    output = tmp_path / "output"
+    if streaming:
+        monkeypatch.setattr(module, "_get_model_cache_status", lambda _: (False, "test"))
+        monkeypatch.setattr(
+            "auto_round.utils.model_free_utils._list_remote_weight_shards",
+            lambda model, subfolder=None: [f"{subfolder}/model.safetensors"],
+        )
+    core = _ModelFreeCompressorCore(
+        model_name_or_path=root,
+        output_dir=str(output),
+        scheme="MXFP8",
+        device="cpu",
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    core.run()
+    component_weights = {}
+    for name in ("transformer", "transformer_2"):
+        config = json.loads((output / name / "config.json").read_text())
+        assert config["quantization_config"]["bits"] == 8
+        tensors = {}
+        for shard in (output / name).glob("*.safetensors"):
+            with safe_open(shard, framework="pt") as f:
+                tensors.update({key: f.get_tensor(key) for key in f.keys()})
+        for key in _TRANSFORMER_TENSORS:
+            if key.endswith(".weight"):
+                assert tensors[key].dtype == torch.float8_e4m3fn
+                assert tensors[key.replace(".weight", ".weight_scale")].dtype == torch.uint8
+        from auto_round.utils.model_free_utils import _process_shard
+
+        expected, _, _ = _process_shard(
+            os.path.join(root, name, "model.safetensors"),
+            default_scheme=core.default_scheme,
+            layer_config={},
+            device="cpu",
+            model_type="flux",
+            disable_opt_rtn=True,
+        )
+        for key in expected:
+            # float8 equality is not implemented on every torch backend.
+            assert torch.equal(tensors[key].view(torch.uint8), expected[key].view(torch.uint8))
+        for key in _TRANSFORMER_TENSORS:
+            component_weights[name, key] = tensors[key].view(torch.uint8)
+    assert any(
+        not torch.equal(component_weights["transformer", key], component_weights["transformer_2", key])
+        for key in _TRANSFORMER_TENSORS
+    )
+    assert (output / "vae" / "config.json").exists()
+    assert not (output / "transformer" / ".cache" / "model_free_resume.json").exists()
+
+
+@pytest.mark.parametrize("component", ["transformer", "transformer_2"])
+def test_streaming_download_uses_transformer_subfolder(tmp_path, monkeypatch, component):
+    import auto_round.compressors.model_free as module
+
+    downloads = []
+
+    def download(repo, filename, cache_dir):
+        downloads.append((repo, filename))
+        path = tmp_path / "download" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"weights")
+        return str(path)
+
+    monkeypatch.setattr(module, "_download_single_shard", download)
+    path = module._prefetch_shard("org/wan", "model.safetensors", str(tmp_path), "", True, component)
+    assert downloads == [("org/wan", f"{component}/model.safetensors")]
+    assert path == str(tmp_path / ".cache" / "model_free_source_shards" / "model.safetensors")
+    assert os.path.isfile(path)
+
+
+@pytest.mark.parametrize("component", ["transformer", "transformer_2"])
+def test_streaming_discovery_ignores_partial_quantized_output(tmp_path, monkeypatch, component):
+    output = tmp_path / component
+    output.mkdir()
+    save_file({"layer.weight": torch.randn(32, 32)}, output / "model-00001-of-00002.safetensors")
+    core = _ModelFreeCompressorCore("org/wan", str(tmp_path), enable_torch_compile=False)
+    core.is_streaming = True
+    core.is_diffusion_model = True
+    core.diffusion_component = component
+    core.work_dir = str(output)
+    calls = []
+
+    def remote(model, subfolder=None):
+        calls.append(subfolder)
+        return [f"{component}/original-a.safetensors", f"{component}/original-b.safetensors"]
+
+    monkeypatch.setattr("auto_round.utils.model_free_utils._list_remote_weight_shards", remote)
+    core._discover_shards()
+    assert calls == [component]
+    assert core.shard_names == ["original-a.safetensors", "original-b.safetensors"]
+
+
+def test_streaming_secondary_resume_uses_original_sources(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import auto_round.compressors.model_free as module
+
+    root = _make_diffusion_model_dir(tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS)
+    import shutil
+
+    shutil.copytree(os.path.join(root, "transformer"), os.path.join(root, "transformer_2"))
+    source = {}
+    for component in ("transformer", "transformer_2"):
+        for index, (key, tensor) in enumerate(list(_TRANSFORMER_TENSORS.items())[:2]):
+            path = tmp_path / f"{component}-source-{index}.safetensors"
+            save_file({key: tensor if component == "transformer" else -tensor}, path)
+            source[component, f"source-{index}.safetensors"] = str(path)
+
+    monkeypatch.setattr(module, "_get_model_cache_status", lambda _: (False, "test"))
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi.model_info", lambda *args, **kwargs: SimpleNamespace(sha="fixed-revision")
+    )
+    original_metadata = module._download_metadata_files
+    monkeypatch.setattr(module, "_download_metadata_files", lambda model, directory: original_metadata(root, directory))
+    monkeypatch.setattr(
+        "auto_round.utils.model_free_utils._list_remote_weight_shards",
+        lambda model, subfolder=None: [f"{subfolder}/source-{index}.safetensors" for index in range(2)],
+    )
+    processed = []
+    interrupted = [False]
+
+    def process_shards(core):
+        for index, name in enumerate(core.shard_names):
+            if name in core._resume_processed_shards:
+                continue
+            if core.diffusion_component == "transformer_2" and index == 1 and not interrupted[0]:
+                interrupted[0] = True
+                raise RuntimeError("interrupted secondary")
+            tensors, quantized, ignored = _process_shard(
+                source[core.diffusion_component, name],
+                default_scheme=core.default_scheme,
+                disable_opt_rtn=core.disable_opt_rtn,
+                model_type="flux",
+            )
+            output_name = f"model-{index + 1:05d}-of-00002.safetensors"
+            os.makedirs(core._quant_output_dir, exist_ok=True)
+            save_file(tensors, os.path.join(core._quant_output_dir, output_name))
+            core.output_weight_map.update({key: output_name for key in tensors})
+            core.all_quantized_layers.extend(quantized)
+            core._mark_shard_completed(name, output_name, list(tensors), quantized, ignored)
+            processed.append((core.diffusion_component, name))
+
+    monkeypatch.setattr(module._ModelFreeCompressorCore, "_process_all_shards", process_shards)
+    output = tmp_path / "output"
+
+    def compressor():
+        return _ModelFreeCompressorCore(
+            "org/wan", str(output), scheme="MXFP8", enable_torch_compile=False, disable_opt_rtn=True
+        )
+
+    with pytest.raises(RuntimeError, match="interrupted secondary"):
+        compressor().run()
+    assert processed == [
+        ("transformer", "source-0.safetensors"),
+        ("transformer", "source-1.safetensors"),
+        ("transformer_2", "source-0.safetensors"),
+    ]
+    processed.clear()
+    compressor().run()
+    assert processed == [("transformer_2", "source-1.safetensors")]
+    for component in ("transformer", "transformer_2"):
+        config = json.loads((output / component / "config.json").read_text())
+        assert config["quantization_config"]["bits"] == 8
+        assert not (output / component / ".cache" / "model_free_resume.json").exists()
+
+
+def test_streaming_worker_receives_disable_opt_rtn(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+
+    shard = tmp_path / "source.safetensors"
+    save_file({"layer.weight": torch.randn(32, 32)}, shard)
+    core = _ModelFreeCompressorCore("org/wan", str(tmp_path), enable_torch_compile=False, disable_opt_rtn=True)
+    core.is_streaming = True
+    core.is_diffusion_model = True
+    core.diffusion_component = "transformer_2"
+    core.work_dir = str(tmp_path)
+    core.shard_names = ["source.safetensors"]
+    received = []
+    monkeypatch.setattr(
+        module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers=max_workers)
+    )
+    monkeypatch.setattr(module, "_prefetch_shard", lambda *args: str(shard))
+    monkeypatch.setattr(
+        module, "_quantize_local_shard_task", lambda *args, **kwargs: received.append(kwargs["disable_opt_rtn"])
+    )
+    monkeypatch.setattr(core, "_merge_shard_task_result", lambda result: None)
+    core._process_all_shards_streaming_pipeline()
+    assert received == [True]
+
+
+@pytest.mark.parametrize("component", ["transformer", "transformer_2"])
+@pytest.mark.parametrize(
+    "index_name",
+    ["model.safetensors.index.json", "diffusion_pytorch_model.safetensors.index.json", "pytorch_model.bin.index.json"],
+)
+def test_streaming_discovery_prefers_source_index(tmp_path, monkeypatch, component, index_name):
+    from unittest.mock import Mock
+
+    metadata = tmp_path / "metadata" / component
+    metadata.mkdir(parents=True)
+    suffix = ".bin" if index_name.endswith(".bin.index.json") else ".safetensors"
+    shards = [f"source-b{suffix}", f"source-a{suffix}"]
+    index = {"weight_map": {"blocks.1.weight": shards[0], "blocks.0.weight": shards[1], "blocks.1.bias": shards[0]}}
+    (metadata / index_name).write_text(json.dumps(index))
+    output = tmp_path / "output"
+    component_output = output / component
+    component_output.mkdir(parents=True)
+    (component_output / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blocks.0.weight": "partial-output.safetensors"}})
+    )
+    core = _ModelFreeCompressorCore("org/wan", str(output), enable_torch_compile=False)
+    core.is_streaming = True
+    core.is_diffusion_model = True
+    core.diffusion_component = component
+    core.work_dir = str(metadata)
+    remote = Mock(return_value=[f"{component}/{name}" for name in shards] + [f"{component}/backup{suffix}"])
+    monkeypatch.setattr("auto_round.utils.model_free_utils._list_remote_weight_shards", remote)
+    core._discover_shards()
+    assert core.shard_names == shards
+    remote.assert_not_called()
