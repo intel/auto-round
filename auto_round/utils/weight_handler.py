@@ -379,7 +379,7 @@ def convert_module_to_hp_if_necessary(
     dtype: torch.dtype = torch.bfloat16,
     device: str | torch.device = "cpu",
     to_cpu: bool = False,
-    ignore_layers: Optional[list] = None,
+    ignore_layers: list | None = None,
 ) -> torch.nn.Module:
     """Convert quantized layer(s) to high-precision Linear layer(s) if necessary.
 
