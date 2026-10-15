@@ -18,6 +18,12 @@
 </a>
 <a href="https://pepy.tech/projects/auto-round" style="text-decoration:none;"><img src="https://static.pepy.tech/badge/auto-round" alt="PyPI Downloads"></a>
 
+<p align="center">
+<a href="https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard" style="text-decoration:none;">
+<img alt="免费量化您的模型" src="https://img.shields.io/badge/%F0%9F%91%89%20%E5%85%8D%E8%B4%B9%E9%87%8F%E5%8C%96%E6%82%A8%E7%9A%84%E6%A8%A1%E5%9E%8B%20%7C%20Quantize%20Your%20Model%20for%20FREE-2E7D32?style=for-the-badge">
+</a>
+</p>
+
 &nbsp;&nbsp;&nbsp;&nbsp;[English](README.md) | 简体中文
 
 [User Guide](./docs/step_by_step.md) | [用户指南](./docs/step_by_step_CN.md)&nbsp;&nbsp; 
