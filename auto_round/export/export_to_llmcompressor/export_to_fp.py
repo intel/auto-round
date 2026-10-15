@@ -46,6 +46,7 @@ from auto_round.utils import (
     get_module,
     set_amax_for_all_moe_layers,
     set_module,
+    to_standard_regex,
     unsupported_meta_device,
 )
 from auto_round.wrapper import WrapperWALayer
@@ -183,6 +184,22 @@ def _attention_modules_have_nvfp4_kv_scales(model: torch.nn.Module) -> bool:
     return num_attention_modules > 0
 
 
+def _to_regex_targets(layer_names):
+    """Convert exact layer names into ``re:`` regex targets for llm_compressor.
+
+    Exact-name targets only match when the serialized module path is byte-for-byte
+    identical to the runtime path. Models that wrap the language model under a prefix
+    break this: ``Qwen3_5ForConditionalGeneration`` exposes ``lm_head`` as
+    ``language_model.lm_head`` at inference time, so an exact ``lm_head`` target never
+    matches and the layer is silently left unquantized (vLLM then fails to find
+    ``lm_head.weight_packed``). Emitting substring regexes (mirroring
+    ``generate_ignore_regex_list``) keeps matching robust to such prefixes; fused
+    layers (e.g. ``gate_up_proj``) are still resolved via compressed-tensors' fused
+    component expansion.
+    """
+    return [f"re:{to_standard_regex(name)}" for name in layer_names]
+
+
 def _build_mixed_fp_quantization_config(
     scheme_groups,
     layer_config,
@@ -234,7 +251,7 @@ def _build_mixed_fp_quantization_config(
         tmp_quantization_config = initialize_quantization(scheme=scheme)
         tmp_quantization_config = tmp_quantization_config.config_groups["group_0"]
         is_default = (lbits, ldata_type, lact_bits) == global_key
-        tmp_quantization_config.targets = ["Linear"] if is_default else layer_names
+        tmp_quantization_config.targets = ["Linear"] if is_default else _to_regex_targets(layer_names)
         config_groups[group_name] = tmp_quantization_config
         group_formats[group_name] = _get_group_format(lbits, ldata_type)
 
@@ -435,7 +452,7 @@ def save_quantized_as_fp(
                 f"Unsupported layer override data_type={layer_data_type}, bits={layer_bits}, act_bits={layer_act_bits}."
             )
         quantization_config = initialize_quantization(
-            scheme=scheme, targets=targets, kv_cache_scheme=kv_cache_scheme, ignore=ignore
+            scheme=scheme, targets=_to_regex_targets(targets), kv_cache_scheme=kv_cache_scheme, ignore=ignore
         )
         quantization_config.format = _get_group_format(layer_bits, layer_data_type)
         quantization_config = quantization_config.to_dict()

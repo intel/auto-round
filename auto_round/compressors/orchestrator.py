@@ -531,6 +531,16 @@ class CompressionOrchestrator(BaseOrchestrator):
         for name in remain_layer_names:
             logger.info(f"Quantizing remaining layer {name} on CPU.")
             self.alg_composer.compress_layer_outside_block(get_module(self.model, name))
+            # Pack/write outside-block layers (e.g. lm_head) immediately, mirroring the
+            # data-driven path in ``_quantize_layers_outside_blocks``. Without this, the
+            # zero-shot/RTN route serializes them as the raw ``WrapperWALayer`` (e.g.
+            # ``lm_head.orig_layer.weight``) and never packs them to the FP format, so the
+            # exported checkpoint lacks ``weight_packed``/``weight_scale``.
+            if self.compress_context.is_immediate_packing:
+                immediate_pack(name, self.layer_config)
+            if self.compress_context.is_immediate_saving:
+                m = get_module(self.model, name)
+                self.shard_writer.write(m, name=name, is_finalize=False)
             # Outside-block layers (embed_tokens/lm_head/etc.) are typically few so just
             # log a summary after each one.
             clear_memory()
