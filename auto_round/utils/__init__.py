@@ -21,15 +21,28 @@ from auto_round.utils.weight_handler import (
     detect_weight_type,
     is_quantized_input_module,
 )
-from auto_round.utils.dataset_utils import (
-    CalibDataset,
-    auto_detect_text_field,
-    auto_detect_text_field_from_sample,
-    build_dataset_spec,
-    extract_text_from_sample,
-    normalize_dataset_spec,
-    parse_dataset_spec,
+
+# ``dataset_utils`` lives in ``auto_round.calibration`` but is re-exported here for
+# backward compatibility. Importing it eagerly would trigger the calibration package
+# ``__init__`` (which pulls in compressors/schemes) and cause a circular import, so we
+# expose the symbols lazily via module-level ``__getattr__``.
+_DATASET_UTILS_EXPORTS = (
+    "CalibDataset",
+    "auto_detect_text_field",
+    "auto_detect_text_field_from_sample",
+    "build_dataset_spec",
+    "extract_text_from_sample",
+    "normalize_dataset_spec",
+    "parse_dataset_spec",
 )
+
+
+def __getattr__(name):
+    if name in _DATASET_UTILS_EXPORTS:
+        from auto_round.calibration import dataset_utils
+
+        return getattr(dataset_utils, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def copy_missing_tensors_from_source(*args, **kwargs):

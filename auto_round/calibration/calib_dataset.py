@@ -42,9 +42,9 @@ from datasets import (
 from packaging.version import Version
 from torch.utils.data import DataLoader
 
-from . import envs
-from .utils import is_local_path, logger
-from .utils.dataset_utils import (
+from auto_round import envs
+from auto_round.utils import is_local_path, logger
+from auto_round.calibration.dataset_utils import (
     CalibDataset,
     auto_detect_text_field,
     auto_detect_text_field_from_sample,

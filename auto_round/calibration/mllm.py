@@ -87,7 +87,7 @@ class MLLMCalibrator(LLMCalibrator):
 
         logger.info(f"Using MLLM template: {template_name}")
 
-        from auto_round.utils.dataset_utils import strip_dataset_spec_whitespace
+        from auto_round.calibration.dataset_utils import strip_dataset_spec_whitespace
 
         # Strip only cosmetic whitespace; spaces inside option values
         # (e.g. separator / template / system_prompt) are preserved.
@@ -99,7 +99,7 @@ class MLLMCalibrator(LLMCalibrator):
             dataset = strip_dataset_spec_whitespace(dataset)
             # Switch text-only dataset to MLLM dataset when quant_nontext_module=True,
             # as text datasets cannot calibrate vision modules.
-            from auto_round.calib_dataset import CALIB_DATASETS
+            from auto_round.calibration.calib_dataset import CALIB_DATASETS
 
             if self.quant_nontext_module and dataset in CALIB_DATASETS:
                 logger.warning(
@@ -126,7 +126,7 @@ class MLLMCalibrator(LLMCalibrator):
                 # its MLLM_DATASET registry (its `os.path.isfile(dataset) or
                 # dataset in MLLM_DATASET` guard still indexes MLLM_DATASET
                 # with the file path).
-                from auto_round.calib_dataset import get_dataloader
+                from auto_round.calibration.calib_dataset import get_dataloader
 
                 logger.info(
                     f"Multimodal model with non-MLLM calibration dataset {dataset!r} and "

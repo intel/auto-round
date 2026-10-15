@@ -287,8 +287,8 @@ class LLMCalibrator(Calibrator):
 
         Verbatim port of the legacy ``Compressor.calib`` (LLM path only).
         """
-        from auto_round.calib_dataset import get_dataloader
-        from auto_round.utils.dataset_utils import strip_dataset_spec_whitespace
+        from auto_round.calibration.calib_dataset import get_dataloader
+        from auto_round.calibration.dataset_utils import strip_dataset_spec_whitespace
 
         need_attention_mask = True
         if isinstance(self.dataset, str):

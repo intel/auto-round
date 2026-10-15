@@ -334,7 +334,7 @@ def get_mllm_dataloader(
         return DataLoader(dataset, **dataloader_params), bs, seqlen
     else:
         # try to load text calibration dataset
-        from auto_round.calib_dataset import get_dataloader
+        from auto_round.calibration.calib_dataset import get_dataloader
 
         dataloader = get_dataloader(tokenizer, seqlen, dataset, seed, bs, nsamples)
         if quant_nontext_module:

@@ -8,7 +8,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound
-from auto_round.calib_dataset import get_code_calibration_dataset
+from auto_round.calibration.calib_dataset import get_code_calibration_dataset
 
 
 @pytest.mark.parametrize(

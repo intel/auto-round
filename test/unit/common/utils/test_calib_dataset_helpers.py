@@ -27,7 +27,7 @@ from datasets import Dataset, Features, Sequence, Value
 # ---------------------------------------------------------------------------
 class TestRegisterDataset:
     def test_register_single_name(self):
-        from auto_round.calib_dataset import CALIB_DATASETS, register_dataset
+        from auto_round.calibration.calib_dataset import CALIB_DATASETS, register_dataset
 
         @register_dataset("_test_ds_zzz_")
         class _StubDataset:
@@ -40,7 +40,7 @@ class TestRegisterDataset:
             CALIB_DATASETS.pop("_test_ds_zzz_", None)
 
     def test_register_multiple_names(self):
-        from auto_round.calib_dataset import CALIB_DATASETS, register_dataset
+        from auto_round.calibration.calib_dataset import CALIB_DATASETS, register_dataset
 
         @register_dataset(["_a_", "_b_"])
         class _Dual:
@@ -54,7 +54,7 @@ class TestRegisterDataset:
             CALIB_DATASETS.pop("_b_", None)
 
     def test_register_returns_class_unchanged(self):
-        from auto_round.calib_dataset import CALIB_DATASETS, register_dataset
+        from auto_round.calibration.calib_dataset import CALIB_DATASETS, register_dataset
 
         @register_dataset("_return_check_")
         class _Returned:
@@ -71,7 +71,7 @@ class TestRegisterDataset:
 # ---------------------------------------------------------------------------
 class TestDatasetNetworkErrors:
     def test_network_error_without_modelscope_prompts_install(self, monkeypatch):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         monkeypatch.setattr(calib_dataset, "version", MagicMock(side_effect=calib_dataset.PackageNotFoundError))
 
@@ -81,7 +81,7 @@ class TestDatasetNetworkErrors:
             )
 
     def test_network_error_with_modelscope_switches_to_fineweb_edu(self, monkeypatch):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         fallback_dataset = MagicMock()
         load_dataset = MagicMock(return_value=fallback_dataset)
@@ -100,14 +100,14 @@ class TestDatasetNetworkErrors:
         assert "Automatically switching" in warning.call_args.args[0]
 
     def test_closed_http_client_is_treated_as_network_error(self):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         error = RuntimeError("Cannot send a request, as the client has been closed.")
 
         assert calib_dataset._get_dataset_network_error(error) is error
 
     def test_modelscope_fineweb_network_error_is_not_retried(self, monkeypatch):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         monkeypatch.setattr(calib_dataset, "version", MagicMock(return_value="1.0"))
         load_dataset = MagicMock()
@@ -131,7 +131,7 @@ class TestFineWebEduDataset:
         return dataset
 
     def test_alias_loads_huggingface_sample_without_modelscope(self, monkeypatch):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         dataset = self._streaming_dataset_mock()
         load_dataset = MagicMock(return_value=dataset)
@@ -151,7 +151,7 @@ class TestFineWebEduDataset:
     def test_alias_loads_modelscope_sample_when_enabled(self, monkeypatch):
         import transformers.utils.versions as transformers_versions
 
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         streamed_samples = [
             {
@@ -190,7 +190,7 @@ class TestFineWebEduDataset:
 # ---------------------------------------------------------------------------
 class TestMakeMapFingerprint:
     def test_deterministic_for_same_inputs(self):
-        from auto_round.calib_dataset import _make_map_fingerprint
+        from auto_round.calibration.calib_dataset import _make_map_fingerprint
 
         ds = MagicMock()
         ds._fingerprint = "fp_abc"
@@ -202,7 +202,7 @@ class TestMakeMapFingerprint:
         assert fp1 == fp2
 
     def test_different_seqlen_changes_fingerprint(self):
-        from auto_round.calib_dataset import _make_map_fingerprint
+        from auto_round.calibration.calib_dataset import _make_map_fingerprint
 
         ds = MagicMock()
         ds._fingerprint = "fp_abc"
@@ -214,7 +214,7 @@ class TestMakeMapFingerprint:
         assert fp1 != fp2
 
     def test_different_system_prompt_changes_fingerprint(self):
-        from auto_round.calib_dataset import _make_map_fingerprint
+        from auto_round.calibration.calib_dataset import _make_map_fingerprint
 
         ds = MagicMock()
         ds._fingerprint = "fp_abc"
@@ -226,7 +226,7 @@ class TestMakeMapFingerprint:
         assert fp1 != fp2
 
     def test_different_apply_chat_template_changes_fingerprint(self):
-        from auto_round.calib_dataset import _make_map_fingerprint
+        from auto_round.calibration.calib_dataset import _make_map_fingerprint
 
         ds = MagicMock()
         ds._fingerprint = "fp_abc"
@@ -238,7 +238,7 @@ class TestMakeMapFingerprint:
         assert fp1 != fp2
 
     def test_missing_dataset_fingerprint_falls_back(self):
-        from auto_round.calib_dataset import _make_map_fingerprint
+        from auto_round.calibration.calib_dataset import _make_map_fingerprint
 
         ds = object()  # no _fingerprint
         tok = MagicMock()
@@ -250,7 +250,7 @@ class TestMakeMapFingerprint:
         assert len(fp) == 64  # sha256 hex digest length
 
     def test_returns_sha256_hex(self):
-        from auto_round.calib_dataset import _make_map_fingerprint
+        from auto_round.calibration.calib_dataset import _make_map_fingerprint
 
         ds = MagicMock()
         ds._fingerprint = "x"
@@ -267,7 +267,7 @@ class TestMakeMapFingerprint:
 # ---------------------------------------------------------------------------
 class TestGetDatasetLen:
     def test_supports_len_protocol(self):
-        from auto_round.calib_dataset import get_dataset_len
+        from auto_round.calibration.calib_dataset import get_dataset_len
 
         class _Sized:
             def __len__(self):
@@ -276,7 +276,7 @@ class TestGetDatasetLen:
         assert get_dataset_len(_Sized()) == 7
 
     def test_falls_back_to_iteration(self):
-        from auto_round.calib_dataset import get_dataset_len
+        from auto_round.calibration.calib_dataset import get_dataset_len
 
         class _Iterable:
             def __iter__(self):
@@ -285,7 +285,7 @@ class TestGetDatasetLen:
         assert get_dataset_len(_Iterable()) == 5
 
     def test_empty_iterable(self):
-        from auto_round.calib_dataset import get_dataset_len
+        from auto_round.calibration.calib_dataset import get_dataset_len
 
         class _Empty:
             def __iter__(self):
@@ -294,7 +294,7 @@ class TestGetDatasetLen:
         assert get_dataset_len(_Empty()) == 0
 
     def test_list_input(self):
-        from auto_round.calib_dataset import get_dataset_len
+        from auto_round.calibration.calib_dataset import get_dataset_len
 
         assert get_dataset_len([1, 2, 3]) == 3
 
@@ -304,7 +304,7 @@ class TestGetDatasetLen:
 # ---------------------------------------------------------------------------
 class TestSelect:
     def test_yields_requested_indices(self):
-        from auto_round.calib_dataset import select
+        from auto_round.calibration.calib_dataset import select
 
         data = ["a", "b", "c", "d", "e"]
         result = list(select(data, [1, 3]))
@@ -312,7 +312,7 @@ class TestSelect:
 
     def test_stops_at_max_index(self):
         """Iteration should stop once max requested index is reached."""
-        from auto_round.calib_dataset import select
+        from auto_round.calibration.calib_dataset import select
 
         def _gen():
             yield "a"
@@ -326,14 +326,14 @@ class TestSelect:
 
     def test_empty_indices_raises(self):
         """``select`` requires at least one index (max() on empty raises)."""
-        from auto_round.calib_dataset import select
+        from auto_round.calibration.calib_dataset import select
 
         data = ["a", "b", "c"]
         with pytest.raises(ValueError):
             list(select(data, []))
 
     def test_out_of_range_indices_ignored(self):
-        from auto_round.calib_dataset import select
+        from auto_round.calibration.calib_dataset import select
 
         data = ["a", "b"]
         # 5 is out of range and greater than max([1, 5])=5; the loop will stop
@@ -350,7 +350,7 @@ class TestSelect:
 # ---------------------------------------------------------------------------
 class TestApplyChatTemplateToSamples:
     def test_with_string_samples(self):
-        from auto_round.calib_dataset import apply_chat_template_to_samples
+        from auto_round.calibration.calib_dataset import apply_chat_template_to_samples
 
         tokenizer = MagicMock()
         tokenizer.apply_chat_template.return_value = "<rendered text>"
@@ -369,7 +369,7 @@ class TestApplyChatTemplateToSamples:
         assert tokenizer.apply_chat_template.call_count == 2
 
     def test_with_dict_messages(self):
-        from auto_round.calib_dataset import apply_chat_template_to_samples
+        from auto_round.calibration.calib_dataset import apply_chat_template_to_samples
 
         tokenizer = MagicMock()
         tokenizer.apply_chat_template.return_value = "<rendered>"
@@ -386,7 +386,7 @@ class TestApplyChatTemplateToSamples:
         assert msgs_arg[1]["role"] == "assistant"
 
     def test_with_system_prompt(self):
-        from auto_round.calib_dataset import apply_chat_template_to_samples
+        from auto_round.calibration.calib_dataset import apply_chat_template_to_samples
 
         tokenizer = MagicMock()
         tokenizer.apply_chat_template.return_value = "<rendered>"
@@ -399,7 +399,7 @@ class TestApplyChatTemplateToSamples:
         assert msgs_arg[0]["content"] == "you are helpful"
 
     def test_fallback_when_template_fails(self):
-        from auto_round.calib_dataset import apply_chat_template_to_samples
+        from auto_round.calibration.calib_dataset import apply_chat_template_to_samples
 
         tokenizer = MagicMock()
         # First call raises (the one with system prompt), second succeeds (fallback)
@@ -422,7 +422,7 @@ class TestApplyChatTemplateToSamples:
 # ---------------------------------------------------------------------------
 class TestGetDatasetImpl:
     def test_fineweb_edu_loader_receives_requested_sample_limit(self, monkeypatch):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         dataset = Dataset.from_dict(
             {
@@ -439,7 +439,7 @@ class TestGetDatasetImpl:
         assert loader.call_args.kwargs["max_samples"] == calib_dataset._FINEWEB_EDU_MIN_CANDIDATES
 
     def test_combines_sources_with_different_metadata_schemas(self, monkeypatch):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         def dataset_loader(text_feature):
             def load_dataset(*args, **kwargs):
@@ -480,7 +480,7 @@ class TestGetDatasetImpl:
         assert len(dataset) == 2
 
     def test_preserves_single_source_metadata(self, monkeypatch):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         def load_dataset(*args, **kwargs):
             return Dataset.from_dict(
@@ -504,7 +504,7 @@ class TestGetDatasetImpl:
 # ---------------------------------------------------------------------------
 class TestConcatSamplesToSeqlen:
     def test_packs_short_samples_into_full_length(self):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         # Four samples of length 3 packed into seqlen=6 -> two full-length rows.
         ds = Dataset.from_dict({"input_ids": [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]})
@@ -515,7 +515,7 @@ class TestConcatSamplesToSeqlen:
             assert len(row["attention_mask"]) == 6
 
     def test_oversized_sample_emits_single_sequence(self):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         ds = Dataset.from_dict({"input_ids": [list(range(10))]})
         packed = calib_dataset._concat_samples_to_seqlen(ds, seqlen=4)
@@ -523,7 +523,7 @@ class TestConcatSamplesToSeqlen:
         assert len(packed[0]["input_ids"]) == 4
 
     def test_all_short_returns_original_unpacked(self):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         # Single short sample can never reach seqlen -> original returned.
         ds = Dataset.from_dict({"input_ids": [[1, 2]]})
@@ -554,7 +554,7 @@ class TestCompetitionMathChatTemplate:
             return {"input_ids": input_ids, "attention_mask": [[1] * len(x) for x in input_ids]}
 
     def test_chat_template_applied_once_per_sample(self, monkeypatch):
-        import auto_round.calib_dataset as calib_dataset
+        import auto_round.calibration.calib_dataset as calib_dataset
 
         rows = Dataset.from_dict({"problem": ["p1", "p2", "p3"], "solution": ["s1", "s2", "s3"]})
         monkeypatch.setattr(calib_dataset, "load_dataset", lambda *a, **k: rows)

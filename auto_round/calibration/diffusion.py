@@ -114,7 +114,7 @@ class DiffusionCalibrator(LLMCalibrator):
         )
         requires_image = self._requires_calibration_image()
         if isinstance(self.dataset, str):
-            from auto_round.utils.dataset_utils import strip_dataset_spec_whitespace
+            from auto_round.calibration.dataset_utils import strip_dataset_spec_whitespace
 
             # Strip only cosmetic whitespace; spaces inside option values
             # (e.g. separator / template / system_prompt) are preserved.

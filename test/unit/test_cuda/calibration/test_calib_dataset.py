@@ -1,7 +1,7 @@
 import pytest
 from transformers import AutoTokenizer
 
-from auto_round.calib_dataset import get_dataloader
+from auto_round.calibration.calib_dataset import get_dataloader
 
 
 class TestLocalCalibDataset:

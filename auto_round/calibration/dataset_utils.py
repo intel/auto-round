@@ -24,7 +24,7 @@ This module provides:
 
 Example::
 
-    from auto_round.utils.dataset_utils import CalibDataset
+    from auto_round.calibration.dataset_utils import CalibDataset
 
     # Single field
     spec = CalibDataset("my-org/my-dataset", split="train", num=1000, fields="text")
