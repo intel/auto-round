@@ -716,7 +716,7 @@ def test_parse_max_shard_size():
 # ---------------------------------------------------------------------------
 
 
-def _build_cli_configs(argv):
+def _build_cli_configs(argv, **overrides):
     """Build algorithm configs exactly like the quantize CLI does."""
     from auto_round.cli.algorithms import AlgorithmHandler
     from auto_round.cli.main import _extract_common_quantization_kwargs
@@ -725,6 +725,8 @@ def _build_cli_configs(argv):
     args = build_quantize_parser().parse_args(["--model", "dummy-model"] + list(argv))
     if getattr(args, "iters", None) is None:
         args.iters = 200
+    for key, value in overrides.items():
+        setattr(args, key, value)
     return AlgorithmHandler.build_configs(args, _extract_common_quantization_kwargs(args))
 
 
@@ -807,6 +809,117 @@ def test_list_alg_includes_auto_round_v2():
     from auto_round.cli.algorithms import AlgorithmHandler
 
     assert "auto_round_v2" in AlgorithmHandler.format_listing()
+
+
+# ---------------------------------------------------------------------------
+# `rtn` / `opt-rtn` plain-vs-optimized RTN
+# ---------------------------------------------------------------------------
+
+
+def test_cli_rtn_algorithm_selects_plain_rtn():
+    from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
+    from auto_round.algorithms.registry import normalize_algorithm_config
+
+    configs = _build_cli_configs(["--alg", "rtn"])
+
+    assert [type(config).__name__ for config in configs] == ["RTNConfig"]
+    assert configs[0].disable_opt_rtn is True
+    # An explicitly forced plain RTN must not be re-normalized into the optimized one.
+    assert type(normalize_algorithm_config(configs[0])) is RTNConfig
+    assert not isinstance(configs[0], OptimizedRTNConfig)
+
+
+@pytest.mark.parametrize("alias", ["opt-rtn", "opt_rtn", "optimized_rtn", "optimized-rtn"])
+def test_cli_opt_rtn_algorithm_selects_the_optimized_path(alias):
+    from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
+    from auto_round.algorithms.registry import normalize_algorithm_config
+
+    configs = _build_cli_configs(["--alg", alias])
+
+    # Exactly one block quantizer: opt-rtn must not append the implicit fallback.
+    assert [type(config).__name__ for config in configs] == ["OptimizedRTNConfig"]
+    assert isinstance(configs[0], OptimizedRTNConfig)
+    assert configs[0].disable_opt_rtn is False
+    assert configs[0].orig_disable_opt_rtn is False
+    assert isinstance(normalize_algorithm_config(configs[0]), OptimizedRTNConfig)
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_disable_opt_rtn"),
+    [
+        (["--alg", "rtn", "--enable_opt_rtn"], True),
+        (["--alg", "opt-rtn", "--disable_opt_rtn"], False),
+    ],
+)
+def test_rtn_algorithm_name_wins_over_a_contradicting_flag(argv, expected_disable_opt_rtn):
+    configs = _build_cli_configs(argv)
+
+    assert len(configs) == 1
+    assert configs[0].disable_opt_rtn is expected_disable_opt_rtn
+    # `orig_disable_opt_rtn` marks the value as user policy, which is what stops
+    # the W8A16/W8A8 efficiency heuristic and the AWQ policy from overriding it.
+    assert configs[0].orig_disable_opt_rtn is expected_disable_opt_rtn
+
+
+def test_cli_opt_rtn_composes_with_awq_without_extra_configs():
+    from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
+
+    configs = _build_cli_configs(["--alg", "awq,opt-rtn"])
+
+    assert [type(config).__name__ for config in configs] == ["AWQConfig", "OptimizedRTNConfig"]
+    assert isinstance(configs[1], OptimizedRTNConfig)
+    assert configs[1].disable_opt_rtn is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_type"),
+    [
+        ({}, "RTNConfig"),
+        ({"disable_opt_rtn": True}, "RTNConfig"),
+        ({"disable_opt_rtn": False}, "RTNConfig"),
+    ],
+)
+def test_implicit_rtn_path_keeps_flag_and_heuristic_behaviour(overrides, expected_type):
+    """Without an explicit `--algorithm`, RTN must not be forced to plain.
+
+    This is what keeps `auto-round-rtn` / `auto-round-opt-rtn` and the plain
+    `--iters 0` path behaving exactly as before.
+    """
+    from auto_round.algorithms.registry import normalize_algorithm_config
+
+    configs = _build_cli_configs(["--iters", "0"], **overrides)
+
+    assert [type(config).__name__ for config in configs] == [expected_type]
+    if overrides:
+        # An explicit flag is user policy, exactly as before.
+        assert configs[0].disable_opt_rtn is overrides["disable_opt_rtn"]
+        assert configs[0].orig_disable_opt_rtn is overrides["disable_opt_rtn"]
+    else:
+        # No flag: `orig` stays None so the engine keeps owning the decision
+        # (heuristic default for a W4A16 int scheme is the optimized path).
+        assert configs[0].disable_opt_rtn is False
+        assert configs[0].orig_disable_opt_rtn is None
+    assert type(normalize_algorithm_config(configs[0])).__name__ == (
+        "OptimizedRTNConfig" if configs[0].disable_opt_rtn is False else "RTNConfig"
+    )
+
+
+def test_list_alg_includes_opt_rtn():
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    listing = AlgorithmHandler.format_listing()
+
+    assert "- rtn" in listing
+    assert "opt-rtn" in listing
+
+
+def test_opt_rtn_help_lists_the_rtn_switches():
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    help_text = AlgorithmHandler.format_detail("opt-rtn")
+
+    assert "--disable_opt_rtn" in help_text
+    assert "--enable_opt_rtn" in help_text
 
 
 # ---------------------------------------------------------------------------

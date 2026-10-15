@@ -31,7 +31,7 @@ class RTNConfig(QuantizationConfig):
             dest="disable_opt_rtn",
             action="store_const",
             const=True,
-            help="Force plain RTN (disable optimized path).",
+            help="Force plain RTN (disable optimized path). Equivalent to `--algorithm rtn`.",
         )
         mutex.add_argument(
             "--enable_opt_rtn",
@@ -39,7 +39,7 @@ class RTNConfig(QuantizationConfig):
             dest="disable_opt_rtn",
             action="store_const",
             const=False,
-            help="Force optimized RTN path.",
+            help="Force optimized RTN path. Equivalent to `--algorithm opt-rtn`.",
         )
         registry.add_argument(
             "--enable_neuqi",
@@ -116,5 +116,13 @@ register_algorithm(
     "rtn",
     aliases=("rtn",),
     config_factory=RTNConfig,
-    summary="Round-To-Nearest quantization.",
+    summary="Round-To-Nearest quantization (plain, no optimized initialization).",
+)
+
+
+register_algorithm(
+    "opt-rtn",
+    aliases=("opt-rtn", "opt_rtn", "optimized_rtn", "optimized-rtn"),
+    config_factory=OptimizedRTNConfig,
+    summary="Round-To-Nearest quantization with the optimized initialization path.",
 )

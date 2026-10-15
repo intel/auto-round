@@ -29,6 +29,7 @@ _builtin_algorithms_registered = False
 _pipeline_members_registered = False
 _BUILTIN_ALGORITHM_ORDER = (
     "rtn",
+    "opt-rtn",
     "auto_round",
     "auto_round_v2",
     "awq",
