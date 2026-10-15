@@ -36,8 +36,8 @@ def moe_infer(module, x, topk_ids, topk_weight):
         return _get_moe_infer_impl(module)(module, x, topk_ids, topk_weight)
 
 
-class KimiVLDeepseekV3MoE(ReplacementModuleBase):
-    """Expose a grad-aware ``moe_infer`` on Kimi remote MoE blocks (Kimi-VL ``DeepseekV3MoE``).
+class _KimiMoEGradHook:
+    """Expose a grad-aware ``moe_infer`` on Kimi remote MoE blocks.
 
     The remote ``moe_infer`` is decorated with ``@torch.no_grad()`` and is the only path
     used in eval mode, so routed experts would never receive tuning gradients.
@@ -49,10 +49,6 @@ class KimiVLDeepseekV3MoE(ReplacementModuleBase):
         super().__init__(original)
 
     @classmethod
-    def original_module_class(cls) -> str:
-        return "DeepseekV3MoE"
-
-    @classmethod
     def is_to_be_replaced(cls, original: torch.nn.Module) -> bool:
         return cls.is_registered(original.__class__.__name__) and callable(_get_moe_infer_impl(original))
 
@@ -61,12 +57,17 @@ class KimiVLDeepseekV3MoE(ReplacementModuleBase):
         original.moe_infer = MethodType(moe_infer, original)
         return original
 
-    def release_original_module(self) -> None:
-        pass
+
+class KimiVLDeepseekV3MoE(_KimiMoEGradHook, ReplacementModuleBase):
+    """Kimi-VL remote ``DeepseekV3MoE``."""
+
+    @classmethod
+    def original_module_class(cls) -> str:
+        return "DeepseekV3MoE"
 
 
-class KimiLinearSparseMoeBlock(KimiVLDeepseekV3MoE):
-    """Same hook for Kimi-Linear / Kimi-K3 remote ``KimiSparseMoeBlock``."""
+class KimiLinearSparseMoeBlock(_KimiMoEGradHook, ReplacementModuleBase):
+    """Kimi-Linear / Kimi-K3 remote ``KimiSparseMoeBlock``."""
 
     @classmethod
     def original_module_class(cls) -> str:
