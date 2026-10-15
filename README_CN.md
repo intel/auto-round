@@ -7,7 +7,7 @@
 </p>
 
 
-<h3> 面向 LLM 的先进量化算法</h3>
+<h3>训练后量化的效率，量化感知训练的精度</h3>
 
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.16.0-green)](https://github.com/intel/auto-round/releases)
