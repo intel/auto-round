@@ -25,6 +25,7 @@ import pytest
 import torch
 
 ark = auto_round_kernel
+CRI_SYCL_TARGETS = {"cri", "intel_gpu_cri"}
 
 
 def is_xpu_available():
@@ -63,7 +64,11 @@ def has_moe_gemm_prefill_hmt_mxfp4_mxfp4():
     """Check if the FWHT HMT + MXFP4 x MXFP4 MoE prefill path is available."""
     if ark.xpu_lib is None:
         return False
-    return hasattr(ark.xpu_lib, "mxfp4_hadamard_quant") and hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp4_mxfp4")
+    return (
+        getattr(ark.xpu_lib, "sycl_target", None) in CRI_SYCL_TARGETS
+        and hasattr(ark.xpu_lib, "mxfp4_hadamard_quant")
+        and hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp4_mxfp4")
+    )
 
 
 @pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
@@ -144,7 +149,7 @@ class TestMoEGemmPrefillMXFP4MXFP4:
 @pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
 @pytest.mark.skipif(
     not has_moe_gemm_prefill_hmt_mxfp4_mxfp4(),
-    reason="HMT MXFP4 x MXFP4 MoE prefill kernel not built (need ARK_SYCL_TLA=ON)",
+    reason="HMT MXFP4 x MXFP4 MoE prefill kernel was not built for CRI",
 )
 class TestMoEGemmPrefillHMTMXFP4MXFP4:
     """Unit tests for fused HMT + MXFP4 activation x MXFP4 weight MoE prefill."""
