@@ -299,20 +299,33 @@ def test_zero_shot_resolves_component_plan_before_initialization(monkeypatch, se
 
 
 @pytest.mark.parametrize("fail_save", [False, True])
-def test_secondary_export_selects_and_restores_full_plan(tmp_path, monkeypatch, fail_save):
+@pytest.mark.parametrize("selector", [None, r"\.1$"])
+def test_secondary_export_selects_and_restores_full_plan(tmp_path, monkeypatch, fail_save, selector):
+    from auto_round.compressors.base import BaseOrchestrator
+    from auto_round.utils import extract_block_names_to_str
+
     primary, secondary = torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)
-    primary_plan, secondary_plan = object(), object()
+    primary_plan = SimpleNamespace(quant_block_list=(("blocks.0", "blocks.1"),))
+    secondary_plan = SimpleNamespace(quant_block_list=(("layers.0", "layers.1"),))
     calls = []
 
     class Parent:
         def save_quantized(self, **kwargs):
-            calls.append((self.model_context.model, self.compression_plan))
+            exported_selector = self.to_quant_block_names
+            if exported_selector is None:
+                exported_selector = extract_block_names_to_str(self.quant_block_list)
+            calls.append((self.model_context.model, self.compression_plan, exported_selector))
+            assert exported_selector == (selector or ("blocks" if self.model_context.model is primary else "layers"))
             if self.model_context.model is secondary and fail_save:
                 raise RuntimeError("export failed")
             return self.model_context.model
 
     class Compressor(DiffusionMixin, Parent):
+        quant_block_list = BaseOrchestrator.quant_block_list
+
         def __init__(self):
+            self._diffusion_user_block_selector = selector
+            self.to_quant_block_names = selector or "blocks"
             self.model_context = SimpleNamespace(
                 model=primary,
                 pipe=SimpleNamespace(
@@ -335,7 +348,8 @@ def test_secondary_export_selects_and_restores_full_plan(tmp_path, monkeypatch, 
             comp.save_quantized(str(tmp_path), format=[])
     else:
         comp.save_quantized(str(tmp_path), format=[])
-    assert calls == [(primary, primary_plan), (secondary, secondary_plan)]
+    assert calls == [(primary, primary_plan, selector or "blocks"), (secondary, secondary_plan, selector or "layers")]
+    assert comp.to_quant_block_names == (selector or "blocks")
     assert comp.model_context.model is primary
     assert comp.compression_plan is primary_plan
     assert comp.layer_config == {"primary": {}}

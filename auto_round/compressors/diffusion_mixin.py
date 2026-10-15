@@ -545,9 +545,12 @@ class DiffusionMixin:
                 saved_model = self.model_context.model
                 saved_lc = self.layer_config
                 saved_plan = getattr(self, "compression_plan", None)
+                saved_selector = self.to_quant_block_names
                 component_plan = getattr(self, "_quantized_transformer_plans", {}).get(name)
                 if component_plan is not None:
                     self.compression_plan = component_plan
+                    # None lets serialization derive the selector from this component's plan.
+                    self.to_quant_block_names = copy.deepcopy(self._diffusion_user_block_selector)
                 saved_immediate_saving = self.compress_context.is_immediate_saving
                 self.model_context.model, self.layer_config = quantized_transformers[name]
                 saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
@@ -569,6 +572,7 @@ class DiffusionMixin:
                         self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
                     self.model_context.model = saved_model
                     self.compression_plan = saved_plan
+                    self.to_quant_block_names = saved_selector
                     self.layer_config = saved_lc
             elif val is self.model_context.model:
                 # Save primary quantized transformer
