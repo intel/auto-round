@@ -541,6 +541,7 @@ def _wildcard_concat_converters_for(model_type):
         target = entry.target_patterns[0].rstrip("$")
         if "*" not in source or "*" in target:
             continue
+
         converters.append((target, source, getattr(entry.operations[0], "dim", 0), getattr(entry, "force_cpu", False)))
     return tuple(converters)
 
@@ -583,6 +584,7 @@ def _wildcard_split_converters_for(model_type):
         target = entry.target_patterns[0].rstrip("$")
         if "*" not in source or "*" in target:
             continue
+
         op = entry.operations[0]
         converters.append((target, source, getattr(op, "dim", 0), getattr(op, "num_shards_attribute", None)))
     return tuple(converters)
