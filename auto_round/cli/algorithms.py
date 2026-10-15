@@ -22,6 +22,7 @@ from dataclasses import replace
 from typing import Any, get_args, get_origin, get_type_hints
 
 from auto_round.algorithms.config import AlgorithmConfig, AlgorithmParameterRegistry
+from auto_round.algorithms.quantization.rtn.config import RTN_VARIANT_DISABLE_OPT_RTN
 from auto_round.algorithms.registry import (
     get_algorithm_entry,
     iter_algorithm_entries,
@@ -173,14 +174,12 @@ _BLOCK_QUANTIZER_ALGORITHMS = frozenset({"rtn", "opt-rtn", "auto_round", "auto_r
 # nothing to tune, so it degrades to RTN exactly like `auto_round`.
 _ITERS_ZERO_ALGORITHMS = {"auto_round": "rtn", "auto_round_v2": "rtn"}
 
-# RTN variants that are selectable by name. `rtn` forces plain RTN and `opt-rtn`
-# forces the optimized path, which is exactly what `--disable_opt_rtn` /
-# `--enable_opt_rtn` do. The name is authoritative, so a contradicting flag is
-# ignored rather than silently winning. The mapping only applies when the user
-# spells the name out: the implicit `rtn` fallback (no `--algorithm`, the
-# `auto-round-rtn` / `auto-round-opt-rtn` recipes) keeps the existing
-# flag- and heuristic-driven behaviour.
-_RTN_VARIANT_DISABLE_OPT_RTN = {"rtn": True, "opt-rtn": False}
+# RTN variants selectable by name (`RTN_VARIANT_DISABLE_OPT_RTN` in the RTN config
+# module, shared with the entry API). The name is authoritative, so a contradicting
+# flag is ignored rather than silently winning. The mapping only applies when the
+# user spells the name out: the implicit `rtn` fallback (no `--algorithm`, the
+# `auto-round-rtn` / `auto-round-opt-rtn` recipes) keeps the existing flag- and
+# heuristic-driven behaviour.
 
 
 def _find_merge_target(merged_parameters, locations, group_name, parameter) -> int | None:
@@ -314,10 +313,10 @@ class AlgorithmHandler:
             kwargs = _parameter_registry(config_cls).config_kwargs(args)
             if getattr(config_cls, "cli_include_common_args", True):
                 kwargs.update(common_kwargs)
-            if name in explicit_names and name in _RTN_VARIANT_DISABLE_OPT_RTN:
+            if name in explicit_names and name in RTN_VARIANT_DISABLE_OPT_RTN:
                 # The algorithm name is authoritative: it selects the variant
                 # even when the opposite flag was passed as well.
-                kwargs["disable_opt_rtn"] = _RTN_VARIANT_DISABLE_OPT_RTN[name]
+                kwargs["disable_opt_rtn"] = RTN_VARIANT_DISABLE_OPT_RTN[name]
             elif name == "rtn" and getattr(args, "disable_opt_rtn", None) is None and awq_disable_opt_rtn is not None:
                 kwargs["disable_opt_rtn"] = awq_disable_opt_rtn
             if isinstance(entry.config_factory, type):

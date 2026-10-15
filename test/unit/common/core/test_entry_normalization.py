@@ -228,7 +228,8 @@ def test_combined_awq_zero_iters_keeps_awq_and_selects_rtn():
 @pytest.mark.parametrize(
     ("algorithm", "expected_types"),
     [
-        ("rtn", ["OptimizedRTNConfig"]),
+        ("rtn", ["RTNConfig"]),
+        ("opt-rtn", ["OptimizedRTNConfig"]),
         ("awq", ["AWQConfig", "RTNConfig"]),
         ("signround", ["SignRoundConfig"]),
         ("awq,signround", ["AWQConfig", "SignRoundConfig"]),
@@ -240,6 +241,70 @@ def test_legacy_algorithm_matches_alg_configs_aliases(algorithm, expected_types)
 
     assert _types(legacy_configs) == expected_types
     assert _types(unified_configs) == expected_types
+
+
+@pytest.mark.parametrize(
+    ("alias", "expected_disable_opt_rtn"),
+    [
+        ("rtn", True),
+        ("opt-rtn", False),
+        ("opt_rtn", False),
+        ("optimized_rtn", False),
+        ("optimized-rtn", False),
+    ],
+)
+def test_named_rtn_variant_forces_the_disable_opt_rtn_policy(alias, expected_disable_opt_rtn):
+    """`rtn` selects plain RTN and `opt-rtn` the optimized path, as on the CLI."""
+    configs = _normalize_alg_configs(alias)
+
+    assert len(configs) == 1
+    assert configs[0].disable_opt_rtn is expected_disable_opt_rtn
+    # Marked as user policy, so the W8A16/W8A8 heuristic and the AWQ-inherited
+    # policy cannot switch the variant back.
+    assert configs[0].orig_disable_opt_rtn is expected_disable_opt_rtn
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "direct_kwargs", "expected_disable_opt_rtn"),
+    [
+        ("rtn", {"disable_opt_rtn": False}, True),
+        ("opt-rtn", {"disable_opt_rtn": True}, False),
+        ("rtn", {"enable_opt_rtn": True}, True),
+    ],
+)
+def test_named_rtn_variant_wins_over_a_contradicting_argument(algorithm, direct_kwargs, expected_disable_opt_rtn):
+    configs = _normalize_alg_configs(algorithm, direct_kwargs=dict(direct_kwargs))
+
+    assert len(configs) == 1
+    assert configs[0].disable_opt_rtn is expected_disable_opt_rtn
+    assert configs[0].orig_disable_opt_rtn is expected_disable_opt_rtn
+
+
+def test_implicit_rtn_fallback_keeps_the_heuristic_variant():
+    """`alg_configs=None` must not be treated as naming the `rtn` variant."""
+    heuristic = _normalize_alg_configs(None, direct_kwargs={"iters": 0})
+    forced = _normalize_alg_configs(None, direct_kwargs={"iters": 0, "disable_opt_rtn": True})
+
+    # No name was given, so the value stays unmarked (orig is None) and the
+    # engine picks the variant: W4A16 int is optimized by default.
+    assert heuristic[0].orig_disable_opt_rtn is None
+    assert heuristic[0].disable_opt_rtn is False
+    assert _types(heuristic) == ["OptimizedRTNConfig"]
+
+    # The explicit flag is still honoured, exactly as before.
+    assert forced[0].orig_disable_opt_rtn is True
+    assert forced[0].disable_opt_rtn is True
+    assert _types(forced) == ["RTNConfig"]
+
+
+def test_awq_keeps_its_own_policy_next_to_a_named_rtn_variant():
+    """Only RTN configs take the name's policy; AWQ keeps its own."""
+    configs = _normalize_alg_configs("awq,opt-rtn")
+
+    assert _types(configs) == ["AWQConfig", "OptimizedRTNConfig"]
+    assert configs[0].disable_opt_rtn is True
+    assert configs[1].disable_opt_rtn is False
+    assert configs[1].orig_disable_opt_rtn is False
 
 
 def test_algorithm_and_alg_configs_are_mutually_exclusive():

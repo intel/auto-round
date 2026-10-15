@@ -112,6 +112,13 @@ class OptimizedRTNConfig(RTNConfig):
     need_calib = True
 
 
+#: RTN variants selectable by algorithm name, mapped to the ``disable_opt_rtn``
+#: value the name forces. ``rtn`` means plain RTN and ``opt-rtn`` the optimized
+#: path; both the CLI and the entry API resolve the names through this mapping so
+#: the name means the same thing everywhere.
+RTN_VARIANT_DISABLE_OPT_RTN = {"rtn": True, "opt-rtn": False}
+
+
 register_algorithm(
     "rtn",
     aliases=("rtn",),

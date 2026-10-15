@@ -333,7 +333,7 @@ def _owning_algorithm_names(field_name: str) -> list[str]:
 def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     from auto_round.algorithms.config_resolver import split_quantization_configs
     from auto_round.algorithms.quantization.config import QuantizationConfig
-    from auto_round.algorithms.quantization.rtn.config import RTNConfig
+    from auto_round.algorithms.quantization.rtn.config import RTN_VARIANT_DISABLE_OPT_RTN, RTNConfig
     from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config, resolve_algorithm_names
     from auto_round.algorithms.transforms import normalize_rotation_config
     from auto_round.algorithms.transforms.awq.config import (
@@ -382,6 +382,16 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
                     seen_names.add(canonical_name)
     else:
         raw_configs = [alg_configs]
+
+    # An `rtn` / `opt-rtn` the caller actually named selects the RTN variant, the
+    # same way `--algorithm rtn` / `--algorithm opt-rtn` does on the CLI. When
+    # `alg_configs` is None the RTN config below is an implicit fallback, so it
+    # must keep the existing flag/heuristic behaviour.
+    named_rtn_variants = (
+        [name for name in raw_configs if isinstance(name, str) and name in RTN_VARIANT_DISABLE_OPT_RTN]
+        if alg_configs is not None
+        else []
+    )
 
     configs = []
     pending_rtn_indices = []
@@ -498,6 +508,18 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             recommended_config_name,
         )
     sync_rtn_opt_rtn_from_awq(configs)
+    if named_rtn_variants:
+        # Applied last, on RTN configs only (AWQ keeps its own policy), so the
+        # algorithm name is not overridden by the AWQ inheritance above or by a
+        # contradicting `disable_opt_rtn` argument. `orig_disable_opt_rtn` marks
+        # it as user policy, which is what stops the W8A16/W8A8 efficiency
+        # heuristic from silently switching the variant back.
+        forced_disable_opt_rtn = RTN_VARIANT_DISABLE_OPT_RTN[named_rtn_variants[0]]
+        for config in configs:
+            if isinstance(config, RTNConfig):
+                config.disable_opt_rtn = forced_disable_opt_rtn
+                if hasattr(config, "orig_disable_opt_rtn"):
+                    config.orig_disable_opt_rtn = forced_disable_opt_rtn
     return [normalize_algorithm_config(config) for config in configs]
 
 
