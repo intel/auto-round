@@ -200,7 +200,10 @@ class BaseQuantizer(BaseAlgorithm):
     def _quantize_layer_via_rtn(self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None) -> None:
         """Quantize one layer with RTN (with optional optimized scale/zp search)."""
         layer_name = layer.global_name
-        layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
+        layer = convert_module_to_hp_if_necessary(
+            layer, self.model_context.amp_dtype, device_manager.device,
+            ignore_layers=getattr(self, "_resolved_ignore_layers", None)
+        )
         set_module(self.model, layer_name, layer)
         tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device
         try:
