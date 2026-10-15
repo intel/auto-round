@@ -956,6 +956,81 @@ class TestMXFPDequantization:
         assert torch.equal(result, torch.tensor([[0.5, 1.0, 6.0, 8.0]]))
 
 
+class TestDeepseekV41EngramSourceTensors:
+    """DeepSeek-V4.1 Engram handling in the model-free source chain.
+
+    The FP8 n-gram lookup table must reach the output checkpoint under its source key
+    and dtype (inference engines read it as float8 weights plus raw ue8m0 bytes), while
+    ``engram.wkv`` is an ordinary Linear: being in the ignore list, it has to be exported
+    in full precision. Leaving a float8 ``.weight`` + ``.scale`` pair under an ignored
+    Linear produces a checkpoint whose scale has no parameter to load into.
+    """
+
+    @staticmethod
+    def _raw_tensors():
+        weight = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        # [32, 32] blocks of ue8m0 exponents, exactly as shipped in the source checkpoint
+        scale = torch.full((2, 2), 120, dtype=torch.uint8).view(torch.float8_e8m0fnu)
+        table = torch.randn(1000, 32, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        table_scale = torch.full((1000, 1), 127, dtype=torch.uint8).view(torch.float8_e8m0fnu)
+        return {
+            "layers.1.attn.wkv.weight": weight.clone(),
+            "layers.1.attn.wkv.scale": scale.clone(),
+            "layers.1.engram.wkv.weight": weight.clone(),
+            "layers.1.engram.wkv.scale": scale.clone(),
+            "layers.1.engram.embed.weight": table.clone(),
+            "layers.1.engram.embed.scale": table_scale.clone(),
+            "layers.1.engram.q_weight": torch.randn(4, 128, dtype=torch.bfloat16),
+        }
+
+    def _run(self, model_type="deepseek_v41", ignore=("engram",)):
+        raw = self._raw_tensors()
+        out, state = _preprocess_model_type_source_tensors(raw, model_type=model_type)
+        matcher = _matcher(
+            ignore=list(ignore),
+            default={"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"},
+        )
+        out, passthrough, layers = _handle_mxfp_source_tensors(out, matcher, source_state=state)
+        return {**out, **passthrough}, state, layers
+
+    def test_v41_reaches_the_translation_chain(self):
+        _, state, _ = self._run()
+        assert state == {"layers.1.attn.wkv": 8, "layers.1.engram.wkv": 8}
+
+    def test_engram_table_keeps_source_key_and_dtype(self):
+        tensors, _, _ = self._run()
+        assert tensors["layers.1.engram.embed.weight"].dtype == torch.float8_e4m3fn
+        assert tensors["layers.1.engram.embed.scale"].dtype == torch.float8_e8m0fnu
+        assert "layers.1.engram.embed.weight_scale" not in tensors
+
+    def test_ignored_engram_linear_is_exported_in_bfloat16(self):
+        tensors, _, layers = self._run()
+        weight = tensors["layers.1.engram.wkv.weight"]
+        assert weight.dtype == torch.bfloat16 and weight.shape == (64, 128)
+        assert "layers.1.engram.wkv.scale" not in tensors
+        assert "layers.1.engram.wkv.weight_scale" not in tensors
+        assert "layers.1.engram.wkv" not in layers
+
+    def test_non_ignored_linear_becomes_ocp_mxfp8(self):
+        tensors, _, layers = self._run()
+        assert layers == ["layers.1.attn.wkv"]
+        assert tensors["layers.1.attn.wkv.weight"].dtype == torch.float8_e4m3fn
+        # 2D [32, 32] blocks expanded to per-row groups of 32
+        assert tensors["layers.1.attn.wkv.weight_scale"].shape == (64, 4)
+        assert "layers.1.attn.wkv.scale" not in tensors
+
+    def test_engram_non_linear_projections_untouched(self):
+        tensors, _, _ = self._run()
+        q = tensors["layers.1.engram.q_weight"]
+        assert q.dtype == torch.bfloat16 and q.shape == (4, 128)
+
+    def test_kept_raw_when_not_ignored(self):
+        tensors, state, layers = self._run(ignore=())
+        assert layers == ["layers.1.attn.wkv", "layers.1.engram.wkv"]
+        assert state["layers.1.engram.wkv"] == 8
+        assert tensors["layers.1.engram.embed.scale"].dtype == torch.float8_e8m0fnu
+
+
 # ===========================================================================
 #  AutoScheme helpers
 # ===========================================================================
