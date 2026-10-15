@@ -26,6 +26,7 @@ from auto_round.algorithms.transforms import (
     BaseRotationConfig,
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from auto_round.calibration.dataset_utils import CalibDataset
 from auto_round.compressors.config_resolution import (
     FormatResolution,
     ResolvedScheme,
@@ -75,7 +76,6 @@ from auto_round.utils import (
     revert_checkpoint_conversion_mapping,
     revert_name_with_weight_transforms,
 )
-from auto_round.calibration.dataset_utils import CalibDataset
 from auto_round.utils.device import (
     _force_trim_malloc,
     patch_xpu_sdpa_drop_causal_mask,
@@ -256,8 +256,8 @@ class BaseOrchestrator:
         # the rest of ``__init__`` only ever interacts with the state object
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
-        from auto_round.calibration.state import CalibrationContext
         from auto_round.calibration.dataset_utils import CalibDataset, normalize_dataset_spec
+        from auto_round.calibration.state import CalibrationContext
 
         # Normalize CalibDataset objects to spec strings
         if isinstance(dataset, CalibDataset):

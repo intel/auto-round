@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
+from auto_round.calibration.dataset_utils import CalibDataset, normalize_dataset_spec
 from auto_round.logger import deprecated, logger
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
@@ -30,7 +31,6 @@ from auto_round.scheme_entry import (
     resolve_entry_scheme,
 )
 from auto_round.schemes import QuantizationScheme
-from auto_round.calibration.dataset_utils import CalibDataset, normalize_dataset_spec
 from auto_round.utils.device_manager import normalize_default_device_map
 
 if TYPE_CHECKING:
@@ -557,9 +557,9 @@ class _CompressorBuilder:
         from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
         from auto_round.algorithms.registry import normalize_algorithm_config
+        from auto_round.calibration.dataset_utils import CalibDataset
         from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
         from auto_round.compressors.utils import check_need_act_calibration
-        from auto_round.calibration.dataset_utils import CalibDataset
         from auto_round.utils.model import is_model_free_route
 
         # Normalize CalibDataset objects to spec strings
