@@ -244,7 +244,7 @@ def _message_content(message: dict[str, Any]) -> str:
 def _message_role(message: dict[str, Any]) -> str | None:
     """Extract the role/speaker of a single chat-message dict, if present."""
     for key in _MESSAGE_ROLE_KEYS:
-        if key in message and message[key]:
+        if message.get(key):
             return str(message[key])
     return None
 
@@ -284,7 +284,6 @@ def extract_conversation_text(value: Any, separator: str = "\n") -> str:
         elif isinstance(message, str) and message.strip():
             parts.append(message)
     return separator.join(parts)
-
 
 
 def auto_detect_text_field(dataset, sample_size: int = 10) -> str:

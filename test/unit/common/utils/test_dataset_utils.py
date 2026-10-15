@@ -669,5 +669,3 @@ class TestStripSpecWhitespace:
         # Round-trips through whitespace stripping without corrupting the value.
         stripped = strip_dataset_spec_whitespace(spec)
         assert parse_dataset_spec(stripped)["system_prompt"] == "a, b: c"
-
-
