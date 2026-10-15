@@ -20,9 +20,15 @@ from auto_round.utils.dataset_utils import (
     auto_detect_text_field,
     auto_detect_text_field_from_sample,
     build_dataset_spec,
+    escape_spec_value,
+    extract_conversation_text,
     extract_text_from_sample,
+    is_conversation_value,
     normalize_dataset_spec,
     parse_dataset_spec,
+    split_unescaped,
+    strip_dataset_spec_whitespace,
+    unescape_spec_value,
 )
 
 
@@ -165,11 +171,14 @@ class TestExtractTextFromSample:
         assert result == "hello world"
 
     def test_list_of_dicts(self):
-        """List of dicts in single-field mode: only string items are extracted."""
+        """List of message dicts is extracted as a conversation (roles preserved).
+
+        Previously this flattened to an empty string (every row was skipped);
+        structured conversations are now extracted with ``role: content`` markers.
+        """
         sample = {"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}
-        # In single-field mode, list items that are dicts are skipped (only str items kept)
         result = extract_text_from_sample(sample, fields="messages", separator=" ")
-        assert result == ""
+        assert result == "user: hi assistant: hello"
 
     def test_list_of_dicts_with_template(self):
         """Template mode extracts 'content' from list of dicts."""
@@ -295,6 +304,28 @@ class TestCalibDataset:
         parsed = CalibDataset.from_spec_string(spec_str)
         assert parsed.template == "{question} {answer}"
         assert parsed.separator == " "
+
+    def test_roundtrip_template_with_colons(self):
+        """A template containing ':' must survive serialization (escaped)."""
+        tmpl = "Question: {question}\nAnswer: {answer}"
+        spec = CalibDataset("my/ds", template=tmpl)
+        parsed = CalibDataset.from_spec_string(spec.to_spec_string())
+        assert parsed.template == tmpl
+
+    def test_roundtrip_system_prompt_with_comma_and_colon(self):
+        """A system prompt with ',' and ':' must not create extra datasets/options."""
+        prompt = "Note: be concise, clear, and kind"
+        spec = CalibDataset("my/ds", system_prompt=prompt)
+        parsed = CalibDataset.from_spec_string(spec.to_spec_string())
+        assert parsed.system_prompt == prompt
+
+    def test_comma_in_value_does_not_split_datasets(self):
+        """Commas inside option values must stay within a single dataset spec."""
+        from auto_round.utils.dataset_utils import split_unescaped
+
+        spec = CalibDataset("my/ds", system_prompt="a, b, c").to_spec_string()
+        multi = spec + "," + "pile-10k"
+        assert split_unescaped(multi, ",") == [spec, "pile-10k"]
 
     def test_roundtrip_with_timeout(self):
         spec = CalibDataset("my/ds", num=100, timeout=600)
@@ -496,3 +527,147 @@ class TestNormalizeDatasetSpec:
 
     def test_empty_list(self):
         assert normalize_dataset_spec([]) == ""
+
+
+# ---------------------------------------------------------------------------
+# Structured-conversation extraction (messages / conversations fields)
+# ---------------------------------------------------------------------------
+class TestConversationExtraction:
+    def test_is_conversation_value_hf_schema(self):
+        value = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+        assert is_conversation_value(value) is True
+
+    def test_is_conversation_value_sharegpt_schema(self):
+        value = [{"from": "human", "value": "hi"}, {"from": "gpt", "value": "hello"}]
+        assert is_conversation_value(value) is True
+
+    def test_is_conversation_value_plain_string_list(self):
+        assert is_conversation_value(["hi", "hello"]) is False
+
+    def test_is_conversation_value_non_list(self):
+        assert is_conversation_value("hi") is False
+        assert is_conversation_value([]) is False
+        assert is_conversation_value([{"foo": "bar"}]) is False
+
+    def test_extract_conversation_text_preserves_roles(self):
+        value = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+        assert extract_conversation_text(value, separator=" ") == "user: hi assistant: hello"
+
+    def test_extract_conversation_text_sharegpt(self):
+        value = [{"from": "human", "value": "hi"}, {"from": "gpt", "value": "hello"}]
+        assert extract_conversation_text(value, separator="\n") == "human: hi\ngpt: hello"
+
+    def test_extract_conversation_text_multimodal_content_parts(self):
+        value = [{"role": "user", "content": [{"type": "text", "text": "hi"}, {"type": "text", "text": "there"}]}]
+        assert extract_conversation_text(value, separator=" ") == "user: hi there"
+
+    def test_single_field_messages_not_empty(self):
+        """Regression: a 'messages' field of dicts must not flatten to ''."""
+        sample = {"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]}
+        result = extract_text_from_sample(sample, fields="messages", separator=" ")
+        assert result == "user: hi assistant: yo"
+        assert result.strip() != ""
+
+    def test_fallback_detects_conversation(self):
+        """Auto fallback (no fields) extracts a conversation instead of ''."""
+        sample = {"conversations": [{"from": "human", "value": "hi"}, {"from": "gpt", "value": "yo"}]}
+        result = extract_text_from_sample(sample)
+        assert "hi" in result and "yo" in result
+
+
+# ---------------------------------------------------------------------------
+# auto_detect_text_field with unresolved streaming metadata (column_names=None)
+# ---------------------------------------------------------------------------
+class TestAutoDetectUnresolvedMetadata:
+    class _FakeIterable:
+        """Mimics a streaming IterableDataset whose schema is not yet resolved."""
+
+        column_names = None
+        features = None
+
+        def __init__(self, rows):
+            self._rows = rows
+
+        def __iter__(self):
+            return iter(self._rows)
+
+    def test_none_column_names_falls_back_to_sampling(self):
+        ds = self._FakeIterable([{"text": "the quick brown fox", "id": 1}])
+        # Must not raise TypeError from list(None); detects from a sample instead.
+        assert auto_detect_text_field(ds) == "text"
+
+    def test_none_metadata_single_column(self):
+        ds = self._FakeIterable([{"body": "hello world"}])
+        assert auto_detect_text_field(ds) == "body"
+
+
+# ---------------------------------------------------------------------------
+# Spec value escaping (preserve ':' and ',' in option values)
+# ---------------------------------------------------------------------------
+class TestSpecEscaping:
+    def test_escape_unescape_roundtrip(self):
+        for raw in ["plain", "a: b", "a, b", "x\\y", "line1\nline2", "tab\there"]:
+            assert unescape_spec_value(escape_spec_value(raw)) == raw
+
+    def test_escape_protects_delimiters(self):
+        escaped = escape_spec_value("a:b,c")
+        assert ":" not in escaped.replace("\\:", "")
+        assert "," not in escaped.replace("\\,", "")
+
+    def test_split_unescaped_ignores_escaped_delims(self):
+        assert split_unescaped("a\\:b:c", ":") == ["a\\:b", "c"]
+        assert split_unescaped("a\\,b,c", ",") == ["a\\,b", "c"]
+
+    def test_split_unescaped_maxsplit(self):
+        assert split_unescaped("a:b:c", ":", maxsplit=1) == ["a", "b:c"]
+
+    def test_template_with_colon_roundtrip(self):
+        tmpl = "Question: {q}\nAnswer: {a}"
+        parsed = parse_dataset_spec(CalibDataset("my/ds", template=tmpl).to_spec_string())
+        assert parsed["template"] == tmpl
+
+    def test_system_prompt_with_comma_roundtrip(self):
+        prompt = "Be concise, clear: and kind"
+        parsed = parse_dataset_spec(CalibDataset("my/ds", system_prompt=prompt).to_spec_string())
+        assert parsed["system_prompt"] == prompt
+
+    def test_comma_in_value_not_split_as_dataset(self):
+        spec = CalibDataset("my/ds", system_prompt="a, b, c").to_spec_string()
+        multi = spec + ",pile-10k"
+        assert split_unescaped(multi, ",") == [spec, "pile-10k"]
+
+    def test_legacy_unescaped_spec_still_parses(self):
+        """Specs without any escapes keep their original parsing behavior."""
+        result = parse_dataset_spec("my/ds:split=train+test:num=100:fields=q+a")
+        assert result["name"] == "my/ds"
+        assert result["split"] == ["train", "test"]
+        assert result["fields"] == ["q", "a"]
+
+    def test_legacy_separator_escape_newline(self):
+        assert parse_dataset_spec("my/ds:separator=\\n:fields=text")["separator"] == "\n"
+
+
+# ---------------------------------------------------------------------------
+# strip_dataset_spec_whitespace (preserve spaces inside option values)
+# ---------------------------------------------------------------------------
+class TestStripSpecWhitespace:
+    def test_preserves_separator_space(self):
+        assert strip_dataset_spec_whitespace("my/ds:separator= ") == "my/ds:separator= "
+
+    def test_preserves_template_spaces(self):
+        spec = "my/ds:template={question} {answer}"
+        assert strip_dataset_spec_whitespace(spec) == spec
+
+    def test_trims_cosmetic_whitespace_around_commas(self):
+        assert strip_dataset_spec_whitespace("pile-10k , ultrachat") == "pile-10k,ultrachat"
+
+    def test_trims_name_and_keys(self):
+        assert strip_dataset_spec_whitespace("  my/ds : fields=text") == "my/ds:fields=text"
+
+    def test_preserves_escaped_value_spaces(self):
+        spec = CalibDataset("my/ds", system_prompt="a, b: c").to_spec_string()
+        # Round-trips through whitespace stripping without corrupting the value.
+        stripped = strip_dataset_spec_whitespace(spec)
+        assert parse_dataset_spec(stripped)["system_prompt"] == "a, b: c"
+
+

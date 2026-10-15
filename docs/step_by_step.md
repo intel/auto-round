@@ -124,9 +124,12 @@ to the calibration data before tokenization. This is commonly used for instruct-
 customize the system prompt,
 use:`--dataset 'NeelNanda/pile-10k:apply_chat_template:system_prompt="You are a helpful assistant."'`
 
-**Generic dataset loading**: Any HuggingFace dataset can be used directly without prior registration. The text field
+**Generic dataset loading** (experimental): Any HuggingFace dataset can be used directly without prior registration. The text field
 is auto-detected by inspecting column names and sampling values. For example:
 `--dataset my-org/my-dataset:split=train:num=512`
+
+> **Note**: Generic dataset loading (including `fields`, `template`, `separator`, `timeout`, auto field detection, and the
+> `CalibDataset` API below) is **experimental** and its behavior/interface may change in future releases.
 
 **Field selection**: Use `fields` to explicitly specify the text column(s). A single field:
 `--dataset my-org/my-dataset:fields=text`. Multiple fields are concatenated with a separator:

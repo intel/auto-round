@@ -102,9 +102,9 @@ class CalibDataset:
 
         if self.split is not None:
             if isinstance(self.split, list):
-                parts.append(f"split={'+'.join(self.split)}")
+                parts.append(f"split={'+'.join(escape_spec_value(s) for s in self.split)}")
             else:
-                parts.append(f"split={self.split}")
+                parts.append(f"split={escape_spec_value(self.split)}")
 
         if self.num is not None:
             parts.append(f"num={self.num}")
@@ -113,22 +113,22 @@ class CalibDataset:
             parts.append("concat=true")
 
         if self.template is not None:
-            parts.append(f"template={self.template}")
+            parts.append(f"template={escape_spec_value(self.template)}")
         elif self.fields is not None:
             if isinstance(self.fields, str):
-                parts.append(f"fields={self.fields}")
+                parts.append(f"fields={escape_spec_value(self.fields)}")
             else:
-                parts.append(f"fields={'+'.join(self.fields)}")
+                parts.append(f"fields={'+'.join(escape_spec_value(f) for f in self.fields)}")
 
         # Only include separator if it differs from the default and fields/template is used
         if self.separator != "\n\n" and (self.template is not None or self.fields is not None):
-            parts.append(f"separator={self.separator}")
+            parts.append(f"separator={escape_spec_value(self.separator)}")
 
         if self.apply_chat_template:
             parts.append("apply_chat_template=true")
 
         if self.system_prompt is not None:
-            parts.append(f"system_prompt={self.system_prompt}")
+            parts.append(f"system_prompt={escape_spec_value(self.system_prompt)}")
 
         if self.timeout != 300:
             parts.append(f"timeout={self.timeout}")
@@ -213,6 +213,80 @@ def _is_text_list(value: Any) -> bool:
     return text_count >= len(value) // 2
 
 
+#: Keys commonly used for the role of a chat message across dataset schemas
+#: (HF ``role``, ShareGPT ``from``, etc.).
+_MESSAGE_ROLE_KEYS: tuple[str, ...] = ("role", "from", "speaker")
+#: Keys commonly used for the textual content of a chat message.
+_MESSAGE_CONTENT_KEYS: tuple[str, ...] = ("content", "value", "text", "message")
+
+
+def _message_content(message: dict[str, Any]) -> str:
+    """Extract the textual content from a single chat-message dict.
+
+    Handles both plain-string content and structured (e.g. multimodal) content
+    that is itself a list of parts such as ``[{"type": "text", "text": ...}]``.
+    """
+    for key in _MESSAGE_CONTENT_KEYS:
+        if key in message and message[key] is not None:
+            content = message[key]
+            if isinstance(content, (list, tuple)):
+                parts = []
+                for part in content:
+                    if isinstance(part, dict):
+                        parts.append(str(part.get("text", part.get("content", ""))))
+                    elif isinstance(part, str):
+                        parts.append(part)
+                return " ".join(p for p in parts if p)
+            return str(content)
+    return ""
+
+
+def _message_role(message: dict[str, Any]) -> str | None:
+    """Extract the role/speaker of a single chat-message dict, if present."""
+    for key in _MESSAGE_ROLE_KEYS:
+        if key in message and message[key]:
+            return str(message[key])
+    return None
+
+
+def is_conversation_value(value: Any) -> bool:
+    """Return ``True`` if *value* is a list of chat-message dicts.
+
+    Recognizes structured conversations stored under fields like ``messages`` or
+    ``conversations`` where each element is a dict carrying a content field
+    (``content``/``value``/...). Such values would otherwise flatten to an empty
+    string in :func:`extract_text_from_sample`, causing every row to be skipped.
+    """
+    if not isinstance(value, (list, tuple)) or len(value) == 0:
+        return False
+    dict_messages = [item for item in value if isinstance(item, dict)]
+    # Require the list to be predominantly message dicts.
+    if len(dict_messages) < max(1, len(value) // 2):
+        return False
+    # At least one message must expose a recognizable content field.
+    return any(any(k in msg for k in _MESSAGE_CONTENT_KEYS) for msg in dict_messages)
+
+
+def extract_conversation_text(value: Any, separator: str = "\n") -> str:
+    """Flatten a list of chat-message dicts into plain text for calibration.
+
+    Role markers (``role: content``) are preserved so text-only calibration
+    retains the conversational structure. Plain-string elements are kept as-is.
+    """
+    parts: list[str] = []
+    for message in value:
+        if isinstance(message, dict):
+            content = _message_content(message)
+            if not content:
+                continue
+            role = _message_role(message)
+            parts.append(f"{role}: {content}" if role else content)
+        elif isinstance(message, str) and message.strip():
+            parts.append(message)
+    return separator.join(parts)
+
+
+
 def auto_detect_text_field(dataset, sample_size: int = 10) -> str:
     """Auto-detect the most likely text field in a HuggingFace ``Dataset``.
 
@@ -236,12 +310,16 @@ def auto_detect_text_field(dataset, sample_size: int = 10) -> str:
         ValueError: If no suitable text field can be found.
     """
     # --- 1. Single-column shortcut ------------------------------------------
-    if hasattr(dataset, "column_names"):
+    # Note: HF ``IterableDataset`` can expose ``column_names``/``features`` as
+    # ``None`` before the schema is resolved (streaming is the generic loader's
+    # default), so check for non-None metadata rather than mere attribute
+    # presence; otherwise ``list(None)`` would raise ``TypeError``.
+    if getattr(dataset, "column_names", None) is not None:
         columns = list(dataset.column_names)
-    elif hasattr(dataset, "features"):
+    elif getattr(dataset, "features", None) is not None:
         columns = list(dataset.features.keys())
     else:
-        # IterableDataset without column_names – grab one sample
+        # Schema not resolved (e.g. streaming IterableDataset) – grab one sample.
         columns = list(next(iter(dataset)).keys())
 
     if len(columns) == 1:
@@ -420,7 +498,9 @@ def extract_text_from_sample(
             if f not in sample:
                 raise KeyError(f"Field '{f}' not found in sample. Available fields: {list(sample.keys())}")
             val = sample[f]
-            if isinstance(val, (list, tuple)):
+            if is_conversation_value(val):
+                parts.append(extract_conversation_text(val, separator))
+            elif isinstance(val, (list, tuple)):
                 parts.append(separator.join(str(v) for v in val if isinstance(v, str)))
             else:
                 parts.append(str(val))
@@ -432,6 +512,11 @@ def extract_text_from_sample(
         if f not in sample:
             raise KeyError(f"Field '{f}' not found in sample. Available fields: {list(sample.keys())}")
         val = sample[f]
+        # Structured conversation (list of role/content dicts): preserve roles +
+        # content instead of flattening to an empty string (which would make the
+        # downstream loader skip every row, even with apply_chat_template=True).
+        if is_conversation_value(val):
+            return extract_conversation_text(val, separator)
         if isinstance(val, (list, tuple)):
             return separator.join(str(v) for v in val if isinstance(v, str))
         return str(val)
@@ -440,6 +525,8 @@ def extract_text_from_sample(
     for val in sample.values():
         if isinstance(val, str) and len(val.strip()) > 0:
             return val
+        if is_conversation_value(val):
+            return extract_conversation_text(val, separator)
         if isinstance(val, (list, tuple)) and _is_text_list(val):
             return separator.join(str(v) for v in val if isinstance(v, str))
 
@@ -504,6 +591,115 @@ def normalize_dataset_spec(dataset: Union[str, "CalibDataset", list, tuple]) -> 
 
 # ---------------------------------------------------------------------------# Spec-string building and parsing
 # ---------------------------------------------------------------------------
+
+#: Backslash-escape sequences used to protect structural delimiters (and
+#: whitespace control chars) inside option values of a dataset spec string.
+#: ``:`` separates key=value options, ``,`` separates datasets, and ``\`` is the
+#: escape introducer; ``\n`` / ``\t`` keep newline / tab round-trippable.
+_SPEC_ESCAPE_MAP = {
+    "\\": "\\\\",
+    ":": "\\:",
+    ",": "\\,",
+    "\n": "\\n",
+    "\t": "\\t",
+}
+#: Reverse mapping (escape character -> literal) used when unescaping.
+_SPEC_UNESCAPE_MAP = {"\\": "\\", ":": ":", ",": ",", "n": "\n", "t": "\t"}
+
+
+def escape_spec_value(value: str) -> str:
+    """Escape structural delimiters inside a spec option value.
+
+    Protects ``:``, ``,`` and ``\\`` (plus newline/tab) so that values such as
+    ``template='Question: {q}\\nAnswer: {a}'`` or ``system_prompt='a, b'`` survive
+    a serialize/parse round-trip instead of being split into extra options or
+    extra datasets.
+    """
+    return "".join(_SPEC_ESCAPE_MAP.get(ch, ch) for ch in value)
+
+
+def unescape_spec_value(value: str) -> str:
+    """Reverse :func:`escape_spec_value` (also accepts legacy ``\\n`` / ``\\t``)."""
+    out: list[str] = []
+    i = 0
+    n = len(value)
+    while i < n:
+        ch = value[i]
+        if ch == "\\" and i + 1 < n and value[i + 1] in _SPEC_UNESCAPE_MAP:
+            out.append(_SPEC_UNESCAPE_MAP[value[i + 1]])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def split_unescaped(spec: str, delim: str, maxsplit: int = -1) -> list[str]:
+    """Split *spec* on *delim* occurrences that are not backslash-escaped.
+
+    Escape sequences (``\\:`` / ``\\,`` / ``\\\\`` / ...) are preserved verbatim in
+    the returned parts so the caller can :func:`unescape_spec_value` them.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    i = 0
+    n = len(spec)
+    splits = 0
+    while i < n:
+        ch = spec[i]
+        if ch == "\\" and i + 1 < n:
+            # Keep the escape sequence intact (two chars) for later unescaping.
+            current.append(ch)
+            current.append(spec[i + 1])
+            i += 2
+            continue
+        if ch == delim and (maxsplit < 0 or splits < maxsplit):
+            parts.append("".join(current))
+            current = []
+            splits += 1
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    parts.append("".join(current))
+    return parts
+
+
+def strip_dataset_spec_whitespace(spec: str) -> str:
+    """Remove cosmetic whitespace from a calibration dataset spec string.
+
+    A spec has the form ``name[:key=value[:key=value]][,name2:...]``. Users may
+    add cosmetic spaces around the comma separators, dataset names, and option
+    keys; those are stripped. Spaces *inside* option values are meaningful and
+    kept intact — e.g. ``separator= `` or ``template={question} {answer}`` —
+    so serialized :class:`CalibDataset` options are not silently altered the way
+    a blanket ``spec.replace(" ", "")`` would (turning ``separator=' '`` into an
+    empty separator and ``{question} {answer}`` into ``{question}{answer}``).
+
+    Args:
+        spec: The dataset spec string.
+
+    Returns:
+        The spec with cosmetic whitespace removed and value whitespace preserved.
+    """
+    entries = []
+    for entry in split_unescaped(spec, ","):
+        segments = split_unescaped(entry, ":")
+        if len(segments) == 1:
+            # Plain dataset name (no options): safe to trim surrounding spaces.
+            entries.append(segments[0].strip())
+            continue
+        normalized = [segments[0].strip()]
+        for option in segments[1:]:
+            if "=" in option:
+                key, value = option.split("=", 1)
+                # Trim the key only; preserve all whitespace inside the value.
+                normalized.append(f"{key.strip()}={value}")
+            else:
+                normalized.append(option.strip())
+        entries.append(":".join(normalized))
+    return ",".join(entries)
+
 
 #: Keys that are recognised in a dataset spec string.
 _SPEC_KEYS = {
@@ -570,9 +766,9 @@ def build_dataset_spec(
 
     if split is not None:
         if isinstance(split, list):
-            parts.append(f"split={'+'.join(split)}")
+            parts.append(f"split={'+'.join(escape_spec_value(s) for s in split)}")
         else:
-            parts.append(f"split={split}")
+            parts.append(f"split={escape_spec_value(split)}")
 
     if num is not None:
         parts.append(f"num={num}")
@@ -581,22 +777,22 @@ def build_dataset_spec(
         parts.append("concat=true")
 
     if template is not None:
-        parts.append(f"template={template}")
+        parts.append(f"template={escape_spec_value(template)}")
     elif fields is not None:
         if isinstance(fields, str):
-            parts.append(f"fields={fields}")
+            parts.append(f"fields={escape_spec_value(fields)}")
         else:
-            parts.append(f"fields={'+'.join(fields)}")
+            parts.append(f"fields={'+'.join(escape_spec_value(f) for f in fields)}")
 
     # Only include separator if it differs from the default and fields/template is used
     if separator != "\n\n" and (template is not None or fields is not None):
-        parts.append(f"separator={separator}")
+        parts.append(f"separator={escape_spec_value(separator)}")
 
     if apply_chat_template:
         parts.append("apply_chat_template=true")
 
     if system_prompt is not None:
-        parts.append(f"system_prompt={system_prompt}")
+        parts.append(f"system_prompt={escape_spec_value(system_prompt)}")
 
     if timeout != 300:
         parts.append(f"timeout={timeout}")
@@ -657,10 +853,13 @@ def parse_dataset_spec(spec: str) -> dict[str, Any]:
     if ":" not in spec:
         return result
 
-    name, kv_parts = spec.split(":", 1)
-    result["name"] = name.strip()
+    # Split on unescaped ":" so that ":" inside option values (e.g. a template
+    # like "Question: {q}") does not truncate the value. The first segment is
+    # the dataset name; the rest are key=value options.
+    segments = split_unescaped(spec, ":")
+    result["name"] = unescape_spec_value(segments[0]).strip()
 
-    for part in kv_parts.split(":"):
+    for part in segments[1:]:
         if not part or "=" not in part:
             continue
         key, value = part.split("=", 1)
@@ -668,6 +867,8 @@ def parse_dataset_spec(spec: str) -> dict[str, Any]:
         # Don't strip value for separator (whitespace is meaningful)
         if key != "separator":
             value = value.strip()
+        # Restore escaped delimiters / whitespace control chars in the value.
+        value = unescape_spec_value(value)
 
         if key == "split":
             result["split"] = value.split("+") if value else None
@@ -689,8 +890,7 @@ def parse_dataset_spec(spec: str) -> dict[str, Any]:
         elif key == "template":
             result["template"] = value
         elif key == "separator":
-            # Support escaped newline: \n -> actual newline
-            result["separator"] = value.replace("\\n", "\n").replace("\\t", "\t")
+            result["separator"] = value
         elif key == "timeout":
             result["timeout"] = int(value)
         else:

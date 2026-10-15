@@ -110,8 +110,10 @@ pip install auto-round
 
 **启用对话模板**：可使用 `--dataset NeelNanda/pile-10k:apply_chat_template` 在分词前为标定数据应用对话模板，这在指令式模型的生成任务中比较常用。若需自定义系统提示词，可使用 `--dataset 'NeelNanda/pile-10k:apply_chat_template:system_prompt="你是一个乐于助人的智能助手。"'`
 
-**通用数据集加载**：任何 HuggingFace 数据集都可以直接使用，无需预先注册。文本字段会通过检查列名和采样值自动检测。例如：
+**通用数据集加载**（实验性）：任何 HuggingFace 数据集都可以直接使用，无需预先注册。文本字段会通过检查列名和采样值自动检测。例如：
 `--dataset my-org/my-dataset:split=train:num=512`
+
+> **注意**：通用数据集加载（包括 `fields`、`template`、`separator`、`timeout`、自动字段检测，以及下文的 `CalibDataset` API）为**实验性**功能，其行为和接口在未来版本中可能发生变化。
 
 **字段选择**：使用 `fields` 参数显式指定文本列。单个字段：
 `--dataset my-org/my-dataset:fields=text`。多个字段会用分隔符拼接：

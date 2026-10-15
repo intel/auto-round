@@ -29,8 +29,10 @@ logging.getLogger("datasets").setLevel(logging.WARNING)
 import torch
 from datasets import (
     Dataset,
+    DatasetDict,
     Features,
     IterableDataset,
+    IterableDatasetDict,
     Sequence,
     Value,
     concatenate_datasets,
@@ -48,6 +50,8 @@ from .utils.dataset_utils import (
     auto_detect_text_field_from_sample,
     extract_text_from_sample,
     normalize_dataset_spec,
+    split_unescaped,
+    unescape_spec_value,
 )
 
 CALIB_DATASETS = {}
@@ -91,7 +95,7 @@ def _get_dataset_network_error(error):
     return None
 
 
-def _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples):
+def _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples, trust_remote_code=False):
     """Switch to ModelScope FineWeb-Edu after a calibration dataset network failure."""
     network_error = _get_dataset_network_error(error)
     if network_error is None:
@@ -115,15 +119,17 @@ def _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamp
         network_error,
         _FINEWEB_EDU_MODELSCOPE_DATASET,
     )
-    return _get_dataset_impl(tokenizer, seqlen, _FINEWEB_EDU_MODELSCOPE_DATASET, seed, nsamples)
+    return _get_dataset_impl(tokenizer, seqlen, _FINEWEB_EDU_MODELSCOPE_DATASET, seed, nsamples, trust_remote_code)
 
 
-def _preprocess_dataset_in_subprocess(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples, output_path):
+def _preprocess_dataset_in_subprocess(
+    result_queue, tokenizer, seqlen, dataset_name, seed, nsamples, output_path, trust_remote_code=False
+):
     """Run dataset preprocessing and report network failures to the parent process."""
     # The parent's OpenMP thread pool does not survive fork; keep torch single-threaded here.
     torch.set_num_threads(1)
     try:
-        dataset = _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+        dataset = _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples, trust_remote_code)
         dataset.save_to_disk(output_path)
     except Exception as error:
         network_error = _get_dataset_network_error(error)
@@ -675,9 +681,10 @@ def get_competition_math_dataset(
             raise ValueError("competition_math supports only one split at a time.")
         split = split[0]
 
-    tokenizer_function = get_tokenizer_function(
-        tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
-    )
+    # The chat template (when requested) is already rendered per-sample in the
+    # loop below, so tokenize the resulting "text" plainly here to avoid applying
+    # the template a second time (which would duplicate role markers/prompts).
+    tokenizer_function = get_tokenizer_function(tokenizer, seqlen)
 
     # competition_math is small; load it fully instead of streaming.
     # Always use the canonical Hub repo id (the short "competition_math" alias
@@ -1010,6 +1017,16 @@ def get_ultradata_agent_dataset(
         batched=True,
         remove_columns=["text"],
     )
+
+    # Pack whole traces up to seqlen before returning. "Preferred" traces are
+    # chosen on their messages-only length (<= seqlen) and can remain shorter
+    # than seqlen even after rendering tools, so returning them unpacked would
+    # let _get_dataset_impl.filter_func drop them -- leaving calibration
+    # undersized despite available oversized fallback data. Sample-level packing
+    # concatenates short traces into full-length sequences, while oversized
+    # traces (already truncated to seqlen) each emit a single full-length
+    # sequence, so no usable data is lost.
+    calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen)
     return calib_dataset
 
 
@@ -1027,9 +1044,9 @@ def get_ultrafinweb_dataset(
     if split is not None:
         if split not in ["en", "zh"]:
             raise ValueError("split must be one of ['en', 'zh'] for Ultra-FineWeb dataset")
-        calib_dataset = load_dataset("openbmb/Ultra-FineWeb", split=split, streaming=True, trust_remote_code=True)
+        calib_dataset = load_dataset("openbmb/Ultra-FineWeb", split=split, streaming=True)
     else:
-        calib_dataset = load_dataset("openbmb/Ultra-FineWeb", split="en", streaming=True, trust_remote_code=True)
+        calib_dataset = load_dataset("openbmb/Ultra-FineWeb", split="en", streaming=True)
         # dataset_ch = load_dataset("openbmb/Ultra-FineWeb", split='zh',
         #                           streaming=True, trust_remote_code=True).shuffle(seed=seed).take(2000)
 
@@ -1360,6 +1377,53 @@ def _concat_samples_to_seqlen(calib_dataset, seqlen):
     return Dataset.from_list(packed)
 
 
+def _normalize_split(split):
+    """Reduce a requested split spec to a single ``load_dataset`` split string.
+
+    The dispatcher passes splits as lists (e.g. ``["train", "test"]``); combine
+    every requested split into HuggingFace's ``"train+test"`` form so they are
+    loaded together instead of only the first one being used. Returns ``None``
+    when nothing was requested, so the caller can pick an available default from
+    the resulting split dictionary.
+    """
+    if split is None:
+        return None
+    if isinstance(split, (list, tuple)):
+        parts = [str(part) for part in split if part]
+        return "+".join(parts) if parts else None
+    return split
+
+
+def _reduce_to_single_dataset(loaded):
+    """Reduce a ``load_dataset`` result to a single (Iterable)Dataset.
+
+    When a concrete split string is passed, ``load_dataset`` already returns a
+    single dataset and this is a no-op. When no split is requested it returns a
+    split dictionary; in that case pick a sensible default (prefer ``train``,
+    otherwise the first available split) so downstream ``.map()`` / column
+    access receive a single dataset rather than a dict or list.
+    """
+    if isinstance(loaded, (DatasetDict, IterableDatasetDict)):
+        keys = list(loaded.keys())
+        if not keys:
+            raise ValueError("Loaded dataset contains no splits to select from.")
+        key = "train" if "train" in keys else keys[0]
+        return loaded[key]
+    # Defensive: a list is returned if a list split ever reaches load_dataset;
+    # combine the splits so callers always receive a single dataset.
+    if isinstance(loaded, list):
+        if not loaded:
+            raise ValueError("Loaded dataset contains no splits to combine.")
+        if len(loaded) == 1:
+            return loaded[0]
+        if any(isinstance(part, IterableDataset) for part in loaded):
+            from datasets import interleave_datasets
+
+            return interleave_datasets(loaded)
+        return concatenate_datasets(loaded)
+    return loaded
+
+
 def _get_generic_dataset(
     tokenizer,
     seqlen,
@@ -1375,6 +1439,7 @@ def _get_generic_dataset(
     nsamples=None,
     timeout=300,
     concat=False,
+    trust_remote_code=False,
 ):
     """Generic dataset loader that works with any HuggingFace dataset.
 
@@ -1409,6 +1474,9 @@ def _get_generic_dataset(
             ``seqlen`` tokens (resetting after every full sequence), so that
             datasets whose individual samples are shorter than ``seqlen`` are
             not dropped by the downstream length filter.
+        trust_remote_code: Passed through to ``datasets.load_dataset``. Controlled
+            by the AutoRound interface so the user decides whether to execute
+            remote dataset-loading scripts. Defaults to ``False``.
 
     Returns:
         A tokenized HuggingFace Dataset.
@@ -1420,64 +1488,44 @@ def _get_generic_dataset(
     is_local = is_local_path(dataset_name)
     use_streaming = streaming and not is_local
 
+    # Normalize the requested split(s) once so local, streaming and
+    # non-streaming branches behave consistently. The dispatcher passes splits
+    # as lists; ``_normalize_split`` combines them into HF's "train+test" form
+    # (or ``None`` when nothing was requested).
+    split_arg = _normalize_split(split)
+
     # Load the dataset
     if is_local:
         # Local file: use json or text loader (always full load)
         if dataset_name.endswith((".json", ".jsonl")):
-            calib_dataset = load_dataset("json", data_files=dataset_name, split=split or "train")
+            loaded = load_dataset("json", data_files=dataset_name, split=split_arg)
         elif dataset_name.endswith(".txt"):
-            calib_dataset = load_dataset("text", data_files=dataset_name, split=split or "train")
+            loaded = load_dataset("text", data_files=dataset_name, split=split_arg)
         else:
-            calib_dataset = load_dataset(dataset_name, split=split or "train")
+            loaded = load_dataset(dataset_name, split=split_arg)
     else:
-        # HuggingFace dataset
-        if use_streaming:
-            try:
-                calib_dataset = load_dataset(
-                    dataset_name,
-                    split=split or "train",
-                    trust_remote_code=True,
-                    streaming=True,
-                )
-            except Exception:
-                # Try without split (some datasets don't have explicit splits)
-                calib_dataset = load_dataset(
-                    dataset_name,
-                    trust_remote_code=True,
-                    streaming=True,
-                )
-                if split:
-                    if isinstance(split, list):
-                        split = split[0]
-                    if split in calib_dataset:
-                        calib_dataset = calib_dataset[split]
-                    else:
-                        calib_dataset = calib_dataset[next(iter(calib_dataset.keys()))]
-        else:
-            try:
-                calib_dataset = load_dataset(
-                    dataset_name,
-                    split=split or "train",
-                    trust_remote_code=True,
-                )
-            except Exception:
-                # Try without split (some datasets don't have explicit splits)
-                calib_dataset = load_dataset(dataset_name, trust_remote_code=True)
-                if split:
-                    if isinstance(split, list):
-                        split = split[0]
-                    if split in calib_dataset:
-                        calib_dataset = calib_dataset[split]
-                    else:
-                        calib_dataset = calib_dataset[next(iter(calib_dataset.keys()))]
+        # HuggingFace dataset. ``trust_remote_code`` is passed through from the
+        # AutoRound interface so the user controls whether remote code runs.
+        loaded = load_dataset(
+            dataset_name,
+            split=split_arg,
+            trust_remote_code=trust_remote_code,
+            streaming=use_streaming,
+        )
+
+    # When no split was requested, ``load_dataset`` returns a split dictionary;
+    # reduce it (and any list result) to a single dataset for extraction below.
+    calib_dataset = _reduce_to_single_dataset(loaded)
 
     # Determine the text field
     if fields is None and template is None:
-        # Auto-detect
-        if hasattr(calib_dataset, "column_names"):
+        # Auto-detect. Streaming IterableDatasets may expose ``column_names`` as
+        # None before the schema is resolved, so check for non-None metadata and
+        # otherwise detect from a single sample.
+        if getattr(calib_dataset, "column_names", None) is not None:
             fields = auto_detect_text_field(calib_dataset)
         else:
-            # IterableDataset – grab first sample to detect
+            # IterableDataset / unresolved schema – grab first sample to detect
             first_sample = next(iter(calib_dataset))
             fields = auto_detect_text_field_from_sample(first_sample)
         logger.info(f"Auto-detected text field '{fields}' for dataset '{dataset_name}'")
@@ -1677,7 +1725,7 @@ def select_dataset(dataset, indices):
         return dataset
 
 
-def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512):
+def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512, trust_remote_code=False):
     """Internal implementation: generate a dataset for calibration.
 
     Args:
@@ -1700,7 +1748,9 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
     elif isinstance(dataset_name, (list, tuple)):
         dataset_name = normalize_dataset_spec(dataset_name)
 
-    dataset_names = dataset_name.split(",")
+    # Split on unescaped commas so that commas inside option values (e.g. a
+    # system_prompt or template) are not mistaken for dataset separators.
+    dataset_names = split_unescaped(dataset_name, ",")
 
     def cast_dataset_columns(dataset):
         features = dict(dataset.features)
@@ -1773,33 +1823,41 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
         timeout = 300
 
         if ":" in name:
-            name, split_list = name.split(":")[0], name.split(":")[1:]
-            for ele in split_list:
-                key, values = ele.split("=", 1)[0], ele.split("=", 1)[1:]
+            # Split on unescaped ":" so values containing ":" (e.g. templates)
+            # are not truncated; the first segment is the dataset name.
+            segments = split_unescaped(name, ":")
+            name = segments[0]
+            for ele in segments[1:]:
+                if "=" not in ele:
+                    continue
+                key, raw_value = ele.split("=", 1)
+                key = key.strip()
+                # Restore escaped delimiters / whitespace; keep separator spaces.
+                value = unescape_spec_value(raw_value if key == "separator" else raw_value.strip())
                 if key == "split":
-                    split = values[0].split("+")
+                    split = value.split("+")
                 elif key == "num":
-                    data_lens[name] = int(values[0])
-                if key == "concat":
-                    do_concat = not (len(values) > 0 and values[0].lower() == "false")
-                if key == "apply_chat_template":
-                    apply_chat_template = not (len(values) > 0 and values[0].lower() == "false")
-                if key == "system_prompt":
-                    system_prompt = values[0]
+                    data_lens[name] = int(value)
+                elif key == "concat":
+                    do_concat = value.lower() != "false"
+                elif key == "apply_chat_template":
+                    apply_chat_template = value.lower() != "false"
+                elif key == "system_prompt":
+                    system_prompt = value
                     apply_chat_template = True
                 elif key == "fields":
                     # Single field: "fields=text" -> "text"
                     # Multiple fields: "fields=q+a" -> ["q", "a"]
-                    if "+" in values[0]:
-                        fields = values[0].split("+")
+                    if "+" in value:
+                        fields = value.split("+")
                     else:
-                        fields = values[0]
+                        fields = value
                 elif key == "template":
-                    template = values[0]
+                    template = value
                 elif key == "separator":
-                    separator = values[0].replace("\\n", "\n").replace("\\t", "\t")
+                    separator = value
                 elif key == "timeout":
-                    timeout = int(values[0])
+                    timeout = int(value)
         # If user explicitly specified fields/template, use the generic
         # loader regardless of whether the dataset is registered.
         use_generic = fields is not None or template is not None
@@ -1832,6 +1890,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                     nsamples=nsamples,
                     timeout=timeout,
                     concat=do_concat,
+                    trust_remote_code=trust_remote_code,
                 )
                 # Packing already handled inside the generic loader.
                 do_concat = False
@@ -1861,6 +1920,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
                     nsamples=nsamples,
                     timeout=timeout,
                     concat=do_concat,
+                    trust_remote_code=trust_remote_code,
                 )
                 # Packing already handled inside the generic loader.
                 do_concat = False
@@ -1970,7 +2030,7 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
     return dataset_final
 
 
-def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512):
+def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, nsamples=512, trust_remote_code=False):
     """Generate a dataset for calibration.
 
     Uses a subprocess for preprocessing to ensure all temporary memory is fully
@@ -2002,9 +2062,9 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, n
     # Allow disabling subprocess mode via environment variable
     if envs.AR_DISABLE_DATASET_SUBPROCESS:
         try:
-            return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+            return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples, trust_remote_code)
         except Exception as error:
-            return _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples)
+            return _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples, trust_remote_code)
 
     # Run preprocessing in a subprocess so all temporary memory is freed on exit.
     logger.info("Preprocessing calibration dataset in a subprocess to avoid memory leaks...")
@@ -2023,7 +2083,16 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, n
             result_queue = ctx.Queue()
             p = ctx.Process(
                 target=_preprocess_dataset_in_subprocess,
-                args=(result_queue, tokenizer, seqlen, dataset_name, seed, nsamples, os.path.join(temp_dir, "dataset")),
+                args=(
+                    result_queue,
+                    tokenizer,
+                    seqlen,
+                    dataset_name,
+                    seed,
+                    nsamples,
+                    os.path.join(temp_dir, "dataset"),
+                    trust_remote_code,
+                ),
             )
             p.start()
             p.join()
@@ -2048,15 +2117,19 @@ def get_dataset(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, n
             logger.warning(f"Subprocess dataset preprocessing failed ({e}), falling back to in-process mode.")
 
     if subprocess_network_error is not None:
-        return _fallback_to_fineweb_edu(subprocess_network_error, tokenizer, seqlen, dataset_name, seed, nsamples)
+        return _fallback_to_fineweb_edu(
+            subprocess_network_error, tokenizer, seqlen, dataset_name, seed, nsamples, trust_remote_code
+        )
 
     try:
-        return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples)
+        return _get_dataset_impl(tokenizer, seqlen, dataset_name, seed, nsamples, trust_remote_code)
     except Exception as error:
-        return _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples)
+        return _fallback_to_fineweb_edu(error, tokenizer, seqlen, dataset_name, seed, nsamples, trust_remote_code)
 
 
-def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, nsamples=512):
+def get_dataloader(
+    tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42, bs=8, nsamples=512, trust_remote_code=False
+):
     """Generate a DataLoader for calibration using specified parameters.
 
     Args:
@@ -2099,6 +2172,6 @@ def get_dataloader(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed=42
         res = {"input_ids": input_ids_new, "attention_mask": attention_mask_new}
         return res
 
-    dataset_final = get_dataset(tokenizer, seqlen, dataset_name, seed, nsamples)
+    dataset_final = get_dataset(tokenizer, seqlen, dataset_name, seed, nsamples, trust_remote_code)
     calib_dataloader = DataLoader(dataset_final, batch_size=bs, shuffle=False, collate_fn=collate_batch)
     return calib_dataloader
