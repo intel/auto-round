@@ -194,7 +194,12 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
                 # the plain min/max initialization ignores it
                 if getattr(quant_config, "enable_neuqi", False):
                     enable_imatrix = True
-            elif (data_type == "int" and (bits is None or bits < 8)) or is_weight_scheme(scheme):
+            elif (
+                (data_type == "int" and (bits is None or bits < 8))
+                or (data_type in ("mx_fp", "mx_int") and bits is not None and bits <= 8)
+                or (data_type == "nv_fp" and bits == 4)
+                or is_weight_scheme(scheme)
+            ):
                 enable_imatrix = True
 
     act_bits = resolved_attrs.get("act_bits")
