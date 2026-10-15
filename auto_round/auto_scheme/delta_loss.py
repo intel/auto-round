@@ -2307,7 +2307,7 @@ def _can_parallel_scheme_scoring(
     )
 
 
-def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_usage):
+def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_usage, trust_remote_code=False):
     """Load an isolated worker model without an extra full-size CPU initialization copy."""
     return load_model(
         model_name,
@@ -2315,10 +2315,11 @@ def _load_scheme_worker_model(model_name, use_model_replacements, low_cpu_mem_us
         use_auto_mapping=False,
         use_model_replacements=use_model_replacements,
         low_cpu_mem_usage=low_cpu_mem_usage,
+        trust_remote_code=trust_remote_code,
     )
 
 
-def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=False):
+def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=False, trust_remote_code=False):
     """Build an isolated meta model and checkpoint index for a scoring worker."""
     from auto_round.modeling.fused_moe.replace_modules import _handle_moe_modules
     from auto_round.utils.disk_stream_util import build_meta_model
@@ -2330,12 +2331,12 @@ def _load_disk_stream_scheme_worker_model(model_name, use_model_replacements=Fal
     # here in the worker: with the custom MoE replacements disabled, the meta-skeleton
     # build no longer guarantees it, and leaving the experts fused makes the per-expert
     # quant layers unresolvable during scoring.
-    model, tokenizer, disk_index = build_meta_model(model_name)
+    model, tokenizer, disk_index = build_meta_model(model_name, trust_remote_code=trust_remote_code)
     _handle_moe_modules(model)
     if use_model_replacements:
         from auto_round.special_model_handler import _handle_special_model, update_module
 
-        model = update_module(model, formats=None, cleanup_original=False)
+        model = update_module(model, formats=None, trust_remote_code=trust_remote_code, cleanup_original=False)
         model = _handle_special_model(model)
     return model, tokenizer, disk_index
 
@@ -2376,6 +2377,7 @@ def _score_scheme_worker(args):
         progress_queue,
         disk_stream_model,
         worker_cache_path,
+        trust_remote_code,
     ) = args
 
     from auto_round.auto_scheme.utils import _scheme_short_name as _short_name
@@ -2388,7 +2390,7 @@ def _score_scheme_worker(args):
     if disk_stream_model:
         try:
             model, tokenizer, disk_index = _load_disk_stream_scheme_worker_model(
-                model_name, use_model_replacements=use_model_replacements
+                model_name, use_model_replacements=use_model_replacements, trust_remote_code=trust_remote_code
             )
             processor = None
         except Exception as exc:  # noqa: BLE001
@@ -2406,6 +2408,7 @@ def _score_scheme_worker(args):
                 model_name,
                 use_model_replacements,
                 low_cpu_mem_usage,
+                trust_remote_code,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -3112,6 +3115,7 @@ def _gen_layer_config(
                             progress_queue,
                             worker_disk_stream_model,
                             scheme_cache_meta[index][1],  # cache_path for batch checkpoints
+                            auto_scheme.trust_remote_code,
                         )
                         for slot, index in enumerate(uncached_indices)
                     ]
@@ -3624,6 +3628,7 @@ def gen_layer_config(
     disk_index = None
     if isinstance(model, str):
         model_name = model
+        trust_remote_code = auto_scheme.trust_remote_code
         is_vlm = is_mllm_model(model_name)
         if not is_vlm and auto_scheme.low_cpu_mem_usage and low_gpu_mem_usage:
             # Disk-streamed load (meta-device skeleton + on-demand per-block
@@ -3634,7 +3639,7 @@ def gen_layer_config(
             try:
                 from auto_round.utils.disk_stream_util import build_meta_model, materialize_non_block_params
 
-                model, tokenizer, disk_index = build_meta_model(model_name)
+                model, tokenizer, disk_index = build_meta_model(model_name, trust_remote_code=trust_remote_code)
                 block_prefixes = flatten_list(get_block_names(model, quant_vision=is_vlm))
                 materialize_non_block_params(model, block_prefixes, disk_index, device="cpu")
             except Exception as exc:  # noqa: BLE001
@@ -3644,10 +3649,12 @@ def gen_layer_config(
                 )
                 disk_index = None
                 model, tokenizer, processor, _, _, is_vlm, _ = load_model(
-                    model_name, device="cpu", use_auto_mapping=False
+                    model_name, device="cpu", use_auto_mapping=False, trust_remote_code=trust_remote_code
                 )
         else:
-            model, tokenizer, processor, _, _, is_vlm, _ = load_model(model_name, device="cpu", use_auto_mapping=False)
+            model, tokenizer, processor, _, _, is_vlm, _ = load_model(
+                model_name, device="cpu", use_auto_mapping=False, trust_remote_code=trust_remote_code
+            )
     else:
         # Object passed in: still try to detect VLM so we can pick the right dataloader later.
         try:

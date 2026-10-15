@@ -207,11 +207,11 @@ def eval(args):
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
     )
 
-    if is_diffusion_model(args.model_name):
+    if is_diffusion_model(args.model_name, trust_remote_code=not args.disable_trust_remote_code):
         from auto_round.eval.evaluation import evaluate_diffusion_model
         from auto_round.utils import diffusion_load_model
 
-        pipe, _ = diffusion_load_model(args.model_name)
+        pipe, _ = diffusion_load_model(args.model_name, trust_remote_code=not args.disable_trust_remote_code)
         evaluate_diffusion_model(args, pipe=pipe)
         return
     if args.eval_backend == "vllm":

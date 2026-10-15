@@ -541,7 +541,7 @@ def llm_load_model(
 
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
     if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
-        logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
+        logger.warning("trust_remote_code is explicitly enabled, please ensure the model source is trusted.")
 
     if is_hpex_available():
         # For loading FP8 model on HPU
@@ -1049,7 +1049,7 @@ def diffusion_load_model(
                     torch_dtype[k] = component_dtype
 
         pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
-            pretrained_model_name_or_path, torch_dtype=torch_dtype
+            pretrained_model_name_or_path, torch_dtype=torch_dtype, trust_remote_code=trust_remote_code
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 

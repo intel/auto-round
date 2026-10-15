@@ -952,6 +952,7 @@ class BaseOrchestrator:
             and not self.orig_scheme.low_gpu_mem_usage
         ):
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
+        self.orig_scheme.trust_remote_code = self.model_context.trust_remote_code
         self.scheme_generator = GenScheme(
             self.orig_scheme,
             self.model_context.model,

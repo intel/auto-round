@@ -371,6 +371,7 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             limit=args.limit,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             mllm=getattr(autoround, "mllm", False),
+            trust_remote_code=not getattr(args, "disable_trust_remote_code", True),
             add_bos_token=args.add_bos_token,
             num_fewshot=getattr(args, "num_fewshot", None),
             gen_kwargs=getattr(args, "eval_gen_kwargs", None),
