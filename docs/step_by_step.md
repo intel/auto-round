@@ -716,14 +716,16 @@ Supported source tensor layouts:
 
 Status of commonly requested checkpoints:
 
-| Model | Source format | Status |
-| --- | --- | --- |
-| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors, NVFP4 | Verified |
-| `RedHatAI/Qwen3.8-27B-NVFP4` | compressed-tensors, NVFP4 + FP8 | Not verified (TODO) |
-| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt, NVFP4 + FP8 | Not verified (TODO) |
-| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt, NVFP4 | Not verified (TODO) |
-| `amd/MiniMax-M2.7-NVFP4` | Quark, NVFP4 | Not verified (TODO) |
-| `thinkingmachines/Inkling-Small-NVFP4` | Special format (`inkling_mm_model`), NVFP4 | Not verified (TODO) |
+| Model | Source format | Status | gsm8k strict-match (MXFP4) | gsm8k flexible-extract (MXFP4) |
+| --- | --- | --- | --- | --- |
+| `RedHatAI/Qwen3.8-27B-NVFP4` | compressed-tensors, NVFP4 + FP8 | Verified | 0.9636 ± 0.0052 | 0.9636 |
+| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt, NVFP4 + FP8 | Verified | 0.9644 ± 0.0051 | 0.9659 |
+| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors, NVFP4 | Verified | 0.9575 ± 0.0056 | 0.9575 |
+| `amd/MiniMax-M2.7-NVFP4` | Quark, NVFP4 | Verified | 0.9568 ± 0.0056 | 0.9591 |
+| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt, NVFP4 | Verified | 0.9477 ± 0.0061 | 0.9522 |
+| `thinkingmachines/Inkling-Small-NVFP4` | Special format (`inkling_mm_model`), NVFP4 | Verified | 0.9477 ± 0.0061 | 0.9545 |
+
+gsm8k is evaluated with 5-shot on the converted MXFP4 models, with thinking disabled. These results only demonstrate that the converted models work correctly; the numbers are not guaranteed to be accurate.
 
 Running `--scheme MXFP4 --model_free` on an NVFP4 checkpoint converts **only** the NVFP4 layers to MXFP4. The source is detected as NVFP4 from the model name (containing `nvfp4`) or its quantization config (`config.json` / `hf_quant_config.json`), and a warning is printed:
 

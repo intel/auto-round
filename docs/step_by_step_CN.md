@@ -705,14 +705,16 @@ ar.quantize_and_save(output_dir, format="auto_round")
 
 常见 checkpoint 的支持状态：
 
-| 模型 | 源格式 | 状态 |
-| --- | --- | --- |
-| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors，NVFP4 | 已验证 |
-| `RedHatAI/Qwen3.8-27B-NVFP4` | compressed-tensors，NVFP4 + FP8 | 未验证（TODO） |
-| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt，NVFP4 + FP8 | 未验证（TODO） |
-| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt，NVFP4 | 未验证（TODO） |
-| `amd/MiniMax-M2.7-NVFP4` | Quark，NVFP4 | 未验证（TODO） |
-| `thinkingmachines/Inkling-Small-NVFP4` | 特殊格式（`inkling_mm_model`），NVFP4 | 未验证（TODO） |
+| 模型 | 源格式 | 状态 | gsm8k strict-match（MXFP4） | gsm8k flexible-extract（MXFP4） |
+| --- | --- | --- | --- | --- |
+| `RedHatAI/Qwen3.8-27B-NVFP4` | compressed-tensors，NVFP4 + FP8 | 已验证 | 0.9636 ± 0.0052 | 0.9636 |
+| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt，NVFP4 + FP8 | 已验证 | 0.9644 ± 0.0051 | 0.9659 |
+| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors，NVFP4 | 已验证 | 0.9575 ± 0.0056 | 0.9575 |
+| `amd/MiniMax-M2.7-NVFP4` | Quark，NVFP4 | 已验证 | 0.9568 ± 0.0056 | 0.9591 |
+| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt，NVFP4 | 已验证 | 0.9477 ± 0.0061 | 0.9522 |
+| `thinkingmachines/Inkling-Small-NVFP4` | 特殊格式（`inkling_mm_model`），NVFP4 | 已验证 | 0.9477 ± 0.0061 | 0.9545 |
+
+gsm8k 为转换后 MXFP4 模型的 5-shot 评测结果，未开启 thinking。结果仅用于证明模型可正常运行，数据不保证准确。
 
 对 NVFP4 checkpoint 使用 `--scheme MXFP4 --model_free` 时，**仅**将 NVFP4 层转换为 MXFP4。是否为 NVFP4 源模型由模型名（包含 `nvfp4`）或其量化配置（`config.json` / `hf_quant_config.json`）判断，检测到时会打印警告：
 

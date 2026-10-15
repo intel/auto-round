@@ -46,6 +46,7 @@ from auto_round.utils.model_free_utils import (
     _handle_nvfp4_source_tensors,
     _hydrate_and_clean_inkling_nvfp4_aux,
     _hydrate_missing_fp8_scales_from_index,
+    _ignore_fused_experts_for_vllm,
     _looks_like_auto_scheme,
     _PatternMatcher,
     _process_shard,
@@ -517,6 +518,52 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         )
         targets = _get_targets_from_qconfig(qconfig, "group_0")
         assert "RoutedExperts" not in targets, f"Unexpected RoutedExperts in targets: {targets}"
+
+    def test_ignored_fused_experts_get_vllm_ignore_entry(self):
+        default_scheme = {"bits": 16, "data_type": "float", "group_size": -1}
+        layer_cfg = {".w1.": {"bits": 4, "data_type": "nv_fp", "group_size": 16}}
+        qconfig = _build_quantization_config(
+            default_scheme=default_scheme,
+            layer_config=layer_cfg,
+            ignore_patterns=[],
+            quantized_layers=_MOE_NV_QUANTIZED,
+            ignored_layers=["model.layers.2.mlp.experts.w13_weight", "model.layers.2.mlp.experts.w2_weight"],
+            format="llm_compressor",
+        )
+        assert qconfig["ignore"] == [r"re:^model\.layers\.2\.mlp\.experts\.\d+\.(gate|up|down)_proj$"]
+
+
+class TestIgnoreFusedExpertsForVllm:
+    _ENTRY = r"re:^model\.layers\.0\.mlp\.experts\.\d+\.(gate|up|down)_proj$"
+
+    def _qconfig(self, targets):
+        return {"config_groups": {"group_0": {"targets": targets}}, "ignore": ["lm_head"]}
+
+    def test_adds_entry_matching_vllm_probe_names(self):
+        import re
+
+        qconfig = _ignore_fused_experts_for_vllm(
+            self._qconfig(["Linear", "RoutedExperts"]),
+            ["model.layers.0.mlp.experts.w13_weight", "model.layers.0.mlp.experts.w2_weight"],
+            [],
+        )
+        assert qconfig["ignore"] == ["lm_head", self._ENTRY]
+        for proj in ("gate_proj", "up_proj", "down_proj"):
+            assert re.match(self._ENTRY[3:], f"model.layers.0.mlp.experts.0.{proj}")
+
+    def test_no_routed_experts_no_change(self):
+        qconfig = _ignore_fused_experts_for_vllm(
+            self._qconfig(["Linear"]), ["model.layers.0.mlp.experts.w13_weight"], []
+        )
+        assert qconfig["ignore"] == ["lm_head"]
+
+    def test_unfused_and_partially_quantized_modules_skipped(self):
+        qconfig = _ignore_fused_experts_for_vllm(
+            self._qconfig(["RoutedExperts"]),
+            ["model.layers.1.mlp.experts.0.gate_proj", "model.layers.0.mlp.experts.w13_weight"],
+            ["model.layers.0.mlp.experts.w2_weight"],
+        )
+        assert qconfig["ignore"] == ["lm_head"]
 
 
 # ===========================================================================

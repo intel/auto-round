@@ -34,6 +34,10 @@ from typing import Any
 import torch
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
+from auto_round.export.export_to_llmcompressor.utils import add_routed_experts_if_moe as _add_routed_experts_if_moe
+from auto_round.export.export_to_llmcompressor.utils import (
+    ignore_fused_experts_for_vllm as _ignore_fused_experts_for_vllm,
+)
 from auto_round.logger import logger
 from auto_round.schemes import PRESET_SCHEMES, QuantizationScheme, preset_name_to_scheme
 from auto_round.utils.common import _normalize_tensor_name_for_warning, to_standard_regex
@@ -2691,42 +2695,6 @@ def _build_nvfp4_e5m3_quantization_config(ignored_layers: list[str]) -> dict:
     return qconfig
 
 
-# TODO: Remove when the issue is fixed
-# https://github.com/vllm-project/llm-compressor/issues/3069
-def _add_routed_experts_if_moe(targets: list[str], layer_names: list[str]) -> list[str]:
-    """Append ``"RoutedExperts"`` for routed expert layouts that llm-compressor misses.
-
-    The generic ``"Linear"`` target does not cover all expert layouts.  Keep the
-    safe canonical cases alone (``mlp.experts.*.gate_proj|up_proj|down_proj``),
-    but trigger for non-standard expert paths and for any routed
-    expert structure that lives outside the standard ``mlp.experts`` naming.
-    """
-    if "RoutedExperts" in targets:
-        return targets
-
-    def _projection_name(name: str) -> str:
-        # Eg. '...experts.0.gate_proj.weight' -> ['...', 'experts', '0', 'gate_proj', 'weight']
-        parts = name.split(".")
-        if len(parts) >= 2:
-            return parts[-2]
-        return parts[-1]
-
-    for name in layer_names:
-        lname = name.lower()
-        if "block_sparse_moe" in lname or ".moe." in lname or ".feed_forward." in lname:
-            return list(targets) + ["RoutedExperts"]
-
-        if ".experts." not in lname:
-            continue
-
-        projection = _projection_name(name)
-        if projection in {"gate_proj", "up_proj", "down_proj"}:
-            continue
-        return list(targets) + ["RoutedExperts"]
-
-    return targets
-
-
 def _is_mxfp_ct_group(group: dict) -> bool:
     weights = group.get("weights") or {}
     return (
@@ -3277,7 +3245,7 @@ def _build_quantization_config(
             qconfig["config_groups"]["group_0"]["targets"] = targets
             qconfig["format"] = "nvfp4-pack-quantized"
         qconfig.update(_get_llm_compressor_metadata())
-        return qconfig
+        return _ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers)
     if is_mx_fp(data_type) or (is_fp_default and _layer_config_has_mxfp(layer_config)):
         if format in ("auto_round", "auto_round:auto_gptq"):
             return _build_mxfp_autoround_quantization_config(
@@ -3301,7 +3269,7 @@ def _build_quantization_config(
             "compressed-tensors"
         ):
             qconfig = _explicit_mxfp_targets(qconfig, quantized_layers)
-        return qconfig
+        return _ignore_fused_experts_for_vllm(qconfig, ignored_layers, quantized_layers)
 
     # When the default is full-precision (BF16/FP16) but INT layers were
     # quantized via layer_config, derive the dominant INT scheme and use it as

@@ -13,7 +13,89 @@
 # limitations under the License.
 
 
+import re
+
+import torch
+
 from auto_round.utils import matches_any_regex, to_standard_regex
+
+_EXPERT_SEGMENTS = ("experts", "shared_experts")
+
+
+# TODO: Remove when the issue is fixed
+# https://github.com/vllm-project/llm-compressor/issues/3069
+def add_routed_experts_if_moe(targets: list[str], layer_names: list[str]) -> list[str]:
+    """Append ``"RoutedExperts"`` for routed expert layouts that llm-compressor misses.
+
+    The generic ``"Linear"`` target does not cover all expert layouts.  Keep the
+    safe canonical cases alone (``mlp.experts.*.gate_proj|up_proj|down_proj``),
+    but trigger for non-standard expert paths and for any routed
+    expert structure that lives outside the standard ``mlp.experts`` naming.
+    """
+    if "RoutedExperts" in targets:
+        return targets
+
+    def _projection_name(name: str) -> str:
+        # Eg. '...experts.0.gate_proj.weight' -> ['...', 'experts', '0', 'gate_proj', 'weight']
+        parts = name.split(".")
+        if len(parts) >= 2:
+            return parts[-2]
+        return parts[-1]
+
+    for name in layer_names:
+        lname = name.lower()
+        if "block_sparse_moe" in lname or ".moe." in lname or ".feed_forward." in lname:
+            return list(targets) + ["RoutedExperts"]
+
+        if ".experts." not in lname:
+            continue
+
+        projection = _projection_name(name)
+        if projection in {"gate_proj", "up_proj", "down_proj"}:
+            continue
+        return list(targets) + ["RoutedExperts"]
+
+    return targets
+
+
+def ignore_fused_experts_for_vllm(qconfig: dict, ignored_layers: list[str], quantized_layers: list[str]) -> dict:
+    """Add vLLM-matchable ignore entries for ignored fused expert modules when ``RoutedExperts`` is targeted.
+
+    vLLM resolves a FusedMoE scheme via ``<module>.0.{gate,up,down}_proj``, which fused layer names such as
+    ``<module>.w13_weight`` never match, so the global ``RoutedExperts`` target would quantize them.
+    """
+    groups = qconfig.get("config_groups") or {}
+    if not any("RoutedExperts" in (g.get("targets") or []) for g in groups.values()):
+        return qconfig
+
+    ignore = list(qconfig.get("ignore") or [])
+    for layer_name in dict.fromkeys(ignored_layers):
+        if layer_name.startswith("re:"):
+            continue
+        parts = layer_name.split(".")
+        if parts[-1] in _EXPERT_SEGMENTS:
+            module = layer_name
+        elif len(parts) >= 2 and parts[-2] in _EXPERT_SEGMENTS and not parts[-1].isdigit():
+            module = ".".join(parts[:-1])
+        else:
+            continue
+        # A partially quantized module cannot be described as ignored.
+        if any(q == module or q.startswith(f"{module}.") for q in quantized_layers):
+            continue
+        entry = f"re:^{re.escape(module)}\\.\\d+\\.(gate|up|down)_proj$"
+        if entry not in ignore:
+            ignore.append(entry)
+    qconfig["ignore"] = ignore
+    return qconfig
+
+
+def collect_fused_expert_modules(model: torch.nn.Module) -> list[str]:
+    """Return expert modules still holding fused 3-D weights, i.e. never unfused into quantized Linear layers."""
+    return [
+        name
+        for name, module in model.named_modules()
+        if name.split(".")[-1] in _EXPERT_SEGMENTS and any(p.dim() == 3 for p in module.parameters(recurse=False))
+    ]
 
 
 def generate_ignore_regex_list(regex_config: dict[str, dict], layer_config: dict[str, dict]) -> list[str]:
