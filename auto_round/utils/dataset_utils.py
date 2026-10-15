@@ -860,9 +860,16 @@ def parse_dataset_spec(spec: str) -> dict[str, Any]:
     result["name"] = unescape_spec_value(segments[0]).strip()
 
     for part in segments[1:]:
-        if not part or "=" not in part:
+        if not part:
             continue
-        key, value = part.split("=", 1)
+        if "=" in part:
+            key, value = part.split("=", 1)
+        elif part.strip() in ("concat", "apply_chat_template"):
+            # Preserve the bare boolean syntax (e.g. "pile-10k:apply_chat_template").
+            key, value = part, "true"
+        else:
+            # Ignore incomplete non-boolean options.
+            continue
         key = key.strip()
         # Don't strip value for separator (whitespace is meaningful)
         if key != "separator":

@@ -1828,9 +1828,14 @@ def _get_dataset_impl(tokenizer, seqlen, dataset_name="NeelNanda/pile-10k", seed
             segments = split_unescaped(name, ":")
             name = segments[0]
             for ele in segments[1:]:
-                if "=" not in ele:
+                if "=" in ele:
+                    key, raw_value = ele.split("=", 1)
+                elif ele.strip() in ("concat", "apply_chat_template"):
+                    # Preserve the bare boolean syntax (e.g. "pile-10k:apply_chat_template").
+                    key, raw_value = ele, "true"
+                else:
+                    # Ignore incomplete non-boolean options.
                     continue
-                key, raw_value = ele.split("=", 1)
                 key = key.strip()
                 # Restore escaped delimiters / whitespace; keep separator spaces.
                 value = unescape_spec_value(raw_value if key == "separator" else raw_value.strip())

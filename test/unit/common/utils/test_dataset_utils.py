@@ -291,6 +291,17 @@ class TestCalibDataset:
         spec = CalibDataset.from_spec_string("my/ds:timeout=600")
         assert spec.timeout == 600
 
+    def test_from_spec_string_bare_apply_chat_template(self):
+        """Bare ``apply_chat_template`` flag survives parsing and round-trips."""
+        spec = CalibDataset.from_spec_string("my/ds:apply_chat_template")
+        assert spec.apply_chat_template is True
+        assert "apply_chat_template=true" in spec.to_spec_string()
+
+    def test_from_spec_string_bare_concat(self):
+        """Bare ``concat`` flag survives parsing."""
+        spec = CalibDataset.from_spec_string("my/ds:concat")
+        assert spec.concat is True
+
     def test_roundtrip(self):
         """build -> parse -> build should be identity."""
         spec = CalibDataset("my/ds", split="train", num=100, fields=["q", "a"], separator=" ")
@@ -444,6 +455,29 @@ class TestParseDatasetSpec:
     def test_apply_chat_template(self):
         result = parse_dataset_spec("my/ds:apply_chat_template=true")
         assert result["apply_chat_template"] is True
+
+    def test_bare_apply_chat_template(self):
+        """Bare ``apply_chat_template`` flag (no ``=value``) is treated as true."""
+        result = parse_dataset_spec("my/ds:apply_chat_template")
+        assert result["apply_chat_template"] is True
+
+    def test_bare_concat(self):
+        """Bare ``concat`` flag (no ``=value``) is treated as true."""
+        result = parse_dataset_spec("my/ds:concat")
+        assert result["concat"] is True
+
+    def test_bare_flag_combined_with_kv_options(self):
+        """Bare boolean flags coexist with regular key=value options."""
+        result = parse_dataset_spec("my/ds:num=100:apply_chat_template:concat")
+        assert result["num"] == 100
+        assert result["apply_chat_template"] is True
+        assert result["concat"] is True
+
+    def test_incomplete_non_boolean_option_ignored(self):
+        """An option without ``=`` that is not a known bare flag is ignored."""
+        result = parse_dataset_spec("my/ds:split")
+        assert result["name"] == "my/ds"
+        assert result["split"] is None
 
     def test_system_prompt(self):
         result = parse_dataset_spec("my/ds:system_prompt=You are helpful.")
@@ -669,5 +703,6 @@ class TestStripSpecWhitespace:
         # Round-trips through whitespace stripping without corrupting the value.
         stripped = strip_dataset_spec_whitespace(spec)
         assert parse_dataset_spec(stripped)["system_prompt"] == "a, b: c"
+
 
 
