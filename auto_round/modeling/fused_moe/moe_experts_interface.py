@@ -369,7 +369,20 @@ def _experts_supports_decorator(module: nn.Module) -> bool:
     return hasattr(forward_method, "__wrapped__")
 
 
-def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
+def _module_name_is_experts_container(module_name: str) -> bool:
+    """True when ``module_name`` names a fused-MoE experts container.
+
+    Fused expert weights always live on a module whose path carries an experts/MoE
+    token (e.g. ``model.layers.0.mlp.experts``, ``...block_sparse_moe.experts``,
+    ``...ffn.experts``). A vision/positional embedder such as gemma-4 unified's
+    ``model.embed_vision`` (which owns a 3D ``pos_embedding`` table) does not, so it
+    must never be mistaken for an experts module.
+    """
+    tokens = module_name.lower().split(".")
+    return any(("expert" in token) or token == "moe" for token in tokens)
+
+
+def _detect_expert_projections(module: nn.Module, module_name: str = "") -> dict[str, dict]:
     """Detect which expert projections exist in the module.
 
     This function scans the module for any 3D nn.Parameter attributes.
@@ -380,6 +393,13 @@ def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
     modules: ``dir()`` on an ``nn.Module`` is expensive, and every miss goes through
     ``nn.Module.__getattr__``, which searches three dicts before raising. A parameter is
     always registered in ``_parameters``, so the cheap membership test is equivalent.
+
+    Args:
+        module: The candidate experts module.
+        module_name: The module's qualified path in the model tree (e.g.
+            ``model.layers.0.mlp.experts``). Used to gate the *unknown* 3D-parameter
+            fallback so only genuine experts/MoE containers are unfused. When empty
+            (name unavailable), the fallback stays permissive for backward compatibility.
 
     Returns:
         Dict mapping projection names to their config, only for projections that exist
@@ -406,17 +426,29 @@ def _detect_expert_projections(module: nn.Module) -> dict[str, dict]:
         if proj_name in three_dim:
             detected[proj_name] = config
 
-    # If no known patterns found, take any 3D parameter (future-proofing), but exclude
-    # known non-expert 3D parameters that exist on some transformer architectures
-    # (e.g. scale_shift_table on WanTransformer3DModel).
+    # Known 3D parameters that are *never* fused expert GEMMs and must never be split,
+    # regardless of the module path (e.g. ``scale_shift_table`` on WanTransformer3DModel).
     _NON_EXPERT_3D_PARAMS = frozenset(["scale_shift_table"])
-    if not detected:
+
+    # If no known pattern matched, fall back to treating an unknown 3D parameter as a
+    # future expert projection -- but ONLY when this module is actually a fused-MoE
+    # experts container (by path). This is the stable signal: an expert projection
+    # always lives on a ``*.experts``/``*.moe`` module. Without it, legitimate 3D
+    # parameters on non-expert modules get misclassified and split into bogus experts,
+    # e.g. gemma-4 unified's ``model.embed_vision.pos_embedding``
+    # ``(mm_posemb_size, 2, mm_embed_dim)`` -> ``embed_vision.{i}.pos_embedding.weight``.
+    # When ``module_name`` is unavailable we cannot verify the container, so stay
+    # permissive to preserve the previous behaviour -- but still honour the explicit
+    # non-expert denylist in both cases.
+    if not detected and (not module_name or _module_name_is_experts_container(module_name)):
         for name in three_dim:
             if name in _NON_EXPERT_3D_PARAMS:
+                logger.debug(f"Skipping known non-expert 3D parameter: {name}")
                 continue
-            # Use default config for unknown projections
             logger.debug(f"Discovered unknown 3D projection: {name}")
             detected[name] = {"is_input_proj": True, "output_multiplier": 1}
+    elif not detected:
+        logger.debug(f"Skipping 3D parameter(s) on non-experts module '{module_name}': {list(three_dim)}")
 
     return detected
 
@@ -584,13 +616,12 @@ def _warn_if_unfusing_allocates(module: nn.Module, detected_projections: dict[st
 
     total_bytes = sum(param.numel() * param.element_size() for param in params)
     logger.warning(
-        "[MoE Prep] fused expert weights are on %s (%.2f GB for '%s' alone), not meta. "
-        "Splitting them in memory needs the fused tensor and its per-expert copies at the "
-        "same time. AutoRound normally avoids this by building a meta skeleton and reading "
-        "each expert from disk; that requires a local checkpoint directory.",
-        params[0].device.type,
-        total_bytes / 1024**3,
+        "[MoE Prep] unfusing '%s' (%.2f GB on %s) in memory needs ~2x that peak. "
+        "For large MoE, enable AutoRound's disk-stream path (AR_DISK_STREAM_MODEL=1, "
+        "needs a local checkpoint + transformers>=5) to unfuse on meta instead.",
         module.__class__.__name__,
+        total_bytes / 1024**3,
+        params[0].device.type,
     )
 
 
@@ -598,6 +629,7 @@ def _unfuse_experts_weights_inplace(
     module: nn.Module,
     check_decorator: bool = True,
     projection_names: list[str] | None = None,
+    module_name: str = "",
 ) -> bool:
     """Convert fused 3D expert weights to per-expert containers of nn.Linear layers.
 
@@ -610,6 +642,9 @@ def _unfuse_experts_weights_inplace(
             @use_experts_implementation decorator. Default is True.
         projection_names: Optional list of projection names to unfuse.
             If None, auto-detects from KNOWN_PROJECTION_PATTERNS.
+        module_name: The module's qualified path in the model tree. Forwarded to
+            :func:`_detect_expert_projections` so the unknown-3D-parameter fallback
+            only fires on genuine experts/MoE containers.
 
     Returns:
         True if unfusing was successful, False if module doesn't match pattern
@@ -620,7 +655,7 @@ def _unfuse_experts_weights_inplace(
             name: config for name, config in KNOWN_PROJECTION_PATTERNS.items() if name in projection_names
         }
     else:
-        detected_projections = _detect_expert_projections(module)
+        detected_projections = _detect_expert_projections(module, module_name=module_name)
 
     if not detected_projections:
         return False
@@ -787,7 +822,7 @@ def prepare_model_for_moe_quantization(
     for name, module in model.named_modules():
         if skip_prefixes and any(name.startswith(p) for p in skip_prefixes):
             continue
-        if _unfuse_experts_weights_inplace(module):
+        if _unfuse_experts_weights_inplace(module, module_name=name):
             unfused_modules.append(name)
             logger.debug(f"[MoE Prep] Unfused '{name}'")
 
