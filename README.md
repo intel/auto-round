@@ -7,7 +7,7 @@
 </p>
 
 
-<h3> Advanced Quantization Toolkit for LLMs</h3>
+<h3>PTQ-Level Efficiency, QAT-Level Accuracy.</h3>
 
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.16.0-green)](https://github.com/intel/auto-round/releases)
