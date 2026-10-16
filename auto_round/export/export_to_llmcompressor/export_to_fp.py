@@ -29,9 +29,8 @@ from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.config import initialize_quantization
 from auto_round.export.export_to_llmcompressor.utils import (
     add_routed_experts_if_moe,
-    collect_fused_expert_modules,
+    finalize_llmcompressor_config_names,
     generate_ignore_regex_list,
-    ignore_fused_experts_for_vllm,
 )
 from auto_round.export.utils import (
     filter_quantization_config,
@@ -476,9 +475,10 @@ def save_quantized_as_fp(
         _configure_gaudi2_fp8_dtype(quantization_config)
         if attention_config is not None:
             quantization_config["attention_input_activations"] = attention_config
-    quantization_config = ignore_fused_experts_for_vllm(
+    quantization_config = finalize_llmcompressor_config_names(
         quantization_config,
-        ignore + collect_fused_expert_modules(model),
+        model,
+        [],
         [name for names in scheme_groups.values() for name in names],
     )
     if hasattr(model, "config"):

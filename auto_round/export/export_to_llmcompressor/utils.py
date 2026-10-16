@@ -89,6 +89,67 @@ def ignore_fused_experts_for_vllm(qconfig: dict, ignored_layers: list[str], quan
     return qconfig
 
 
+def get_checkpoint_name_reverter(model: torch.nn.Module):
+    """Return ``fn(module_name) -> name`` mapping a loaded-model module name to the saved checkpoint namespace."""
+    from auto_round.utils.common import (
+        get_reverse_checkpoint_conversion_mapping,
+        get_reverse_weight_transforms,
+        revert_checkpoint_conversion_mapping,
+        revert_name_with_weight_transforms,
+    )
+
+    transforms = get_reverse_weight_transforms(model)
+    mapping = get_reverse_checkpoint_conversion_mapping(model) if transforms is None else None
+    if transforms is None and not mapping:
+        return lambda name: name
+
+    def _revert(name: str) -> str:
+        # Renamings are defined on parameter keys, so revert a full weight key.
+        key = f"{name}.weight"
+        if transforms is not None:
+            reverted = revert_name_with_weight_transforms(key, transforms)
+        else:
+            reverted = revert_checkpoint_conversion_mapping(key, mapping)
+        return reverted[: -len(".weight")] if reverted.endswith(".weight") else name
+
+    return _revert
+
+
+def revert_quantization_config_names(qconfig: dict, revert) -> dict:
+    """Rewrite module names in ``ignore`` and group ``targets`` with ``revert`` so they match the saved weights."""
+
+    def _revert_entry(entry):
+        if not isinstance(entry, str):
+            return entry
+        if not entry.startswith("re:"):
+            return revert(entry)
+        # Only rewrite regexes that wrap a single escaped module name, e.g. ``re:.*model\.layers\.0\.mlp\.gate.*``.
+        match = re.fullmatch(r"(re:(?:\.\*)?)(.*?)((?:\.\*)?)", entry)
+        plain = re.sub(r"\\(.)", r"\1", match.group(2))
+        if not plain or re.escape(plain) != match.group(2):
+            return entry
+        return f"{match.group(1)}{re.escape(revert(plain))}{match.group(3)}"
+
+    if qconfig.get("ignore"):
+        qconfig["ignore"] = list(dict.fromkeys(_revert_entry(e) for e in qconfig["ignore"]))
+    for group in (qconfig.get("config_groups") or {}).values():
+        if group.get("targets"):
+            group["targets"] = [_revert_entry(t) for t in group["targets"]]
+    return qconfig
+
+
+def finalize_llmcompressor_config_names(
+    qconfig: dict, model: torch.nn.Module, ignored_layers: list[str], quantized_layers: list[str]
+) -> dict:
+    """Revert config module names to the checkpoint namespace, then add vLLM ignore entries for fused experts."""
+    revert = get_checkpoint_name_reverter(model)
+    qconfig = revert_quantization_config_names(qconfig, revert)
+    ignored = list(qconfig.get("ignore") or []) + [
+        revert(n) for n in ignored_layers + collect_fused_expert_modules(model) if not n.startswith("re:")
+    ]
+    return ignore_fused_experts_for_vllm(qconfig, ignored, [revert(n) for n in quantized_layers])
+
+
 def collect_fused_expert_modules(model: torch.nn.Module) -> list[str]:
     """Return expert modules still holding fused 3-D weights, i.e. never unfused into quantized Linear layers."""
     return [

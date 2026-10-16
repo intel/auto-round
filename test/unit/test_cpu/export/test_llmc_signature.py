@@ -10,6 +10,7 @@ from auto_round.export.export_to_llmcompressor.export import (
 from auto_round.export.export_to_llmcompressor.utils import (
     collect_fused_expert_modules,
     ignore_fused_experts_for_vllm,
+    revert_quantization_config_names,
 )
 
 
@@ -133,3 +134,29 @@ def test_ignored_fused_experts_get_vllm_ignore_entry():
     config = ignore_fused_experts_for_vllm(config, config["ignore"] + fused, ["dense"])
 
     assert config["ignore"] == ["re:.*lm_head", r"re:^mlp\.experts\.\d+\.(gate|up|down)_proj$"]
+
+
+def test_revert_quantization_config_names_uses_checkpoint_namespace():
+    def revert(name):
+        return name.replace(".mlp.", ".block_sparse_moe.")
+
+    config = {
+        "config_groups": {"group_0": {"targets": ["Linear", "model.layers.0.mlp.experts.0.down_proj"]}},
+        "ignore": [
+            "model.layers.0.mlp.experts.0.gate_proj",
+            r"re:.*model\.layers\.0\.mlp\.gate.*",
+            r"re:.*mlp\.(gate|up).*",
+        ],
+    }
+
+    config = revert_quantization_config_names(config, revert)
+
+    assert config["config_groups"]["group_0"]["targets"] == [
+        "Linear",
+        "model.layers.0.block_sparse_moe.experts.0.down_proj",
+    ]
+    assert config["ignore"] == [
+        "model.layers.0.block_sparse_moe.experts.0.gate_proj",
+        r"re:.*model\.layers\.0\.block_sparse_moe\.gate.*",
+        r"re:.*mlp\.(gate|up).*",
+    ]
