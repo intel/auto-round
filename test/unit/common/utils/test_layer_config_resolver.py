@@ -173,16 +173,16 @@ def test_extract_regex_config_honors_format_allowance(monkeypatch):
 @pytest.mark.parametrize(
     "model_type,expected_dtype",
     [
-        ("nemotron_h", torch.bfloat16),
         ("nemotron_h_omni", torch.bfloat16),
-        ("nemotron_h_puzzle", torch.bfloat16),
+        ("nemotron_h", torch.float16),
+        ("nemotron_h_puzzle", torch.float16),
         ("qwen3_moe", torch.float16),
         ("nemotron", torch.float16),
         ("nemotron_h_other", torch.float16),
         (None, torch.float16),
     ],
 )
-def test_mamba_scale_default_is_only_for_nemotron_h_family(model_type, expected_dtype):
+def test_mamba_scale_default_is_only_for_nemotron_h_omni(model_type, expected_dtype):
     from auto_round.special_model_handler import get_predefined_layer_config
 
     model = nn.Module()
@@ -206,9 +206,9 @@ def test_mamba_scale_default_is_only_for_nemotron_h_family(model_type, expected_
         assert get_predefined_layer_config(model) == {}
 
 
-def test_nemotron_h_scale_default_respects_explicit_user_dtype():
+def test_nemotron_h_omni_scale_default_respects_explicit_user_dtype():
     model = nn.Module()
-    model.config = SimpleNamespace(model_type="nemotron_h")
+    model.config = SimpleNamespace(model_type="nemotron_h_omni")
     model.mixer = nn.Module()
     model.mixer.out_proj = nn.Linear(32, 32)
     scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))

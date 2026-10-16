@@ -27,7 +27,8 @@ from auto_round import envs
 from auto_round.compressors.utils import get_shared_keys
 from auto_round.context.base import BaseContext
 from auto_round.logger import logger
-from auto_round.modeling.unfused_moe import apply_model_monkey_patches, apply_post_load_fixups
+from auto_round.modeling.nemotron_h_omni import apply_nemotron_h_omni_post_load
+from auto_round.modeling.unfused_moe import apply_model_monkey_patches
 from auto_round.special_model_handler import _handle_special_model, update_module
 from auto_round.utils import (
     cast_model_dtype,
@@ -278,12 +279,9 @@ class ModelContext(BaseContext):
         elif self.tokenizer is None and not self.is_diffusion and self.need_calib:
             raise ValueError("A tokenizer must be set for non-str model input")
 
-        # Architecture-specific post-load fix-ups registered via ``MODEL_CONFIG``'s
-        # ``post_load_fn`` (currently only Nemotron-H: restore Zamba2 ``group_size``
-        # bypassed by HF ``low_cpu_mem_usage``, plus FP32 SSM-recurrence / router
-        # bias restoration from the source checkpoint).  No-op for any model_type
-        # without a registered fix-up.
-        apply_post_load_fixups(self.model)
+        # Nemotron-H Omni wrappers: restore FP32 SSM/router tensors and the gated-norm
+        # group_size after loading. No-op for every other model.
+        apply_nemotron_h_omni_post_load(self.model)
         self._model_loaded = True
 
         # Clear tuning_device from any previous quantization passes.

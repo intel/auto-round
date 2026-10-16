@@ -1168,13 +1168,10 @@ register_ignore_layers(
 
 
 # Architecture-specific layer_config defaults, keyed by ``config.model_type``.
-# Nemotron-H keeps its Mamba2 ``out_proj`` scales in BF16; other models keep the
-# caller's scale_dtype.
-_NEMOTRON_H_LAYER_CONFIG = {".*mixer.out_proj$": {"scale_dtype": torch.bfloat16}}
+# Nemotron-H Omni wrappers (Super VL, Bolt) keep their Mamba2 ``out_proj`` scales in
+# BF16; every other model, including plain ``nemotron_h``, keeps the caller's scale_dtype.
 _PRE_DEFINED_LAYER_CONFIG = {
-    "nemotron_h": _NEMOTRON_H_LAYER_CONFIG,
-    "nemotron_h_omni": _NEMOTRON_H_LAYER_CONFIG,
-    "nemotron_h_puzzle": _NEMOTRON_H_LAYER_CONFIG,
+    "nemotron_h_omni": {".*mixer.out_proj$": {"scale_dtype": torch.bfloat16}},
 }
 
 

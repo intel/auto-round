@@ -320,30 +320,16 @@ def copy_missing_tensors_from_source(
     saved_block_prefix.update(shortcut_block_prefix)
 
     def _name_aliases(name: str) -> set:
-        """Return a set of equivalent tensor-name variants to match against saved tensors.
+        """Equivalent spellings of ``name`` to match against the saved tensors.
 
-        Handles models where the source and saved prefixes differ, e.g.
-        google/gemma-3-4b-it: ``language_model.model.*`` ↔ ``model.language_model.*``.
+        Nemotron-H Omni checkpoints store the language-model trunk as
+        ``language_model.backbone.*``, while the quantized model saves it as
+        ``language_model.model.*``; without this alias every quantized LM block
+        would be re-copied from the source in BF16.
         """
         aliases = {name}
-        if name.startswith("language_model.model."):
-            aliases.add("model.language_model." + name[len("language_model.model.") :])
-        elif name.startswith("model.language_model."):
-            aliases.add("language_model.model." + name[len("model.language_model.") :])
-        # NH trunk rename: the on-disk ``backbone.*`` trunk is re-exposed by
-        # transformers' ``AutoModelForCausalLM`` as ``model.*`` (and vice-versa).
-        # Alias only these two known trunk spellings — never drop an arbitrary
-        # leading component, which would wrongly equate sibling submodules such
-        # as ``talker.model.*`` and ``thinker.model.*``.
-        if name.startswith("backbone."):
-            aliases.add("model." + name[len("backbone.") :])
-        elif name.startswith("model."):
-            aliases.add("backbone." + name[len("model.") :])
-        # Nested Nemotron-H VLM trunk: do not re-copy quantized LM blocks as BF16.
         if name.startswith("language_model.backbone."):
             aliases.add("language_model.model." + name[len("language_model.backbone.") :])
-        elif name.startswith("language_model.model."):
-            aliases.add("language_model.backbone." + name[len("language_model.model.") :])
         return aliases
 
     def _is_truly_missing(name: str) -> bool:
