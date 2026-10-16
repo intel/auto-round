@@ -94,11 +94,32 @@ def test_model_config_block_patch_paths_are_valid_python():
 
 
 def test_get_checkpoint_conversion_mapping_ar_registered():
-    """For a model_type present in MODEL_CONFIG, return its ``checkpoint_mapping``."""
+    """Registered mappings preserve only allowed upstream rules, then append our rules."""
+    from transformers import conversion_mapping
+
+    upstream_getter = getattr(
+        conversion_mapping,
+        "orig_get_checkpoint_conversion_mapping",
+        conversion_mapping.get_checkpoint_conversion_mapping,
+    )
     for model_type, cfg in MODEL_CONFIG.items():
         if "checkpoint_mapping" in cfg:
-            result = get_checkpoint_conversion_mapping_ar(model_type)
-            assert result == cfg["checkpoint_mapping"]
+            expected = cfg["checkpoint_mapping"]
+            if cfg.get("preserve_upstream_conversion_mapping"):
+                upstream = upstream_getter(model_type) or []
+                dropped = set(cfg.get("drop_conversion_target_patterns", []))
+                expected = [
+                    rule for rule in upstream if dropped.isdisjoint(getattr(rule, "target_patterns", []) or [])
+                ] + expected
+                # Transformers deep-copies rules without value equality. Reuse
+                # this independently fetched list so exact list equality also
+                # checks rule order and identity, not merely a subset of names.
+                with mock.patch.object(
+                    conversion_mapping, "orig_get_checkpoint_conversion_mapping", return_value=upstream, create=True
+                ):
+                    assert get_checkpoint_conversion_mapping_ar(model_type) == expected
+            else:
+                assert get_checkpoint_conversion_mapping_ar(model_type) == expected
 
 
 def test_get_checkpoint_conversion_mapping_ar_passthrough():

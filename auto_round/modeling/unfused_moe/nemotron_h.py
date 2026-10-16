@@ -34,9 +34,7 @@ class LinearNemotronHMoE(nn.Module):
         # ``config`` would size them against ``hidden_size`` and every expert tensor would
         # fail to load. One shared derived config per block keeps the expert attrs
         # (``mlp_bias``/``mlp_hidden_act``) identical to upstream.
-        self.expert_input_size = (
-            config.moe_latent_size if config.moe_latent_size is not None else config.hidden_size
-        )
+        self.expert_input_size = config.moe_latent_size if config.moe_latent_size is not None else config.hidden_size
         if self.expert_input_size != config.hidden_size:
             import copy
 
@@ -120,8 +118,12 @@ class LinearNemotronHMoE(nn.Module):
         orig_shape = hidden_states.shape
         hidden_dim = hidden_states.shape[-1]
 
-        router_logits = self.gate(hidden_states)
-        topk_indices, topk_weights = self.route_tokens_to_experts(router_logits)
+        routing = self.gate(hidden_states)
+        if isinstance(routing, tuple):
+            # Transformers 5.20 performs top-k selection inside the router.
+            _, topk_weights, topk_indices = routing
+        else:
+            topk_indices, topk_weights = self.route_tokens_to_experts(routing)
         topk_weights = topk_weights.to(hidden_states.dtype)
 
         flat = hidden_states.view(-1, hidden_dim)
@@ -181,7 +183,7 @@ def apply_nemotron_h_post_load(
             router_bias_dtype=router_bias_dtype,
         )
     try:
-        setattr(model, "_autoround_nh_post_load_applied", True)
+        model._autoround_nh_post_load_applied = True
     except Exception:
         pass
     return summary

@@ -53,7 +53,7 @@ from auto_round.utils import (
 )
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _quant_linear_accepts(qlinear_cls, kwarg_name: str) -> bool:
     target_cls = qlinear_cls
     if isinstance(target_cls, functools.partial):
@@ -142,7 +142,7 @@ def pack_qact_layer(name, model):
         out_features = layer.weight.shape[1]
     bias = layer.bias is not None
     use_pc = False
-    extra_kwargs: dict[str, "torch.dtype"] = {}
+    extra_kwargs: dict[str, torch.dtype] = {}
     if isinstance(scale, torch.Tensor) and _quant_linear_accepts(QuantLinear, "scale_dtype"):
         extra_kwargs["scale_dtype"] = scale.dtype
     new_layer = QuantLinear(  ##pylint: disable=E1123
@@ -242,7 +242,7 @@ def pack_layer(layer_name, model, backend, device=None):
 
     bias = layer.bias is not None
 
-    extra_kwargs: dict[str, "torch.dtype"] = {}
+    extra_kwargs: dict[str, torch.dtype] = {}
     if isinstance(scale, torch.Tensor) and _quant_linear_accepts(QuantLinear, "scale_dtype"):
         extra_kwargs["scale_dtype"] = scale.dtype
     new_layer = QuantLinear(  ##pylint: disable=E1123

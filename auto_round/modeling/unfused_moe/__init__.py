@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from contextvars import ContextVar
 from auto_round import envs
 import transformers
 import importlib
@@ -167,6 +168,45 @@ MODEL_CONFIG = {
     },
 }
 
+_remote_omni_conversion_mapping = ContextVar("remote_omni_conversion_mapping", default=False)
+
+
+def get_model_conversion_mapping_ar(model, *args, **kwargs):
+    """Keep NVIDIA's remote wrapper mapping separate from the native class.
+
+    Transformers 5.20 has a native class with the same name as NVIDIA's
+    remote wrapper, but different projector/audio module names. Keep this
+    override local to the current load so native models retain their mapping.
+    """
+    remote_omni = any(
+        type(module).__name__ == "NemotronH_Omni_Reasoning_V3"
+        and hasattr(module, "vision_projector")
+        and not type(module).__module__.startswith("transformers.models.")
+        for module in model.modules()
+    )
+    token = _remote_omni_conversion_mapping.set(remote_omni)
+    try:
+        from transformers import conversion_mapping
+
+        mappings = conversion_mapping.orig_get_model_conversion_mapping(model, *args, **kwargs)
+        # Bolt's remote puzzle model is not registered as native nemotron_h.
+        # Its checkpoint still uses backbone.*, while its modules use model.*.
+        from transformers.core_model_loading import WeightRenaming
+
+        for name, module in model.named_modules():
+            if getattr(getattr(module, "config", None), "model_type", None) != "nemotron_h_puzzle":
+                continue
+            if not hasattr(module, "model"):
+                continue
+            rule = WeightRenaming("backbone.", "model.")
+            if name:
+                rule.scope_prefix = name
+                rule.base_model_prefix = model.base_model_prefix
+            mappings.append(rule)
+        return mappings
+    finally:
+        _remote_omni_conversion_mapping.reset(token)
+
 
 def get_checkpoint_conversion_mapping_ar(model_type):
     from transformers import conversion_mapping
@@ -174,12 +214,17 @@ def get_checkpoint_conversion_mapping_ar(model_type):
     if not hasattr(conversion_mapping, "orig_get_checkpoint_conversion_mapping"):
         conversion_mapping.orig_get_checkpoint_conversion_mapping = conversion_mapping.get_checkpoint_conversion_mapping
 
+    if model_type == "NemotronH_Omni_Reasoning_V3" and _remote_omni_conversion_mapping.get():
+        # None lets Transformers fall back to the remote code's registered
+        # model_type mapping, including its required projector/audio renames.
+        return None
+
     cfg = MODEL_CONFIG.get(model_type)
     if cfg:
         # Preserve upstream renames; filter out drop_conversion_target_patterns.
         if cfg.get("preserve_upstream_conversion_mapping"):
             try:
-                upstream = conversion_mapping.orig_get_checkpoint_conversion_mapping(model_type)
+                upstream = conversion_mapping.orig_get_checkpoint_conversion_mapping(model_type) or []
             except Exception as exc:  # pragma: no cover - defensive guard
                 logger.warning(
                     f"Failed to fetch upstream checkpoint conversion mapping for "
@@ -187,15 +232,13 @@ def get_checkpoint_conversion_mapping_ar(model_type):
                 )
                 return cfg.get("checkpoint_mapping", [])
             drop_targets = cfg.get("drop_conversion_target_patterns", []) or []
-            if not drop_targets:
-                return upstream
             filtered = []
             for rule in upstream:
                 target_patterns = getattr(rule, "target_patterns", []) or []
                 if any(pat in target_patterns for pat in drop_targets):
                     continue
                 filtered.append(rule)
-            return filtered
+            return filtered + cfg.get("checkpoint_mapping", [])
         return cfg.get("checkpoint_mapping", [])
 
     return conversion_mapping.orig_get_checkpoint_conversion_mapping(model_type)
@@ -311,6 +354,12 @@ def apply_model_monkey_patches(model_name: str, trust_remote_code: bool = True) 
 
                 conversion_mapping.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
                 transformers.modeling_utils.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping_ar
+                if not hasattr(conversion_mapping, "orig_get_model_conversion_mapping"):
+                    conversion_mapping.orig_get_model_conversion_mapping = (
+                        conversion_mapping.get_model_conversion_mapping
+                    )
+                conversion_mapping.get_model_conversion_mapping = get_model_conversion_mapping_ar
+                transformers.modeling_utils.get_model_conversion_mapping = get_model_conversion_mapping_ar
             logger.info(f"Patched {orig_path} -> {custom_path}")
             return True
 
