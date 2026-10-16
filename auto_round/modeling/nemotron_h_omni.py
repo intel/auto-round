@@ -152,7 +152,6 @@ def _patch_zamba2_group_size(model: nn.Module) -> int:
     for module in model.modules():
         if module.__class__.__name__ != "Zamba2RMSNormGated":
             continue
-        module.__class__.group_size = group_size
         if getattr(module, "group_size", None) != group_size:
             object.__setattr__(module, "group_size", group_size)
         patched += 1

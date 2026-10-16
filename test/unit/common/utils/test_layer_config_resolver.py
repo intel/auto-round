@@ -221,3 +221,22 @@ def test_nemotron_h_omni_scale_default_respects_explicit_user_dtype():
         inner_supported_types=(),
     )
     assert resolved["mixer.out_proj"]["scale_dtype"] is torch.float32
+    assert resolved["mixer.out_proj"]["fixed_by_user"] is True
+
+
+def test_nemotron_h_omni_scale_default_is_not_marked_user_fixed():
+    model = nn.Module()
+    model.config = SimpleNamespace(model_type="nemotron_h_omni")
+    model.mixer = nn.Module()
+    model.mixer.out_proj = nn.Linear(32, 32)
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={},
+        scale_dtype=torch.float16,
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+    assert resolved["mixer.out_proj"]["scale_dtype"] is torch.bfloat16
+    assert resolved["mixer.out_proj"]["fixed_by_user"] is False

@@ -163,6 +163,21 @@ def test_post_load_restores_fp32_tensors_for_omni(tmp_path):
     assert apply_nemotron_h_omni_post_load(model)["high_precision_restored"] == 0
 
 
+def test_post_load_sets_group_size_per_instance_only(tmp_path):
+    """The gated-norm group_size is restored on the instance; the class stays untouched."""
+
+    class Zamba2RMSNormGated(torch.nn.Module):
+        pass
+
+    save_file({"language_model.backbone.layers.0.mixer.A_log": torch.ones(4)}, str(tmp_path / "model.safetensors"))
+    model = _wrapper("nemotron_h_omni", tmp_path)
+    model.language_model.model.layers[0].mixer.norm = Zamba2RMSNormGated()
+    assert apply_nemotron_h_omni_post_load(model)["zamba2_patched"] == 1
+    assert model.language_model.model.layers[0].mixer.norm.group_size == 4 * 8 // 2
+    assert not hasattr(Zamba2RMSNormGated, "group_size")
+    assert not hasattr(Zamba2RMSNormGated(), "group_size")
+
+
 @pytest.mark.parametrize("model_type", ["nemotron_h", "nemotron_h_puzzle", "qwen3_moe"])
 def test_post_load_is_noop_for_other_models(tmp_path, model_type):
     save_file({"language_model.backbone.layers.0.mixer.A_log": torch.ones(4)}, str(tmp_path / "model.safetensors"))

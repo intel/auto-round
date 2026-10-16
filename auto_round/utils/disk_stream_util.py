@@ -479,7 +479,8 @@ def _resolve_checkpoint_name(index, full_name: str):
         for transform in transforms:
             try:
                 candidate, _ = transform.rename_source_key(candidate)
-            except Exception:  # pragma: no cover - defensive, never fail a load here
+            except Exception as exc:  # pragma: no cover - defensive, never fail a load here
+                logger.debug("chained rename %s via %s failed: %s", candidate, transform, exc)
                 continue
         if candidate != full_name and index.has_tensor(candidate):
             return candidate

@@ -330,8 +330,11 @@ def get_nemotron_pretraining_dataset(
     Uses the Nemotron-CC-High-Quality config — filtered high-quality web text from
     the same distribution as Nemotron-H / Nemotron-Cascade-2 pretraining.
     """
-    from datasets import load_dataset
-
+    split = "train" if split is None else split
+    if isinstance(split, list):
+        if len(split) != 1:
+            raise ValueError("Nemotron-Pretraining-Dataset-sample supports only one split at a time.")
+        split = split[0]
     tokenizer_function = get_tokenizer_function(
         tokenizer, seqlen, apply_chat_template=apply_chat_template, system_prompt=system_prompt
     )
@@ -339,7 +342,7 @@ def get_nemotron_pretraining_dataset(
         calib_dataset = load_dataset(
             dataset_name,
             name="Nemotron-CC-High-Quality",
-            split="train",
+            split=split,
             streaming=True,
         )
         calib_dataset = calib_dataset.shuffle(seed=seed).take(10000)
