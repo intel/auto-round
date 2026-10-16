@@ -131,8 +131,7 @@ pip install auto-round
 **CalibDataset（API）**：编程式使用时，`CalibDataset` 数据类提供了类型化的接口：
 
     ~~~python
-    from auto_round.utils.dataset_utils import CalibDataset
-    from auto_round import AutoRound
+    from auto_round import AutoRound, CalibDataset
 
     # 单字段
     spec = CalibDataset("my-org/my-dataset", split="train", num=1000, fields="text")

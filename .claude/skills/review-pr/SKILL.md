@@ -62,7 +62,7 @@ When the PR adds new functionality, verify all registration points are updated:
 | Export format | `auto_round/formats.py` `@OutputFormat.register()` |
 | VLM model | `special_model_handler.py` `SPECIAL_MULTIMODAL_BLOCK` + lists |
 | Backend | `auto_round/inference/backend.py` `BackendInfos` dict |
-| Dataset | `auto_round/calib_dataset.py` `@register_dataset` |
+| Dataset | `auto_round/calibration/calib_dataset.py` `@register_dataset` |
 | Scheme preset | `auto_round/schemes.py` `PRESET_SCHEMES` dict |
 
 ### 4. Test Coverage

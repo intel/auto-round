@@ -26,6 +26,7 @@ from auto_round.algorithms.transforms import (
     BaseRotationConfig,
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from auto_round.calibration.dataset_utils import CalibDataset
 from auto_round.compressors.config_resolution import (
     FormatResolution,
     ResolvedScheme,
@@ -75,7 +76,6 @@ from auto_round.utils import (
     revert_checkpoint_conversion_mapping,
     revert_name_with_weight_transforms,
 )
-from auto_round.utils.dataset_utils import CalibDataset
 from auto_round.utils.device import (
     _force_trim_malloc,
     patch_xpu_sdpa_drop_causal_mask,
@@ -256,8 +256,8 @@ class BaseOrchestrator:
         # the rest of ``__init__`` only ever interacts with the state object
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
+        from auto_round.calibration.dataset_utils import CalibDataset, normalize_dataset_spec
         from auto_round.calibration.state import CalibrationContext
-        from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
 
         # Normalize CalibDataset objects to spec strings
         if isinstance(dataset, CalibDataset):
@@ -519,7 +519,7 @@ class BaseOrchestrator:
         # The default pile dataset is model-adaptive for pure-text LLMs. Any
         # non-default dataset remains untouched.
         if self.need_calib and not dataset_was_explicitly_set and calibrator_kind == "llm":
-            from auto_round.calib_dataset import get_code_calibration_dataset
+            from auto_round.calibration.calib_dataset import get_code_calibration_dataset
             from auto_round.utils.model import is_code_model
 
             detection_config = model_config or getattr(self.model_context.model, "config", None)

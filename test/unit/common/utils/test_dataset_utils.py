@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for auto_round.utils.dataset_utils."""
+"""Tests for auto_round.calibration.dataset_utils."""
 
 import pytest
 
-from auto_round.utils.dataset_utils import (
+from auto_round.calibration.dataset_utils import (
     CalibDataset,
     auto_detect_text_field,
     auto_detect_text_field_from_sample,
@@ -332,7 +332,7 @@ class TestCalibDataset:
 
     def test_comma_in_value_does_not_split_datasets(self):
         """Commas inside option values must stay within a single dataset spec."""
-        from auto_round.utils.dataset_utils import split_unescaped
+        from auto_round.calibration.dataset_utils import split_unescaped
 
         spec = CalibDataset("my/ds", system_prompt="a, b, c").to_spec_string()
         multi = spec + "," + "pile-10k"

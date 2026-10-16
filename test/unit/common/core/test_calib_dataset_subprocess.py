@@ -54,7 +54,7 @@ def _fake_get_context(captured):
 
 def test_mac_uses_spawn_context(monkeypatch):
     """On macOS, get_dataset must request the ``spawn`` multiprocessing context."""
-    import auto_round.calib_dataset as cd
+    import auto_round.calibration.calib_dataset as cd
 
     captured = {}
     monkeypatch.setattr(cd.multiprocessing, "get_context", _fake_get_context(captured))
@@ -70,7 +70,7 @@ def test_mac_uses_spawn_context(monkeypatch):
 
 def test_linux_uses_fork_context(monkeypatch):
     """On Linux, get_dataset must request the ``fork`` multiprocessing context."""
-    import auto_round.calib_dataset as cd
+    import auto_round.calibration.calib_dataset as cd
 
     captured = {}
     monkeypatch.setattr(cd.multiprocessing, "get_context", _fake_get_context(captured))
@@ -86,7 +86,7 @@ def test_linux_uses_fork_context(monkeypatch):
 
 def test_windows_falls_back_to_inprocess(monkeypatch):
     """On Windows (os.name == 'nt'), subprocess is skipped and in-process runs."""
-    import auto_round.calib_dataset as cd
+    import auto_round.calibration.calib_dataset as cd
 
     inprocess_called = []
     monkeypatch.setattr(cd.os, "name", "nt")
@@ -100,7 +100,7 @@ def test_windows_falls_back_to_inprocess(monkeypatch):
 
 def test_subprocess_network_error_falls_back_without_retrying_source(monkeypatch):
     """A child-process network error must switch directly to FineWeb-Edu."""
-    import auto_round.calib_dataset as cd
+    import auto_round.calibration.calib_dataset as cd
 
     class _NetworkErrorQueue:
         def get(self, timeout=None):
@@ -143,7 +143,7 @@ def test_subprocess_network_error_falls_back_without_retrying_source(monkeypatch
 
 @pytest.mark.skipif(os.name == "nt", reason="fork is unavailable on Windows")
 def test_subprocess_returns_saved_dataset_without_reprocessing(monkeypatch, tmp_path):
-    import auto_round.calib_dataset as cd
+    import auto_round.calibration.calib_dataset as cd
 
     parent_pid = os.getpid()
     output_path = tmp_path / "output_path"

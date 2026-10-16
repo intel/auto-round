@@ -43,7 +43,7 @@ from auto_round.auto_scheme.utils import (
     parse_shared_layers,
     remove_quant_scheme,
 )
-from auto_round.calib_dataset import get_dataloader
+from auto_round.calibration.calib_dataset import get_dataloader
 from auto_round.data_type.gguf import (
     quant_tensor_gguf_asym_dq,
     quant_tensor_gguf_sym_dq,

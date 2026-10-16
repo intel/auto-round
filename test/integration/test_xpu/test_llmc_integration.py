@@ -5,7 +5,7 @@ from llmcompressor import oneshot
 from llmcompressor.modifiers.autoround import AutoRoundModifier
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from auto_round.calib_dataset import get_dataset
+from auto_round.calibration.calib_dataset import get_dataset
 
 recipe_str = """
 quant_stage:

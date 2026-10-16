@@ -8,7 +8,7 @@ from llmcompressor.modifiers.autoround import AutoRoundModifier
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AWQConfig
-from auto_round.calib_dataset import get_dataset
+from auto_round.calibration.calib_dataset import get_dataset
 
 from ...unit.envs import multi_card
 

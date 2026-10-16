@@ -204,7 +204,7 @@ def _handle_special_model(model):
 ## Step 5: Add Custom Calibration Dataset (Optional)
 
 If your model needs a specialized calibration dataset loader, create one in
-`auto_round/calib_dataset.py` using the `@register_dataset` decorator:
+`auto_round/calibration/calib_dataset.py` using the `@register_dataset` decorator:
 
 ```python
 @register_dataset("your_vlm_dataset")
