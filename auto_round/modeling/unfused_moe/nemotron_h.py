@@ -162,11 +162,12 @@ def apply_nemotron_h_post_load(
     config = getattr(model, "config", None)
     if config is None:
         return summary
-    # Accept the plain text architecture and any VLM wrapper whose *inner* language
-    # model is Nemotron-H (``nemotron_h_omni``): the SSM/router attributes live on
-    # the nested config and the modules are reached by the full dotted path.
+    # Accept the plain text architecture, the pruned "puzzle" variant used by
+    # Nemotron 3.5 Bolt 74B-A9B, and any VLM wrapper whose *inner* language
+    # model is Nemotron-H (``nemotron_h_omni``): the SSM/router attributes live
+    # on the nested config and the modules are reached by the full dotted path.
     text_model_type = getattr(resolve_text_config(config), "model_type", None)
-    if text_model_type != "nemotron_h":
+    if text_model_type not in ("nemotron_h", "nemotron_h_puzzle"):
         return summary
 
     if getattr(model, "_autoround_nh_post_load_applied", False):
