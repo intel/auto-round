@@ -319,20 +319,43 @@ def copy_missing_tensors_from_source(
     shortcut_block_prefix: set = {name.split(".", 1)[1] for name in saved_block_prefix if "." in name}
     saved_block_prefix.update(shortcut_block_prefix)
 
+    def _name_aliases(name: str) -> set:
+        """Return a set of equivalent tensor-name variants to match against saved tensors.
+
+        Handles models where the source and saved prefixes differ, e.g.
+        google/gemma-3-4b-it: ``language_model.model.*`` ↔ ``model.language_model.*``.
+        """
+        aliases = {name}
+        if name.startswith("language_model.model."):
+            aliases.add("model.language_model." + name[len("language_model.model.") :])
+        elif name.startswith("model.language_model."):
+            aliases.add("language_model.model." + name[len("model.language_model.") :])
+        # NH trunk rename: the on-disk ``backbone.*`` trunk is re-exposed by
+        # transformers' ``AutoModelForCausalLM`` as ``model.*`` (and vice-versa).
+        # Alias only these two known trunk spellings — never drop an arbitrary
+        # leading component, which would wrongly equate sibling submodules such
+        # as ``talker.model.*`` and ``thinker.model.*``.
+        if name.startswith("backbone."):
+            aliases.add("model." + name[len("backbone.") :])
+        elif name.startswith("model."):
+            aliases.add("backbone." + name[len("model.") :])
+        return aliases
+
     def _is_truly_missing(name: str) -> bool:
         # Special case: Qwen/Qwen3-0.6B-FP8
         # lm_head is tied but still in source_dir → not missing
         if name == "lm_head.weight":
             return False
-        if name in saved_tensor_names:
+        aliases = _name_aliases(name)
+        if aliases & saved_tensor_names:
             return False
-        parent = name.rsplit(".", 1)[0]
-        if parent in saved_parent_layers:
+        parents = {a.rsplit(".", 1)[0] for a in aliases if "." in a}
+        if parents & saved_parent_layers:
             return False
         # For split experts, name is changed but block name is the same.
-        block = _first_numeric_prefix(name)
-        if block is not None:
-            return block not in saved_block_prefix
+        blocks = {_first_numeric_prefix(a) for a in aliases} - {None}
+        if blocks:
+            return not (blocks & saved_block_prefix)
         return True
 
     missing_tensor_names: list = [name for name in source_tensor_to_file if _is_truly_missing(name)]

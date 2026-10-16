@@ -233,6 +233,23 @@ def _resolve_layer_config_presets(
             "fixed_by_user": True,
         }
 
+    # 1b. merge architecture-specific default patterns registered via MODEL_CONFIG's
+    # ``default_layer_config_patterns_fn`` (e.g. Nemotron-H's Mamba2 ``out_proj``
+    # scale_dtype=bfloat16). User entries win per-pattern and per-key.
+    try:
+        from auto_round.modeling.unfused_moe import get_default_layer_config_patterns
+
+        model_default_patterns = get_default_layer_config_patterns(model)
+    except Exception:  # pragma: no cover - defensive: the registry is optional
+        model_default_patterns = {}
+    for _pattern, _overlay in (model_default_patterns or {}).items():
+        _existing = layer_config.get(_pattern)
+        if isinstance(_existing, dict):
+            for _k, _v in _overlay.items():
+                _existing.setdefault(_k, _v)
+        elif _existing is None:
+            layer_config[_pattern] = dict(_overlay)
+
     # 2. normalize
     layer_config = {k: normalize_item(v, k) for k, v in layer_config.items()}
     # entries whose sym was set by the user (dict key or a QuantizationScheme
