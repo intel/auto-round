@@ -137,16 +137,6 @@ class LinearNemotronHMoE(nn.Module):
         return out
 
 
-def nemotron_h_default_layer_config_patterns():
-    from auto_round.modeling.unfused_moe.nemotron_h_setup import _NEMOTRON_H_OUT_PROJ_PATTERN
-
-    return {
-        _NEMOTRON_H_OUT_PROJ_PATTERN: {
-            "scale_dtype": torch.bfloat16,
-        },
-    }
-
-
 def apply_nemotron_h_post_load(
     model: nn.Module,
     *,

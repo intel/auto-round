@@ -111,9 +111,6 @@ MODEL_CONFIG = {
             "embeddings.weight",
         ],
         "post_load_fn": "auto_round.modeling.unfused_moe.nemotron_h.apply_nemotron_h_post_load",
-        "default_layer_config_patterns_fn": (
-            "auto_round.modeling.unfused_moe.nemotron_h.nemotron_h_default_layer_config_patterns"
-        ),
         "block_patch": [
             (
                 "transformers.models.nemotron_h.modeling_nemotron_h.NemotronHMoE",
@@ -148,9 +145,6 @@ MODEL_CONFIG = {
         "preserve_upstream_conversion_mapping": True,
         "drop_conversion_target_patterns": [],
         "post_load_fn": "auto_round.modeling.unfused_moe.nemotron_h.apply_nemotron_h_post_load",
-        "default_layer_config_patterns_fn": (
-            "auto_round.modeling.unfused_moe.nemotron_h.nemotron_h_default_layer_config_patterns"
-        ),
         "block_patch": [
             (
                 "transformers.models.nemotron_h.modeling_nemotron_h.NemotronHMoE",
@@ -410,8 +404,5 @@ def apply_modeling_patch(model: torch.nn.Module) -> bool:
     return False
 
 
-# Registry dispatch helpers (``post_load_fn`` / ``default_layer_config_patterns_fn``)
-# live in ``nemotron_h_setup`` — currently their only consumer — to keep this
-# registry file thin.  Re-exported here as the ``unfused_moe`` package API for
-# ``auto_round.context`` / ``auto_round.compressors`` callers.
-from auto_round.modeling.unfused_moe.nemotron_h_setup import apply_post_load_fixups, get_default_layer_config_patterns
+# Registry dispatch for architecture-specific post-load fixups.
+from auto_round.modeling.unfused_moe.nemotron_h_setup import apply_post_load_fixups

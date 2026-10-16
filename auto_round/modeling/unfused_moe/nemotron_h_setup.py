@@ -28,11 +28,8 @@ from auto_round.utils.model import get_module
 
 
 # ---------------------------------------------------------------------------
-# Generic registry dispatch for MODEL_CONFIG-registered per-model hooks
-# (``post_load_fn`` / ``default_layer_config_patterns_fn``).  Kept here — rather
-# than bloating the shared ``unfused_moe/__init__`` registry table — since
-# Nemotron-H is currently the only consumer.  Re-exported from the package for
-# ``auto_round.context`` / ``auto_round.compressors`` callers.
+# Generic registry dispatch for MODEL_CONFIG-registered post-load hooks.
+# Re-exported from unfused_moe for auto_round.context callers.
 # ---------------------------------------------------------------------------
 def _resolve_dotted(path: str):
     """Import ``module.attr`` given ``'module.submodule.attr'``."""
@@ -90,34 +87,6 @@ def apply_post_load_fixups(model: torch.nn.Module, **overrides) -> dict:
         )
         return {}
 
-
-def get_default_layer_config_patterns(model: torch.nn.Module) -> dict:
-    """Return registered default layer_config patterns for model_type."""
-    _, fn_path, fn = _resolve_registered_fn(
-        model, "default_layer_config_patterns_fn", "get_default_layer_config_patterns"
-    )
-    if fn is None:
-        return {}
-    try:
-        patterns = fn() or {}
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning(
-            "get_default_layer_config_patterns: %s raised %s — skipping defaults.",
-            fn_path,
-            exc,
-        )
-        return {}
-    if not isinstance(patterns, dict):
-        logger.warning(
-            "get_default_layer_config_patterns: %s returned %s, expected dict",
-            fn_path,
-            type(patterns).__name__,
-        )
-        return {}
-    return patterns
-
-
-_NEMOTRON_H_OUT_PROJ_PATTERN = ".*mixer.out_proj$"
 
 _NH_SSM_CORE_PATTERNS: tuple[str, ...] = (
     r"\.mixer\.A_log$",

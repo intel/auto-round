@@ -46,9 +46,6 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 ## 🆕 What's New
 
-* [2026/10] Nemotron-H unfused experts support Transformers 5.12 and 5.20 router APIs. For NVIDIA's `nemotron_h_omni` checkpoints, use `trust_remote_code=True`: AutoRound preserves the remote wrapper's projector/audio weight names instead of applying the incompatible native class-name mapping, and restores Bolt puzzle's `backbone` prefix mapping. Tiny random checkpoints are checked on CPU; Bolt's remote puzzle model additionally imports `mamba-ssm` RMSNorm code, so a CPU-compatible implementation is needed for CPU execution.
-  Multimodal disk streaming keeps its meta skeleton if processor loading fails (text-only calibration), permits intentionally mixed CPU/meta tensors, and recognizes nested LM name aliases so quantized weights are not copied back as BF16.
-
 * [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.
 
 * [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.

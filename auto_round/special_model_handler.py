@@ -1167,6 +1167,23 @@ register_ignore_layers(
 )
 
 
+# Architecture-specific layer_config defaults, keyed by ``config.model_type``.
+# Nemotron-H keeps its Mamba2 ``out_proj`` scales in BF16; other models keep the
+# caller's scale_dtype.
+_NEMOTRON_H_LAYER_CONFIG = {".*mixer.out_proj$": {"scale_dtype": torch.bfloat16}}
+_PRE_DEFINED_LAYER_CONFIG = {
+    "nemotron_h": _NEMOTRON_H_LAYER_CONFIG,
+    "nemotron_h_omni": _NEMOTRON_H_LAYER_CONFIG,
+    "nemotron_h_puzzle": _NEMOTRON_H_LAYER_CONFIG,
+}
+
+
+def get_predefined_layer_config(model: torch.nn.Module) -> dict:
+    """Return predefined layer_config patterns for the model; user entries take precedence."""
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    return _PRE_DEFINED_LAYER_CONFIG.get(model_type, {})
+
+
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     layers = []
     for rule in _PRE_DEFINED_IGNORE_LAYERS:
