@@ -268,7 +268,12 @@ class CompressionOrchestrator(BaseOrchestrator):
 
             # ── Infrastructure: materialize, dtype convert, device placement ──
             materialize_model_(m)
-            convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, device_manager.device)
+            convert_module_to_hp_if_necessary(
+                m,
+                self.model_context.amp_dtype,
+                device_manager.device,
+                ignore_layers=getattr(self, "_resolved_ignore_layers", None),
+            )
 
             m = self.alg_composer.dispatch_block(m, input_ids, input_others)
 
@@ -536,8 +541,10 @@ class CompressionOrchestrator(BaseOrchestrator):
             clear_memory()
             memory_monitor.log_summary()
 
-        # Convert remaining fp8
-        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
+        # Convert remaining fp8, but keep ignored layers in their original format
+        convert_module_to_hp_if_necessary(
+            self.model, self.amp_dtype, self.device, ignore_layers=getattr(self, "_resolved_ignore_layers", None)
+        )
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reload(self.model)
         if self.compress_context.is_immediate_saving:
@@ -809,7 +816,11 @@ class CompressionOrchestrator(BaseOrchestrator):
         self._quantize_layers_outside_blocks(layer_names, all_inputs, token_ids=input_ids_cache)
 
         convert_module_to_hp_if_necessary(
-            self.model_context.model, self.model_context.amp_dtype, device_manager.device, to_cpu=True
+            self.model_context.model,
+            self.model_context.amp_dtype,
+            device_manager.device,
+            to_cpu=True,
+            ignore_layers=getattr(self, "_resolved_ignore_layers", None),
         )
         if self.compress_context.is_immediate_saving:
             self.shard_writer.write(is_finalize=True)
@@ -1054,7 +1065,12 @@ class CompressionOrchestrator(BaseOrchestrator):
             from auto_round.algorithms.composer import BlockContext
 
             materialize_model_(block)
-            convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
+            convert_module_to_hp_if_necessary(
+                block,
+                self.model_context.amp_dtype,
+                device,
+                ignore_layers=getattr(self, "_resolved_ignore_layers", None),
+            )
             from auto_round.utils.model import move_to_device_preserving_cpu_pinned, pin_ngram_embeddings_on_cpu_
 
             pin_ngram_embeddings_on_cpu_(block)
@@ -1105,7 +1121,9 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         # ── Infrastructure: materialize, dtype convert, device placement ──────
         materialize_model_(block)
-        convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
+        convert_module_to_hp_if_necessary(
+            block, self.model_context.amp_dtype, device, ignore_layers=getattr(self, "_resolved_ignore_layers", None)
+        )
 
         if auto_offload:
             if (
