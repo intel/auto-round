@@ -672,7 +672,7 @@ class _ModelFreeCompressorCore:
         if reason is None:
             return
         format_lower = self.format.lower().replace(" ", "").split(",")[0]
-        if format_lower != "llm_compressor":
+        if format_lower not in ("llm_compressor", "auto_round:llm_compressor"):
             raise ValueError(
                 f"Detected an NVFP4 source model ({reason}); converting its NVFP4 layers to MXFP4 "
                 f"currently only supports format 'llm_compressor', got '{self.format}'."

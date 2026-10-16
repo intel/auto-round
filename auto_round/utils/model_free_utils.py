@@ -2264,6 +2264,10 @@ def _process_shard(
         index_dir=index_dir,
         donor_shard_dir=donor_shard_dir,
     )
+    # Hydrated Inkling scales are source tensors; keep their dtype if they survive (failed dequant).
+    source_fp32_names.update(
+        n for n, t in raw_tensors.items() if t.dtype == torch.float32 and n.endswith((".scale", ".scale2"))
+    )
 
     # NVFP4 source -> MXFP4: only NVFP4 source layers (plus layer_config matches) are quantized;
     # all other layers are treated as ignored. Must run before NVFP4 dequantization.

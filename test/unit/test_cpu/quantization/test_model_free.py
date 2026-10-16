@@ -1806,6 +1806,13 @@ class TestNVFP4ToMXFP4:
             _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), format=fmt)
 
     @require_compressed_tensors
+    def test_core_accepts_auto_round_llm_compressor_alias(self, tmp_path):
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, _nvfp4_source_tensors(_NV_MLP))
+        output_dir = str(tmp_path / "out")
+        _run_nvfp4_to_mxfp4(model_dir, output_dir, format="auto_round:llm_compressor")
+        _assert_mxfp4_layer(_read_output_tensors(output_dir), _NV_MLP)
+
+    @require_compressed_tensors
     def test_autoround_entry(self, tmp_path):
         source = {**_nvfp4_source_tensors(_NV_MLP), **_ct_fp8_tensors(_NV_ATTN)}
         model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_MIXED_QC), source)
