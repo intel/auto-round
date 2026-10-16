@@ -168,6 +168,21 @@ MODEL_CONFIG = {
     },
 }
 
+# Puzzle uses NVIDIA's remote LM code, but shares the post-load hooks and
+# native MoE patch target. Use the full nested prefix: reversing "model."
+# alone also matches the suffix of "language_model." during disk streaming.
+MODEL_CONFIG["nemotron_h_puzzle"] = {
+    **MODEL_CONFIG["nemotron_h"],
+    "preserve_upstream_conversion_mapping": False,
+    "checkpoint_mapping": [],
+}
+if version.parse(transformers.__version__) >= version.parse("5.0.0"):
+    from transformers.core_model_loading import WeightRenaming
+
+    MODEL_CONFIG["nemotron_h_puzzle"]["checkpoint_mapping"] = [
+        WeightRenaming("language_model.backbone.", "language_model.model.")
+    ]
+
 _remote_omni_conversion_mapping = ContextVar("remote_omni_conversion_mapping", default=False)
 
 
@@ -189,20 +204,13 @@ def get_model_conversion_mapping_ar(model, *args, **kwargs):
         from transformers import conversion_mapping
 
         mappings = conversion_mapping.orig_get_model_conversion_mapping(model, *args, **kwargs)
-        # Bolt's remote puzzle model is not registered as native nemotron_h.
-        # Its checkpoint still uses backbone.*, while its modules use model.*.
-        from transformers.core_model_loading import WeightRenaming
-
-        for name, module in model.named_modules():
-            if getattr(getattr(module, "config", None), "model_type", None) != "nemotron_h_puzzle":
-                continue
-            if not hasattr(module, "model"):
-                continue
-            rule = WeightRenaming("backbone.", "model.")
-            if name:
-                rule.scope_prefix = name
-                rule.base_model_prefix = model.base_model_prefix
-            mappings.append(rule)
+        # Custom puzzle code is skipped by Transformers 5.20's static mapping
+        # collector. Add its full-prefix rule once at the composition level.
+        if remote_omni and any(
+            getattr(getattr(module, "config", None), "model_type", None) == "nemotron_h_puzzle"
+            for module in model.modules()
+        ):
+            mappings.extend(MODEL_CONFIG["nemotron_h_puzzle"]["checkpoint_mapping"])
         return mappings
     finally:
         _remote_omni_conversion_mapping.reset(token)
@@ -218,6 +226,10 @@ def get_checkpoint_conversion_mapping_ar(model_type):
         # None lets Transformers fall back to the remote code's registered
         # model_type mapping, including its required projector/audio renames.
         return None
+    if model_type == "nemotron_h_puzzle" and _remote_omni_conversion_mapping.get():
+        # The wrapper installs the full-prefix rule globally, not scoped to the
+        # inner LM (which would strip language_model before matching the rule).
+        return []
 
     cfg = MODEL_CONFIG.get(model_type)
     if cfg:

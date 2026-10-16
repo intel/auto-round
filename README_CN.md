@@ -46,6 +46,7 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 ## 🆕 最新进展
 
 * [2026/10] Nemotron-H 非融合专家支持 Transformers 5.12 和 5.20 的路由接口。加载 NVIDIA 的 `nemotron_h_omni` 检查点时请使用 `trust_remote_code=True`：AutoRound 保留远程模型的投影器和音频权重名称，不套用不兼容的原生类名映射，并恢复 Bolt puzzle 的 `backbone` 前缀映射。小型随机检查点已在 CPU 上检查；Bolt 远程 puzzle 模型还导入 `mamba-ssm` 的 RMSNorm 代码，因此 CPU 执行需要兼容 CPU 的实现。
+  多模态磁盘流式加载在处理器加载失败时保留 meta 骨架（仅文本校准），允许有意混合 CPU/meta 张量，并识别嵌套语言模型名称别名，避免将量化权重重新复制为 BF16。
 
 * [2026/09] 我们将 MoE量化速度提升了 3 倍以上，并显著降低了 RAM 使用量。详细结果请参阅[文档](./docs/moe.md)。请注意，该优化可能会引入一些回归问题或其他问题。
 

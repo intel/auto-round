@@ -163,23 +163,93 @@ def test_preserved_mapping_appends_autoround_rules(monkeypatch):
     assert get_checkpoint_conversion_mapping_ar("test_mapping") == [keep, extra]
 
 
-def test_puzzle_checkpoint_prefix_is_scoped(monkeypatch):
-    class Puzzle(PreTrainedModel):
+def test_puzzle_checkpoint_prefix_roundtrips_without_matching_language_model(monkeypatch):
+    from types import SimpleNamespace
+
+    from auto_round.utils.common import get_reverse_checkpoint_conversion_mapping, revert_checkpoint_conversion_mapping
+
+    class NemotronH_Omni_Reasoning_V3(PreTrainedModel):
         def __init__(self):
             config = PreTrainedConfig()
-            config.model_type = "nemotron_h_puzzle"
+            config.model_type = "nemotron_h_omni"
             super().__init__(config)
-            self.model = torch.nn.Linear(2, 2)
-
-    class Wrapper(PreTrainedModel):
-        def __init__(self):
-            super().__init__(PreTrainedConfig())
-            self.language_model = Puzzle()
-            self.vision_model = torch.nn.Linear(2, 2)
+            self.vision_projector = torch.nn.Linear(2, 2)
+            self.language_model = torch.nn.Linear(2, 2)
+            self.language_model.config = SimpleNamespace(model_type="nemotron_h_puzzle")
 
     with _patched_mapping(monkeypatch):
-        rules = conversion_mapping.get_model_conversion_mapping(Wrapper(), add_legacy=False)
-    assert len(rules) == 1
-    assert rules[0].source_patterns == ["backbone."]
-    assert rules[0].target_patterns == ["model."]
-    assert rules[0].scope_prefix == "language_model"
+        rules = conversion_mapping.get_model_conversion_mapping(NemotronH_Omni_Reasoning_V3(), add_legacy=False)
+        puzzle_rule = rules[-1]
+        assert puzzle_rule.source_patterns == ["language_model.backbone."]
+        assert puzzle_rule.target_patterns == ["language_model.model."]
+        assert puzzle_rule.scope_prefix is None
+        model = SimpleNamespace(_weight_conversions=[puzzle_rule])
+        reverse = get_reverse_checkpoint_conversion_mapping(model)
+        assert (
+            revert_checkpoint_conversion_mapping("language_model.model.layers.0.mixer.up_proj", reverse)
+            == "language_model.backbone.layers.0.mixer.up_proj"
+        )
+
+
+@pytest.mark.parametrize("processor_fails", [False, True])
+def test_multimodal_disk_stream_keeps_meta_skeleton(monkeypatch, processor_fails):
+    from unittest.mock import Mock
+
+    from auto_round.context import model as context_module
+
+    monkeypatch.setattr(context_module.ModelContext, "_instances", {})
+
+    class Tiny(torch.nn.Module):
+        dtype = torch.float32
+
+        def __init__(self):
+            super().__init__()
+            self.block = torch.nn.Linear(2, 2, device="meta")
+            self.restored_ssm = torch.nn.Parameter(torch.ones(2))
+
+    model, tokenizer, index = Tiny(), object(), object()
+    processor = Mock(image_processor=object())
+    load_processor = Mock(side_effect=ValueError("incompatible processor") if processor_fails else None)
+    load_processor.return_value = processor
+    full_load = Mock(side_effect=AssertionError("must not materialize the full checkpoint"))
+    warning = Mock()
+    materialize = Mock()
+    monkeypatch.setattr(context_module, "is_diffusion_model", lambda *a, **kw: False)
+    monkeypatch.setattr(context_module, "is_mllm_model", lambda *a, **kw: True)
+    monkeypatch.setattr(context_module, "is_moe_model", lambda *a, **kw: False)
+    monkeypatch.setattr(context_module, "install_debug_layer_config_patch", lambda: None)
+    monkeypatch.setattr(context_module, "apply_post_load_fixups", lambda _: None)
+    monkeypatch.setattr(context_module, "mllm_load_model", full_load)
+    monkeypatch.setattr(context_module.logger, "warning", warning)
+    monkeypatch.setattr("transformers.AutoProcessor.from_pretrained", load_processor)
+    monkeypatch.setattr(context_module.ModelContext, "_peek_config", lambda _: None)
+    monkeypatch.setattr(context_module.ModelContext, "_should_use_meta_skeleton", lambda *a: True)
+    monkeypatch.setattr(context_module.ModelContext, "_build_disk_stream_model", lambda *a: (model, tokenizer, index))
+    monkeypatch.setattr(context_module.ModelContext, "_materialize_disk_stream_non_block_params", materialize)
+    monkeypatch.setattr(context_module.ModelContext, "_import_custom_moe_replacements", lambda *a: None)
+    monkeypatch.setattr(
+        context_module.ModelContext, "_set_amp_dtype", lambda self: setattr(self, "amp_dtype", torch.float32)
+    )
+    guard = Mock(side_effect=AssertionError("disk-stream skeleton must bypass the mixed-meta guard"))
+    monkeypatch.setattr(context_module, "unsupported_meta_device", guard)
+    context = context_module.ModelContext(model="tiny-nemotron", need_calib=False)
+    assert context.model is model and context.tokenizer is tokenizer and context._disk_stream_index is index
+    materialize.assert_called_once()
+    full_load.assert_not_called()
+    guard.assert_not_called()
+    if processor_fails:
+        assert context.processor is None and context.image_processor is None
+        assert warning.call_args.kwargs["exc_info"] is True
+    else:
+        assert context.processor is processor and context.image_processor is processor.image_processor
+
+
+def test_non_streamed_meta_model_still_rejected(monkeypatch):
+    from auto_round.context import model as context_module
+
+    monkeypatch.setattr(context_module.ModelContext, "_instances", {})
+
+    monkeypatch.setattr(context_module.ModelContext, "_load_model", lambda _: None)
+    monkeypatch.setattr(context_module, "unsupported_meta_device", lambda _: True)
+    with pytest.raises(RuntimeError, match="does not support parameters on meta"):
+        context_module.ModelContext(model=torch.nn.Linear(2, 2, device="meta"), need_calib=False)

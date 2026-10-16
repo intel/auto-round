@@ -339,6 +339,11 @@ def copy_missing_tensors_from_source(
             aliases.add("model." + name[len("backbone.") :])
         elif name.startswith("model."):
             aliases.add("backbone." + name[len("model.") :])
+        # Nested Nemotron-H VLM trunk: do not re-copy quantized LM blocks as BF16.
+        if name.startswith("language_model.backbone."):
+            aliases.add("language_model.model." + name[len("language_model.backbone.") :])
+        elif name.startswith("language_model.model."):
+            aliases.add("language_model.backbone." + name[len("language_model.model.") :])
         return aliases
 
     def _is_truly_missing(name: str) -> bool:

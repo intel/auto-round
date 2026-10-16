@@ -121,7 +121,7 @@ class ModelContext(BaseContext):
         # by the time BaseCompressor.post_init() runs.
         self._load_model()
 
-        if unsupported_meta_device(self.model):
+        if self._disk_stream_index is None and unsupported_meta_device(self.model):
             raise RuntimeError(
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
@@ -196,13 +196,22 @@ class ModelContext(BaseContext):
                         self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
                             self.disk_stream_model_dir
                         )
+                        loaded_via_meta = True
                         from transformers import AutoProcessor
 
-                        self.processor = AutoProcessor.from_pretrained(
-                            self.disk_stream_model_dir, trust_remote_code=self.trust_remote_code
-                        )
-                        self.image_processor = getattr(self.processor, "image_processor", None)
-                        loaded_via_meta = True
+                        try:
+                            self.processor = AutoProcessor.from_pretrained(
+                                self.disk_stream_model_dir, trust_remote_code=self.trust_remote_code
+                            )
+                            self.image_processor = getattr(self.processor, "image_processor", None)
+                        except Exception:
+                            logger.warning(
+                                "AutoProcessor failed for %s; keeping the meta skeleton (text-only calibration).",
+                                self.disk_stream_model_dir,
+                                exc_info=True,
+                            )
+                            self.processor = None
+                            self.image_processor = None
                     except Exception:
                         logger.warning(
                             "Building a multimodal meta skeleton for %s failed; " "falling back to a full CPU load.",
