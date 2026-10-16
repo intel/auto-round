@@ -1447,7 +1447,11 @@ def get_score_for_scheme(
                 )
             except Exception as exc:  # noqa: BLE001
                 # Memory exhaustion does not indicate incompatible text inputs.
-                if not is_vlm or isinstance(exc, (torch.OutOfMemoryError, MemoryError)):
+                if (
+                    not is_vlm
+                    or isinstance(exc, (torch.OutOfMemoryError, MemoryError))
+                    or (isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower())
+                ):
                     raise
                 logger.warning(
                     f"Text-only calibration failed on VLM ({exc}); "
@@ -1548,7 +1552,11 @@ def get_score_for_scheme(
                 _run_forward_loop(_build_calib_dataloader())
             except Exception as exc:  # noqa: BLE001
                 # Memory exhaustion does not indicate incompatible text inputs.
-                if not is_vlm or isinstance(exc, (torch.OutOfMemoryError, MemoryError)):
+                if (
+                    not is_vlm
+                    or isinstance(exc, (torch.OutOfMemoryError, MemoryError))
+                    or (isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower())
+                ):
                     raise
                 logger.warning(
                     f"Text-only calibration failed on VLM ({exc}); "
