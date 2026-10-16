@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -116,6 +117,32 @@ def test_glm_nextn_missing_weights_remain_full_precision(tmp_path, nested):
         config["text_config"] = text_config
     else:
         config.update(text_config)
+    from auto_round.compressors.config_resolution import ResolvedScheme
+    from auto_round.compressors.layer_config_resolver import extract_regex_config
+    from auto_round.schemes import QuantizationScheme
+    from auto_round.special_model_handler import get_predefined_ignore_layers
+    from auto_round.utils.common import to_standard_regex
+
+    # Exercise the normal ignore-layer/export path with no draft module loaded.
+    model = torch.nn.Module()
+    model.config = SimpleNamespace(model_type="glm5_next", name_or_path=src, architectures=[])
+    if nested:
+        model.config.text_config = SimpleNamespace(**text_config)
+    else:
+        for key, value in text_config.items():
+            setattr(model.config, key, value)
+    ignored = get_predefined_ignore_layers(model)
+    assert "layers.45." in ignored
+    regex_config = extract_regex_config(
+        model=model,
+        scheme=ResolvedScheme.from_scheme(QuantizationScheme()),
+        layer_config={},
+        ignore_layers=",".join(ignored),
+    )
+    config["quantization_config"]["extra_config"] = {
+        to_standard_regex(key): {"bits": value["bits"], "data_type": value["data_type"]}
+        for key, value in regex_config.items()
+    }
     with open(os.path.join(tgt, "config.json"), "w") as f:
         json.dump(config, f)
     copy_missing_tensors_from_source(src, tgt)
