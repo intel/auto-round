@@ -483,10 +483,13 @@ def _pad_block_fp8_weight_naive(
 
 @with_thread_limits()
 def _dequant_fp8_linear_weight(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list | None = None, data_type: str | None = None
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    block_size: list | None = None,
+    data_type: str | None = None,
+    dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
     """Core dequantization logic for block-wise FP8 weights."""
-    dtype = torch.bfloat16
     if weight_scale is None:
         return weight
 

@@ -36,14 +36,17 @@ from auto_round.utils.model_free_utils import (
     _build_mxfp_autoround_quantization_config,
     _build_mxfp_quantization_config,
     _build_quantization_config,
+    _collect_nvfp4_source_layers,
     _convert_auto_scheme_layer_config,
     _dequant_fp8_tensors,
-    _dequant_modelopt_nvfp4_tensors,
+    _dequant_inkling_nvfp4_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
     _handle_mxfp_source_tensors,
-    _hydrate_and_clean_modelopt_nvfp4_aux,
+    _handle_nvfp4_source_tensors,
+    _hydrate_and_clean_inkling_nvfp4_aux,
     _hydrate_missing_fp8_scales_from_index,
+    _ignore_fused_experts_for_vllm,
     _looks_like_auto_scheme,
     _PatternMatcher,
     _process_shard,
@@ -104,7 +107,7 @@ def _read_output_keys(output_dir):
     return keys
 
 
-def test_modelopt_nvfp4_failure_restores_scale2():
+def test_inkling_nvfp4_failure_restores_scale2():
     """A failed fused-NVFP4 decode must preserve its complete source triple."""
     base = "model.layers.0.experts.w13_weight"
     packed = torch.zeros((2, 4, 8), dtype=torch.uint8)
@@ -112,7 +115,7 @@ def test_modelopt_nvfp4_failure_restores_scale2():
     scale2 = torch.ones(3, dtype=torch.float32)
     tensors = {base: packed, f"{base}.scale": scale, f"{base}.scale2": scale2}
 
-    result = _dequant_modelopt_nvfp4_tensors(tensors)
+    result = _dequant_inkling_nvfp4_tensors(tensors)
 
     assert result[base] is packed
     assert result[f"{base}.scale"] is scale
@@ -145,8 +148,8 @@ def test_fused_moe_weight_uses_canonical_name_for_matcher():
     assert quantize.call_count == tensor.shape[0]
 
 
-def test_modelopt_nvfp4_hydrates_scales_from_separate_shards(tmp_path):
-    """ModelOpt NVFP4 scales are hydrated from the index-selected donor shards."""
+def test_inkling_nvfp4_hydrates_scales_from_separate_shards(tmp_path):
+    """Inkling NVFP4 scales are hydrated from the index-selected donor shards."""
     base = "model.layers.0.experts.w13_weight"
     recipient_name = "model-00001-of-00003.safetensors"
     scale_shard_name = "model-00002-of-00003.safetensors"
@@ -170,7 +173,7 @@ def test_modelopt_nvfp4_hydrates_scales_from_separate_shards(tmp_path):
             file,
         )
 
-    result = _hydrate_and_clean_modelopt_nvfp4_aux(
+    result = _hydrate_and_clean_inkling_nvfp4_aux(
         {base: torch.zeros((2, 4, 8), dtype=torch.uint8)},
         str(tmp_path / recipient_name),
     )
@@ -179,10 +182,10 @@ def test_modelopt_nvfp4_hydrates_scales_from_separate_shards(tmp_path):
     assert torch.equal(result[scale2_name], scale2)
 
 
-def test_modelopt_nvfp4_dequantizes_fused_3d_weight():
-    """Fused ModelOpt NVFP4 weights dequantize per expert and drop metadata."""
+def test_inkling_nvfp4_dequantizes_fused_3d_weight():
+    """Fused Inkling NVFP4 weights dequantize per expert and drop metadata."""
     base = "model.layers.0.experts.w13_weight"
-    result = _dequant_modelopt_nvfp4_tensors(
+    result = _dequant_inkling_nvfp4_tensors(
         {
             base: torch.zeros((2, 4, 8), dtype=torch.uint8),
             f"{base}.scale": torch.ones((2, 4, 1), dtype=torch.float32),
@@ -191,7 +194,7 @@ def test_modelopt_nvfp4_dequantizes_fused_3d_weight():
     )
 
     assert set(result) == {base}
-    assert result[base].dtype == torch.bfloat16
+    assert result[base].dtype == torch.float32
     assert result[base].shape == (2, 4, 16)
 
 
@@ -516,6 +519,52 @@ class TestBuildQuantizationConfigNvfp4MoeLlmCompressor:
         targets = _get_targets_from_qconfig(qconfig, "group_0")
         assert "RoutedExperts" not in targets, f"Unexpected RoutedExperts in targets: {targets}"
 
+    def test_ignored_fused_experts_get_vllm_ignore_entry(self):
+        default_scheme = {"bits": 16, "data_type": "float", "group_size": -1}
+        layer_cfg = {".w1.": {"bits": 4, "data_type": "nv_fp", "group_size": 16}}
+        qconfig = _build_quantization_config(
+            default_scheme=default_scheme,
+            layer_config=layer_cfg,
+            ignore_patterns=[],
+            quantized_layers=_MOE_NV_QUANTIZED,
+            ignored_layers=["model.layers.2.mlp.experts.w13_weight", "model.layers.2.mlp.experts.w2_weight"],
+            format="llm_compressor",
+        )
+        assert qconfig["ignore"] == [r"re:^model\.layers\.2\.mlp\.experts\.\d+\.(gate|up|down)_proj$"]
+
+
+class TestIgnoreFusedExpertsForVllm:
+    _ENTRY = r"re:^model\.layers\.0\.mlp\.experts\.\d+\.(gate|up|down)_proj$"
+
+    def _qconfig(self, targets):
+        return {"config_groups": {"group_0": {"targets": targets}}, "ignore": ["lm_head"]}
+
+    def test_adds_entry_matching_vllm_probe_names(self):
+        import re
+
+        qconfig = _ignore_fused_experts_for_vllm(
+            self._qconfig(["Linear", "RoutedExperts"]),
+            ["model.layers.0.mlp.experts.w13_weight", "model.layers.0.mlp.experts.w2_weight"],
+            [],
+        )
+        assert qconfig["ignore"] == ["lm_head", self._ENTRY]
+        for proj in ("gate_proj", "up_proj", "down_proj"):
+            assert re.match(self._ENTRY[3:], f"model.layers.0.mlp.experts.0.{proj}")
+
+    def test_no_routed_experts_no_change(self):
+        qconfig = _ignore_fused_experts_for_vllm(
+            self._qconfig(["Linear"]), ["model.layers.0.mlp.experts.w13_weight"], []
+        )
+        assert qconfig["ignore"] == ["lm_head"]
+
+    def test_unfused_and_partially_quantized_modules_skipped(self):
+        qconfig = _ignore_fused_experts_for_vllm(
+            self._qconfig(["RoutedExperts"]),
+            ["model.layers.1.mlp.experts.0.gate_proj", "model.layers.0.mlp.experts.w13_weight"],
+            ["model.layers.0.mlp.experts.w2_weight"],
+        )
+        assert qconfig["ignore"] == ["lm_head"]
+
 
 # ===========================================================================
 #  _PatternMatcher
@@ -825,6 +874,53 @@ def _make_deepseek_v4_mxfp8(out_f, in_f, block_h, block_w):
     return weight_fp8, scale
 
 
+class TestNVFP4VsMXFP4SourceDetection:
+    """NVFP4 (FP8 E4M3 scale / global scale) and MXFP4 (uint8 E8M0 scale) share weight_packed + weight_scale."""
+
+    @staticmethod
+    def _mxfp4(prefix):
+        return {
+            f"{prefix}.weight_packed": torch.randint(0, 256, (32, 32), dtype=torch.uint8),
+            f"{prefix}.weight_scale": torch.full((32, 2), 127, dtype=torch.uint8),
+        }
+
+    @staticmethod
+    def _nvfp4(prefix, with_global=True):
+        tensors = {
+            f"{prefix}.weight_packed": torch.randint(0, 256, (32, 32), dtype=torch.uint8),
+            f"{prefix}.weight_scale": torch.ones((32, 4)).to(torch.float8_e4m3fn),
+        }
+        if with_global:
+            tensors[f"{prefix}.weight_global_scale"] = torch.tensor([1.0])
+            tensors[f"{prefix}.input_global_scale"] = torch.tensor([1.0])
+        return tensors
+
+    def test_collect_only_nvfp4_layers(self):
+        raw = {**self._mxfp4("mx"), **self._nvfp4("nv"), **self._nvfp4("nv_no_global", with_global=False)}
+        assert _collect_nvfp4_source_layers(raw) == {"nv", "nv_no_global"}
+
+    @pytest.mark.parametrize(
+        "default",
+        [
+            {"bits": 4, "group_size": 32, "data_type": "mx_fp"},
+            {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"},
+        ],
+        ids=["mxfp4_target", "int4_target"],
+    )
+    def test_handle_nvfp4_skips_mxfp4_layers(self, default):
+        mx = self._mxfp4("mx")
+        raw = {**{k: v.clone() for k, v in mx.items()}, **self._nvfp4("nv")}
+        raw_out, passthrough, layers = _handle_nvfp4_source_tensors(raw, _matcher(default=default))
+
+        assert passthrough == {} and layers == []
+        for key, value in mx.items():
+            assert torch.equal(raw_out[key], value)
+        assert "mx.weight" not in raw_out
+        assert raw_out["nv.weight"].dtype == torch.float32
+        assert raw_out["nv.weight"].shape == (32, 64)
+        assert "nv.weight_packed" not in raw_out and "nv.weight_global_scale" not in raw_out
+
+
 class TestHandleMXFPSourceTensors:
     def test_passthrough_mxfp8_same_target(self):
         weight_fp8 = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
@@ -857,8 +953,8 @@ class TestHandleMXFPSourceTensors:
         matcher = _matcher(default={"bits": 4, "group_size": 128, "sym": True, "data_type": "int"})
         raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw, matcher)
         assert layers == [] and passthrough == {}
-        assert raw_out["layer.weight"].dtype == torch.bfloat16
-        assert torch.allclose(raw_out["layer.weight"], weight_fp8.to(torch.bfloat16))
+        assert raw_out["layer.weight"].dtype == torch.float32
+        assert torch.allclose(raw_out["layer.weight"], weight_fp8.to(torch.float32))
         assert "layer.weight_scale" not in raw_out
 
     def test_mixed_passthrough_and_dequant(self):
@@ -877,7 +973,7 @@ class TestHandleMXFPSourceTensors:
         assert "attn" in layers
         assert passthrough["attn.weight"].dtype == torch.float8_e4m3fn
         assert "mlp" not in layers
-        assert raw_out["mlp.weight"].dtype == torch.bfloat16
+        assert raw_out["mlp.weight"].dtype == torch.float32
         assert raw_out["mlp.weight"].shape == (64, 128)
 
     def test_noop_without_mxfp_tensors(self):
@@ -915,9 +1011,9 @@ class TestHandleMXFPSourceTensors:
         raw_out, state = _preprocess_model_type_source_tensors(raw, model_type="deepseek_v4")
         raw_out, passthrough, layers = _handle_mxfp_source_tensors(raw_out, matcher, source_state=state)
         assert layers == [] and passthrough == {}
-        assert raw_out["layer.weight"].dtype == torch.bfloat16
+        assert raw_out["layer.weight"].dtype == torch.float32
         assert raw_out["layer.weight"].shape == (64, 128)
-        assert torch.allclose(raw_out["layer.weight"], weight_fp8.to(torch.bfloat16))
+        assert torch.allclose(raw_out["layer.weight"], weight_fp8.to(torch.float32))
         assert "layer.scale" not in raw_out and "layer.weight_scale" not in raw_out
 
     def test_convert_noop_without_quantized(self):
@@ -933,8 +1029,8 @@ class TestHandleMXFPSourceTensors:
         weight_scale = torch.full((64, 4), 127, dtype=torch.uint8)
         raw = {"layer.weight": weight_fp8.clone(), "layer.weight_scale": weight_scale.clone()}
         out = _dequant_mxfp_tensors(raw)
-        assert out["layer.weight"].dtype == torch.bfloat16
-        assert torch.allclose(out["layer.weight"], weight_fp8.to(torch.bfloat16))
+        assert out["layer.weight"].dtype == torch.float32
+        assert torch.allclose(out["layer.weight"], weight_fp8.to(torch.float32))
         assert "layer.weight_scale" not in out
 
 
@@ -1488,7 +1584,7 @@ class TestFP8Source:
         w = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
         raw = {"layer.weight": w, "layer.weight_scale_inv": torch.tensor(0.5), "layer.bias": torch.randn(64)}
         result = _dequant_fp8_tensors(raw, block_size=None)
-        assert result["layer.weight"].dtype == torch.bfloat16 and "layer.weight_scale_inv" not in result
+        assert result["layer.weight"].dtype == torch.float32 and "layer.weight_scale_inv" not in result
 
     def test_no_fp8_noop(self):
         raw = {"layer.weight": torch.randn(64, 128)}
@@ -1559,7 +1655,7 @@ class TestKimiK25Int4Source:
             device="cpu",
         )
 
-        expected = ((nibbles - 8).float() * 0.5).to(torch.bfloat16)
+        expected = (nibbles - 8).float() * 0.5
         assert torch.equal(out["layer.weight"], expected)
 
     def test_kimi_k25_int4_dequant_helper(self):
@@ -1574,7 +1670,7 @@ class TestKimiK25Int4Source:
             device="cpu",
         )
         assert "layer.weight" in out
-        assert out["layer.weight"].dtype == torch.bfloat16
+        assert out["layer.weight"].dtype == torch.float32
         assert out["layer.weight"].shape == (128, 128)
         assert "layer.weight_packed" not in out
         assert "layer.weight_scale" not in out
