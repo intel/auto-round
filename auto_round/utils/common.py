@@ -896,7 +896,7 @@ def to_standard_regex(pattern: str) -> str:
     '.*mlp.*gate.*'
     """
     # Heuristic: if pattern contains regex meta characters, assume partial regex
-    meta_chars = {".*", "^", "$", "|", "(", ")", "[", "]", "?", "+", "\\"}
+    meta_chars = {"*", "{", "}", "^", "$", "|", "(", ")", "[", "]", "?", "+", "\\"}
     has_regex = any(tok in pattern for tok in meta_chars)
     if not has_regex:
         # Escape literal dots, etc., and wrap with .* for substring matching
