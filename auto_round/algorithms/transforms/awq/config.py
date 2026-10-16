@@ -113,11 +113,35 @@ class AWQConfig(QuantizationConfig):
             help="Number of grid-search points for AWQ scaling ratio.",
         )
         registry.add_argument(
+            "--awq-v2-scale-search",
+            field="v2_scale_search",
+            default="full",
+            choices=("full", "off", "reuse"),
+            help=(
+                "Scale-search policy used by AWQ's internal QDQ when the terminal quantizer is AutoRoundV2: "
+                "full searches every AWQ candidate, off uses plain RTN for AWQ loss only, and reuse searches "
+                "once per balance layer and reuses that scale."
+            ),
+        )
+        registry.add_argument(
             "--awq_seqlen",
             field="awq_seqlen",
             default=None,
             type=int,
             help="Maximum sequence length used by AWQ calibration, distinct from global --seqlen.",
+        )
+        registry.add_argument(
+            "--awq_nsamples",
+            "--awq-nsamples",
+            "--awq-samples",
+            field="awq_nsamples",
+            dest="awq_nsamples",
+            default=128,
+            type=int,
+            help=(
+                "Maximum number of randomly selected calibration samples used by AWQ smoothing and clipping, "
+                "independent of global --nsamples."
+            ),
         )
         registry.add_argument(
             "--awq_smooth_batch_size",
@@ -154,6 +178,7 @@ class AWQConfig(QuantizationConfig):
         n_grid: int = 20,
         seqlen: int = 2048,
         nsamples: int = 128,
+        awq_nsamples: int = 128,
         batch_size: int = 8,
         apply_smooth: bool = True,
         smooth_iters: int = 1,
@@ -164,6 +189,7 @@ class AWQConfig(QuantizationConfig):
         clip_n_sample_token: int = 512,
         awq_seqlen: int | None = None,
         smooth_batch_size: int | None = None,
+        v2_scale_search: str = "full",
         disable_opt_rtn: bool | None = True,
         skip_moe: bool = True,
         mappings: list[dict] | None = None,
@@ -180,8 +206,13 @@ class AWQConfig(QuantizationConfig):
                 AWQ scaling ratio.
             seqlen: Calibration sequence length retained for compatibility
                 with standalone AWQ entry points.
-            nsamples: Number of calibration samples retained for compatibility
-                with standalone AWQ entry points.
+            nsamples: Global calibration sample count retained for compatibility
+                with standalone AWQ entry points. In composed pipelines, the
+                downstream quantizer owns this value.
+            awq_nsamples: Maximum number of randomly selected calibration samples
+                used by AWQ activation statistics, smoothing, and clipping.
+                Defaults to 128 and is independent of the downstream block
+                quantizer's global calibration sample count.
             batch_size: Batch size retained for compatibility with standalone
                 AWQ entry points.
             apply_smooth: Whether to apply AWQ smoothing before the downstream
@@ -236,6 +267,12 @@ class AWQConfig(QuantizationConfig):
                 peak VRAM while preserving the AWQ parent-output loss, at the
                 cost of more parent forward calls. ``None`` or ``<= 0`` replays
                 the cached calibration batch as-is.
+            v2_scale_search: AutoRoundV2 scale-search policy for AWQ's internal
+                grid-loss QDQ. ``"full"`` preserves the exact terminal
+                quantizer initialization for every AWQ candidate. ``"off"``
+                uses plain RTN for AWQ loss while leaving the terminal
+                AutoRoundV2 search unchanged. ``"reuse"`` searches once for
+                each balance layer before the AWQ grid and reuses that scale.
             disable_opt_rtn: Whether AWQ's internal weight QDQ should use the
                 plain RTN path. Defaults to True because AWQ calibration has not
                 shown accuracy or cost benefits from optimized RTN in benchmarks.
@@ -270,6 +307,9 @@ class AWQConfig(QuantizationConfig):
         self.n_grid = n_grid
         self.seqlen = seqlen
         self.nsamples = nsamples
+        if awq_nsamples is None or awq_nsamples < 1:
+            raise ValueError(f"`awq_nsamples` must be a positive integer, got {awq_nsamples!r}")
+        self.awq_nsamples = awq_nsamples
         self.batch_size = batch_size
         self.apply_smooth = apply_smooth
         if smooth_iters is None or smooth_iters < 1:
@@ -287,12 +327,15 @@ class AWQConfig(QuantizationConfig):
             raise ValueError(f"`clip_n_sample_token` must be a positive integer, got {clip_n_sample_token!r}")
         if smooth_batch_size is not None and smooth_batch_size < 0:
             raise ValueError(f"`smooth_batch_size` must be a non-negative integer or None, got {smooth_batch_size!r}")
+        if v2_scale_search not in {"full", "off", "reuse"}:
+            raise ValueError("`v2_scale_search` must be one of 'full', 'off', or 'reuse', " f"got {v2_scale_search!r}")
         self._disable_opt_rtn = disable_opt_rtn
         self.clip_n_grid = clip_n_grid
         self.clip_max_shrink = clip_max_shrink
         self.clip_n_sample_token = clip_n_sample_token
         self.awq_seqlen = awq_seqlen
         self.smooth_batch_size = smooth_batch_size
+        self.v2_scale_search = v2_scale_search
         self.skip_moe = skip_moe
         self.mappings = mappings
         self.infer_bs_coeff = 1
@@ -324,7 +367,9 @@ class AWQConfig(QuantizationConfig):
             f"AWQConfig(duo_scaling={self.duo_scaling!r}, n_grid={self.n_grid}, "
             f"smooth_iters={self.smooth_iters}, "
             f"apply_clip={self.apply_clip}, clip_as_init={self.clip_as_init}, "
-            f"awq_seqlen={self.awq_seqlen}, smooth_batch_size={self.smooth_batch_size}, "
+            f"awq_nsamples={self.awq_nsamples}, awq_seqlen={self.awq_seqlen}, "
+            f"smooth_batch_size={self.smooth_batch_size}, "
+            f"v2_scale_search={self.v2_scale_search!r}, "
             f"disable_opt_rtn={self.disable_opt_rtn}, "
             f"skip_moe={self.skip_moe}, "
             f"bits={self.bits}, group_size={self.group_size}, sym={self.sym}, "
