@@ -228,6 +228,35 @@ class TestToStandardRegex:
         # Must not raise when compiled
         _re.compile(to_standard_regex("plain_text"))
 
+    @pytest.mark.parametrize(
+        "pattern, matching, nonmatching",
+        [
+            ("layers.{3}mlp", "layers.3.mlp", "layers.33.mlp"),
+            ("layers.{2,3}mlp", "layers.3.mlp", "layers.333.mlp"),
+            ("layers.{3,}mlp", "layers.33.mlp", "layers3mlp"),
+            ("layer*s", "layerrs", "layexs"),
+        ],
+    )
+    def test_unanchored_quantifiers(self, pattern, matching, nonmatching):
+        import re as _re
+
+        from auto_round.utils.common import to_standard_regex
+
+        regex = to_standard_regex(pattern)
+        assert _re.search(regex, matching)
+        assert not _re.search(regex, nonmatching)
+
+    def test_regex_tokens_and_escapes_kept(self):
+        import re as _re
+
+        from auto_round.utils.common import to_standard_regex
+
+        name = "model.layers.3.mlp.gate"
+        for pattern in ("layers.+mlp", r"layers\.[0-9]+\.mlp", r"model\.layers\.3"):
+            assert _re.search(to_standard_regex(pattern), name), pattern
+        # Bare dots are still literal.
+        assert not _re.search(to_standard_regex("mlp.gate"), "mlpXgate")
+
 
 # ---------------------------------------------------------------------------
 # matches_any_regex
