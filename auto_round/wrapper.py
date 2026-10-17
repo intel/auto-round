@@ -206,19 +206,31 @@ class WrapperLinear(torch.nn.Module):
                     "enable_neuqi anchors the tuning grid to its own search result, which "
                     "overrides the AWQ clip-as-init range on this layer; the clip is ignored."
                 )
-            from auto_round.data_type.neuqi import neuqi_anchor_margins
+            if defer_search:
+                # staged for the batched anchor driver; the margins keep the
+                # plain min/max until the batch pass applies the searched ones
+                self._deferred_neuqi_anchor = (
+                    weight_reshape,
+                    self.orig_layer.bits,
+                    orig_layer.group_size,
+                    getattr(orig_layer, "imatrix", None),
+                    bool(getattr(orig_layer, "sym", True)),
+                )
+                self._neuqi_frozen_margins = True
+            else:
+                from auto_round.data_type.neuqi import neuqi_anchor_margins
 
-            _wmin, _wmax = neuqi_anchor_margins(
-                weight_reshape,
-                self.orig_layer.bits,
-                orig_layer.group_size,
-                getattr(orig_layer, "imatrix", None),
-                self.device,
-                sym=bool(getattr(orig_layer, "sym", True)),
-            )
-            self._neuqi_frozen_margins = True
-            self.weight_min = _wmin.to(self.weight_min.dtype)
-            self.weight_max = _wmax.to(self.weight_max.dtype)
+                _wmin, _wmax = neuqi_anchor_margins(
+                    weight_reshape,
+                    self.orig_layer.bits,
+                    orig_layer.group_size,
+                    getattr(orig_layer, "imatrix", None),
+                    self.device,
+                    sym=bool(getattr(orig_layer, "sym", True)),
+                )
+                self._neuqi_frozen_margins = True
+                self.weight_min = _wmin.to(self.weight_min.dtype)
+                self.weight_max = _wmax.to(self.weight_max.dtype)
         self._init_params(
             "value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning and self.orig_layer.bits < 16
         )
@@ -335,6 +347,31 @@ class WrapperLinear(torch.nn.Module):
             global_scale = self.weight_global_scale
             assert global_scale.numel() == 1
             self.orig_layer.weight_global_scale = global_scale.to("cpu")
+
+    def _run_deferred_neuqi_anchor_now(self) -> None:
+        """Run the staged NeUQI grid anchor per module (fallback when batching is off)."""
+        staged = getattr(self, "_deferred_neuqi_anchor", None)
+        if staged is None:
+            return
+        weight_reshape, bits, group_size, imatrix_raw, sym = staged
+        from auto_round.data_type.neuqi import neuqi_anchor_margins
+
+        # run on the weight's own device when it is accelerator-resident: the
+        # tuning device also hosts the pools and calibration state, so a
+        # per-module fallback that pulls every search there can exhaust it
+        device = weight_reshape.device if weight_reshape.device.type == "cuda" else self.device
+        wmin, wmax = neuqi_anchor_margins(weight_reshape, bits, group_size, imatrix_raw, device, sym=sym)
+        self._apply_neuqi_anchor(wmin, wmax)
+
+    def _apply_neuqi_anchor(self, wmin: "torch.Tensor", wmax: "torch.Tensor") -> None:
+        """Adopt a searched anchor, computed alone or on a stacked same-shape batch."""
+        self.weight_min = wmin.reshape(self.weight_min.shape).to(
+            device=self.weight_min.device, dtype=self.weight_min.dtype
+        )
+        self.weight_max = wmax.reshape(self.weight_max.shape).to(
+            device=self.weight_max.device, dtype=self.weight_max.dtype
+        )
+        self._deferred_neuqi_anchor = None
 
     def _quant_call_kwargs(
         self,
@@ -952,6 +989,11 @@ def wrapper_block(
     results = [_wrap_one(n, m, kind) for n, m, kind in work]
 
     if _defer_batch and deferred_wrappers:
+        anchor_pending = [w for w in deferred_wrappers if getattr(w, "_deferred_neuqi_anchor", None) is not None]
+        if anchor_pending:
+            if not search_dispatch.run_batched_neuqi_anchors(anchor_pending):
+                for w in anchor_pending:
+                    w._run_deferred_neuqi_anchor_now()
         # stacked same-shape batches per (device, shape, config, search fn);
         # singletons and the kill-switch fall back to the identical per-module call
         if not search_dispatch.run_batched_wrap_search(deferred_wrappers):

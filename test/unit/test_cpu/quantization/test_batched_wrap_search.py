@@ -385,11 +385,14 @@ class TestWorkerBucketKeys(unittest.TestCase):
         def fake_run(keyed, fn):
             captured["keys"] = list(keyed.keys())
 
-        with mock.patch.object(
-            batched_search, "pick_search_worker_devices", side_effect=[["cuda:9"], ["cpu"]]
+        import auto_round.algorithms.quantization.search_dispatch as _sd
+
+        with mock.patch.object(_sd, "pick_search_worker_devices", return_value=["cpu", "cuda:9"]), mock.patch.object(
+            _sd, "probe_usable_bytes", return_value=2**40
         ), mock.patch.object(batched_search, "run_items_by_device", side_effect=fake_run):
-            # max_batch=1 -> two singleton chunks -> two distinct worker buckets;
-            # run_items_by_device is mocked so nothing actually moves to cuda:9
+            # max_batch=1 -> two singleton chunks spread round-robin over the
+            # two candidates -> two distinct worker buckets; run_items_by_device
+            # is mocked so nothing actually moves to cuda:9
             batched_search.run_batched_rtn_search(model, staged, max_batch=1)
         # distinct worker bucket vs home -> multi-bucket path taken; every key must parse
         self.assertEqual(sorted(captured["keys"]), ["cpu", "cuda:9"])
@@ -457,7 +460,7 @@ class TestSearchWorkerPicking(unittest.TestCase):
     def test_kill_switch_pins_home(self):
         import auto_round.algorithms.quantization.search_dispatch as dispatch_mod
 
-        with mock.patch.object(dispatch_mod.envs, "AR_DISABLE_MULTIGPU_SEARCH", True):
+        with mock.patch.object(dispatch_mod.envs, "AR_DISABLE_CROSS_DEVICE_SEARCH", True):
             self.assertEqual(dispatch_mod.pick_search_worker_devices(4 * 2**30, home_device="cuda:3"), ["cuda:3"])
 
     def test_no_cuda_returns_home(self):
@@ -589,7 +592,7 @@ class TestBatchedRtnSearchParity(unittest.TestCase):
         # parity is asserted against a serial CPU arm; on GPU-rich boxes the
         # multigpu offload would move the batched arm to idle CUDA workers
         # (different device numerics) -- out of scope for these tests
-        self._env = mock.patch.dict(os.environ, {"AR_DISABLE_MULTIGPU_SEARCH": "1"})
+        self._env = mock.patch.dict(os.environ, {"AR_DISABLE_CROSS_DEVICE_SEARCH": "1"})
         self._env.start()
         self.addCleanup(self._env.stop)
 
@@ -658,6 +661,55 @@ class TestBatchedRtnSearchParity(unittest.TestCase):
 
     def test_parity_sym_with_imatrix(self):
         self._run(sym=True, with_imatrix=True)
+
+    def test_stacked_oom_falls_back_per_module(self):
+        """A stacked-call OOM finishes the chunk per-module: every module ends
+        up exactly as the serial arm produced it."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.quantization.rtn.batched_search import run_batched_rtn_search
+
+        # serial reference arm (real quant fns, untouched)
+        serial = []
+        with torch.no_grad():
+            for i in range(3):
+                layer = self._layer(seed=i, sym=True, with_imatrix=True)
+                out = self._make_wrapper(layer).unwrapper({})
+                serial.append((out.weight.data.clone(), out.scale, getattr(out, "zp", None)))
+
+        class _OomOnStacked:
+            # raises only on the stacked 3D call; the per-module fallback's 2D
+            # calls delegate to the real quant fn. One shared instance: the
+            # staged key derives from the callable, so the fake must key
+            # identically across wrappers to form one chunk; the name lands
+            # outside the non-stackable denylist
+            def __init__(self, real):
+                self.real = real
+                self.__name__ = "quant_tensor"
+
+            def __call__(self, w, *a, **kw):
+                if w.dim() == 3:
+                    raise torch.OutOfMemoryError("simulated stacked OOM")
+                return self.real(w, *a, **kw)
+
+        model = nn.Module()
+        staged = []
+        for i in range(3):
+            layer = self._layer(seed=i, sym=True, with_imatrix=True)
+            setattr(model, f"l{i}", layer)
+            w = self._make_wrapper(layer)
+            staged.append((f"l{i}", w))
+        fake = _OomOnStacked(staged[0][1].weight_quant_func)
+        for _name, w in staged:
+            w.weight_quant_func = fake
+        run_batched_rtn_search(model, staged)
+        for i in range(3):
+            got = getattr(model, f"l{i}")
+            ref_w, ref_scale, ref_zp = serial[i]
+            self.assertTrue(torch.equal(got.weight.data, ref_w), f"weight mismatch module {i}")
+            self.assertTrue(torch.equal(got.scale, ref_scale), f"scale mismatch module {i}")
+            if isinstance(ref_zp, torch.Tensor):
+                self.assertTrue(torch.equal(got.zp, ref_zp), f"zp mismatch module {i}")
 
     def test_parity_sym_no_imatrix(self):
         self._run(sym=True, with_imatrix=False)
@@ -1025,3 +1077,176 @@ class TestBatchedRtnSearchParity(unittest.TestCase):
         for i in range(2):
             got = getattr(model, f"l{i}")
             self.assertIsNotNone(getattr(got, "scale", None))  # per-module fallback quantized it
+
+
+class FakeAnchor:
+    """Duck-typed deferred NeuUQI anchor: stages inputs, applies searched margins."""
+
+    def __init__(self, seed, shape=(8, 128), sym=True, with_imatrix=True):
+        import types as _types
+
+        g = torch.Generator().manual_seed(seed)
+        w = torch.randn(*shape, generator=g)
+        im = (torch.rand(shape[1], generator=g) + 0.5) if with_imatrix else None
+        self._deferred_neuqi_anchor = (w, 4, shape[1], im, sym)
+        self._applied = None
+        self.device = "cpu"
+        self.orig_layer = _types.SimpleNamespace(bits=4, group_size=shape[1])
+        self.weight_min = torch.zeros(w.numel() // shape[1])
+        self.weight_max = torch.zeros(w.numel() // shape[1])
+
+    def _run_deferred_neuqi_anchor_now(self):
+        from auto_round.data_type.neuqi import neuqi_anchor_margins
+
+        w, bits, gs, im, sym = self._deferred_neuqi_anchor
+        wmin, wmax = neuqi_anchor_margins(w, bits, gs, im, self.device, sym=sym)
+        self._apply_neuqi_anchor(wmin, wmax)
+
+    def _apply_neuqi_anchor(self, wmin, wmax):
+        self._applied = (wmin.detach().clone(), wmax.detach().clone())
+        self.weight_min = wmin
+        self.weight_max = wmax
+        self._deferred_neuqi_anchor = None
+
+
+class TestBatchedNeuqiAnchors(unittest.TestCase):
+    def _make(self, n, **kw):
+        return [FakeAnchor(i, **kw) for i in range(n)]
+
+    def test_batched_anchor_matches_serial(self):
+        for sym in (True, False):
+            for with_imatrix in (True, False):
+                serial = self._make(4, sym=sym, with_imatrix=with_imatrix)
+                for w in serial:
+                    w._run_deferred_neuqi_anchor_now()
+                batched = self._make(4, sym=sym, with_imatrix=with_imatrix)
+                from auto_round.algorithms.quantization.search_dispatch import run_batched_neuqi_anchors
+
+                self.assertTrue(run_batched_neuqi_anchors(batched))
+                for s, b in zip(serial, batched):
+                    self.assertTrue(torch.equal(s._applied[0], b._applied[0]), f"sym={sym} im={with_imatrix} wmin")
+                    self.assertTrue(torch.equal(s._applied[1], b._applied[1]), f"sym={sym} im={with_imatrix} wmax")
+
+    def test_probe_shrinks_anchor_batches(self):
+        from auto_round.algorithms.quantization import search_dispatch
+
+        batched = self._make(8)
+        # tiny usable headroom: at most two modules per stacked batch
+        from auto_round.data_type.neuqi import _MAX_TMP_ELEMS
+
+        # half the headroom must cover the per-call sweep budget plus two
+        # modules' fp32 copy chain (incl. imatrix)
+        per_module = 8 * 128 * 4 * 16 + 8 * 128 * 4
+        with mock.patch.object(
+            search_dispatch,
+            "probe_usable_bytes",
+            return_value=(_MAX_TMP_ELEMS * 4 * 8 + per_module * 2) * 2 + 1,
+        ), mock.patch.dict(os.environ, {"AR_PERF_COUNTERS": "1"}), mock.patch.object(
+            search_dispatch.logger, "info"
+        ) as dbg:
+            self.assertTrue(search_dispatch.run_batched_neuqi_anchors(batched))
+        args = dbg.call_args.args
+        text = args[0] % tuple(args[1:])
+        # each chunk's own transient (two modules' chain + the per-call
+        # sweep budget) fits half the probed headroom, serially re-earned
+        self.assertIn("4 batch", text)
+
+    def test_execute_time_headroom_splits_chunks(self):
+        # plan-time probe blind (cpu-staged weights) -> one big chunk; the
+        # executing device then reports too little headroom -> the chunk
+        # halves recursively down to per-module calls
+        import auto_round.data_type.neuqi as neuqi_mod
+        from auto_round.algorithms.quantization import search_dispatch
+
+        calls = {"n": 0}
+        real = neuqi_mod.neuqi_anchor_margins
+
+        def _counting(weight, bits, gs, im, device, sym=False):
+            calls["n"] += 1
+            return real(weight, bits, gs, im, device, sym=sym)
+
+        from auto_round.data_type.neuqi import _MAX_TMP_ELEMS
+
+        per = 8 * 128 * 4 * 16 + 8 * 128 * 4 + _MAX_TMP_ELEMS * 4 * 8
+        batched = self._make(8)
+        with mock.patch.object(
+            search_dispatch, "probe_usable_bytes", side_effect=[None] + [per] * 64
+        ), mock.patch.object(neuqi_mod, "neuqi_anchor_margins", _counting):
+            self.assertTrue(search_dispatch.run_batched_neuqi_anchors(batched))
+        self.assertEqual(calls["n"], 8)  # split down to single-module stacks
+        for w in batched:
+            self.assertIsNotNone(w._applied)
+
+    def test_search_batch_gb_bounds_anchor_stacks(self):
+        # the env budget counts weight + expanded-imatrix elements, exactly
+        # like the wrap lane
+        import os as _os
+
+        from auto_round.algorithms.quantization import search_dispatch
+
+        batched = self._make(8)  # with imatrix: 2 x 1024 elements per module
+        budget_elements = 2048  # one module's weight+imatrix, no room for a pair
+        gb = budget_elements * 4 / 2**30
+        saved = _os.environ.get("AR_SEARCH_BATCH_GB")
+        _os.environ["AR_SEARCH_BATCH_GB"] = repr(gb)
+        try:
+            with mock.patch.dict(os.environ, {"AR_PERF_COUNTERS": "1"}), mock.patch.object(
+                search_dispatch.logger, "info"
+            ) as dbg:
+                self.assertTrue(search_dispatch.run_batched_neuqi_anchors(batched))
+        finally:
+            if saved is None:
+                _os.environ.pop("AR_SEARCH_BATCH_GB", None)
+            else:
+                _os.environ["AR_SEARCH_BATCH_GB"] = saved
+        args = dbg.call_args.args
+        text = args[0] % tuple(args[1:])
+        self.assertIn("8 batch", text)  # one module per stack under the tight budget
+
+    def test_disabled_batching_returns_false(self):
+        from auto_round.algorithms.quantization import search_dispatch
+
+        batched = self._make(3)
+        with mock.patch.object(search_dispatch, "batched_search_disabled", return_value=True):
+            self.assertFalse(search_dispatch.run_batched_neuqi_anchors(batched))
+        # the caller's per-module fallback then finishes them
+        for w in batched:
+            w._run_deferred_neuqi_anchor_now()
+        self.assertTrue(all(w._applied is not None for w in batched))
+
+
+class TestWrapSearchExecuteTimeSplit(unittest.TestCase):
+    def test_headroom_shortfall_halves_chunks(self):
+        # plan-time probe blind (cpu) -> one chunk; the executor then sees too
+        # little headroom -> the chunk halves down to per-module stacks
+        import auto_round.algorithms.quantization.search_dispatch as sd
+
+        fakes = [FakeDeferred(seed=i, shape=(8, 128)) for i in range(4)]
+        calls = []
+        real_stack = torch.stack
+
+        def spy_stack(tensors, *a, **k):
+            calls.append(len(tensors))
+            return real_stack(tensors, *a, **k)
+
+        with mock.patch.object(sd, "probe_usable_bytes", side_effect=[None] + [1] * 64), mock.patch.object(
+            torch, "stack", side_effect=spy_stack
+        ):
+            self.assertTrue(run_batched_wrap_search(fakes))
+        self.assertEqual(calls, [1] * 8)  # four single-module stacks x (weights + imatrix)
+        for f in fakes:
+            self.assertIsNotNone(f.init_scale)
+
+
+class TestOffloadedImatrixDevice(unittest.TestCase):
+    def test_offloaded_chunk_moves_materialized_imatrix_to_worker(self):
+        # cross-device tensor pairs cannot be hosted on a CPU-only test box;
+        # pin the source contract instead (the materialized imatrix stack is
+        # built from home-resident staged columns and must follow the stacked
+        # weights onto the executing device before the search call)
+        import inspect
+
+        from auto_round.algorithms.quantization import search_dispatch as sd
+
+        src = inspect.getsource(sd.run_batched_wrap_search)
+        self.assertIn("stacked_im.to(worker_key", src)

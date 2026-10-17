@@ -1163,6 +1163,56 @@ class TestNeuqiSymCompiledCore:
         assert calls["n"] == 1
         assert neuqi._sym_compile_failed
 
+    def test_failure_warning_names_the_exception(self, monkeypatch):
+        monkeypatch.setenv("AR_NEUQI_BACKEND", "compile")
+        from unittest import mock
+
+        from auto_round.data_type import neuqi
+
+        def _flaky(fn):
+            def _raise(*a, **k):
+                raise RuntimeError("kernel boom")
+
+            return _raise
+
+        monkeypatch.setattr(neuqi.torch, "compile", _flaky)
+        with mock.patch.object(neuqi.logger, "warning") as warn:
+            out = neuqi._sym_loss_chunk_eval(torch.randn(8, 32), None, torch.rand(8, 2) + 0.5, 7)
+        assert torch.isfinite(out[0]).all()
+        text = "".join(str(a) for a in warn.call_args.args)
+        assert "kernel boom" in text
+
+    def test_concurrent_first_calls_compile_once(self, monkeypatch):
+        monkeypatch.setenv("AR_NEUQI_BACKEND", "compile")
+        import threading
+        import time
+
+        from auto_round.data_type import neuqi
+
+        entered = {"n": 0}
+        guard = threading.Lock()
+
+        def _counting_compile(fn):
+            with guard:
+                entered["n"] += 1
+            time.sleep(0.05)
+            return fn  # eager math stands in for the compiled core
+
+        monkeypatch.setattr(neuqi.torch, "compile", _counting_compile)
+        ok = []
+
+        def _call():
+            out = neuqi._sym_loss_chunk_eval(torch.randn(8, 32), None, torch.rand(8, 2) + 0.5, 7)
+            ok.append(bool(torch.isfinite(out[0]).all()))
+
+        threads = [threading.Thread(target=_call) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert all(ok)
+        assert entered["n"] == 1
+
     def test_search_end_to_end_matches_eager_backend(self, monkeypatch):
         """The compiled core routes every chunk through; results must match an
         eager-backend run."""
@@ -1481,9 +1531,15 @@ class TestSignRoundEnableNeuqi:
         assert SignRoundConfig(bits=4, group_size=32, sym=False, enable_neuqi=True).enable_neuqi is True
 
 
-class TestExpertBatching:
-    """Same-shape expert projections quantize in one stacked search call
-    (row-independent: results identical to per-module calls)."""
+class TestNeuqiBatchedSearch:
+    """The batched zero-shot search driver carries the NeUQI sym/asym searches.
+
+    Every zero-shot NeUQI run rides the staged batched driver; stacked batches
+    and per-module serial calls must produce identical modules: bit-equal qdq
+    weights with matching scale/zp metadata, for both symmetry classes, with
+    and without imatrix weighting. The gating contracts (which modules run a
+    search at all) live in the staging heuristic exercised below.
+    """
 
     @pytest.fixture(autouse=True)
     def _tie_free_grid(self, monkeypatch):
@@ -1495,176 +1551,140 @@ class TestExpertBatching:
         # contract was verified against
         monkeypatch.setenv("AR_NEUQI_COARSE", "256")
         monkeypatch.setenv("AR_NEUQI_FINE", "64")
+        # parity is asserted against a serial CPU arm; keep the batched arm home
+        monkeypatch.setenv("AR_DISABLE_CROSS_DEVICE_SEARCH", "1")
 
-    def teardown_method(self):
-        import auto_round.algorithms.quantization.rtn.quantizer as _qmod
-
-        if "model_context" in _qmod.OptimizedRTNQuantizer.__dict__:
-            del _qmod.OptimizedRTNQuantizer.model_context
-
-    def _expert(self, name, out=16, inn=32, bits=4, group_size=32, sym=False, seed=0):
+    def _expert(self, name, out=16, inn=32, bits=4, group_size=32, sym=False, seed=0, imatrix=False):
         m = torch.nn.Linear(inn, out, bias=False)
-        torch.manual_seed(seed)
+        gen = torch.Generator().manual_seed(seed)
         with torch.no_grad():
-            m.weight.copy_(torch.randn(out, inn))
+            m.weight.copy_(torch.randn(out, inn, generator=gen))
         m.global_name = name
         m.bits = bits
         m.group_size = group_size
         m.sym = sym
         m.data_type = "int"
+        m.iters = 0
+        m.act_bits = 16
+        m.scale_dtype = torch.float16
+        if imatrix:
+            m.imatrix = torch.rand(inn, generator=gen) + 0.5
         return m
 
-    def _quantizer(self, enable_neuqi=True, disable_opt_rtn=False, is_moe=True):
+    def _moe_model(self, proj="gate_proj", sym=False, imatrix=False, n=3, seed0=0):
+        # a real nested tree: the driver re-attaches results by dotted name, so
+        # every parent module along the path must exist
+        model = torch.nn.Module()
+        blk = torch.nn.Module()
+        model.blk = blk
+        experts = torch.nn.ModuleList()
+        blk.experts = experts
+        mods = []
+        for i in range(n):
+            e = torch.nn.Module()
+            experts.append(e)
+            m = self._expert(f"blk.experts.{i}.{proj}", sym=sym, seed=seed0 + i, imatrix=imatrix)
+            setattr(e, proj, m)
+            mods.append(m)
+        return model, mods
+
+    def _wrapper(self, m):
+        from auto_round.wrapper import WrapperLinear
+
+        return WrapperLinear(
+            m,
+            device="cpu",
+            enable_minmax_tuning=False,
+            enable_norm_bias_tuning=False,
+            enable_round_tuning=False,
+            enable_torch_compile=False,
+            disable_opt_rtn=False,
+            enable_neuqi=True,
+            iters=0,
+        )
+
+    def _assert_same_module(self, got, ref, index):
+        ref_w, ref_scale, ref_zp, ref_dt = ref
+        assert torch.equal(got.weight.data, ref_w), f"weight mismatch module {index}"
+        if isinstance(ref_scale, torch.Tensor):
+            assert torch.equal(got.scale, ref_scale), f"scale mismatch module {index}"
+        if isinstance(ref_zp, torch.Tensor):
+            assert torch.equal(got.zp, ref_zp), f"zp mismatch module {index}"
+        assert got.data_type == ref_dt, f"data_type mismatch module {index}"
+
+    def _run(self, sym, imatrix):
+        from auto_round.algorithms.quantization.rtn.batched_search import run_batched_rtn_search
+
+        model_serial, mods_serial = self._moe_model(sym=sym, imatrix=imatrix, seed0=0)
+        model_batched, mods_batched = self._moe_model(sym=sym, imatrix=imatrix, seed0=0)
+
+        serial = []
+        with torch.no_grad():
+            for m in mods_serial:
+                out = self._wrapper(m).unwrapper({})
+                serial.append((out.weight.data.clone(), out.scale, getattr(out, "zp", None), out.data_type))
+
+        staged = [(m.global_name, self._wrapper(m)) for m in mods_batched]
+        # pin that the neuqi searches were selected: the wrapper resolves the
+        # scheme before any call runs (weight-only write-back leaves the layer's
+        # own data_type at "int" in both arms)
+        resolved = "opt_rtn_int_sym_neuqi" if sym else "opt_rtn_int_asym"
+        assert all(w.data_type == resolved for _n, w in staged)
+        run_batched_rtn_search(model_batched, staged)
+
+        for i, m in enumerate(mods_batched):
+            self._assert_same_module(m, serial[i], i)
+
+    def test_asym_batched_matches_serial(self):
+        self._run(sym=False, imatrix=False)
+
+    def test_sym_batched_matches_serial(self):
+        self._run(sym=True, imatrix=False)
+
+    def test_imatrix_weighting_batched_matches_serial(self):
+        self._run(sym=False, imatrix=True)
+
+    def test_moe_heuristic_gates_expert_search(self):
+        """The staging heuristic decides which modules run a search.
+
+        Expert projections on MoE models skip the optimized search unless the
+        user forces it; dense projections and an explicit --enable_opt_rtn both
+        keep it on. The staged wrapper records the resolved decision.
+        """
+        import auto_round.algorithms.quantization.rtn.quantizer as _qmod
         from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
         from auto_round.algorithms.quantization.rtn.quantizer import OptimizedRTNQuantizer
 
-        cfg = OptimizedRTNConfig(bits=4, group_size=32, sym=False, enable_neuqi=enable_neuqi)
-        cfg.disable_opt_rtn = disable_opt_rtn
-        cfg.orig_disable_opt_rtn = False if not disable_opt_rtn else True
-        q = OptimizedRTNQuantizer(cfg)
-        if is_moe:
-            # model_context is a read-only property backed by the run ctx;
-            # patch the class property for the MoE-heuristic branch
-            import auto_round.algorithms.quantization.rtn.quantizer as _qmod
+        model, mods = self._moe_model(sym=False, imatrix=False, n=1)
+        model.blk.mlp = torch.nn.Module()
+        dense = self._expert("blk.mlp.gate_proj", sym=False, seed=9)
+        model.blk.mlp.gate_proj = dense
 
-            _qmod.OptimizedRTNQuantizer.model_context = property(lambda self: type("MC", (), {"is_moe_model": True})())
-        return q
+        ctx = SimpleNamespace(is_moe_model=True, amp_dtype=torch.float32, model=model, enable_torch_compile=False)
+        q = object.__new__(OptimizedRTNQuantizer)
+        q.config = OptimizedRTNConfig(bits=4, group_size=32, sym=False, enable_neuqi=True)
+        q.config.disable_opt_rtn = False
+        q.config.orig_disable_opt_rtn = None  # user left the flag unset
+        try:
+            _qmod.OptimizedRTNQuantizer.model_context = property(lambda self: ctx)
+            _qmod.OptimizedRTNQuantizer.compress_context = property(lambda self: ctx)
 
-    def test_sym_and_asym_batched_and_equivalent(self):
-        # THE sym gap fix: sym modules join the batches under neuqi, and the
-        # stacked call matches per-module search outputs exactly
-        q = self._quantizer()
-        mods = [self._expert(f"blk.experts.{i}.gate_proj", sym=False, seed=i) for i in range(4)]
-        sym_mods = [self._expert(f"blk.experts.{i}.up_proj", sym=True, seed=100 + i) for i in range(4)]
-        batches, singles = q._split_expert_batches(mods + sym_mods)
-        assert len(batches) == 2 and not singles
-        assert {m.sym for m in batches[0]} == {False} and {m.sym for m in batches[1]} == {True}
+            w = q._quantize_layer_via_rtn(model.blk.experts[0].gate_proj, defer_search=True)
+            assert w.disable_opt_rtn is True, "expert projection on a MoE model must skip the search by default"
 
-        from auto_round.data_type.neuqi import quant_tensor_opt_rtn_asym, quant_tensor_opt_rtn_sym_neuqi
+            w = q._quantize_layer_via_rtn(dense, defer_search=True)
+            assert w.disable_opt_rtn is False, "dense projection keeps the search"
 
-        assert q._quantize_expert_batch(batches[0], "cpu") == []
-        for m in mods:
-            ref_qdq, ref_scale, ref_zp = quant_tensor_opt_rtn_asym(
-                m.weight.data, bits=m.bits, group_size=m.group_size, v=0.0, q_scale_thresh=1e-5, imatrix=None
-            )
-            assert torch.equal(m.weight.data, ref_qdq)
-            assert torch.equal(m.scale.reshape(-1), ref_scale.reshape(-1))
-            assert torch.equal(m.zp.reshape(-1), ref_zp.reshape(-1))
-            assert m.q_scale_thresh == 1e-5
+            q.config.orig_disable_opt_rtn = False  # user forced --enable_opt_rtn
+            w = q._quantize_layer_via_rtn(model.blk.experts[0].gate_proj, defer_search=True)
+            assert w.disable_opt_rtn is False, "forced --enable_opt_rtn keeps experts on the search"
 
-        assert q._quantize_expert_batch(batches[1], "cpu") == []
-        for m in sym_mods:
-            ref_qdq, ref_scale, ref_zp = quant_tensor_opt_rtn_sym_neuqi(
-                m.weight.data, bits=m.bits, group_size=m.group_size, v=0.0, q_scale_thresh=1e-5, imatrix=None
-            )
-            assert torch.equal(m.weight.data, ref_qdq)
-            assert torch.equal(m.scale.reshape(-1), ref_scale.reshape(-1))
-            assert m.zp == ref_zp
-        # R2-5: the batch writeback must stamp the resolved data_type both classes
-        assert all(m.data_type == "opt_rtn_int_asym" for m in mods)
-        assert all(m.data_type == "opt_rtn_int_sym_neuqi" for m in sym_mods)
-
-    def test_imatrix_weighting_stacked_equivalence(self):
-        q = self._quantizer()
-        mods = [self._expert(f"blk.experts.{i}.down_proj", sym=False, seed=7 + i) for i in range(3)]
-        for i, m in enumerate(mods):
-            torch.manual_seed(50 + i)
-            m.imatrix = torch.rand(m.weight.shape[1])
-        batches, singles = q._split_expert_batches(mods)
-        assert len(batches) == 1 and not singles
-        assert q._quantize_expert_batch(batches[0], "cpu") == []
-        from auto_round.data_type.neuqi import quant_tensor_opt_rtn_asym
-
-        for m in mods:
-            ref_qdq, ref_scale, ref_zp = quant_tensor_opt_rtn_asym(
-                m.weight.data,
-                bits=m.bits,
-                group_size=m.group_size,
-                v=0.0,
-                q_scale_thresh=1e-5,
-                imatrix=m.imatrix,
-            )
-            assert torch.equal(m.weight.data, ref_qdq)
-            assert torch.equal(m.scale.reshape(-1), ref_scale.reshape(-1))
-
-    def test_batch_splitting_rules(self):
-        """One setup for every _split_expert_batches rule: gating, expert-name
-        filtering, shape/act-quant/symmetry segregation."""
-        q = self._quantizer()
-
-        # gating: off -> inactive; disable_opt_rtn -> inactive
-        assert self._quantizer(enable_neuqi=False)._expert_search_active() is False
-        assert self._quantizer(enable_neuqi=True, disable_opt_rtn=True)._expert_search_active() is False
-
-        # non-expert and odd-shaped modules stay single
-        dense = self._expert("blk.mlp.gate_proj")
-        odd = self._expert("blk.experts.0.gate_proj", inn=48, group_size=32)  # in % g != 0 is fine for grouping
-        mixed_shape = self._expert("blk.experts.1.gate_proj", inn=64)
-        batches, singles = q._split_expert_batches([dense, odd, mixed_shape])
-        assert not batches and {dense, odd, mixed_shape} == set(singles)
-
-        # act quantization needs the per-module wrapper path
-        m = self._expert("blk.experts.0.gate_proj")
-        m.act_bits = 8
-        batches, singles = q._split_expert_batches([m])
-        assert not batches and singles == [m]
-
-        # same (parent, proj, shape, bits, gs) but different symmetry: not
-        # mergeable into one stacked call -> both stay single (group of 1)
-        a = self._expert("blk.experts.0.gate_proj", sym=False)
-        sym_m = self._expert("blk.experts.1.gate_proj", sym=True)
-        batches, singles = q._split_expert_batches([a, sym_m])
-        assert not batches and len(singles) == 2
-
-    def test_oom_returns_only_unwritten(self, monkeypatch):
-        # R2-2: a mid-batch OOM must leave already-written modules untouched
-        # and return ONLY the unwritten remainder (per-module fallback must
-        # never re-quantize a qdq'd weight)
-        import auto_round.algorithms.quantization.rtn.quantizer as Q
-        import auto_round.data_type.neuqi as N
-
-        q = self._quantizer()
-        mods = [self._expert(f"blk.experts.{i}.gate_proj", seed=i) for i in range(3)]
-        batches, singles = q._split_expert_batches(mods)
-        assert len(batches) == 1
-
-        calls = []
-        orig = N.quant_tensor_opt_rtn_asym
-
-        def oom_after_first(weights, *a, **kw):
-            calls.append(1)
-            if len(calls) > 1:
-                raise torch.OutOfMemoryError("simulated")
-            return orig(weights, *a, **kw)
-
-        monkeypatch.setattr(N, "quant_tensor_opt_rtn_asym", oom_after_first)
-        # one module per stacked call -> the failure hits mid-batch
-        monkeypatch.setattr(Q, "_EXPERT_BATCH_MAX_ELEMS", mods[0].weight.numel())
-        before = mods[0].weight.data.clone()
-        remaining = q._quantize_expert_batch(batches[0], "cpu")
-        assert len(remaining) == 2, "modules after the failed chunk must be returned unwritten"
-        assert remaining == mods[1:]
-        # the first chunk was written and must NOT be re-quantized later
-        assert not torch.equal(mods[0].weight.data, before)
-        assert hasattr(mods[0], "scale") and mods[0].data_type == "opt_rtn_int_asym"
-        # unwritten modules are untouched
-        assert not hasattr(mods[1], "scale") and not hasattr(mods[2], "scale")
-
-    def test_act_quant_modules_stay_single(self):
-        q = self._quantizer()
-        m = self._expert("blk.experts.0.gate_proj")
-        m.act_bits = 8  # act quantization needs the per-module wrapper path
-        batches, singles = q._split_expert_batches([m])
-        assert not batches and singles == [m]
-
-    def test_sym_key_separates_batches(self):
-        q = self._quantizer()
-        a = self._expert("blk.experts.0.gate_proj", sym=False)
-        s = self._expert("blk.experts.1.gate_proj", sym=True)
-        batches, singles = q._split_expert_batches([a, s])
-        # same (parent, proj, shape, bits, gs) but different symmetry: not
-        # mergeable into one stacked call -> both stay single (group of 1)
-        assert not batches and len(singles) == 2
+            w = q._quantize_layer_via_rtn(dense, disable_opt_rtn=True, defer_search=True)
+            assert w.disable_opt_rtn is True, "explicit disable wins everywhere"
+        finally:
+            for prop in ("model_context", "compress_context"):
+                if prop in _qmod.OptimizedRTNQuantizer.__dict__:
+                    delattr(_qmod.OptimizedRTNQuantizer, prop)
 
 
 class TestImatrixAutoRule:

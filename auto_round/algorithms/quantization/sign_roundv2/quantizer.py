@@ -108,7 +108,7 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
     supports_batched_search = True
 
     def _init_tuning_params_and_quant_func(self, defer_search: bool = False) -> None:
-        super()._init_tuning_params_and_quant_func()
+        super()._init_tuning_params_and_quant_func(defer_search=defer_search)
 
         layer = self.orig_layer
         data_type = layer.data_type

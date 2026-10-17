@@ -59,6 +59,7 @@ from auto_round.utils.device import (
     _force_trim_malloc,
 )
 from auto_round.utils.device_manager import device_manager
+from auto_round.utils.perf_counters import _PerfCounters
 from auto_round.wrapper import WrapperMultiblock
 
 if TYPE_CHECKING:
@@ -401,7 +402,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 # `low_cpu_mem_usage` is False -- see the `is_immediate_saving`-adjacent
                 # offload call further down), matching upstream's own choice not to cycle
                 # blocks for these formats.
-                _perf = bool(getattr(envs, "AR_PERF_COUNTERS", False))
+                _perf = _PerfCounters()
                 _t_reload_start = time.perf_counter()
                 disk_streaming = getattr(self.model_context, "_disk_stream_index", None) is not None
                 if self.compress_context.low_cpu_mem_usage or envs.AR_DISK_STREAM_MODEL or disk_streaming:
@@ -410,7 +411,6 @@ class CompressionOrchestrator(BaseOrchestrator):
                     else:
                         self._offloader.reload(model, names)
                 _t_reload_mark = time.perf_counter()
-                _marks = {"reload": time.perf_counter()}
                 # reload duration sits BEFORE the marks' reference point; it is
                 # folded into the end-of-block phases line as its first item so
                 # the line's total covers the whole block (true-wall comparable)
@@ -452,7 +452,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 # traffic), or sharded across free GPUs when it does not. Placement is
                 # pure memory behavior -- chunk values are bit-identical.
                 self._attach_pool_placement(m, input_ids, q_input, input_others)
-                _marks["attach"] = time.perf_counter()
+                _perf.tick("attach")
 
                 # ── Run block pipeline (calibration → quantization → collection) ──
                 new_q_input, reference_output = self.alg_composer.compress_block(
@@ -463,7 +463,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                     q_inputs=q_input,
                     input_ids=token_ids,
                 )
-                _marks["compress"] = time.perf_counter()
+                _perf.tick("compress")
 
                 # ── Infrastructure: memory management ─────────────────────────────
                 # Mirrors the original q_input-swap + end-of-loop clear_memory semantics:
@@ -481,40 +481,26 @@ class CompressionOrchestrator(BaseOrchestrator):
                     clear_memory(input_ids if input_ids is not next_input_ids else None)
 
                 q_input = new_q_input
-                _marks["post.swap"] = time.perf_counter()
+                _perf.tick("swap")
 
-                # ── Infrastructure: hook removal, device cleanup, logging ─────────
-                # Census-named accumulator: each block's torch.compile tracing
-                # leaves FX-graph example tensors and shape-env TrackedFake entries
-                # pinned in dynamo's caches (~GB-class per block, growing). Blocks
-                # compile fresh wrappers anyway, so the previous block's compiled
-                # artifacts are pure dead weight -- reset the caches at the boundary.
-                if getattr(self.compress_context, "enable_torch_compile", False):
-                    try:
-                        import torch._dynamo as _dynamo
-
-                        _dynamo.reset()
-                    except Exception as e:  # pragma: no cover - never break the block loop
-                        logger.warning("dynamo cache reset at block end failed (%s)", e)
-                _marks["post.dynamo"] = time.perf_counter()
                 # Belt-and-braces: no module may carry staged batched-search inputs
-                # (weight reshape + imatrix copies) across the block boundary; the
-                # first block-3 census showed search-stack groups retained into the
-                # next block's collection (~GB-class growth per block).
+                # (weight reshape + imatrix copies) across the block boundary;
+                # otherwise the search-stack groups stay retained into the next
+                # block's collection (~GB-class growth per block).
                 for _mn, _mm in m.named_modules():
                     if getattr(_mm, "_deferred_search_inputs", None) is not None:
                         _mm._deferred_search_inputs = None
-                _marks["post.sweep"] = time.perf_counter()
+                _perf.tick("sweep")
                 if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                     accelerate.hooks.remove_hook_from_submodules(m)
-                _marks["post.hooks"] = time.perf_counter()
+                _perf.tick("hooks")
 
                 # ── Infrastructure: immediate_pack / shard write ──────────────────
                 # Pack BEFORE draining the block off the GPUs: pack_layer resolves
                 # the math device from layer.weight.device (orig_device), so packing
                 # after mv_module_from_gpu drops every module into the CPU packing
-                # regime -- a Python per-column qzeros loop at ~50ms/module, ~30s
-                # per MoE block (measured on hy3). With weights still on their tune
+                # regime -- a Python per-column qzeros loop at ~50ms/module, tens of
+                # seconds per large MoE block. With weights still on their tune
                 # devices the math runs on GPU (~2.3ms/module) and the packed
                 # artifacts land on host by construction (qweight/qzeros are .to(
                 # "cpu") in the packers), so VRAM pressure stays one-module-sized.
@@ -533,14 +519,14 @@ class CompressionOrchestrator(BaseOrchestrator):
                             if module_name is None:
                                 continue
                             _immediate_pack(module_name, _layer_cfg)
-                _marks["post.pack"] = time.perf_counter()
+                _perf.tick("pack")
 
                 mv_module_from_gpu(m)
-                _marks["post.mv"] = time.perf_counter()
+                _perf.tick("mv")
                 clear_memory(device_list=device_manager.device_list)
-                _marks["post.clear"] = time.perf_counter()
+                _perf.tick("clear")
                 memory_monitor.log_summary()
-                _marks["post.monitor"] = time.perf_counter()
+                _perf.tick("monitor")
 
                 input_ids = next_input_ids
 
@@ -595,26 +581,21 @@ class CompressionOrchestrator(BaseOrchestrator):
                     _bg_resume.dispatch(
                         lambda _n=n, _q=_resume_q, _i=_resume_i: resume_state.mark_block_done(_n, _q, _i)
                     )
-                if _perf:
-                    _marks["post.write"] = time.perf_counter()
-                    # dynamo/sweep/hooks/monitor stay accumulated in _marks but are
-                    # no longer printed: they were bad-perf-investigation probes that
+                _perf.tick("write")
+                if _perf.enabled:
+                    _perf.stop("write")
+                    # sweep/hooks fold into the printed pack span, monitor into the
+                    # printed write span; they were bad-perf-investigation probes that
                     # read 0.00 in every validated run since
-                    _order = [
-                        "reload",
-                        "attach",
-                        "compress",
-                        "post.swap",
-                        "post.pack",
-                        "post.mv",
-                        "post.clear",
-                        "post.write",
+                    _parts = [
+                        f"attach={_perf.get('attach'):.2f}s",
+                        f"compress={_perf.get('compress'):.2f}s",
+                        f"swap={_perf.get('swap'):.2f}s",
+                        f"pack={_perf.get('sweep') + _perf.get('hooks') + _perf.get('pack'):.2f}s",
+                        f"mv={_perf.get('mv'):.2f}s",
+                        f"clear={_perf.get('clear'):.2f}s",
+                        f"write={_perf.get('monitor') + _perf.get('write'):.2f}s",
                     ]
-                    _parts = []
-                    _prev = _marks[_order[0]]
-                    for _k in _order[1:]:
-                        _parts.append(f"{_k.rsplit('.', 1)[-1]}={_marks[_k] - _prev:.2f}s")
-                        _prev = _marks[_k]
                     try:
                         from auto_round.export.export_to_autoround.export import PACK_PHASES as _pp
 
@@ -630,7 +611,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                         block_name_or_names,
                         _t_reload_mark - _t_reload_start,
                         " ".join(_parts),
-                        _marks["post.write"] - _marks["reload"] + (_t_reload_mark - _t_reload_start),
+                        (_t_reload_mark - _t_reload_start) + sum(_perf.totals.values()),
                     )
         finally:
             # join the background writers even when a block raises: a daemon killed

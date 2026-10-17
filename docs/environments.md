@@ -161,10 +161,10 @@ export AR_NEUQI_BACKEND=eager
 ```
 
 ### AR_DYNAMO_CACHE_SIZE_LIMIT
-- **Description**: Minimum value to which `torch._dynamo`'s `cache_size_limit`, `accumulated_cache_size_limit`, and `recompile_limit` are bumped when `torch.compile` is enabled (the default except on Windows). The same compiled quant function is reused across every linear layer in a transformer block (q/k/v/o_proj, gate/up/down_proj, ...) but each layer has a different weight shape, so per-layer static recompiles quickly exceed dynamo's default limit (8) and trigger a noisy fallback to eager. Raising the limit keeps static-shape compilation (best perf) and just allows more cache entries.
-- **Default**: `16`
+- **Description**: Minimum value to which `torch._dynamo`'s `cache_size_limit`, `accumulated_cache_size_limit`, and `recompile_limit` are bumped when `torch.compile` is enabled (the default except on Windows). The same compiled quant function is reused across every linear layer in a transformer block (q/k/v/o_proj, gate/up/down_proj, ...) but each layer has a different weight shape, so per-layer static recompiles quickly exceed dynamo's default limit (8) and trigger a noisy fallback to eager. Raising the limit keeps static-shape compilation (best perf) and just allows more cache entries. On multi-device runs the target is scaled by the number of engaged devices (per-layer shapes multiplied by per-device guard pins); single-device runs use the value as-is.
+- **Default**: `16` (per engaged device on multi-device runs)
 - **Valid Values**: positive integer
-- **Usage**: Increase if your model has more than 16 distinct linear-weight shapes per block (rare).
+- **Usage**: Increase if your model has more than 16 distinct linear-weight shapes per block per engaged device (rare).
 
 ```bash
 export AR_DYNAMO_CACHE_SIZE_LIMIT=32
@@ -303,8 +303,8 @@ AR_PERF_COUNTERS=1 python -m auto_round --model ... --device_map 0,1,2,3
 ```
 
 ### AR_SEARCH_BATCH_GB
-- **Description**: Overrides the element budget of the batched quantization searches in GiB of stacked fp32 weights per batched call (default ~1 GiB, matching the fixed budget used by the expert batching). Applies to BOTH lanes: the iters=0 optimized-RTN search and the iters>0 wrapper init search (they share the batch cap). The searches are bandwidth-bound, so larger batches rarely reduce wall time; use this only to shrink transient VRAM on tight cards or to experiment with batch sizes.
-- **Default**: unset (fixed ~1 GiB budget)
+- **Description**: Explicit override for the batched quantization searches' stacked-batch size, in GiB of stacked fp32 weights per batched call. Applies to ALL batched lanes: the iters=0 optimized-RTN search, the iters>0 wrapper init search, and the NeUQI grid anchors. When unset, batch sizes are capacity-driven: each batch is sized so the search's transient footprint (an fp32 copy chain over the batch, plus the NeUQI sweeps' capped internal temporaries when applicable) fits in half the probed free VRAM, and every executing device re-checks headroom at call time (an oversized batch halves instead of faulting). Set this only to cap batches below what the capacity planning would choose.
+- **Default**: unset (capacity-driven sizing)
 - **Valid Values**: positive float (GiB)
 - **Usage**: Shrink batches on memory-tight multi-device runs.
 
@@ -322,14 +322,14 @@ AR_SEARCH_BATCH_GB=0.5 python -m auto_round --model ... --device_map 0,1
 AR_MOE_EXPERTS_IMPL=linear_loop python -m auto_round --model ... --device_map 0,1,2,3
 ```
 
-### AR_DISABLE_MULTIGPU_SEARCH
-- **Description**: Keeps batched search batches on the device that hosts each weight instead of also using other GPUs. Without this flag, a stacked batch may execute on ANY CUDA device with free VRAM for its transient working set (chosen by a free-memory probe with margin), because the searches read only their module's weight plus per-module statistics -- never calibration activations. The primary winner is the zero-shot (iters=0) lane where the whole block sits on one GPU and the other cards are idle. Only the optimized-RTN (iters=0) searches offload this way; iters>0 wrap-search batches always stay on the weight's device. Set to `1` on rigs whose GPUs are shared with other jobs (a free-memory probe cannot see foreign reservations), when debugging cross-device behavior, or on hosts where the PCIe transfers outweigh the search cost. When no device fits, chunks stay on the weight's home device and rely on the per-chunk OOM fallback.
+### AR_DISABLE_CROSS_DEVICE_SEARCH
+- **Description**: Restricts batched search chunks to the device that hosts each weight. By default both search lanes plan their chunks centrally: every chunk starts on its home device and chunks rebalance onto under-loaded viable devices, so the search spreads across every visible device with headroom (the searches read only their module's weight plus per-module statistics, never calibration activations; each executing device is owned by a single worker thread). Non-CUDA device families keep every chunk on its home device. Set to `1` on rigs whose GPUs are shared with other jobs (a free-memory probe cannot see foreign reservations), when debugging cross-device behavior, or on hosts where the PCIe transfers outweigh the search cost. When no device fits, chunks stay on the weight's home device and rely on the per-chunk OOM fallback.
 - **Default**: `0` (multi-GPU search enabled, probe-gated)
 - **Valid Values**: `0` / `1`
 - **Usage**: Pin search traffic to the weight-hosting devices.
 
 ```bash
-AR_DISABLE_MULTIGPU_SEARCH=1 python -m auto_round --model ... --iters 0
+AR_DISABLE_CROSS_DEVICE_SEARCH=1 python -m auto_round --model ... --iters 0
 ```
 
 ### AR_RESUME_DIR

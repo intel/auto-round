@@ -59,13 +59,23 @@ DEVICE_ENVIRON_VARIABLE_MAPPING = {
 
 ################ Check available sys.module to decide behavior #################
 def probe_usable_bytes(device_key: str) -> int | None:
-    """Corrected free bytes on a cuda device (raw free + reserved-but-unallocated)."""
+    """Corrected free bytes on an accelerator device (raw free + reserved-but-unallocated).
+
+    Routes through the device manager so every backend it supports (cuda,
+    xpu, hpu, mps) probes through its own API instead of silently reporting
+    nothing on non-cuda fleets.
+    """
     try:
         dev = torch.device(str(device_key))
-        if dev.type != "cuda" or dev.index is None or not torch.cuda.is_available():
+        if dev.type == "cpu" or dev.index is None:
             return None
-        free, _total = torch.cuda.mem_get_info(dev.index)
-        free += torch.cuda.memory_reserved(dev.index) - torch.cuda.memory_allocated(dev.index)
+        from auto_round.utils.device_manager import get_ar_device
+
+        ar_dev = get_ar_device(dev.type)
+        free, total = ar_dev.mem_get_info(dev.index)
+        if total <= 0:
+            return None
+        free += ar_dev.memory_reserved(dev.index) - ar_dev.memory_allocated(dev.index)
         return max(free, 0)
     except (ValueError, RuntimeError, AttributeError) as e:
         logger.debug("[device] free-memory probe failed for %s (%s)", device_key, e)
@@ -789,11 +799,14 @@ def _allocate_layers_to_devices(
     sorted_layers = sorted(remaining.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
     num_devices = len(gpu_devices)
 
-    def find_best_device(layer_name: str, estimated_memory: float, layer_idx: int, strict: bool = False) -> str | None:
+    def find_best_device(layer_name: str, estimated_memory: float, layer_idx: int, strict: bool = False) -> str:
         """Find the best device for a layer.
 
-        strict=True returns None when no device has budget left (used by the
-        atomic-group allocator, which must fail loudly instead of overcommitting).
+        strict=True skips the Phase-1 shortcut (used by the atomic-group
+        allocator so every unit goes through budget-aware scoring). When no
+        device passes the score filter, the device with the most remaining
+        budget still takes the unit: estimates are balancing reservations and
+        real overflow is owned by the per-layer OOM handlers.
         """
         # Phase 1: Direct assign largest layers to higher-index devices first.
         # Skipped under strict: the atomic allocator's fail-loudly contract must
@@ -912,7 +925,8 @@ def get_moe_memory_ratio(block: torch.nn.Module, config: Any = None) -> float:
         config: Model config to read when the block itself carries none
             (block-wise tuning blocks have no ``.config``; without this the
             ratio silently falls back to 1.0 and prices ALL experts' outputs
-            at full width -- the ~170 GiB inflation observed on hy3).
+            at full width -- an order-of-magnitude overcharge on models with
+            many sparsely-active experts).
 
     Returns:
         float: Memory ratio (num_experts_per_tok / num_experts).
@@ -1059,11 +1073,11 @@ def estimate_tuning_block_mem(
                 # _ExpertContainer children (checkpoint-format keys), NOT an nn.ModuleList;
                 # the num_experts attribute identifies it just as well.
                 # The experts container itself may be a plain class with a
-                # generic name (HYV3Experts: neither ModuleList nor num_experts,
-                # no "moe" in ITS class name) -- the MoE marker sits on an
-                # ANCESTOR (hy3's MLP class). Walk the chain; a single-parent
-                # check priced every expert full-width (~170 GiB est on hy3
-                # with the correct 8/192 ratio logged).
+                # generic name (neither ModuleList nor num_experts, and no
+                # "moe" in ITS class name) -- the MoE marker sits on an
+                # ANCESTOR. Walk the chain; a single-parent check prices
+                # every expert full-width (an order-of-magnitude overcharge
+                # on models with many sparsely-active experts).
                 is_experts_container = isinstance(pparent_module, torch.nn.ModuleList) or hasattr(
                     pparent_module, "num_experts"
                 )

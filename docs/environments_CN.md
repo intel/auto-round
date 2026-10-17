@@ -161,10 +161,10 @@ export AR_NEUQI_BACKEND=eager
 ```
 
 ### AR_DYNAMO_CACHE_SIZE_LIMIT
-- **描述**：在开启 `torch.compile`（除 Windows 外默认开启）时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可保留静态 shape 编译（性能最佳），仅增加缓存条目数。
-- **默认值**：`16`
+- **描述**：在开启 `torch.compile`（除 Windows 外默认开启）时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可保留静态 shape 编译（性能最佳），仅增加缓存条目数。多设备运行时目标值会乘以参与设备数（逐层 shape 与逐设备 guard 钉住相乘地增加特化条目）；单设备运行直接使用该值。
+- **默认值**：`16`（多设备运行时按参与设备数相乘）
 - **有效值**：正整数
-- **用途**：当模型单个 block 内 linear 权重 shape 种类超过 16 时（较少见）可调大。
+- **用途**：当模型单个 block 内、每个参与设备的 linear 权重 shape 种类超过 16 时（较少见）可调大。
 
 ```bash
 export AR_DYNAMO_CACHE_SIZE_LIMIT=32
@@ -303,8 +303,8 @@ AR_PERF_COUNTERS=1 python -m auto_round --model ... --device_map 0,1,2,3
 ```
 
 ### AR_SEARCH_BATCH_GB
-- **描述**：以 GiB（每次批量调用的堆叠 fp32 权重大小）覆盖批量量化搜索的元素预算（默认约 1 GiB，与专家批量搜索使用的固定预算一致）。同时作用于两条 lane：iters=0 的 optimized-RTN 搜索与 iters>0 的封装期 init 搜索（二者共享批次上限）。该搜索受带宽限制，更大的批次通常不会缩短耗时；仅在显存紧张的卡上缩小瞬态占用或实验批次大小时使用。
-- **默认值**：未设置（固定约 1 GiB 预算）
+- **描述**：显式覆盖批量量化搜索的堆叠批次大小，单位为每次调用堆叠 fp32 权重的 GiB 数。适用于所有批量 lane：iters=0 的 optimized-RTN 搜索、iters>0 的封装期搜索以及 NeUQI 网格锚定。未设置时批次大小按容量驱动：每个批次的大小使搜索的瞬态占用（批次的 fp32 拷贝链，NeUQI 场景另加封顶的内部临时量）不超过探测到的空闲显存的一半，且每个执行设备在调用时复查余量（过大的批次会减半而不是出错）。仅当需要把批次压到容量规划以下时才设置。
+- **默认值**：未设置（容量驱动）
 - **有效取值**：正浮点数（GiB）
 - **用法**：在显存紧张的多设备运行中缩小批次。
 
@@ -322,14 +322,14 @@ AR_SEARCH_BATCH_GB=0.5 python -m auto_round --model ... --device_map 0,1
 AR_MOE_EXPERTS_IMPL=linear_loop python -m auto_round --model ... --device_map 0,1,2,3
 ```
 
-### AR_DISABLE_MULTIGPU_SEARCH
-- **描述**：让批量搜索批次留在权重所在设备上，不再使用其他 GPU。不设置该变量时，堆叠批次可以在任何有瞬态工作集余量的 CUDA 设备上执行（由带余量的空闲显存探针选择），因为此类搜索只读取自身模块的权重与逐模块统计量——从不读取校准激活。主要受益者是零样本（iters=0）lane：整个 block 位于单 GPU 上时，其余显卡原本空闲。只有 optimized-RTN（iters=0）搜索会这样迁移；iters>0 的封装期搜索批次始终留在权重所在设备。以下情况设为 `1`：机架 GPU 与其他任务共享（空闲显存探针无法看到其他任务的占用）、调试跨设备行为、或 PCIe 传输开销超过搜索收益的主机。当没有设备放得下时，批次留在权重所在设备并依赖逐批次的 OOM 回退。
+### AR_DISABLE_CROSS_DEVICE_SEARCH
+- **描述**：将批量搜索批次限制在权重所在设备上。默认情况下，两条搜索 lane 会集中规划批次：每个批次先落在权重所在设备，再从过载设备向空闲的可用设备再平衡，使搜索尽量铺满所有有余量的可见设备（此类搜索只读取自身模块的权重与逐模块统计量，从不读取校准激活；每个执行设备由单个工作线程独占）。非 CUDA 设备族的批次始终留在权重所在设备。以下情况设为 `1`：机架 GPU 与其他任务共享（空闲显存探针无法看到其他任务的占用）、调试跨设备行为、或 PCIe 传输开销超过搜索收益的主机。当没有设备放得下时，批次留在权重所在设备并依赖逐批次的 OOM 回退。
 - **默认值**：`0`（启用多 GPU 搜索，探针门控）
 - **有效取值**：`0` / `1`
 - **用法**：将搜索流量固定在权重所在设备。
 
 ```bash
-AR_DISABLE_MULTIGPU_SEARCH=1 python -m auto_round --model ... --iters 0
+AR_DISABLE_CROSS_DEVICE_SEARCH=1 python -m auto_round --model ... --iters 0
 ```
 
 ### AR_RESUME_DIR

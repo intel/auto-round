@@ -490,7 +490,7 @@ class ARDevice:
             return func
         from auto_round.utils.device import _bump_dynamo_cache_limit
 
-        _bump_dynamo_cache_limit()
+        _bump_dynamo_cache_limit(_engaged_cache_limit())
 
         return torch.compile(func)
 
@@ -887,6 +887,21 @@ class DeviceManager:
 
 # Process-wide singleton manager.
 device_manager = DeviceManager()
+
+
+def _engaged_cache_limit() -> int:
+    """Dynamo cache-limit target scaled by the engaged device count.
+
+    Multi-device runs multiply the static shape specializations of the shared
+    compiled quant functions (per-layer shapes x per-device guard pins), so the
+    cache limit must scale with the engaged devices or the lane silently
+    degrades to eager mid-block once the limit is hit.  A single-device run
+    keeps the plain env default.  The bump itself is monotone raise-only, so
+    repeated calls are idempotent.
+    """
+    from auto_round import envs
+
+    return int(envs.AR_DYNAMO_CACHE_SIZE_LIMIT) * max(1, len(device_manager.device_list))
 
 
 def get_ar_device(device_type: Union[None, str, int, torch.device] = None) -> ARDevice:

@@ -32,8 +32,7 @@ def _tuning_state_bytes(block: torch.nn.Module, target_dev: str) -> int:
     14 B per logical parameter: fp32 value + fp32 grad (first backward) +
     best-params snapshot + bf16 copy. At tune time ``block.parameters()``
     yields BOTH the original weights and the wrappers' registered value
-    params -- counting both would price every wrapped parameter twice
-    (measured: a 34.63 GiB reserve on a lane whose honest state is ~17).
+    params -- counting both would price every wrapped parameter twice.
     Wrapper tuning tensors are identified by identity (any ``.params``
     dict on a module) and excluded; the original weights carry the charge.
     """
@@ -45,8 +44,7 @@ def _logical_state_by_device(block: torch.nn.Module) -> dict[str, int]:
 
     ``_state_bytes_by_device`` counts ``block.parameters()`` raw, which at
     tune time includes BOTH the original weights and the wrappers' fp32
-    value params -- every wrapped parameter priced twice (the 4x3090 auto
-    check logged state 23.3 GiB where the honest logical state is ~12).
+    value params -- every wrapped parameter priced twice.
     """
     tuning = set()
     for m in block.modules():
@@ -78,6 +76,7 @@ def _ensure_routed_shape_recorders_(block: torch.nn.Module) -> None:
 
     if force_all_experts_routing_enabled():
         return
+    from auto_round.utils import SUPPORTED_LAYER_TYPES
     from auto_round.utils.model import is_moe_layer
 
     def _record(module: torch.nn.Module, args: Any) -> None:
@@ -109,8 +108,7 @@ def _ensure_routed_shape_recorders_(block: torch.nn.Module) -> None:
 
     def _is_experts_container(name: str, module: torch.nn.Module) -> bool:
         # container may carry the marker itself, expose num_experts, be a
-        # ModuleList, or carry the MoE marker only on an ANCESTOR
-        # (HYV3Experts: none of the former)
+        # ModuleList, or carry the MoE marker only on an ANCESTOR container
         if is_moe_layer(module) or isinstance(getattr(module, "num_experts", None), int):
             return True
         stem = name
@@ -121,11 +119,24 @@ def _ensure_routed_shape_recorders_(block: torch.nn.Module) -> None:
                 return True
         return False
 
+    def _can_host_recorder(module: torch.nn.Module) -> bool:
+        # Only dispatch containers receive (hidden, top_k_index,
+        # top_k_weights).  Leaf projections (plain Linear/Conv1D) and tuning
+        # wrappers (orig_layer child) see per-row activations only: their
+        # pre-hook can never record, never self-removes, and lingers for the
+        # whole block -- which disqualifies the projection in the
+        # grouped-experts support gate and forces every tune iteration onto
+        # the per-expert linear_loop.
+        if hasattr(module, "orig_layer"):
+            return False
+        return not isinstance(module, SUPPORTED_LAYER_TYPES)
+
     mods = dict(block.named_modules())
     for _name, module in mods.items():
         if (
             "expert" in _name.lower()
             and _is_experts_container(_name, module)
+            and _can_host_recorder(module)
             and not hasattr(module, "_routed_shape_rec_")
         ):
             module._routed_rec_handles_ = [module.register_forward_pre_hook(_record)]
@@ -176,10 +187,9 @@ def _grouped_stack_bytes_detail(block: torch.nn.Module, device: str, config: Any
         def _is_expert_leaf(name, leaf):
             # expert leaves are named "experts.N.proj" in every unfused layout;
             # the container may carry num_experts, be a ModuleList, or carry
-            # the MoE marker only on an ANCESTOR (HYV3Experts: none of the
-            # former -- a name-only walk returned 0 stacks on the real lane
-            # and silently disabled the activation charge and the auto
-            # linear_loop pick)
+            # the MoE marker only on an ANCESTOR container -- a name-only
+            # walk can return 0 stacks and silently disable the activation
+            # charge and the auto linear_loop pick
             if "expert" not in name.lower() or "shared" in name.lower():
                 # shared experts are plain modules outside the dispatch (the
                 # repo's own is_moe_expert predicate excludes them); stacking
@@ -208,8 +218,7 @@ def _grouped_stack_bytes_detail(block: torch.nn.Module, device: str, config: Any
             # at tune time named_modules yields BOTH the wrapper
             # (...gate_proj) and its orig_layer child (...gate_proj.orig_
             # layer), each exposing a same-shape weight -- counting both
-            # doubled retention (measured: 10.1-10.3 GiB charged where the
-            # logical 6 B/elem charge is ~5.2)
+            # doubles retention
             if name.endswith(".orig_layer"):
                 continue
             weight = getattr(leaf, "weight", None)
@@ -230,13 +239,17 @@ def _grouped_stack_bytes_detail(block: torch.nn.Module, device: str, config: Any
             try:
                 chunk = _qdq_chunk_size([l for l, _w in local_pairs])  # env/budget-aware; 0 = all
             except Exception as e:
-                logger.debug("[tune] chunk sizing failed for slot %r on %s (%s); using 16", _slot, device, e)
+                logger.warning("[tune] chunk sizing failed for slot %r on %s (%s); using 16", _slot, device, e)
                 chunk = 16
             per_leaf = elems // max(1, len(local_pairs))
             chunk_elems = elems if chunk <= 0 else min(elems, chunk * per_leaf)
             transient += chunk_elems * 6  # ~2 streaming passes over the chunk
     except Exception as e:  # pragma: no cover - never break the gate
-        logger.debug("[tune] grouped-stack accounting unavailable (%s)", e)
+        logger.warning(
+            "[tune] grouped-stack accounting unavailable (%s); continuing with a zero stack charge "
+            "(an OOM in the tuned loop after this line is explained by the missing charge)",
+            e,
+        )
         return {"retention": 0, "transient": 0}
     return {"retention": retention, "transient": transient}
 
@@ -255,7 +268,7 @@ def _routed_budget_bytes(block: torch.nn.Module, tensors: Any, batch_size: int, 
     if config is not None:
         top_k = get_first_available_attr(config, ["num_experts_per_tok", "moe_num_active_primary_experts"])
         if top_k is None:
-            moe_topk = getattr(config, "moe_topk", None)  # HunYuan MoE V1
+            moe_topk = getattr(config, "moe_topk", None)  # list-form top_k
             if isinstance(moe_topk, (list, tuple)) and moe_topk:
                 top_k = moe_topk[0]
     if top_k is None:
@@ -310,9 +323,8 @@ def _activation_bytes_by_device(
     each module's saved output + grad lands on the module's WEIGHT HOME, and
     each expert's routed-row caches land on the expert's home. Charging the
     whole activation budget to the entry alone (the previous form) left the
-    MoE stages' transients unpriced: measured 3.2 GiB/peer unaccounted on a
-    4-GPU hy3 lane while the entry's charge matched its realized peak to
-    0.2 GiB.
+    MoE stages' transients unpriced while the entry's own charge was
+    accurate.
 
     Terms per device:
     - est split: the estimator's per-module output bytes (x2 grads, expert
@@ -354,13 +366,13 @@ def _activation_bytes_by_device(
 
         routed_by_dev = {}
         routed_total = None
-        # routed x6 was calibrated on a LINEAR_LOOP lane (per-expert route
-        # caches + batch cats, 12.7 GiB measured). Grouped mode builds no
+        # routed x6 was calibrated on the per-expert-loop implementation
+        # (per-expert route caches + batch cats). Grouped mode builds no
         # route caches -- its routed working set (sorted flat buffers) is
         # covered by the estimator's ratio-scaled expert outputs, and the
         # weight-side retention arrives via the stacks term. Charging both
-        # on a grouped lane double-charged ~3 GiB and falsely switched the
-        # measured-working 5x3090 lane to linear_loop.
+        # under grouped mode double-charges and can falsely switch a
+        # working grouped lane to the per-expert loop.
         stacks_any = any(
             _grouped_stack_bytes(block, d, config=config) > 0 for d in set(est_by_dev) | set(expert_counts)
         )
@@ -429,7 +441,7 @@ def _maybe_auto_linear_loop_for_tuning(
     expert-homing device (chunk-INDEPENDENT autograd retention) ON TOP of the
     in-loop tuning state; when a device cannot hold both beside the reserve,
     the first backward OOMs only after a wasted grouped_mm attempt plus a
-    sliced-fallback re-staging (the 4x3090 hy3 failure mode). The charges are
+    sliced-fallback re-staging. The charges are
     the same ones the placement gates use: per-device tuning state charged
     at 6 of the 14 B/param layout (grads + bf16 are guaranteed in-loop; the
     values are already inside the probed free and the best-params snapshot
@@ -473,8 +485,8 @@ def _maybe_auto_linear_loop_for_tuning(
         logger.debug("[moe-impl] auto check skipped: explicit AR_MOE_EXPERTS_IMPL=%s", requested)
         return
     # The dispatch reads the MODEL's config; model_context.config may be a
-    # separate object that never received _experts_implementation (the exact
-    # silent no-op the 4x3090 lane exposed). Prefer whichever candidate
+    # separate object that never received _experts_implementation (a silent
+    # no-op). Prefer whichever candidate
     # actually carries the attr; switch ALL of them when we switch.
     candidates = [c for c in (config, getattr(model, "config", None)) if c is not None]
     cfg = next((c for c in candidates if getattr(c, "_experts_implementation", None)), None)
@@ -499,9 +511,8 @@ def _maybe_auto_linear_loop_for_tuning(
             # values (4 B/param) are already inside the probed free here; of
             # the remainder, grads (4) + bf16 copy (2) are guaranteed in-loop,
             # while the best-params snapshot (4) PARKS TO HOST under pressure
-            # (measured on the 5/6-GPU lanes: host RAM spikes as snapshots
-            # stop fitting) -- charging it as guaranteed over-declined the
-            # knife-edge-but-working 5x3090 grouped lane by ~3.5 GiB
+            # -- charging it as guaranteed over-declines tight grouped lanes
+            # that were working
             remaining_state = state_bytes * 6 // 14
             demand = remaining_state + act.get(d, 0) + _RESERVE_BYTES
             free = probe_usable_bytes(d)

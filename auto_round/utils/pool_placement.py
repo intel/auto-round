@@ -14,11 +14,11 @@
 
 """Per-chunk device placement for block calibration data (--calibration_data_device).
 
-Policy (user rulings, Sep-13):
+Policy:
 
 * single-device-first: when the consumer device (per-block loss device on
   iters>0 lanes, else the cache primary) holds the pool beside its full charge
-  (computed working allowance + flat 0.25 GiB allocator reserve + measured
+  (computed working allowance + flat 0.25 GiB allocator reserve + derived
   collection-window term + occupied pool bytes + per-device activation
   charge), every chunk stays there -- zero peer traffic.
 * otherwise water-fill: chunks are placed so every receiving device ends at
@@ -441,8 +441,8 @@ def _activation_bytes_for(
     The tune loop's forward/backward graph executes on EVERY device the
     block spans: each module's saved output + grad lands on the module's
     weight home (the entry's batch cats AND the MoE stages' routed-row
-    caches -- the 3.2 GiB/peer that state-only charges left unpriced on the
-    4-GPU hy3 lane). {device: bytes}; {} when unknown (charges nothing).
+    caches, which state-only charges leave unpriced). {device: bytes}; {} when
+    unknown (charges nothing).
     """
     if iters <= 0:
         return {}
@@ -452,7 +452,9 @@ def _activation_bytes_for(
         got = _activation_bytes_by_device(block, pool, batch_size, config)
         return {str(d): int(b) for d, b in got.items()} if got else {}
     except Exception as e:  # pragma: no cover - placement must never break
-        logger.debug("[calib-data-device] activation budget unavailable (%s)", e)
+        logger.warning(
+            "[calib-data-device] activation budget unavailable (%s); continuing without the activation charge", e
+        )
         return {}
 
 
@@ -473,7 +475,7 @@ def _state_bytes_by_device(block: torch.nn.Module) -> dict[str, int]:
         for p in block.parameters():
             out[str(p.device)] = out.get(str(p.device), 0) + p.numel() * 14
     except Exception as e:  # pragma: no cover - placement must never break
-        logger.debug("[calib-data-device] per-device state walk failed (%s)", e)
+        logger.warning("[calib-data-device] per-device state walk failed (%s); continuing without the state charge", e)
         return {}
     return out
 
@@ -485,7 +487,7 @@ def _dominant_param_esize(block: torch.nn.Module) -> int:
         for p in block.parameters():
             counts[p.element_size()] = counts.get(p.element_size(), 0) + p.numel()
     except Exception as e:  # pragma: no cover - exotic modules: fall back to bf16-ish
-        logger.debug("[calib-data-device] dominant-esize walk failed on %r (%s); assuming 2", block, e)
+        logger.warning("[calib-data-device] dominant-esize walk failed on %r (%s); assuming 2", block, e)
         return 2
     return max(counts, key=lambda k: counts[k]) if counts else 2
 
@@ -525,14 +527,13 @@ def _working_allowance_bytes(block: torch.nn.Module, pool: Any, batch_size: int)
     First principles: at any instant during a block forward, the transients
     sitting next to the pools are (a) the batch IO on the compute device --
     the staged input batch plus the produced output batch (2 generations of
-    ``batch_size`` pool samples), and (b) ONE module's activation buffer, the
+    batch_size`` pool samples), and (b) ONE module's activation buffer, the
     widest projection's ``tokens x out_features`` in the block's dominant
-    dtype (in+out buffers -> x2). The earlier flat 3 GiB charge was
-    census-derived for one config; this derives the same quantity from the
-    block and pool actually being placed. Over-charging is the safe
-    direction (less consolidation); the census rounds measured the real
-    simultaneous set at ~4.6 GiB worst case on hy3, which this formula
-    reproduces within ~20%.
+    dtype (in+out buffers -> x2). The earlier flat 3 GiB charge was derived
+    for one config; this derives the same quantity from the block and pool
+    actually being placed. Over-charging is the safe direction (less
+    consolidation); the derived value tracks the observed worst-case
+    simultaneous set within ~20%.
     """
     try:
         per_chain = _tensor_bytes(pool)
@@ -567,19 +568,20 @@ def placement_need_bytes(
     """Candidate-device working-set need for the placement gates, first principles.
 
     The earlier port reused ``estimate_tuning_block_mem`` (mapped-placement
-    card-0 accounting), whose MoE term prices a hy3 block at ~343GiB: every
-    module's batch activation counted with a x2 grad multiplier stacked with
-    the x6 routing fudge, all assumed simultaneously live. That vetoed every
-    primary residency for every MoE block. An intermediate model additionally
-    charged ``2 * pool bytes`` as a "window-2 retention" term -- but the census
-    rounds later showed that retention IS the in+out pool pair itself, which
-    the gates already count explicitly (``total`` + ``reserved_bytes`` in the
-    consolidation gate, ``pool_bytes`` + ``occupied_bytes`` in the resolve
-    gate). A first revision took that reasoning too far and dropped the term
-    from the RESOLVE gate as well -- but there it encodes the MEASURED
+    card-0 accounting), whose MoE term overprices a large MoE block by an order
+    of magnitude: every module's batch activation counted with a x2 grad
+    multiplier stacked with the x6 routing fudge, all assumed simultaneously
+    live. That vetoed every primary residency for every MoE block. An
+    intermediate model additionally charged ``2 * pool bytes`` as a
+    "window-2 retention" term -- but that retention IS the in+out pool pair
+    itself, which the gates already count explicitly (``total`` +
+    ``reserved_bytes`` in the consolidation gate, ``pool_bytes`` +
+    ``occupied_bytes`` in the resolve gate). A first revision took that
+    reasoning too far and dropped the term
+    from the RESOLVE gate as well -- but there it encodes the empirical
     collection window (retained batch outputs + route caches ~= 2x pool
     bytes on a single-compute-device MoE block), and dropping it let a
-    block-2 single plan through that OOMed on the first server run. The
+    single-device plan through that OOMed on the first multi-GPU run. The
     term is restored, making the need strictly >= the validated formula;
     the computed allowance below is the additional, tune-loop-accurate
     part. Total charge:
@@ -598,14 +600,13 @@ def placement_need_bytes(
     """
     try:
         need = _working_allowance_bytes(block, pool, batch_size) + _RESERVE_BYTES
-        # MEASURED collection-window term (window~=2 chain retention + the
-        # linear_loop route caches observed in the block censuses: on a
-        # single-compute-device iters=0 MoE block the live transients ran
-        # to ~3x pool bytes -- 8.25 GiB of retained batch-shaped outputs
-        # plus 4 GiB of selected-hidden next to a 4 GiB pool). An earlier
-        # revision dropped this term as a "double count" and the first
-        # server run OOMed exactly there (block-2 single plan on the
-        # primary); the computed allowance models the TUNE loop's
+        # Collection-window term (window~=2 chain retention + the
+        # linear_loop route caches: on a single-compute-device iters=0 MoE
+        # block the live transients reach ~3x pool bytes -- retained
+        # batch-shaped outputs plus selected-hidden next to the pool). An
+        # earlier revision dropped this term as a "double count" and the
+        # first multi-GPU run OOMed exactly there; the computed allowance
+        # models the TUNE loop's
         # transients, not the collection forward's. Keeping the term makes
         # this need strictly >= the previously validated formula, so every
         # placement decision can only be equal or more conservative.
