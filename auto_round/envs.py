@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     AR_DISABLE_BATCHED_SEARCH: bool = False
     AR_PERF_COUNTERS: bool = False
     AR_SEARCH_BATCH_GB: Optional[float] = None
-    AR_DISABLE_MULTIGPU_SEARCH: bool = False
+    AR_DISABLE_CROSS_DEVICE_SEARCH: bool = False
 
 
 def _get_optional_positive_int_env(name: str) -> int | None:
@@ -166,7 +166,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     in ("1", "true", "yes"),
     "AR_PERF_COUNTERS": lambda: os.getenv("AR_PERF_COUNTERS", "False").strip().lower() in ("1", "true", "yes"),
     "AR_SEARCH_BATCH_GB": lambda: _get_optional_positive_float_env("AR_SEARCH_BATCH_GB"),
-    "AR_DISABLE_MULTIGPU_SEARCH": lambda: os.getenv("AR_DISABLE_MULTIGPU_SEARCH", "False").strip().lower()
+    "AR_DISABLE_CROSS_DEVICE_SEARCH": lambda: os.getenv("AR_DISABLE_CROSS_DEVICE_SEARCH", "False").strip().lower()
     in ("1", "true", "yes"),
     # When enabled, MoE routing can be overridden in selected model wrappers
     # to rotate token assignments across all experts for calibration coverage.

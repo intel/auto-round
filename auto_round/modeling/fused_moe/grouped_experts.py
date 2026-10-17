@@ -227,6 +227,35 @@ def _act_quant_is_row_independent(layer: nn.Module) -> bool:
     return True
 
 
+_ACCELERATE_HOOK_WHITELIST: "tuple[type, ...] | None" = None
+
+
+def _accelerate_hook_whitelist() -> "tuple[type, ...]":
+    """Resolve accelerate's placement-hook classes once per process.
+
+    The installed accelerate version cannot change mid-run, and the grouped gate
+    consults the whitelist for every MoE container -- probing per call repeats
+    the import machinery and spams the missing-class notice for every layer.
+    """
+    global _ACCELERATE_HOOK_WHITELIST
+    if _ACCELERATE_HOOK_WHITELIST is None:
+        classes = []
+        try:
+            from accelerate.hooks import AlignDevicesHook
+
+            classes.append(AlignDevicesHook)
+        except Exception as e:  # pragma: no cover - accelerate always present in our lanes
+            logger.warning("[grouped-experts] AlignDevicesHook unavailable (%s); fast-path gate will decline", e)
+        try:  # newer accelerate only; absence on older versions is expected
+            from accelerate.hooks import AddContiguousHook
+
+            classes.append(AddContiguousHook)
+        except Exception as e:
+            logger.debug("[grouped-experts] AddContiguousHook unavailable (%s); whitelist shrinks accordingly", e)
+        _ACCELERATE_HOOK_WHITELIST = tuple(classes)
+    return _ACCELERATE_HOOK_WHITELIST
+
+
 def _hooks_are_alignment_only(module: nn.Module) -> bool:
     """Whether every hook on ``module`` is one the grouped path satisfies manually.
 
@@ -240,23 +269,11 @@ def _hooks_are_alignment_only(module: nn.Module) -> bool:
     hooks = list(module._forward_pre_hooks.values()) + list(module._forward_hooks.values())
     if not hooks:
         return True
-    hook_classes = []
-    try:
-        from accelerate.hooks import AlignDevicesHook
-
-        hook_classes.append(AlignDevicesHook)
-    except Exception:  # pragma: no cover - accelerate always present in our lanes
-        pass
-    try:  # newer accelerate only
-        from accelerate.hooks import AddContiguousHook
-
-        hook_classes.append(AddContiguousHook)
-    except Exception:
-        pass
+    hook_classes = _accelerate_hook_whitelist()
     if not hook_classes:
         return False
     for h in hooks:
-        if not isinstance(h, tuple(hook_classes)):
+        if not isinstance(h, hook_classes):
             return False
         # Offload-carrying variants (weights streaming in from host) must still run
         # their own forward; alignment-only variants are satisfied manually.

@@ -31,16 +31,18 @@ from typing import Any, Callable
 import torch
 
 from auto_round.algorithms.quantization.search_dispatch import (
-    _batch_cap,
     _fn_key,
+    _plan_capacity_chunks,
     _search_fn_stackable,
+    _wrap_batch_max_elems,
     dump_oom_tensor_census_,
     group_items_by_device,
-    pick_search_worker_devices,
     run_items_by_device,
+    search_sweep_budget,
 )
 from auto_round.logger import logger
 from auto_round.utils import set_module
+from auto_round.utils.perf_counters import perf_counters_enabled
 from auto_round.wrapper import WrapperLinear
 
 
@@ -222,50 +224,34 @@ def run_batched_rtn_search(
     # Chunks are assigned round-robin over viable worker devices; the weights
     # and imatrices move to the worker for the stacked call and results write
     # back cross-device through _apply_qdq.
-    chunks = []  # (home_device, entries)
+    plan_entries = []  # (home_device, per-module chain, sweep budget, max modules, group)
     for dev, batch in device_groups.items():
         by_key = OrderedDict()
         for e in batch:
             by_key.setdefault(_staged_key(e["w"], e["weight"], e["im"]), []).append(e)
         for _key, group in by_key.items():
+            fn0 = group[0]["w"].weight_quant_func
+            elements = group[0]["weight"].numel() + (group[0]["im"].numel() if group[0]["im"] is not None else 0)
+            per_module = elements * 4 * 4  # the fp32 copy chain per module
+            max_n = 1024 if max_batch is None else max(1, max_batch)
+            elem_cap = _wrap_batch_max_elems()
+            if elem_cap is not None:
+                max_n = min(max_n, max(1, elem_cap // max(elements, 1)))
+            # singleton and non-stackable groups plan like any other group:
+            # the RTN lane runs them through the same per-module path, and a
+            # roomy idle device may still take them
+            plan_entries.append((dev, per_module, search_sweep_budget(fn0), max_n, group))
 
-            if len(group) < 2 or not _search_fn_stackable(group[0]["w"].weight_quant_func):
-                chunks.extend((dev, [e]) for e in group)
-                continue
-            cap = _batch_cap(
-                [
-                    type("S", (), {"_deferred_search_inputs": (e["weight"], None, None, e["im"], None, None)})()
-                    for e in group
-                ],
-                dev,
-                max_batch,
-            )
-            for start in range(0, len(group), cap):
-                chunks.append((dev, group[start : start + cap]))
-
-    def _chunk_working_set(chunk: list[dict[str, Any]]) -> int:
-        e0 = chunk[0]
-        per = (e0["weight"].numel() + (e0["im"].numel() if e0["im"] is not None else 0)) * 4 * 4
-        return per * len(chunk)
+    # capacity-weighted planning: chunks form directly on the device that
+    # runs them, sized to its tracked headroom (see _plan_capacity_chunks)
+    planned = _plan_capacity_chunks(plan_entries)
 
     buckets = OrderedDict()
-    rr = 0
-    for dev, chunk in chunks:
-        workers = pick_search_worker_devices(_chunk_working_set(chunk), home_device=dev)
-        worker = workers[rr % len(workers)] if workers else dev
-        rr += 1
+    for worker, _home, chunk in planned:
         buckets.setdefault(str(worker), []).append(chunk)
-    if buckets:
-        # len(c) counts MODULES per chunk, len(cs) chunks per worker: print
-        # both so the line cannot read as "one chunk per module" when
-        # batching is engaged; per-worker chunk counts use the memory-monitor
-        # short-device grammar ({"0": 5, ...})
-        from auto_round.utils.pool_placement import _short_device_key
 
-        _n_mods = sum(len(c) for cs in buckets.values() for c in cs)
-        _n_chunks = sum(len(cs) for cs in buckets.values())
-        _workers = ", ".join(f"'{_short_device_key(w)}': {len(cs)}" for w, cs in buckets.items())
-        logger.debug("[rtn-batch] %d modules in %d chunks over workers {%s}", _n_mods, _n_chunks, _workers)
+    # per-worker execution stats for the wrap-grammar summary line
+    stats: "OrderedDict[str, dict]" = OrderedDict()
 
     def _worker_of(chunk: list[dict[str, Any]]) -> str:
         for wk, cs in buckets.items():
@@ -302,8 +288,36 @@ def run_batched_rtn_search(
             )
             return layer.unwrapper({})
 
+    def _chunk_working_set(chunk: list[dict[str, Any]]) -> int:
+        e0 = chunk[0]
+        elements = e0["weight"].numel() + (e0["im"].numel() if e0["im"] is not None else 0)
+        from auto_round.algorithms.quantization.search_dispatch import search_transient_bytes
+
+        return search_transient_bytes(e0["w"].weight_quant_func, elements * len(chunk))
+
+    @torch.no_grad()
+    def _run_chunk_guarded(chunk: list[dict[str, Any]], worker: str, threaded: bool = False) -> None:
+        """_run_chunk with an execution-time headroom check: halve an oversized
+        chunk before running it (plan-time estimates can drift)."""
+        if len(chunk) > 1:
+            from auto_round.utils.device import probe_usable_bytes
+
+            usable = probe_usable_bytes(str(worker))
+            if usable is not None and usable - 512 * 2**20 < _chunk_working_set(chunk):
+                mid = len(chunk) // 2
+                _run_chunk_guarded(chunk[:mid], worker, threaded)
+                _run_chunk_guarded(chunk[mid:], worker, threaded)
+                return
+        _run_chunk(chunk, worker, threaded)
+
     @torch.no_grad()
     def _run_chunk(chunk: list[dict[str, Any]], worker: str, threaded: bool = False) -> None:
+        st = stats.setdefault(str(worker), {"wall": 0.0, "modules": 0, "batches": 0, "singletons": 0})
+        st["modules"] += len(chunk)
+        if len(chunk) > 1:
+            st["batches"] += 1
+        else:
+            st["singletons"] += 1
         w0 = chunk[0]["w"]
         dev = str(chunk[0]["weight"].device)
         worker = str(worker)
@@ -339,10 +353,10 @@ def run_batched_rtn_search(
         kwargs = _relocate_tensor_kwargs(kwargs, str(stacked_w.device))
         fn = w0.weight_quant_func
         if worker != dev or threaded:
-            # measured: the compiled path on workers (pre-warmed) ran 3x slower than
-            # eager for this bandwidth-bound grid search; eager also sidesteps the
-            # cross-thread dynamo trace race entirely -- including for home-staying
-            # chunks, which the multi-device path also executes on worker threads
+            # the compiled path runs slower than eager for this bandwidth-bound
+            # grid search; eager also sidesteps the cross-thread dynamo trace
+            # race entirely -- including for home-staying chunks, which the
+            # multi-device path also executes on worker threads
             fn = getattr(fn, "_torchdynamo_orig_callable", None) or fn
         try:
             qdq, scale, zp = fn(stacked_w, **kwargs)
@@ -394,15 +408,52 @@ def run_batched_rtn_search(
                     _restore()
             set_module(model, e["name"], layer)
 
+    def _run_chunks(wk: str, cs: list[list[dict[str, Any]]]) -> None:
+        import time as _ptime
+
+        _t0 = _ptime.perf_counter()
+        try:
+            for c in cs:
+                _run_chunk_guarded(c, _worker_of(c), threaded=True)
+        finally:
+            stats.setdefault(str(wk), {"wall": 0.0, "modules": 0, "batches": 0, "singletons": 0})["wall"] += (
+                _ptime.perf_counter() - _t0
+            )
+
     if len(buckets) > 1:
         keyed = OrderedDict()
         for wk, cs in buckets.items():
-            keyed.setdefault(str(wk), []).append((len(keyed), cs))
-        run_items_by_device(keyed, lambda _idx, cs: [_run_chunk(c, _worker_of(c), threaded=True) for c in cs])
+            keyed.setdefault(str(wk), []).append((len(keyed), (str(wk), cs)))
+        run_items_by_device(keyed, lambda _idx, item: _run_chunks(item[0], item[1]))
     else:
-        for wcs in buckets.values():
-            for c in wcs:
-                _run_chunk(c, _worker_of(c))
+        for wk, cs in buckets.items():
+            _run_chunks(str(wk), cs)
+
+    if stats and perf_counters_enabled():
+        # one timing line, same grammar and gating as the wrap-search lane:
+        # calls are chunks (each chunk is one stacked or per-module search
+        # call), so the counts cannot read as "one call per module"
+        from auto_round.utils.pool_placement import _short_device_key
+
+        _n_mod = sum(st["modules"] for st in stats.values())
+        _n_batch = sum(st["batches"] for st in stats.values())
+        _n_single = sum(st["singletons"] for st in stats.values())
+        _n_offloaded = sum(1 for worker, home, _chunk in planned if worker != home)
+        _walls = sum(st.get("wall", 0.0) for st in stats.values())
+        per_device = (
+            "{" + ", ".join(f"'{_short_device_key(dev)}': {st.get('wall', 0.0):.2f}" for dev, st in stats.items()) + "}"
+        )
+        logger.info(
+            "[rtn-batch] %d modules, %d batch + %d singleton search calls"
+            + (f" ({_n_offloaded} chunk(s) offloaded to idle devices)" if _n_offloaded else "")
+            + ", %.2fs device-wall (%.2fs summed) walls %s",
+            _n_mod,
+            _n_batch,
+            _n_single,
+            max((st.get("wall", 0.0) for st in stats.values()), default=0.0),
+            _walls,
+            per_device,
+        )
 
 
 def _relocate_tensor_kwargs(kwargs: dict[str, Any], device: str) -> dict[str, Any]:

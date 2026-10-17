@@ -149,6 +149,59 @@ class TestBumpDynamoCacheLimit:
                 sys.modules["torch._dynamo"] = original_dynamo
 
 
+class TestEngagedCacheLimit:
+    """Test the engaged-device scaling of the dynamo cache limit."""
+
+    def test_limit_scales_with_engaged_devices(self, monkeypatch):
+        """Multi-device runs scale the cache limit; single-device keeps the plain default."""
+        dm = sys.modules["auto_round.utils.device_manager"]
+
+        monkeypatch.setenv("AR_DYNAMO_CACHE_SIZE_LIMIT", "16")
+        saved = dm.device_manager._device_list
+        try:
+            dm.device_manager._device_list = ["cuda:0", "cuda:1"]
+            assert dm._engaged_cache_limit() == 32
+            dm.device_manager._device_list = [f"cuda:{i}" for i in range(8)]
+            assert dm._engaged_cache_limit() == 128
+            dm.device_manager._device_list = ["cpu"]
+            assert dm._engaged_cache_limit() == 16
+            dm.device_manager._device_list = []
+            assert dm._engaged_cache_limit() == 16
+        finally:
+            dm.device_manager._device_list = saved
+
+    def test_compile_func_bumps_by_engaged_count(self, monkeypatch):
+        """ARDevice.compile_func bumps the dynamo limit through the scaled target."""
+        import torch as _torch
+
+        dm = sys.modules["auto_round.utils.device_manager"]
+
+        calls = []
+        saved_list = dm.device_manager._device_list
+        try:
+            monkeypatch.setenv("AR_DYNAMO_CACHE_SIZE_LIMIT", "10")
+            dm.device_manager._device_list = ["cuda:0", "cuda:1", "cuda:2"]
+
+            class _FakeDev:
+                type = "cuda"
+
+                @staticmethod
+                def is_torch_compile_supported():
+                    return True
+
+            fake = _FakeDev()
+            fake.compile_func = dm.ARDevice.compile_func.__get__(fake)
+            with patch("auto_round.utils.device._bump_dynamo_cache_limit") as bump, patch.object(
+                _torch, "compile", return_value=lambda *a, **k: None
+            ):
+                fake.compile_func(lambda x: x)
+            calls.append(bump.call_args)
+            assert bump.call_args is not None
+            assert bump.call_args.args[0] == 30
+        finally:
+            dm.device_manager._device_list = saved_list
+
+
 class TestNumbaAndTbb:
     """Test Numba and TBB availability functions."""
 

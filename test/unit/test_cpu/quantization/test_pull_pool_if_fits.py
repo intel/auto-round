@@ -259,6 +259,57 @@ class TestPullPoolIfFits(unittest.TestCase):
         self.assertEqual(experts._routed_shape_rec_, (8, 128))
         self.assertFalse(experts._routed_rec_handles_)
 
+    def test_routed_recorder_skips_leaf_projections_and_wrappers(self):
+        # The ancestor walk inside the container check matched EVERY
+        # expert-named module, so leaf projections received a pre-hook that
+        # can never record (their forward sees per-row activations only),
+        # never self-removes, and lingers for the whole block -- it then
+        # disqualifies the projection in the grouped-experts support gate and
+        # every tune iteration falls back to the per-expert linear_loop.
+        import torch.nn as nn
+
+        import auto_round.algorithms.quantization.tune_memory as q
+
+        class _MoeMLP(nn.Module):
+
+            pass
+
+        class _HYV3Experts(nn.Module):  # no num_experts, not a ModuleList
+
+            def forward(self, *args):
+                return args
+
+        class _WrappedLinear(nn.Module):  # tune wrapper shape (orig_layer child)
+
+            pass
+
+        blk = nn.Module()
+        mlp = _MoeMLP()
+        experts = _HYV3Experts()
+        expert0 = nn.Module()
+        expert0.up_proj = nn.Linear(4, 4)  # leaf projection: excluded
+        expert0.down_proj = _WrappedLinear()  # wrapped projection: excluded
+        expert0.down_proj.orig_layer = nn.Linear(4, 4)
+        experts._modules["0"] = expert0
+        mlp.experts = experts
+        blk.mlp = mlp
+
+        q._ensure_routed_shape_recorders_(blk)
+
+        # container keeps its recorder (the documented contract)
+        self.assertTrue(experts._routed_rec_handles_, "recorder must attach on the MoE container")
+        # leaves carry NO hook: they could never record, and a lingering
+        # pre-hook there fails the grouped support gate on wrapped blocks
+        self.assertFalse(expert0.up_proj._forward_pre_hooks, "leaf projection must stay hook-free")
+        self.assertFalse(getattr(expert0.up_proj, "_routed_rec_handles_", []))
+        self.assertFalse(expert0.down_proj._forward_pre_hooks, "tune wrapper must stay hook-free")
+        self.assertFalse(expert0.down_proj.orig_layer._forward_pre_hooks, "orig layer must stay hook-free")
+
+        # the container still records from a natural dispatch and self-removes
+        experts(torch.zeros(2, 4, 8), torch.zeros(16, 8))
+        self.assertEqual(experts._routed_shape_rec_, (8, 128))
+        self.assertFalse(experts._routed_rec_handles_)
+
     def test_logical_state_walk_dedups_wrapper_values(self):
         # real-structure form of the a2414b42 fix: a module with a .params
         # dict carrying an fp32 value PLUS the original weight must be

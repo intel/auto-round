@@ -31,6 +31,31 @@ from auto_round.compressors.utils import (
     snapshot_best_params,
 )
 from auto_round.logger import logger
+from auto_round.utils.perf_counters import _PerfCounters
+
+
+def resolve_loss_device(loss_device, primary_device):
+    """The tune loop's staging device: a concrete device, coalescing None.
+
+    The placement pass may store ``None`` (and ``tensor.to(None)`` is a silent
+    no-op), which would strand batch outputs on the block's exit device; the
+    loop always stages on a concrete device, defaulting to the primary.
+    """
+    return loss_device or primary_device
+
+
+def _log_tune_phases(perf: _PerfCounters, iters: int) -> None:
+    """Derive the loop split and log the per-block tune phase line."""
+    if not perf.enabled:
+        return
+    serial = perf.get("s_fwd") + perf.get("s_loss") + perf.get("s_bwd")
+    rest = max(perf.get("loop") - perf.get("sampler") - perf.get("snap") - perf.get("step") - serial, 0.0)
+    perf.set("lp_sampler", perf.get("sampler"))
+    perf.set("lp_snap", perf.get("snap"))
+    perf.set("lp_step", perf.get("step"))
+    perf.set("lp_rest", rest)
+    perf.set("lp_serial", serial)
+    logger.info("%s", _tune_phase_line(perf.totals, iters))
 
 
 def _tune_phase_line(phases: dict, iters: int) -> str:
@@ -391,7 +416,11 @@ class SignRoundQuantizer(BaseQuantizer):
                 empty dict if no trainable parameters were found.
         """
         device = device_manager.device
-        loss_device = getattr(self, "_loss_device", device)
+        # None coalesces to the primary: an explicit None from the placement pass
+        # must leave the loop with a concrete staging device; pred/ref and the
+        # loss mask all stage here (card-0-risk relocation may move it off the
+        # primary, and the masked loss multiplies pred by the mask)
+        loss_device = resolve_loss_device(getattr(self, "_loss_device", None), device)
         card_0_in_high_risk = getattr(self, "_card_0_in_high_risk", False)
         mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
 
@@ -407,19 +436,8 @@ class SignRoundQuantizer(BaseQuantizer):
         active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
         nsamples = len(active_inputs) if isinstance(active_inputs, list) else self._count_samples(active_inputs)
 
-        import auto_round.envs as _envs
-
-        _tune_perf = (
-            {"wrap": 0.0, "prepare": 0.0, "loop": 0.0, "tail": 0.0}
-            if getattr(_envs, "AR_PERF_COUNTERS", False)
-            else None
-        )
-        _loop_perf = (
-            {"sampler": 0.0, "snap": 0.0, "step": 0.0, "s_fwd": 0.0, "s_loss": 0.0, "s_bwd": 0.0}
-            if _tune_perf is not None
-            else None
-        )
-        _tp0 = _ptime.perf_counter()
+        _perf = _PerfCounters()
+        _perf.start("wrap")
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
             self.enable_minmax_tuning,
@@ -428,9 +446,8 @@ class SignRoundQuantizer(BaseQuantizer):
             device=device,
             enable_neuqi=getattr(self.config, "enable_neuqi", False),
         )
-        if _tune_perf is not None:
-            _tune_perf["wrap"] = _ptime.perf_counter() - _tp0
-            _tp1 = _ptime.perf_counter()
+        _perf.stop("wrap")
+        _perf.start("prepare")
 
         round_params = []
         minmax_params = []
@@ -541,9 +558,8 @@ class SignRoundQuantizer(BaseQuantizer):
             and (loss_device is None or torch.device(loss_device) == torch.device(device))
         )
 
-        if _tune_perf is not None:
-            _tune_perf["prepare"] = _ptime.perf_counter() - _tp1
-            _tp2 = _ptime.perf_counter()
+        _perf.stop("prepare")
+        _perf.start("loop")
         # iters>0 hot-pool strategy (loop-amortized; the iters=0 lane streams
         # its pools once and never reaches these pulls): each pool moves in
         # bulk onto the device that reads it every iteration -- the input
@@ -552,9 +568,9 @@ class SignRoundQuantizer(BaseQuantizer):
         # device. Both gates charge ACTUAL data: exact tuning state from the
         # wrapper walker, and (input pull) the routed-buffer budget proven on
         # the mapped-streaming lane -- tokens x top_k hidden rows as in/out
-        # accumulators plus the backward grad (x6), which reproduces the
-        # measured 12.7 GiB loop retention on hy3 from shapes alone. Declined
-        # pulls keep the per-batch gather (measured ~1-2 s/block).
+        # accumulators plus the backward grad (x6), reproducing the loop
+        # retention from shapes alone. Declined pulls keep the per-batch
+        # gather.
         self.maybe_adapt_moe_implementation(block, active_inputs, batch_size)
         _entry_dev = str(getattr(block_fwd, "device", device)) if block_fwd is not None else str(device)
         if isinstance(active_inputs, list):
@@ -602,18 +618,15 @@ class SignRoundQuantizer(BaseQuantizer):
                     for n, m in block.named_modules():
                         m.cur_iter = i
                 total_loss = 0
-                if _loop_perf is not None:
-                    _smp_t0 = _ptime.perf_counter()
+                _perf.start("sampler")
                 global_indices = index_sampler.next_batch()
                 if valid_token_mask:
                     num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
-                if _loop_perf is not None:
-                    _loop_perf["sampler"] += _ptime.perf_counter() - _smp_t0
+                _perf.stop("sampler")
 
                 for batch_start in range(0, len(global_indices), batch_size):
                     indices = global_indices[batch_start : batch_start + batch_size]
-                    if _loop_perf is not None:
-                        _sf_t0 = _ptime.perf_counter()
+                    _perf.start("s_fwd")
                     staged = tuning_cache.get(indices) if tuning_cache is not None else None
                     if staged is None:
                         # fp_outputs may be sharded across park devices
@@ -632,9 +645,8 @@ class SignRoundQuantizer(BaseQuantizer):
                         pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
                     if loss_device is not None:
                         pred_output = pred_output.to(loss_device)
-                    if _loop_perf is not None:
-                        _loop_perf["s_fwd"] += _ptime.perf_counter() - _sf_t0
-                        _sl_t0 = _ptime.perf_counter()
+                    _perf.stop("s_fwd")
+                    _perf.start("s_loss")
                     if (
                         block_ctx.block_index == block_ctx.block_cnt - 1
                         and self.enable_lfq
@@ -643,20 +655,21 @@ class SignRoundQuantizer(BaseQuantizer):
                     ):
                         loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
                     else:
-                        loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
+                        # the mask must land on the same device pred/ref were staged
+                        # on (loss_device, which card-0-risk relocation may move off
+                        # the primary), not on the primary unconditionally
+                        loss = self._get_loss(pred_output, ref_output, indices, mse_loss, loss_device, valid_token_mask)
                     num_elm = 1 if num_elm <= 0 else num_elm
                     total_loss += loss.item() / num_elm
-                    if _loop_perf is not None:
-                        _loop_perf["s_loss"] += _ptime.perf_counter() - _sl_t0
-                        _sb_t0 = _ptime.perf_counter()
+                    _perf.stop("s_loss")
+                    _perf.start("s_bwd")
 
                     if mid_iter_mem_check:
                         # clear memory to avoid OOM due to memory fragmentation
                         clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
 
                     self._scale_loss_and_backward(scaler, loss)
-                    if _loop_perf is not None:
-                        _loop_perf["s_bwd"] += _ptime.perf_counter() - _sb_t0
+                    _perf.stop("s_bwd")
 
                     if mid_iter_mem_check:
                         # clear memory to avoid OOM due to memory fragmentation
@@ -667,8 +680,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 current_lr = optimizer.param_groups[0]["lr"]
                 logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
-                if _loop_perf is not None:
-                    _snap_t0 = _ptime.perf_counter()
+                _perf.start("snap")
                 if total_loss < best_loss:
                     best_loss = total_loss
                     if not self.not_use_best_mse:
@@ -685,23 +697,20 @@ class SignRoundQuantizer(BaseQuantizer):
                         else snapshot_best_params(block, self.compress_context.cache_device)
                     )
 
-                if _loop_perf is not None:
-                    _loop_perf["snap"] += _ptime.perf_counter() - _snap_t0
-                    _stp_t0 = _ptime.perf_counter()
+                _perf.stop("snap")
+                _perf.start("step")
                 if not self.not_use_best_mse:
                     if 0 < self.dynamic_max_gap <= i - last_best_iter:
                         break
                 sync_gradients()
                 self._step(scaler, optimizer, lr_schedule)
-                if _loop_perf is not None:
-                    _loop_perf["step"] += _ptime.perf_counter() - _stp_t0
+                _perf.stop("step")
 
         finally:
             if tuning_cache is not None:
                 tuning_cache.close()
-        if _tune_perf is not None:
-            _tune_perf["loop"] = _ptime.perf_counter() - _tp2
-            _tp3 = _ptime.perf_counter()
+        _perf.stop("loop")
+        _perf.start("tail")
 
         last_loss = total_loss
         best_iter = self.iters
@@ -725,23 +734,8 @@ class SignRoundQuantizer(BaseQuantizer):
         with torch.no_grad():
             unwrapper_block(block, best_params)
 
-        if _tune_perf is not None:
-            _tune_perf["tail"] = _ptime.perf_counter() - _tp3
-            _serial = _loop_perf["s_fwd"] + _loop_perf["s_loss"] + _loop_perf["s_bwd"]
-            _rest = max(
-                _tune_perf["loop"] - _loop_perf["sampler"] - _loop_perf["snap"] - _loop_perf["step"] - _serial,
-                0.0,
-            )
-            _tune_perf.update(
-                {
-                    "lp_sampler": _loop_perf["sampler"],
-                    "lp_snap": _loop_perf["snap"],
-                    "lp_step": _loop_perf["step"],
-                    "lp_rest": _rest,
-                    "lp_serial": _serial,
-                }
-            )
-            logger.info("%s", _tune_phase_line(_tune_perf, self.iters))
+        _perf.stop("tail")
+        _log_tune_phases(_perf, self.iters)
 
         if self.config.is_act_nv_fp:
             # enable moe experts act_max automatic generation for WrapperWALayer

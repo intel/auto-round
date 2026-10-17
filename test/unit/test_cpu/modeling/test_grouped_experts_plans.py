@@ -15,6 +15,37 @@ from auto_round.modeling.fused_moe.grouped_experts import (
 )
 
 
+class TestHookWhitelistResolution(unittest.TestCase):
+    """Missing accelerate hook classes are probed once per process, not per call."""
+
+    def test_missing_classes_log_once(self):
+        import sys
+        import types
+        from unittest import mock
+
+        from auto_round.modeling.fused_moe import grouped_experts
+
+        orig = sys.modules.get("accelerate.hooks")
+        stub = types.ModuleType("accelerate.hooks")  # carries neither hook class
+        sys.modules["accelerate.hooks"] = stub
+        try:
+            grouped_experts._ACCELERATE_HOOK_WHITELIST = None
+            with mock.patch.object(grouped_experts, "logger") as spy:
+                self.assertEqual(grouped_experts._accelerate_hook_whitelist(), ())
+                notices = spy.warning.call_count + spy.debug.call_count
+                self.assertEqual(notices, 2)
+                # the cached resolution must not repeat the notices
+                self.assertEqual(grouped_experts._accelerate_hook_whitelist(), ())
+                self.assertEqual(spy.warning.call_count + spy.debug.call_count, notices)
+            lin = _linear()
+            lin.register_forward_hook(lambda *a: None)  # any hook reaches the whitelist gate
+            self.assertFalse(_hooks_are_alignment_only(lin))
+        finally:
+            if orig is not None:
+                sys.modules["accelerate.hooks"] = orig
+            grouped_experts._ACCELERATE_HOOK_WHITELIST = None
+
+
 def _linear(out=4, inp=4):
     lin = nn.Linear(inp, out, bias=False)
     with torch.no_grad():
