@@ -1053,6 +1053,20 @@ def get_glm_flash_ignore_layers(model) -> list[str]:
     return ignore_layers
 
 
+def get_glm_nextn_ignore_layers(model) -> list[str]:
+    """Keep checkpoint-only draft layers in full precision for vLLM."""
+    config = model.config
+    text_config = getattr(config, "text_config", None) or config
+    first_draft = getattr(text_config, "num_hidden_layers", None)
+    draft_count = getattr(text_config, "num_nextn_predict_layers", getattr(config, "num_nextn_predict_layers", 0))
+    if not isinstance(first_draft, int) or not isinstance(draft_count, int) or first_draft < 0 or draft_count <= 0:
+        return []
+    # Keep the trailing separator so layer 45 does not also match layer 450.
+    # Short paths survive predefined-ignore filtering even when the draft blocks
+    # are absent from the instantiated model and quantization block list.
+    return [f"layers.{i}." for i in range(first_draft, first_draft + draft_count)]
+
+
 # glmflash
 register_ignore_layers(
     matchers=[
@@ -1090,6 +1104,7 @@ register_ignore_layers(
     ],
     ignore_layers=[
         get_glm_flash_ignore_layers,  # vllm issue
+        get_glm_nextn_ignore_layers,
         "weights_proj",
         "indexer",
         "self_attn",
