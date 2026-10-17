@@ -464,7 +464,8 @@ def _resolve_checkpoint_name(index, full_name: str):
         if index.has_tensor(candidate):
             return candidate
     for model_type in _index_model_types(index):
-        for transform in _reverse_renamings_for(model_type):
+        transforms = _reverse_renamings_for(model_type)
+        for transform in transforms:
             try:
                 candidate, _ = transform.rename_source_key(full_name)
             except Exception as exc:  # pragma: no cover - defensive, never fail a load here
@@ -472,6 +473,17 @@ def _resolve_checkpoint_name(index, full_name: str):
                 continue
             if candidate != full_name and index.has_tensor(candidate):
                 return candidate
+        # Some names need several of a family's renames at once, e.g. RADIO's
+        # ``encoder.layer.N.attention.output.dense`` <- ``radio_model.model.blocks.N.attn.proj``.
+        candidate = full_name
+        for transform in transforms:
+            try:
+                candidate, _ = transform.rename_source_key(candidate)
+            except Exception as exc:  # pragma: no cover - defensive, never fail a load here
+                logger.debug("chained rename %s via %s failed: %s", candidate, transform, exc)
+                continue
+        if candidate != full_name and index.has_tensor(candidate):
+            return candidate
     return None
 
 
@@ -1143,8 +1155,16 @@ def build_meta_model(model_name: str, trust_remote_code: bool = True, unfuse_moe
     # reap/layerwise_prune.py's disk-streamed model builder.
     import transformers as _transformers
 
+    from auto_round.modeling.nemotron_h_omni import (
+        prefer_remote_omni_class,
+        register_nemotron_h_omni_checkpoint_mapping,
+    )
+
+    register_nemotron_h_omni_checkpoint_mapping(config, trust_remote_code)
     archs = getattr(config, "architectures", None) or []
-    model_cls = next((getattr(_transformers, a) for a in archs if hasattr(_transformers, a)), None)
+    model_cls = None
+    if not prefer_remote_omni_class(config, trust_remote_code):
+        model_cls = next((getattr(_transformers, a) for a in archs if hasattr(_transformers, a)), None)
     with init_empty_weights():
         if model_cls is not None:
             model = model_cls(config)

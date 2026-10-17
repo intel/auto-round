@@ -233,8 +233,24 @@ def _resolve_layer_config_presets(
             "fixed_by_user": True,
         }
 
+    # 1b. Merge predefined model defaults; user entries win per-pattern and per-key.
+    from auto_round.special_model_handler import get_predefined_layer_config
+
+    predefined_only = set()
+    for _pattern, _overlay in get_predefined_layer_config(model).items():
+        _existing = layer_config.get(_pattern)
+        if isinstance(_existing, dict):
+            for _k, _v in _overlay.items():
+                _existing.setdefault(_k, _v)
+        elif _existing is None:
+            layer_config[_pattern] = dict(_overlay)
+            predefined_only.add(_pattern)
+
     # 2. normalize
     layer_config = {k: normalize_item(v, k) for k, v in layer_config.items()}
+    # Entries added only from predefined model defaults are not user choices.
+    for _pattern in predefined_only:
+        layer_config[_pattern]["fixed_by_user"] = False
     # entries whose sym was set by the user (dict key or a QuantizationScheme
     # object) rather than inherited from the default scheme below
     explicit_sym = {name for name, cfg in layer_config.items() if "sym" in cfg}

@@ -842,6 +842,12 @@ def prepare_model_for_moe_quantization(
             impl_to_set = saved_impl if saved_impl in AUTO_ROUND_EXPERTS_IMPLS else implementation
             model.config._experts_implementation = impl_to_set
             logger.debug(f"Set model.config._experts_implementation = '{impl_to_set}'")
+            # Experts dispatch on their own ``self.config``; in a multimodal wrapper that is the
+            # nested text config (e.g. Nemotron-H Omni's ``llm_config``), not ``model.config``.
+            for name in unfused_modules:
+                expert_config = getattr(model.get_submodule(name), "config", None)
+                if expert_config is not None and expert_config is not model.config:
+                    expert_config._experts_implementation = impl_to_set
 
         memory_monitor.update()
         memory_monitor.log_summary("After applying custom replacements")
