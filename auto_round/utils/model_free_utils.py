@@ -2111,10 +2111,10 @@ def _dequant_fp8_tensors(
                 weight.to(dequant_device, non_blocking=True),
                 scale.to(dequant_device, non_blocking=True),
                 block_size=block_size,
-                dtype=torch.float32,
+                output_dtype=torch.float32,
             ).to("cpu"),
             on_cpu=lambda weight=weight, scale=scale: _dequant_fp8_linear_weight(
-                weight, scale, block_size=block_size, dtype=torch.float32
+                weight, scale, block_size=block_size, output_dtype=torch.float32
             ),
         )
         # ``weight`` still aliases the original FP8 storage after the dict slot
@@ -2708,13 +2708,18 @@ def _is_mxfp_ct_group(group: dict) -> bool:
     )
 
 
+def _is_catch_all_group(group: dict) -> bool:
+    # The default group may be ["Linear", "RoutedExperts"] after add_routed_experts_if_moe.
+    return "Linear" in (group.get("targets") or [])
+
+
 def _explicit_mxfp_targets(qconfig: dict, quantized_layers: list[str]) -> dict:
     """Replace the ``"Linear"`` catch-all of MXFP groups with the quantized layer names (+ ``RoutedExperts``)."""
     groups = qconfig.get("config_groups") or {}
-    covered = {t for g in groups.values() if g.get("targets") != ["Linear"] for t in g.get("targets") or []}
+    covered = {t for g in groups.values() if not _is_catch_all_group(g) for t in g.get("targets") or []}
     layers = [name for name in dict.fromkeys(quantized_layers) if name not in covered]
     for group in groups.values():
-        if group.get("targets") == ["Linear"] and _is_mxfp_ct_group(group) and layers:
+        if _is_catch_all_group(group) and _is_mxfp_ct_group(group) and layers:
             group["targets"] = _add_routed_experts_if_moe(list(layers), layers)
     return qconfig
 
@@ -3610,6 +3615,35 @@ def _detect_nvfp4_source(model_name_or_path: str, source_quant_config: dict | No
     return None
 
 
+def _detect_fp8_source(model_name_or_path: str, source_quant_config: dict | None) -> str | None:
+    """Return why the source checkpoint looks FP8-quantized (DeepSeek-V3 style), or None."""
+    qc = source_quant_config or {}
+    if (
+        qc.get("quant_method") == "fp8"
+        or qc.get("quantization_type") == "fp8"
+        or str(qc.get("fmt") or "").startswith("e4m3")
+    ):
+        return "source quantization config"
+    return None
+
+
+# Source dtype name -> detector(model_name_or_path, source_quant_config) returning a reason or None.
+_SOURCE_DTYPE_DETECTORS = {
+    "nvfp4": _detect_nvfp4_source,
+    "fp8": _detect_fp8_source,
+}
+
+
+def detect_model_dtypes(model_name_or_path: str, source_quant_config: dict | None) -> dict[str, str]:
+    """Return ``{source_dtype: reason}`` for every low-precision dtype detected in the source checkpoint."""
+    detected = {}
+    for dtype_name, detector in _SOURCE_DTYPE_DETECTORS.items():
+        reason = detector(model_name_or_path, source_quant_config)
+        if reason is not None:
+            detected[dtype_name] = reason
+    return detected
+
+
 def _rewrite_nvfp4_groups_as_mxfp(
     mxfp_qconfig: dict, source_ct: dict, ignored_layers: list[str], quantized_layers: list[str] | None = None
 ) -> dict:
@@ -3619,7 +3653,7 @@ def _rewrite_nvfp4_groups_as_mxfp(
     """
     mxfp_groups = mxfp_qconfig["config_groups"]
     # The default (catch-all) group targets "Linear"; layer_config override groups list explicit layers.
-    default_name = next((n for n, g in mxfp_groups.items() if g.get("targets") == ["Linear"]), next(iter(mxfp_groups)))
+    default_name = next((n for n, g in mxfp_groups.items() if _is_catch_all_group(g)), next(iter(mxfp_groups)))
     mxfp_format = mxfp_qconfig.get("format")
 
     def _with_format(name: str) -> dict:

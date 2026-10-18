@@ -1479,9 +1479,9 @@ class TestNVFP4ToMXFP4:
         ids=["hub_name", "local_name", "ct", "ct_mixed", "modelopt", "modelopt_mixed", "quark"],
     )
     def test_detect_nvfp4_source(self, name, qc):
-        from auto_round.utils.model_free_utils import _detect_nvfp4_source
+        from auto_round.utils.model_free_utils import detect_model_dtypes
 
-        assert _detect_nvfp4_source(name, qc) is not None
+        assert "nvfp4" in detect_model_dtypes(name, qc)
 
     @pytest.mark.parametrize(
         "name, qc",
@@ -1493,9 +1493,25 @@ class TestNVFP4ToMXFP4:
         ids=["parent_dir_only", "fp8", "ct_fp8"],
     )
     def test_detect_non_nvfp4_source(self, name, qc):
-        from auto_round.utils.model_free_utils import _detect_nvfp4_source
+        from auto_round.utils.model_free_utils import detect_model_dtypes
 
-        assert _detect_nvfp4_source(name, qc) is None
+        assert "nvfp4" not in detect_model_dtypes(name, qc)
+
+    @pytest.mark.parametrize(
+        "qc, expected",
+        [
+            ({"quant_method": "fp8", "weight_block_size": [128, 128]}, True),
+            ({"quantization_type": "fp8"}, True),
+            ({"fmt": "e4m3", "scale_fmt": "ue8m0"}, True),
+            ({"fmt": None}, False),
+            (_CT_NVFP4_QC, False),
+        ],
+        ids=["quant_method", "quantization_type", "fmt", "fmt_none", "ct_nvfp4"],
+    )
+    def test_detect_fp8_source(self, qc, expected):
+        from auto_round.utils.model_free_utils import detect_model_dtypes
+
+        assert ("fp8" in detect_model_dtypes("Qwen/Qwen3-8B", qc)) is expected
 
     @require_compressed_tensors
     def test_detection_warns(self, tmp_path, monkeypatch):

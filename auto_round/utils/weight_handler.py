@@ -487,9 +487,12 @@ def _dequant_fp8_linear_weight(
     weight_scale: torch.Tensor,
     block_size: list | None = None,
     data_type: str | None = None,
-    dtype: torch.dtype = torch.bfloat16,
+    output_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
-    """Core dequantization logic for block-wise FP8 weights."""
+    """Core dequantization logic for block-wise FP8 weights.
+
+    ``data_type`` is the source quantization data type; ``output_dtype`` is the torch dtype of the result.
+    """
     if weight_scale is None:
         return weight
 
@@ -503,7 +506,7 @@ def _dequant_fp8_linear_weight(
                 weight_scale = weight_scale.view(-1, 1)
             elif weight_scale.numel() == weight.shape[-1]:
                 weight_scale = weight_scale.view(1, -1)
-        return weight.to(dtype) * weight_scale.to(dtype)
+        return weight.to(output_dtype) * weight_scale.to(output_dtype)
 
     assert len(block_size) == 2
 
@@ -517,14 +520,14 @@ def _dequant_fp8_linear_weight(
         weight_scale_m, weight_scale_n = weight_scale.shape
         weight_scale = weight_scale.view(weight_scale_m, 1, weight_scale_n, 1)
         weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
-        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
+        dequant_weight = weight.to(output_dtype) * weight_scale.to(output_dtype)
         dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
         keep_first_dim = False
     elif weight_shape_len == 3:
         fd, weight_scale_m, weight_scale_n = weight_scale.shape
         weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
         weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
-        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
+        dequant_weight = weight.to(output_dtype) * weight_scale.to(output_dtype)
         dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
         keep_first_dim = True
     else:

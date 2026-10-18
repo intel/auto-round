@@ -1714,3 +1714,19 @@ class TestKimiK25Int4Source:
         # Re-quantized MXFP4 scales are uint8 E8M0 (source INT4 scales were fp16).
         assert found_scale_dtype == torch.uint8
         assert found_packed_shape == (128, 64)
+
+
+def test_explicit_mxfp_targets_replaces_linear_with_routed_experts_catch_all():
+    from auto_round.utils.model_free_utils import _explicit_mxfp_targets
+
+    weights = {"type": "float", "num_bits": 4, "group_size": 32}
+    qconfig = {
+        "config_groups": {
+            "group_0": {"targets": ["model.layers.0.mlp.fc1"], "weights": weights},
+            "group_1": {"targets": ["Linear", "RoutedExperts"], "weights": weights},
+        }
+    }
+    layers = ["model.layers.0.mlp.fc1", "model.layers.0.self_attn.q_proj"]
+    out = _explicit_mxfp_targets(qconfig, layers)
+    assert out["config_groups"]["group_0"]["targets"] == ["model.layers.0.mlp.fc1"]
+    assert out["config_groups"]["group_1"]["targets"] == ["model.layers.0.self_attn.q_proj"]

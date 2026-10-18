@@ -133,7 +133,6 @@ from auto_round.utils.model_free_utils import (
     _build_cross_shard_pairs_from_weight_map,
     _build_quantization_config,
     _convert_auto_scheme_layer_config,
-    _detect_nvfp4_source,
     _download_metadata_files,
     _download_single_shard,
     _get_model_cache_status,
@@ -154,6 +153,7 @@ from auto_round.utils.model_free_utils import (
     _validate_supported_scheme,
     _write_index_file,
     _write_output_shard,
+    detect_model_dtypes,
     handle_model_type_low_precision_source_tensors,
     is_model_free_supported_scheme,
     preprocess_model_type_source_tensors,
@@ -663,12 +663,12 @@ class _ModelFreeCompressorCore:
         data_type = (self.scheme_obj.data_type or "").lower()
         if not (is_mx_fp(data_type) and self.scheme_obj.bits == 4):
             return
-        reason = _detect_nvfp4_source(
+        reason = detect_model_dtypes(
             self.model_name_or_path,
             _load_source_quant_config(
                 self.work_dir if self.is_streaming else self.source_dir, self.source_quantization_config
             ),
-        )
+        ).get("nvfp4")
         if reason is None:
             return
         format_lower = self.format.lower().replace(" ", "").split(",")[0]
@@ -856,12 +856,7 @@ class _ModelFreeCompressorCore:
 
     def _detect_fp8_source(self) -> None:
         quant_config = self.source_quantization_config
-        is_fp8 = (
-            quant_config.get("quant_method") == "fp8"
-            or quant_config.get("quantization_type") == "fp8"
-            or quant_config.get("fmt", "").startswith("e4m3")
-        )
-        if is_fp8:
+        if "fp8" in detect_model_dtypes(self.model_name_or_path, quant_config):
             self.fp8_block_size = quant_config.get("weight_block_size")
             logger.info(
                 f"Detected FP8 source model (block_size={self.fp8_block_size}, "
