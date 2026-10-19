@@ -28,7 +28,7 @@
 
 [//]: # (</p>)
 
-[简体中文](README_CN.md) | English
+[简体中文](README_CN.md) | English&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
