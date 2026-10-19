@@ -633,8 +633,13 @@ def _pull_pool_if_fits(
             reserve = 4 << 30
         if free is not None and free - reserve >= pool_b:
             moved = [t.to(_tgt) for t in tensors]
+            # splice in place: the tune loop rebinds only its local handle
+            # while the pool containers (release bookkeeping, snapshots)
+            # still hold the ORIGINAL list -- returning a fresh list would
+            # keep the source tensors resident next to the pulled copies
+            pool[:] = moved
             logger.debug("[%s bulk pull -> %s (%.2f GiB, free %.2f GiB)", label, _tgt, pool_b / 2**30, free / 2**30)
-            return moved
+            return pool
         if free is not None:
             logger.debug(
                 "[%s stays sharded, per-batch gather (data %.2f GiB + reserve %.2f GiB vs free %.2f GiB on %s)",

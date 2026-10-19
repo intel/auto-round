@@ -64,6 +64,50 @@ def _run(pool, block, free, target="cuda:1", iters=20, label="tune-reference", *
         return _pull_pool_if_fits(pool, target, block, 8, iters, label, **kw)
 
 
+class TestPullPolicyGating(unittest.TestCase):
+    """Bulk pulls are a capacity optimization; explicit host parking wins."""
+
+    def test_policies_skip_pull(self):
+        from types import SimpleNamespace
+
+        import auto_round.algorithms.quantization.tune_memory as tm
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+
+        pool = [_FakeTensor("cpu", numel=1024)]
+        called = []
+        real = tm._pull_pool_if_fits
+
+        def _spy(*a, **kw):
+            called.append(a)
+            return real(*a, **kw)
+
+        for cc in (
+            SimpleNamespace(low_gpu_mem_usage=True, calibration_data_device="auto"),
+            SimpleNamespace(low_gpu_mem_usage=False, calibration_data_device="cpu"),
+        ):
+            q = object.__new__(BaseQuantizer)
+            q._BaseAlgorithm__run_ctx = SimpleNamespace(compress_context=cc, model_context=SimpleNamespace(config=None))
+            with mock.patch.object(tm, "_pull_pool_if_fits", _spy):
+                out = q.pull_tuning_pool(pool, "cuda:1", _FakeBlock([]), 8, "tune-input")
+            self.assertIs(out, pool, f"policy {cc} must leave the pool untouched")
+        self.assertEqual(called, [])  # capacity gate never even consulted
+
+    def test_default_policy_delegates_to_the_capacity_gate(self):
+        from types import SimpleNamespace
+
+        import auto_round.algorithms.quantization.tune_memory as tm
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+
+        pool = [_FakeTensor("cpu", numel=1024)]
+        cc = SimpleNamespace(low_gpu_mem_usage=False, calibration_data_device="auto")
+        q = object.__new__(BaseQuantizer)
+        q._BaseAlgorithm__run_ctx = SimpleNamespace(compress_context=cc, model_context=SimpleNamespace(config=None))
+        with mock.patch.object(tm, "_pull_pool_if_fits", return_value="delegated") as spy:
+            out = q.pull_tuning_pool(pool, "cuda:1", _FakeBlock([]), 8, "tune-input")
+        self.assertEqual(out, "delegated")
+        spy.assert_called_once()
+
+
 class TestPullPoolIfFits(unittest.TestCase):
     def test_moves_when_free_covers_pool_and_state(self):
         # 8-GPU-shaped arithmetic: 4 GiB pool, ~6.4 GiB state on the target.
@@ -72,6 +116,18 @@ class TestPullPoolIfFits(unittest.TestCase):
         out = _run(pool, block, free=19.5 * _GIB)
         self.assertEqual(len(out), len(pool))
         self.assertTrue(all(t.moved_to == torch.device("cuda:1") for t in out))
+
+    def test_successful_pull_splices_the_shared_pool_in_place(self):
+        # the tune loop rebinds only its local handle; the pool containers
+        # (release bookkeeping, snapshots) still hold the ORIGINAL list, so a
+        # fresh returned list would keep the source tensors resident next to
+        # the pulled copies -- the pull must splice the shared object
+        pool = [_FakeTensor("cuda:0", numel=_GIB // 4) for _ in range(4)]
+        alias = pool
+        block = _FakeBlock([_FakeParam("cuda:1", numel=int(0.46e9))])
+        out = _run(pool, block, free=19.5 * _GIB)
+        self.assertIs(out, alias)  # the same list object, not a copy
+        self.assertTrue(all(t.moved_to == torch.device("cuda:1") for t in alias))
 
     def test_declines_when_state_density_eats_headroom(self):
         # 4-GPU-shaped arithmetic: same pool, ~12.9 GiB state on the target,

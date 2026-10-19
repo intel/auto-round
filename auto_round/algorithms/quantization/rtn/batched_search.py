@@ -162,6 +162,28 @@ def _staged_key(wrapper: WrapperLinear, weight: torch.Tensor, imatrix: torch.Ten
     )
 
 
+def _stackable_layout(wrapper: WrapperLinear) -> bool:
+    """Whether the wrapper's weight layout is safe for a stacked batch call.
+
+    The stacked call bypasses ``_qdq_weight`` and hands the quant callable a
+    3-D ``(N, out, in)`` tensor, so only row-group layouts are stackable:
+    ``group_size`` -1 (per-channel) or a positive int never straddle the
+    leading-dim module boundary, while ``0`` (per-tensor) would share ONE
+    scale across every module in the chunk and 2-D block tuples (e.g. fp8
+    ``(128, 128)``) expect a 2-D weight. Activation-only layers (``bits >=
+    16``) must finish through their own ``unwrapper`` so their weights stay
+    untouched and the act metadata is still processed.
+    """
+    layer = wrapper.orig_layer
+    bits = getattr(layer, "bits", None)
+    if bits is None or int(bits) >= 16:
+        return False
+    group_size = getattr(layer, "group_size", None)
+    if isinstance(group_size, bool) or not isinstance(group_size, int) or group_size == 0:
+        return False
+    return group_size == -1 or group_size > 0
+
+
 def swap_wrapper_callables_to_eager(wrapper: WrapperLinear) -> Callable[[], None] | None:
     """Point compiled wrapper callables at their eager originals.
 
@@ -192,6 +214,40 @@ def swap_wrapper_callables_to_eager(wrapper: WrapperLinear) -> Callable[[], None
             setattr(wrapper, attr, fn)
 
     return _restore
+
+
+def _unwrap_with_cpu_fallback(w: WrapperLinear, name: str) -> torch.nn.Module:
+    """unwrapper({}) under the serial lane's OOM->CPU contract.
+
+    The per-module search can OOM on the device exactly like the serial
+    path's own search (base.py); there the run falls back to CPU instead of
+    crashing. The batched lane previously called unwrapper({}) unguarded --
+    a module that OOMed took the whole run down, violating the progressive
+    batched -> per-module -> CPU ladder.
+
+    The rebuilt wrapper keeps the failed wrapper's optimized-RTN and NeuQI
+    settings: the fallback must only change WHERE the search runs, not
+    WHICH search runs (the WrapperLinear defaults would silently downgrade
+    an optimized or NeuQI layer to plain RTN).
+    """
+    try:
+        return w.unwrapper({})
+    except torch.OutOfMemoryError:
+        dump_oom_tensor_census_("rtn batched unwrapper")
+        logger.warning("[rtn-batch] per-module search OOM for %s; falling back to CPU", name)
+        layer = w.orig_layer if hasattr(w, "orig_layer") else w
+        layer = layer.to("cpu")
+        layer = WrapperLinear(
+            layer,
+            enable_minmax_tuning=False,
+            enable_norm_bias_tuning=False,
+            enable_round_tuning=False,
+            enable_torch_compile=False,
+            disable_opt_rtn=getattr(w, "disable_opt_rtn", True),
+            enable_neuqi=getattr(w, "enable_neuqi", False),
+            iters=0,
+        )
+        return layer.unwrapper({})
 
 
 @torch.no_grad()
@@ -237,6 +293,12 @@ def run_batched_rtn_search(
             elem_cap = _wrap_batch_max_elems()
             if elem_cap is not None:
                 max_n = min(max_n, max(1, elem_cap // max(elements, 1)))
+            # layouts that must not share a stacked call (per-tensor scales,
+            # 2-D block groups, activation-only layers) plan as singletons:
+            # _run_chunk finishes each through the module's own unwrapper,
+            # exactly like the serial lane
+            if not _stackable_layout(group[0]["w"]):
+                max_n = 1
             # singleton and non-stackable groups plan like any other group:
             # the RTN lane runs them through the same per-module path, and a
             # roomy idle device may still take them
@@ -258,35 +320,6 @@ def run_batched_rtn_search(
             if any(c is chunk for c in cs):
                 return str(wk)
         return str(chunk[0]["weight"].device)  # not found (should not happen): stay home
-
-    def _unwrap_with_cpu_fallback(w: WrapperLinear, name: str) -> torch.nn.Module:
-        """unwrapper({}) under the serial lane's OOM->CPU contract.
-
-        The per-module search can OOM on the device exactly like the serial
-        path's own search (base.py); there the run falls back to CPU instead
-        of crashing. The batched lane previously called unwrapper({})
-        unguarded -- a module that OOMed took the whole run down, violating
-        the progressive batched -> per-module -> CPU ladder.
-        """
-        try:
-            return w.unwrapper({})
-        except torch.OutOfMemoryError:
-            from auto_round.algorithms.quantization.search_dispatch import dump_oom_tensor_census_
-            from auto_round.wrapper import WrapperLinear
-
-            dump_oom_tensor_census_("rtn batched unwrapper")
-            logger.warning("[rtn-batch] per-module search OOM for %s; falling back to CPU", name)
-            layer = w.orig_layer if hasattr(w, "orig_layer") else w
-            layer = layer.to("cpu")
-            layer = WrapperLinear(
-                layer,
-                enable_minmax_tuning=False,
-                enable_norm_bias_tuning=False,
-                enable_round_tuning=False,
-                enable_torch_compile=False,
-                iters=0,
-            )
-            return layer.unwrapper({})
 
     def _chunk_working_set(chunk: list[dict[str, Any]]) -> int:
         e0 = chunk[0]
@@ -321,9 +354,10 @@ def run_batched_rtn_search(
         w0 = chunk[0]["w"]
         dev = str(chunk[0]["weight"].device)
         worker = str(worker)
-        if len(chunk) == 1 and not _search_fn_stackable(w0.weight_quant_func):
-            # non-stackable callable: the module's own serial path, on the
-            # weight's device (the stacked call is unsafe for it)
+        if len(chunk) == 1 and (not _search_fn_stackable(w0.weight_quant_func) or not _stackable_layout(w0)):
+            # non-stackable callable or non-stackable layout: the module's
+            # own serial path, on the weight's device (the stacked call is
+            # unsafe for it)
             _restore = swap_wrapper_callables_to_eager(chunk[0]["w"]) if (threaded or worker != dev) else None
             try:
                 layer = _unwrap_with_cpu_fallback(chunk[0]["w"], chunk[0]["name"])
@@ -339,18 +373,6 @@ def run_batched_rtn_search(
         # row-independent fns
         weights = [e["weight"] for e in chunk]
         ims = [e["im"] for e in chunk]
-        if worker != dev:
-            weights = [w.to(worker) for w in weights]
-            ims = [im.to(worker) if im is not None else None for im in ims]
-        stacked_w = torch.stack(weights)
-        stacked_im = None
-        if ims and ims[0] is not None:
-            _gs = w0.orig_layer.group_size
-            stacked_im = torch.stack([_expand_imatrix(im, w, _gs) for im, w in zip(ims, weights)])
-        kwargs = w0._quant_call_kwargs(
-            torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0), imatrix_override=stacked_im
-        )
-        kwargs = _relocate_tensor_kwargs(kwargs, str(stacked_w.device))
         fn = w0.weight_quant_func
         if worker != dev or threaded:
             # the compiled path runs slower than eager for this bandwidth-bound
@@ -359,8 +381,26 @@ def run_batched_rtn_search(
             # multi-device path also executes on worker threads
             fn = getattr(fn, "_torchdynamo_orig_callable", None) or fn
         try:
+            # materialization is inside the guard on purpose: an OOM while
+            # moving or stacking the batch must take the same per-module
+            # ladder as an OOM inside the stacked call, not abort the run
+            if worker != dev:
+                weights = [w.to(worker) for w in weights]
+                ims = [im.to(worker) if im is not None else None for im in ims]
+            stacked_w = torch.stack(weights)
+            stacked_im = None
+            if ims and ims[0] is not None:
+                _gs = w0.orig_layer.group_size
+                stacked_im = torch.stack([_expand_imatrix(im, w, _gs) for im, w in zip(ims, weights)])
+            kwargs = w0._quant_call_kwargs(
+                torch.tensor(0.0), torch.tensor(1.0), torch.tensor(1.0), imatrix_override=stacked_im
+            )
+            kwargs = _relocate_tensor_kwargs(kwargs, str(stacked_w.device))
             qdq, scale, zp = fn(stacked_w, **kwargs)
         except torch.OutOfMemoryError:
+            # release the partial batch before the retry: the ladder needs
+            # the headroom the failed materialization consumed
+            weights = ims = stacked_w = stacked_im = kwargs = None
             logger.warning(
                 "[rtn-batch] stacked search OOM (%d modules); finishing this chunk per-module "
                 "(shrink batches with AR_SEARCH_BATCH_GB or disable with AR_DISABLE_BATCHED_SEARCH=1)",

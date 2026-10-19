@@ -1045,22 +1045,23 @@ def _run_routes(
     # settings must match per expert (they quantize the same input tensor).
     for slot_name, groups in (("up_proj", up_groups), ("gate_proj", gate_groups), ("down_proj", down_groups)):
         for _, positions in groups:
-            sig = layout = None
-            for p in positions:
+            # Seed the references from the FIRST position: None is a valid
+            # quantization signature (plain Linear), so it cannot double as
+            # the unset marker -- a plain expert preceding a quantized wrapper
+            # would otherwise latch the wrapper's signature without comparison
+            # and accept the mixed group.
+            first = getattr(getattr(module, str(active_ids[positions[0]])), slot_name)
+            sig = _quant_signature(first)
+            layout = _weight_layout(first)
+            for p in positions[1:]:
                 proj = getattr(getattr(module, str(active_ids[p])), slot_name)
                 if not _projection_is_supported(proj):
                     _log_fallback_once(f"unsupported projection type {type(proj).__name__}")
                     return None
-                cur_sig = _quant_signature(proj)
-                if sig is None:
-                    sig = cur_sig
-                elif sig != cur_sig:
+                if _quant_signature(proj) != sig:
                     _log_fallback_once("mixed quantization schemes across experts in a device group")
                     return None
-                cur_layout = _weight_layout(proj)
-                if layout is None:
-                    layout = cur_layout
-                elif layout != cur_layout:
+                if _weight_layout(proj) != layout:
                     _log_fallback_once("experts have different weight shape/dtype in a device group")
                     return None
     if has_gate:

@@ -367,6 +367,139 @@ class TestRealV2Construction(unittest.TestCase):
         self.assertIsNone(w._deferred_search_inputs)  # old callers unchanged
 
 
+class TestCpuFallbackPreservesSearchSettings(unittest.TestCase):
+    """The CPU fallback must only change WHERE the search runs, not WHICH search."""
+
+    def test_rebuild_carries_opt_rtn_and_neuqi_flags(self):
+        import torch.nn as nn
+
+        from auto_round.algorithms.quantization.rtn import batched_search
+
+        layer = nn.Linear(8, 8, bias=False)
+        layer.data_type = "int"
+        layer.bits = 4
+        layer.sym = True
+        layer.group_size = -1
+        layer.iters = 0
+        layer.act_bits = 16
+
+        class _Failed:
+            orig_layer = layer
+            disable_opt_rtn = False  # optimized RTN active on the failed wrapper
+            enable_neuqi = True  # NeuQI active on the failed wrapper
+
+            def unwrapper(self, cfg):
+                raise torch.OutOfMemoryError("simulated per-module OOM")
+
+        recorded = {}
+
+        class _Recorder:
+            def __call__(self, lyr, **kw):
+                recorded.update(kw)
+                recorded["_positional_is_layer"] = lyr is layer
+
+                class _Out:
+                    def unwrapper(self, cfg):
+                        return "cpu_result"
+
+                return _Out()
+
+        with mock.patch.object(batched_search, "WrapperLinear", _Recorder()), mock.patch.object(
+            batched_search, "dump_oom_tensor_census_", lambda *a, **k: None
+        ):
+            out = batched_search._unwrap_with_cpu_fallback(_Failed(), "model.l0")
+
+        self.assertEqual(out, "cpu_result")
+        self.assertTrue(recorded.pop("_positional_is_layer"))
+        self.assertFalse(recorded["disable_opt_rtn"])  # stays OFF, not the True default
+        self.assertTrue(recorded["enable_neuqi"])  # stays ON, not the False default
+
+
+class TestStackableLayoutGate(unittest.TestCase):
+    """Layouts whose quant math is not row-stackable must finish per-module."""
+
+    def setUp(self):
+        self._env = mock.patch.dict(os.environ, {"AR_DISABLE_CROSS_DEVICE_SEARCH": "1"})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def _layer(self, seed, bits, group_size, act_bits=16):
+        import torch.nn as nn
+
+        g = torch.Generator().manual_seed(seed)
+        layer = nn.Linear(128, 64, bias=False)
+        with torch.no_grad():
+            layer.weight.copy_(torch.randn(64, 128, generator=g))
+        layer.data_type = "int"
+        layer.bits = bits
+        layer.sym = True
+        layer.group_size = group_size
+        layer.iters = 0
+        layer.act_bits = act_bits
+        if act_bits <= 8:
+            layer.act_data_type = "int"
+            layer.act_scale_dtype = torch.float16
+            layer.act_sym = False
+            layer.act_group_size = 128
+            layer.act_dynamic = False
+        layer.scale_dtype = torch.float16
+        return layer
+
+    def _wrapper(self, layer):
+        from auto_round.wrapper import WrapperLinear
+
+        return WrapperLinear(
+            layer,
+            device="cpu",
+            enable_minmax_tuning=False,
+            enable_norm_bias_tuning=False,
+            enable_round_tuning=False,
+            enable_torch_compile=False,
+            disable_opt_rtn=True,
+            iters=0,
+        )
+
+    def test_stackable_layout_matrix(self):
+        from auto_round.algorithms.quantization.rtn.batched_search import _stackable_layout
+
+        self.assertTrue(_stackable_layout(self._wrapper(self._layer(0, 4, 128))))  # row groups
+        self.assertTrue(_stackable_layout(self._wrapper(self._layer(1, 4, -1))))  # per-channel
+        self.assertFalse(_stackable_layout(self._wrapper(self._layer(2, 4, 0))))  # per-tensor scale
+        self.assertFalse(_stackable_layout(self._wrapper(self._layer(3, 8, (128, 128)))))  # 2-D blocks
+        self.assertFalse(_stackable_layout(self._wrapper(self._layer(4, 16, 128, act_bits=8))))  # act-only
+
+    def _parity(self, bits, group_size, act_bits=16):
+        import torch.nn as nn
+
+        from auto_round.algorithms.quantization.rtn.batched_search import run_batched_rtn_search
+
+        with torch.no_grad():
+            serial = []
+            for i in range(3):
+                layer = self._layer(seed=i, bits=bits, group_size=group_size, act_bits=act_bits)
+                out = self._wrapper(layer).unwrapper({})
+                serial.append(out.weight.data.clone())
+
+        model = nn.Module()
+        staged = []
+        for i in range(3):
+            layer = self._layer(seed=i, bits=bits, group_size=group_size, act_bits=act_bits)
+            setattr(model, f"l{i}", layer)
+            staged.append((f"l{i}", self._wrapper(layer)))
+        run_batched_rtn_search(model, staged)
+        for i in range(3):
+            self.assertTrue(
+                torch.equal(getattr(model, f"l{i}").weight.data, serial[i]),
+                f"module {i} diverged from the serial path",
+            )
+
+    def test_per_tensor_group_size_matches_serial(self):
+        self._parity(bits=4, group_size=0)
+
+    def test_act_only_layer_matches_serial(self):
+        self._parity(bits=16, group_size=128, act_bits=8)
+
+
 class TestWorkerBucketKeys(unittest.TestCase):
     def test_multi_worker_keys_are_device_parseable(self):
         """Regression: the threading key once carried the chunk entry dict itself."""
@@ -661,6 +794,40 @@ class TestBatchedRtnSearchParity(unittest.TestCase):
 
     def test_parity_sym_with_imatrix(self):
         self._run(sym=True, with_imatrix=True)
+
+    def test_materialization_oom_falls_back_per_module(self):
+        """An OOM while moving/copying the batch (before the quant call) must
+        take the same per-module ladder as a stacked-call OOM, not abort."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.quantization.rtn import batched_search
+        from auto_round.algorithms.quantization.rtn.batched_search import run_batched_rtn_search
+
+        serial = []
+        with torch.no_grad():
+            for i in range(3):
+                layer = self._layer(seed=i, sym=True, with_imatrix=True)
+                out = self._make_wrapper(layer).unwrapper({})
+                serial.append((out.weight.data.clone(), out.scale, getattr(out, "zp", None)))
+
+        model = nn.Module()
+        staged = []
+        for i in range(3):
+            layer = self._layer(seed=i, sym=True, with_imatrix=True)
+            setattr(model, f"l{i}", layer)
+            staged.append((f"l{i}", self._make_wrapper(layer)))
+
+        with mock.patch.object(
+            batched_search,
+            "_expand_imatrix",
+            side_effect=torch.OutOfMemoryError("simulated materialization OOM"),
+        ):
+            run_batched_rtn_search(model, staged)
+        for i in range(3):
+            got = getattr(model, f"l{i}")
+            ref_w, ref_scale, ref_zp = serial[i]
+            self.assertTrue(torch.equal(got.weight.data, ref_w), f"weight mismatch module {i}")
+            self.assertTrue(torch.equal(got.scale, ref_scale), f"scale mismatch module {i}")
 
     def test_stacked_oom_falls_back_per_module(self):
         """A stacked-call OOM finishes the chunk per-module: every module ends

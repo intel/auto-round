@@ -322,9 +322,17 @@ class BaseQuantizer(BaseAlgorithm):
         iteration when its footprint fits next to the working set; a declined
         pull keeps the per-batch gather.
 
-        Algorithms with pool-placement constraints of their own (e.g. a
-        host-pinned cache) can skip or override this hook for their pools.
+        Bulk pulls are a capacity optimization only: when the user explicitly
+        parked memory on the host (``low_gpu_mem_usage`` or
+        ``calibration_data_device="cpu"``) the pool stays where that policy
+        put it, however much room the target device has.
         """
+        cc = self.compress_context
+        if (
+            getattr(cc, "low_gpu_mem_usage", False)
+            or str(getattr(cc, "calibration_data_device", "auto") or "auto").lower() == "cpu"
+        ):
+            return pool
         from auto_round.algorithms.quantization.tune_memory import _pull_pool_if_fits
 
         config = getattr(getattr(self, "model_context", None), "config", None)

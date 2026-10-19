@@ -160,6 +160,22 @@ class TestRunRoutesSingleGroupCPU(unittest.TestCase):
         w = torch.rand(6, 2)
         self.assertIsNone(_run_routes(experts, x, idx, w, experts.n))
 
+    def test_plain_before_wrapper_falls_back(self):
+        # a plain Linear's quantization signature is None -- a VALID value that
+        # must not double as the unset marker. Seeding the reference from the
+        # first position rejects the mix regardless of expert ordering; the
+        # old sentinel latched the wrapper's signature without comparison when
+        # the plain expert came first and accepted the mixed group.
+        x = torch.randn(6, 4)
+        idx = torch.tensor([[0, 1]] * 6)
+        w = torch.rand(6, 2)
+        experts = _Experts(2)
+        getattr(experts, "1").up_proj = self._wrapped_linear(bits=4, seed=3)  # plain first
+        self.assertIsNone(_run_routes(experts, x, idx, w, experts.n))
+        experts = _Experts(2)
+        getattr(experts, "0").up_proj = self._wrapped_linear(bits=4, seed=4)  # wrapper first
+        self.assertIsNone(_run_routes(experts, x, idx, w, experts.n))
+
     def test_weightless_packed_linear_falls_back(self):
         # packed QuantLinear types (e.g. MXFP4QuantLinear) store packed weights
         # and expose no .weight; the support probe must reject them BEFORE any
@@ -182,8 +198,8 @@ class TestRunRoutesSingleGroupCPU(unittest.TestCase):
 
 
 @unittest.skipIf(
-    not (torch.cuda.is_available() and torch.cuda.device_count() >= 2),
-    "needs >=2 CUDA devices",
+    not (torch.cuda.is_available() and torch.cuda.device_count() >= 3),
+    "needs >=3 CUDA devices (inputs live on a third device)",
 )
 class TestRunRoutesMultiDeviceCUDA(unittest.TestCase):
     def test_two_device_groups_match_reference(self):
