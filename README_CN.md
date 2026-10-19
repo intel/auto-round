@@ -10,7 +10,7 @@
 <h3>训练后量化的效率，量化感知训练的精度</h3>
 
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.16.0-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.16.1-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -28,7 +28,7 @@
 
 [//]: # (</p>)
 
-&nbsp;&nbsp;&nbsp;&nbsp;简体中文 | [English](README.md)
+简体中文 | [English](README.md)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
