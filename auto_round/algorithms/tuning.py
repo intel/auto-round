@@ -27,6 +27,7 @@ class BlockTuningSession:
     Algorithms use the same interface with or without prefetch. A session must
     enclose forward, backward and optimizer steps so its staging buffers remain
     valid until all consumers finish, including on exceptions and early exit.
+    Sessions are single-use: enter once and request one iteration sequence.
     """
 
     def __init__(
@@ -59,6 +60,8 @@ class BlockTuningSession:
         self._cache = None
         self._cache_factory = None
         self._warmup_iterations = 0
+        self._state = "new"
+        self._iterations_started = False
         # Backend selection belongs to data infrastructure, not to algorithms.
         # Non-diffusion workflows do not even import the optional backend.
         if getattr(model_context, "is_diffusion", False):
@@ -70,11 +73,19 @@ class BlockTuningSession:
                 self._warmup_iterations = 1 if budget == "auto" else 0
 
     def __enter__(self):
+        if self._state != "new":
+            raise RuntimeError("BlockTuningSession can only be entered once.")
+        self._state = "active"
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        self._state = "closed"
         if self._cache is not None:
             self._cache.close()
+
+    def _require_active(self):
+        if self._state != "active":
+            raise RuntimeError("BlockTuningSession data access requires an active context.")
 
     def iterations(self):
         """Yield iterations, initializing staging after warmup.
@@ -83,7 +94,16 @@ class BlockTuningSession:
         next item. Auto budgeting therefore sees the same warmed allocator as
         the original synchronous-first-iteration implementation.
         """
+        self._require_active()
+        if self._iterations_started:
+            raise RuntimeError("BlockTuningSession.iterations() can only be called once.")
+        self._iterations_started = True
+        return self._iterate()
+
+    def _iterate(self):
         for iteration in range(self.iters):
+            # A retained iterator must not start or resume after context exit.
+            self._require_active()
             if self._cache_factory is not None and iteration == self._warmup_iterations:
                 self._cache = self._cache_factory(
                     self.block,
@@ -98,10 +118,12 @@ class BlockTuningSession:
 
     def next_batch(self):
         """Return the next sample indices without changing sampling semantics."""
+        self._require_active()
         return self.sampler.next_batch()
 
     def forward(self, indices):
         """Return prediction and reference using staged or synchronous data."""
+        self._require_active()
         staged = self._cache.get(indices) if self._cache is not None else None
         if staged is None:
             reference = torch.cat([self.outputs[index] for index in indices], dim=0).to(self.loss_device)
@@ -113,6 +135,7 @@ class BlockTuningSession:
 
     def collect_best_params(self):
         """Snapshot parameters using the active storage policy."""
+        self._require_active()
         if self._cache is not None and self._cache.best is not None:
             return self._cache.collect_best_params()
         return collect_best_params(self.block, self.cache_device)

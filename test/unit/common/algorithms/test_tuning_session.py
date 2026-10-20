@@ -278,6 +278,70 @@ def test_cache_closes_after_all_consumers_and_propagates_errors(session_args, ba
     backend.cache.close.assert_called_once_with()
 
 
+@pytest.mark.parametrize("consume_first", [False, True])
+def test_iterations_is_single_use_without_overwriting_cache(session_args, backend, consume_first):
+    with BlockTuningSession(**session_args) as session:
+        iterator = session.iterations()
+        if consume_first:
+            next(iterator)
+        with pytest.raises(RuntimeError, match="only be called once"):
+            session.iterations()
+        assert backend.create.call_count == int(consume_first)
+    assert backend.cache.close.call_count == int(consume_first)
+
+
+@pytest.mark.parametrize("phase", ["before_enter", "after_exit"])
+@pytest.mark.parametrize("operation", ["iterations", "next_batch", "forward", "collect_best_params"])
+def test_data_access_requires_active_context(session_args, backend, phase, operation):
+    session = BlockTuningSession(**session_args)
+    if phase == "after_exit":
+        with session:
+            next(session.iterations())
+    calls_before = backend.create.call_count
+    with pytest.raises(RuntimeError, match="active context"):
+        args = ([0],) if operation == "forward" else ()
+        getattr(session, operation)(*args)
+    assert backend.create.call_count == calls_before
+    backend.cache.get.assert_not_called()
+    backend.cache.collect_best_params.assert_not_called()
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_session_cannot_be_entered_twice(session_args, backend, nested):
+    session = BlockTuningSession(**session_args)
+    with session:
+        next(session.iterations())
+        if nested:
+            with pytest.raises(RuntimeError, match="only be entered once"), session:
+                pytest.fail("nested entry must be rejected")
+            backend.cache.close.assert_not_called()
+    if not nested:
+        with pytest.raises(RuntimeError, match="only be entered once"), session:
+            pytest.fail("closed session must not reopen")
+    backend.cache.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize("advance_before_exit", [False, True])
+def test_retained_iterator_cannot_run_after_exit(session_args, backend, advance_before_exit):
+    session_args["model_context"].diffusion_tuning_cache_size = "auto"
+    with BlockTuningSession(**session_args) as session:
+        iterator = session.iterations()
+        if advance_before_exit:
+            assert next(iterator) == 0
+    with pytest.raises(RuntimeError, match="active context"):
+        next(iterator)
+    backend.create.assert_not_called()
+
+
+def test_close_failure_still_marks_session_closed(session_args, backend):
+    backend.cache.close.side_effect = RuntimeError("close failed")
+    session = BlockTuningSession(**session_args)
+    with pytest.raises(RuntimeError, match="close failed"), session:
+        next(session.iterations())
+    with pytest.raises(RuntimeError, match="active context"):
+        session.next_batch()
+
+
 def test_base_quantizer_creates_usable_session(session_args, monkeypatch):
     monkeypatch.setattr("auto_round.algorithms.quantization.base.device_manager", SimpleNamespace(device="cpu"))
     quantizer = SimpleNamespace(
