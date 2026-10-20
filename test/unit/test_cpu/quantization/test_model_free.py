@@ -205,6 +205,12 @@ def test_explicit_model_free_rejects_unknown_runtime_kwargs():
         AutoRound("unused-model-path", model_free=True, unsupported_option=True)
 
 
+@pytest.mark.parametrize("dtype_key", ["static_kv_dtype", "static_attention_dtype"])
+def test_explicit_model_free_rejects_static_attention_quantization(dtype_key):
+    with pytest.raises(ValueError, match="model_free=True.*static"):
+        AutoRound("unused-model-path", scheme="W4A16", model_free=True, **{dtype_key: "fp8"})
+
+
 def test_explicit_model_free_rejects_unsupported_export_without_fallback():
     compressor = AutoRound("unused-model-path", model_free=True, scheme="W4A16")
 

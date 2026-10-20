@@ -3194,10 +3194,12 @@ def is_model_free_route(
     has_static_attention_quantization = any(
         kwargs.get(key) is not None for key in ("static_kv_dtype", "static_attention_dtype")
     )
+    if explicit:
+        if has_static_attention_quantization:
+            raise ValueError("model_free=True does not support static KV or attention quantization.")
+        return True
     if has_static_attention_quantization:
         return False
-    if explicit:
-        return True
     # Only auto-route when format is auto_round (or not specified).
     fmt = kwargs.get("format", "auto_round")
     if fmt is None:
