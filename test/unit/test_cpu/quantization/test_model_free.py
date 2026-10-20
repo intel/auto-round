@@ -200,6 +200,18 @@ def test_model_free_entry_forwards_explicit_format(monkeypatch):
     assert ar._fallback_init_kwargs.get("format") == "auto_round:llm_compressor"
 
 
+def test_explicit_model_free_rejects_unknown_runtime_kwargs():
+    with pytest.raises(TypeError, match="Unsupported parameter 'unsupported_option'.*model_free=True"):
+        AutoRound("unused-model-path", model_free=True, unsupported_option=True)
+
+
+def test_explicit_model_free_rejects_unsupported_export_without_fallback():
+    compressor = AutoRound("unused-model-path", model_free=True, scheme="W4A16")
+
+    with pytest.raises(ValueError, match="model_free=True does not support format 'gguf:q4_k_m'"):
+        compressor.quantize_and_save("unused-output", format="gguf:q4_k_m")
+
+
 def test_fallback_construction_sees_save_format_when_no_construction_format(monkeypatch):
     """The fallback exists to serve a quantize_and_save(format=...) call.
 

@@ -1887,6 +1887,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         from dataclasses import fields as dc_fields
 
         fallback_kwargs = dict(kwargs)
+        self._force_model_free = bool(kwargs.get("model_free", False))
 
         # Collect per-field scheme overrides forwarded from AutoRound
         # (e.g. bits=4, sym=False passed as individual kwargs).
@@ -1975,6 +1976,12 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
     def _fallback_to_base_compressor(self, save_format: str | None = None):
         from auto_round.autoround import AutoRound
 
+        if self._force_model_free:
+            requested_format = save_format or self.format
+            raise ValueError(
+                "model_free=True does not support the requested operation "
+                f"(format: '{requested_format}'); refusing to fall back to regular AutoRound."
+            )
         logger.info(
             "Model-free mode cannot export this request directly; "
             "constructing the regular AutoRound compressor (requested format: '%s').",
@@ -2158,6 +2165,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
 
         if format not in accepted_formats:
+            if self._force_model_free:
+                raise ValueError(
+                    f"model_free=True does not support format '{format}' " f"for AutoScheme family '{family}'."
+                )
             logger.warning(
                 "Format '%s' is incompatible with model-free + AutoScheme (family=%s); "
                 "fallback before running AutoScheme scoring.",
@@ -2216,6 +2227,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             # BF16 default with NVFP4_E5M3 layer_config overrides.
             _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         if format not in _accepted_formats:
+            if self._force_model_free:
+                raise ValueError(
+                    f"model_free=True does not support format '{format}' " f"for scheme '{self.scheme_input}'."
+                )
             logger.warning(
                 f"Format '{format}' is not supported by model-free mode for scheme '{self.scheme_input}'; "
                 f"falling back to the regular AutoRound flow."
