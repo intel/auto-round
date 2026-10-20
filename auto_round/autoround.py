@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import functools
 import inspect
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 
@@ -30,13 +30,14 @@ from auto_round.scheme_entry import (
     resolve_entry_scheme,
 )
 from auto_round.schemes import QuantizationScheme
+from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
 from auto_round.utils.device_manager import normalize_default_device_map
 
 if TYPE_CHECKING:
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-    from auto_round.compressors.base import BaseOrchestrator as BaseCompressor
+    from auto_round.compressors.base import BaseCompressor
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +194,12 @@ def _select_rtn_compressor_base_cls(quant_config: RTNConfig, scheme, format, bas
                 # the plain min/max initialization ignores it
                 if getattr(quant_config, "enable_neuqi", False):
                     enable_imatrix = True
-            elif (data_type == "int" and (bits is None or bits < 8)) or is_weight_scheme(scheme):
+            elif (
+                (data_type == "int" and (bits is None or bits < 8))
+                or (data_type in ("mx_fp", "mx_int") and bits is not None and bits <= 8)
+                or (data_type == "nv_fp" and bits == 4)
+                or is_weight_scheme(scheme)
+            ):
                 enable_imatrix = True
 
     act_bits = resolved_attrs.get("act_bits")
@@ -536,7 +542,7 @@ class _CompressorBuilder:
         tokenizer=None,
         platform="hf",
         format=None,
-        dataset="NeelNanda/pile-10k",
+        dataset: str | CalibDataset | list | tuple | torch.utils.data.DataLoader | None = None,
         low_gpu_mem_usage: bool = False,
         device_map: str | torch.device | int | dict = 0,
         iters: int | None = None,
@@ -553,7 +559,14 @@ class _CompressorBuilder:
         from auto_round.algorithms.registry import normalize_algorithm_config
         from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
         from auto_round.compressors.utils import check_need_act_calibration
+        from auto_round.utils.dataset_utils import CalibDataset
         from auto_round.utils.model import is_model_free_route
+
+        # Normalize CalibDataset objects to spec strings
+        if isinstance(dataset, CalibDataset):
+            dataset = dataset.to_spec_string()
+        elif isinstance(dataset, (list, tuple)):
+            dataset = normalize_dataset_spec(dataset)
 
         if alg_configs is None:
             alg_configs = "signround"
@@ -709,7 +722,8 @@ class AutoRound:
             Use config instances to provide algorithm-specific options, such
             as ``SignRoundConfig(iters=50)`` or ``AWQConfig(apply_clip=True)``.
         layer_config: Optional per-layer quantization overrides.
-        dataset: Calibration dataset name, samples, or dataloader.
+        dataset: Calibration dataset name, samples, dataloader, or a
+            :class:`~auto_round.utils.dataset_utils.CalibDataset` object.
         seqlen: Calibration sequence length.
         nsamples: Number of calibration samples.
         batch_size: Calibration batch size.

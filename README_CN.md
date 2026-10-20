@@ -7,10 +7,10 @@
 </p>
 
 
-<h3> 面向 LLM 的先进量化算法</h3>
+<h3>训练后量化的效率，量化感知训练的精度</h3>
 
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.16.0-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.16.1-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -18,9 +18,19 @@
 </a>
 <a href="https://pepy.tech/projects/auto-round" style="text-decoration:none;"><img src="https://static.pepy.tech/badge/auto-round" alt="PyPI Downloads"></a>
 
-&nbsp;&nbsp;&nbsp;&nbsp;[English](README.md) | 简体中文
+[//]: # (<p align="center">)
 
-[User Guide](./docs/step_by_step.md) | [用户指南](./docs/step_by_step_CN.md)&nbsp;&nbsp; 
+[//]: # (<a href="https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard" style="text-decoration:none;">)
+
+[//]: # (<img alt="免费量化您的模型" src="https://img.shields.io/badge/%F0%9F%91%89%20%E5%85%8D%E8%B4%B9%E9%87%8F%E5%8C%96%E6%82%A8%E7%9A%84%E6%A8%A1%E5%9E%8B%20%7C%20Quantize%20Your%20Model%20for%20FREE-2E7D32?style=for-the-badge">)
+
+[//]: # (</a>)
+
+[//]: # (</p>)
+
+简体中文 | [English](README.md)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+
+[用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
 ---
 <div align="left">
