@@ -568,9 +568,25 @@ def llm_load_model(
     monkey_patch_model(model)
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
+    _keep_checkpoint_fp32_params(model, pretrained_model_name_or_path, platform)
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer
+
+
+def _keep_checkpoint_fp32_params(model, pretrained_model_name_or_path, platform, subfolder=None):
+    """Keep FP32 tensors of a mixed-precision checkpoint in FP32 after ``from_pretrained``."""
+    from auto_round.utils.missing_tensors import keep_special_fp32_params
+
+    try:
+        source_dir = pretrained_model_name_or_path
+        if not os.path.isdir(source_dir):
+            source_dir = download_or_get_path(source_dir, platform=platform)
+        if subfolder is not None:
+            source_dir = os.path.join(source_dir, subfolder)
+        keep_special_fp32_params(model, source_dir)
+    except Exception as e:
+        logger.warning(f"Skipping restore of FP32 tensors from the checkpoint due to error: {e}")
 
 
 def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list | None = None) -> tuple:
@@ -941,6 +957,7 @@ def mllm_load_model(
     model = model.eval()
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
+    _keep_checkpoint_fp32_params(model, pretrained_model_name_or_path, platform, model_subfolder)
     model = _to_model_dtype(model, model_dtype)
 
     if model_subfolder is not None:
@@ -3194,10 +3211,12 @@ def is_model_free_route(
     has_static_attention_quantization = any(
         kwargs.get(key) is not None for key in ("static_kv_dtype", "static_attention_dtype")
     )
+    if explicit:
+        if has_static_attention_quantization:
+            raise ValueError("model_free=True does not support static KV or attention quantization.")
+        return True
     if has_static_attention_quantization:
         return False
-    if explicit:
-        return True
     # Only auto-route when format is auto_round (or not specified).
     fmt = kwargs.get("format", "auto_round")
     if fmt is None:

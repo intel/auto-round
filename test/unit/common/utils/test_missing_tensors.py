@@ -503,7 +503,7 @@ class TestCopyMissingTensorsFromSource:
         os.makedirs(src)
         os.makedirs(tgt)
         original = torch.tensor([1.0001, -2.0002], dtype=torch.float32)
-        unchanged = torch.tensor([3.0], dtype=torch.float32)
+        unchanged = torch.tensor([3.0], dtype=torch.bfloat16)
         _save_safetensors(
             {"model.special.weight": original, "model.unchanged.weight": unchanged},
             os.path.join(src, "model.safetensors"),
@@ -533,13 +533,22 @@ class TestCopyMissingTensorsFromSource:
         original = torch.tensor([1.0001, -2.0002], dtype=torch.float32)
         source_shard = "model-00002-of-00002.safetensors"
         target_shard = "model-00001-of-00002.safetensors"
-        _save_safetensors({"model.special.weight": original}, os.path.join(src, source_shard))
+        _save_safetensors(
+            {"model.special.weight": original, "model.other.weight": torch.ones(2, dtype=torch.bfloat16)},
+            os.path.join(src, source_shard),
+        )
         _save_safetensors(
             {"model.special.weight": original.to(torch.bfloat16), "model.other.weight": torch.ones(2)},
             os.path.join(tgt, target_shard),
         )
         with open(os.path.join(src, "model.safetensors.index.json"), "w") as f:
-            json.dump({"metadata": {}, "weight_map": {"model.special.weight": source_shard}}, f)
+            json.dump(
+                {
+                    "metadata": {},
+                    "weight_map": {"model.special.weight": source_shard, "model.other.weight": source_shard},
+                },
+                f,
+            )
         with open(os.path.join(tgt, "model.safetensors.index.json"), "w") as f:
             json.dump(
                 {
@@ -897,7 +906,7 @@ class TestRestoreFp32DecoupledFromMtp:
         os.makedirs(src, exist_ok=True)
         os.makedirs(tgt, exist_ok=True)
         norm_weight = torch.tensor([1.0001, -2.0002, 3.0003], dtype=torch.float32)
-        mtp_weight = torch.randn(32, 64)
+        mtp_weight = torch.randn(32, 64, dtype=torch.bfloat16)
         _save_safetensors(
             {
                 "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,
@@ -944,7 +953,7 @@ class TestRestoreFp32DecoupledFromMtp:
         _save_safetensors(
             {
                 "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,
-                "model.language_model.mtp.0.fc.weight": torch.randn(32, 64),
+                "model.language_model.mtp.0.fc.weight": torch.randn(32, 64, dtype=torch.bfloat16),
             },
             os.path.join(src, "model.safetensors"),
         )
@@ -985,7 +994,7 @@ class TestRestoreFp32DecoupledFromMtp:
         src = str(tmp_path / "src")
         os.makedirs(src)
         norm_weight = torch.tensor([1.0001, -2.0002, 3.0003], dtype=torch.float32)
-        mtp_weight = torch.randn(32, 64)
+        mtp_weight = torch.randn(32, 64, dtype=torch.bfloat16)
         _save_safetensors(
             {
                 "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,
@@ -1022,3 +1031,172 @@ class TestRestoreFp32DecoupledFromMtp:
             extra = _load_safetensors(os.path.join(tmp_save_dir, "model_extra_tensors.safetensors"))
             assert "model.language_model.mtp.0.fc.weight" in extra
             torch.testing.assert_close(extra["model.language_model.mtp.0.fc.weight"], mtp_weight)
+
+    def test_all_fp32_source_is_not_restored(self, tmp_path):
+        """An all-FP32 source (e.g. fake format export to bf16) must keep the saved tensors."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        weight = torch.randn(32, 64)
+        _save_safetensors({"model.layers.0.mlp.up_proj.weight": weight}, os.path.join(src, "model.safetensors"))
+        _save_safetensors(
+            {"model.layers.0.mlp.up_proj.weight": weight.to(torch.bfloat16)}, os.path.join(tgt, "model.safetensors")
+        )
+        _write_config(tgt)
+
+        restore_fp32_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        assert result["model.layers.0.mlp.up_proj.weight"].dtype == torch.bfloat16
+
+    def test_modified_fp32_tensor_is_not_restored(self, tmp_path):
+        """FP32 source tensors altered by quantization (fake format) must not be overwritten."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003], dtype=torch.float32)
+        weight = torch.randn(32, 64)
+        fake_quantized = (weight * 4).round().div(4).to(torch.bfloat16) + 1
+        _save_safetensors(
+            {
+                "model.layers.0.norm.weight": norm_weight,
+                "model.layers.0.mlp.up_proj.weight": weight,
+                "model.embed_tokens.weight": torch.randn(8, 64, dtype=torch.bfloat16),
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors(
+            {
+                "model.layers.0.norm.weight": norm_weight.to(torch.bfloat16),
+                "model.layers.0.mlp.up_proj.weight": fake_quantized,
+            },
+            os.path.join(tgt, "model.safetensors"),
+        )
+        _write_config(tgt)
+
+        restore_fp32_tensors_from_source(src, tgt)
+
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        assert torch.equal(result["model.layers.0.norm.weight"], norm_weight)
+        assert torch.equal(result["model.layers.0.mlp.up_proj.weight"], fake_quantized)
+
+
+class TestKeepSpecialFp32Params:
+
+    def test_meta_loader_marks_fp32_params_and_buffers(self, tmp_path):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from auto_round.context.model import ModelContext
+        from auto_round.utils.disk_stream_util import SafetensorsIndex, materialize_module
+
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003, 4.0004])
+        _save_safetensors(
+            {
+                "block.norm.weight": norm_weight,
+                "block.norm.bias": torch.zeros(4, dtype=torch.bfloat16),
+                "block.proj.weight": torch.randn(4, 4, dtype=torch.bfloat16),
+                "block.scale": norm_weight.clone(),
+            },
+            str(tmp_path / "model.safetensors"),
+        )
+        with torch.device("meta"):
+            model = torch.nn.Module()
+            model.block = self._make_model().to(torch.bfloat16)
+            model.block.register_buffer("scale", torch.empty(4))
+        index = SafetensorsIndex(str(tmp_path))
+        context = SimpleNamespace(trust_remote_code=False)
+        with patch("auto_round.utils.disk_stream_util.build_meta_model", return_value=(model, None, index)):
+            loaded, _, loaded_index = ModelContext._build_disk_stream_model(context, str(tmp_path))
+
+        assert loaded is model
+        assert loaded_index is index
+        assert set(model._keep_in_fp32_modules) == {"block.norm.weight", "block.scale"}
+        assert all(tensor.is_meta for tensor in model.parameters())
+        assert model.block.scale.is_meta
+        materialize_module(model.block, "block", index, device="cpu")
+        assert torch.equal(model.block.norm.weight, norm_weight)
+        assert model.block.norm.weight.dtype == torch.float32
+        assert torch.equal(model.block.scale, norm_weight)
+        assert model.block.scale.dtype == torch.float32
+
+    def test_all_fp32_meta_checkpoint_is_untouched(self, tmp_path):
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+
+        _save_safetensors(self._make_model().state_dict(), str(tmp_path / "model.safetensors"))
+        with torch.device("meta"):
+            model = self._make_model().to(torch.bfloat16)
+
+        assert keep_special_fp32_params(model, str(tmp_path)) == []
+        assert model.norm.weight.is_meta
+        assert model.norm.weight.dtype == torch.bfloat16
+
+    def test_meta_checkpoint_keeps_fp32_through_materialization(self, tmp_path):
+        from auto_round.utils.disk_stream_util import SafetensorsIndex, free_module, materialize_module
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+        from auto_round.utils.model import cast_model_dtype
+
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003, 4.0004])
+        _save_safetensors(
+            {
+                "block.norm.weight": norm_weight,
+                "block.norm.bias": torch.zeros(4, dtype=torch.bfloat16),
+                "block.proj.weight": torch.randn(4, 4, dtype=torch.bfloat16),
+            },
+            str(tmp_path / "model.safetensors"),
+        )
+        model = torch.nn.Module()
+        with torch.device("meta"):
+            model.block = self._make_model().to(torch.bfloat16)
+
+        assert keep_special_fp32_params(model, str(tmp_path)) == ["block.norm.weight"]
+        assert all(tensor.is_meta for tensor in model.parameters())
+        cast_model_dtype(model, torch.bfloat16)
+        assert model.block.norm.weight.dtype == torch.float32
+
+        index = SafetensorsIndex(str(tmp_path))
+        for _ in range(2):
+            materialize_module(model.block, "block", index, device="cpu")
+            assert model.block.norm.weight.dtype == torch.float32
+            assert torch.equal(model.block.norm.weight, norm_weight)
+            assert model.block.proj.weight.dtype == torch.bfloat16
+            free_module(model.block)
+
+    @staticmethod
+    def _make_model():
+        model = torch.nn.Module()
+        model.norm = torch.nn.LayerNorm(4)
+        model.proj = torch.nn.Linear(4, 4, bias=False)
+        return model
+
+    def test_mixed_checkpoint_keeps_fp32_after_cast(self, tmp_path):
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+        from auto_round.utils.model import cast_model_dtype
+
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003, 4.0004])
+        _save_safetensors(
+            {
+                "norm.weight": norm_weight,
+                "norm.bias": torch.zeros(4, dtype=torch.bfloat16),
+                "proj.weight": torch.randn(4, 4, dtype=torch.bfloat16),
+            },
+            str(tmp_path / "model.safetensors"),
+        )
+        model = self._make_model().to(torch.bfloat16)
+
+        assert keep_special_fp32_params(model, str(tmp_path)) == ["norm.weight"]
+        model = cast_model_dtype(model, torch.bfloat16)
+
+        assert model.norm.weight.dtype == torch.float32
+        assert torch.equal(model.norm.weight, norm_weight)
+        assert model.proj.weight.dtype == torch.bfloat16
+
+    def test_all_fp32_checkpoint_is_untouched(self, tmp_path):
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+
+        model = self._make_model()
+        _save_safetensors(model.state_dict(), str(tmp_path / "model.safetensors"))
+        model = model.to(torch.bfloat16)
+
+        assert keep_special_fp32_params(model, str(tmp_path)) == []
+        assert model.norm.weight.dtype == torch.bfloat16

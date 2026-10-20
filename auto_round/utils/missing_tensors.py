@@ -68,15 +68,23 @@ def _restore_special_fp32_tensors(
             source_to_saved[source_name] = source_name
 
     source_names_by_shard: dict[str, list[str]] = {}
-    for tensor_name in source_to_saved:
-        source_names_by_shard.setdefault(source_tensor_to_file[tensor_name], []).append(tensor_name)
+    for tensor_name, source_shard in source_tensor_to_file.items():
+        source_names_by_shard.setdefault(source_shard, []).append(tensor_name)
 
     candidates: list[str] = []
+    has_low_precision_float = False
     for source_shard, tensor_names in source_names_by_shard.items():
         with safe_open(source_shard, framework="pt", device="cpu") as source_file:
             for tensor_name in tensor_names:
-                if source_file.get_slice(tensor_name).get_dtype() == "F32":
+                dtype = source_file.get_slice(tensor_name).get_dtype()
+                if dtype in {"F16", "BF16"} or dtype.startswith("F8"):
+                    has_low_precision_float = True
+                elif dtype == "F32" and tensor_name in source_to_saved:
                     candidates.append(tensor_name)
+
+    # An all-FP32 source has no "special" FP32 tensors; the downcast to the export dtype is intended.
+    if not has_low_precision_float:
+        return
 
     target_names_by_shard: dict[str, list[str]] = {}
     for tensor_name in candidates:
@@ -91,7 +99,13 @@ def _restore_special_fp32_tensors(
                 if target_file.get_slice(target_name).get_dtype() in {"F16", "BF16"}:
                     source_shard = source_tensor_to_file[tensor_name]
                     with safe_open(source_shard, framework="pt", device="cpu") as source_file:
-                        tensors_to_restore[tensor_name] = source_file.get_tensor(tensor_name)
+                        source_tensor = source_file.get_tensor(tensor_name)
+                    target_tensor = target_file.get_tensor(target_name)
+                    # Skip tensors changed beyond a plain downcast (e.g. fake-quantized weights).
+                    if source_tensor.shape == target_tensor.shape and torch.equal(
+                        source_tensor.to(target_tensor.dtype), target_tensor
+                    ):
+                        tensors_to_restore[tensor_name] = source_tensor
 
     restore_names_by_shard: dict[str, list[str]] = {}
     for tensor_name in tensors_to_restore:
@@ -129,24 +143,83 @@ def _restore_special_fp32_tensors(
         )
 
 
-def _resolve_tensor_shard_maps(
-    source_dir: str,
-    target_dir: str,
-) -> tuple[dict[str, str], dict[str, str]] | None:
-    """Resolve ``tensor_name -> shard_file`` maps for *source_dir* and *target_dir*.
+def keep_special_fp32_params(model: torch.nn.Module, source_dir: str) -> list[str]:
+    """Preserve checkpoint FP32 tensors after loading or building a meta skeleton.
 
-    Returns ``None`` when either checkpoint cannot be resolved (missing config,
-    unresolvable source repo, or no safetensors present), in which case callers
-    should skip whatever tensor-level processing they were about to do.
+    Only applies to mixed-precision checkpoints (e.g. a BF16 model that stores
+    ``linear_attn.norm.weight`` in FP32); for an all-FP32 checkpoint the load dtype is
+    intentional. Restored names are appended to ``model._keep_in_fp32_modules`` so that
+    later ``cast_model_dtype`` calls and export keep them in FP32.
+
+    Meta tensors are promoted without reading their payload; materialization later
+    loads the original FP32 values. Returns the restored or marked tensor names.
     """
+    source_tensor_to_file = _resolve_source_tensor_map(source_dir)
+    if not source_tensor_to_file:
+        return []
+    from safetensors import safe_open
+
+    model_tensors = dict(model.named_parameters(remove_duplicate=False))
+    model_tensors.update(model.named_buffers(remove_duplicate=False))
+
+    names_by_shard: dict[str, list[str]] = {}
+    for tensor_name, shard in source_tensor_to_file.items():
+        names_by_shard.setdefault(shard, []).append(tensor_name)
+
+    has_low_precision_float = False
+    candidates_by_shard: dict[str, list[str]] = {}
+    for shard, tensor_names in names_by_shard.items():
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            for tensor_name in tensor_names:
+                dtype = f.get_slice(tensor_name).get_dtype()
+                if dtype in {"F16", "BF16"} or dtype.startswith("F8"):
+                    has_low_precision_float = True
+                elif dtype == "F32":
+                    tensor = model_tensors.get(tensor_name)
+                    if (
+                        tensor is not None
+                        and tensor.dtype in (torch.float16, torch.bfloat16, torch.float32)
+                        and (tensor.device.type == "meta" or tensor.dtype != torch.float32)
+                    ):
+                        candidates_by_shard.setdefault(shard, []).append(tensor_name)
+
+    if not has_low_precision_float or not candidates_by_shard:
+        return []
+
+    restored: list[str] = []
+    for shard, tensor_names in candidates_by_shard.items():
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            for tensor_name in tensor_names:
+                tensor = model_tensors[tensor_name]
+                if tensor.device.type == "meta":
+                    if tuple(f.get_slice(tensor_name).get_shape()) != tuple(tensor.shape):
+                        continue
+                    tensor.data = tensor.to(dtype=torch.float32)
+                    restored.append(tensor_name)
+                    continue
+                value = f.get_tensor(tensor_name)
+                if value.shape != tensor.shape:
+                    continue
+                tensor.data = value.to(tensor.device)
+                restored.append(tensor_name)
+
+    if restored:
+        keep = getattr(model, "_keep_in_fp32_modules", None) or []
+        keep = [keep] if isinstance(keep, str) else list(keep)
+        model._keep_in_fp32_modules = keep + [name for name in restored if name not in keep]
+        logger.info(
+            f"Kept {len(restored)} checkpoint FP32 tensor(s) in FP32 after loading: "
+            f"{compress_layer_names(restored)}."
+        )
+    return restored
+
+
+def _resolve_source_tensor_map(source_dir: str) -> dict[str, str] | None:
+    """Return ``tensor_name -> shard_file`` for the safetensors checkpoint in *source_dir*."""
     try:
         from safetensors import safe_open
     except ImportError:
         logger.warning("safetensors not available, skipping tensor comparison against source checkpoint")
-        return None
-
-    config_path = os.path.join(target_dir, "config.json")
-    if not os.path.exists(config_path):
         return None
 
     if not os.path.isdir(source_dir):
@@ -180,6 +253,27 @@ def _resolve_tensor_shard_maps(
                 source_tensor_to_file[key] = source_single_file
     else:
         return None
+    return source_tensor_to_file
+
+
+def _resolve_tensor_shard_maps(
+    source_dir: str,
+    target_dir: str,
+) -> tuple[dict[str, str], dict[str, str]] | None:
+    """Resolve ``tensor_name -> shard_file`` maps for *source_dir* and *target_dir*.
+
+    Returns ``None`` when either checkpoint cannot be resolved (missing config,
+    unresolvable source repo, or no safetensors present), in which case callers
+    should skip whatever tensor-level processing they were about to do.
+    """
+    config_path = os.path.join(target_dir, "config.json")
+    if not os.path.exists(config_path):
+        return None
+
+    source_tensor_to_file = _resolve_source_tensor_map(source_dir)
+    if source_tensor_to_file is None:
+        return None
+    from safetensors import safe_open
 
     saved_tensor_to_file: dict[str, str] = {}
     saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
