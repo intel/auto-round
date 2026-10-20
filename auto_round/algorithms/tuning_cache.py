@@ -332,7 +332,7 @@ def resolve_tuning_cache_cls(model_context) -> type[BlockTuningPrefetchCache]:
     This is the single place that knows about cache variants, so the SignRound
     tuning loop never branches on model type: it asks for a class and gets the
     diffusion specialization for diffusion pipelines, otherwise the generic
-    LLM/VLM cache. New variants are added here (or by overriding the quantizer's
+    LLM/VLM cache. New variants are added here (or by overriding the session's
     ``_resolve_tuning_cache_plan`` hook) instead of threading ``if is_diffusion``
     checks through the algorithm.
     """
