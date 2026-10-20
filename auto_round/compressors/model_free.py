@@ -40,6 +40,9 @@ weights with ``fake`` format):
 
 * Preset names: ``MXFP4``, ``MXFP8``.
 * ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
+* NVFP4 source checkpoints (detected from the model name or the source quantization config) with
+  scheme ``MXFP4``: only the NVFP4 layers are converted to MXFP4 (plus any layer matched by
+  ``layer_config``); every other layer is kept as-is.
 
 **NVFP4 E5M3** (``auto_round`` or ``fake`` format):
 
@@ -125,6 +128,7 @@ from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.model_free_utils import (
     _LM_HEAD_PATTERNS,
+    _NVFP_SOURCE_ONLY_KEY,
     _apply_scheme_overrides,
     _build_cross_shard_pairs_from_weight_map,
     _build_quantization_config,
@@ -138,6 +142,7 @@ from auto_round.utils.model_free_utils import (
     _layer_config_has_nvfp4,
     _list_weight_shards,
     _load_config,
+    _load_source_quant_config,
     _load_weight_map_from_index,
     _looks_like_auto_scheme,
     _normalize_scheme,
@@ -148,6 +153,7 @@ from auto_round.utils.model_free_utils import (
     _validate_supported_scheme,
     _write_index_file,
     _write_output_shard,
+    detect_model_dtypes,
     handle_model_type_low_precision_source_tensors,
     is_model_free_supported_scheme,
     preprocess_model_type_source_tensors,
@@ -200,6 +206,7 @@ _QUANTIZATION_CONFIG_FILENAMES: tuple[str, ...] = (
     "quantization_config.json",
     "quantize_config.json",
     "quant_config.json",
+    "hf_quant_config.json",
 )
 
 _RESUME_MANIFEST_NAME = "model_free_resume.json"
@@ -572,6 +579,8 @@ class _ModelFreeCompressorCore:
         self.model_name_or_path = model_name_or_path
         self.output_dir = output_dir
         self.scheme_input = scheme
+        # Set by _detect_nvfp4_source_model(): convert only the NVFP4 source layers to MXFP4.
+        self.nvfp_source_only = False
         self.layer_config_input = layer_config
         self.ignore_layers_input = ignore_layers
         self.format = format or "auto_round"
@@ -663,6 +672,33 @@ class _ModelFreeCompressorCore:
         ds = asdict(self.scheme_obj)
         self.default_scheme = {k: v for k, v in ds.items() if v is not None}
         self.default_scheme["_output_format"] = self.format
+
+    def _detect_nvfp4_source_model(self) -> None:
+        """With an MXFP4 scheme on an NVFP4 source, convert only the NVFP4 layers (plus layer_config matches)."""
+        data_type = (self.scheme_obj.data_type or "").lower()
+        if not (is_mx_fp(data_type) and self.scheme_obj.bits == 4):
+            return
+        reason = detect_model_dtypes(
+            self.model_name_or_path,
+            _load_source_quant_config(
+                self.work_dir if self.is_streaming else self.source_dir, self.source_quantization_config
+            ),
+        ).get("nvfp4")
+        if reason is None:
+            return
+        format_lower = self.format.lower().replace(" ", "").split(",")[0]
+        if format_lower not in ("llm_compressor", "auto_round:llm_compressor"):
+            raise ValueError(
+                f"Detected an NVFP4 source model ({reason}); converting its NVFP4 layers to MXFP4 "
+                f"currently only supports format 'llm_compressor', got '{self.format}'."
+            )
+        logger.warning(
+            f"Detected NVFP4 layers in the source model ({reason}). Only the NVFP4 layers will be quantized "
+            "to MXFP4; all other layers (BF16, FP8, ...) are kept as-is. To quantize additional layers, "
+            "set them explicitly via layer_config."
+        )
+        self.nvfp_source_only = True
+        self.default_scheme[_NVFP_SOURCE_ONLY_KEY] = True
 
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
@@ -846,12 +882,7 @@ class _ModelFreeCompressorCore:
 
     def _detect_fp8_source(self) -> None:
         quant_config = self.source_quantization_config
-        is_fp8 = (
-            quant_config.get("quant_method") == "fp8"
-            or quant_config.get("quantization_type") == "fp8"
-            or quant_config.get("fmt", "").startswith("e4m3")
-        )
-        if is_fp8:
+        if "fp8" in detect_model_dtypes(self.model_name_or_path, quant_config):
             self.fp8_block_size = quant_config.get("weight_block_size")
             logger.info(
                 f"Detected FP8 source model (block_size={self.fp8_block_size}, "
@@ -1556,6 +1587,12 @@ class _ModelFreeCompressorCore:
         block_name_to_quantize = ",".join(dict.fromkeys(block_prefixes)) or None
 
         os.makedirs(self._quant_output_dir, exist_ok=True)
+        source_quant_config = None
+        if self.nvfp_source_only:
+            # Read before the stale source metadata files are removed below.
+            source_quant_config = _load_source_quant_config(
+                self.work_dir if self.is_streaming else self.source_dir, self.source_quantization_config
+            )
         quantization_config = _build_quantization_config(
             default_scheme=self.default_scheme,
             layer_config=self.layer_config,
@@ -1564,6 +1601,7 @@ class _ModelFreeCompressorCore:
             ignored_layers=self.all_ignored_layers,
             block_name_to_quantize=block_name_to_quantize,
             format=self.format,
+            source_quant_config=source_quant_config,
         )
 
         self._remove_stale_quantization_config_files()
@@ -1700,6 +1738,7 @@ class _ModelFreeCompressorCore:
 
         # ---- source resolution ----
         self._resolve_source()
+        self._detect_nvfp4_source_model()
         self._check_conv1d_and_embedding()
         self._apply_predefined_ignore_layers()
         self._detect_fp8_source()
@@ -1742,6 +1781,7 @@ class _ModelFreeCompressorCore:
         logger.info(
             f"Model-free quantization: {self.model_name_or_path}\n"
             f"  Scheme: {self.scheme_obj}\n"
+            f"  NVFP4 source layers only: {self.nvfp_source_only}\n"
             f"  Packing format: {packing_format}\n"
             f"  Optimized RTN: {'enabled' if opt_rtn_enabled else 'disabled'}\n"
             f"  Output: {self.output_dir}\n"
@@ -1767,6 +1807,12 @@ class _ModelFreeCompressorCore:
             raise RuntimeError(
                 "Model-free quantization did not complete all weight shards; resume state was retained for: "
                 f"{', '.join(missing_shards)}"
+            )
+
+        if self.nvfp_source_only and not self.all_quantized_layers:
+            logger.warning(
+                f"No NVFP4 layers were found in the shards of '{self.model_name_or_path}'; "
+                "all layers were kept as-is."
             )
 
         # ---- write outputs ----

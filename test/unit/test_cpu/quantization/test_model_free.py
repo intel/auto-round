@@ -20,6 +20,7 @@ Backend-specific model-free behavior is covered by test_model_free_parity.py.
 
 import json
 import os
+import re
 from unittest.mock import Mock
 
 import pytest
@@ -36,6 +37,7 @@ def test_quantize_and_save_restores_temporary_state_on_failure(monkeypatch):
     compressor.output_dir = "original-output"
     compressor.format = "auto_round"
     compressor.quantized = False
+    compressor.nvfp_source_only = False
 
     def fail_run():
         raise RuntimeError("save failed")
@@ -726,6 +728,20 @@ def test_model_free_legacy_nvfp4_is_normalized_and_passthrough(tmp_path):
     assert "model.layers.0.self_attn.q_proj" in quantized
     assert prefix not in ignored
 
+
+def test_model_free_llmc_nvfp4_is_not_renormalized(tmp_path):
+    prefix = "model.layers.0.mlp.down_proj"
+    tensors = _nvfp4_source_tensors(prefix)
+    tensors[f"{prefix}.weight_global_scale"] = torch.tensor([4.0], dtype=torch.float32)
+    shard_path = str(tmp_path / "shard.safetensors")
+    save_file(tensors, shard_path)
+
+    layer_config = {prefix: {"bits": 4, "group_size": 16, "sym": True, "data_type": "nv_fp"}}
+    output, _, _ = _process_shard(shard_path, _DEFAULT_SCHEME, layer_config, [])
+
+    # llm-compressor global scales are already in the expected convention.
+    assert torch.allclose(output[f"{prefix}.weight_global_scale"], torch.tensor([4.0], dtype=torch.float32))
+
     def test_ignores_and_skips(self, tmp_path):
         shard_path = str(tmp_path / "shard.safetensors")
         save_file(
@@ -1259,6 +1275,577 @@ class TestModelFreeMXFP:
         # lm_head stays full precision
         assert "lm_head.weight" in keys
         assert "lm_head.weight_packed" not in keys
+
+
+# ===========================================================================
+#  NVFP4 source + MXFP4 scheme: convert only the NVFP4 layers of an NVFP4 source checkpoint
+# ===========================================================================
+
+_NV_ATTN = "model.layers.0.self_attn.q_proj"
+_NV_MLP = "model.layers.0.mlp.down_proj"
+_NV_MLP_UP = "model.layers.0.mlp.up_proj"
+
+
+def _nvfp4_source_tensors(prefix, out_features=32, in_features=64):
+    """compressed-tensors NVFP4 layer."""
+    return {
+        f"{prefix}.weight_packed": torch.randint(0, 256, (out_features, in_features // 2), dtype=torch.uint8),
+        f"{prefix}.weight_scale": torch.ones((out_features, in_features // 16)).to(torch.float8_e4m3fn),
+        f"{prefix}.weight_global_scale": torch.tensor([1.0], dtype=torch.float32),
+        f"{prefix}.input_global_scale": torch.tensor([1.0], dtype=torch.float32),
+    }
+
+
+def _modelopt_nvfp4_tensors(prefix, out_features=32, in_features=64, input_scale_key="input_scale"):
+    """ModelOpt NVFP4 layer (Quark uses ``input_scale_2`` instead of ``input_scale``)."""
+    return {
+        f"{prefix}.weight": torch.randint(0, 256, (out_features, in_features // 2), dtype=torch.uint8),
+        f"{prefix}.weight_scale": torch.ones((out_features, in_features // 16)).to(torch.float8_e4m3fn),
+        f"{prefix}.weight_scale_2": torch.tensor(1.0, dtype=torch.float32),
+        f"{prefix}.{input_scale_key}": torch.tensor(1.0, dtype=torch.float32),
+    }
+
+
+def _ct_fp8_tensors(prefix, out_features=64, in_features=64):
+    """compressed-tensors FP8 per-channel layer."""
+    return {
+        f"{prefix}.weight": torch.randn(out_features, in_features).to(torch.float8_e4m3fn),
+        f"{prefix}.weight_scale": torch.rand(out_features, 1, dtype=torch.float32),
+    }
+
+
+def _modelopt_fp8_tensors(prefix, out_features=64, in_features=64):
+    """ModelOpt FP8 per-tensor layer."""
+    return {
+        f"{prefix}.weight": torch.randn(out_features, in_features).to(torch.float8_e4m3fn),
+        f"{prefix}.weight_scale": torch.tensor(0.5, dtype=torch.float32),
+        f"{prefix}.input_scale": torch.tensor(0.25, dtype=torch.float32),
+    }
+
+
+# Trimmed from the config.json / hf_quant_config.json of the public checkpoints listed in the docs.
+# RedHatAI/Qwen3.6-35B-A3B-NVFP4 (compressed-tensors, NVFP4)
+_CT_NVFP4_QC = {
+    "quant_method": "compressed-tensors",
+    "format": "nvfp4-pack-quantized",
+    "quantization_status": "compressed",
+    "config_groups": {
+        "group_0": {
+            "format": "nvfp4-pack-quantized",
+            "targets": ["Linear"],
+            "weights": {
+                "num_bits": 4,
+                "type": "float",
+                "symmetric": True,
+                "strategy": "tensor_group",
+                "group_size": 16,
+            },
+            "input_activations": {
+                "num_bits": 4,
+                "type": "float",
+                "symmetric": True,
+                "strategy": "tensor_group",
+                "group_size": 16,
+                "dynamic": "local",
+            },
+        }
+    },
+    "ignore": ["lm_head", _NV_ATTN],
+    "kv_cache_scheme": None,
+}
+# RedHatAI/Qwen3.8-27B-NVFP4 (compressed-tensors, FP8 attention + NVFP4 MLP)
+_CT_FP8_GROUP = {
+    "format": "float-quantized",
+    "targets": [r"re:.*self_attn\.(q|k|v|o)_proj$"],
+    "weights": {"num_bits": 8, "type": "float", "symmetric": True, "strategy": "channel", "dynamic": False},
+    "input_activations": {"num_bits": 8, "type": "float", "symmetric": True, "strategy": "token", "dynamic": True},
+}
+_CT_KV_SCHEME = {"num_bits": 8, "type": "float", "symmetric": True, "strategy": "tensor", "dynamic": False}
+_CT_MIXED_QC = {
+    "quant_method": "compressed-tensors",
+    "format": "mixed-precision",
+    "config_groups": {
+        "group_0": _CT_FP8_GROUP,
+        "group_1": {
+            **_CT_NVFP4_QC["config_groups"]["group_0"],
+            "targets": [r"re:.*mlp\..*(gate|up|down)_proj$"],
+        },
+    },
+    "ignore": ["lm_head"],
+    "kv_cache_scheme": _CT_KV_SCHEME,
+}
+# nvidia/Qwen3.8-27B-NVFP4 hf_quant_config.json (ModelOpt, FP8 + NVFP4)
+_MODELOPT_MIXED_HF_QC = {
+    "producer": {"name": "modelopt", "version": "0.35.0"},
+    "quantization": {
+        "quant_algo": "MIXED_PRECISION",
+        "kv_cache_quant_algo": None,
+        "quantized_layers": {
+            _NV_ATTN: {"quant_algo": "FP8"},
+            _NV_MLP: {"quant_algo": "NVFP4", "group_size": 16},
+        },
+        "exclude_modules": ["lm_head", "mtp*"],
+    },
+}
+# nvidia/MiniMax-M2.7-NVFP4 config.json (ModelOpt, NVFP4 + FP8 kv cache)
+_MODELOPT_NVFP4_QC = {
+    "quant_method": "modelopt",
+    "quant_algo": "NVFP4",
+    "producer": {"name": "modelopt", "version": "0.37.0"},
+    "kv_cache_scheme": {"num_bits": 8, "type": "float", "dynamic": False},
+    "ignore": ["lm_head", "model.layers.0.self_attn*"],
+}
+# amd/MiniMax-M2.7-NVFP4 (Quark, NVFP4)
+_QUARK_FP4_SPEC = {"dtype": "fp4", "qscheme": "per_group", "group_size": 16, "is_dynamic": False}
+_QUARK_FP8_SCALE_SPEC = {"dtype": "fp8_e4m3", "qscheme": "per_tensor", "is_dynamic": False, "is_scale_quant": True}
+_QUARK_NVFP4_QC = {
+    "quant_method": "quark",
+    "global_quant_config": {
+        "weight": [_QUARK_FP4_SPEC, _QUARK_FP8_SCALE_SPEC],
+        "input_tensors": [{**_QUARK_FP4_SPEC, "is_dynamic": True}, _QUARK_FP8_SCALE_SPEC],
+    },
+    "layer_quant_config": {},
+    "layer_type_quant_config": {},
+    "exclude": [_NV_ATTN, "lm_head"],
+    "export": {"kv_cache_group": [], "pack_method": "reorder"},
+}
+
+
+def _cfg_with_qc(qc):
+    return {**_LLAMA_CFG, "quantization_config": qc}
+
+
+def _make_nvfp4_model_dir(tmp_path, config, tensors, **kwargs):
+    """Like ``_make_model_dir`` but the directory name marks the source as NVFP4."""
+    model_dir = _make_model_dir(tmp_path, config, tensors, **kwargs)
+    nvfp4_dir = os.path.join(os.path.dirname(model_dir), "Model-NVFP4")
+    os.rename(model_dir, nvfp4_dir)
+    return nvfp4_dir
+
+
+def _run_nvfp4_to_mxfp4(model_dir, output_dir, **kwargs):
+    kwargs.setdefault("format", "llm_compressor")
+    _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP4", **kwargs).run()
+    return _read_output_tensors(output_dir), _read_qconfig(output_dir)
+
+
+def _read_output_tensors(output_dir):
+    tensors = {}
+    for fname in os.listdir(output_dir):
+        if fname.endswith(".safetensors"):
+            with safe_open(os.path.join(output_dir, fname), framework="pt") as sf:
+                tensors.update({k: sf.get_tensor(k) for k in sf.keys()})
+    return tensors
+
+
+def _assert_mxfp4_layer(tensors, layer):
+    assert tensors[f"{layer}.weight_packed"].dtype == torch.uint8
+    assert tensors[f"{layer}.weight_scale"].dtype == torch.uint8
+    for stale in ("weight", "weight_global_scale", "input_global_scale", "weight_scale_2", "input_scale"):
+        assert f"{layer}.{stale}" not in tensors
+
+
+def _assert_unchanged(tensors, source, keys):
+    for key in keys:
+        assert tensors[key].dtype == source[key].dtype, key
+        assert torch.equal(tensors[key].reshape(-1).view(torch.uint8), source[key].reshape(-1).view(torch.uint8)), key
+
+
+def _assert_mxfp4_group(group, targets):
+    assert group["targets"] == targets
+    assert group["format"] == "mxfp4-pack-quantized"
+    assert group["weights"]["num_bits"] == 4
+    assert group["weights"]["type"] == "float"
+    assert group["weights"]["group_size"] == 32
+
+
+class TestNVFP4ToMXFP4:
+    """MXFP4 on an NVFP4 source: only NVFP4 source layers become MXFP4; everything else is kept byte-for-byte."""
+
+    def test_nvfp2mxfp_scheme_removed(self):
+        assert not is_model_free_supported_scheme("NVFP2MXFP")
+
+    @pytest.mark.parametrize(
+        "name, qc",
+        [
+            ("nvidia/MiniMax-M2.7-NVFP4", None),
+            ("/models/Qwen3-nvfp4/", None),
+            ("source_model", _CT_NVFP4_QC),
+            ("source_model", _CT_MIXED_QC),
+            ("source_model", _MODELOPT_NVFP4_QC),
+            ("source_model", {**_MODELOPT_MIXED_HF_QC["quantization"], "quant_method": "modelopt"}),
+            ("source_model", _QUARK_NVFP4_QC),
+        ],
+        ids=["hub_name", "local_name", "ct", "ct_mixed", "modelopt", "modelopt_mixed", "quark"],
+    )
+    def test_detect_nvfp4_source(self, name, qc):
+        from auto_round.utils.model_free_utils import detect_model_dtypes
+
+        assert "nvfp4" in detect_model_dtypes(name, qc)
+
+    @pytest.mark.parametrize(
+        "name, qc",
+        [
+            ("/data/nvfp4_models/Qwen3-8B", None),
+            ("Qwen/Qwen3-8B", {"quant_method": "fp8", "weight_block_size": [128, 128]}),
+            ("Qwen/Qwen3-8B", {**_CT_MIXED_QC, "config_groups": {"group_0": _CT_FP8_GROUP}}),
+        ],
+        ids=["parent_dir_only", "fp8", "ct_fp8"],
+    )
+    def test_detect_non_nvfp4_source(self, name, qc):
+        from auto_round.utils.model_free_utils import detect_model_dtypes
+
+        assert "nvfp4" not in detect_model_dtypes(name, qc)
+
+    @pytest.mark.parametrize(
+        "qc, expected",
+        [
+            ({"quant_method": "fp8", "weight_block_size": [128, 128]}, True),
+            ({"quantization_type": "fp8"}, True),
+            ({"fmt": "e4m3", "scale_fmt": "ue8m0"}, True),
+            ({"fmt": None}, False),
+            (_CT_NVFP4_QC, False),
+        ],
+        ids=["quant_method", "quantization_type", "fmt", "fmt_none", "ct_nvfp4"],
+    )
+    def test_detect_fp8_source(self, qc, expected):
+        from auto_round.utils.model_free_utils import detect_model_dtypes
+
+        assert ("fp8" in detect_model_dtypes("Qwen/Qwen3-8B", qc)) is expected
+
+    @require_compressed_tensors
+    def test_detection_warns(self, tmp_path, monkeypatch):
+        import auto_round.compressors.model_free as model_free_mod
+
+        warnings = []
+        monkeypatch.setattr(model_free_mod.logger, "warning", lambda msg, *a, **k: warnings.append(str(msg)))
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, _nvfp4_source_tensors(_NV_MLP))
+        _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+        assert any("Detected NVFP4 layers" in w and "layer_config" in w for w in warnings)
+
+    @require_compressed_tensors
+    def test_detection_from_config_without_nvfp4_name(self, tmp_path):
+        source = {**_nvfp4_source_tensors(_NV_MLP), f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16)}
+        model_dir = _make_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight"])
+
+    @require_compressed_tensors
+    def test_non_nvfp4_source_quantizes_every_layer(self, tmp_path):
+        source = {f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16)}
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, source)
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_ATTN)
+
+    @require_compressed_tensors
+    def test_layer_config_quantizes_extra_layers(self, tmp_path):
+        source = {
+            **_nvfp4_source_tensors(_NV_MLP),
+            f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16),
+            "lm_head.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), layer_config={"q_proj": "MXFP4"})
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_mxfp4_layer(tensors, _NV_ATTN)
+        _assert_unchanged(tensors, source, ["lm_head.weight"])
+        _assert_mxfp4_group(qc["config_groups"]["group_0"], ["Linear"])
+        _assert_mxfp4_group(qc["config_groups"]["group_1"], [_NV_ATTN])
+        assert qc["ignore"] == ["lm_head"]
+
+    # ------------------------------------------------------------------
+    # Tensor conversion per source layout
+    # ------------------------------------------------------------------
+
+    @require_compressed_tensors
+    def test_ct_nvfp4_only(self, tmp_path):
+        source = {
+            **_nvfp4_source_tensors(_NV_MLP),
+            f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16),
+            "lm_head.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight", "lm_head.weight"])
+        assert qc["quant_method"] == "compressed-tensors"
+        assert qc["format"] == "mxfp4-pack-quantized"
+        assert list(qc["config_groups"]) == ["group_0"]
+        _assert_mxfp4_group(qc["config_groups"]["group_0"], ["Linear"])
+        assert qc["ignore"] == ["lm_head", _NV_ATTN]
+
+    @require_compressed_tensors
+    def test_ct_fp8_and_nvfp4_mixed(self, tmp_path):
+        source = {
+            **_nvfp4_source_tensors(_NV_MLP),
+            **_nvfp4_source_tensors(_NV_MLP_UP),
+            **_ct_fp8_tensors(_NV_ATTN),
+            "model.layers.0.self_attn.k_scale": torch.tensor(0.1, dtype=torch.float32),
+            "lm_head.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_MIXED_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_mxfp4_layer(tensors, _NV_MLP_UP)
+        _assert_unchanged(
+            tensors,
+            source,
+            [f"{_NV_ATTN}.weight", f"{_NV_ATTN}.weight_scale", "model.layers.0.self_attn.k_scale", "lm_head.weight"],
+        )
+        assert qc["format"] == "mixed-precision"
+        assert qc["config_groups"]["group_0"] == _CT_FP8_GROUP
+        _assert_mxfp4_group(qc["config_groups"]["group_1"], [r"re:.*mlp\..*(gate|up|down)_proj$"])
+        assert qc["ignore"] == ["lm_head"]
+        assert _NV_ATTN not in qc["ignore"]
+        assert qc["kv_cache_scheme"] == _CT_KV_SCHEME
+
+    @require_compressed_tensors
+    def test_modelopt_fp8_and_nvfp4_from_hf_quant_config(self, tmp_path):
+        source = {
+            **_modelopt_nvfp4_tensors(_NV_MLP),
+            **_modelopt_fp8_tensors(_NV_ATTN),
+            "lm_head.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, source)
+        with open(os.path.join(model_dir, "hf_quant_config.json"), "w") as f:
+            json.dump(_MODELOPT_MIXED_HF_QC, f)
+        output_dir = str(tmp_path / "out")
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, output_dir)
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(
+            tensors,
+            source,
+            [f"{_NV_ATTN}.weight", f"{_NV_ATTN}.weight_scale", f"{_NV_ATTN}.input_scale", "lm_head.weight"],
+        )
+        assert qc["quant_method"] == "compressed-tensors"
+        assert qc["format"] == "mixed-precision"
+        groups = list(qc["config_groups"].values())
+        fp8_group = next(g for g in groups if g["weights"]["num_bits"] == 8)
+        assert fp8_group["targets"] == [_NV_ATTN]
+        assert fp8_group["format"] == "float-quantized"
+        assert fp8_group["weights"]["strategy"] == "tensor" and fp8_group["weights"]["type"] == "float"
+        assert fp8_group["input_activations"]["strategy"] == "tensor"
+        assert fp8_group["input_activations"]["dynamic"] is False
+        _assert_mxfp4_group(next(g for g in groups if g["weights"]["num_bits"] == 4), [_NV_MLP])
+        assert "lm_head" in qc["ignore"]
+        assert any(t.startswith("re:") and re.match(t[3:], "mtp.layers.0.mlp") for t in qc["ignore"])
+        # The stale ModelOpt metadata file must not survive next to the rewritten config.
+        assert not os.path.exists(os.path.join(output_dir, "hf_quant_config.json"))
+
+    @require_compressed_tensors
+    def test_modelopt_nvfp4_with_kv_cache(self, tmp_path):
+        source = {
+            **_modelopt_nvfp4_tensors(_NV_MLP),
+            f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16),
+            "model.layers.0.self_attn.k_proj.k_scale": torch.tensor(0.1, dtype=torch.float32),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_MODELOPT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight", "model.layers.0.self_attn.k_proj.k_scale"])
+        assert qc["format"] == "mxfp4-pack-quantized"
+        _assert_mxfp4_group(next(iter(qc["config_groups"].values())), [_NV_MLP])
+        assert qc["kv_cache_scheme"]["num_bits"] == 8 and qc["kv_cache_scheme"]["type"] == "float"
+        attn_ignore = [t for t in qc["ignore"] if t.startswith("re:")]
+        assert attn_ignore and re.match(attn_ignore[0][3:], _NV_ATTN)
+
+    @require_compressed_tensors
+    def test_quark_nvfp4(self, tmp_path):
+        source = {
+            **_modelopt_nvfp4_tensors(_NV_MLP, input_scale_key="input_scale_2"),
+            f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_QUARK_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        assert f"{_NV_MLP}.input_scale_2" not in tensors
+        _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight"])
+        assert qc["quant_method"] == "compressed-tensors"
+        assert qc["format"] == "mxfp4-pack-quantized"
+        _assert_mxfp4_group(next(iter(qc["config_groups"].values())), [_NV_MLP])
+        assert qc["ignore"] == [_NV_ATTN, "lm_head"]
+        assert "kv_cache_scheme" not in qc or qc["kv_cache_scheme"] is None
+
+    @require_compressed_tensors
+    def test_existing_mxfp_layers_kept(self, tmp_path):
+        mxfp4, mxfp8 = "model.layers.0.mlp.gate_proj", "model.layers.0.self_attn.o_proj"
+        source = {
+            **_nvfp4_source_tensors(_NV_MLP),
+            f"{mxfp4}.weight_packed": torch.randint(0, 256, (32, 32), dtype=torch.uint8),
+            f"{mxfp4}.weight_scale": torch.full((32, 2), 127, dtype=torch.uint8),
+            f"{mxfp8}.weight": torch.randn(64, 64).to(torch.float8_e4m3fn),
+            f"{mxfp8}.weight_scale": torch.full((64, 2), 127, dtype=torch.uint8),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, source)
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(
+            tensors,
+            source,
+            [f"{mxfp4}.weight_packed", f"{mxfp4}.weight_scale", f"{mxfp8}.weight", f"{mxfp8}.weight_scale"],
+        )
+
+    @require_compressed_tensors
+    def test_deepseek_fp8_kept_across_shards(self, tmp_path):
+        fp8 = "model.layers.0.self_attn.o_proj"
+        # _make_model_dir splits keys in half: the FP8 weight lands in shard 1, its scale_inv in shard 2.
+        source = {
+            **_nvfp4_source_tensors(_NV_MLP),
+            f"{fp8}.weight": torch.randn(128, 128).to(torch.float8_e4m3fn),
+            f"{fp8}.weight_scale_inv": torch.rand(1, 1, dtype=torch.float32),
+            "lm_head.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+            f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16),
+            "model.norm.weight": torch.ones(64, dtype=torch.bfloat16),
+            "model.embed_tokens.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, source, multi_shard=True)
+        output_dir = str(tmp_path / "out")
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, output_dir)
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(tensors, source, [f"{fp8}.weight", f"{fp8}.weight_scale_inv", f"{_NV_ATTN}.weight"])
+        with open(os.path.join(output_dir, "model.safetensors.index.json")) as f:
+            weight_map = json.load(f)["weight_map"]
+        assert set(weight_map) == set(tensors)
+
+    @require_compressed_tensors
+    def test_mxfp4_matches_nvfp4_dequant(self, tmp_path):
+        from auto_round.utils.model_free_utils import _dequant_nvfp4_tensors
+
+        source = _nvfp4_source_tensors(_NV_MLP)
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, source)
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), disable_opt_rtn=True)
+
+        ref = _dequant_nvfp4_tensors({k: v.clone() for k, v in source.items()}, [_NV_MLP])[f"{_NV_MLP}.weight"]
+        out = _dequant_mxfp_tensors(
+            {
+                f"{_NV_MLP}.weight_packed": tensors[f"{_NV_MLP}.weight_packed"],
+                f"{_NV_MLP}.weight_scale": tensors[f"{_NV_MLP}.weight_scale"],
+            }
+        )[f"{_NV_MLP}.weight"]
+        # With unit NVFP4 scales every value is an E2M1 grid point, so MXFP4 reproduces it exactly.
+        assert torch.equal(out.float(), ref.float())
+
+    # ------------------------------------------------------------------
+    # Edge cases
+    # ------------------------------------------------------------------
+
+    @require_compressed_tensors
+    def test_ignored_nvfp4_layer_is_dequantized_and_added_to_ignore(self, tmp_path):
+        source = {**_nvfp4_source_tensors(_NV_MLP), **_nvfp4_source_tensors(_NV_MLP_UP)}
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), ignore_layers="down_proj")
+
+        _assert_mxfp4_layer(tensors, _NV_MLP_UP)
+        assert tensors[f"{_NV_MLP}.weight"].dtype == torch.bfloat16
+        assert f"{_NV_MLP}.weight_packed" not in tensors
+        assert _NV_MLP in qc["ignore"]
+        assert _NV_MLP_UP not in qc["ignore"]
+
+    @require_compressed_tensors
+    def test_no_nvfp4_layers_keeps_everything(self, tmp_path):
+        source = {f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16), **_ct_fp8_tensors(_NV_MLP)}
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, source)
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        assert set(tensors) == set(source)
+        _assert_unchanged(tensors, source, list(source))
+
+    @require_compressed_tensors
+    def test_unknown_source_config_falls_back_to_plain_mxfp4(self, tmp_path):
+        source = {**_nvfp4_source_tensors(_NV_MLP), f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16)}
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc({"quant_method": "bitsandbytes"}), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        assert qc["format"] == "mxfp4-pack-quantized"
+        assert next(iter(qc["config_groups"].values()))["targets"] == [_NV_MLP]
+        assert _NV_ATTN in qc["ignore"]
+
+    @require_compressed_tensors
+    def test_non_ct_moe_source_targets_routed_experts(self, tmp_path):
+        experts = [f"model.layers.0.block_sparse_moe.experts.{i}.w1" for i in range(2)]
+        source = {k: v for e in experts for k, v in _modelopt_nvfp4_tensors(e).items()}
+        source[f"{_NV_ATTN}.weight"] = torch.randn(64, 64, dtype=torch.bfloat16)
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_MODELOPT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        for expert in experts:
+            _assert_mxfp4_layer(tensors, expert)
+        targets = next(iter(qc["config_groups"].values()))["targets"]
+        assert "Linear" not in targets
+        assert sorted(targets) == sorted(experts + ["RoutedExperts"])
+
+    @pytest.mark.parametrize(
+        "qc",
+        [
+            {**_QUARK_NVFP4_QC, "layer_type_quant_config": {"Linear": {"weight": _QUARK_FP4_SPEC}}},
+            {**_QUARK_NVFP4_QC, "global_quant_config": {"weight": {"dtype": "int4", "qscheme": "per_group"}}},
+            {**_MODELOPT_NVFP4_QC, "quant_algo": "W4A8_AWQ"},
+            {"quant_method": "gptq"},
+        ],
+        ids=["quark_layer_type", "quark_int4", "modelopt_awq", "gptq"],
+    )
+    def test_unsupported_source_config_is_skipped(self, qc):
+        from auto_round.utils.model_free_utils import _source_config_to_ct
+
+        assert _source_config_to_ct(qc) is None
+
+    def test_load_source_quant_config_prefers_config_json(self, tmp_path):
+        from auto_round.utils.model_free_utils import _load_source_quant_config
+
+        with open(tmp_path / "hf_quant_config.json", "w") as f:
+            json.dump(_MODELOPT_MIXED_HF_QC, f)
+        assert _load_source_quant_config(str(tmp_path), _CT_NVFP4_QC) is _CT_NVFP4_QC
+        loaded = _load_source_quant_config(str(tmp_path), {})
+        assert loaded["quant_method"] == "modelopt"
+        assert loaded["quantized_layers"] == _MODELOPT_MIXED_HF_QC["quantization"]["quantized_layers"]
+
+    # ------------------------------------------------------------------
+    # Entry points / format validation
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("fmt", ["auto_round", "auto_round:auto_gptq", "fake"])
+    def test_core_rejects_non_llm_compressor_format(self, tmp_path, fmt):
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, _nvfp4_source_tensors(_NV_MLP))
+        with pytest.raises(ValueError, match="llm_compressor"):
+            _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), format=fmt)
+
+    @require_compressed_tensors
+    def test_core_accepts_auto_round_llm_compressor_alias(self, tmp_path):
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, _nvfp4_source_tensors(_NV_MLP))
+        output_dir = str(tmp_path / "out")
+        _run_nvfp4_to_mxfp4(model_dir, output_dir, format="auto_round:llm_compressor")
+        _assert_mxfp4_layer(_read_output_tensors(output_dir), _NV_MLP)
+
+    @require_compressed_tensors
+    def test_autoround_entry(self, tmp_path):
+        source = {**_nvfp4_source_tensors(_NV_MLP), **_ct_fp8_tensors(_NV_ATTN)}
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_MIXED_QC), source)
+        output_dir = str(tmp_path / "out")
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True, device_map="cpu").quantize_and_save(
+            output_dir, format="llm_compressor"
+        )
+        tensors = _read_output_tensors(output_dir)
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight", f"{_NV_ATTN}.weight_scale"])
+        assert _read_qconfig(output_dir)["format"] == "mixed-precision"
+
+    def test_autoround_entry_rejects_non_llm_compressor_format(self, tmp_path):
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, _nvfp4_source_tensors(_NV_MLP))
+        ar = AutoRound(model=model_dir, scheme="MXFP4", model_free=True, device_map="cpu")
+        with pytest.raises(ValueError, match="llm_compressor"):
+            ar.quantize_and_save(str(tmp_path / "out"), format="auto_round")
 
 
 # ===========================================================================

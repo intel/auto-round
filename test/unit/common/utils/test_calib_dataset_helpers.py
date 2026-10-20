@@ -185,6 +185,41 @@ class TestFineWebEduDataset:
         dataset.take.assert_called_once_with(10000)
 
 
+class TestNemotronPretrainingDataset:
+    @pytest.mark.parametrize("split,expected", [(None, "train"), ("validation", "validation"), (["train"], "train")])
+    def test_split_is_forwarded(self, monkeypatch, split, expected):
+        import auto_round.calib_dataset as calib_dataset
+
+        streamed = MagicMock()
+        streamed.shuffle.return_value = streamed
+        streamed.take.return_value = [{"text": "sample text"}]
+        load_dataset = MagicMock(return_value=streamed)
+        monkeypatch.setattr(calib_dataset, "load_dataset", load_dataset)
+        monkeypatch.setattr(calib_dataset, "_make_map_fingerprint", lambda *a, **k: "nemotron-test")
+        tokenizer = MagicMock(
+            side_effect=lambda texts, **kwargs: {
+                "input_ids": [[1, 2, 3] for _ in texts],
+                "attention_mask": [[1, 1, 1] for _ in texts],
+            }
+        )
+
+        result = calib_dataset.get_nemotron_pretraining_dataset(tokenizer, 128, split=split)
+
+        assert len(result) == 1
+        load_dataset.assert_called_once_with(
+            "nvidia/Nemotron-Pretraining-Dataset-sample",
+            name="Nemotron-CC-High-Quality",
+            split=expected,
+            streaming=True,
+        )
+
+    def test_rejects_multiple_splits(self):
+        import auto_round.calib_dataset as calib_dataset
+
+        with pytest.raises(ValueError, match="one split"):
+            calib_dataset.get_nemotron_pretraining_dataset(MagicMock(), 128, split=["train", "validation"])
+
+
 # ---------------------------------------------------------------------------
 # _make_map_fingerprint
 # ---------------------------------------------------------------------------
