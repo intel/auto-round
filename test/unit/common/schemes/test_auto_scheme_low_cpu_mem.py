@@ -123,8 +123,7 @@ class TestOffloadManager:
 
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc/self/maps is Linux-only")
     def test_reload_does_not_keep_temp_file_mapped(self, tmp_path, monkeypatch):
-        """Regression test for https://github.com/intel/auto-round/issues/2467.
-        """
+        """Regression test for https://github.com/intel/auto-round/issues/2467."""
         monkeypatch.setenv("AR_WORK_SPACE", str(tmp_path))
         model = torch.nn.Sequential(torch.nn.Linear(32, 32))
         mgr = OffloadManager(enabled=True, mode="offload")
