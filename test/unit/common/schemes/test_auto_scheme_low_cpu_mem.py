@@ -134,8 +134,13 @@ class TestOffloadManager:
 
         mgr.reload(model, "0")
 
-        with open("/proc/self/maps") as f:
-            maps = f.read()
+        try:
+            with open("/proc/self/maps") as f:
+                maps = f.read()
+        except OSError as e:
+            # procfs may be absent or unreadable in containers/sandboxes
+            # (e.g. hidepid, restricted seccomp), so skip instead of failing.
+            pytest.skip(f"/proc/self/maps is not readable: {e}")
         assert tempdir not in maps, f"reload left the deleted offload file mmap'd: {tempdir}"
 
     def test_reload_all_auto_cleans(self):
