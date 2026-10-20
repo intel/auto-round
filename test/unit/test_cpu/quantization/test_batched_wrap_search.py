@@ -602,6 +602,38 @@ class TestSearchWorkerPicking(unittest.TestCase):
         with mock.patch.object(torch.cuda, "device_count", return_value=0):
             self.assertEqual(dispatch_mod.pick_search_worker_devices(4 * 2**30, home_device="cpu"), ["cpu"])
 
+    def test_hpu_lazy_stays_home_despite_idle_devices(self):
+        # Habana lazy tensors execute on per-thread device contexts: a stacked
+        # search spread onto worker threads reaches the write-back's host copy
+        # without storage attached (CI: data_ptr()-> "no storage tensor
+        # attached to lazy tensor"). Lazy mode must collapse to the home device.
+        import auto_round.algorithms.quantization.search_dispatch as dispatch_mod
+
+        class _Fleet:
+            @staticmethod
+            def device_count():
+                return 4
+
+        with mock.patch.object(dispatch_mod, "is_hpu_lazy_mode", return_value=True), mock.patch(
+            "auto_round.utils.device_manager.get_ar_device", return_value=_Fleet()
+        ), mock.patch.object(dispatch_mod, "probe_usable_bytes", side_effect=lambda k: 12 * 2**30):
+            self.assertEqual(dispatch_mod.pick_search_worker_devices(2**30, home_device="hpu:0"), ["hpu:0"])
+
+    def test_hpu_compile_mode_spreads_like_other_families(self):
+        # compile mode runs the eager pipeline: concrete tensors survive worker
+        # threads and cross-device moves, so spreading stays enabled there.
+        import auto_round.algorithms.quantization.search_dispatch as dispatch_mod
+
+        class _Fleet:
+            @staticmethod
+            def device_count():
+                return 2
+
+        with mock.patch.object(dispatch_mod, "is_hpu_lazy_mode", return_value=False), mock.patch(
+            "auto_round.utils.device_manager.get_ar_device", return_value=_Fleet()
+        ), mock.patch.object(dispatch_mod, "probe_usable_bytes", side_effect=lambda k: 12 * 2**30):
+            self.assertEqual(dispatch_mod.pick_search_worker_devices(2**30, home_device="hpu:0"), ["hpu:0", "hpu:1"])
+
     def test_rtn_driver_offloads_to_viable_worker(self):
         # CPU-only: workers = [home] so behavior is the parity path already covered;
         # this pins that the bucket machinery runs end-to-end with the picker patched.

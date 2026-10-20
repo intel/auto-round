@@ -37,7 +37,7 @@ import torch
 
 import auto_round.envs as envs
 from auto_round.logger import logger
-from auto_round.utils.device import probe_usable_bytes
+from auto_round.utils.device import is_hpu_lazy_mode, probe_usable_bytes
 from auto_round.utils.oom import dump_oom_tensor_census_  # re-exported for existing call sites
 from auto_round.utils.perf_counters import perf_counters_enabled
 from auto_round.wrapper import WrapperLinear
@@ -173,12 +173,20 @@ def pick_search_worker_devices(
     nothing fits, the home device is returned so the caller keeps today's
     behavior and relies on the per-chunk OOM fallback.
 
-    CUDA-only today: the free-memory probe underneath is a cuda API, so
-    non-cuda fleets simply get ``[home_device]`` (no offload, no crash).
+    Device families enumerate through their own APIs (cuda, xpu, hpu, mps),
+    so offload engages wherever the free-memory probe works. HPU lazy mode
+    is the exception: lazy tensors execute on per-thread device contexts, so
+    a stacked search spread onto worker threads reaches the write-back's
+    host copy with lazy tensors that have no storage attached
+    (``data_ptr()`` fails). HPU lazy searches therefore stay on the home
+    device -- stacked batching still runs there, inline on the calling
+    thread; compile mode (the eager pipeline) spreads like any other family.
     """
     if cross_device_search_disabled():
         return [home_device] if home_device is not None else []
     home_type = str(home_device).split(":")[0] if home_device else ""
+    if home_type == "hpu" and is_hpu_lazy_mode():
+        return [home_device] if home_device is not None else []
     try:
         from auto_round.utils.device_manager import get_ar_device
 
