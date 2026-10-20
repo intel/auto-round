@@ -227,10 +227,10 @@ def _act_quant_is_row_independent(layer: nn.Module) -> bool:
     return True
 
 
-_ACCELERATE_HOOK_WHITELIST: "tuple[type, ...] | None" = None
+_ACCELERATE_HOOK_WHITELIST: tuple[type, ...] | None = None
 
 
-def _accelerate_hook_whitelist() -> "tuple[type, ...]":
+def _accelerate_hook_whitelist() -> tuple[type, ...]:
     """Resolve accelerate's placement-hook classes once per process.
 
     The installed accelerate version cannot change mid-run, and the grouped gate
@@ -291,9 +291,8 @@ def _projection_is_supported(layer: nn.Module) -> bool:
         # leaving every expert without ``act_max`` (breaking static-act export, e.g. NVFP4).
         # Alignment-only accelerate hooks are exempt: the grouped path performs that exact
         # move itself (mapped multi-GPU placement attaches them to off-primary experts).
-        if (layer._forward_pre_hooks or layer._forward_hooks) and not _hooks_are_alignment_only(layer):
-            return False
-        return True
+        hooks = layer._forward_pre_hooks or layer._forward_hooks
+        return not hooks or _hooks_are_alignment_only(layer)
     if not _is_wrapper_linear(layer):
         return False
     # accelerate's stage hooks attach to the tree module -- the wrapper itself.

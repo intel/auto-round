@@ -36,14 +36,14 @@ class TestAutoLinearLoop(unittest.TestCase):
 
     def _run(self, iters=20, stacks=True):
         q = self.q
-        with _envs_auto():
-            with mock.patch.object(q, "_logical_state_by_device", return_value=self.state):
-                with mock.patch.object(q, "_activation_bytes_by_device", return_value=self.act):
-                    with mock.patch.object(
-                        q, "_grouped_stack_bytes", side_effect=lambda b, d, config=None: 1 if stacks else 0
-                    ):
-                        with mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=16 * GB):
-                            q._maybe_auto_linear_loop_for_tuning(object(), [object()], 8, iters, self.cfg, None)
+        with (
+            _envs_auto(),
+            mock.patch.object(q, "_logical_state_by_device", return_value=self.state),
+            mock.patch.object(q, "_activation_bytes_by_device", return_value=self.act),
+            mock.patch.object(q, "_grouped_stack_bytes", side_effect=lambda b, d, config=None: 1 if stacks else 0),
+            mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=16 * GB),
+        ):
+            q._maybe_auto_linear_loop_for_tuning(object(), [object()], 8, iters, self.cfg, None)
 
     def test_over_lane_switches_before_the_loop(self):
         # demand on cuda:1 = 14*6/14 (grads+bf16; snapshot parks) + 12 + 0.25
@@ -78,12 +78,14 @@ class TestAutoLinearLoop(unittest.TestCase):
         model = type("M", (), {})()
         model.config = self.cfg
         q = self.q
-        with _envs_auto():
-            with mock.patch.object(q, "_logical_state_by_device", return_value=self.state):
-                with mock.patch.object(q, "_activation_bytes_by_device", return_value=self.act):
-                    with mock.patch.object(q, "_grouped_stack_bytes", side_effect=lambda b, d, config=None: 1):
-                        with mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=16 * GB):
-                            q._maybe_auto_linear_loop_for_tuning(object(), [object()], 8, 20, ctx_cfg, model)
+        with (
+            _envs_auto(),
+            mock.patch.object(q, "_logical_state_by_device", return_value=self.state),
+            mock.patch.object(q, "_activation_bytes_by_device", return_value=self.act),
+            mock.patch.object(q, "_grouped_stack_bytes", side_effect=lambda b, d, config=None: 1),
+            mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=16 * GB),
+        ):
+            q._maybe_auto_linear_loop_for_tuning(object(), [object()], 8, 20, ctx_cfg, model)
         self.assertEqual(self.cfg._experts_implementation, "linear_loop")
         self.assertEqual(ctx_cfg._experts_implementation, "linear_loop")
 
@@ -93,12 +95,14 @@ class TestAutoLinearLoop(unittest.TestCase):
         q = self.q
         state = {"cuda:1": 20 * GB}  # remaining: 10/14 -> 14.3 (old switch), 6/14 -> 8.6
         act = {"cuda:1": 5 * GB}
-        with _envs_auto():
-            with mock.patch.object(q, "_logical_state_by_device", return_value=state):
-                with mock.patch.object(q, "_activation_bytes_by_device", return_value=act):
-                    with mock.patch.object(q, "_grouped_stack_bytes", side_effect=lambda b, d, config=None: 1):
-                        with mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=16 * GB):
-                            q._maybe_auto_linear_loop_for_tuning(object(), [object()], 8, 20, self.cfg, None)
+        with (
+            _envs_auto(),
+            mock.patch.object(q, "_logical_state_by_device", return_value=state),
+            mock.patch.object(q, "_activation_bytes_by_device", return_value=act),
+            mock.patch.object(q, "_grouped_stack_bytes", side_effect=lambda b, d, config=None: 1),
+            mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=16 * GB),
+        ):
+            q._maybe_auto_linear_loop_for_tuning(object(), [object()], 8, 20, self.cfg, None)
         self.assertEqual(self.cfg._experts_implementation, "linear_grouped")
 
     def test_second_run_same_process_re_decides(self):
@@ -107,12 +111,14 @@ class TestAutoLinearLoop(unittest.TestCase):
         q = self.q
         q._MOE_IMPL_AUTO_LINEAR_LOOP_DONE = True  # a previous run finished
         cfg2 = _Cfg()
-        with _envs_auto():
-            with mock.patch.object(q, "_logical_state_by_device", return_value=self.state):
-                with mock.patch.object(q, "_activation_bytes_by_device", return_value=self.act):
-                    with mock.patch.object(q, "_grouped_stack_bytes", side_effect=lambda b, d, config=None: 1):
-                        with mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=16 * GB):
-                            q._maybe_auto_linear_loop_for_tuning(object(), [object()], 8, 20, cfg2, None)
+        with (
+            _envs_auto(),
+            mock.patch.object(q, "_logical_state_by_device", return_value=self.state),
+            mock.patch.object(q, "_activation_bytes_by_device", return_value=self.act),
+            mock.patch.object(q, "_grouped_stack_bytes", side_effect=lambda b, d, config=None: 1),
+            mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=16 * GB),
+        ):
+            q._maybe_auto_linear_loop_for_tuning(object(), [object()], 8, 20, cfg2, None)
         self.assertEqual(cfg2._experts_implementation, "linear_loop")  # decided, not skipped
 
     def test_dense_block_no_stacks_no_decision(self):

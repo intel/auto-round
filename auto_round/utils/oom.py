@@ -28,9 +28,10 @@ All are best effort: the census swallows its own failures and never
 masks the original error.
 """
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from types import FrameType, ModuleType, TracebackType
-from typing import Any, Iterator
+from typing import Any
 
 import torch
 

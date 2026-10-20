@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the per-device grouped experts plans and the align-hook exemption."""

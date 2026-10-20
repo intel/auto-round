@@ -191,8 +191,9 @@ class TestEngagedCacheLimit:
 
             fake = _FakeDev()
             fake.compile_func = dm.ARDevice.compile_func.__get__(fake)
-            with patch("auto_round.utils.device._bump_dynamo_cache_limit") as bump, patch.object(
-                _torch, "compile", return_value=lambda *a, **k: None
+            with (
+                patch("auto_round.utils.device._bump_dynamo_cache_limit") as bump,
+                patch.object(_torch, "compile", return_value=lambda *a, **k: None),
             ):
                 fake.compile_func(lambda x: x)
             calls.append(bump.call_args)

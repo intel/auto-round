@@ -928,7 +928,7 @@ class TestBatchedRtnSearchParity(unittest.TestCase):
         with torch.no_grad():
             w_ref = self._make_wrapper(_act_layer(0))
             ref_w = w_ref.unwrapper({}).weight.data.clone()
-        self.assertTrue(torch.equal(getattr(model, "l0").weight.data, ref_w))
+        self.assertTrue(torch.equal(model.l0.weight.data, ref_w))
 
     def _run_shape_dtype(self, out_f, in_f, gs, dtype):
         """Batched-vs-serial parity for arbitrary shapes/dtypes with an imatrix

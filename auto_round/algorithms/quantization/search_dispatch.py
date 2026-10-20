@@ -30,7 +30,8 @@ import contextlib
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from typing import Any
 
 import torch
 
@@ -383,7 +384,7 @@ def _plan_capacity_chunks(entries: list) -> list:
     Estimates guide this planner only: the execute-time headroom guards and
     the OOM ladder own real overflow.
     """
-    usable_cache: "OrderedDict[str, int | None]" = OrderedDict()
+    usable_cache: OrderedDict[str, int | None] = OrderedDict()
 
     def _usable(dev: str):
         if dev not in usable_cache:
@@ -391,7 +392,7 @@ def _plan_capacity_chunks(entries: list) -> list:
         return usable_cache[dev]
 
     grand = sum(len(modules) for _home, _per, _sweep, _max_n, modules in entries)
-    counts: "OrderedDict[str, int]" = OrderedDict()
+    counts: OrderedDict[str, int] = OrderedDict()
 
     plans: list = []
     for home, per, sweep, max_n, modules in entries:
@@ -409,7 +410,7 @@ def _plan_capacity_chunks(entries: list) -> list:
                 n_max[d] = max(1, min(max_n, (u // 2 - sweep) // max(per, 1)))
             counts.setdefault(d, 0)
         share = max(1, -(-grand // len(cands)))  # a device's fair share of the work
-        alloc: "OrderedDict[str, list]" = OrderedDict((d, []) for d in cands)
+        alloc: OrderedDict[str, list] = OrderedDict((d, []) for d in cands)
         for m in modules:
             if home in cands and counts.get(home, 0) < share:
                 d = home  # resident modules stay put while home holds its share
@@ -470,7 +471,7 @@ def run_batched_wrap_search(deferred_wrappers: list[WrapperLinear], max_batch: i
         by_key = OrderedDict()
         for w in wrappers:
             by_key.setdefault(_wrap_batch_key(w._deferred_search_inputs), []).append(w)
-        for _key, group in by_key.items():
+        for group in by_key.values():
             if len(group) < 2 or not _search_fn_stackable(group[0]._deferred_search_inputs[5]):
                 singletons.extend((dev, w) for w in group)
                 continue
@@ -493,7 +494,7 @@ def run_batched_wrap_search(deferred_wrappers: list[WrapperLinear], max_batch: i
     # owned by exactly one thread. The grid searches end every step with a
     # host sync, so two threads sharing one device's default stream convoy
     # each other; exclusive buckets keep every sync private.
-    buckets: "OrderedDict[str, list[tuple[str, list[WrapperLinear]]]]" = OrderedDict()
+    buckets: OrderedDict[str, list[tuple[str, list[WrapperLinear]]]] = OrderedDict()
     for worker, home, chunk in planned:
         buckets.setdefault(worker, []).append((home, chunk))
 
@@ -670,12 +671,12 @@ def run_batched_neuqi_anchors(deferred_wrappers: list) -> bool:
 
     singletons: list = []
     plan_entries: list[tuple[str, int, int, int, list]] = []
-    by_key: "OrderedDict[tuple, list]" = OrderedDict()
+    by_key: OrderedDict[tuple, list] = OrderedDict()
     for w in deferred_wrappers:
         by_key.setdefault(_anchor_key(_staged(w)), []).append(w)
     from auto_round.data_type.neuqi import _MAX_TMP_ELEMS
 
-    for _key, group in by_key.items():
+    for group in by_key.values():
         if len(group) < 2:
             singletons.extend(group)
             continue
@@ -696,7 +697,7 @@ def run_batched_neuqi_anchors(deferred_wrappers: list) -> bool:
     planned = _plan_capacity_chunks(plan_entries)
     staged_all = [[_staged(w) for w in chunk] for _worker, _home, chunk in planned]
 
-    buckets: "OrderedDict[str, list]" = OrderedDict()
+    buckets: OrderedDict[str, list] = OrderedDict()
     for worker, _home, chunk in planned:
         buckets.setdefault(worker, []).append(chunk)
 

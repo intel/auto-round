@@ -310,12 +310,12 @@ class WrapperLinear(torch.nn.Module):
             shape = qdq_weight.t().shape
 
         def _set_dict_attr(attr_dict: dict, attr_name: str) -> None:
-            for key in attr_dict.keys():
+            for key, value in attr_dict.items():
                 if key == attr_name:
-                    setattr(self.orig_layer, attr_name, attr_dict[key].reshape(shape[0], -1).to("cpu"))
+                    setattr(self.orig_layer, attr_name, value.reshape(shape[0], -1).to("cpu"))
                 else:
                     name = "w_" + key
-                    setattr(self.orig_layer, name, attr_dict[key].to("cpu"))
+                    setattr(self.orig_layer, name, value.to("cpu"))
 
         if not isinstance(self.orig_layer.group_size, tuple):
             if isinstance(scale, dict):

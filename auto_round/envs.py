@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     AR_CALIB_DATA_MULTIPLIER: int = 100
     AR_DISABLE_BATCHED_SEARCH: bool = False
     AR_PERF_COUNTERS: bool = False
-    AR_SEARCH_BATCH_GB: Optional[float] = None
+    AR_SEARCH_BATCH_GB: float | None = None
     AR_DISABLE_CROSS_DEVICE_SEARCH: bool = False
 
 
@@ -60,7 +60,7 @@ def _get_optional_positive_int_env(name: str) -> int | None:
     return value
 
 
-def _get_optional_positive_float_env(name: str) -> Optional[float]:
+def _get_optional_positive_float_env(name: str) -> float | None:
     """Read an optional env var that must be a positive float when set."""
     raw = os.getenv(name)
     if raw is None:

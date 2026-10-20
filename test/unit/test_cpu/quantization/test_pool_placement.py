@@ -456,25 +456,25 @@ class TestConsolidate(unittest.TestCase):
 
     def test_local_when_already_on_target(self):
         pool = [self._tensor_on("cuda:0") for _ in range(3)]
-        with self._ctx(10, 0)[0], self._ctx(10, 0)[1]:
-            with mock.patch.object(pp, "_move_pool_to") as mv:
-                self.assertEqual(pp.consolidate_pool_onto([pool], "cuda:0", object(), 8), "local")
+        with self._ctx(10, 0)[0], self._ctx(10, 0)[1], mock.patch.object(pp, "_move_pool_to") as mv:
+            self.assertEqual(pp.consolidate_pool_onto([pool], "cuda:0", object(), 8), "local")
         mv.assert_not_called()
 
     def test_consolidated_moves_in_place(self):
         pool = [self._tensor_on("cuda:1"), self._tensor_on("cuda:2")]
-        with self._ctx(10, 0)[0], self._ctx(10, 0)[1]:
-            with mock.patch.object(pp, "_move_pool_to") as mv:
-                self.assertEqual(pp.consolidate_pool_onto([pool], "cuda:0", object(), 8), "consolidated")
+        with self._ctx(10, 0)[0], self._ctx(10, 0)[1], mock.patch.object(pp, "_move_pool_to") as mv:
+            self.assertEqual(pp.consolidate_pool_onto([pool], "cuda:0", object(), 8), "consolidated")
         mv.assert_any_call(pool, "cuda:0")
 
     def test_spread_when_not_fitting(self):
         pool = [self._tensor_on("cuda:1")]
-        with self._ctx(10, 9)[0], self._ctx(10, 9)[1]:
-            with mock.patch.object(pp, "_tensor_bytes", return_value=5 * 2**30), mock.patch.object(
-                pp, "_move_pool_to"
-            ) as mv:
-                self.assertEqual(pp.consolidate_pool_onto([pool], "cuda:0", object(), 8), "spread")
+        with (
+            self._ctx(10, 9)[0],
+            self._ctx(10, 9)[1],
+            mock.patch.object(pp, "_tensor_bytes", return_value=5 * 2**30),
+            mock.patch.object(pp, "_move_pool_to") as mv,
+        ):
+            self.assertEqual(pp.consolidate_pool_onto([pool], "cuda:0", object(), 8), "spread")
         mv.assert_not_called()
 
     def test_consolidation_reachable_under_first_principles_need(self):
@@ -486,20 +486,20 @@ class TestConsolidate(unittest.TestCase):
         pool = [torch.zeros(1) for _ in range(4)]
         # 4 GiB of pool tensors, 8 GiB free on the target cuda:0,
         # need 3.5 GiB (working + reserve)
-        with mock.patch.object(pp, "_tensor_bytes", return_value=4 * GBi), mock.patch.object(
-            pp, "_move_pool_to"
-        ) as mv, mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=8 * GBi), mock.patch.object(
-            pp, "placement_need_bytes", return_value=int(3.5 * GBi)
+        with (
+            mock.patch.object(pp, "_tensor_bytes", return_value=4 * GBi),
+            mock.patch.object(pp, "_move_pool_to") as mv,
+            mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=8 * GBi),
+            mock.patch.object(pp, "placement_need_bytes", return_value=int(3.5 * GBi)),
         ):
             self.assertEqual(pp.consolidate_pool_onto([pool], "cuda:0", object(), 8), "consolidated")
         mv.assert_called()
         # genuinely tight: free - need < pool -> spread, never moved
-        with mock.patch.object(pp, "_tensor_bytes", return_value=4 * GBi), mock.patch.object(
-            pp, "_move_pool_to"
-        ) as mv2, mock.patch(
-            "auto_round.utils.device.probe_usable_bytes", return_value=int(7 * GBi)
-        ), mock.patch.object(
-            pp, "placement_need_bytes", return_value=int(3.5 * GBi)
+        with (
+            mock.patch.object(pp, "_tensor_bytes", return_value=4 * GBi),
+            mock.patch.object(pp, "_move_pool_to") as mv2,
+            mock.patch("auto_round.utils.device.probe_usable_bytes", return_value=int(7 * GBi)),
+            mock.patch.object(pp, "placement_need_bytes", return_value=int(3.5 * GBi)),
         ):
             self.assertEqual(pp.consolidate_pool_onto([pool], "cuda:0", object(), 8), "spread")
         mv2.assert_not_called()

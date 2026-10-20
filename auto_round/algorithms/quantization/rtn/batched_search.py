@@ -26,7 +26,8 @@ drift apart.
 """
 
 from collections import OrderedDict
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -285,7 +286,7 @@ def run_batched_rtn_search(
         by_key = OrderedDict()
         for e in batch:
             by_key.setdefault(_staged_key(e["w"], e["weight"], e["im"]), []).append(e)
-        for _key, group in by_key.items():
+        for group in by_key.values():
             fn0 = group[0]["w"].weight_quant_func
             elements = group[0]["weight"].numel() + (group[0]["im"].numel() if group[0]["im"] is not None else 0)
             per_module = elements * 4 * 4  # the fp32 copy chain per module
@@ -313,7 +314,7 @@ def run_batched_rtn_search(
         buckets.setdefault(str(worker), []).append(chunk)
 
     # per-worker execution stats for the wrap-grammar summary line
-    stats: "OrderedDict[str, dict]" = OrderedDict()
+    stats: OrderedDict[str, dict] = OrderedDict()
 
     def _worker_of(chunk: list[dict[str, Any]]) -> str:
         for wk, cs in buckets.items():

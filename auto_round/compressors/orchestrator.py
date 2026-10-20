@@ -16,8 +16,8 @@ import gc
 import os
 import threading
 import time
-from functools import partial
 from collections.abc import Callable
+from functools import partial
 from typing import TYPE_CHECKING, Any, Optional
 
 import accelerate

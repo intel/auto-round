@@ -25,7 +25,7 @@ from auto_round.logger import logger
 
 def _rtn_phase_line(norm: float, quant: float, n: int, mean: float, max_: float) -> str:
     """Format the zero-shot RTN phase breakdown for AR_PERF_COUNTERS."""
-    return "[perf] rtn phases: norm=%.2fs quant=%.2fs (n=%d, mean=%.3fs, max=%.3fs)" % (norm, quant, n, mean, max_)
+    return f"[perf] rtn phases: norm={norm:.2f}s quant={quant:.2f}s (n={n}, mean={mean:.3f}s, max={max_:.3f}s)"
 
 
 from auto_round.utils import (

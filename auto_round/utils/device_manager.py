@@ -903,7 +903,6 @@ def _engaged_cache_limit() -> int:
     return int(envs.AR_DYNAMO_CACHE_SIZE_LIMIT) * max(1, len(device_manager.device_list))
 
 
-
 def get_ar_device(device_type: None | str | int | torch.device = None) -> ARDevice:
     """Return the cached :class:`Device` handle for a specific backend type."""
     return device_manager.get_ar_device(device_type)

@@ -17,8 +17,8 @@ import functools
 import inspect
 import json
 import os
-from collections.abc import Callable
 import time
+from collections.abc import Callable
 from dataclasses import fields
 from enum import Enum
 

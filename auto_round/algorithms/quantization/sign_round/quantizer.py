@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
-from collections.abc import Callable
 import time as _ptime
+from collections.abc import Callable
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
@@ -71,22 +71,18 @@ def _tune_phase_line(phases: dict, iters: int) -> str:
     sync + optimizer step, ``serial: fwd+loss+bwd`` = the inline forward,
     loss (incl. the .item() drain) and backward of every serial batch.
     """
-    line = "[perf] tune phases (iters=%d): wrap=%.2fs prepare=%.2fs loop=%.2fs tail=%.2fs" % (
-        iters,
-        phases.get("wrap", 0.0),
-        phases.get("prepare", 0.0),
-        phases.get("loop", 0.0),
-        phases.get("tail", 0.0),
+    line = (
+        f"[perf] tune phases (iters={iters}):"
+        f" wrap={phases.get('wrap', 0.0):.2f}s prepare={phases.get('prepare', 0.0):.2f}s"
+        f" loop={phases.get('loop', 0.0):.2f}s tail={phases.get('tail', 0.0):.2f}s"
     )
     if "lp_sampler" in phases:
-        line += " (loop: sampler=%.2fs snap=%.2fs step=%.2fs rest=%.2fs" % (
-            phases["lp_sampler"],
-            phases["lp_snap"],
-            phases["lp_step"],
-            phases["lp_rest"],
+        line += (
+            f" (loop: sampler={phases['lp_sampler']:.2f}s snap={phases['lp_snap']:.2f}s"
+            f" step={phases['lp_step']:.2f}s rest={phases['lp_rest']:.2f}s"
         )
         if phases.get("lp_serial", 0.0):
-            line += " serial: fwd+loss+bwd=%.2fs" % phases["lp_serial"]
+            line += f" serial: fwd+loss+bwd={phases['lp_serial']:.2f}s"
         line += ")"
     return line
 

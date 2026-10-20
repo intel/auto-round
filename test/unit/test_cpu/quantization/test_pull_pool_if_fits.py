@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright (c) 2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
@@ -400,12 +399,14 @@ class TestPullPoolIfFits(unittest.TestCase):
 
         blk = SimpleNamespace(modules=lambda: iter([SimpleNamespace(num_experts=8)]))
         est = ({}, 0.0, 0.0, 0.0, {"cuda:1": 1.0, "cuda:0": 0.5}, {"cuda:1": 24})
-        with mock.patch.object(dev_mod, "estimate_tuning_block_mem", return_value=est):
-            with mock.patch.object(q, "_routed_budget_bytes", return_value=8 * _GB):
-                with mock.patch.object(
-                    q, "_grouped_stack_bytes", side_effect=lambda b, d, config=None: 2 * _GB if d == "cuda:1" else 0
-                ):
-                    got = q._activation_bytes_by_device(blk, [], 8, None)
+        with (
+            mock.patch.object(dev_mod, "estimate_tuning_block_mem", return_value=est),
+            mock.patch.object(q, "_routed_budget_bytes", return_value=8 * _GB),
+            mock.patch.object(
+                q, "_grouped_stack_bytes", side_effect=lambda b, d, config=None: 2 * _GB if d == "cuda:1" else 0
+            ),
+        ):
+            got = q._activation_bytes_by_device(blk, [], 8, None)
         self.assertIn("cuda:1", got)
         # with routed charged it would be max(1, 8) + 2 = 10 GiB; honest = 1 + 2
         self.assertLess(got["cuda:1"], 4 * _GB)
@@ -629,10 +630,12 @@ class TestBaseQuantizerHooks(unittest.TestCase):
             seen["pull"] = (iters, label, charge_activation)
             return "moved"
 
-        with mock.patch.object(tm, "_maybe_auto_linear_loop_for_tuning", side_effect=fake_adapt):
-            with mock.patch.object(tm, "_pull_pool_if_fits", side_effect=fake_pull):
-                q.maybe_adapt_moe_implementation(block, [], 8)
-                out = q.pull_tuning_pool([1], "cuda:0", block, 8, "test] pool", charge_activation=False)
+        with (
+            mock.patch.object(tm, "_maybe_auto_linear_loop_for_tuning", side_effect=fake_adapt),
+            mock.patch.object(tm, "_pull_pool_if_fits", side_effect=fake_pull),
+        ):
+            q.maybe_adapt_moe_implementation(block, [], 8)
+            out = q.pull_tuning_pool([1], "cuda:0", block, 8, "test] pool", charge_activation=False)
         self.assertEqual(seen["adapt"], (7, block))
         self.assertEqual(seen["pull"], (7, "test] pool", False))
         self.assertEqual(out, "moved")

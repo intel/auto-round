@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the in-place calibration-pool release (composer)."""

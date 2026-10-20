@@ -41,7 +41,8 @@ accelerator families the resolver returns ``None`` (policy inactive, pools keep
 their today placement) rather than guessing at unprobed capacities.
 """
 
-from typing import Any, Callable, List, Optional, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any, Optional
 
 import torch
 
@@ -71,7 +72,7 @@ class PoolPlacement:
         return f"PoolPlacement({self.counts()})"
 
 
-def _spread_plan(devices: Sequence[str], capacities: Sequence[int], n_chunks: int) -> List[str]:
+def _spread_plan(devices: Sequence[str], capacities: Sequence[int], n_chunks: int) -> list[str]:
     """Largest-remainder proportional split, interleaved across devices.
 
     Interleaving (round-robin order of the assigned slots) keeps consecutive
@@ -87,7 +88,7 @@ def _spread_plan(devices: Sequence[str], capacities: Sequence[int], n_chunks: in
     for i in range(n_chunks - sum(counts)):
         counts[remainders[i % len(remainders)]] += 1
     # interleave: one slot per device in turn, skipping exhausted devices
-    plan: List[str] = []
+    plan: list[str] = []
     cursors = [0] * len(devices)
     while any(cursors[i] < counts[i] for i in range(len(devices))):
         for i in range(len(devices)):
@@ -125,7 +126,7 @@ def _short_device_key(dev: str) -> str:
 
 
 def calib_data_line(
-    inputs: Sequence[Any], aux: Any, plan: Optional[PoolPlacement], outputs_bytes: int, n_chunks: int, primary: str
+    inputs: Sequence[Any], aux: Any, plan: PoolPlacement | None, outputs_bytes: int, n_chunks: int, primary: str
 ) -> str:
     """One-line calibration-data summary in the memory-monitor format:
 
@@ -285,13 +286,13 @@ def resolve_pool_placement(
     primary: str,
     need_bytes: int,
     candidate_devices: Sequence[str],
-    free_probe: Callable[[str], Optional[int]],
+    free_probe: Callable[[str], int | None],
     mode: str = "auto",
-    consumer: Optional[str] = None,
+    consumer: str | None = None,
     occupied_bytes: int = 0,
-    peer_state_bytes: Optional[dict] = None,
-    activation_bytes: Optional[dict] = None,
-) -> Optional[PoolPlacement]:
+    peer_state_bytes: dict | None = None,
+    activation_bytes: dict | None = None,
+) -> PoolPlacement | None:
     """Decide per-chunk output placement for a calibration pool.
 
     ``need_bytes`` is the candidate's own forward working-set demand (estimated
@@ -331,7 +332,7 @@ def resolve_pool_placement(
     consumer = str(consumer) if consumer is not None else None
     if consumer is not None and (consumer == str(primary) or not consumer.startswith("cuda")):
         consumer = None  # degenerate target: fall back to primary-first
-    candidates: List[str] = []
+    candidates: list[str] = []
     if forced is not None:
         candidates = forced
     elif consumer is not None:
@@ -492,7 +493,7 @@ def _dominant_param_esize(block: torch.nn.Module) -> int:
     return max(counts, key=lambda k: counts[k]) if counts else 2
 
 
-def _widest_out_and_hidden(block: torch.nn.Module) -> tuple[int, Optional[int]]:
+def _widest_out_and_hidden(block: torch.nn.Module) -> tuple[int, int | None]:
     """(widest out_features, modal in_features) over the block's Linear/Conv1D."""
     """
     The modal in_features approximates the hidden size (every attention/mlp
@@ -563,7 +564,7 @@ def _working_allowance_bytes(block: torch.nn.Module, pool: Any, batch_size: int)
 
 
 def placement_need_bytes(
-    block: torch.nn.Module, pool: Any, batch_size: int, iters: int = 0, primary: Optional[str] = None
+    block: torch.nn.Module, pool: Any, batch_size: int, iters: int = 0, primary: str | None = None
 ) -> int:
     """Candidate-device working-set need for the placement gates, first principles.
 
@@ -630,13 +631,13 @@ def resolve_placement_for_pool(
     chains: int,
     primary: str,
     candidate_devices: Sequence[str],
-    block: Optional[torch.nn.Module] = None,
+    block: torch.nn.Module | None = None,
     batch_size: int = 8,
     mode: str = "auto",
     iters: int = 0,
-    consumer: Optional[str] = None,
+    consumer: str | None = None,
     config: Any = None,
-) -> Optional[PoolPlacement]:
+) -> PoolPlacement | None:
     """Resolve placement from a live pool object (orchestrator entry point).
 
     ``primary`` must be the lane's actual cache device: a CPU primary

@@ -102,8 +102,9 @@ class TestRunItemsByDevice(unittest.TestCase):
 
         items = ["a", "b"]
         groups = group_items_by_device(items, device_of=lambda it: "cuda:0" if it == "a" else "cuda:1")
-        with mock.patch.object(torch.cuda, "is_available", return_value=True), mock.patch.object(
-            torch.cuda, "device", FakeCtx
+        with (
+            mock.patch.object(torch.cuda, "is_available", return_value=True),
+            mock.patch.object(torch.cuda, "device", FakeCtx),
         ):
             run_items_by_device(groups, lambda _idx, it: None, use_cuda_ctx=True)
         self.assertEqual(sorted(recorded), ["cuda:0", "cuda:1"])  # one ctx per device group
@@ -129,12 +130,14 @@ class TestRtnSearchShard(unittest.TestCase):
             m.global_name = f"m{i}"
             setattr(block, f"m{i}", m)
 
-        with mock.patch.object(type(q), "_quantize_layer_via_rtn", fake_via_rtn), mock.patch.object(
-            type(q), "model", torch.nn.Module()
-        ), mock.patch(
-            "auto_round.algorithms.quantization.rtn.batched_search.run_batched_rtn_search",
-            side_effect=lambda model, staged: staged_seen.extend([]) or [],
-        ) as drv:
+        with (
+            mock.patch.object(type(q), "_quantize_layer_via_rtn", fake_via_rtn),
+            mock.patch.object(type(q), "model", torch.nn.Module()),
+            mock.patch(
+                "auto_round.algorithms.quantization.rtn.batched_search.run_batched_rtn_search",
+                side_effect=lambda model, staged: staged_seen.extend([]) or [],
+            ) as drv,
+        ):
             q.quantize_block(block, None, None, None, None, None)
         self.assertEqual(drv.call_count, 1)
         self.assertEqual([n for n, _m in staged_seen], ["m0", "m1", "m2"])
@@ -156,8 +159,9 @@ class TestRtnSearchShard(unittest.TestCase):
         # strict serial baseline = batching AND multigpu spreading both off;
         # batching-off alone now spreads per-module searches (see the
         # quadrant test below)
-        with mock.patch.object(search_dispatch, "batched_search_disabled", return_value=True), mock.patch.object(
-            search_dispatch, "cross_device_search_disabled", return_value=True
+        with (
+            mock.patch.object(search_dispatch, "batched_search_disabled", return_value=True),
+            mock.patch.object(search_dispatch, "cross_device_search_disabled", return_value=True),
         ):
             q.quantize_block(block, None, None, None, None, None)
         self.assertEqual(calls, [caller])
@@ -194,10 +198,11 @@ class TestRtnSearchShard(unittest.TestCase):
                 w._run_deferred_search_now()
             return True
 
-        with mock.patch.object(batched_search, "run_batched_rtn_search", side_effect=_spy_run), mock.patch.object(
-            search_dispatch, "batched_search_disabled", return_value=True
-        ), mock.patch.object(search_dispatch, "cross_device_search_disabled", return_value=False), mock.patch.object(
-            type(q), "model", new_callable=mock.PropertyMock
+        with (
+            mock.patch.object(batched_search, "run_batched_rtn_search", side_effect=_spy_run),
+            mock.patch.object(search_dispatch, "batched_search_disabled", return_value=True),
+            mock.patch.object(search_dispatch, "cross_device_search_disabled", return_value=False),
+            mock.patch.object(type(q), "model", new_callable=mock.PropertyMock),
         ):
             q.quantize_block(block, None, None, None, None, None)
         self.assertEqual(seen_run.get("max_batch"), 1)  # singleton chunks: zero stacking
@@ -208,19 +213,23 @@ class TestOomCensus(unittest.TestCase):
     def test_context_manager_plugs_anywhere_and_reraises(self):
         from auto_round.utils.oom import oom_census
 
-        with mock.patch("auto_round.utils.oom.dump_oom_tensor_census_") as census:
-            with self.assertRaisesRegex(torch.OutOfMemoryError, "boom"):
-                with oom_census("surgical frame"):
-                    raise torch.OutOfMemoryError("boom")
+        with (
+            mock.patch("auto_round.utils.oom.dump_oom_tensor_census_") as census,
+            self.assertRaisesRegex(torch.OutOfMemoryError, "boom"),
+            oom_census("surgical frame"),
+        ):
+            raise torch.OutOfMemoryError("boom")
         census.assert_called_once_with("surgical frame")
 
     def test_context_manager_passes_non_oom_through_silently(self):
         from auto_round.utils.oom import oom_census
 
-        with mock.patch("auto_round.utils.oom.dump_oom_tensor_census_") as census:
-            with self.assertRaisesRegex(ValueError, "other"):
-                with oom_census("frame"):
-                    raise ValueError("other")
+        with (
+            mock.patch("auto_round.utils.oom.dump_oom_tensor_census_") as census,
+            self.assertRaisesRegex(ValueError, "other"),
+            oom_census("frame"),
+        ):
+            raise ValueError("other")
         census.assert_not_called()
 
     def test_global_hook_fires_on_uncaught_oom(self):
@@ -286,19 +295,23 @@ class TestOomCensus(unittest.TestCase):
         # HPU-class OOMs surface as RuntimeError("... out of memory ...")
         from auto_round.utils.oom import oom_census
 
-        with mock.patch("auto_round.utils.oom.dump_oom_tensor_census_") as census:
-            with self.assertRaisesRegex(RuntimeError, "Out of Memory in HPU"):
-                with oom_census("hpu frame"):
-                    raise RuntimeError("Out of Memory in HPU allocator")
+        with (
+            mock.patch("auto_round.utils.oom.dump_oom_tensor_census_") as census,
+            self.assertRaisesRegex(RuntimeError, "Out of Memory in HPU"),
+            oom_census("hpu frame"),
+        ):
+            raise RuntimeError("Out of Memory in HPU allocator")
         census.assert_called_once_with("hpu frame")
 
     def test_plain_runtime_error_does_not_trigger_census(self):
         from auto_round.utils.oom import oom_census
 
-        with mock.patch("auto_round.utils.oom.dump_oom_tensor_census_") as census:
-            with self.assertRaisesRegex(RuntimeError, "shape mismatch"):
-                with oom_census("frame"):
-                    raise RuntimeError("shape mismatch")
+        with (
+            mock.patch("auto_round.utils.oom.dump_oom_tensor_census_") as census,
+            self.assertRaisesRegex(RuntimeError, "shape mismatch"),
+            oom_census("frame"),
+        ):
+            raise RuntimeError("shape mismatch")
         census.assert_not_called()
 
     def test_reexport_from_search_dispatch(self):
@@ -633,10 +646,10 @@ class TestWrapSearchWorkerBuckets(unittest.TestCase):
         def fake_run(keyed, fn):
             captured["buckets"] = {k: [c for _idx, it in v for c in it[1]] for k, v in keyed.items()}
 
-        with mock.patch.object(
-            search_dispatch, "pick_search_worker_devices", return_value=["cpu", "cuda:9"]
-        ), mock.patch.object(search_dispatch, "probe_usable_bytes", return_value=2**40), mock.patch.object(
-            search_dispatch, "run_items_by_device", side_effect=fake_run
+        with (
+            mock.patch.object(search_dispatch, "pick_search_worker_devices", return_value=["cpu", "cuda:9"]),
+            mock.patch.object(search_dispatch, "probe_usable_bytes", return_value=2**40),
+            mock.patch.object(search_dispatch, "run_items_by_device", side_effect=fake_run),
         ):
             search_dispatch.run_batched_wrap_search(wrappers, max_batch=1)
         buckets = captured["buckets"]
@@ -661,10 +674,10 @@ class TestWrapSearchWorkerBuckets(unittest.TestCase):
         def fake_run(keyed, fn):
             captured["buckets"] = {k: [c for _idx, it in v for c in it[1]] for k, v in keyed.items()}
 
-        with mock.patch.object(
-            search_dispatch, "pick_search_worker_devices", return_value=["cpu", "cuda:9"]
-        ), mock.patch.object(search_dispatch, "probe_usable_bytes", return_value=2**40), mock.patch.object(
-            search_dispatch, "run_items_by_device", side_effect=fake_run
+        with (
+            mock.patch.object(search_dispatch, "pick_search_worker_devices", return_value=["cpu", "cuda:9"]),
+            mock.patch.object(search_dispatch, "probe_usable_bytes", return_value=2**40),
+            mock.patch.object(search_dispatch, "run_items_by_device", side_effect=fake_run),
         ):
             search_dispatch.run_batched_wrap_search(wrappers, max_batch=1)
         counts = sorted(len(v) for v in captured["buckets"].values())

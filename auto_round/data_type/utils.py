@@ -13,10 +13,11 @@
 # limitations under the License.
 
 import math
+from collections.abc import Callable
 from functools import lru_cache
 from math import ceil
-
 from typing import Any
+
 import torch
 from torch.nn import Linear, Module
 

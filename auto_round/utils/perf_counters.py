@@ -17,11 +17,11 @@ class _PerfCounters:
 
     def __init__(self):
         self.enabled = perf_counters_enabled()
-        self.totals: "dict[str, float] | None" = {} if self.enabled else None
-        self.counts: "dict[str, int]" = {}
-        self.maxima: "dict[str, float]" = {}
-        self._t0: "dict[str, float]" = {}
-        self._current: "str | None" = None
+        self.totals: dict[str, float] | None = {} if self.enabled else None
+        self.counts: dict[str, int] = {}
+        self.maxima: dict[str, float] = {}
+        self._t0: dict[str, float] = {}
+        self._current: str | None = None
 
     def start(self, key: str) -> None:
         if self.enabled:
