@@ -459,69 +459,28 @@ class SignRoundQuantizer(BaseQuantizer):
                 num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
 
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
-        index_sampler = IndexSampler(nsamples, global_batch_size)
-        block_fwd = self.block_forward
-
-        # When low_gpu_mem_usage is enabled, active_inputs / fp_outputs are intentionally
-        # kept on CPU to limit GPU memory.  However block_fwd normally routes pred_output
-        # through CPU (cache_device="cpu") and the very next line moves it back to
-        # loss_device — a wasteful GPU→CPU→GPU roundtrip on every batch × iteration.
-        # pred_output is a transient single-batch tensor consumed immediately for the
-        # loss and then freed, so keeping it on the compute device costs no persistent
-        # extra memory.  Pass it as a per-call override so self.cache_device is unchanged.
-        _fwd_cache_device = (
-            device
-            if getattr(self.compress_context, "low_gpu_mem_usage", False) and not str(device).startswith("cpu")
-            else None
-        )
-
-        tuning_cache = None
-        # Only opt-in diffusion tuning can enter the CUDA staging path.
-        cache_budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
-        use_tuning_cache = (
-            getattr(self.model_context, "is_diffusion", False)
-            and (cache_budget == "auto" or cache_budget > 0)
-            and self.compress_context.low_gpu_mem_usage
-            and str(device).startswith("cuda")
-            and len(device_manager.device_list) == 1
-            and (loss_device is None or torch.device(loss_device) == torch.device(device))
-        )
-
-        try:
-            for i in range(self.iters):
-                # Auto observes a complete forward/backward/optimizer iteration
-                # on the legacy path before allocating any extra GPU buffers.
-                if use_tuning_cache and i == (1 if cache_budget == "auto" else 0):
-                    from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
-
-                    tuning_cache = DiffusionTuningCache.create(
-                        block,
-                        block_fwd,
-                        active_inputs,
-                        input_others,
-                        fp_outputs,
-                        index_sampler,
-                        self.iters - i,
-                        cache_budget,
-                        device,
-                    )
+        with self.tuning_session(
+            block,
+            active_inputs,
+            input_others,
+            fp_outputs,
+            nsamples=nsamples,
+            global_batch_size=global_batch_size,
+            iters=self.iters,
+            loss_device=loss_device,
+        ) as tuning:
+            for i in tuning.iterations():
                 if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
                     for n, m in block.named_modules():
                         m.cur_iter = i
                 total_loss = 0
-                global_indices = index_sampler.next_batch()
+                global_indices = tuning.next_batch()
                 if valid_token_mask:
                     num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
                 for batch_start in range(0, len(global_indices), batch_size):
                     indices = global_indices[batch_start : batch_start + batch_size]
-                    staged = tuning_cache.get(indices) if tuning_cache is not None else None
-                    if staged is None:
-                        ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
-                        pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
-                    else:
-                        ref_output = staged[2]
-                        pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
+                    pred_output, ref_output = tuning.forward(indices)
                     if loss_device is not None:
                         pred_output = pred_output.to(loss_device)
                     if (
@@ -554,28 +513,16 @@ class SignRoundQuantizer(BaseQuantizer):
                 if total_loss < best_loss:
                     best_loss = total_loss
                     if not self.not_use_best_mse:
-                        best_params = (
-                            tuning_cache.collect_best_params()
-                            if tuning_cache is not None and tuning_cache.best is not None
-                            else collect_best_params(block, self.compress_context.cache_device)
-                        )
+                        best_params = tuning.collect_best_params()
                         last_best_iter = i
                 if self.not_use_best_mse and i == self.iters - 1:
-                    best_params = (
-                        tuning_cache.collect_best_params()
-                        if tuning_cache is not None and tuning_cache.best is not None
-                        else collect_best_params(block, self.compress_context.cache_device)
-                    )
+                    best_params = tuning.collect_best_params()
 
                 if not self.not_use_best_mse:
                     if 0 < self.dynamic_max_gap <= i - last_best_iter:
                         break
                 sync_gradients()
                 self._step(scaler, optimizer, lr_schedule)
-
-        finally:
-            if tuning_cache is not None:
-                tuning_cache.close()
 
         last_loss = total_loss
         best_iter = self.iters
