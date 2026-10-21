@@ -73,6 +73,10 @@ pip install auto-round
 - `mbpp`：用于代码场景
 - `nvidia/OpenCodeInstruct`：用于代码指令数据
 - `openbmb/Ultra-FineWeb`
+- `openbmb/UltraData-SFT-Agent-2609`（实验性）：用于智能体/工具调用（tool-calling）数据。每个样本都包含一个 `messages` 对话
+  （含 `tool_calls`/tool 轮次）以及 `tools` 工具 schema，并通过聊天模板渲染（始终启用 `apply_chat_template`），
+  因此量化模型可以看到完整的工具调用轨迹。该数据集的所有配置（`Code-Agent`、`Search-Agent`、`General-Agent`、`Tool-Use`）都会被加载并交错混合
+- `qwedsacf/competition_math`（实验性）：用于数学场景（会拼接 `problem` 与 `solution` 字段，并默认将较短的样本打包成完整的 `seqlen` 序列）
 
 ### 自定义数据集
 **建议用户还是尽量不使用 padding 的数据**。虽然对于 padding 过的数据我们有做特殊处理，但是目前验证的比较少。
@@ -102,9 +106,47 @@ pip install auto-round
 
 **数据集组合**：可使用 `--dataset` 参数组合不同数据集并设置其他的参数。示例代码 `--dataset ./tmp.json,NeelNanda/pile-10k:num=256,mbpp:num=128`。此参数同时支持本地标定文件和 Hugging Face 数据集，同时还可用 `split = split1+split2` 指定某个数据集的多个拆分子集。
 
-**样本拼接**：可使用 `--dataset NeelNanda/pile-10k:concat=True` 拼接标定样本。在该模式下，会先将所有样本拼接成完整文本，再按 seqlen 长度切分出来。
+**样本拼接**：可使用 `--dataset NeelNanda/pile-10k:concat=True` 拼接标定样本。在该模式下，会先将所有样本拼接成完整文本，再按 seqlen 长度切分出来。对于通用加载器（任意 HuggingFace 数据集，或通过 `fields`/`template` 指定的数据集），`concat=True` 会改为执行“样本级拼接”：不断累积整条样本直到缓冲区达到 `seqlen`，输出一条完整长度的序列后清空缓冲区，下一条样本重新开始拼接。这样可以避免单条样本短于 `seqlen` 的数据集（例如 `qwedsacf/competition_math`）被长度过滤丢弃。
 
 **启用对话模板**：可使用 `--dataset NeelNanda/pile-10k:apply_chat_template` 在分词前为标定数据应用对话模板，这在指令式模型的生成任务中比较常用。若需自定义系统提示词，可使用 `--dataset 'NeelNanda/pile-10k:apply_chat_template:system_prompt="你是一个乐于助人的智能助手。"'`
+
+**通用数据集加载**（实验性）：任何 HuggingFace 数据集都可以直接使用，无需预先注册。文本字段会通过检查列名和采样值自动检测。例如：
+`--dataset my-org/my-dataset:split=train:num=512`
+
+> **注意**：通用数据集加载（包括 `fields`、`template`、`separator`、`timeout`、自动字段检测，以及下文的 `CalibDataset` API）为**实验性**功能，其行为和接口在未来版本中可能发生变化。
+
+**字段选择**：使用 `fields` 参数显式指定文本列。单个字段：
+`--dataset my-org/my-dataset:fields=text`。多个字段会用分隔符拼接：
+`--dataset my-org/my-dataset:fields=question+answer`
+
+**模板**：使用 `template` 配合 `{field}` 占位符从多列构建自定义文本。同时设置时优先于 `fields`。
+`--dataset 'my-org/my-dataset:template={question} {answer}'`
+
+**分隔符**：拼接多个字段时可自定义分隔符（默认 `"\n\n"`）：
+`--dataset 'my-org/my-dataset:fields=q+a:separator=\n'`
+
+**超时**：对于流式数据集，可设置 `timeout`（秒）限制数据收集时间。若超时前无法收集到足够样本，会记录警告并使用已收集的样本。
+`--dataset my-org/my-dataset:timeout=600`
+
+**CalibDataset（API）**：编程式使用时，`CalibDataset` 数据类提供了类型化的接口：
+
+    ~~~python
+    from auto_round.utils.dataset_utils import CalibDataset
+    from auto_round import AutoRound
+
+    # 单字段
+    spec = CalibDataset("my-org/my-dataset", split="train", num=1000, fields="text")
+
+    # 多字段拼接
+    spec = CalibDataset("my-org/my-dataset", fields=["question", "answer"], separator="\n")
+
+    # 模板
+    spec = CalibDataset("my-org/my-dataset", template="{question} {answer}")
+
+    # 直接传入 AutoRound
+    ar = AutoRound(model="Qwen/Qwen3-8B", dataset=spec, scheme="W4A16")
+    ar.quantize_and_save()
+    ~~~
 
 注意：如果没有开启拼接选项，长度小于 args.seqlen 的样本会被舍弃。
 
@@ -640,32 +682,21 @@ ar.quantize_and_save(output_dir, format="auto_round")
 <details>
   <summary>Model-free 并行量化基准（分钟向上取整）</summary>
 
-时间归一化规则：所有 `mm:ss` 均向上取整到分钟。例如：`4:20 -> 5`、`15:45 -> 16`、`9:07 -> 10`、`7:29 -> 8`、`4:09 -> 5`。
+免模型模式会用多进程并行量化多个权重分片（shard），并行度通过环境变量 `AR_MODEL_FREE_SHARD_PARALLELISM` 设置，详见[环境变量指南](./environments_CN.md#ar_model_free_shard_parallelism)：
+- **默认（未设置）**：`shard_count // 4`，最小 1、最大 10。例如：8 个 shard 对应 2 个 worker，40 个 shard 及以上对应 10 个 worker。
+- **手动设置**：例如 `export AR_MODEL_FREE_SHARD_PARALLELISM=20`，实际并行度不超过 shard 总数。
+- 并行度越高通常越快，但峰值显存（以及内存）会随之上升，资源受限时请调小。
 
-| 模型 | 设备 | 方案 | 并行度 | 峰值显存 (G) | 耗时（分钟，向上取整） |
-|---|---|---|---:|---:|---:|
-| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 | 2 | N/A |
-| Qwen/Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 10 | 8 | 7 |
-| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 | 2 | 17 |
-| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 10 | 8 | 5 |
-| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 1 | 2 | 60 |
-| zai-org/GLM-5.2 | B200 | MXFP4-Mixed | 10 | 27 | 16 |
-| zai-org/GLM-5.2 | B200 | W4A16 | 1 | 3 | 30 |
-| zai-org/GLM-5.2 | B200 | W4A16 | 10 | 16 | 10 |
-| zai-org/GLM-5.2 | B200 | W4A16 | 20 | 32 | 8 |
-| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 | 2 | 18 |
-| MiniMaxAI/MiniMax-M2.7 (FP8) | B200 | W4A16 | 10 | 10 | 5 |
-| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 | 6 | 80 |
-| deepseek-ai/DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 10 | 50 | 13 |
+耗时均向上取整到分钟。
 
-| 模型 | 方案 | 对比 | 耗时变化（分钟） | 加速比 | 时间节省 | 峰值显存变化 |
-|---|---|---|---|---:|---:|---|
-| Qwen3-235B | W4A16 | 并行 1 -> 10 | 17 -> 5 | 3.40x | 70.6% | 2G -> 8G |
-| GLM-5.2 | MXFP4-Mixed | 并行 1 -> 10 | 60 -> 16 | 3.75x | 73.3% | 2G -> 27G |
-| GLM-5.2 | W4A16 | 并行 1 -> 10 | 30 -> 10 | 3.00x | 66.7% | 3G -> 16G |
-| GLM-5.2 | W4A16 | 并行 1 -> 20 | 30 -> 8 | 3.75x | 73.3% | 3G -> 32G |
-| MiniMax-M2.7 | W4A16 | 并行 1 -> 10 | 18 -> 5 | 3.60x | 72.2% | 2G -> 10G |
-| DeepSeek-V4-Pro | W4A16 | 并行 1 -> 10 | 80 -> 13 | 6.15x | 83.8% | 6G -> 50G |
+| 模型 | 设备 | 方案 | 并行度 | 耗时（分钟） | 加速比 | 峰值显存 (G) |
+|---|---|---|---|---|---:|---|
+| Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 -> 10 | N/A -> 7 | N/A | 2 -> 8 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 -> 10 | 17 -> 5 | 3.40x | 2 -> 8 |
+| GLM-5.2 | B200 | MXFP4-Mixed | 1 -> 10 | 60 -> 16 | 3.75x | 2 -> 27 |
+| GLM-5.2 | B200 | W4A16 | 1 -> 10 / 20 | 30 -> 10 / 8 | 3.00x / 3.75x | 3 -> 16 / 32 |
+| MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 -> 10 | 18 -> 5 | 3.60x | 2 -> 10 |
+| DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 -> 10 | 80 -> 13 | 6.15x | 6 -> 50 |
 
 结论：在 model-free 量化中，提高并行度通常可带来约 `3x-6x` 的耗时加速，但峰值显存会明显上升。
 
@@ -701,6 +732,43 @@ ar.quantize_and_save(output_dir, format="auto_round")
 | `MXFP8` | 8 | 32 | mxfp8-quantized |
 
 需要特殊打包内核的 scheme（`W3A16`、`FPW8A16`、`BF16`、`MXINT4`、`NVFP4`、`FP8_BLOCK`、`FP8_STATIC`、`INT8_W8A8`、`GGUF:*` 等）**不被支持**，传入会抛 `ValueError`。这些请使用标准 AutoRound 流程。
+
+**NVFP4 源模型 → MXFP4**
+
+目标：将已发布的 NVFP4 checkpoint 转换为 MXFP4，以便在支持 MXFP4、但没有原生 NVFP4 加速路径的 Intel GPU 上，高吞吐地部署 4-bit 大语言模型。
+
+支持的源张量布局：
+
+| 源布局 | 张量 | 状态 |
+| --- | --- | --- |
+| compressed-tensors（NVFP4） | `.weight_packed` + `.weight_scale` + `.weight_global_scale` + `.input_global_scale` | 支持 |
+| ModelOpt / Quark（NVFP4） | `.weight`（uint8）+ `.weight_scale`（FP8）+ `.weight_scale_2` + `.input_scale` | 支持 |
+| `inkling_mm_model` 类型 | `X`（uint8）+ `X.scale` + `X.scale2`（可能位于不同分片） | 支持 |
+
+常见 checkpoint 的支持状态：
+
+| 模型 | 源格式 | 状态 | gsm8k strict-match（MXFP4） | gsm8k flexible-extract（MXFP4） |
+| --- | --- | --- | --- | --- |
+| `RedHatAI/Qwen3.8-27B-NVFP4` | compressed-tensors，NVFP4 + FP8 | 已验证 | 0.9636 ± 0.0052 | 0.9636 |
+| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt，NVFP4 + FP8 | 已验证 | 0.9644 ± 0.0051 | 0.9659 |
+| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors，NVFP4 | 已验证 | 0.9575 ± 0.0056 | 0.9575 |
+| `amd/MiniMax-M2.7-NVFP4` | Quark，NVFP4 | 已验证 | 0.9568 ± 0.0056 | 0.9591 |
+| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt，NVFP4 | 已验证 | 0.9477 ± 0.0061 | 0.9522 |
+| `thinkingmachines/Inkling-Small-NVFP4` | 特殊格式（`inkling_mm_model`），NVFP4 | 已验证 | 0.9477 ± 0.0061 | 0.9545 |
+
+gsm8k 为转换后 MXFP4 模型的 5-shot 评测结果，未开启 thinking。结果仅用于证明模型可正常运行，数据不保证准确。
+
+对 NVFP4 checkpoint 使用 `--scheme MXFP4 --model_free` 时，**仅**将 NVFP4 层转换为 MXFP4。是否为 NVFP4 源模型由模型名（包含 `nvfp4`）或其量化配置（`config.json` / `hf_quant_config.json`）判断，检测到时会打印警告：
+
+- **NVFP4 层**：在每个分片中自动检测，并转换为 MXFP4。
+- **非量化层**（BF16、`lm_head`、router 等）：保持原样，并在 `quantization_config` 中记录为未量化。如需同时量化其中部分层，请通过 `--layer_config` 额外指定，例如 `--layer_config "{lm_head:mxfp4}"`。
+- **FP8 层**（混合精度源模型，例如 FP8 attention + NVFP4 MLP）：保持原样。直接复用源模型的量化配置（compressed-tensors；ModelOpt 与 Quark 配置会先转换为 compressed-tensors 格式），仅将其中的 NVFP4 分组改写为 MXFP4，输出为 `mixed-precision` 的 `quantization_config`。
+- 无法识别的源配置会给出警告并跳过。
+- 目前仅支持 `--format llm_compressor`。
+
+```bash
+auto_round nvidia/MiniMax-M2.7-NVFP4 --model_free --scheme MXFP4 --format llm_compressor --output_dir ./mxfp4-model
+```
 
 #### 命令行用法
 

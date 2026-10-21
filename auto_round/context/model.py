@@ -27,6 +27,7 @@ from auto_round import envs
 from auto_round.compressors.utils import get_shared_keys
 from auto_round.context.base import BaseContext
 from auto_round.logger import logger
+from auto_round.modeling.nemotron_h_omni import apply_nemotron_h_omni_post_load
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
 from auto_round.special_model_handler import _handle_special_model, update_module
 from auto_round.utils import (
@@ -121,7 +122,7 @@ class ModelContext(BaseContext):
         # by the time BaseCompressor.post_init() runs.
         self._load_model()
 
-        if unsupported_meta_device(self.model):
+        if self._disk_stream_index is None and unsupported_meta_device(self.model):
             raise RuntimeError(
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
@@ -196,13 +197,22 @@ class ModelContext(BaseContext):
                         self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
                             self.disk_stream_model_dir
                         )
+                        loaded_via_meta = True
                         from transformers import AutoProcessor
 
-                        self.processor = AutoProcessor.from_pretrained(
-                            self.disk_stream_model_dir, trust_remote_code=self.trust_remote_code
-                        )
-                        self.image_processor = getattr(self.processor, "image_processor", None)
-                        loaded_via_meta = True
+                        try:
+                            self.processor = AutoProcessor.from_pretrained(
+                                self.disk_stream_model_dir, trust_remote_code=self.trust_remote_code
+                            )
+                            self.image_processor = getattr(self.processor, "image_processor", None)
+                        except Exception:
+                            logger.warning(
+                                "AutoProcessor failed for %s; keeping the meta skeleton (text-only calibration).",
+                                self.disk_stream_model_dir,
+                                exc_info=True,
+                            )
+                            self.processor = None
+                            self.image_processor = None
                     except Exception:
                         logger.warning(
                             "Building a multimodal meta skeleton for %s failed; " "falling back to a full CPU load.",
@@ -269,6 +279,9 @@ class ModelContext(BaseContext):
         elif self.tokenizer is None and not self.is_diffusion and self.need_calib:
             raise ValueError("A tokenizer must be set for non-str model input")
 
+        # Nemotron-H Omni wrappers: restore FP32 SSM/router tensors and the gated-norm
+        # group_size after loading. No-op for every other model.
+        apply_nemotron_h_omni_post_load(self.model)
         self._model_loaded = True
 
         # Clear tuning_device from any previous quantization passes.
