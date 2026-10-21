@@ -303,7 +303,7 @@ class SignRoundQuantizer(BaseQuantizer):
         Returns:
             Scalar LFQ loss tensor.
         """
-        import torch.nn.functional as F
+        from .lfq_loss import soft_cross_entropy
 
         self._init_lm_components()
         device = q_hidden_state.device
@@ -320,24 +320,20 @@ class SignRoundQuantizer(BaseQuantizer):
         # FP logits form the (detached) soft target distribution σ(X·W_FP·W_Head).
         with torch.no_grad():
             fp_logits = _to_logits(fp_hidden_state.to(device))
-            target = F.softmax(fp_logits.float(), dim=-1)
 
         # Quantized logits: gradients flow through this branch only.
         q_logits = _to_logits(q_hidden_state)
-        log_q = F.log_softmax(q_logits.float(), dim=-1)
 
-        # Per-position cross-entropy summed over the vocabulary dimension.
-        token_ce = -(target * log_q).sum(dim=-1)  # [batch, seq_len]
-
-        # Optionally exclude ignored positions (e.g. padding marked with -100),
-        # then average over the remaining L sequence positions (Eq. 3 "1/L").
+        # Optional mask excluding ignored positions (e.g. padding marked -100);
+        # token values themselves are not used as targets (soft CE, Eq. 3).
+        valid_mask = None
         if input_ids is not None:
-            mask = (input_ids.to(device) != -100).to(token_ce.dtype)
-            denom = mask.sum().clamp_min(1.0)
-            loss = (token_ce * mask).sum() / denom
-        else:
-            loss = token_ce.mean()
-        return loss
+            valid_mask = input_ids.to(device) != -100
+
+        # Memory-efficient soft cross-entropy (Unsloth-style logsumexp + analytic
+        # gradient + row chunking): never materializes a full float32 log_softmax
+        # tensor nor an autograd graph through softmax.
+        return soft_cross_entropy(q_logits, fp_logits, valid_mask)
 
     def quantize_block(
         self,
