@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import torch
 
-__all__ = ["soft_cross_entropy", "DEFAULT_SOFT_CE_CHUNK_ELEMS"]
+__all__ = ["DEFAULT_SOFT_CE_CHUNK_ELEMS", "soft_cross_entropy"]
 
 # Target number of (rows × vocab) float32 elements processed per chunk.
 # 2**23 ≈ 8.4M elems ≈ 32 MB per temporary fp32 tensor.
@@ -136,4 +136,3 @@ def soft_cross_entropy(
         mask = valid_mask.reshape(-1).to(device=q2d.device, dtype=torch.float32)
 
     return _SoftCrossEntropy.apply(q2d, fp2d, mask, chunk_elems)
-
