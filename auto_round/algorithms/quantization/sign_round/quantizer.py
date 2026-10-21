@@ -270,49 +270,81 @@ class SignRoundQuantizer(BaseQuantizer):
         name_lower = block_name.lower()
         return not any(kw in name_lower for kw in self._NON_TEXT_BLOCK_KEYWORDS)
 
-    def lfq_loss(self, hidden_state: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
-        """Compute LM cross-entropy loss from the last block's hidden states.
+    def lfq_loss(
+        self,
+        q_hidden_state: torch.Tensor,
+        fp_hidden_state: torch.Tensor,
+        input_ids: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """Compute the LFQ loss between the FP and quantized token distributions.
 
-        Applies every post-block module (final norm, optional projection, …) in
-        order, then runs lm_head and computes next-token prediction loss.
-        Positions marked with ``-100`` in *input_ids* are excluded from the loss.
+        Implements Eq. 3 of the LFQ paper: the cross-entropy between the FP
+        model's logit distribution and the quantized model's logit distribution,
+
+            L_CE = -(1/L) Σ_{i,j} σ(X·W_FP·W_Head)_{i,j} · log σ(X·W_q·W_Head)_{i,j}
+
+        where ``σ`` is the softmax over the vocabulary dimension. Both logits are
+        obtained by applying every post-block module (final norm, optional
+        projection, …) in order followed by ``lm_head``. The FP distribution is
+        the (detached) soft target; gradients flow only through the quantized
+        branch. This is a distribution-matching objective, *not* a hard-label
+        next-token cross-entropy.
 
         Args:
-            hidden_state: Last block output, shape ``[batch, seq_len, hidden]``.
-            input_ids:    Token-ID labels with ``-100`` for ignored positions,
-                          shape ``[batch, seq_len]``.
+            q_hidden_state:  Quantized last-block output ``X·W_q``, shape
+                             ``[batch, seq_len, hidden]``.
+            fp_hidden_state: FP last-block output ``X·W_FP`` used to build the
+                             soft target distribution, same shape as above.
+            input_ids:       Optional token-ID labels with ``-100`` for ignored
+                             (e.g. padding) positions, shape ``[batch, seq_len]``.
+                             When provided, those positions are excluded from the
+                             loss; token values themselves are not used as targets.
 
         Returns:
-            Scalar cross-entropy loss tensor.
+            Scalar LFQ loss tensor.
         """
+        from .lfq_loss import soft_cross_entropy
+
         self._init_lm_components()
-        device = hidden_state.device
+        device = q_hidden_state.device
 
         for module in self._post_block_modules:
             module.to(device)
-            hidden_state = module(hidden_state)
-
         self._lm_head.to(device)
-        logits = self._lm_head(hidden_state)
 
-        if hasattr(self.model, "loss_function"):
-            loss = self.model.loss_function(
-                logits=logits,
-                labels=input_ids.to(device),
-                vocab_size=self.model.config.vocab_size,
-            )
-        else:
-            import torch.nn.functional as F
+        def _to_logits(hidden: torch.Tensor) -> torch.Tensor:
+            for module in self._post_block_modules:
+                hidden = module(hidden)
+            return self._lm_head(hidden)
 
-            # Standard causal-LM shift: predict token t+1 from hidden state t.
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = input_ids[..., 1:].contiguous().to(device)
-            loss = F.cross_entropy(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-                ignore_index=-100,
-            )
-        return loss
+        # FP logits form the (detached) soft target distribution σ(X·W_FP·W_Head).
+        with torch.no_grad():
+            fp_logits = _to_logits(fp_hidden_state.to(device))
+
+        # Quantized logits: gradients flow through this branch only.
+        q_logits = _to_logits(q_hidden_state)
+
+        # Position mask for the soft-CE objective.
+        #
+        # IMPORTANT: this is a *deliberate same-position* mask — no next-token
+        # shift is applied. LFQ (Eq. 3) matches the FP and quantized output
+        # distributions σ(X·W_FP·W_Head) vs σ(X·W_q·W_Head) at each position; it
+        # is a per-position distillation objective, not next-token prediction,
+        # so logits and the target distribution are aligned position-for-position
+        # (unlike the legacy hard-label CE path that used shift_logits/labels).
+        #
+        # ``input_ids`` already carries the calibrator's -100 ignore markers
+        # (pad tokens, trailing repeated tokens, and the last position of each
+        # sample). Those positions are simply dropped here; the token *values*
+        # are never used as targets.
+        valid_mask = None
+        if input_ids is not None:
+            valid_mask = input_ids.to(device) != -100
+
+        # Memory-efficient soft cross-entropy (Unsloth-style logsumexp + analytic
+        # gradient + row chunking): never materializes a full float32 log_softmax
+        # tensor nor an autograd graph through softmax.
+        return soft_cross_entropy(q_logits, fp_logits, valid_mask)
 
     def quantize_block(
         self,
@@ -530,7 +562,11 @@ class SignRoundQuantizer(BaseQuantizer):
                         and input_ids is not None
                         and self._is_text_decoder_block(block_ctx.block_name)
                     ):
-                        loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
+                        loss = self.lfq_loss(
+                            pred_output,
+                            ref_output,
+                            torch.cat([input_ids[i] for i in indices], dim=0),
+                        )
                     else:
                         loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
                     num_elm = 1 if num_elm <= 0 else num_elm

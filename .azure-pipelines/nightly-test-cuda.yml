@@ -11,6 +11,7 @@ pr:
   branches:
     include:
       - main
+      - "*rc"
   paths:
     include:
       - auto_round
