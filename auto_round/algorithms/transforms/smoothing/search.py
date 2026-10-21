@@ -26,22 +26,29 @@ from auto_round.logger import logger
 _CandidateT = TypeVar("_CandidateT")
 
 
+def _select_best_layer_result(
+    candidates: Iterable[tuple[_CandidateT, float | torch.Tensor]],
+    *,
+    module_name: str,
+) -> tuple[_CandidateT, float]:
+    """Keep the candidate and its score together, including a valid None candidate."""
+    best = None
+    for candidate, error in candidates:
+        error_value = error.item() if torch.is_tensor(error) else float(error)
+        if math.isfinite(error_value) and (best is None or error_value < best[1]):
+            best = (candidate, error_value)
+    if best is None:
+        raise NoFiniteCandidateError(f"Smooth search produced no finite candidate for {module_name!r}.")
+    return best
+
+
 def select_best_layer_candidate(
     candidates: Iterable[tuple[_CandidateT, float | torch.Tensor]],
     *,
     module_name: str,
 ) -> _CandidateT:
     """Select the lowest finite error, retaining the first exact tie."""
-    best_candidate = None
-    best_error = float("inf")
-    for candidate, error in candidates:
-        error_value = error.item() if torch.is_tensor(error) else float(error)
-        if math.isfinite(error_value) and error_value < best_error:
-            best_candidate = candidate
-            best_error = error_value
-    if best_candidate is None:
-        raise NoFiniteCandidateError(f"Smooth search produced no finite candidate for {module_name!r}.")
-    return best_candidate
+    return _select_best_layer_result(candidates, module_name=module_name)[0]
 
 
 def search_candidates(
@@ -74,10 +81,9 @@ def search_candidates(
             raise
         scored.append((candidate, error))
     try:
-        selected = select_best_layer_candidate(scored, module_name=module_name)
+        selected, error = _select_best_layer_result(scored, module_name=module_name)
     except NoFiniteCandidateError:
         logger.warning("Smooth search produced no finite candidate for %s", module_name)
         raise
-    error = next(error for candidate, error in reversed(scored) if candidate is selected)
     logger.debug("Smooth search selected a candidate for %s: error=%.6g", module_name, error)
     return selected, error

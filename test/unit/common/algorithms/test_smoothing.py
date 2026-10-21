@@ -25,6 +25,7 @@ from auto_round.algorithms.transforms.smoothing.search import (
     InvalidSmoothCandidateError,
     NoFiniteCandidateError,
     search_candidates,
+    select_best_layer_candidate,
 )
 
 
@@ -72,6 +73,13 @@ def test_search_keeps_order_invalid_candidates_and_first_ties():
     )
     assert (selected, error) == ("first", 1)
     assert invalid == ["invalid", "nan"]
+
+
+@pytest.mark.parametrize("candidate", [None, object()])
+def test_search_keeps_the_winning_score_for_repeated_candidates(candidate):
+    errors = iter([1.0, 2.0])
+    assert search_candidates([candidate, candidate], lambda _: next(errors), module_name="proj") == (candidate, 1.0)
+    assert select_best_layer_candidate([(candidate, 1.0)], module_name="proj") is candidate
 
 
 @pytest.mark.parametrize("fail", [False, True])

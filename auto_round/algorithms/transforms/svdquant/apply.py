@@ -30,7 +30,7 @@ from auto_round.algorithms.transforms.smoothing.calibration import (
 )
 from auto_round.algorithms.transforms.smoothing.calibration import move_to_device as _move_to_device
 from auto_round.algorithms.transforms.smoothing.engine import SmoothEngine
-from auto_round.algorithms.transforms.smoothing.replay import output_squared_error, temporary_modules
+from auto_round.algorithms.transforms.smoothing.replay import output_squared_error, register_hooks, temporary_modules
 from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
 from auto_round.algorithms.transforms.svdquant.residual import (
     ActivationQuantScheme,
@@ -193,7 +193,9 @@ class SVDQuantTransform(BasePreprocessor):
             for calibration in evaluation_owners.get(id(module), ()):
                 calibration.finish_call(inputs, kwargs, output)
 
-        return [module.register_forward_hook(collect_calibration, with_kwargs=True) for module in modules.values()]
+        return register_hooks(
+            module.register_forward_hook(collect_calibration, with_kwargs=True) for module in modules.values()
+        )
 
     @torch.no_grad()
     def pre_quantize_block(self, ctx) -> None:

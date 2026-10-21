@@ -119,3 +119,55 @@ def test_shared_search_matches_original_svdquant_search(dtype):
     actual = transform._search_group_scale(capture, block, local_names)
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     assert block[0] is projection
+
+
+def test_svdquant_partial_hook_registration_preserves_existing_hooks(monkeypatch):
+    from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+
+    block = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
+    transform = SVDQuantTransform(SVDQuantConfig(smooth_enabled=True, model_adapter="identity"))
+    existing = block[0].register_forward_hook(lambda *args: None)
+
+    def fail_registration(*args, **kwargs):
+        raise RuntimeError("registration failed")
+
+    monkeypatch.setattr(block[1], "register_forward_hook", fail_registration)
+    with pytest.raises(RuntimeError, match="registration failed"):
+        transform.register_fp_input_forward_hooks(block)
+    assert list(block[0]._forward_hooks) == [existing.id]
+    existing.remove()
+
+
+@torch.no_grad()
+def test_svdquant_later_group_failure_does_not_install_earlier_wrappers(monkeypatch):
+    from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
+    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+    from auto_round.schemes import PRESET_SCHEMES
+
+    block = torch.nn.Sequential(torch.nn.Linear(32, 32), torch.nn.Linear(32, 32))
+    originals = list(block)
+    for projection in block:
+        for name, value in PRESET_SCHEMES["MXFP4"].to_dict().items():
+            setattr(projection, name, value)
+        projection.scale_dtype = torch.float32
+    transform = SVDQuantTransform(
+        SVDQuantConfig(rank=2, smooth_enabled=True, smooth_num_grids=2, low_rank_dtype="fp32", model_adapter="identity")
+    )
+    hooks = transform.register_fp_input_forward_hooks(block)
+    block(torch.randn(1, 2, 32))
+    for hook in hooks:
+        hook.remove()
+    groups = [capture.group for capture in transform._smooth_calibration.values()]
+    decompose = transform._decompose_smoothed_group
+
+    def fail_later_group(calibration, *args):
+        if calibration.group is groups[1]:
+            raise RuntimeError("second group failed")
+        return decompose(calibration, *args)
+
+    monkeypatch.setattr(transform, "_decompose_smoothed_group", fail_later_group)
+    with pytest.raises(RuntimeError, match="second group failed"):
+        transform._pre_quantize_smoothed_block(block, groups)
+    assert list(block) == originals
+    assert not transform._smooth_calibration

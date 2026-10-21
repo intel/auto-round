@@ -34,6 +34,33 @@ class Parent(torch.nn.Module):
         return output, output.square() * 100
 
 
+def test_awq_partial_hook_registration_preserves_existing_hooks(monkeypatch):
+    parent = Parent()
+    transform = AWQTransform(AWQConfig())
+    transform._block_mappings = {
+        "block": [
+            ResolvedMapping(
+                smooth_name="block.norm",
+                smooth_layer=parent.norm,
+                balance_names=["block.q"],
+                balance_layers=[parent.q],
+                parent_name="block",
+                parent=parent,
+            )
+        ]
+    }
+    existing = parent.q.register_forward_pre_hook(lambda *args: None)
+
+    def fail_registration(*args, **kwargs):
+        raise RuntimeError("registration failed")
+
+    monkeypatch.setattr(parent, "register_forward_pre_hook", fail_registration)
+    with pytest.raises(RuntimeError, match="registration failed"):
+        transform._register_awq_hooks(parent, parent, "block")
+    assert list(parent.q._forward_pre_hooks) == [existing.id]
+    existing.remove()
+
+
 @pytest.mark.parametrize("duo_scaling", [False, True, "both"])
 @pytest.mark.parametrize("parent_forward", [False, True])
 @torch.no_grad()

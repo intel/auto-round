@@ -15,11 +15,12 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from typing import Any
 
 import torch
+from torch.utils.hooks import RemovableHandle
 
 
 def normalize_tensors(output: Any, indices: tuple[int, ...] | None = None) -> tuple[torch.Tensor, ...]:
@@ -96,9 +97,21 @@ def restore_weights(originals: Mapping[torch.nn.Module, torch.Tensor]):
                 module.weight.copy_(weight)
 
 
+def register_hooks(registrations: Iterable[RemovableHandle]) -> list[RemovableHandle]:
+    """Collect lazy registrations and roll back created hooks if registration fails."""
+    handles = []
+    try:
+        handles.extend(registrations)
+    except BaseException:
+        for handle in handles:
+            handle.remove()
+        raise
+    return handles
+
+
 @contextmanager
 def temporary_hooks():
-    """Remove accumulated calibration hooks after registration or replay fails."""
+    """Remove collected calibration hooks on normal or exceptional context exit."""
     handles = []
     try:
         yield handles
