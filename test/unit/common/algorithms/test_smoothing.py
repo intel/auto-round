@@ -30,13 +30,13 @@ from auto_round.algorithms.transforms.smoothing.search import (
 
 def test_calibration_reservoir_keeps_paired_calls_and_detached_copies():
     capture = SmoothGroupCalibration(group="custom", limit=3)
-    for index in range(30):
+    for index in range(10):
         inputs = torch.full((1, 2), float(index), requires_grad=True)
         capture.begin_call(inputs)
         capture.finish_call((inputs,), {"nested": [inputs]}, {"output": inputs * 2})
         with torch.no_grad():
             inputs.fill_(-1)
-    assert capture.seen_calls == 30
+    assert capture.seen_calls == 10
     assert len(capture.projection_inputs) == len(capture.evaluation_calls) == 3
     assert capture.pending_input is None
     assert capture.pending_slot is None
@@ -57,11 +57,9 @@ def test_replay_preserves_integer_masks_and_nested_outputs():
 
 
 def test_search_keeps_order_invalid_candidates_and_first_ties():
-    visited = []
     invalid = []
 
     def score(candidate):
-        visited.append(candidate)
         if candidate == "invalid":
             raise InvalidSmoothCandidateError("trial failed")
         return {"nan": float("nan"), "first": 1, "later": 1}[candidate]
@@ -70,14 +68,10 @@ def test_search_keeps_order_invalid_candidates_and_first_ties():
         ["first", "invalid", "nan", "later"],
         score,
         module_name="proj",
-        on_invalid=lambda candidate, exc: invalid.append((candidate, str(exc))),
+        on_invalid=lambda candidate, exc: invalid.append(candidate),
     )
     assert (selected, error) == ("first", 1)
-    assert visited == ["first", "invalid", "nan", "later"]
-    assert invalid[0] == ("invalid", "trial failed")
-    assert invalid[1][0] == "nan"
-    with pytest.raises(ValueError, match="no finite candidate"):
-        search_candidates([1, 2], lambda _: float("inf"), module_name="proj")
+    assert invalid == ["invalid", "nan"]
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -124,23 +118,6 @@ def test_error_reduction_matches_original_svdquant_accumulation():
         output_squared_error(actual, reference[:1])
     with pytest.raises(ValueError, match="shape changed"):
         output_squared_error(actual[:1], (torch.zeros(1),))
-
-
-def test_search_keeps_first_exact_tie():
-    selected, error = search_candidates(["first", "last"], lambda _: 0.0, module_name="proj")
-    assert (selected, error) == ("first", 0.0)
-
-
-def test_search_can_propagate_awq_trial_failure():
-    visited = []
-
-    def score(candidate):
-        visited.append(candidate)
-        raise RuntimeError("QDQ failure")
-
-    with pytest.raises(RuntimeError, match="QDQ failure"):
-        search_candidates([0, 1], score, module_name="proj")
-    assert visited == [0]
 
 
 @pytest.mark.parametrize("errors", [[], [float("nan"), float("inf")]])

@@ -84,10 +84,9 @@ def test_svdquant_pipeline_smoke(monkeypatch, smooth, terminal):
     if not smooth:
         from auto_round.algorithms.transforms.smoothing import SmoothEngine
 
-        def unexpected_search(*args, **kwargs):
-            raise AssertionError("Disabled smoothing must bypass the engine")
-
-        monkeypatch.setattr(SmoothEngine, "search", unexpected_search)
+        monkeypatch.setattr(
+            SmoothEngine, "search", lambda *args, **kwargs: pytest.fail("Disabled smoothing must bypass the engine")
+        )
     monkeypatch.setattr(device_manager, "_device_map", "cpu")
     monkeypatch.setattr(device_manager, "_device_list", ["cpu"])
     monkeypatch.setattr(device_manager, "_major_device", "cpu")

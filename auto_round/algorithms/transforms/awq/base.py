@@ -332,13 +332,9 @@ class AWQTransform(BasePreprocessor):
             )
         if not active_mappings:
             return
-        try:
-            self._smooth_block(block_name, active_mappings)
-            if self.apply_clip:
-                self._clip_block(block_name, active_mappings)
-        except BaseException:
-            self.post_quantize_block(ctx)
-            raise
+        self._smooth_block(block_name, active_mappings)
+        if self.apply_clip:
+            self._clip_block(block_name, active_mappings)
         modified = []
         for mapping in active_mappings:
             modified.extend(mapping.balance_names)

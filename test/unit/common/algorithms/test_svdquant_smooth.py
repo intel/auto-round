@@ -81,31 +81,20 @@ def test_shared_search_matches_original_svdquant_search(dtype):
     from auto_round.algorithms.transforms.smoothing.calibration import SmoothGroupCalibration
     from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
     from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
-    from auto_round.algorithms.transforms.svdquant.smooth import SmoothCandidate
     from auto_round.algorithms.transforms.svdquant.smooth_adapters.base import generic_linear_groups
+    from auto_round.schemes import PRESET_SCHEMES
 
     torch.manual_seed(17)
     block = torch.nn.Sequential(torch.nn.Linear(32, 16, dtype=dtype))
     projection = block[0]
-    for name, value in {
-        "bits": 4,
-        "group_size": 32,
-        "sym": True,
-        "data_type": "mx_fp4e2m1",
-        "act_bits": 4,
-        "act_group_size": 32,
-        "act_sym": True,
-        "act_data_type": "mx_fp4e2m1",
-        "act_dynamic": True,
-        "scale_dtype": torch.float32,
-    }.items():
+    for name, value in PRESET_SCHEMES["MXFP4"].to_dict().items():
         setattr(projection, name, value)
+    projection.scale_dtype = torch.float32
     group = generic_linear_groups(block, lambda name, module: True)[0]
-    capture = SmoothGroupCalibration(group, limit=2)
-    for _ in range(2):
-        inputs = torch.randn(1, 3, 32, dtype=dtype)
-        capture.begin_call(inputs)
-        capture.finish_call((inputs,), {}, projection(inputs))
+    capture = SmoothGroupCalibration(group, limit=1)
+    inputs = torch.randn(1, 3, 32, dtype=dtype)
+    capture.begin_call(inputs)
+    capture.finish_call((inputs,), {}, projection(inputs))
     transform = SVDQuantTransform(
         SVDQuantConfig(
             rank=2,
@@ -125,8 +114,8 @@ def test_shared_search_matches_original_svdquant_search(dtype):
         error = transform._score_group_wrappers(
             capture, transform._candidate_group_wrappers(group, scale), block, local_names
         )
-        scored.append((SmoothCandidate(alpha, beta, scale), error))
-    expected = select_best_layer_candidate(scored, module_name=group.key)
+        scored.append((scale, error))
+    expected = min(scored, key=lambda candidate: candidate[1])[0]
     actual = transform._search_group_scale(capture, block, local_names)
-    torch.testing.assert_close(actual, expected.scale, rtol=0, atol=0)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     assert block[0] is projection

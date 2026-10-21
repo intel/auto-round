@@ -18,7 +18,6 @@ import torch
 from auto_round.algorithms.transforms.awq.base import AWQTransform
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
-from auto_round.algorithms.transforms.smoothing.search import search_candidates
 
 
 class Parent(torch.nn.Module):
@@ -67,8 +66,8 @@ def test_shared_search_preserves_awq_candidates_and_loss(duo_scaling, parent_for
         transform._parent_args_cache[parent] = calls
     x_mean = torch.cat([parent.norm(args[0]).reshape(-1, 8) for args, _ in calls]).abs().mean(0)
     original = {layer: layer.weight.detach().clone() for layer in mapping.balance_layers}
-    expected = transform._grid_search_scales(mapping, x_mean)
-    assert expected is not None
+    actual = transform._grid_search_scales(mapping, x_mean)
+    assert actual is not None
     params = {layer: transform._qdq_tool.resolve_params(layer) for layer in mapping.balance_layers}
     funcs = {layer: transform._qdq_tool.resolve_quant_funcs(params[layer]) for layer in mapping.balance_layers}
     w_mean = transform._compute_layer_means(mapping.balance_layers, 8)
@@ -107,19 +106,16 @@ def test_shared_search_preserves_awq_candidates_and_loss(duo_scaling, parent_for
             for layer, weight in original.items():
                 layer.weight.copy_(weight)
 
-    selected, _ = search_candidates(
-        candidates,
-        score,
-        module_name=mapping.smooth_name,
-    )
-    torch.testing.assert_close(selected, expected, rtol=0, atol=0)
+    expected = min(candidates, key=score)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     for layer, weight in original.items():
         torch.testing.assert_close(layer.weight, weight, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("failure", ["qdq", "replay"])
 def test_awq_failed_trial_restores_weights_and_clears_cache(monkeypatch, failure):
-    from types import SimpleNamespace
+    from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
+    from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
     parent = Parent()
     parent.q.global_name, parent.k.global_name = "block.q", "block.k"
@@ -151,8 +147,14 @@ def test_awq_failed_trial_restores_weights_and_clears_cache(monkeypatch, failure
 
     monkeypatch.setattr(transform._qdq_tool, "qdq", qdq)
     monkeypatch.setattr(transform, "_compute_parent_loss", replay)
+    # Use the pre-populated calibration caches.
+    monkeypatch.setattr(transform, "register_fp_input_forward_hooks", lambda block: [])
+    composer = AlgorithmComposer([RTNConfig(disable_opt_rtn=True)])
+    composer.preprocessors = [transform]
+    composer.block_forward = lambda block, inputs, others: block(inputs[0])
+    ctx = BlockContext(model=parent, block_names=["block"], block_name="block", block_index=0)
     with pytest.raises(RuntimeError, match="trial failure"):
-        transform.pre_quantize_block(SimpleNamespace(block_names=["block"], block_name="block"))
+        composer.compress_block(parent, [torch.ones(1, 3, 8)], {}, ctx)
     for layer, weight in originals.items():
         torch.testing.assert_close(layer.weight, weight, rtol=0, atol=0)
     assert not transform._activation_stats
