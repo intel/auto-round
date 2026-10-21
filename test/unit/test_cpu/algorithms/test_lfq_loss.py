@@ -57,12 +57,10 @@ def _assert_matches(q, fp, mask, chunk_elems):
     ref = _reference_soft_ce(q_ref, fp, mask)
     ref.backward()
 
-    assert torch.allclose(loss.double(), ref, atol=1e-6, rtol=1e-5), (
-        f"loss mismatch: {loss.item()} vs {ref.item()}"
-    )
-    assert torch.allclose(q_test.grad.double(), q_ref.grad, atol=1e-6, rtol=1e-5), (
-        f"grad max diff: {(q_test.grad.double() - q_ref.grad).abs().max().item()}"
-    )
+    assert torch.allclose(loss.double(), ref, atol=1e-6, rtol=1e-5), f"loss mismatch: {loss.item()} vs {ref.item()}"
+    assert torch.allclose(
+        q_test.grad.double(), q_ref.grad, atol=1e-6, rtol=1e-5
+    ), f"grad max diff: {(q_test.grad.double() - q_ref.grad).abs().max().item()}"
 
 
 @pytest.mark.parametrize("chunk_elems", [1 << 23, 60, 20])  # full, 3-row, 1-row chunks
@@ -138,4 +136,3 @@ def test_soft_ce_matches_hard_onehot_reference():
     loss = soft_cross_entropy(q, fp, None, chunk_elems=1 << 23)
     ref = torch.nn.functional.cross_entropy(q.double(), labels, reduction="mean")
     assert torch.allclose(loss.double(), ref.double(), atol=1e-5, rtol=1e-4)
-
