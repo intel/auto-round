@@ -324,8 +324,19 @@ class SignRoundQuantizer(BaseQuantizer):
         # Quantized logits: gradients flow through this branch only.
         q_logits = _to_logits(q_hidden_state)
 
-        # Optional mask excluding ignored positions (e.g. padding marked -100);
-        # token values themselves are not used as targets (soft CE, Eq. 3).
+        # Position mask for the soft-CE objective.
+        #
+        # IMPORTANT: this is a *deliberate same-position* mask — no next-token
+        # shift is applied. LFQ (Eq. 3) matches the FP and quantized output
+        # distributions σ(X·W_FP·W_Head) vs σ(X·W_q·W_Head) at each position; it
+        # is a per-position distillation objective, not next-token prediction,
+        # so logits and the target distribution are aligned position-for-position
+        # (unlike the legacy hard-label CE path that used shift_logits/labels).
+        #
+        # ``input_ids`` already carries the calibrator's -100 ignore markers
+        # (pad tokens, trailing repeated tokens, and the last position of each
+        # sample). Those positions are simply dropped here; the token *values*
+        # are never used as targets.
         valid_mask = None
         if input_ids is not None:
             valid_mask = input_ids.to(device) != -100

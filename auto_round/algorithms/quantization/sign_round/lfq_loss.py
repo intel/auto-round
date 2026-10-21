@@ -68,8 +68,10 @@ class _SoftCrossEntropy(torch.autograd.Function):
         for start in range(0, n_rows, rows):
             end = min(start + rows, n_rows)
             m = valid_mask[start:end]
-            if float(m.sum()) == 0.0:
-                continue
+            # No host-side ``if m.sum() == 0`` skip here: it would force a
+            # device-to-host sync on every chunk (dozens per forward for large
+            # vocabs). Invalid rows are already zeroed by multiplying with ``m``,
+            # and ``denom`` guards the all-invalid case, so the math stays correct.
             q_c = q_logits[start:end].float()
             lse_q = torch.logsumexp(q_c, dim=-1)
             p_fp = torch.softmax(fp_logits[start:end].float(), dim=-1)
