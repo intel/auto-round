@@ -1034,8 +1034,12 @@ out = ark.moe_w4a8(
 )
 
 ark.clear_moe_w4a8_prepack_cache()  # drop the cached int8 weights
-ark.moe_w4a8_release_scratch()  # hand back the device scratch slabs
 ```
+
+Activation-quantization and expert-map scratch use the extension-wide global
+`DeviceMemoryPool`. The pool reuses allocations per device/context/queue and
+grows them automatically when a larger shape is requested. Scratch persists
+across calls and cache clears; no manual creation or release is needed.
 
 Helper: `ark.moe_w4a8_rescale_block_size(K, group_size, rescale_group_size)`
 resolves the effective block size (and therefore the `wscales` shape) without

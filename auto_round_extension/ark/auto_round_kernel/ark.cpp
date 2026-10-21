@@ -1708,7 +1708,6 @@ PYBIND11_MODULE(PY_NAME, m) {
   m.def("moe_gemm_w4a8", &ark::moe_gemm_w4a8_wrapper);
   m.def("moe_w4a8_quant_act", &ark::moe_w4a8_quant_act_wrapper);
   m.def("moe_w4a8_rescale_block_size", &ark::moe_w4a8_rescale_block_size);
-  m.def("moe_w4a8_release_scratch", &ark::moe_w4a8_release_scratch);
   m.def("matmul_sycl_tla", &ark::matmul_sycl_tla);
 #endif  // ARK_SYCL_TLA
 #if !defined(ARK_XPU)

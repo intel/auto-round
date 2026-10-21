@@ -627,9 +627,6 @@ inline int moe_w4a8_rescale_block_size(int K, int group_size, int rescale_group_
   return moe_w4a8::moe_w4a8_rescale_block_size(K, group_size, rescale_group_size);
 }
 
-// Free the W4A8 activation-quantization / expert-map scratch slabs.
-inline void moe_w4a8_release_scratch() { moe_w4a8::moe_w4a8_release_scratch(); }
-
 }  // namespace moe_w4a8_detail
 
 }  // namespace ark

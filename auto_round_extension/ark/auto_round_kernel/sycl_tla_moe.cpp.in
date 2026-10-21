@@ -1076,8 +1076,6 @@ void moe_w4a8_quant_act(sycl::queue* q, const void* activations, void* qact, voi
   moe_w4a8_detail::moe_w4a8_quant_act(q, activations, qact, ascale, act_dtype, total_tokens, K);
 }
 
-void moe_w4a8_release_scratch() { moe_w4a8_detail::moe_w4a8_release_scratch(); }
-
 }  // namespace ark
 
 #elif @MOE_SOURCE_MODE@ == 22

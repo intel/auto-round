@@ -3578,19 +3578,6 @@ def _require_same_device(tensor: torch.Tensor, reference: torch.Tensor, tensor_n
         raise ValueError(f"{api_name}: {tensor_name} must be on {reference.device}, got {tensor.device}")
 
 
-def moe_w4a8_release_scratch() -> None:
-    """Release the device scratch slabs held by the W4A8 MoE path.
-
-    :func:`moe_gemm_w4a8` serves its quantized-activation and expert-map
-    buffers from grow-on-demand per-queue slabs kept for the lifetime of the
-    process. A no-op when the XPU extension is not loaded.
-    """
-    lib = xpu_lib
-    if lib is None or not hasattr(lib, "moe_w4a8_release_scratch"):
-        return
-    lib.moe_w4a8_release_scratch()
-
-
 def clear_moe_w4a8_prepack_cache() -> None:
     """Release every int8 weight/scale pair cached by :func:`moe_w4a8`.
 

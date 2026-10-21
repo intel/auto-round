@@ -1453,7 +1453,6 @@ def run_perf(
         # Drop the (large) int8 weights before the next shape allocates.
         case = weights_s8 = wscales = None
         ark.clear_moe_w4a8_prepack_cache()
-        ark.moe_w4a8_release_scratch()
         _release_xpu_memory()
     # Before any verdict is drawn from the ceilings -- including the one
     # `_assert_targets` draws from the returned rows, which is why this is not
@@ -1721,7 +1720,6 @@ def run_dedup_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=Tru
         case = weights_s8 = wscales = hidden = None
         qact_batch = ascale_batch = permuted_bf16 = permuted_int8 = permuted_scale = None
         ark.clear_moe_w4a8_prepack_cache()
-        ark.moe_w4a8_release_scratch()
         _release_xpu_memory()
 
     if verbose and rows:
@@ -1948,7 +1946,6 @@ def run_act_quant(batches=None, dtype=torch.bfloat16, models=None, verbose=True,
         call = qact = ascale = reference = None
         case = weights_s8 = wscales = None
         ark.clear_moe_w4a8_prepack_cache()
-        ark.moe_w4a8_release_scratch()
         _release_xpu_memory()
 
     if verbose and rows:
@@ -2407,7 +2404,6 @@ def run_config_sweep(phase, configs, dtype=torch.bfloat16, models=None, verbose=
                     out = None
                 case = weights_s8 = wscales = baseline_out = None
                 ark.clear_moe_w4a8_prepack_cache()
-                ark.moe_w4a8_release_scratch()
                 _release_xpu_memory()
     if verbose:
         _print_sweep_best(phase, rows)
@@ -2505,23 +2501,61 @@ if pytest is not None:
 
     @pytest.fixture(autouse=True)
     def _xpu_cleanup_between_tests():
-        """Release the XPU allocator cache and W4A8 scratch around every test.
+        """Release cached weights and the XPU allocator cache around every test.
 
         The prepacked int8 weights are ``E * N * K`` bytes (200+ MB for the
         Qwen3 up-proj shape), so a test that aborts mid-sweep would otherwise
         leave the allocator holding them and starve the next parametrization.
+        Global scratch remains allocated and grows on demand across tests.
         """
         _release_xpu_memory()
         try:
             yield
         finally:
             ark.clear_moe_w4a8_prepack_cache()
-            ark.moe_w4a8_release_scratch()
             _release_xpu_memory()
 
     @pytest.mark.skipif(bool(_W4A8_SKIP), reason=_W4A8_SKIP or "W4A8 MoE kernel unavailable")
     class TestMoEW4A8:
         """W4A8 MoE: accuracy + performance for prefill and decode."""
+
+        @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+        def test_scratch_reuse_across_shapes(self, dtype):
+            """Global scratch survives shape changes and weight-cache clears.
+
+            Alternate decode and prefill, grow both token count and K, then
+            return to smaller shapes without creating or releasing scratch.
+            Pre-quantized calls independently exercise the decode expert map.
+            """
+            shapes = (
+                ("decode", 3, 768),
+                ("prefill", 257, 768),
+                ("decode", 31, 2048),
+                ("prefill", 513, 2048),
+                ("decode", 3, 768),
+            )
+            for phase, tokens, K in shapes:
+                case = _build_case(
+                    128,
+                    K,
+                    4,
+                    tokens,
+                    32,
+                    dtype,
+                    need_dequant=False,
+                    act_int8_grid=True,
+                )
+                weights_s8, wscales, block = ark.moe_w4a8_prepack(case["packed"], case["scales"], group_size=32)
+                internal = _w4a8(case, weights_s8, wscales, block, phase).clone()
+                external = _w4a8(case, weights_s8, wscales, block, phase, prequant=True).clone()
+                assert int(_ulp_diff(internal, external).max().item()) <= 1, (
+                    f"{phase} T={tokens} K={K}: scratch reuse changed quantization: "
+                    f"{_ulp_report(internal, external)}"
+                )
+                assert _snr_db(case["reference"], internal) >= _MIN_SNR_DB
+                assert _cosine(case["reference"], internal) >= _MIN_COSINE
+                case = weights_s8 = wscales = internal = external = None
+                ark.clear_moe_w4a8_prepack_cache()
 
         @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
         def test_accuracy_decode(self, request, dtype):
@@ -3251,7 +3285,6 @@ if pytest is not None:
                 )
                 case = weights_s8 = wscales = internal = external = None
                 ark.clear_moe_w4a8_prepack_cache()
-                ark.moe_w4a8_release_scratch()
                 _release_xpu_memory()
 
         def test_prequantized_activations_match_internal_decode(self):
@@ -3435,7 +3468,6 @@ if pytest is not None:
                     )
                 case = weights_s8 = wscales = outs = None
                 ark.clear_moe_w4a8_prepack_cache()
-                ark.moe_w4a8_release_scratch()
                 _release_xpu_memory()
 
         def test_full_tile_epilogue_matches_predicated(self):
@@ -3518,7 +3550,6 @@ if pytest is not None:
                 )
                 case = weights_s8 = wscales = outs = None
                 ark.clear_moe_w4a8_prepack_cache()
-                ark.moe_w4a8_release_scratch()
                 _release_xpu_memory()
 
         @pytest.mark.skipif(bool(_QUANT_ACT_SKIP), reason=_QUANT_ACT_SKIP or "standalone quantizer unavailable")
@@ -3651,7 +3682,6 @@ if pytest is not None:
                 )
                 case = weights_s8 = wscales = in_call = standalone = qact = ascale = None
                 ark.clear_moe_w4a8_prepack_cache()
-                ark.moe_w4a8_release_scratch()
                 _release_xpu_memory()
 
         def test_prefill_2d_store_matches_scalar(self):

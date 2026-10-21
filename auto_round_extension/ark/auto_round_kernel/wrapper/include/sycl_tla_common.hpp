@@ -305,11 +305,6 @@ void moe_w4a8_quant_act(sycl::queue* q, const void* activations, void* qact, voi
  */
 int moe_w4a8_rescale_block_size(int K, int group_size, int rescale_group_size);
 
-/**
- * @brief Release the W4A8 activation-quantization / expert-map scratch slabs.
- */
-void moe_w4a8_release_scratch();
-
 void sycl_tla_dense_gemm(sycl::queue* q, int m, int n, int k, const void* a, BTLA_DTYPE at, const void* b,
                          BTLA_DTYPE bt, void* c, BTLA_DTYPE ct, const void* bias, bool BT);
 void sycl_tla_dense_gemm_f32(sycl::queue* q, int m, int n, int k, const void* a, const void* b, void* c,

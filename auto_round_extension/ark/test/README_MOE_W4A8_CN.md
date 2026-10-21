@@ -899,8 +899,11 @@ out = ark.moe_w4a8(
 )
 
 ark.clear_moe_w4a8_prepack_cache()  # 释放缓存的 int8 权重
-ark.moe_w4a8_release_scratch()  # 归还设备端 scratch 内存
 ```
+
+激活量化和 expert-map 的 scratch 统一使用扩展级全局 `DeviceMemoryPool`。
+内存池按设备、context 和队列复用已有分配，遇到更大的 shape 时自动增长。
+scratch 在多次调用和权重缓存清理之间持续复用，不需要手动创建或释放。
 
 辅助函数：`ark.moe_w4a8_rescale_block_size(K, group_size, rescale_group_size)`
 可以在不做任何分配的情况下解析出有效的 block 大小 (即 `wscales` 的形状)。

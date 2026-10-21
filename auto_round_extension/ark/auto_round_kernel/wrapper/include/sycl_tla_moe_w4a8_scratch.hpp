@@ -5,23 +5,20 @@
 // recomputed on every call, so they come from persistent slabs instead of a
 // hot-path `malloc_device`.
 //
-// The slabs are served from the extension-wide `DeviceMemoryPool`, which keys
-// on the device UUID rather than on a `sycl::queue*`: a slab therefore follows
-// the device and is immune to the caller destroying its queue and to a later
-// queue landing on the same address.
+// The slabs are owned by the extension-wide `DeviceMemoryPool`, keyed by
+// device, context and queue identity rather than a raw `sycl::queue*`.
+// Repeated requests reuse the existing allocation; larger requests grow it
+// automatically. No W4A8-specific state or explicit create/release is needed.
 //
-// Slabs are intentionally never freed from a static destructor -- the SYCL
-// context may already be torn down by then. `moe_w4a8_release_scratch` provides
-// the explicit teardown (exposed to Python under the same name).
+// Like the other global scratch slots, allocations persist for the lifetime
+// of the process and are not freed from a static destructor, when the SYCL
+// context may already be torn down.
 //
-// Sharing one slab per device means these entry points must not be driven
-// concurrently from two queues on one device, which matches every other
-// `DeviceMemoryPool` slot.
+// Different queues use separate allocations, matching the pool's other slots.
 //
-// Only the declarations live here; the bookkeeping is defined in
-// `sycl_tla_moe_w4a8_scratch.cpp` so that the module holds exactly one instance
-// of it and -- just as importantly -- so that `utils.hpp` stays out of this
-// include chain. `utils.hpp` drags in bestla's AVX512/xbyak JIT headers, which
+// Only the declarations live here; the pool access is defined in
+// `sycl_tla_moe_w4a8_scratch.cpp` so that `utils.hpp` stays out of this include
+// chain. `utils.hpp` drags in bestla's AVX512/xbyak JIT headers, which
 // would grow every cutlass-free W4A8 translation unit by an order of magnitude
 // and undo much of the TU split. This mirrors
 // `sycl_tla_moe_decode_scratch.{hpp,cpp}`.
@@ -46,9 +43,9 @@ namespace moe_w4a8 {
 // `DeviceMemoryPool` slots owned by the W4A8 path. Slots 0-7 belong to the
 // dnnl / xpu / sycl-s8 / cpu wrappers and the SDPA kernels, slot 8 to the DPAS
 // work-group counter, slots 9-10 to the int4 decode scratch, and slot 11 to
-// the XMX Hadamard staging buffer.
-inline constexpr size_t kW4A8QactScratchLoc = 12;
-inline constexpr size_t kW4A8ExpertMapScratchLoc = 13;
+// the XMX Hadamard staging buffer. Slot 12 is the SYCL-TLA prefill workspace.
+inline constexpr size_t kW4A8QactScratchLoc = 13;
+inline constexpr size_t kW4A8ExpertMapScratchLoc = 14;
 
 // Acquire the quantized-activation slab (int8 activations + per-token scales).
 // Returns `nullptr` for a zero-byte request; throws `std::invalid_argument` on
@@ -57,12 +54,6 @@ uint8_t* acquire_qact_scratch(sycl::queue* q, size_t bytes);
 
 // Acquire the decode expert map (`[total_tokens]` int32). Same contract.
 int* acquire_expert_map_scratch(sycl::queue* q, size_t bytes);
-
-// Release both slabs for every device they were allocated on. Must not overlap
-// an acquire on the same device: the acquire entry points hand out a raw
-// pointer, so a caller that is between the acquire and its kernel submission
-// would have the memory freed underneath it.
-void moe_w4a8_release_scratch();
 
 }  // namespace moe_w4a8
 }  // namespace ark
