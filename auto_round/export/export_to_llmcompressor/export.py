@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 import torch
 
 from auto_round.export.export_to_llmcompressor.utils import (
+    add_autoround_config,
     add_routed_experts_if_moe,
     finalize_llmcompressor_config_names,
 )
@@ -389,6 +390,7 @@ def save_quantized_as_llmcompressor(
         [],
         [n for n, m in model.named_modules() if getattr(m, "quantization_scheme", None) is not None],
     )
+    quantization_config_dict = add_autoround_config(quantization_config_dict, serialization_dict)
     model.config.quantization_config = quantization_config_dict
 
     if output_dir is None:
