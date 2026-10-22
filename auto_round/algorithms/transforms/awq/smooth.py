@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 import torch
 
 from auto_round.algorithms.transforms.smoothing.groups import SmoothGroup
-from auto_round.algorithms.transforms.smoothing.replay import restore_weights
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
 
 if TYPE_CHECKING:
@@ -143,38 +142,39 @@ class AWQSmoothStrategy:
         def score(candidate):
             _, scales = candidate
             scales_view = scales.view(1, -1).to(device)
-            with restore_weights(orig_state):
-                if use_parent_forward:
-                    # Quantize each balance layer's smoothed weight and write the
-                    # de-smoothed result back, so the parent forward below sees the
-                    # weights the layer would actually compute with.
-                    for bl in mapping.balance_layers:
-                        quant_func, opt_quant_func = bl_quant_funcs[bl]
-                        w_qdq = owner._qdq_tool.qdq(
-                            orig_state[bl] * scales_view,
-                            bl_params[bl],
-                            quant_func=quant_func,
-                            opt_quant_func=opt_quant_func,
-                            imatrix=getattr(bl, "imatrix", None),
-                        )
-                        bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
+            if use_parent_forward:
+                # Quantize each balance layer's smoothed weight and write the
+                # de-smoothed result back, so the parent forward below sees the
+                # weights the layer would actually compute with.
+                for bl in mapping.balance_layers:
+                    quant_func, opt_quant_func = bl_quant_funcs[bl]
+                    w_qdq = owner._qdq_tool.qdq(
+                        orig_state[bl] * scales_view,
+                        bl_params[bl],
+                        quant_func=quant_func,
+                        opt_quant_func=opt_quant_func,
+                        imatrix=getattr(bl, "imatrix", None),
+                    )
+                    bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
 
-                    total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
-                else:
-                    total_loss = 0.0
-                    for bl in mapping.balance_layers:
-                        quant_func, opt_quant_func = bl_quant_funcs[bl]
-                        w_orig = orig_weights[bl].to(device)
-                        w_qdq = owner._qdq_tool.qdq(
-                            w_orig * scales_view,
-                            bl_params[bl],
-                            quant_func=quant_func,
-                            opt_quant_func=opt_quant_func,
-                            imatrix=getattr(bl, "imatrix", None),
-                        )
-                        total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
+                total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
+                for bl in mapping.balance_layers:
+                    bl.weight.data.copy_(orig_state[bl])
+            else:
+                total_loss = 0.0
+                for bl in mapping.balance_layers:
+                    quant_func, opt_quant_func = bl_quant_funcs[bl]
+                    w_orig = orig_weights[bl].to(device)
+                    w_qdq = owner._qdq_tool.qdq(
+                        w_orig * scales_view,
+                        bl_params[bl],
+                        quant_func=quant_func,
+                        opt_quant_func=opt_quant_func,
+                        imatrix=getattr(bl, "imatrix", None),
+                    )
+                    total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
 
-                return total_loss
+            return total_loss
 
         self._candidates = candidates
         self._score = score

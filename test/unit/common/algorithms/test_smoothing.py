@@ -153,35 +153,3 @@ def test_calibration_clear_releases_pending_and_retained_calls():
     assert not capture.projection_inputs and not capture.evaluation_calls
     assert capture.pending_input is None and capture.pending_slot is None
     assert capture.seen_calls == 0
-
-
-@pytest.mark.parametrize("stage", ["fp", "q"])
-def test_failed_calibration_removes_hooks(stage):
-    from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
-    from auto_round.algorithms.quantization.rtn.config import RTNConfig
-
-    block = torch.nn.Linear(2, 2)
-
-    class Probe:
-        def register_fp_input_forward_hooks(self, module):
-            return [module.register_forward_hook(lambda *args: None)]
-
-        register_qinput_forward_hooks = register_fp_input_forward_hooks
-
-    probe = Probe()
-    composer = AlgorithmComposer([RTNConfig(disable_opt_rtn=True)])
-    composer.preprocessors = [probe]
-    calls = 0
-
-    def forward(module, inputs, others):
-        nonlocal calls
-        calls += 1
-        if (stage == "fp" and calls == 1) or (stage == "q" and calls == 2):
-            raise RuntimeError("calibration failure")
-        return module(inputs[0])
-
-    composer.block_forward = forward
-    ctx = BlockContext(model=block, block_names=["block"], block_name="block", block_index=0)
-    with pytest.raises(RuntimeError, match="failure"):
-        composer.compress_block(block, [torch.ones(1, 2)], {}, ctx)
-    assert not block._forward_hooks

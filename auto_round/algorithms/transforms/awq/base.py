@@ -55,7 +55,6 @@ from auto_round.algorithms.transforms.base import BasePreprocessor
 from auto_round.algorithms.transforms.smoothing.calibration import clear_caches
 from auto_round.algorithms.transforms.smoothing.engine import SmoothEngine
 from auto_round.algorithms.transforms.smoothing.errors import NoFiniteCandidateError
-from auto_round.algorithms.transforms.smoothing.replay import register_hooks
 from auto_round.logger import logger
 from auto_round.utils.model import move_to_device
 
@@ -380,10 +379,7 @@ class AWQTransform(BasePreprocessor):
         block_name: str,
     ) -> list:
         """Register activation-stats and parent-kwargs hooks for one block."""
-        return register_hooks(self._iter_awq_hooks(model, block, block_name))
-
-    def _iter_awq_hooks(self, model: torch.nn.Module, block: torch.nn.Module, block_name: str):
-        """Yield each handle immediately so partial registration can be rolled back."""
+        handles = []
         mappings = self._block_mappings.get(block_name, [])
         module_lookup = dict(model.named_modules())
 
@@ -463,7 +459,7 @@ class AWQTransform(BasePreprocessor):
                 return hook_fn
 
             h = target_layer.register_forward_pre_hook(_make_activation_hook(mapping.smooth_name))
-            yield h
+            handles.append(h)
 
         # One forward_pre_hook per unique parent module in the current block.
         parent_modules_hooked: set[int] = set()
@@ -508,7 +504,9 @@ class AWQTransform(BasePreprocessor):
                 return hook_fn
 
             h = parent.register_forward_pre_hook(_make_parent_hook(parent), with_kwargs=True)
-            yield h
+            handles.append(h)
+
+        return handles
 
     # ── Smoothing (grid search + scale apply) ─────────────────────────────────
 

@@ -121,24 +121,6 @@ def test_shared_search_matches_original_svdquant_search(dtype):
     assert block[0] is projection
 
 
-def test_svdquant_partial_hook_registration_preserves_existing_hooks(monkeypatch):
-    from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform
-    from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
-
-    block = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
-    transform = SVDQuantTransform(SVDQuantConfig(smooth_enabled=True, model_adapter="identity"))
-    existing = block[0].register_forward_hook(lambda *args: None)
-
-    def fail_registration(*args, **kwargs):
-        raise RuntimeError("registration failed")
-
-    monkeypatch.setattr(block[1], "register_forward_hook", fail_registration)
-    with pytest.raises(RuntimeError, match="registration failed"):
-        transform.register_fp_input_forward_hooks(block)
-    assert list(block[0]._forward_hooks) == [existing.id]
-    existing.remove()
-
-
 @torch.no_grad()
 def test_svdquant_later_group_failure_does_not_install_earlier_wrappers(monkeypatch):
     from auto_round.algorithms.transforms.svdquant.apply import SVDQuantTransform

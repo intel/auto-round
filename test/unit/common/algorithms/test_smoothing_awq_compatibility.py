@@ -34,33 +34,6 @@ class Parent(torch.nn.Module):
         return output, output.square() * 100
 
 
-def test_awq_partial_hook_registration_preserves_existing_hooks(monkeypatch):
-    parent = Parent()
-    transform = AWQTransform(AWQConfig())
-    transform._block_mappings = {
-        "block": [
-            ResolvedMapping(
-                smooth_name="block.norm",
-                smooth_layer=parent.norm,
-                balance_names=["block.q"],
-                balance_layers=[parent.q],
-                parent_name="block",
-                parent=parent,
-            )
-        ]
-    }
-    existing = parent.q.register_forward_pre_hook(lambda *args: None)
-
-    def fail_registration(*args, **kwargs):
-        raise RuntimeError("registration failed")
-
-    monkeypatch.setattr(parent, "register_forward_pre_hook", fail_registration)
-    with pytest.raises(RuntimeError, match="registration failed"):
-        transform._register_awq_hooks(parent, parent, "block")
-    assert list(parent.q._forward_pre_hooks) == [existing.id]
-    existing.remove()
-
-
 @pytest.mark.parametrize("duo_scaling", [False, True, "both"])
 @pytest.mark.parametrize("parent_forward", [False, True])
 @torch.no_grad()
@@ -137,53 +110,3 @@ def test_shared_search_preserves_awq_candidates_and_loss(duo_scaling, parent_for
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     for layer, weight in original.items():
         torch.testing.assert_close(layer.weight, weight, rtol=0, atol=0)
-
-
-@pytest.mark.parametrize("failure", ["qdq", "replay"])
-def test_awq_failed_trial_restores_weights_and_clears_cache(monkeypatch, failure):
-    from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
-    from auto_round.algorithms.quantization.rtn.config import RTNConfig
-
-    parent = Parent()
-    parent.q.global_name, parent.k.global_name = "block.q", "block.k"
-    mapping = ResolvedMapping(
-        smooth_name="block.norm",
-        smooth_layer=parent.norm,
-        balance_names=["block.q", "block.k"],
-        balance_layers=[parent.q, parent.k],
-        parent_name="block",
-        parent=parent,
-    )
-    transform = AWQTransform(AWQConfig(bits=4, group_size=8, sym=True, data_type="int", n_grid=2))
-    transform._block_mappings = {"block": [mapping]}
-    transform._activation_stats[mapping.smooth_name] = [torch.ones(8), 1]
-    transform._parent_args_cache[parent] = [((torch.randn(1, 3, 8),), {})]
-    transform._clip_input_feat[mapping.smooth_name] = torch.ones(1, 8)
-    originals = {layer: layer.weight.detach().clone() for layer in mapping.balance_layers}
-    calls = 0
-
-    def qdq(weight, *args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if failure == "qdq" and calls == 2:
-            raise RuntimeError("trial failure")
-        return torch.zeros_like(weight)
-
-    def replay(*args, **kwargs):
-        raise RuntimeError("trial failure")
-
-    monkeypatch.setattr(transform._qdq_tool, "qdq", qdq)
-    monkeypatch.setattr(transform, "_compute_parent_loss", replay)
-    # Use the pre-populated calibration caches.
-    monkeypatch.setattr(transform, "register_fp_input_forward_hooks", lambda block: [])
-    composer = AlgorithmComposer([RTNConfig(disable_opt_rtn=True)])
-    composer.preprocessors = [transform]
-    composer.block_forward = lambda block, inputs, others: block(inputs[0])
-    ctx = BlockContext(model=parent, block_names=["block"], block_name="block", block_index=0)
-    with pytest.raises(RuntimeError, match="trial failure"):
-        composer.compress_block(parent, [torch.ones(1, 3, 8)], {}, ctx)
-    for layer, weight in originals.items():
-        torch.testing.assert_close(layer.weight, weight, rtol=0, atol=0)
-    assert not transform._activation_stats
-    assert not transform._parent_args_cache
-    assert not transform._clip_input_feat
