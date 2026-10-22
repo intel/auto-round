@@ -390,6 +390,7 @@ def save_quantized_as_llmcompressor(
         [],
         [n for n, m in model.named_modules() if getattr(m, "quantization_scheme", None) is not None],
     )
+    quantization_config_dict["provider"] = "auto-round"
     quantization_config_dict = add_autoround_config(quantization_config_dict, serialization_dict)
     model.config.quantization_config = quantization_config_dict
 

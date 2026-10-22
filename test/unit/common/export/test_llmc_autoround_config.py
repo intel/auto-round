@@ -14,7 +14,6 @@
 """AutoRound hyper-parameters are recorded in llm-compressor checkpoints (#2469)."""
 
 import json
-import os
 
 import pytest
 
@@ -57,17 +56,43 @@ class TestAddAutoroundConfig:
         json.dumps(qconfig)
 
     def test_non_json_values_are_stringified(self):
+        import enum
+
         import torch
 
-        qconfig = {}
-        add_autoround_config(qconfig, {"scale_dtype": torch.float16, "group_size": (128, 128)})
-        assert qconfig[AUTOROUND_CONFIG_KEY] == {"scale_dtype": "torch.float16", "group_size": [128, 128]}
+        class SampleEnum(enum.Enum):
+            A = "alpha"
+
+        qconfig = {"provider": "auto-round"}
+        add_autoround_config(
+            qconfig,
+            {
+                "scale_dtype": torch.float16,
+                "group_size": (128, 128),
+                "static_kv_dtype": torch.device("cpu"),
+                "static_attention_dtype": SampleEnum.A,
+            },
+        )
+        assert qconfig[AUTOROUND_CONFIG_KEY] == {
+            "scale_dtype": "torch.float16",
+            "group_size": [128, 128],
+            "static_kv_dtype": "cpu",
+            "static_attention_dtype": "alpha",
+        }
 
     @pytest.mark.parametrize("serialization_dict", [None, {}, {"iters": None}])
     def test_noop_without_values(self, serialization_dict):
         qconfig = {"provider": "auto-round"}
         add_autoround_config(qconfig, serialization_dict)
         assert AUTOROUND_CONFIG_KEY not in qconfig
+
+    def test_noop_without_auto_round_provider(self):
+        qconfig = {"provider": "other"}
+        add_autoround_config(qconfig, {"iters": 200, "autoround_version": "0.17.0"})
+        assert AUTOROUND_CONFIG_KEY not in qconfig
+        qconfig_missing = {}
+        add_autoround_config(qconfig_missing, {"iters": 200})
+        assert AUTOROUND_CONFIG_KEY not in qconfig_missing
 
     def test_compressed_tensors_ignores_extra_key(self):
         ct = pytest.importorskip("compressed_tensors.quantization")
@@ -97,17 +122,15 @@ class TestAddAutoroundConfig:
 @pytest.mark.parametrize("scheme", ["W4A16", "MXFP4"])
 def test_llmc_export_writes_autoround_config(tiny_opt_model_path, tmp_path, scheme):
     pytest.importorskip("compressed_tensors")
+    from pathlib import Path
+
     from auto_round import AutoRound
     from auto_round.version import __version__
 
     ar = AutoRound(tiny_opt_model_path, scheme=scheme, iters=2, nsamples=2, seqlen=16, lr=0.01)
-    ar.quantize_and_save(output_dir=str(tmp_path), format="llm_compressor")
-    config_path = None
-    for root, _, files in os.walk(tmp_path):
-        if "config.json" in files:
-            config_path = os.path.join(root, "config.json")
-            break
-    assert config_path is not None
+    _, export_dir = ar.quantize_and_save(output_dir=str(tmp_path), format="llm_compressor")
+    config_path = Path(export_dir) / "config.json"
+    assert config_path.is_file()
     with open(config_path) as f:
         qconfig = json.load(f)["quantization_config"]
     assert qconfig["quant_method"] == "compressed-tensors"
@@ -121,7 +144,7 @@ def test_llmc_export_writes_autoround_config(tiny_opt_model_path, tmp_path, sche
 
     from transformers import AutoConfig
 
-    AutoConfig.from_pretrained(os.path.dirname(config_path))
+    AutoConfig.from_pretrained(str(export_dir))
     from compressed_tensors.quantization import QuantizationConfig
 
     QuantizationConfig.model_validate(qconfig)
