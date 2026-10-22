@@ -48,6 +48,7 @@ from auto_round.algorithms.transforms.awq.mappings import (
 from auto_round.algorithms.transforms.awq.qdq import QDQTool
 from auto_round.algorithms.transforms.base import BasePreprocessor
 from auto_round.data_type.utils import (
+    compute_optimized_init_scale,
     reshape_pad_tensor_by_group_size,
     revert_tensor_by_pad,
 )
@@ -226,6 +227,7 @@ class AWQTransform(BasePreprocessor):
         self.duo_scaling: bool | str = config.duo_scaling
         self.n_grid: int = config.n_grid
         self.smooth_iters: int = getattr(config, "smooth_iters", 1)
+        self._awq_nsamples: int = config.awq_nsamples
 
         # AWQ weight-clip options (search + hard-clamp after smoothing).
         self.apply_clip: bool = getattr(config, "apply_clip", False)
@@ -267,6 +269,9 @@ class AWQTransform(BasePreprocessor):
         self._clip_input_feat: dict[str, torch.Tensor] = {}
 
         self._finalized: bool = False
+        self._sample_indices: torch.Tensor | None = None
+        self._sample_population: int | None = None
+        self._modified_block_name: str | None = None
 
     # ── Algorithm Fusion: lifecycle hook implementations ──────────────────────
 
@@ -328,6 +333,10 @@ class AWQTransform(BasePreprocessor):
         if composer is not None:
             self._qdq_tool.configure(composer, awq_config=self.config)
 
+        self._sample_indices = None
+        self._sample_population = None
+        self._modified_block_name = None
+
         logger.info(
             "AWQ: resolved %d mappings across %d blocks.",
             len(self._resolved_mappings),
@@ -348,15 +357,37 @@ class AWQTransform(BasePreprocessor):
             return self._register_awq_hooks(self.model_context.model, block, block_name)
         return []
 
+    def select_calibration_samples(self, fp_inputs, input_others):
+        """Select one deterministic random AWQ subset shared by every block.
+
+        The global calibration cache remains unchanged for the downstream
+        quantizer. Only AWQ's activation statistics, smoothing replay, and clip
+        features use this subset.
+        """
+        if self.block_forward is None:
+            return fp_inputs, input_others
+        num_samples = self.block_forward.count_samples(fp_inputs)
+        if num_samples <= self._awq_nsamples:
+            return fp_inputs, input_others
+        if self._sample_indices is None or self._sample_population != num_samples:
+            generator = torch.Generator(device="cpu")
+            generator.manual_seed(42)
+            self._sample_indices = torch.randperm(num_samples, generator=generator)[: self._awq_nsamples]
+            self._sample_indices, _ = torch.sort(self._sample_indices)
+            self._sample_population = num_samples
+            logger.info("AWQ: randomly selected %d/%d calibration samples.", self._awq_nsamples, num_samples)
+        return self.block_forward.select_batch(fp_inputs, input_others, self._sample_indices)
+
     def pre_quantize_block(self, ctx: BlockContext) -> None:
         """Apply AWQ smoothing for this block and mark modified params.
 
-        Called after the reference forward (activation stats collected) and
-        before the block quantizer runs.
+        Called after activation-stat collection and before the authoritative
+        reference forward and block quantizer run.
         """
         if len(ctx.block_names) != 1:
             raise ValueError(f"AWQ requires nblocks=1, got {len(ctx.block_names)} blocks: {ctx.block_names}.")
         block_name = ctx.block_names[0]
+        self._modified_block_name = None
         block_mappings = self._block_mappings.get(block_name, [])
         if not block_mappings:
             logger.debug("AWQ: no mappings for block '%s', skipping.", block_name)
@@ -375,13 +406,28 @@ class AWQTransform(BasePreprocessor):
             )
         if not active_mappings:
             return
-        self._smooth_block(block_name, active_mappings)
+        if self.config.apply_smooth:
+            self._smooth_block(block_name, active_mappings)
         if self.apply_clip:
             self._clip_block(block_name, active_mappings)
+        if self.config.apply_smooth or (self.apply_clip and not self.clip_as_init):
+            self._modified_block_name = block_name
         modified = []
         for mapping in active_mappings:
             modified.extend(mapping.balance_names)
             modified.append(mapping.smooth_name)
+
+    def invalidates_reference_output(self, ctx: BlockContext) -> bool:
+        """Return whether AWQ changes this block before reference collection.
+
+        Smoothing mutates weights even though its inverse scale folding should
+        preserve the FP function. Hard clipping intentionally changes the FP
+        function. In both cases the authoritative reference and next-block FP
+        input must be produced by a new forward through the transformed block.
+        ``clip_as_init`` only records bounds and therefore does not invalidate
+        an otherwise current reference.
+        """
+        return self._modified_block_name == ctx.block_name
 
     def post_quantize_block(self, ctx: BlockContext) -> None:
         """Release per-block AWQ caches to free memory."""
@@ -412,6 +458,9 @@ class AWQTransform(BasePreprocessor):
         self._activation_stats.clear()
         self._parent_args_cache.clear()
         self._clip_input_feat.clear()
+        self._sample_indices = None
+        self._sample_population = None
+        self._modified_block_name = None
         self._finalized = True
         logger.debug("AWQ: finalize_quantization complete.")
 
@@ -730,6 +779,23 @@ class AWQTransform(BasePreprocessor):
         # compatible quant params, but keeping this per-layer avoids hidden
         # coupling to the first layer and makes direct calls robust.
         bl_quant_funcs = {bl: self._qdq_tool.resolve_quant_funcs(bl_params[bl]) for bl in mapping.balance_layers}
+        reused_init_scales = {}
+        if self._qdq_tool.v2_scale_search == "reuse":
+            for bl in mapping.balance_layers:
+                _, opt_quant_func = bl_quant_funcs[bl]
+                if opt_quant_func is None:
+                    continue
+                # Reuse the scale found for the original balance-layer weight.
+                # This deliberately avoids rerunning the optimized search for
+                # every AWQ smoothing candidate; the final V2 quantizer still
+                # performs its normal scale search on the transformed weight.
+                reused_init_scales[bl] = compute_optimized_init_scale(
+                    orig_state[bl],
+                    bl_params[bl]["data_type"],
+                    bl_params[bl]["bits"],
+                    bl_params[bl]["group_size"],
+                    imatrix=getattr(bl, "imatrix", None),
+                )
 
         best_error = float("inf")
         best_scales = None
@@ -757,6 +823,7 @@ class AWQTransform(BasePreprocessor):
                         quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
                         imatrix=getattr(bl, "imatrix", None),
+                        init_scale=reused_init_scales.get(bl),
                     )
                     bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
 
@@ -774,6 +841,7 @@ class AWQTransform(BasePreprocessor):
                         quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
                         imatrix=getattr(bl, "imatrix", None),
+                        init_scale=reused_init_scales.get(bl),
                     )
                     total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
 

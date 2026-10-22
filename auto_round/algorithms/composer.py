@@ -424,7 +424,16 @@ class AlgorithmComposer:
         with torch.no_grad():
             pre_hooks = []
             for pre in self.preprocessors:
-                pre_hooks.extend(pre.register_fp_input_forward_hooks(block))
+                hooks = pre.register_fp_input_forward_hooks(block)
+                if not hooks:
+                    continue
+                pre_inputs, pre_others = pre.select_calibration_samples(fp_inputs, input_others)
+                if pre_inputs is fp_inputs and pre_others is input_others:
+                    pre_hooks.extend(hooks)
+                    continue
+                block_forward_fn(block, pre_inputs, pre_others)
+                for h in hooks:
+                    h.remove()
             if pre_hooks:
                 block_forward_fn(block, fp_inputs, input_others)
             for h in pre_hooks:
@@ -443,14 +452,24 @@ class AlgorithmComposer:
         for pre in self.preprocessors:
             pre.pre_quantize_block(block_ctx)
 
+        # A reference supplied by an external caller may have been collected
+        # before a weight-changing preprocessor (for example AWQ smoothing or
+        # hard clipping). Such a reference is stale and must not be used as the
+        # quantizer target or propagated as the next block's FP input.
+        reference_invalidated = any(pre.invalidates_reference_output(block_ctx) for pre in self.preprocessors)
+
         reference_next_input = None
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
         if fp_inputs is not None:
             with torch.no_grad():
                 quant_hooks = self._get_fp_act_hooks(block)
-                if reference_output is None:
+                if reference_output is None or reference_invalidated:
                     reference_output = block_forward_fn(block, fp_inputs, input_others)
-                reference_next_input = getattr(block_forward_fn, "last_output_dict", None) or reference_output
+                    reference_next_input = getattr(block_forward_fn, "last_output_dict", None) or reference_output
+                else:
+                    # No forward happened in this step, so last_output_dict may
+                    # belong to an earlier AWQ subset/calibration replay.
+                    reference_next_input = reference_output
                 for h in quant_hooks:
                     h.remove()
 

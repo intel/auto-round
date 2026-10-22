@@ -525,7 +525,7 @@ class TestAWQMoE:
         def fake_resolve_quant_funcs(params):
             return f"{params['data_type']}_{params['bits']}", None
 
-        def fake_qdq(weight, params, *, quant_func=None, opt_quant_func=None, imatrix=None):
+        def fake_qdq(weight, params, *, quant_func=None, opt_quant_func=None, imatrix=None, init_scale=None):
             records.append((params["data_type"], params["bits"], quant_func))
             return weight
 
@@ -985,6 +985,232 @@ class TestAWQUseV2ScaleSearch:
         block.data_type = "mx_fp"
         compressor = self._make_compressor(block)
         assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
+
+    def test_v2_scale_search_policy(self):
+        """AWQ policy changes internal QDQ without changing the terminal V2 config."""
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        block = SignRoundV2Config(iters=1)
+        compressor = self._make_compressor(block)
+
+        off = AWQTransform(AWQConfig(v2_scale_search="off"))
+        off._qdq_tool.configure(compressor, off.config)
+        assert (
+            off._qdq_tool.resolve_quant_funcs(
+                {"data_type": "int", "bits": 3, "sym": True, "group_size": 128, "disable_opt_rtn": True}
+            )[1]
+            is None
+        )
+
+        reuse = AWQTransform(AWQConfig(v2_scale_search="reuse"))
+        reuse._qdq_tool.configure(compressor, reuse.config)
+        assert (
+            reuse._qdq_tool.resolve_quant_funcs(
+                {"data_type": "int", "bits": 2, "sym": True, "group_size": 64, "disable_opt_rtn": True}
+            )[1]
+            is not None
+        )
+        assert block.enable_alg_ext is False
+
+    def test_reuse_computes_v2_scale_once_per_balance_layer(self, monkeypatch):
+        """Reuse avoids repeating the optimized scale search for each AWQ candidate."""
+        import torch.nn as nn
+
+        import auto_round.algorithms.transforms.awq.base as awq_base
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+        smooth = nn.Linear(4, 4, bias=False)
+        balance = nn.Linear(4, 4, bias=False)
+        balance.global_name = "block.balance"
+        mapping = ResolvedMapping(
+            smooth_name="block.smooth",
+            smooth_layer=smooth,
+            balance_names=[balance.global_name],
+            balance_layers=[balance],
+            parent_name="block",
+            parent=nn.Module(),
+        )
+        transform = AWQTransform(AWQConfig(v2_scale_search="reuse", n_grid=2))
+        transform._qdq_tool.v2_scale_search = "reuse"
+        transform._qdq_tool.layer_config = {
+            balance.global_name: {
+                "bits": 4,
+                "group_size": 4,
+                "sym": True,
+                "data_type": "int_sym",
+                "disable_opt_rtn": True,
+            }
+        }
+        transform._qdq_tool.use_v2_scale_search = True
+        transform._get_grid_search_params = lambda: [(0.0, False), (1.0, False)]
+
+        calls = []
+
+        def fake_scale(weight, *_args, **_kwargs):
+            calls.append(weight)
+            return torch.ones(weight.shape[0], 1)
+
+        monkeypatch.setattr(awq_base, "compute_optimized_init_scale", fake_scale)
+        result = transform._grid_search_scales(mapping, torch.ones(4))
+
+        assert result is not None
+        assert len(calls) == 1
+
+    def test_v2_scale_search_config_validation(self):
+        """Reject misspelled scale-search policies."""
+        import pytest
+
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        with pytest.raises(ValueError, match="v2_scale_search"):
+            AWQConfig(v2_scale_search="fast")
+
+    def test_v2_scale_search_cli_registration(self):
+        """Expose the low-bit scale-search policy through the generic CLI registry."""
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        parameters = {parameter.field: parameter for parameter in AWQConfig.get_registered_args().parameters}
+        assert parameters["v2_scale_search"].argparse_kwargs["choices"] == ("full", "off", "reuse")
+
+    def test_awq_nsamples_cli_and_validation(self):
+        """AWQ sample cap is independent, user-facing, and strictly positive."""
+        import pytest
+
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        parameters = {parameter.field: parameter for parameter in AWQConfig.get_registered_args().parameters}
+        assert parameters["awq_nsamples"].argparse_kwargs["dest"] == "awq_nsamples"
+        assert parameters["awq_nsamples"].argparse_kwargs["default"] == 128
+        config = AWQConfig(nsamples=256, awq_nsamples=17)
+        assert config.nsamples == 256
+        assert config.awq_nsamples == 17
+        with pytest.raises(ValueError, match="positive integer"):
+            AWQConfig(awq_nsamples=0)
+
+    def test_awq_nsamples_random_subset_is_deterministic(self):
+        """AWQ uses a stable random subset without changing quantizer inputs."""
+        from auto_round.algorithms.block_runner import BlockForwardRunner
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        transform = AWQTransform(AWQConfig(awq_nsamples=3))
+        runner = BlockForwardRunner(batch_size=2, enable_torch_compile=False)
+        transform.bind_block_forward_runner(runner)
+        inputs = [torch.full((1, 2, 4), idx, dtype=torch.float32) for idx in range(8)]
+        others = {"position_ids": [torch.full((1, 2), idx) for idx in range(8)]}
+
+        selected_inputs, selected_others = transform.select_calibration_samples(inputs, others)
+        expected = torch.randperm(8, generator=torch.Generator().manual_seed(42))[:3].sort().values
+        assert selected_inputs[:, 0, 0].to(torch.long).tolist() == expected.tolist()
+        assert selected_others["position_ids"][:, 0].tolist() == expected.tolist()
+        assert len(inputs) == 8
+
+        repeated_inputs, _ = transform.select_calibration_samples(inputs, others)
+        assert torch.equal(selected_inputs, repeated_inputs)
+
+    def test_awq_smoothing_preserves_fp_function(self):
+        """Inverse folding keeps the smooth-to-balance FP path unchanged."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+        torch.manual_seed(0)
+        smooth = nn.Linear(4, 6, bias=True)
+        balance = nn.Linear(6, 3, bias=False)
+        mapping = ResolvedMapping(
+            smooth_name="block.smooth",
+            smooth_layer=smooth,
+            balance_names=["block.balance"],
+            balance_layers=[balance],
+            parent_name="block",
+            parent=nn.Sequential(smooth, balance),
+        )
+        inputs = torch.randn(2, 5, 4)
+        expected = balance(smooth(inputs))
+        scales = torch.tensor([0.5, 0.75, 1.25, 1.5, 2.0, 0.8])
+
+        AWQTransform(AWQConfig())._apply_scales(mapping, scales)
+
+        assert torch.allclose(balance(smooth(inputs)), expected, atol=1e-6, rtol=1e-5)
+
+    def test_awq_clip_as_init_does_not_modify_weight(self, monkeypatch):
+        """clip_as_init records bounds without hard-clamping the FP block."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+        layer = nn.Linear(4, 2, bias=False)
+        layer.global_name = "block.balance"
+        smooth = nn.Linear(4, 4, bias=False)
+        mapping = ResolvedMapping(
+            smooth_name="block.smooth",
+            smooth_layer=smooth,
+            balance_names=[layer.global_name],
+            balance_layers=[layer],
+            parent_name="block",
+            parent=nn.Module(),
+        )
+        transform = AWQTransform(AWQConfig(apply_clip=True, clip_as_init=True))
+        transform._clip_input_feat[mapping.smooth_name] = torch.randn(3, 4)
+        clip_min = torch.full((2, 1, 1), -0.5)
+        clip_max = torch.full((2, 1, 1), 0.5)
+        monkeypatch.setattr(transform, "_compute_best_clip", lambda *_args: (clip_min, clip_max))
+        original_weight = layer.weight.detach().clone()
+
+        transform._clip_block("block", [mapping])
+
+        assert torch.equal(layer.weight, original_weight)
+        assert torch.equal(layer.awq_clip_min, clip_min)
+        assert torch.equal(layer.awq_clip_max, clip_max)
+
+    def test_awq_reference_invalidation_requires_an_applied_transform(self):
+        """Skipped mappings and clip-as-init alone keep a supplied reference valid."""
+        import torch.nn as nn
+
+        from auto_round.algorithms.composer import BlockContext
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+        from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+        block_name = "block"
+        ctx = BlockContext(model=None, block_names=[block_name], block_name=block_name, block_index=0)
+        smooth = nn.Linear(4, 4, bias=False)
+        balance = nn.Linear(4, 4, bias=False)
+        mapping = ResolvedMapping(
+            smooth_name="block.smooth",
+            smooth_layer=smooth,
+            balance_names=["block.balance"],
+            balance_layers=[balance],
+            parent_name=block_name,
+            parent=nn.Module(),
+        )
+
+        clip_init = AWQTransform(AWQConfig(apply_smooth=False, apply_clip=True, clip_as_init=True))
+        clip_init._block_mappings = {block_name: [mapping]}
+        clip_init._activation_stats[mapping.smooth_name] = [torch.ones(4), 1]
+        clip_init._clip_input_feat[mapping.smooth_name] = torch.randn(2, 4)
+        clip_init._qdq_tool.layer_config = {}
+        clip_init._compute_best_clip = lambda *_args: (
+            torch.full((4, 1, 1), -0.5),
+            torch.full((4, 1, 1), 0.5),
+        )
+        clip_init.pre_quantize_block(ctx)
+        assert clip_init.invalidates_reference_output(ctx) is False
+
+        skipped = AWQTransform(AWQConfig(apply_smooth=True))
+        skipped._block_mappings = {block_name: [mapping]}
+        skipped._activation_stats[mapping.smooth_name] = [torch.ones(4), 1]
+        skipped._mapping_is_smoothable = lambda _mapping: False
+        skipped.pre_quantize_block(ctx)
+        assert skipped.invalidates_reference_output(ctx) is False
 
     def test_qdq_configure_resolves_opt_rtn_policy_and_legacy_shapes(self):
         """QDQ wiring covers AWQ-owned policy plus legacy compressor-shaped callers."""

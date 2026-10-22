@@ -14,6 +14,7 @@ import torch
 
 from auto_round import RTNConfig
 from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
+from auto_round.algorithms.transforms.base import BasePreprocessor
 
 
 def _make_ctx():
@@ -93,3 +94,71 @@ class TestCompressBlockReferenceOutputSkip:
         )
 
         assert ref_next is pre_computed
+
+
+class _WeightChangingPreprocessor(BasePreprocessor):
+    """Minimal transform used to exercise reference invalidation."""
+
+    def register_fp_input_forward_hooks(self, block):
+        return []
+
+    def pre_quantize_block(self, ctx):
+        ctx.model.weight.data.mul_(2)
+
+    def invalidates_reference_output(self, ctx):
+        return True
+
+
+def test_weight_changing_preprocessor_recomputes_seeded_reference():
+    """A pre-transform reference must not survive a weight-changing preprocessor."""
+    from auto_round.algorithms.block_runner import BlockForwardRunner
+
+    composer = AlgorithmComposer([RTNConfig()])
+    block = torch.nn.Linear(1, 1, bias=False)
+    block.weight.data.fill_(1)
+    fp_inputs = [torch.tensor([[3.0]])]
+    stale_reference = [torch.tensor([[3.0]])]
+    ctx = BlockContext(
+        model=block,
+        block_names=["block"],
+        block_name="block",
+        block_index=0,
+    )
+    composer.block_forward = BlockForwardRunner(batch_size=1, amp=False, enable_torch_compile=False)
+    composer.block_quantizer.quantize_block = MagicMock()
+    composer.block_quantizer.enable_quanted_input = False
+    composer._get_fp_act_hooks = MagicMock(return_value=[])
+    composer._get_q_act_hooks = MagicMock(return_value=[])
+    composer.preprocessors = [_WeightChangingPreprocessor()]
+
+    _, reference_next_input = composer.compress_block(
+        block,
+        fp_inputs,
+        {},
+        block_ctx=ctx,
+        reference_output=stale_reference,
+    )
+
+    expected = torch.tensor([[6.0]])
+    assert torch.equal(reference_next_input[0], expected)
+    quantizer_reference = composer.block_quantizer.quantize_block.call_args.args[3]
+    assert torch.equal(quantizer_reference[0], expected)
+
+
+def test_reference_propagation_ignores_stale_last_output_dict():
+    """A skipped reference forward cannot reuse metadata from preprocessor calibration."""
+    composer = AlgorithmComposer([RTNConfig()])
+    fp_inputs = [torch.zeros(1, 4)]
+    pre_computed = [torch.ones(1, 4)]
+    mock_forward = _patch_composer(composer, fp_inputs)
+    mock_forward.last_output_dict = {"hidden_states": [torch.full((1, 4), 9.0)]}
+
+    _, reference_next_input = composer.compress_block(
+        torch.nn.Linear(4, 4),
+        fp_inputs,
+        {},
+        block_ctx=_make_ctx(),
+        reference_output=pre_computed,
+    )
+
+    assert reference_next_input is pre_computed

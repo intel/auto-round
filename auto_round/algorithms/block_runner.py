@@ -266,6 +266,10 @@ class BlockForwardRunner:
         """Slice inputs and others by sample indices (public for custom loops)."""
         return self._select_batch(inputs, input_others, indices)
 
+    def count_samples(self, inputs: Any) -> int:
+        """Return the number of cached calibration samples in ``inputs``."""
+        return self._count_samples(inputs)
+
     # ── Helpers ──────────────────────────────────────────────────────────────
 
     def split_outputs(self, output: torch.Tensor) -> list[torch.Tensor]:
