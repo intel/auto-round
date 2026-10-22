@@ -1281,7 +1281,11 @@ def test_model_free_route_accepts_mxfp_scheme_case_insensitively(scheme):
 @pytest.mark.parametrize("explicit", [False, True])
 def test_model_free_route_rejects_static_attention_quantization(dtype_key, explicit):
     kwargs = {dtype_key: "fp8", "model_free": explicit}
-    assert not is_model_free_route("model", "W4A16", 0, True, kwargs)
+    if explicit:
+        with pytest.raises(ValueError, match="model_free=True.*static"):
+            is_model_free_route("model", "W4A16", 0, True, kwargs)
+    else:
+        assert not is_model_free_route("model", "W4A16", 0, True, kwargs)
 
 
 # ===========================================================================
