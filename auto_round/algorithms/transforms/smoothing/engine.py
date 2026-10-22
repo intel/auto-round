@@ -94,6 +94,11 @@ class SmoothEngine:
         strategy: SmoothStrategy[_CalibrationT_contra, _CandidateT, _AppliedT_co],
         result: SmoothResult[_CandidateT],
     ) -> _AppliedT_co:
+        """Apply a result using the same group and strategy instances used by search().
+
+        Equivalent reconstructed groups are not interchangeable; the strategy
+        retains state prepared for the original group.
+        """
         if result.group is not group:
             raise ValueError("Smooth result belongs to a different group.")
         return strategy.apply(result.candidate)

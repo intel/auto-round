@@ -100,7 +100,7 @@ def test_shared_search_matches_original_svdquant_search(dtype):
     x_span = torch.stack([absmax_channel_span(inputs, -1) for inputs in capture.projection_inputs]).amax(dim=0)
     w_span = absmax_channel_span(projection.weight.float(), 1)
     scored = []
-    # Preserve the pre-extraction search as an independent numerical reference.
+    # Keep the original candidate scoring as an independent numerical reference.
     for alpha, beta in build_alpha_beta_candidates(4):
         scale = build_smooth_scale(x_span, w_span, alpha, beta, eps=transform.config.smooth_eps)
         scale = validate_smooth_scale_for_deployment(scale, dtype=dtype, module_name=group.key).float()
@@ -108,6 +108,7 @@ def test_shared_search_matches_original_svdquant_search(dtype):
             capture, transform._candidate_group_wrappers(group, scale), block, local_names
         )
         scored.append((scale, error))
+    # Use the agreed first-tie policy; the original SVDQuant search kept the last tie.
     expected = min(scored, key=lambda candidate: candidate[1])[0]
     actual = transform._search_group_scale(capture, block, local_names)
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)

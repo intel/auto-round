@@ -61,7 +61,11 @@ def output_squared_error(
     *,
     accumulator: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Sum output errors using FP32 differences and an FP64 CPU accumulator."""
+    """Sum output errors using FP32 differences and an FP64 CPU accumulator.
+
+    When supplied, accumulator must be a scalar CPU tensor of dtype torch.float64.
+    It is updated in place and returned; otherwise a zero accumulator is created.
+    """
     if len(actual) != len(reference):
         raise ValueError("Smooth output tensor count changed.")
     error = torch.zeros((), dtype=torch.float64) if accumulator is None else accumulator
