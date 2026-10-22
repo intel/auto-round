@@ -1960,8 +1960,13 @@ class BaseOrchestrator:
                 )
 
             serialization_dict = asdict(SerializedCompressorConfig())
+            calibration_context = getattr(self, "calibration_context", None)
             for key in serialization_dict:
-                serialization_dict[key] = getattr(self, key, serialization_dict[key])
+                value = getattr(self, key, serialization_dict[key])
+                # Calibration params (nsamples/seqlen/batch_size) live on the calibration context.
+                if value is None and calibration_context is not None:
+                    value = getattr(calibration_context, key, None)
+                serialization_dict[key] = value
             from auto_round.version import __version__
 
             serialization_dict["autoround_version"] = __version__
