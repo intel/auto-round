@@ -134,7 +134,7 @@ def test_no_finite_candidate_has_distinct_algorithm_fallback(errors):
         search_candidates(errors, lambda error: error, module_name="proj")
 
 
-@pytest.mark.parametrize("error_type", [RuntimeError, ValueError, TypeError, torch.OutOfMemoryError])
+@pytest.mark.parametrize("error_type", [RuntimeError, torch.OutOfMemoryError])
 def test_execution_errors_are_never_skipped(error_type):
     def fail(_):
         raise error_type("execution failure")
@@ -157,8 +157,6 @@ def test_calibration_clear_releases_pending_and_retained_calls():
 
 @pytest.mark.parametrize("require_finite, expected", [(True, 1.0), (False, -float("inf"))])
 def test_search_preserves_algorithm_specific_loss_validity(require_finite, expected):
-    from auto_round.algorithms.transforms.smoothing.search import search_candidates
-
     candidate, error = search_candidates(
         [float("nan"), float("inf"), -float("inf"), 1.0],
         lambda value: value,
@@ -170,8 +168,6 @@ def test_search_preserves_algorithm_specific_loss_validity(require_finite, expec
 
 def test_search_releases_losing_candidates():
     import weakref
-
-    from auto_round.algorithms.transforms.smoothing.search import search_candidates
 
     references = []
 

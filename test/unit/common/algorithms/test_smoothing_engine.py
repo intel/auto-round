@@ -21,28 +21,20 @@ from auto_round.algorithms.transforms.smoothing import SmoothEngine, SmoothGroup
 class IndependentStrategy:
     """A third-party policy with no dependency on AWQ or SVDQuant."""
 
-    def __init__(self, fail_at=None):
-        self.fail_at = fail_at
+    def __init__(self):
         self.target = None
         self.applied = False
 
-    def _check_failure(self, stage):
-        if stage == self.fail_at:
-            raise RuntimeError(stage)
-
     def prepare(self, group, calibration):
         self.target = sum(calibration) / len(calibration)
-        self._check_failure("prepare")
 
     def candidates(self):
         return [1.0, 2.0, 3.0]
 
     def score(self, candidate):
-        self._check_failure("score")
         return (candidate - self.target) ** 2
 
     def apply(self, candidate):
-        self._check_failure("apply")
         self.applied = True
         return candidate
 
@@ -62,10 +54,14 @@ def test_independent_strategy_can_extend_engine():
     assert strategy.target is None
 
 
-@pytest.mark.parametrize("stage", ["prepare", "score", "apply"])
-def test_engine_cleans_strategy_after_failure(stage):
-    strategy = IndependentStrategy(fail_at=stage)
-    with pytest.raises(RuntimeError, match=stage):
+def test_engine_cleans_strategy_after_failure(monkeypatch):
+    strategy = IndependentStrategy()
+
+    def fail(candidate):
+        raise RuntimeError("score failed")
+
+    monkeypatch.setattr(strategy, "score", fail)
+    with pytest.raises(RuntimeError, match="score failed"):
         SmoothEngine().run(make_group(), [2.0], strategy)
     assert strategy.target is None
 

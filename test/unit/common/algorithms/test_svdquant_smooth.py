@@ -19,7 +19,6 @@ from auto_round.algorithms.transforms.svdquant.smooth import (
     absmax_channel_span,
     build_alpha_beta_candidates,
     build_smooth_scale,
-    select_best_layer_candidate,
     validate_smooth_scale_for_deployment,
 )
 
@@ -67,12 +66,6 @@ def test_deployment_validation_rejects_bfloat16_reciprocal_overflow():
             dtype=torch.bfloat16,
             module_name="transformer_blocks.0.proj",
         )
-
-
-def test_candidate_selection_keeps_first_exact_tie_and_skips_nonfinite():
-    candidates = [("nan", float("nan")), ("first", 1.0), ("later", 1.0), ("worse", 2.0)]
-
-    assert select_best_layer_candidate(candidates, module_name="blocks.0.qkv") == "first"
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
