@@ -374,33 +374,24 @@ sym 解码出真正的有符号 nibble，不含 zero-point 项，因此只有在
 每生成一个 token 就调用一次，因此这次分配加同步的开销已经与 GEMV 本身同量级。
 现在 repack 缓冲区与激活求和表都取自按需增长的常驻 slab，稳态 decode 不再有任何
 分配，也不引入主机侧同步；生产者 kernel 与 GEMV 之间的顺序由 in-order queue
-保证。`ark.moe_decode_release_scratch()`(pybind `moe_decode_release_scratch`)
-可将内存归还。
+保证。scratch 在进程生命周期内持续复用，不需要手动创建或释放。
 
 这些 slab 由 extension 级的 `DeviceMemoryPool`(槽位 9 与 10)提供 —— 与
 dnnl/xpu wrapper、SDPA kernel 以及 DPAS work-group 计数器所用的是同一个管理器。
-它以*设备 UUID* 为键，因此 slab 的身份跟随设备而非裸 `sycl::queue*`：slab 不会
-再比它所依附的 queue 活得更久，被复用的 queue 地址也不会再拿到别人的 slab，同一
-设备上的两个 wrapper 也不会再各分配一份。相关簿记放在
-`sycl_tla_moe_decode_scratch.cpp` 中，以保证模块内只有唯一实例
-(`sycl_tla_moe_decode_scratch.hpp` 只保留声明)；`release_decode_scratch()` 在持
-锁期间只把 slab 从池中摘除，`queue::wait()` 与 `sycl::free()` 都放在释放锁*之后*
-执行，因此锁内不会出现不可控的设备同步。以设备为键的代价是：同一设备上的两个
-queue 现在共享同一份 slab，因此这些入口不能被同一设备上的两个 queue 并发驱动。
+它以设备 UUID、SYCL context 和队列身份为键，而非裸 `sycl::queue*`，因此不同
+stream 使用独立的 slab，同一队列的多个 wrapper 则复用同一份分配。队列句柄、
+分配状态、锁和自动增长全部由全局池统一维护。
+`sycl_tla_moe_decode_scratch.cpp` 仅保留薄封装，避免将内存池依赖的重量级头文件
+引入 decode 编译单元，不再维护独立的 scratch 状态或生命周期。
 
-repack *kernel* 默认仍每次调用都执行。设置
-`ARK_MOE_DECODE_INT4_REPACK_CACHE=1` 可在权重缓冲区地址与形状不变时复用上一次的
-repack 结果 —— 这对权重固定的真实推理循环是成立的。它**默认关闭**，因为其 tag
-是指针身份：被释放后重新分配的权重张量可能落在同一地址(torch 的缓存分配器在
-测试循环中很容易出现这种情况)，此时陈旧的 repack 会静默产生错误结果。启用它的
-调用方必须在丢弃权重张量之前调用 `ark.moe_decode_release_scratch()`。slab 增长
-同样会丢弃已缓存的 repack，因为重新分配得到的字节内容是未定义的。
+repack *kernel* 每次调用都执行：复用的是内存分配，内容则根据当前权重重新生成。
+旧的可选指针标签 repack 缓存已移除，权重原地修改或分配器复用地址时都不需要手动
+使缓存失效，默认计算路径保持不变。
 
 | 环境变量 | 默认值 | 作用 |
 | -------- | ------ | ---- |
 | `ARK_MOE_DECODE_COALESCE_INT4` | 开启 | int4 标量回退使用按 4 字节分块的 coalesced repack GEMV；设为 `0` 则强制使用按 lane 跨步的旧版 `launch_int4`。 |
 | `ARK_MOE_DECODE_COALESCE_MIN_TOKENS` | `num_experts * TOKEN_BLOCK` | coalesced kernel 值回其 repack 开销所需的最小总 token 数；设为 `0` 关闭该门控(一致性/A-B 测试即如此设置)。 |
-| `ARK_MOE_DECODE_INT4_REPACK_CACHE` | 关闭 | 在同一权重缓冲区上跨调用复用 repack 结果。仅当调用方掌握权重生命周期时才安全。 |
 
 coalesced 路径的性能 A/B 见
 `test_moe_decode_perf.py::test_perf_int4_coalesced_vs_strided`(在相同形状上切换
@@ -408,7 +399,8 @@ coalesced 路径的性能 A/B 见
 `test_moe.py::test_decode_int4_coalesced_matches_scalar`、
 `::test_decode_int4_coalesced_token_blocking`、
 `::test_decode_int4_coalesced_unaligned_group_size`(非 8 的倍数的 group_size，
-覆盖标量前导/收尾路径)以及 `::test_decode_int4_repack_cache` 覆盖。
+覆盖标量前导/收尾路径)以及 `::test_decode_int4_scratch_reuse` 覆盖；后者验证重复
+调用、shape 从小变大再变小，以及权重原地更新，全程无需手动管理 scratch。
 
 **占用率门控阈值扫描。** `ARK_MOE_DECODE_DPAS_S4_MIN_TPE` 的默认值 8 来自
 `dpas_w4a16_policy_m_8` 的 tile 行数，而非实测结果。定位真实交叉点的扫描用例是

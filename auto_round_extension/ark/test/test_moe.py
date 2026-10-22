@@ -927,64 +927,57 @@ class TestMoEGemmDecode:
         torch.testing.assert_close(out_coalesced, out_scalar, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    def test_decode_int4_repack_cache(self, monkeypatch, dtype):
-        """``ARK_MOE_DECODE_INT4_REPACK_CACHE=1`` lets the coalesced int4 kernel
-        reuse the N-tiled weight repack across calls instead of rebuilding it.
+    @pytest.mark.parametrize("asym", [False, True])
+    def test_decode_int4_scratch_reuse(self, monkeypatch, dtype, asym):
+        """Reuse global scratch, grow it, then return to a smaller shape.
 
-        Reuse is keyed on the weight buffer address plus its shape, so it is
-        only valid while the caller keeps that buffer alive. Verify that (a)
-        repeated calls on a live weight tensor keep matching the reference, and
-        (b) ``moe_decode_release_scratch()`` drops the cache so a *different*
-        weight tensor -- which torch's caching allocator may well hand back at
-        the same address -- is repacked again rather than answered from the
-        stale entry.
+        Both repack and asymmetric activation-sum buffers persist without
+        manual creation or release. In-place weight updates must be honoured
+        even though their address and shape have not changed.
         """
         num_experts = 3
-        tokens_per_expert = [4, 0, 5]
-        total_tokens = sum(tokens_per_expert)
-        N, K = 64, 128
         group_size = 32
-
-        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
-
-        def _build():
-            w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
-            scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
-            packed = _pack_int4_sym(w_float, scales, group_size)
-            dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
-            return packed, scales, _moe_decode_reference(activations, dequant, num_tokens_per_expert)
-
-        def _run(packed, scales):
-            return ark.moe_gemm_decode(
-                activations,
-                packed,
-                num_tokens_per_expert,
-                scales=scales,
-                weight_bits=4,
-                group_size=group_size,
-                asym=False,
-            )
-
         monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
         monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
         monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
-        monkeypatch.setenv("ARK_MOE_DECODE_INT4_REPACK_CACHE", "1")
 
-        try:
-            packed_a, scales_a, ref_a = _build()
-            # First call builds the repack, second must hit the cache.
-            torch.testing.assert_close(_run(packed_a, scales_a), ref_a, rtol=5e-2, atol=5e-2)
-            torch.testing.assert_close(_run(packed_a, scales_a), ref_a, rtol=5e-2, atol=5e-2)
+        for N, K, tokens_per_expert in (
+            (64, 128, [4, 0, 5]),
+            (128, 256, [7, 0, 13]),
+            (64, 128, [4, 0, 5]),
+        ):
+            total_tokens = sum(tokens_per_expert)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+            w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            if asym:
+                zeros = torch.empty_like(scales)
+                packed = _pack_int4_asym(w_float, scales, zeros, group_size)
+            else:
+                zeros = None
+                packed = _pack_int4_sym(w_float, scales, group_size)
 
-            # Drop the cached repack before the buffer it was derived from goes
-            # away, then verify a freshly built weight tensor is honoured.
-            del packed_a, scales_a
-            ark.moe_decode_release_scratch()
-            packed_b, scales_b, ref_b = _build()
-            torch.testing.assert_close(_run(packed_b, scales_b), ref_b, rtol=5e-2, atol=5e-2)
-        finally:
-            ark.moe_decode_release_scratch()
+            # Reuse twice, then change the weight contents at the same address.
+            for iteration in range(3):
+                if iteration == 2:
+                    packed.bitwise_xor_(0x11)
+                if asym:
+                    dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
+                else:
+                    dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+                ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+                out = ark.moe_gemm_decode(
+                    activations,
+                    packed,
+                    num_tokens_per_expert,
+                    scales=scales,
+                    zeros=zeros,
+                    weight_bits=4,
+                    group_size=group_size,
+                    asym=asym,
+                )
+                torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
 
     def test_decode_validation_errors(self):
         """Sanity-check that Python-side validation catches misuse."""

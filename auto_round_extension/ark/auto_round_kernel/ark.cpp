@@ -1710,7 +1710,6 @@ PYBIND11_MODULE(PY_NAME, m) {
     m.attr("sycl_target") = ARK_SYCL_TARGET_NAME;
   m.def("moe_gemm", &ark::moe_gemm_wrapper);
   m.def("moe_gemm_decode", &ark::moe_gemm_decode_wrapper);
-  m.def("moe_decode_release_scratch", &ark::moe_decode_release_scratch);
   m.def("moe_gemm_prefill", &ark::moe_gemm_prefill_wrapper);
   m.def("moe_gemm_prefill_mxfp8_mxfp4", &ark::moe_gemm_prefill_mxfp8_mxfp4_wrapper);
   m.def("moe_gemm_prefill_mxfp4_mxfp4", &ark::moe_gemm_prefill_mxfp4_mxfp4_wrapper);

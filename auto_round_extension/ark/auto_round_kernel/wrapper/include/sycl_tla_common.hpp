@@ -111,18 +111,6 @@ void sycl_tla_moe_decode_fp8(const MoeDecodeParams& params);
 bool sycl_tla_moe_decode_int4_dpas_applicable(const MoeDecodeParams& params);
 bool sycl_tla_moe_decode_fp8_dpas_applicable(const MoeDecodeParams& params);
 
-// Release every device scratch buffer the int4 decode fallbacks hold (the
-// N-tiled weight repack and the activation-sum table). Both are served from
-// grow-on-demand per-device slabs that are normally kept for the lifetime of
-// the process; call this to hand the memory back, or to drop a repack cached
-// under `ARK_MOE_DECODE_INT4_REPACK_CACHE` before the underlying weight buffer
-// is freed. The next decode simply reallocates.
-//
-// Must not overlap a decode call on the same device: this frees the slabs a
-// concurrent call may already be holding a pointer into. Call it from the same
-// thread that drives decode, between calls.
-void moe_decode_release_scratch();
-
 /**
  * @brief MoE Grouped GEMM optimized for the prefill phase, supporting the
  * same set of weight encodings as `moe_gemm_decode` (FP16/BF16, INT8 sym/asym,
