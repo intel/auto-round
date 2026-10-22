@@ -52,7 +52,6 @@ from auto_round.algorithms.transforms.awq.smooth import (
     smooth_group_from_mapping,
 )
 from auto_round.algorithms.transforms.base import BasePreprocessor
-from auto_round.algorithms.transforms.smoothing.calibration import clear_caches
 from auto_round.algorithms.transforms.smoothing.engine import SmoothEngine
 from auto_round.algorithms.transforms.smoothing.errors import NoFiniteCandidateError
 from auto_round.logger import logger
@@ -366,7 +365,9 @@ class AWQTransform(BasePreprocessor):
         """Idempotent global teardown.  Safe to call inside try/finally."""
         if self._finalized:
             return
-        clear_caches(self._activation_stats, self._parent_args_cache, self._clip_input_feat, scope="AWQ")
+        self._activation_stats.clear()
+        self._parent_args_cache.clear()
+        self._clip_input_feat.clear()
         self._finalized = True
         logger.debug("AWQ: finalize_quantization complete.")
 
@@ -598,7 +599,9 @@ class AWQTransform(BasePreprocessor):
                 x_mean = (act_sum / act_count).to(torch.float32)
                 del act_sum
 
-                self._grid_search_scales(mapping, x_mean, apply=True)
+                best_scales = self._grid_search_scales(mapping, x_mean)
+                if best_scales is not None:
+                    self._apply_scales(mapping, best_scales)
 
             if n_passes > 1:
                 logger.debug("AWQ: completed smooth pass %d/%d for block '%s'", smooth_pass + 1, n_passes, block_prefix)
@@ -633,20 +636,20 @@ class AWQTransform(BasePreprocessor):
         self,
         mapping: ResolvedMapping,
         x_mean: torch.Tensor,
-        *,
-        apply: bool = False,
     ) -> torch.Tensor | None:
-        """Search through the shared engine; optionally fold the selected scale."""
+        """Find the best scaling ratio for *mapping* via output-based loss."""
         engine = SmoothEngine()
         group = smooth_group_from_mapping(mapping)
         strategy = AWQSmoothStrategy(self, mapping)
         with engine.session(strategy):
             try:
-                result = engine.search(group, x_mean, strategy)
+                result = engine.search(group, x_mean, strategy, require_finite=False, log_search=False)
             except NoFiniteCandidateError:
+                logger.warning("AWQ: grid search failed for '%s': no finite error.", mapping.smooth_name)
                 return None
-            if apply:
-                engine.apply(group, strategy, result)
+            logger.debug(
+                "AWQ '%s': best_ratio=%.2f, best_error=%.3e", mapping.smooth_name, result.candidate[0], result.error
+            )
             return result.candidate[1].clone()
 
     def _iter_parent_calls(self, stored_args: tuple, stored_kwargs: dict):

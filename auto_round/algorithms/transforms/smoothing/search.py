@@ -30,12 +30,13 @@ def _select_best_layer_result(
     candidates: Iterable[tuple[_CandidateT, float | torch.Tensor]],
     *,
     module_name: str,
+    require_finite: bool = True,
 ) -> tuple[_CandidateT, float]:
     """Keep the candidate and its score together, including a valid None candidate."""
     best = None
     for candidate, error in candidates:
         error_value = error.item() if torch.is_tensor(error) else float(error)
-        if math.isfinite(error_value) and (best is None or error_value < best[1]):
+        if (not require_finite or math.isfinite(error_value)) and error_value < (best[1] if best else float("inf")):
             best = (candidate, error_value)
     if best is None:
         raise NoFiniteCandidateError(f"Smooth search produced no finite candidate for {module_name!r}.")
@@ -57,33 +58,42 @@ def search_candidates(
     *,
     module_name: str,
     on_invalid: Callable[[_CandidateT, Exception], None] | None = None,
+    require_finite: bool = True,
+    log_search: bool = True,
 ) -> tuple[_CandidateT, float]:
-    """Keep first ties and skip only explicitly invalid numerical candidates.
+    """Score candidates incrementally and retain only the first lowest-error candidate.
 
-    Execution errors, including OOM, propagate after the scorer restores trial
-    mutations. Candidate construction, output selection and loss remain owned
-    by the algorithm. No usable trial raises NoFiniteCandidateError.
+    Candidate validity and diagnostics can preserve algorithm-specific behavior.
+    Execution errors propagate; temporary mutation handling belongs to the strategy.
     """
-    scored = []
-    for index, candidate in enumerate(candidates):
-        try:
-            error = score(candidate)
-            error = error.item() if torch.is_tensor(error) else float(error)
-            if not math.isfinite(error):
-                raise InvalidSmoothCandidateError(f"Nonfinite candidate error: {error}.")
-        except InvalidSmoothCandidateError as exc:
-            logger.debug("Smooth search skipped candidate %d for %s: %s", index, module_name, exc)
-            if on_invalid is not None:
-                on_invalid(candidate, exc)
-            error = float("inf")
-        except Exception:
-            logger.error("Smooth search failed at candidate %d for %s", index, module_name, exc_info=True)
-            raise
-        scored.append((candidate, error))
+
+    def scored_candidates():
+        for index, candidate in enumerate(candidates):
+            try:
+                error = score(candidate)
+                error = error.item() if torch.is_tensor(error) else float(error)
+                if require_finite and not math.isfinite(error):
+                    raise InvalidSmoothCandidateError(f"Nonfinite candidate error: {error}.")
+            except InvalidSmoothCandidateError as exc:
+                if log_search:
+                    logger.debug("Smooth search skipped candidate %d for %s: %s", index, module_name, exc)
+                if on_invalid is not None:
+                    on_invalid(candidate, exc)
+                error = float("inf")
+            except Exception:
+                if log_search:
+                    logger.error("Smooth search failed at candidate %d for %s", index, module_name, exc_info=True)
+                raise
+            yield candidate, error
+
     try:
-        selected, error = _select_best_layer_result(scored, module_name=module_name)
+        selected, error = _select_best_layer_result(
+            scored_candidates(), module_name=module_name, require_finite=require_finite
+        )
     except NoFiniteCandidateError:
-        logger.warning("Smooth search produced no finite candidate for %s", module_name)
+        if log_search:
+            logger.warning("Smooth search produced no finite candidate for %s", module_name)
         raise
-    logger.debug("Smooth search selected a candidate for %s: error=%.6g", module_name, error)
+    if log_search:
+        logger.debug("Smooth search selected a candidate for %s: error=%.6g", module_name, error)
     return selected, error

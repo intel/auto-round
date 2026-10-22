@@ -29,7 +29,10 @@ class SmoothSearchGroup(SmoothGroup):
     """SVDQuant compatibility group with a shared linear input width."""
 
     def __post_init__(self) -> None:
-        super().__post_init__()
+        if not self.projections:
+            raise ValueError(f"SVDQuant group {self.key!r} has no projections.")
+        if len(self.projection_names) != len(self.projections):
+            raise ValueError(f"SVDQuant group {self.key!r} has mismatched names and projections.")
         if len({projection.in_features for projection in self.projections}) != 1:
             raise ValueError(f"SVDQuant group {self.key!r} projections must share an input width.")
 

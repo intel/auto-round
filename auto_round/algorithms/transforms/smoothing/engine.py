@@ -32,8 +32,8 @@ _AppliedT_co = TypeVar("_AppliedT_co", covariant=True)
 class SmoothStrategy(Protocol[_CalibrationT_contra, _CandidateT, _AppliedT_co]):
     """Extension contract; statistics, candidates, loss and deployment are policies.
 
-    Each group uses a separate strategy instance. Scoring must restore temporary
-    mutations before returning or raising. clear() releases only strategy-owned
+    Each group uses a separate strategy instance. Strategies own temporary
+    mutation handling. clear() releases only strategy-owned
     state, preserving calibration caches shared with other groups or passes.
     """
 
@@ -73,9 +73,18 @@ class SmoothEngine:
         group: SmoothGroup,
         calibration: _CalibrationT_contra,
         strategy: SmoothStrategy[_CalibrationT_contra, _CandidateT, _AppliedT_co],
+        *,
+        require_finite: bool = True,
+        log_search: bool = True,
     ) -> SmoothResult[_CandidateT]:
         strategy.prepare(group, calibration)
-        candidate, error = search_candidates(strategy.candidates(), strategy.score, module_name=group.key)
+        candidate, error = search_candidates(
+            strategy.candidates(),
+            strategy.score,
+            module_name=group.key,
+            require_finite=require_finite,
+            log_search=log_search,
+        )
         return SmoothResult(group, candidate, error)
 
     @torch.no_grad()

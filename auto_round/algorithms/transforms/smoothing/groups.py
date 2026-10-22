@@ -39,12 +39,6 @@ class SmoothGroup:
     evaluation_module: torch.nn.Module
     output_indices: tuple[int, ...] | None = None
 
-    def __post_init__(self) -> None:
-        if not self.projections:
-            raise ValueError(f"Smooth group {self.key!r} has no projections.")
-        if len(self.projection_names) != len(self.projections):
-            raise ValueError(f"Smooth group {self.key!r} has mismatched names and projections.")
-
     def filter_evaluation_kwargs(self, kwargs: Mapping[str, Any]) -> dict[str, Any]:
         return filter_supported_kwargs(self.evaluation_module, kwargs)
 

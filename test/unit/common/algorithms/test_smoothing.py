@@ -153,3 +153,37 @@ def test_calibration_clear_releases_pending_and_retained_calls():
     assert not capture.projection_inputs and not capture.evaluation_calls
     assert capture.pending_input is None and capture.pending_slot is None
     assert capture.seen_calls == 0
+
+
+@pytest.mark.parametrize("require_finite, expected", [(True, 1.0), (False, -float("inf"))])
+def test_search_preserves_algorithm_specific_loss_validity(require_finite, expected):
+    from auto_round.algorithms.transforms.smoothing.search import search_candidates
+
+    candidate, error = search_candidates(
+        [float("nan"), float("inf"), -float("inf"), 1.0],
+        lambda value: value,
+        module_name="proj",
+        require_finite=require_finite,
+    )
+    assert candidate == expected and error == expected
+
+
+def test_search_releases_losing_candidates():
+    import weakref
+
+    from auto_round.algorithms.transforms.smoothing.search import search_candidates
+
+    references = []
+
+    def candidates():
+        for index in range(10):
+            candidate = torch.tensor(float(index))
+            references.append(weakref.ref(candidate))
+            yield candidate
+
+    def score(candidate):
+        assert sum(reference() is not None for reference in references) <= 3
+        return candidate.item()
+
+    candidate, error = search_candidates(candidates(), score, module_name="proj")
+    assert candidate.item() == error == 0.0
