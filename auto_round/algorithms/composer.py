@@ -452,30 +452,24 @@ class AlgorithmComposer:
         except Exception as e:  # pragma: no cover - diagnostics only
             logger.debug("[routed-shape] recorder setup skipped (%s)", e)
 
-        try:
-            # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──────
-            with torch.no_grad():
-                with temporary_hooks() as pre_hooks:
-                    for pre in self.preprocessors:
-                        pre_hooks.extend(pre.register_fp_input_forward_hooks(block))
-                    if pre_hooks:
-                        block_forward_fn(block, fp_inputs, input_others)
+        # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──────
+        with torch.no_grad():
+            with temporary_hooks() as pre_hooks:
+                for pre in self.preprocessors:
+                    pre_hooks.extend(pre.register_fp_input_forward_hooks(block))
+                if pre_hooks:
+                    block_forward_fn(block, fp_inputs, input_others)
 
-                with temporary_hooks() as pre_q_hooks:
-                    for pre in self.preprocessors:
-                        if hasattr(pre, "register_qinput_forward_hooks"):
-                            pre_q_hooks.extend(pre.register_qinput_forward_hooks(block))
-                    if pre_q_hooks:
-                        block_forward_fn(block, q_inputs if q_inputs is not None else fp_inputs, input_others)
+            with temporary_hooks() as pre_q_hooks:
+                for pre in self.preprocessors:
+                    if hasattr(pre, "register_qinput_forward_hooks"):
+                        pre_q_hooks.extend(pre.register_qinput_forward_hooks(block))
+                if pre_q_hooks:
+                    block_forward_fn(block, q_inputs if q_inputs is not None else fp_inputs, input_others)
 
-            # ── Step 2: pre_quantize_block (stats consolidation + weight transforms) ──
-            for pre in self.preprocessors:
-                pre.pre_quantize_block(block_ctx)
-
-        except BaseException:
-            for pre in self.preprocessors:
-                pre.post_quantize_block(block_ctx)
-            raise
+        # ── Step 2: pre_quantize_block (stats consolidation + weight transforms) ──
+        for pre in self.preprocessors:
+            pre.pre_quantize_block(block_ctx)
 
         reference_next_input = None
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────

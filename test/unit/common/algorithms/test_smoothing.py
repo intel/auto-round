@@ -155,28 +155,18 @@ def test_calibration_clear_releases_pending_and_retained_calls():
     assert capture.seen_calls == 0
 
 
-@pytest.mark.parametrize("stage", ["fp", "q", "preprocess"])
-def test_failed_preprocessor_removes_hooks_and_clears_cache(stage):
+@pytest.mark.parametrize("stage", ["fp", "q"])
+def test_failed_calibration_removes_hooks(stage):
     from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
-    from auto_round.algorithms.transforms.smoothing.calibration import clear_caches
 
     block = torch.nn.Linear(2, 2)
 
     class Probe:
-        def __init__(self):
-            self.cache = {"input": torch.ones(1, 2)}
-
         def register_fp_input_forward_hooks(self, module):
             return [module.register_forward_hook(lambda *args: None)]
 
         register_qinput_forward_hooks = register_fp_input_forward_hooks
-
-        def pre_quantize_block(self, ctx):
-            raise RuntimeError("preprocess failure")
-
-        def post_quantize_block(self, ctx):
-            clear_caches(self.cache, scope="probe")
 
     probe = Probe()
     composer = AlgorithmComposer([RTNConfig(disable_opt_rtn=True)])
@@ -195,4 +185,3 @@ def test_failed_preprocessor_removes_hooks_and_clears_cache(stage):
     with pytest.raises(RuntimeError, match="failure"):
         composer.compress_block(block, [torch.ones(1, 2)], {}, ctx)
     assert not block._forward_hooks
-    assert not probe.cache
