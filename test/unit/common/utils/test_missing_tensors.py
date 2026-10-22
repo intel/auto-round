@@ -1191,6 +1191,49 @@ class TestKeepSpecialFp32Params:
         assert torch.equal(model.norm.weight, norm_weight)
         assert model.proj.weight.dtype == torch.bfloat16
 
+    def test_mixed_checkpoint_keeps_fp32_loaded_model_param_after_cast(self, tmp_path):
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+        from auto_round.utils.model import cast_model_dtype
+
+        norm_weight = torch.tensor([1.0001, -2.0002, 3.0003, 4.0004])
+        _save_safetensors(
+            {
+                "norm.weight": norm_weight,
+                "norm.bias": torch.zeros(4, dtype=torch.bfloat16),
+                "proj.weight": torch.randn(4, 4, dtype=torch.bfloat16),
+            },
+            str(tmp_path / "model.safetensors"),
+        )
+        model = self._make_model()
+
+        assert keep_special_fp32_params(model, str(tmp_path)) == ["norm.weight"]
+        model = cast_model_dtype(model, torch.bfloat16)
+
+        assert model.norm.weight.dtype == torch.float32
+        assert torch.equal(model.norm.weight, norm_weight)
+        assert model.proj.weight.dtype == torch.bfloat16
+
+    def test_checkpoint_fp32_restore_uses_resolved_revision(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        import auto_round.utils.missing_tensors as missing_tensors
+        import auto_round.utils.model as model_utils
+
+        calls = {}
+
+        def fake_download(repo_id, platform, revision):
+            calls.update(repo_id=repo_id, platform=platform, revision=revision)
+            return str(tmp_path)
+
+        monkeypatch.setattr(model_utils, "download_or_get_path", fake_download)
+        monkeypatch.setattr(missing_tensors, "keep_special_fp32_params", lambda model, source_dir: [])
+        model = self._make_model()
+        model.config = SimpleNamespace(_commit_hash="resolved-commit")
+
+        model_utils._keep_checkpoint_fp32_params(model, "org/model", "hf", revision="requested-branch")
+
+        assert calls == {"repo_id": "org/model", "platform": "hf", "revision": "resolved-commit"}
+
     def test_all_fp32_checkpoint_is_untouched(self, tmp_path):
         from auto_round.utils.missing_tensors import keep_special_fp32_params
 

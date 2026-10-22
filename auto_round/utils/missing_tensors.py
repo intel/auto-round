@@ -176,11 +176,7 @@ def keep_special_fp32_params(model: torch.nn.Module, source_dir: str) -> list[st
                     has_low_precision_float = True
                 elif dtype == "F32":
                     tensor = model_tensors.get(tensor_name)
-                    if (
-                        tensor is not None
-                        and tensor.dtype in (torch.float16, torch.bfloat16, torch.float32)
-                        and (tensor.device.type == "meta" or tensor.dtype != torch.float32)
-                    ):
+                    if tensor is not None and tensor.dtype in (torch.float16, torch.bfloat16, torch.float32):
                         candidates_by_shard.setdefault(shard, []).append(tensor_name)
 
     if not has_low_precision_float or not candidates_by_shard:
