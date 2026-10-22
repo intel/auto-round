@@ -35,6 +35,7 @@ from auto_round.compressors.config_resolution import (
 from auto_round.compressors.layer_config_resolver import (
     apply_plan_to_model,
     extract_regex_config,
+    get_fp_layer_names,
     has_quantized_layer_outside_blocks,
     resolve_layer_config,
 )
@@ -1098,6 +1099,9 @@ class BaseOrchestrator:
         self.regex_config = {name: dict(config) for name, config in self.compression_plan.regex_config.items()}
         self.has_qlayer_outside_block = self.compression_plan.has_qlayer_outside_block
         apply_plan_to_model(self.model_context.model, self.compression_plan)
+        # Resolve ignore layer names for FP8 preservation: layers matching ignore_layers
+        # will be kept in their original format instead of being dequantized.
+        self._resolved_ignore_layers = get_fp_layer_names(self.model_context.model, self.ignore_layers)
         if self.is_auto_scheme:
             self._log_auto_scheme_avg_bits()
 

@@ -63,6 +63,7 @@ from collections.abc import Callable
 from contextlib import ContextDecorator
 from dataclasses import fields
 from enum import Enum, auto
+from typing import Optional
 
 import psutil
 import torch
@@ -378,6 +379,7 @@ def convert_module_to_hp_if_necessary(
     dtype: torch.dtype = torch.bfloat16,
     device: str | torch.device = "cpu",
     to_cpu: bool = False,
+    ignore_layers: list | None = None,
 ) -> torch.nn.Module:
     """Convert quantized layer(s) to high-precision Linear layer(s) if necessary.
 
@@ -389,6 +391,8 @@ def convert_module_to_hp_if_necessary(
         dtype: Target dtype for the converted layer(s). Defaults to torch.bfloat16.
         device: Target device for the conversion. Defaults to "cpu".
         to_cpu: If True, move converted layers to CPU. Defaults to False.
+        ignore_layers: List of layer names to keep in their original format
+            instead of converting to high precision. Defaults to None.
 
     Returns:
         If input is a quantized layer: A new high-precision layer with dequantized weights.
@@ -397,6 +401,9 @@ def convert_module_to_hp_if_necessary(
     """
     from auto_round.utils.device import clear_memory
     from auto_round.utils.model import set_module
+
+    if ignore_layers is None:
+        ignore_layers = []
 
     def _sync_serialization_attrs(src_module: torch.nn.Module, dst_module: torch.nn.Module) -> None:
         """Copy serialization-related attributes from source to destination module."""
@@ -425,6 +432,8 @@ def convert_module_to_hp_if_necessary(
     type_counts: dict = {}
     for n, m in model_or_layer.named_modules():
         if hasattr(m, "quantized_weight_type") and m.quantized_weight_type is not None:
+            if n in ignore_layers:
+                continue
             handler = get_handler(m.quantized_weight_type)
             type_counts[m.quantized_weight_type.name] = type_counts.get(m.quantized_weight_type.name, 0) + 1
             new_module = handler.convert_layer(m, dtype, device, to_cpu)
