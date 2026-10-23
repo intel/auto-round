@@ -26,7 +26,7 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_
 from auto_round.experimental.utils import NVFP4_KV_DTYPE
 from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
 from auto_round.export.export_to_llmcompressor.config import check_compressed_tensors_supported
-from auto_round.export.export_to_llmcompressor.utils import finalize_llmcompressor_config_names
+from auto_round.export.export_to_llmcompressor.utils import add_autoround_config, finalize_llmcompressor_config_names
 from auto_round.export.utils import is_immediate_saving_mode, save_model, save_pretrained_artifact
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -298,6 +298,7 @@ def save_quantized_as_static_fp(
     quantization_config = finalize_llmcompressor_config_names(
         quantization_config, model, [], [n for n in layer_config if check_to_quantized(layer_config[n])]
     )
+    quantization_config = add_autoround_config(quantization_config, serialization_dict)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
 

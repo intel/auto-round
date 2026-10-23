@@ -191,3 +191,81 @@ def generate_ignore_regex_list(regex_config: dict[str, dict], layer_config: dict
             ignore_regex.append(key)
 
     return ignore_regex
+
+
+# Tuning hyper-parameters worth recording so a llm-compressor checkpoint can be
+# traced back to (and re-created with) the AutoRound command that produced it.
+AUTOROUND_CONFIG_KEY = "autoround_config"
+_AUTOROUND_CONFIG_FIELDS = (
+    "autoround_version",
+    "bits",
+    "group_size",
+    "sym",
+    "data_type",
+    "act_bits",
+    "act_group_size",
+    "act_sym",
+    "act_data_type",
+    "act_dynamic",
+    "super_bits",
+    "super_group_size",
+    "iters",
+    "lr",
+    "minmax_lr",
+    "nsamples",
+    "seqlen",
+    "batch_size",
+    "gradient_accumulate_steps",
+    "enable_minmax_tuning",
+    "enable_norm_bias_tuning",
+    "enable_quanted_input",
+    "amp",
+    "low_gpu_mem_usage",
+    "scale_dtype",
+    "static_kv_dtype",
+    "static_attention_dtype",
+)
+
+
+def _to_json_value(value):
+    import enum
+
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, torch.dtype):
+        return str(value)
+    if isinstance(value, torch.device):
+        return str(value)
+    if isinstance(value, enum.Enum):
+        enum_value = value.value
+        if isinstance(enum_value, (bool, int, float, str)):
+            return enum_value
+        return value.name
+    if isinstance(value, type):
+        return f"{value.__module__}.{value.__qualname__}"
+    if isinstance(value, (list, tuple)):
+        return [_to_json_value(v) for v in value]
+    return str(value)
+
+
+def add_autoround_config(quantization_config: dict, serialization_dict: dict | None) -> dict:
+    """Record AutoRound tuning hyper-parameters in an llm-compressor ``quantization_config``.
+
+    The values are stored under a single nested ``"autoround_config"`` key so that the
+    compressed-tensors / vLLM loaders, which only read the keys they know, are unaffected.
+    Only runs when ``quantization_config["provider"] == "auto-round"``, so shared export
+    helpers do not write AutoRound-branded metadata for other providers.
+    """
+    if not isinstance(quantization_config, dict) or not serialization_dict:
+        return quantization_config
+    if quantization_config.get("provider") != "auto-round":
+        return quantization_config
+    autoround_config = {}
+    for key in _AUTOROUND_CONFIG_FIELDS:
+        value = serialization_dict.get(key)
+        if value is None:
+            continue
+        autoround_config[key] = _to_json_value(value)
+    if autoround_config:
+        quantization_config[AUTOROUND_CONFIG_KEY] = autoround_config
+    return quantization_config
