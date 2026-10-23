@@ -364,7 +364,7 @@ def load_bagel_model(model_path, torch_dtype="auto", device_map=None):
     model.config._name_or_path = model_path
 
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=False)
 
     logger.info(
         f"BAGEL model loaded: {sum(p.numel() for p in model.parameters()) / 1e9:.2f}B parameters, "

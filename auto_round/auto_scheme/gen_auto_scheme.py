@@ -41,6 +41,7 @@ class AutoScheme:
     enable_torch_compile: bool | None = None
     low_gpu_mem_usage: bool = True
     low_cpu_mem_usage: bool = True
+    trust_remote_code: bool = False
 
     def __post_init__(self):
         if isinstance(self.options, str):
