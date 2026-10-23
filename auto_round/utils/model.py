@@ -655,6 +655,11 @@ def mllm_load_model(
     model_dtype: str | None = None,
     **kwargs,
 ):
+    from auto_round.modeling.nemotron_h_omni import (
+        nemotron_h_omni_load_kwargs,
+        prefer_remote_omni_class,
+        register_nemotron_h_omni_checkpoint_mapping,
+    )
     from auto_round.special_model_handler import MISTRAL_3_2_MODELS
 
     _check_accelerate_version()
@@ -725,6 +730,7 @@ def mllm_load_model(
         model_type = config["model_type"]
     else:
         model_type = None
+    register_nemotron_h_omni_checkpoint_mapping(config, trust_remote_code)
 
     if model_type == "qwen2_5_omni":
         if version.parse(transformers.__version__) < version.parse("4.52.0"):
@@ -850,7 +856,9 @@ def mllm_load_model(
                 torch_dtype=torch_dtype,
             )
         else:
-            if architectures.endswith("Model") and hasattr(
+            if prefer_remote_omni_class(config, trust_remote_code):
+                cls = AutoModelForCausalLM
+            elif architectures.endswith("Model") and hasattr(
                 base_lib, n := architectures.replace("Model", "ForConditionalGeneration")
             ):
                 cls = getattr(base_lib, n)
@@ -859,7 +867,7 @@ def mllm_load_model(
             else:
                 cls = AutoModelForCausalLM
             try:
-                model_load_kwargs = {}
+                model_load_kwargs = nemotron_h_omni_load_kwargs(config)
                 if model_subfolder is not None:
                     model_load_kwargs["subfolder"] = model_subfolder
                 model = cls.from_pretrained(
@@ -3186,10 +3194,12 @@ def is_model_free_route(
     has_static_attention_quantization = any(
         kwargs.get(key) is not None for key in ("static_kv_dtype", "static_attention_dtype")
     )
+    if explicit:
+        if has_static_attention_quantization:
+            raise ValueError("model_free=True does not support static KV or attention quantization.")
+        return True
     if has_static_attention_quantization:
         return False
-    if explicit:
-        return True
     # Only auto-route when format is auto_round (or not specified).
     fmt = kwargs.get("format", "auto_round")
     if fmt is None:

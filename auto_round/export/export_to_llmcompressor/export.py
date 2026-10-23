@@ -19,6 +19,10 @@ from collections.abc import Callable, Mapping
 
 import torch
 
+from auto_round.export.export_to_llmcompressor.utils import (
+    add_routed_experts_if_moe,
+    finalize_llmcompressor_config_names,
+)
 from auto_round.export.utils import (
     is_immediate_saving_mode,
     save_config_artifact,
@@ -175,7 +179,7 @@ def _rewrite_config_group_targets(model, quantization_config_dict):
         )
         names = sig_to_names.get(sig)
         if names:
-            group["targets"] = sorted(names)
+            group["targets"] = add_routed_experts_if_moe(sorted(names), names)
         else:
             logger.warning(
                 "AutoRound llm_compressor export: no quantized module matched "
@@ -372,6 +376,12 @@ def save_quantized_as_llmcompressor(
     # precision that makes groups indistinguishable to vLLM; rewrite targets with
     # the concrete module names each group covers.
     quantization_config_dict = _rewrite_config_group_targets(model, quantization_config_dict)
+    quantization_config_dict = finalize_llmcompressor_config_names(
+        quantization_config_dict,
+        model,
+        [],
+        [n for n, m in model.named_modules() if getattr(m, "quantization_scheme", None) is not None],
+    )
     model.config.quantization_config = quantization_config_dict
 
     if output_dir is None:

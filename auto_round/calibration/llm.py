@@ -288,11 +288,14 @@ class LLMCalibrator(Calibrator):
         Verbatim port of the legacy ``Compressor.calib`` (LLM path only).
         """
         from auto_round.calib_dataset import get_dataloader
+        from auto_round.utils.dataset_utils import strip_dataset_spec_whitespace
 
         need_attention_mask = True
         if isinstance(self.dataset, str):
             need_attention_mask = False  # all supported datasets do not use pad
-            dataset = self.dataset.replace(" ", "")  # remove all whitespaces
+            # Strip only cosmetic whitespace; spaces inside option values
+            # (e.g. separator / template / system_prompt) are preserved.
+            dataset = strip_dataset_spec_whitespace(self.dataset)
 
             # slow here
             self.dataloader = get_dataloader(
@@ -302,6 +305,7 @@ class LLMCalibrator(Calibrator):
                 self.seed,
                 bs,
                 nsamples,
+                trust_remote_code=self.trust_remote_code,
             )
         else:
             self.dataloader = self.dataset

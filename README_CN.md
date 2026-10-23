@@ -7,10 +7,10 @@
 </p>
 
 
-<h3> 面向 LLM 的先进量化算法</h3>
+<h3>训练后量化的效率，量化感知训练的精度</h3>
 
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.16.0-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.16.1-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -18,9 +18,19 @@
 </a>
 <a href="https://pepy.tech/projects/auto-round" style="text-decoration:none;"><img src="https://static.pepy.tech/badge/auto-round" alt="PyPI Downloads"></a>
 
-&nbsp;&nbsp;&nbsp;&nbsp;[English](README.md) | 简体中文
+[//]: # (<p align="center">)
 
-[User Guide](./docs/step_by_step.md) | [用户指南](./docs/step_by_step_CN.md)&nbsp;&nbsp; 
+[//]: # (<a href="https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard" style="text-decoration:none;">)
+
+[//]: # (<img alt="免费量化您的模型" src="https://img.shields.io/badge/%F0%9F%91%89%20%E5%85%8D%E8%B4%B9%E9%87%8F%E5%8C%96%E6%82%A8%E7%9A%84%E6%A8%A1%E5%9E%8B%20%7C%20Quantize%20Your%20Model%20for%20FREE-2E7D32?style=for-the-badge">)
+
+[//]: # (</a>)
+
+[//]: # (</p>)
+
+简体中文 | [English](README.md)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+
+[用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
 ---
 <div align="left">
@@ -275,6 +285,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - ​**​`low_gpu_mem_usage`​**​（bool）：若要节省显存，可以设为 `True` 。它会将中间特征卸载到 CPU，但会增加 30%-100% 的时间（默认 `False`）。
 - ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 用于启用即时保存以减少内存占用。该功能默认开启；在 CLI 中可使用 `--disable_low_cpu_mem_usage` 关闭（`--low_cpu_mem_usage` 仅为兼容旧参数保留）。
 - ​**​`device_map`​**​（str | dict | int）：计算设备指定，如 `auto`​、`cpu`​、`cuda`​、`0,1,2`​（默认 `0`​）。使用 `auto` 时会尝试利用所有可用 GPU。
+- **`calibration_data_device`**（str）：多 GPU 运行时块校准数据的存放位置：`auto`（默认）| `cpu` | `off` | `1,2` | `cuda:1,cuda:2`。
 
 </details>
 
