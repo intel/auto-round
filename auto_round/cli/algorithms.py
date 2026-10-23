@@ -274,7 +274,7 @@ class AlgorithmHandler:
         if getattr(args, "rotation_hadamard_type", None) and "hadamard" not in names:
             names.append("hadamard")
 
-        canonical = resolve_algorithm_names(names, ignore_unknown=True)
+        canonical = resolve_algorithm_names(names)
         # Names the user actually wrote. The implicit block-quantizer fallback
         # appended below is deliberately excluded: only an explicit `rtn` /
         # `opt-rtn` carries the plain-vs-optimized intent.

@@ -371,6 +371,18 @@ def test_model_free_cli_disable_opt_rtn(monkeypatch):
     assert compressor.disable_opt_rtn is True
 
 
+@pytest.mark.parametrize("flag", ["--algorithm", "--algorithms", "--alg", "--algs", "--alg_config", "--alg_configs"])
+@pytest.mark.parametrize("algorithms", ["haha", "rtn,haha", "haha,auto_round"])
+def test_unknown_algorithm_quantization_raises(flag, algorithms):
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(["--model", "/models/opt-125m", flag, algorithms])
+
+    with pytest.raises(ValueError, match="Unknown algorithm alias 'haha'"):
+        AlgorithmHandler.build_configs(args, {})
+
+
 def test_unknown_algorithm_help_exits_with_suggestion(monkeypatch):
     from auto_round.cli import main as cli_main
 
