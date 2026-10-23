@@ -22,8 +22,8 @@ import torch
 from torch.nn import Linear, Module
 
 from auto_round import envs
-from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
+from auto_round.schemes import needs_nvfp_global_scale
 from auto_round.utils import check_to_quantized, logger
 
 
@@ -559,9 +559,9 @@ def update_fused_layer_global_scales(
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):
-    from auto_round.data_type.nvfp import calculate_gparam
+    from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-    has_nvfp = is_nv_fp(data_type)
+    has_nvfp = needs_nvfp_global_scale(data_type)
 
     # Calculate block wise weight global scale
     for _, m in block.named_modules():
@@ -570,10 +570,10 @@ def update_block_global_scale_if_needed(block, data_type, group_size):
         # Check per-layer data_type for mixed-scheme scenarios
         module_data_type = getattr(m, "data_type", data_type)
         module_group_size = getattr(m, "group_size", group_size)
-        if is_nv_fp(module_data_type):
+        if needs_nvfp_global_scale(module_data_type):
             has_nvfp = True
             if not hasattr(m, "weight_global_scale"):
-                weight_global_scale = calculate_gparam(m.weight, module_group_size)
+                weight_global_scale = calculate_gparam_by_dtype(m.weight, module_data_type, module_group_size)
                 m.weight_global_scale = weight_global_scale
 
     if not has_nvfp:

@@ -53,14 +53,15 @@ FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max if hasattr(torch, "float8
 FLOAT8_E4M3_MIN = torch.finfo(torch.float8_e4m3fn).min if hasattr(torch, "float8_e4m3fn") else -448
 
 
-def calculate_gparam(tensor, group_size=16, device="cpu"):
+def calculate_gparam(tensor, group_size=16, device="cpu", scale_max=None):
     """Calculate global scaling factor for NVFP quantization."""
     assert group_size == 16, f"Only group_size=16 is supported, got {group_size}"
+    scale_max = FLOAT8_E4M3_MAX if scale_max is None else scale_max
     if isinstance(tensor, (float, int)):
         tensor_amax = torch.tensor(tensor, device=device, dtype=torch.float32).abs()
     elif isinstance(tensor, torch.Tensor):
         tensor_amax = tensor.to(torch.float32).abs().max()
-    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax)
+    global_scale = scale_max * FLOAT4_E2M1_MAX * get_reciprocal(tensor_amax)
     return global_scale
 
 
@@ -229,6 +230,59 @@ def nvfp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     global_scale = 1.0
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v, max_scale)
+    qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq_res.to(orig_dtype), scale, None
+
+
+def calculate_gparam_e5m3(tensor, group_size=16, device="cpu"):
+    """Calculate the per-tensor global scale for NVFP4 E5M3 (UE5M3 block scales)."""
+    return calculate_gparam(tensor, group_size, device, scale_max=FLOAT8_UE5M3_MAX)
+
+
+def calculate_gparam_by_dtype(tensor, data_type, group_size=16, device="cpu"):
+    if "nvfp4_v2" in str(data_type).lower():
+        return calculate_gparam_e5m3(tensor, group_size, device)
+    return calculate_gparam(tensor, group_size, device)
+
+
+def _to_global_scale_tensor(global_scale, device):
+    if not isinstance(global_scale, torch.Tensor):
+        global_scale = torch.tensor(global_scale, dtype=torch.float32)
+    return global_scale.to(device=device, dtype=torch.float32).reshape(-1)[:1]
+
+
+@register_dtype("nvfp4_v2_gs")
+def nvfp4_v2_gs(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0, **kwargs):
+    """FP4 E2M1 with UE5M3 block scales and a per-tensor FP32 global scale."""
+    assert group_size == 16, f"NVFP4_E5M3_GS only supports group_size=16, got {group_size}"
+    orig_dtype = tensor.dtype
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if global_scale is None:
+        global_scale = calculate_gparam_e5m3(tensor, group_size)
+    global_scale = _to_global_scale_tensor(global_scale, tensor.device)
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.reshape(-1).to(tensor.device)
+    qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v, max_scale)
+    qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq_res.to(orig_dtype), scale, None
+
+
+@register_dtype("nvfp4_v2_with_static_gs")
+def nvfp4_v2_with_static_gs(tensor, bits=4, group_size=16, v=0, tensor_max=None, global_scale=None, **kwargs):
+    """Activation QDQ for NVFP4_E5M3_GS; the global scale comes from calibrated ``tensor_max``."""
+    if tensor is None or tensor.numel() == 0:
+        return tensor, None, None
+    assert group_size == 16, f"NVFP4_E5M3_GS only supports group_size=16, got {group_size}"
+    orig_dtype = tensor.dtype
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if global_scale is None:
+        if tensor_max is None:
+            tensor_max = tensor.to(torch.float32).abs().max()
+        elif isinstance(tensor_max, torch.Tensor):
+            tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32).abs().max()
+        global_scale = calculate_gparam_e5m3(tensor_max, group_size, tensor.device)
+    global_scale = _to_global_scale_tensor(global_scale, tensor.device)
+    qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
 
@@ -407,6 +461,31 @@ def opt_rtn_fast_nvfp4(
     init_scale = search_nvfp4_scale(tensor, 4, qw)
     tensor = revert_tensor_by_pad(tensor, orig_shape, pad_len)
     return nv_fp4_rtn(tensor, bits, group_size, v, global_scale, max_scale, init_scale=init_scale)
+
+
+@register_dtype("opt_rtn_nvfp4_v2_gs")
+def opt_rtn_nvfp4_v2_gs(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0, imatrix=1.0, **kwargs):
+    grouped, _, _ = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if not isinstance(imatrix, torch.Tensor):
+        qw = 1.0
+    else:
+        imatrix = imatrix.reshape(1, -1)
+        imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+        imatrix = imatrix.expand(grouped.numel() // imatrix.numel(), -1)
+        imatrix = imatrix.reshape(grouped.shape)
+        qw = _imatrix_handle_zero(imatrix, grouped, bits, group_size)
+    if global_scale is None:
+        global_scale = calculate_gparam_e5m3(grouped, group_size)
+
+    def _candidate(t, bits=4, group_size=16, v=0, max_scale=1.0):
+        return nvfp4_v2_gs(t, bits, group_size, v, global_scale=global_scale, max_scale=max_scale)
+
+    init_scale = search_nvfp4_scale(grouped, bits, qw, quant_func=_candidate, group_size=group_size).reshape(-1)
+    if isinstance(max_scale, torch.Tensor):
+        init_scale = init_scale * max_scale.reshape(-1).to(init_scale.device)
+    else:
+        init_scale = init_scale * max_scale
+    return nvfp4_v2_gs(tensor, bits, group_size, v, global_scale=global_scale, max_scale=init_scale)
 
 
 @register_dtype("rtn_nv_fp4_with_static_gs")

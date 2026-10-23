@@ -1,11 +1,19 @@
 import pytest
 import torch
 
-from auto_round.data_type.nvfp import cast_to_fp4, e5m3_to_float_tensor, nvfp4_v2
+from auto_round.data_type.nvfp import (
+    calculate_gparam_e5m3,
+    cast_to_fp4,
+    e5m3_to_float_tensor,
+    nvfp4_v2,
+    nvfp4_v2_with_static_gs,
+)
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
 from auto_round_extension.cuda.cute_nvfp4_e5m3 import (
     can_use_cute_nvfp4_v2_qdq,
+    try_cute_nvfp4_e5m3_gs_weight_dq,
     try_cute_nvfp4_e5m3_weight_dq,
+    try_cute_nvfp4_v2_gs_qdq,
     try_cute_nvfp4_v2_qdq,
 )
 
@@ -78,3 +86,47 @@ def test_nvfp4_v2_direct_scale_handles_zero_group():
 
     assert torch.equal(actual, activation)
     assert torch.equal(scale, torch.zeros_like(scale))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize(
+    ("dtype", "atol"),
+    [(torch.float32, 1e-6), (torch.float16, 2e-3), (torch.bfloat16, 2e-2)],
+)
+def test_cute_nvfp4_v2_gs_qdq_matches_reference(dtype, atol):
+    if torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("CuTe QDQ requires SM80 or newer")
+
+    torch.manual_seed(0)
+    activation = torch.randn(64, 16, device="cuda", dtype=dtype)
+    activation[0] = 0
+    if not can_use_cute_nvfp4_v2_qdq(activation, 16):
+        pytest.skip("CuTe DSL is not available")
+
+    # Calibrated max below the runtime max exercises the UE5M3 upper clamp.
+    global_scale = calculate_gparam_e5m3(activation.float().abs().max() * 0.5).reshape(1)
+    expected, _, _ = nvfp4_v2_with_static_gs(activation.float(), group_size=16, global_scale=global_scale)
+    actual = try_cute_nvfp4_v2_gs_qdq(activation, global_scale, 16)
+
+    assert actual is not None
+    torch.testing.assert_close(actual, expected.to(dtype), rtol=0, atol=atol)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_cute_nvfp4_e5m3_gs_weight_dq_matches_reference(dtype):
+    if torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("CuTe weight DQ requires SM80 or newer")
+
+    torch.manual_seed(42)
+    weight_packed = torch.randint(0, 256, (37, 64), device="cuda", dtype=torch.uint8)
+    weight_scale = torch.randint(0, 0xFE, (37, 8), device="cuda", dtype=torch.uint8)
+    global_scale = torch.tensor([12345.0], device="cuda")
+    actual = try_cute_nvfp4_e5m3_gs_weight_dq(weight_packed, weight_scale, global_scale, dtype)
+    if actual is None:
+        pytest.skip("CuTe DSL is not available")
+
+    unpacked = unpack_fp4_from_uint8(weight_packed, 37, 128, dtype=dtype).float()
+    scale = (e5m3_to_float_tensor(weight_scale) / global_scale).reshape(-1, 1)
+    expected = (unpacked.reshape(-1, 16) * scale).reshape(37, 128).to(dtype)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

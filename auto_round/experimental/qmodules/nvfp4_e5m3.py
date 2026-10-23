@@ -16,18 +16,25 @@ import os
 
 import torch
 
-from auto_round.data_type.nvfp import e5m3_to_float_tensor, nvfp4_v2
+from auto_round.data_type.nvfp import e5m3_to_float_tensor, nvfp4_v2, nvfp4_v2_with_static_gs
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round_extension.cuda.cute_nvfp4_e5m3 import (
+    try_cute_nvfp4_e5m3_gs_weight_dq,
     try_cute_nvfp4_e5m3_linear,
     try_cute_nvfp4_e5m3_weight_dq,
+    try_cute_nvfp4_v2_gs_qdq,
     try_cute_nvfp4_v2_qdq,
 )
 
-__all__ = ["CuteNVFP4E5M3QuantLinear", "NVFP4E5M3QuantLinear"]
+__all__ = [
+    "CuteNVFP4E5M3GSQuantLinear",
+    "CuteNVFP4E5M3QuantLinear",
+    "NVFP4E5M3GSQuantLinear",
+    "NVFP4E5M3QuantLinear",
+]
 
 _CACHE_WEIGHT_ENV = "AR_NVFP4_E5M3_CACHE_HP_WEIGHT"
 
@@ -158,3 +165,54 @@ class CuteNVFP4E5M3QuantLinear(NVFP4E5M3QuantLinear):
         if fused_output is not None:
             return fused_output
         return super().forward(input)
+
+
+class NVFP4E5M3GSQuantLinear(NVFP4E5M3QuantLinear):
+    """NVFP4 E5M3 linear with per-tensor FP32 weight and input global scales."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.register_buffer("weight_global_scale", torch.ones((1,), dtype=torch.float32))
+        self.register_buffer("input_global_scale", torch.ones((1,), dtype=torch.float32))
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        for name in ("weight_global_scale", "input_global_scale"):
+            if name in state_dict and state_dict[name].dtype != torch.float32:
+                state_dict[name] = state_dict[name].to(torch.float32)
+        return super().load_state_dict(state_dict, strict, assign)
+
+    def dequant_weight_online(self) -> torch.Tensor:
+        unpacked = unpack_fp4_from_uint8(self.weight_packed, self.out_features, self.in_features, dtype=self.dtype).to(
+            torch.float32
+        )
+        weight_global_scale = self.weight_global_scale.to(device=unpacked.device, dtype=torch.float32)
+        scale = (e5m3_to_float_tensor(self.weight_scale) / weight_global_scale).reshape(-1, 1)
+        return (unpacked.reshape(-1, self.group_size) * scale).reshape(self.out_features, self.in_features)
+
+    def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
+        original_dtype = activation.dtype
+        qdq_activation, _, _ = nvfp4_v2_with_static_gs(
+            activation.to(torch.float32),
+            bits=self.config.act_bits,
+            group_size=self.config.act_group_size,
+            global_scale=self.input_global_scale,
+        )
+        return qdq_activation.to(original_dtype)
+
+
+class CuteNVFP4E5M3GSQuantLinear(NVFP4E5M3GSQuantLinear):
+    """NVFP4 E5M3 GS linear that dispatches activation QDQ and weight dequantization to CuTe."""
+
+    def dequant_weight_online(self) -> torch.Tensor:
+        cute_weight = try_cute_nvfp4_e5m3_gs_weight_dq(
+            self.weight_packed, self.weight_scale, self.weight_global_scale, self.dtype
+        )
+        if cute_weight is not None:
+            return cute_weight
+        return super().dequant_weight_online()
+
+    def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:
+        cute_qdq_activation = try_cute_nvfp4_v2_gs_qdq(activation, self.input_global_scale, self.config.act_group_size)
+        if cute_qdq_activation is not None:
+            return cute_qdq_activation
+        return super().qdq_input(activation)
