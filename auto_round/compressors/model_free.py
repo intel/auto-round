@@ -48,6 +48,8 @@ weights with ``fake`` format):
 
 * Preset name: ``NVFP4_E5M3``.
 * ``data_type="nvfp4_v2"``, ``group_size=16``, with high-precision QDQ weights.
+* Preset name: ``NVFP4_E5M3_GS`` (``data_type="nvfp4_v2_gs"``) adds a per-tensor weight global
+  scale; model-free mode writes ``input_global_scale=1``.
 
 Schemes that require special packing (FP8, standard NVFP4, GGUF, INT8_W8A8,
 BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
@@ -188,6 +190,7 @@ SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
     "MXFP4",
     "MXFP8",
     "NVFP4_E5M3",
+    "NVFP4_E5M3_GS",
     "BF16",
 )
 
@@ -199,6 +202,8 @@ _SUPPORTED_INT_BITS: tuple[int, ...] = (2, 4, 8)
 _SUPPORTED_MXFP_BITS: tuple[int, ...] = (4, 8)
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
+_NVFP4_E5M3_GS_DATA_TYPE = "nvfp4_v2_gs"
+_NVFP4_E5M3_FAMILY_DATA_TYPES = (_NVFP4_E5M3_DATA_TYPE, _NVFP4_E5M3_GS_DATA_TYPE)
 
 # Standalone quantization metadata used by different source formats. Only the
 # newly generated quantization_config.json may remain in model-free output.
@@ -1756,11 +1761,13 @@ class _ModelFreeCompressorCore:
             packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
         elif data_type == _NVFP4_E5M3_DATA_TYPE:
             packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
+        elif data_type == _NVFP4_E5M3_GS_DATA_TYPE:
+            packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3_gs"
         else:
             packing_format = "fake" if self.format == "fake" else "auto_round:auto_gptq"
         supports_opt_rtn = (
             is_mx_fp(data_type)
-            or data_type == _NVFP4_E5M3_DATA_TYPE
+            or data_type in _NVFP4_E5M3_FAMILY_DATA_TYPES
             or _layer_config_has_mxfp(self.layer_config)
             or _layer_config_has_nvfp4(self.layer_config)
         )
@@ -2218,7 +2225,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             normalized_scheme is not None and is_mx_fp((normalized_scheme.data_type or "").lower())
         ) or self._auto_scheme_family == "mx_fp":
             _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
-        elif normalized_scheme is not None and (normalized_scheme.data_type or "").lower() == _NVFP4_E5M3_DATA_TYPE:
+        elif (
+            normalized_scheme is not None
+            and (normalized_scheme.data_type or "").lower() in _NVFP4_E5M3_FAMILY_DATA_TYPES
+        ):
             _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):
             # BF16 default with MXFP layer_config overrides.
