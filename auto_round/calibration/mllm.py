@@ -87,12 +87,16 @@ class MLLMCalibrator(LLMCalibrator):
 
         logger.info(f"Using MLLM template: {template_name}")
 
-        dataset = self.dataset.replace(" ", "") if isinstance(self.dataset, str) else self.dataset
+        from auto_round.utils.dataset_utils import strip_dataset_spec_whitespace
+
+        # Strip only cosmetic whitespace; spaces inside option values
+        # (e.g. separator / template / system_prompt) are preserved.
+        dataset = strip_dataset_spec_whitespace(self.dataset) if isinstance(self.dataset, str) else self.dataset
         if dataset is None:
             dataset = template_obj.default_dataset
 
         if isinstance(dataset, str):
-            dataset = dataset.replace(" ", "")
+            dataset = strip_dataset_spec_whitespace(dataset)
             # Switch text-only dataset to MLLM dataset when quant_nontext_module=True,
             # as text datasets cannot calibrate vision modules.
             from auto_round.calib_dataset import CALIB_DATASETS
@@ -130,7 +134,9 @@ class MLLMCalibrator(LLMCalibrator):
                     "(vision/audio towers are not being quantized, so text-only "
                     "calibration through the full-model forward is sufficient)."
                 )
-                self.dataloader = get_dataloader(tokenizer, self.seqlen, dataset, self.seed, bs, nsamples)
+                self.dataloader = get_dataloader(
+                    tokenizer, self.seqlen, dataset, self.seed, bs, nsamples, trust_remote_code=self.trust_remote_code
+                )
             else:
                 orig_bs = self.batch_size
                 (

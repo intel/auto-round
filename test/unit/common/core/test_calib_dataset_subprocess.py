@@ -122,8 +122,8 @@ def test_subprocess_network_error_falls_back_without_retrying_source(monkeypatch
     fallback_dataset = Dataset.from_dict({"input_ids": [[1]], "attention_mask": [[1]]})
     fallback = []
 
-    def fallback_to_fineweb(error, tokenizer, seqlen, dataset_name, seed, nsamples):
-        fallback.append((error, dataset_name))
+    def fallback_to_fineweb(error, tokenizer, seqlen, dataset_name, seed, nsamples, trust_remote_code=False):
+        fallback.append((error, dataset_name, trust_remote_code))
         return fallback_dataset
 
     monkeypatch.setattr(cd.multiprocessing, "get_context", lambda method: _NetworkErrorContext())
@@ -138,6 +138,7 @@ def test_subprocess_network_error_falls_back_without_retrying_source(monkeypatch
     assert result is fallback_dataset
     assert isinstance(fallback[0][0], ConnectionError)
     assert fallback[0][1] == "source"
+    assert fallback[0][2] is False
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fork is unavailable on Windows")

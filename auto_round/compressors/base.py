@@ -75,6 +75,7 @@ from auto_round.utils import (
     revert_checkpoint_conversion_mapping,
     revert_name_with_weight_transforms,
 )
+from auto_round.utils.dataset_utils import CalibDataset
 from auto_round.utils.device import (
     _force_trim_malloc,
     patch_xpu_sdpa_drop_causal_mask,
@@ -236,6 +237,7 @@ class BaseOrchestrator:
         format: str | list | None = None,
         scheme: str | dict | QuantizationScheme | AutoScheme = "W4A16",
         low_gpu_mem_usage: bool = False,
+        calibration_data_device: str = "auto",
         device_map: str | torch.device | int | dict = 0,
         enable_torch_compile: bool | None = None,
         seed: int = 42,
@@ -247,7 +249,7 @@ class BaseOrchestrator:
         ignore_layers: str = "",
         quant_lm_head: bool = False,
         to_quant_block_names: str | list[str] | None = None,
-        dataset: str | list | tuple | torch.utils.data.DataLoader | None = None,
+        dataset: str | list | tuple | torch.utils.data.DataLoader | CalibDataset | None = None,
         **kwargs,
     ) -> None:
         # ``CalibrationContext`` is the single source of truth for calibration
@@ -256,6 +258,13 @@ class BaseOrchestrator:
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
+        from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
+
+        # Normalize CalibDataset objects to spec strings
+        if isinstance(dataset, CalibDataset):
+            dataset = dataset.to_spec_string()
+        elif isinstance(dataset, (list, tuple)):
+            dataset = normalize_dataset_spec(dataset)
 
         dataset_was_explicitly_set = dataset is not None
         self.dataset = dataset if dataset_was_explicitly_set else "NeelNanda/pile-10k"
@@ -474,6 +483,7 @@ class BaseOrchestrator:
             low_cpu_mem_usage,
             low_gpu_mem_usage,
             enable_torch_compile,
+            calibration_data_device=calibration_data_device,
             formats=self.formats,
             static_kv_dtype=self.static_kv_dtype,
             static_attention_dtype=self.static_attention_dtype,

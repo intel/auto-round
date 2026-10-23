@@ -319,11 +319,7 @@ def copy_missing_tensors_from_source(
     shortcut_block_prefix: set = {name.split(".", 1)[1] for name in saved_block_prefix if "." in name}
     saved_block_prefix.update(shortcut_block_prefix)
 
-    def _is_truly_missing(name: str) -> bool:
-        # Special case: Qwen/Qwen3-0.6B-FP8
-        # lm_head is tied but still in source_dir → not missing
-        if name == "lm_head.weight":
-            return False
+    def _is_missing_by_name(name: str) -> bool:
         if name in saved_tensor_names:
             return False
         parent = name.rsplit(".", 1)[0]
@@ -333,6 +329,23 @@ def copy_missing_tensors_from_source(
         block = _first_numeric_prefix(name)
         if block is not None:
             return block not in saved_block_prefix
+        return True
+
+    nested_trunk_source, nested_trunk_saved = "language_model.backbone.", "language_model.model."
+
+    def _is_truly_missing(name: str) -> bool:
+        # Special case: Qwen/Qwen3-0.6B-FP8
+        # lm_head is tied but still in source_dir → not missing
+        if name == "lm_head.weight":
+            return False
+        if not _is_missing_by_name(name):
+            return False
+        # Nemotron-H Omni checkpoints store the language-model trunk as
+        # ``language_model.backbone.*`` while the quantized model saves it as
+        # ``language_model.model.*``; without this alias every quantized LM block
+        # would be re-copied from the source in BF16.
+        if name.startswith(nested_trunk_source):
+            return _is_missing_by_name(nested_trunk_saved + name[len(nested_trunk_source) :])
         return True
 
     missing_tensor_names: list = [name for name in source_tensor_to_file if _is_truly_missing(name)]

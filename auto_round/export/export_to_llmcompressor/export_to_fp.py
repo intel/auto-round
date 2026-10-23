@@ -27,7 +27,11 @@ from tqdm import tqdm
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.config import initialize_quantization
-from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
+from auto_round.export.export_to_llmcompressor.utils import (
+    add_routed_experts_if_moe,
+    finalize_llmcompressor_config_names,
+    generate_ignore_regex_list,
+)
 from auto_round.export.utils import (
     filter_quantization_config,
     is_immediate_saving_mode,
@@ -234,7 +238,9 @@ def _build_mixed_fp_quantization_config(
         tmp_quantization_config = initialize_quantization(scheme=scheme)
         tmp_quantization_config = tmp_quantization_config.config_groups["group_0"]
         is_default = (lbits, ldata_type, lact_bits) == global_key
-        tmp_quantization_config.targets = ["Linear"] if is_default else layer_names
+        tmp_quantization_config.targets = (
+            ["Linear"] if is_default else add_routed_experts_if_moe(list(layer_names), layer_names)
+        )
         config_groups[group_name] = tmp_quantization_config
         group_formats[group_name] = _get_group_format(lbits, ldata_type)
 
@@ -435,7 +441,10 @@ def save_quantized_as_fp(
                 f"Unsupported layer override data_type={layer_data_type}, bits={layer_bits}, act_bits={layer_act_bits}."
             )
         quantization_config = initialize_quantization(
-            scheme=scheme, targets=targets, kv_cache_scheme=kv_cache_scheme, ignore=ignore
+            scheme=scheme,
+            targets=add_routed_experts_if_moe(list(targets), targets),
+            kv_cache_scheme=kv_cache_scheme,
+            ignore=ignore,
         )
         quantization_config.format = _get_group_format(layer_bits, layer_data_type)
         quantization_config = quantization_config.to_dict()
@@ -466,6 +475,12 @@ def save_quantized_as_fp(
         _configure_gaudi2_fp8_dtype(quantization_config)
         if attention_config is not None:
             quantization_config["attention_input_activations"] = attention_config
+    quantization_config = finalize_llmcompressor_config_names(
+        quantization_config,
+        model,
+        [],
+        [name for names in scheme_groups.values() for name in names],
+    )
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:
