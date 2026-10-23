@@ -124,6 +124,87 @@ class TestSaveModelConfigs:
 # ==============================================================================
 
 
+class TestSourceConfig:
+    @pytest.mark.parametrize("immediate_saving", [False, True])
+    @pytest.mark.parametrize("dtype", [None, torch.bfloat16])
+    def test_preserves_original_config(self, tmp_path, immediate_saving, dtype):
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        original = {
+            "model_type": "original",
+            "text_config": {"custom_field": [1, 2]},
+            "torch_dtype": "float32",
+            "dtype": "float32",
+            "quantization_config": {"quant_method": "old"},
+        }
+        (source_dir / "config.json").write_text(json.dumps(original), encoding="utf-8")
+        quantization_config = {"quant_method": "auto-round", "bits": 4}
+        model = nn.Linear(4, 4)
+        model.dtype = torch.float32
+        model.config = SimpleNamespace(
+            _name_or_path=str(source_dir),
+            model_type="changed",
+            quantization_config=quantization_config,
+            save_pretrained=MagicMock(),
+        )
+        output_dir = tmp_path / "output"
+
+        def save_reconstructed_config(*args, **kwargs):
+            (output_dir / "config.json").write_text('{"model_type": "changed"}', encoding="utf-8")
+
+        model.save_pretrained = MagicMock(side_effect=save_reconstructed_config)
+        with patch("auto_round.export.utils.apply_post_save_source_fixes"):
+            save_model(model, str(output_dir), immediate_saving=immediate_saving, dtype=dtype)
+
+        expected = {**original, "quantization_config": quantization_config}
+        if dtype is not None:
+            expected.update(torch_dtype="bfloat16", dtype="bfloat16")
+        assert json.loads((output_dir / "config.json").read_text()) == expected
+        assert json.loads((output_dir / "quantization_config.json").read_text()) == quantization_config
+        assert json.loads((source_dir / "config.json").read_text()) == original
+        model.config.save_pretrained.assert_not_called()
+
+    def test_remote_failure_falls_back(self, tmp_path):
+        model = nn.Module()
+        output_dir = str(tmp_path / "output")
+        model.config = SimpleNamespace(_name_or_path="org/model", save_pretrained=MagicMock())
+        with patch("transformers.utils.hub.cached_file", side_effect=OSError("download failed")):
+            _save_model_configs(model, output_dir)
+        model.config.save_pretrained.assert_called_once_with(output_dir)
+
+    @pytest.mark.parametrize("source_content", [None, "invalid json", "[]"])
+    def test_invalid_source_falls_back(self, tmp_path, source_content):
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        if source_content is not None:
+            (source_dir / "config.json").write_text(source_content, encoding="utf-8")
+        model = nn.Module()
+        model.config = SimpleNamespace(_name_or_path=str(source_dir), save_pretrained=MagicMock())
+        _save_model_configs(model, str(tmp_path / "output"))
+        model.config.save_pretrained.assert_called_once_with(str(tmp_path / "output"))
+
+    def test_remote_source_config(self, tmp_path):
+        source_config = tmp_path / "original.json"
+        source_config.write_text('{"model_type": "original", "custom_field": true}', encoding="utf-8")
+        model = nn.Module()
+        model.config = SimpleNamespace(
+            _name_or_path="org/model",
+            _commit_hash="source-revision",
+            quantization_config={"bits": 4},
+            save_pretrained=MagicMock(),
+        )
+        output_dir = tmp_path / "output"
+        with patch("transformers.utils.hub.cached_file", return_value=str(source_config)) as cached_file:
+            _save_model_configs(model, str(output_dir))
+        cached_file.assert_called_once_with("org/model", "config.json", revision="source-revision")
+        assert json.loads((output_dir / "config.json").read_text()) == {
+            "model_type": "original",
+            "custom_field": True,
+            "quantization_config": {"bits": 4},
+        }
+        model.config.save_pretrained.assert_not_called()
+
+
 class TestStateDictHasMetaTensor:
     """Test _state_dict_has_meta_tensor function."""
 

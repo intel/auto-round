@@ -39,8 +39,9 @@ namespace moe_mxfp_bdpas_detail {
 
 using namespace cute;
 
-inline constexpr size_t kMetadataScratchLoc = 13;
-inline constexpr size_t kWorkspaceScratchLoc = 14;
+// Slots 13/14 belong to W4A8; keep MXFP metadata and workspace independent.
+inline constexpr size_t kMetadataScratchLoc = 15;
+inline constexpr size_t kWorkspaceScratchLoc = 16;
 
 class UnpackMXFP4WeightToFP8Kernel;
 class TransposeActivationScaleKernel;

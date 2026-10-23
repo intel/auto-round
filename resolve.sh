@@ -18,7 +18,7 @@ git pull --ff-only origin "${PR_BRANCH}"
 git merge --no-ff --no-commit origin/main || true
 
 # ---------------------------------------------------------------------------
-# 1) utils.hpp：以 main 为准（main 占用 slot 12），MXFP 用 13/14，MaxLocNum=15
+# 1) utils.hpp：保留 main 的 slot 12 与 W4A8 13/14，MXFP 用 15/16
 #    在 PR 分支上 merge main 时，--theirs = main
 # ---------------------------------------------------------------------------
 if git ls-files -u -- "${UTILS}" | grep -q .; then
@@ -30,10 +30,12 @@ p = sys.argv[1]
 s = open(p, encoding="utf-8").read()
 new_tail = (
     "  // prefill workspace (`kPrefillScratchLoc` in `sycl_tla_wrapper.hpp`);\n"
-    "  // slots 13 and 14 are the MXFP block-scaled grouped-GEMM metadata and\n"
+    "  // slots 13 and 14 are the W4A8 activation-quantization and expert-map buffers\n"
+    "  // (`moe_w4a8::kW4A8QactScratchLoc` / `kW4A8ExpertMapScratchLoc`);\n"
+    "  // slots 15 and 16 are the MXFP block-scaled grouped-GEMM metadata and\n"
     "  // scheduler workspace buffers (`moe_mxfp_bdpas_detail::kMetadataScratchLoc` /\n"
     "  // `kWorkspaceScratchLoc` in `sycl_tla_moe_prefill_mxfp8_mxfp4_bdpas.cpp`).\n"
-    "  static constexpr int MaxLocNum = 15;\n"
+    "  static constexpr int MaxLocNum = 17;\n"
 )
 pat = re.compile(
     r"  // prefill workspace \(`kPrefillScratchLoc` in `sycl_tla_wrapper\.hpp`\)[.;]\n"
@@ -44,21 +46,21 @@ s2, n = pat.subn(new_tail, s, count=1)
 if n == 0:
     sys.exit(f"[utils.hpp] 未找到 main 的 MaxLocNum 注释块，请手动修改 {p}")
 open(p, "w", encoding="utf-8").write(s2)
-print("[utils.hpp] MaxLocNum -> 15, MXFP slots 13/14")
+print("[utils.hpp] MaxLocNum -> 17, W4A8 slots 13/14, MXFP slots 15/16")
 PY
 git add "${UTILS}"
 
 # ---------------------------------------------------------------------------
-# 2) BDPAS 新文件：槽位 12/13 -> 13/14
+# 2) BDPAS：使用独立槽位 15/16
 # ---------------------------------------------------------------------------
 sed -i \
-  -e 's/inline constexpr size_t kMetadataScratchLoc = 12;/inline constexpr size_t kMetadataScratchLoc = 13;/' \
-  -e 's/inline constexpr size_t kWorkspaceScratchLoc = 13;/inline constexpr size_t kWorkspaceScratchLoc = 14;/' \
+  -e 's/inline constexpr size_t kMetadataScratchLoc = [0-9][0-9]*;/inline constexpr size_t kMetadataScratchLoc = 15;/' \
+  -e 's/inline constexpr size_t kWorkspaceScratchLoc = [0-9][0-9]*;/inline constexpr size_t kWorkspaceScratchLoc = 16;/' \
   "${BDPAS}"
-grep -n "kMetadataScratchLoc = 13;" "${BDPAS}" >/dev/null || { echo "[bdpas] 修改失败"; exit 1; }
-grep -n "kWorkspaceScratchLoc = 14;" "${BDPAS}" >/dev/null || { echo "[bdpas] 修改失败"; exit 1; }
+grep -n "kMetadataScratchLoc = 15;" "${BDPAS}" >/dev/null || { echo "[bdpas] 修改失败"; exit 1; }
+grep -n "kWorkspaceScratchLoc = 16;" "${BDPAS}" >/dev/null || { echo "[bdpas] 修改失败"; exit 1; }
 git add "${BDPAS}"
-echo "[bdpas] kMetadataScratchLoc=13, kWorkspaceScratchLoc=14"
+echo "[bdpas] kMetadataScratchLoc=15, kWorkspaceScratchLoc=16"
 
 # ---------------------------------------------------------------------------
 # 3) 检查剩余冲突
@@ -71,7 +73,7 @@ if [[ -n "${REMAINING}" ]]; then
   echo
   echo "处理完后执行："
   echo "  grep -rn '<<<<<<<\\|>>>>>>>' auto_round_extension/   # 应无输出"
-  echo "  git add -A && git commit -m 'Merge main into PR #2371; move MXFP BDPAS scratch slots to 13/14'"
+  echo "  git add -A && git commit -m 'Merge main into PR #2371; move MXFP BDPAS scratch slots to 15/16'"
   echo "  pre-commit run --all-files && git push origin ${PR_BRANCH}"
   exit 2
 fi
@@ -80,7 +82,7 @@ if grep -rn '<<<<<<<\|>>>>>>>' auto_round_extension/; then
   echo "仍有冲突标记，请检查"; exit 1
 fi
 
-git commit -m "Merge main into PR #2371; move MXFP BDPAS scratch slots to 13/14"
+git commit -m "Merge main into PR #2371; move MXFP BDPAS scratch slots to 15/16"
 pre-commit run --all-files || { echo "pre-commit 有改动或报错，修复后再 commit/push"; exit 1; }
 git push origin "${PR_BRANCH}"
 echo "完成：PR #2371 已更新"
