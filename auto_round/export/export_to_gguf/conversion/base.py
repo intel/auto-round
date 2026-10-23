@@ -323,7 +323,7 @@ class ModelBase:
         new_tensors: dict[str, Callable[[], Tensor]] = {}
 
         if (quant_config := self.hparams.get("quantization_config")) and isinstance(quant_config, dict):
-            quant_method = quant_config.get("quant_method")
+            packing_format = quant_config.get("packing_format")
 
             def dequant_bitnet(weight: Tensor, scale: Tensor) -> Tensor:
                 weight = weight.view(torch.uint8)
