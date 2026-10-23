@@ -197,7 +197,10 @@ class QuantizedKVParameterCache(DynamicCache):
 
         qdq_tensor, scale = fp8_qdq(tensor, granularity=self.granularity)
         # Detach scale to prevent holding computation graph references
-        _pad_and_append_at_idx_(scales, layer_idx, scale.reshape(-1).detach())
+        scale = scale.reshape(-1).detach()
+        if layer_idx < len(scales) and scales[layer_idx] is not None:
+            scale = torch.maximum(scales[layer_idx], scale)
+        _pad_and_append_at_idx_(scales, layer_idx, scale)
         return qdq_tensor
 
     def _nvfp4_track_amax(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int):

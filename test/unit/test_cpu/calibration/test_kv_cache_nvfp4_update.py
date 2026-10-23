@@ -233,7 +233,7 @@ def test_kv_context_preserves_unrelated_hooks():
 
 
 @pytest.mark.parametrize("granularity", ["tensor", "head"])
-def test_fp8_update_quantizes_and_keeps_last_batch_scale(granularity):
+def test_fp8_update_quantizes_and_keeps_running_max_scale(granularity):
     cache = QuantizedKVParameterCache(dtype="fp8", granularity=granularity)
     key_states = torch.linspace(-3.1, 2.7, 64).reshape(1, 2, 2, 16)
     value_states = key_states * 2.7
@@ -243,8 +243,34 @@ def test_fp8_update_quantizes_and_keeps_last_batch_scale(granularity):
     initial_k_scale = cache.k_scales[0].clone()
     initial_v_scale = cache.v_scales[0].clone()
     cache.update(key_states / 4, value_states / 4, 0)
-    torch.testing.assert_close(cache.k_scales[0], initial_k_scale / 4)
-    torch.testing.assert_close(cache.v_scales[0], initial_v_scale / 4)
+    torch.testing.assert_close(cache.k_scales[0], initial_k_scale)
+    torch.testing.assert_close(cache.v_scales[0], initial_v_scale)
+
+
+@pytest.mark.parametrize("granularity", ["tensor", "head"])
+def test_fp8_update_running_max_per_side_head_and_layer(granularity):
+    cache = QuantizedKVParameterCache(dtype="fp8", granularity=granularity)
+    first_keys = torch.tensor([8.0, 1.0]).reshape(1, 2, 1, 1).expand(1, 2, 2, 16)
+    first_values = torch.tensor([2.0, 16.0]).reshape(1, 2, 1, 1).expand(1, 2, 2, 16)
+    cache.update(first_keys, first_values, 2)
+    second_keys = torch.tensor([2.0, 4.0]).reshape(1, 2, 1, 1).expand(1, 2, 2, 16)
+    second_values = torch.tensor([32.0, 1.0]).reshape(1, 2, 1, 1).expand(1, 2, 2, 16)
+    cache.reset_states()
+    cache.update(second_keys, second_values, 2)
+    expected_keys = torch.tensor([8.0, 4.0] if granularity == "head" else [8.0]) / 448
+    expected_values = torch.tensor([32.0, 16.0] if granularity == "head" else [32.0]) / 448
+    torch.testing.assert_close(cache.k_scales[2], expected_keys)
+    torch.testing.assert_close(cache.v_scales[2], expected_values)
+    assert not cache.k_scales[2].requires_grad
+    assert not cache.v_scales[2].requires_grad
+
+    cache.update(second_keys / 8, second_values / 8, 0)
+    expected_layer_keys = torch.tensor([0.25, 0.5] if granularity == "head" else [0.5]) / 448
+    expected_layer_values = torch.tensor([4.0, 0.125] if granularity == "head" else [4.0]) / 448
+    torch.testing.assert_close(cache.k_scales[0], expected_layer_keys)
+    torch.testing.assert_close(cache.v_scales[0], expected_layer_values)
+    torch.testing.assert_close(cache.k_scales[2], expected_keys)
+    torch.testing.assert_close(cache.v_scales[2], expected_values)
 
 
 @pytest.mark.parametrize("scheme", ["W4A16", "NVFP4"])
