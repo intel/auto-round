@@ -999,10 +999,15 @@ def wrapper_block(
                 for w in anchor_pending:
                     w._run_deferred_neuqi_anchor_now()
         # stacked same-shape batches per (device, shape, config, search fn);
-        # singletons and the kill-switch fall back to the identical per-module call
-        if not search_dispatch.run_batched_wrap_search(deferred_wrappers):
-            for w in deferred_wrappers:
-                w._run_deferred_search_now()
+        # singletons and the kill-switch fall back to the identical per-module call.
+        # Data-parallel ranks shard the searches across the ranks instead.
+        from auto_round.algorithms.parallel.spmd import current_rank, run_rank_sharded_wrap_searches
+
+        rank = current_rank()
+        if not (rank is not None and run_rank_sharded_wrap_searches(rank, deferred_wrappers)):
+            if not search_dispatch.run_batched_wrap_search(deferred_wrappers):
+                for w in deferred_wrappers:
+                    w._run_deferred_search_now()
 
     quantized_layers = [n for (n, _m, _k), r in zip(work, results) if r == "q"]
     unquantized_layers = [n for (n, _m, _k), r in zip(work, results) if r == "u"]

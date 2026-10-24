@@ -791,3 +791,62 @@ class TestPlanCapacityChunks(unittest.TestCase):
         plans, _ = self._plan([("cuda:1", per, 0, 8, group_home1), ("cuda:2", per, 0, 8, group_home2)], probes, picks)
         for worker, home, chunk in plans:
             self.assertEqual(worker, home)
+
+
+class TestSearchSummary(unittest.TestCase):
+    """One summary line per search phase: per-device busy time (stacked and
+    per-module calls alike) and the elapsed time of the phase."""
+
+    def _line(self, summary, label="[batched-search] wrap search:"):
+        from unittest import mock
+
+        from auto_round.algorithms.quantization import search_dispatch
+
+        with (
+            mock.patch.object(search_dispatch, "perf_counters_enabled", return_value=True),
+            mock.patch.object(search_dispatch.logger, "info") as info,
+        ):
+            summary.log(label)
+        fmt, *args = info.call_args[0]
+        return fmt % tuple(args)
+
+    def test_line_keeps_the_summary_grammar(self):
+        from auto_round.algorithms.quantization.search_dispatch import SearchSummary
+
+        s = SearchSummary()
+        st = s.device("cuda:0")
+        st.update(wall=1.5, modules=10, batches=2, singletons=0)
+        st = s.device("cuda:1")
+        st.update(wall=0.5, modules=2, batches=0, singletons=2)
+        s.elapsed = 1.75
+        self.assertEqual(
+            self._line(s),
+            "[batched-search] wrap search: 12 modules, 2 batch + 2 singleton search calls, "
+            "1.75s device-wall (2.00s summed) walls {'0': 1.50, '1': 0.50}",
+        )
+
+    def test_per_module_calls_are_timed(self):
+        import time as _time
+
+        from auto_round.algorithms.quantization.search_dispatch import SearchSummary
+
+        s = SearchSummary()
+        with s.timed("cuda:0") as st:
+            _time.sleep(0.02)
+            st["singletons"] += 1
+            st["modules"] += 1
+        s.finish()
+        self.assertGreater(s.devices["cuda:0"]["wall"], 0.01)
+        self.assertGreaterEqual(s.elapsed, s.devices["cuda:0"]["wall"])
+
+    def test_merged_ranks_add_counters_and_keep_the_slowest_elapsed(self):
+        from auto_round.algorithms.quantization.search_dispatch import SearchSummary
+
+        a, b = SearchSummary(), SearchSummary()
+        a.device("cuda:0").update(wall=1.0, modules=3, batches=1, singletons=0)
+        b.device("cuda:1").update(wall=2.0, modules=2, batches=0, singletons=2)
+        a.elapsed, b.elapsed = 1.1, 2.2
+        m = SearchSummary.merged([a, b])
+        self.assertEqual(m.elapsed, 2.2)
+        self.assertEqual(m.devices["cuda:0"]["modules"] + m.devices["cuda:1"]["modules"], 5)
+        self.assertIn("5 modules, 1 batch + 2 singleton search calls, 2.20s device-wall (3.00s summed)", self._line(m))

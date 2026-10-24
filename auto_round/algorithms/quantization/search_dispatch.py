@@ -184,6 +184,12 @@ def pick_search_worker_devices(
     """
     if cross_device_search_disabled():
         return [home_device] if home_device is not None else []
+    from auto_round.algorithms.parallel.spmd import current_rank
+
+    if current_rank() is not None:
+        # a data-parallel rank owns only its device: the "idle" ones are the
+        # other ranks' devices, busy with their own searches and tune steps
+        return [home_device] if home_device is not None else []
     home_type = str(home_device).split(":")[0] if home_device else ""
     if home_type == "hpu" and is_hpu_lazy_mode():
         return [home_device] if home_device is not None else []
@@ -221,6 +227,70 @@ def log_engaged_once(label: str) -> None:
         return
     _ENGAGED_LOGGED.add(label)
     logger.info("[batched-search] %s: running weight-local searches with one worker per device", label)
+
+
+class SearchSummary:
+    """Calls and per-device search time of one search phase, logged as one line.
+
+    ``walls`` sums the time each device spent searching -- stacked and
+    per-module calls alike; ``device-wall`` is the elapsed time of the phase.
+    Summaries of concurrent phases (data-parallel ranks) merge into one line.
+    """
+
+    def __init__(self) -> None:
+        self._t0 = time.perf_counter()
+        self.elapsed = 0.0
+        self.offloaded = 0
+        self.devices: OrderedDict[str, dict] = OrderedDict()
+
+    def device(self, key) -> dict:
+        return self.devices.setdefault(str(key), {"wall": 0.0, "modules": 0, "batches": 0, "singletons": 0})
+
+    @contextlib.contextmanager
+    def timed(self, key) -> Iterator[dict]:
+        """Charge the enclosed search time to device ``key``; yields its counters."""
+        st = self.device(key)
+        t0 = time.perf_counter()
+        try:
+            yield st
+        finally:
+            st["wall"] += time.perf_counter() - t0
+
+    def finish(self) -> "SearchSummary":
+        self.elapsed = time.perf_counter() - self._t0
+        return self
+
+    @classmethod
+    def merged(cls, parts: "list[SearchSummary]") -> "SearchSummary":
+        """One summary for concurrent parts: device counters add up, the elapsed time is the slowest part's."""
+        out = cls()
+        out.elapsed = max((p.elapsed for p in parts), default=0.0)
+        for p in parts:
+            out.offloaded += p.offloaded
+            for key, st in p.devices.items():
+                dst = out.device(key)
+                for k, v in st.items():
+                    dst[k] += v
+        return out
+
+    def log(self, label: str) -> None:
+        if not perf_counters_enabled():
+            return
+        from auto_round.utils.pool_placement import _short_device_key
+
+        sts = list(self.devices.values())
+        logger.info(
+            "%s %d modules, %d batch + %d singleton search calls"
+            + (f" ({self.offloaded} chunk(s) offloaded to idle devices)" if self.offloaded else "")
+            + ", %.2fs device-wall (%.2fs summed) walls %s",
+            label,
+            sum(st["modules"] for st in sts),
+            sum(st["batches"] for st in sts),
+            sum(st["singletons"] for st in sts),
+            self.elapsed,
+            sum(st["wall"] for st in sts),
+            "{" + ", ".join(f"'{_short_device_key(k)}': {st['wall']:.2f}" for k, st in self.devices.items()) + "}",
+        )
 
 
 def batched_search_disabled() -> bool:
@@ -433,7 +503,9 @@ def _plan_capacity_chunks(entries: list) -> list:
     return plans
 
 
-def run_batched_wrap_search(deferred_wrappers: list[WrapperLinear], max_batch: int | None = None) -> bool:
+def run_batched_wrap_search(
+    deferred_wrappers: list[WrapperLinear], max_batch: int | None = None, summary: "SearchSummary | None" = None
+) -> bool:
     """Run deferred weight-local wrap searches on stacked same-shape batches.
 
     Wrappers stage ``(weight_reshape, data_type, bits, imatrix, q_scale_thresh,
@@ -456,11 +528,16 @@ def run_batched_wrap_search(deferred_wrappers: list[WrapperLinear], max_batch: i
 
     Returns True when the inputs were consumed; False when batching is disabled
     by AR_DISABLE_BATCHED_SEARCH (the caller then runs the searches per module).
+    A caller-supplied ``summary`` collects the calls and times instead of the
+    summary line (a data-parallel rank searches a share of the block).
     """
     if batched_search_disabled():
         return False
     if not deferred_wrappers:
         return False
+    _log_summary = summary is None
+    if summary is None:
+        summary = SearchSummary()
 
     device_groups = OrderedDict()
     for w in deferred_wrappers:
@@ -506,7 +583,7 @@ def run_batched_wrap_search(deferred_wrappers: list[WrapperLinear], max_batch: i
     for worker, home, chunk in planned:
         buckets.setdefault(worker, []).append((home, chunk))
 
-    stats = {wk: {"modules": 0, "batches": 0, "singletons": 0} for wk in buckets}
+    summary.offloaded += sum(1 for worker, home, _chunk in planned if worker != home)
 
     @torch.no_grad()
     def _run_one(wrapper: WrapperLinear) -> None:
@@ -570,7 +647,9 @@ def run_batched_wrap_search(deferred_wrappers: list[WrapperLinear], max_batch: i
             dump_oom_tensor_census_("wrap search")
             for w in chunk:
                 w._run_deferred_search_now()
-            stats[worker_key]["singletons"] += len(chunk)
+            st = summary.device(worker_key)
+            st["singletons"] += len(chunk)
+            st["modules"] += len(chunk)
             return
         if worker_key != home_key:
             if torch.is_tensor(results):
@@ -579,21 +658,23 @@ def run_batched_wrap_search(deferred_wrappers: list[WrapperLinear], max_batch: i
                 results = [r.to(home_key) if torch.is_tensor(r) else r for r in results]
         for w, res in zip(chunk, results):
             w.finalize_batched_search(res)
-        stats[worker_key]["batches"] += 1
-        stats[worker_key]["modules"] += len(chunk)
+        st = summary.device(worker_key)
+        st["batches"] += 1
+        st["modules"] += len(chunk)
 
     @torch.no_grad()
     def _execute(worker_key: str, items: list[tuple[str, list[WrapperLinear]]]) -> None:
-        _t0 = time.perf_counter()
-        for home_key, chunk in items:
-            _run_chunk_stacked(home_key, chunk, worker_key)
-        stats[worker_key]["wall"] = time.perf_counter() - _t0
+        with summary.timed(worker_key):
+            for home_key, chunk in items:
+                _run_chunk_stacked(home_key, chunk, worker_key)
 
     # singleton groups and non-stackable searches run per module on the
     # calling thread, each on its own weight's device
-    for _dev, w in singletons:
-        _run_one(w)
-    _n_single = len(singletons)
+    for dev, w in singletons:
+        with summary.timed(dev) as st:
+            _run_one(w)
+            st["singletons"] += 1
+            st["modules"] += 1
 
     if len(buckets) > 1:
         pairs = list(buckets.items())
@@ -602,27 +683,9 @@ def run_batched_wrap_search(deferred_wrappers: list[WrapperLinear], max_batch: i
     elif buckets:
         wk, items = next(iter(buckets.items()))
         _execute(wk, items)
-    _t_total = sum(st.get("wall", 0.0) for st in stats.values())
-    _n_mod = sum(st["modules"] for st in stats.values()) + _n_single
-    _n_batch = sum(st["batches"] for st in stats.values())
-    from auto_round.utils.pool_placement import _short_device_key
-
-    per_device = (
-        "{" + ", ".join(f"'{_short_device_key(dev)}': {st.get('wall', 0.0):.2f}" for dev, st in stats.items()) + "}"
-    )
-    _n_offloaded = sum(1 for worker, home, _chunk in planned if worker != home)
-    if perf_counters_enabled():
-        logger.info(
-            "[batched-search] wrap search: %d modules, %d batch + %d singleton search calls"
-            + (f" ({_n_offloaded} chunk(s) offloaded to idle devices)" if _n_offloaded else "")
-            + ", %.2fs device-wall (%.2fs summed) walls %s",
-            _n_mod,
-            _n_batch,
-            _n_single,
-            max(st.get("wall", 0.0) for st in stats.values()) if stats else 0.0,
-            _t_total,
-            per_device,
-        )
+    summary.finish()
+    if _log_summary:
+        summary.log("[batched-search] wrap search:")
     return True
 
 
@@ -709,7 +772,8 @@ def run_batched_neuqi_anchors(deferred_wrappers: list) -> bool:
     for worker, _home, chunk in planned:
         buckets.setdefault(worker, []).append(chunk)
 
-    stats = {wk: {"modules": 0, "batches": 0, "singletons": 0} for wk in buckets}
+    summary = SearchSummary()
+    summary.offloaded = sum(1 for worker, home, _chunk in planned if worker != home)
 
     @torch.no_grad()
     def _run_anchor_stack(chunk: list, worker_key: str):
@@ -736,7 +800,11 @@ def run_batched_neuqi_anchors(deferred_wrappers: list) -> bool:
 
     @torch.no_grad()
     def _execute(worker_key: str, chunk_list: list) -> None:
-        _t0 = time.perf_counter()
+        with summary.timed(worker_key) as st:
+            _execute_chunks(worker_key, chunk_list, st)
+
+    @torch.no_grad()
+    def _execute_chunks(worker_key: str, chunk_list: list, st: dict) -> None:
         for chunk in chunk_list:
             staged = [_staged(w) for w in chunk]
             homes = [str(s[0].device) for s in staged]
@@ -764,18 +832,21 @@ def run_batched_neuqi_anchors(deferred_wrappers: list) -> bool:
                 dump_oom_tensor_census_("neuqi anchor")
                 for w in chunk:
                     w._run_deferred_neuqi_anchor_now()
-                stats[worker_key]["singletons"] += len(chunk)  # counted like the wrap lane's fallbacks
+                st["singletons"] += len(chunk)  # counted like the wrap lane's fallbacks
+                st["modules"] += len(chunk)
                 continue
             wmin = wmin.reshape(len(chunk), -1)
             wmax = wmax.reshape(len(chunk), -1)
             for w, s, mn, mx in zip(chunk, staged, wmin, wmax):
                 w._apply_neuqi_anchor(mn.to(s[0].device), mx.to(s[0].device))
-            stats[worker_key]["batches"] += 1
-            stats[worker_key]["modules"] += len(chunk)
-        stats[worker_key]["wall"] = time.perf_counter() - _t0
+            st["batches"] += 1
+            st["modules"] += len(chunk)
 
     for w in singletons:
-        w._run_deferred_neuqi_anchor_now()
+        with summary.timed(str(_staged(w)[0].device)) as st:
+            w._run_deferred_neuqi_anchor_now()
+            st["singletons"] += 1
+            st["modules"] += 1
 
     if len(buckets) > 1:
         pairs = list(buckets.items())
@@ -785,26 +856,5 @@ def run_batched_neuqi_anchors(deferred_wrappers: list) -> bool:
         wk, items = next(iter(buckets.items()))
         _execute(wk, items)
 
-    _t_total = sum(st.get("wall", 0.0) for st in stats.values())
-    _n_single = len(singletons) + sum(st["singletons"] for st in stats.values())
-    _n_mod = sum(st["modules"] for st in stats.values()) + _n_single
-    _n_batch = sum(st["batches"] for st in stats.values())
-    _n_offloaded = sum(1 for worker, home, _chunk in planned if worker != home)
-    from auto_round.utils.pool_placement import _short_device_key
-
-    per_device = (
-        "{" + ", ".join(f"'{_short_device_key(dev)}': {st.get('wall', 0.0):.2f}" for dev, st in stats.items()) + "}"
-    )
-    if perf_counters_enabled():
-        logger.info(
-            "[batched-search] neuqi anchors: %d modules, %d batch + %d singleton search calls"
-            + (f" ({_n_offloaded} chunk(s) offloaded to idle devices)" if _n_offloaded else "")
-            + ", %.2fs device-wall (%.2fs summed) walls %s",
-            _n_mod,
-            _n_batch,
-            _n_single,
-            max(st.get("wall", 0.0) for st in stats.values()) if stats else 0.0,
-            _t_total,
-            per_device,
-        )
+    summary.finish().log("[batched-search] neuqi anchors:")
     return True

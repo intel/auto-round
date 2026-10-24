@@ -360,6 +360,8 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 class SignRoundV2Quantizer(SignRoundQuantizer):
     """SignRound variant using the open algorithm-extension path in the new architecture."""
 
+    calibration_stats = {"imatrix": "sum"}
+
     def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)
         self._use_outlier_suppressed_loss = False

@@ -95,7 +95,7 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
-from auto_round.utils.distributed import setup_ddp_if_needed_
+from auto_round.utils.distributed import all_reduce_loss, make_index_sampler, setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
 
 if TYPE_CHECKING:
@@ -558,7 +558,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
 
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
-        index_sampler = IndexSampler(nsamples, global_batch_size)
+        index_sampler = make_index_sampler(nsamples, global_batch_size)
         block_fwd = self.block_forward
 
         # When low_gpu_mem_usage is enabled, active_inputs / fp_outputs are intentionally
@@ -707,6 +707,7 @@ class SignRoundQuantizer(BaseQuantizer):
                         # clear memory to avoid OOM due to memory fragmentation
                         clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
 
+                total_loss = all_reduce_loss(total_loss, num_elm)
                 if i == 0:
                     init_loss = total_loss
                 current_lr = optimizer.param_groups[0]["lr"]
