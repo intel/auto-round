@@ -416,6 +416,12 @@ class CompressionOrchestrator(BaseOrchestrator):
                 # folded into the end-of-block phases line as its first item so
                 # the line's total covers the whole block (true-wall comparable)
                 block_name_or_names = n if nblocks == 1 else names
+                # tick(key) closes the running span and opens `key`, so every
+                # tick sits right BEFORE the region it names. The chain opens
+                # here: "prep" (materialize + dtype convert + dispatch_block
+                # device placement + BlockContext) costs seconds per block on
+                # large MoE models, and the total covers the true per-block wall.
+                _perf.tick("prep")
 
                 # ── Infrastructure: materialize, dtype convert, device placement ──
                 materialize_model_(m)
@@ -452,8 +458,9 @@ class CompressionOrchestrator(BaseOrchestrator):
                 # primary cache device when it fits (today's behavior, zero peer
                 # traffic), or sharded across free GPUs when it does not. Placement is
                 # pure memory behavior -- chunk values are bit-identical.
-                self._attach_pool_placement(m, input_ids, q_input, input_others)
                 _perf.tick("attach")
+                self._attach_pool_placement(m, input_ids, q_input, input_others)
+                _perf.tick("compress")
 
                 # ── Run block pipeline (calibration → quantization → collection) ──
                 new_q_input, reference_output = self.alg_composer.compress_block(
@@ -464,7 +471,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                     q_inputs=q_input,
                     input_ids=token_ids,
                 )
-                _perf.tick("compress")
+                _perf.tick("swap")
 
                 # ── Infrastructure: memory management ─────────────────────────────
                 # Mirrors the original q_input-swap + end-of-loop clear_memory semantics:
@@ -482,7 +489,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                     clear_memory(input_ids if input_ids is not next_input_ids else None)
 
                 q_input = new_q_input
-                _perf.tick("swap")
+                _perf.tick("sweep")
 
                 # Belt-and-braces: no module may carry staged batched-search inputs
                 # (weight reshape + imatrix copies) across the block boundary;
@@ -491,10 +498,10 @@ class CompressionOrchestrator(BaseOrchestrator):
                 for _mn, _mm in m.named_modules():
                     if getattr(_mm, "_deferred_search_inputs", None) is not None:
                         _mm._deferred_search_inputs = None
-                _perf.tick("sweep")
+                _perf.tick("hooks")
                 if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
                     accelerate.hooks.remove_hook_from_submodules(m)
-                _perf.tick("hooks")
+                _perf.tick("pack")
 
                 # ── Infrastructure: immediate_pack / shard write ──────────────────
                 # Pack BEFORE draining the block off the GPUs: pack_layer resolves
@@ -520,14 +527,14 @@ class CompressionOrchestrator(BaseOrchestrator):
                             if module_name is None:
                                 continue
                             _immediate_pack(module_name, _layer_cfg)
-                _perf.tick("pack")
+                _perf.tick("mv")
 
                 mv_module_from_gpu(m)
-                _perf.tick("mv")
-                clear_memory(device_list=device_manager.device_list)
                 _perf.tick("clear")
-                memory_monitor.log_summary()
+                clear_memory(device_list=device_manager.device_list)
                 _perf.tick("monitor")
+                memory_monitor.log_summary()
+                _perf.tick("write")
 
                 input_ids = next_input_ids
 
@@ -582,13 +589,13 @@ class CompressionOrchestrator(BaseOrchestrator):
                     _bg_resume.dispatch(
                         lambda _n=n, _q=_resume_q, _i=_resume_i: resume_state.mark_block_done(_n, _q, _i)
                     )
-                _perf.tick("write")
                 if _perf.enabled:
                     _perf.stop("write")
                     # sweep/hooks fold into the printed pack span, monitor into the
                     # printed write span; they were bad-perf-investigation probes that
                     # read 0.00 in every validated run since
                     _parts = [
+                        f"prep={_perf.get('prep'):.2f}s",
                         f"attach={_perf.get('attach'):.2f}s",
                         f"compress={_perf.get('compress'):.2f}s",
                         f"swap={_perf.get('swap'):.2f}s",
@@ -677,6 +684,13 @@ class CompressionOrchestrator(BaseOrchestrator):
         # In RTN mode (iters == 0), force blockwise quantization to avoid
         # full-model materialization and linear CPU RAM growth.
         logger.info("Zero-shot mode (no calibration data needed): using blockwise quantization.")
+
+        # an explicit --parallel_quantization N cannot engage here (no
+        # calibration forward for the data-parallel lane to shard): one INFO
+        # line, no refusal -- weights-only RTN has nothing to parallelize
+        from auto_round.algorithms.parallel.data_parallel import log_zero_shot_parallel_noop_
+
+        log_zero_shot_parallel_noop_(getattr(self.compress_context, "parallel_policy", None))
 
         tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
         if tied_weights_keys is None:

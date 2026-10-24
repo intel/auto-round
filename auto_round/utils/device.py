@@ -127,7 +127,12 @@ def _bump_dynamo_cache_limit(min_size: int | None = None):
             min_size = envs.AR_DYNAMO_CACHE_SIZE_LIMIT
         from torch._dynamo import config as _dynamo_config
 
-        for attr in ("cache_size_limit", "accumulated_cache_size_limit", "recompile_limit"):
+        for attr in (
+            "cache_size_limit",
+            "accumulated_cache_size_limit",
+            "recompile_limit",
+            "accumulated_recompile_limit",  # newer torch: process-wide cap (binds on MoE shape zoos)
+        ):
             if hasattr(_dynamo_config, attr) and getattr(_dynamo_config, attr) < min_size:
                 setattr(_dynamo_config, attr, min_size)
     except Exception:  # pragma: no cover - best effort
@@ -1580,6 +1585,9 @@ class MemoryMonitor:
         self.peak_ram = 0.0  # GB
         self.peak_vram = {}  # {device_id: peak_mb}
         self.enabled = True
+        # devices registered for sampling BEYOND the caller's device_map list
+        # (e.g. DDP replica devices the parallel lane engaged outside the map)
+        self._extra_devices: set[str] = set()
 
     @staticmethod
     def _process_tree_rss() -> float:
@@ -1592,6 +1600,31 @@ class MemoryMonitor:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         return rss / 1024**3
+
+    def register_extra_devices(self, devices) -> None:
+        """Add accelerator devices to the monitored set beyond the device_map.
+
+        The final ``'peak_vram': {...}`` summary only reports devices the
+        ``update`` calls sample; callers pass the device-map list, so devices
+        engaged outside the map (single-process DDP replicas on all visible
+        GPUs while ``--device_map`` is single-device) would stay invisible.
+        Registered devices are merged into every subsequent ``update``/
+        ``update_hpu`` sample; ``reset`` clears the peaks but keeps the
+        registration (engagement re-registers per block).
+        """
+        if not hasattr(self, "_extra_devices"):  # older singleton instance
+            self._extra_devices = set()
+        for d in devices or []:
+            key = str(d)
+            if key.split(":")[0] in ("cuda", "xpu", "hpu"):
+                self._extra_devices.add(key)
+
+    def _merged_device_list(self, device_list):
+        """The caller's device list plus any registered extra devices (deduped)."""
+        if not getattr(self, "_extra_devices", None):
+            return device_list
+        seen = [str(d) for d in device_list]
+        return list(device_list) + [d for d in sorted(self._extra_devices) if d not in seen]
 
     def update(self, device_list=None):
         """Update current memory usage and track peaks."""
@@ -1611,6 +1644,7 @@ class MemoryMonitor:
                 device_list = list(range(dev_mgr.device_count()))
             else:
                 device_list = [0]
+        device_list = self._merged_device_list(device_list)
 
         dev_mgr = get_current_device_manager()
         for device in device_list:
@@ -1658,6 +1692,7 @@ class MemoryMonitor:
             device_list = list(range(count)) if count > 0 else [0]
         elif not isinstance(device_list, (list, tuple)):
             device_list = [device_list]
+        device_list = self._merged_device_list(device_list)
         for device in device_list:
             if str(device) == "cpu":
                 continue

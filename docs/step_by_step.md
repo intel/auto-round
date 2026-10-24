@@ -936,6 +936,37 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 
 There are typically two scenarios that require multi-GPU tuning: one is the calibration phase mainly for lm-head quantization, and the other is quantizing extremely large models (e.g., models larger than 100 GB).
 
+#### Parallel block tuning across GPUs
+When a tuning block fits on one GPU, `--parallel_quantization` uses the other GPUs of the same process for
+data-parallel tuning: the block's tuning loop runs once per GPU (a rank, one thread each) on that GPU's copy of the
+block and its share of the calibration samples, and the ranks average their gradients every iteration. This is the
+same contract as the multi-process torchrun path (`sync_gradients()`), so the algorithm's loop itself is unchanged.
+
+~~~bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --parallel_quantization auto
+~~~
+
+- `off` (default) keeps the serial loop. `N` pins the number of ranks: at least 2, at most the visible device count,
+  and a power of two when `--iters > 0` (the gradient all-reduce is a halving-doubling exchange); checked at startup.
+  `auto` takes all visible devices at `--iters 0` and the largest power of two that fits them at `--iters > 0`, and
+  announces the choice in the log.
+- The block must sit whole on one GPU: run without `--device_map` or with a single-device map. A block spread across
+  several GPUs stops with that reason; blocks larger than one GPU are not covered.
+- Every rank holds a full copy of the block plus its tuning state. Free-VRAM estimates only warn (naming the
+  device); an actual shortage surfaces as an out-of-memory error.
+- `--parallel_batch split` (default) keeps `--batch_size` as the global batch of an iteration; every rank draws
+  `batch_size / world` samples (the division must be exact). `--parallel_batch per_replica` lets every rank draw the
+  full `--batch_size`, so the global batch is `batch_size x world`.
+- A block whose sample count or batch does not split evenly over the ranks, or whose per-rank batch exceeds its
+  share of the samples, tunes serially and logs the reason. LFQ, dict-shaped (diffusion-style) calibration pools and
+  an active torchrun group are not supported.
+- The calibration forwards (reference outputs, the quantized-input chain, imatrix and activation statistics) are
+  sharded across the GPUs too, also at `--iters 0`. Quantizers declare the statistics their hooks write and how they
+  reduce (`calibration_stats`); a hook pass with undeclared statistics stays serial.
+- Each rank samples from its own share of the calibration pool, so per-iteration loss lines and tuned weights differ
+  from a serial run. Compare runs at the model level (accuracy, KL divergence against the base model).
+- To exclude devices, set the backend's visibility variable (e.g. `CUDA_VISIBLE_DEVICES`) before launch.
+
 #### Enable multiple gpus calibration in lm_head quantization
 For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which requires the entire model to reside on 
   the GPU for efficient calibration. If there is no enough VRAM, some layers will fallback to RTN mode

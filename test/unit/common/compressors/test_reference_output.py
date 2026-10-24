@@ -33,8 +33,8 @@ def _patch_composer(composer, fp_inputs):
     composer.block_forward = mock_forward
     composer.block_quantizer.quantize_block = MagicMock()
     composer.block_quantizer.enable_quanted_input = False
-    composer._get_fp_act_hooks = MagicMock(return_value=[])
-    composer._get_q_act_hooks = MagicMock(return_value=[])
+    composer._get_fp_act_hooks = MagicMock(return_value=([], {"act_max": "max"}))
+    composer._get_q_act_hooks = MagicMock(return_value=([], {"act_max": "max"}))
     composer.preprocessors = []
     return mock_forward
 

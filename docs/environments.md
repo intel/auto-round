@@ -411,6 +411,16 @@ else:
 4. **Performance Optimization**: Enable `AR_ENABLE_COMPILE_PACKING=1` if you have sufficient computational resources
 5. **Custom Workspace**: Set `AR_WORK_SPACE` to a directory with sufficient disk space for model processing
 
+### AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES
+- **Description**: Caps the number of devices a hook-carrying sharded collection forward runs on concurrently (hook passes keep compiled runners python-bound between graph sections, which can convoy on the GIL). Only lower this on hosts where hook-carrying passes convoy; not reproduced on the validation rig up to world=8. Values above the engaged world are no-ops.
+- **Default**: `0` (no cap)
+- **Valid Values**: non-negative integer
+- **Usage**: Limit concurrent shard-forward threads on weak-CPU hosts.
+
+```bash
+AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES=2 python -m auto_round --model ... --parallel_quantization 8
+```
+
 ## Notes
 
 - Environment variables are evaluated lazily, meaning they are only read when first accessed

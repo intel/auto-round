@@ -19,6 +19,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
+    AR_PERF_COUNTERS: bool = False
     AR_LOG_LEVEL: str = "INFO"
     AR_USE_MODELSCOPE: bool = "False"
     AR_MODEL_FREE_SHARD_PARALLELISM: int | None = None
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     AR_PERF_COUNTERS: bool = False
     AR_SEARCH_BATCH_GB: float | None = None
     AR_DISABLE_CROSS_DEVICE_SEARCH: bool = False
+    AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES: int = 0
 
 
 def _get_optional_positive_int_env(name: str) -> int | None:
@@ -57,6 +59,20 @@ def _get_optional_positive_int_env(name: str) -> int | None:
         raise ValueError(f"{name} must be a positive integer, got {raw!r}") from exc
     if value < 1:
         raise ValueError(f"{name} must be a positive integer, got {value}")
+    return value
+
+
+def _get_non_negative_int_env(name: str, default: int) -> int:
+    """Read an env var that must be a non-negative integer; malformed values fail fast."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer, got {raw!r}") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer, got {raw!r}")
     return value
 
 
@@ -164,6 +180,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_RESUME_DIR": lambda: os.getenv("AR_RESUME_DIR", None),
     "AR_DISABLE_BATCHED_SEARCH": lambda: os.getenv("AR_DISABLE_BATCHED_SEARCH", "False").strip().lower()
     in ("1", "true", "yes"),
+    # Emit [perf] phase-breakdown log lines (per-block load/tune/pack/write/clean/offload
+    # in the data-driven loop; the sharded collection breakdown for --parallel_quantization).
     "AR_PERF_COUNTERS": lambda: os.getenv("AR_PERF_COUNTERS", "False").strip().lower() in ("1", "true", "yes"),
     "AR_SEARCH_BATCH_GB": lambda: _get_optional_positive_float_env("AR_SEARCH_BATCH_GB"),
     "AR_DISABLE_CROSS_DEVICE_SEARCH": lambda: os.getenv("AR_DISABLE_CROSS_DEVICE_SEARCH", "False").strip().lower()
@@ -208,9 +226,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     #                Benchmarks (A100, W4G128 tuning fwd+bwd) show "auto" matches or beats a
     #                fixed 16 on every Qwen3-MoE preset (e.g. 35B-A3B: 108 ms vs 156 ms).
     #   <int > 0>  - fixed group size. Fusing every active expert at once builds a working set
-    #                that grows with the expert count; past a point that costs peak memory on
-    #                GPU and cache locality on CPU (measured: fusing 64 experts halved CPU
-    #                calibration throughput, and doubled the GPU calibration peak).
+    #                that grows with the expert count; past a point that costs peak
+    #                memory on GPU and cache locality on CPU.
     #   0 or <0    - disable chunking/tiling: "fuse everything" in one group (e.g. set -1 to turn it off).
     # Results are identical for any value -- rows stay independent. A fixed count and "auto"
     # are both torch.compile-friendly (constant fused shape -> no per-count recompile).
@@ -249,6 +266,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_NEUQI_COARSE": lambda: int(v) if (v := os.getenv("AR_NEUQI_COARSE")) is not None else None,
     "AR_NEUQI_FINE": lambda: int(v) if (v := os.getenv("AR_NEUQI_FINE")) is not None else None,
     "AR_NEUQI_BACKEND": lambda: os.getenv("AR_NEUQI_BACKEND", "auto").lower(),
+    # Cap the number of devices a hook-carrying sharded collection forward runs
+    # on concurrently (hook passes keep compiled runners python-bound between
+    # graph sections, which can convoy on the GIL). Only lower this on hosts
+    # where hook-carrying passes convoy. Values above the engaged world are
+    # no-ops. Default 0 = no cap.
+    "AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES": lambda: _get_non_negative_int_env(
+        "AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES", 0
+    ),
 }
 
 
