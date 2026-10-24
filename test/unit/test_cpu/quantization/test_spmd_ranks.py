@@ -275,6 +275,10 @@ def test_signround_on_two_cpu_ranks_matches_serial(tiny_opt_model_path, monkeypa
     assert set(serial) == set(ranks)
     diff = [k for k in serial if not torch.equal(serial[k], ranks[k])]
     assert not diff, f"rank run diverged from serial: {diff[:8]}"
+    # the padded samples carry a valid-token mask: the global loss (masked
+    # sums over valid tokens, weighted by each rank's token count) reports
+    # the serial value
+    assert serial_losses and rank_losses == serial_losses
 
 
 def test_signroundv2_on_two_cpu_ranks_matches_serial(tiny_opt_model_path, monkeypatch):

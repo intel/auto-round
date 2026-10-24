@@ -540,7 +540,10 @@ class SignRoundQuantizer(BaseQuantizer):
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
         mse_reduction = "mean"
-        if self.gradient_accumulate_steps != 1:
+        # a masked loss is a SUM over the valid elements, normalized by the
+        # valid-token count below (num_elm) -- also at accumulation == 1, where
+        # a mean over all elements divided again by that count normalizes twice
+        if self.gradient_accumulate_steps != 1 or valid_token_mask:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
