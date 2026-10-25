@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Convert logical SVDQuant records to vLLM-Omni's NVFP4 tensor layout.
+"""Convert logical SVDQuant records to vLLM-Omni's MXFP tensor layout.
 
 The default export fuses shared-input self-attention QKV for Omni's loaders.
 Tuned NVFP4 residuals retain their scales; untuned NVFP4 residuals use RTN.
+MXFP4 residuals are exported with RTN block-32 E8M0 scales, which is the
+untuned (``iters=0``) path.
 """
 
 from __future__ import annotations
@@ -36,7 +38,13 @@ from auto_round.export.svdquant_nunchaku import (
     _source_records,
     _validate_adapter_provenance,
 )
+from auto_round.utils import logger
 from auto_round.wrapper import WrapperWALayer
+
+_MXFP4_BLOCK_SIZE = 32
+_MXFP4_ELEMENT_MAX = 6.0
+_MXFP4_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
+_MXFP4_ACT_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1", "mx_fp_rceil", "mx_fp4_rceil", "mx_fp4_rceil_v2"})
 
 
 def _fuse_qkv_records(model, records):
@@ -115,9 +123,76 @@ def validate_nvfp4_scheme(scheme) -> bool:
             valid = type(actual) is type(expected) and actual == expected
         if not valid:
             raise ValueError(
-                f"svdquant_omni only supports NVFP4 W4A4 group16: " f"got {name}={actual!r}, expected {expected!r}"
+                f"svdquant_omni only supports NVFP4 W4A4 group16: got {name}={actual!r}, expected {expected!r}"
             )
     return True
+
+
+def validate_mxfp4_scheme(scheme) -> bool:
+    """Require the MXFP4 W4A4 group32 scheme supported by Omni's SVDQuant runtime."""
+    rules = dict(bits=4, group_size=32, sym=True, act_bits=4, act_group_size=32, act_sym=True, act_dynamic=True)
+    for name, expected in rules.items():
+        actual = getattr(scheme, name, None)
+        if type(actual) is not type(expected) or actual != expected:
+            raise ValueError(
+                f"svdquant_omni only supports MXFP4 W4A4 group32: got {name}={actual!r}, expected {expected!r}"
+            )
+    for name, aliases in (("data_type", _MXFP4_ALIASES), ("act_data_type", _MXFP4_ACT_ALIASES)):
+        actual = getattr(scheme, name, None)
+        if not (isinstance(actual, str) and actual in aliases):
+            raise ValueError(
+                f"svdquant_omni only supports MXFP4 W4A4 group32: got {name}={actual!r}, "
+                f"expected one of {sorted(aliases)!r}"
+            )
+    return True
+
+
+def validate_omni_scheme(scheme) -> str:
+    """Resolve the Omni precision (``nvfp4`` or ``mxfp4``) for one quantized scheme."""
+    errors = []
+    for precision, validator in (("nvfp4", validate_nvfp4_scheme), ("mxfp4", validate_mxfp4_scheme)):
+        try:
+            validator(scheme)
+        except ValueError as error:
+            errors.append(str(error))
+        else:
+            return precision
+    raise ValueError("svdquant_omni supports NVFP4 W4A4 group16 or MXFP4 W4A4 group32; " + " | ".join(errors))
+
+
+def _mxfp4_block_scales(weight: torch.Tensor) -> torch.Tensor:
+    """Return rceil E8M0 exponents, matching AutoRound's deployable MXFP4 QDQ."""
+    rows, k = weight.shape
+    grouped = weight.float().reshape(rows, k // _MXFP4_BLOCK_SIZE, _MXFP4_BLOCK_SIZE)
+    amax = grouped.abs().amax(dim=-1)
+    nonzero = amax > 0
+    safe = torch.where(nonzero, amax, torch.ones_like(amax))
+    exponent = torch.ceil(torch.log2(safe / _MXFP4_ELEMENT_MAX)).clamp(min=-127.0, max=127.0)
+    return torch.where(nonzero, exponent, torch.zeros_like(exponent))
+
+
+@torch.inference_mode()
+def _pack_residual_mxfp4(weight: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Quantize a residual with RTN E2M1 values and one E8M0 scale per 32 channels."""
+    if weight.ndim != 2 or weight.shape[1] % _MXFP4_BLOCK_SIZE or 0 in weight.shape:
+        raise ValueError("MXFP4 residual must be a nonempty matrix with input width divisible by 32")
+    if not torch.isfinite(weight).all():
+        raise ValueError("MXFP4 residual must contain only finite values")
+    weight = weight.float()
+    _, k = weight.shape
+    packed_rows, scale_rows = [], []
+    # Bound the temporary allocation of the existing FP4 encoder.
+    for chunk in weight.split(128):
+        packer = QuantLinear(4, _MXFP4_BLOCK_SIZE, k, chunk.shape[0], False, data_type="mx_fp4", act_bits=16)
+        holder = torch.nn.Module()
+        holder.weight = torch.nn.Parameter(chunk, requires_grad=False)
+        packer.pack(holder, _mxfp4_block_scales(chunk))
+        packed_rows.append(packer.weight_packed.view(torch.uint8))
+        scale_rows.append(packer.weight_scale.view(torch.uint8))
+    return {
+        "qweight": torch.cat(packed_rows).contiguous(),
+        "wscales": torch.cat(scale_rows).T.contiguous(),
+    }
 
 
 @torch.inference_mode()
@@ -171,8 +246,12 @@ def collect_svdquant_omni_tensors(
     fuse_qkv = adapter is None
     adapter = adapter or IdentitySVDQuantModelAdapter()
     sources = _source_records(model)
+    precision = None
     for source in sources:
-        validate_nvfp4_scheme(source.scheme)
+        resolved = validate_omni_scheme(source.scheme)
+        if precision is not None and resolved != precision:
+            raise ValueError("svdquant_omni cannot mix NVFP4 and MXFP4 layers in one export")
+        precision = resolved
     records = tuple(adapter.map_modules(model, sources))
     if fuse_qkv:
         records = _fuse_qkv_records(model, records)
@@ -182,7 +261,10 @@ def collect_svdquant_omni_tensors(
     adapter.validate_records(sources, records)
     tensors, ranks = {}, set()
     for record in records:
-        validate_nvfp4_scheme(record.scheme)
+        resolved = validate_omni_scheme(record.scheme)
+        if precision is not None and resolved != precision:
+            raise ValueError("svdquant_omni cannot mix NVFP4 and MXFP4 layers in one export")
+        precision = resolved
         if record.omitted_suffixes - {"bias"}:
             raise ValueError(f"{record.prefix}: cannot omit required Omni tensors")
         weight, down, up = record.residual_weight, record.lora_down, record.lora_up
@@ -203,21 +285,31 @@ def collect_svdquant_omni_tensors(
                 residual = residual.orig_layer
             residuals.append(residual)
         scale = global_scale = None
-        if any(hasattr(residual, "scale") for residual in residuals):
-            if not all(
-                hasattr(residual, "scale") and hasattr(residual, "weight_global_scale") for residual in residuals
-            ):
-                raise ValueError("tuned Omni residuals require NVFP4 scale and weight_global_scale")
-            global_scale = residuals[0].weight_global_scale.to(device).float().reshape(1)
-            if not all(
-                torch.equal(global_scale, residual.weight_global_scale.to(device).float().reshape(1))
-                for residual in residuals
-            ) or not torch.equal(weight, torch.cat([source.residual_weight for source in record.sources])):
-                raise ValueError("adapter must preserve tuned residuals and their shared global scale")
-            scale = torch.cat([residual.scale.reshape(residual.weight.shape[0], -1) for residual in residuals]).to(
-                device
-            )
-        values = _pack_residual(weight.to(device), scale=scale, global_scale=global_scale)
+        if precision == "nvfp4":
+            if any(hasattr(residual, "scale") for residual in residuals):
+                if not all(
+                    hasattr(residual, "scale") and hasattr(residual, "weight_global_scale") for residual in residuals
+                ):
+                    raise ValueError("tuned Omni residuals require NVFP4 scale and weight_global_scale")
+                global_scale = residuals[0].weight_global_scale.to(device).float().reshape(1)
+                if not all(
+                    torch.equal(global_scale, residual.weight_global_scale.to(device).float().reshape(1))
+                    for residual in residuals
+                ) or not torch.equal(weight, torch.cat([source.residual_weight for source in record.sources])):
+                    raise ValueError("adapter must preserve tuned residuals and their shared global scale")
+                scale = torch.cat([residual.scale.reshape(residual.weight.shape[0], -1) for residual in residuals]).to(
+                    device
+                )
+            values = _pack_residual(weight.to(device), scale=scale, global_scale=global_scale)
+        else:
+            if not torch.equal(weight, torch.cat([source.residual_weight for source in record.sources])):
+                raise ValueError("adapter must preserve residual weights")
+            if any(hasattr(residual, "scale") for residual in residuals):
+                logger.warning_once(
+                    "svdquant_omni MXFP4 export quantizes residuals with RTN block-32 E8M0 scales; "
+                    "tuned scales are not exported. Use iters=0 for MXFP4 checkpoints."
+                )
+            values = _pack_residual_mxfp4(weight.to(device))
         values.update(
             proj_down=(down.float() * smooth).T.bfloat16(),
             proj_up=up.bfloat16(),
@@ -247,7 +339,7 @@ def collect_svdquant_omni_tensors(
         tensors[name] = value.detach().cpu().contiguous()
     quantization = dict(
         quant_method="svdquant",
-        precision="nvfp4",
+        precision=precision,
         rank=ranks.pop(),
         act_unsigned=False,
         modules_to_not_convert=[

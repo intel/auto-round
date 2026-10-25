@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Standard format backend for vLLM-Omni SVDQuant NVFP4 checkpoints."""
+"""Standard format backend for vLLM-Omni SVDQuant NVFP4 and MXFP4 checkpoints."""
 
 from __future__ import annotations
 
@@ -24,14 +24,14 @@ from auto_round.export.formats.base import OutputFormat
 class SVDQuantOmniFormat(SVDQuantNunchakuFormat):
     """Reuse full-model SVDQuant export handling, but select the Omni tensor ABI."""
 
-    support_schemes = ["NVFP4"]
+    support_schemes = ["NVFP4", "MXFP4"]
     format_name = "svdquant_omni"
 
     @classmethod
     def check_scheme_args(cls, scheme) -> bool:
-        from auto_round.export.svdquant_omni import validate_nvfp4_scheme
+        from auto_round.export.svdquant_omni import validate_omni_scheme
 
-        return validate_nvfp4_scheme(scheme)
+        return bool(validate_omni_scheme(scheme))
 
     def check_and_reset_format(self, scheme, ctx):
         self.check_scheme_args(scheme)
