@@ -125,6 +125,9 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
             lines.append("")
             lines.append(f"- **Category:** {analysis.get('category', 'Unknown')}")
             lines.append(f"- **Confidence:** {analysis.get('confidence', 'low')}")
+            if analysis.get("model"):
+                suffix = " (escalated: first answer was not high confidence)" if analysis.get("escalated") else ""
+                lines.append(f"- **Model:** {analysis['model']}{suffix}")
             if analysis.get("root_cause"):
                 lines.append(f"- **Root cause:** {analysis['root_cause']}")
             if analysis.get("suggested_fix"):
