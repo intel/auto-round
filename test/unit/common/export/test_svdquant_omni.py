@@ -22,12 +22,18 @@ import pytest
 import torch
 from safetensors.torch import load_file
 
+from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
+from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.algorithms.transforms.svdquant import SVDQuantConfig
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.data_type.nvfp import nv_fp4
+from auto_round.data_type.utils import update_block_global_scale_if_needed
 from auto_round.export.svdquant_nunchaku import IdentitySVDQuantModelAdapter
 from auto_round.export.svdquant_omni import save_svdquant_omni
 from auto_round.formats import get_formats
 from auto_round.schemes import PRESET_SCHEMES
+from auto_round.utils.device_manager import device_manager
+from auto_round.wrapper import WrapperWALayer
 
 
 def test_omni_tensor_layout_and_adapter_mapping(tmp_path):
@@ -145,3 +151,99 @@ def test_omni_format_rejects_incompatible_schemes(tmp_path, monkeypatch):
             alg_configs=[SVDQuantConfig(smooth_enabled=False), RTNConfig(disable_opt_rtn=True)],
         )
         assert created["format"] == format
+
+
+def test_omni_zero_shot_rtn_fuses_qkv_with_shared_scale(tmp_path, monkeypatch):
+    monkeypatch.setattr(device_manager, "_device_map", "cpu")
+    monkeypatch.setattr(device_manager, "_device_list", ["cpu"])
+    monkeypatch.setattr(device_manager, "_major_device", "cpu")
+
+    class SelfAttention(torch.nn.Module):
+        is_cross_attention = False
+
+        def __init__(self):
+            super().__init__()
+            self.to_q = torch.nn.Linear(32, 32, bias=False)
+            self.to_k = torch.nn.Linear(32, 32, bias=False)
+            self.to_v = torch.nn.Linear(32, 32, bias=False)
+
+    class WanBlock(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = SelfAttention()
+
+    model = torch.nn.Module()
+    model.blocks = torch.nn.ModuleList([WanBlock()])
+    model.config = {"_name_or_path": str(tmp_path)}
+    scheme = PRESET_SCHEMES["NVFP4"].copy()
+    for name, module in model.named_modules():
+        module.global_name = name
+        if isinstance(module, torch.nn.Linear):
+            for key, value in scheme.to_dict().items():
+                setattr(module, key, value)
+            module.scale_dtype = torch.float32
+
+    block_name = "blocks.0"
+    orchestrator = SimpleNamespace(
+        model_context=SimpleNamespace(
+            model=model,
+            amp=False,
+            amp_dtype=torch.float32,
+            is_diffusion=True,
+            is_moe_model=False,
+            output_config=None,
+        ),
+        compress_context=SimpleNamespace(
+            enable_torch_compile=False,
+            low_gpu_mem_usage=False,
+            cache_device=torch.device("cpu"),
+            clear_memory=lambda: None,
+            formats=[SimpleNamespace(format_name="svdquant_omni")],
+        ),
+        calibration_context=SimpleNamespace(batch_size=1, batch_dim=0),
+        scheme_context=scheme,
+        scale_dtype=torch.float32,
+        nblocks=1,
+        quant_block_list=[[block_name]],
+        data_type=scheme.data_type,
+        batch_dim=0,
+        batch_size=1,
+        cache_device="cpu",
+        amp=False,
+        amp_dtype=torch.float32,
+        shared_cache_keys=(),
+    )
+    composer = AlgorithmComposer(
+        [
+            SVDQuantConfig(rank=2, smooth_enabled=False, residual_iters=1, low_rank_dtype="fp32"),
+            RTNConfig(disable_opt_rtn=True),
+        ],
+        orchestrator=orchestrator,
+    )
+    composer.prepare_run()
+
+    block = model.blocks[0]
+    # Match the Orchestrator's initial NVFP4 scale setup before SVD replacement.
+    update_block_global_scale_if_needed(block, scheme.data_type, scheme.group_size)
+    ctx = BlockContext(
+        model=model,
+        block_names=[block_name],
+        block_name=block_name,
+        block_index=0,
+        block_cnt=1,
+    )
+    composer.compress_block(block, fp_inputs=None, input_others={}, block_ctx=ctx)
+
+    residual_scales = []
+    for name in ("to_q", "to_k", "to_v"):
+        residual = getattr(block.attn, name).residual_linear
+        while isinstance(residual, WrapperWALayer):
+            residual = residual.orig_layer
+        residual_scales.append(residual.weight_global_scale)
+    torch.testing.assert_close(residual_scales[0], residual_scales[1])
+    torch.testing.assert_close(residual_scales[0], residual_scales[2])
+
+    output_dir = tmp_path / "svdquant_omni"
+    save_svdquant_omni(model, output_dir)
+    tensors = load_file(output_dir / "diffusion_pytorch_model.safetensors")
+    assert "blocks.0.attn.to_qkv.wtscale" in tensors
