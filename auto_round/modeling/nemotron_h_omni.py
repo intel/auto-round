@@ -20,9 +20,12 @@ Plain ``nemotron_h`` text checkpoints are not touched by anything in this module
 """
 
 import glob
+import importlib.machinery
 import json
 import os
 import re
+import sys
+import types
 from collections.abc import Iterable
 
 import torch
@@ -89,6 +92,61 @@ def nemotron_h_omni_load_kwargs(config) -> dict:
     return {"key_mapping": {r"^language_model\.backbone\.": _NESTED_TRUNK_TARGET}}
 
 
+def install_mamba_ssm_stub() -> bool:
+    """Install a pure-PyTorch stub for mamba_ssm if it is not installed.
+
+    Nemotron-H remote code (modeling_nemotron_h.py) unconditionally imports rmsnorm_fn
+    from mamba_ssm.ops.triton.layernorm_gated, even though it provides a pure-PyTorch
+    torch_forward fallback for non-CUDA platforms.
+    """
+    if "mamba_ssm" in sys.modules:
+        return False
+    try:
+        import mamba_ssm  # noqa: F401
+
+        return False
+    except (ImportError, ModuleNotFoundError, Exception):
+        pass
+
+    def _rmsnorm_gated(
+        x: torch.Tensor, z: torch.Tensor | None, w: torch.Tensor, eps: float, group: int, norm_before_gate: bool = False
+    ) -> torch.Tensor:
+        dim = x.shape[-1]
+        v = x.float()
+        if z is not None and not norm_before_gate:
+            v = v * (z.float() * torch.sigmoid(z.float()))
+        vg = v.reshape(*v.shape[:-1], dim // group, group)
+        ms = (vg * vg).mean(-1)
+        rstd = torch.rsqrt(ms + eps)
+        out = (vg * rstd[..., None]).reshape(v.shape) * w.float()
+        if z is not None and norm_before_gate:
+            out = out * (z.float() * torch.sigmoid(z.float()))
+        return out.to(x.dtype)
+
+    def _rmsnorm_fn(x, weight, bias=None, z=None, eps=1e-5, group_size=None, norm_before_gate=False, upcast=True):
+        out = _rmsnorm_gated(x, z, weight, eps, group_size or x.shape[-1], norm_before_gate)
+        if bias is not None:
+            out = out + bias
+        return out
+
+    mods = {}
+    for name in ("mamba_ssm", "mamba_ssm.ops", "mamba_ssm.ops.triton"):
+        m = types.ModuleType(name)
+        m.__path__ = []
+        mods[name] = m
+    ln = types.ModuleType("mamba_ssm.ops.triton.layernorm_gated")
+    ln.rmsnorm_fn = _rmsnorm_fn
+    mods["mamba_ssm.ops.triton.layernorm_gated"] = ln
+    for name, m in mods.items():
+        m.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package=hasattr(m, "__path__"))
+        sys.modules[name] = m
+    mods["mamba_ssm"].ops = mods["mamba_ssm.ops"]
+    mods["mamba_ssm.ops"].triton = mods["mamba_ssm.ops.triton"]
+    mods["mamba_ssm.ops"].triton.layernorm_gated = ln
+    logger.info("Installed PyTorch fallback stub for mamba_ssm (rmsnorm_fn)")
+    return True
+
+
 def register_nemotron_h_omni_checkpoint_mapping(config, trust_remote_code: bool = False) -> bool:
     """Register the conversion rules an Omni wrapper needs; idempotent, no-op for other models.
 
@@ -102,6 +160,7 @@ def register_nemotron_h_omni_checkpoint_mapping(config, trust_remote_code: bool 
     """
     if not is_nemotron_h_omni_config(config):
         return False
+    install_mamba_ssm_stub()
     try:
         from transformers.conversion_mapping import (
             get_checkpoint_conversion_mapping,
@@ -187,6 +246,15 @@ def _resolve_source_dir(name_or_path) -> str | None:
         return name_or_path
     try:
         from huggingface_hub import snapshot_download
+
+        try:
+            return snapshot_download(
+                name_or_path,
+                allow_patterns=["*.safetensors", "*.safetensors.index.json"],
+                local_files_only=True,
+            )
+        except Exception:
+            pass
 
         return snapshot_download(name_or_path, allow_patterns=["*.safetensors", "*.safetensors.index.json"])
     except Exception as exc:  # noqa: BLE001 - offline / gated: keep the loaded dtype
