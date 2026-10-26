@@ -30,6 +30,12 @@ from auto_round.algorithms.registry import (
 )
 
 
+def _is_rrq_format(args) -> bool:
+    """Check whether the requested output format is RRQ."""
+    fmt = getattr(args, "format", None) or getattr(args, "_api_format", None) or ""
+    return "auto_round:rrq" in fmt.lower()
+
+
 def _parameter_registry(config_cls: type) -> AlgorithmParameterRegistry:
     if _has_custom_register_args(config_cls):
         return config_cls.get_registered_args()
@@ -181,7 +187,7 @@ class AlgorithmHandler:
         parameters_by_group = {}
         locations = []
         for entry in iter_algorithm_entries():
-            if entry.config_factory is None:
+            if entry.config_factory is None or entry.hidden:
                 continue
             config_cls = (
                 entry.config_factory if isinstance(entry.config_factory, type) else type(entry.config_factory())
@@ -194,17 +200,32 @@ class AlgorithmHandler:
                 for parameter in registry.parameters:
                     if _check_existing_parser_argument(parser, parameter, fallback=fallback):
                         continue
+                    # Prefer matching on the shared option string first: two distinct
+                    # options (e.g. ``--disable_opt_rtn`` and ``--enable_opt_rtn``) can
+                    # share the same ``dest`` while being different argparse actions, and
+                    # only the option-string match pairs them with the correct counterpart.
                     existing_index = next(
                         (
                             index
                             for index, item in enumerate(merged_parameters)
                             if locations[index][0] != group_name
-                            and (
-                                item.dest == parameter.dest or set(item.option_strings) & set(parameter.option_strings)
-                            )
+                            and set(item.option_strings) & set(parameter.option_strings)
                         ),
                         None,
                     )
+                    if existing_index is None:
+                        # Fall back to matching by ``dest`` (aliased options), but only
+                        # when the parsing semantics are compatible.
+                        existing_index = next(
+                            (
+                                index
+                                for index, item in enumerate(merged_parameters)
+                                if locations[index][0] != group_name
+                                and item.dest == parameter.dest
+                                and _argument_compatibility_key(item) == _argument_compatibility_key(parameter)
+                            ),
+                            None,
+                        )
                     if existing_index is not None:
                         merged = _merge_parameter(merged_parameters[existing_index], parameter)
                         merged_parameters[existing_index] = merged
@@ -229,9 +250,14 @@ class AlgorithmHandler:
         if getattr(args, "rotation_hadamard_type", None) and "hadamard" not in names:
             names.append("hadamard")
 
+        # Auto-select RRQ when the output format is auto_round:rrq and the user
+        # did not explicitly choose an algorithm.
+        if not names and _is_rrq_format(args):
+            names = ["rrq"]
+
         canonical = resolve_algorithm_names(names, ignore_unknown=True)
         seen = set(canonical)
-        if not ({"rtn", "auto_round"} & seen):
+        if not ({"rtn", "auto_round", "rrq"} & seen):
             canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
             canonical = ["rtn" if name == "auto_round" else name for name in canonical]
@@ -279,7 +305,7 @@ class AlgorithmHandler:
     def format_listing(cls) -> str:
         lines = []
         for entry in iter_algorithm_entries():
-            if entry.config_factory is None:
+            if entry.config_factory is None or entry.hidden:
                 continue
             other = [alias for alias in entry.aliases if alias != entry.name]
             alias_str = f" (aliases: {', '.join(other)})" if other else ""
@@ -290,7 +316,11 @@ class AlgorithmHandler:
     def format_detail(cls, name: str) -> str:
         canonical = cls.resolve_alias(name)
         if canonical is None:
-            supported = [entry.name for entry in iter_algorithm_entries() if entry.config_factory is not None]
+            supported = [
+                entry.name
+                for entry in iter_algorithm_entries()
+                if entry.config_factory is not None and not entry.hidden
+            ]
             raise ValueError(f"Unknown algorithm '{name}'. Supported: {', '.join(supported)}.")
         entry = get_algorithm_entry(canonical)
         lines = [f"{entry.name}: {entry.summary}"]
