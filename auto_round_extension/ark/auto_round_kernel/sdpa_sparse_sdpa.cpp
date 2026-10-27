@@ -50,11 +50,36 @@ KernelLauncher select_sparse_sdpa_prefill_launcher(BTLA_DTYPE q_dtype, int head_
   if (is_causal && has_mask) {
     return nullptr;
   }
+  if (q_tile_override == 512) {
+    if (head_dim == 128 && q_dtype == BTLA_DTYPE::BF16 && !is_causal && !has_mask) {
+      return detail::launch_sdpa_sparse_128_qtile512_bf16_noncausal_unmasked;
+    }
+    return nullptr;
+  }
+#if defined(ARK_SPARSE_BF16_ONLY)
+  if (q_dtype != BTLA_DTYPE::BF16 || is_causal || has_mask || head_dim != 128) {
+    return nullptr;
+  }
+  if (q_tile_override == 64) {
+    return detail::launch_sdpa_sparse_128_qtile64_bf16_noncausal_unmasked;
+  }
+  if (q_tile_override == 128) {
+    return detail::launch_sdpa_sparse_128_qtile128_bf16_noncausal_unmasked;
+  }
+  if (q_tile_override == 0 || q_tile_override == 256) {
+    return detail::launch_sdpa_sparse_128_bf16_noncausal_unmasked;
+  }
+  return nullptr;
+#else
   switch (head_dim) {
     case 128:
       if (q_tile_override == 64) {
         if (q_dtype == BTLA_DTYPE::BF16) ARK_SPARSE_SDPA_LAUNCHER(128_qtile64, bf16);
         ARK_SPARSE_SDPA_LAUNCHER(128_qtile64, f16);
+      }
+      if (q_tile_override == 128) {
+        if (q_dtype == BTLA_DTYPE::BF16) ARK_SPARSE_SDPA_LAUNCHER(128_qtile128, bf16);
+        ARK_SPARSE_SDPA_LAUNCHER(128_qtile128, f16);
       }
       if (q_tile_override != 0 && q_tile_override != 256) return nullptr;
       if (q_dtype == BTLA_DTYPE::BF16) ARK_SPARSE_SDPA_LAUNCHER(128, bf16);
@@ -66,6 +91,7 @@ KernelLauncher select_sparse_sdpa_prefill_launcher(BTLA_DTYPE q_dtype, int head_
     default:
       return nullptr;
   }
+#endif
 }
 
 #undef ARK_SPARSE_SDPA_LAUNCHER
@@ -121,7 +147,8 @@ void sparse_sdpa_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
                          int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h,
                          int o_stride_b, int batch, int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv,
                          int head_dim, float softmax_scale, bool is_causal, BTLA_DTYPE q_dtype,
-                         int sparse_q_block_size = 0) {
+                         int sparse_q_block_size = 0, int const* execution_schedule = nullptr,
+                         int const* execution_schedule_rounds = nullptr, int execution_schedule_max_rounds = 0) {
   const int effective_q_tile_override =
       (head_dim == 128 && q_tile_override == 0) ? 64 : ((head_dim == 64 && q_tile_override == 0) ? 64 : q_tile_override);
   detail::Options options =
@@ -140,6 +167,9 @@ void sparse_sdpa_prefill(sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, 
   options.valid_block_num = static_cast<int const*>(valid_block_num);
   options.num_q_blocks = num_q_blocks;
   options.num_k_blocks = num_k_blocks;
+  options.execution_schedule = execution_schedule;
+  options.execution_schedule_rounds = execution_schedule_rounds;
+  options.execution_schedule_max_rounds = execution_schedule_max_rounds;
   compat::set_default_queue(*q);
 
   KernelLauncher launcher =
@@ -282,20 +312,77 @@ void sdpa_impl_bf16_sparse_sdpa_qtile256_row64k(
     int num_q_blocks, int num_k_blocks, int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h,
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
-    int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-    bool is_causal) {
-  if (q_tile_override != 256) {
-    throw std::invalid_argument("sdpa_impl_bf16_sparse_sdpa_qtile256_row64k: q_tile_override must be 256");
+    int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
+    int sparse_q_block_size, int const* execution_schedule, int const* execution_schedule_rounds,
+    int execution_schedule_max_rounds) {
+  if (q_tile_override != 256 && q_tile_override != 512) {
+    throw std::invalid_argument("sdpa_impl_bf16_sparse_sdpa_qtile256_row64k: q_tile_override must be 256 or 512");
   }
   if (head_dim != 128) {
     throw std::invalid_argument("sdpa_impl_bf16_sparse_sdpa_qtile256_row64k: head_dim must be 128");
+  }
+  if (sparse_q_block_size != 64 && sparse_q_block_size != 256) {
+    throw std::invalid_argument(
+        "sdpa_impl_bf16_sparse_sdpa_qtile256_row64k: sparse_q_block_size must be 64 or 256");
   }
 
   sparse_sdpa_prefill(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, lut, valid_block_num, num_q_blocks, num_k_blocks,
                       q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
                       k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
                       o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
-                      softmax_scale, is_causal, BTLA_DTYPE::BF16, /*sparse_q_block_size=*/256);
+                      softmax_scale, is_causal, BTLA_DTYPE::BF16, sparse_q_block_size, execution_schedule,
+                      execution_schedule_rounds, execution_schedule_max_rounds);
+}
+
+void sdpa_impl_bf16_sparse_sdpa_qtile128_row64k(
+    sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, void* lut, void* valid_block_num,
+    int num_q_blocks, int num_k_blocks, int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h,
+    int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
+    int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
+    int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
+    int sparse_q_block_size) {
+  if (q_tile_override != 128) {
+    throw std::invalid_argument("sdpa_impl_bf16_sparse_sdpa_qtile128_row64k: q_tile_override must be 128");
+  }
+  if (head_dim != 128) {
+    throw std::invalid_argument("sdpa_impl_bf16_sparse_sdpa_qtile128_row64k: head_dim must be 128");
+  }
+  if (sparse_q_block_size != 64 && sparse_q_block_size != 128) {
+    throw std::invalid_argument("sdpa_impl_bf16_sparse_sdpa_qtile128_row64k: sparse_q_block_size must be 64 or 128");
+  }
+  if (sparse_q_block_size == 128 && (is_causal || mask != nullptr)) {
+    throw std::invalid_argument("128-token query routing requires non-causal, unmasked BF16 attention");
+  }
+
+  sparse_sdpa_prefill(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, lut, valid_block_num, num_q_blocks, num_k_blocks,
+                      q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
+                      k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
+                      o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
+                      softmax_scale, is_causal, BTLA_DTYPE::BF16, sparse_q_block_size);
+}
+
+void sdpa_impl_fp16_sparse_sdpa_qtile128_row64k(
+    sycl::queue* q, void* Q_ptr, void* K_ptr, void* V_ptr, void* O_ptr, void* mask, void* lut, void* valid_block_num,
+    int num_q_blocks, int num_k_blocks, int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h,
+    int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
+    int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
+    int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
+    int sparse_q_block_size) {
+  if (q_tile_override != 128) {
+    throw std::invalid_argument("sdpa_impl_fp16_sparse_sdpa_qtile128_row64k: q_tile_override must be 128");
+  }
+  if (head_dim != 128) {
+    throw std::invalid_argument("sdpa_impl_fp16_sparse_sdpa_qtile128_row64k: head_dim must be 128");
+  }
+  if (sparse_q_block_size != 64) {
+    throw std::invalid_argument("sdpa_impl_fp16_sparse_sdpa_qtile128_row64k: sparse_q_block_size must be 64");
+  }
+
+  sparse_sdpa_prefill(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, lut, valid_block_num, num_q_blocks, num_k_blocks,
+                      q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
+                      k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
+                      o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
+                      softmax_scale, is_causal, BTLA_DTYPE::F16, sparse_q_block_size);
 }
 
 void sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
@@ -303,20 +390,24 @@ void sdpa_impl_fp16_sparse_sdpa_qtile256_row64k(
     int num_q_blocks, int num_k_blocks, int q_tile_override, int q_stride_s, int q_stride_d, int q_stride_h,
     int q_stride_b, int k_stride_s, int k_stride_d, int k_stride_h, int k_stride_b, int v_stride_d, int v_stride_s,
     int v_stride_h, int v_stride_b, int o_stride_s, int o_stride_d, int o_stride_h, int o_stride_b, int batch,
-    int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale,
-    bool is_causal) {
+    int num_heads_q, int num_heads_kv, int seq_len_q, int seq_len_kv, int head_dim, float softmax_scale, bool is_causal,
+    int sparse_q_block_size) {
   if (q_tile_override != 256) {
     throw std::invalid_argument("sdpa_impl_fp16_sparse_sdpa_qtile256_row64k: q_tile_override must be 256");
   }
   if (head_dim != 128) {
     throw std::invalid_argument("sdpa_impl_fp16_sparse_sdpa_qtile256_row64k: head_dim must be 128");
   }
+  if (sparse_q_block_size != 64 && sparse_q_block_size != 256) {
+    throw std::invalid_argument(
+        "sdpa_impl_fp16_sparse_sdpa_qtile256_row64k: sparse_q_block_size must be 64 or 256");
+  }
 
   sparse_sdpa_prefill(q, Q_ptr, K_ptr, V_ptr, O_ptr, mask, lut, valid_block_num, num_q_blocks, num_k_blocks,
                       q_tile_override, q_stride_s, q_stride_d, q_stride_h, q_stride_b, k_stride_s, k_stride_d,
                       k_stride_h, k_stride_b, v_stride_d, v_stride_s, v_stride_h, v_stride_b, o_stride_s, o_stride_d,
                       o_stride_h, o_stride_b, batch, num_heads_q, num_heads_kv, seq_len_q, seq_len_kv, head_dim,
-                      softmax_scale, is_causal, BTLA_DTYPE::F16, /*sparse_q_block_size=*/256);
+                      softmax_scale, is_causal, BTLA_DTYPE::F16, sparse_q_block_size);
 }
 
 }  // namespace ark

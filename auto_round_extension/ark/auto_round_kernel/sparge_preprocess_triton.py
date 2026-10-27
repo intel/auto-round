@@ -111,6 +111,7 @@ def _triton_bmm_pool_sim_simmean_fuse_quant_xpu(
     D: tl.constexpr,
     BS: tl.constexpr,
     FUSE_MEAN: tl.constexpr,
+    FORCE_PARTIAL_TAIL_DENSE: tl.constexpr,
 ):
     b = tl.program_id(0)
     h = tl.program_id(1)
@@ -142,12 +143,12 @@ def _triton_bmm_pool_sim_simmean_fuse_quant_xpu(
     grams = tl.dot(x_normed, tl.trans(x_normed))
     sum_value = tl.sum(grams).to(tl.float32)
     cur_sim = (sum_value / (bs_eff * bs_eff)) > cur_h1
-    # Match the CUDA reference (SpargeAttn spas_sage_attn/utils.py): there the
-    # self-similarity divides zero-padded rows by a zero norm (0/0 -> NaN), so a
-    # partial tail block compares NaN > thr == False and is forced dense. Our
-    # guarded norm would instead mark the tail block similar/prunable, sparsifying
-    # the sequence tail (= last video frames). Force partial blocks to False.
-    cur_sim = cur_sim & (bs_eff >= BS)
+    # Match the CUDA reference for K routing: mark a partial K tail block as not
+    # similar so every query keeps it selected. For Q routing we instead use the
+    # valid-token statistics; forcing a partial Q block dense would select all K
+    # blocks, doubling that tile's rounds without improving its sparse error.
+    if FORCE_PARTIAL_TAIL_DENSE:
+        cur_sim = cur_sim & (bs_eff >= BS)
 
     num_blocks = tl.cdiv(N, BS)
     pool_block_offset = (b * H * num_blocks * D) + (h * num_blocks * D) + (nb * D)
@@ -285,6 +286,7 @@ def _get_pool_sim_triton_simmean_fuse_quant(
     block_size: int,
     simthreshd1: torch.Tensor,
     tensor_layout: str,
+    force_partial_tail_dense: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     x = x.contiguous()
     layout = tensor_layout.upper()
@@ -326,6 +328,7 @@ def _get_pool_sim_triton_simmean_fuse_quant(
         D=head_dim,
         BS=block_size,
         FUSE_MEAN=mean is not None,
+        FORCE_PARTIAL_TAIL_DENSE=force_partial_tail_dense,
         num_warps=num_warps,
     )
     return pool, sim_u8.to(torch.bool), x_quant, x_scale.unsqueeze(-1).contiguous()
@@ -339,6 +342,7 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
         ctx.quant_block_size,
         ctx.simthreshd1,
         ctx.tensor_layout,
+        force_partial_tail_dense=False,
     )
     pooled_k, sim_kblocks, k_int8_hnd, k_scale = _get_pool_sim_triton_simmean_fuse_quant(
         ctx.key,
@@ -366,6 +370,7 @@ def _run_triton_xpu_preprocess(ctx: Any) -> dict[str, Any]:
             ctx.query_tile_tokens,
             ctx.simthreshd1,
             ctx.tensor_layout,
+            force_partial_tail_dense=False,
         )
     else:
         pooled_q_for_routing = pooled_q
