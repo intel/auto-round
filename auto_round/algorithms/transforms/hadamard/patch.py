@@ -27,7 +27,7 @@ from __future__ import annotations
 import torch
 import transformers
 
-from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear, pack_fp4_to_uint8
+from auto_round.export.formats.autoround.qlinear_fp import QuantLinear, pack_fp4_to_uint8
 from auto_round.wrapper import WrapperLinear, WrapperWALayer
 
 __all__ = [

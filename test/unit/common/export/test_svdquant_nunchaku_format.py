@@ -21,7 +21,7 @@ import torch
 from safetensors.torch import save_file
 
 from auto_round.compressors.base import BaseCompressor
-from auto_round.export.formats.backends.svdquant_nunchaku import SVDQuantNunchakuFormat
+from auto_round.export.formats.svdquant.format import SVDQuantNunchakuFormat
 from auto_round.formats import get_formats
 from auto_round.schemes import PRESET_SCHEMES
 
@@ -80,7 +80,7 @@ def test_format_resolves_nested_sdxl_quant_blocks():
 
 @pytest.mark.parametrize("quant_block_list", [[["custom.block"]], []], ids=["custom", "empty"])
 def test_format_preserves_explicit_quant_blocks_without_adapter_resolution(monkeypatch, quant_block_list):
-    import auto_round.export.svdquant_adapters as svdquant_adapters
+    import auto_round.export.formats.svdquant.adapters as svdquant_adapters
 
     monkeypatch.setattr(
         svdquant_adapters,
@@ -162,8 +162,8 @@ def test_full_model_format_disables_immediate_packing_and_saving():
 
 
 def test_format_uses_flux_adapter_and_diffusers_weight_name(monkeypatch, tmp_path):
-    import auto_round.export.svdquant_nunchaku as exporter
-    from auto_round.export.svdquant_adapters.flux import FluxSVDQuantNunchakuAdapter
+    import auto_round.export.formats.svdquant.nunchaku as exporter
+    from auto_round.export.formats.svdquant.adapters.flux import FluxSVDQuantNunchakuAdapter
 
     output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
 
@@ -188,7 +188,7 @@ def test_format_uses_flux_adapter_and_diffusers_weight_name(monkeypatch, tmp_pat
 
     monkeypatch.setattr(exporter, "save_svdquant_nunchaku_safetensors", fake_export)
 
-    result = output_format.save_quantized(tmp_path, model=model, model_adapter="flux", device="cpu")
+    result = output_format.save_quantized_as_format(tmp_path, model=model, model_adapter="flux", device="cpu")
 
     assert result is model
     assert captured["output_path"] == str(tmp_path / "diffusion_pytorch_model.safetensors")
@@ -198,8 +198,8 @@ def test_format_uses_flux_adapter_and_diffusers_weight_name(monkeypatch, tmp_pat
 
 
 def test_format_auto_resolves_sdxl_adapter(monkeypatch, tmp_path):
-    import auto_round.export.svdquant_nunchaku as exporter
-    from auto_round.export.svdquant_adapters.sdxl import SDXLSVDQuantNunchakuAdapter
+    import auto_round.export.formats.svdquant.nunchaku as exporter
+    from auto_round.export.formats.svdquant.adapters.sdxl import SDXLSVDQuantNunchakuAdapter
 
     output_format = get_formats("svdquant_nunchaku", _mxfp4_compressor())[0]
 
@@ -233,7 +233,7 @@ def test_format_auto_resolves_sdxl_adapter(monkeypatch, tmp_path):
 
     monkeypatch.setattr(exporter, "save_svdquant_nunchaku_safetensors", fake_export)
 
-    output_format.save_quantized(tmp_path, model=model, model_adapter="auto", device="cpu")
+    output_format.save_quantized_as_format(tmp_path, model=model, model_adapter="auto", device="cpu")
 
     assert captured["output_path"] == str(tmp_path / "diffusion_pytorch_model.safetensors")
     assert isinstance(captured["adapter"], SDXLSVDQuantNunchakuAdapter)

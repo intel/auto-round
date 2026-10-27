@@ -340,7 +340,7 @@ def test_load_block_from_model_files_loads_legit_shard(tmp_path):
 
 
 def test_gguf_get_tensor_from_file_rejects_traversal(tmp_path):
-    from auto_round.export.export_to_gguf.special_handle import get_tensor_from_file
+    from auto_round.export.formats.gguf.special_handle import get_tensor_from_file
 
     _make_outside_secrets(tmp_path)
     model_dir = tmp_path / "malicious_model"
@@ -353,7 +353,7 @@ def test_gguf_get_tensor_from_file_rejects_traversal(tmp_path):
 
 @pytest.mark.parametrize("component_name", ["../../outside", "/abs/outside", "a/b", ".."])
 def test_copy_pipeline_artifacts_rejects_unsafe_component_name(tmp_path, component_name):
-    from auto_round.export.utils import _copy_pipeline_artifacts
+    from auto_round.export.common.serialization import _copy_pipeline_artifacts
 
     source_dir = tmp_path / "pipe"
     source_dir.mkdir()

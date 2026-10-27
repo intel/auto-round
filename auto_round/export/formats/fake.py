@@ -1,0 +1,185 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import copy
+import glob
+import json
+import os
+from collections.abc import Callable
+from typing import Any
+
+import torch
+
+from auto_round.export.base import OutputFormat
+from auto_round.export.common.artifacts import save_artifacts
+from auto_round.export.common.packing import prepare_model
+from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme, is_nv_fp
+from auto_round.utils import unsupported_meta_device
+
+
+def _serialize_quantization_config_value(value):
+    if isinstance(value, torch.dtype):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _serialize_quantization_config_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_quantization_config_value(item) for item in value]
+    return value
+
+
+def _normalize_state_dict_keys(state_dict: dict[str, torch.Tensor]) -> tuple[dict[str, torch.Tensor], bool]:
+    """Collapse wrapped-layer keys like ``*.orig_layer.weight`` to ``*.weight``."""
+    normalized = {}
+    changed = False
+    for key, value in state_dict.items():
+        new_key = key.replace(".orig_layer.", ".")
+        if new_key != key:
+            changed = True
+        # Prefer already-normalized keys if both happen to exist.
+        if new_key not in normalized:
+            normalized[new_key] = value
+    return normalized, changed
+
+
+def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
+    """Rewrite saved checkpoint shards in-place so no ``.orig_layer.`` keys remain."""
+    if not os.path.isdir(output_dir):
+        return
+
+    safetensor_files = sorted(glob.glob(os.path.join(output_dir, "*.safetensors")))
+    rewrote_safetensors = False
+    for file_path in safetensor_files:
+        try:
+            from safetensors.torch import load_file as safe_load_file
+            from safetensors.torch import save_file as safe_save_file
+
+            state = safe_load_file(file_path)
+            normalized, changed = _normalize_state_dict_keys(state)
+            if changed:
+                safe_save_file(normalized, file_path)
+                rewrote_safetensors = True
+        except Exception as exc:
+            logger.warning("Failed to normalize safetensors keys for %s: %s", file_path, exc)
+
+    index_path = os.path.join(output_dir, "model.safetensors.index.json")
+    if rewrote_safetensors and os.path.exists(index_path):
+        try:
+            with open(index_path) as index_file:
+                index = json.load(index_file)
+            weight_map = index.get("weight_map", {})
+            normalized_weight_map, changed = _normalize_state_dict_keys(weight_map)
+            if changed:
+                index["weight_map"] = normalized_weight_map
+                with open(index_path, "w") as index_file:
+                    json.dump(index, index_file, indent=2)
+        except Exception as exc:
+            logger.warning("Failed to normalize safetensors index keys for %s: %s", index_path, exc)
+
+    bin_files = sorted(glob.glob(os.path.join(output_dir, "*.bin")))
+    for file_path in bin_files:
+        try:
+            state = torch.load(file_path, weights_only=True)
+            if not isinstance(state, dict):
+                continue
+            normalized, changed = _normalize_state_dict_keys(state)
+            if changed:
+                torch.save(normalized, file_path)
+        except Exception as exc:
+            logger.warning("Failed to normalize pytorch checkpoint keys for %s: %s", file_path, exc)
+
+
+def _materialize_fake_input_global_scales(model: torch.nn.Module) -> None:
+    """Persist calibrated NVFP activation scales in fake-format checkpoints."""
+    for layer in model.modules():
+        if not is_nv_fp(getattr(layer, "act_data_type", "") or "") or "input_global_scale" in layer._buffers:
+            continue
+        input_global_scale = getattr(layer, "input_global_scale", None)
+        if not isinstance(input_global_scale, torch.Tensor):
+            continue
+        delattr(layer, "input_global_scale")
+        layer.register_buffer("input_global_scale", input_global_scale.to(torch.float32))
+
+
+@OutputFormat.register("fake")
+class FakeFormat(OutputFormat):
+    support_schemes = None
+    format_name = "fake"
+
+    def check_and_reset_format(
+        self, scheme: QuantizationScheme, ctx: Any
+    ) -> tuple[None, QuantizationScheme, dict, list]:
+        return None, scheme, ctx.layer_config, ctx.quant_block_list
+
+    # fake format will not execute pack_layer.
+    def pack_layer(self, layer_name, model, device=None, **kwargs):
+        pass
+
+    def save_quantized_as_format(
+        self,
+        output_dir: str,
+        model: torch.nn.Module = None,
+        tokenizer: Callable | None = None,
+        layer_config: dict | None = None,
+        inplace: bool = True,
+        device: str | torch.device = "cpu",
+        serialization_dict: dict | None = None,
+        **kwargs,
+    ):
+        has_fake_act_quant = False
+        logger.warning(
+            "Saving fake-quantized model to disk. "
+            "Linear replacement is deferred to load-time (via auto_round:fake backend); "
+            "save-time now keeps the in-memory quantized model structure unchanged."
+        )
+        model = prepare_model(model, inplace, device="cpu")
+        has_meta_device = unsupported_meta_device(model)
+
+        config_act_bits = (serialization_dict or {}).get("act_bits")
+        if config_act_bits is not None and config_act_bits <= 8:
+            has_fake_act_quant = True
+
+        if has_fake_act_quant:
+            quantization_config = _serialize_quantization_config_value(dict(serialization_dict or {}))
+            quantization_config["quant_method"] = "auto-round"
+            quantization_config["packing_format"] = "auto_round:fake"
+            quantization_config["block_name_to_quantize"] = quantization_config.pop("to_quant_block_names", None)
+            from auto_round.export.common.serialization import filter_quantization_config
+
+            filter_quantization_config(quantization_config)
+            if hasattr(model, "config") and model.config is not None:
+                model.config.quantization_config = quantization_config
+        elif hasattr(model, "config") and model.config is not None and hasattr(model.config, "quantization_config"):
+            delattr(model.config, "quantization_config")
+
+        if not has_meta_device:
+            if has_fake_act_quant:
+                _materialize_fake_input_global_scales(model)
+            model.save_pretrained(output_dir)
+        else:
+            from auto_round.export.common.serialization import save_config_artifact
+
+            save_config_artifact(model, output_dir)
+
+        # Some save flows write wrapper keys first; normalize to plain Linear keys
+        # so HF loading does not report UNEXPECTED/MISSING pairs.
+        if has_fake_act_quant:
+            _rewrite_saved_weights_without_orig_layer(output_dir)
+
+        from auto_round.export.common.serialization import apply_post_save_source_fixes
+
+        apply_post_save_source_fixes(model, output_dir)
+
+        save_artifacts(output_dir, tokenizer, kwargs.get("processor"), kwargs.get("image_processor"))
+        return model

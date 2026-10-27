@@ -302,7 +302,7 @@ def tune(args):
             raise ValueError(f"{fmt} is not supported, we only support {SUPPORTED_FORMATS}")
 
     if any("llm_compressor" in fmt for fmt in formats):
-        from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+        from auto_round.export.formats.compressed_tensors import check_compressed_tensors_supported
 
         try:
             check_compressed_tensors_supported(raise_error=True)

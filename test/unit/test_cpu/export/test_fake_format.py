@@ -21,7 +21,7 @@ from transformers import AutoModelForCausalLM, OPTConfig, OPTForCausalLM
 
 import auto_round.experimental.qmodules.fake as fake_qmodule
 from auto_round.experimental.qmodules.fake import FakeActQuantLinear
-from auto_round.export.formats.backends.fake import (
+from auto_round.export.formats.fake import (
     _normalize_state_dict_keys,
     _rewrite_saved_weights_without_orig_layer,
 )
@@ -133,7 +133,7 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
     expected_weight = model.linear.orig_layer.weight.detach().clone()
     output_dir = str(tmp_path / "fake_model")
 
-    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4"], SimpleNamespace(mllm=False)).save_quantized(
+    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4"], SimpleNamespace(mllm=False)).save_quantized_as_format(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -305,7 +305,7 @@ def test_fake_format_omits_woq_quantization_config(tmp_path):
     model = _SaveableModel()
     output_dir = str(tmp_path / "woq_model")
 
-    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized(
+    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized_as_format(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -331,7 +331,7 @@ def test_fake_format_still_saves_when_env_disabled(tmp_path):
     model = _SaveableModel()
     output_dir = str(tmp_path / "save_model_even_when_env_disabled")
 
-    returned = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
+    returned = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized_as_format(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -358,14 +358,14 @@ def test_fake_format_meta_device_applies_post_save_source_fixes(tmp_path, monkey
     output_dir = str(tmp_path / "meta_device_model")
     fixup_calls = []
 
-    monkeypatch.setattr("auto_round.export.formats.backends.fake.unsupported_meta_device", lambda model: True)
-    monkeypatch.setattr("auto_round.export.utils.save_config_artifact", lambda model, save_dir: None)
+    monkeypatch.setattr("auto_round.export.formats.fake.unsupported_meta_device", lambda model: True)
+    monkeypatch.setattr("auto_round.export.common.serialization.save_config_artifact", lambda model, save_dir: None)
     monkeypatch.setattr(
-        "auto_round.export.utils.apply_post_save_source_fixes",
+        "auto_round.export.common.serialization.apply_post_save_source_fixes",
         lambda saved_model, save_dir: fixup_calls.append((saved_model, save_dir)),
     )
 
-    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized(
+    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized_as_format(
         output_dir=output_dir,
         model=model,
     )
@@ -425,7 +425,7 @@ def test_fake_format_restores_fp32_and_copies_mtp_tensors(tmp_path, monkeypatch)
     model = _SaveableSafetensorsModel(source_dir, norm_weight)
     output_dir = str(tmp_path / "fake_qwen35")
 
-    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized(
+    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized_as_format(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -549,7 +549,9 @@ def test_fake_format_keeps_in_memory_wrapper_structure_on_save(tmp_path):
     model = _SaveableModel()
     output_dir = str(tmp_path / "fake_keep_wrapper_model")
 
-    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
+    saved_model = FakeFormat(
+        "fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)
+    ).save_quantized_as_format(
         output_dir=output_dir,
         model=model,
         inplace=False,

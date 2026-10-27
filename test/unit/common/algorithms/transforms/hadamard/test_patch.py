@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 from auto_round.wrapper import WrapperLinear, WrapperWALayer
 
 # ---------------------------------------------------------------------------

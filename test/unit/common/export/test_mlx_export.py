@@ -5,7 +5,7 @@
 # You may obtain a copy of the License at
 #
 #    http://www.apache.org/licenses/LICENSE-2.0
-"""Unit tests for ``auto_round.export.export_to_mlx.export``.
+"""Unit tests for ``auto_round.export.formats.mlx.packing``.
 
 Tests the MLX-format exporter that produces models loadable by mlx-lm.
 """
@@ -21,7 +21,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.export.export_to_mlx.export import (
+from auto_round.compressors.config_resolution import resolve_scheme_value
+from auto_round.export.formats.mlx.config import (
     _build_mlx_quantization_config,
     _build_text_subconfig_quantization,
     _detect_text_module_prefix,
@@ -30,15 +31,15 @@ from auto_round.export.export_to_mlx.export import (
     _flatten_rope_parameters_recursive,
     _is_mlx_quantizable,
     _load_original_config_json,
-    _MLXPackedLayer,
-    _pack_weight_mlx,
     _preserve_original_model_types,
     _snapshot_original_model_types,
     _strip_prefix,
-    pack_layer,
-    save_quantized_as_mlx,
 )
+from auto_round.export.formats.mlx.format import MLXFormat
+from auto_round.export.formats.mlx.packing import _MLXPackedLayer, _pack_weight_mlx, pack_layer
 from auto_round.utils.common import MM_KEYS
+
+mlx_format = MLXFormat("mlx", resolve_scheme_value("W4A16", {}).value, SimpleNamespace(mllm=False))
 
 # ==============================================================================
 # _is_mlx_quantizable
@@ -502,7 +503,7 @@ class TestSaveQuantizedAsMlx:
     def _patch_save_paths(self):
         """Patch unsupported_meta_device so save_pretrained is skipped for plain nn.Module."""
         with patch(
-            "auto_round.export.export_to_mlx.export.unsupported_meta_device",
+            "auto_round.export.formats.mlx.format.unsupported_meta_device",
             return_value=True,
         ):
             yield
@@ -522,7 +523,7 @@ class TestSaveQuantizedAsMlx:
     def test_creates_output_directory(self, tmp_path):
         model = self._make_model()
         output_dir = str(tmp_path / "mlx_model")
-        result = save_quantized_as_mlx(
+        result = mlx_format.save_quantized_as_format(
             output_dir=output_dir,
             model=model,
             tokenizer=None,
@@ -543,7 +544,7 @@ class TestSaveQuantizedAsMlx:
             json.dump({"model_type": "test", "hidden_size": 64}, f)
 
         # Now call the function - it will read config.json and add quantization info
-        save_quantized_as_mlx(
+        mlx_format.save_quantized_as_format(
             output_dir=output_dir,
             model=model,
             tokenizer=None,
@@ -560,7 +561,7 @@ class TestSaveQuantizedAsMlx:
         model = self._make_model()
         output_dir = str(tmp_path / "mlx_model")
         # The function should not raise and should process the autoround_format flag
-        save_quantized_as_mlx(
+        mlx_format.save_quantized_as_format(
             output_dir=output_dir,
             model=model,
             tokenizer=None,
@@ -590,7 +591,7 @@ class TestSaveQuantizedAsMlx:
         )
         output_dir = str(tmp_path / "mlx_model")
         # Should not raise; VLM text_config path is exercised
-        save_quantized_as_mlx(
+        mlx_format.save_quantized_as_format(
             output_dir=output_dir,
             model=model,
             tokenizer=None,
@@ -601,7 +602,7 @@ class TestSaveQuantizedAsMlx:
     def test_inplace_false_creates_copy(self, tmp_path):
         model = self._make_model()
         output_dir = str(tmp_path / "mlx_model")
-        result = save_quantized_as_mlx(
+        result = mlx_format.save_quantized_as_format(
             output_dir=output_dir,
             model=model,
             tokenizer=None,

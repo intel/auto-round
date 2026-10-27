@@ -21,7 +21,36 @@ from auto_round.export.formats import OutputFormat
 from auto_round.utils import SUPPORTED_FORMATS
 
 
-def test_custom_format_quantize_and_save(tiny_opt_model_path, tmp_path):
+def test_custom_format_quantize_and_save(tmp_path):
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from tokenizers.pre_tokenizers import Whitespace
+    from transformers import OPTConfig, OPTForCausalLM, PreTrainedTokenizerFast
+
+    # Keep the extension acceptance test local and independent of model downloads.
+    model_dir = tmp_path / "input_model"
+    model = OPTForCausalLM(
+        OPTConfig(
+            vocab_size=128,
+            hidden_size=64,
+            ffn_dim=64,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            max_position_embeddings=128,
+        )
+    )
+    model.save_pretrained(model_dir)
+    backend = Tokenizer(WordLevel({"[UNK]": 0, "[PAD]": 1, "[EOS]": 2, "hello": 3}, unk_token="[UNK]"))
+    backend.pre_tokenizer = Whitespace()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=backend,
+        unk_token="[UNK]",
+        pad_token="[PAD]",
+        eos_token="[EOS]",
+    )
+    tokenizer.save_pretrained(model_dir)
+    tiny_opt_model_path = str(model_dir)
+
     name = "test_custom_save"
     calls = []
 
@@ -30,7 +59,7 @@ def test_custom_format_quantize_and_save(tiny_opt_model_path, tmp_path):
         def pack_layer(self, *args, **kwargs):
             pass
 
-        def save_quantized(self, output_dir, *, model, **kwargs):
+        def save_quantized_as_format(self, output_dir, *, model, **kwargs):
             calls.append((output_dir, model, kwargs))
             Path(output_dir).mkdir(parents=True, exist_ok=True)
             (Path(output_dir) / "export.marker").write_text(self.output_format)

@@ -1,0 +1,319 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import json
+import os
+import sys
+from collections.abc import Callable
+from functools import partial
+
+import torch
+import transformers
+
+from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.experimental.utils import NVFP4_KV_DTYPE
+from auto_round.export.common.artifacts import save_artifacts
+from auto_round.export.common.packing import pack_layers, prepare_model
+from auto_round.export.common.serialization import is_immediate_saving_mode, save_model
+from auto_round.export.formats.autoround.fp8 import FP8QLinear
+from auto_round.export.formats.compressed_tensors.config import check_compressed_tensors_supported
+from auto_round.export.formats.compressed_tensors.utils import finalize_llmcompressor_config_names
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_start_with_block_name,
+    check_to_quantized,
+    get_module,
+    get_packing_device,
+    is_gaudi2,
+    logger,
+    set_module,
+    unsupported_meta_device,
+)
+
+
+def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: str | None = None) -> None:
+    """
+    Packs a model layer for quantization based on its type and configuration.
+
+    This function retrieves the specified layer from the model, checks its
+    compatibility for quantization, and replaces it with a quantized version
+    if applicable. The quantization process depends on the layer's bit-width,
+    group size, symmetry, and activation bits.
+
+    Args:
+        layer_name (str): The name of the layer to be packed.
+        model (torch.nn.Module): The model containing the layer.
+        backend (str): The backend framework to be used for quantization.
+
+    Returns:
+        None: The function modifies the model in place.
+    """
+    from auto_round.export.formats.autoround.fp8 import pack_layer as fp8_pack_layer
+
+    fp8_pack_layer(layer_name, model, data_type, device, unsqueeze=True)
+
+
+def _get_fp8_strategy(granularity: str = "tensor"):
+    from compressed_tensors.quantization import QuantizationStrategy  # pylint: disable=E0401
+
+    if granularity == "head":
+        return QuantizationStrategy.ATTN_HEAD
+    return QuantizationStrategy.TENSOR
+
+
+def _construct_fp8_args(granularity: str = "tensor"):
+    from compressed_tensors.quantization import (  # pylint: disable=E0401
+        QuantizationArgs,
+        QuantizationType,
+    )
+
+    return QuantizationArgs(
+        num_bits=8,
+        type=QuantizationType.FLOAT,
+        strategy=_get_fp8_strategy(granularity),
+        symmetric=True,
+        dynamic=False,
+    )
+
+
+def _construct_kv_scheme(granularity: str = "tensor"):
+    """Construct the default KV cache quantization scheme for FP8_STATIC export."""
+    default_kv_scheme = _construct_fp8_args(granularity)
+
+    logger.warning_once(
+        "Using default KV cache scheme: %s. "
+        "Currently, only this KV cache scheme is supported for FP8_STATIC + FP8 KV.",
+        repr(default_kv_scheme),
+    )
+
+    return default_kv_scheme
+
+
+def _use_fp8_kv(static_kv_dtype: str | None) -> bool:
+    """Return True if static KV cache should use FP8."""
+    if static_kv_dtype in ("fp8", "float8_e4m3fn"):
+        logger.warning_once("Exporting model with static KV cache in FP8 dtype.")
+        return True
+    return False
+
+
+def _use_fp8_attention(static_attention_dtype: str | None) -> bool:
+    """Return True if static attention should use FP8."""
+    if static_attention_dtype in ("fp8", "float8_e4m3fn"):
+        logger.warning_once("Exporting model with static attention in FP8 dtype.")
+        return True
+    return False
+
+
+def _use_nvfp4_kv(static_kv_dtype: str | None) -> bool:
+    """Return True if static KV cache should use NVFP4."""
+    if static_kv_dtype in (NVFP4_KV_DTYPE, "fp4", "float4_e2m1"):
+        logger.warning_once("Exporting model with static KV cache in NVFP4 dtype.")
+        return True
+    return False
+
+
+def _construct_nvfp4_kv_scheme():
+    """Construct the NVFP4 KV cache scheme from the compressed-tensors NVFP4 preset.
+
+    Reusing the preset's input-activation args guarantees the serialized
+    ``kv_cache_scheme`` is identical to what llm-compressor / compressed-tensors
+    produce for NVFP4 KV cache (fp4 e2m1, 16-element groups, fp8_e4m3 block
+    scales computed at runtime, static per-tensor global scale).
+    """
+    from compressed_tensors.quantization import preset_name_to_scheme  # pylint: disable=E0401
+
+    kv_args = preset_name_to_scheme("NVFP4", ["Linear"]).input_activations
+    logger.warning_once(
+        "Using the compressed-tensors NVFP4 preset input-activation args as the KV cache scheme: %s",
+        repr(kv_args),
+    )
+    return kv_args
+
+
+def _get_attention_targets(model: torch.nn.Module) -> list[str]:
+    from compressed_tensors.quantization.lifecycle.initialize import is_attention_module  # pylint: disable=E0401
+
+    attention_targets = []
+    for module in model.modules():
+        if is_attention_module(module):
+            target = type(module).__name__
+            if target not in attention_targets:
+                attention_targets.append(target)
+    return attention_targets
+
+
+def _get_attention_config(model: torch.nn.Module, granularity: str = "tensor") -> dict | None:
+    """Return attention FP8 config as a standalone dict for the top-level
+    ``attention_input_activations`` field.
+
+    Keeping this out of ``config_groups`` prevents compressed_tensors from
+    trying to compress attention modules (which have no weight tensor to
+    compress) during model loading.
+    """
+    attention_targets = _get_attention_targets(model)
+    if len(attention_targets) == 0:
+        logger.warning("Skipping FP8 attention config because no attention modules were detected.")
+        return None
+
+    return {
+        "targets": attention_targets,
+        "input_activations": _construct_fp8_args(granularity).model_dump(),
+    }
+
+
+def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
+    """Configure FP8 dtype flavor for Intel Gaudi2 hardware compatibility."""
+    _GAUDI2_FP8_DTYPE_FLAVOR = "float8_e4m3fnuz"
+
+    if is_gaudi2():
+        quantization_config["fp8_dtype_flavor"] = _GAUDI2_FP8_DTYPE_FLAVOR
+        logger.warning_once(
+            "Running on Intel Gaudi2 hardware."
+            f" Setting FP8 dtype flavor to {_GAUDI2_FP8_DTYPE_FLAVOR} for compatibility."
+        )
+
+
+def save_checkpoint(
+    output_dir: str,
+    model: torch.nn.Module = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
+    inplace: bool = True,
+    device: str | torch.device = "cpu",
+    serialization_dict: dict | None = None,
+    **kwargs,
+) -> torch.nn.Module:
+    """
+    Saves a quantized model of FP8_STATIC scheme in the llm-compressor format.
+
+    Args:
+        output_dir (str): The directory where the quantized model will be saved.
+        inplace (bool, optional): If True, modifies the model in place. Otherwise, creates a deepcopy of the model.
+                                Default is True.
+        backend (str, optional): The backend to be used for quantization.
+                                  Default is "autoround:exllamav2".
+        **kwargs: Additional keyword arguments including:
+            - model (nn.Module): The model to be quantized.
+            - layer_config (dict): The layer configuration for each layer.
+            - serialization_dict (dict): The serialization configuration.
+            - tokenizer (Tokenizer, optional): The tokenizer to be saved.
+
+    Returns:
+        None
+
+    Raises:
+        ValueError: If the backend is not supported.
+    """
+    safe_serialization = kwargs.get("safe_serialization", True)
+    model = prepare_model(model, inplace, device="cpu" if not inplace else None)
+
+    processor = kwargs.get("processor", None)
+    image_processor = kwargs.get("image_processor", None)
+
+    names = list(layer_config.keys())
+    if not unsupported_meta_device(model):
+        pack_layers(
+            model,
+            names,
+            kwargs.get("_pack_layer") or partial(pack_layer, data_type=serialization_dict.get("data_type", "fp8")),
+            device=device,
+        )
+
+    # Get llm-compressor format config
+    check_compressed_tensors_supported(raise_error=True)
+    from compressed_tensors.quantization import (  # pylint: disable=E0401
+        QuantizationArgs,
+        QuantizationConfig,
+        QuantizationScheme,
+        QuantizationStatus,
+        QuantizationStrategy,
+        QuantizationType,
+    )
+
+    group_size = serialization_dict["group_size"]
+    if group_size == -1:
+        strategy = QuantizationStrategy.CHANNEL
+    elif group_size == 0:
+        strategy = QuantizationStrategy.TENSOR
+    else:
+        strategy = QuantizationStrategy.GROUP
+    if serialization_dict["act_group_size"] != 0:
+        logger.error(
+            f"scheme FP8_STATIC export to llm_compressor format only support for act_group_size 0,"
+            f" but got {serialization_dict['act_group_size']}, please check."
+        )
+        sys.exit(-1)
+    scheme_args = dict(
+        weights=QuantizationArgs(
+            num_bits=8,
+            type=QuantizationType.FLOAT,
+            strategy=strategy,
+            symmetric=True,
+            dynamic=False,
+        ),
+        input_activations=_construct_fp8_args(),
+    )
+    targets = ["Linear"]
+    ignore = []
+    for layer_name in layer_config:
+        if not check_to_quantized(layer_config[layer_name]):
+            ignore.append(layer_name)
+    config_groups = {}
+    scheme = QuantizationScheme(targets=targets, **scheme_args)
+    config_groups["group_0"] = scheme
+    static_attention_granularity = serialization_dict.get("static_attention_granularity", "tensor")
+    static_kv_granularity = serialization_dict.get("static_kv_granularity", "tensor")
+    use_fp8_attention = _use_fp8_attention(serialization_dict.get("static_attention_dtype", None))
+    use_fp8_kv = _use_fp8_kv(serialization_dict.get("static_kv_dtype", None))
+    if _use_nvfp4_kv(serialization_dict.get("static_kv_dtype", None)):
+        raise ValueError(
+            "NVFP4 KV cache export is only supported on the NVFP4 compressed-tensors export path "
+            "(NVFP4 weight scheme + format 'llm_compressor'); this path (FP8_STATIC) supports FP8 KV cache only."
+        )
+    attention_config = _get_attention_config(model, static_attention_granularity) if use_fp8_attention else None
+    kv_granularity = static_attention_granularity if use_fp8_attention else static_kv_granularity
+    quantization_config = QuantizationConfig(
+        config_groups=config_groups,
+        kv_cache_scheme=_construct_kv_scheme(kv_granularity) if (use_fp8_kv or use_fp8_attention) else None,
+        quantization_status=QuantizationStatus.COMPRESSED,
+        ignore=ignore,
+    )
+    quantization_config = quantization_config.to_dict()
+    quantization_config["provider"] = "auto-round"
+    _configure_gaudi2_fp8_dtype(quantization_config)
+    quantization_config["format"] = "float-quantized"
+    if group_size > 0:
+        quantization_config["config_groups"]["group_0"]["weights"]["group_size"] = group_size
+    if attention_config is not None:
+        quantization_config["attention_input_activations"] = attention_config
+    quantization_config = finalize_llmcompressor_config_names(
+        quantization_config, model, [], [n for n in layer_config if check_to_quantized(layer_config[n])]
+    )
+    if hasattr(model, "config"):
+        model.config.quantization_config = quantization_config
+
+    if output_dir is None:
+        return model
+
+    immediate_saving = is_immediate_saving_mode(model, serialization_dict)
+    if os.path.exists(output_dir) and not immediate_saving:
+        logger.warning(f"{output_dir} already exists, this may cause model conflict")
+
+    save_artifacts(output_dir, tokenizer, processor, image_processor)
+
+    dtype = None
+    save_model(model, output_dir, safe_serialization=safe_serialization, dtype=dtype, immediate_saving=immediate_saving)
+
+    return model

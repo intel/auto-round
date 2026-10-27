@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from transformers.core_model_loading import Chunk, PrefixChange, WeightConverter
 
-from auto_round.export.export_to_gguf.hf_checkpoint_restorer import HFCheckpointRestorer
+from auto_round.export.formats.gguf.hf_checkpoint_restorer import HFCheckpointRestorer
 from auto_round.modeling.fused_moe.fusion_spec import (
     MoEFusionSpec,
     ProjectionFusionSpec,
@@ -87,7 +87,7 @@ def test_restorer_rejects_partially_completed_moe_refusion_view():
 
 
 def test_get_and_filter_restored_tensor_preserve_moe_sources():
-    from auto_round.export.export_to_gguf.convert import filter_restored_tensor, get_restored_tensors
+    from auto_round.export.formats.gguf.convert import filter_restored_tensor, get_restored_tensors
 
     class Converter:
         @staticmethod
@@ -202,7 +202,7 @@ def test_restorer_does_not_rerun_completed_conversion_group(monkeypatch):
 def test_resolve_restored_qtype_keeps_higher_recipe_fallback_for_multi_source_layer_config():
     import gguf
 
-    from auto_round.export.export_to_gguf.convert import resolve_restored_qtype
+    from auto_round.export.formats.gguf.convert import resolve_restored_qtype
 
     diagnostics = []
     qtype = resolve_restored_qtype(
@@ -228,7 +228,7 @@ def test_resolve_restored_qtype_keeps_higher_recipe_fallback_for_multi_source_la
 def test_resolve_restored_qtype_respects_mixed_layer_config_even_when_recipe_is_higher():
     import gguf
 
-    from auto_round.export.export_to_gguf.convert import resolve_restored_qtype
+    from auto_round.export.formats.gguf.convert import resolve_restored_qtype
 
     diagnostics = []
     qtype = resolve_restored_qtype(
@@ -254,7 +254,7 @@ def test_resolve_restored_qtype_respects_mixed_layer_config_even_when_recipe_is_
 def test_resolve_restored_qtype_keeps_higher_layer_config_than_recipe_fallback():
     import gguf
 
-    from auto_round.export.export_to_gguf.convert import resolve_restored_qtype
+    from auto_round.export.formats.gguf.convert import resolve_restored_qtype
 
     diagnostics = []
     qtype = resolve_restored_qtype(
@@ -275,7 +275,7 @@ def test_resolve_restored_qtype_keeps_higher_layer_config_than_recipe_fallback()
 def test_resolve_restored_qtype_falls_back_and_records_conflicting_multi_source_layer_config():
     import gguf
 
-    from auto_round.export.export_to_gguf.convert import resolve_restored_qtype
+    from auto_round.export.formats.gguf.convert import resolve_restored_qtype
 
     diagnostics = []
     qtype = resolve_restored_qtype(
@@ -335,7 +335,7 @@ def test_restorer_falls_back_to_original_tensor_when_weight_conversion_fails():
 
 
 def test_get_restored_tensors_replaces_empty_live_tensor_from_checkpoint(monkeypatch):
-    from auto_round.export.export_to_gguf import convert
+    from auto_round.export.formats.gguf import convert
 
     tensor_name = "model.layers.0.self_attn.q_proj.weight"
     model = _DummyModel({tensor_name: torch.tensor([], dtype=torch.bfloat16)}, [])
@@ -360,7 +360,7 @@ def test_get_restored_tensors_replaces_empty_live_tensor_from_checkpoint(monkeyp
 
 
 def test_name_resolution_diagnostics_are_never_written_to_export_directory(tmp_path, monkeypatch):
-    from auto_round.export.export_to_gguf.convert import _flush_name_resolution_diagnostics
+    from auto_round.export.formats.gguf.convert import _flush_name_resolution_diagnostics
 
     monkeypatch.setenv("AR_GGUF_DEBUG_NAME_RESOLUTION", "1")
 
@@ -377,7 +377,7 @@ def test_gguf_writer_has_tensor_supports_current_gguf_dict_entries():
     import numpy as np
     from gguf.gguf_writer import GGUFWriter
 
-    from auto_round.export.export_to_gguf.convert import _gguf_writer_has_tensor
+    from auto_round.export.formats.gguf.convert import _gguf_writer_has_tensor
 
     writer = GGUFWriter(path=None, arch="llama")
     writer.add_tensor("blk.24.attn_k_norm.weight", np.zeros((1,), dtype=np.float32))
@@ -388,7 +388,7 @@ def test_gguf_writer_has_tensor_supports_current_gguf_dict_entries():
 
 def test_gguf_shape_fallback_updates_layer_config_before_quantization():
     from auto_round.compressors.utils import _apply_gguf_shape_fallback
-    from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
+    from auto_round.export.formats.gguf.config import GGUF_INNER_CONFIG
 
     class Model(nn.Module):
         def __init__(self):
@@ -411,7 +411,7 @@ def test_quant_data_recomputes_scale_when_final_qtype_differs_from_layer_config(
     import gguf
     import numpy as np
 
-    from auto_round.export.export_to_gguf import convert
+    from auto_round.export.formats.gguf import convert
 
     captured = {}
 
@@ -459,7 +459,7 @@ def test_quant_data_recomputes_scale_when_final_qtype_differs_from_layer_config(
 def test_quant_data_rejects_layer_scale_that_does_not_match_final_qtype(monkeypatch):
     import gguf
 
-    from auto_round.export.export_to_gguf import convert
+    from auto_round.export.formats.gguf import convert
 
     class Module:
         def __init__(self):

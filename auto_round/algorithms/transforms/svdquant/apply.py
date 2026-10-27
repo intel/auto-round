@@ -141,7 +141,7 @@ class SVDQuantTransform(BasePreprocessor):
         self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
         self._target_modules = config.target_modules
         if self._target_modules is None and config.model_adapter in {"flux", "sdxl"}:
-            from auto_round.export.svdquant_adapters import (
+            from auto_round.export.formats.svdquant.adapters import (
                 FLUX_SVDQUANT_TARGET_MODULES,
                 SDXL_SVDQUANT_TARGET_MODULES,
             )
@@ -182,7 +182,7 @@ class SVDQuantTransform(BasePreprocessor):
     def _resolve_model_adapter(self, model: torch.nn.Module | None, block: torch.nn.Module | None = None) -> str:
         model_adapter = self.config.model_adapter or "auto"
         if model_adapter == "auto":
-            from auto_round.export.svdquant_adapters import detect_svdquant_model_adapter
+            from auto_round.export.formats.svdquant.adapters import detect_svdquant_model_adapter
 
             model_adapter = detect_svdquant_model_adapter(model) if model is not None else "identity"
             if (
@@ -204,7 +204,7 @@ class SVDQuantTransform(BasePreprocessor):
                 warn_if_unverified_flux_model(model)
         self._target_modules = self.config.target_modules
         if self._target_modules is None and model_adapter in {"flux", "sdxl"}:
-            from auto_round.export.svdquant_adapters import (
+            from auto_round.export.formats.svdquant.adapters import (
                 FLUX_SVDQUANT_TARGET_MODULES,
                 SDXL_SVDQUANT_TARGET_MODULES,
             )

@@ -148,7 +148,7 @@ class TestOutputFormatRegister:
     def test_register_without_names_raises(self):
         from auto_round.formats import OutputFormat
 
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="At least one format name"):
             OutputFormat.register()
 
 
@@ -163,7 +163,7 @@ class TestSchemeCompatibility:
             def pack_layer(self, *a, **kw):
                 pass
 
-            def save_quantized(self, *a, **kw):
+            def save_quantized_as_format(self, *a, **kw):
                 pass
 
         if support_schemes is not None:
@@ -254,7 +254,7 @@ class TestLLMCompressorMixedIntBitGate:
         ],
     )
     def test_int_weight_only_presets_pass(self, name):
-        from auto_round.export.formats.backends.llm_compressor import LLMCompressorFormat
+        from auto_round.export.formats.compressed_tensors.format import LLMCompressorFormat
         from auto_round.schemes import preset_name_to_scheme
 
         scheme = preset_name_to_scheme(name)
@@ -289,7 +289,7 @@ class TestLLMCompressorMixedIntBitGate:
         assert scheme.act_bits == 16
 
     def test_unsupported_schemes_still_rejected(self):
-        from auto_round.export.formats.backends.llm_compressor import LLMCompressorFormat
+        from auto_round.export.formats.compressed_tensors.format import LLMCompressorFormat
         from auto_round.schemes import QuantizationScheme
 
         with pytest.raises(ValueError):

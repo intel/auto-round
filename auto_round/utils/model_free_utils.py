@@ -34,8 +34,8 @@ from typing import Any
 import torch
 
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
-from auto_round.export.export_to_llmcompressor.utils import add_routed_experts_if_moe as _add_routed_experts_if_moe
-from auto_round.export.export_to_llmcompressor.utils import (
+from auto_round.export.formats.compressed_tensors.utils import add_routed_experts_if_moe as _add_routed_experts_if_moe
+from auto_round.export.formats.compressed_tensors.utils import (
     ignore_fused_experts_for_vllm as _ignore_fused_experts_for_vllm,
 )
 from auto_round.logger import logger
@@ -1210,8 +1210,8 @@ def _quantize_weight_mxfp(
     """Quantize a 2D weight tensor to MXFP4 / MXFP8 and return packed outputs.
 
     Reuses :func:`auto_round.data_type.mxfp.quant_mx` to derive the per-block
-    shared exponent (E8M0 scale), and :class:`auto_round.export.export_to_autoround.qlinear_fp.QuantLinear`
-    to perform the same packing as :func:`auto_round.export.export_to_llmcompressor.export_to_fp.pack_layer`.
+    shared exponent (E8M0 scale), and :class:`auto_round.export.formats.autoround.qlinear_fp.QuantLinear`
+    to perform the same packing as :func:`auto_round.export.formats.compressed_tensors.float.pack_layer`.
 
     Returns a dict with one of:
       * MXFP8: ``{layer_name+'.weight': float8_e4m3fn, layer_name+'.weight_scale': uint8}``
@@ -1220,7 +1220,7 @@ def _quantize_weight_mxfp(
     import torch.nn as nn
 
     from auto_round.data_type.utils import get_quant_func
-    from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+    from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
     if not is_mx_fp(data_type):
         data_type = "mx_fp4" if bits == 4 else "mx_fp8"
@@ -1351,7 +1351,7 @@ def _pack_weight_nvfp4_e5m3(
     """Pack FP4 E2M1 weights with unsigned E5M3 block scales."""
     from auto_round.data_type.nvfp import nvfp4_v2, search_nvfp4_v2_scale
     from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
-    from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+    from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
     out_features, in_features = weight.shape
     if group_size != 16 or in_features % group_size != 0:
@@ -2692,7 +2692,7 @@ def _get_llm_compressor_metadata() -> dict[str, str]:
 
 def _build_nvfp4_e5m3_quantization_config(ignored_layers: list[str]) -> dict:
     """Build compressed-tensors metadata for NVFP4 E5M3 without global scales."""
-    from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
+    from auto_round.export.formats.compressed_tensors.config import initialize_nvfp4_e5m3_quantization
 
     qconfig = initialize_nvfp4_e5m3_quantization(ignore=ignored_layers)
     qconfig.update(_get_llm_compressor_metadata())
@@ -2733,7 +2733,7 @@ def _get_mxfp_group_scheme_and_format(
 
     Handles MXFP (mx_fp), NVFP4 (nv_fp), and NVFP4_E5M3 (nvfp4_v2) groups.
     """
-    from auto_round.export.export_to_llmcompressor.config import (
+    from auto_round.export.formats.compressed_tensors.config import (
         initialize_nvfp4_e5m3_quantization,
         initialize_quantization,
     )
@@ -2779,9 +2779,9 @@ def _build_mxfp_quantization_config(
     set to ``"mixed-precision"`` when more than one group is produced.
 
     Mirrors the per-group format produced by
-    :mod:`auto_round.export.export_to_llmcompressor.export_to_fp`.
+    :mod:`auto_round.export.formats.compressed_tensors.float`.
     """
-    from auto_round.export.export_to_llmcompressor.config import (
+    from auto_round.export.formats.compressed_tensors.config import (
         initialize_quantization,
     )
 
@@ -2829,7 +2829,7 @@ def _build_mxfp_quantization_config(
             raise ValueError(f"Unsupported MXFP bits={actual_bits} for model-free output.")
         group_scheme, fmt = _get_mxfp_group_scheme_and_format(actual_bits, actual_dt, ignore)
         if actual_dt == _NVFP4_E5M3_DATA_TYPE:
-            from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
+            from auto_round.export.formats.compressed_tensors.config import initialize_nvfp4_e5m3_quantization
 
             qconfig = initialize_nvfp4_e5m3_quantization(ignore=ignore)
             if is_fp_default and scheme_groups:
@@ -2838,7 +2838,7 @@ def _build_mxfp_quantization_config(
             qconfig["format"] = fmt
             qconfig.update(_get_llm_compressor_metadata())
             return qconfig
-        from auto_round.export.export_to_llmcompressor.config import initialize_quantization as _init_q
+        from auto_round.export.formats.compressed_tensors.config import initialize_quantization as _init_q
 
         scheme_name = "MXFP4" if actual_bits == 4 else "MXFP8"
         qconfig = _init_q(scheme=scheme_name, ignore=ignore)
@@ -2966,7 +2966,7 @@ def _build_mxfp_autoround_quantization_config(
     non_linear_re = re.compile("|".join(re.escape(op) for op in non_linear_ops))
 
     if layer_config:
-        from auto_round.export.export_to_autoround.utils import check_neq_config
+        from auto_round.export.formats.autoround.utils import check_neq_config
 
         expected_scheme = {key: qconfig.get(key) for key in scheme_keys}
         for layer_name, cfg in layer_config.items():
@@ -3240,14 +3240,14 @@ def _build_quantization_config(
                 stacklevel=2,
             )
             # Global-scale-free variant (NVFP4_E5M3)
-            from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
+            from auto_round.export.formats.compressed_tensors.config import initialize_nvfp4_e5m3_quantization
 
             qconfig = initialize_nvfp4_e5m3_quantization(ignore=[])
             qconfig["config_groups"]["group_0"]["targets"] = targets
             qconfig["format"] = "nvfp4-e5m3-pack-quantized"
         else:
             # Standard NVFP4 (nv_fp, scale_dtype=float8_e4m3fn)
-            from auto_round.export.export_to_llmcompressor.config import initialize_quantization
+            from auto_round.export.formats.compressed_tensors.config import initialize_quantization
 
             qconfig_obj = initialize_quantization(scheme="NVFP4", ignore=[])
             qconfig = qconfig_obj.to_dict()

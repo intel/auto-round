@@ -19,8 +19,8 @@ import pytest
 import torch
 
 from auto_round.compressors.config_resolution import resolve_scheme_value
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG
 from auto_round.export.formats import OutputFormat, resolve_formats
+from auto_round.export.formats.gguf.config import GGUF_CONFIG
 from auto_round.utils import SUPPORTED_FORMATS
 
 
@@ -80,7 +80,7 @@ class _TestFormat(OutputFormat):
     def pack_layer(self, *args, **kwargs):
         pass
 
-    def save_quantized(self, output_dir, *, model, **kwargs):
+    def save_quantized_as_format(self, output_dir, *, model, **kwargs):
         return model
 
 

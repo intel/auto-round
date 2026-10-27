@@ -1,0 +1,521 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+import json
+import os
+import shutil
+
+import torch
+import torch.nn as nn
+
+import auto_round.envs as envs
+from auto_round.utils import (
+    copy_missing_tensors_from_source,
+    copy_python_files_from_model_cache,
+    logger,
+    restore_fp32_tensors_from_source,
+    unsupported_meta_device,
+)
+from auto_round.utils.path_safety import UnsafeCheckpointPathError, resolve_within_directory
+
+
+def save_pretrained_artifact(artifact, output_dir: str, artifact_name: str = "artifact") -> bool:
+    """Save a Hugging Face style artifact and log explicit skip reasons."""
+    if output_dir is None:
+        logger.warning("Skipping %s save: output_dir is None.", artifact_name)
+        return False
+    if artifact is None:
+        logger.warning("Skipping %s save: object is None.", artifact_name)
+        return False
+    if not hasattr(artifact, "save_pretrained"):
+        logger.warning("Skipping %s save: object %r has no save_pretrained method.", artifact_name, artifact)
+        return False
+    artifact.save_pretrained(output_dir)
+    return True
+
+
+def save_config_artifact(model: nn.Module, save_dir: str) -> None:
+    """Write ``model.config`` to ``save_dir``, for transformers and diffusers models alike.
+
+    A diffusers ``ModelMixin`` keeps its config in a ``FrozenDict``, which has no
+    ``save_pretrained``; ``ModelMixin.save_config`` is the equivalent writer.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return
+
+    if not hasattr(config, "save_pretrained") and hasattr(model, "save_config"):
+        model.save_config(save_dir)
+        # save_config serializes the config's own dict, so the quantization_config the
+        # exporter set on the config object afterwards has to be merged back in.
+        quantization_config = getattr(config, "quantization_config", None)
+        if quantization_config is not None:
+            config_path = os.path.join(save_dir, "config.json")
+            with open(config_path, encoding="utf-8") as f:
+                config_dict = json.load(f)
+            config_dict["quantization_config"] = quantization_config
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config_dict, f, indent=2, sort_keys=True)
+        return
+
+    try:
+        config.save_pretrained(save_dir)
+    except (KeyError, TypeError):
+        # Some third-party configs (e.g. qwen-tts) fail with use_diff=True
+        # due to missing keys in recursive_diff_dict. Fall back to full config.
+        config_path = os.path.join(save_dir, "config.json")
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(config.to_json_string(use_diff=False))
+
+
+def _save_model_configs(model: nn.Module, save_dir: str) -> None:
+    save_config_artifact(model, save_dir)
+
+    if hasattr(model, "generation_config") and model.generation_config is not None:
+        model.generation_config.save_pretrained(save_dir)
+
+
+def _state_dict_has_meta_tensor(model: nn.Module) -> bool:
+    for tensor in model.state_dict().values():
+        if isinstance(tensor, torch.Tensor) and tensor.device.type == "meta":
+            return True
+    return False
+
+
+def is_immediate_saving_mode(model: nn.Module, serialization_dict: dict | None = None) -> bool:
+    """Determine if the model was saved via ShardWriter (immediate saving mode).
+
+    Resolution order:
+      1. CompressContext singleton (authoritative at export time).
+      2. Meta-tensor heuristics (ShardWriter offloads weights to meta device).
+    """
+    from auto_round.context.compress import CompressContext
+
+    if CompressContext in CompressContext._instances:
+        if CompressContext._instances[CompressContext].is_immediate_saving:
+            return True
+    if unsupported_meta_device(model):
+        return True
+    return _state_dict_has_meta_tensor(model)
+
+
+def is_local_pipeline_model_dir(model_dir: str) -> bool:
+    if not model_dir or not os.path.isdir(model_dir):
+        return False
+    return os.path.isfile(os.path.join(model_dir, "model_index.json"))
+
+
+def is_remote_pipeline_model_dir(model_dir: str) -> bool:
+    if not model_dir or os.path.isdir(model_dir):
+        return False
+    try:
+        from huggingface_hub import list_repo_files
+
+        return "model_index.json" in list_repo_files(model_dir)
+    except Exception:
+        return False
+
+
+def is_pipeline_model_dir(model_dir: str) -> bool:
+    return is_local_pipeline_model_dir(model_dir) or is_remote_pipeline_model_dir(model_dir)
+
+
+def _resolve_pipeline_source_dir(model: nn.Module) -> str | None:
+    candidates = [
+        getattr(model, "name_or_path", None),
+        getattr(getattr(model, "config", None), "_name_or_path", None),
+        getattr(getattr(model, "config", None), "name_or_path", None),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and is_pipeline_model_dir(candidate):
+            return candidate
+    return None
+
+
+def _resolve_model_source_dir(model: nn.Module) -> str | None:
+    candidates = [
+        getattr(model, "name_or_path", None),
+        getattr(getattr(model, "config", None), "_name_or_path", None),
+        getattr(getattr(model, "config", None), "name_or_path", None),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
+def _copy_pipeline_artifact(model_dir: str, relative_path: str, output_dir: str) -> None:
+    # ``relative_path`` comes from the pipeline's own model_index.json, so it must
+    # stay inside output_dir (write side) and model_dir (read side).
+    target_path = str(resolve_within_directory(output_dir, relative_path, origin="model_index.json"))
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    if is_local_pipeline_model_dir(model_dir):
+        source_path = str(resolve_within_directory(model_dir, relative_path, origin="model_index.json"))
+    else:
+        from huggingface_hub import hf_hub_download
+
+        source_path = hf_hub_download(model_dir, relative_path)
+    shutil.copy2(source_path, target_path)
+
+
+def _copy_pipeline_artifacts(source_dir: str, output_dir: str, exclude_components: set[str] | None = None):
+    exclude_components = exclude_components or set()
+    os.makedirs(output_dir, exist_ok=True)
+
+    model_index_path = os.path.join(source_dir, "model_index.json") if is_local_pipeline_model_dir(source_dir) else None
+    if model_index_path:
+        with open(model_index_path, "r", encoding="utf-8") as f:
+            model_index = json.load(f)
+    else:
+        from huggingface_hub import hf_hub_download, list_repo_files
+
+        with open(hf_hub_download(source_dir, "model_index.json"), "r", encoding="utf-8") as f:
+            model_index = json.load(f)
+
+    component_dirs = [k for k, v in model_index.items() if not k.startswith("_") and isinstance(v, list)]
+    is_local = is_local_pipeline_model_dir(source_dir)
+
+    # Copy root-level files
+    if is_local:
+        for name in os.listdir(source_dir):
+            src = os.path.join(source_dir, name)
+            if os.path.isfile(src) and (
+                name in ("model_index.json", ".gitattributes") or name.lower().startswith(("readme", "license"))
+            ):
+                shutil.copy2(src, os.path.join(output_dir, name))
+    else:
+        all_files = list(list_repo_files(source_dir))
+        for name in all_files:
+            if "/" not in name and (
+                name in ("model_index.json", ".gitattributes") or name.lower().startswith(("readme", "license"))
+            ):
+                _copy_pipeline_artifact(source_dir, name, output_dir)
+
+    # Copy component directories
+    for component_name in component_dirs:
+        if component_name in exclude_components:
+            continue
+        # Keys of model_index.json are pipeline kwargs; anything else would be joined as a path.
+        if not component_name.isidentifier():
+            raise UnsafeCheckpointPathError(
+                f"model_index.json: component name {component_name!r} is not a plain directory name"
+            )
+        if is_local:
+            src = os.path.join(source_dir, component_name)
+            dst = os.path.join(output_dir, component_name)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            prefix = f"{component_name}/"
+            for f in all_files:
+                if f.startswith(prefix):
+                    _copy_pipeline_artifact(source_dir, f, output_dir)
+
+
+def resolve_pipeline_export_layout(model: nn.Module, output_dir: str) -> tuple[str, str, bool]:
+    model_component = getattr(model, "_autoround_pipeline_subfolder", None)
+    if model_component is None:
+        return output_dir, output_dir, False
+
+    source_dir = _resolve_pipeline_source_dir(model)
+    processor_component = None
+    if source_dir is not None:
+        try:
+            model_index_path = (
+                os.path.join(source_dir, "model_index.json") if is_local_pipeline_model_dir(source_dir) else None
+            )
+            if model_index_path:
+                with open(model_index_path, "r", encoding="utf-8") as f:
+                    model_index = json.load(f)
+            else:
+                from huggingface_hub import hf_hub_download
+
+                with open(hf_hub_download(source_dir, "model_index.json"), "r", encoding="utf-8") as f:
+                    model_index = json.load(f)
+            if "processor" in model_index and isinstance(model_index["processor"], list):
+                processor_component = "processor"
+            excluded = {model_component}
+            if processor_component:
+                excluded.add(processor_component)
+            _copy_pipeline_artifacts(source_dir, output_dir, exclude_components=excluded)
+        except Exception as e:
+            logger.warning("Failed to copy pipeline artifacts from %s: %s", source_dir, e)
+
+    model_output_dir = os.path.join(output_dir, model_component)
+    processor_output_dir = os.path.join(output_dir, processor_component) if processor_component else output_dir
+    return model_output_dir, processor_output_dir, True
+
+
+def _load_source_config_dict(source_dir: str) -> dict | None:
+    """Load the source checkpoint's ``config.json`` as a dict (local dir or HF repo id)."""
+    if not isinstance(source_dir, str) or not source_dir:
+        return None
+    config_path = None
+    if os.path.isdir(source_dir):
+        candidate = os.path.join(source_dir, "config.json")
+        config_path = candidate if os.path.exists(candidate) else None
+    else:
+        try:
+            from huggingface_hub import hf_hub_download
+
+            config_path = hf_hub_download(source_dir, "config.json")
+        except Exception:
+            config_path = None
+    if config_path is None or not os.path.exists(config_path):
+        return None
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _restore_original_layer_types(save_dir: str, source_dir: str) -> None:
+    """Restore the original ``layer_types`` from the source checkpoint into the saved config.
+
+    transformers normalizes ``layer_types`` (e.g. legacy name remapping) when a config is
+    loaded and re-saved. For hybrid-attention models this rewrites the strings the user
+    authored in their checkpoint. This copies the original ``layer_types`` back so the
+    exported ``config.json`` matches the source. Both the top-level config and a nested
+    ``text_config`` (VL models) are handled. The value is only restored when it differs and
+    the number of entries matches, to avoid tripping transformers' length validation.
+    """
+    saved_path = os.path.join(save_dir, "config.json")
+    if not os.path.exists(saved_path):
+        return
+    source_config = _load_source_config_dict(source_dir)
+    if source_config is None:
+        return
+
+    with open(saved_path, "r", encoding="utf-8") as f:
+        saved_config = json.load(f)
+
+    changed = False
+    for src_scope, dst_scope, scope_name in (
+        (source_config, saved_config, "config"),
+        (source_config.get("text_config"), saved_config.get("text_config"), "text_config"),
+    ):
+        if not isinstance(src_scope, dict) or not isinstance(dst_scope, dict):
+            continue
+        original = src_scope.get("layer_types")
+        current = dst_scope.get("layer_types")
+        if not isinstance(original, list) or original == current:
+            continue
+        if isinstance(current, list) and len(current) != len(original):
+            logger.warning(
+                "Not restoring original layer_types for %s: source has %d entries but exported has %d.",
+                scope_name,
+                len(original),
+                len(current),
+            )
+            continue
+        dst_scope["layer_types"] = original
+        changed = True
+        logger.info("Restored original layer_types from source checkpoint for %s.", scope_name)
+
+    if changed:
+        with open(saved_path, "w", encoding="utf-8") as f:
+            json.dump(saved_config, f, indent=2)
+
+
+# Quantization metadata (weight/input/kv-cache scales and zero points) is part of the
+# checkpoint contract and must keep its own dtype, so it is never cast to the export dtype.
+_QUANT_PARAM_SUFFIXES = ("_scale", "_scales", "_scale_inv", "_zero_point", "_zeros", "_zp")
+
+
+def _is_quant_param(name: str) -> bool:
+    return name.endswith(_QUANT_PARAM_SUFFIXES)
+
+
+def _get_state_dict_for_export_dtype(model: nn.Module, dtype) -> dict | None:
+    """Return a state dict with float32 tensors cast to ``dtype``, or None if nothing needs casting.
+
+    Tuning may run the model in float32, e.g. when the device doesn't support bfloat16. The
+    exported config declares ``dtype``, so the saved tensors should use it too. Tensors of
+    modules the model keeps in float32 (``_keep_in_fp32_modules``) are left unchanged, as are
+    quantized (non-float32) tensors and quantization scales/zero points.
+    """
+    if dtype not in (torch.bfloat16, torch.float16):
+        return None
+    state_dict = model.state_dict()
+    if not any(tensor.dtype == torch.float32 for tensor in state_dict.values()):
+        return None
+
+    keep_in_fp32 = set()
+    for attribute in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+        names = getattr(model, attribute, None) or []
+        keep_in_fp32.update([names] if isinstance(names, str) else names)
+
+    def _should_cast(name: str, tensor: torch.Tensor) -> bool:
+        if tensor.dtype != torch.float32 or _is_quant_param(name):
+            return False
+        return not any(module_name in name for module_name in keep_in_fp32)
+
+    return {name: (tensor.to(dtype) if _should_cast(name, tensor) else tensor) for name, tensor in state_dict.items()}
+
+
+def apply_post_save_source_fixes(model: nn.Module, save_dir: str) -> None:
+    """Restore checkpoint artifacts that ``save_pretrained`` does not preserve."""
+    source_dir = _resolve_model_source_dir(model)
+    if source_dir is None:
+        return
+
+    try:
+        restore_fp32_tensors_from_source(source_dir=source_dir, target_dir=save_dir)
+    except Exception as e:
+        logger.warning("Skipping restore of FP32 tensors from source checkpoint due to error: %s", e)
+
+    if not envs.AR_DISABLE_COPY_MTP_WEIGHTS:
+        try:
+            copy_missing_tensors_from_source(source_dir=source_dir, target_dir=save_dir)
+        except Exception as e:
+            logger.warning("Skipping copy of missing tensors from source checkpoint due to error: %s", e)
+
+    try:
+        _restore_original_layer_types(save_dir, source_dir)
+    except Exception as e:  # pragma: no cover - best-effort, never block export
+        logger.warning("Skipping restore of original layer_types due to error: %s", e)
+
+    try:
+        copy_python_files_from_model_cache(model, save_dir)
+    except Exception as e:
+        logger.warning("Skipping source model Python file copy due to error: %s", e)
+
+
+def save_model(
+    model: nn.Module,
+    save_dir: str,
+    max_shard_size: str = "5GB",
+    safe_serialization: bool = True,
+    dtype=None,
+    config_file="quantization_config.json",
+    immediate_saving: bool = False,
+):
+    """Save model state dict and configs.
+
+    Args:
+        model (`nn.Module`):
+            Model to be saved. The model can be wrapped or unwrapped.
+        save_dir (`str`):
+            Directory to which to save. Will be created if it doesn't exist.
+        max_shard_size (`str`, defaults to `"10GB"`):
+            The maximum size for a checkpoint before being sharded. Checkpoints shard will then be each of size
+            lower than this size. If expressed as a string, needs to be digits followed by a unit (like `"5MB"`).
+            <Tip warning={true}>
+
+            If a single weight of the model is bigger than `max_shard_size`, it will be in its own checkpoint shard
+            which will be bigger than `max_shard_size`.
+
+            </Tip>
+        safe_serialization (`bool`, defaults to `True`):
+            Whether to save the model using `safetensors` or the traditional PyTorch way (that uses `pickle`).
+        immediate_saving (`bool`, defaults to `False`):
+            When True, weights were already saved by ShardWriter during quantization.
+            Only configs and metadata will be saved; weight saving is skipped.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+
+    if immediate_saving:
+        logger.info("Immediate saving mode: weights already saved by ShardWriter, saving configs only.")
+        _save_model_configs(model, save_dir)
+    else:
+        export_state_dict = _get_state_dict_for_export_dtype(model, dtype)
+        save_kwargs = {} if export_state_dict is None else {"state_dict": export_state_dict}
+        try:
+            model.save_pretrained(
+                save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization, **save_kwargs
+            )
+        except (KeyError, TypeError) as e:
+            # Some third-party configs fail during config serialization in save_pretrained.
+            # Fall back to saving weights separately + config without diff.
+            logger.warning("model.save_pretrained failed (%s), falling back to manual save.", e)
+            from safetensors.torch import save_file
+
+            state_dict = model.state_dict() if export_state_dict is None else export_state_dict
+            save_file(state_dict, os.path.join(save_dir, "model.safetensors"))
+            _save_model_configs(model, save_dir)
+
+    apply_post_save_source_fixes(model, save_dir)
+
+    config_path = os.path.join(save_dir, "config.json")
+    if dtype is not None and dtype != model.dtype and os.path.exists(os.path.join(save_dir, "config.json")):
+        with open(config_path, "r") as file:
+            data = json.load(file)
+        dtype_str = str(dtype).split(".")[-1]
+        data["torch_dtype"] = dtype_str
+        # Also update 'dtype' field if present (transformers >= 4.57) for consistency
+        if "dtype" in data:
+            data["dtype"] = dtype_str
+        with open(config_path, "w") as file:
+            json.dump(data, file, indent=2)
+
+    config_file = "quantization_config.json"
+    if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+        with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
+            json.dump(model.config.quantization_config, f, indent=2)
+
+
+def filter_quantization_config(quantization_config):
+    default_dict = {
+        "amp": True,
+        "batch_size": 8,
+        "data_type": int,
+        "dataset": "NeelNanda/pile-10k",
+        "enable_minmax_tuning": True,
+        "enable_norm_bias_tuning": False,
+        "enable_quanted_input": True,
+        "gradient_accumulate_steps": 1,
+        "iters": 200,
+        "low_gpu_mem_usage": False,
+        "nsamples": 128,
+        "scale_dtype": "torch.float16",
+        "seqlen": 2048,
+    }
+    iters = quantization_config.get("iters")
+    if iters is None:
+        iters = 0
+
+    default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
+    default_dict["minmax_lr"] = default_dict["lr"]
+
+    for key, default_value in default_dict.items():
+        if key in quantization_config and default_value == quantization_config[key]:
+            quantization_config.pop(key)
+    for k in list(quantization_config.keys()):
+        if quantization_config[k] is None:
+            quantization_config.pop(k)
+
+    # static_*_granularity only carries a value ("tensor") when the matching static
+    # dtype is set; without it the key is inert but misleads readers into thinking
+    # KV/attention quantization is configured.
+    for dtype_key, gran_key in (
+        ("static_kv_dtype", "static_kv_granularity"),
+        ("static_attention_dtype", "static_attention_granularity"),
+    ):
+        if quantization_config.get(dtype_key) is None:
+            quantization_config.pop(gran_key, None)
+
+    if quantization_config.get("act_bits", 16) >= 16:
+        quantization_config.pop("act_bits", None)
+        quantization_config.pop("act_data_type", None)
+        quantization_config.pop("act_dynamic", None)
+        quantization_config.pop("act_sym", None)
+        quantization_config.pop("act_group_size", None)
+
+    clean_list = ("supported_types", "quant_block_list", "rotation_configs")
+    for key in list(quantization_config.keys()):
+        if callable(key):
+            quantization_config.pop(key)
+        elif isinstance(quantization_config[key], (list, tuple)):
+            if any(callable(item) for item in quantization_config[key]) or len(quantization_config[key]) == 0:
+                quantization_config.pop(key)
+        if key in clean_list and key in quantization_config:
+            quantization_config.pop(key)
+    return quantization_config

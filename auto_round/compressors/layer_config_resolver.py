@@ -78,7 +78,7 @@ def apply_layer_config_special_cases(
         # Re-mark after regex/partial layer_config entries are expanded: the same
         # marking already ran at format-resolution time, but raw user entries can
         # overwrite it during expansion.
-        from auto_round.export.formats.backends.auto_awq import mark_awq_unservable_layers
+        from auto_round.export.formats.awq.format import mark_awq_unservable_layers
 
         layer_config = mark_awq_unservable_layers(model, layer_config, default_dict)
 
@@ -493,7 +493,7 @@ def resolve_layer_config(
         export_to_awq="awq" in (format or ""),
     )
     if gguf_name:
-        from auto_round.export.formats.backends.gguf import apply_gguf_layer_defaults
+        from auto_round.export.formats.gguf.format import apply_gguf_layer_defaults
 
         resolved, _ = apply_gguf_layer_defaults(
             dict(resolved),

@@ -936,7 +936,7 @@ class TestRestoreFp32DecoupledFromMtp:
         disables the (separate) missing-tensor copy, mirroring how `save_model` now
         calls the two features independently."""
         import auto_round.envs as envs
-        from auto_round.export.utils import save_model
+        from auto_round.export.common.serialization import save_model
 
         src = str(tmp_path / "src")
         os.makedirs(src)
@@ -980,7 +980,7 @@ class TestRestoreFp32DecoupledFromMtp:
         """With the MTP-disable flag off (default), both fp32 restore and MTP tensor
         copy must be applied together via save_model."""
         import auto_round.envs as envs
-        from auto_round.export.utils import save_model
+        from auto_round.export.common.serialization import save_model
 
         src = str(tmp_path / "src")
         os.makedirs(src)

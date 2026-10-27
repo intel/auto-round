@@ -16,7 +16,7 @@ from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig
 
 
 def test_pack_gguf_layer_clears_global_state_on_error(monkeypatch, tmp_path):
-    export_module = import_module("auto_round.export.export_to_gguf.export")
+    export_module = import_module("auto_round.export.formats.gguf.writer")
     failure = RuntimeError("packing failed")
     gguf_model = SimpleNamespace(
         model_arch=object(),
@@ -31,7 +31,7 @@ def test_pack_gguf_layer_clears_global_state_on_error(monkeypatch, tmp_path):
 
     try:
         with pytest.raises(RuntimeError, match="packing failed"):
-            export_module.pack_gguf_layer(
+            export_module.pack_layer(
                 "layer.weight",
                 model,
                 "gguf:q4_0",
@@ -46,7 +46,7 @@ def test_pack_gguf_layer_clears_global_state_on_error(monkeypatch, tmp_path):
 
 
 def test_save_gguf_clears_global_state_on_writer_error():
-    export_module = import_module("auto_round.export.export_to_gguf.export")
+    export_module = import_module("auto_round.export.formats.gguf.writer")
     gguf_model = SimpleNamespace(
         model_arch=object(),
         fname_out="broken.gguf",
@@ -56,7 +56,7 @@ def test_save_gguf_clears_global_state_on_writer_error():
 
     try:
         with pytest.raises(RuntimeError, match="writer failed"):
-            export_module.save_quantized_as_gguf("unused", model=object())
+            export_module.save_quantized_as_format("unused", model=object())
 
         assert not hasattr(export_module, "gguf_model_instance_global")
     finally:
@@ -106,7 +106,7 @@ def test_update_module_applies_replacements_for_gguf(monkeypatch):
 def test_make_q3_quants_rmse_scale_matches_levels():
     """The refined Q3_K sub-block scale must be the least-squares fit for the returned levels,
     sum(w*x*L) / sum(w*L*L) with w = x**2, as in llama.cpp's make_q3_quants."""
-    from auto_round.export.export_to_gguf.packing import make_q3_quants
+    from auto_round.export.formats.gguf.packing import make_q3_quants
 
     torch.manual_seed(0)
     data = torch.randn(4, 16, 16)
@@ -294,8 +294,8 @@ class TestGGUF:
                 assert abs(file_size - 264) < 5.0
 
     def test_mmproj_uses_native_f32_export_when_nontext_is_not_quantized(self, tmp_path, monkeypatch):
-        from auto_round.export.export_to_gguf import export
-        from auto_round.export.export_to_gguf.config import ModelType
+        from auto_round.export.formats.gguf import writer as export
+        from auto_round.export.formats.gguf.config import ModelType
 
         ftypes = {
             "q4_0": object(),
@@ -361,8 +361,8 @@ class TestGGUF:
         assert model_instance.fname_out == tmp_path / "mmproj-model.gguf"
 
     def test_text_still_uses_autoround_wrapper_when_nontext_is_not_quantized(self, tmp_path, monkeypatch):
-        from auto_round.export.export_to_gguf import export
-        from auto_round.export.export_to_gguf.config import ModelType
+        from auto_round.export.formats.gguf import writer as export
+        from auto_round.export.formats.gguf.config import ModelType
 
         ftypes = {
             "q4_0": object(),
@@ -436,7 +436,7 @@ class TestGGUF:
         # Qwen3-8B output q6_k, token_embed q4_0 4.5G
         # Llama-3.2-1B-Instruct o output, token_embed q6_k 736M
         from auto_round.compressors.utils import set_layer_config
-        from auto_round.export.export_to_gguf.config import ModelType
+        from auto_round.export.formats.gguf.config import ModelType
 
         model_name = get_model_path("Qwen/Qwen2.5-0.5B-Instruct")
         ar = AutoRound(model=model_name, scheme="gguf:q4_0", iters=0)
@@ -587,7 +587,7 @@ class TestGGUFQ5K:
 
     def test_q5_k_pack_matches_fake_quant(self):
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
-        from auto_round.export.export_to_gguf.packing import ggml_quant
+        from auto_round.export.formats.gguf.packing import ggml_quant
 
         torch.manual_seed(0)
         tensor = torch.randn(4, 256)
@@ -605,7 +605,7 @@ class TestGGUFQ5K:
         torch.testing.assert_close(dequantized, qdq, atol=1e-2, rtol=0)
 
     def test_q5_k_pack_without_stored_params_uses_5_bits(self):
-        from auto_round.export.export_to_gguf.packing import ggml_quant
+        from auto_round.export.formats.gguf.packing import ggml_quant
 
         torch.manual_seed(0)
         tensor = torch.randn(4, 256)
@@ -636,7 +636,7 @@ class TestGGUFZeroBlock:
     def test_q6_k_all_zero_block_packs_zero_d(self):
         import numpy as np
 
-        from auto_round.export.export_to_gguf.packing import ggml_quant
+        from auto_round.export.formats.gguf.packing import ggml_quant
 
         tensor = torch.zeros(2, 256)
         tensor[1] = torch.randn(256)
@@ -657,7 +657,7 @@ class TestGGUFPositiveGroup:
         from gguf import GGMLQuantizationType
 
         from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
-        from auto_round.export.export_to_gguf.packing import ggml_quant
+        from auto_round.export.formats.gguf.packing import ggml_quant
 
         torch.manual_seed(0)
         tensor = torch.randn(2, 256)

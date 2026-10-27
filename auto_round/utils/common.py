@@ -27,7 +27,7 @@ import torch
 import transformers
 from packaging import version
 
-from auto_round.export.export_to_gguf.config import GGUF_CONFIG
+from auto_round.export.formats.gguf.config import GGUF_CONFIG
 from auto_round.logger import logger
 
 
@@ -710,10 +710,9 @@ class SupportedFormats:
 
     @staticmethod
     def _names():
-        # Import the package lazily: it registers all backends and depends on utils itself.
-        from auto_round.export.formats import OutputFormat
+        from auto_round.export.registry import public_format_names
 
-        return tuple(sorted((OutputFormat._format_list.keys() - OutputFormat._non_public_names) | GGUF_CONFIG.keys()))
+        return public_format_names()
 
     def __contains__(self, key):
         return key in self._names()
