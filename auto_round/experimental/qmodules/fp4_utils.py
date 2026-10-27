@@ -79,8 +79,7 @@ def _unpack_fp4_from_uint8_cpu(
 def _unpack_fp4_from_uint8_cuda(
     a: torch.Tensor, m: int, n: int, dtype: torch.dtype | None = torch.bfloat16
 ) -> torch.Tensor:
-    # On CUDA callers pass the packed width, so expand it to the logical width.
-    return _unpack_fp4_from_uint8(a, m, n * 2, dtype)
+    return _unpack_fp4_from_uint8(a, m, n, dtype)
 
 
 # reference: : https://github.com/vllm-project/vllm/pull/16362
