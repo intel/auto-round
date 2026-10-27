@@ -474,6 +474,11 @@ class AlgorithmComposer:
         for pre in self.preprocessors:
             pre.pre_quantize_block(block_ctx)
 
+        act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
+        data_type = self.scheme.data_type if self.scheme else "int"
+        group_size = self.scheme.group_size if self.scheme else -1
+        act_data_type = self.scheme.act_data_type if self.scheme else data_type
+
         reference_next_input = None
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
         if fp_inputs is not None:
@@ -494,18 +499,20 @@ class AlgorithmComposer:
 
             # ── Step 3.5: MoE scale alignment + global scale update ─────────────────
             # Must run after calibration hooks (act_max collected) and before quantize_block.
-            act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
-            data_type = self.scheme.data_type if self.scheme else "int"
-            group_size = self.scheme.group_size if self.scheme else -1
-            act_data_type = self.scheme.act_data_type if self.scheme else data_type
             if act_data_type is not None or not act_dynamic:
-                from auto_round.data_type.utils import update_block_global_scale_if_needed
                 from auto_round.schemes import needs_nvfp_global_scale
                 from auto_round.utils import set_amax_for_all_moe_layers
 
                 if needs_nvfp_global_scale(act_data_type) or not act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
-                update_block_global_scale_if_needed(block, data_type, group_size)
+
+        # SVDQuant may have replaced the original linears during pre-quantize.
+        # Update NVFP4 scales after that transformation even on the zero-shot
+        # path, where fp_inputs is None and the calibration block above is skipped.
+        if act_data_type is not None or not act_dynamic:
+            from auto_round.data_type.utils import update_block_global_scale_if_needed
+
+            update_block_global_scale_if_needed(block, data_type, group_size)
 
         if q_inputs is not None and fp_inputs is not q_inputs:
             # Release the fp pool at its last use (before tuning): the q pool is
