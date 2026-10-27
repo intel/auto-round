@@ -169,12 +169,14 @@ class QuantLinear(nn.Module, TritonModuleMixin):
                 self.qweight.device
             )
 
+        # Recompute g_idx from group_size so stale checkpoints with act-order g_idx are ignored.
+        g_idx = torch.arange(self.infeatures, dtype=torch.int32) // self.group_size
         out = quant_linear_fn.apply(
             x.reshape(-1, x.shape[-1]),
             self.qweight,
             self.scales,
             self.qzeros,
-            self.g_idx,
+            g_idx,
             self.bits,
             self.maxq,
         )

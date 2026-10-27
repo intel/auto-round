@@ -227,8 +227,21 @@ def pack_fp4_to_uint8_cuda(x: torch.Tensor) -> torch.Tensor:
     :param x: tensor to pack
     returns: a packed tensor in uint8
     """
+    if not envs.AR_ENABLE_COMPILE_PACKING:
+        return _pack_fp4_to_uint8_bucketize(x)
     pack_fn = _get_packing_fn()
     return pack_fn(x)
+
+
+def _pack_fp4_to_uint8_bucketize(x: torch.Tensor) -> torch.Tensor:
+    """Memory-friendly CUDA packing: bucketize avoids the [m, n, 8] argmin buffer."""
+    m, n = x.shape
+    kE2M1 = torch.tensor(FLOAT_TO_E2M1, device=x.device, dtype=x.dtype)
+    boundaries = (kE2M1[1:] + kE2M1[:-1]) / 2
+    abs_indices = torch.bucketize(torch.abs(x), boundaries)
+    indices = (abs_indices | (torch.signbit(x).to(torch.long) << 3)).reshape(-1, 2)
+    packed = ((indices[:, 0] << 4) | indices[:, 1]).to(torch.uint8)
+    return packed.reshape(m, n // 2)
 
 
 def _pack_fp4_to_uint8(x: torch.Tensor) -> torch.Tensor:

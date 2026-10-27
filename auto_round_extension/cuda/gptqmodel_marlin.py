@@ -480,6 +480,8 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
                 self.workspace = marlin_make_workspace_new(device)
             else:
                 self.workspace = marlin_make_workspace(self.out_features, device)
+            # Trim the workspace to save GPU memory on large models.
+            self.workspace = self.workspace[: max(1, self.workspace.numel() // 4)]
 
             # Handle sorting for activation reordering if needed.
 
