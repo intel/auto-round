@@ -1116,6 +1116,25 @@ class TestAWQUseV2ScaleSearch:
         assert config.awq_nsamples == 17
         with pytest.raises(ValueError, match="positive integer"):
             AWQConfig(awq_nsamples=0)
+        with pytest.raises(ValueError, match="positive integer"):
+            AWQConfig(awq_nsamples=1.5)
+        with pytest.raises(ValueError, match="positive integer"):
+            AWQConfig(awq_nsamples=True)
+
+    def test_awq_integer_option_validation(self):
+        """AWQ integer controls reject floats and booleans at construction time."""
+        import pytest
+
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        with pytest.raises(ValueError, match="awq_seqlen"):
+            AWQConfig(awq_seqlen=1.5)
+        with pytest.raises(ValueError, match="awq_seqlen"):
+            AWQConfig(awq_seqlen=True)
+        with pytest.raises(ValueError, match="smooth_batch_size"):
+            AWQConfig(smooth_batch_size=1.5)
+        with pytest.raises(ValueError, match="smooth_batch_size"):
+            AWQConfig(smooth_batch_size=True)
 
     def test_awq_nsamples_random_subset_is_deterministic(self):
         """AWQ uses a stable random subset without changing quantizer inputs."""

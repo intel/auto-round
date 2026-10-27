@@ -301,6 +301,8 @@ class AWQConfig(QuantizationConfig):
             disable_opt_rtn = False
         super().__init__(**kwargs)
 
+        if awq_seqlen is not None and (isinstance(awq_seqlen, bool) or not isinstance(awq_seqlen, int)):
+            raise ValueError(f"`awq_seqlen` must be an integer or None, got {awq_seqlen!r}")
         if awq_seqlen is None:
             awq_seqlen = 512
 
@@ -310,7 +312,7 @@ class AWQConfig(QuantizationConfig):
         self.n_grid = n_grid
         self.seqlen = seqlen
         self.nsamples = nsamples
-        if awq_nsamples is None or awq_nsamples < 1:
+        if isinstance(awq_nsamples, bool) or not isinstance(awq_nsamples, int) or awq_nsamples < 1:
             raise ValueError(f"`awq_nsamples` must be a positive integer, got {awq_nsamples!r}")
         self.awq_nsamples = awq_nsamples
         self.batch_size = batch_size
@@ -328,7 +330,9 @@ class AWQConfig(QuantizationConfig):
             raise ValueError(f"`clip_max_shrink` must be in (0, 1), got {clip_max_shrink!r}")
         if clip_n_sample_token is None or clip_n_sample_token < 1:
             raise ValueError(f"`clip_n_sample_token` must be a positive integer, got {clip_n_sample_token!r}")
-        if smooth_batch_size is not None and smooth_batch_size < 0:
+        if smooth_batch_size is not None and (
+            isinstance(smooth_batch_size, bool) or not isinstance(smooth_batch_size, int) or smooth_batch_size < 0
+        ):
             raise ValueError(f"`smooth_batch_size` must be a non-negative integer or None, got {smooth_batch_size!r}")
         if v2_scale_search not in {"auto", "full", "off", "reuse"}:
             raise ValueError(
