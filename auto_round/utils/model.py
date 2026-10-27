@@ -213,7 +213,7 @@ def check_start_with_block_name(name: str, block_name_to_quantize: list):
     return False
 
 
-def download_or_get_path(repo_id: str, platform: str | None = None) -> str:
+def download_or_get_path(repo_id: str, platform: str | None = None, revision: str | None = None) -> str:
     from auto_round import envs
 
     if platform is None:
@@ -223,12 +223,14 @@ def download_or_get_path(repo_id: str, platform: str | None = None) -> str:
             platform = "hf"
 
     if platform == "model_scope":
-        return download_modelscope_model(repo_id)
+        return download_modelscope_model(repo_id, revision=revision)
     else:
-        return download_hf_model(repo_id)
+        return download_hf_model(repo_id, revision=revision)
 
 
-def download_modelscope_model(repo_id: str, local_dir: str | None = None, cache_dir: str | None = None):
+def download_modelscope_model(
+    repo_id: str, local_dir: str | None = None, cache_dir: str | None = None, revision: str | None = None
+):
     from modelscope.utils.file_utils import get_modelscope_cache_dir  # pylint: disable=E0401
 
     system_cache = cache_dir if cache_dir is not None else get_modelscope_cache_dir()
@@ -238,12 +240,12 @@ def download_modelscope_model(repo_id: str, local_dir: str | None = None, cache_
         directory = os.path.join(system_cache, *repo_id.split("/"))
     else:
         directory = os.path.join(system_cache, "models", *repo_id.split("/"))
-    if os.path.exists(directory):
+    if os.path.exists(directory) and revision is None:
         return directory
     else:
         from modelscope.hub.snapshot_download import snapshot_download  # pylint: disable=E0401
 
-        return snapshot_download(repo_id)
+        return snapshot_download(repo_id, revision=revision)
 
 
 def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
@@ -273,7 +275,7 @@ def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
     else:  # pragma: no cover
         from huggingface_hub import snapshot_download
 
-        model_path = snapshot_download(repo_id)
+        model_path = snapshot_download(repo_id, revision=revision)
         return model_path
 
 
@@ -568,9 +570,26 @@ def llm_load_model(
     monkey_patch_model(model)
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
+    _keep_checkpoint_fp32_params(model, pretrained_model_name_or_path, platform, revision=load_kwargs.get("revision"))
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer
+
+
+def _keep_checkpoint_fp32_params(model, pretrained_model_name_or_path, platform, subfolder=None, revision=None):
+    """Keep FP32 tensors of a mixed-precision checkpoint in FP32 after ``from_pretrained``."""
+    from auto_round.utils.missing_tensors import keep_special_fp32_params
+
+    revision = getattr(getattr(model, "config", None), "_commit_hash", None) or revision
+    try:
+        source_dir = pretrained_model_name_or_path
+        if not os.path.isdir(source_dir):
+            source_dir = download_or_get_path(source_dir, platform=platform, revision=revision)
+        if subfolder is not None:
+            source_dir = os.path.join(source_dir, subfolder)
+        keep_special_fp32_params(model, source_dir)
+    except Exception as e:
+        logger.warning(f"Skipping restore of FP32 tensors from the checkpoint due to error: {e}")
 
 
 def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list | None = None) -> tuple:
@@ -941,6 +960,9 @@ def mllm_load_model(
     model = model.eval()
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
+    _keep_checkpoint_fp32_params(
+        model, pretrained_model_name_or_path, platform, model_subfolder, revision=kwargs.get("revision")
+    )
     model = _to_model_dtype(model, model_dtype)
 
     if model_subfolder is not None:
@@ -3194,10 +3216,12 @@ def is_model_free_route(
     has_static_attention_quantization = any(
         kwargs.get(key) is not None for key in ("static_kv_dtype", "static_attention_dtype")
     )
+    if explicit:
+        if has_static_attention_quantization:
+            raise ValueError("model_free=True does not support static KV or attention quantization.")
+        return True
     if has_static_attention_quantization:
         return False
-    if explicit:
-        return True
     # Only auto-route when format is auto_round (or not specified).
     fmt = kwargs.get("format", "auto_round")
     if fmt is None:

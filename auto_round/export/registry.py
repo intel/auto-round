@@ -49,6 +49,7 @@ def load_builtin_formats():
         "fake",
         "gguf.format",
         "svdquant.format",
+        "svdquant.omni_format",
     ):
         import_module(f"auto_round.export.formats.{module}")
 

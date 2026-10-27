@@ -42,6 +42,7 @@ from auto_round.utils import SUPPORTED_FORMATS
         ("gguf:q4_0", "W4A16", "GGUFFormat", "gguf:q4_0", True),
         ("fake", "W4A16", "FakeFormat", "fake", True),
         ("svdquant_nunchaku", "MXFP4", "SVDQuantNunchakuFormat", "svdquant_nunchaku", False),
+        ("svdquant_omni", "NVFP4", "SVDQuantOmniFormat", "svdquant_omni", False),
     ],
 )
 def test_builtin_format_contract(name, scheme, class_name, backend, immediate):
@@ -70,6 +71,7 @@ def test_public_format_names_match_existing_contract():
         "mlx",
         "auto_round:mlx",
         "svdquant_nunchaku",
+        "svdquant_omni",
     }
     assert set(SUPPORTED_FORMATS) == ordinary_names | GGUF_CONFIG.keys()
     assert "gguf" not in SUPPORTED_FORMATS

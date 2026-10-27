@@ -44,14 +44,47 @@ def save_pretrained_artifact(artifact, output_dir: str, artifact_name: str = "ar
     return True
 
 
+def _save_source_config(model: nn.Module, save_dir: str) -> bool:
+    """Preserve the source JSON, replacing only its quantization metadata when available."""
+    try:
+        source_dir = _resolve_model_source_dir(model)
+        if source_dir is None:
+            return False
+        config = getattr(model, "config", None)
+        if os.path.isdir(source_dir):
+            config_path = os.path.join(source_dir, "config.json")
+        else:
+            from transformers.utils.hub import cached_file
+
+            revision = getattr(config, "_commit_hash", None)
+            config_path = cached_file(source_dir, "config.json", revision=revision)
+        with open(config_path, encoding="utf-8") as source_file:
+            config_dict = json.load(source_file)
+        if not isinstance(config_dict, dict):
+            raise TypeError("Source config.json must contain a JSON object")
+        quantization_config = getattr(config, "quantization_config", None)
+        if quantization_config is not None:
+            config_dict["quantization_config"] = quantization_config
+        config_json = json.dumps(config_dict, indent=2, ensure_ascii=False)
+        os.makedirs(save_dir, exist_ok=True)
+        with open(os.path.join(save_dir, "config.json"), "w", encoding="utf-8") as config_file:
+            config_file.write(config_json)
+        return True
+    except Exception as error:
+        logger.warning("Could not save original model config; using model.config instead: %s", error)
+        return False
+
+
 def save_config_artifact(model: nn.Module, save_dir: str) -> None:
-    """Write ``model.config`` to ``save_dir``, for transformers and diffusers models alike.
+    """Prefer the source config JSON, falling back to serializing ``model.config``.
 
     A diffusers ``ModelMixin`` keeps its config in a ``FrozenDict``, which has no
     ``save_pretrained``; ``ModelMixin.save_config`` is the equivalent writer.
     """
     config = getattr(model, "config", None)
     if config is None:
+        return
+    if _save_source_config(model, save_dir):
         return
 
     if not hasattr(config, "save_pretrained") and hasattr(model, "save_config"):
@@ -432,6 +465,7 @@ def save_model(
             model.save_pretrained(
                 save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization, **save_kwargs
             )
+            _save_source_config(model, save_dir)
         except (KeyError, TypeError) as e:
             # Some third-party configs fail during config serialization in save_pretrained.
             # Fall back to saving weights separately + config without diff.

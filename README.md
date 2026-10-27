@@ -10,7 +10,7 @@
 <h3>PTQ-Level Efficiency, QAT-Level Accuracy.</h3>
 
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.16.0-green)](https://github.com/intel/auto-round/releases)
+[![version](https://img.shields.io/badge/release-0.16.1-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
@@ -28,7 +28,7 @@
 
 [//]: # (</p>)
 
-&nbsp;&nbsp;&nbsp;&nbsp;[简体中文](README_CN.md) | English
+[简体中文](README_CN.md) | English&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
@@ -269,6 +269,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`low_gpu_mem_usage` (bool)**: Whether to offload intermediate features to CPU at the cost of ~30%-100% more tuning time (default is `False`).
 - **`low_cpu_mem_usage` (bool)**: [Experimental Feature] Whether to enable immediate-save mode to reduce RAM usage. It is enabled by default. In CLI, use `--disable_low_cpu_mem_usage` to turn it off (the legacy `--low_cpu_mem_usage` flag is kept only for compatibility).
 - **`device_map` (str|dict|int)**: The device to be used for tuning, e.g., `auto`, `cpu`, `cuda`, `0,1,2` (default is `0`). When using `auto`, it will try to use all available GPUs.
+- **`calibration_data_device` (str)**: Placement of the block calibration data in multi-GPU runs: `auto` (default) | `cpu` | `off` | `1,2` | `cuda:1,cuda:2`.
 
 </details>
 
