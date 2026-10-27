@@ -527,7 +527,7 @@ class TestAWQMoE:
         def fake_resolve_quant_funcs(params):
             return f"{params['data_type']}_{params['bits']}", None
 
-        def fake_qdq(weight, params, *, quant_func=None, opt_quant_func=None, imatrix=None):
+        def fake_qdq(weight, params, *, quant_func=None, opt_quant_func=None, imatrix=None, init_scale=None):
             records.append((params["data_type"], params["bits"], quant_func))
             return weight
 

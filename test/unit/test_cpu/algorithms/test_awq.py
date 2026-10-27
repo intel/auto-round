@@ -1014,6 +1014,31 @@ class TestAWQUseV2ScaleSearch:
         )
         assert block.enable_alg_ext is False
 
+    def test_v2_scale_search_defaults_off_for_int(self):
+        """The default policy uses plain RTN for INT and full search for MX/NV."""
+        from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
+        from auto_round.algorithms.transforms.awq.base import AWQTransform
+        from auto_round.algorithms.transforms.awq.config import AWQConfig
+
+        block = SignRoundV2Config(iters=1)
+        compressor = self._make_compressor(block)
+        auto = AWQTransform(AWQConfig())
+        auto._qdq_tool.configure(compressor, auto.config)
+
+        assert auto.config.v2_scale_search == "auto"
+        assert (
+            auto._qdq_tool.resolve_quant_funcs(
+                {"data_type": "int", "bits": 4, "sym": True, "group_size": 128, "disable_opt_rtn": True}
+            )[1]
+            is None
+        )
+        assert (
+            auto._qdq_tool.resolve_quant_funcs(
+                {"data_type": "mx_fp4", "bits": 4, "sym": True, "group_size": 32, "disable_opt_rtn": True}
+            )[1]
+            is not None
+        )
+
     def test_reuse_computes_v2_scale_once_per_balance_layer(self, monkeypatch):
         """Reuse avoids repeating the optimized scale search for each AWQ candidate."""
         import torch.nn as nn
@@ -1074,7 +1099,8 @@ class TestAWQUseV2ScaleSearch:
         from auto_round.algorithms.transforms.awq.config import AWQConfig
 
         parameters = {parameter.field: parameter for parameter in AWQConfig.get_registered_args().parameters}
-        assert parameters["v2_scale_search"].argparse_kwargs["choices"] == ("full", "off", "reuse")
+        assert parameters["v2_scale_search"].argparse_kwargs["default"] == "auto"
+        assert parameters["v2_scale_search"].argparse_kwargs["choices"] == ("auto", "full", "off", "reuse")
 
     def test_awq_nsamples_cli_and_validation(self):
         """AWQ sample cap is independent, user-facing, and strictly positive."""

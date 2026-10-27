@@ -115,12 +115,13 @@ class AWQConfig(QuantizationConfig):
         registry.add_argument(
             "--awq-v2-scale-search",
             field="v2_scale_search",
-            default="full",
-            choices=("full", "off", "reuse"),
+            default="auto",
+            choices=("auto", "full", "off", "reuse"),
             help=(
                 "Scale-search policy used by AWQ's internal QDQ when the terminal quantizer is AutoRoundV2: "
-                "full searches every AWQ candidate, off uses plain RTN for AWQ loss only, and reuse searches "
-                "once per balance layer and reuses that scale."
+                "auto uses plain RTN for INT schemes and full search otherwise, full searches every AWQ "
+                "candidate, off uses plain RTN for AWQ loss only, and reuse searches once per balance layer "
+                "and reuses that scale."
             ),
         )
         registry.add_argument(
@@ -189,7 +190,7 @@ class AWQConfig(QuantizationConfig):
         clip_n_sample_token: int = 512,
         awq_seqlen: int | None = None,
         smooth_batch_size: int | None = None,
-        v2_scale_search: str = "full",
+        v2_scale_search: str = "auto",
         disable_opt_rtn: bool | None = True,
         skip_moe: bool = True,
         mappings: list[dict] | None = None,
@@ -268,11 +269,13 @@ class AWQConfig(QuantizationConfig):
                 cost of more parent forward calls. ``None`` or ``<= 0`` replays
                 the cached calibration batch as-is.
             v2_scale_search: AutoRoundV2 scale-search policy for AWQ's internal
-                grid-loss QDQ. ``"full"`` preserves the exact terminal
-                quantizer initialization for every AWQ candidate. ``"off"``
-                uses plain RTN for AWQ loss while leaving the terminal
-                AutoRoundV2 search unchanged. ``"reuse"`` searches once for
-                each balance layer before the AWQ grid and reuses that scale.
+                grid-loss QDQ. ``"auto"`` (the default) uses ``"off"`` for INT
+                schemes and ``"full"`` for MX/NV schemes. ``"full"`` preserves
+                the exact terminal quantizer initialization for every AWQ
+                candidate. ``"off"`` uses plain RTN for AWQ loss while leaving
+                the terminal AutoRoundV2 search unchanged. ``"reuse"`` searches
+                once for each balance layer before the AWQ grid and reuses that
+                scale.
             disable_opt_rtn: Whether AWQ's internal weight QDQ should use the
                 plain RTN path. Defaults to True because AWQ calibration has not
                 shown accuracy or cost benefits from optimized RTN in benchmarks.
@@ -327,8 +330,10 @@ class AWQConfig(QuantizationConfig):
             raise ValueError(f"`clip_n_sample_token` must be a positive integer, got {clip_n_sample_token!r}")
         if smooth_batch_size is not None and smooth_batch_size < 0:
             raise ValueError(f"`smooth_batch_size` must be a non-negative integer or None, got {smooth_batch_size!r}")
-        if v2_scale_search not in {"full", "off", "reuse"}:
-            raise ValueError("`v2_scale_search` must be one of 'full', 'off', or 'reuse', " f"got {v2_scale_search!r}")
+        if v2_scale_search not in {"auto", "full", "off", "reuse"}:
+            raise ValueError(
+                "`v2_scale_search` must be one of 'auto', 'full', 'off', or 'reuse', " f"got {v2_scale_search!r}"
+            )
         self._disable_opt_rtn = disable_opt_rtn
         self.clip_n_grid = clip_n_grid
         self.clip_max_shrink = clip_max_shrink
