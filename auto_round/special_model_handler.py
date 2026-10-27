@@ -454,7 +454,8 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
     """Get block names for Qwen3-Omni MoE model.
 
     Qwen3-Omni has the following structure:
-    - thinker: Contains audio_tower, visual, model (text decoder)
+    - thinker.model: Contains visual/audio towers and the text decoder in newer Transformers releases
+    - thinker: Contains visual/audio towers directly in older Transformers releases
     - talker: Contains model (talker decoder), code_predictor
     - code2wav: Audio decoder
 
@@ -466,18 +467,30 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
     degrade audio quality in long-form generation .
     """
     block_names = []
+    thinker = getattr(model, "thinker", None)
+    thinker_model = getattr(thinker, "model", None)
 
     # Quantize visual encoder blocks if quant_vision is enabled
     if quant_vision:
-        # Vision encoder blocks
-        if hasattr(model, "thinker") and hasattr(model.thinker, "visual") and hasattr(model.thinker.visual, "blocks"):
-            block_names.append([f"thinker.visual.blocks.{i}" for i in range(len(model.thinker.visual.blocks))])
-        # Audio encoder layers
-        if hasattr(model, "thinker") and hasattr(model.thinker, "audio_tower"):
-            if hasattr(model.thinker.audio_tower, "layers"):
-                block_names.append(
-                    [f"thinker.audio_tower.layers.{i}" for i in range(len(model.thinker.audio_tower.layers))]
-                )
+        visual = getattr(thinker_model, "visual", None)
+        visual_blocks = getattr(visual, "blocks", None)
+        visual_prefix = "thinker.model.visual"
+        if visual_blocks is None or len(visual_blocks) == 0:
+            visual = getattr(thinker, "visual", None)
+            visual_blocks = getattr(visual, "blocks", None)
+            visual_prefix = "thinker.visual"
+        if visual_blocks is not None:
+            block_names.append([f"{visual_prefix}.blocks.{i}" for i in range(len(visual_blocks))])
+
+        audio_tower = getattr(thinker_model, "audio_tower", None)
+        audio_layers = getattr(audio_tower, "layers", None)
+        audio_prefix = "thinker.model.audio_tower"
+        if audio_layers is None or len(audio_layers) == 0:
+            audio_tower = getattr(thinker, "audio_tower", None)
+            audio_layers = getattr(audio_tower, "layers", None)
+            audio_prefix = "thinker.audio_tower"
+        if audio_layers is not None:
+            block_names.append([f"{audio_prefix}.layers.{i}" for i in range(len(audio_layers))])
 
     # Thinker text model layers (main LLM decoder). Transformers may wrap the
     # decoder in `language_model` in newer Qwen3-Omni releases.
