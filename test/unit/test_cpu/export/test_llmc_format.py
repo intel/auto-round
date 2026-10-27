@@ -101,9 +101,7 @@ class TestLLMCZpInt8:
 
     @pytest.mark.skipif(
         check_version("compressed-tensors==0.20.0"),
-        reason="compressed-tensors 0.20.0 zero-point unpacking bug: "
-        "https://github.com/vllm-project/compressed-tensors/issues/986 "
-        "(fix: https://github.com/vllm-project/compressed-tensors/pull/987)",
+        reason="compressed-tensors 0.20.0 has a zero-point unpacking bug",
     )
     def test_asym_zp_signed_convention_round_trip(self):
         """AutoRound zp is unsigned (q in [0, 2^b-1], W = (q - zp) * s);
