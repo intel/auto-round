@@ -251,6 +251,12 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         " Accepts space-separated (--shared_layers l1 l2) or comma-separated ('l1,l2') per group.",
     )
     rt.add_argument(
+        "--disable_default_shared_layers",
+        action="store_true",
+        help="Do not automatically share one quantization scheme across vLLM-fused projections "
+        "(q_proj/k_proj/v_proj, MLA q_a_proj/kv_a_proj_with_mqa, gate_proj/up_proj).",
+    )
+    rt.add_argument(
         "--static_kv_dtype",
         default=None,
         type=str,

@@ -40,6 +40,16 @@ export AR_ENABLE_COMPILE_PACKING=1
 export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 ```
 
+### AR_DISABLE_DEFAULT_SHARED_LAYERS
+- **Description**: Disables AutoScheme's default sharing of one quantization scheme across the projections vLLM/SGLang fuse at serving time (`q_proj`/`k_proj`/`v_proj`, MLA `q_a_proj`/`kv_a_proj_with_mqa`, `gate_proj`/`up_proj`). A fused kernel can only apply one scheme, so sharing is enabled by default. Equivalent to `AutoScheme(default_shared_layers=False)` and the CLI flag `--disable_default_shared_layers`.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) to disable the defaults; any other value keeps them.
+- **Usage**: Only disable when targeting a runtime that does not fuse these projections, or when you deliberately want per-projection schemes.
+
+```bash
+export AR_DISABLE_DEFAULT_SHARED_LAYERS=1
+```
+
 ### AR_USE_MODELSCOPE
 - **Description**: Controls whether to use ModelScope for model downloads
 - **Default**: `False`

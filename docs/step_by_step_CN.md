@@ -552,7 +552,9 @@ ar.quantize_and_save()
 
 `device_map (Optional[str,dict,torch.device])`：仅支持 API 场景。由于 AutoScheme 会比标准 AutoRound 会占用更多显存，故可通过此参数为其指定不同的设备映射。
 
-`shared_layers (Optional[Iterable[Iterable[str]]])`：仅支持 API 场景，用于定义多个层的分组，这些层将共享相同的量化配置。
+`shared_layers (Optional[Iterable[Iterable[str]]])`：仅支持 API 场景，用于在下方内置的 vLLM 融合分组之外，额外指定需要共享同一量化配置层的分组。
+
+`default_shared_layers (bool)`：是否自动为 vLLM/SGLang 在推理时融合的投影层共享同一量化配置，包括 `q_proj`/`k_proj`/`v_proj`（融合为 `qkv_proj`）、`q_a_proj`/`kv_a_proj_with_mqa`（DeepSeek 类 MLA，融合为 `fused_qkv_a_proj`）以及 `gate_proj`/`up_proj`（融合为 `gate_up_proj`）。默认 `True`；设为 `False` 或设置环境变量 `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`，即可让 AutoScheme 为各投影层独立选择量化配置。命令行参数：`--disable_default_shared_layers`。
 
 `batch_size (Optional[int])`：设为 `1` 可以降低显存占用，但会增加训练时间。
 
@@ -560,7 +562,9 @@ ar.quantize_and_save()
 
 `calibration_data_device (str)` 多 GPU 运行时块校准数据的存放位置：`auto`（默认）| `cpu` | `off` | `1,2` | `cuda:1,cuda:2`。命令行参数：`--calibration_data_device`。
 
-为加速推理，在部分框架中，会对特定层（如QKV、MoE）进行融合。这些融合层必须是相同的数据类型和量化配置。`shared_layers` 参数可以简化该配置，**同时支持正则表达式匹配和完整层名匹配**。注意**正则匹配按块匹配规则生效**。
+为加速推理，在部分框架中，会对特定层（如QKV、MoE）进行融合。这些融合层必须是相同的数据类型和量化配置。`shared_layers` 参数可以显式声明这些分组，**同时支持正则表达式匹配和完整层名匹配**。注意**正则匹配按块匹配规则生效**。
+
+**融合投影层默认共享同一配置。** 由于 vLLM 与 SGLang 会把 `q/k/v` 融合为 `qkv_proj`、把 `gate/up` 融合为 `gate_up_proj`（DeepSeek 类 MLA 还会把 `q_a_proj`/`kv_a_proj_with_mqa` 融合为 `fused_qkv_a_proj`），单个融合 kernel 只能使用一种量化配置，因此 AutoScheme 默认即为每个融合分组分配同一方案，并按**精确叶子层名**匹配，所以 `q_proj_moe_gen`、`down_proj` 这类相似命名不会被误并入。用户传入的 `shared_layers` 会与这些内置分组取并集。若希望 AutoScheme 为各投影层独立选择方案，可传入 `default_shared_layers=False` 或设置 `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`。
 
 **MoE 的 expert 层会自动按块分组** — 同一个 transformer block 内所有 expert 的投影层（gate/up/down，跨所有 experts）会被视为一个整体进行 DP 优化。它们共享相同的量化方案，loss 和 numel 直接求和。无需手动配置 `shared_layers` 来处理 expert 层。
 
@@ -568,6 +572,8 @@ ar.quantize_and_save()
 ```python
 from auto_round import AutoRound
 
+# vLLM 融合分组（q/k/v、MLA q_a/kv_a、gate/up）会自动生效，
+# shared_layers 仅在其基础上追加额外分组。
 shared_layers = [
     ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
     ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
@@ -576,6 +582,18 @@ shared_layers = [
 model_name = "Qwen/Qwen3-0.6B"
 ar = AutoRound(model=model_name, schemes=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
+```
+
+如需保持原有行为（各投影层独立选择方案），可关闭默认分组：
+```python
+ar = AutoRound(
+    model=model_name,
+    schemes=("W4A16", "MXFP8"),
+    bits=5.0,
+    default_shared_layers=False,
+    iters=0,
+    nsamples=1,
+)
 ```
 
 此外，若需为特定的层固定量化方案，可使用 AutoRound API 中的`layer_config`参数，用法示例如下：

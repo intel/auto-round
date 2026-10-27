@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     AR_QUANTIZE_BAGEL_MOE_GEN: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
     AR_ALLOW_W8_ASYM: bool = False
+    AR_DISABLE_DEFAULT_SHARED_LAYERS: bool = False
     AR_CALIB_DATA_MULTIPLIER: int = 100
     AR_DISABLE_BATCHED_SEARCH: bool = False
     AR_PERF_COUNTERS: bool = False
@@ -232,6 +233,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE": lambda: os.getenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1").lower()
     not in ("0", "false", "no", "off"),
     "AR_ALLOW_W8_ASYM": lambda: os.getenv("AR_ALLOW_W8_ASYM", "0").lower() in ("1", "true", "yes"),
+    # AutoScheme shares one quantization scheme across vLLM-fused projections
+    # (q/k/v, MLA q_a/kv_a, gate/up) by default, because a fused serving kernel
+    # can only apply a single scheme. Set to opt out globally.
+    "AR_DISABLE_DEFAULT_SHARED_LAYERS": lambda: os.getenv("AR_DISABLE_DEFAULT_SHARED_LAYERS", "0").lower()
+    in ("1", "true", "yes"),
     # Debug helper: when set to a positive integer N, models are loaded with only
     # the first N decoder layers (config.num_hidden_layers is truncated to N before
     # the weights are instantiated). This makes it possible to isolate and debug

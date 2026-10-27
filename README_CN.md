@@ -335,7 +335,8 @@ ar.quantize_and_save()
 - ​**​`bits`​**​  **(float)** ：传入 `schemes` 时，为整个模型的目标平均 bits（平均 bits 的计算仅包含被量化的层）。未提供 `schemes` 时，`bits` 为普通权重量化位宽，必须为整数。
 - ​**​`schemes`​**​  **(str | list[str] | list[QuantizationScheme])** ​：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。传入 `schemes` 即启用 AutoScheme。
 - ​**​`ignore_scale_zp_bits`​**​  **(bool)** ​：仅支持 API 调用场景。用于决定在计算平均 bit 时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
-- ​**​`shared_layers`​**​  **(Iterable[Iterable[str]], optional)** ：仅支持 API 调用场景，用于定义多个层的分组，这些层将共享相同的量化配置。
+- ​**​`shared_layers`​**​  **(Iterable[Iterable[str]], optional)** ：仅支持 API 调用场景。在内置的 vLLM 融合分组之外，额外指定需要共享量化配置的层分组。
+- ​**​`default_shared_layers`​**​  **(bool)** ：是否为 vLLM/SGLang 在推理时融合的投影层（`q_proj`/`k_proj`/`v_proj`、`q_a_proj`/`kv_a_proj_with_mqa`、`gate_proj`/`up_proj`）共享同一量化配置。默认 `True`；设为 `False`（或设置 `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`）可让 AutoScheme 为各投影层独立选择。命令行参数：`--disable_default_shared_layers`。
 - ​**​`batch_size`​**​  **(int, optional)** ​：仅支持 API 调用场景。设为 `1` 可以降低显存占用，但同时会增加训练时间。
 
 </details>
