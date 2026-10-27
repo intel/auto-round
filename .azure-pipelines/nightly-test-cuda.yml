@@ -7,14 +7,6 @@ trigger: none
 
 pr: none
 
-schedules:
-  - cron: "0 18 * * *"   # 02:00 Asia/Shanghai every day
-    displayName: Daily CUDA nightly run
-    branches:
-      include:
-        - main
-    always: true
-
 variables:
   - name: POOL_NAME
     value: "RunPod-GPU-Pool"

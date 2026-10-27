@@ -129,6 +129,7 @@ class TestLLMCZpInt8:
         model = nn.Sequential()
         model.add_module("q_proj", layer)
         pack_layer("q_proj", model, device="cpu")
+        assert layer.weight_zero_point.stride(-2) == 1
 
         # AutoRound's own fake-quantized weight (unsigned convention)
         s = scale.repeat_interleave(gs, dim=1)
