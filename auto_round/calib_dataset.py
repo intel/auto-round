@@ -2047,19 +2047,22 @@ def _get_dataset_impl(
         indices = [item[0] for item in res]
         datasets = [datasets[item[0]] for item in res]
         dataset_names = [dataset_names[index] for index in indices]
+        # Keep the lengths aligned with the reordered datasets.
+        lens = [item[1] for item in res]
         cnt = 0 if not data_lens else sum(data_lens.values())
         dataset_cnt_info = {}
         if cnt > nsamples:
             cnt = 0
 
+        # Datasets are visited from smallest to largest, so dividing the remaining
+        # budget by the number of datasets still to fill lets later (larger) datasets
+        # take up what earlier (smaller) ones could not provide.
+        remaining = sum(1 for dataset_name in dataset_names if dataset_name.split(":")[0] not in data_lens)
         for i in range(len(datasets)):
             name = dataset_names[i].split(":")[0]
             if name not in data_lens:
-                target_cnt = (
-                    (nsamples - cnt) // (len(datasets) - len(data_lens))
-                    if data_lens
-                    else (nsamples - cnt) // (len(datasets) - i)
-                )
+                target_cnt = (nsamples - cnt) // remaining
+                remaining -= 1
                 target_cnt = min(target_cnt, lens[i])
                 cnt += target_cnt
             else:

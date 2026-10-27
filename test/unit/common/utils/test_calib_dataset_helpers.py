@@ -600,3 +600,53 @@ class TestCompetitionMathChatTemplate:
         # Exactly one render per sample in the loop; the .map() tokenization must
         # NOT re-apply the template (regression guard for double application).
         assert tok.chat_calls == 3
+
+
+# ---------------------------------------------------------------------------
+# Sample allocation when mixing several calibration datasets
+# ---------------------------------------------------------------------------
+class TestMixedDatasetSampleAllocation:
+    @staticmethod
+    def _register(monkeypatch, name, num_rows, base):
+        import auto_round.calib_dataset as calib_dataset
+
+        def _get(**kwargs):
+            input_ids = [[base + i, base + i + 1, base + i + 2, base + i + 3] for i in range(num_rows)]
+            return Dataset.from_dict({"input_ids": input_ids, "attention_mask": [[1] * 4] * num_rows})
+
+        monkeypatch.setitem(calib_dataset.CALIB_DATASETS, name, _get)
+
+    @staticmethod
+    def _count_by_source(dataset):
+        counts = {}
+        for row in dataset:
+            source = int(row["input_ids"][0]) // 1000
+            counts[source] = counts.get(source, 0) + 1
+        return counts
+
+    def test_small_dataset_listed_last_does_not_shrink_total(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        self._register(monkeypatch, "_ar_mix_big_", num_rows=100, base=1000)
+        self._register(monkeypatch, "_ar_mix_small_", num_rows=5, base=2000)
+
+        dataset = calib_dataset._get_dataset_impl(
+            MagicMock(), seqlen=4, dataset_name="_ar_mix_big_,_ar_mix_small_", nsamples=20
+        )
+
+        assert len(dataset) == 20
+        assert self._count_by_source(dataset) == {1: 15, 2: 5}
+
+    def test_remaining_budget_is_shared_with_num_option(self, monkeypatch):
+        import auto_round.calib_dataset as calib_dataset
+
+        self._register(monkeypatch, "_ar_mix_a_", num_rows=100, base=1000)
+        self._register(monkeypatch, "_ar_mix_b_", num_rows=100, base=2000)
+        self._register(monkeypatch, "_ar_mix_c_", num_rows=100, base=3000)
+
+        dataset = calib_dataset._get_dataset_impl(
+            MagicMock(), seqlen=4, dataset_name="_ar_mix_a_:num=4,_ar_mix_b_,_ar_mix_c_", nsamples=20
+        )
+
+        assert len(dataset) == 20
+        assert self._count_by_source(dataset) == {1: 4, 2: 8, 3: 8}
