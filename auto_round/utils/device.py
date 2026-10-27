@@ -42,6 +42,7 @@ from auto_round.utils.device_manager import (
     get_current_device_type,
     get_device_memory,
     get_major_device,
+    get_primary_device_type,
 )
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
@@ -334,9 +335,11 @@ def check_is_cpu(device):
 def is_pipeline_parallel_supported(device_type: str) -> bool:
     """Whether multi-card (naive pipeline) parallel tuning is enabled.
 
-    The policy itself lives on the backend handle
+    Thin compatibility shim: the policy itself lives on the backend handle
     (:attr:`ARDevice.supports_pipeline_parallel`), so a new device declares it
-    once instead of being special-cased here.
+    once instead of being special-cased here.  Prefer reading
+    ``get_ar_device(device_type).supports_pipeline_parallel`` directly in new
+    code; this function is kept for existing callers and external users.
     """
     return get_ar_device(device_type).supports_pipeline_parallel
 
@@ -1507,8 +1510,10 @@ def parse_available_devices(device_map: str | torch.device | int | dict | None =
 
     # === Step 2. Parse different input formats ===
     if device_map is None:
-        # Automatically detect one available device
-        primary = device_types[0]
+        # Automatically detect one available device.  ``get_primary_device_type``
+        # applies the ``auto_select_by_default`` policy (MPS opts out), so this
+        # agrees with ``normalize_default_device_map`` / ``get_major_device``.
+        primary = get_primary_device_type(device_types)
         return ["cpu"] if primary == "cpu" else [f"{primary}:0"]
 
     if isinstance(device_map, torch.device):
@@ -1522,8 +1527,8 @@ def parse_available_devices(device_map: str | torch.device | int | dict | None =
         return [f"{dev_type}:{index}"]
 
     if isinstance(device_map, int):
-        # Integer input → use primary available device type
-        device_type = device_types[0]
+        # Integer input → use the primary (default) available device type
+        device_type = get_primary_device_type(device_types)
         return [f"{device_type}:{device_map}"] if device_type != "cpu" else ["cpu"]
 
     # ---- dict-like string ----
@@ -1532,10 +1537,12 @@ def parse_available_devices(device_map: str | torch.device | int | dict | None =
         devices = []
         for pair in pairs:
             try:
-                key, *value_parts = pair.split(":")
+                _, *value_parts = pair.split(":")
                 value = ":".join(value_parts).strip()
-                if value.isdigit() and device_types[0] != "cpu":
-                    value = device_types[0] + ":" + value
+                if value.isdigit():
+                    primary = get_primary_device_type(device_types)
+                    if primary != "cpu":
+                        value = primary + ":" + value
                 devices.append(value)
             except ValueError:
                 continue
@@ -1547,7 +1554,7 @@ def parse_available_devices(device_map: str | torch.device | int | dict | None =
         if device_map.lower() == "cpu":
             return ["cpu"]
         if device_map.lower() == "auto":
-            primary = device_types[0]
+            primary = get_primary_device_type(device_types)
             if primary == "cpu":
                 return ["cpu"]
             return [f"{primary}:{i}" for i in range(detect_device_count())]
@@ -1556,8 +1563,8 @@ def parse_available_devices(device_map: str | torch.device | int | dict | None =
         parsed = []
         for p in parts:
             if p.isdigit():
-                # Numeric → assign to first available device type
-                device_type = device_types[0]
+                # Numeric → assign to the primary (default) device type
+                device_type = get_primary_device_type(device_types)
                 parsed.append(f"{device_type}:{p}" if device_type != "cpu" else "cpu")
             elif p in device_types and ":" not in p:
                 # Bare device type string (e.g., "cuda", "xpu") → normalize to "type:0".
@@ -1678,7 +1685,15 @@ class MemoryMonitor:
         self.peak_ram = max(self.peak_ram, current_ram)
 
     def update_hpu(self, device_list=None):
-        """Update memory usage for HPU devices."""
+        """Update memory usage for HPU devices.
+
+        .. deprecated::
+            Kept for backward compatibility only.  :meth:`update` is now
+            backend-agnostic (it reads ``memory_reserved`` from the
+            :class:`ARDevice` handle, which HPU reports as allocated memory) and
+            is what :class:`ClearMemory` calls, so no caller needs the HPU
+            special case anymore.
+        """
         if not self.enabled:
             return
         # Track RAM

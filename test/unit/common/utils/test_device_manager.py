@@ -885,14 +885,17 @@ class TestNewBackendSupport:
         """Discovery is driven by is_available(), not by a hardcoded list."""
         from auto_round.utils.device_manager import get_available_device_types
 
-        with patch("auto_round.utils.device_manager._hpu_available", return_value=False), patch(
-            "auto_round.utils.device_manager._torch_accelerator_type", return_value=None
-        ), patch(
-            "auto_round.utils.device_manager._candidate_backend_types",
-            return_value=["cuda", "xpu"],
-        ), patch(
-            "auto_round.utils.device_manager._backend_available",
-            side_effect=lambda name: name == "xpu",
+        with (
+            patch("auto_round.utils.device_manager._hpu_available", return_value=False),
+            patch("auto_round.utils.device_manager._torch_accelerator_type", return_value=None),
+            patch(
+                "auto_round.utils.device_manager._candidate_backend_types",
+                return_value=["cuda", "xpu"],
+            ),
+            patch(
+                "auto_round.utils.device_manager._backend_available",
+                side_effect=lambda name: name == "xpu",
+            ),
         ):
             assert get_available_device_types() == ["xpu"]
 
@@ -942,9 +945,107 @@ class TestNewBackendSupport:
     def test_normalize_default_device_map_skips_opt_out_backends(self):
         from auto_round.utils.device_manager import normalize_default_device_map
 
-        with patch("auto_round.utils.device_manager.get_ar_device") as fake_get:
+        with (
+            patch("auto_round.utils.device_manager.get_available_device_types", return_value=["mps"]),
+            patch("auto_round.utils.device_manager.get_ar_device") as fake_get,
+        ):
             fake_get.return_value.is_available.return_value = True
             fake_get.return_value.auto_select_by_default = False
             assert normalize_default_device_map(None) == "cpu"
             # An explicit request is never overridden.
             assert normalize_default_device_map("mps") == "mps"
+
+    def test_normalize_keeps_default_when_no_opt_out_backend(self):
+        """No opt-out backend available -> the caller's default is untouched."""
+        from auto_round.utils.device_manager import normalize_default_device_map
+
+        def fake_device(device_type):
+            fake = MagicMock()
+            fake.is_available.return_value = True
+            fake.auto_select_by_default = True
+            return fake
+
+        with (
+            patch("auto_round.utils.device_manager.get_available_device_types", return_value=["cuda", "xpu"]),
+            patch("auto_round.utils.device_manager.get_ar_device", side_effect=fake_device),
+        ):
+            assert normalize_default_device_map(0) == 0
+            assert normalize_default_device_map(None) is None
+
+    def test_all_default_paths_honour_opt_out(self):
+        """``parse_available_devices`` / ``get_major_device`` agree with normalize.
+
+        Regression test: the MPS opt-out used to be applied only by
+        ``normalize_default_device_map``, while the other default-resolution
+        helpers kept selecting MPS.
+        """
+        from auto_round.utils.device import parse_available_devices
+        from auto_round.utils.device_manager import get_major_device, normalize_default_device_map
+
+        with (
+            patch("auto_round.utils.device_manager.get_available_device_types", return_value=["mps"]),
+            patch("auto_round.utils.device_manager.get_ar_device") as fake_get,
+        ):
+            fake_get.return_value.auto_select_by_default = False
+            fake_get.return_value.is_available.return_value = True
+            assert normalize_default_device_map(0) == "cpu"
+            assert get_major_device(0) == "cpu"
+            assert parse_available_devices(None) == ["cpu"]
+            assert parse_available_devices(0) == ["cpu"]
+            assert parse_available_devices("auto") == ["cpu"]
+
+    def test_get_primary_device_type_prefers_first_selectable(self):
+        from auto_round.utils.device_manager import get_primary_device_type
+
+        assert get_primary_device_type(["cuda", "xpu"]) == "cuda"
+        assert get_primary_device_type(["xpu", "cuda"]) == "xpu"
+        assert get_primary_device_type([]) == "cpu"
+        with patch("auto_round.utils.device_manager.get_ar_device") as fake_get:
+            fake_get.return_value.auto_select_by_default = False
+            assert get_primary_device_type(["mps"]) == "cpu"
+
+    def test_backend_available_uses_custom_is_available_override(self):
+        """A vendor handle's ``is_available`` override drives discovery.
+
+        Regression test: discovery used to call the static
+        ``get_device_module(...).is_available()`` and silently ignored a
+        subclass override, so a registered backend was never discovered.
+        """
+        from auto_round.utils.device_manager import ARDevice, _backend_available, register_ar_device
+
+        @register_ar_device
+        class _AlwaysOn(ARDevice):
+            device_type = "_always_on_zzz"
+
+            def is_available(self):
+                return True
+
+        @register_ar_device
+        class _AlwaysOff(ARDevice):
+            device_type = "_always_off_zzz"
+
+            def is_available(self):
+                return False
+
+        try:
+            assert _backend_available("_always_on_zzz") is True
+            assert _backend_available("_always_off_zzz") is False
+        finally:
+            from auto_round.utils.device_manager import device_manager
+
+            for name in ("_always_on_zzz", "_always_off_zzz"):
+                ARDevice._registry.pop(name, None)
+                device_manager._cache.pop(name, None)
+
+    def test_mps_supports_bf16_probes_macos_version(self):
+        """MPS bf16 is gated on macOS 14 instead of always reporting True."""
+        from auto_round.utils.device_manager import MpsARDevice
+
+        for macos14_supported, expected in ((True, True), (False, False)):
+            device = MpsARDevice()
+            with patch("torch.backends.mps.is_macos_or_newer", return_value=macos14_supported) as probe:
+                assert device.supports_bf16() is expected
+                probe.assert_called_with(14, 0)
+            # Cached after the first probe.
+            with patch("torch.backends.mps.is_macos_or_newer", side_effect=AssertionError("must be cached")):
+                assert device.supports_bf16() is expected

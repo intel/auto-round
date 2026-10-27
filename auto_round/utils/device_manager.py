@@ -86,6 +86,7 @@ __all__ = [
     "get_device_memory",
     "get_major_device",
     "get_packing_device",
+    "get_primary_device_type",
     "is_auto_device_mapping",
     "is_device_available",
     "normalize_default_device_map",
@@ -118,26 +119,37 @@ def normalize_default_device_map(device_map: None | str | int | torch.device | d
 
     Some backends should not be picked implicitly (they declare
     ``auto_select_by_default = False``); Apple Silicon / MPS is the canonical
-    example because it tends to OOM on larger models.  When such a backend is
-    the only one available, the default ``0`` / ``"0"`` / ``None`` / ``"auto"``
-    selection falls back to CPU unless the caller asked for it explicitly.
+    example because it tends to OOM on larger models.  When only such a backend
+    is available, the default ``0`` / ``"0"`` / ``None`` / ``"auto"`` selection
+    falls back to CPU unless the caller asked for it explicitly.
+
+    The decision itself lives in :func:`get_primary_device_type`, which
+    :func:`auto_round.utils.device.parse_available_devices` and
+    :func:`get_major_device` use as well, so every default-resolution path
+    agrees.
     """
     if device_map not in (0, "0", None, "auto"):
         return device_map
-    for device_type, device_cls in list(ARDevice._registry.items()):
-        if device_cls.auto_select_by_default:
-            continue
+
+    available = get_available_device_types()
+    if not available:
+        return device_map
+    if get_primary_device_type(available) != "cpu":
+        return device_map
+
+    # Every available backend opts out of implicit selection; keep the
+    # historical CPU default and tell the user how to force the device.
+    for device_type in available:
         try:
-            available = get_ar_device(device_type).is_available()
+            if get_ar_device(device_type).auto_select_by_default:
+                continue
         except Exception:
-            available = False
-        if available:
-            logger.warning(
-                f"{device_type} detected. Using CPU by default to avoid potential memory issues. "
-                f"Set --device_map={device_type} to force {device_type} usage."
-            )
-            return "cpu"
-    return device_map
+            continue
+        logger.warning(
+            f"{device_type} detected. Using CPU by default to avoid potential memory issues. "
+            f"Set --device_map={device_type} to force {device_type} usage."
+        )
+    return "cpu"
 
 
 def _torch_accelerator_type() -> str | None:
@@ -237,13 +249,26 @@ def _candidate_backend_types() -> list[str]:
 def _backend_available(device_type: str) -> bool:
     """Whether ``device_type`` is usable, without knowing anything about it.
 
-    Relies solely on the uniform ``<runtime module>.is_available()`` contract
-    every PyTorch device backend implements.
+    A registered :class:`ARDevice` subclass that overrides :meth:`ARDevice.is_available`
+    is the authority for its own backend -- that is how a vendor handle (or a
+    test double) declares availability without touching this function.  Only
+    backends without such an override fall back to the uniform
+    ``<runtime module>.is_available()`` contract every PyTorch backend implements.
     """
     if device_type == "cpu":
         return True
     if device_type == "hpu":
         return _hpu_available()
+    device_cls = ARDevice._registry.get(device_type)
+    # ``__dict__`` lookup: only an *overridden* method is authoritative, an
+    # inherited generic probe would just repeat the module check below.
+    if device_cls is not None and "is_available" in device_cls.__dict__:
+        try:
+            return bool(device_cls.create(device_type).is_available())
+        except Exception:
+            # A handle that cannot be instantiated must not silently disable the
+            # backend; fall through to the runtime-module probe below.
+            pass
     module = ARDevice.get_device_module(device_type)
     is_avail = getattr(module, "is_available", None)
     if not callable(is_avail):
@@ -266,7 +291,7 @@ def _normalize_device_type(device: None | str | int | torch.device) -> str | Non
         if device in ("auto", "tp"):
             return get_current_device_type()
         return device.split(":")[0]
-    raise ValueError("Device type not recognized")
+    raise ValueError(f"Device type not recognized: {device!r} (type {type(device).__name__})")
 
 
 @functools.lru_cache(None)
@@ -308,6 +333,11 @@ def get_available_device_types() -> list[str]:
     PyTorch -- including out-of-tree ones such as ``npu`` -- are discovered
     automatically, without callers ever touching ``torch.cuda`` / ``torch.xpu``
     by hand.
+
+    The result is a *priority-ordered* list, not a single choice: the first
+    entry is the most preferred backend, but it may still be one that must not
+    be picked implicitly.  Use :func:`get_primary_device_type` when the caller
+    did not request a specific device.
     """
     available: list[str] = []
     # Out-of-tree hpu first (may not be registered with torch.accelerator).
@@ -322,6 +352,40 @@ def get_available_device_types() -> list[str]:
         if device_type not in available and _backend_available(device_type):
             available.append(device_type)
     return available
+
+
+def get_primary_device_type(available: list[str] | None = None) -> str:
+    """Backend to use when the caller did not request a specific device.
+
+    :func:`get_available_device_types` returns *every* usable backend in
+    preference order; picking the first one is not the same decision as picking
+    the *default* one, because a backend may declare
+    ``auto_select_by_default = False`` (Apple Silicon / MPS: unified memory OOMs
+    on larger models).  Centralising the rule here keeps
+    :func:`auto_round.utils.device.parse_available_devices`,
+    :func:`get_major_device` and :func:`normalize_default_device_map` from
+    disagreeing about what "default" means.
+
+    Args:
+        available: Already-detected backend types.  Callers that have resolved
+            the list themselves (and may have monkeypatched the discovery
+            helper) pass it in; otherwise it is looked up.
+
+    Returns:
+        ``"cpu"`` when an available backend opts out of implicit selection (the
+        historical behaviour, kept so every entry point agrees), otherwise the
+        most preferred available backend, or ``"cpu"`` when nothing is
+        available.
+    """
+    if available is None:
+        available = get_available_device_types()
+    for device_type in available:
+        try:
+            if not get_ar_device(device_type).auto_select_by_default:
+                return "cpu"
+        except Exception:
+            continue
+    return available[0] if available else "cpu"
 
 
 # ---------------------------------------------------------------------------
@@ -737,6 +801,34 @@ class MpsARDevice(ARDevice):
 
     def device_index(self, index: int):  # nothing to switch on MPS.
         return contextlib.nullcontext()
+
+    # -- numeric format / mixed-precision policy ---------------------------
+    def supports_bf16(self) -> bool:
+        """Whether the MPS backend can execute ``bfloat16``.
+
+        MPS bf16 support arrived with macOS 14 / PyTorch 2.x; older systems
+        silently produce wrong values, so probe the OS instead of inheriting the
+        optimistic base-class default.
+        """
+        cached = getattr(self, "_bf16_supported", None)
+        if cached is not None:
+            return cached
+
+        supports = False
+        backends = getattr(torch, "backends", None)
+        mps_backend = getattr(backends, "mps", None) if backends is not None else None
+        is_macos_or_newer = getattr(mps_backend, "is_macos_or_newer", None)
+        if callable(is_macos_or_newer):
+            try:
+                supports = bool(is_macos_or_newer(14, 0))
+            except Exception:
+                supports = False
+        else:
+            # No version probe available (e.g. older PyTorch): assume the
+            # runtime knows what it is doing rather than disabling bf16.
+            supports = True
+        self._bf16_supported = supports
+        return supports
 
     def total_memory(self, index: int = 0) -> int:
         return torch.mps.recommended_max_memory()
@@ -1154,7 +1246,10 @@ def get_major_device(device_map: None | str | torch.device | int | dict = None) 
             dev_idx = device_list[0] if device_list else None
             device = "auto"
         if device is None or device == "auto":
-            device_type = get_current_device_type()
+            # ``get_primary_device_type`` applies the ``auto_select_by_default``
+            # policy (MPS opts out), so a default request never resolves to a
+            # backend that must not be picked implicitly.
+            device_type = get_primary_device_type()
             device = torch.device(device_type) if device_type is not None else torch.device("cpu")
             if dev_idx is not None and str(device) != "cpu":
                 device = str(device) + f":{dev_idx}"
