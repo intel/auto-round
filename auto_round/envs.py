@@ -181,7 +181,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_DISABLE_BATCHED_SEARCH": lambda: os.getenv("AR_DISABLE_BATCHED_SEARCH", "False").strip().lower()
     in ("1", "true", "yes"),
     # Emit [perf] phase-breakdown log lines (per-block load/tune/pack/write/clean/offload
-    # in the data-driven loop; the sharded collection breakdown for --parallel_quantization).
+    # in the data-driven loop; the sharded collection breakdown for --data_parallel).
     "AR_PERF_COUNTERS": lambda: os.getenv("AR_PERF_COUNTERS", "False").strip().lower() in ("1", "true", "yes"),
     "AR_SEARCH_BATCH_GB": lambda: _get_optional_positive_float_env("AR_SEARCH_BATCH_GB"),
     "AR_DISABLE_CROSS_DEVICE_SEARCH": lambda: os.getenv("AR_DISABLE_CROSS_DEVICE_SEARCH", "False").strip().lower()

@@ -103,7 +103,7 @@ def _accel_free_bytes_map(dev_type: str):
 
 @dataclass(frozen=True)
 class ParallelPolicy:
-    """Resolved ``--parallel_quantization`` policy, set once at the entry.
+    """Resolved ``--data_parallel`` policy, set once at the entry.
 
     ``world`` is the requested DDP world (1 = off/serial); ``source`` records
     where it came from ("off" | "auto" | "explicit"); ``collect_forward_cap``
@@ -159,7 +159,7 @@ def parallel_state(quantizer, create: bool = False) -> ParallelTuneState | None:
 
 
 def resolve_parallel_world(parallel: str, n_visible: int, iters: int = 0) -> int:
-    """Resolve the ``--parallel_quantization`` argument into a DDP world size.
+    """Resolve the ``--data_parallel`` argument into a DDP world size.
 
     Policy entry point (called by the CLI): ``off`` -> 1, ``auto`` -> all
     visible devices, ``N`` -> N. The power-of-two rule applies only when the
@@ -175,7 +175,7 @@ def resolve_parallel_world(parallel: str, n_visible: int, iters: int = 0) -> int
     if parallel == "off":
         return 1
     if n_visible < 2:
-        raise RuntimeError("--parallel_quantization auto needs at least 2 visible CUDA devices")
+        raise RuntimeError("--data_parallel auto needs at least 2 visible CUDA devices")
     if parallel == "auto":
         if iters > 0:
             return 1 << (max(n_visible, 1).bit_length() - 1)  # largest power of two <= visible
@@ -183,22 +183,22 @@ def resolve_parallel_world(parallel: str, n_visible: int, iters: int = 0) -> int
     if parallel.isdigit():
         world = int(parallel)
         if world < 2:
-            raise RuntimeError(f"--parallel_quantization world must be at least 2, got {world}")
+            raise RuntimeError(f"--data_parallel world must be at least 2, got {world}")
         if world > n_visible:
             raise RuntimeError(
-                f"--parallel_quantization {world} requires at least {world} visible CUDA devices, got {n_visible}"
+                f"--data_parallel {world} requires at least {world} visible CUDA devices, got {n_visible}"
             )
         if world & (world - 1) and iters > 0:
             raise RuntimeError(
-                f"--parallel_quantization world must be a power of two when iters > 0 (the gradient "
+                f"--data_parallel world must be a power of two when iters > 0 (the gradient "
                 f"exchange is a halving-doubling reduction), got {world}"
             )
         return world
-    raise RuntimeError(f"--parallel_quantization accepts off|auto|N, got {parallel!r}")
+    raise RuntimeError(f"--data_parallel accepts off|auto|N, got {parallel!r}")
 
 
 def log_zero_shot_parallel_noop_(policy) -> None:
-    """ONE INFO line when an explicit ``--parallel_quantization N`` lands on
+    """ONE INFO line when an explicit ``--data_parallel N`` lands on
     the zero-shot RTN path.
 
     Plain RTN without calibration (``need_calib == False``) runs
@@ -210,7 +210,7 @@ def log_zero_shot_parallel_noop_(policy) -> None:
     """
     if isinstance(policy, ParallelPolicy) and getattr(policy, "source", "") == "explicit" and policy.world > 1:
         logger.info(
-            "[tune-ddp] --parallel_quantization %d has no effect on this run: "
+            "[tune-ddp] --data_parallel %d has no effect on this run: "
             "zero-shot RTN needs no calibration forward (weights only); quantizing serially",
             policy.world,
         )
@@ -246,7 +246,7 @@ def check_parallel_device_map_compat_(world: int, device_map, iters: int) -> Non
             f"block spans {len(devs)} {dev_type} devices; parallel tuning requires "
             "single-device block placement (run with no --device_map or a single-device "
             "--device_map; multi-device/auto maps may shard a block across GPUs -- or run "
-            "with --parallel_quantization off)"
+            "with --data_parallel off)"
         )
 
 
@@ -416,10 +416,10 @@ def resolve_tune_ddp_plan_(quantizer, block, fp_inputs, fp_outputs, home, world=
             f"block spans {len(_home_span_devs)} {home.type.upper()} devices; parallel tuning requires "
             "single-device block placement (run with no --device_map or a single-device "
             "--device_map; multi-device/auto maps may shard a block across GPUs -- or run "
-            "with --parallel_quantization off)"
+            "with --data_parallel off)"
         )
     if world > 1 and is_distributed():
-        decline.append("multi-process torchrun lane is active (--parallel_quantization is single-process)")
+        decline.append("multi-process torchrun lane is active (--data_parallel is single-process)")
 
     plan = DDPPlan(1, [home], len(fp_inputs) if isinstance(fp_inputs, list) else 0)
     if eligible:
@@ -546,7 +546,7 @@ def resolve_tune_ddp_plan_(quantizer, block, fp_inputs, fp_outputs, home, world=
             raise RuntimeError(
                 f"parallel tuning with world={world} is ineligible: "
                 f"{'; '.join(reasons)}. Fix the blocking condition listed above, or run "
-                "with --parallel_quantization off to tune serial deliberately."
+                "with --data_parallel off to tune serial deliberately."
             )
     parallel_state(quantizer, create=True).plan = plan
     return plan
@@ -857,7 +857,7 @@ def _warn_undeclared_mirror_writes(mirrors, snapshots, merge_stats) -> None:
                         "[tune-ddp] '%s' changed on mirror modules during a sharded collection pass but is not a "
                         "declared calibration statistic: if a calibration hook accumulates it, the mirrors' share "
                         "is dropped (the home keeps only its own shard). Declare its reduction in the block "
-                        "quantizer's calibration_stats, or run with --parallel_quantization off.",
+                        "quantizer's calibration_stats, or run with --data_parallel off.",
                         attr,
                     )
 

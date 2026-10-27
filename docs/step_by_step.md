@@ -937,13 +937,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 There are typically two scenarios that require multi-GPU tuning: one is the calibration phase mainly for lm-head quantization, and the other is quantizing extremely large models (e.g., models larger than 100 GB).
 
 #### Parallel block tuning across GPUs
-When a tuning block fits on one GPU, `--parallel_quantization` uses the other GPUs of the same process for
+When a tuning block fits on one GPU, `--data_parallel` uses the other GPUs of the same process for
 data-parallel tuning: the block's tuning loop runs once per GPU (a rank, one thread each) on that GPU's copy of the
 block and its share of the calibration samples, and the ranks average their gradients every iteration. This is the
 same contract as the multi-process torchrun path (`sync_gradients()`), so the algorithm's loop itself is unchanged.
 
 ~~~bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --parallel_quantization auto
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --data_parallel auto
 ~~~
 
 - `off` (default) keeps the serial loop. `N` pins the number of ranks: at least 2, at most the visible device count,

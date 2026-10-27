@@ -728,7 +728,7 @@ class TestEarlyDeviceMapEligibility:
     def test_message_lists_the_fixes(self):
         from auto_round.algorithms.parallel.data_parallel import check_parallel_device_map_compat_
 
-        with pytest.raises(RuntimeError, match="--parallel_quantization off"):
+        with pytest.raises(RuntimeError, match="--data_parallel off"):
             check_parallel_device_map_compat_(4, {"a": "cuda:0", "b": "cuda:1"}, iters=10)
 
     def test_single_device_map_passes(self):
@@ -782,7 +782,7 @@ class TestEarlyDeviceMapEligibility:
 
 
 class TestZeroShotParallelNotice:
-    """F4: an explicit --parallel_quantization N on the zero-shot RTN path
+    """F4: an explicit --data_parallel N on the zero-shot RTN path
     (no calibration forward) emits exactly ONE INFO line; auto/off stay
     silent; nothing refuses to run."""
 
@@ -793,7 +793,7 @@ class TestZeroShotParallelNotice:
             log_zero_shot_parallel_noop_(ParallelPolicy(world=4, source="explicit"))
         infos = [r for r in caplog.records if "has no effect on this run" in r.message]
         assert len(infos) == 1 and infos[0].levelno == logging.INFO
-        assert "--parallel_quantization 4" in infos[0].message
+        assert "--data_parallel 4" in infos[0].message
         assert "zero-shot RTN needs no calibration forward" in infos[0].message
         assert "quantizing serially" in infos[0].message
 

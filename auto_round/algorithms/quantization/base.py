@@ -49,7 +49,7 @@ class BaseQuantizer(BaseAlgorithm):
     """
 
     #: Statistics this quantizer's calibration hooks write on modules, mapped
-    #: to their shard reduction ("sum" | "max"). Under --parallel_quantization
+    #: to their shard reduction ("sum" | "max"). Under --data_parallel
     #: the hook-carrying calibration forwards shard across the block mirrors
     #: and the engine folds these attributes back into the home block.
     #: ``None`` = undeclared: if the quantizer registers calibration hooks,

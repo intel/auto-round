@@ -327,7 +327,7 @@ def tune(args):
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
-    _parallel = str(getattr(args, "parallel_quantization", "off") or "off").strip().lower()
+    _parallel = str(getattr(args, "data_parallel", "off") or "off").strip().lower()
     _parallel_policy = None
     if _parallel != "off":
         import torch
@@ -359,7 +359,7 @@ def tune(args):
             # visible count); an explicit N either validates silently or
             # raises, and the engagement line reports the resolved plan
             logger.info(
-                "[tune-ddp] --parallel_quantization auto -> world=%d (largest power of two <= %d visible "
+                "[tune-ddp] --data_parallel auto -> world=%d (largest power of two <= %d visible "
                 "devices; %d unused)",
                 _world,
                 _n,
@@ -496,7 +496,7 @@ def tune(args):
     )
 
     if _parallel_policy is not None:
-        # the resolved --parallel_quantization policy is set on the compress
+        # the resolved --data_parallel policy is set on the compress
         # context; the data-parallel engine reads it from there
         autoround.compress_context.parallel_policy = _parallel_policy
 

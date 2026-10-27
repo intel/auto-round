@@ -685,7 +685,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         # full-model materialization and linear CPU RAM growth.
         logger.info("Zero-shot mode (no calibration data needed): using blockwise quantization.")
 
-        # an explicit --parallel_quantization N cannot engage here (no
+        # an explicit --data_parallel N cannot engage here (no
         # calibration forward for the data-parallel lane to shard): one INFO
         # line, no refusal -- weights-only RTN has nothing to parallelize
         from auto_round.algorithms.parallel.data_parallel import log_zero_shot_parallel_noop_

@@ -418,7 +418,7 @@ else:
 - **Usage**: Limit concurrent shard-forward threads on weak-CPU hosts.
 
 ```bash
-AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES=2 python -m auto_round --model ... --parallel_quantization 8
+AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES=2 python -m auto_round --model ... --data_parallel 8
 ```
 
 ## Notes

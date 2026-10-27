@@ -155,8 +155,7 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--device_map", "--device", "--devices", default="0", type=str, help="Device mapping used for quantization."
     )
     rt.add_argument(
-        "--parallel_quantization",
-        "--ddp_world",
+        "--data_parallel",
         default="off",
         type=str,
         help="Single-process data-parallel SignRound tuning: 'off' (default), 'auto' (all visible CUDA "
@@ -170,7 +169,7 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         default="split",
         type=str,
         choices=["split", "per_replica"],
-        help="Batch semantics for --parallel_quantization tuning. 'split' (default): the requested "
+        help="Batch semantics for --data_parallel tuning. 'split' (default): the requested "
         "--batch_size is the GLOBAL per-iteration batch and every replica draws its world-split "
         "share (serial-equivalent updates). 'per_replica': every replica draws the FULL "
         "--batch_size from its own calibration shard each iteration, so the effective global "

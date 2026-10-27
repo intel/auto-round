@@ -418,7 +418,7 @@ else:
 - **用法**：在弱 CPU 主机上限制并发分片前向线程数。
 
 ```bash
-AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES=2 python -m auto_round --model ... --parallel_quantization 8
+AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES=2 python -m auto_round --model ... --data_parallel 8
 ```
 
 ## 注意事项

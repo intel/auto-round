@@ -908,13 +908,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 通常有两种情况需要启用多 GPU 训练：一是主要针对 lm-head 量化的标定阶段，二是参数量极大（如显存占用超 100GB）的模型。
 
 #### 跨 GPU 并行 block 调优
-当单个 block 可以放入单张 GPU 时，可通过 `--parallel_quantization` 在同一进程中利用其他 GPU 做数据并行调优：
+当单个 block 可以放入单张 GPU 时，可通过 `--data_parallel` 在同一进程中利用其他 GPU 做数据并行调优：
 block 的调优循环在每张 GPU 上各运行一次（每张 GPU 一个 rank，各占一个线程），使用该 GPU 上的 block 副本和它分到的
 那部分标定样本，各 rank 在每次迭代中对梯度求平均。这与多进程 torchrun 路径的约定（`sync_gradients()`）相同，因此算法
 本身的调优循环不需要修改。
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --parallel_quantization auto
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --data_parallel auto
 ```
 
 - `off`（默认）保持串行循环。`N` 指定 rank 数：至少为 2，不超过可见设备数；`--iters > 0` 时必须为 2 的幂

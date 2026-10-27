@@ -59,7 +59,7 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
 
     rank = current_rank()
     if rank is not None:
-        # in-process thread ranks (--parallel_quantization): each rank tunes
+        # in-process thread ranks (--data_parallel): each rank tunes
         # its own replica; the hook averages gradients across the ranks
         return block, lambda: rank.sync_gradients(block)
 
