@@ -9,5 +9,5 @@ pytest
 lm_eval>=0.4.10  # for transformers >= 5.0.0
 diffusers
 protobuf
-compressed-tensors>=0.15.0
+compressed-tensors>=0.15.0,<0.20  # 0.20.0 breaks packed int4 asymmetric zero-point decompression
 transformers>=5.5.0
