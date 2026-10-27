@@ -312,7 +312,12 @@ def pack_layer(name, model, device=None):
 
     _compress_and_set_format(layer, scheme, device)
     if hasattr(layer, "weight_zero_point"):
-        layer.weight_zero_point.data = layer.weight_zero_point.data.contiguous()
+        zero_point = layer.weight_zero_point.data.contiguous()
+        if scheme.weights.num_bits == 4 and zero_point.ndim >= 2 and zero_point.shape[-2] == 1:
+            stride = list(zero_point.stride())
+            stride[-2] = 1
+            zero_point = zero_point.as_strided(zero_point.shape, stride)
+        layer.weight_zero_point.data = zero_point
 
 
 @torch.no_grad()
