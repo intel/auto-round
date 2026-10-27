@@ -48,6 +48,75 @@ def test_attention_context_uses_module_config_and_restores_it():
     assert not hasattr(attention, QUERY_MAX_NAME)
 
 
+NUM_HEADS, HEAD_DIM, HIDDEN = 2, 8, 16
+
+
+class LegacyEagerAttention(torch.nn.Module):
+    """Mimics remote-code attention (e.g. Kimi-K2.6) computing Q @ K^T inline."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.layer_idx = 0
+        self.q_proj = torch.nn.Linear(HIDDEN, HIDDEN, bias=False)
+        self.k_proj = torch.nn.Linear(HIDDEN, HIDDEN, bias=False)
+        self.v_proj = torch.nn.Linear(HIDDEN, HIDDEN, bias=False)
+
+    def _split(self, x):
+        b, s, _ = x.shape
+        return x.view(b, s, NUM_HEADS, HEAD_DIM).transpose(1, 2)
+
+    def _qkv(self, hidden_states, past_key_value=None):
+        q = self._split(self.q_proj(hidden_states))
+        k = self._split(self.k_proj(hidden_states))
+        v = self._split(self.v_proj(hidden_states))
+        if past_key_value is not None:
+            k, v = past_key_value.update(k, v, self.layer_idx)
+        return q, k, v
+
+    def forward(self, hidden_states, past_key_value=None, **kwargs):
+        q, k, v = self._qkv(hidden_states, past_key_value)
+        weights = torch.matmul(q, k.transpose(2, 3)).softmax(-1)
+        out = torch.matmul(weights, v)
+        return out.transpose(1, 2).reshape(hidden_states.shape)
+
+
+class LegacyFlashAttention2(LegacyEagerAttention):
+    """Mimics remote-code FlashAttention2 calling flash_attn_func via _flash_attention_forward."""
+
+    def forward(self, hidden_states, past_key_value=None, **kwargs):
+        q, k, v = (t.transpose(1, 2) for t in self._qkv(hidden_states, past_key_value))
+        out = self._flash_attention_forward(q, k, v)
+        return out.reshape(hidden_states.shape)
+
+    def _flash_attention_forward(self, query_states, key_states, value_states):
+        return value_states
+
+
+@pytest.mark.parametrize("attn_cls", [LegacyEagerAttention, LegacyFlashAttention2])
+def test_legacy_attention_q_scale_is_calibrated(attn_cls):
+    torch.manual_seed(0)
+    config = PretrainedConfig()
+    config._attn_implementation = "eager"
+    attn = attn_cls(config)
+    model = torch.nn.Module()
+    model.config = config
+    model.attention = attn
+    hidden_states = torch.randn(1, 4, HIDDEN)
+
+    with torch.no_grad(), attention_quant_ctx(model):
+        attn(hidden_states)
+
+    expected = attn.q_proj(hidden_states).abs().max() / torch.finfo(torch.float8_e4m3fn).max
+    assert (attn.q_scale > 0).all(), f"q_scale must be positive, got {attn.q_scale}"
+    assert torch.allclose(attn.q_scale.data, expected.detach().reshape(1), rtol=1e-3)
+    # patches and transient tensors are removed after calibration
+    assert "forward" not in attn.__dict__
+    assert "_flash_attention_forward" not in attn.__dict__
+    assert not hasattr(attn, QUERY_MAX_NAME)
+    assert config._attn_implementation == "eager"
+
+
 def test_deepseek_v2(tiny_deepseek_v2_model_path):
     model_name = tiny_deepseek_v2_model_path
     model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=False)

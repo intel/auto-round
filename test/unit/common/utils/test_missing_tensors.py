@@ -443,6 +443,25 @@ class TestCopyMissingTensorsFromSource:
         copy_missing_tensors_from_source(src, tgt)
         assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
 
+    def test_nested_nemotron_omni_lm_not_recopied(self, tmp_path):
+        """Nemotron-H Omni: ``language_model.backbone.*`` on disk is saved as ``language_model.model.*``."""
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {"language_model.backbone.layers.0.mixer.experts.0.up_proj.weight": torch.randn(4, 4).bfloat16()},
+            os.path.join(src, "model.safetensors"),
+        )
+        packed = torch.randint(0, 16, (2, 4), dtype=torch.int32)
+        saved_name = "language_model.model.layers.0.mixer.experts.0.up_proj.qweight"
+        _save_safetensors({saved_name: packed}, os.path.join(tgt, "model.safetensors"))
+        _write_config(tgt)
+        copy_missing_tensors_from_source(src, tgt)
+        assert not os.path.exists(os.path.join(tgt, "model_extra_tensors.safetensors"))
+        result = _load_safetensors(os.path.join(tgt, "model.safetensors"))
+        assert set(result) == {saved_name}
+        torch.testing.assert_close(result[saved_name], packed)
+
     def test_known_block_prefix_not_copied(self, tmp_path):
         src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
         os.makedirs(src)

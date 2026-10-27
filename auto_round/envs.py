@@ -16,7 +16,7 @@
 
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     AR_LOG_LEVEL: str = "INFO"
@@ -39,6 +39,11 @@ if TYPE_CHECKING:
     AR_QUANTIZE_BAGEL_MOE_GEN: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
     AR_ALLOW_W8_ASYM: bool = False
+    AR_CALIB_DATA_MULTIPLIER: int = 100
+    AR_DISABLE_BATCHED_SEARCH: bool = False
+    AR_PERF_COUNTERS: bool = False
+    AR_SEARCH_BATCH_GB: float | None = None
+    AR_DISABLE_CROSS_DEVICE_SEARCH: bool = False
 
 
 def _get_optional_positive_int_env(name: str) -> int | None:
@@ -55,6 +60,20 @@ def _get_optional_positive_int_env(name: str) -> int | None:
     return value
 
 
+def _get_optional_positive_float_env(name: str) -> float | None:
+    """Read an optional env var that must be a positive float when set."""
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive float, got {raw!r}") from exc
+    if not (value > 0 and value != float("inf")):
+        raise ValueError(f"{name} must be a positive finite float, got {value}")
+    return value
+
+
 environment_variables: dict[str, Callable[[], Any]] = {
     # this is used for configuring the default logging level
     "AR_LOG_LEVEL": lambda: os.getenv("AR_LOG_LEVEL", "INFO").upper(),
@@ -66,6 +85,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_OMP_NUM_THREADS": lambda: os.getenv("AR_OMP_NUM_THREADS", None),
     "AR_DISABLE_OFFLOAD": lambda: os.getenv("AR_DISABLE_OFFLOAD", "0").lower() in ("1", "true", "yes"),
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
+    # Multiplier applied to nsamples to determine the candidate pool size for
+    # streaming calibration datasets. The pool is nsamples * AR_CALIB_DATA_MULTIPLIER.
+    "AR_CALIB_DATA_MULTIPLIER": lambda: int(os.getenv("AR_CALIB_DATA_MULTIPLIER", "100")),
     "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
     in ("1", "true", "yes"),
     # Device for the disk-streamed calibration forward pass in
@@ -140,6 +162,12 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # instead of restarting the whole tuning pass from block 0 after a
     # crash/kill. See auto_round/utils/resume.py.
     "AR_RESUME_DIR": lambda: os.getenv("AR_RESUME_DIR", None),
+    "AR_DISABLE_BATCHED_SEARCH": lambda: os.getenv("AR_DISABLE_BATCHED_SEARCH", "False").strip().lower()
+    in ("1", "true", "yes"),
+    "AR_PERF_COUNTERS": lambda: os.getenv("AR_PERF_COUNTERS", "False").strip().lower() in ("1", "true", "yes"),
+    "AR_SEARCH_BATCH_GB": lambda: _get_optional_positive_float_env("AR_SEARCH_BATCH_GB"),
+    "AR_DISABLE_CROSS_DEVICE_SEARCH": lambda: os.getenv("AR_DISABLE_CROSS_DEVICE_SEARCH", "False").strip().lower()
+    in ("1", "true", "yes"),
     # When enabled, MoE routing can be overridden in selected model wrappers
     # to rotate token assignments across all experts for calibration coverage.
     "AR_FORCE_MOE_ROUTING_ALL_EXPERTS": lambda: os.getenv("AR_FORCE_MOE_ROUTING_ALL_EXPERTS", "0").lower()
