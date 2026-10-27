@@ -479,11 +479,29 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
                     [f"thinker.audio_tower.layers.{i}" for i in range(len(model.thinker.audio_tower.layers))]
                 )
 
-    # Thinker text model layers (main LLM decoder)
-    if hasattr(model, "thinker") and hasattr(model.thinker, "model") and hasattr(model.thinker.model, "layers"):
-        block_names.append([f"thinker.model.layers.{i}" for i in range(len(model.thinker.model.layers))])
+    # Thinker text model layers (main LLM decoder). Transformers may wrap the
+    # decoder in `language_model` in newer Qwen3-Omni releases.
+    layer_prefix, layers = _get_qwen3_omni_thinker_layer_info(model)
+    if layers is not None:
+        block_names.append([f"{layer_prefix}.{i}" for i in range(len(layers))])
 
     return block_names
+
+
+def _get_qwen3_omni_thinker_layer_info(model):
+    """Return the module path and layers for either supported thinker layout."""
+    thinker_model = getattr(getattr(model, "thinker", None), "model", None)
+    if thinker_model is None:
+        return None, None
+
+    if hasattr(thinker_model, "layers"):
+        return "thinker.model.layers", thinker_model.layers
+
+    language_model = getattr(thinker_model, "language_model", None)
+    if language_model is not None and hasattr(language_model, "layers"):
+        return "thinker.model.language_model.layers", language_model.layers
+
+    return None, None
 
 
 def _get_glm_image_multimodal_block(model, quant_vision=False):
