@@ -574,9 +574,11 @@ class TestEvalWithVllm:
             vllm_args=None,
         )
 
-        with patch("auto_round.utils.DEVICE_ENVIRON_VARIABLE_MAPPING", {"cuda": "CUDA_VISIBLE_DEVICES"}):
-            with pytest.raises(RuntimeError, match="Failed to set multiprocessing start method to 'spawn'"):
-                eval_cli.eval_with_vllm(args)
+        with (
+            patch("auto_round.utils.DEVICE_ENVIRON_VARIABLE_MAPPING", {"cuda": "CUDA_VISIBLE_DEVICES"}),
+            pytest.raises(RuntimeError, match="Failed to set multiprocessing start method to 'spawn'"),
+        ):
+            eval_cli.eval_with_vllm(args)
 
 
 class TestEvalTaskByTask:
