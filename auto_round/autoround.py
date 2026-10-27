@@ -333,7 +333,11 @@ def _owning_algorithm_names(field_name: str) -> list[str]:
 def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     from auto_round.algorithms.config_resolver import split_quantization_configs
     from auto_round.algorithms.quantization.config import QuantizationConfig
-    from auto_round.algorithms.quantization.rtn.config import RTN_VARIANT_DISABLE_OPT_RTN, RTNConfig
+    from auto_round.algorithms.quantization.rtn.config import (
+        RTN_VARIANT_DISABLE_OPT_RTN,
+        RTNConfig,
+        validate_rtn_variant_names,
+    )
     from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config, resolve_algorithm_names
     from auto_round.algorithms.transforms import normalize_rotation_config
     from auto_round.algorithms.transforms.awq.config import (
@@ -382,6 +386,8 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
                     seen_names.add(canonical_name)
     else:
         raw_configs = [alg_configs]
+
+    validate_rtn_variant_names(raw_configs)
 
     # An `rtn` / `opt-rtn` the caller actually named selects the RTN variant, the
     # same way `--algorithm rtn` / `--algorithm opt-rtn` does on the CLI. When

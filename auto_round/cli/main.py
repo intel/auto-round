@@ -30,23 +30,23 @@ from auto_round.logger import logger
 # Flags surfaced by `auto_round --help`. Entries are (dest, shown option strings):
 # the overview is a curated subset, so a few flags list only their primary name
 # instead of every alias. The full list stays behind `auto_round quantize --help`.
-_OVERVIEW_ARGUMENTS: tuple[tuple[str, int], ...] = (
-    ("model", 0),
-    ("model_name", 1),
-    ("scheme", 1),
-    ("algorithm", 1),
-    ("bits", 1),
-    ("group_size", 1),
-    ("iters", 1),
-    ("nsamples", 1),
-    ("seqlen", 1),
-    ("batch_size", 1),
-    ("device_map", 1),
-    ("format", 1),
-    ("output_dir", 1),
-    ("asym", 1),
-    ("ignore_layers", 1),
-    ("tasks", 1),
+_OVERVIEW_ARGUMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("model", ()),
+    ("model_name", ("--model",)),
+    ("scheme", ("--scheme",)),
+    ("algorithm", ("--algorithm",)),
+    ("bits", ("--bits",)),
+    ("group_size", ("--group_size",)),
+    ("iters", ("--iters",)),
+    ("nsamples", ("--nsamples",)),
+    ("seqlen", ("--seqlen",)),
+    ("batch_size", ("--batch_size",)),
+    ("device_map", ("--device_map",)),
+    ("format", ("--format",)),
+    ("output_dir", ("--output_dir",)),
+    ("asym", ("--asym",)),
+    ("ignore_layers", ("--ignore_layers",)),
+    ("tasks", ("--tasks",)),
 )
 
 _OVERVIEW_DESCRIPTION = """\
@@ -111,8 +111,8 @@ def _overview_parser(prog: str = "auto_round") -> argparse.ArgumentParser:
         if not action.option_strings:
             group.add_argument(dest, nargs="?", help=action.help)
             continue
-        options = list(action.option_strings[:shown_options]) if shown_options else list(action.option_strings)
-        kwargs = {"help": action.help}
+        options = list(shown_options or action.option_strings)
+        kwargs = {"help": action.help, "dest": action.dest}
         if action.nargs == 0:
             # A boolean switch: render it as one instead of as a value-taking flag.
             if isinstance(action, argparse.BooleanOptionalAction):

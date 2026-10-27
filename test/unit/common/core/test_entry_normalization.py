@@ -403,3 +403,15 @@ def test_awq_kwargs_without_awq_error_and_are_ignored(monkeypatch):
     assert isinstance(configs[0], SignRoundConfig)
     assert not hasattr(configs[0], "n_grid")
     assert any("AWQ" in message for message in errors)
+
+
+@pytest.mark.parametrize("algorithms", ["rtn,opt-rtn", "opt_rtn,rtn", ["rtn", "optimized-rtn"]])
+def test_conflicting_rtn_variants_are_rejected(algorithms):
+    with pytest.raises(ValueError, match="Cannot select both.*rtn.*opt-rtn"):
+        _normalize_alg_configs(algorithms)
+
+
+def test_duplicate_optimized_rtn_aliases_are_deduplicated():
+    configs = _normalize_alg_configs(["opt_rtn", "optimized-rtn"])
+    assert len(configs) == 1
+    assert configs[0].disable_opt_rtn is False

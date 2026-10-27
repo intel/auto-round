@@ -22,7 +22,7 @@ from dataclasses import replace
 from typing import Any, get_args, get_origin, get_type_hints
 
 from auto_round.algorithms.config import AlgorithmConfig, AlgorithmParameterRegistry
-from auto_round.algorithms.quantization.rtn.config import RTN_VARIANT_DISABLE_OPT_RTN
+from auto_round.algorithms.quantization.rtn.config import RTN_VARIANT_DISABLE_OPT_RTN, validate_rtn_variant_names
 from auto_round.algorithms.registry import (
     get_algorithm_entry,
     iter_algorithm_entries,
@@ -275,6 +275,7 @@ class AlgorithmHandler:
             names.append("hadamard")
 
         canonical = resolve_algorithm_names(names)
+        validate_rtn_variant_names(canonical)
         # Names the user actually wrote. The implicit block-quantizer fallback
         # appended below is deliberately excluded: only an explicit `rtn` /
         # `opt-rtn` carries the plain-vs-optimized intent.

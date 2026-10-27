@@ -1017,3 +1017,19 @@ def test_quantize_help_has_no_empty_algorithm_group():
     # `auto_round_v2` reuses the SignRound switches, so it must not add a bare header.
     assert "Algorithm: auto_round:" in help_text
     assert "Algorithm: auto_round_v2:" not in help_text
+
+
+@pytest.mark.parametrize("algorithms", ["rtn,opt-rtn", "opt_rtn,rtn", "rtn,optimized-rtn"])
+def test_cli_conflicting_rtn_variants_are_rejected(algorithms):
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    with pytest.raises(ValueError, match="Cannot select both.*rtn.*opt-rtn"):
+        AlgorithmHandler.build_configs(argparse.Namespace(algorithm=algorithms, iters=200), {})
+
+
+def test_overview_displays_primary_model_flag():
+    from auto_round.cli.main import _overview_parser
+
+    options = {option for action in _overview_parser()._actions for option in action.option_strings}
+    assert "--model" in options
+    assert "--model_name" not in options

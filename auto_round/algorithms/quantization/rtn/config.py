@@ -119,6 +119,13 @@ class OptimizedRTNConfig(RTNConfig):
 RTN_VARIANT_DISABLE_OPT_RTN = {"rtn": True, "opt-rtn": False}
 
 
+def validate_rtn_variant_names(names) -> None:
+    """Reject conflicting canonical RTN variant names before constructing configs."""
+    variants = {name for name in names if isinstance(name, str) and name in RTN_VARIANT_DISABLE_OPT_RTN}
+    if len(variants) > 1:
+        raise ValueError("Cannot select both 'rtn' and 'opt-rtn'; choose one RTN variant.")
+
+
 register_algorithm(
     "rtn",
     aliases=("rtn",),
