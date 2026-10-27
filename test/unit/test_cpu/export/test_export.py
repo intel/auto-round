@@ -17,6 +17,44 @@ from auto_round.export.export_to_awq import export as awq_export
 from auto_round.export.formats import resolve_formats
 
 
+@pytest.mark.parametrize("data_type", ["fp", "block_fp8", "fp8"])
+def test_int_backend_packs_fp8_block_override(data_type, monkeypatch):
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias=False))
+    model.dtype = torch.float32
+    layer = model[0]
+    layer.bits = 8
+    layer.data_type = data_type
+    layer.group_size = (128, 128)
+    layer.act_bits = 8
+    layer.sym = True
+    layer.scale = torch.ones(1, 1)
+    layer.zp = None
+    with torch.no_grad():
+        layer.weight.fill_(1)
+
+    def reject_integer_packer(*args, **kwargs):
+        pytest.fail("FP8 layers must not use the integer activation packer")
+
+    monkeypatch.setattr(autoround_export, "pack_qact_layer", reject_integer_packer)
+    autoround_export.pack_layer("0", model, "auto_round:auto_gptq", device="cpu")
+
+    assert isinstance(model[0], autoround_fp8_export.FP8BlockQLinear)
+    assert model[0].weight.dtype == torch.float8_e4m3fn
+    assert model[0].weight_scale_inv.shape == (1, 1)
+    torch.testing.assert_close(model[0].weight.float(), torch.ones(128, 128))
+
+
+def test_integer_activation_packing_is_unchanged(monkeypatch):
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias=False))
+    model[0].data_type = "int"
+    model[0].bits = 8
+    model[0].act_bits = 8
+    calls = []
+    monkeypatch.setattr(autoround_export, "pack_qact_layer", lambda *args: calls.append(args))
+    autoround_export.pack_layer("0", model, "auto_round:auto_gptq", device="cpu")
+    assert calls == [("0", model)]
+
+
 def _get_folder_size(path: str) -> float:
     """Return folder size in GB."""
     total_size = 0
