@@ -32,7 +32,7 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.utils import check_to_quantized, find_matching_blocks, get_block_names, get_module
 
 
-@OutputFormat.register("gguf")
+@OutputFormat.register("gguf", public=False)
 class GGUFFormat(OutputFormat):
     support_schemes = [
         "GGUF:Q4_0",

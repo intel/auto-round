@@ -22,7 +22,8 @@ from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 
 
-@OutputFormat.register("auto_gptq", "gptqmodel")
+@OutputFormat.register("auto_gptq")
+@OutputFormat.register("gptqmodel", public=False)
 class AutoGPTQFormat(OutputFormat):
     support_schemes = [
         "W4A16",

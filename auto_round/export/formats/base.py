@@ -103,6 +103,7 @@ class OutputFormat(ABC):
 
     support_schemes: list = []
     _format_list: dict[str, OutputFormat] = {}
+    _non_public_names: set[str] = set()
     format_name = "base"
 
     def __init__(self, format: str, scheme: QuantizationScheme, ctx: Any):
@@ -118,12 +119,17 @@ class OutputFormat(ABC):
             )
 
     @classmethod
-    def register(cls, *names: str) -> Callable[[OutputFormat], OutputFormat]:
+    def register(cls, *names: str, public: bool = True) -> Callable[[OutputFormat], OutputFormat]:
+        """Register format names; internal aliases can opt out of CLI/resolver visibility."""
         assert names
 
         def func(output_format: OutputFormat) -> OutputFormat:
             for name in names:
                 cls._format_list[name] = output_format
+                if public:
+                    cls._non_public_names.discard(name)
+                else:
+                    cls._non_public_names.add(name)
             return output_format
 
         return func
@@ -218,11 +224,26 @@ class OutputFormat(ABC):
 
     @abstractmethod
     def pack_layer(self, *args, **kwargs):
-        pass
+        """Pack one layer, usually as ``pack_layer(layer_name, model, device=device)``.
+
+        ``layer_name`` identifies a module in ``model``; ``device`` selects the packing
+        device. The return value is ignored. Fake and whole-model formats may leave
+        this a no-op. Override ``immediate_pack`` when packing needs additional
+        context, as GGUF does, rather than changing other formats' signatures.
+        """
 
     @abstractmethod
     def save_quantized(self, *args, **kwargs):
-        pass
+        """Save this format and return the exported model.
+
+        The compressor passes ``output_dir`` positionally, then ``model``,
+        ``tokenizer``, ``layer_config``, ``inplace``, ``device`` and
+        ``serialization_dict`` as keywords, followed by caller-supplied kwargs.
+        ``serialization_dict`` contains per-export quantization metadata;
+        ``layer_config`` describes per-layer settings. ``inplace=False`` requests
+        preserving the input model. Each format retains its own ``output_dir=None``
+        behavior and serialization layout. Keep optional exporter imports local.
+        """
 
     def immediate_pack(self, name: str, model: torch.nn.Module, device: torch.device, **kwargs):
         m = get_module(model, name)
