@@ -2,10 +2,11 @@
 # Split into two stages because a job condition cannot read a previous stage's
 # overall result (`stageDependencies.<stage>` only exposes per-job nodes, so
 # `stageDependencies.<stage>.result` is a dictionary miss -> Null). A stage-level
-# condition can read `dependencies.<stage>.result`, so we branch there instead.
+# condition can check previous stage results (failed()/succeeded()), so we branch there instead.
 parameters:
+  # A single stage name or a list of stage names (e.g. the per-part CUDA stages).
   - name: dependsOn
-    type: string
+    type: object
     default: "Unit_test"
   - name: stageName
     type: string
@@ -29,7 +30,8 @@ stages:
     pool:
       vmImage: "ubuntu-latest"
     dependsOn: ${{ parameters.dependsOn }}
-    condition: and(eq(dependencies.${{ parameters.dependsOn }}.result, 'Failed'), eq(variables['System.StageAttempt'], '1'))
+    # failed('A', 'B', ...) is true when any of the listed stages failed.
+    condition: and(failed('${{ join(''', ''', parameters.dependsOn) }}'), eq(variables['System.StageAttempt'], '1'))
     variables:
       - group: "auto-round-bot-secrets"
     jobs:
@@ -165,7 +167,8 @@ stages:
     pool:
       vmImage: "ubuntu-latest"
     dependsOn: ${{ parameters.dependsOn }}
-    condition: in(dependencies.${{ parameters.dependsOn }}.result, 'Succeeded', 'SucceededWithIssues')
+    # succeeded('A', 'B', ...) is true when all listed stages succeeded (with or without issues).
+    condition: succeeded('${{ join(''', ''', parameters.dependsOn) }}')
     variables:
       - group: "auto-round-bot-secrets"
     jobs:
