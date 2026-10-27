@@ -454,6 +454,11 @@ class BlockForwardRunner:
         """Select a subset of inputs by indices."""
         batch_dim = self.batch_dim
         shared_cache_keys = self.shared_cache_keys
+        # Host ints, resolved once. ``indices`` rides on the inputs' device, so a
+        # per-element ``int(i)`` read syncs an accelerator once per element;
+        # every host-side consumer below draws from this list instead. Device
+        # consumers (index_select on the inputs) keep the original tensor.
+        idx_list = indices.tolist() if isinstance(indices, torch.Tensor) else list(indices)
 
         if isinstance(inputs, dict):
             selected_inputs = {}
@@ -462,13 +467,13 @@ class BlockForwardRunner:
                     if isinstance(val, list) and len(val) == 1:
                         selected_inputs[key] = val[0]
                     elif isinstance(val, list) and len(val) > 1:
-                        idx = int(indices[0]) if len(indices) == 1 else 0
+                        idx = idx_list[0] if len(idx_list) == 1 else 0
                         selected_inputs[key] = val[idx] if idx < len(val) else val[0]
                     else:
                         selected_inputs[key] = val
                 else:
                     if isinstance(val, list):
-                        batch_vals = self._gather_same_device([val[i] for i in indices], self.device)
+                        batch_vals = self._gather_same_device([val[i] for i in idx_list], self.device)
                         selected_inputs[key] = torch.cat(batch_vals, dim=batch_dim)
                     elif isinstance(val, torch.Tensor):
                         # relocate indices like the input_others branch below:
@@ -480,7 +485,7 @@ class BlockForwardRunner:
                         selected_inputs[key] = val
         else:
             if isinstance(inputs, list):
-                batch_vals = self._gather_same_device([inputs[i] for i in indices], self.device)
+                batch_vals = self._gather_same_device([inputs[i] for i in idx_list], self.device)
                 selected_inputs = torch.cat(batch_vals, dim=batch_dim)
             else:
                 selected_inputs = torch.index_select(inputs, batch_dim, indices)
@@ -492,12 +497,13 @@ class BlockForwardRunner:
             passes through unsliced, as does a tensor too short for ``rows``
             (with a warning). The range is checked on the host: on CUDA an
             out-of-range index_select is a device-side assert, not an exception."""
+            rows = rows.cpu()  # host-side bounds check (no-op for host rows)
             size = t.shape[batch_dim] if t.dim() > batch_dim else 0
             if size == 1:
                 return t
             if not len(rows) or int(rows.max()) >= size:
                 logger.warning_once(
-                    "kwarg row slicing fell back to the unsliced tensor (batch dim %d, rows up to %d); "
+                    "kwarg row slicing fell back to the unsliced tensor (batch size %d, rows up to %d); "
                     "sub-batch draws may see the wrong batch's entry",
                     size,
                     int(rows.max()) if len(rows) else -1,
@@ -529,7 +535,7 @@ class BlockForwardRunner:
                     _per_entry = -(-_n // len(val)) if _n > len(val) else 1
                     if len(val) == _n and len(indices) > 1:
                         # per-sample list: pick the drawn samples' entries
-                        _picks = [val[int(i)] if int(i) < len(val) else val[0] for i in indices]
+                        _picks = [val[i] if i < len(val) else val[0] for i in idx_list]
                         if len(_picks) == 1:
                             selected_others[key] = _picks[0]
                         elif all(isinstance(pp, tuple) and pp and all(torch.is_tensor(t) for t in pp) for pp in _picks):
@@ -544,20 +550,20 @@ class BlockForwardRunner:
                     elif len(indices) < _per_entry:
                         # draw smaller than the collection batch (a rank's share):
                         # the owning batch's entry, sliced to the drawn rows
-                        _b = int(indices[0]) // _per_entry
+                        _b = idx_list[0] // _per_entry
                         _entry = val[_b] if 0 <= _b < len(val) else val[0]
-                        _rows = torch.as_tensor([int(i) % _per_entry for i in indices], dtype=torch.long)
+                        _rows = torch.tensor([i % _per_entry for i in idx_list], dtype=torch.long)
                         selected_others[key] = _slice_shared_entry(_entry, _rows)
                     else:
-                        idx = int(indices[0]) if len(indices) == 1 else 0
+                        idx = idx_list[0] if len(idx_list) == 1 else 0
                         selected_others[key] = val[idx] if idx < len(val) else val[0]
                 elif isinstance(val, list) and len(val) > 1:
-                    idx = int(indices[0]) if len(indices) == 1 else 0
+                    idx = idx_list[0] if len(idx_list) == 1 else 0
                     selected_others[key] = val[idx] if idx < len(val) else val[0]
                 else:
                     selected_others[key] = val
             elif isinstance(val, list):
-                batch_vals = self._gather_same_device([val[i] for i in indices], self.device)
+                batch_vals = self._gather_same_device([val[i] for i in idx_list], self.device)
                 if len(batch_vals) == 1:
                     selected_others[key] = batch_vals[0]
                 else:
@@ -576,7 +582,7 @@ class BlockForwardRunner:
                 # broadcast behavior. Without this, shard/batch forwards
                 # smaller than the cached batch crash in apply_rotary_pos_emb
                 # (hidden batch N vs cos batch full).
-                _idx = torch.as_tensor(indices, dtype=torch.long)
+                _idx = torch.tensor(idx_list, dtype=torch.long)
                 selected_others[key] = tuple(_take_rows(t, _idx) for t in val)
             elif isinstance(val, (str, bool, type(None))):
                 selected_others[key] = val

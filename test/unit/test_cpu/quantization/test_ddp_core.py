@@ -564,6 +564,17 @@ class TestSharedCacheShardPick:
         # 16 batch entries, each an (cos, sin) tuple of [8, S, D] per-sample tensors
         return [(torch.full((8, 6, 2), float(b)), torch.full((8, 6, 2), -float(b))) for b in range(16)]
 
+    def test_tensor_and_list_indices_pick_identically(self):
+        # ``indices`` normally ride on the inputs' device (a CUDA tensor on GPU
+        # runs); the host-int hoist must yield the same picks as a plain list
+        runner, inputs = self._runner()
+        pe = self._pe()
+        t_in, t_other = runner.select_batch(inputs, {"position_embeddings": pe}, torch.tensor([32, 33]))
+        l_in, l_other = runner.select_batch(inputs, {"position_embeddings": pe}, [32, 33])
+        assert torch.equal(t_in, l_in)
+        assert torch.equal(t_other["position_embeddings"][0], l_other["position_embeddings"][0])
+        assert torch.equal(t_other["position_embeddings"][1], l_other["position_embeddings"][1])
+
     def test_shard_picks_owning_batch_and_rows(self):
         runner, inputs = self._runner()
         pe = self._pe()

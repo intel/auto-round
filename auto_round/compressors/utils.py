@@ -197,6 +197,23 @@ def block_forward(
             for _k, _v in value.items():
                 _audit(_v, f"{prefix}.{_k}", bad)
 
+    def _relocate(value):
+        # Mirror _audit's condition exactly: only accelerator tensors that
+        # mismatch the block device move. A wholesale to_device() here would
+        # also migrate host tensors nested in lists/dicts onto the accelerator
+        # (semantic change + VRAM), which the audit never flagged.
+        if torch.is_tensor(value):
+            if value.device.type in ("cuda", "xpu", "hpu") and value.device != _block_dev:
+                return value.to(_block_dev)
+            return value
+        if isinstance(value, list):
+            return [_relocate(_v) for _v in value]
+        if isinstance(value, tuple):
+            return tuple(_relocate(_v) for _v in value)
+        if isinstance(value, dict):
+            return {k: _relocate(v) for k, v in value.items()}
+        return value
+
     _bad = []
     for _k, _v in input_others.items():
         _audit(_v, str(_k), _bad)
@@ -213,7 +230,7 @@ def block_forward(
                 if input_others[_k].device != _block_dev:
                     input_others[_k] = input_others[_k].to(_block_dev)
             elif isinstance(input_others[_k], (list, tuple, dict)):
-                input_others[_k] = to_device(input_others[_k], _block_dev)
+                input_others[_k] = _relocate(input_others[_k])
 
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
