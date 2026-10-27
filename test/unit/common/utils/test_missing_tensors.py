@@ -23,6 +23,7 @@ import torch
 from auto_round.utils.missing_tensors import (
     _get_woq_config_from_dir,
     _normalize_tensor_name_for_warning,
+    _register_missing_modules_in_ct_ignore,
     copy_missing_tensors_from_source,
     quantize_weight_rtn,
     restore_fp32_tensors_from_source,
@@ -92,6 +93,23 @@ def _make_auto_round_config(bits=4, group_size=128, sym=True, block_name_to_quan
     if block_name_to_quantize is not None:
         qcfg["quantization_config"]["block_name_to_quantize"] = block_name_to_quantize
     return qcfg
+
+
+def _make_compressed_tensors_config(ignore: list | None = None) -> dict:
+    """Minimal compressed-tensors ``quantization_config`` with a ``"Linear"`` catch-all group."""
+    return {
+        "quant_method": "compressed-tensors",
+        "format": "mixed-precision",
+        "provider": "auto-round",
+        "config_groups": {
+            "group_0": {
+                "format": "mxfp8-quantized",
+                "targets": ["Linear"],
+                "weights": {"num_bits": 8, "type": "float", "group_size": 32},
+            }
+        },
+        "ignore": list(ignore) if ignore is not None else [],
+    }
 
 
 # ===========================================================================
@@ -888,6 +906,92 @@ class TestCopyMissingTensorsFromSource:
                 "Fused talker expert keys should not be treated as missing when "
                 "their per-expert 2D components are already saved"
             )
+
+
+# ===========================================================================
+#  _register_missing_modules_in_ct_ignore: compressed-tensors ``ignore`` fix
+#
+#  Copied-through (unquantized) Linear modules — most notably MTP layers that
+#  ``transformers`` does not instantiate — must be added to the compressed-tensors
+#  ``ignore`` list so a ``"Linear"`` catch-all target does not make an inference
+#  engine (e.g. vLLM) treat them as quantized and fail to load their scale-less
+#  weights.
+# ===========================================================================
+
+
+class TestRegisterMissingModulesInCtIgnore:
+
+    def test_mtp_linear_added_to_ignore_in_both_config_files(self, tmp_path):
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors(
+            {
+                "mtp.fc.weight": torch.randn(32, 64),
+                "mtp.layers.0.self_attn.q_proj.weight": torch.randn(32, 64),
+                "mtp.norm.weight": torch.randn(64),  # 1-D: not a Linear, must NOT be ignored
+            },
+            os.path.join(src, "model.safetensors"),
+        )
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        qcfg = _make_compressed_tensors_config()
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+        with open(os.path.join(tgt, "quantization_config.json"), "w") as f:
+            json.dump(qcfg, f)
+
+        copy_missing_tensors_from_source(src, tgt)
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            embedded_ignore = json.load(f)["quantization_config"]["ignore"]
+        assert "mtp.fc" in embedded_ignore
+        assert "mtp.layers.0.self_attn.q_proj" in embedded_ignore
+        assert "mtp.norm" not in embedded_ignore  # 1-D norm is not matched by a "Linear" catch-all
+
+        with open(os.path.join(tgt, "quantization_config.json")) as f:
+            standalone_ignore = json.load(f)["ignore"]
+        assert "mtp.fc" in standalone_ignore
+        assert "mtp.layers.0.self_attn.q_proj" in standalone_ignore
+
+    def test_existing_regex_ignore_not_duplicated(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        qcfg = _make_compressed_tensors_config(ignore=["re:.*mtp.*"])
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore == ["re:.*mtp.*"], "a covering regex should suppress redundant exact-name entries"
+
+    def test_idempotent_no_duplicate_exact_names(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": _make_compressed_tensors_config()}, f)
+        missing = {"mtp.fc.weight": torch.randn(32, 64)}
+
+        _register_missing_modules_in_ct_ignore(tgt, missing)
+        _register_missing_modules_in_ct_ignore(tgt, missing)
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore.count("mtp.fc") == 1
+
+    def test_non_compressed_tensors_config_untouched(self, tmp_path):
+        """The WOQ / auto_round:auto_gptq config has no ``config_groups`` and must be left alone."""
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump(_make_auto_round_config(), f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            qcfg = json.load(f)["quantization_config"]
+        assert "ignore" not in qcfg
 
 
 # ===========================================================================

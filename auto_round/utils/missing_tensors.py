@@ -563,6 +563,16 @@ def copy_missing_tensors_from_source(
         return
 
     # ------------------------------------------------------------------ #
+    # compressed-tensors: register copied-through modules in ``ignore``     #
+    # ------------------------------------------------------------------ #
+    # For the compressed-tensors / llm_compressor export format these tensors
+    # are written unquantized (BF16). If a ``config_groups`` group targets the
+    # bare class name ``"Linear"`` (a catch-all), an inference engine such as
+    # vLLM applies that scheme to every ``nn.Linear`` not listed in ``ignore``
+    # and then fails to load these scale-less modules. Add them to ``ignore``.
+    _register_missing_modules_in_ct_ignore(target_dir, missing_tensors_dict)
+
+    # ------------------------------------------------------------------ #
     # Write missing tensors to a new shard and update the index             #
     # ------------------------------------------------------------------ #
     is_sharded = os.path.exists(saved_index_file)
@@ -593,6 +603,90 @@ def copy_missing_tensors_from_source(
     logger.info(
         f"Successfully wrote {len(missing_tensors_dict)} missing tensor(s) to " f"'{new_shard_name}' in {target_dir}."
     )
+
+
+def _register_missing_modules_in_ct_ignore(target_dir: str, missing_tensors_dict: dict) -> None:
+    """Add copied-through (unquantized) Linear modules to the compressed-tensors ``ignore`` list.
+
+    When ``transformers`` does not instantiate a submodule (most notably **MTP /
+    multi-token-prediction** layers), AutoRound copies its original weights into
+    the saved checkpoint verbatim (see :func:`copy_missing_tensors_from_source`),
+    leaving them unquantized (no ``weight_scale``).
+
+    For the compressed-tensors / llm_compressor export format, a ``config_groups``
+    group whose ``targets`` include the bare class name ``"Linear"`` acts as a
+    catch-all that an inference engine (e.g. vLLM) applies to *every* ``nn.Linear``
+    that is not listed in ``ignore``. Because the copied-through modules carry no
+    scales, loading fails unless they are explicitly ignored. This function adds
+    their module names to ``ignore`` in both ``config.json`` (the embedded copy
+    engines read) and the standalone ``quantization_config.json``.
+
+    This is a no-op for the WOQ / ``auto_round:auto_gptq`` export path (which has
+    no ``config_groups`` and handles missing tensors via ``extra_config`` in
+    :func:`_woq_quantize_missing_tensors`).
+
+    Args:
+        target_dir: Output directory that contains ``config.json``.
+        missing_tensors_dict: Dict mapping copied-through tensor names to values.
+    """
+    import re as _re
+
+    # Only 2-D Linear weights can be matched by a "Linear" catch-all target.
+    missing_linear_modules = sorted(
+        {
+            name[: -len(".weight")]
+            for name, tensor in missing_tensors_dict.items()
+            if name.endswith(".weight") and getattr(tensor, "dim", lambda: 0)() == 2
+        }
+    )
+    if not missing_linear_modules:
+        return
+
+    def _is_compressed_tensors(qcfg: dict) -> bool:
+        return isinstance(qcfg, dict) and isinstance(qcfg.get("config_groups"), dict)
+
+    def _already_ignored(ignore_list: list, module_name: str) -> bool:
+        for entry in ignore_list:
+            if entry == module_name:
+                return True
+            if isinstance(entry, str) and entry.startswith("re:"):
+                try:
+                    if _re.search(entry[len("re:") :], module_name):
+                        return True
+                except _re.error:
+                    continue
+        return False
+
+    def _update_qcfg(qcfg: dict) -> list:
+        ignore_list = qcfg.get("ignore")
+        if not isinstance(ignore_list, list):
+            ignore_list = []
+        added = [m for m in missing_linear_modules if not _already_ignored(ignore_list, m)]
+        if added:
+            qcfg["ignore"] = ignore_list + added
+        return added
+
+    for cfg_file in ["config.json", "quantization_config.json"]:
+        cfg_path = os.path.join(target_dir, cfg_file)
+        if not os.path.exists(cfg_path):
+            continue
+        try:
+            with open(cfg_path) as f:
+                cfg_data = json.load(f)
+            qcfg = cfg_data.get("quantization_config", {}) if cfg_file == "config.json" else cfg_data
+            if not _is_compressed_tensors(qcfg):
+                continue
+            added = _update_qcfg(qcfg)
+            if not added:
+                continue
+            with open(cfg_path, "w") as f:
+                json.dump(cfg_data, f, indent=2)
+            logger.info(
+                f"Added {len(added)} copied-through module(s) to the compressed-tensors "
+                f"'ignore' list in {cfg_file}: {compress_layer_names(added)}"
+            )
+        except Exception as e:  # pragma: no cover - defensive, mirrors sibling handlers
+            logger.warning(f"Failed to update 'ignore' in {cfg_file}: {e}")
 
 
 def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -> dict:
