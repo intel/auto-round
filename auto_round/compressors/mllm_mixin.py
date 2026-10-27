@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Optional, Union
+from typing import Any
 
 from auto_round.logger import logger
 
@@ -49,8 +49,8 @@ class MLLMMixin:
         *args,
         processor: Any = None,
         image_processor: Any = None,
-        template: Optional[str] = None,
-        extra_data_dir: Optional[str] = None,
+        template: str | None = None,
+        extra_data_dir: str | None = None,
         quant_nontext_module: bool = False,
         **kwargs,
     ) -> None:
@@ -103,8 +103,8 @@ class MLLMMixin:
 
     def save_quantized(
         self,
-        output_dir: Optional[str] = None,
-        format: Union[str, list] = "auto_round",
+        output_dir: str | None = None,
+        format: str | list = "auto_round",
         inplace: bool = True,
         **kwargs,
     ) -> Any:

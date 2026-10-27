@@ -27,6 +27,14 @@ We cover both paths with ``unittest.mock``:
 
 * **transformers < 4.0** (mocked): the helper should log a warning and
   return early without touching the upstream module.
+
+* **solve_triangular fallback**: the module also installs a wrapper around
+  ``torch.linalg.solve_triangular`` (``patch_solve_triangular()``) that
+  probes for a native kernel at runtime and, for ``(device, dtype)``
+  combinations that raise ``NotImplementedError``, falls back to an fp32
+  solve cast back to the promoted dtype.  The wrapper factory
+  ``_make_solve_triangular_wrapper()`` is tested directly against fakes so
+  no real broken kernel is required.
 """
 
 import importlib
@@ -255,3 +263,195 @@ def test_hpu_patch_handles_generic_exception(fresh_hpu_patch, monkeypatch):
 
     # Should swallow the RuntimeError.
     assert hpu_patch.patch_finegrained_fp8() is None
+
+
+# ---------------------------------------------------------------------------
+# torch.linalg.solve_triangular runtime-probed fp32 fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clean_solve_triangular(monkeypatch):
+    """Guarantee ``torch.linalg.solve_triangular`` is the pristine torch
+    implementation for the duration of the test, and restore the previous
+    state afterwards.
+
+    The wrapper installed by ``patch_solve_triangular()`` carries an
+    ``_ar_orig_solve_triangular`` back-reference, so any number of wrapping
+    layers can be unwound to reach the original builtin.
+    """
+    import torch
+
+    current = torch.linalg.solve_triangular
+    while getattr(current, "_ar_solve_triangular_patched", False):
+        current = current._ar_orig_solve_triangular
+    monkeypatch.setattr(torch.linalg, "solve_triangular", current)
+    yield current
+
+
+def _make_lower_triangular(n, dtype, device="cpu"):
+    """Unit lower-triangular matrix: identity with ones below the diagonal."""
+    import torch
+
+    return torch.eye(n, dtype=dtype, device=device) + torch.tril(
+        torch.ones(n, n, dtype=dtype, device=device), diagonal=-1
+    )
+
+
+def test_solve_triangular_not_patched_when_hpu_unavailable(fresh_hpu_patch, clean_solve_triangular, monkeypatch):
+    """On a non-HPU host the wrapper must not be installed."""
+    import torch
+
+    monkeypatch.setattr("auto_round.utils.is_hpex_available", lambda: False)
+
+    import auto_round.modeling.hpu_patch  # noqa: F401
+
+    assert not getattr(torch.linalg.solve_triangular, "_ar_solve_triangular_patched", False)
+    assert torch.linalg.solve_triangular is clean_solve_triangular
+
+
+def test_solve_triangular_patch_is_idempotent(fresh_hpu_patch, clean_solve_triangular, monkeypatch):
+    """Repeated ``patch_solve_triangular()`` calls must install exactly one
+    wrapper layer whose back-reference reaches the original builtin."""
+    import torch
+
+    monkeypatch.setattr("auto_round.utils.is_hpex_available", lambda: True)
+
+    import auto_round.modeling.hpu_patch as hpu_patch
+
+    hpu_patch.patch_solve_triangular()
+    wrapper1 = torch.linalg.solve_triangular
+    hpu_patch.patch_solve_triangular()
+    wrapper2 = torch.linalg.solve_triangular
+
+    assert wrapper1 is wrapper2
+    assert wrapper1._ar_solve_triangular_patched is True
+    # The import-time call (HPU mocked available above) and the explicit
+    # calls must converge on the same single wrapper.
+    assert wrapper1._ar_orig_solve_triangular is clean_solve_triangular
+
+
+def test_solve_triangular_supported_dtype_uses_native_path(fresh_hpu_patch, clean_solve_triangular, monkeypatch):
+    """When the native kernel handles the (device, dtype) pair, results and
+    dtypes pass through untouched and the pair is cached as supported."""
+    import torch
+
+    real = clean_solve_triangular
+    seen = []
+
+    def spy(A, B, **kwargs):
+        seen.append((A.dtype, B.dtype))
+        return real(A, B, **kwargs)
+
+    import auto_round.modeling.hpu_patch as hpu_patch
+
+    wrapper = hpu_patch._make_solve_triangular_wrapper(spy)
+    monkeypatch.setattr(torch.linalg, "solve_triangular", wrapper)
+
+    A = _make_lower_triangular(4, torch.float32)
+    B = torch.randn(4, 2, dtype=torch.float32)
+    result = torch.linalg.solve_triangular(A, B, upper=False, unitriangular=True)
+    again = torch.linalg.solve_triangular(A, B, upper=False, unitriangular=True)
+
+    assert result.dtype == torch.float32
+    assert torch.allclose(result, real(A, B, upper=False, unitriangular=True))
+    assert torch.allclose(again, result)
+    # Each call invokes the original exactly once, always in the original dtype.
+    assert seen == [(torch.float32, torch.float32)] * 2
+    assert wrapper._ar_support_cache[("cpu", torch.float32, torch.float32)] is True
+
+
+def test_solve_triangular_falls_back_to_fp32_when_kernel_missing(fresh_hpu_patch, clean_solve_triangular, monkeypatch):
+    """When the native kernel is missing for a (device, dtype) pair, the
+    wrapper solves in fp32 and casts back to the promoted dtype; the negative
+    result is cached so later calls skip the probe."""
+    import torch
+
+    real = clean_solve_triangular
+    seen = []
+
+    def fake_orig(A, B, **kwargs):
+        seen.append(A.dtype)
+        if A.dtype == torch.bfloat16:
+            raise NotImplementedError('triangular_solve_cpu not implemented for "BFloat16"')
+        return real(A, B, **kwargs)
+
+    import auto_round.modeling.hpu_patch as hpu_patch
+
+    wrapper = hpu_patch._make_solve_triangular_wrapper(fake_orig)
+    monkeypatch.setattr(torch.linalg, "solve_triangular", wrapper)
+
+    A = _make_lower_triangular(4, torch.bfloat16)
+    B = torch.randn(4, 2, dtype=torch.float32).to(torch.bfloat16)
+    result = torch.linalg.solve_triangular(A, B, upper=False, unitriangular=True)
+
+    expected = real(A.float(), B.float(), upper=False, unitriangular=True).to(torch.bfloat16)
+    assert result.dtype == torch.bfloat16
+    assert torch.allclose(result, expected, rtol=1e-2, atol=1e-2)
+    # First call: the probe with bf16 failed, then the fp32 solve ran.
+    assert seen == [torch.bfloat16, torch.float32]
+    assert wrapper._ar_support_cache[("cpu", torch.bfloat16, torch.bfloat16)] is False
+
+    # Second call: probe skipped, straight to the fp32 solve.
+    seen.clear()
+    again = torch.linalg.solve_triangular(A, B, upper=False, unitriangular=True)
+    assert torch.allclose(again, expected, rtol=1e-2, atol=1e-2)
+    assert seen == [torch.float32]
+
+
+def test_solve_triangular_out_kwarg_passes_through(fresh_hpu_patch, clean_solve_triangular, monkeypatch):
+    """With a caller-provided out= tensor the wrapper must not take the fp32
+    detour (it could not write into the caller's tensor); the call is passed
+    through untouched."""
+    import torch
+
+    captured = {}
+    sentinel = object()
+
+    def fake_orig(A, B, **kwargs):
+        captured["A"] = A
+        captured["B"] = B
+        captured["kwargs"] = kwargs
+        return sentinel
+
+    import auto_round.modeling.hpu_patch as hpu_patch
+
+    wrapper = hpu_patch._make_solve_triangular_wrapper(fake_orig)
+
+    A = _make_lower_triangular(3, torch.bfloat16)
+    B = torch.randn(3, 2, dtype=torch.float32).to(torch.bfloat16)
+    out = torch.empty(3, 2, dtype=torch.bfloat16)
+
+    result = wrapper(A, B, upper=False, unitriangular=True, out=out)
+
+    assert result is sentinel
+    assert captured["A"] is A
+    assert captured["B"] is B
+    assert captured["kwargs"]["out"] is out
+    assert wrapper._ar_support_cache == {}  # never probed
+
+
+def test_solve_triangular_runtime_error_propagates_and_is_not_cached(
+    fresh_hpu_patch, clean_solve_triangular, monkeypatch
+):
+    """Errors other than NotImplementedError (e.g. a singular matrix) must
+    propagate to the caller and must not poison the capability cache."""
+    import torch
+
+    calls = []
+
+    def fake_orig(A, B, **kwargs):
+        calls.append(A.dtype)
+        raise RuntimeError("simulated singular matrix")
+
+    import auto_round.modeling.hpu_patch as hpu_patch
+
+    wrapper = hpu_patch._make_solve_triangular_wrapper(fake_orig)
+    A = _make_lower_triangular(3, torch.float32)
+    B = torch.randn(3, 2, dtype=torch.float32)
+
+    with pytest.raises(RuntimeError, match="singular matrix"):
+        wrapper(A, B, upper=False, unitriangular=True)
+
+    assert calls == [torch.float32]  # no fp32 retry
+    assert wrapper._ar_support_cache == {}

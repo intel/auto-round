@@ -14,15 +14,16 @@
 
 import logging
 import warnings
-from functools import lru_cache, wraps
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, TypeVar
+from collections.abc import Callable, Mapping
+from functools import cache, wraps
+from typing import TypeVar
 
 import auto_round.envs as envs
 
 T = TypeVar("T", bound="Callable")  # used by `deprecated`
 
 
-@lru_cache(maxsize=None)
+@cache
 def warning_once(self, msg, *args):
     """
     Log a warning message only once per unique message/arguments combination.
@@ -34,7 +35,7 @@ def warning_once(self, msg, *args):
     logger.warning(msg, *args, stacklevel=2)
 
 
-@lru_cache(maxsize=None)
+@cache
 def info_once(self, msg, *args):
     """
     Log an info message only once per unique message/arguments combination.
@@ -115,7 +116,7 @@ fh.setFormatter(AutoRoundFormatter())
 logger.addHandler(fh)
 
 
-def deprecated(future_name: Optional[str] = None, message: Optional[str] = None) -> Callable[[T], T]:
+def deprecated(future_name: str | None = None, message: str | None = None) -> Callable[[T], T]:
     """
     Decorator to mark functions as deprecated
 

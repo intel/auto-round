@@ -15,7 +15,8 @@
 import gc
 import importlib
 import os
-from typing import Any, Callable, Optional, Union
+from collections.abc import Callable
+from typing import Any
 
 import torch
 import transformers
@@ -26,6 +27,7 @@ from auto_round import envs
 from auto_round.compressors.utils import get_shared_keys
 from auto_round.context.base import BaseContext
 from auto_round.logger import logger
+from auto_round.modeling.nemotron_h_omni import apply_nemotron_h_omni_post_load
 from auto_round.modeling.unfused_moe import apply_model_monkey_patches
 from auto_round.special_model_handler import _handle_special_model, update_module
 from auto_round.utils import (
@@ -61,12 +63,12 @@ class ModelContext(BaseContext):
 
     def __init__(
         self,
-        model: Union[torch.nn.Module, str, None] = None,
+        model: torch.nn.Module | str | None = None,
         tokenizer: Any = None,
         platform: str = "hf",
-        model_dtype: Optional[Union[str, torch.dtype]] = None,
+        model_dtype: str | torch.dtype | None = None,
         trust_remote_code: bool = True,
-        config: Optional[AutoConfig] = None,
+        config: AutoConfig | None = None,
         amp: bool = True,
         need_calib: bool = True,
         is_act_quantize: bool = False,
@@ -120,7 +122,7 @@ class ModelContext(BaseContext):
         # by the time BaseCompressor.post_init() runs.
         self._load_model()
 
-        if unsupported_meta_device(self.model):
+        if self._disk_stream_index is None and unsupported_meta_device(self.model):
             raise RuntimeError(
                 "AutoRound does not support parameters on meta device. "
                 "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
@@ -195,13 +197,22 @@ class ModelContext(BaseContext):
                         self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
                             self.disk_stream_model_dir
                         )
+                        loaded_via_meta = True
                         from transformers import AutoProcessor
 
-                        self.processor = AutoProcessor.from_pretrained(
-                            self.disk_stream_model_dir, trust_remote_code=self.trust_remote_code
-                        )
-                        self.image_processor = getattr(self.processor, "image_processor", None)
-                        loaded_via_meta = True
+                        try:
+                            self.processor = AutoProcessor.from_pretrained(
+                                self.disk_stream_model_dir, trust_remote_code=self.trust_remote_code
+                            )
+                            self.image_processor = getattr(self.processor, "image_processor", None)
+                        except Exception:
+                            logger.warning(
+                                "AutoProcessor failed for %s; keeping the meta skeleton (text-only calibration).",
+                                self.disk_stream_model_dir,
+                                exc_info=True,
+                            )
+                            self.processor = None
+                            self.image_processor = None
                     except Exception:
                         logger.warning(
                             "Building a multimodal meta skeleton for %s failed; " "falling back to a full CPU load.",
@@ -219,7 +230,7 @@ class ModelContext(BaseContext):
                 if config is None:
                     config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
                 self._import_custom_moe_replacements(config)
-            except (OSError, EnvironmentError, ValueError) as e:
+            except (OSError, ValueError) as e:
                 logger.debug(
                     "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
                     "Proceeding without config-based checks.",
@@ -268,6 +279,9 @@ class ModelContext(BaseContext):
         elif self.tokenizer is None and not self.is_diffusion and self.need_calib:
             raise ValueError("A tokenizer must be set for non-str model input")
 
+        # Nemotron-H Omni wrappers: restore FP32 SSM/router tensors and the gated-norm
+        # group_size after loading. No-op for every other model.
+        apply_nemotron_h_omni_post_load(self.model)
         self._model_loaded = True
 
         # Clear tuning_device from any previous quantization passes.
@@ -295,11 +309,12 @@ class ModelContext(BaseContext):
         """Whether to build a meta skeleton instead of a full CPU load.
 
         Deliberately narrow: this only targets ``transformers>=5`` models whose experts are
-        stored as a *fused* 3D ``nn.Parameter``. For those, the checkpoint holds one 2D
-        tensor per expert, ``from_pretrained`` stacks them into the fused parameter, and
-        AutoRound then has to split it back into per-expert ``nn.Linear`` to quantize it --
-        and splitting real tensors needs the fused tensor and its per-expert copies alive
-        at once, i.e. ~2x one experts module on top of an already fully resident model.
+        stored as a *fused* 3D ``nn.Parameter``. The fused parameter may be produced by a
+        Transformers checkpoint converter from per-expert 2D tensors, or already be stored
+        as 3D ``gate_up_proj``/``down_proj`` tensors in the checkpoint. AutoRound has to
+        split either layout back into per-expert ``nn.Linear`` modules to quantize it, and
+        splitting real tensors needs the fused tensor and its per-expert copies alive at
+        once, i.e. ~2x one experts module on top of an already fully resident model.
 
         Building on meta makes that unfuse allocation-free and lets the tuning loop
         materialize one block at a time from the checkpoint. Every other model (dense, or
@@ -323,21 +338,27 @@ class ModelContext(BaseContext):
         if config is None:
             return False
 
-        from auto_round.modeling.fused_moe.moe_experts_interface import config_has_fused_moe_experts
+        from auto_round.modeling.fused_moe.moe_experts_interface import (
+            _config_model_types,
+            config_has_fused_moe_experts,
+        )
         from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+        from auto_round.utils.disk_stream_util import checkpoint_has_native_fused_moe_experts
 
-        if not config_has_fused_moe_experts(config):
-            return False
         # Families with a dedicated replacement drive their own (already memory-aware)
         # materialization; do not reroute them through the meta skeleton.
-        model_type = getattr(config, "model_type", None)
-        if model_type in BUILTIN_MODULES:
-            logger.debug("meta-skeleton load skipped: %s has a dedicated MoE replacement", model_type)
+        dedicated_model_type = next(
+            (model_type for model_type in _config_model_types(config) if model_type in BUILTIN_MODULES), None
+        )
+        if dedicated_model_type is not None:
+            logger.debug("meta-skeleton load skipped: %s has a dedicated MoE replacement", dedicated_model_type)
             return False
 
         checkpoint_dir = self._resolve_local_checkpoint_dir()
         if checkpoint_dir is None:
             logger.debug("meta-skeleton load skipped: %s is not addressable as a local directory", self.model)
+            return False
+        if not config_has_fused_moe_experts(config) and not checkpoint_has_native_fused_moe_experts(checkpoint_dir):
             return False
         self.disk_stream_model_dir = checkpoint_dir
         logger.info(
@@ -346,7 +367,7 @@ class ModelContext(BaseContext):
         )
         return True
 
-    def _resolve_local_checkpoint_dir(self) -> Optional[str]:
+    def _resolve_local_checkpoint_dir(self) -> str | None:
         """Return a local directory holding the checkpoint shards, or ``None``.
 
         ``SafetensorsIndex`` reads shards by path, so a hub repo id has to be resolved to
@@ -378,8 +399,10 @@ class ModelContext(BaseContext):
         runs, in ``__init__``, via ``_materialize_disk_stream_non_block_params``.
         """
         from auto_round.utils.disk_stream_util import build_meta_model
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
 
         model, tokenizer, index = build_meta_model(model_name, trust_remote_code=self.trust_remote_code)
+        keep_special_fp32_params(model, model_name)
         model.path = model_name
         # Stash the index on the model object
         # itself so downstream code that only has a reference to the model
@@ -442,7 +465,7 @@ class ModelContext(BaseContext):
             gate = getattr(module, "gate", None)
             top_k = getattr(gate, "top_k", None)
             if top_k is not None:
-                setattr(module, "top_k", top_k)
+                module.top_k = top_k
 
     def _set_amp_dtype(self) -> None:
         """Sets the automatic mixed precision (AMP) data type for the model based on the device and configuration.

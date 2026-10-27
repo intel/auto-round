@@ -7,26 +7,40 @@
 </p>
 
 
-<h3> 面向 LLM 的先进量化算法</h3>
+<h3>训练后量化的效率，量化感知训练的精度</h3>
 
-[![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://github.com/intel/auto-round)
-[![version](https://img.shields.io/badge/release-0.15.0-green)](https://github.com/intel/auto-round/releases)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
+[![version](https://img.shields.io/badge/release-0.16.1-green)](https://github.com/intel/auto-round/releases)
 [![nightly](https://img.shields.io/badge/pypi-nightly-green)](https://pypi.org/project/auto-round-nightly)
 [![license](https://img.shields.io/badge/license-Apache%202-9C27B0)](https://github.com/intel/auto-round/blob/main/LICENSE)
 <a href="https://huggingface.co/Intel">
 <img alt="Model Checkpoints" src="https://img.shields.io/badge/%F0%9F%A4%97%20HF-Models-F57C00">
 </a>
+<a href="https://pepy.tech/projects/auto-round" style="text-decoration:none;"><img src="https://static.pepy.tech/badge/auto-round" alt="PyPI Downloads"></a>
 
-&nbsp;&nbsp;&nbsp;&nbsp;[English](README.md) | 简体中文
+[//]: # (<p align="center">)
 
-[User Guide](./docs/step_by_step.md) | [用户指南](./docs/step_by_step_CN.md)&nbsp;&nbsp; 
+[//]: # (<a href="https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard" style="text-decoration:none;">)
+
+[//]: # (<img alt="免费量化您的模型" src="https://img.shields.io/badge/%F0%9F%91%89%20%E5%85%8D%E8%B4%B9%E9%87%8F%E5%8C%96%E6%82%A8%E7%9A%84%E6%A8%A1%E5%9E%8B%20%7C%20Quantize%20Your%20Model%20for%20FREE-2E7D32?style=for-the-badge">)
+
+[//]: # (</a>)
+
+[//]: # (</p>)
+
+简体中文 | [English](README.md)&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+
+[用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
 ---
 <div align="left">
 
 ## 🚀 AutoRound 是什么？
 
-AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设计的先进量化工具包。它能在 **极低比特（2–4 bits）** 下实现较高的模型精度，所需调参极少。其核心是采用**符号梯度下降法（sign-gradient descent）**。此外，该工具还具备良好的硬件兼容性。更多细节详见论文 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)。使用方法请参阅 [用户指南](./docs/step_by_step.md).
+AutoRound 是一个面向大语言模型（LLMs）和视觉-语言模型（VLMs）的易用型训练后量化工具包。它支持多种实用的低比特和自适应比特量化算法，特别是主推的 [SignRoundV1](https://arxiv.org/pdf/2309.05516) 和 [SignRoundV2](http://arxiv.org/abs/2512.04746)算法。
+AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精度表现。它支持常用的数据类型和量化方案，包括 WNA16、MXFP4、NVFP4 和 FP8，以及 GGUF 等低比特模型格式。
+它已集成到 Transformers、vLLM 和 SGLang 等主流生态中，并支持在 Intel CPU、XPU、Gaudi 加速器以及 NVIDIA GPU 上部署。
+更多使用细节请参阅[用户指南](./docs/step_by_step_CN.md)。
 
 <p align="center">
   <img src="docs/imgs/autoround_overview.png" alt="AutoRound Overview" width="80%">
@@ -38,6 +52,8 @@ AutoRound 是专为大语言模型（LLMs）和视觉-语言模型（VLMs）设�
 * [2026/09] 我们将 MoE量化速度提升了 3 倍以上，并显著降低了 RAM 使用量。详细结果请参阅[文档](./docs/moe.md)。请注意，该优化可能会引入一些回归问题或其他问题。
 
 * [2026/09] 现在支持在 CUDA 设备上通过 vLLM 和 Transformers 使用 5/6/7-bit WOQ 模型，感谢 Humming Kernel 的支持。
+
+* [2026/09] 面向免标定量化的 **NeUQI** 网格搜索（[arXiv 2505.17595](https://arxiv.org/abs/2505.17595)）现已可用：`--enable_neuqi` 配合 `--iters 0` 时，非对称层执行联合 (scale, zero-point) 搜索、对称层执行两阶段 scale 搜索；`iters > 0` 时搜索结果将作为调优网格的锚点：[*结果*](./docs/neuqi_acc.md)。
 
 * [2026/08] 我们实验性地支持**算法组合**（例如 `--algs awq,signround` 或 `--algs hadamard,awq,signround`），以提升精度：[*总览*](./docs/algorithm_combinations_CN.md). 我们欢迎能真正落地的任何算法组合，欢迎提交 PR 或在 Issues 中留言。
 
@@ -269,6 +285,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - ​**​`low_gpu_mem_usage`​**​（bool）：若要节省显存，可以设为 `True` 。它会将中间特征卸载到 CPU，但会增加 30%-100% 的时间（默认 `False`）。
 - ​**​`low_cpu_mem_usage`​**​（bool）：[实验性功能] 用于启用即时保存以减少内存占用。该功能默认开启；在 CLI 中可使用 `--disable_low_cpu_mem_usage` 关闭（`--low_cpu_mem_usage` 仅为兼容旧参数保留）。
 - ​**​`device_map`​**​（str | dict | int）：计算设备指定，如 `auto`​、`cpu`​、`cuda`​、`0,1,2`​（默认 `0`​）。使用 `auto` 时会尝试利用所有可用 GPU。
+- **`calibration_data_device`**（str）：多 GPU 运行时块校准数据的存放位置：`auto`（默认）| `cpu` | `off` | `1,2` | `cuda:1,cuda:2`。
 
 </details>
 
@@ -293,15 +310,20 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 AutoScheme 提供了一种自动生成算法，用于生成 **自适应的混合精度/数据类型** 的量化方案（mixed bits/data type quantization recipes）。关于 AutoScheme 的更多细节可参考[用户指南](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme)。
 
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 model_name = "Qwen/Qwen3-8B"
-avg_bits = 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_S"), ignore_scale_zp_bits=True)
 layer_config = {"lm_head": "GGUF:Q6_K"}
 
 # 对于非 GGUF 方案，将 iters 改为 200
-ar = AutoRound(model=model_name, scheme=scheme, layer_config=layer_config, iters=0)
+ar = AutoRound(
+    model=model_name,
+    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    bits=3.0,
+    ignore_scale_zp_bits=True,
+    layer_config=layer_config,
+    iters=0,
+)
 ar.quantize_and_save()
 ```
 
@@ -310,8 +332,8 @@ ar.quantize_and_save()
 
 ##### AutoScheme 超参数
 
-- ​**​`avg_bits`​**​  **(float)** ：整个模型的目标平均 bits（平均 bits 的计算仅包含被量化的层）。
-- ​**​`options`​**​  **(str | list[str] | list[QuantizationScheme])** ​：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。
+- ​**​`bits`​**​  **(float)** ：传入 `schemes` 时，为整个模型的目标平均 bits（平均 bits 的计算仅包含被量化的层）。未提供 `schemes` 时，`bits` 为普通权重量化位宽，必须为整数。
+- ​**​`schemes`​**​  **(str | list[str] | list[QuantizationScheme])** ​：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。传入 `schemes` 即启用 AutoScheme。
 - ​**​`ignore_scale_zp_bits`​**​  **(bool)** ​：仅支持 API 调用场景。用于决定在计算平均 bit 时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
 - ​**​`shared_layers`​**​  **(Iterable[Iterable[str]], optional)** ：仅支持 API 调用场景，用于定义多个层的分组，这些层将共享相同的量化配置。
 - ​**​`batch_size`​**​  **(int, optional)** ​：仅支持 API 调用场景。设为 `1` 可以降低显存占用，但同时会增加训练时间。

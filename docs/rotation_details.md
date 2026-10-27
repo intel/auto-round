@@ -87,6 +87,7 @@ Defined in `auto_round/algorithms/transforms/spinquant/preprocessor.py`.
 | `kl_top_k` | `1000` | Top-k logits used by the `kl_top` loss. |
 | `fuse_rmsnorm` | `True` | Fuse RMSNorm scales into following linear layers. |
 | `untie_embeddings` | `True` | Untie shared embedding / LM-head weights before rotating. |
+| `layerwise` | `False` | Apply rotation **per decoder block**, in lock-step with AutoRound's block-wise quantization, instead of rotating the whole model up-front (see §1.8). Supported by QuaRot / SpinQuant and the per-Linear Hadamard *transform* backend; the Hadamard *inplace* backend ignores it and falls back to full-model rotation. |
 | `dtype` | `torch.float32` | Numerical dtype used for rotation math. |
 | `device` | `None` (auto) | Defaults to `"cuda"` if available, else `"cpu"`. |
 
@@ -208,6 +209,69 @@ with a `*_type` code: `0` = deterministic, `1` = random, `2` = trained):
   re-patches the QuantLinear forward (R1/R4) and re-applies the R3 RoPE monkeypatch.
   R3 is rebuilt purely from `config.json`, not from stored buffers.
 
+### 1.8 Block-wise (layer-wise) rotation
+
+By default QuaRot / SpinQuant rotate the **entire model up-front**: R1 is fused into
+the embedding and all linears, R2 into attention, and R3/R4 are installed as online
+hooks — after which quantization runs. This requires the whole model to be resident at
+once, which is heavy for large models and decoupled from AutoRound's block-wise
+quantization loop.
+
+Setting `layerwise=True` on the rotation config aligns rotation with block-wise
+quantization: only the rotation matrices (R1–R4) are initialised up-front, and each
+decoder block is rotated **just before it is quantized**, so only one block needs to be
+on-device at a time.
+
+```python
+from auto_round import AutoRound
+from auto_round.algorithms.transforms.spinquant import SpinQuantConfig
+
+# Block-wise QuaRot: rotate each decoder block in lock-step with quantization.
+ar = AutoRound(
+    "Qwen/Qwen3-0.6B",
+    scheme="MXFP4",
+    alg_configs=["rtn", SpinQuantConfig(r1=True, r2=True, layerwise=True)],
+)
+ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot-blockwise", format="auto_round")
+```
+
+The per-Linear Hadamard rotation also supports block-wise execution. Because it fuses an
+independent Hadamard into each Linear (no cross-layer residual-stream coupling), rotating
+one decoder block at a time is mathematically identical to the full-model pass:
+
+```python
+from auto_round import AutoRound
+from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+
+# Block-wise Hadamard (per-Linear transform backend, MXFP4 / NVFP4).
+ar = AutoRound(
+    "Qwen/Qwen3-0.6B",
+    scheme="MXFP4",
+    iters=0,
+    rotation_config=RotationConfig(hadamard_type="hadamard", layerwise=True),
+)
+ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-hadamard-blockwise", format="auto_round")
+```
+
+Notes and limitations:
+
+- **Supported algorithms.** `layerwise` is honoured by QuaRot / SpinQuant and by the
+  per-Linear Hadamard **transform** backend (`BaseRotation.supports_layerwise == True`).
+  The Hadamard **inplace** / QuaRot residual-stream backend (`backend="inplace"`) couples
+  consecutive layers, so it reports `supports_layerwise == False` and transparently falls
+  back to full-model rotation. Requesting `layerwise=True` for the transform backend on a
+  non-MXFP4/NVFP4 dtype raises `NotImplementedError` (block-wise Hadamard needs the
+  per-Linear kernel path).
+- **`nblocks` aware.** When several decoder layers are fused into one scheduling group
+  (`nblocks > 1`), each fused layer receives its correct global `layer_idx`, so R2/R3/R4
+  head-dim math stays aligned with the model topology.
+- **Single-block API.** Layer-wise rotation is driven by AutoRound's internal block loop
+  and is **not** supported through the external single-block `quantize_block()` API
+  (e.g. LLM-Compressor); attempting it raises `NotImplementedError`. Use the full
+  `quantize()` entry point, or set `layerwise=False`.
+- **Accuracy parity.** Block-wise rotation is mathematically equivalent to full-model
+  rotation for the R1/R2/R3/R4 positions it supports; see §4 for measured parity.
+
 ---
 
 ## 2. Per-Linear Block Rotation
@@ -248,6 +312,7 @@ Application modes (`hadamard/apply.py`):
 | `hadamard_type` | `"hadamard"` | One of `hadamard`, `random_hadamard`, `inplace_quarot_hadamard`, `inplace_hadamard`, `inplace_random`. Deterministic Hadamard uses Sylvester construction (`block_size` must be a power of 2); `random_hadamard` supports non-power-of-2 sizes from the known-matrix library. |
 | `fuse_online_to_weight` | `None` | Fuse online Hadamard rotation into weights when supported (`inplace` backend only). |
 | `allow_online_rotation` | `True` | Allow online activation rotation. |
+| `layerwise` | `False` | Apply the Hadamard rotation **per decoder block**, in lock-step with AutoRound's block-wise quantization (see §1.8). Supported by the per-Linear `transform` backend (MXFP4 / NVFP4); the `inplace` backend couples layers and falls back to full-model rotation. |
 
 ### 2.2 Usage
 

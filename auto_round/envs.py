@@ -15,31 +15,38 @@
 # For detailed usage and configuration guide, see: docs/environments.md
 
 import os
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     AR_LOG_LEVEL: str = "INFO"
     AR_USE_MODELSCOPE: bool = "False"
-    AR_MODEL_FREE_SHARD_PARALLELISM: Optional[int] = None
-    AUTO_ROUND_CACHE: Optional[str] = None
+    AR_MODEL_FREE_SHARD_PARALLELISM: int | None = None
+    AUTO_ROUND_CACHE: str | None = None
     AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
     AR_DISABLE_GGUF_MTP_EXPORT: bool = False
-    LLAMA_CPP_ROOT: Optional[str] = None
-    AR_AUTO_SCHEME_NSAMPLES: Optional[int] = None
-    AR_AUTO_SCHEME_BATCH_SIZE: Optional[int] = None
-    AR_AUTO_SCHEME_CACHE: Optional[str] = None
+    LLAMA_CPP_ROOT: str | None = None
+    AR_AUTO_SCHEME_NSAMPLES: int | None = None
+    AR_AUTO_SCHEME_BATCH_SIZE: int | None = None
+    AR_AUTO_SCHEME_CACHE: str | None = None
     AR_AUTO_SCHEME_NO_SERIAL_FALLBACK: bool = False
     AR_ENABLE_AUTO_SCHEME_PARALLEL: bool = True
     AR_NVFP4_E5M3_CACHE_HP_WEIGHT: bool = False
     AR_DISK_STREAM_MODEL: bool = False
     AR_DISABLE_META_LOAD: bool = False
-    AR_RESUME_DIR: Optional[str] = None
+    AR_RESUME_DIR: str | None = None
     AR_FORCE_MOE_ROUTING_ALL_EXPERTS: bool = False
+    AR_QUANTIZE_BAGEL_MOE_GEN: bool = False
     AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE: bool = True
     AR_ALLOW_W8_ASYM: bool = False
+    AR_CALIB_DATA_MULTIPLIER: int = 100
+    AR_DISABLE_BATCHED_SEARCH: bool = False
+    AR_PERF_COUNTERS: bool = False
+    AR_SEARCH_BATCH_GB: float | None = None
+    AR_DISABLE_CROSS_DEVICE_SEARCH: bool = False
 
 
-def _get_optional_positive_int_env(name: str) -> Optional[int]:
+def _get_optional_positive_int_env(name: str) -> int | None:
     """Read an optional env var that must be a positive integer when set."""
     raw = os.getenv(name)
     if raw is None:
@@ -53,17 +60,34 @@ def _get_optional_positive_int_env(name: str) -> Optional[int]:
     return value
 
 
+def _get_optional_positive_float_env(name: str) -> float | None:
+    """Read an optional env var that must be a positive float when set."""
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a positive float, got {raw!r}") from exc
+    if not (value > 0 and value != float("inf")):
+        raise ValueError(f"{name} must be a positive finite float, got {value}")
+    return value
+
+
 environment_variables: dict[str, Callable[[], Any]] = {
     # this is used for configuring the default logging level
     "AR_LOG_LEVEL": lambda: os.getenv("AR_LOG_LEVEL", "INFO").upper(),
     "AR_ENABLE_COMPILE_PACKING": lambda: os.getenv("AR_ENABLE_COMPILE_PACKING", "0").lower() in ("1", "true", "yes"),
     "AR_USE_MODELSCOPE": lambda: os.getenv("AR_USE_MODELSCOPE", "False").lower() in ["1", "true"],
-    "AR_WORK_SPACE": lambda: os.getenv("AR_WORK_SPACE", "ar_work_space").lower(),
+    "AR_WORK_SPACE": lambda: os.getenv("AR_WORK_SPACE", "ar_work_space"),
     "AR_ENABLE_UNIFY_MOE_INPUT_SCALE": lambda: os.getenv("AR_ENABLE_UNIFY_MOE_INPUT_SCALE", "False").lower()
     in ["1", "true"],
     "AR_OMP_NUM_THREADS": lambda: os.getenv("AR_OMP_NUM_THREADS", None),
     "AR_DISABLE_OFFLOAD": lambda: os.getenv("AR_DISABLE_OFFLOAD", "0").lower() in ("1", "true", "yes"),
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
+    # Multiplier applied to nsamples to determine the candidate pool size for
+    # streaming calibration datasets. The pool is nsamples * AR_CALIB_DATA_MULTIPLIER.
+    "AR_CALIB_DATA_MULTIPLIER": lambda: int(os.getenv("AR_CALIB_DATA_MULTIPLIER", "100")),
     "AR_DISABLE_COPY_MTP_WEIGHTS": lambda: os.getenv("AR_DISABLE_COPY_MTP_WEIGHTS", "0").lower()
     in ("1", "true", "yes"),
     # Device for the disk-streamed calibration forward pass in
@@ -138,10 +162,20 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # instead of restarting the whole tuning pass from block 0 after a
     # crash/kill. See auto_round/utils/resume.py.
     "AR_RESUME_DIR": lambda: os.getenv("AR_RESUME_DIR", None),
+    "AR_DISABLE_BATCHED_SEARCH": lambda: os.getenv("AR_DISABLE_BATCHED_SEARCH", "False").strip().lower()
+    in ("1", "true", "yes"),
+    "AR_PERF_COUNTERS": lambda: os.getenv("AR_PERF_COUNTERS", "False").strip().lower() in ("1", "true", "yes"),
+    "AR_SEARCH_BATCH_GB": lambda: _get_optional_positive_float_env("AR_SEARCH_BATCH_GB"),
+    "AR_DISABLE_CROSS_DEVICE_SEARCH": lambda: os.getenv("AR_DISABLE_CROSS_DEVICE_SEARCH", "False").strip().lower()
+    in ("1", "true", "yes"),
     # When enabled, MoE routing can be overridden in selected model wrappers
     # to rotate token assignments across all experts for calibration coverage.
     "AR_FORCE_MOE_ROUTING_ALL_EXPERTS": lambda: os.getenv("AR_FORCE_MOE_ROUTING_ALL_EXPERTS", "0").lower()
     in ("1", "true", "yes"),
+    # BAGEL's image-generation experts are kept in BF16 by default because
+    # quantizing them can reduce image quality. Enable only for experiments
+    # that explicitly trade image quality for a smaller checkpoint.
+    "AR_QUANTIZE_BAGEL_MOE_GEN": lambda: os.getenv("AR_QUANTIZE_BAGEL_MOE_GEN", "0").lower() in ("1", "true", "yes"),
     # Experts forward used for AutoRound's unfused per-expert nn.Linear MoE layout:
     #   "auto"                   - (default) same as "linear_grouped"
     #   "linear_grouped"         - sort the routed (token, expert) pairs once and run one
@@ -205,6 +239,16 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Exposed on the CLI as ``--num_hidden_layers``. The resulting model is a
     # partial model and must not be used for a real/production quantization run.
     "AR_DEBUG_LAYER_NUM": lambda: _get_optional_positive_int_env("AR_DEBUG_LAYER_NUM"),
+    # NeUQI joint (scale, zero-point) search knobs: coarse/fine candidate
+    # counts (shared by both symmetry classes), backend selection for the
+    # zero-point sweep (auto|eager|compile|triton; latches down permanently
+    # on failure), and the sweep/knobs are otherwise internal (layout and
+    # candidate batching are device-automatic).
+    # unset -> None so the search entries can apply their backend-aware
+    # defaults (wide 256/64 on Triton/compile lanes, narrow 64/32 on eager)
+    "AR_NEUQI_COARSE": lambda: int(v) if (v := os.getenv("AR_NEUQI_COARSE")) is not None else None,
+    "AR_NEUQI_FINE": lambda: int(v) if (v := os.getenv("AR_NEUQI_FINE")) is not None else None,
+    "AR_NEUQI_BACKEND": lambda: os.getenv("AR_NEUQI_BACKEND", "auto").lower(),
 }
 
 

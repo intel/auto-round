@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 #
 # Copyright (c) 2026 Intel Corporation
 #
@@ -115,16 +114,13 @@ _DECODE_SKIP = _decode_skip_reason()
 
 # Surface diagnostics on collection so the user always sees why the suite
 # would skip, without having to add extra flags.
+_xpu_lib_state = "loaded" if ark.xpu_lib is not None else "None"
+_has_decode = hasattr(ark.xpu_lib, "moe_gemm_decode") if ark.xpu_lib is not None else False
 print(
-    "[moe-decode-perf] xpu_available=%s  xpu_lib=%s  has_moe_gemm_decode=%s"
-    % (
-        _xpu_available(),
-        "loaded" if ark.xpu_lib is not None else "None",
-        hasattr(ark.xpu_lib, "moe_gemm_decode") if ark.xpu_lib is not None else False,
-    )
+    f"[moe-decode-perf] xpu_available={_xpu_available()}  xpu_lib={_xpu_lib_state}  has_moe_gemm_decode={_has_decode}"
 )
 if _DECODE_SKIP:
-    print("[moe-decode-perf] suite will SKIP. reason: %s" % _DECODE_SKIP)
+    print(f"[moe-decode-perf] suite will SKIP. reason: {_DECODE_SKIP}")
 
 
 # ---------------------------------------------------------------------------

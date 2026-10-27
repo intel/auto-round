@@ -3,7 +3,7 @@
 This project uses `pytest` for unit testing. All test cases are under the `test/` directory.
 
 ## 1. Environment Setup
-- Recommended Python 3.10 or above.
+- Recommended Python 3.11 or above.
 - Install dependencies:
   ```sh
   pip install -r ../requirements.txt

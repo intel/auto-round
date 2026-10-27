@@ -13,14 +13,15 @@ from __future__ import annotations
 import json
 import logging
 import re
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
-from typing import Dict
 
 import torch
 import torch.nn as nn
 from accelerate.utils import set_module_tensor_to_device
-from safetensors import safe_open
+from safetensors import SafetensorError, safe_open
+
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,12 @@ class SafetensorsIndex:
         index_path = self.checkpoint_dir / "model.safetensors.index.json"
         if index_path.exists():
             with open(index_path) as f:
-                self.weight_map: Dict[str, str] = json.load(f)["weight_map"]
+                # The shard names come from the checkpoint's own index, i.e. from the
+                # artifact being loaded -- validate them against the directory before
+                # anything downstream gets a chance to join and open them.
+                self.weight_map: dict[str, str] = validate_weight_map(
+                    json.load(f)["weight_map"], self.checkpoint_dir, index_path=index_path
+                )
         else:
             # Small, unsharded checkpoint: one model.safetensors file.
             single_file = self.checkpoint_dir / "model.safetensors"
@@ -56,16 +62,24 @@ class SafetensorsIndex:
     def read_tensor(self, name: str, device: str = "cpu") -> torch.Tensor:
         return self.read_tensors([name], device=device)[name]
 
-    def read_tensors(self, names: list[str], device: str = "cpu") -> Dict[str, torch.Tensor]:
+    def tensor_shape(self, name: str) -> tuple[int, ...]:
+        """Return a tensor's shape from its safetensors header without reading its payload."""
+        shard_name = self.weight_map[name]
+        shard_path = resolve_within_directory(self.checkpoint_dir, shard_name)
+        with safe_open(str(shard_path), framework="pt") as f:
+            return tuple(f.get_slice(name).get_shape())
+
+    def read_tensors(self, names: list[str], device: str = "cpu") -> dict[str, torch.Tensor]:
         """Read several tensors, grouped by shard file so each shard is opened and
         closed (unmapped) once regardless of how many tensors are pulled from it."""
-        by_shard: Dict[str, list[str]] = {}
+        by_shard: dict[str, list[str]] = {}
         for name in names:
             by_shard.setdefault(self.weight_map[name], []).append(name)
 
-        result: Dict[str, torch.Tensor] = {}
+        result: dict[str, torch.Tensor] = {}
         for shard_name, shard_tensor_names in by_shard.items():
-            with safe_open(str(self.checkpoint_dir / shard_name), framework="pt") as f:
+            shard_path = resolve_within_directory(self.checkpoint_dir, shard_name)
+            with safe_open(str(shard_path), framework="pt") as f:
                 for name in shard_tensor_names:
                     tensor = f.get_tensor(name)
                     if device != "cpu":
@@ -79,7 +93,7 @@ class SafetensorsIndex:
 
 
 @lru_cache(maxsize=8)
-def get_safetensors_index(checkpoint_dir: str) -> "SafetensorsIndex":
+def get_safetensors_index(checkpoint_dir: str) -> SafetensorsIndex:
     """Shared ``SafetensorsIndex`` per checkpoint directory.
 
     Only the (cheap) name->shard map is cached; no ``safe_open`` handle is kept, so this
@@ -87,6 +101,45 @@ def get_safetensors_index(checkpoint_dir: str) -> "SafetensorsIndex":
     used to build a fresh index for every block, re-reading the index JSON 40+ times.
     """
     return SafetensorsIndex(str(checkpoint_dir))
+
+
+def checkpoint_has_native_fused_moe_experts(checkpoint_dir: str) -> bool:
+    """Whether a checkpoint directly stores supported fused 3D expert tensors.
+
+    Unlike :func:`config_has_fused_moe_experts`, which detects experts fused by a
+    Transformers checkpoint converter, this inspects the checkpoint layout itself.
+    Only the ``gate_up_proj`` + ``down_proj`` layout understood by
+    :func:`materialize_module` is accepted. Tensor shapes come from safetensors
+    headers, so this check never maps or copies the weight payloads.
+    """
+    try:
+        index = get_safetensors_index(str(checkpoint_dir))
+    except (OSError, ValueError, KeyError, SafetensorError):
+        return False
+
+    gate_up_suffix = ".experts.gate_up_proj"
+    for gate_up_name in index.weight_map:
+        if not gate_up_name.endswith(gate_up_suffix):
+            continue
+        prefix = gate_up_name[: -len(gate_up_suffix)]
+        down_name = f"{prefix}.experts.down_proj"
+        if not index.has_tensor(down_name):
+            continue
+        try:
+            gate_up_shape = index.tensor_shape(gate_up_name)
+            down_shape = index.tensor_shape(down_name)
+        except (OSError, ValueError, KeyError, SafetensorError):
+            continue
+        if len(gate_up_shape) == 3 and len(down_shape) == 3 and gate_up_shape[0] == down_shape[0] > 1:
+            logger.debug(
+                "Native fused-MoE checkpoint tensors detected: %s %s and %s %s",
+                gate_up_name,
+                gate_up_shape,
+                down_name,
+                down_shape,
+            )
+            return True
+    return False
 
 
 # Model-side module names sometimes differ from the checkpoint-side tensor
@@ -98,7 +151,7 @@ def get_safetensors_index(checkpoint_dir: str) -> "SafetensorsIndex":
 # whose names already match the model are untouched.
 
 
-@lru_cache(maxsize=None)
+@cache
 def _reverse_renamings_for(model_type):
     """Invert the checkpoint-conversion WeightRenaming entries for one family.
 
@@ -134,7 +187,7 @@ def _reverse_renamings_for(model_type):
     return tuple(reversed_transforms)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _model_types_for_dir(checkpoint_dir: str):
     """Every model_type in the checkpoint's config, including nested sub-configs.
 
@@ -306,7 +359,7 @@ _MODEL_SIDE_EXPERT_RE = re.compile(
 )
 
 
-@lru_cache(maxsize=None)
+@cache
 def _expert_projection_renames_for(model_type):
     """Map a fused projection to the checkpoint-side per-expert projection names.
 
@@ -353,7 +406,7 @@ def _expert_projection_renames_for(model_type):
     return tuple(renames.items())
 
 
-@lru_cache(maxsize=None)
+@cache
 def _concat_converters_for(model_type):
     """Model-side params assembled by concatenating several checkpoint tensors.
 
@@ -411,7 +464,8 @@ def _resolve_checkpoint_name(index, full_name: str):
         if index.has_tensor(candidate):
             return candidate
     for model_type in _index_model_types(index):
-        for transform in _reverse_renamings_for(model_type):
+        transforms = _reverse_renamings_for(model_type)
+        for transform in transforms:
             try:
                 candidate, _ = transform.rename_source_key(full_name)
             except Exception as exc:  # pragma: no cover - defensive, never fail a load here
@@ -419,6 +473,17 @@ def _resolve_checkpoint_name(index, full_name: str):
                 continue
             if candidate != full_name and index.has_tensor(candidate):
                 return candidate
+        # Some names need several of a family's renames at once, e.g. RADIO's
+        # ``encoder.layer.N.attention.output.dense`` <- ``radio_model.model.blocks.N.attn.proj``.
+        candidate = full_name
+        for transform in transforms:
+            try:
+                candidate, _ = transform.rename_source_key(candidate)
+            except Exception as exc:  # pragma: no cover - defensive, never fail a load here
+                logger.debug("chained rename %s via %s failed: %s", candidate, transform, exc)
+                continue
+        if candidate != full_name and index.has_tensor(candidate):
+            return candidate
     return None
 
 
@@ -445,7 +510,7 @@ def _dot_natural_key(name: str):
         return parts
 
 
-@lru_cache(maxsize=None)
+@cache
 def _wildcard_concat_converters_for(model_type):
     """Wildcard shard-concat converters registered for one family.
 
@@ -488,11 +553,12 @@ def _wildcard_concat_converters_for(model_type):
         target = entry.target_patterns[0].rstrip("$")
         if "*" not in source or "*" in target:
             continue
+
         converters.append((target, source, getattr(entry.operations[0], "dim", 0), getattr(entry, "force_cpu", False)))
     return tuple(converters)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _wildcard_split_converters_for(model_type):
     """Save-side inverse of :func:`_wildcard_concat_converters_for`.
 
@@ -530,6 +596,7 @@ def _wildcard_split_converters_for(model_type):
         target = entry.target_patterns[0].rstrip("$")
         if "*" not in source or "*" in target:
             continue
+
         op = entry.operations[0]
         converters.append((target, source, getattr(op, "dim", 0), getattr(op, "num_shards_attribute", None)))
     return tuple(converters)
@@ -556,7 +623,7 @@ def _resolve_num_shards(config, num_shards_attribute):
     return None
 
 
-def split_merged_concat_tensor(config, full_name: str, tensor: "torch.Tensor"):
+def split_merged_concat_tensor(config, full_name: str, tensor: torch.Tensor):
     """Split a merged model-side concat parameter back into its checkpoint shards.
 
     Inverse of the load-time :func:`_assemble_sharded_tensor`. Qwen3-Next "Flash"
@@ -919,11 +986,16 @@ def materialize_module(module: nn.Module, module_name: str, index: SafetensorsIn
 
     targets = []  # (param_name, full_checkpoint_name, declared_meta_dtype)
     fused_targets = []  # (param_name, sliced_value)
+    buffer_names = {name for name, _ in module.named_buffers()}
     for name, tensor in list(module.named_parameters()) + list(module.named_buffers()):
-        if str(tensor.device) != "meta":
-            continue  # already materialized (e.g. shared/tied weights)
+        is_meta = str(tensor.device) == "meta"
+        is_checkpoint_backed_buffer = name in buffer_names
+        if not is_meta and not is_checkpoint_backed_buffer:
+            continue  # already materialized parameter (e.g. shared/tied weights)
         full_name = f"{module_name}.{name}".replace(".orig_layer.", ".")
         resolved_name = _resolve_checkpoint_name(index, full_name)
+        if not is_meta and resolved_name is None:
+            continue  # runtime buffer without a checkpoint counterpart
         if resolved_name is None:
             sliced = _fused_lookup(full_name, tensor.shape)
             if sliced is None:
@@ -1083,8 +1155,16 @@ def build_meta_model(model_name: str, trust_remote_code: bool = True, unfuse_moe
     # reap/layerwise_prune.py's disk-streamed model builder.
     import transformers as _transformers
 
+    from auto_round.modeling.nemotron_h_omni import (
+        prefer_remote_omni_class,
+        register_nemotron_h_omni_checkpoint_mapping,
+    )
+
+    register_nemotron_h_omni_checkpoint_mapping(config, trust_remote_code)
     archs = getattr(config, "architectures", None) or []
-    model_cls = next((getattr(_transformers, a) for a in archs if hasattr(_transformers, a)), None)
+    model_cls = None
+    if not prefer_remote_omni_class(config, trust_remote_code):
+        model_cls = next((getattr(_transformers, a) for a in archs if hasattr(_transformers, a)), None)
     with init_empty_weights():
         if model_cls is not None:
             model = model_cls(config)
@@ -1200,12 +1280,12 @@ class stream_block_forward:
     is for a plain inference-only forward pass (e.g. eval loss), not tuning.
     """
 
-    def __init__(self, model: nn.Module, index: SafetensorsIndex, device: str, block_names: list[str] = None):
+    def __init__(self, model: nn.Module, index: SafetensorsIndex, device: str, block_names: list[str] | None = None):
         self.model = model
         self.index = index
         self.device = device
         self.block_names = block_names if block_names is not None else _default_block_names(model)
-        self._originals: Dict[str, "callable"] = {}
+        self._originals: dict[str, callable] = {}
 
     def __enter__(self):
         for block_name in self.block_names:

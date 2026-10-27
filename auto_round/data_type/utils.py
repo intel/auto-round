@@ -13,9 +13,10 @@
 # limitations under the License.
 
 import math
+from collections.abc import Callable
 from functools import lru_cache
 from math import ceil
-from typing import List, Union
+from typing import Any
 
 import torch
 from torch.nn import Linear, Module
@@ -26,7 +27,7 @@ from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.utils import check_to_quantized, logger
 
 
-def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: Union[int, list], val: float = 0.0):
+def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int | list, val: float = 0.0):
     """Reshapes and pads the tensor to ensure that it can be quantized in groups of `group_size`.
 
     This function adjusts the
@@ -71,7 +72,7 @@ def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: Union[int, 
         return data_new, orig_shape, pad_len
 
 
-def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[int, list]):
+def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: int | list):
     """Reverts the tensor to its original shape by removing padding.
 
     This function removes the padding added during reshaping and returns the tensor to
@@ -103,7 +104,7 @@ def revert_tensor_by_pad(data: torch.Tensor, orig_shape: tuple, pad_len: Union[i
 
 
 def get_quant_func(
-    dtype: str, bits: int, sym: bool, disable_opt_rtn=False, group_size=None, iters=200
+    dtype: str, bits: int, sym: bool, disable_opt_rtn=False, group_size=None, iters=200, enable_neuqi=False
 ) -> tuple[callable, str]:
     """Retrieve the quantization function based on data type, bit width, and symmetry.
 
@@ -117,6 +118,12 @@ def get_quant_func(
         sym (bool): A flag indicating whether the quantization is symmetric (True) or asymmetric (False).
         disable_opt_rtn(bool): whether to disable optimized rtn.
         group_size (tuple): The block size for weight quantization (e.g., (128, 128)).
+        enable_neuqi (bool): Opt into the NeUQI grid search (arXiv 2505.17595).
+            For ``sym=False`` the joint (scale, zero-point) search replaces the
+            plain min/max initialization on the optimized path; for ``sym=True``
+            the two-stage symmetric scale search
+            (``opt_rtn_int_sym_neuqi``) replaces the uniform ``search_scales``
+            grid. ``False`` (default) keeps the incumbent behavior byte-identical.
 
     Returns:
         function: The quantization function corresponding to the specified parameters.
@@ -136,6 +143,15 @@ def get_quant_func(
     if not disable_opt_rtn and iters == 0:
         rtn_data_type = "opt_rtn_" + dtype
         data_types = [rtn_data_type, pad_bits(rtn_data_type), pad_sym(rtn_data_type), pad_sym(pad_bits(rtn_data_type))]
+        if not enable_neuqi and not sym:
+            # the joint NeUQI search is opt-in: without it the asymmetric
+            # optimized path has no search (the integer zero point breaks the
+            # scale-only grid) and resolves to the plain min/max function
+            data_types = [dt for dt in data_types if not dt.endswith("_asym") and not dt.endswith(f"_asym{bits}")]
+        if sym and enable_neuqi:
+            # two-stage symmetric scale search (NeUQI grid machinery, zero point
+            # fixed at 0) -- preferred over the uniform search_scales grid
+            data_types = [f"{rtn_data_type}_sym_neuqi"] + data_types
         for data_type in data_types:
             from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
 
@@ -176,6 +192,28 @@ def get_quant_func(
     )
 
 
+def _int_search_with_thresh(search_scales: Any, q_scale_thresh: float) -> "Callable[..., torch.Tensor]":
+    """Stable partial for the clamped int init-scale search.
+
+    A module-level partial (captures visible as ``keywords``) instead of a
+    per-call closure, so resolved callables compare equal across calls and can
+    safely key same-shape search batches.
+    """
+    import functools
+
+    def _clamped(
+        weight_reshape: torch.Tensor, bits: int, imatrix: "torch.Tensor | None", *, _thresh: float
+    ) -> torch.Tensor:
+        init_scale = search_scales(weight_reshape, bits, imatrix)
+        return torch.where(
+            init_scale < 0,
+            torch.clamp(init_scale, max=-_thresh),
+            torch.clamp(init_scale, min=_thresh),
+        )
+
+    return functools.partial(_clamped, _thresh=q_scale_thresh)
+
+
 def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5):
     """Resolve the SignRound optimized ``(scale_search_fn, quant_func)`` for a data type.
 
@@ -201,15 +239,7 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
             return None, None
         from auto_round.data_type.int import quant_tensor_sym, search_scales
 
-        def search_int(weight_reshape, bits, imatrix):
-            init_scale = search_scales(weight_reshape, bits, imatrix)
-            return torch.where(
-                init_scale < 0,
-                torch.clamp(init_scale, max=-q_scale_thresh),
-                torch.clamp(init_scale, min=q_scale_thresh),
-            )
-
-        return search_int, quant_tensor_sym
+        return _int_search_with_thresh(search_scales, q_scale_thresh), quant_tensor_sym
     if dt.startswith("mx"):
         from auto_round.data_type.mxfp import quant_mx, search_mx_scale
 
@@ -219,6 +249,21 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
 
         return search_nvfp4_scale, nv_fp4
     return None, None
+
+
+def resolve_optimized_init_scale_fn(
+    data_type: str, q_scale_thresh: float = 1e-5
+) -> "Callable[..., torch.Tensor] | None":
+    """Resolve the per-group init-scale search callable for a data type.
+
+    Returns the exact callable ``search_optimized_init_scale`` would invoke --
+    ``(weight_reshape, bits, imatrix) -> init_scale`` -- or ``None`` for data
+    types without an optimized path. The resolved callable can be staged and
+    invoked later (batched wrap searches) with identical semantics, so future
+    dispatch changes travel with the caller automatically.
+    """
+    search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
+    return search_fn
 
 
 def search_optimized_init_scale(
@@ -439,6 +484,7 @@ def update_fused_layer_global_scales(
 
     For attention layers:
       - q/k/v projections share a single global scale.
+      - Diffusers self-attention uses to_q/to_k/to_v (e.g. Wan).
 
     For MLP layers:
       - gate_proj and up_proj share a single global scale.
@@ -451,7 +497,7 @@ def update_fused_layer_global_scales(
 
     global_scale_name = f"{base_name}_global_scale"
 
-    def _collect_scales(mods: List[Module]) -> List[torch.Tensor]:
+    def _collect_scales(mods: list[Module]) -> list[torch.Tensor]:
         """Collect valid global_scale tensors from modules."""
         scales = []
         for m in mods:
@@ -472,8 +518,12 @@ def update_fused_layer_global_scales(
         """Check for MoE expert naming: w1 (gate) and w3 (up)."""
         return all(hasattr(module, projection) for projection in ("w1", "w3"))
 
-    def _update_global_scales(modules: List[Module]):
+    def _update_global_scales(modules: list[Module]):
         """Update global scales for a list of modules."""
+        from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
+
+        # SVDQuant keeps the quantized projection inside its residual branch.
+        modules = [module.residual_linear if isinstance(module, SVDQuantLinear) else module for module in modules]
         scales = _collect_scales(modules)
         if not scales:
             return
@@ -492,6 +542,14 @@ def update_fused_layer_global_scales(
     # ---------------- Attention ----------------
     if _is_attention_module(submodule):
         _update_global_scales([submodule.q_proj, submodule.k_proj, submodule.v_proj])
+        return
+
+    # Diffusers self-attention (e.g. Wan) uses to_q/to_k/to_v. Cross-attention
+    # Q consumes different inputs from K/V and must not join their scale group.
+    if not getattr(submodule, "is_cross_attention", False) and all(
+        hasattr(submodule, projection) for projection in ("to_q", "to_k", "to_v")
+    ):
+        _update_global_scales([submodule.to_q, submodule.to_k, submodule.to_v])
         return
 
     # ---------------- MLP ----------------
@@ -520,7 +578,7 @@ def update_block_global_scale_if_needed(block, data_type, group_size):
             has_nvfp = True
             if not hasattr(m, "weight_global_scale"):
                 weight_global_scale = calculate_gparam(m.weight, module_group_size)
-                setattr(m, "weight_global_scale", weight_global_scale)
+                m.weight_global_scale = weight_global_scale
 
     if not has_nvfp:
         return

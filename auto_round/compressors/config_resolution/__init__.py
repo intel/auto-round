@@ -27,11 +27,11 @@ from auto_round.compressors.config_resolution.errors import (
 from auto_round.compressors.config_resolution.resolve import resolve_quantization_config, resolve_scheme_value
 
 __all__ = [
-    "ResolvedQuantizationConfig",
+    "ConfigResolutionError",
     "FormatCompatibilityError",
     "FormatResolution",
     "LayerConfigResolutionError",
-    "ConfigResolutionError",
+    "ResolvedQuantizationConfig",
     "ResolvedScheme",
     "SchemeResolutionError",
     "resolve_quantization_config",

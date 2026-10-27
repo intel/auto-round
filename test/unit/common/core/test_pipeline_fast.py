@@ -81,7 +81,9 @@ def test_block_quantizer_is_terminal_regardless_of_config_order(configs):
 
     members = pipeline.members()
 
-    assert members[:-1] == pipeline.preprocessors
+    # Preprocessors always lead the pipeline; rotation members (added by
+    # RotationConfig) may sit between them and the terminal block quantizer.
+    assert members[: len(pipeline.preprocessors)] == pipeline.preprocessors
     assert members[-1] is pipeline.block_quantizer
     assert isinstance(members[-1], RTNQuantizer)
 

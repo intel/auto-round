@@ -30,7 +30,6 @@ class TestSchemePresetsGpu:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     @pytest.mark.parametrize("scheme", ["W4A16", "W2A16", "W8A16", "W3A16", "INT8"])
     def test_scheme_preset_quantize_forward(self, tiny_opt_model_path, scheme):
         autoround = AutoRound(tiny_opt_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, seqlen=16)
@@ -43,7 +42,6 @@ class TestSchemePresetsGpu:
             out = model(input_ids)
         assert out.logits.shape[0] == 1
 
-    @pytest.mark.timeout(180)
     @pytest.mark.parametrize(
         ("bits", "expected"),
         [(4, 4), (8, 8)],

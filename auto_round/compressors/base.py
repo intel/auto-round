@@ -16,7 +16,7 @@ import gc
 import os
 import sys
 from dataclasses import asdict, dataclass, fields, replace
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 from transformers import AutoConfig, set_seed
@@ -24,7 +24,6 @@ from transformers import AutoConfig, set_seed
 from auto_round.algorithms.quantization import BaseQuantizer, QuantizationConfig
 from auto_round.algorithms.transforms import (
     BaseRotationConfig,
-    apply_rotation,
 )
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.compressors.config_resolution import (
@@ -76,6 +75,7 @@ from auto_round.utils import (
     revert_checkpoint_conversion_mapping,
     revert_name_with_weight_transforms,
 )
+from auto_round.utils.dataset_utils import CalibDataset
 from auto_round.utils.device import (
     _force_trim_malloc,
     patch_xpu_sdpa_drop_causal_mask,
@@ -92,39 +92,39 @@ MIN_ITERS_FOR_TORCH_COMPILE = 10
 
 @dataclass
 class SerializedCompressorConfig:
-    bits: Optional[int] = None
-    act_bits: Optional[int] = None
-    data_type: Optional[str] = None
-    act_data_type: Optional[str] = None
-    group_size: Optional[int] = None
-    act_group_size: Optional[int] = None
-    sym: Optional[bool] = None
-    act_sym: Optional[bool] = None
-    act_dynamic: Optional[bool] = None
-    amp: Optional[bool] = None
-    batch_size: Optional[int] = None
-    enable_minmax_tuning: Optional[bool] = True
-    enable_norm_bias_tuning: Optional[bool] = False
-    enable_quanted_input: Optional[bool] = True
-    gradient_accumulate_steps: Optional[int] = None
-    iters: Optional[int] = None
-    lr: Optional[float] = None
-    low_gpu_mem_usage: Optional[bool] = None
-    minmax_lr: Optional[float] = None
-    nsamples: Optional[int] = None
-    quant_block_list: Optional[list[str]] = None
-    regex_config: Optional[dict[str, Any]] = None
-    scale_dtype: Optional[str] = None
-    seqlen: Optional[int] = None
-    supported_types: Optional[list[str]] = SUPPORTED_LAYER_TYPES
-    static_attention_dtype: Optional[str] = None
-    static_kv_dtype: Optional[str] = None
-    static_attention_granularity: Optional[str] = "tensor"
-    static_kv_granularity: Optional[str] = "tensor"
-    super_bits: Optional[int] = None
-    super_group_size: Optional[int] = None
-    to_quant_block_names: Optional[list[str]] = None
-    rotation_configs: Optional[list[dict[str, Any]]] = None
+    bits: int | None = None
+    act_bits: int | None = None
+    data_type: str | None = None
+    act_data_type: str | None = None
+    group_size: int | None = None
+    act_group_size: int | None = None
+    sym: bool | None = None
+    act_sym: bool | None = None
+    act_dynamic: bool | None = None
+    amp: bool | None = None
+    batch_size: int | None = None
+    enable_minmax_tuning: bool | None = True
+    enable_norm_bias_tuning: bool | None = False
+    enable_quanted_input: bool | None = True
+    gradient_accumulate_steps: int | None = None
+    iters: int | None = None
+    lr: float | None = None
+    low_gpu_mem_usage: bool | None = None
+    minmax_lr: float | None = None
+    nsamples: int | None = None
+    quant_block_list: list[str] | None = None
+    regex_config: dict[str, Any] | None = None
+    scale_dtype: str | None = None
+    seqlen: int | None = None
+    supported_types: list[str] | None = SUPPORTED_LAYER_TYPES
+    static_attention_dtype: str | None = None
+    static_kv_dtype: str | None = None
+    static_attention_granularity: str | None = "tensor"
+    static_kv_granularity: str | None = "tensor"
+    super_bits: int | None = None
+    super_group_size: int | None = None
+    to_quant_block_names: list[str] | None = None
+    rotation_configs: list[dict[str, Any]] | None = None
 
 
 SERIALIZATION_KEYS = tuple(field.name for field in fields(SerializedCompressorConfig))
@@ -191,7 +191,7 @@ def _formats_policy_string_of(formats) -> str:
     return ",".join(names)
 
 
-class BaseOrchestrator(object):
+class BaseOrchestrator:
     need_calib: bool = True
     compress_context: CompressContext = None
     model_context: ModelContext = None
@@ -213,13 +213,13 @@ class BaseOrchestrator(object):
         locals()[_scheme_field] = _make_compressor_scheme_property(_scheme_field)
 
     @staticmethod
-    def _preload_model_config(model: Union[torch.nn.Module, str], trust_remote_code: bool) -> Optional[AutoConfig]:
+    def _preload_model_config(model: torch.nn.Module | str, trust_remote_code: bool) -> AutoConfig | None:
         if not isinstance(model, str):
             return None
 
         try:
             return AutoConfig.from_pretrained(model, trust_remote_code=trust_remote_code)
-        except (OSError, EnvironmentError, ValueError) as e:
+        except (OSError, ValueError) as e:
             logger.debug(
                 "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
                 "Proceeding without config-based checks.",
@@ -230,25 +230,26 @@ class BaseOrchestrator(object):
 
     def __init__(
         self,
-        config: Union[object, list[object]],
-        model: Union[torch.nn.Module, str],
+        config: object | list[object],
+        model: torch.nn.Module | str,
         tokenizer: Any = None,
         platform: str = "hf",
-        format: Union[str, list, None] = None,
-        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
+        format: str | list | None = None,
+        scheme: str | dict | QuantizationScheme | AutoScheme = "W4A16",
         low_gpu_mem_usage: bool = False,
-        device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: Optional[bool] = None,
+        calibration_data_device: str = "auto",
+        device_map: str | torch.device | int | dict = 0,
+        enable_torch_compile: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
-        layer_config: Optional[dict] = None,
-        nsamples: int = None,
-        seqlen: int = None,
-        scale_dtype: Optional[Union[str, torch.dtype]] = None,
+        layer_config: dict | None = None,
+        nsamples: int | None = None,
+        seqlen: int | None = None,
+        scale_dtype: str | torch.dtype | None = None,
         ignore_layers: str = "",
         quant_lm_head: bool = False,
-        to_quant_block_names: Optional[Union[str, list[str]]] = None,
-        dataset: Optional[Union[str, list, tuple, torch.utils.data.DataLoader]] = None,
+        to_quant_block_names: str | list[str] | None = None,
+        dataset: str | list | tuple | torch.utils.data.DataLoader | CalibDataset | None = None,
         **kwargs,
     ) -> None:
         # ``CalibrationContext`` is the single source of truth for calibration
@@ -257,6 +258,13 @@ class BaseOrchestrator(object):
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
+        from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
+
+        # Normalize CalibDataset objects to spec strings
+        if isinstance(dataset, CalibDataset):
+            dataset = dataset.to_spec_string()
+        elif isinstance(dataset, (list, tuple)):
+            dataset = normalize_dataset_spec(dataset)
 
         dataset_was_explicitly_set = dataset is not None
         self.dataset = dataset if dataset_was_explicitly_set else "NeelNanda/pile-10k"
@@ -475,6 +483,7 @@ class BaseOrchestrator(object):
             low_cpu_mem_usage,
             low_gpu_mem_usage,
             enable_torch_compile,
+            calibration_data_device=calibration_data_device,
             formats=self.formats,
             static_kv_dtype=self.static_kv_dtype,
             static_attention_dtype=self.static_attention_dtype,
@@ -555,6 +564,12 @@ class BaseOrchestrator(object):
         if isinstance(self.scheme, AutoScheme):
             return True
 
+        # Static KV-cache / attention quantization observes KV magnitudes
+        # during the calibration forwards, so it always needs data — even for
+        # weight-only schemes (e.g. NVFP4 with iters=0).
+        if self.static_kv_dtype is not None or self.static_attention_dtype is not None:
+            return True
+
         # Check if activation calibration is needed
         from auto_round.compressors.utils import check_need_act_calibration
 
@@ -579,10 +594,7 @@ class BaseOrchestrator(object):
         # Layer-level scheme overrides can request static-activation paths
         # (e.g., global MXFP8 + local NVFP4 experts). Those still need
         # calibration data even when top-level scheme looks dynamic.
-        if self._layer_config_needs_calibration(check_need_act_calibration):
-            return True
-
-        return False
+        return self._layer_config_needs_calibration(check_need_act_calibration)
 
     def _layer_config_needs_calibration(self, check_need_act_calibration) -> bool:
         """Return True if any raw layer_config entry implies activation calibration."""
@@ -642,12 +654,12 @@ class BaseOrchestrator(object):
             self.__dict__["compression_plan"] = replace(plan, **changes)
 
     @property
-    def scheme_context(self) -> Optional[QuantizationScheme]:
+    def scheme_context(self) -> QuantizationScheme | None:
         plan = self.__dict__.get("compression_plan")
         return plan.scheme.value if plan is not None else self.__dict__.get("_scheme_context")
 
     @scheme_context.setter
-    def scheme_context(self, value: Optional[QuantizationScheme]) -> None:
+    def scheme_context(self, value: QuantizationScheme | None) -> None:
         self.__dict__["_scheme_context"] = value
         plan = self.__dict__.get("compression_plan")
         if plan is not None and value is not None:
@@ -670,7 +682,7 @@ class BaseOrchestrator(object):
             self._replace_compression_plan(formats=tuple(value))
 
     @property
-    def layer_config(self) -> Optional[dict]:
+    def layer_config(self) -> dict | None:
         plan = self.__dict__.get("compression_plan")
         if plan is None:
             return self.__dict__.get("_layer_config")
@@ -683,7 +695,7 @@ class BaseOrchestrator(object):
             self._replace_compression_plan(layer_config=value)
 
     @property
-    def regex_config(self) -> Optional[dict]:
+    def regex_config(self) -> dict | None:
         plan = self.__dict__.get("compression_plan")
         if plan is None:
             return self.__dict__.get("_regex_config")
@@ -733,8 +745,8 @@ class BaseOrchestrator(object):
 
     def resolve_scheme(
         self,
-        model_context: Optional[ModelContext] = None,
-        compress_context: Optional[CompressContext] = None,
+        model_context: ModelContext | None = None,
+        compress_context: CompressContext | None = None,
     ) -> None:
         """Phase-1 init: resolve scheme and bind config attrs (no model structure needed).
 
@@ -978,6 +990,7 @@ class BaseOrchestrator(object):
 
     def configure_layer_config(self, enable_gguf_official_mixed: bool | None = True) -> None:
         """Build ``self.layer_config`` from the resolved scheme on the patched model."""
+        self.ignore_layers = self.ignore_layers or ""
         # External callers (e.g. llm-compressor's AutoRoundModifier) may invoke this
         # method directly without going through the normal post_init()/_scheme_post_init()
         # sequence. Make sure the scheme is resolved first so `self.scheme_context` (and
@@ -1232,7 +1245,7 @@ class BaseOrchestrator(object):
                 "'enable_torch_compile' is disabled. Enabling it can reduce tuning cost by about 20%.",
             )
 
-    def _torch_compile_disabled_reason(self, ignore_user_override: bool = False) -> Optional[str]:
+    def _torch_compile_disabled_reason(self, ignore_user_override: bool = False) -> str | None:
         """Return why torch.compile must stay off for the current algorithm, else None.
 
         RTN and optimized RTN quantize each layer in a single pass, and very short
@@ -1281,7 +1294,7 @@ class BaseOrchestrator(object):
 
         return None
 
-    def _torch_compile_unsupported_arch_reason(self) -> Optional[str]:
+    def _torch_compile_unsupported_arch_reason(self) -> str | None:
         """Return why the model *architecture* forbids ``torch.compile``, else ``None``.
 
         Rules live in :mod:`auto_round.special_model_handler` so a new architecture can
@@ -1406,7 +1419,6 @@ class BaseOrchestrator(object):
         self._resolve_formats()
         self._patch_model()
         self._build_layer_config()
-        self._apply_rotations()
 
         # Reclaim temporaries from Phases 1-4 (scheme resolution, format
         # parsing, model patching, layer-config walk) before Phase 5
@@ -1420,6 +1432,14 @@ class BaseOrchestrator(object):
         # BlockForwardRunner is now created inside AlgorithmComposer.__init__,
         # so _build_composer must run first.
         self._build_composer()
+
+        # Phase 4.5 – Model-level pre-quantisation transforms (rotation).
+        # Applies full-model rotation up-front (or prepares layer-wise rotation
+        # matrices). Runs here so every entry point — the full quantize() loop,
+        # the zero-shot loop, and the external single-block quantize_block() API —
+        # sees a consistently transformed model before any calibration data is
+        # collected. Rotation is now owned by the composer's rotation members.
+        self.model_context.model = self.alg_composer.apply_model_transforms(self.model_context.model)
 
         # Set block_forward torch compile for block forward
         # Final trim after all init phases.
@@ -1517,7 +1537,7 @@ class BaseOrchestrator(object):
         return self._alg_composer
 
     @staticmethod
-    def _resolve_gguf_preset_string(formats: list["OutputFormat"]) -> Optional[str]:
+    def _resolve_gguf_preset_string(formats: list["OutputFormat"]) -> str | None:
         """Return the precise GGUF preset string (e.g. ``"gguf:q4_k_m"``) for the
         single resolved GGUF format, or ``None`` if no GGUF format is present.
 
@@ -1629,39 +1649,6 @@ class BaseOrchestrator(object):
             ShardWriter.reset()
             # Defer ShardWriter construction to _ensure_shard_writer() to avoid
             # heap fragmentation during post_init (parameter iteration).
-
-    def _apply_rotations(self) -> None:
-        """Phase 4.5 – Apply Hadamard / rotation transforms to the model.
-
-        Preconditions:
-          - Phase 3 complete: model topology is final (``apply_patches`` has
-            replaced / merged layers, e.g. MoE experts), so rotation operates
-            on the same modules that quantization will later see.
-          - Phase 4 complete: ``self.layer_config`` is built; rotation only
-            transforms weights and does not change layer names, so this
-            ordering matches the old arch where rotation ran after
-            ``configure_layer_config``.
-          - ``self.quantize_config.data_type`` is final (rotation backend
-            dispatch depends on it).
-
-        Work performed:
-          - Iterates ``self.rotation_configs`` and calls
-            :func:`~auto_round.algorithms.transforms.apply_rotation` on the
-            model for each config.
-
-        Postconditions:
-          - ``self.model_context.model`` carries the rotated weights and any
-            inserted online-Hadamard hooks.
-        """
-        if not self.rotation_configs:
-            return
-        logger.info("Applying Hadamard transform to the model.")
-        for rotation_cfg in self.rotation_configs:
-            self.model_context.model = apply_rotation(
-                self.model_context.model,
-                rotation_cfg,
-                data_type=self.quantize_config.data_type,
-            )
 
     def _patch_model(self) -> None:
         """Phase 3 – Model structure patching.
@@ -1795,7 +1782,7 @@ class BaseOrchestrator(object):
         return device_manager.device
 
     @device.setter
-    def device(self, value: Union[str, torch.device]) -> None:
+    def device(self, value: str | torch.device) -> None:
         device_manager.device = value
 
     @property
@@ -1860,7 +1847,7 @@ class BaseOrchestrator(object):
                     logger.warning("reset low_cpu_mem_usage to False due to tied weights")
                 return
             if len(tied_weight_keys) == 1:
-                key = list(tied_weight_keys.keys())[0]
+                key = next(iter(tied_weight_keys))
                 if "lm_head" not in key:
                     self.compress_context.is_immediate_saving = False
                     if self.compress_context.low_cpu_mem_usage:
@@ -1927,11 +1914,11 @@ class BaseOrchestrator(object):
 
     def save_quantized(
         self,
-        output_dir: str = None,
-        format: Union[str, list[OutputFormat]] = None,
+        output_dir: str | None = None,
+        format: str | list[OutputFormat] | None = None,
         inplace: bool = True,
         return_folders: bool = False,
-        max_shard_size: Union[int, str] = None,
+        max_shard_size: int | str | None = None,
         **kwargs,
     ) -> torch.nn.Module:
         """Save the quantized model to the specified output directory in the specified format.
@@ -1966,9 +1953,9 @@ class BaseOrchestrator(object):
         if isinstance(self.formats, str):
             self.formats = self._resolve_format_string(self.formats)
             self.compress_context.formats = self.formats
-        for format in self.formats:
-            save_folder = _get_save_folder_name(format)
-            if self.act_bits <= 8 and format.is_fake():
+        for output_format in self.formats:
+            save_folder = _get_save_folder_name(output_format)
+            if self.act_bits <= 8 and output_format.is_fake():
                 logger.warning(
                     "Support for exporting activation quantization is limited. "
                     "Please ensure that your configuration is supported."
@@ -2017,7 +2004,7 @@ class BaseOrchestrator(object):
                         original_block_name, reverted_block_name
                     )
 
-            compressed_model = format.save_quantized(
+            compressed_model = output_format.save_quantized(
                 save_folder,
                 model=self.model_context.model,
                 layer_config=self.layer_config,
@@ -2120,9 +2107,9 @@ class BaseOrchestrator(object):
     def quantize_and_save(
         self,
         output_dir: str = "tmp_autoround",
-        format: str = None,
+        format: str | None = None,
         inplace: bool = True,
-        max_shard_size: Union[int, str] = None,
+        max_shard_size: int | str | None = None,
         **kwargs,
     ) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantizes the model and saves it in the specified format(s).

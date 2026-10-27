@@ -353,6 +353,7 @@ class TestQwen3OmniMoeUtils:
         assert ignore_layers == [
             "thinker.model.layers.0.mlp.gate",
             "talker.model.layers.0.mlp.gate",
+            "talker.model.layers.0.mlp.shared_expert_gate",
         ], f"Expected mlp.gate in ignore_layers for qwen3_omni_moe, got: {ignore_layers}"
 
 

@@ -16,15 +16,17 @@ import copy
 import json
 import os
 import sys
-from typing import Callable, Union
+from collections.abc import Callable
 
 import torch
 import transformers
 from tqdm import tqdm
 
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.experimental.utils import NVFP4_KV_DTYPE
 from auto_round.export.export_to_autoround.export_to_fp8 import FP8QLinear
 from auto_round.export.export_to_llmcompressor.config import check_compressed_tensors_supported
+from auto_round.export.export_to_llmcompressor.utils import finalize_llmcompressor_config_names
 from auto_round.export.utils import is_immediate_saving_mode, save_model, save_pretrained_artifact
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -40,7 +42,7 @@ from auto_round.utils import (
 )
 
 
-def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: str = None) -> None:
+def pack_layer(layer_name: str, model: torch.nn.Module, data_type: str, device: str | None = None) -> None:
     """
     Packs a model layer for quantization based on its type and configuration.
 
@@ -114,6 +116,32 @@ def _use_fp8_attention(static_attention_dtype: str | None) -> bool:
     return False
 
 
+def _use_nvfp4_kv(static_kv_dtype: str | None) -> bool:
+    """Return True if static KV cache should use NVFP4."""
+    if static_kv_dtype in (NVFP4_KV_DTYPE, "fp4", "float4_e2m1"):
+        logger.warning_once("Exporting model with static KV cache in NVFP4 dtype.")
+        return True
+    return False
+
+
+def _construct_nvfp4_kv_scheme():
+    """Construct the NVFP4 KV cache scheme from the compressed-tensors NVFP4 preset.
+
+    Reusing the preset's input-activation args guarantees the serialized
+    ``kv_cache_scheme`` is identical to what llm-compressor / compressed-tensors
+    produce for NVFP4 KV cache (fp4 e2m1, 16-element groups, fp8_e4m3 block
+    scales computed at runtime, static per-tensor global scale).
+    """
+    from compressed_tensors.quantization import preset_name_to_scheme  # pylint: disable=E0401
+
+    kv_args = preset_name_to_scheme("NVFP4", ["Linear"]).input_activations
+    logger.warning_once(
+        "Using the compressed-tensors NVFP4 preset input-activation args as the KV cache scheme: %s",
+        repr(kv_args),
+    )
+    return kv_args
+
+
 def _get_attention_targets(model: torch.nn.Module) -> list[str]:
     from compressed_tensors.quantization.lifecycle.initialize import is_attention_module  # pylint: disable=E0401
 
@@ -152,21 +180,19 @@ def _configure_gaudi2_fp8_dtype(quantization_config: dict) -> None:
     if is_gaudi2():
         quantization_config["fp8_dtype_flavor"] = _GAUDI2_FP8_DTYPE_FLAVOR
         logger.warning_once(
-            (
-                "Running on Intel Gaudi2 hardware."
-                f" Setting FP8 dtype flavor to {_GAUDI2_FP8_DTYPE_FLAVOR} for compatibility."
-            )
+            "Running on Intel Gaudi2 hardware."
+            f" Setting FP8 dtype flavor to {_GAUDI2_FP8_DTYPE_FLAVOR} for compatibility."
         )
 
 
 def save_quantized_as_static_fp(
     output_dir: str,
     model: torch.nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    device: Union[str, torch.device] = "cpu",
-    serialization_dict: dict = None,
+    device: str | torch.device = "cpu",
+    serialization_dict: dict | None = None,
     **kwargs,
 ) -> torch.nn.Module:
     """
@@ -190,7 +216,7 @@ def save_quantized_as_static_fp(
     Raises:
         ValueError: If the backend is not supported.
     """
-    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
+    safe_serialization = kwargs.get("safe_serialization", True)
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
 
@@ -248,6 +274,11 @@ def save_quantized_as_static_fp(
     static_kv_granularity = serialization_dict.get("static_kv_granularity", "tensor")
     use_fp8_attention = _use_fp8_attention(serialization_dict.get("static_attention_dtype", None))
     use_fp8_kv = _use_fp8_kv(serialization_dict.get("static_kv_dtype", None))
+    if _use_nvfp4_kv(serialization_dict.get("static_kv_dtype", None)):
+        raise ValueError(
+            "NVFP4 KV cache export is only supported on the NVFP4 compressed-tensors export path "
+            "(NVFP4 weight scheme + format 'llm_compressor'); this path (FP8_STATIC) supports FP8 KV cache only."
+        )
     attention_config = _get_attention_config(model, static_attention_granularity) if use_fp8_attention else None
     kv_granularity = static_attention_granularity if use_fp8_attention else static_kv_granularity
     quantization_config = QuantizationConfig(
@@ -264,6 +295,9 @@ def save_quantized_as_static_fp(
         quantization_config["config_groups"]["group_0"]["weights"]["group_size"] = group_size
     if attention_config is not None:
         quantization_config["attention_input_activations"] = attention_config
+    quantization_config = finalize_llmcompressor_config_names(
+        quantization_config, model, [], [n for n in layer_config if check_to_quantized(layer_config[n])]
+    )
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
 

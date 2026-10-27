@@ -14,8 +14,8 @@
 import logging
 import math
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, fields
-from typing import Iterable, Optional, Union
 
 import torch
 from accelerate import dispatch_model, infer_auto_device_map
@@ -44,7 +44,7 @@ def apply_quant_scheme(
     model: torch.nn.Module,
     quant_layer_names: Iterable[str],
     fixed_layer_scheme: dict[str, dict],
-    scheme: Union[str, dict],  # TODO add scale_dtype
+    scheme: str | dict,  # TODO add scale_dtype
 ) -> None:
     """Apply a quantization scheme to each quantized layer.
 
@@ -91,7 +91,7 @@ def compute_avg_bits_for_scheme(
     model: torch.nn.Module,
     quant_layer_names: Iterable[str],
     fixed_layer_scheme: dict[str, dict],
-    scheme: Union[str, dict, None] = None,
+    scheme: str | dict | None = None,
     ignore_scale_zp_bits: bool = False,
     clean_scheme: bool = True,
 ) -> tuple[float, float]:
@@ -341,7 +341,7 @@ def parse_shared_layers(model: torch.nn.Module, shared_patterns: Iterable[Iterab
     return matched_groups
 
 
-def _expert_key_from_layer_name(layer_name: str) -> Optional[str]:
+def _expert_key_from_layer_name(layer_name: str) -> str | None:
     """Map one MoE-related linear layer to a unique expert key.
 
     Gate/up/down projections belonging to the same expert should map to one key.
@@ -489,7 +489,7 @@ def _fill_inactive_expert_scores(scores_dict: dict[str, list[float]], block_name
         if not active_expert_avg_losses:
             continue
         fill_value = sum(active_expert_avg_losses) / len(active_expert_avg_losses)
-        for _, expert_stats in expert_stats_map.items():
+        for expert_stats in expert_stats_map.values():
             if expert_stats["has_active"]:
                 continue
             for layer_name in expert_stats["layers"]:
@@ -500,8 +500,8 @@ def _log_score_summary_by_block_and_nonblock(
     scores_dict: dict[str, list[float]],
     block_names: list[str],
     model=None,
-    scheme_tag: Optional[str] = None,
-    summary_stage: Optional[str] = None,
+    scheme_tag: str | None = None,
+    summary_stage: str | None = None,
 ):
     """Log a per-block (and non-block) breakdown of ``scores_dict`` losses at debug level."""
     if not scores_dict:

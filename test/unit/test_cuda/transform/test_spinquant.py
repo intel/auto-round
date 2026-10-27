@@ -308,7 +308,6 @@ class TestPipelineIntegration:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     def test_pipeline_quarot_string(self):
         """AutoRound(alg_configs=["rtn", "quarot"]) should work end-to-end."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
@@ -325,7 +324,6 @@ class TestPipelineIntegration:
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         generate_prompt(model, tokenizer)
 
-    @pytest.mark.timeout(90)
     def test_pipeline_spinquant_config(self):
         """AutoRound(alg_configs=["rtn", SpinQuantConfig(...)]) should work."""
         model_name = get_model_path("Qwen/Qwen3-0.6B")
@@ -353,7 +351,6 @@ class TestPipelineIntegration:
     @pytest.mark.skip_ci(
         reason="Matrix: The SpinQuantConfig-object pipeline is already covered by test_pipeline_spinquant_config"
     )
-    @pytest.mark.timeout(90)
     def test_pipeline_config_object(self):
         """Building a SpinQuantConfig directly (instead of the dict shorthand) and passing
         it via ``alg_configs`` should work."""

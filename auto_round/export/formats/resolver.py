@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from types import SimpleNamespace
-from typing import Iterable
 
 import torch
 
@@ -94,15 +94,15 @@ def _precise_gguf_name(formats: list[OutputFormat]) -> str | None:
 def resolve_formats(
     scheme: ResolvedScheme,
     *,
-    format: str = None,
-    layer_config: dict = None,
+    format: str | None = None,
+    layer_config: dict | None = None,
     scale_dtype=None,
     quant_block_list=None,
     mllm: bool = False,
     iters: int = 0,
     enable_alg_ext: bool = False,
     quant_nontext_module: bool = False,
-    platform: str = None,
+    platform: str | None = None,
     is_auto_scheme: bool = False,
     model=None,
 ) -> FormatResolution:

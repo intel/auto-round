@@ -15,7 +15,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Union
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -132,11 +133,11 @@ class SVDQuantNunchakuFormat(OutputFormat):
         self,
         output_dir: str,
         model: torch.nn.Module = None,
-        tokenizer: Callable = None,
-        layer_config: dict = None,
+        tokenizer: Callable | None = None,
+        layer_config: dict | None = None,
         inplace: bool = True,
-        device: Union[str, torch.device] = "cpu",
-        serialization_dict: dict = None,
+        device: str | torch.device = "cpu",
+        serialization_dict: dict | None = None,
         *,
         config=None,
         residual_provider=None,

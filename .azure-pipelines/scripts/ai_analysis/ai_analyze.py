@@ -155,7 +155,7 @@ def _call_copilot_cli(prompt: str, timeout: int, model: str, reasoning_effort: s
     if ai_token:
         env.setdefault("GITHUB_TOKEN", ai_token)
         env.setdefault("GH_TOKEN", ai_token)
-    started = datetime.datetime.now(datetime.timezone.utc)
+    started = datetime.datetime.now(datetime.UTC)
     returncode = None
     stderr = ""
     stdout = ""
@@ -169,7 +169,7 @@ def _call_copilot_cli(prompt: str, timeout: int, model: str, reasoning_effort: s
     except (OSError, subprocess.TimeoutExpired) as e:
         print(f"Warning: Copilot CLI call failed: {e}", file=sys.stderr)
         stderr = str(e)
-    ended = datetime.datetime.now(datetime.timezone.utc)
+    ended = datetime.datetime.now(datetime.UTC)
     parsed = _parse_copilot_json(stdout)
     raw = parsed["answer"]
     _append_trace(

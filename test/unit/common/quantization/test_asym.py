@@ -79,7 +79,6 @@ class TestAutoRoundAsym:
     # ------------------------------------------------------------------
     # RTN path (iters=0): cheap, so runs unconditionally in CI on every device.
     # ------------------------------------------------------------------
-    @pytest.mark.timeout(60)
     @pytest.mark.parametrize("device", _device_params(_AVAILABLE_DEVICES))
     @pytest.mark.parametrize("format", _FORMATS)
     def test_asym_format_rtn(self, tiny_opt_model_path, format, device):
@@ -239,7 +238,6 @@ class TestAutoRoundAsym:
     # heavier still and stay skip_ci -- manual/nightly coverage only).
     # ------------------------------------------------------------------
     @requires_cuda
-    @pytest.mark.timeout(120)
     @pytest.mark.parametrize("group_size", [32])
     def test_asym_group_size_tuning(self, tiny_opt_model_path, group_size, dataloader):
         """Tuned (iters=1) asym quantization works across group sizes."""

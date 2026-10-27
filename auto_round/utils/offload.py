@@ -51,12 +51,13 @@ import sys
 import tempfile
 from collections import defaultdict
 from functools import partial
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 
 from auto_round.logger import logger
 from auto_round.utils.model import get_module
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 
 __all__ = ["OffloadManager"]
 
@@ -189,7 +190,7 @@ def _clear_module_weights(
 # =====================================================================
 
 
-def _resolve_model_dir(model_dir: str, revision: Optional[str] = None) -> str:
+def _resolve_model_dir(model_dir: str, revision: str | None = None) -> str:
     """Resolve a model name/path to a local directory containing weight files."""
     if os.path.isdir(model_dir):
         return model_dir
@@ -226,7 +227,9 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
             index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(index_path):
         with open(index_path) as f:
-            return json.load(f)["weight_map"]
+            # Shard names are declared by the checkpoint itself; validate them
+            # before any caller joins one onto model_dir.
+            return validate_weight_map(json.load(f)["weight_map"], model_dir, index_path=index_path)
 
     single_path = os.path.join(model_dir, "model.safetensors")
     if os.path.exists(single_path):
@@ -242,11 +245,12 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
             bin_index_path = os.path.join(model_dir, custom_indexes[0])
     if os.path.exists(bin_index_path):
         with open(bin_index_path) as f:
-            return json.load(f)["weight_map"]
+            return validate_weight_map(json.load(f)["weight_map"], model_dir, index_path=bin_index_path)
 
     single_bin = os.path.join(model_dir, "pytorch_model.bin")
     if os.path.exists(single_bin):
-        state_dict = torch.load(single_bin, map_location="cpu")
+        # No unrestricted fallback: this pickle comes from an untrusted artifact.
+        state_dict = torch.load(single_bin, map_location="cpu", weights_only=True)
         return {k: "pytorch_model.bin" for k in state_dict.keys()}
 
     raise FileNotFoundError(
@@ -301,7 +305,7 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
 
     state_dict = {}
     for shard_file, tensor_names in shard_to_tensors.items():
-        shard_path = os.path.join(model_dir, shard_file)
+        shard_path = str(resolve_within_directory(model_dir, shard_file))
         if shard_file.endswith(".safetensors"):
             from safetensors import safe_open
 
@@ -309,7 +313,7 @@ def load_block_from_model_files(model_dir: str, block_name: str, block: torch.nn
                 for name in tensor_names:
                     state_dict[name[len(prefix) :]] = f.get_tensor(name)
         else:
-            full_state = torch.load(shard_path, map_location="cpu")
+            full_state = torch.load(shard_path, map_location="cpu", weights_only=True)
             for name in tensor_names:
                 if name in full_state:
                     state_dict[name[len(prefix) :]] = full_state[name]
@@ -367,11 +371,11 @@ class OffloadManager:
         self,
         enabled: bool = True,
         mode: str = "offload",
-        model_dir: Optional[str] = None,
+        model_dir: str | None = None,
         offload_dir_prefix: str = "ar_offload",
         cache_numel: bool = False,
         retain_saved_entries: bool = False,
-        model_revision: Optional[str] = None,
+        model_revision: str | None = None,
     ):
         from auto_round import envs
 
@@ -387,7 +391,7 @@ class OffloadManager:
         self.retain_saved_entries = retain_saved_entries
 
         # Disk state (offload mode)
-        self._tempdir: Optional[str] = None
+        self._tempdir: str | None = None
         self._saved: dict[str, dict] = {}  # name -> {"save_path": str}
 
         # Cached weight map for clean mode (avoids repeated disk I/O)
@@ -395,12 +399,12 @@ class OffloadManager:
 
         # Hook state (for add_offload_hooks/remove_offload_hooks transparent offloading)
         self._hook_handles: list = []
-        self._model_ref: Optional[torch.nn.Module] = None
+        self._model_ref: torch.nn.Module | None = None
         self._module_names: list[str] = []
-        self._last_loaded: Optional[str] = None
+        self._last_loaded: str | None = None
 
         # Ensure-style state (for wrapping loops)
-        self._current_loaded: Optional[str] = None
+        self._current_loaded: str | None = None
 
     # ------------------------------------------------------------------
     # Context manager
@@ -422,7 +426,7 @@ class OffloadManager:
     def __call__(
         self,
         model: torch.nn.Module,
-        names: Union[str, list[str], list[list[str]]],
+        names: str | list[str] | list[list[str]],
         *,
         skip_if_saved: bool = False,
         overwrite: bool = False,
@@ -446,7 +450,7 @@ class OffloadManager:
     def offload(
         self,
         model: torch.nn.Module,
-        names: Union[str, list[str], list[list[str]]],
+        names: str | list[str] | list[list[str]],
         *,
         skip_if_saved: bool = False,
         overwrite: bool = False,
@@ -504,7 +508,7 @@ class OffloadManager:
             logger.info(f"offload done, freed {total_gb:.2f} GB")
         return total_gb
 
-    def _check_disk_space(self, model: torch.nn.Module, names: Union[str, list[str], list[list[str]]]) -> bool:
+    def _check_disk_space(self, model: torch.nn.Module, names: str | list[str] | list[list[str]]) -> bool:
         """Check whether there is enough disk space to offload the given modules.
 
         Args:
@@ -572,7 +576,7 @@ class OffloadManager:
             self._save_to_disk(name, module)
         self._clear(module, block_name=name)
 
-    def reload(self, model: torch.nn.Module, names: Union[str, list[str], None] = None) -> None:
+    def reload(self, model: torch.nn.Module, names: str | list[str] | None = None) -> None:
         """Reload previously offloaded module(s).
 
         For ``"offload"`` mode: loads from the temp directory, then
@@ -688,7 +692,7 @@ class OffloadManager:
         clear_memory()
         logger.info("module weights cleared")
 
-    def remove_offload_hooks(self, model: torch.nn.Module, names: Optional[list[str]] = None) -> None:
+    def remove_offload_hooks(self, model: torch.nn.Module, names: list[str] | None = None) -> None:
         """Remove hooks and reload all managed modules.
 
         Args:
@@ -1003,7 +1007,7 @@ class OffloadManager:
         return False
 
     @staticmethod
-    def _flatten_names(names: Union[list[str], list[list[str]]]) -> list[str]:
+    def _flatten_names(names: list[str] | list[list[str]]) -> list[str]:
         """Flatten a potentially nested list of names."""
         flat = []
         for item in names:

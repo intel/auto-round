@@ -15,9 +15,9 @@
 import json
 import os
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
-from typing import Dict, Optional
 
 import pandas as pd
 import torch
@@ -26,7 +26,7 @@ from transformers import set_seed
 
 from auto_round.utils import download_audiocaps_csv, logger
 
-DIFFUSION_DATASET: Dict[str, Dataset] = {}
+DIFFUSION_DATASET: dict[str, Dataset] = {}
 
 
 COCO_URL = {
@@ -35,6 +35,12 @@ COCO_URL = {
         "coco2014/captions/captions_source.tsv"
     )
 }
+
+OPENS2V_DATASET_REVISION = "09a03003234151c14c7e0989e5a0c125039c9e0d"
+OPENS2V_ASSET_BASE_URL = (
+    f"https://huggingface.co/datasets/changwangss/opens2v-calibration/resolve/{OPENS2V_DATASET_REVISION}/data"
+)
+OPENS2V_MANIFEST_URL = f"{OPENS2V_ASSET_BASE_URL}/opens2v_calibration.tsv"
 
 COCO_ANNOTATIONS_URL = "https://s3.amazonaws.com/images.cocodataset.org/annotations/annotations_trainval2014.zip"
 COCO_CAPTIONS_MEMBER = "annotations/captions_val2014.json"
@@ -49,6 +55,16 @@ def _get_coco_cache_dir() -> Path:
         Path(_envs.AUTO_ROUND_CACHE).expanduser() if _envs.AUTO_ROUND_CACHE else Path.home() / ".cache" / "auto_round"
     )
     return cache_root / "datasets" / "coco2014"
+
+
+def _get_opens2v_cache_dir() -> Path:
+    """Return the persistent cache directory for OpenS2V calibration data."""
+    from auto_round import envs as _envs
+
+    cache_root = (
+        Path(_envs.AUTO_ROUND_CACHE).expanduser() if _envs.AUTO_ROUND_CACHE else Path.home() / ".cache" / "auto_round"
+    )
+    return cache_root / "datasets" / "opens2v"
 
 
 def _download_to_cache(url: str, destination: Path, timeout: int) -> None:
@@ -152,6 +168,38 @@ def _load_coco_dataframe(dataset: str, nsamples: int, image_required: bool) -> p
     return selected
 
 
+def _load_opens2v_dataframe(nsamples: int, image_required: bool) -> pd.DataFrame:
+    """Load the compact OpenS2V manifest and cache reference images only for I2V."""
+    cache_dir = _get_opens2v_cache_dir()
+    manifest_path = cache_dir / "opens2v_calibration.tsv"
+    _download_to_cache(OPENS2V_MANIFEST_URL, manifest_path, timeout=30)
+    dataframe = pd.read_csv(manifest_path, sep="\t")
+
+    required_cols = {"id", "caption", "image"}
+    if not required_cols.issubset(dataframe.columns):
+        raise ValueError(f"OpenS2V calibration requires columns {sorted(required_cols)}.")
+
+    selected = dataframe.iloc[:nsamples].copy() if nsamples > 0 else dataframe.copy()
+    if not image_required:
+        return selected.drop(columns="image")
+
+    image_paths = []
+    logger.info(f"Caching {len(selected)} OpenS2V reference images for I2V calibration in {cache_dir / 'images'}")
+    downloads = []
+    for image_reference in selected["image"]:
+        image_reference = str(image_reference).lstrip("/")
+        image_path = cache_dir / "images" / Path(image_reference).name
+        image_url = f"{OPENS2V_ASSET_BASE_URL}/{image_reference}"
+        downloads.append((image_url, image_path))
+        image_paths.append(str(image_path))
+    with ThreadPoolExecutor(max_workers=min(8, len(downloads) or 1)) as executor:
+        futures = [executor.submit(_download_to_cache, url, path, 60) for url, path in downloads]
+        for future in futures:
+            future.result()
+    selected["image"] = image_paths
+    return selected
+
+
 def register_dataset(name_list):
     """Class decorator to register a DATASET subclass to the registry.
 
@@ -179,7 +227,7 @@ class Text2ImgDataset(Dataset):
         self,
         dataset_path: str,
         nsamples: int = 128,
-        dataframe: Optional[pd.DataFrame] = None,
+        dataframe: pd.DataFrame | None = None,
     ) -> None:
         super().__init__()
         self.captions = []
@@ -223,7 +271,7 @@ class Text2ImgDataset(Dataset):
     def __len__(self):
         return len(self.captions)
 
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, i) -> dict[str, torch.Tensor]:
         if self.image_paths is not None:
             return self.caption_ids[i], self.captions[i], self.image_paths[i]
         return self.caption_ids[i], self.captions[i]
@@ -263,11 +311,11 @@ class AudioCapsDataset(Dataset):
     def __len__(self):
         return len(self.captions)
 
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, i) -> dict[str, torch.Tensor]:
         return self.caption_ids[i], self.captions[i]
 
 
-def get_diffusion_dataloader(dataset="coco2014", bs=1, seed=42, nsamples=128, image_required=False):
+def get_diffusion_dataloader(dataset="opens2v", bs=1, seed=42, nsamples=128, image_required=False):
     """Generate a DataLoader for calibration using specified parameters.
     Args:
         Dataset_name (str): The name or path of the dataset.
@@ -281,6 +329,11 @@ def get_diffusion_dataloader(dataset="coco2014", bs=1, seed=42, nsamples=128, im
         dataframe = _load_coco_dataframe(dataset, nsamples, image_required)
         dataset = DIFFUSION_DATASET["local"](dataset, nsamples, dataframe=dataframe)
 
+    if dataset == "opens2v":
+        logger.info("use dataset opens2v, loading calibration data...")
+        dataframe = _load_opens2v_dataframe(nsamples, image_required)
+        dataset = DIFFUSION_DATASET["local"]("opens2v", nsamples, dataframe=dataframe)
+
     if dataset in ("audiocaps",):
         dataset = download_audiocaps_csv()
 
@@ -292,7 +345,7 @@ def get_diffusion_dataloader(dataset="coco2014", bs=1, seed=42, nsamples=128, im
         else:
             dataset = DIFFUSION_DATASET["local"](dataset, nsamples)
     else:
-        raise ValueError("Only support coco2014/audiocaps dataset or loading local tsv/csv file now.")
+        raise ValueError("Only support opens2v/coco2014/audiocaps dataset or loading local tsv/csv file now.")
 
     if (
         image_required

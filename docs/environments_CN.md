@@ -50,6 +50,17 @@ export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 export AR_USE_MODELSCOPE=true
 ```
 
+### AR_QUANTIZE_BAGEL_MOE_GEN
+
+- **描述**：启用 BAGEL `*_moe_gen` 图像生成专家层的量化。AutoRound 默认将这些模块保留为 BF16，因为实际测试发现量化它们可能降低图像生成质量。BAGEL 的普通 transformer attention 和 MLP 层默认仍会量化。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"` 或 `"yes"`（不区分大小写）表示启用；其他值会让 `*_moe_gen` 保持 BF16
+- **用途**：仅在研究 checkpoint 大小与图像质量之间的取舍时启用
+
+```bash
+export AR_QUANTIZE_BAGEL_MOE_GEN=1
+```
+
 ### AR_WORK_SPACE
 - **描述**：设置 AutoRound 操作的工作目录
 - **默认值**：`"ar_work_space"`
@@ -119,11 +130,41 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 export AR_SEARCH_SCALE_RATIO=0.75
 ```
 
+### AR_NEUQI_COARSE
+- **描述**：NeUQI 网格搜索（`--enable_neuqi`，arXiv 2505.17595）粗阶段的候选数量。粗阶段扫描较宽的对数网格，细阶段在胜者附近细化（`AR_NEUQI_FINE`）。同时作用于非对称联合 (scale, zero-point) 搜索与对称两阶段 scale 搜索。
+- **默认值**：加速后端（Triton/torch.compile）为 `256`，eager 扫描为 `64` —— eager 路径每 group 需评估约 coarse x fine 个候选，因此未显式指定时使用更窄的默认网格（两种网格的实测质量持平）
+- **取值**：正整数
+- **用法**：调低可加快搜索，代价是网格覆盖范围变小。
+
+```bash
+export AR_NEUQI_COARSE=128
+```
+
+### AR_NEUQI_FINE
+- **描述**：NeUQI 网格搜索细阶段的候选数量，在粗阶段胜者附近细化。参见 `AR_NEUQI_COARSE`。
+- **默认值**：加速后端（Triton/torch.compile）为 `64`，eager 扫描为 `32`
+- **取值**：正整数
+- **用法**：调低可加快搜索，代价是最终分辨率下降。
+
+```bash
+export AR_NEUQI_FINE=32
+```
+
+### AR_NEUQI_BACKEND
+- **描述**：NeUQI 候选扫描的后端覆盖。`auto` 选择最快的可用后端（扩展 Triton 内核 → torch.compile 融合 → eager），并在内核首次失败时永久回退。`eager`/`compile`/`triton` 强制指定后端，用于调试或基准测试。
+- **默认值**：`auto`
+- **取值**：`auto`、`eager`、`compile`、`triton`
+- **用法**：驱动/硬件兼容性逃生口；推荐使用 `auto`。
+
+```bash
+export AR_NEUQI_BACKEND=eager
+```
+
 ### AR_DYNAMO_CACHE_SIZE_LIMIT
-- **描述**：在开启 `torch.compile`（除 Windows 外默认开启）时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可保留静态 shape 编译（性能最佳），仅增加缓存条目数。
-- **默认值**：`16`
+- **描述**：在开启 `torch.compile`（除 Windows 外默认开启）时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可保留静态 shape 编译（性能最佳），仅增加缓存条目数。多设备运行时目标值会乘以参与设备数（逐层 shape 与逐设备 guard 钉住相乘地增加特化条目）；单设备运行直接使用该值。
+- **默认值**：`16`（多设备运行时按参与设备数相乘）
 - **有效值**：正整数
-- **用途**：当模型单个 block 内 linear 权重 shape 种类超过 16 时（较少见）可调大。
+- **用途**：当模型单个 block 内、每个参与设备的 linear 权重 shape 种类超过 16 时（较少见）可调大。
 
 ```bash
 export AR_DYNAMO_CACHE_SIZE_LIMIT=32
@@ -239,6 +280,56 @@ export AR_DISK_STREAM_MODEL=1
 
 ```bash
 AR_ALLOW_W8_ASYM=1 python -m auto_round --model ... --scheme W8A16 --asym --format auto_round
+```
+
+### AR_DISABLE_BATCHED_SEARCH
+- **描述**：禁用批量量化搜索机制：SignRoundV2 的封装期 init-scale 搜索（iters>0）与 iters=0 的 optimized-RTN 搜索都将完全串行（GGUF DQ scale 搜索始终逐模块内联执行）、逐模块地在权重所在设备上执行。批量化将设备/形状/配置相同的模块堆叠为一次调用，逐模块结果比特级一致；设置该变量可回退到串行循环（例如用于调试，或二分定位疑似与批量化相关的差异）。堆叠也会改变瞬态显存占用（见 `AR_SEARCH_BATCH_GB`）。
+- **默认值**：`0`（启用批量化）
+- **有效取值**：`0` / `1`
+- **用法**：批量/并行搜索机制的总开关。
+
+```bash
+AR_DISABLE_BATCHED_SEARCH=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_PERF_COUNTERS
+- **描述**：为每个 block 输出一行 `[perf] tune phases` INFO 日志，包含各调优阶段（wrap / prepare / loop / tail）的耗时，以及循环内部的采样器抽取、最优参数快照、梯度同步 + 优化器步进、剩余时间和串行 forward+loss+backward 时间。用于大型多设备量化运行的性能归因；开销可忽略。
+- **默认值**：`0`（关闭）
+- **有效取值**：`0` / `1`
+- **用法**：在基准测试运行中设置，用于将 block 时间归因到封装搜索或调优循环。
+
+```bash
+AR_PERF_COUNTERS=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_SEARCH_BATCH_GB
+- **描述**：显式覆盖批量量化搜索的堆叠批次大小，单位为每次调用堆叠 fp32 权重的 GiB 数。适用于所有批量 lane：iters=0 的 optimized-RTN 搜索、iters>0 的封装期搜索以及 NeUQI 网格锚定。未设置时批次大小按容量驱动：每个批次的大小使搜索的瞬态占用（批次的 fp32 拷贝链，NeUQI 场景另加封顶的内部临时量）不超过探测到的空闲显存的一半，且每个执行设备在调用时复查余量（过大的批次会减半而不是出错）。仅当需要把批次压到容量规划以下时才设置。
+- **默认值**：未设置（容量驱动）
+- **有效取值**：正浮点数（GiB）
+- **用法**：在显存紧张的多设备运行中缩小批次。
+
+```bash
+AR_SEARCH_BATCH_GB=0.5 python -m auto_round --model ... --device_map 0,1
+```
+
+### AR_MOE_EXPERTS_IMPL
+- **描述**：MoE 调优阶段（模型已按专家拆分）使用的前向实现。`auto`（默认）会在第一个 MoE 块之前预测 grouped-GEMM 调优路径的每卡显存占用，当 grouped 调优放不下时（qdq 堆叠保留 + 调优状态与各卡剩余显存比较）整个运行改用 `linear_loop`；决策与各卡数值都会记录到日志。显式取值不会被 `auto` 覆盖。
+- **默认值**：`auto`
+- **可选值**：`auto`、`linear_grouped`、`linear_grouped_sliced`、`linear_loop`
+- **用法**：强制指定调优时的专家前向实现，或保持 `auto` 由显存模型自动选择。
+
+```bash
+AR_MOE_EXPERTS_IMPL=linear_loop python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_DISABLE_CROSS_DEVICE_SEARCH
+- **描述**：将批量搜索批次限制在权重所在设备上。默认情况下，两条搜索 lane 会集中规划批次：每个批次先落在权重所在设备，再从过载设备向空闲的可用设备再平衡，使搜索尽量铺满所有有余量的可见设备（此类搜索只读取自身模块的权重与逐模块统计量，从不读取校准激活；每个执行设备由单个工作线程独占）。非 CUDA 设备族的批次始终留在权重所在设备。以下情况设为 `1`：机架 GPU 与其他任务共享（空闲显存探针无法看到其他任务的占用）、调试跨设备行为、或 PCIe 传输开销超过搜索收益的主机。当没有设备放得下时，批次留在权重所在设备并依赖逐批次的 OOM 回退。
+- **默认值**：`0`（启用多 GPU 搜索，探针门控）
+- **有效取值**：`0` / `1`
+- **用法**：将搜索流量固定在权重所在设备。
+
+```bash
+AR_DISABLE_CROSS_DEVICE_SEARCH=1 python -m auto_round --model ... --iters 0
 ```
 
 ### AR_RESUME_DIR

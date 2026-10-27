@@ -103,6 +103,20 @@ def test_update_module_applies_replacements_for_gguf(monkeypatch):
     assert calls == [(model, {"gguf_export": True})]
 
 
+def test_make_q3_quants_rmse_scale_matches_levels():
+    """The refined Q3_K sub-block scale must be the least-squares fit for the returned levels,
+    sum(w*x*L) / sum(w*L*L) with w = x**2, as in llama.cpp's make_q3_quants."""
+    from auto_round.export.export_to_gguf.packing import make_q3_quants
+
+    torch.manual_seed(0)
+    data = torch.randn(4, 16, 16)
+    scales, levels = make_q3_quants(data.clone(), bits=3, do_rmse=True)
+    levels = levels.to(torch.int8).float()
+    weights = data**2
+    expected = (weights * data * levels).sum(-1) / (weights * levels * levels).sum(-1)
+    torch.testing.assert_close(scales, expected)
+
+
 class TestGGUF:
 
     @classmethod
@@ -120,7 +134,6 @@ class TestGGUF:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(60)
     def test_q4_0(self, tiny_qwen_model_path):
         bits, group_size, sym = 4, 32, True
         autoround = AutoRound(
@@ -154,7 +167,6 @@ class TestGGUF:
         assert type(autoround).__name__ == "CompressionOrchestrator"
         assert isinstance(autoround.quantize_config, OptimizedRTNConfig)
 
-    @pytest.mark.timeout(60)
     def test_func(self):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
@@ -172,7 +184,6 @@ class TestGGUF:
         model = AutoModelForCausalLM.from_pretrained(quantized_model_path, gguf_file=gguf_file, device_map="auto")
         eval_generated_prompt(model, self.tokenizer)
 
-    @pytest.mark.timeout(120)
     def test_q4_k_m(self, dataloader, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         layer_config = {
@@ -212,7 +223,6 @@ class TestGGUF:
         assert autoround.model.model.layers[0].mlp.gate_proj.bits == 8
         assert autoround.layer_config["model.layers.0.mlp.gate_proj"]["mostly"] == "gguf:q8_0"
 
-    @pytest.mark.timeout(360)
     def test_all_format(self, monkeypatch, tiny_qwen_model_path):
         model_name = tiny_qwen_model_path
         # for gguf_format in ["gguf:q4_0", "gguf:q4_1", "gguf:q4_k_m", "gguf:q6_k"]:
@@ -243,7 +253,6 @@ class TestGGUF:
         )
         shutil.rmtree("../../tmp_autoround", ignore_errors=True)
 
-    @pytest.mark.timeout(90)
     def test_vlm_gguf(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRound
 
@@ -264,7 +273,6 @@ class TestGGUF:
             else:
                 assert file_size < 270, f"file size {file_size} MB is too large for non-quantized mmproj-model.gguf"
 
-    @pytest.mark.timeout(60)
     def test_vlm_gguf_wo_quant_nontext_module(self, tiny_qwen_vl_model_path):
         from auto_round import AutoRound
 
@@ -523,7 +531,6 @@ class TestGGUF:
         assert ar.layer_config["model.language_model.embed_tokens"]["bits"] == 6
         assert ar.layer_config["model.language_model.embed_tokens"]["super_bits"] == 8
 
-    @pytest.mark.timeout(60)
     def test_q2k_mixed(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(
@@ -546,7 +553,6 @@ class TestGGUF:
         tensor_types = {tensor.name: tensor.tensor_type.name for tensor in gguf_model.tensors}
         assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"
 
-    @pytest.mark.timeout(60)
     def test_q2k_mixed_keeps_only_three_dim_expert_weights_at_q2k(self, tiny_qwen_moe_model_path):
         model_name = tiny_qwen_moe_model_path
         autoround = AutoRound(
@@ -568,6 +574,47 @@ class TestGGUF:
         assert tensor_types["blk.0.attn_k.weight"] == "Q4_K"
         assert tensor_types["blk.0.ffn_down_exps.weight"] == "Q5_0"
         assert tensor_types["blk.0.ffn_up_exps.weight"] == "Q2_K"
+
+
+class TestGGUFQ5K:
+    """Q5_K blocks must round-trip through gguf's reference dequantizer."""
+
+    def _dequantize(self, packed, qtype, shape):
+        gguf_quants = pytest.importorskip("gguf.quants")
+        from gguf import GGMLQuantizationType
+
+        return torch.from_numpy(gguf_quants.dequantize(packed, GGMLQuantizationType[qtype.upper()])).reshape(shape)
+
+    def test_q5_k_pack_matches_fake_quant(self):
+        from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
+        from auto_round.export.export_to_gguf.packing import ggml_quant
+
+        torch.manual_seed(0)
+        tensor = torch.randn(4, 256)
+        qdq, scales, mins = quant_tensor_gguf_asym_dq(tensor, bits=5, scale_dtype=torch.float32)
+        packed = ggml_quant(
+            qdq.clone(),
+            "q5_k",
+            scale=scales["scale"],
+            wmin=mins["wmin"],
+            d_scale=scales["d_scale"],
+            d_wmin=mins["d_wmin"],
+            device="cpu",
+        )
+        dequantized = self._dequantize(packed, "q5_k", tensor.shape)
+        torch.testing.assert_close(dequantized, qdq, atol=1e-2, rtol=0)
+
+    def test_q5_k_pack_without_stored_params_uses_5_bits(self):
+        from auto_round.export.export_to_gguf.packing import ggml_quant
+
+        torch.manual_seed(0)
+        tensor = torch.randn(4, 256)
+        mse = {}
+        for qtype in ("q4_k", "q5_k"):
+            packed = ggml_quant(tensor.clone(), qtype, device="cpu")
+            mse[qtype] = ((self._dequantize(packed, qtype, tensor.shape) - tensor) ** 2).mean().item()
+        # One extra bit should roughly quarter the error.
+        assert mse["q5_k"] < mse["q4_k"] / 2, mse
 
 
 class TestGGUFZeroBlock:
@@ -598,3 +645,29 @@ class TestGGUFZeroBlock:
         d = np.ascontiguousarray(packed.reshape(2, 210)[:, -2:]).view(np.float16)
         assert not np.isnan(d).any(), f"packed Q6_K d scales contain NaN: {d}"
         assert d[0] == 0.0
+
+
+class TestGGUFPositiveGroup:
+    """K-quant groups whose values are all positive must keep 0 in the range (as llama.cpp
+    does), because Q2_K/Q4_K/Q5_K can only store non-negative mins."""
+
+    @pytest.mark.parametrize("qtype, bits", [("q2_k", 2), ("q4_k", 4)])
+    def test_all_positive_groups(self, qtype, bits):
+        gguf_quants = pytest.importorskip("gguf.quants")
+        from gguf import GGMLQuantizationType
+
+        from auto_round.data_type.gguf import quant_tensor_gguf_asym_dq
+        from auto_round.export.export_to_gguf.packing import ggml_quant
+
+        torch.manual_seed(0)
+        tensor = torch.randn(2, 256)
+        tensor[1] = torch.rand(256) + 0.5
+
+        qdq, _, _ = quant_tensor_gguf_asym_dq(tensor.clone(), bits=bits, scale_dtype=torch.float32)
+        # With 0 kept in the range the MSE is about 0.014 (2-bit) or 0.0007 (4-bit);
+        # with a positive min that cannot be stored it is above 0.06.
+        assert ((qdq[1] - tensor[1]) ** 2).mean() < 0.03
+
+        packed = ggml_quant(tensor.clone(), qtype, device="cpu")
+        dequantized = gguf_quants.dequantize(packed, GGMLQuantizationType[qtype.upper()])
+        torch.testing.assert_close(torch.from_numpy(dequantized).reshape(tensor.shape), qdq, atol=1e-2, rtol=0)

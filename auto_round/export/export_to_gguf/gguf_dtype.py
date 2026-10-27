@@ -92,6 +92,28 @@ def _use_more_bits(i_layer: int, n_layer: int) -> bool:
     return i_layer < n_layer // 8 or i_layer >= 7 * n_layer // 8 or (i_layer - n_layer // 8) % 3 == 2
 
 
+# Number of transformer blocks for which llama.cpp sets LLM_TYPE_70B, per architecture
+# (see the per-architecture load_hparams in llama.cpp's src/models/*.cpp).
+# Keyed by gguf.MODEL_ARCH member name, so that importing this module does not import gguf.
+_LLM_TYPE_70B_BLOCK_COUNT = {"LLAMA": 80, "QWEN2": 80, "DECI": 80, "OLMO": 80, "JAIS2": 68}
+
+
+def _is_llm_type_70b(model_arch, hparams: dict) -> bool:
+    """Whether llama.cpp would classify the model as LLM_TYPE_70B."""
+    arch_name = getattr(model_arch, "name", None)
+    n_layer = hparams.get("num_hidden_layers", hparams.get("n_layer", hparams.get("num_layers")))
+    if arch_name not in _LLM_TYPE_70B_BLOCK_COUNT or n_layer is None:
+        return False
+    if int(n_layer) != _LLM_TYPE_70B_BLOCK_COUNT[arch_name]:
+        return False
+    if arch_name == "LLAMA":
+        # 80-layer LLaMA without grouped-query attention is LLM_TYPE_65B
+        n_head = hparams.get("num_attention_heads", hparams.get("n_head"))
+        n_head_kv = hparams.get("num_key_value_heads", hparams.get("n_head_kv", n_head))
+        return n_head != n_head_kv
+    return True
+
+
 def _get_layer_id(name: str, fallback: int) -> int:
     parts = name.split(".")
     if len(parts) > 1 and parts[0] == "blk" and parts[1].isdigit():
@@ -251,6 +273,12 @@ class GGUFDTypeSelector:
             ):
                 qtype = gguf.GGMLQuantizationType.Q6_K
             elif self.ftype == gguf.LlamaFileType.MOSTLY_Q4_K_S and self.i_attention_wv < 4:
+                qtype = gguf.GGMLQuantizationType.Q5_K
+            if _is_llm_type_70b(self.model_arch, self.hparams) and qtype in (
+                gguf.GGMLQuantizationType.Q3_K,
+                gguf.GGMLQuantizationType.Q4_K,
+            ):
+                # llama.cpp: attn_v is 8x smaller than attn_q in these models, so more bits are cheap
                 qtype = gguf.GGMLQuantizationType.Q5_K
             if n_expert == 8:
                 qtype = gguf.GGMLQuantizationType.Q8_0

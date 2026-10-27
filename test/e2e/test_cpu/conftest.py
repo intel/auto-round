@@ -32,7 +32,6 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from typing import List, Optional
 
 import pytest
 
@@ -144,7 +143,7 @@ class ModelCase:
 # Default CPU matrix: real, small (≤1.5B) LLMs that finish quantize+eval
 # in a few minutes on a 32 GiB host.  These are the models most likely
 # to actually run on CPU in production.
-DEFAULT_MODEL_CASES: List[ModelCase] = [
+DEFAULT_MODEL_CASES: list[ModelCase] = [
     # Qwen family - small + well supported across all formats.
     ModelCase("Qwen/Qwen3-0.6B", 4, 128, True, "auto_round", min_ram_gib=8, eval_limit=80),
     ModelCase("Qwen/Qwen3-0.6B", 4, 128, True, "auto_gptq", min_ram_gib=8, eval_limit=80),
@@ -166,7 +165,7 @@ DEFAULT_MODEL_CASES: List[ModelCase] = [
 ]
 
 # Heavier cases - 1.5B-2B; need ~24 GiB free RAM and longer wall-clock.
-LARGE_MODEL_CASES: List[ModelCase] = [
+LARGE_MODEL_CASES: list[ModelCase] = [
     ModelCase("Qwen/Qwen2.5-1.5B-Instruct", 4, 128, True, "auto_round", min_ram_gib=14, eval_limit=80),
     ModelCase("Qwen/Qwen2.5-1.5B-Instruct", 4, 128, True, "auto_gptq", min_ram_gib=14, eval_limit=80),
     ModelCase("Qwen/Qwen2.5-1.5B-Instruct", 4, 128, True, "auto_awq", min_ram_gib=14, eval_limit=80),
@@ -175,7 +174,7 @@ LARGE_MODEL_CASES: List[ModelCase] = [
 ]
 
 
-def _resolve_mem_override(request) -> Optional[int]:
+def _resolve_mem_override(request) -> int | None:
     return request.config.getoption("--e2e-cpu-mem-gib") if request else None
 
 
@@ -185,7 +184,7 @@ def _resolve_mem_override(request) -> Optional[int]:
 
 
 @pytest.fixture(scope="session")
-def model_matrix(request) -> List[ModelCase]:
+def model_matrix(request) -> list[ModelCase]:
     preset = os.environ.get("E2E_CPU_PRESET", "default")
     if preset == "default":
         return DEFAULT_MODEL_CASES
@@ -261,9 +260,9 @@ class EvalResult:
     bits: int
     group_size: int
     sym: bool
-    task: Optional[str] = None
-    metric: Optional[str] = None
-    value: Optional[float] = None
+    task: str | None = None
+    metric: str | None = None
+    value: float | None = None
     extra: dict = field(default_factory=dict)
     wall_time_s: float = 0.0
 
@@ -295,8 +294,8 @@ def quantize_and_save(
     iters: int = 200,
     nsamples: int = 128,
     seqlen: int = 2048,
-    extra_kwargs: Optional[dict] = None,
-    scheme: Optional[str] = None,
+    extra_kwargs: dict | None = None,
+    scheme: str | None = None,
 ):
     """Quantize a model with the Python API and save it.
 
@@ -342,7 +341,7 @@ def run_lm_eval(
     limit: int = 100,
     batch_size: str = "auto",
     model_type: str = "hf",
-    extra_model_args: Optional[dict] = None,
+    extra_model_args: dict | None = None,
 ):
     """Run ``lm-eval`` over a saved checkpoint.
 
@@ -366,7 +365,7 @@ def run_lm_eval(
     )
 
 
-def extract_metric(results: dict, task: str, metric: str = "acc,none") -> Optional[float]:
+def extract_metric(results: dict, task: str, metric: str = "acc,none") -> float | None:
     """Pull a single metric out of the lm-eval results dict (may be missing)."""
     try:
         return float(results["results"][task][metric])
@@ -379,7 +378,7 @@ def extract_metric(results: dict, task: str, metric: str = "acc,none") -> Option
 # ---------------------------------------------------------------------------
 
 
-def run_cli(argv: List[str], env: Optional[dict] = None, timeout: int = 60 * 60) -> int:
+def run_cli(argv: list[str], env: dict | None = None, timeout: int = 60 * 60) -> int:
     """Spawn ``python -m auto_round <argv>`` and return the exit code.
 
     Used by the CLI e2e tests; intentionally goes through the actual

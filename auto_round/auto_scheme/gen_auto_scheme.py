@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Optional, Union
+from typing import Union
 
 import torch
 
@@ -27,17 +28,17 @@ from auto_round.utils import get_layer_features, get_module
 
 @dataclass
 class AutoScheme:
-    avg_bits: Union[float, list[float]]
-    options: Union[str, list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str], ...]]
-    shared_layers: Optional[Iterable[Iterable[str]]] = None
+    avg_bits: float | list[float]
+    options: str | list[QuantizationScheme | str] | tuple[QuantizationScheme | str, ...]
+    shared_layers: Iterable[Iterable[str]] | None = None
     method: str = "default"
     ignore_scale_zp_bits: bool = False
-    batch_size: Optional[int] = None
-    nsamples: Optional[int] = None
-    seqlen: Optional[int] = None
-    dataset: Optional[str] = None  # Import Notice no comma for each item
-    device_map: Optional[Union[str, torch.device, int, dict]] = None
-    enable_torch_compile: Optional[bool] = None
+    batch_size: int | None = None
+    nsamples: int | None = None
+    seqlen: int | None = None
+    dataset: str | None = None  # Import Notice no comma for each item
+    device_map: str | torch.device | int | dict | None = None
+    enable_torch_compile: bool | None = None
     low_gpu_mem_usage: bool = True
     low_cpu_mem_usage: bool = True
 
@@ -94,11 +95,11 @@ class GenScheme:
         quant_layer_names: Iterable[str],
         fixed_layer_scheme: dict[str, dict],
         dataset: str = "pile-10k",
-        device_map: Union[str, torch.device, int, dict, None] = None,
+        device_map: str | torch.device | int | dict | None = None,
         tokenizer=None,
         enable_torch_compile=True,
         processor=None,
-        export_format: str = None,
+        export_format: str | None = None,
     ):
         self.auto_scheme = auto_scheme
         # Export-format context for the generation-time 8-bit-asym policy: the

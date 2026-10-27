@@ -16,8 +16,8 @@ import copy
 import inspect
 import json
 import os
+from collections.abc import Callable
 from dataclasses import fields
-from typing import Callable, Union
 
 import torch
 import torch.nn as nn
@@ -84,7 +84,7 @@ def pack_layer(name, model, backend, device=None):
             from auto_round.data_type.nvfp import calculate_gparam
 
             input_global_scale = calculate_gparam(layer.act_max, layer.group_size, "cpu")
-            setattr(layer, "input_global_scale", input_global_scale)
+            layer.input_global_scale = input_global_scale
             delattr(layer, "act_max")
 
     if type(layer) == nn.Linear:
@@ -137,12 +137,12 @@ def pack_layer(name, model, backend, device=None):
 def save_quantized_as_fp(
     output_dir: str,
     model: torch.nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    device: Union[str, torch.device] = "cpu",
+    device: str | torch.device = "cpu",
     backend: str = "autoround:exllamav2",
-    serialization_dict: dict = None,
+    serialization_dict: dict | None = None,
     **kwargs,
 ) -> torch.nn.Module:
     """
@@ -170,7 +170,7 @@ def save_quantized_as_fp(
     data_type = serialization_dict.get("data_type", None)
     act_bits = serialization_dict.get("act_bits", None)
     act_data_type = serialization_dict.get("act_data_type", None)
-    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
+    safe_serialization = kwargs.get("safe_serialization", True)
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
     quantization_config = serialization_dict
@@ -205,7 +205,7 @@ def save_quantized_as_fp(
                     from auto_round.data_type.nvfp import calculate_gparam
 
                     input_global_scale = calculate_gparam(layer.act_max, layer.group_size, model.device)
-                    setattr(layer, "input_global_scale", input_global_scale)
+                    layer.input_global_scale = input_global_scale
                     delattr(layer, "act_max")
         # update fused input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales

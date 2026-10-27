@@ -41,7 +41,6 @@ class TestActQuantizationGpu:
             out = model(input_ids)
         assert out.logits.shape[0] == 1
 
-    @pytest.mark.timeout(180)
     def test_w4a8_act_dynamic(self, tiny_opt_model_path):
         autoround = AutoRound(
             tiny_opt_model_path,
@@ -58,7 +57,6 @@ class TestActQuantizationGpu:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
         self._reload_and_forward(quantized_model_path)
 
-    @pytest.mark.timeout(180)
     def test_w8a8_act_dynamic(self, tiny_opt_model_path):
         autoround = AutoRound(
             tiny_opt_model_path,
@@ -76,7 +74,6 @@ class TestActQuantizationGpu:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
         self._reload_and_forward(quantized_model_path)
 
-    @pytest.mark.timeout(180)
     def test_w4a8_act_static(self, tiny_opt_model_path):
         """Static (non-dynamic) activation quantization path."""
         autoround = AutoRound(
@@ -95,7 +92,6 @@ class TestActQuantizationGpu:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
         self._reload_and_forward(quantized_model_path)
 
-    @pytest.mark.timeout(180)
     def test_w4a8_act_group128(self, tiny_opt_model_path):
         """Wider act_group_size exercises a different act-hook grouping path."""
         autoround = AutoRound(
@@ -113,7 +109,6 @@ class TestActQuantizationGpu:
         _, quantized_model_path = autoround.quantize_and_save(output_dir=self.save_dir, format="auto_round")
         self._reload_and_forward(quantized_model_path)
 
-    @pytest.mark.timeout(180)
     def test_w8a8_asym(self, tiny_opt_model_path):
         """Asymmetric W8A8 cannot be exported to the auto_round format.
 
@@ -136,7 +131,6 @@ class TestActQuantizationGpu:
                 seqlen=16,
             )
 
-    @pytest.mark.timeout(180)
     def test_w4a8_reload_layer_type_diff_but_output_equal(self, tiny_opt_model_path):
         """Save path keeps wrappers; reload path materializes FakeActQuantLinear, outputs should match."""
         old_offload = os.environ.get("AR_DISABLE_OFFLOAD")

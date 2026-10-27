@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import os
-from typing import Optional, Union
 
 import torch
 
@@ -33,7 +32,7 @@ __all__ = ["CuteNVFP4E5M3QuantLinear", "NVFP4E5M3QuantLinear"]
 _CACHE_WEIGHT_ENV = "AR_NVFP4_E5M3_CACHE_HP_WEIGHT"
 
 
-def _resolve_cache_weight(cache_weight: Optional[bool], default: bool) -> bool:
+def _resolve_cache_weight(cache_weight: bool | None, default: bool) -> bool:
     if cache_weight is not None:
         return cache_weight
     value = os.getenv(_CACHE_WEIGHT_ENV)
@@ -53,11 +52,11 @@ class NVFP4E5M3QuantLinear(QModuleBase):
         in_features: int,
         out_features: int,
         config: QuantizationScheme,
-        weight: Optional[torch.Tensor] = None,
-        weight_scale: Optional[torch.Tensor] = None,
-        bias: Union[torch.Tensor, bool, None] = None,
+        weight: torch.Tensor | None = None,
+        weight_scale: torch.Tensor | None = None,
+        bias: torch.Tensor | bool | None = None,
         dtype=torch.bfloat16,
-        cache_weight: Optional[bool] = None,
+        cache_weight: bool | None = None,
     ):
         super().__init__()
         assert dtype in self.SUPPORTED_COMPUTE_DTYPE

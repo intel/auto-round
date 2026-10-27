@@ -29,12 +29,12 @@ from auto_round.export.formats.base import (
 from auto_round.export.formats.resolver import resolve_formats
 
 __all__ = [
-    "BackendDataType",
-    "AutoRoundFormat",
     "AutoAWQFormat",
     "AutoGPTQFormat",
-    "FakeFormat",
+    "AutoRoundFormat",
+    "BackendDataType",
     "FP8Format",
+    "FakeFormat",
     "GGUFFormat",
     "LLMCompressorFormat",
     "MLXFormat",

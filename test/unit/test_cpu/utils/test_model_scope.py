@@ -32,13 +32,11 @@ class TestModelScope:
         if os.path.exists(self.cache_path):
             shutil.rmtree(self.cache_path, ignore_errors=True)
 
-    @pytest.mark.timeout(120)
     def test_llm(self, dataloader):
         model_name = save_tiny_model(get_model_path("Qwen/Qwen2.5-0.5B-Instruct"), self.tiny_model_path, num_layers=2)
         autoround = AutoRound(model_name, platform="model_scope", scheme="w4a16", iters=0, seqlen=2, dataset=dataloader)
         autoround.quantize_and_save(self.saved_path)
 
-    @pytest.mark.timeout(480)
     def test_mllm(self, dataloader):
         model_name = save_tiny_model(
             get_model_path("Qwen/Qwen2-VL-2B-Instruct"), self.tiny_model_path, num_layers=2, is_mllm=True

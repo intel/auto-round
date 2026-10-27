@@ -312,7 +312,7 @@ def main():
                     real_cmd = cmd[cmd.index(item) :]
                     break
 
-        result = subprocess.run(real_cmd, cwd=repo_root, env=env)
+        result = subprocess.run(real_cmd, cwd=repo_root, env=env, check=False)
         if result.returncode != 0:
             print(f"  FAILED (exit {result.returncode})\n")
             overall = False

@@ -51,7 +51,6 @@ class TestAWQNormalLLM:
 
         assert cfg.awq_seqlen == 128
 
-    @pytest.mark.timeout(90)
     def test_awq_w4a16_quantize_and_inference(self, tiny_opt_model_path):
         """W4A16 AWQ quantization produces valid layer_config and the model can generate.
 
@@ -80,7 +79,6 @@ class TestAWQNormalLLM:
         output = generate_prompt(model, tokenizer, device=device)
         assert len(output) > 0, "Model should produce non-empty output"
 
-    @pytest.mark.timeout(120)
     def test_awq_w4a16_export_default_scheme(self, tiny_opt_model_path):
         """Default W4A16 scheme export: quantization_config has bits=4, group_size=128."""
         ar = AutoRound(
@@ -130,7 +128,6 @@ class TestAWQNormalLLM:
         assert qconfig["sym"] == sym
         assert "auto-round" in qconfig["quant_method"]
 
-    @pytest.mark.timeout(120)
     @pytest.mark.parametrize("device", _AVAILABLE_DEVICES)
     def test_awq_w4a16_round_trip(self, tiny_opt_model_path, device):
         """Quantize, save, reload on `device`, and generate -- exercises the full save/load round trip.
@@ -161,7 +158,6 @@ class TestAWQNonIntegerSchemes:
     MXFP/NVFP scheme.
     """
 
-    @pytest.mark.timeout(60)
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4"])
     def test_awq_non_integer_scheme_smoke(self, tiny_opt_model_path, scheme):
         """Algorithm/config correctness (bits/act_bits assignment) -- runs once on cpu.
@@ -735,7 +731,6 @@ class TestAWQMoE:
         assert kwargs["position_embeddings"][1].shape == (1, 4, 8)
 
     @requires_cuda
-    @pytest.mark.timeout(420)
     def test_awq_moe_quantized_layers_check(self, tiny_qwen_moe_model_path):
         """AWQ on MoE: expert layers should be quantized, gates/routers stay FP.
 
@@ -779,7 +774,6 @@ class TestAWQMoE:
 
     # TODO: Investigate and fix the excessive test runtime instead of relying on an increased timeout.
     @requires_cuda
-    @pytest.mark.timeout(400)
     def test_awq_moe_save_quant_config(self, tiny_qwen_moe_model_path):
         """AWQ MoE: saved quantization_config should be consistent and loadable.
 

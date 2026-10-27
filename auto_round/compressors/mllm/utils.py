@@ -43,7 +43,7 @@ def _extract_data_dir(dir_path: str):
 def fetch_image(path_or_url):
     if os.path.isfile(path_or_url):
         image_obj = Image.open(path_or_url)
-    elif path_or_url.startswith("http://") or path_or_url.startswith("https://"):
+    elif path_or_url.startswith(("http://", "https://")):
         try:
             response = requests.get(path_or_url, stream=True, timeout=(3, 10))
             response.raise_for_status()

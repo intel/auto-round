@@ -53,17 +53,16 @@ if check_compressed_tensors_supported():
 
 # please refer to https://github.com/vllm-project/llm-compressor/blob/
 # 29f4d5644b48e9c8ebb7e36d5be9f7c92747ceb7/src/llmcompressor/modifiers/quantization/quantization/mixin.py#L168
-def initialize_quantization(scheme, targets=["Linear"], config_groups=None, kv_cache_scheme=None, ignore=["lm_head"]):
+def initialize_quantization(scheme, targets=None, config_groups=None, kv_cache_scheme=None, ignore=None):
     """
     Attach quantization schemes to modules in the model and initialize the quantization config
     """
 
     # apply scheme and status to model
-    scheme = scheme
-    targets = targets
-    config_groups = config_groups
-    kv_cache_scheme = kv_cache_scheme
-    ignore = ignore
+    if targets is None:
+        targets = ["Linear"]
+    if ignore is None:
+        ignore = ["lm_head"]
     using_mxfp4_for_mxfp8 = False
     check_compressed_tensors_supported(raise_error=True)
     if scheme is not None and config_groups is not None:

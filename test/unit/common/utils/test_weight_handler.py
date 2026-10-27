@@ -871,7 +871,6 @@ class TestGetHandler:
         # Actually, ModuleWeightType is an Enum, so we can't easily create a new one
         # Let's just verify that unknown combinations return None
         # The function should return None for any unregistered type
-        pass
 
 
 # ==============================================================================

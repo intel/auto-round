@@ -12,16 +12,15 @@ New architectures can be supported by calling :func:`register_mapping`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 from auto_round.utils import logger
 
 __all__ = [
+    "MAPPING_REGISTRY",
     "RotationMapping",
-    "register_mapping",
     "get_mapping",
     "infer_mapping_from_model",
-    "MAPPING_REGISTRY",
+    "register_mapping",
 ]
 
 
@@ -45,7 +44,7 @@ class RotationMapping:
     # -- top-level modules (dot-path from model root) --
     embedding: str = "model.embed_tokens"
     lm_head: str = "lm_head"
-    positional_embedding: Optional[str] = None  # e.g. "model.decoder.embed_positions" for OPT
+    positional_embedding: str | None = None  # e.g. "model.decoder.embed_positions" for OPT
 
     # -- layers container (dot-path from model root) --
     layers_attr: str = "model.layers"
@@ -59,14 +58,14 @@ class RotationMapping:
 
     # -- per-layer: MLP (dot-path from each layer) --
     mlp_input_ln: str = "post_attention_layernorm"
-    mlp_in: List[str] = field(default_factory=lambda: ["mlp.up_proj", "mlp.gate_proj"])
+    mlp_in: list[str] = field(default_factory=lambda: ["mlp.up_proj", "mlp.gate_proj"])
     mlp_out: str = "mlp.down_proj"
 
     # -- final norm (dot-path from model root) --
     pre_head_ln: str = "model.norm"
 
     # -- head dim override (None = hidden_size // num_heads) --
-    attn_head_dim: Optional[int] = None
+    attn_head_dim: int | None = None
 
     # -- config attr names --
     num_heads_attr: str = "num_attention_heads"
@@ -91,7 +90,7 @@ def _resolve(root, dot_path: str):
 # Registry
 # ---------------------------------------------------------------------------
 
-MAPPING_REGISTRY: Dict[str, RotationMapping] = {}
+MAPPING_REGISTRY: dict[str, RotationMapping] = {}
 
 
 def register_mapping(key: str, mapping: RotationMapping) -> RotationMapping:

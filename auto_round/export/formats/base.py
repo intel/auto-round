@@ -18,9 +18,10 @@ import copy
 import os
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import asdict
 from enum import Enum
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
 import torch
 import transformers
@@ -162,7 +163,7 @@ class OutputFormat(ABC):
         return self.backend.is_supported_immediate_saving() if self.backend is not None else True
 
     @classmethod
-    def is_support_scheme(cls: OutputFormat, scheme: Union[str, QuantizationScheme]) -> bool:
+    def is_support_scheme(cls: OutputFormat, scheme: str | QuantizationScheme) -> bool:
         if isinstance(scheme, str) and scheme.upper() in cls.support_schemes:
             return True
         if isinstance(scheme, QuantizationScheme):
@@ -177,7 +178,7 @@ class OutputFormat(ABC):
         self,
         scheme: QuantizationScheme,
         ctx: Any,
-    ) -> tuple[Optional[str], QuantizationScheme, dict, list]:
+    ) -> tuple[str | None, QuantizationScheme, dict, list]:
         layer_config, quant_block_list = ctx.layer_config, ctx.quant_block_list
         if self.backend is not None:
             new_format, scheme, layer_config, quant_block_list = self.backend.check_and_reset_format(scheme, ctx)
@@ -224,11 +225,20 @@ class OutputFormat(ABC):
         pass
 
     def immediate_pack(self, name: str, model: torch.nn.Module, device: torch.device, **kwargs):
+        import time as _time
+
+        _t0 = _time.perf_counter()
         m = get_module(model, name)
-        if not check_to_quantized(m):
+        ok = check_to_quantized(m)
+        import auto_round.export.export_to_autoround.export as _ar_export
+
+        _ar_export.PACK_PHASES["lookup"] += _time.perf_counter() - _t0
+        if not ok:
             return
 
+        _t1 = _time.perf_counter()
         self.pack_layer(name, model, device=device)
+        _ar_export.PACK_PHASES["dispatch"] += _time.perf_counter() - _t1
 
     def is_gguf(self) -> bool:
         return "gguf" in self.output_format

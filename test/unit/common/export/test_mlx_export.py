@@ -552,7 +552,8 @@ class TestSaveQuantizedAsMlx:
         )
         cfg_path = os.path.join(output_dir, "config.json")
         assert os.path.exists(cfg_path)
-        cfg = json.load(open(cfg_path))
+        with open(cfg_path) as f:
+            cfg = json.load(f)
         assert "quantization" in cfg
 
     def test_autoround_format_flag(self, tmp_path):

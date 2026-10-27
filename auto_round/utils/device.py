@@ -19,11 +19,11 @@ import re
 import shutil
 import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import ContextDecorator, contextmanager
 from functools import lru_cache
 from threading import Lock
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
 import cpuinfo
 import psutil
@@ -55,7 +55,7 @@ class _VisibleDevicesEnvMapping(Mapping):
     """
 
     @staticmethod
-    def _env_var(device_type: str) -> Optional[str]:
+    def _env_var(device_type: str) -> str | None:
         device_cls = ARDevice._registry.get(device_type)
         return device_cls.visible_devices_env_var if device_cls is not None else None
 
@@ -84,6 +84,30 @@ DEVICE_ENVIRON_VARIABLE_MAPPING = _VisibleDevicesEnvMapping()
 
 
 ################ Check available sys.module to decide behavior #################
+def probe_usable_bytes(device_key: str) -> int | None:
+    """Corrected free bytes on an accelerator device (raw free + reserved-but-unallocated).
+
+    Routes through the device manager so every backend it supports (cuda,
+    xpu, hpu, mps) probes through its own API instead of silently reporting
+    nothing on non-cuda fleets.
+    """
+    try:
+        dev = torch.device(str(device_key))
+        if dev.type == "cpu" or dev.index is None:
+            return None
+        from auto_round.utils.device_manager import get_ar_device
+
+        ar_dev = get_ar_device(dev.type)
+        free, total = ar_dev.mem_get_info(dev.index)
+        if total <= 0:
+            return None
+        free += ar_dev.memory_reserved(dev.index) - ar_dev.memory_allocated(dev.index)
+        return max(free, 0)
+    except (ValueError, RuntimeError, AttributeError) as e:
+        logger.debug("[device] free-memory probe failed for %s (%s)", device_key, e)
+        return None
+
+
 def is_package_available(package_name: str) -> bool:
     """Check if the package exists in the environment without importing.
 
@@ -106,7 +130,7 @@ def _use_hpu_compile_mode():
     return TORCH_VERSION_AT_LEAST_2_4 and not is_hpu_lazy_mode()
 
 
-def _bump_dynamo_cache_limit(min_size: Optional[int] = None):
+def _bump_dynamo_cache_limit(min_size: int | None = None):
     """Raise torch._dynamo cache/recompile limits.
 
     The same quant function (e.g. ``quant_tensor_sym``) is reused across
@@ -135,9 +159,7 @@ def _bump_dynamo_cache_limit(min_size: Optional[int] = None):
         pass
 
 
-def compile_func(
-    fun: Union[torch.nn.Module, Callable], device: Union[str, torch.device, int]
-) -> Union[torch.nn.Module, Callable]:
+def compile_func(fun: torch.nn.Module | Callable, device: str | torch.device | int) -> torch.nn.Module | Callable:
     """Compile a function on the specified device.
 
     The shared dynamo cache-limit bump lives in :func:`_bump_dynamo_cache_limit`;
@@ -188,11 +210,9 @@ def is_tbb_available():  # pragma: no cover
         return False
     if not _is_tbb_configured():
         logger.warning_once(
-            (
-                "TBB is installed but not configured correctly. \n"
-                "Please add the TBB library path to `LD_LIBRARY_PATH`, "
-                "for example: `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/`."
-            )
+            "TBB is installed but not configured correctly. \n"
+            "Please add the TBB library path to `LD_LIBRARY_PATH`, "
+            "for example: `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/`."
         )
         return False
     return True
@@ -206,9 +226,7 @@ def can_pack_with_numba():  # pragma: no cover
     if not is_numba_available():
         logger.warning_once("Numba is not installed, please install it with `pip install numba`.")
         return False
-    if not is_tbb_available():
-        return False
-    return True
+    return is_tbb_available()
 
 
 ## check hpex
@@ -323,7 +341,7 @@ def is_pipeline_parallel_supported(device_type: str) -> bool:
     return get_ar_device(device_type).supports_pipeline_parallel
 
 
-def set_visible_devices(device: str, device_type: Optional[str] = None) -> None:
+def set_visible_devices(device: str, device_type: str | None = None) -> None:
     """Restrict the visible cards of ``device_type`` to the requested indices.
 
     Works for any backend that declares a ``visible_devices_env_var`` (e.g.
@@ -461,7 +479,7 @@ class fake_triton_for_hpu(ContextDecorator):
         return False
 
 
-class CpuInfo(object):
+class CpuInfo:
     """Get CPU Info."""
 
     def __init__(self):
@@ -641,7 +659,7 @@ def set_tuning_device_for_layer(model, name: str, device: str) -> None:
 
 
 def set_non_auto_device_map(
-    model: torch.nn.Module, device_map: Union[str, int, dict], quant_layer_names: Union[None, list, tuple] = None
+    model: torch.nn.Module, device_map: str | int | dict, quant_layer_names: None | list | tuple = None
 ) -> None:
     if not device_map or device_map == "auto" or isinstance(device_map, int):
         return
@@ -753,15 +771,28 @@ def _preassign_moe_experts(
         # Spread chunk-aligned groups across cards: each group stays whole on one device (so a
         # chunk's grouped GEMM is single-device) but different groups balance across GPUs.
         # ``chunk <= 0`` ("fuse everything") keeps the whole container as one group.
+        # On overflow the chunk SHRINKS (halving, floor 1 = a single expert whole) instead of
+        # dropping to the per-Linear balancer: dropped chunks are what scatter one expert's
+        # gate/up/down across devices and force the grouped path to fall back to the loop.
         step = len(idxs) if chunk <= 0 else chunk
-        for start in range(0, len(idxs), step):
-            group_items = [item for i in idxs[start : start + step] for item in by_idx[i]]
+        start = 0
+        while start < len(idxs):
+            take = min(step, len(idxs) - start)
+            group_items = [item for i in idxs[start : start + take] for item in by_idx[i]]
             group_mem = mem_of(group_items)
             group_device = best_fit(group_mem)
             if group_device is None:
-                continue  # Overflow: leave for the general balancer
+                if take <= 1:
+                    logger.debug(
+                        "[moe-prepass] single expert of %s fits no device budget; leaving for the balancer", container
+                    )
+                    start += 1
+                    continue
+                step = max(1, step // 2)
+                continue
             place(group_items, group_device)
             device_memory[group_device] -= group_mem
+            start += take
 
     return assigned
 
@@ -807,10 +838,20 @@ def _allocate_layers_to_devices(
     sorted_layers = sorted(remaining.items(), key=lambda x: (-x[1]["param_memory"], -layer_order[x[0]]))
     num_devices = len(gpu_devices)
 
-    def find_best_device(layer_name, estimated_memory, layer_idx):
-        """Find the best device for a layer."""
-        # Phase 1: Direct assign largest layers to higher-index devices first
-        if layer_idx < num_devices - 1:
+    def find_best_device(layer_name: str, estimated_memory: float, layer_idx: int, strict: bool = False) -> str:
+        """Find the best device for a layer.
+
+        strict=True skips the Phase-1 shortcut (used by the atomic-group
+        allocator so every unit goes through budget-aware scoring). When no
+        device passes the score filter, the device with the most remaining
+        budget still takes the unit: estimates are balancing reservations and
+        real overflow is owned by the per-layer OOM handlers.
+        """
+        # Phase 1: Direct assign largest layers to higher-index devices first.
+        # Skipped under strict: the atomic allocator's fail-loudly contract must
+        # hold for the LARGEST units too, and this shortcut assigns the first
+        # num_devices-1 units to fixed devices without any budget check.
+        if layer_idx < num_devices - 1 and not strict:
             return gpu_devices[-(layer_idx + 1)]
 
         # Phase 2: Choose device with best score (memory + continuity)
@@ -839,15 +880,52 @@ def _allocate_layers_to_devices(
                 best_score = total_score
                 best_device = device
 
-        # Fallback: device with most available memory
+        # Fallback: device with most available memory. Estimates are
+        # balancing reservations, never admission control -- when nothing
+        # fits by score, the max-remaining device gets the unit and the
+        # real OOM handlers own any actual overflow.
         return best_device or max(gpu_devices, key=lambda d: device_memory[d])
 
-    # Allocate the remaining (non-preassigned) layers
-    for layer_idx, (layer_name, mem_info) in enumerate(sorted_layers):
-        names.append(layer_name)
-        estimated_memory = mem_info["param_memory"] * mem_per_param
-        best_device = find_best_device(layer_name, estimated_memory, layer_idx)
-        device_map[layer_name] = best_device
+    # Allocate the remaining (non-preassigned) layers in ATOMIC GROUPS: leaves under the
+    # same indexed container (e.g. ``experts.7.gate/up/down``) are one indivisible unit —
+    # the streaming lane's ``_atomic_groups`` pattern — so the balancer can never split an
+    # expert across devices even when the MoE pre-pass left it behind.
+    import re as _re
+
+    _indexed = _re.compile(r"^(.*)\.(\d+)\.[^.]+$")
+    _groups: dict = {}
+    _group_order: list = []
+    for layer_name in remaining:
+        m = _indexed.match(layer_name)
+        key = f"{m.group(1)}.{m.group(2)}" if m else layer_name
+        if key not in _groups:
+            _groups[key] = []
+            _group_order.append(key)
+        _groups[key].append(layer_name)
+    grouped_units = [
+        (key, sum(remaining[n]["param_memory"] for n in _groups[key]), min(layer_order[n] for n in _groups[key]))
+        for key in _group_order
+    ]
+    grouped_units.sort(key=lambda u: (-u[1], -u[2]))
+
+    for layer_idx, (key, unit_param_memory, _order) in enumerate(grouped_units):
+        members = _groups[key]
+        estimated_memory = unit_param_memory * mem_per_param
+        best_device = find_best_device(members[0], estimated_memory, layer_idx, strict=True)
+        if device_memory[best_device] < estimated_memory:
+            # The proportional share is a balancing reservation, not a
+            # footprint (sum of shares == the whole pool, so fat units can
+            # exhaust every remaining budget on dense blocks) -- placed
+            # anyway; the OOM ladder owns real overflows.
+            logger.debug(
+                "atomic module group '%s' share %.2f GB exceeds %s's remaining budget; placed for best fit",
+                key,
+                estimated_memory,
+                best_device,
+            )
+        for layer_name in members:
+            names.append(layer_name)
+            device_map[layer_name] = best_device
         device_memory[best_device] -= estimated_memory
 
     # Restore original order
@@ -874,7 +952,7 @@ def get_first_available_attr(obj, attr_names: list[str], default=None):
     return default
 
 
-def get_moe_memory_ratio(block: torch.nn.Module) -> float:
+def get_moe_memory_ratio(block: torch.nn.Module, config: Any = None) -> float:
     """
     Calculate the memory ratio for MoE (Mixture of Experts) models.
 
@@ -883,6 +961,11 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
 
     Args:
         block (torch.nn.Module): The model block to analyze.
+        config: Model config to read when the block itself carries none
+            (block-wise tuning blocks have no ``.config``; without this the
+            ratio silently falls back to 1.0 and prices ALL experts' outputs
+            at full width -- an order-of-magnitude overcharge on models with
+            many sparsely-active experts).
 
     Returns:
         float: Memory ratio (num_experts_per_tok / num_experts).
@@ -900,8 +983,14 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
         if not is_moe_layer(module):
             continue
 
-        config = getattr(block, "config", None)
+        config = config if config is not None else getattr(block, "config", None)
         if config is None:
+            # container-attr fallback before giving up: expert count from the
+            # container itself, active count from its top_k-ish attrs
+            num_experts = getattr(module, "num_experts", None)
+            active = getattr(module, "num_experts_per_tok", None) or getattr(module, "top_k", None)
+            if isinstance(num_experts, int) and num_experts > 0 and isinstance(active, int) and active > 0:
+                return active / num_experts, True
             break
 
         # Try to get num_experts_per_tok (active experts count)
@@ -930,17 +1019,20 @@ def get_moe_memory_ratio(block: torch.nn.Module) -> float:
         if num_experts is not None and num_experts > 0:
             moe_ratio = num_experts_per_tok / num_experts
             logger.debug(
-                f"MoE detected: {num_experts_per_tok}/{num_experts} experts active per token, "
-                f"activation memory ratio: {moe_ratio:.2f}"
+                f"Using MoE memory ratio: {moe_ratio:.4f} ({num_experts_per_tok}/{num_experts} experts active per token)"
             )
-            logger.debug(f"Using MoE memory ratio: {moe_ratio:.4f}")
             return moe_ratio, True
         break  # Only check once per block
 
     return 1.0, False  # Default ratio for non-MoE models
 
 
-def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size: int) -> tuple[dict, float]:
+def estimate_tuning_block_mem(
+    block: torch.nn.Module,
+    input_ids: Any,
+    batch_size: int,
+    config: Any = None,
+) -> tuple[dict[str, Any], float, float, float, dict[str, float], dict[str, int]]:
     """
     Calculates the memory consumption of a specific block in the model.
 
@@ -951,12 +1043,16 @@ def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size
         batch_size (int): Number of samples to consider for memory estimation.
 
     Returns:
-        tuple: A tuple containing the following:
+        tuple: A 6-tuple containing:
             - layer_memory_dict (dict): A dictionary mapping layer names to their memory consumption (in GB).
                 Format: {layer_name: {"param_memory": float, "output_memory": float}}
+            - layer_activation_memory (float): Sum of per-layer output memory (GB), expert outputs
+                ratio-scaled by active/total experts.
             - input_output_memory (float): The memory consumption (in GB) for input and output
                 tensors of the block.
             - additional_memory (float): Additional memory overhead (in GB) for operations like attention.
+            - per_device_activation (dict): {device: GB} of output+grad charges bucketed by weight home.
+            - per_device_experts (dict): {device: count} of routed-expert leaves homed per device.
     """
     # Calculate all block parameters memory and build layer-wise memory dict
     from auto_round.utils.model import get_layer_features, is_moe_layer
@@ -981,11 +1077,15 @@ def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size
     seq_len = reference_tensor.shape[1] if reference_tensor is not None and reference_tensor.ndim >= 2 else 1
     element_size = reference_tensor.element_size() if reference_tensor is not None else 2
 
-    moe_ratio, has_moe = get_moe_memory_ratio(block)  # Get MoE memory ratio (1.0 for non-MoE models)
+    moe_ratio, has_moe = get_moe_memory_ratio(block, config)  # ratio 1.0 for non-MoE models
 
     for name, module in block.named_modules():
         if check_to_quantized(module):
-            enable_act_quant = module.act_bits <= 8
+            # V2 wrappers keep bits/act_bits on orig_layer (check_to_quantized
+            # reads them there); reading them off the wrapper itself raises
+            enable_act_quant = (
+                getattr(getattr(module, "orig_layer", module), "act_bits", getattr(module, "act_bits", 16)) <= 8
+            )
             layer_name = name
             param_size = module.weight.nbytes
             param_memory_gb = param_size / 1024**3
@@ -1008,7 +1108,32 @@ def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size
 
             if has_moe:
                 pparent_module = get_module(block, layer_name.rsplit(".", 2)[0]) if "." in layer_name else block
-                is_moe_expert = "expert" in layer_name.lower() and isinstance(pparent_module, torch.nn.ModuleList)
+                # Our unfuse builds the experts module as a plain nn.Module with numbered
+                # _ExpertContainer children (checkpoint-format keys), NOT an nn.ModuleList;
+                # the num_experts attribute identifies it just as well.
+                # The experts container itself may be a plain class with a
+                # generic name (neither ModuleList nor num_experts, and no
+                # "moe" in ITS class name) -- the MoE marker sits on an
+                # ANCESTOR. Walk the chain; a single-parent check prices
+                # every expert full-width (an order-of-magnitude overcharge
+                # on models with many sparsely-active experts).
+                is_experts_container = isinstance(pparent_module, torch.nn.ModuleList) or hasattr(
+                    pparent_module, "num_experts"
+                )
+                if not is_experts_container:
+                    _and = layer_name
+                    while "." in _and and not is_experts_container:
+                        _and = _and.rsplit(".", 1)[0]
+                        _mod = get_module(block, _and) if _and else None
+                        if _mod is not None and (
+                            isinstance(_mod, torch.nn.ModuleList) or hasattr(_mod, "num_experts") or is_moe_layer(_mod)
+                        ):
+                            is_experts_container = True
+                # shared experts are plain modules outside the dispatch (same
+                # exclusion the repo's is_moe_expert predicate applies)
+                is_moe_expert = (
+                    "expert" in layer_name.lower() and "shared" not in layer_name.lower() and is_experts_container
+                )
             else:
                 is_moe_expert = False
 
@@ -1017,6 +1142,9 @@ def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size
                 "param_memory": param_memory_gb * 2,
                 "output_memory": output_memory_gb * 2,
                 "is_moe_expert": is_moe_expert,
+                # weight home: fwd/bwd executes where the weight lives, so the
+                # saved output + grad transient lands on this device
+                "device": str(module.weight.device),
             }
 
     # Assuming bfloat16 or float32, input and output
@@ -1026,13 +1154,22 @@ def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size
     # For MoE expert layers, multiply activation memory by the ratio of active experts
     # For non-MoE layers (attention, norm, etc.), use full activation memory
     layer_activation_memory = 0.0
+    per_device_activation = {}
+    per_device_experts = {}
     for layer_name, info in layer_memory_dict.items():
         if info.get("is_moe_expert", False):
             # MoE expert layer: only a fraction of experts are active
             layer_activation_memory += info["output_memory"] * moe_ratio
+            per_device_activation[info["device"]] = (
+                per_device_activation.get(info["device"], 0.0) + info["output_memory"] * moe_ratio
+            )
+            per_device_experts[info["device"]] = per_device_experts.get(info["device"], 0) + 1
         else:
             # Non-MoE layer: use full activation memory
             layer_activation_memory += info["output_memory"]
+            per_device_activation[info["device"]] = (
+                per_device_activation.get(info["device"], 0.0) + info["output_memory"]
+            )
 
     # layer_activation_memory considers other ops activation memory
     # 1GB considers norm weight, sdpa, reference_output, etc.
@@ -1044,7 +1181,14 @@ def estimate_tuning_block_mem(block: torch.nn.Module, input_ids: Any, batch_size
         moe_additional_memory = additional_memory * 6  # GB
         additional_memory += moe_additional_memory
 
-    return layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory
+    return (
+        layer_memory_dict,
+        layer_activation_memory,
+        block_input_output_memory,
+        additional_memory,
+        per_device_activation,
+        per_device_experts,
+    )
 
 
 def set_auto_device_map_for_block_with_tuning(
@@ -1118,7 +1262,7 @@ def set_auto_device_map_for_block_with_tuning(
 
     device_0_memory = get_device_memory(device_list[0] if device_list else 0)
     device_1_memory = get_device_memory(device_list[1] if device_list else 1)
-    layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory = (
+    layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory, _, _ = (
         estimate_tuning_block_mem(block, input_ids, batch_size)
     )
     loss_memory = block_input_output_memory / 2  # GB, rough estimate for loss tensor memory
@@ -1219,7 +1363,7 @@ def partition_dict_numbers(number_dict, n):
     #  - Assign each item to the group with the current smallest sum
     # Complexity: O(m log n) which scales well for large m (layers)
     groups_sums = [0.0] * n
-    groups = [dict() for _ in range(n)]
+    groups = [{} for _ in range(n)]
 
     # Sort items descending by size
     items_sorted = sorted(items, key=lambda kv: kv[1], reverse=True)
@@ -1306,11 +1450,9 @@ def set_avg_auto_device_map(model: torch.nn.Module, device_map):
                 params_dict[n] = in_features * out_features
 
             res_list = partition_dict_numbers(params_dict, num_devices)
-            device_index = 0
-            for res in res_list:
+            for device_index, res in enumerate(res_list):
                 for key in res.keys():
                     set_tuning_device_for_layer(block_module, key, gpu_devices[device_index])
-                device_index += 1
 
 
 if __name__ == "__main__":
@@ -1338,7 +1480,7 @@ if __name__ == "__main__":
         print(f"Group {i + 1}: {group}, Sum: {sum(group.values())}")
 
 
-def parse_available_devices(device_map: Union[str, torch.device, int, dict, None] = None) -> list:
+def parse_available_devices(device_map: str | torch.device | int | dict | None = None) -> list:
     """
     Parse the device map and return a list of all available devices.
 
@@ -1439,7 +1581,7 @@ def parse_available_devices(device_map: Union[str, torch.device, int, dict, None
     raise TypeError(f"Unsupported device_map type: {type(device_map)}")
 
 
-@lru_cache(maxsize=None)
+@functools.cache
 def is_gaudi2():
     try:
         import habana_frameworks.torch.utils.experimental as htexp
@@ -1637,7 +1779,7 @@ def dump_mem_usage(msg: str = "", log_level: str = "info"):
 # This function is designed for Auto Scheme and Diffusion Pipeline,
 # which requires dispatching the whole model on all available devices.
 def dispatch_model_by_all_available_devices(
-    model: torch.nn.Module, device_map: Union[str, int, dict, None]
+    model: torch.nn.Module, device_map: str | int | dict | None
 ) -> torch.nn.Module:
     # Important Notice: This dispatch does not follow dict device_map, just extract all available devices and use them
     device_type = get_major_device()

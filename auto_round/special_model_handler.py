@@ -14,9 +14,10 @@
 import importlib
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 
 import torch
 
@@ -394,7 +395,7 @@ def _handle_special_model(model):
 
 
 def update_module(
-    model, formats: list[OutputFormat] = None, trust_remote_code: bool = True, cleanup_original: bool = True
+    model, formats: list[OutputFormat] | None = None, trust_remote_code: bool = True, cleanup_original: bool = True
 ):
     gguf_export = formats is not None and any(format_.is_gguf() for format_ in formats)
     model = apply_replacements(model, gguf_export=gguf_export)
@@ -1133,32 +1134,26 @@ register_ignore_layers(
 
 
 def get_bagel_ignore_layers(model) -> list[str]:
-    """Keep BAGEL generation-path modules in FP16.
+    """Keep BAGEL generation-path modules in BF16.
 
     BAGEL uses `*_moe_gen` modules for the image-generation path. Quantizing
-    them causes quality to collapse during the iterative denoising loop.
-    The shared attention projections are also highly sensitive, and preserving
-    the top 4 transformer blocks in FP16 gave acceptable image quality in
-    validation runs.
+    them can reduce quality during the iterative denoising loop. Users can
+    explicitly opt in with ``AR_QUANTIZE_BAGEL_MOE_GEN=1``.
+
+    The standard Qwen2 attention and MLP projections are deliberately not
+    ignored: they form BAGEL's normal text path and should follow AutoRound's
+    usual transformer-layer policy.
     """
-    top_fp16_layers = 0
+    from auto_round import envs
 
-    ignore_layers = [
-        "moe_gen",
-        "self_attn.q_proj",
-        "self_attn.k_proj",
-        "self_attn.v_proj",
-        "self_attn.o_proj",
-    ]
-
-    num_layers = 0
-    if hasattr(model, "language_model") and hasattr(model.language_model, "model"):
-        num_layers = len(getattr(model.language_model.model, "layers", []))
-
-    if num_layers > 0:
-        for layer_idx in range(max(0, num_layers - top_fp16_layers), num_layers):
-            ignore_layers.append(f"language_model.model.layers.{layer_idx}")
-
+    ignore_layers = []
+    if not envs.AR_QUANTIZE_BAGEL_MOE_GEN:
+        ignore_layers.append("moe_gen")
+    else:
+        logger.warning(
+            "AR_QUANTIZE_BAGEL_MOE_GEN is enabled. Quantizing BAGEL's image-generation experts may reduce image "
+            "quality."
+        )
     return ignore_layers
 
 
@@ -1170,6 +1165,20 @@ register_ignore_layers(
         get_bagel_ignore_layers,
     ],
 )
+
+
+# Architecture-specific layer_config defaults, keyed by ``config.model_type``.
+# Nemotron-H Omni wrappers (Super VL, Bolt) keep their Mamba2 ``out_proj`` scales in
+# BF16; every other model, including plain ``nemotron_h``, keeps the caller's scale_dtype.
+_PRE_DEFINED_LAYER_CONFIG = {
+    "nemotron_h_omni": {".*mixer.out_proj$": {"scale_dtype": torch.bfloat16}},
+}
+
+
+def get_predefined_layer_config(model: torch.nn.Module) -> dict:
+    """Return predefined layer_config patterns for the model; user entries take precedence."""
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    return _PRE_DEFINED_LAYER_CONFIG.get(model_type, {})
 
 
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
@@ -1189,7 +1198,7 @@ def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:
     config = getattr(model, "config", None)
     if not layers and is_moe_model_via_config(config):
         for name, _ in model.named_modules():
-            if name.endswith(".gate"):
+            if name.endswith((".gate", ".shared_expert_gate")):
                 layers.append(name)
 
     return list(dict.fromkeys(layers))

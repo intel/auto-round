@@ -50,7 +50,7 @@ class LinearQwen3VLMoeTextSparseMoeBlock(ReplacementModuleBase):
         calibrate_all_experts: bool = False,
     ):
         super().__init__(original)
-        text_config: "Qwen3VLMoeTextConfig" = config.get_text_config()
+        text_config: Qwen3VLMoeTextConfig = config.get_text_config()
 
         self.hidden_size = text_config.hidden_size
         self.num_experts = text_config.num_experts

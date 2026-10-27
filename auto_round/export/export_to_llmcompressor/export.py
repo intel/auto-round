@@ -15,12 +15,20 @@
 import copy
 import math
 import os
-from collections.abc import Mapping
-from typing import Callable, Union
+from collections.abc import Callable, Mapping
 
 import torch
 
-from auto_round.export.utils import is_immediate_saving_mode, save_model, save_pretrained_artifact
+from auto_round.export.export_to_llmcompressor.utils import (
+    add_routed_experts_if_moe,
+    finalize_llmcompressor_config_names,
+)
+from auto_round.export.utils import (
+    is_immediate_saving_mode,
+    save_config_artifact,
+    save_model,
+    save_pretrained_artifact,
+)
 from auto_round.logger import logger
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -171,7 +179,7 @@ def _rewrite_config_group_targets(model, quantization_config_dict):
         )
         names = sig_to_names.get(sig)
         if names:
-            group["targets"] = sorted(names)
+            group["targets"] = add_routed_experts_if_moe(sorted(names), names)
         else:
             logger.warning(
                 "AutoRound llm_compressor export: no quantized module matched "
@@ -229,8 +237,8 @@ def pack_layer(name, model, device=None):
     weight_device = layer.weight.device
 
     scheme = construct_ct_scheme(layer)
-    setattr(layer, "quantization_scheme", scheme)
-    setattr(layer, "weight_scale", torch.nn.Parameter(layer.scale.to(weight_device)))
+    layer.quantization_scheme = scheme
+    layer.weight_scale = torch.nn.Parameter(layer.scale.to(weight_device))
     # AutoRound zp is the UNSIGNED level convention (q in [0, 2^b-1],
     # W = (q - zp) * s); compressed-tensors packs the SIGNED convention (q in
     # [-2^(b-1), 2^(b-1)-1], zp added BEFORE the clamp into that range - see
@@ -299,7 +307,7 @@ def pack_layer(name, model, device=None):
             )
         zp = zp.to(torch.int8)
 
-    setattr(layer, "weight_zero_point", torch.nn.Parameter(zp.to(weight_device), requires_grad=False))
+    layer.weight_zero_point = torch.nn.Parameter(zp.to(weight_device), requires_grad=False)
     delattr(layer, "scale")
 
     _compress_and_set_format(layer, scheme, device)
@@ -309,11 +317,11 @@ def pack_layer(name, model, device=None):
 def save_quantized_as_llmcompressor(
     output_dir: str,
     model: torch.nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    device: Union[str, torch.device] = "cpu",
-    serialization_dict: dict = None,
+    device: str | torch.device = "cpu",
+    serialization_dict: dict | None = None,
     **kwargs,
 ) -> torch.nn.Module:
     """
@@ -368,13 +376,19 @@ def save_quantized_as_llmcompressor(
     # precision that makes groups indistinguishable to vLLM; rewrite targets with
     # the concrete module names each group covers.
     quantization_config_dict = _rewrite_config_group_targets(model, quantization_config_dict)
+    quantization_config_dict = finalize_llmcompressor_config_names(
+        quantization_config_dict,
+        model,
+        [],
+        [n for n, m in model.named_modules() if getattr(m, "quantization_scheme", None) is not None],
+    )
     model.config.quantization_config = quantization_config_dict
 
     if output_dir is None:
         return model
 
     # save model.config, model.state_dict()
-    model.config.save_pretrained(output_dir)
+    save_config_artifact(model, output_dir)
 
     save_model(model, output_dir, safe_serialization=safe_serialization, immediate_saving=immediate_saving)
 

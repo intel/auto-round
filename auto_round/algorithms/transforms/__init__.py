@@ -61,7 +61,7 @@ from auto_round.algorithms.transforms.hadamard import (
     RotationConfig,
 )
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     # Base interfaces
     "BasePreprocessor",
     "BaseWeightTransformer",  # backward-compat alias

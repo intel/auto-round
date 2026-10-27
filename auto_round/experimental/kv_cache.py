@@ -19,12 +19,15 @@
 import contextlib
 from enum import Enum
 from functools import partial
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import torch
 from transformers.cache_utils import DynamicCache
 
 from auto_round.experimental.utils import (
+    FP8_GRANULARITY_TENSOR,
+    NVFP4_KV_BLOCK_SIZE,
+    NVFP4_KV_DTYPE,
     fp8_qdq,
     is_attention_module,
     normalize_fp8_granularity,
@@ -34,10 +37,10 @@ from auto_round.experimental.utils import (
 from auto_round.utils import logger
 
 __all__ = [
-    "initialize_quantized_kv_cache",
-    "prep_attention_module_for_calibration",
     "freeze_module_quantization_",
+    "initialize_quantized_kv_cache",
     "kvcache_quant_context",
+    "prep_attention_module_for_calibration",
 ]
 
 
@@ -68,7 +71,7 @@ class KVCacheScaleType(Enum):
 
 
 # NOTE: Using _ suffix to denote l is modified in place
-def _pad_and_append_at_idx_(lst: List, idx: int, val: Any) -> list:
+def _pad_and_append_at_idx_(lst: list, idx: int, val: Any) -> list:
     """
     Append value val to list lst at index idx, right padding if necessary
     Needed because user may ignore some layers in configuration, meaning
@@ -104,19 +107,28 @@ class QuantizedKVParameterCache(DynamicCache):
     def __new__(cls, *args, **kwargs):
         """Singleton"""
         if cls._instance is None:
-            cls._instance = super(QuantizedKVParameterCache, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, dtype: torch.dtype = torch.float8_e4m3fn, granularity: str = "tensor"):
-
-        assert dtype == torch.float8_e4m3fn, "Only fp8_e4m3fn is supported for now."
-        self.granularity = normalize_fp8_granularity(granularity)
+    def __init__(self, dtype: torch.dtype | str = torch.float8_e4m3fn, granularity: str = "tensor"):
+        dtype = normalize_static_kv_dtype(dtype)
+        self.is_nvfp4 = dtype == NVFP4_KV_DTYPE
+        if self.is_nvfp4:
+            # NVFP4 block scales are computed per 16-element group at runtime;
+            # only a static per-tensor global scale is calibrated, so "head"
+            # granularity does not apply.
+            self.granularity = FP8_GRANULARITY_TENSOR
+        else:
+            assert dtype == torch.float8_e4m3fn, "Only fp8_e4m3fn is supported for now."
+            self.granularity = normalize_fp8_granularity(granularity)
         if not self._initialized:
             super().__init__()
 
             # each index corresponds to layer_idx of the attention layer
-            self.k_scales: List[torch.Tensor] = []
-            self.v_scales: List[torch.Tensor] = []
+            self.k_scales: list[torch.Tensor] = []
+            self.v_scales: list[torch.Tensor] = []
+            self.k_amax: list[float] = []
+            self.v_amax: list[float] = []
             self._initialized = True
 
     def update(
@@ -124,11 +136,18 @@ class QuantizedKVParameterCache(DynamicCache):
         key_states: torch.Tensor,
         value_states: torch.Tensor,
         layer_idx: int,
-        cache_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        cache_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Get the k_scale and v_scale and output the quant-dequant key_states and value_states
         """
+        if self.is_nvfp4:
+            # Observe-only: track the per-side running amax and let K/V
+            # pass through unmodified (see _nvfp4_track_amax).
+            self._nvfp4_track_amax(key_states, KVCacheScaleType.KEY, layer_idx)
+            self._nvfp4_track_amax(value_states, KVCacheScaleType.VALUE, layer_idx)
+            return key_states, value_states
+
         qdq_key_states = self._quant_dequant(key_states.contiguous(), KVCacheScaleType.KEY, layer_idx)
         qdq_value_states = self._quant_dequant(value_states.contiguous(), KVCacheScaleType.VALUE, layer_idx)
 
@@ -136,7 +155,7 @@ class QuantizedKVParameterCache(DynamicCache):
 
         return keys_to_return, values_to_return
 
-    def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
+    def get_seq_length(self, layer_idx: int | None = 0) -> int:
         """
         Returns the sequence length of the cached states.
         A layer index can be optionally passed.
@@ -154,12 +173,12 @@ class QuantizedKVParameterCache(DynamicCache):
 
     def reset_states(self):
         """reset the kv states (used in calibration)"""
-        self.key_cache: List[torch.Tensor] = []
-        self.value_cache: List[torch.Tensor] = []
+        self.key_cache: list[torch.Tensor] = []
+        self.value_cache: list[torch.Tensor] = []
         # Used in `generate` to keep tally of how many tokens the cache has seen
         self._seen_tokens = 0
-        self._quantized_key_cache: List[torch.Tensor] = []
-        self._quantized_value_cache: List[torch.Tensor] = []
+        self._quantized_key_cache: list[torch.Tensor] = []
+        self._quantized_value_cache: list[torch.Tensor] = []
 
     def reset(self):
         """
@@ -181,6 +200,32 @@ class QuantizedKVParameterCache(DynamicCache):
         _pad_and_append_at_idx_(scales, layer_idx, scale.reshape(-1).detach())
         return qdq_tensor
 
+    def _nvfp4_track_amax(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int):
+        """Track the running NVFP4 K/V amax during calibration (observe-only).
+
+        Mirrors the observer-based KV calibration in llm-compressor: the
+        per-side running amax is accumulated while the K/V tensors pass
+        through unmodified, so calibration never fake-quantizes with an
+        incomplete scale.  The static global scale is derived from the
+        final (full-calibration-set) amax by the output hook, which
+        writes the vLLM dequant-multiplier convention (``amax / 2688``) --
+        see ``_nvfp4_global_scale``.
+        """
+        if tensor.shape[-1] % NVFP4_KV_BLOCK_SIZE != 0:
+            raise ValueError(
+                f"NVFP4 KV cache quantization requires the last dim (head_dim) "
+                f"to be divisible by {NVFP4_KV_BLOCK_SIZE} (got {tensor.shape[-1]} "
+                f"at layer_idx={layer_idx}); use static_kv_dtype='fp8' for "
+                f"this model."
+            )
+
+        amax = tensor.abs().max().item()
+        amax_list = self.k_amax if kv_type == KVCacheScaleType.KEY else self.v_amax
+        if layer_idx >= len(amax_list):
+            _pad_and_append_at_idx_(amax_list, layer_idx, amax)
+        else:
+            amax_list[layer_idx] = max(amax_list[layer_idx], amax)
+
 
 def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4m3fn, granularity: str = "tensor"):
     """
@@ -193,23 +238,42 @@ def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4
     if isinstance(existing_kv_cache, QuantizedKVParameterCache):
         return
 
+    dtype = normalize_static_kv_dtype(dtype)
+    if dtype == NVFP4_KV_DTYPE:
+        # NVFP4 KV needs head_dim divisible by the fp4 block size; fail
+        # early per layer instead of silently degrading all layers.
+        head_dim = getattr(module, "head_dim", None)
+        if head_dim is not None and head_dim % NVFP4_KV_BLOCK_SIZE != 0:
+            raise ValueError(
+                f"NVFP4 KV cache quantization requires head_dim divisible by "
+                f"{NVFP4_KV_BLOCK_SIZE} (got {head_dim} in "
+                f"{module.__class__.__name__}, "
+                f"layer_idx={getattr(module, 'layer_idx', '?')}); "
+                f"use static_kv_dtype='fp8' for this model."
+            )
+
     quantized_kv_cache = QuantizedKVParameterCache(dtype=dtype, granularity=granularity)
-    setattr(module, "kv_cache", quantized_kv_cache)
+    module.kv_cache = quantized_kv_cache
     logger.debug(f"Initialized quantized kv_cache for {module.__class__.__name__} {getattr(module, 'layer_idx', None)}")
+    if quantized_kv_cache.is_nvfp4:
+        # Global scales are only registered once calibration has observed KV
+        # magnitudes; creating zero/placeholder scales up front would export a
+        # broken scheme when no calibration forward happens.
+        return
     init_scale = torch.tensor([0.0], device=next(module.parameters()).device)
     update_parameter_data(module, init_scale.clone(), KVCacheScaleType.KEY.value)
     update_parameter_data(module, init_scale.clone(), KVCacheScaleType.VALUE.value)
 
 
 def calibrate_kv_cache_input_hook(
-    module: torch.nn.Module, args: Any, kwargs: Dict[str, Any]
-) -> Tuple[Tuple[Any, ...], Dict[str, Any]]:
+    module: torch.nn.Module, args: Any, kwargs: dict[str, Any]
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
     """
     Hook to update inputs to attention layers when running
     kv_cache quantization. Will update the passed in
     kv_cache to singleton QuantizedKVParameterCache.
     """
-    kv_cache = getattr(module, "kv_cache")
+    kv_cache = module.kv_cache
     #  Start from transformers 4.55.2, the `past_key_value` was renamed to `past_key_values`.
     # https://github.com/huggingface/transformers/blob/52c6c1bb6e27ca87c4faede34a4c2a7404c17c4d/src/transformers/models/llama/modeling_llama.py#L279-L280
     if "past_key_values" in kwargs:
@@ -220,11 +284,52 @@ def calibrate_kv_cache_input_hook(
     return args, kwargs
 
 
+def _nvfp4_global_scale(amax: float, device: torch.device) -> torch.Tensor:
+    """Static NVFP4 KV scale for the checkpoint, in the vLLM serving convention.
+
+    vLLM's NVFP4 KV cache store kernel (``reshape_and_cache_nvfp4``) treats the
+    checkpoint value as the *dequantization multiplier*: it computes
+    ``global_scale = 1 / k_scale`` and the per-16-element fp8 block scale as
+    ``sf = global_scale * block_max / 6``, then reads back
+    ``x = fp4 * sf * k_scale``.  Storing the weight-style ``2688 / amax``
+    instead would make the runtime build fp8 block scales from
+    ``block_max * amax / (6 * 2688)``, which underflows e4m3 (min subnormal
+    ~2**-9) for typical activation magnitudes and zeroes the KV cache.
+
+    The reciprocal ``amax / 2688 = 1 / calculate_gparam(amax)`` makes the
+    runtime's block scale ``(2688 / amax) * block_max / 6`` -- exactly the
+    value auto-round's QDQ simulation (``nv_fp4_with_static_gs``) uses during
+    calibration, so served outputs match calibration up to fp8 rounding.
+
+    Note: the pure-Python compressed-tensors runtime (``forward_quantize``)
+    interprets the stored value the other way around (``sf = gs * block_max /
+    6``).  The two runtimes use opposite conventions; vLLM is the target
+    serving engine, hence this convention.
+    """
+    from auto_round.data_type.nvfp import calculate_gparam
+
+    global_scale = calculate_gparam(amax, device=device)
+    return (1.0 / global_scale).reshape(1).detach()
+
+
 def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output: torch.Tensor):
     """
     Hook to update k_scale and v_scale parameters when running kv_cache quantization.
     """
-    kv_cache = getattr(module, "kv_cache")
+    kv_cache = module.kv_cache
+    if kv_cache.is_nvfp4:
+        layer_idx = module.layer_idx
+        k_amax = kv_cache.k_amax[layer_idx] if layer_idx < len(kv_cache.k_amax) else 0.0
+        v_amax = kv_cache.v_amax[layer_idx] if layer_idx < len(kv_cache.v_amax) else 0.0
+        if k_amax > 0:
+            update_parameter_data(
+                module, _nvfp4_global_scale(k_amax, next(module.parameters()).device), "k_global_scale"
+            )
+        if v_amax > 0:
+            update_parameter_data(
+                module, _nvfp4_global_scale(v_amax, next(module.parameters()).device), "v_global_scale"
+            )
+        return
     k_scale = kv_cache.k_scales[module.layer_idx]
     v_scale = kv_cache.v_scales[module.layer_idx]
     update_parameter_data(module, k_scale, KVCacheScaleType.KEY.value)
@@ -241,17 +346,27 @@ def prep_attention_module_for_calibration(module: torch.nn.Module):
 def kvcache_quant_context(
     model: torch.nn.Module, static_kv_dtype=torch.float8_e4m3fn, static_kv_granularity: str = "tensor"
 ):
-    """Context manager for FP8 KV cache quantization operations."""
+    """Context manager for static KV cache quantization (FP8 or NVFP4) operations."""
     try:
         # Setup phase: Initialize KV cache for quantization
         static_kv_dtype = normalize_static_kv_dtype(static_kv_dtype)
         static_kv_granularity = normalize_fp8_granularity(static_kv_granularity)
-        if static_kv_dtype != torch.float8_e4m3fn:
-            logger.warning(f"Ignoring static kv dtype {static_kv_dtype}, only fp8_e4m3fn is supported.")
+        if static_kv_dtype == NVFP4_KV_DTYPE:
+            if static_kv_granularity != FP8_GRANULARITY_TENSOR:
+                logger.warning(
+                    "NVFP4 KV cache only supports 'tensor' granularity; ignoring granularity %r.",
+                    static_kv_granularity,
+                )
+            initialize_fn = partial(
+                initialize_quantized_kv_cache, dtype=NVFP4_KV_DTYPE, granularity=FP8_GRANULARITY_TENSOR
+            )
+        elif static_kv_dtype != torch.float8_e4m3fn:
+            logger.warning(f"Ignoring static kv dtype {static_kv_dtype}, only fp8_e4m3fn and nvfp4 are supported.")
         else:
             initialize_fn = partial(
                 initialize_quantized_kv_cache, dtype=static_kv_dtype, granularity=static_kv_granularity
             )
+        if static_kv_dtype in (torch.float8_e4m3fn, NVFP4_KV_DTYPE):
             model.apply(initialize_fn)
             model.apply(prep_attention_module_for_calibration)
 

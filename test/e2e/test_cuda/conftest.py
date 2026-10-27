@@ -35,7 +35,6 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 import pytest
 import torch
@@ -126,7 +125,7 @@ class ModelCase:
 # every user runs, (b) the W2A16 low-memory path, (c) the activation
 # quant path and (d) the GPTQ/AWQ back-compat paths.  All models are
 # small enough to fit on a single 24 GiB GPU at W4A16 with offloading.
-DEFAULT_MODEL_CASES: List[ModelCase] = [
+DEFAULT_MODEL_CASES: list[ModelCase] = [
     ModelCase("Qwen/Qwen3-1.7B", 4, 128, True, "auto_round", min_gpu_gib=10),
     ModelCase("Qwen/Qwen3-1.7B", 4, 128, True, "auto_gptq", min_gpu_gib=10),
     ModelCase("Qwen/Qwen3-1.7B", 4, 128, True, "auto_awq", min_gpu_gib=10),
@@ -136,7 +135,7 @@ DEFAULT_MODEL_CASES: List[ModelCase] = [
 
 # A more demanding matrix for nightly runs (8 GiB / 7B-class).  These
 # require ~16 GiB free at fp16 master + W4A16 weights.
-LARGE_MODEL_CASES: List[ModelCase] = [
+LARGE_MODEL_CASES: list[ModelCase] = [
     ModelCase("Qwen/Qwen2.5-7B-Instruct", 4, 128, True, "auto_round", min_gpu_gib=18),
     ModelCase("Qwen/Qwen2.5-7B-Instruct", 4, 128, True, "auto_gptq", min_gpu_gib=18),
     ModelCase("meta-llama/Llama-3.2-3B-Instruct", 4, 128, True, "auto_round", min_gpu_gib=12),
@@ -159,7 +158,7 @@ def pytest_addoption(parser):
 
 
 @pytest.fixture(scope="session")
-def model_matrix(request) -> List[ModelCase]:
+def model_matrix(request) -> list[ModelCase]:
     preset = request.config.getoption("--e2e-model-preset")
     if preset == "default":
         return DEFAULT_MODEL_CASES
@@ -211,7 +210,7 @@ def quantize_and_save(
     iters: int = 200,
     nsamples: int = 128,
     seqlen: int = 2048,
-    extra_kwargs: Optional[dict] = None,
+    extra_kwargs: dict | None = None,
 ):
     """Run the full AutoRound pipeline and return the saved checkpoint dir.
 
@@ -264,14 +263,14 @@ class BenchResult:
     # End-to-end output tokens per second (prompt processing + decoding).
     output_tokens_per_s: float
     # Decoding-only tokens per second (excludes prompt eval), if measurable.
-    gen_tokens_per_s: Optional[float]
+    gen_tokens_per_s: float | None
     # Time-to-first-token seconds (mean over the batch, if available).
-    ttft_s: Optional[float]
+    ttft_s: float | None
     # Generated text for the first prompt; useful for sanity checks.
     sample_output: str
 
 
-def _standard_prompts() -> List[str]:
+def _standard_prompts() -> list[str]:
     """A fixed prompt list so different runs are comparable."""
     return [
         "The capital of France is",
@@ -285,7 +284,7 @@ def _standard_prompts() -> List[str]:
     ]
 
 
-def make_bench_prompts(tokenizer, num_prompts: int, target_input_tokens: int = 64) -> List[str]:
+def make_bench_prompts(tokenizer, num_prompts: int, target_input_tokens: int = 64) -> list[str]:
     """Pad each base prompt with lorem-style text to ~target_input_tokens.
 
     The result is a list of prompts whose prompt-eval cost is similar
@@ -296,7 +295,7 @@ def make_bench_prompts(tokenizer, num_prompts: int, target_input_tokens: int = 6
         " Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
         "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. "
     )
-    out: List[str] = []
+    out: list[str] = []
     i = 0
     while len(out) < num_prompts:
         prompt = base[i % len(base)] + pad * 4

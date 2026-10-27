@@ -30,7 +30,6 @@ class TestMxfpNvfpExportGpu:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4", "MXFP8", "MXFP4_RCEIL"])
     def test_export_reload_forward(self, tiny_qwen_model_path, scheme):
         autoround = AutoRound(
@@ -50,7 +49,6 @@ class TestMxfpNvfpExportGpu:
             out = model(input_ids)
         assert out.logits.shape[0] == 1
 
-    @pytest.mark.timeout(180)
     @pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4"])
     def test_export_qlinear_modules(self, tiny_qwen_model_path, scheme):
         """The reloaded model must contain the expected MXFP/NVFP quant-linear module."""

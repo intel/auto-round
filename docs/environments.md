@@ -50,6 +50,17 @@ export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 export AR_USE_MODELSCOPE=true
 ```
 
+### AR_QUANTIZE_BAGEL_MOE_GEN
+
+- **Description**: Enables quantization of BAGEL's `*_moe_gen` image-generation experts. By default, AutoRound keeps these modules in BF16 because quantizing them has been observed to reduce image-generation quality. BAGEL's normal transformer attention and MLP layers are still quantized by default.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, or `"yes"` (case-insensitive) for enabling; any other value keeps `*_moe_gen` in BF16
+- **Usage**: Enable only when experimenting with the checkpoint-size and image-quality tradeoff
+
+```bash
+export AR_QUANTIZE_BAGEL_MOE_GEN=1
+```
+
 ### AR_WORK_SPACE
 - **Description**: Sets the workspace directory for AutoRound operations
 - **Default**: `"ar_work_space"`
@@ -119,11 +130,41 @@ export AR_ENABLE_ACT_MINMAX_TUNING=1
 export AR_SEARCH_SCALE_RATIO=0.75
 ```
 
-### AR_DYNAMO_CACHE_SIZE_LIMIT
-- **Description**: Minimum value to which `torch._dynamo`'s `cache_size_limit`, `accumulated_cache_size_limit`, and `recompile_limit` are bumped when `torch.compile` is enabled (the default except on Windows). The same compiled quant function is reused across every linear layer in a transformer block (q/k/v/o_proj, gate/up/down_proj, ...) but each layer has a different weight shape, so per-layer static recompiles quickly exceed dynamo's default limit (8) and trigger a noisy fallback to eager. Raising the limit keeps static-shape compilation (best perf) and just allows more cache entries.
-- **Default**: `16`
+### AR_NEUQI_COARSE
+- **Description**: Number of coarse-stage candidates in the NeUQI grid search (`--enable_neuqi`, arXiv 2505.17595). The coarse stage scans a wide log-spaced grid; the fine stage refines around the winner (`AR_NEUQI_FINE`). Applies to both the asymmetric joint (scale, zero-point) search and the symmetric two-stage scale search.
+- **Default**: `256` on accelerated backends (Triton/torch.compile), `64` on the eager sweep — the eager path evaluates ~coarse x fine candidates per group, so it narrows the unpinned default (measured quality is flat between the two grids)
 - **Valid Values**: positive integer
-- **Usage**: Increase if your model has more than 16 distinct linear-weight shapes per block (rare).
+- **Usage**: Lower for faster searches at the cost of grid coverage.
+
+```bash
+export AR_NEUQI_COARSE=128
+```
+
+### AR_NEUQI_FINE
+- **Description**: Number of fine-stage candidates in the NeUQI grid search, refined around the coarse winner. See `AR_NEUQI_COARSE`.
+- **Default**: `64` on accelerated backends (Triton/torch.compile), `32` on the eager sweep
+- **Valid Values**: positive integer
+- **Usage**: Lower for faster searches at the cost of final resolution.
+
+```bash
+export AR_NEUQI_FINE=32
+```
+
+### AR_NEUQI_BACKEND
+- **Description**: Backend override for the NeUQI candidate sweep. `auto` picks the fastest available (extension Triton kernel, then torch.compile-fused, then eager) and latches down permanently on the first kernel failure. `eager`/`compile`/`triton` force one backend for debugging or benchmarking.
+- **Default**: `auto`
+- **Valid Values**: `auto`, `eager`, `compile`, `triton`
+- **Usage**: Escape hatch for driver/hardware incompatibilities; `auto` is recommended.
+
+```bash
+export AR_NEUQI_BACKEND=eager
+```
+
+### AR_DYNAMO_CACHE_SIZE_LIMIT
+- **Description**: Minimum value to which `torch._dynamo`'s `cache_size_limit`, `accumulated_cache_size_limit`, and `recompile_limit` are bumped when `torch.compile` is enabled (the default except on Windows). The same compiled quant function is reused across every linear layer in a transformer block (q/k/v/o_proj, gate/up/down_proj, ...) but each layer has a different weight shape, so per-layer static recompiles quickly exceed dynamo's default limit (8) and trigger a noisy fallback to eager. Raising the limit keeps static-shape compilation (best perf) and just allows more cache entries. On multi-device runs the target is scaled by the number of engaged devices (per-layer shapes multiplied by per-device guard pins); single-device runs use the value as-is.
+- **Default**: `16` (per engaged device on multi-device runs)
+- **Valid Values**: positive integer
+- **Usage**: Increase if your model has more than 16 distinct linear-weight shapes per block per engaged device (rare).
 
 ```bash
 export AR_DYNAMO_CACHE_SIZE_LIMIT=32
@@ -239,6 +280,56 @@ export AR_DISK_STREAM_MODEL=1
 
 ```bash
 AR_ALLOW_W8_ASYM=1 python -m auto_round --model ... --scheme W8A16 --asym --format auto_round
+```
+
+### AR_DISABLE_BATCHED_SEARCH
+- **Description**: Disables the batched quantization-search machinery: SignRoundV2 wrap-time init-scale searches (iters>0) and optimized-RTN scale searches (iters=0) then run fully serially (the GGUF DQ scale search always runs inline per module), one module at a time, on the device hosting each weight. Batching stacks modules sharing device/shape/config into one call with bit-identical per-module results; set this to fall back to the serial loop (e.g. for debugging or bisecting a suspected batching-related difference). Stacking also changes the transient VRAM envelope (see `AR_SEARCH_BATCH_GB`).
+- **Default**: `0` (batching enabled)
+- **Valid Values**: `0` / `1`
+- **Usage**: Kill switch for the batched/parallel search machinery.
+
+```bash
+AR_DISABLE_BATCHED_SEARCH=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_PERF_COUNTERS
+- **Description**: Emits one per-block `[perf] tune phases` INFO line with the wall time of each tuning phase (wrap / prepare / loop / tail) and, inside the loop, the sampler draw, best-params snapshots, gradient sync + optimizer step, rest, and the serial forward+loss+backward time. Intended for performance attribution of large multi-device quantization runs; adds negligible overhead.
+- **Default**: `0` (disabled)
+- **Valid Values**: `0` / `1`
+- **Usage**: Set during benchmarking runs to attribute block time to wrap searches vs the tuning loop.
+
+```bash
+AR_PERF_COUNTERS=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_SEARCH_BATCH_GB
+- **Description**: Explicit override for the batched quantization searches' stacked-batch size, in GiB of stacked fp32 weights per batched call. Applies to ALL batched lanes: the iters=0 optimized-RTN search, the iters>0 wrapper init search, and the NeUQI grid anchors. When unset, batch sizes are capacity-driven: each batch is sized so the search's transient footprint (an fp32 copy chain over the batch, plus the NeUQI sweeps' capped internal temporaries when applicable) fits in half the probed free VRAM, and every executing device re-checks headroom at call time (an oversized batch halves instead of faulting). Set this only to cap batches below what the capacity planning would choose.
+- **Default**: unset (capacity-driven sizing)
+- **Valid Values**: positive float (GiB)
+- **Usage**: Shrink batches on memory-tight multi-device runs.
+
+```bash
+AR_SEARCH_BATCH_GB=0.5 python -m auto_round --model ... --device_map 0,1
+```
+
+### AR_MOE_EXPERTS_IMPL
+- **Description**: Experts forward used during MoE tuning for models that were unfused into per-expert modules. `auto` (default) predicts the per-device VRAM of the grouped-GEMM tuning path before the first MoE block and selects `linear_loop` for the whole run when grouped tuning cannot fit (qdq stack retention plus in-loop tuning state vs the free memory of each device); the decision and the per-device numbers are logged. Explicit values are never overridden by `auto`.
+- **Default**: `auto`
+- **Valid Values**: `auto`, `linear_grouped`, `linear_grouped_sliced`, `linear_loop`
+- **Usage**: Force a specific experts implementation for tuning, or keep `auto` to let the memory model choose.
+
+```bash
+AR_MOE_EXPERTS_IMPL=linear_loop python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_DISABLE_CROSS_DEVICE_SEARCH
+- **Description**: Restricts batched search chunks to the device that hosts each weight. By default both search lanes plan their chunks centrally: every chunk starts on its home device and chunks rebalance onto under-loaded viable devices, so the search spreads across every visible device with headroom (the searches read only their module's weight plus per-module statistics, never calibration activations; each executing device is owned by a single worker thread). Non-CUDA device families keep every chunk on its home device. Set to `1` on rigs whose GPUs are shared with other jobs (a free-memory probe cannot see foreign reservations), when debugging cross-device behavior, or on hosts where the PCIe transfers outweigh the search cost. When no device fits, chunks stay on the weight's home device and rely on the per-chunk OOM fallback.
+- **Default**: `0` (multi-GPU search enabled, probe-gated)
+- **Valid Values**: `0` / `1`
+- **Usage**: Pin search traffic to the weight-hosting devices.
+
+```bash
+AR_DISABLE_CROSS_DEVICE_SEARCH=1 python -m auto_round --model ... --iters 0
 ```
 
 ### AR_RESUME_DIR

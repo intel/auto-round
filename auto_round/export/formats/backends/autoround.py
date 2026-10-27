@@ -13,7 +13,8 @@
 # limitations under the License.
 
 import re
-from typing import Any, Callable, Union
+from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -71,9 +72,12 @@ class AutoRoundFormat(OutputFormat):
                     )
                 if enable_awq:
                     self.backend = AutoAWQFormat("auto_round:auto_awq", scheme, ctx)
-            elif scheme.is_nv_fp() or scheme.is_mx_fp() or scheme.data_type == BackendDataType.NVFP4_E5M3.value:
-                self.backend = AutoRoundFormat(scheme.data_type, scheme, ctx)
-            elif scheme.is_mx_int() and scheme.bits == 4:  # only add mx_int4 now
+            elif (
+                scheme.is_nv_fp()
+                or scheme.is_mx_fp()
+                or scheme.data_type == BackendDataType.NVFP4_E5M3.value
+                or (scheme.is_mx_int() and scheme.bits == 4)  # only add mx_int4 now
+            ):
                 self.backend = AutoRoundFormat(scheme.data_type, scheme, ctx)
             elif scheme.is_act_static():  # static wfp8afp8
                 self.backend = AutoRoundFormat(BackendDataType.FP8_STATIC.value, scheme, ctx)
@@ -146,11 +150,8 @@ class AutoRoundFormat(OutputFormat):
             f"auto_round:{BackendDataType.MX_FP.value}",
             f"auto_round:{BackendDataType.MX_FP_RCEIL.value}",
             f"auto_round:{BackendDataType.NV_FP4_WITH_STATIC_GS.value}",
+            f"auto_round:{BackendDataType.MX_INT.value}",
         ]:
-            from auto_round.export.export_to_autoround.export_to_nvfp_mx import pack_layer
-
-            pack_func = pack_layer
-        elif self.output_format in [f"auto_round:{BackendDataType.MX_INT.value}"]:
             from auto_round.export.export_to_autoround.export_to_nvfp_mx import pack_layer
 
             pack_func = pack_layer
@@ -172,11 +173,11 @@ class AutoRoundFormat(OutputFormat):
         self,
         output_dir: str,
         model: torch.nn.Module = None,
-        tokenizer: Callable = None,
-        layer_config: dict = None,
+        tokenizer: Callable | None = None,
+        layer_config: dict | None = None,
         inplace: bool = True,
-        device: Union[str, torch.device] = "cpu",
-        serialization_dict: dict = None,
+        device: str | torch.device = "cpu",
+        serialization_dict: dict | None = None,
         **kwargs,
     ) -> torch.nn.Module:
         if self.backend is not None:

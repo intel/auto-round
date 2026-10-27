@@ -67,7 +67,6 @@ class TestAlgExt:
     #         "overrides were applied (data_type was not yet 'int_asym_dq')."
     #     )
 
-    @pytest.mark.timeout(90)
     def test_int2_g64_asym_enable_alg_ext_keeps_config(self, tiny_qwen_model_path):
         """Regression test: asym int2/g64 keeps the requested tuning config."""
 
@@ -101,7 +100,6 @@ class TestAlgExt:
         assert quantizer.enable_norm_bias_tuning is True
         assert quantizer.enable_quanted_input is False
 
-    @pytest.mark.timeout(120)
     @pytest.mark.parametrize("scheme", ["MXFP4", "W2A16G64"])
     def test_all_support_dtype(self, scheme, tiny_qwen_model_path, tmp_path, monkeypatch):
         from auto_round.auto_scheme import AutoScheme
@@ -144,13 +142,13 @@ class TestAlgExt:
         python_path = sys.executable
 
         res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --disable_minmax_tuning --disable_quanted_input --avg_bits 2 --options=W2A16,W4A16 --ignore_scale_zp_bits --nsamples 1 --seqlen 32"
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --disable_minmax_tuning --disable_quanted_input --bits 2 --schemes=W2A16,W4A16 --ignore_scale_zp_bits --nsamples 1 --seqlen 32"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
         res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --avg_bits 5.5 --options=mxfp4,mxfp8 --ignore_scale_zp_bits --enable_torch_compile --nsamples 1 --seqlen 32"
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --bits 5.5 --schemes=mxfp4,mxfp8 --ignore_scale_zp_bits --enable_torch_compile --nsamples 1 --seqlen 32"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"

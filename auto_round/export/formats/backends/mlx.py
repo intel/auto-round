@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import re
-from typing import Callable, Union
+from collections.abc import Callable
 
 import torch
 
@@ -55,11 +55,11 @@ class MLXFormat(OutputFormat):
         self,
         output_dir: str,
         model: torch.nn.Module = None,
-        tokenizer: Callable = None,
-        layer_config: dict = None,
+        tokenizer: Callable | None = None,
+        layer_config: dict | None = None,
         inplace: bool = True,
-        device: Union[str, torch.device] = "cpu",
-        serialization_dict: dict = None,
+        device: str | torch.device = "cpu",
+        serialization_dict: dict | None = None,
         **kwargs,
     ) -> torch.nn.Module:
         from auto_round.export.export_to_mlx.export import save_quantized_as_mlx

@@ -33,8 +33,6 @@ class AdamRoundQuantizer(SignRoundQuantizer):
             optimizer = torch.optim.AdamW
         elif isinstance(optimizer, str):
             optimizer = getattr(torch.optim, optimizer)
-        else:
-            optimizer = optimizer
         return optimizer
 
     def _get_scaler(self):

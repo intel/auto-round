@@ -89,11 +89,11 @@ def resolve_svdquant_model_adapter(
 
 
 __all__ = [
-    "FLUX_TOP_LEVEL_TENSOR_KEYS",
     "FLUX_SVDQUANT_TARGET_MODULES",
+    "FLUX_TOP_LEVEL_TENSOR_KEYS",
     "SDXL_SVDQUANT_TARGET_MODULES",
-    "SDXLSVDQuantNunchakuAdapter",
     "FluxSVDQuantNunchakuAdapter",
+    "SDXLSVDQuantNunchakuAdapter",
     "detect_svdquant_model_adapter",
     "flux_onefile_tensor_count",
     "resolve_svdquant_model_adapter",

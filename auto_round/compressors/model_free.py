@@ -40,6 +40,9 @@ weights with ``fake`` format):
 
 * Preset names: ``MXFP4``, ``MXFP8``.
 * ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
+* NVFP4 source checkpoints (detected from the model name or the source quantization config) with
+  scheme ``MXFP4``: only the NVFP4 layers are converted to MXFP4 (plus any layer matched by
+  ``layer_config``); every other layer is kept as-is.
 
 **NVFP4 E5M3** (``auto_round`` or ``fake`` format):
 
@@ -58,7 +61,7 @@ Output formats
   ``quant_method="compressed-tensors"``, compatible with vLLM / llm-compressor.
 * **NVFP4_E5M3** → AutoRound format with packed ``.weight_packed`` and
     ``.weight_scale`` tensors; use ``format="fake"`` explicitly for high-precision
-    QDQ ``.weight`` tensors.
+    QDQ ``.weight`` tensors with metadata that restores runtime activation QDQ.
 
 Usage (CLI)
 -----------
@@ -110,7 +113,7 @@ import tempfile
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
 from dataclasses import asdict, fields
-from typing import Any, Optional, Union
+from typing import Any
 
 import torch
 from safetensors import safe_open
@@ -125,6 +128,7 @@ from auto_round.utils.device import clear_memory, memory_monitor
 from auto_round.utils.device_manager import default_enable_torch_compile
 from auto_round.utils.model_free_utils import (
     _LM_HEAD_PATTERNS,
+    _NVFP_SOURCE_ONLY_KEY,
     _apply_scheme_overrides,
     _build_cross_shard_pairs_from_weight_map,
     _build_quantization_config,
@@ -138,6 +142,7 @@ from auto_round.utils.model_free_utils import (
     _layer_config_has_nvfp4,
     _list_weight_shards,
     _load_config,
+    _load_source_quant_config,
     _load_weight_map_from_index,
     _looks_like_auto_scheme,
     _normalize_scheme,
@@ -148,10 +153,12 @@ from auto_round.utils.model_free_utils import (
     _validate_supported_scheme,
     _write_index_file,
     _write_output_shard,
+    detect_model_dtypes,
     handle_model_type_low_precision_source_tensors,
     is_model_free_supported_scheme,
     preprocess_model_type_source_tensors,
 )
+from auto_round.utils.path_safety import resolve_within_directory
 
 # Backward-compat aliases for internal/private helper names used in tests and
 # downstream imports.
@@ -199,6 +206,7 @@ _QUANTIZATION_CONFIG_FILENAMES: tuple[str, ...] = (
     "quantization_config.json",
     "quantize_config.json",
     "quant_config.json",
+    "hf_quant_config.json",
 )
 
 _RESUME_MANIFEST_NAME = "model_free_resume.json"
@@ -318,6 +326,7 @@ def _prefetch_shard(
     work_dir: str,
     source_dir: str,
     streaming: bool,
+    subfolder: str | None = None,
 ) -> str | None:
     """Return the local path of the next shard (download if needed)."""
     try:
@@ -325,8 +334,20 @@ def _prefetch_shard(
             # Keep source shards in a dedicated cache directory to avoid
             # colliding with quantized output shard names in output_dir.
             shard_cache_dir = os.path.join(work_dir, ".cache", "model_free_source_shards")
+            if subfolder:
+                if os.path.isdir(model_name_or_path):
+                    model_name_or_path = os.path.join(model_name_or_path, subfolder)
+                else:
+                    local_path = str(resolve_within_directory(shard_cache_dir, shard_name, origin="shard list"))
+                    if os.path.isfile(local_path):
+                        return local_path
+                    remote_name = subfolder + "/" + shard_name
+                    path = _download_single_shard(model_name_or_path, remote_name, shard_cache_dir)
+                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                    shutil.move(path, local_path)
+                    return local_path
             return _download_single_shard(model_name_or_path, shard_name, shard_cache_dir)
-        path = os.path.join(source_dir, shard_name)
+        path = str(resolve_within_directory(source_dir, shard_name, origin="shard list"))
         return path if os.path.exists(path) else None
     except Exception as e:  # pragma: no cover
         logger.warning(f"Prefetch failed for {shard_name}: {e}")
@@ -544,20 +565,22 @@ class _ModelFreeCompressorCore:
         self,
         model_name_or_path: str,
         output_dir: str,
-        scheme: Union[str, QuantizationScheme] = "W4A16",
-        layer_config: Optional[dict] = None,
+        scheme: str | QuantizationScheme = "W4A16",
+        layer_config: dict | None = None,
         ignore_layers: str = "",
-        format: Optional[str] = None,
+        format: str | None = None,
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
-        enable_torch_compile: Optional[bool] = None,
+        enable_torch_compile: bool | None = None,
         disable_opt_rtn: bool = False,
     ) -> None:
         # --- raw inputs ---
         self.model_name_or_path = model_name_or_path
         self.output_dir = output_dir
         self.scheme_input = scheme
+        # Set by _detect_nvfp4_source_model(): convert only the NVFP4 source layers to MXFP4.
+        self.nvfp_source_only = False
         self.layer_config_input = layer_config
         self.ignore_layers_input = ignore_layers
         self.format = format or "auto_round"
@@ -596,6 +619,8 @@ class _ModelFreeCompressorCore:
         self.is_streaming: bool = False
         self.is_diffusion_model: bool = False
         self.diffusion_root_dir: str = ""
+        self.diffusion_component = "transformer"
+        self._resolved_diffusion_source = None
         self.work_dir: str = ""
         self.source_dir: str = ""
         self.shard_names: list[str] = []
@@ -647,6 +672,33 @@ class _ModelFreeCompressorCore:
         ds = asdict(self.scheme_obj)
         self.default_scheme = {k: v for k, v in ds.items() if v is not None}
         self.default_scheme["_output_format"] = self.format
+
+    def _detect_nvfp4_source_model(self) -> None:
+        """With an MXFP4 scheme on an NVFP4 source, convert only the NVFP4 layers (plus layer_config matches)."""
+        data_type = (self.scheme_obj.data_type or "").lower()
+        if not (is_mx_fp(data_type) and self.scheme_obj.bits == 4):
+            return
+        reason = detect_model_dtypes(
+            self.model_name_or_path,
+            _load_source_quant_config(
+                self.work_dir if self.is_streaming else self.source_dir, self.source_quantization_config
+            ),
+        ).get("nvfp4")
+        if reason is None:
+            return
+        format_lower = self.format.lower().replace(" ", "").split(",")[0]
+        if format_lower not in ("llm_compressor", "auto_round:llm_compressor"):
+            raise ValueError(
+                f"Detected an NVFP4 source model ({reason}); converting its NVFP4 layers to MXFP4 "
+                f"currently only supports format 'llm_compressor', got '{self.format}'."
+            )
+        logger.warning(
+            f"Detected NVFP4 layers in the source model ({reason}). Only the NVFP4 layers will be quantized "
+            "to MXFP4; all other layers (BF16, FP8, ...) are kept as-is. To quantize additional layers, "
+            "set them explicitly via layer_config."
+        )
+        self.nvfp_source_only = True
+        self.default_scheme[_NVFP_SOURCE_ONLY_KEY] = True
 
     def _parse_layer_config(self) -> None:
         lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
@@ -722,6 +774,17 @@ class _ModelFreeCompressorCore:
     # -------------------------------------------------------------------
 
     def _resolve_source(self) -> None:
+        if self._resolved_diffusion_source is not None:
+            self.diffusion_root_dir, self.is_streaming = self._resolved_diffusion_source
+            self.is_diffusion_model = True
+            component_dir = os.path.join(self.diffusion_root_dir, self.diffusion_component)
+            if self.is_streaming:
+                self.work_dir = component_dir
+            else:
+                self.source_dir = component_dir
+            self.config = _load_config(component_dir)
+            self.source_quantization_config = copy.deepcopy(_find_quantization_config(self.config))
+            return
         os.makedirs(self.output_dir, exist_ok=True)
         cached, cache_reason = _get_model_cache_status(self.model_name_or_path)
         self.is_streaming = not cached
@@ -736,7 +799,7 @@ class _ModelFreeCompressorCore:
                 "(snapshot_download with weight ignore patterns), then fetch "
                 "weight shards on demand (hf_hub_download)."
             )
-            self.work_dir = self.output_dir
+            self.work_dir = os.path.join(self.output_dir, ".cache", "model_free_metadata")
             _download_metadata_files(self.model_name_or_path, self.work_dir)
             transformer_work_dir = os.path.join(self.work_dir, "transformer")
             if (
@@ -749,7 +812,7 @@ class _ModelFreeCompressorCore:
                 self.work_dir = transformer_work_dir
                 logger.info(
                     "Detected diffusion model (no root config.json, found transformer/ subfolder). "
-                    "Only the transformer component will be quantized; other sub-components are skipped."
+                    "All transformer components will be quantized; other sub-components are copied."
                 )
             self.config = _load_config(self.work_dir)
         else:
@@ -769,7 +832,7 @@ class _ModelFreeCompressorCore:
                 self.source_dir = transformer_source_dir
                 logger.info(
                     "Detected diffusion model (no root config.json, found transformer/ subfolder). "
-                    "Only the transformer component will be quantized; other sub-components are skipped."
+                    "All transformer components will be quantized; other sub-components are copied."
                 )
             self.config = _load_config(self.source_dir)
 
@@ -789,7 +852,7 @@ class _ModelFreeCompressorCore:
             if incompatible:
                 # Group by class for a cleaner warning message
                 incompatible_layers = []
-                for cls, layers in incompatible.items():
+                for layers in incompatible.values():
                     incompatible_layers.extend(layers)
                 summary = ", ".join(f"{cls}({len(layers)})" for cls, layers in sorted(incompatible.items()))
                 self.ignore_patterns.extend(incompatible_layers)
@@ -819,12 +882,7 @@ class _ModelFreeCompressorCore:
 
     def _detect_fp8_source(self) -> None:
         quant_config = self.source_quantization_config
-        is_fp8 = (
-            quant_config.get("quant_method") == "fp8"
-            or quant_config.get("quantization_type") == "fp8"
-            or quant_config.get("fmt", "").startswith("e4m3")
-        )
-        if is_fp8:
+        if "fp8" in detect_model_dtypes(self.model_name_or_path, quant_config):
             self.fp8_block_size = quant_config.get("weight_block_size")
             logger.info(
                 f"Detected FP8 source model (block_size={self.fp8_block_size}, "
@@ -838,9 +896,32 @@ class _ModelFreeCompressorCore:
         if self.model_type:
             logger.info(f"Detected source model_type='{self.model_type}'.")
 
+        from auto_round.utils import expand_layer_config_for_weight_renames
+
+        self.layer_config = expand_layer_config_for_weight_renames(
+            self.layer_config,
+            model_type=self.model_type,
+            to_model_names=False,
+        )
+
     def _discover_shards(self) -> None:
         search_dir = self.work_dir if self.is_streaming else self.source_dir
-        self.shard_names = _list_weight_shards(search_dir)
+        # Source indices live in the isolated metadata cache; never infer streamed
+        # source names from output shards, or include remote files outside the index.
+        has_source_index = any(
+            name.endswith((".safetensors.index.json", ".bin.index.json")) for name in os.listdir(search_dir)
+        )
+        self.shard_names = _list_weight_shards(search_dir) if not self.is_streaming or has_source_index else []
+        if self.is_streaming and not has_source_index:
+            from auto_round.utils.model_free_utils import _list_remote_weight_shards
+
+            subfolder = self.diffusion_component if self.is_diffusion_model else None
+            self.shard_names = _list_remote_weight_shards(self.model_name_or_path, subfolder=subfolder)
+            if subfolder:
+                prefix = subfolder + "/"
+                self.shard_names = [name.removeprefix(prefix) for name in self.shard_names]
+        if not self.shard_names:
+            raise FileNotFoundError(f"No safetensors or PyTorch weight files found for {self.model_name_or_path}")
 
     def _build_cross_shard_deps(self) -> None:
         """Build cross-shard FP8 scale_inv dependency map from index.json.
@@ -996,12 +1077,12 @@ class _ModelFreeCompressorCore:
     def _quant_output_dir(self) -> str:
         """Effective output directory for quantized weight shards and config.
 
-        For diffusion models the quantized transformer component is written
-        to ``<output_dir>/transformer/``; for all other models the top-level
+        For diffusion models each quantized transformer component is written
+        to its own subdirectory; for all other models the top-level
         ``output_dir`` is used directly.
         """
         if self.is_diffusion_model:
-            return os.path.join(self.output_dir, "transformer")
+            return os.path.join(self.output_dir, self.diffusion_component)
         return self.output_dir
 
     # -------------------------------------------------------------------
@@ -1010,7 +1091,7 @@ class _ModelFreeCompressorCore:
 
     @property
     def _resume_manifest_path(self) -> str:
-        return os.path.join(self.output_dir, ".cache", _RESUME_MANIFEST_NAME)
+        return os.path.join(self._quant_output_dir, ".cache", _RESUME_MANIFEST_NAME)
 
     def _build_resume_parameters(self) -> dict:
         """Return the effective command inputs that determine shard output."""
@@ -1369,6 +1450,7 @@ class _ModelFreeCompressorCore:
                 self.work_dir,
                 self.source_dir,
                 self.is_streaming,
+                self.diffusion_component if self.is_diffusion_model else None,
             )
             download_futures[future] = (shard_idx, shard_name)
             next_download_idx += 1
@@ -1432,6 +1514,7 @@ class _ModelFreeCompressorCore:
                                 quant_output_dir=self._quant_output_dir,
                                 total_shards=total_shards,
                                 enable_torch_compile=self.enable_torch_compile,
+                                disable_opt_rtn=self.disable_opt_rtn,
                                 # Keep donor shards alive for recipient hydration.
                                 cleanup_source_shard=not is_donor,
                                 donor_tensors_to_exclude=donor_tensors,
@@ -1504,6 +1587,12 @@ class _ModelFreeCompressorCore:
         block_name_to_quantize = ",".join(dict.fromkeys(block_prefixes)) or None
 
         os.makedirs(self._quant_output_dir, exist_ok=True)
+        source_quant_config = None
+        if self.nvfp_source_only:
+            # Read before the stale source metadata files are removed below.
+            source_quant_config = _load_source_quant_config(
+                self.work_dir if self.is_streaming else self.source_dir, self.source_quantization_config
+            )
         quantization_config = _build_quantization_config(
             default_scheme=self.default_scheme,
             layer_config=self.layer_config,
@@ -1512,11 +1601,12 @@ class _ModelFreeCompressorCore:
             ignored_layers=self.all_ignored_layers,
             block_name_to_quantize=block_name_to_quantize,
             format=self.format,
+            source_quant_config=source_quant_config,
         )
 
         self._remove_stale_quantization_config_files()
         _remove_quantization_configs(self.config)
-        if self.format == "fake":
+        if self.format == "fake" and quantization_config.get("packing_format") != "auto_round:fake":
             with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
                 json.dump(self.config, f, indent=2)
             return
@@ -1528,12 +1618,37 @@ class _ModelFreeCompressorCore:
         with open(os.path.join(self._quant_output_dir, "quantization_config.json"), "w") as f:
             json.dump(quantization_config, f, indent=2)
 
-    def _copy_metadata_files(self) -> None:
-        if self.is_streaming:
-            # Metadata was downloaded directly to output_dir (or output_dir/transformer/
-            # for diffusion models) — nothing to copy or clean up.
+    def _quantize_additional_transformers(self) -> None:
+        """Run a separate shard pipeline for each additional transformer."""
+        if not self.is_diffusion_model or self.diffusion_component != "transformer":
             return
+        for name in sorted(os.listdir(self.diffusion_root_dir)):
+            if name == "transformer" or not name.startswith("transformer"):
+                continue
+            if not os.path.isfile(os.path.join(self.diffusion_root_dir, name, "config.json")):
+                continue
+            logger.info(f"Model-free quantization of {name}")
+            component = _ModelFreeCompressorCore(
+                model_name_or_path=self.model_name_or_path,
+                output_dir=self.output_dir,
+                scheme=copy.deepcopy(self.scheme_input),
+                layer_config=copy.deepcopy(self.layer_config_input),
+                ignore_layers=self.ignore_layers_input,
+                format=self.format,
+                device=self.device,
+                quant_lm_head=self.quant_lm_head,
+                quant_nontext_module=self.quant_nontext_module,
+                enable_torch_compile=self.enable_torch_compile,
+                disable_opt_rtn=self.disable_opt_rtn,
+            )
+            component.user_scheme_overrides = copy.deepcopy(getattr(self, "user_scheme_overrides", {}))
+            component.diffusion_component = name
+            component._resolved_diffusion_source = (self.diffusion_root_dir, self.is_streaming)
+            component.run()
 
+    def _copy_metadata_files(self) -> None:
+        if self.diffusion_component != "transformer":
+            return
         if self.is_diffusion_model:
             # For diffusion models, copy root-level metadata files and
             # sub-component directories (vae, scheduler, tokenizer, …) to
@@ -1553,10 +1668,11 @@ class _ModelFreeCompressorCore:
                     shutil.copy2(src, dst)
             return
 
-        for fname in os.listdir(self.source_dir):
+        metadata_dir = self.work_dir if self.is_streaming else self.source_dir
+        for fname in os.listdir(metadata_dir):
             if _is_weight_shard(fname) or _is_stale_quantization_metadata(fname):
                 continue
-            src = os.path.join(self.source_dir, fname)
+            src = os.path.join(metadata_dir, fname)
             dst = os.path.join(self.output_dir, fname)
             if os.path.isdir(src):
                 if not os.path.exists(dst):
@@ -1622,6 +1738,7 @@ class _ModelFreeCompressorCore:
 
         # ---- source resolution ----
         self._resolve_source()
+        self._detect_nvfp4_source_model()
         self._check_conv1d_and_embedding()
         self._apply_predefined_ignore_layers()
         self._detect_fp8_source()
@@ -1641,6 +1758,13 @@ class _ModelFreeCompressorCore:
             packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
         else:
             packing_format = "fake" if self.format == "fake" else "auto_round:auto_gptq"
+        supports_opt_rtn = (
+            is_mx_fp(data_type)
+            or data_type == _NVFP4_E5M3_DATA_TYPE
+            or _layer_config_has_mxfp(self.layer_config)
+            or _layer_config_has_nvfp4(self.layer_config)
+        )
+        opt_rtn_enabled = supports_opt_rtn and not self.disable_opt_rtn
         if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
             if not self.disable_opt_rtn:
                 logger.info(
@@ -1648,7 +1772,7 @@ class _ModelFreeCompressorCore:
                     "2x scale, and 0.5x scale independently for each group. "
                     "Pass --disable_opt_rtn to use plain RTN."
                 )
-        else:
+        elif not supports_opt_rtn:
             logger.info(
                 "Integer WOQ model-free quantization uses plain RTN "
                 "(opt_rtn is disabled for INT WOQ to preserve accuracy)."
@@ -1657,7 +1781,9 @@ class _ModelFreeCompressorCore:
         logger.info(
             f"Model-free quantization: {self.model_name_or_path}\n"
             f"  Scheme: {self.scheme_obj}\n"
+            f"  NVFP4 source layers only: {self.nvfp_source_only}\n"
             f"  Packing format: {packing_format}\n"
+            f"  Optimized RTN: {'enabled' if opt_rtn_enabled else 'disabled'}\n"
             f"  Output: {self.output_dir}\n"
             f"  Shards: {len(self.shard_names)}\n"
             f"  Shard parallelism: {self.shard_parallelism} ({shard_parallelism_source}, "
@@ -1683,9 +1809,16 @@ class _ModelFreeCompressorCore:
                 f"{', '.join(missing_shards)}"
             )
 
+        if self.nvfp_source_only and not self.all_quantized_layers:
+            logger.warning(
+                f"No NVFP4 layers were found in the shards of '{self.model_name_or_path}'; "
+                "all layers were kept as-is."
+            )
+
         # ---- write outputs ----
         self._write_index()
         self._write_config_files()
+        self._quantize_additional_transformers()
         self._copy_metadata_files()
         self._clear_resume_state()
         self._cleanup_streaming_shard_cache()
@@ -1734,11 +1867,11 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
     def __init__(
         self,
         model_name_or_path: str,
-        output_dir: Optional[str] = None,
-        scheme: Union[str, QuantizationScheme] = "W4A16",
-        layer_config: Optional[dict] = None,
+        output_dir: str | None = None,
+        scheme: str | QuantizationScheme = "W4A16",
+        layer_config: dict | None = None,
         ignore_layers: str = "",
-        format: Optional[str] = None,
+        format: str | None = None,
         device: str = "cpu",
         quant_lm_head: bool = False,
         quant_nontext_module: bool = False,
@@ -1746,7 +1879,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         tokenizer: Any = None,
         device_map: Any = None,
         low_cpu_mem_usage: bool = True,
-        enable_torch_compile: Optional[bool] = None,
+        enable_torch_compile: bool | None = None,
         disable_opt_rtn: bool = False,
         **kwargs,
     ) -> None:
@@ -1754,6 +1887,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
         from dataclasses import fields as dc_fields
 
         fallback_kwargs = dict(kwargs)
+        self._force_model_free = bool(kwargs.get("model_free", False))
 
         # Collect per-field scheme overrides forwarded from AutoRound
         # (e.g. bits=4, sym=False passed as individual kwargs).
@@ -1787,7 +1921,7 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
         # Compressor-role state (mirrors BaseCompressor attributes used by
         # AutoRound's post-processing code)
-        self._output_dir_override: Optional[str] = None  # set by quantize_and_save
+        self._output_dir_override: str | None = None  # set by quantize_and_save
         self.model = None
         self.tokenizer = tokenizer
         self.model_free = True
@@ -1808,6 +1942,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             model=model_name_or_path,
             iters=0,
             disable_opt_rtn=disable_opt_rtn,
+            # Forward the user's torch.compile choice so the fallback compressor
+            # honors an explicit --enable_torch_compile request. ``None`` keeps the
+            # fallback's default situational policy (auto-disable for RTN/OPT-RTN).
+            enable_torch_compile=enable_torch_compile,
             tokenizer=tokenizer,
             scheme=copy.deepcopy(scheme),
             layer_config=copy.deepcopy(layer_config),
@@ -1833,11 +1971,17 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
 
         # AutoScheme (two-phase delta-loss selection) state.
         self._auto_scheme_resolved = False
-        self._auto_scheme_family: Optional[str] = None
+        self._auto_scheme_family: str | None = None
 
-    def _fallback_to_base_compressor(self, save_format: Optional[str] = None):
+    def _fallback_to_base_compressor(self, save_format: str | None = None):
         from auto_round.autoround import AutoRound
 
+        if self._force_model_free:
+            requested_format = save_format or self.format
+            raise ValueError(
+                "model_free=True does not support the requested operation "
+                f"(format: '{requested_format}'); refusing to fall back to regular AutoRound."
+            )
         logger.info(
             "Model-free mode cannot export this request directly; "
             "constructing the regular AutoRound compressor (requested format: '%s').",
@@ -2021,6 +2165,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
 
         if format not in accepted_formats:
+            if self._force_model_free:
+                raise ValueError(
+                    f"model_free=True does not support format '{format}' " f"for AutoScheme family '{family}'."
+                )
             logger.warning(
                 "Format '%s' is incompatible with model-free + AutoScheme (family=%s); "
                 "fallback before running AutoScheme scoring.",
@@ -2079,6 +2227,10 @@ class ModelFreeCompressor(_ModelFreeCompressorCore):
             # BF16 default with NVFP4_E5M3 layer_config overrides.
             _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
         if format not in _accepted_formats:
+            if self._force_model_free:
+                raise ValueError(
+                    f"model_free=True does not support format '{format}' " f"for scheme '{self.scheme_input}'."
+                )
             logger.warning(
                 f"Format '{format}' is not supported by model-free mode for scheme '{self.scheme_input}'; "
                 f"falling back to the regular AutoRound flow."

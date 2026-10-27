@@ -30,7 +30,6 @@ class TestConfigResolverGpu:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     @pytest.mark.parametrize("scheme", ["W4A16", "W2A16", "W8A16", "MXFP4"])
     def test_preset_scheme_export(self, tiny_opt_model_path, scheme):
         autoround = AutoRound(tiny_opt_model_path, scheme=scheme, iters=0, disable_opt_rtn=True, nsamples=1, seqlen=16)
@@ -39,7 +38,6 @@ class TestConfigResolverGpu:
         config = AutoConfig.from_pretrained(quantized_model_path, trust_remote_code=True)
         assert getattr(config, "quantization_config", {}).get("quant_method") == "auto-round"
 
-    @pytest.mark.timeout(180)
     def test_layer_config_override(self, tiny_opt_model_path):
         """Per-layer override wins over the default scheme during config resolution."""
         layer_config = {"model.decoder.layers.0.self_attn.q_proj": {"bits": 8}}

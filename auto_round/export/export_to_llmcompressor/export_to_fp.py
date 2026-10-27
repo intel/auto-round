@@ -17,7 +17,7 @@ import inspect
 import json
 import os
 import sys
-from typing import Callable, Union
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -27,7 +27,11 @@ from tqdm import tqdm
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.config import initialize_quantization
-from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
+from auto_round.export.export_to_llmcompressor.utils import (
+    add_routed_experts_if_moe,
+    finalize_llmcompressor_config_names,
+    generate_ignore_regex_list,
+)
 from auto_round.export.utils import (
     filter_quantization_config,
     is_immediate_saving_mode,
@@ -54,9 +58,11 @@ from .config import check_compressed_tensors_supported
 from .export_to_static_fp import (
     _configure_gaudi2_fp8_dtype,
     _construct_kv_scheme,
+    _construct_nvfp4_kv_scheme,
     _get_attention_config,
     _use_fp8_attention,
     _use_fp8_kv,
+    _use_nvfp4_kv,
 )
 
 __all__ = [
@@ -92,7 +98,7 @@ def pack_layer(name, model, device=None):
             from auto_round.data_type.nvfp import calculate_gparam
 
             input_global_scale = calculate_gparam(layer.act_max, layer.group_size)  # , model.device
-            setattr(layer, "input_global_scale", input_global_scale)
+            layer.input_global_scale = input_global_scale
             delattr(layer, "act_max")
 
     # QuantLinear = get_fp_qlinear(backend, bits, group_size, sym)
@@ -134,8 +140,10 @@ def pack_layer(name, model, device=None):
     release_layer_safely(layer)
 
 
-def _get_scheme(bits, data_type):
+def _get_scheme(bits, data_type, act_bits=16):
     """Determine the compressed-tensors format string for a given data type and bit-width."""
+    if data_type == "int" and 2 <= bits <= 8 and act_bits >= 16:
+        return f"W{bits}A16"
     if is_mx_fp(data_type):
         return "MXFP4" if bits == 4 else "MXFP8"
     if is_nv_fp(data_type):
@@ -147,6 +155,8 @@ def _get_scheme(bits, data_type):
 
 def _get_group_format(bits, data_type):
     """Determine the compressed-tensors format string for a given data type and bit-width."""
+    if data_type == "int":
+        return "pack-quantized"
     if is_mx_fp(data_type):
         return "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
     if is_nv_fp(data_type):
@@ -156,12 +166,34 @@ def _get_group_format(bits, data_type):
     return "float-quantized"
 
 
+def _attention_modules_have_nvfp4_kv_scales(model: torch.nn.Module) -> bool:
+    """True when every attention module collected NVFP4 KV global scales in calibration.
+
+    The ``k_global_scale``/``v_global_scale`` parameters are only registered
+    once the calibration forwards observed KV magnitudes, so their presence on
+    all attention modules is the signal that an NVFP4 ``kv_cache_scheme`` can
+    be exported with valid static scales.
+    """
+    from auto_round.experimental.utils import is_attention_module
+
+    num_attention_modules = 0
+    for module in model.modules():
+        if is_attention_module(module):
+            num_attention_modules += 1
+            if not isinstance(getattr(module, "k_global_scale", None), torch.nn.Parameter) or not isinstance(
+                getattr(module, "v_global_scale", None), torch.nn.Parameter
+            ):
+                return False
+    return num_attention_modules > 0
+
+
 def _build_mixed_fp_quantization_config(
     scheme_groups,
     layer_config,
     ignore,
     global_bits,
     global_data_type,
+    global_act_bits,
     model,
     static_kv_dtype=None,
     static_attention_dtype=None,
@@ -176,7 +208,7 @@ def _build_mixed_fp_quantization_config(
     targets=["Linear"]) comes last. Top-level format is set to "mixed-precision".
 
     Args:
-        scheme_groups: dict mapping (bits, data_type) -> list of layer names
+        scheme_groups: dict mapping (bits, data_type, act_bits) -> list of layer names
         layer_config: per-layer quantization configs
         ignore: list of layers/patterns to ignore
         global_bits: global quantization bit-width
@@ -184,7 +216,7 @@ def _build_mixed_fp_quantization_config(
     Returns:
         quantization_config dict
     """
-    global_key = (global_bits, global_data_type)
+    global_key = (global_bits, global_data_type, global_act_bits)
 
     # Override groups first, default group last
     override_groups = []
@@ -198,28 +230,39 @@ def _build_mixed_fp_quantization_config(
 
     config_groups = {}
     group_formats = {}
-    for idx, ((lbits, ldata_type), layer_names) in enumerate(ordered):
+    for idx, ((lbits, ldata_type, lact_bits), layer_names) in enumerate(ordered):
         group_name = f"group_{idx}"
-        scheme = _get_scheme(lbits, ldata_type)
+        scheme = _get_scheme(lbits, ldata_type, lact_bits)
+        if scheme is None:
+            raise ValueError(f"Unsupported layer scheme: data_type={ldata_type}, bits={lbits}, act_bits={lact_bits}.")
         tmp_quantization_config = initialize_quantization(scheme=scheme)
         tmp_quantization_config = tmp_quantization_config.config_groups["group_0"]
-        is_default = (lbits, ldata_type) == global_key
-        tmp_quantization_config.targets = ["Linear"] if is_default else layer_names
+        is_default = (lbits, ldata_type, lact_bits) == global_key
+        tmp_quantization_config.targets = (
+            ["Linear"] if is_default else add_routed_experts_if_moe(list(layer_names), layer_names)
+        )
         config_groups[group_name] = tmp_quantization_config
         group_formats[group_name] = _get_group_format(lbits, ldata_type)
 
     use_fp8_attention = _use_fp8_attention(static_attention_dtype)
+    use_fp8_kv = _use_fp8_kv(static_kv_dtype)
+    use_nvfp4_kv = _use_nvfp4_kv(static_kv_dtype)
     if use_fp8_attention:
         attention_config = _get_attention_config(model, static_attention_granularity)
     else:
         attention_config = None
     kv_granularity = static_attention_granularity if use_fp8_attention else static_kv_granularity
+    kv_cache_scheme = _resolve_kv_cache_scheme(
+        model,
+        use_fp8_kv=use_fp8_kv,
+        use_nvfp4_kv=use_nvfp4_kv,
+        use_fp8_attention=use_fp8_attention,
+        kv_granularity=kv_granularity,
+    )
     quantization_config = initialize_quantization(
         scheme=None,
         config_groups=config_groups,
-        kv_cache_scheme=(
-            _construct_kv_scheme(kv_granularity) if (_use_fp8_kv(static_kv_dtype) or use_fp8_attention) else None
-        ),
+        kv_cache_scheme=kv_cache_scheme,
         ignore=ignore,
     )
     quantization_config = quantization_config.to_dict()
@@ -236,15 +279,42 @@ def _build_mixed_fp_quantization_config(
     return quantization_config
 
 
+def _resolve_kv_cache_scheme(
+    model: torch.nn.Module,
+    use_fp8_kv: bool,
+    use_nvfp4_kv: bool,
+    use_fp8_attention: bool,
+    kv_granularity: str = "tensor",
+):
+    """Pick the KV cache scheme for the exported compressed-tensors config."""
+    if use_nvfp4_kv and (use_fp8_kv or use_fp8_attention):
+        raise ValueError(
+            "static_kv_dtype 'nvfp4' conflicts with the FP8 static attention/KV options; "
+            "please set only one of them."
+        )
+    if use_nvfp4_kv:
+        if not _attention_modules_have_nvfp4_kv_scales(model):
+            raise ValueError(
+                "NVFP4 static KV cache quantization was requested "
+                "(static_kv_dtype='nvfp4') but no k_global_scale/v_global_scale "
+                "parameters were collected. Quantize with calibration data and "
+                "static_kv_dtype='nvfp4' set (or drop the NVFP4 KV option)."
+            )
+        return _construct_nvfp4_kv_scheme()
+    if use_fp8_kv or use_fp8_attention:
+        return _construct_kv_scheme(kv_granularity)
+    return None
+
+
 def save_quantized_as_fp(
     output_dir: str,
     model: torch.nn.Module = None,
-    tokenizer: Callable = None,
-    layer_config: dict = None,
+    tokenizer: Callable | None = None,
+    layer_config: dict | None = None,
     inplace: bool = True,
-    device: Union[str, torch.device] = "cpu",
-    backend: str = None,
-    serialization_dict: dict = None,
+    device: str | torch.device = "cpu",
+    backend: str | None = None,
+    serialization_dict: dict | None = None,
     **kwargs,
 ) -> torch.nn.Module:
     """
@@ -272,7 +342,7 @@ def save_quantized_as_fp(
     data_type = serialization_dict.get("data_type", None)
     act_bits = serialization_dict.get("act_bits", None)
     act_data_type = serialization_dict.get("act_data_type", None)
-    safe_serialization = True if "safe_serialization" not in kwargs.keys() else kwargs["safe_serialization"]
+    safe_serialization = kwargs.get("safe_serialization", True)
     if not inplace:
         model = copy.deepcopy(model.to("cpu"))
     processor = kwargs.get("processor", None)
@@ -296,7 +366,7 @@ def save_quantized_as_fp(
                     from auto_round.data_type.nvfp import calculate_gparam
 
                     input_global_scale = calculate_gparam(layer.act_max, layer.group_size, model.device)
-                    setattr(layer, "input_global_scale", input_global_scale)
+                    layer.input_global_scale = input_global_scale
                     delattr(layer, "act_max")
         # update fused input_global_scale
         from auto_round.data_type.utils import update_fused_layer_global_scales
@@ -319,13 +389,16 @@ def save_quantized_as_fp(
     check_compressed_tensors_supported(raise_error=True)
 
     # Detect mixed precision by grouping quantized layers by (bits, data_type)
-    scheme_groups = {}  # (bits, data_type) -> list of layer names
+    scheme_groups = {}  # (bits, data_type, act_bits) -> list of layer names
     for name, cfg in layer_config.items():
         layer_bits = cfg.get("bits", bits)
         layer_dt = cfg.get("data_type", data_type)
         if layer_bits > 8:
             continue
-        key = (layer_bits, layer_dt)
+        layer_act_bits = cfg.get("act_bits")
+        if layer_act_bits is None:
+            layer_act_bits = act_bits if act_bits is not None else 16
+        key = (layer_bits, layer_dt, layer_act_bits)
         scheme_groups.setdefault(key, []).append(name)
 
     is_mixed = len(scheme_groups) > 1
@@ -334,10 +407,12 @@ def save_quantized_as_fp(
     static_attention_granularity = serialization_dict.get("static_attention_granularity", "tensor")
     static_kv_granularity = serialization_dict.get("static_kv_granularity", "tensor")
     kv_granularity = static_attention_granularity if use_fp8_attention else static_kv_granularity
-    kv_cache_scheme = (
-        _construct_kv_scheme(kv_granularity)
-        if (_use_fp8_kv(serialization_dict.get("static_kv_dtype", None)) or use_fp8_attention)
-        else None
+    kv_cache_scheme = _resolve_kv_cache_scheme(
+        model,
+        use_fp8_kv=_use_fp8_kv(serialization_dict.get("static_kv_dtype", None)),
+        use_nvfp4_kv=_use_nvfp4_kv(serialization_dict.get("static_kv_dtype", None)),
+        use_fp8_attention=use_fp8_attention,
+        kv_granularity=kv_granularity,
     )
 
     if is_mixed:
@@ -347,19 +422,40 @@ def save_quantized_as_fp(
             ignore,
             bits,
             data_type,
+            act_bits if act_bits is not None else 16,
             model,
             static_kv_dtype=serialization_dict.get("static_kv_dtype", None),
             static_attention_dtype=serialization_dict.get("static_attention_dtype", None),
             static_kv_granularity=static_kv_granularity,
             static_attention_granularity=static_attention_granularity,
         )
+    elif bits >= 16:
+        if not scheme_groups:
+            raise ValueError(
+                "LLMCompressor export requires quantized layer overrides for a full-precision default scheme."
+            )
+        (layer_bits, layer_data_type, layer_act_bits), targets = next(iter(scheme_groups.items()))
+        scheme = _get_scheme(layer_bits, layer_data_type, layer_act_bits)
+        if scheme is None:
+            raise ValueError(
+                f"Unsupported layer override data_type={layer_data_type}, bits={layer_bits}, act_bits={layer_act_bits}."
+            )
+        quantization_config = initialize_quantization(
+            scheme=scheme,
+            targets=add_routed_experts_if_moe(list(targets), targets),
+            kv_cache_scheme=kv_cache_scheme,
+            ignore=ignore,
+        )
+        quantization_config.format = _get_group_format(layer_bits, layer_data_type)
+        quantization_config = quantization_config.to_dict()
+        quantization_config["provider"] = "auto-round"
     elif data_type == "nvfp4_v2":
         from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
 
         quantization_config = initialize_nvfp4_e5m3_quantization(ignore=ignore)
         quantization_config["provider"] = "auto-round"
     else:
-        scheme = _get_scheme(bits, data_type)
+        scheme = _get_scheme(bits, data_type, act_bits if act_bits is not None else 16)
         if scheme is None:
             raise ValueError(f"Unsupported combination of data_type={data_type} and bits={bits}.")
 
@@ -373,12 +469,18 @@ def save_quantized_as_fp(
             attention_config = _get_attention_config(model, static_attention_granularity)
         else:
             attention_config = None
-        setattr(quantization_config, "format", format)
+        quantization_config.format = format
         quantization_config = quantization_config.to_dict()
         quantization_config["provider"] = "auto-round"
         _configure_gaudi2_fp8_dtype(quantization_config)
         if attention_config is not None:
             quantization_config["attention_input_activations"] = attention_config
+    quantization_config = finalize_llmcompressor_config_names(
+        quantization_config,
+        model,
+        [],
+        [name for names in scheme_groups.values() for name in names],
+    )
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:

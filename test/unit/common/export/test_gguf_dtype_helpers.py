@@ -195,7 +195,7 @@ class TestUseMoreBits:
         from auto_round.export.export_to_gguf.gguf_dtype import _use_more_bits
 
         # 8 layers: first 8/8=1 layer uses more bits
-        for i in range(0, 1):
+        for i in range(1):
             assert _use_more_bits(i, 8) is True
 
     def test_last_eighth(self):
@@ -322,3 +322,44 @@ class TestGGUFDTypeSelector:
         )
 
         assert selector.select_qtype("blk.0.ffn_down.weight", n_dims=2) == gguf.GGMLQuantizationType.Q4_K
+
+
+class TestGGUFDTypeSelectorLLMType70B:
+    """llama.cpp gives attn_v of LLM_TYPE_70B models Q5_K instead of Q3_K/Q4_K."""
+
+    @staticmethod
+    def _attn_v_qtypes(model_arch, hparams, gguf_format):
+        from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector, gguf_format_to_ftype
+
+        selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype(gguf_format), model_arch)
+        n_layer = hparams["num_hidden_layers"]
+        return [selector.select_qtype(f"blk.{i}.attn_v.weight", n_dims=2) for i in range(n_layer)]
+
+    def test_llama_70b_attn_v_uses_q5_k(self):
+        hparams = {"num_hidden_layers": 80, "num_attention_heads": 64, "num_key_value_heads": 8}
+        qtypes = self._attn_v_qtypes(gguf.MODEL_ARCH.LLAMA, hparams, "gguf:q4_k_m")
+        # use_more_bits layers stay Q6_K, every other layer is bumped from Q4_K to Q5_K
+        assert set(qtypes) == {gguf.GGMLQuantizationType.Q5_K, gguf.GGMLQuantizationType.Q6_K}
+        assert gguf.GGMLQuantizationType.Q5_K in qtypes
+
+        qtypes = self._attn_v_qtypes(gguf.MODEL_ARCH.LLAMA, hparams, "gguf:q3_k_s")
+        assert set(qtypes) == {gguf.GGMLQuantizationType.Q5_K}
+
+    def test_qwen2_80_layers_attn_v_uses_q5_k(self):
+        hparams = {"num_hidden_layers": 80, "num_attention_heads": 64, "num_key_value_heads": 8}
+        qtypes = self._attn_v_qtypes(gguf.MODEL_ARCH.QWEN2, hparams, "gguf:q4_k_s")
+        assert set(qtypes) == {gguf.GGMLQuantizationType.Q5_K}
+
+    @pytest.mark.parametrize(
+        "model_arch, hparams",
+        [
+            # 80-layer LLaMA without GQA is LLM_TYPE_65B in llama.cpp
+            (gguf.MODEL_ARCH.LLAMA, {"num_hidden_layers": 80, "num_attention_heads": 64, "num_key_value_heads": 64}),
+            (gguf.MODEL_ARCH.LLAMA, {"num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8}),
+            (None, {"num_hidden_layers": 80, "num_attention_heads": 64, "num_key_value_heads": 8}),
+        ],
+    )
+    def test_other_models_keep_q4_k(self, model_arch, hparams):
+        qtypes = self._attn_v_qtypes(model_arch, hparams, "gguf:q4_k_s")
+        assert gguf.GGMLQuantizationType.Q4_K in qtypes
+        assert gguf.GGMLQuantizationType.Q5_K not in qtypes[4:]

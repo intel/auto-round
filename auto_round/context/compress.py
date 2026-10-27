@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Callable, Optional, Union
+from collections.abc import Callable
 
 import torch
 
@@ -34,12 +34,13 @@ class CompressContext(BaseContext):
         low_cpu_mem_usage: bool = True,
         low_gpu_mem_usage: bool = False,
         enable_torch_compile: bool = True,
+        calibration_data_device: str = "auto",
         is_immediate_packing: bool = False,
         is_immediate_saving: bool = False,
-        formats: Union[list, str] = None,
+        formats: list | str | None = None,
         output_dir: str = "./compressed_models",
-        static_kv_dtype: Optional[torch.dtype] = None,  # TODO later this should be scheme wenhuach
-        static_attention_dtype: Optional[torch.dtype] = None,
+        static_kv_dtype: torch.dtype | None = None,  # TODO later this should be scheme wenhuach
+        static_attention_dtype: torch.dtype | None = None,
         static_kv_granularity: str = "tensor",
         static_attention_granularity: str = "tensor",
         **kwargs,
@@ -47,6 +48,9 @@ class CompressContext(BaseContext):
         super().__init__()
         self.low_cpu_mem_usage = low_cpu_mem_usage
         self.low_gpu_mem_usage = low_gpu_mem_usage
+        # Device placement for block calibration data: auto | off | cpu | csv.
+        # Threaded from the same-name API/CLI parameter (single source of truth).
+        self.calibration_data_device = calibration_data_device
         self.formats = formats
         self.output_dir = output_dir
         # All device / device-list state lives on the process-wide DeviceManager

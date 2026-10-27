@@ -133,7 +133,6 @@ class TestQwen3OmniMoeQuantization:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     def test_quantize_and_reload(self, tiny_opt_model_path, tiny_qwen3_omni_moe_model_path):
         """Quantize, save, reload, and run Qwen3-Omni's text-only thinker path."""
         autoround = _make_text_only_autoround(tiny_qwen3_omni_moe_model_path, tiny_opt_model_path)

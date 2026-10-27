@@ -13,8 +13,6 @@
 # limitations under the License.
 
 
-from typing import Optional, Union
-
 import torch
 
 from auto_round.experimental.qmodules.base import QModuleBase
@@ -39,10 +37,10 @@ class WeightFP8ActFP8StaticQuantLinear(QModuleBase):
         self,
         in_features,
         out_features,
-        weight: Optional[torch.Tensor] = None,
-        weight_scale: Optional[torch.Tensor] = None,
-        bias: Union[torch.Tensor, bool, None] = None,
-        input_scale: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        weight_scale: torch.Tensor | None = None,
+        bias: torch.Tensor | bool | None = None,
+        input_scale: torch.Tensor | None = None,
         dtype=torch.bfloat16,
     ):
         super().__init__()

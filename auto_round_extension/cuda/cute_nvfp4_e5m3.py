@@ -14,9 +14,8 @@
 
 """Optional CuTe DSL dispatch for NVFP4 E5M3 activation QDQ."""
 
-from functools import lru_cache
+from functools import cache, lru_cache
 from importlib.util import find_spec
-from typing import Optional
 
 import torch
 
@@ -167,7 +166,7 @@ def _make_weight_dq_kernel():
     return launch_weight_dq
 
 
-@lru_cache(maxsize=None)
+@cache
 def _get_compiled_qdq_kernel(device_index: int, dtype: torch.dtype):
     import cutlass.cute as cute
     from cutlass.cute.runtime import from_dlpack
@@ -181,7 +180,7 @@ def _get_compiled_qdq_kernel(device_index: int, dtype: torch.dtype):
     )
 
 
-@lru_cache(maxsize=None)
+@cache
 def _get_compiled_weight_dq_kernel(device_index: int, dtype: torch.dtype):
     import cutlass.cute as cute
     from cutlass.cute.runtime import from_dlpack
@@ -197,7 +196,7 @@ def _get_compiled_weight_dq_kernel(device_index: int, dtype: torch.dtype):
     )
 
 
-def try_cute_nvfp4_v2_qdq(activation: torch.Tensor, group_size: int) -> Optional[torch.Tensor]:
+def try_cute_nvfp4_v2_qdq(activation: torch.Tensor, group_size: int) -> torch.Tensor | None:
     """Run a CuTe DSL group-size-16 FP4 QDQ kernel when eligible."""
     if not can_use_cute_nvfp4_v2_qdq(activation, group_size):
         return None
@@ -222,7 +221,7 @@ def try_cute_nvfp4_v2_qdq(activation: torch.Tensor, group_size: int) -> Optional
 
 def try_cute_nvfp4_e5m3_weight_dq(
     weight_packed: torch.Tensor, weight_scale: torch.Tensor, dtype: torch.dtype
-) -> Optional[torch.Tensor]:
+) -> torch.Tensor | None:
     """Dequantize packed FP4 E5M3 weights with CuTe."""
     if (
         not is_cute_dsl_available()
@@ -261,13 +260,13 @@ def try_cute_nvfp4_e5m3_linear(
     activation: torch.Tensor,
     weight_packed: torch.Tensor,
     weight_scale: torch.Tensor,
-    bias: Optional[torch.Tensor],
-) -> Optional[torch.Tensor]:
+    bias: torch.Tensor | None,
+) -> torch.Tensor | None:
     """Reserved second-stage dispatch point for fused QDQ, unpack, and GEMM.
 
     Returning ``None`` keeps the reference Linear path active until the packed-weight
     mainloop has been validated against the existing E5M3 checkpoint format.
     """
     del activation, weight_packed, weight_scale, bias
-    fused_output: Optional[torch.Tensor] = None
+    fused_output: torch.Tensor | None = None
     return fused_output

@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 #
 # Copyright (c) 2023 Intel Corporation
 #
@@ -342,9 +341,8 @@ def test_xpu_woqgemm_graph_capture_uses_live_queue():
         graph = torch.xpu.CUDAGraph()
 
         try:
-            with torch.xpu.stream(capture_stream):
-                with torch.xpu.graph(graph):
-                    graph_output = _woq_call(graph_input)
+            with torch.xpu.stream(capture_stream), torch.xpu.graph(graph):
+                graph_output = _woq_call(graph_input)
         except RuntimeError as err:
             pytest.skip(f"XPU graph capture is unavailable in this environment: {err}")
 

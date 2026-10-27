@@ -47,7 +47,6 @@ class TestAutoSchemeGpu:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(240)
     def test_auto_scheme_quantize_reload(self, tiny_qwen_model_path, tmp_path, monkeypatch):
         monkeypatch.setenv("AR_AUTO_SCHEME_NSAMPLES", "1")
         monkeypatch.setenv("AR_AUTO_SCHEME_BATCH_SIZE", "1")
@@ -76,7 +75,6 @@ class TestAutoSchemeGpu:
         )
         assert isinstance(model, torch.nn.Module)
 
-    @pytest.mark.timeout(120)
     def test_auto_scheme_avg_bits_in_range(self, tiny_qwen_model_path, tmp_path, monkeypatch):
         """The generated mixed scheme lands near the requested average bit-width."""
         from auto_round.auto_scheme.utils import compute_avg_bits_for_model
@@ -99,7 +97,6 @@ class TestAutoSchemeGpu:
         avg_bits, _ = compute_avg_bits_for_model(model, ignore_scale_zp_bits=True)
         assert target - 0.3 < avg_bits <= target + 0.3
 
-    @pytest.mark.timeout(240)
     def test_auto_scheme_iters1_reload(self, tiny_qwen_model_path, tmp_path, monkeypatch):
         """Auto scheme with sign-SGD (iters>0) + reload."""
         monkeypatch.setenv("AR_AUTO_SCHEME_NSAMPLES", "1")

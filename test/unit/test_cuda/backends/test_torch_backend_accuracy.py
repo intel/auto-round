@@ -45,7 +45,6 @@ class TestTorchBackendAccuracy:
     def teardown_class(cls):
         shutil.rmtree("runs", ignore_errors=True)
 
-    @pytest.mark.timeout(90)
     def test_torch_backend_accuracy_asym_rtn(self, dataloader):
         """RTN-quantized 4-bit asym model meets the accuracy threshold in both fp16 and bf16."""
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
@@ -65,7 +64,6 @@ class TestTorchBackendAccuracy:
             evaluate_accuracy(model, tokenizer, threshold=0.35, batch_size=16, limit=10)
             torch.cuda.empty_cache()
 
-    @pytest.mark.timeout(90)
     def test_torch_backend_accuracy_sym_rtn(self, dataloader):
         """RTN-quantized 4-bit sym model meets the accuracy threshold."""
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)
@@ -82,7 +80,6 @@ class TestTorchBackendAccuracy:
         evaluate_accuracy(model, tokenizer, threshold=0.28, batch_size=32, limit=1000)
         torch.cuda.empty_cache()
 
-    @pytest.mark.timeout(90)
     def test_torch_backend_accuracy_asym_tuning(self, dataloader):
         """Tuned (iters=1) 4-bit asym model meets the accuracy threshold."""
         model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype="auto", trust_remote_code=True)

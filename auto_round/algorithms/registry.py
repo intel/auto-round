@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import copy
 import importlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from auto_round.algorithms.base import BaseAlgorithm
@@ -23,7 +24,7 @@ class AlgRegistryEntry:
 
 _ALG_REGISTRY: dict[str, AlgRegistryEntry] = {}
 _ALIAS_TO_NAME: dict[str, str] = {}
-_CONFIG_IMPL_REGISTRY: dict[type, type["BaseAlgorithm"]] = {}
+_CONFIG_IMPL_REGISTRY: dict[type, type[BaseAlgorithm]] = {}
 _builtin_algorithms_registered = False
 _pipeline_members_registered = False
 _BUILTIN_ALGORITHM_ORDER = ("rtn", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
@@ -171,14 +172,14 @@ def list_registered_algorithms() -> list[str]:
 
 
 def register_pipeline_member(config_cls: type):
-    def _decorator(member_cls: type["BaseAlgorithm"]) -> type["BaseAlgorithm"]:
+    def _decorator(member_cls: type[BaseAlgorithm]) -> type[BaseAlgorithm]:
         _CONFIG_IMPL_REGISTRY[config_cls] = member_cls
         return member_cls
 
     return _decorator
 
 
-def resolve_pipeline_member(config: object) -> type["BaseAlgorithm"]:
+def resolve_pipeline_member(config: object) -> type[BaseAlgorithm]:
     _ensure_pipeline_members_registered()
     config_cls = type(config)
     for cls in config_cls.__mro__:

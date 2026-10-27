@@ -42,7 +42,6 @@ from test.e2e.test_cpu.conftest import (  # noqa: E402
     quantize_and_save,
     record,
 )
-from typing import List
 
 import pytest
 
@@ -99,7 +98,7 @@ def _build_llamacpp(gguf_path: str, n_ctx: int = 512, n_threads: int = 0):
 
 def _find_gguf(save_dir: str) -> str:
     """Locate the .gguf file produced by ``auto-round --format gguf:*``."""
-    matches: List[str] = []
+    matches: list[str] = []
     for root, _, files in os.walk(save_dir):
         for name in files:
             if name.endswith(".gguf"):

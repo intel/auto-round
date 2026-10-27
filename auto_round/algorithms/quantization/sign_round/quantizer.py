@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import time as _ptime
+from collections.abc import Callable
 from contextlib import nullcontext
-from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch import autocast
 
+from auto_round.algorithms.block_runner import BlockForwardRunner
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
@@ -25,8 +28,65 @@ from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import (
     IndexSampler,
     collect_best_params,
+    snapshot_best_params,
 )
 from auto_round.logger import logger
+from auto_round.utils.perf_counters import _PerfCounters
+
+
+def resolve_loss_device(loss_device, primary_device):
+    """The tune loop's staging device: a concrete device, coalescing None.
+
+    The placement pass may store ``None`` (and ``tensor.to(None)`` is a silent
+    no-op), which would strand batch outputs on the block's exit device; the
+    loop always stages on a concrete device, defaulting to the primary.
+    """
+    return loss_device or primary_device
+
+
+def _log_tune_phases(perf: _PerfCounters, iters: int) -> None:
+    """Derive the loop split and log the per-block tune phase line."""
+    if not perf.enabled:
+        return
+    serial = perf.get("s_fwd") + perf.get("s_loss") + perf.get("s_bwd")
+    rest = max(perf.get("loop") - perf.get("sampler") - perf.get("snap") - perf.get("step") - serial, 0.0)
+    perf.set("lp_sampler", perf.get("sampler"))
+    perf.set("lp_snap", perf.get("snap"))
+    perf.set("lp_step", perf.get("step"))
+    perf.set("lp_rest", rest)
+    perf.set("lp_serial", serial)
+    logger.info("%s", _tune_phase_line(perf.totals, iters))
+
+
+def _tune_phase_line(phases: dict, iters: int) -> str:
+    """Format the per-block tuning phase breakdown for AR_PERF_COUNTERS.
+
+    ``wrap`` = wrapper_block (params init, quant-func resolve + optional
+    per-wrapper torch.compile, SignRoundV2 init-scale search -- batched
+    same-shape when eligible); ``prepare`` = tuning-param collection +
+    optimizer/scheduler build + sampler setup; ``loop`` = the iteration
+    try/finally; ``tail`` = best-params restore, clear_memory, unwrapping.
+    The optional ``loop`` split appears when counters ran: ``sampler`` =
+    index draw, ``snap`` = best-params snapshots, ``step`` = gradient
+    sync + optimizer step, ``serial: fwd+loss+bwd`` = the inline forward,
+    loss (incl. the .item() drain) and backward of every serial batch.
+    """
+    line = (
+        f"[perf] tune phases (iters={iters}):"
+        f" wrap={phases.get('wrap', 0.0):.2f}s prepare={phases.get('prepare', 0.0):.2f}s"
+        f" loop={phases.get('loop', 0.0):.2f}s tail={phases.get('tail', 0.0):.2f}s"
+    )
+    if "lp_sampler" in phases:
+        line += (
+            f" (loop: sampler={phases['lp_sampler']:.2f}s snap={phases['lp_snap']:.2f}s"
+            f" step={phases['lp_step']:.2f}s rest={phases['lp_rest']:.2f}s"
+        )
+        if phases.get("lp_serial", 0.0):
+            line += f" serial: fwd+loss+bwd={phases['lp_serial']:.2f}s"
+        line += ")"
+    return line
+
+
 from auto_round.utils import (
     htcore,
     is_hpex_available,
@@ -135,13 +195,13 @@ class SignRoundQuantizer(BaseQuantizer):
         ref_output: torch.Tensor,
         indices: torch.Tensor,
         loss_func: Callable,
-        device: Union[str, torch.device] = "cpu",
-        valid_token_mask: Optional[torch.Tensor] = None,
+        device: str | torch.device = "cpu",
+        valid_token_mask: torch.Tensor | None = None,
         input_ids=None,
     ):
         autocast_ctx = (
             nullcontext()
-            if self.model_context.amp
+            if not self.model_context.amp
             else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
         )
         if valid_token_mask:
@@ -269,49 +329,81 @@ class SignRoundQuantizer(BaseQuantizer):
         name_lower = block_name.lower()
         return not any(kw in name_lower for kw in self._NON_TEXT_BLOCK_KEYWORDS)
 
-    def lfq_loss(self, hidden_state: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
-        """Compute LM cross-entropy loss from the last block's hidden states.
+    def lfq_loss(
+        self,
+        q_hidden_state: torch.Tensor,
+        fp_hidden_state: torch.Tensor,
+        input_ids: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """Compute the LFQ loss between the FP and quantized token distributions.
 
-        Applies every post-block module (final norm, optional projection, …) in
-        order, then runs lm_head and computes next-token prediction loss.
-        Positions marked with ``-100`` in *input_ids* are excluded from the loss.
+        Implements Eq. 3 of the LFQ paper: the cross-entropy between the FP
+        model's logit distribution and the quantized model's logit distribution,
+
+            L_CE = -(1/L) Σ_{i,j} σ(X·W_FP·W_Head)_{i,j} · log σ(X·W_q·W_Head)_{i,j}
+
+        where ``σ`` is the softmax over the vocabulary dimension. Both logits are
+        obtained by applying every post-block module (final norm, optional
+        projection, …) in order followed by ``lm_head``. The FP distribution is
+        the (detached) soft target; gradients flow only through the quantized
+        branch. This is a distribution-matching objective, *not* a hard-label
+        next-token cross-entropy.
 
         Args:
-            hidden_state: Last block output, shape ``[batch, seq_len, hidden]``.
-            input_ids:    Token-ID labels with ``-100`` for ignored positions,
-                          shape ``[batch, seq_len]``.
+            q_hidden_state:  Quantized last-block output ``X·W_q``, shape
+                             ``[batch, seq_len, hidden]``.
+            fp_hidden_state: FP last-block output ``X·W_FP`` used to build the
+                             soft target distribution, same shape as above.
+            input_ids:       Optional token-ID labels with ``-100`` for ignored
+                             (e.g. padding) positions, shape ``[batch, seq_len]``.
+                             When provided, those positions are excluded from the
+                             loss; token values themselves are not used as targets.
 
         Returns:
-            Scalar cross-entropy loss tensor.
+            Scalar LFQ loss tensor.
         """
+        from .lfq_loss import soft_cross_entropy
+
         self._init_lm_components()
-        device = hidden_state.device
+        device = q_hidden_state.device
 
         for module in self._post_block_modules:
             module.to(device)
-            hidden_state = module(hidden_state)
-
         self._lm_head.to(device)
-        logits = self._lm_head(hidden_state)
 
-        if hasattr(self.model, "loss_function"):
-            loss = self.model.loss_function(
-                logits=logits,
-                labels=input_ids.to(device),
-                vocab_size=self.model.config.vocab_size,
-            )
-        else:
-            import torch.nn.functional as F
+        def _to_logits(hidden: torch.Tensor) -> torch.Tensor:
+            for module in self._post_block_modules:
+                hidden = module(hidden)
+            return self._lm_head(hidden)
 
-            # Standard causal-LM shift: predict token t+1 from hidden state t.
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = input_ids[..., 1:].contiguous().to(device)
-            loss = F.cross_entropy(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-                ignore_index=-100,
-            )
-        return loss
+        # FP logits form the (detached) soft target distribution σ(X·W_FP·W_Head).
+        with torch.no_grad():
+            fp_logits = _to_logits(fp_hidden_state.to(device))
+
+        # Quantized logits: gradients flow through this branch only.
+        q_logits = _to_logits(q_hidden_state)
+
+        # Position mask for the soft-CE objective.
+        #
+        # IMPORTANT: this is a *deliberate same-position* mask — no next-token
+        # shift is applied. LFQ (Eq. 3) matches the FP and quantized output
+        # distributions σ(X·W_FP·W_Head) vs σ(X·W_q·W_Head) at each position; it
+        # is a per-position distillation objective, not next-token prediction,
+        # so logits and the target distribution are aligned position-for-position
+        # (unlike the legacy hard-label CE path that used shift_logits/labels).
+        #
+        # ``input_ids`` already carries the calibrator's -100 ignore markers
+        # (pad tokens, trailing repeated tokens, and the last position of each
+        # sample). Those positions are simply dropped here; the token *values*
+        # are never used as targets.
+        valid_mask = None
+        if input_ids is not None:
+            valid_mask = input_ids.to(device) != -100
+
+        # Memory-efficient soft cross-entropy (Unsloth-style logsumexp + analytic
+        # gradient + row chunking): never materializes a full float32 log_softmax
+        # tensor nor an autograd graph through softmax.
+        return soft_cross_entropy(q_logits, fp_logits, valid_mask)
 
     def quantize_block(
         self,
@@ -352,7 +444,11 @@ class SignRoundQuantizer(BaseQuantizer):
                 empty dict if no trainable parameters were found.
         """
         device = device_manager.device
-        loss_device = getattr(self, "_loss_device", device)
+        # None coalesces to the primary: an explicit None from the placement pass
+        # must leave the loop with a concrete staging device; pred/ref and the
+        # loss mask all stage here (card-0-risk relocation may move it off the
+        # primary, and the masked loss multiplies pred by the mask)
+        loss_device = resolve_loss_device(getattr(self, "_loss_device", None), device)
         card_0_in_high_risk = getattr(self, "_card_0_in_high_risk", False)
         mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
 
@@ -368,13 +464,18 @@ class SignRoundQuantizer(BaseQuantizer):
         active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
         nsamples = len(active_inputs) if isinstance(active_inputs, list) else self._count_samples(active_inputs)
 
+        _perf = _PerfCounters()
+        _perf.start("wrap")
         quantized_layer_names, unquantized_layer_names = self.wrapper_block(
             block,
             self.enable_minmax_tuning,
             self.enable_norm_bias_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            enable_neuqi=getattr(self.config, "enable_neuqi", False),
         )
+        _perf.stop("wrap")
+        _perf.start("prepare")
 
         round_params = []
         minmax_params = []
@@ -485,6 +586,44 @@ class SignRoundQuantizer(BaseQuantizer):
             and (loss_device is None or torch.device(loss_device) == torch.device(device))
         )
 
+        _perf.stop("prepare")
+        _perf.start("loop")
+        # iters>0 hot-pool strategy (loop-amortized; the iters=0 lane streams
+        # its pools once and never reaches these pulls): each pool moves in
+        # bulk onto the device that reads it every iteration -- the input
+        # pool onto the entry device (BlockForwardRunner.device, where the
+        # forward gathers each batch), the fp reference pool onto the loss
+        # device. Both gates charge ACTUAL data: exact tuning state from the
+        # wrapper walker, and (input pull) the routed-buffer budget proven on
+        # the mapped-streaming lane -- tokens x top_k hidden rows as in/out
+        # accumulators plus the backward grad (x6), reproducing the loop
+        # retention from shapes alone. Declined pulls keep the per-batch
+        # gather.
+        self.maybe_adapt_moe_implementation(block, active_inputs, batch_size)
+        _entry_dev = str(getattr(block_fwd, "device", device)) if block_fwd is not None else str(device)
+        if isinstance(active_inputs, list):
+            active_inputs = self.pull_tuning_pool(
+                active_inputs,
+                _entry_dev,
+                block,
+                batch_size,
+                "tune] block input activations",
+                charge_activation=True,
+            )
+        # the diffusion tuning cache requires its pools on the host (it
+        # stages batches to the GPU itself via pinned slots); a bulk pull
+        # onto the loss device would put the cached reference outputs on
+        # cuda and the cache would decline every batch signature
+        if fp_outputs and loss_device is not None and not use_tuning_cache:
+            fp_outputs = self.pull_tuning_pool(
+                fp_outputs,
+                loss_device,
+                block,
+                batch_size,
+                "tune] fp reference outputs",
+                charge_activation=False,
+            )
+
         try:
             for i in range(self.iters):
                 # Auto observes a complete forward/backward/optimizer iteration
@@ -507,38 +646,62 @@ class SignRoundQuantizer(BaseQuantizer):
                     for n, m in block.named_modules():
                         m.cur_iter = i
                 total_loss = 0
+                _perf.start("sampler")
                 global_indices = index_sampler.next_batch()
                 if valid_token_mask:
                     num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+                _perf.stop("sampler")
 
                 for batch_start in range(0, len(global_indices), batch_size):
                     indices = global_indices[batch_start : batch_start + batch_size]
+                    _perf.start("s_fwd")
                     staged = tuning_cache.get(indices) if tuning_cache is not None else None
                     if staged is None:
-                        ref_output = torch.cat([fp_outputs[i] for i in indices], dim=0).to(loss_device)
+                        # fp_outputs may be sharded across park devices
+                        # (--calibration_data_device): gather onto one device
+                        # before cat. Uniform-device selections are returned
+                        # untouched (byte-identical to the single-device path);
+                        # tensors are immutable, so concurrent gather is safe.
+                        _sel = [fp_outputs[i] for i in indices]
+                        _gather = BlockForwardRunner._gather_same_device(
+                            _sel, str(loss_device) if loss_device is not None else str(_sel[0].device)
+                        )
+                        ref_output = torch.cat(_gather, dim=0).to(loss_device)
                         pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
                     else:
                         ref_output = staged[2]
                         pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
                     if loss_device is not None:
                         pred_output = pred_output.to(loss_device)
+                    _perf.stop("s_fwd")
+                    _perf.start("s_loss")
                     if (
                         block_ctx.block_index == block_ctx.block_cnt - 1
                         and self.enable_lfq
                         and input_ids is not None
                         and self._is_text_decoder_block(block_ctx.block_name)
                     ):
-                        loss = self.lfq_loss(pred_output, torch.cat([input_ids[i] for i in indices], dim=0))
+                        loss = self.lfq_loss(
+                            pred_output,
+                            ref_output,
+                            torch.cat([input_ids[i] for i in indices], dim=0),
+                        )
                     else:
-                        loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
+                        # the mask must land on the same device pred/ref were staged
+                        # on (loss_device, which card-0-risk relocation may move off
+                        # the primary), not on the primary unconditionally
+                        loss = self._get_loss(pred_output, ref_output, indices, mse_loss, loss_device, valid_token_mask)
                     num_elm = 1 if num_elm <= 0 else num_elm
                     total_loss += loss.item() / num_elm
+                    _perf.stop("s_loss")
+                    _perf.start("s_bwd")
 
                     if mid_iter_mem_check:
                         # clear memory to avoid OOM due to memory fragmentation
                         clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
 
                     self._scale_loss_and_backward(scaler, loss)
+                    _perf.stop("s_bwd")
 
                     if mid_iter_mem_check:
                         # clear memory to avoid OOM due to memory fragmentation
@@ -549,31 +712,37 @@ class SignRoundQuantizer(BaseQuantizer):
                 current_lr = optimizer.param_groups[0]["lr"]
                 logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
+                _perf.start("snap")
                 if total_loss < best_loss:
                     best_loss = total_loss
                     if not self.not_use_best_mse:
                         best_params = (
                             tuning_cache.collect_best_params()
                             if tuning_cache is not None and tuning_cache.best is not None
-                            else collect_best_params(block, self.compress_context.cache_device)
+                            else snapshot_best_params(block, self.compress_context.cache_device)
                         )
                         last_best_iter = i
                 if self.not_use_best_mse and i == self.iters - 1:
                     best_params = (
                         tuning_cache.collect_best_params()
                         if tuning_cache is not None and tuning_cache.best is not None
-                        else collect_best_params(block, self.compress_context.cache_device)
+                        else snapshot_best_params(block, self.compress_context.cache_device)
                     )
 
+                _perf.stop("snap")
+                _perf.start("step")
                 if not self.not_use_best_mse:
                     if 0 < self.dynamic_max_gap <= i - last_best_iter:
                         break
                 sync_gradients()
                 self._step(scaler, optimizer, lr_schedule)
+                _perf.stop("step")
 
         finally:
             if tuning_cache is not None:
                 tuning_cache.close()
+        _perf.stop("loop")
+        _perf.start("tail")
 
         last_loss = total_loss
         best_iter = self.iters
@@ -597,6 +766,9 @@ class SignRoundQuantizer(BaseQuantizer):
         with torch.no_grad():
             unwrapper_block(block, best_params)
 
+        _perf.stop("tail")
+        _log_tune_phases(_perf, self.iters)
+
         if self.config.is_act_nv_fp:
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
@@ -607,10 +779,10 @@ class SignRoundQuantizer(BaseQuantizer):
     def quantize_layer_outside_block(
         self,
         layer: "torch.nn.Module",
-        fp_inputs: Optional[list[torch.Tensor]] = None,
-        q_inputs: Optional[list[torch.Tensor]] = None,
-        disable_opt_rtn: Optional[bool] = None,
-        input_ids: Optional[list[torch.Tensor]] = None,
+        fp_inputs: list[torch.Tensor] | None = None,
+        q_inputs: list[torch.Tensor] | None = None,
+        disable_opt_rtn: bool | None = None,
+        input_ids: list[torch.Tensor] | None = None,
     ):
         """Quantize a single layer that lives outside a transformer block.
 
@@ -666,6 +838,7 @@ class SignRoundQuantizer(BaseQuantizer):
             enable_minmax_tuning=self.enable_minmax_tuning,
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
+            enable_neuqi=getattr(self.config, "enable_neuqi", False),
         ).to(device)
         round_params = []
         minmax_params = []
@@ -839,7 +1012,7 @@ class SignRoundQuantizer(BaseQuantizer):
 
     def _get_scaler(self):
         """Returns scaler, in SignRound, no need to use scaler."""
-        return None
+        return
 
     def _scale_loss_and_backward(self, scaler: Any, loss: torch.Tensor) -> torch.Tensor:
         """Scales the loss and performs backward pass.
@@ -852,7 +1025,13 @@ class SignRoundQuantizer(BaseQuantizer):
         The scaled loss.
         """
         scale_loss = loss * 1000
-        scale_loss.backward()
+        try:
+            scale_loss.backward()
+        except torch.OutOfMemoryError:
+            from auto_round.algorithms.quantization.search_dispatch import dump_oom_tensor_census_
+
+            dump_oom_tensor_census_("tune backward")
+            raise
         if is_hpex_available():
             htcore.mark_step()
         return scale_loss

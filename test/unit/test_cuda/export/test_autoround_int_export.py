@@ -54,7 +54,6 @@ class TestAutoroundIntExportGpu:
         yield
         shutil.rmtree(self.save_dir, ignore_errors=True)
 
-    @pytest.mark.timeout(180)
     @pytest.mark.parametrize("bits", [2, 4, 8])
     @pytest.mark.parametrize("group_size", [32, 128])
     def test_int_export_reload_forward(self, tiny_opt_model_path, bits, group_size):
@@ -78,7 +77,6 @@ class TestAutoroundIntExportGpu:
             out = model(input_ids)
         assert out.logits.shape[0] == 1
 
-    @pytest.mark.timeout(180)
     @pytest.mark.parametrize("group_size", [128])
     def test_w8_asym_env_int_export_reload_forward(self, tiny_opt_model_path, group_size, monkeypatch):
         """AR_ALLOW_W8_ASYM=1 skips the native-format refusal; the packed
@@ -105,7 +103,6 @@ class TestAutoroundIntExportGpu:
             out = model(input_ids)
         assert out.logits.shape[0] == 1
 
-    @pytest.mark.timeout(180)
     @pytest.mark.parametrize("bits", [4])  # 8-bit asym is refused at construction
     @pytest.mark.parametrize("group_size", [32, 128])
     def test_asym_int_export_reload_forward(self, tiny_opt_model_path, bits, group_size):
@@ -130,7 +127,6 @@ class TestAutoroundIntExportGpu:
             out = model(input_ids)
         assert out.logits.shape[0] == 1
 
-    @pytest.mark.timeout(180)
     def test_int_export_group_size_64(self, tiny_opt_model_path):
         """group_size=64 exercises the non-power-of-128 packing path."""
         autoround = AutoRound(

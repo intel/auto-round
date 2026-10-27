@@ -241,7 +241,7 @@ def eval(args):
             add_bos_token=args.add_bos_token,
         )
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
     else:
         st = time.time()
         if "auto" in str(batch_size) and args.mllm:
@@ -262,11 +262,23 @@ def eval(args):
         from lm_eval.utils import make_table  # pylint: disable=E0401
 
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def eval_with_vllm(args):
+    import multiprocessing as mp
     import time
+
+    if mp.get_start_method(allow_none=True) != "spawn":
+        try:
+            mp.set_start_method("spawn", force=True)
+        except RuntimeError as e:
+            if mp.get_start_method(allow_none=True) != "spawn":
+                raise RuntimeError(
+                    f"Failed to set multiprocessing start method to 'spawn' for vLLM evaluation "
+                    f"(current method: '{mp.get_start_method(allow_none=True)}'). "
+                    f"vLLM requires the 'spawn' start method to prevent CUDA re-initialization errors."
+                ) from e
 
     from lm_eval import evaluator  # pylint: disable=E0401
     from lm_eval.models.vllm_causallms import VLLM  # pylint: disable=E0401
@@ -349,7 +361,7 @@ def eval_with_vllm(args):
     )
 
     print(make_table(res))
-    print("evaluation running time=%ds" % (time.time() - st))
+    print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def eval_task_by_task(
