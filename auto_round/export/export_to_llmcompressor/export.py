@@ -311,6 +311,8 @@ def pack_layer(name, model, device=None):
     delattr(layer, "scale")
 
     _compress_and_set_format(layer, scheme, device)
+    if hasattr(layer, "weight_zero_point"):
+        layer.weight_zero_point.data = layer.weight_zero_point.data.contiguous()
 
 
 @torch.no_grad()
