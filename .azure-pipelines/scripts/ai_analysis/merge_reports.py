@@ -150,6 +150,7 @@ def build_unknown_section(clusters: list[dict], analyses_by_id: dict) -> list[st
             "> **Notes**",
             "> - Only top-3 issues receive AI analysis.",
             '> - To request an additional fix from Copilot, use "Quote reply" on the PR comment and @mention Copilot.',
+            "> - Was this analysis helpful? React with 👍 if it was, or 👎 if it wasn't.",
             "",
         ]
     )
