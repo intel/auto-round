@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 from test.helpers import forbid_threaded_packing, get_model_path, opt_name_or_path, transformers_version
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -19,6 +20,14 @@ from auto_round.export.formats import resolve_formats
 
 @pytest.mark.parametrize("data_type", ["fp", "block_fp8", "fp8"])
 def test_int_backend_packs_fp8_block_override(data_type, monkeypatch):
+    fp8_dtype = getattr(torch, "float8_e4m3fn", None)
+    if fp8_dtype is None:
+        pytest.skip("PyTorch does not provide float8_e4m3fn")
+    try:
+        torch.ones(1).to(fp8_dtype).float()
+    except (RuntimeError, NotImplementedError) as error:
+        pytest.skip(f"CPU Float8 conversion is unavailable: {error}")
+
     model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias=False))
     model.dtype = torch.float32
     layer = model[0]
@@ -53,6 +62,65 @@ def test_integer_activation_packing_is_unchanged(monkeypatch):
     monkeypatch.setattr(autoround_export, "pack_qact_layer", lambda *args: calls.append(args))
     autoround_export.pack_layer("0", model, "auto_round:auto_gptq", device="cpu")
     assert calls == [("0", model)]
+
+
+@pytest.mark.parametrize("packing_fails", [False, True])
+def test_fp8_override_pack_phase_accounting(monkeypatch, packing_fails):
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias=False))
+    model[0].data_type = "fp"
+    model[0].bits = 8
+    phases = dict.fromkeys(autoround_export.PACK_PHASES, 0)
+    monkeypatch.setattr(autoround_export, "PACK_PHASES", phases)
+    ticks = iter([0.0, 1.0, 2.0, 3.0])
+    monkeypatch.setattr(autoround_export, "time", SimpleNamespace(perf_counter=lambda: next(ticks)))
+
+    def pack_fp8(*args, **kwargs):
+        if packing_fails:
+            raise RuntimeError("packing failed")
+
+    monkeypatch.setattr(autoround_fp8_export, "pack_layer", pack_fp8)
+    if packing_fails:
+        with pytest.raises(RuntimeError, match="packing failed"):
+            autoround_export.pack_layer("0", model, "auto_round:auto_gptq", device="cpu")
+    else:
+        autoround_export.pack_layer("0", model, "auto_round:auto_gptq", device="cpu")
+    assert phases["count"] == 1
+    assert phases["lookup"] == 1.0
+    assert phases["pack"] == 1.0
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_autoround_fp8_override_packing_metadata(monkeypatch, mixed):
+    model = torch.nn.Sequential(*(torch.nn.Linear(128, 128, bias=False) for _ in range(3)))
+    model.config = SimpleNamespace()
+    default_scheme = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int", "act_bits": 16}
+    layer_config = {str(i): {**default_scheme, "in_blocks": True} for i in range(3)}
+    layer_config["1"]["bits"] = 8  # An integer override must not acquire FP8 packing metadata.
+    if mixed:
+        layer_config["0"].update(bits=8, group_size=(128, 128), data_type="fp", act_bits=8)
+    serialization = {**default_scheme, "regex_config": None}
+    # Isolate serialization from kernel dispatch; real FP8 packing is tested above.
+    monkeypatch.setattr(autoround_export, "pack_layer", lambda *args: None)
+
+    saved = autoround_export.save_quantized_as_autoround(
+        output_dir=None,
+        model=model,
+        layer_config=layer_config,
+        serialization_dict=serialization,
+        backend="auto_round:auto_gptq",
+    )
+
+    config = json.loads(json.dumps(saved.config.quantization_config))
+    assert config["packing_format"] == "auto_round:auto_gptq"
+    overrides = config["extra_config"]
+    if mixed:
+        assert overrides["0"]["packing_format"] == "auto_round:fp8"
+        assert overrides["0"]["bits"] == 8
+        assert overrides["0"]["data_type"] == "fp"
+    else:
+        assert "0" not in overrides
+    assert "packing_format" not in overrides["1"]
+    assert "2" not in overrides
 
 
 def _get_folder_size(path: str) -> float:

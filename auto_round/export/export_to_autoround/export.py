@@ -216,7 +216,13 @@ def pack_layer(layer_name, model, backend, device=None):
     if is_standard_fp(getattr(layer, "data_type", "int")) and layer.bits == 8:
         from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer as pack_fp8_layer
 
-        return pack_fp8_layer(layer_name, model, layer.data_type, device=device)
+        PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
+        PACK_PHASES["count"] += 1
+        _t_pack = time.perf_counter()
+        try:
+            return pack_fp8_layer(layer_name, model, layer.data_type, device=device)
+        finally:
+            PACK_PHASES["pack"] += time.perf_counter() - _t_pack
 
     if int(layer.act_bits) <= 8:
         PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
