@@ -113,6 +113,21 @@ def test_cute_nvfp4_v2_gs_qdq_matches_reference(dtype, atol):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_cute_nvfp4_v2_gs_qdq_handles_zero_global_scale():
+    if torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("CuTe QDQ requires SM80 or newer")
+
+    activation = torch.zeros((4, 16), device="cuda", dtype=torch.float32)
+    global_scale = torch.zeros(1, device="cuda", dtype=torch.float32)
+    actual = try_cute_nvfp4_v2_gs_qdq(activation, global_scale, 16)
+    if actual is None:
+        pytest.skip("CuTe DSL is not available")
+
+    assert torch.isfinite(actual).all()
+    assert torch.equal(actual, activation)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
 def test_cute_nvfp4_e5m3_gs_weight_dq_matches_reference(dtype):
     if torch.cuda.get_device_capability()[0] < 8:
@@ -130,3 +145,19 @@ def test_cute_nvfp4_e5m3_gs_weight_dq_matches_reference(dtype):
     scale = (e5m3_to_float_tensor(weight_scale) / global_scale).reshape(-1, 1)
     expected = (unpacked.reshape(-1, 16) * scale).reshape(37, 128).to(dtype)
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_cute_nvfp4_e5m3_gs_weight_dq_handles_zero_global_scale():
+    if torch.cuda.get_device_capability()[0] < 8:
+        pytest.skip("CuTe weight DQ requires SM80 or newer")
+
+    weight_packed = torch.zeros((2, 8), device="cuda", dtype=torch.uint8)
+    weight_scale = torch.zeros((2, 1), device="cuda", dtype=torch.uint8)
+    global_scale = torch.zeros(1, device="cuda", dtype=torch.float32)
+    actual = try_cute_nvfp4_e5m3_gs_weight_dq(weight_packed, weight_scale, global_scale, torch.float32)
+    if actual is None:
+        pytest.skip("CuTe DSL is not available")
+
+    assert torch.isfinite(actual).all()
+    assert torch.equal(actual, torch.zeros_like(actual))

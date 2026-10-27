@@ -478,6 +478,8 @@ def opt_rtn_nvfp4_v2_gs(tensor, bits=4, group_size=16, v=0, global_scale=None, m
         global_scale = calculate_gparam_e5m3(grouped, group_size)
 
     def _candidate(t, bits=4, group_size=16, v=0, max_scale=1.0):
+        if isinstance(max_scale, torch.Tensor):
+            max_scale = max_scale.reshape(-1)
         return nvfp4_v2_gs(t, bits, group_size, v, global_scale=global_scale, max_scale=max_scale)
 
     init_scale = search_nvfp4_scale(grouped, bits, qw, quant_func=_candidate, group_size=group_size).reshape(-1)

@@ -112,6 +112,19 @@ def test_nvfp4_e5m3_gs_pack_and_dequant_round_trip():
     torch.testing.assert_close(layer.qdq_input(activation), expected_activation)
 
 
+def test_nvfp4_e5m3_gs_dequant_zero_weight_with_zero_global_scale():
+    config = PRESET_SCHEMES["NVFP4_E5M3_GS"]
+    layer = ar_qmodules.NVFP4E5M3GSQuantLinear(16, 8, config, dtype=torch.float32)
+    layer.weight_packed.zero_()
+    layer.weight_scale.zero_()
+    layer.weight_global_scale.zero_()
+
+    dequantized = layer.dequant_weight_online()
+
+    assert torch.isfinite(dequantized).all()
+    assert torch.equal(dequantized, torch.zeros_like(dequantized))
+
+
 def test_nvfp4_e5m3_gs_cute_falls_back_to_reference_on_cpu():
     config = PRESET_SCHEMES["NVFP4_E5M3_GS"]
     layer = ar_qmodules.CuteNVFP4E5M3GSQuantLinear(16, 8, config, dtype=torch.float32)

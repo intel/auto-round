@@ -16,7 +16,7 @@ import os
 
 import torch
 
-from auto_round.data_type.nvfp import e5m3_to_float_tensor, nvfp4_v2, nvfp4_v2_with_static_gs
+from auto_round.data_type.nvfp import e5m3_to_float_tensor, get_reciprocal, nvfp4_v2, nvfp4_v2_with_static_gs
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
 from auto_round.logger import logger
@@ -186,7 +186,7 @@ class NVFP4E5M3GSQuantLinear(NVFP4E5M3QuantLinear):
             torch.float32
         )
         weight_global_scale = self.weight_global_scale.to(device=unpacked.device, dtype=torch.float32)
-        scale = (e5m3_to_float_tensor(self.weight_scale) / weight_global_scale).reshape(-1, 1)
+        scale = (e5m3_to_float_tensor(self.weight_scale) * get_reciprocal(weight_global_scale)).reshape(-1, 1)
         return (unpacked.reshape(-1, self.group_size) * scale).reshape(self.out_features, self.in_features)
 
     def qdq_input(self, activation: torch.Tensor) -> torch.Tensor:

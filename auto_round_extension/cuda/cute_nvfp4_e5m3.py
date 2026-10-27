@@ -203,7 +203,7 @@ def _make_qdq_gs_kernel():
                 )
             else:
                 scale = math.roundeven(scale * cutlass.Float32(2.0**17)) * cutlass.Float32(2.0**-17)
-            dequant_scale = scale * (cutlass.Float32(1.0) / gs)
+            dequant_scale = scale / gs if gs > cutlass.Float32(0.0) else cutlass.Float32(0.0)
 
             for column_idx in range(_GROUP_SIZE):
                 value = cutlass.Float32(input_tensor[group_idx, column_idx])
@@ -254,7 +254,8 @@ def _make_weight_dq_gs_kernel():
             )
             if exponent == cutlass.Float32(0.0):
                 scale = mantissa * math.exp2(cutlass.Float32(-17.0))
-            scale = scale / cutlass.Float32(global_scale[0])
+            gs = cutlass.Float32(global_scale[0])
+            scale = scale / gs if gs > cutlass.Float32(0.0) else cutlass.Float32(0.0)
 
             for column_idx in range(_GROUP_SIZE):
                 packed = cutlass.Float32(weight_packed[group_idx, column_idx // 2])

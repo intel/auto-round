@@ -802,6 +802,15 @@ class TestNvfp4V2GlobalScale:
         optimized, _, _ = opt_rtn_nvfp4_v2_gs(t, group_size=16)
         assert (optimized - t).pow(2).sum() <= (baseline - t).pow(2).sum()
 
+    def test_opt_rtn_handles_multiple_groups(self):
+        t = torch.randn(4, 32)
+
+        optimized, scale, _ = opt_rtn_nvfp4_v2_gs(t, group_size=16)
+
+        assert optimized.shape == t.shape
+        assert scale.shape == (8, 1)
+        assert torch.isfinite(optimized).all()
+
     def test_static_gs_tensor_max_matches_global_scale(self):
         t = torch.randn(4, 64)
         tensor_max = torch.tensor([3.0])
