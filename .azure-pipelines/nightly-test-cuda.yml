@@ -1,32 +1,11 @@
 # Nightly CUDA pipeline: runs the slower CUDA integration + e2e suites
 # (sglang, llmc, vllm) that are excluded from the fast PR unit-test pipeline
-# (unit-test-cuda.yml). Scheduled daily; can also be triggered manually from
-# the Azure DevOps UI.
+# (unit-test-cuda.yml). Scheduled daily only; can also be triggered manually
+# from the Azure DevOps UI.
 
 trigger: none
 
-pr:
-  autoCancel: true
-  drafts: false
-  branches:
-    include:
-      - main
-      - "*rc"
-  paths:
-    include:
-      - auto_round
-      - auto_round_extension
-      - test/integration/test_cuda
-      - setup.py
-      - requirements.txt
-      - .azure-pipelines/scripts/cuda_unit_test
-      - .azure-pipelines/scripts/ut/detect_changed_tests.sh
-      - .azure-pipelines/nightly-test-cuda.yml
-
-    exclude:
-      - "*.md"
-      - "**/*.md"
-      - auto_round_extension/ark
+pr: none
 
 schedules:
   - cron: "0 18 * * *"   # 02:00 Asia/Shanghai every day
@@ -43,12 +22,16 @@ variables:
     value: "runpod-agent-$(Build.BuildId)"
 
 stages:
-  - stage: Start_Pod
-    displayName: "Start Pod"
+  # Pod creation, GPU tests and cleanup live in ONE stage as three jobs so a
+  # "Rerun failed stage" reruns every job (including Start_Pod_Job) and thus
+  # recreates the ephemeral pod. Separate stages would leave the already
+  # succeeded Start_Pod stage un-rerun, so the retry would find no agent.
+  - stage: GPU_Test
+    displayName: "GPU Nightly Test"
     dependsOn: []
     jobs:
       - job: Start_Pod_Job
-        displayName: "Launch Pod & Run CUDA Nightly Tests"
+        displayName: "Launch Pod"
         timeoutInMinutes: 60
         pool:
           vmImage: "ubuntu-latest"
@@ -111,14 +94,12 @@ stages:
             env:
               PYTHONUNBUFFERED: '1'
 
-  - stage: GPU_Test
-    displayName: "GPU Nightly Test"
-    dependsOn: Start_Pod
-    variables:
-      - group: auto-round-bot-secrets
-    jobs:
       - job: GpuTests
-        timeoutInMinutes: 300
+        displayName: "Run CUDA Nightly Tests"
+        dependsOn: Start_Pod_Job
+        variables:
+          - group: auto-round-bot-secrets
+        timeoutInMinutes: 60
         pool:
           name: "$(POOL_NAME)"
           demands: Agent.Name -equals runpod-agent-$(Build.BuildId)
@@ -144,7 +125,6 @@ stages:
 
           - script: |
               export UV_NO_CACHE=0
-              export FILTER_CHANGED_TESTS=true
               bash .azure-pipelines/scripts/cuda_unit_test/run_cuda_ut.sh \
                 --test_case=nightly \
                 --test_part=0
@@ -166,14 +146,12 @@ stages:
             condition: always()
             displayName: "GPU Monitor"
 
-  - stage: Cleanup_Verification
-    displayName: "Verify Pod Cleanup"
-    dependsOn:
-      - Start_Pod
-      - GPU_Test
-    condition: always()
-    jobs:
       - job: Verify_Cleanup
+        displayName: "Verify Pod Cleanup"
+        dependsOn:
+          - Start_Pod_Job
+          - GpuTests
+        condition: always()
         pool:
           vmImage: "ubuntu-latest"
         steps:
