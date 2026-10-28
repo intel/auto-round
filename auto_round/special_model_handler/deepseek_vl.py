@@ -13,6 +13,7 @@
 # limitations under the License.
 from auto_round.special_model_handler.core import SPECIAL_MULTIMODAL_BLOCK
 
+
 def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
     model.forward = model.language.forward
     block_names = []
@@ -21,6 +22,7 @@ def _get_deepseek_vl2_multimodal_block(model, quant_vision=False):
         block_names.append([f"projector.layers.{i}" for i in range(len(model.projector.layers))])
     block_names.append([f"language.model.layers.{i}" for i in range(len(model.language.model.layers))])
     return block_names
+
 
 def _deepseek_vl2_forward(
     model,

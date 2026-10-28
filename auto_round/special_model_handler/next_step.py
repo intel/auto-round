@@ -13,6 +13,7 @@
 # limitations under the License.
 import torch
 
+
 def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     try:
         from models.gen_pipeline import NextStepPipeline  # pylint: disable=E0401

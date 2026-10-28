@@ -13,6 +13,7 @@
 # limitations under the License.
 from auto_round.special_model_handler.core import SPECIAL_MULTIMODAL_BLOCK
 
+
 def _get_mimo_audio_multimodal_block(model, quant_vision=False):
     """Get block names for MiMo-Audio model.
 
@@ -39,6 +40,7 @@ def _get_mimo_audio_multimodal_block(model, quant_vision=False):
         block_names.append([f"layers.{i}" for i in range(len(model.layers))])
 
     return block_names
+
 
 def _mimo_audio_forward(
     model,

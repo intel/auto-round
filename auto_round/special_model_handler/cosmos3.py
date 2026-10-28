@@ -21,6 +21,7 @@ import torch
 from auto_round.special_model_handler.core import SPECIAL_MULTIMODAL_BLOCK, SPECIAL_SHARED_CACHE_KEYS
 from auto_round.utils import logger
 
+
 def _set_quantizable_bits(module, bits=4):
     """Mark all nn.Linear children as quantizable so AutoRound wraps them."""
     import torch.nn as nn
@@ -37,6 +38,7 @@ def _set_quantizable_bits(module, bits=4):
         _m.act_sym = getattr(_m, "act_sym", None)
         _m.act_data_type = getattr(_m, "act_data_type", None)
         _m.act_dynamic = getattr(_m, "act_dynamic", True)
+
 
 _cosmos3_forward_state = threading.local()
 

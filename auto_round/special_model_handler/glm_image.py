@@ -13,6 +13,7 @@
 # limitations under the License.
 from auto_round.special_model_handler.core import SPECIAL_MULTIMODAL_BLOCK
 
+
 def _get_glm_image_multimodal_block(model, quant_vision=False):
     """Get block names for GLM-Image AR model.
 

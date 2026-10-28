@@ -16,6 +16,7 @@
 Merged from the previous ``constants`` / ``matchers`` / ``dispatch`` modules
 (per maintainer feedback on #2514 to reduce granularity).
 """
+
 import re
 from functools import partial
 

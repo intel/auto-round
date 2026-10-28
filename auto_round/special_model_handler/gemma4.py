@@ -13,6 +13,7 @@
 # limitations under the License.
 import torch
 
+
 def _normalize_gemma4_per_layer_input(positional_inputs, hidden_states):
     if positional_inputs is None or len(positional_inputs) == 0:
         return positional_inputs
@@ -32,6 +33,7 @@ def _normalize_gemma4_per_layer_input(positional_inputs, hidden_states):
     normalized_inputs = list(positional_inputs)
     normalized_inputs[0] = per_layer_input
     return type(positional_inputs)(normalized_inputs) if isinstance(positional_inputs, tuple) else normalized_inputs
+
 
 def _get_gemma4_shared_kv_states_global(block):
     """Return the shared KV states dict for Gemma4 block-wise quantization."""
@@ -252,6 +254,7 @@ def _patch_gemma4_model(model):
         )
 
     return model
+
 
 def _attach_gemma4_rotary_emb(model):
     """Attach ``_rotary_emb`` to each Gemma4 decoder layer.

@@ -13,6 +13,7 @@
 # limitations under the License.
 from auto_round.special_model_handler.core import SPECIAL_MULTIMODAL_BLOCK
 
+
 def _get_qwen3_tts_multimodal_block(model, quant_vision=False):
     """Get block names for Qwen3-TTS model.
 
@@ -41,6 +42,7 @@ def _get_qwen3_tts_multimodal_block(model, quant_vision=False):
     if not block_names and hasattr(model, "model") and hasattr(model.model, "layers"):
         block_names.append([f"model.layers.{i}" for i in range(len(model.model.layers))])
     return block_names
+
 
 def _qwen3_tts_forward(
     model,

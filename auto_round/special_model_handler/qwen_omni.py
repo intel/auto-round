@@ -13,6 +13,7 @@
 # limitations under the License.
 from auto_round.special_model_handler.core import SPECIAL_MULTIMODAL_BLOCK
 
+
 def _get_qwen2_5_omni_multimodal_block(model, quant_vision=False):
     """Get block names for Qwen2.5-Omni model.
 
@@ -81,6 +82,7 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
         block_names.append([f"thinker.model.layers.{i}" for i in range(len(model.thinker.model.layers))])
 
     return block_names
+
 
 def _qwen2_5_omni_forward(
     model,

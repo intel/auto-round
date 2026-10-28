@@ -90,6 +90,7 @@ from auto_round.special_model_handler.cosmos3 import (
     _wrap_cosmos3_layer_dual_mode,
     load_cosmos3_diffusion,
 )
+
 # Ensure model modules run their SPECIAL_MULTIMODAL_BLOCK registrations.
 # (Already imported above; bagel/ignore also register ignore rules.)
 
@@ -103,15 +104,15 @@ __all__ = [
     "SPECIAL_MULTIMODAL_BLOCK",
     "SPECIAL_SHARED_CACHE_KEYS",
     "SUPPORT_ONLY_TEXT_MODELS",
+    "_PRE_DEFINED_FIXED_ATTR",
+    "_PRE_DEFINED_IGNORE_LAYERS",
+    "_PRE_DEFINED_LAYER_CONFIG",
+    "_PRE_DEFINED_TORCH_COMPILE_OFF",
     "ArchitectureMatcher",
     "ModelNameMatcher",
     "ModelTypeMatcher",
     "PreDefinedIgnoreLayers",
     "PreDefinedTorchCompileOff",
-    "_PRE_DEFINED_FIXED_ATTR",
-    "_PRE_DEFINED_IGNORE_LAYERS",
-    "_PRE_DEFINED_LAYER_CONFIG",
-    "_PRE_DEFINED_TORCH_COMPILE_OFF",
     "_align_cosmos3_quant_config_to_vllm_omni",
     "_attach_gemma4_rotary_emb",
     "_attach_gemma4_unified_rotary_emb",
