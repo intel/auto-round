@@ -73,13 +73,6 @@ class SignRoundConfig(QuantizationConfig):
             help="Tune normalization and bias terms.",
         )
         registry.add_argument(
-            "--enable_shared_expert_tuning",
-            field="enable_shared_expert_tuning",
-            default=False,
-            action="boolean_optional",
-            help="Fine-tune non-quantized shared_expert layers via fake quantization without rounding.",
-        )
-        registry.add_argument(
             "--gradient_accumulate_steps",
             field="gradient_accumulate_steps",
             default=1,
@@ -250,7 +243,6 @@ class SignRoundConfig(QuantizationConfig):
         nblocks: int = 1,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
-        enable_shared_expert_tuning: bool = False,
         gradient_accumulate_steps: int = 1,
         enable_alg_ext: bool = False,
         not_use_best_mse: bool = False,
@@ -287,10 +279,6 @@ class SignRoundConfig(QuantizationConfig):
             enable_minmax_tuning: Whether to tune weight min/max ranges.
             enable_norm_bias_tuning: Whether to tune normalization and
                 bias terms.
-            enable_shared_expert_tuning: Whether to fine-tune non-quantized
-                shared_expert Linear layers via fake quantization without
-                rounding (same strategy as norm/bias tuning). Only affects
-                shared_expert layers kept at high precision.
             gradient_accumulate_steps: Number of gradient accumulation
                 steps used per optimization update.
             enable_alg_ext: Whether to enable the experimental SignRound
@@ -370,12 +358,6 @@ class SignRoundConfig(QuantizationConfig):
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
         if self.enable_norm_bias_tuning:
             logger.warning("the `enable_norm_bias_tuning` feature is experimental and currently has limited support.")
-        self.enable_shared_expert_tuning = enable_shared_expert_tuning
-        if self.enable_shared_expert_tuning:
-            logger.warning(
-                "the `enable_shared_expert_tuning` feature is experimental; it fake-quantizes "
-                "non-quantized shared_expert layers without rounding for fine-tuning."
-            )
         self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
         self.enable_quanted_input = enable_quanted_input

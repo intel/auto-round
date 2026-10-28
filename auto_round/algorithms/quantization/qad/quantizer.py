@@ -601,7 +601,6 @@ class QADQuantizer(SignRoundQuantizer):
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
             enable_neuqi=getattr(self.config, "enable_neuqi", False),
-            enable_shared_expert_tuning=self.enable_shared_expert_tuning,
         )
         logger.info("QAD: wrapped %d quantizable layers (%d kept FP).", len(quantized_layers), len(unquantized_layers))
         # The wrappers have now copied any warm-start params (e.g. from a prior

@@ -322,10 +322,12 @@ def _discover_alg_config_fields(config_cls: type) -> frozenset:
     return frozenset(fields)
 
 
-def _filter_supported_entry_kwargs(kwargs, *, context="AutoRound"):
+def _filter_supported_entry_kwargs(kwargs, *, context="AutoRound", strict=False):
     supported = {key: value for key, value in kwargs.items() if key in _ENTRY_KWARG_OWNERS}
     unknown = sorted(set(kwargs) - set(_ENTRY_KWARG_OWNERS))
     if unknown:
+        if strict:
+            raise TypeError(f"{context} received unsupported runtime kwargs with model_free=True: {', '.join(unknown)}")
         logger.warning_once(
             "%s received unsupported runtime kwargs %s. They will be ignored.",
             context,
@@ -334,9 +336,9 @@ def _filter_supported_entry_kwargs(kwargs, *, context="AutoRound"):
     return supported
 
 
-def _split_entry_kwargs(kwargs, *, context="AutoRound"):
+def _split_entry_kwargs(kwargs, *, context="AutoRound", strict=False):
     buckets = {"route": {}, "compressor": {}, "base": {}, "mllm": {}, "diffusion": {}}
-    for key, value in _filter_supported_entry_kwargs(kwargs, context=context).items():
+    for key, value in _filter_supported_entry_kwargs(kwargs, context=context, strict=strict).items():
         buckets[_ENTRY_KWARG_OWNERS[key]][key] = value
     return buckets
 
@@ -349,7 +351,7 @@ def _owning_algorithm_names(field_name: str) -> list[str]:
     return [cls.__name__ for _, cls in _iter_registered_alg_configs() if field_name in _discover_alg_config_fields(cls)]
 
 
-def _normalize_alg_configs(alg_configs, direct_kwargs=None):
+def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
     from auto_round.algorithms.config_resolver import split_quantization_configs
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
@@ -490,6 +492,8 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
             # ignored algorithm-specific error after selecting RTN.
             if key == "iters" and any(isinstance(config, RTNConfig) for config in configs):
                 continue
+            if strict:
+                raise TypeError(f"Unsupported parameter '{key}' for the selected algorithm with model_free=True.")
             owners = _owning_algorithm_names(key)
             owner = "/".join(owners) if owners else "the selected algorithm"
             logger.error(
@@ -520,8 +524,8 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None):
     return [normalize_algorithm_config(config) for config in configs]
 
 
-def _prepare_entry_kwargs(alg_configs, direct_kwargs):
-    configs = _normalize_alg_configs(alg_configs, direct_kwargs)
+def _prepare_entry_kwargs(alg_configs, direct_kwargs, *, strict=False):
+    configs = _normalize_alg_configs(alg_configs, direct_kwargs, strict=strict)
     runtime_kwargs = {key: value for key, value in direct_kwargs.items() if key in _ENTRY_KWARG_OWNERS}
     return configs, runtime_kwargs
 
@@ -557,6 +561,7 @@ class _CompressorBuilder:
         format=None,
         dataset: str | CalibDataset | list | tuple | torch.utils.data.DataLoader | None = None,
         low_gpu_mem_usage: bool = False,
+        calibration_data_device: str = "auto",
         device_map: str | torch.device | int | dict = 0,
         iters: int | None = None,
         enable_torch_compile: bool = False,
@@ -586,7 +591,7 @@ class _CompressorBuilder:
         # TODO  wenhuach if key in kwargs could override scheme and alg_config, we should pop and override,
         #  e.g. gradient_accumulate_step
         device_map = normalize_default_device_map(device_map)
-        split_kwargs = _split_entry_kwargs(kwargs)
+        split_kwargs = _split_entry_kwargs(kwargs, strict=bool(kwargs.get("model_free", False)))
         route_kwargs = dict(split_kwargs["route"])
         compressor_kwargs = dict(split_kwargs["compressor"])
         base_kwargs = dict(split_kwargs["base"])
@@ -602,7 +607,7 @@ class _CompressorBuilder:
         configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
         preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
         is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
-        if is_svdquant:
+        if is_svdquant and "svdquant_omni" not in {name.strip().lower() for name in (format or "").split(",")}:
             format = "svdquant_nunchaku"
 
         # Any preprocessor that requires calibration data (e.g. AWQ, SVDQuant
@@ -685,6 +690,7 @@ class _CompressorBuilder:
             scheme=scheme,
             dataset=dataset,
             low_gpu_mem_usage=low_gpu_mem_usage,
+            calibration_data_device=calibration_data_device,
             device_map=device_map,
             iters=iters,
             enable_torch_compile=enable_torch_compile,
@@ -741,6 +747,11 @@ class AutoRound:
         nsamples: Number of calibration samples.
         batch_size: Calibration batch size.
         low_gpu_mem_usage: Enable lower-memory calibration at the cost of speed.
+        calibration_data_device: Placement of the block calibration-data pools:
+            ``"auto"`` (default; primary-first, shard across GPUs when needed),
+            ``"off"`` (no placement machinery), ``"cpu"`` (park pools in host
+            RAM), or an explicit csv such as ``"cuda:1,cuda:2"``. Forwards still
+            run on the compute devices; only the at-rest pool placement changes.
         device_map: Device or device mapping used for quantization.
         enable_torch_compile: Whether to use ``torch.compile`` where supported.
         seed: Random seed used by calibration and tuning.
@@ -768,6 +779,7 @@ class AutoRound:
         batch_size: int = 8,
         gradient_accumulate_steps: int | None = None,
         low_gpu_mem_usage: bool = False,
+        calibration_data_device: str = "auto",
         device_map: str | torch.device | int | dict = 0,
         enable_torch_compile: bool | None = None,
         seed: int = 42,
@@ -777,6 +789,7 @@ class AutoRound:
         **kwargs,
     ) -> BaseCompressor:
         direct_kwargs = dict(kwargs)
+        strict_model_free = bool(direct_kwargs.get("model_free", False))
         legacy_device = direct_kwargs.pop("device", None)
         if legacy_device is not None:
             logger.warning_once("`device` is deprecated, please use `device_map` instead")
@@ -792,7 +805,7 @@ class AutoRound:
             direct_kwargs["bits"] = bits
         scheme, direct_kwargs = resolve_entry_scheme(scheme, schemes, direct_kwargs)
 
-        configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs)
+        configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs, strict=strict_model_free)
         runtime_kwargs["batch_size"] = batch_size
 
         return _CompressorBuilder(
@@ -804,6 +817,7 @@ class AutoRound:
             format=runtime_kwargs.pop("format", None),
             dataset=dataset,
             low_gpu_mem_usage=low_gpu_mem_usage,
+            calibration_data_device=calibration_data_device,
             device_map=normalize_default_device_map(device_map),
             iters=None,
             enable_torch_compile=enable_torch_compile,
