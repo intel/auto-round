@@ -228,21 +228,6 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("min_scale", p_dtype, shape, 1.0, _margins_tunable)
         self._init_params("max_scale", p_dtype, shape, 1.0, _margins_tunable)
 
-        # Optional per-group "zero marker" for low-bit symmetric int weights.
-        # When enabled, entries that quantize to the integer level 0 are pushed to
-        # +0.5/-0.5 * scale based on the sign of a learnable per-group marker (see
-        # ``_apply_zero_marker`` in data_type/int.py). Initialized to 0 so the
-        # default run reproduces plain RTN until the marker is tuned.
-        self.enable_zero_marker = (
-            envs.AR_W2_ZERO_MARKER
-            and self.enable_round_tuning
-            and self.orig_layer.bits < 16
-            and str(self.orig_layer.data_type) == "int"
-            and bool(getattr(self.orig_layer, "sym", True))
-            and not isinstance(orig_layer.group_size, tuple)
-        )
-        if self.enable_zero_marker:
-            self._init_params("zero_marker", p_dtype, shape, 0.0, True)
 
         # Midrise int (v1 path): the absmax-derived scale (absmax / (maxq-0.5)) is far from the
         # MSE optimum (~0.5x at W2) and the default [0, 1] max_scale bound with SignSGD can barely
@@ -343,15 +328,6 @@ class WrapperLinear(torch.nn.Module):
 
         setattr(self, name, p)
 
-    def set_soft_round_progress(self, cur_iter: int, iters: int) -> float:
-        """Update the rounding-branch weight for soft-round int. Returns the new alpha."""
-        if not getattr(self, "enable_soft_round", False):
-            return 1.0
-        from auto_round.data_type.int import soft_round_alpha
-
-        alpha = soft_round_alpha(cur_iter, iters, self.soft_round_init, self.soft_round_ratio)
-        self.soft_round_alpha.fill_(alpha)
-        return alpha
 
     def _qdq_weight(self, value, min_scale, max_scale):
         """Quantizes and dequantizes weights with tuning parameters.
@@ -379,10 +355,6 @@ class WrapperLinear(torch.nn.Module):
         if hasattr(self.orig_layer, "super_bits"):
             quant_kwargs["super_bits"] = self.orig_layer.super_bits
             quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
-        if getattr(self, "enable_zero_marker", False):
-            quant_kwargs["zero_marker"] = self.zero_marker
-        if getattr(self, "enable_soft_round", False):
-            quant_kwargs["round_alpha"] = self.soft_round_alpha
         if hasattr(self, "_extra_quant_kwargs"):
             quant_kwargs.update(self._extra_quant_kwargs())
 
@@ -482,14 +454,6 @@ class WrapperLinear(torch.nn.Module):
         min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get("max_scale", torch.tensor(1.0)).to(self.device)
 
-        # Restore the tuned per-group zero marker so the baked weight matches the
-        # tuned forward (``_qdq_weight`` reads ``self.zero_marker``).
-        if getattr(self, "enable_zero_marker", False) and "zero_marker" in best_params:
-            self.zero_marker = best_params["zero_marker"].to(self.device)
-
-        # The baked weight must be on the pure rounding grid.
-        if getattr(self, "enable_soft_round", False):
-            self.soft_round_alpha.fill_(1.0)
 
         if self.orig_layer.weight.device.type == "meta":
             self.orig_layer.to(self.device)

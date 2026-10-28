@@ -831,15 +831,8 @@ class SignRoundQuantizer(BaseQuantizer):
                         )
                         lfq_teacher_final.extend(o.to(fp_outputs[0].device) for o in torch.split(out, 1, dim=0))
 
-        soft_round_modules = [m for m in block.modules() if getattr(m, "enable_soft_round", False)]
-        soft_round_end = self._soft_round_end_iter(soft_round_modules)
-
         try:
             for i in range(self.iters):
-                # Soft-round int: anneal the rounding-branch weight towards 1.0.
-                in_soft_phase = i < soft_round_end
-                for m in soft_round_modules:
-                    m.set_soft_round_progress(i, self.iters)
                 # Auto observes a complete forward/backward/optimizer iteration
                 # on the legacy path before allocating any extra GPU buffers.
                 if use_tuning_cache and i == (1 if cache_budget == "auto" else 0):
@@ -943,10 +936,7 @@ class SignRoundQuantizer(BaseQuantizer):
                 current_lr = optimizer.param_groups[0]["lr"]
                 logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
-                if in_soft_phase:
-                    # Loss is not comparable to the fully rounded one; skip best selection / early stop.
-                    last_best_iter = i
-                elif total_loss < best_loss:
+                if total_loss < best_loss:
                     best_loss = total_loss
                     if not self.not_use_best_mse:
                         best_params = (
@@ -1144,13 +1134,7 @@ class SignRoundQuantizer(BaseQuantizer):
 
         index_sampler = IndexSampler(nsamples, global_batch_size)
 
-        soft_round_modules = [wrapper_linear] if getattr(wrapper_linear, "enable_soft_round", False) else []
-        soft_round_end = self._soft_round_end_iter(soft_round_modules)
-
         for i in range(self.iters):
-            in_soft_phase = i < soft_round_end
-            for m in soft_round_modules:
-                m.set_soft_round_progress(i, self.iters)
             total_loss = 0
             global_indices = index_sampler.next_batch()
 
@@ -1201,9 +1185,7 @@ class SignRoundQuantizer(BaseQuantizer):
             current_lr = optimizer.param_groups[0]["lr"]
             logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
-            if in_soft_phase:
-                last_best_iter = i
-            elif total_loss < best_loss:
+            if total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
@@ -1227,21 +1209,6 @@ class SignRoundQuantizer(BaseQuantizer):
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.3e} -> iter {best_iter}: {last_loss:.3e}"
         logger.info(dump_info)
 
-    def _soft_round_end_iter(self, soft_round_modules: list) -> int:
-        """First iteration where every soft-round wrapper is on the pure rounding grid (0 if none)."""
-        if not soft_round_modules:
-            return 0
-        from auto_round.data_type.int import soft_round_end_iter
-
-        end = max(soft_round_end_iter(self.iters, m.soft_round_ratio) for m in soft_round_modules)
-        if end > 0 and not getattr(self, "_soft_round_logged", False):
-            self._soft_round_logged = True
-            m = soft_round_modules[0]
-            logger.info(
-                f"soft-round int: rounding-branch weight {m.soft_round_init:.2f} -> 1.0 over iters [0, {end}), "
-                "pure rounding afterwards"
-            )
-        return end
 
     def finalize_run(self) -> None:
         """Clear per-run caches (``_cached_valid_token_mask``, LFQ components)."""

@@ -331,6 +331,12 @@ class QADQuantizer(SignRoundQuantizer):
         self.qad_top_k = getattr(config, "topk", 32)
         self.qad_temperature = getattr(config, "lfq_temperature", 1.0)
         self.qad_workspace = getattr(config, "qad_workspace", None)
+        # Loss mixing weights: total = kd_weight * KD(teacher) + ce_weight * CE(label).
+        # kd_weight=0 => pure hard-label QAT (teacher cache is skipped);
+        # ce_weight>0 => mix the ground-truth cross-entropy into the distillation.
+        self.qad_kd_weight = float(getattr(config, "qad_kd_weight", 1.0))
+        self.qad_ce_weight = float(getattr(config, "qad_ce_weight", 0.0))
+        self._qad_use_teacher = self.qad_kd_weight > 0.0
         # Vocab chunk width for the streaming KD loss (caps the softmax temporary
         # at [N, chunk] in both forward and backward). 0/None = whole vocab.
         self.qad_loss_vocab_chunk = getattr(config, "qad_loss_vocab_chunk", 32768)
@@ -581,7 +587,11 @@ class QADQuantizer(SignRoundQuantizer):
         model.to(device)
 
         # 1) Offline teacher cache from a real full-model forward (no probing).
-        self._build_teacher_cache_from_model(model, token_ids, device)
+        #    Skipped entirely for a pure hard-label QAT run (``--qad_kd_weight 0``).
+        if self._qad_use_teacher:
+            self._build_teacher_cache_from_model(model, token_ids, device)
+        else:
+            logger.info("QAD: KD weight is 0 -> hard-label QAT only; skipping the teacher cache.")
 
         # 2) Wrap every quantizable layer across the whole model.
         quantized_layers, unquantized_layers = self.wrapper_block(
@@ -666,17 +676,22 @@ class QADQuantizer(SignRoundQuantizer):
         try:
             for it in pbar:
                 global_indices = sampler.next_batch()
-                self._teacher_cache.prefetch(global_indices)
+                if self._qad_use_teacher:
+                    self._teacher_cache.prefetch(global_indices)
                 optimizer.zero_grad()
                 total_loss = 0.0
                 for start in range(0, len(global_indices), batch_size):
                     idx = global_indices[start : start + batch_size]
                     # The teacher cache is the single source of truth: it carries the
                     # sample's own input_ids together with the teacher Top-K, so no
-                    # separate token-id copy is indexed here.
-                    batch_ids, t_index, t_prob = self._load_teacher_batch(idx, device)
+                    # separate token-id copy is indexed here. For a pure QAT run
+                    # (no teacher) the labels come straight from ``token_ids``.
+                    if self._qad_use_teacher:
+                        batch_ids, t_index, t_prob = self._load_teacher_batch(idx, device)
+                    else:
+                        batch_ids, t_index, t_prob = self._load_ids_batch(idx, token_ids, device), None, None
                     logits = self._forward_logits(model, batch_ids, vocab_size)
-                    loss = self._qad_kd_loss(logits, t_index, t_prob, batch_ids)
+                    loss = self._qad_loss(logits, t_index, t_prob, batch_ids)
                     self._scale_loss_and_backward(scaler, loss)
                     total_loss += loss.item()
                     # Drop the large per-microbatch logits/graph before the next
@@ -718,6 +733,17 @@ class QADQuantizer(SignRoundQuantizer):
             if self._teacher_cache is not None:
                 self._teacher_cache.shutdown()
             clear_memory()
+
+    def _load_ids_batch(self, sample_indices, token_ids, device) -> torch.Tensor:
+        """Stack raw calibration ``input_ids`` for a batch (pure-QAT path).
+
+        Used when the teacher cache is disabled (``--qad_kd_weight 0``): the
+        hard-label CE only needs the token ids (with their ``-100`` ignore
+        sentinels preserved as loss labels), so they are read straight from
+        ``token_ids`` instead of from the on-disk teacher files.
+        """
+        ids_list = [self._as_batch_ids(token_ids[int(i)], device).squeeze(0) for i in sample_indices]
+        return torch.stack(ids_list, dim=0)
 
     def _load_teacher_batch(self, sample_indices, device):
         """Load and stack cached ``(input_ids, index, prob)`` for a batch.
@@ -775,6 +801,64 @@ class QADQuantizer(SignRoundQuantizer):
             1e-6,
             self.qad_loss_vocab_chunk,
         )
+
+    def _qad_ce_loss(self, student_logits, labels):
+        """Hard-label next-token cross-entropy over the student logits.
+
+        This is the standard causal-LM objective: at position ``t`` the target is
+        the ground-truth token ``labels[t+1]`` (``-100`` positions are ignored).
+        It is expressed as a one-hot special case of :class:`_QADDistillLoss`
+        (teacher mass 1.0 on the label, temperature 1.0), so it reuses the same
+        memory-lean streaming/Triton path as the KD loss and shares the exact
+        next-token shift and ignore mask -- no extra full-vocab log-softmax is
+        materialized.
+
+        Args:
+            student_logits: ``[B, seq, vocab]``.
+            labels:         ``[B, seq]`` token ids (``-100`` = ignore).
+
+        Returns:
+            Scalar cross-entropy loss (mean over valid next-token positions).
+        """
+        # Target for student position ``t`` is the token at ``t+1``; align a
+        # one-hot teacher index to the same ``[:, :-1]`` slice _QADDistillLoss
+        # consumes. Invalid (-100) targets are set to 0 for the gather and are
+        # dropped anyway by the shared ``labels[:, 1:] != -100`` mask.
+        next_labels = torch.full_like(labels, -100)
+        next_labels[:, :-1] = labels[:, 1:]
+        ce_index = next_labels.clamp_min(0).unsqueeze(-1)  # [B, seq, 1]
+        ce_prob = torch.ones_like(ce_index, dtype=torch.float32)  # one-hot mass
+        return _QADDistillLoss.apply(
+            student_logits,
+            ce_index,
+            ce_prob,
+            labels,
+            1.0,  # hard-label CE uses no temperature smoothing
+            1e-6,
+            self.qad_loss_vocab_chunk,
+        )
+
+    def _qad_loss(self, student_logits, teacher_index, teacher_prob, labels):
+        """Combined QAD objective: ``kd_weight * KD + ce_weight * CE``.
+
+        * ``kd_weight > 0`` adds the teacher-distribution distillation term
+          (:meth:`_qad_kd_loss`); *teacher_index*/*teacher_prob* come from the
+          offline cache and may be ``None`` when distillation is disabled.
+        * ``ce_weight > 0`` adds the hard-label cross-entropy (:meth:`_qad_ce_loss`),
+          turning QAD into quantization-aware training (QAT).
+
+        At least one weight is positive (validated by the config).
+        """
+        loss = None
+        if self.qad_kd_weight > 0.0 and teacher_prob is not None:
+            loss = self.qad_kd_weight * self._qad_kd_loss(student_logits, teacher_index, teacher_prob, labels)
+        if self.qad_ce_weight > 0.0:
+            ce = self.qad_ce_weight * self._qad_ce_loss(student_logits, labels)
+            loss = ce if loss is None else loss + ce
+        if loss is None:  # defensive: config guarantees at least one active term
+            raise RuntimeError("QAD loss has no active term; set --qad_kd_weight or --qad_ce_weight > 0.")
+        return loss
+
 
 
 

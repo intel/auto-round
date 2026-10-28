@@ -36,6 +36,12 @@ class QADConfig(SignRoundConfig):
     @classmethod
     def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
         super().register_args(registry)
+        cls._register_qad_teacher_args(registry)
+        cls._register_qad_tuning_args(registry)
+
+    @classmethod
+    def _register_qad_teacher_args(cls, registry: AlgorithmParameterRegistry) -> None:
+        """Teacher-distillation-only args (not used by the pure-QAT variant)."""
         registry.add_argument(
             "--topk",
             field="topk",
@@ -46,6 +52,43 @@ class QADConfig(SignRoundConfig):
                 "Use -1 to store the full vocabulary distribution."
             ),
         )
+        registry.add_argument(
+            "--qad_kd_weight",
+            field="qad_kd_weight",
+            default=1.0,
+            type=float,
+            help=(
+                "Weight of the teacher-distribution KD (soft) loss in the QAD objective: "
+                "loss = qad_kd_weight * KL(p_T || p_S) + qad_ce_weight * CE(label, p_S). "
+                "Set to 0 to drop distillation and train on hard labels only (pure QAT); "
+                "when 0 the offline teacher cache is skipped entirely."
+            ),
+        )
+        registry.add_argument(
+            "--qad_ce_weight",
+            field="qad_ce_weight",
+            default=0.0,
+            type=float,
+            help=(
+                "Weight of the hard-label next-token cross-entropy term added to the QAD loss. "
+                "0 (default) keeps pure teacher distillation; a positive value mixes in the "
+                "ground-truth label CE, turning QAD into quantization-aware training (QAT). "
+                "Use together with --qad_kd_weight to interpolate KD<->QAT."
+            ),
+        )
+        registry.add_argument(
+            "--qad_workspace",
+            field="qad_workspace",
+            default=None,
+            help=(
+                "Directory where the offline teacher Top-K cache is written. "
+                "Defaults to <AR_WORK_SPACE>/qad_teacher_cache when unset."
+            ),
+        )
+
+    @classmethod
+    def _register_qad_tuning_args(cls, registry: AlgorithmParameterRegistry) -> None:
+        """Whole-model tuning knobs shared by QAD and the pure-QAT variant."""
         registry.add_argument(
             "--qad_lr",
             field="qad_lr",
@@ -75,15 +118,6 @@ class QADConfig(SignRoundConfig):
             help="Optimizer used for QAD tuning: 'signround' (SignSGD) or 'adamw' (torch.optim.AdamW).",
         )
         registry.add_argument(
-            "--qad_workspace",
-            field="qad_workspace",
-            default=None,
-            help=(
-                "Directory where the offline teacher Top-K cache is written. "
-                "Defaults to <AR_WORK_SPACE>/qad_teacher_cache when unset."
-            ),
-        )
-        registry.add_argument(
             "--gradient_checkpointing",
             field="gradient_checkpointing",
             default=True,
@@ -105,12 +139,12 @@ class QADConfig(SignRoundConfig):
         qad_nsamples: int | None = None,
         topk: int = 32,
         qad_optimizer: str | None = None,
-        optimizer: str | None = None,
         qad_workspace: str | None = None,
         gradient_checkpointing: bool = True,
+        qad_kd_weight: float = 1.0,
+        qad_ce_weight: float = 0.0,
         **kwargs,
-    ) -> None:
-        # QAD implies whole-network joint distillation. `enable_qad` forces
+    ) -> None:        # QAD implies whole-network joint distillation. `enable_qad` forces
         # `enable_lfq` and makes the orchestrator fuse all blocks into one group.
         kwargs.setdefault("enable_qad", True)
         # NOTE: QAD distills against the FP teacher's logits: the loss is the
@@ -139,9 +173,9 @@ class QADConfig(SignRoundConfig):
         self.qad_nsamples = int(qad_nsamples) if qad_nsamples is not None else None
         # Normalize the optimizer choice before handing it to the base config
         # (SignRound keeps it on ``self.optimizer`` for the quantizer to resolve).
-        # `qad_optimizer` is the QAD-specific name; `optimizer` is still accepted
-        # for API backward compatibility.
-        optimizer = (qad_optimizer or optimizer or "signround").lower()
+        # ``qad_optimizer`` is the QAD-specific name; a legacy ``optimizer=`` kwarg
+        # is still accepted (pulled from ``kwargs``) for API backward compatibility.
+        optimizer = (qad_optimizer or kwargs.pop("optimizer", None) or "signround").lower()
         if optimizer not in ("signround", "adamw"):
             raise ValueError(f"`qad_optimizer` must be 'signround' or 'adamw', got {optimizer!r}")
         self.qad_optimizer = optimizer
@@ -155,10 +189,27 @@ class QADConfig(SignRoundConfig):
             raise ValueError("`topk` must be positive, or -1 to store the full distribution")
         self.qad_workspace = qad_workspace
         self.gradient_checkpointing = bool(gradient_checkpointing)
-        logger.warning_once(
-            "the `QAD` algorithm is experimental: the full-precision teacher Top-K is cached to disk "
-            "and all text-decoder blocks are tuned jointly against it."
-        )
+        # Loss mixing: total = kd_weight * KD(teacher) + ce_weight * CE(label).
+        # Pure KD (default) keeps the historical behavior; a positive ce_weight
+        # mixes in the hard-label objective (QAT), and kd_weight=0 drops the
+        # teacher cache for a pure QAT run.
+        self.qad_kd_weight = float(qad_kd_weight)
+        self.qad_ce_weight = float(qad_ce_weight)
+        if self.qad_kd_weight < 0 or self.qad_ce_weight < 0:
+            raise ValueError("`qad_kd_weight` and `qad_ce_weight` must be non-negative")
+        if self.qad_kd_weight == 0.0 and self.qad_ce_weight == 0.0:
+            raise ValueError("`qad_kd_weight` and `qad_ce_weight` cannot both be 0 (no loss to optimize)")
+        if self.qad_kd_weight == 0.0:
+            # Pure hard-label objective: no teacher model/cache involved at all.
+            logger.warning_once(
+                "the `QAT` algorithm is experimental: all text-decoder blocks are tuned jointly "
+                "against the ground-truth next-token cross-entropy (no teacher cache)."
+            )
+        else:
+            logger.warning_once(
+                "the `QAD` algorithm is experimental: the full-precision teacher Top-K is cached to disk "
+                "and all text-decoder blocks are tuned jointly against it."
+            )
 
 
 register_algorithm(
@@ -167,4 +218,5 @@ register_algorithm(
     config_factory=QADConfig,
     summary="Quantization-aware distillation with an offline teacher Top-K cache.",
 )
+
 
