@@ -34,11 +34,11 @@ from auto_round.compressors.base import BaseOrchestrator
 from auto_round.compressors.utils import (
     _get_quantized_layer_names_outside_blocks,
     immediate_pack,
-    is_nv_fp,
 )
 from auto_round.data_type.utils import update_block_global_scale_if_needed
 from auto_round.logger import logger
 from auto_round.modeling.fused_moe.replace_modules import materialize_model_
+from auto_round.schemes import needs_nvfp_global_scale
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
@@ -726,7 +726,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 )
                 _zs_block_idx += 1
                 # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
-                if is_nv_fp(self.act_data_type) or not self.act_dynamic:
+                if needs_nvfp_global_scale(self.act_data_type or "") or not self.act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
 
                 update_block_global_scale_if_needed(block, self.data_type, self.group_size)
