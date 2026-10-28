@@ -40,11 +40,7 @@ class TestAlgExt:
             enable_alg_ext=True,
         )
         model, _ = ar.quantize()
-        zps = [
-            m.zp
-            for m in model.modules()
-            if hasattr(m, "zp") and isinstance(m.zp, __import__("torch").Tensor)
-        ]
+        zps = [m.zp for m in model.modules() if hasattr(m, "zp") and isinstance(m.zp, __import__("torch").Tensor)]
         assert zps, "expected asym zero points on quantized layers"
         for zp in zps:
             assert zp.min() >= 0 and zp.max() <= 3
