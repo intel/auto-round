@@ -31,6 +31,7 @@ from auto_round.compressors.utils import (
     snapshot_best_params,
 )
 from auto_round.logger import logger
+from auto_round.schemes import is_nvfp4_e5m3_gs
 from auto_round.utils.perf_counters import _PerfCounters
 
 
@@ -769,7 +770,7 @@ class SignRoundQuantizer(BaseQuantizer):
         _perf.stop("tail")
         _log_tune_phases(_perf, self.iters)
 
-        if self.config.is_act_nv_fp:
+        if self.config.is_act_nv_fp or is_nvfp4_e5m3_gs(self.config.act_data_type or ""):
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 

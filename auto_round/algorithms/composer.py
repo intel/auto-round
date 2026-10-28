@@ -265,10 +265,10 @@ class AlgorithmComposer:
 
         Returns a list of hook handles that the caller must remove when done.
         """
-        from auto_round.compressors.utils import is_nv_fp
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+        from auto_round.schemes import needs_nvfp_global_scale as is_nv_fp
 
-        is_act_nv_fp = getattr(self.block_quantizer.config, "is_act_nv_fp", False)
+        is_act_nv_fp = is_nv_fp(getattr(self.block_quantizer.config, "act_data_type", None) or "")
 
         def collect_act_max(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
@@ -350,8 +350,8 @@ class AlgorithmComposer:
             q_inputs: Optional list of quantized input tensors; used instead of
                 ``fp_inputs`` when provided.
         """
-        from auto_round.compressors.utils import is_nv_fp
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+        from auto_round.schemes import needs_nvfp_global_scale as is_nv_fp
 
         target_input = q_inputs or fp_inputs
         act_group_size = layer.act_group_size
@@ -500,10 +500,10 @@ class AlgorithmComposer:
             # ── Step 3.5: MoE scale alignment + global scale update ─────────────────
             # Must run after calibration hooks (act_max collected) and before quantize_block.
             if act_data_type is not None or not act_dynamic:
-                from auto_round.compressors.utils import is_nv_fp
+                from auto_round.schemes import needs_nvfp_global_scale
                 from auto_round.utils import set_amax_for_all_moe_layers
 
-                if is_nv_fp(act_data_type) or not act_dynamic:
+                if needs_nvfp_global_scale(act_data_type) or not act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
 
         # SVDQuant may have replaced the original linears during pre-quantize.
@@ -583,13 +583,13 @@ class AlgorithmComposer:
         """
         # Attach act_max for static activation quantization when inputs are available.
         if fp_inputs is not None:
-            from auto_round.compressors.utils import is_nv_fp
+            from auto_round.schemes import needs_nvfp_global_scale
 
             act_data_type = layer.act_data_type
             if act_data_type is None:
                 act_data_type = "fp"
             act_dynamic = getattr(layer, "act_dynamic", True)
-            if is_nv_fp(act_data_type) or not act_dynamic:
+            if needs_nvfp_global_scale(act_data_type) or not act_dynamic:
                 self._attach_act_max_for_outside_layer(layer, fp_inputs, q_inputs)
 
         # Infrastructure: move layer to the tuning device before handing off to the quantizer.
