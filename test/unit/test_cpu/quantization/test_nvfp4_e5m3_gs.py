@@ -107,7 +107,14 @@ def test_nvfp4_e5m3_gs_weight_global_scale_uses_ue5m3_range(tiny_opt_model_path,
 
     orig_weight = AutoModelForCausalLM.from_pretrained(tiny_opt_model_path).model.decoder.layers[0].fc2.weight
     autoround = AutoRound(
-        tiny_opt_model_path, scheme="NVFP4_E5M3_GS", iters=0, seqlen=8, nsamples=2, dataset=dataloader
+        tiny_opt_model_path,
+        scheme="NVFP4_E5M3_GS",
+        iters=0,
+        seqlen=8,
+        nsamples=2,
+        dataset=dataloader,
+        model_dtype=torch.float32,
+        amp=False,
     )
     model, _ = autoround.quantize()
     layer = model.model.decoder.layers[0].fc2
