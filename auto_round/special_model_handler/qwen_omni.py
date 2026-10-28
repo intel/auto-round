@@ -69,16 +69,52 @@ def _get_qwen3_omni_thinker_layer_info(model):
     return None, None
 
 
+def _get_qwen3_omni_visual_audio_info(model):
+    """Return (visual_prefix, visual_mod, audio_prefix, audio_mod) for Qwen3-Omni.
+
+    Current Transformers nests vision/audio under ``thinker.model``
+    (``thinker.model.visual`` / ``thinker.model.audio_tower``). Older layouts
+    exposed them directly on ``thinker``. Prefer the nested paths, fall back
+    to the legacy direct attributes.
+    """
+    thinker = getattr(model, "thinker", None)
+    if thinker is None:
+        return None, None, None, None
+
+    thinker_model = getattr(thinker, "model", None)
+    visual = None
+    visual_prefix = None
+    audio = None
+    audio_prefix = None
+
+    if thinker_model is not None and hasattr(thinker_model, "visual"):
+        visual = thinker_model.visual
+        visual_prefix = "thinker.model.visual"
+    elif hasattr(thinker, "visual"):
+        visual = thinker.visual
+        visual_prefix = "thinker.visual"
+
+    if thinker_model is not None and hasattr(thinker_model, "audio_tower"):
+        audio = thinker_model.audio_tower
+        audio_prefix = "thinker.model.audio_tower"
+    elif hasattr(thinker, "audio_tower"):
+        audio = thinker.audio_tower
+        audio_prefix = "thinker.audio_tower"
+
+    return visual_prefix, visual, audio_prefix, audio
+
+
 def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
     """Get block names for Qwen3-Omni MoE model.
 
     Qwen3-Omni has the following structure:
-    - thinker: Contains audio_tower, visual, model (text decoder)
+    - thinker.model: Contains audio_tower, visual, language_model (text decoder)
+      (legacy layouts also expose visual/audio_tower directly on thinker)
     - talker: Contains model (talker decoder), code_predictor
     - code2wav: Audio decoder
 
     For quantization, we focus on:
-    - thinker.model.layers (text decoder layers) - main LLM layers
+    - thinker.model.language_model.layers (or thinker.model.layers) - main LLM
     - Optionally: visual encoder blocks, audio encoder layers
 
     talker is excluded by default because quantizing it has been observed to
@@ -88,15 +124,11 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
 
     # Quantize visual encoder blocks if quant_vision is enabled
     if quant_vision:
-        # Vision encoder blocks
-        if hasattr(model, "thinker") and hasattr(model.thinker, "visual") and hasattr(model.thinker.visual, "blocks"):
-            block_names.append([f"thinker.visual.blocks.{i}" for i in range(len(model.thinker.visual.blocks))])
-        # Audio encoder layers
-        if hasattr(model, "thinker") and hasattr(model.thinker, "audio_tower"):
-            if hasattr(model.thinker.audio_tower, "layers"):
-                block_names.append(
-                    [f"thinker.audio_tower.layers.{i}" for i in range(len(model.thinker.audio_tower.layers))]
-                )
+        visual_prefix, visual, audio_prefix, audio = _get_qwen3_omni_visual_audio_info(model)
+        if visual is not None and hasattr(visual, "blocks"):
+            block_names.append([f"{visual_prefix}.blocks.{i}" for i in range(len(visual.blocks))])
+        if audio is not None and hasattr(audio, "layers"):
+            block_names.append([f"{audio_prefix}.layers.{i}" for i in range(len(audio.layers))])
 
     # Thinker text model layers (main LLM decoder)
     layer_prefix, layers = _get_qwen3_omni_thinker_layer_info(model)
