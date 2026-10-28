@@ -1,7 +1,7 @@
 import json
 import os
 import shutil
-from test.helpers import forbid_threaded_packing, get_model_path, opt_name_or_path
+from test.helpers import check_version, forbid_threaded_packing, get_model_path, opt_name_or_path
 
 import pytest
 import torch
@@ -99,6 +99,10 @@ class TestLLMCZpInt8:
         else:
             raise AssertionError("out-of-range zp must raise")
 
+    @pytest.mark.skipif(
+        check_version("compressed-tensors==0.20.0"),
+        reason="compressed-tensors 0.20.0 has a zero-point unpacking bug",
+    )
     def test_asym_zp_signed_convention_round_trip(self):
         """AutoRound zp is unsigned (q in [0, 2^b-1], W = (q - zp) * s);
         compressed-tensors re-quantizes with the SIGNED range
@@ -129,6 +133,7 @@ class TestLLMCZpInt8:
         model = nn.Sequential()
         model.add_module("q_proj", layer)
         pack_layer("q_proj", model, device="cpu")
+        assert layer.weight_zero_point.stride(-2) == 1
 
         # AutoRound's own fake-quantized weight (unsigned convention)
         s = scale.repeat_interleave(gs, dim=1)
