@@ -21,6 +21,9 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from auto_round.logger import deprecated, logger
+from auto_round.recipes import Recipe, get_recipe, resolve_recipe
+from auto_round.recipes.recipe import UNSET
+from auto_round.recipes.resolver import merge_layer_defaults, recipe_context
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
     eager_validate_scheme,
@@ -727,6 +730,8 @@ class AutoRound:
         alg_configs: Algorithm alias, config instance, or sequence of either.
             Use config instances to provide algorithm-specific options, such
             as ``SignRoundConfig(iters=50)`` or ``AWQConfig(apply_clip=True)``.
+        recipe: Recommended quantization plan, defaulting to ``"ar"``.
+            Explicit alg_configs replaces its pipeline while inheriting calibration defaults.
         layer_config: Optional per-layer quantization overrides.
         dataset: Calibration dataset name, samples, dataloader, or a
             :class:`~auto_round.utils.dataset_utils.CalibDataset` object.
@@ -759,11 +764,11 @@ class AutoRound:
         schemes: str | list | tuple | None = None,
         bits: float | None = None,
         layer_config: dict[str, str | dict | QuantizationScheme] | None = None,
-        dataset: str | list | tuple | torch.utils.data.DataLoader | None = None,
+        dataset: str | list | tuple | torch.utils.data.DataLoader | None = UNSET,
         iters: int | None = None,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
+        seqlen: int = UNSET,
+        nsamples: int = UNSET,
+        batch_size: int = UNSET,
         gradient_accumulate_steps: int | None = None,
         low_gpu_mem_usage: bool = False,
         calibration_data_device: str = "auto",
@@ -773,6 +778,7 @@ class AutoRound:
         low_cpu_mem_usage: bool = True,
         alg_configs=None,
         algorithm: str | None = None,
+        recipe: str | Recipe = "ar",
         **kwargs,
     ) -> BaseCompressor:
         direct_kwargs = dict(kwargs)
@@ -792,10 +798,25 @@ class AutoRound:
             direct_kwargs["bits"] = bits
         scheme, direct_kwargs = resolve_entry_scheme(scheme, schemes, direct_kwargs)
 
+        definition = get_recipe(recipe) if isinstance(recipe, str) else recipe
+        plan = resolve_recipe(
+            definition,
+            recipe_context(definition, model, scheme, trust_remote_code=direct_kwargs.get("trust_remote_code", True)),
+        )
+        if alg_configs is None and algorithm is None:
+            alg_configs = plan.build_configs()
+        calibration = plan.calibration
+        dataset = calibration.get("dataset") if dataset is UNSET else dataset
+        seqlen = calibration["seqlen"] if seqlen is UNSET else seqlen
+        nsamples = calibration["nsamples"] if nsamples is UNSET else nsamples
+        batch_size = calibration["batch_size"] if batch_size is UNSET else batch_size
+        if plan.layer_config:
+            layer_config = merge_layer_defaults(plan.layer_config, layer_config)
+
         configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs, strict=strict_model_free)
         runtime_kwargs["batch_size"] = batch_size
 
-        return _CompressorBuilder(
+        compressor = _CompressorBuilder(
             model,
             scheme,
             configs,
@@ -815,6 +836,8 @@ class AutoRound:
             seqlen=seqlen,
             **runtime_kwargs,
         )
+        compressor.resolved_recipe = plan
+        return compressor
 
 
 # Keep legacy entry points available for downstream integrations such as

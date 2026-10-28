@@ -127,6 +127,7 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
 
     # ---- Model / Runtime ----
     rt = parser.add_argument_group("Runtime Arguments")
+    rt.add_argument("--recipe", default=None, help="Recommended quantization plan (default: ar).")
     rt.add_argument("model", default=None, nargs="?", help="Path to the pre-trained model or Hugging Face model id.")
     rt.add_argument(
         "--model_name",
@@ -385,8 +386,8 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
 
 def build_list_parser(*, prog: str = "auto_round list") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=prog)
-    parser.add_argument("item", type=str, help="item to list, e.g., format, alg")
-    parser.add_argument("name", nargs="?", default=None, help="optional specific format/algorithm name")
+    parser.add_argument("item", type=str, help="item to list, e.g., format, alg, recipe")
+    parser.add_argument("name", nargs="?", default=None, help="optional specific format/algorithm/recipe name")
     return parser
 
 

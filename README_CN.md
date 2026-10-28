@@ -115,6 +115,8 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 ✅ **多种量化方案可选**  提供 `auto-round-best`​、`auto-round`​、`auto-round-light`​、`auto-round-opt-rtn`（优化版 RTN）以及 `auto-round-rtn`（原始 RTN，最快基线）等多种预设方案，能够满足多样化需求。详见：[量化方案](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
 
+Python 可通过 `AutoRound(..., recipe="ar-best")` 使用同一方案，CLI 可使用 `--recipe ar-best`。不传 recipe 默认选择 `ar`，已有命令保留为快捷入口。详见[内置 Recipe 与覆盖规则](./docs/recipes_CN.md)。
+
 ✅ **实用额外特性** 支持[多 GPU 量化](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization)和[多标定数据集](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset)，并兼容[十余种推理后端](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend)。
 
 ✅ **不局限于权重量化** 我们正积极扩展对 **MXFP、NVFP、W8A8** 等更多数据类型的支持。
