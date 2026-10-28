@@ -23,7 +23,6 @@ from functools import partial
 import torch
 
 from auto_round.export.formats import OutputFormat
-from auto_round.modeling.fused_moe.replace_modules import apply_replacements, release_original_module_
 from auto_round.utils import logger
 from auto_round.utils.model import ARCHITECTURE_MODEL_TYPE_MAP, resolve_model_type  # noqa: F401
 
@@ -263,10 +262,14 @@ def _handle_special_model(model):
 def update_module(
     model, formats: list[OutputFormat] | None = None, trust_remote_code: bool = True, cleanup_original: bool = True
 ):
+    # Resolve through the package namespace so tests can monkeypatch
+    # ``special_model_handler.apply_replacements`` (legacy module API).
+    from auto_round import special_model_handler as _smh
+
     gguf_export = formats is not None and any(format_.is_gguf() for format_ in formats)
-    model = apply_replacements(model, gguf_export=gguf_export)
+    model = _smh.apply_replacements(model, gguf_export=gguf_export)
 
     if cleanup_original:
-        release_original_module_(model)
+        _smh.release_original_module_(model)
 
     return model

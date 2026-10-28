@@ -62,6 +62,7 @@ from auto_round.special_model_handler.deepseek_vl import (
 )
 from auto_round.special_model_handler.qwen_omni import (
     _get_qwen2_5_omni_multimodal_block,
+    _get_qwen3_omni_thinker_layer_info,
     _get_qwen3_omni_moe_multimodal_block,
     _qwen2_5_omni_forward,
     _qwen3_omni_moe_forward,
@@ -95,6 +96,10 @@ from auto_round.special_model_handler.cosmos3 import (
 # (Already imported above; bagel/ignore also register ignore rules.)
 
 # Re-export resolve_model_type for callers that historically imported it from here.
+from auto_round.modeling.fused_moe.replace_modules import (  # noqa: E402
+    apply_replacements,
+    release_original_module_,
+)
 from auto_round.utils.model import resolve_model_type  # noqa: E402
 
 __all__ = [
@@ -128,6 +133,7 @@ __all__ = [
     "_get_glm_image_multimodal_block",
     "_get_mimo_audio_multimodal_block",
     "_get_qwen2_5_omni_multimodal_block",
+    "_get_qwen3_omni_thinker_layer_info",
     "_get_qwen3_omni_moe_multimodal_block",
     "_get_qwen3_tts_multimodal_block",
     "_handle_special_model",
@@ -155,6 +161,8 @@ __all__ = [
     "register_ignore_layers",
     "register_torch_compile_off",
     "resolve_model_type",
+    "apply_replacements",
+    "release_original_module_",
     "update_module",
 ]
 
