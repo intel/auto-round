@@ -22,6 +22,10 @@ from auto_round.logger import logger
 class SignRoundConfig(QuantizationConfig):
     """Configuration for SignRound-style block quantization."""
 
+    # Whether to emit the generic `enable_qad` experimental warning (subclasses
+    # with their own warning, e.g. QADConfig, disable it).
+    _warn_enable_qad = True
+
     @classmethod
     def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
         registry.add_argument(
@@ -67,6 +71,13 @@ class SignRoundConfig(QuantizationConfig):
             default=False,
             action="boolean_optional",
             help="Tune normalization and bias terms.",
+        )
+        registry.add_argument(
+            "--enable_shared_expert_tuning",
+            field="enable_shared_expert_tuning",
+            default=False,
+            action="boolean_optional",
+            help="Fine-tune non-quantized shared_expert layers via fake quantization without rounding.",
         )
         registry.add_argument(
             "--gradient_accumulate_steps",
@@ -121,6 +132,103 @@ class SignRoundConfig(QuantizationConfig):
             help="Enable last-block LM cross-entropy (LFQ) loss for the final transformer block (experimental).",
         )
         registry.add_argument(
+            "--lfq_loss",
+            field="lfq_loss",
+            default="tk",
+            choices=["ce", "dtk", "rkl", "tk"],
+            help=(
+                "LFQ loss type for the final transformer block. 'ce' uses next-token cross-entropy "
+                "against the ground-truth labels; 'dtk' uses the Decoupled Tempered Top-K forward-KL "
+                "knowledge distillation loss (KL(p_T || p_S)); 'rkl' uses the same decoupled Top-K "
+                "objective with the reverse KL (KL(p_S || p_T)); 'tk' only aligns the Top-K-normalized "
+                "conditional distributions (tempered conditional KL within the teacher Top-K, without "
+                "the binary mass term). 'dtk'/'rkl'/'tk' distill the FP (teacher) block output into the "
+                "quantized (student) block output (experimental)."
+            ),
+        )
+        registry.add_argument(
+            "--lfq_top_k",
+            field="lfq_top_k",
+            default=32,
+            type=int,
+            help="Number of top teacher logits used by the 'dtk' LFQ loss.",
+        )
+        registry.add_argument(
+            "--lfq_temperature",
+            field="lfq_temperature",
+            default=1.0,
+            type=float,
+            help="Temperature applied to the within-Top-K conditional KL term of the 'dtk' LFQ loss.",
+        )
+        registry.add_argument(
+            "--lfq_num_blocks",
+            field="lfq_num_blocks",
+            default=1,
+            type=int,
+            help=(
+                "Number of final text-decoder blocks the LFQ loss is applied to (default 1 = last "
+                "block only). Increase to propagate the logit-aware signal to deeper blocks."
+            ),
+        )
+        registry.add_argument(
+            "--lfq_mse_weight",
+            field="lfq_mse_weight",
+            default=0.0,
+            type=float,
+            help=(
+                "Weight of the MSE block-reconstruction term added to the LFQ (KD) loss: "
+                "loss = kd_loss + lfq_mse_weight * mse_loss. 0.0 (default) replaces the MSE loss "
+                "entirely with the KD loss (original behavior); >0 combines both so the block keeps "
+                "its reconstruction fidelity while adding logit alignment."
+            ),
+        )
+        registry.add_argument(
+            "--lfq_qad",
+            field="lfq_qad",
+            default=False,
+            action="boolean_optional",
+            help=(
+                "Enable quantization-aware distillation (QAD) mode: apply the LFQ (KD) logit-lens "
+                "loss as a deep-supervision checkpoint every `lfq_block_stride` blocks (counting from "
+                "the last block backward), instead of only the final block. Blocks between checkpoints "
+                "are tuned with the MSE reconstruction loss."
+            ),
+        )
+        registry.add_argument(
+            "--lfq_block_stride",
+            field="lfq_block_stride",
+            default=1,
+            type=int,
+            help=(
+                "QAD mode only: apply the KD logit-lens loss every N text-decoder blocks, counting "
+                "from the last block backward (1 = every block)."
+            ),
+        )
+        registry.add_argument(
+            "--lfq_mse_stride",
+            field="lfq_mse_stride",
+            default=1,
+            type=int,
+            help=(
+                "QAD mode only: apply the MSE block-reconstruction loss every N blocks, counting from "
+                "the last block backward (1 = every block). Blocks that are neither a KD nor an MSE "
+                "checkpoint fall back to MSE so they are never left untrained."
+            ),
+        )
+        registry.add_argument(
+            "--enable_qad",
+            field="enable_qad",
+            default=False,
+            action="boolean_optional",
+            help=(
+                "Enable QAD (quantization-aware distillation): fuse all text-decoder blocks into a "
+                "single jointly-optimized group (whole-network training, not block-by-block) and tune "
+                "them against the final-output LM loss (`--lfq_loss`, default 'ce'). No intermediate "
+                "block MSE is used. Implies --enable_lfq. Set --nblocks N to train in joint chunks of "
+                "N blocks instead of the whole network at once (experimental)."
+            ),
+        )
+        registry.add_argument(
             "--enable_neuqi",
             field="enable_neuqi",
             action="store_true",
@@ -142,6 +250,7 @@ class SignRoundConfig(QuantizationConfig):
         nblocks: int = 1,
         enable_minmax_tuning: bool = True,
         enable_norm_bias_tuning: bool = False,
+        enable_shared_expert_tuning: bool = False,
         gradient_accumulate_steps: int = 1,
         enable_alg_ext: bool = False,
         not_use_best_mse: bool = False,
@@ -150,6 +259,15 @@ class SignRoundConfig(QuantizationConfig):
         optimizer: str | None = None,  # TODO later wenhuach delete this
         enable_adam: bool = False,  # TODO later  wenhuach delete this
         enable_lfq: bool = False,
+        lfq_loss: str = "tk",
+        lfq_top_k: int = 32,
+        lfq_temperature: float = 1.0,
+        lfq_num_blocks: int = 1,
+        lfq_mse_weight: float = 0.0,
+        lfq_qad: bool = False,
+        lfq_block_stride: int = 1,
+        lfq_mse_stride: int = 1,
+        enable_qad: bool = False,
         enable_neuqi: bool = False,
         **kwargs,
     ) -> None:
@@ -169,6 +287,10 @@ class SignRoundConfig(QuantizationConfig):
             enable_minmax_tuning: Whether to tune weight min/max ranges.
             enable_norm_bias_tuning: Whether to tune normalization and
                 bias terms.
+            enable_shared_expert_tuning: Whether to fine-tune non-quantized
+                shared_expert Linear layers via fake quantization without
+                rounding (same strategy as norm/bias tuning). Only affects
+                shared_expert layers kept at high precision.
             gradient_accumulate_steps: Number of gradient accumulation
                 steps used per optimization update.
             enable_alg_ext: Whether to enable the experimental SignRound
@@ -181,6 +303,37 @@ class SignRoundConfig(QuantizationConfig):
                 quantized output of previous blocks during calibration.
             optimizer: Optional optimizer name override.
             enable_adam: Whether to use the Adam-based SignRound variant.
+            enable_lfq: Enable the last-block LM loss (LFQ) for the final
+                transformer block (experimental).
+            lfq_loss: LFQ loss type, ``"ce"`` (next-token cross-entropy),
+                ``"dtk"`` (Decoupled Tempered Top-K forward-KL distillation,
+                ``KL(p_T || p_S)``), ``"rkl"`` (same decoupled Top-K objective
+                with the reverse KL ``KL(p_S || p_T)``) or ``"tk"`` (only align
+                the Top-K-normalized conditional distributions, without the
+                binary mass term). ``"dtk"``/``"rkl"``/``"tk"`` distill the FP
+                teacher block output into the quantized student.
+            lfq_top_k: Number of top teacher logits used by the ``"dtk"`` LFQ loss.
+            lfq_temperature: Temperature applied to the within-Top-K conditional
+                KL term of the ``"dtk"`` LFQ loss.
+            lfq_num_blocks: Number of final text-decoder blocks the LFQ loss is
+                applied to (default 1 = last block only).
+            lfq_mse_weight: Weight of the MSE block-reconstruction term added to
+                the KD loss (``loss = kd_loss + lfq_mse_weight * mse_loss``). 0.0
+                replaces MSE with the KD loss (original behavior); >0 combines
+                both.
+            lfq_qad: Enable quantization-aware distillation (QAD) mode: apply the
+                KD logit-lens loss every ``lfq_block_stride`` blocks (deep
+                supervision) instead of only the final block.
+            lfq_block_stride: QAD only. Apply the KD loss every N text-decoder
+                blocks, counting from the last block backward (1 = every block).
+            lfq_mse_stride: QAD only. Apply the MSE reconstruction loss every N
+                blocks, counting from the last block backward (1 = every block).
+            enable_qad: Enable QAD (quantization-aware distillation): fuse all
+                text-decoder blocks into a single jointly-optimized group and
+                tune them against the final-output LM loss (``lfq_loss``, default
+                ``"ce"``), with no intermediate block MSE. Implies
+                ``enable_lfq``. ``nblocks`` > 1 trains in joint chunks instead of
+                the whole network at once.
             enable_neuqi: Opt into the NeUQI grid search (arXiv 2505.17595):
                 the joint (scale, integer zero-point) search runs once at
                 layer init and anchors the tuning grid to the winner, frozen
@@ -217,6 +370,12 @@ class SignRoundConfig(QuantizationConfig):
         self.enable_norm_bias_tuning = enable_norm_bias_tuning
         if self.enable_norm_bias_tuning:
             logger.warning("the `enable_norm_bias_tuning` feature is experimental and currently has limited support.")
+        self.enable_shared_expert_tuning = enable_shared_expert_tuning
+        if self.enable_shared_expert_tuning:
+            logger.warning(
+                "the `enable_shared_expert_tuning` feature is experimental; it fake-quantizes "
+                "non-quantized shared_expert layers without rounding for fine-tuning."
+            )
         self.not_use_best_mse = not_use_best_mse
         self.dynamic_max_gap = dynamic_max_gap
         self.enable_quanted_input = enable_quanted_input
@@ -224,7 +383,43 @@ class SignRoundConfig(QuantizationConfig):
         self.enable_adam = enable_adam
         self.enable_lfq = enable_lfq
         if self.enable_lfq:
-            logger.warning("the `enable_lfq` feature is experimental and currently has limited model support.")
+            logger.warning_once("the `enable_lfq` feature is experimental and currently has limited model support.")
+        self.lfq_loss = lfq_loss
+        if self.lfq_loss not in ("ce", "dtk", "rkl", "tk"):
+            raise ValueError(f"`lfq_loss` must be one of 'ce', 'dtk', 'rkl' or 'tk', got {self.lfq_loss!r}")
+        self.lfq_top_k = lfq_top_k
+        if self.lfq_top_k <= 0:
+            raise ValueError("`lfq_top_k` must be positive")
+        self.lfq_temperature = lfq_temperature
+        if self.lfq_temperature <= 0:
+            raise ValueError("`lfq_temperature` must be positive")
+        self.lfq_num_blocks = lfq_num_blocks
+        if self.lfq_num_blocks <= 0:
+            raise ValueError("`lfq_num_blocks` must be positive")
+        self.lfq_mse_weight = lfq_mse_weight
+        if self.lfq_mse_weight < 0:
+            raise ValueError("`lfq_mse_weight` must be non-negative")
+        self.lfq_qad = lfq_qad
+        if self.lfq_qad:
+            logger.warning_once("the `lfq_qad` (quantization-aware distillation) mode is experimental.")
+        self.lfq_block_stride = lfq_block_stride
+        if self.lfq_block_stride <= 0:
+            raise ValueError("`lfq_block_stride` must be positive")
+        self.lfq_mse_stride = lfq_mse_stride
+        if self.lfq_mse_stride <= 0:
+            raise ValueError("`lfq_mse_stride` must be positive")
+        # QAD (quantization-aware distillation): whole-network joint training against
+        # the final-output LM loss. Implies LFQ; the whole-network fusing (nblocks) is
+        # handled by the orchestrator when this flag is set.
+        self.enable_qad = enable_qad
+        if self.enable_qad:
+            self.enable_lfq = True
+        # QADConfig emits its own (more specific) warning, so skip the generic one there.
+        if self.enable_qad and self._warn_enable_qad:
+            logger.warning_once(
+                "the `enable_qad` (quantization-aware distillation) mode is experimental: all "
+                "text-decoder blocks are fused and tuned jointly against the final-output LM loss."
+            )
 
     def _lr_for_bits(self, bits: int | None) -> float | None:
         """Return the auto lr heuristic for a given bit-width.

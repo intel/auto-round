@@ -37,7 +37,13 @@ from auto_round.utils import (
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
 from auto_round.utils.distributed import setup_ddp_if_needed_
-from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
+from auto_round.wrapper import (
+    WrapperLinear,
+    store_warm_start_params_and_unwrap,
+    unwrapper_block,
+    unwrapper_layer,
+    wrapper_block,
+)
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import BlockContext
@@ -55,6 +61,7 @@ class SignRoundQuantizer(BaseQuantizer):
         self.momentum = config.momentum
         self.enable_minmax_tuning = config.enable_minmax_tuning
         self.enable_norm_bias_tuning = config.enable_norm_bias_tuning
+        self.enable_shared_expert_tuning = getattr(config, "enable_shared_expert_tuning", False)
         self.gradient_accumulate_steps = config.gradient_accumulate_steps
 
         self.enable_alg_ext = config.enable_alg_ext
@@ -62,9 +69,23 @@ class SignRoundQuantizer(BaseQuantizer):
         self.enable_quanted_input = config.enable_quanted_input
         self.dynamic_max_gap = config.dynamic_max_gap
         self.enable_lfq = config.enable_lfq
+        self.lfq_loss_type = getattr(config, "lfq_loss", "ce")
+        self.lfq_top_k = getattr(config, "lfq_top_k", 32)
+        self.lfq_temperature = getattr(config, "lfq_temperature", 1.0)
+        self.lfq_num_blocks = getattr(config, "lfq_num_blocks", 1)
+        self.lfq_mse_weight = getattr(config, "lfq_mse_weight", 0.0)
+        self.lfq_qad = getattr(config, "lfq_qad", False)
+        self.lfq_block_stride = getattr(config, "lfq_block_stride", 1)
+        self.lfq_mse_stride = getattr(config, "lfq_mse_stride", 1)
+        self.enable_qad = getattr(config, "enable_qad", False)
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
+        # Warm-start chaining flag (e.g. SignRound -> QAD): when True, quantize_block
+        # keeps the original FP weight and stashes the tuned params on each layer
+        # instead of baking them into a quantized weight. Set by the orchestrator
+        # for the block-wise warm-up stage that precedes a whole-model quantizer.
+        self.warm_start_collect = False
         # Kept for per-layer (mixed-bit) lr resolution during tuning.
         self._config = config
         self.lr_is_auto = getattr(config, "lr_is_auto", False)
@@ -270,81 +291,345 @@ class SignRoundQuantizer(BaseQuantizer):
         name_lower = block_name.lower()
         return not any(kw in name_lower for kw in self._NON_TEXT_BLOCK_KEYWORDS)
 
-    def lfq_loss(
+    def _maybe_prefetch_teacher(self, indices) -> None:
+        """Hook for subclasses (e.g. QAD) to prefetch per-batch teacher data.
+
+        No-op in the base implementation.
+        """
+        return None
+
+    def _lfq_is_kd_block(self, block_ctx) -> bool:
+        """Return ``True`` if the KD (LFQ logit-lens) loss applies to this block.
+
+        * QAD off (default): the last ``lfq_num_blocks`` text-decoder blocks.
+        * QAD on: every ``lfq_block_stride`` blocks, counting from the last
+          block backward (deep-supervision checkpoints).
+
+        Requires LFQ enabled, token IDs available (checked by the caller) and a
+        pure text-decoder block.
+        """
+        if not self.enable_lfq or not self._is_text_decoder_block(block_ctx.block_name):
+            return False
+        # QAD: every fused group (chunk) is tuned against the final-output LM loss.
+        if self.enable_qad:
+            return True
+        depth_from_last = block_ctx.block_cnt - 1 - block_ctx.block_index
+        if self.lfq_qad:
+            return depth_from_last % self.lfq_block_stride == 0
+        return block_ctx.block_index >= block_ctx.block_cnt - self.lfq_num_blocks
+
+    def _lfq_is_mse_block(self, block_ctx) -> bool:
+        """Return ``True`` if the MSE reconstruction loss applies to this block.
+
+        Only meaningful in QAD mode, where the MSE loss is applied every
+        ``lfq_mse_stride`` blocks (from the last block backward). Outside QAD
+        mode every block uses MSE (handled directly in the tuning loop).
+        """
+        depth_from_last = block_ctx.block_cnt - 1 - block_ctx.block_index
+        return depth_from_last % self.lfq_mse_stride == 0
+
+    def _get_lfq_downstream_blocks(self, block_ctx, device) -> list:
+        """Return the (FP, not-yet-quantized) blocks that follow the current one.
+
+        Only used in the default (non-QAD) LFQ mode with ``lfq_num_blocks`` > 1:
+        a non-final KD block's output must go through the remaining decoder
+        blocks before the final norm / lm_head, otherwise the loss would be a
+        logit-lens on an intermediate hidden state. The returned blocks are
+        moved to *device*; the caller is responsible for moving them back.
+
+        Returns an empty list when the current block is the last one, when the
+        block order is unknown, or when a downstream block is not materialized
+        (e.g. offloaded / meta), in which case it falls back to the logit-lens.
+        """
+        if self.enable_qad or self.lfq_qad:
+            return []
+        all_names = getattr(block_ctx, "all_block_names", None)
+        cur_names = getattr(block_ctx, "block_names", None) or []
+        if not all_names or not cur_names or cur_names[-1] not in all_names:
+            if block_ctx.block_index < block_ctx.block_cnt - 1:
+                logger.warning_once(
+                    "LFQ: block order unavailable, non-final KD blocks fall back to the logit-lens loss "
+                    "(block output fed directly to the final norm/lm_head)."
+                )
+            return []
+        downstream_names = all_names[all_names.index(cur_names[-1]) + 1 :]
+        if not downstream_names:
+            return []
+
+        from auto_round.utils import convert_module_to_hp_if_necessary, get_module
+
+        model = getattr(block_ctx, "model", None) or self.model
+        blocks = []
+        for name in downstream_names:
+            m = get_module(model, name)
+            if m is None or any(p.device.type == "meta" or p.numel() == 0 for p in m.parameters()):
+                logger.warning_once(
+                    "LFQ: downstream block %s is not materialized (offloaded/meta); non-final KD blocks fall "
+                    "back to the logit-lens loss. Disable low_cpu_mem_usage/disk streaming to propagate "
+                    "through the remaining blocks." % name
+                )
+                return []
+            blocks.append(m)
+        for m in blocks:
+            convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, device)
+            m.to(device)
+        logger.info(
+            f"LFQ: propagating {block_ctx.block_name} output through {len(blocks)} downstream FP block(s) "
+            "before lm_head"
+        )
+        return blocks
+
+    def _forward_lfq_downstream(
         self,
-        q_hidden_state: torch.Tensor,
-        fp_hidden_state: torch.Tensor,
-        input_ids: torch.Tensor = None,
+        hidden_state: torch.Tensor,
+        downstream_blocks: list,
+        inputs,
+        input_others: dict,
+        indices,
+        device,
     ) -> torch.Tensor:
-        """Compute the LFQ loss between the FP and quantized token distributions.
+        """Forward *hidden_state* through *downstream_blocks* (frozen FP blocks).
 
-        Implements Eq. 3 of the LFQ paper: the cross-entropy between the FP
-        model's logit distribution and the quantized model's logit distribution,
+        Gradients flow through the activations back to the current block; the
+        downstream block parameters themselves are frozen (``requires_grad=False``).
+        """
+        if not downstream_blocks:
+            return hidden_state
+        from auto_round.utils import to_device
 
-            L_CE = -(1/L) Σ_{i,j} σ(X·W_FP·W_Head)_{i,j} · log σ(X·W_q·W_Head)_{i,j}
+        block_fwd = self.block_forward
+        out_device = hidden_state.device
+        if not isinstance(indices, torch.Tensor):
+            indices = torch.tensor(indices, dtype=torch.long)
+        _, batch_others = block_fwd.select_batch(inputs, input_others, indices)
+        batch_others = to_device(batch_others, device)
+        h = hidden_state.to(device)
+        for m in downstream_blocks:
+            # block_forward mutates the kwargs dict (pops positional_inputs, injects the
+            # hidden-state kwarg), so hand each block a fresh shallow copy.
+            raw = block_fwd._forward_one_batch(m, h, dict(batch_others))
+            h = block_fwd._normalize_output(raw, m)
+        return h.to(out_device)
 
-        where ``σ`` is the softmax over the vocabulary dimension. Both logits are
-        obtained by applying every post-block module (final norm, optional
-        projection, …) in order followed by ``lm_head``. The FP distribution is
-        the (detached) soft target; gradients flow only through the quantized
-        branch. This is a distribution-matching objective, *not* a hard-label
-        next-token cross-entropy.
+    def _lfq_logits(self, hidden_state: torch.Tensor) -> torch.Tensor:
+        """Project a block hidden state to vocabulary logits.
+
+        Applies every post-block module (final norm, optional projection, …) in
+        order, then runs lm_head.
 
         Args:
-            q_hidden_state:  Quantized last-block output ``X·W_q``, shape
-                             ``[batch, seq_len, hidden]``.
-            fp_hidden_state: FP last-block output ``X·W_FP`` used to build the
-                             soft target distribution, same shape as above.
-            input_ids:       Optional token-ID labels with ``-100`` for ignored
-                             (e.g. padding) positions, shape ``[batch, seq_len]``.
-                             When provided, those positions are excluded from the
-                             loss; token values themselves are not used as targets.
+            hidden_state: Block output, shape ``[batch, seq_len, hidden]``.
 
         Returns:
-            Scalar LFQ loss tensor.
+            Logits tensor of shape ``[batch, seq_len, vocab_size]``.
         """
-        from .lfq_loss import soft_cross_entropy
-
         self._init_lm_components()
-        device = q_hidden_state.device
+        device = hidden_state.device
 
         for module in self._post_block_modules:
             module.to(device)
+            hidden_state = module(hidden_state)
+
         self._lm_head.to(device)
+        return self._lm_head(hidden_state)
 
-        def _to_logits(hidden: torch.Tensor) -> torch.Tensor:
-            for module in self._post_block_modules:
-                hidden = module(hidden)
-            return self._lm_head(hidden)
+    def lfq_loss(
+        self,
+        hidden_state: torch.Tensor,
+        input_ids: torch.Tensor,
+        teacher_hidden_state: torch.Tensor | None = None,
+        sample_indices: list | None = None,
+    ) -> torch.Tensor:
+        """Compute the LFQ loss from the last block's hidden states.
 
-        # FP logits form the (detached) soft target distribution σ(X·W_FP·W_Head).
-        with torch.no_grad():
-            fp_logits = _to_logits(fp_hidden_state.to(device))
+        Two loss types are supported, selected by ``self.lfq_loss_type``:
 
-        # Quantized logits: gradients flow through this branch only.
-        q_logits = _to_logits(q_hidden_state)
+        * ``"ce"`` (default): next-token cross-entropy against ground-truth
+          labels. Positions marked with ``-100`` in *input_ids* are excluded.
+        * ``"dtk"``: Decoupled Tempered Top-K forward-KL knowledge distillation
+          (``KL(p_T || p_S)``). The FP block output (*teacher_hidden_state*) is
+          the teacher and the quantized block output (*hidden_state*) is the
+          student. Requires *teacher_hidden_state*; falls back to ``"ce"`` when
+          it is ``None``.
+        * ``"rkl"``: same decoupled Top-K objective but using the reverse KL
+          ``KL(p_S || p_T)`` (mode-seeking). Also requires *teacher_hidden_state*.
+        * ``"tk"``: only aligns the Top-K-normalized conditional distributions
+          (tempered conditional KL within the teacher Top-K, dropping the binary
+          mass term). Also requires *teacher_hidden_state*.
 
-        # Position mask for the soft-CE objective.
-        #
-        # IMPORTANT: this is a *deliberate same-position* mask — no next-token
-        # shift is applied. LFQ (Eq. 3) matches the FP and quantized output
-        # distributions σ(X·W_FP·W_Head) vs σ(X·W_q·W_Head) at each position; it
-        # is a per-position distillation objective, not next-token prediction,
-        # so logits and the target distribution are aligned position-for-position
-        # (unlike the legacy hard-label CE path that used shift_logits/labels).
-        #
-        # ``input_ids`` already carries the calibrator's -100 ignore markers
-        # (pad tokens, trailing repeated tokens, and the last position of each
-        # sample). Those positions are simply dropped here; the token *values*
-        # are never used as targets.
-        valid_mask = None
-        if input_ids is not None:
-            valid_mask = input_ids.to(device) != -100
+        Args:
+            hidden_state: Last (quantized/student) block output,
+                shape ``[batch, seq_len, hidden]``.
+            input_ids:    Token-ID labels with ``-100`` for ignored positions,
+                          shape ``[batch, seq_len]``.
+            teacher_hidden_state: FP (teacher) block output used by the ``"dtk"``,
+                ``"rkl"`` and ``"tk"`` losses, same shape as *hidden_state*.
+            sample_indices: Calibration-sample indices for this batch. Unused by
+                the base implementation; QAD subclasses use it to load the
+                offline teacher Top-K cache from disk.
 
-        # Memory-efficient soft cross-entropy (Unsloth-style logsumexp + analytic
-        # gradient + row chunking): never materializes a full float32 log_softmax
-        # tensor nor an autograd graph through softmax.
-        return soft_cross_entropy(q_logits, fp_logits, valid_mask)
+        Returns:
+            Scalar loss tensor.
+        """
+        device = hidden_state.device
+        logits = self._lfq_logits(hidden_state)
+
+        if self.lfq_loss_type in ("dtk", "rkl", "tk") and teacher_hidden_state is not None:
+            with torch.no_grad():
+                teacher_logits = self._lfq_logits(teacher_hidden_state.to(device))
+            return self._decoupled_topk_kd_loss(
+                logits,
+                teacher_logits,
+                input_ids.to(device),
+                reverse=(self.lfq_loss_type == "rkl"),
+                conditional_only=(self.lfq_loss_type == "tk"),
+            )
+
+        if hasattr(self.model, "loss_function"):
+            loss = self.model.loss_function(
+                logits=logits,
+                labels=input_ids.to(device),
+                vocab_size=self.model.config.vocab_size,
+            )
+        else:
+            import torch.nn.functional as F
+
+            # Standard causal-LM shift: predict token t+1 from hidden state t.
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = input_ids[..., 1:].contiguous().to(device)
+            loss = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
+        return loss
+
+    def _decoupled_topk_kd_loss(
+        self,
+        student_logits: torch.Tensor,
+        teacher_logits: torch.Tensor,
+        labels: torch.Tensor,
+        reverse: bool = False,
+        conditional_only: bool = False,
+    ) -> torch.Tensor:
+        """Decoupled Tempered Top-K knowledge-distillation loss (per-token mean).
+
+        Decomposes the KL divergence between the teacher and student next-token
+        distributions via the chain rule into:
+
+        * ``L_B``: a binary (Bernoulli) term matching the total probability mass
+          the teacher/student assign to the teacher's Top-K set, and
+        * ``L_T``: the temperature-scaled conditional KL *within* the Top-K set,
+          weighted by the expectation distribution's Top-K mass.
+
+        This "decoupled, tempered Top-K" objective avoids support mismatch while
+        preserving the benefits of temperature-scaled distillation.
+
+        The Top-K set is always the teacher's. ``reverse`` selects the KL
+        direction:
+
+        * ``reverse=False`` (forward KL): the expectation is over the teacher,
+          i.e. ``KL(p_T || p_S)`` — mode-covering, the standard distillation
+          objective.
+        * ``reverse=True`` (reverse KL): the expectation is over the student,
+          i.e. ``KL(p_S || p_T)`` — mode-seeking.
+
+        When ``conditional_only`` is ``True`` the binary mass term ``L_B`` and the
+        Top-K mass weighting are dropped, so the loss only aligns the two
+        distributions *renormalized within the Top-K set* (the tempered
+        conditional KL alone).
+
+        Gradients flow only through the student; the teacher is detached.
+
+        Args:
+            student_logits: Student logits, shape ``[batch, seq_len, vocab]``.
+            teacher_logits: Teacher logits, shape ``[batch, seq_len, vocab]``.
+            labels:         Token-ID labels with ``-100`` for ignored positions,
+                            shape ``[batch, seq_len]``. Only used to mask out
+                            padding / ignored next-token positions.
+            reverse:        When ``True`` compute the reverse KL ``KL(p_S || p_T)``
+                            instead of the forward KL ``KL(p_T || p_S)``.
+            conditional_only: When ``True`` only align the Top-K-normalized
+                            conditional distributions (drop ``L_B`` and the mass
+                            weighting).
+
+        Returns:
+            Scalar loss tensor (mean over valid next-token positions).
+        """
+        import torch.nn.functional as F
+
+        top_k = int(self.lfq_top_k)
+        tau = float(self.lfq_temperature)
+        eps = 1e-6
+
+        # Causal-LM shift: position t predicts token t+1.
+        s = student_logits[..., :-1, :].contiguous()
+        t = teacher_logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+
+        vocab = s.size(-1)
+        s = s.reshape(-1, vocab).float()
+        t = t.reshape(-1, vocab).float()
+        mask = (shift_labels.reshape(-1) != -100)
+
+        if mask.sum() == 0:
+            # Keep the graph connected so backward() is a no-op but valid.
+            return student_logits.float().sum() * 0.0
+
+        s = s[mask]
+        t = t[mask]
+        top_k = min(top_k, vocab)
+
+        log_pS = F.log_softmax(s, dim=-1)
+        log_pT = F.log_softmax(t, dim=-1)
+
+        # Teacher Top-K set per token (used for both forward and reverse KL).
+        topk_idx = t.topk(top_k, dim=-1).indices  # [N, k]
+        log_pS_topk = log_pS.gather(-1, topk_idx)  # [N, k]
+        log_pT_topk = log_pT.gather(-1, topk_idx)  # [N, k]
+
+        # Total mass on the Top-K set (in log space for stability).
+        log_PT_T = torch.logsumexp(log_pT_topk, dim=-1)  # [N]
+        log_PS_T = torch.logsumexp(log_pS_topk, dim=-1)  # [N]
+
+        # Select the expectation (E) and the "other" (O) distribution per KL
+        # direction. Forward KL(p_T || p_S): E=teacher, O=student.
+        # Reverse KL(p_S || p_T): E=student, O=teacher.
+        if reverse:
+            log_PE_T, log_PO_T = log_PS_T, log_PT_T
+            log_pE_topk, log_pO_topk = log_pS_topk, log_pT_topk
+        else:
+            log_PE_T, log_PO_T = log_PT_T, log_PS_T
+            log_pE_topk, log_pO_topk = log_pT_topk, log_pS_topk
+
+        PE_T = log_PE_T.exp().clamp(min=eps, max=1.0 - eps)
+
+        # Conditional distributions within the Top-K: log p(x|T) = log p(x) - log P(T).
+        log_cE = log_pE_topk - log_PE_T.unsqueeze(-1)  # [N, k]
+        log_cO = log_pO_topk - log_PO_T.unsqueeze(-1)  # [N, k]
+
+        # Apply temperature tau: p^(tau)(x) = p(x)^(1/tau) / Z, computed in log space.
+        log_cE_tau = log_cE / tau
+        log_cE_tau = log_cE_tau - torch.logsumexp(log_cE_tau, dim=-1, keepdim=True)
+        log_cO_tau = log_cO / tau
+        log_cO_tau = log_cO_tau - torch.logsumexp(log_cO_tau, dim=-1, keepdim=True)
+
+        # Tempered KL: D^(tau)_KL = tau^2 * KL( pE^(tau) || pO^(tau) ).
+        kl_tau = (log_cE_tau.exp() * (log_cE_tau - log_cO_tau)).sum(dim=-1)  # [N]
+
+        if conditional_only:
+            # Only align the Top-K-normalized conditional distributions; drop the
+            # binary mass term L_B and the Top-K mass weighting.
+            return ((tau * tau) * kl_tau).mean()
+
+        # L_B: KL( Bern(P_E(T)) || Bern(P_O(T)) ).
+        log_one_minus_PE = torch.log1p(-PE_T)
+        log_one_minus_PO = torch.log1p(-log_PO_T.exp().clamp(min=eps, max=1.0 - eps))
+        l_b = PE_T * (log_PE_T - log_PO_T) + (1.0 - PE_T) * (log_one_minus_PE - log_one_minus_PO)
+
+        l_t = PE_T * (tau * tau) * kl_tau
+
+        return (l_b + l_t).mean()
 
     def quantize_block(
         self,
@@ -408,6 +693,7 @@ class SignRoundQuantizer(BaseQuantizer):
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
             enable_neuqi=getattr(self.config, "enable_neuqi", False),
+            enable_shared_expert_tuning=self.enable_shared_expert_tuning,
         )
 
         round_params = []
@@ -446,7 +732,10 @@ class SignRoundQuantizer(BaseQuantizer):
                 f"layers in the block"
             )
             logger.info(dump_info)
-            unwrapper_block(block, {})
+            if self.warm_start_collect:
+                store_warm_start_params_and_unwrap(block, {})
+            else:
+                unwrapper_block(block, {})
             return {}
 
         # Build optimizer param groups with a per-layer lr for the rounding
@@ -519,8 +808,38 @@ class SignRoundQuantizer(BaseQuantizer):
             and (loss_device is None or torch.device(loss_device) == torch.device(device))
         )
 
+        # LFQ with lfq_num_blocks > 1: a non-final KD block's output must pass
+        # through the remaining (FP) blocks before reaching the final norm/lm_head.
+        lfq_downstream_blocks = []
+        lfq_teacher_final = None
+        if (
+            input_ids is not None
+            and isinstance(fp_outputs, list)
+            and isinstance(active_inputs, list)
+            and self._lfq_is_kd_block(block_ctx)
+        ):
+            lfq_downstream_blocks = self._get_lfq_downstream_blocks(block_ctx, device)
+            if lfq_downstream_blocks and self.lfq_loss_type in ("dtk", "rkl", "tk"):
+                # The teacher path is fixed across iterations: precompute it once.
+                lfq_teacher_final = []
+                with torch.no_grad():
+                    for s in range(0, nsamples, batch_size):
+                        idx = list(range(s, min(s + batch_size, nsamples)))
+                        ref = torch.cat([fp_outputs[j] for j in idx], dim=0)
+                        out = self._forward_lfq_downstream(
+                            ref, lfq_downstream_blocks, active_inputs, input_others, idx, device
+                        )
+                        lfq_teacher_final.extend(o.to(fp_outputs[0].device) for o in torch.split(out, 1, dim=0))
+
+        soft_round_modules = [m for m in block.modules() if getattr(m, "enable_soft_round", False)]
+        soft_round_end = self._soft_round_end_iter(soft_round_modules)
+
         try:
             for i in range(self.iters):
+                # Soft-round int: anneal the rounding-branch weight towards 1.0.
+                in_soft_phase = i < soft_round_end
+                for m in soft_round_modules:
+                    m.set_soft_round_progress(i, self.iters)
                 # Auto observes a complete forward/backward/optimizer iteration
                 # on the legacy path before allocating any extra GPU buffers.
                 if use_tuning_cache and i == (1 if cache_budget == "auto" else 0):
@@ -542,8 +861,28 @@ class SignRoundQuantizer(BaseQuantizer):
                         m.cur_iter = i
                 total_loss = 0
                 global_indices = index_sampler.next_batch()
+                # Hook: let subclasses (e.g. QAD) prefetch this iteration's teacher
+                # data from disk in the background while the forward/loss runs.
+                self._maybe_prefetch_teacher(global_indices)
                 if valid_token_mask:
                     num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+
+                # Per-block loss schedule (constant across batches/iters):
+                #   lfq_kd_block  -> apply the KD logit-lens loss on this block
+                #   lfq_mse_block -> add the MSE reconstruction loss on this block
+                # QAD: every fused group is tuned against the final-output LM loss only
+                # (no MSE); with the whole network fused this is the true final logits.
+                # Non-QAD: KD on the last `lfq_num_blocks`, MSE elsewhere (and on KD
+                # blocks only when `lfq_mse_weight` > 0). lfq_qad: KD every
+                # `lfq_block_stride` blocks, MSE every `lfq_mse_stride` blocks, with an
+                # MSE fallback so no block is ever left untrained.
+                lfq_kd_block = input_ids is not None and self._lfq_is_kd_block(block_ctx)
+                if self.enable_qad:
+                    lfq_mse_block = False
+                elif self.lfq_qad:
+                    lfq_mse_block = (not lfq_kd_block) or self._lfq_is_mse_block(block_ctx)
+                else:
+                    lfq_mse_block = (not lfq_kd_block) or self.lfq_mse_weight > 0
 
                 for batch_start in range(0, len(global_indices), batch_size):
                     indices = global_indices[batch_start : batch_start + batch_size]
@@ -556,17 +895,34 @@ class SignRoundQuantizer(BaseQuantizer):
                         pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
                     if loss_device is not None:
                         pred_output = pred_output.to(loss_device)
-                    if (
-                        block_ctx.block_index == block_ctx.block_cnt - 1
-                        and self.enable_lfq
-                        and input_ids is not None
-                        and self._is_text_decoder_block(block_ctx.block_name)
-                    ):
+                    if lfq_kd_block:
+                        # For KD losses ("dtk"/"rkl"/"tk"), ref_output (FP block output) is the teacher.
+                        teacher_output = ref_output if self.lfq_loss_type in ("dtk", "rkl", "tk") else None
+                        lfq_student = pred_output
+                        if lfq_downstream_blocks:
+                            lfq_student = self._forward_lfq_downstream(
+                                pred_output, lfq_downstream_blocks, active_inputs, input_others, indices, device
+                            )
+                            if lfq_teacher_final is not None:
+                                teacher_output = torch.cat([lfq_teacher_final[j] for j in indices], dim=0).to(
+                                    lfq_student.device
+                                )
                         loss = self.lfq_loss(
-                            pred_output,
-                            ref_output,
+                            lfq_student,
                             torch.cat([input_ids[i] for i in indices], dim=0),
+                            teacher_hidden_state=teacher_output,
+                            sample_indices=indices,
                         )
+                        # Optionally combine with the MSE block-reconstruction loss so the
+                        # block keeps its reconstruction fidelity while adding logit alignment.
+                        if lfq_mse_block:
+                            mse_term = self._get_loss(
+                                pred_output, ref_output, indices, mse_loss, device, valid_token_mask
+                            )
+                            # In QAD a scheduled MSE checkpoint defaults to weight 1.0; outside
+                            # QAD the explicit `lfq_mse_weight` controls the combination.
+                            mse_w = self.lfq_mse_weight if self.lfq_mse_weight > 0 else 1.0
+                            loss = loss + mse_w * mse_term
                     else:
                         loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
                     num_elm = 1 if num_elm <= 0 else num_elm
@@ -587,7 +943,10 @@ class SignRoundQuantizer(BaseQuantizer):
                 current_lr = optimizer.param_groups[0]["lr"]
                 logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
-                if total_loss < best_loss:
+                if in_soft_phase:
+                    # Loss is not comparable to the fully rounded one; skip best selection / early stop.
+                    last_best_iter = i
+                elif total_loss < best_loss:
                     best_loss = total_loss
                     if not self.not_use_best_mse:
                         best_params = (
@@ -612,6 +971,9 @@ class SignRoundQuantizer(BaseQuantizer):
         finally:
             if tuning_cache is not None:
                 tuning_cache.close()
+            for m in lfq_downstream_blocks:
+                mv_module_from_gpu(m)
+            del lfq_teacher_final
 
         last_loss = total_loss
         best_iter = self.iters
@@ -633,7 +995,12 @@ class SignRoundQuantizer(BaseQuantizer):
         if len(unquantized_layer_names) != 0:
             logger.info(f"Unquantized layers: {unquantized_layer_names}")
         with torch.no_grad():
-            unwrapper_block(block, best_params)
+            if self.warm_start_collect:
+                # Warm-up stage of a chain (e.g. SignRound -> QAD): keep the FP
+                # weight and stash tuned params for the next pass to warm-start from.
+                store_warm_start_params_and_unwrap(block, best_params)
+            else:
+                unwrapper_block(block, best_params)
 
         if self.config.is_act_nv_fp:
             # enable moe experts act_max automatic generation for WrapperWALayer
@@ -777,7 +1144,13 @@ class SignRoundQuantizer(BaseQuantizer):
 
         index_sampler = IndexSampler(nsamples, global_batch_size)
 
+        soft_round_modules = [wrapper_linear] if getattr(wrapper_linear, "enable_soft_round", False) else []
+        soft_round_end = self._soft_round_end_iter(soft_round_modules)
+
         for i in range(self.iters):
+            in_soft_phase = i < soft_round_end
+            for m in soft_round_modules:
+                m.set_soft_round_progress(i, self.iters)
             total_loss = 0
             global_indices = index_sampler.next_batch()
 
@@ -828,7 +1201,9 @@ class SignRoundQuantizer(BaseQuantizer):
             current_lr = optimizer.param_groups[0]["lr"]
             logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 
-            if total_loss < best_loss:
+            if in_soft_phase:
+                last_best_iter = i
+            elif total_loss < best_loss:
                 best_loss = total_loss
                 if not self.not_use_best_mse:
                     best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
@@ -851,6 +1226,22 @@ class SignRoundQuantizer(BaseQuantizer):
         mv_module_from_gpu(layer)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.3e} -> iter {best_iter}: {last_loss:.3e}"
         logger.info(dump_info)
+
+    def _soft_round_end_iter(self, soft_round_modules: list) -> int:
+        """First iteration where every soft-round wrapper is on the pure rounding grid (0 if none)."""
+        if not soft_round_modules:
+            return 0
+        from auto_round.data_type.int import soft_round_end_iter
+
+        end = max(soft_round_end_iter(self.iters, m.soft_round_ratio) for m in soft_round_modules)
+        if end > 0 and not getattr(self, "_soft_round_logged", False):
+            self._soft_round_logged = True
+            m = soft_round_modules[0]
+            logger.info(
+                f"soft-round int: rounding-branch weight {m.soft_round_init:.2f} -> 1.0 over iters [0, {end}), "
+                "pure rounding afterwards"
+            )
+        return end
 
     def finalize_run(self) -> None:
         """Clear per-run caches (``_cached_valid_token_mask``, LFQ components)."""

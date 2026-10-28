@@ -39,6 +39,7 @@ def _ensure_builtin_algorithms_registered() -> None:
     for module_name in (
         "auto_round.algorithms.quantization.rtn.config",
         "auto_round.algorithms.quantization.sign_round.config",
+        "auto_round.algorithms.quantization.qad.config",
         "auto_round.algorithms.transforms.awq.config",
         "auto_round.algorithms.transforms.svdquant.config",
         "auto_round.algorithms.transforms.hadamard.config",
@@ -57,6 +58,7 @@ def _ensure_pipeline_members_registered() -> None:
         "auto_round.algorithms.quantization.rtn.quantizer",
         "auto_round.algorithms.quantization.sign_round.quantizer",
         "auto_round.algorithms.quantization.sign_roundv2.quantizer",
+        "auto_round.algorithms.quantization.qad.quantizer",
         "auto_round.algorithms.quantization.adam_round.adam",
         "auto_round.algorithms.transforms.awq.base",
         "auto_round.algorithms.transforms.svdquant.apply",
@@ -187,6 +189,21 @@ def resolve_pipeline_member(config: object) -> type[BaseAlgorithm]:
         if member_cls is not None:
             return member_cls
     raise ValueError(f"Unknown algorithm config type {config_cls.__name__!r}.")
+
+
+def pipeline_member_for_config_class(config_cls: type):
+    """Return the pipeline member class for a config *class* (or ``None``).
+
+    Class-level counterpart of :func:`resolve_pipeline_member` (which needs an
+    instance). Used by the CLI to tell whether an algorithm is a terminal block
+    quantizer without constructing its config.
+    """
+    _ensure_pipeline_members_registered()
+    for cls in config_cls.__mro__:
+        member_cls = _CONFIG_IMPL_REGISTRY.get(cls)
+        if member_cls is not None:
+            return member_cls
+    return None
 
 
 def coerce_config_class(config: object, target_cls: type) -> object:

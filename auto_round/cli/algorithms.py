@@ -200,7 +200,16 @@ class AlgorithmHandler:
                             for index, item in enumerate(merged_parameters)
                             if locations[index][0] != group_name
                             and (
-                                item.dest == parameter.dest or set(item.option_strings) & set(parameter.option_strings)
+                                # Pair by option strings first (the natural identity of a
+                                # CLI flag). This keeps boolean mutex pairs that share a
+                                # dest -- e.g. --enable_X / --no-enable_X -- matched to the
+                                # correct counterpart instead of the wrong one. Fall back to
+                                # dest only when the parsing semantics are also compatible.
+                                (set(item.option_strings) & set(parameter.option_strings))
+                                or (
+                                    item.dest == parameter.dest
+                                    and _argument_compatibility_key(item) == _argument_compatibility_key(parameter)
+                                )
                             )
                         ),
                         None,
@@ -222,6 +231,27 @@ class AlgorithmHandler:
             _add_registered_arguments(group, registry)
 
     @classmethod
+    def _has_block_quantizer(cls, names) -> bool:
+        """Whether any algorithm in *names* is a terminal block quantizer.
+
+        Block-quantization algorithms (rtn, auto_round, qad, …) already provide a
+        block quantizer, so the CLI must not append a default one. Preprocessors
+        (awq, hadamard, svdquant, …) do not count.
+        """
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+        from auto_round.algorithms.registry import pipeline_member_for_config_class
+
+        for name in names:
+            try:
+                config_cls = cls.get(name)
+            except KeyError:
+                continue
+            member = pipeline_member_for_config_class(config_cls)
+            if member is not None and issubclass(member, BaseQuantizer):
+                return True
+        return False
+
+    @classmethod
     def build_configs(cls, args, common_kwargs: dict[str, Any]) -> list:
         raw = getattr(args, "algorithm", None) or ""
         names = [name.strip().lower() for name in raw.split(",") if name.strip()]
@@ -231,7 +261,7 @@ class AlgorithmHandler:
 
         canonical = resolve_algorithm_names(names, ignore_unknown=True)
         seen = set(canonical)
-        if not ({"rtn", "auto_round"} & seen):
+        if not cls._has_block_quantizer(canonical):
             canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
             canonical = ["rtn" if name == "auto_round" else name for name in canonical]

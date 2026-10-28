@@ -286,6 +286,27 @@ class BaseQuantizer(BaseAlgorithm):
         return block
 
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
+    #: Algorithms that tune the whole model jointly (a single forward to the LM
+    #: head) instead of block-by-block set this to ``True``. The orchestrator then
+    #: calls :meth:`quantize_model` once and skips the per-block loop.
+    whole_model_tuning: bool = False
+
+    def quantize_model(self, model, token_ids, device=None) -> None:
+        """Quantize the entire model jointly (whole-network tuning).
+
+        Only invoked when :attr:`whole_model_tuning` is ``True``. The default
+        implementation is intentionally absent; whole-model algorithms (e.g. QAD)
+        override it to run their own full-model forward/optimize loop.
+
+        Args:
+            model: The model to quantize (all quantizable layers tuned jointly).
+            token_ids: Per-sample calibration token-id tensors.
+            device: Target compute device.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} sets whole_model_tuning=True but does not implement quantize_model()."
+        )
+
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Model-level preparation (called once before block iteration starts)."""
         return

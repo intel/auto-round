@@ -281,6 +281,90 @@ class LLMCalibrator(Calibrator):
             hook_handle.remove()
         self.hook_handles = []
 
+    def _mask_ids_for_loss(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """Return a copy of ``input_ids`` with loss-ignored positions set to ``-100``.
+
+        Ignored positions are pad tokens (via ``pad_token_id`` when available,
+        otherwise trailing repeated tokens) and the last token of every sample.
+        """
+        ids_to_cache = input_ids.clone()
+        if ids_to_cache.dim() == 1:
+            ids_to_cache = ids_to_cache.unsqueeze(0)
+        if self.tokenizer is not None and getattr(self.tokenizer, "pad_token_id", None) is not None:
+            ids_to_cache[ids_to_cache == self.tokenizer.pad_token_id] = -100
+        else:
+            # Heuristic: trailing repeated tokens are treated as padding.
+            for b in range(ids_to_cache.shape[0]):
+                last_token = ids_to_cache[b, -1]
+                j = ids_to_cache.shape[1] - 2
+                while j >= 0 and ids_to_cache[b, j] == last_token:
+                    ids_to_cache[b, j] = -100
+                    j -= 1
+        # Always exclude the last position (no supervision target).
+        ids_to_cache[:, -1] = -100
+        return ids_to_cache
+
+    @torch.no_grad()
+    def collect_token_ids(self, nsamples: int) -> list[torch.Tensor]:
+        """Collect ``nsamples`` raw calibration token-id samples WITHOUT running the model.
+
+        Used by whole-model algorithms (e.g. QAD) that only need token ids and
+        may want a different sample count than the block-wise calibration
+        (e.g. ``sign_round,qad`` with ``qad_nsamples != nsamples``). The ids are
+        masked with ``-100`` exactly like the ``input_ids`` cached by :meth:`calib`.
+        """
+        from auto_round.calib_dataset import get_dataloader
+        from auto_round.utils.dataset_utils import strip_dataset_spec_whitespace
+
+        if isinstance(self.dataset, str):
+            dataloader = get_dataloader(
+                self.tokenizer,
+                self.seqlen,
+                strip_dataset_spec_whitespace(self.dataset),
+                self.seed,
+                self.batch_size,
+                nsamples,
+                trust_remote_code=self.trust_remote_code,
+            )
+        else:
+            dataloader = self.dataset
+        if dataloader.__class__.__name__ == "BatchEncoding":
+            dataloader = [dataloader.data]
+
+        token_ids: list[torch.Tensor] = []
+        for data in dataloader:
+            if data.__class__.__name__ == "BatchEncoding":
+                data = data.data
+            if data is None:
+                continue
+            if isinstance(data, torch.Tensor):
+                input_ids = data
+            elif isinstance(data, str):
+                if self.tokenizer is None:
+                    raise ValueError("please provide tokenizer for string input")
+                input_ids = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt")[
+                    "input_ids"
+                ]
+            elif isinstance(data, (tuple, list)):
+                input_ids = data[0]
+            else:
+                input_ids = data["input_ids"]
+            if input_ids.dim() == 1:
+                input_ids = input_ids.unsqueeze(0)
+            if input_ids.shape[-1] < self.seqlen:
+                continue
+            ids = self._mask_ids_for_loss(input_ids.to("cpu"))
+            token_ids.extend(list(torch.split(ids, 1, dim=0)))
+            if len(token_ids) >= nsamples:
+                break
+        token_ids = token_ids[:nsamples]
+        if len(token_ids) < nsamples:
+            logger.warning_once(
+                f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
+                f"Target samples count is {nsamples}, while valid samples count is {len(token_ids)}"
+            )
+        return token_ids
+
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> None:
         """Drive the model with text data so block hooks fire.
@@ -350,19 +434,7 @@ class LLMCalibrator(Calibrator):
             #   • the last token of every sample (no next-token target)
             if "input_ids" not in self.inputs:
                 self.inputs["input_ids"] = []
-            ids_to_cache = input_ids.clone()
-            if self.tokenizer is not None and getattr(self.tokenizer, "pad_token_id", None) is not None:
-                ids_to_cache[ids_to_cache == self.tokenizer.pad_token_id] = -100
-            else:
-                # Heuristic: trailing repeated tokens are treated as padding.
-                for b in range(ids_to_cache.shape[0]):
-                    last_token = ids_to_cache[b, -1]
-                    j = ids_to_cache.shape[1] - 2
-                    while j >= 0 and ids_to_cache[b, j] == last_token:
-                        ids_to_cache[b, j] = -100
-                        j -= 1
-            # Always exclude the last position (no supervision target).
-            ids_to_cache[:, -1] = -100
+            ids_to_cache = self._mask_ids_for_loss(input_ids)
             self.inputs["input_ids"].extend(list(torch.split(ids_to_cache.to("cpu"), 1, dim=0)))
             if need_attention_mask:
                 if (

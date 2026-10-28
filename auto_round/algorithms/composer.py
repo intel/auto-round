@@ -79,6 +79,9 @@ class BlockContext:
     is_diffusion: bool = False  # fail-fast gate for algorithms that don't support diffusion
     pbar: Any = None
     block_cnt: int = 0  # total number of blocks being quantized in this run
+    # Ordered names of every block in the current all_blocks group (used e.g. by the
+    # LFQ loss to forward a non-final block's output through the remaining FP blocks).
+    all_block_names: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +144,18 @@ class AlgorithmComposer:
 
             configs = configs + [RTNConfig()]
 
-        configs = resolve_shared_config_values(configs)
+        # Detect a block-wise warm-up -> whole-model chain (e.g. ``sign_round,qad``)
+        # at the config level. Such chains are two independent quantization stages
+        # that legitimately differ on behavioral fields (e.g. ``enable_alg_ext``),
+        # so only their shared *scheme* is reconciled, not every public attr.
+        def _resolves_to_whole_model(cfg) -> bool:
+            alg_cls = get_algorithm_class(cfg)
+            return alg_cls is not None and getattr(alg_cls, "whole_model_tuning", False)
+
+        whole_model_cfgs = [c for c in block_quantizer_configs if _resolves_to_whole_model(c)]
+        is_warmup_chain = len(block_quantizer_configs) == 2 and len(whole_model_cfgs) == 1
+
+        configs = resolve_shared_config_values(configs, reconcile_non_scheme=not is_warmup_chain)
 
         preprocessors: list = []
         block_quantizers: list = []
@@ -166,6 +180,24 @@ class AlgorithmComposer:
                 raise TypeError(
                     f"Algorithm class {type(q).__name__} must inherit either " "BasePreprocessor or BaseQuantizer."
                 )
+
+        # Chaining a block-wise warm-up with a whole-model quantizer (e.g.
+        # ``sign_round,qad``): the block-wise quantizer first tunes every block to
+        # produce warm-start ``value``/``min_scale``/``max_scale`` (keeping FP
+        # weights), then the whole-model quantizer (QAD) resumes from them. This is
+        # the only supported multi-block-quantizer case; every other combination
+        # still errors below.
+        self.warmup_quantizer = None
+        whole_model_qs = [q for q in block_quantizers if getattr(q, "whole_model_tuning", False)]
+        blockwise_qs = [q for q in block_quantizers if not getattr(q, "whole_model_tuning", False)]
+        if len(block_quantizers) == 2 and len(whole_model_qs) == 1 and len(blockwise_qs) == 1:
+            self.warmup_quantizer = blockwise_qs[0]
+            block_quantizers = whole_model_qs  # the whole-model quantizer is terminal
+            logger.info(
+                "AlgorithmComposer: chaining %s (block-wise warm-up) -> %s (whole-model).",
+                type(self.warmup_quantizer).__name__,
+                type(block_quantizers[0]).__name__,
+            )
 
         if len(block_quantizers) > 1:
             raise ValueError(
@@ -200,6 +232,8 @@ class AlgorithmComposer:
             blockers = []
             if not self.block_quantizer.can_compile_block_forward():
                 blockers.append(type(self.block_quantizer).__name__)
+            if self.warmup_quantizer is not None and not self.warmup_quantizer.can_compile_block_forward():
+                blockers.append(type(self.warmup_quantizer).__name__)
             for component in [*self.preprocessors, *rotation_configs]:
                 if not getattr(component, "can_compile_block_forward", lambda: True)():
                     blockers.append(type(component).__name__)
@@ -223,6 +257,8 @@ class AlgorithmComposer:
             # A little tricky
             if self.block_quantizer is not None:
                 self.block_quantizer.bind_block_forward_runner(self.block_forward)
+            if self.warmup_quantizer is not None:
+                self.warmup_quantizer.bind_block_forward_runner(self.block_forward)
         self.scheme = getattr(orchestrator, "scheme_context", None)
 
         # Rotation is modelled as ordinary pipeline members (see
@@ -563,9 +599,13 @@ class AlgorithmComposer:
         is always returned last, so its position in that input list has no
         effect on pipeline execution. Rotation members sit between the
         preprocessors and the block quantizer so ``prepare_run`` / ``finalize_run``
-        cover them like any other member.
+        cover them like any other member. A warm-up quantizer (block-wise stage
+        of a ``sign_round,qad``-style chain) sits just before the terminal
+        quantizer so its ``prepare_run`` (which resolves the wrapper class) runs
+        too.
         """
-        return list(self.preprocessors) + list(self._rotation_members) + [self.block_quantizer]
+        warmup = [self.warmup_quantizer] if self.warmup_quantizer is not None else []
+        return list(self.preprocessors) + list(self._rotation_members) + warmup + [self.block_quantizer]
 
     def dispatch_block(self, block: torch.nn.Module, input_ids, input_others: dict):
         """Dispatch block to device(s) via the pipeline's algorithms.
@@ -577,11 +617,18 @@ class AlgorithmComposer:
         from auto_round.algorithms.quantization.base import BaseQuantizer
 
         overriders = []
+        seen_ids = set()
         for member in self.members():
             if not hasattr(member, "dispatch_block"):
                 continue
             # Check if the member overrides the base default
             if type(member).dispatch_block is not BaseQuantizer.dispatch_block:
+                # Deduplicate by identity: a chained warm-up quantizer is temporarily
+                # also installed as ``block_quantizer`` during the warm-up stage, so
+                # the same instance can appear twice in ``members()``.
+                if id(member) in seen_ids:
+                    continue
+                seen_ids.add(id(member))
                 overriders.append(member)
 
         if len(overriders) > 1:

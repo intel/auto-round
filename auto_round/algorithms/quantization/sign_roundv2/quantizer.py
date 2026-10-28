@@ -101,19 +101,28 @@ def _dq_asym_group_size(bits: int) -> int:
 
 
 class SignRoundOptimizedWrapperLinear(WrapperLinear):
-    minmax_scale_bound = (0.0, 2.0)
+    minmax_scale_bound = (0.0, 10.0) #TODO here has been changed to 10.0, need to check if it is correct
 
     def _init_tuning_params_and_quant_func(self):
         super()._init_tuning_params_and_quant_func()
 
         layer = self.orig_layer
         data_type = layer.data_type
-        weight_reshape = self._prepare_init_scale_weight()
-        imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
 
-        self.init_scale = search_optimized_init_scale(
-            weight_reshape, data_type, layer.bits, imatrix, self.q_scale_thresh
-        )
+        # Warm-start reuse: a prior pass (SignRound -> QAD chaining) may have
+        # stashed the searched ``init_scale`` on this layer. Reuse it verbatim so
+        # the second pass tunes on the exact same scale grid (re-searching here
+        # would differ because the imatrix was consumed/deleted in the first pass).
+        warm_start = getattr(layer, "_ar_warm_start", None)
+        if warm_start and warm_start.get("init_scale") is not None:
+            self.init_scale = warm_start["init_scale"].to(self.device)
+        else:
+            weight_reshape = self._prepare_init_scale_weight()
+            imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
+
+            self.init_scale = search_optimized_init_scale(
+                weight_reshape, data_type, layer.bits, imatrix, self.q_scale_thresh
+            )
         self.weight_quant_func = get_optimized_quant_func(data_type)
         if self.init_scale is None or self.weight_quant_func is None:
             raise ValueError(
@@ -160,6 +169,105 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
                     f"incompatible with grouped weight shape {tuple(weight_reshape.shape)}."
                 )
         return weight_reshape
+
+
+class SignRoundOptimizedAsymWrapperLinear(SignRoundOptimizedWrapperLinear):
+    """Algorithm-extension wrapper for asymmetric INT weights.
+
+    The plain asym path seeds the grid from the raw per-group min/max
+    (``scale=(max-min)/maxq``, ``zp=round(-min/scale)``), which at low bit-widths
+    is a poor init: the step is too coarse for bell-shaped groups and the integer
+    zero-point rounding clips one side. This wrapper instead anchors the grid to an
+    imatrix-weighted joint ``(scale, zp)`` search (NeUQI), expressed as per-group
+    ``(tensor_min, tensor_max)`` margins that ``quant_tensor_asym`` reproduces
+    exactly, and -- unlike ``--enable_neuqi`` on the plain path -- keeps
+    ``min_scale``/``max_scale`` tunable around that anchor (both shrink and expand).
+    """
+
+    minmax_scale_bound = (0.5, 1.5)
+
+    def _init_tuning_params_and_quant_func(self):
+        layer = self.orig_layer
+        # Let the anchor below own the NeUQI search: disable the base wrapper's
+        # frozen-margin NeUQI branch so margins stay tunable and the search runs once.
+        enable_neuqi = self.enable_neuqi
+        self.enable_neuqi = False
+        try:
+            WrapperLinear._init_tuning_params_and_quant_func(self)
+        finally:
+            self.enable_neuqi = enable_neuqi
+        self.init_scale = None
+        self._asym_anchor = False
+
+        if self.weight_min is None or layer.bits >= 16 or isinstance(layer.group_size, tuple):
+            return
+
+        warm_start = getattr(layer, "_ar_warm_start", None)
+        if warm_start and warm_start.get("anchor_min") is not None and warm_start.get("anchor_max") is not None:
+            wmin = warm_start["anchor_min"].to(self.device, torch.float32)
+            wmax = warm_start["anchor_max"].to(self.device, torch.float32)
+        else:
+            from auto_round.data_type.neuqi import neuqi_anchor_margins
+
+            weight_reshape = self._prepare_init_scale_weight()
+            wmin, wmax = neuqi_anchor_margins(
+                weight_reshape,
+                layer.bits,
+                layer.group_size,
+                getattr(layer, "imatrix", None),
+                self.device,
+                sym=False,
+            )
+        if wmin.numel() != self.weight_min.numel() or wmax.numel() != self.weight_max.numel():
+            logger.warning_once("SignRoundV2 asym: anchor shape mismatch, falling back to min/max init.")
+            return
+        # Keep the anchor in fp32 so quant_tensor_asym re-derives the searched zp exactly.
+        self.weight_min = wmin.reshape(self.weight_min.shape).to(self.device, torch.float32)
+        self.weight_max = wmax.reshape(self.weight_max.shape).to(self.device, torch.float32)
+        self._asym_anchor = True
+        if hasattr(layer, "imatrix"):
+            del layer.imatrix
+
+
+class SignRoundNVFP4DQWrapperLinear(WrapperLinear):
+    """Algorithm-extension wrapper for int weights with NVFP4 double-quantized scales.
+
+    Used for the ``W{bits}G{group_size}DQ`` schemes (``int_sym_nvfp4_dq`` /
+    ``int_soft_sym_nvfp4_dq``). Mirrors :class:`SignRoundOptimizedWrapperLinear`: the
+    per-group ``init_scale`` comes from :func:`search_int_sym_nvfp4_dq_scale` (int
+    ``search_scales`` + ``search_nvfp4_scale`` evaluated through the NVFP4 double
+    quantization), and ``max_scale`` tunes a coefficient on top of it, instead of the GGUF
+    double-quant search of :class:`SignRoundDQWrapperLinear`.
+    """
+
+    def _init_tuning_params_and_quant_func(self):
+        super()._init_tuning_params_and_quant_func()
+        layer = self.orig_layer
+        if (
+            layer.bits >= 16
+            or "nvfp4_dq" not in str(layer.data_type)
+            or isinstance(layer.group_size, tuple)
+            or not self.enable_round_tuning
+        ):
+            return
+        from auto_round.data_type.nvfp import search_int_sym_nvfp4_dq_scale
+
+        weight = layer.get_weight() if hasattr(layer, "get_weight") else layer.weight
+        if isinstance(layer, transformers.pytorch_utils.Conv1D):
+            weight = weight.t()
+        weight_reshape, _, _ = reshape_pad_tensor_by_group_size(
+            weight.data.to(self.device, torch.float32), layer.group_size
+        )
+        imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
+        self.init_scale = search_int_sym_nvfp4_dq_scale(
+            weight_reshape,
+            layer.bits,
+            imatrix.to(weight_reshape.device),
+            super_group_size=getattr(layer, "super_group_size", None) or 16,
+        )
+        # ``max_scale`` tunes a coefficient around the searched scale in both directions
+        # (same range as the ``search_nvfp4_scale`` grid).
+        self.minmax_scale_bound = (0.5, 1.5)
 
 
 class SignRoundDQWrapperLinear(WrapperLinear):
@@ -353,9 +461,25 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
             else:
                 self._use_outlier_suppressed_loss = False
             self.wrapper_block = _named_wrapper_block(SignRoundOptimizedWrapperLinear, "wrapper_block")
+        elif (
+            not self.scheme.sym
+            and self.scheme.super_group_size is None
+            and self.scheme.data_type == "int"
+            and self.scheme.bits < 16
+        ):
+            # Asym INT: searched (scale, zp) anchor + tunable margins, and the same
+            # outlier-suppressed block loss the sym path uses at low bits.
+            self._use_outlier_suppressed_loss = self.scheme.act_bits <= 4 or self.scheme.bits < 4
+            self.wrapper_block = _named_wrapper_block(SignRoundOptimizedAsymWrapperLinear, "wrapper_block")
 
         if self.scheme.data_type.endswith("dq"):
-            self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
+            if "nvfp4_dq" in self.scheme.data_type:
+                # Int weights + NVFP4 double-quantized scales (W{b}G{g}DQ): dedicated
+                # NVFP4-aware scale search instead of the GGUF double-quant search.
+                self._use_outlier_suppressed_loss = self.scheme.act_bits <= 4 or self.scheme.bits < 4
+                self.wrapper_block = _named_wrapper_block(SignRoundNVFP4DQWrapperLinear, "nvfp4_dq_wrapper_block")
+            else:
+                self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
 
     def can_compile_block_forward(self):
         return False

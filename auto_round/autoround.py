@@ -86,6 +86,19 @@ def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, Quantiza
 
         return preprocessor_configs, block_quant_configs, _RTNConfig()
     if len(block_quant_configs) > 1:
+        # A block-wise warm-up chained with a whole-model quantizer (e.g.
+        # ``signround,qad``) is the one allowed multi-block-quantizer case. Route
+        # on the terminal whole-model config; the composer runs the block-wise
+        # warm-up first and feeds its tuned params into the whole-model stage.
+        from auto_round.algorithms.config_resolver import get_algorithm_class
+
+        whole_model_cfgs = [
+            c
+            for c in block_quant_configs
+            if (get_algorithm_class(c) is not None and getattr(get_algorithm_class(c), "whole_model_tuning", False))
+        ]
+        if len(block_quant_configs) == 2 and len(whole_model_cfgs) == 1:
+            return preprocessor_configs, block_quant_configs, whole_model_cfgs[0]
         raise ValueError(
             f"Only one block-quantization config is allowed, but got {len(block_quant_configs)}: "
             f"{[type(c).__name__ for c in block_quant_configs]}"

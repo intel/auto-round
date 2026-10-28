@@ -285,11 +285,25 @@ class BaseOrchestrator:
 
         _preprocessor_configs, _block_quantizer_configs = split_quantization_configs(self._alg_configs)
         if len(_block_quantizer_configs) > 1:
-            raise ValueError(
-                f"Only one block-quantization config is allowed, but got {len(_block_quantizer_configs)}: "
-                f"{[type(c).__name__ for c in _block_quantizer_configs]}"
-            )
-        if _block_quantizer_configs:
+            # Allow a block-wise warm-up chained with a whole-model quantizer
+            # (e.g. ``signround,qad``). The terminal whole-model config drives
+            # scheme/layer-config/format resolution; the composer runs the
+            # block-wise warm-up first (see AlgorithmComposer.warmup_quantizer).
+            from auto_round.algorithms.config_resolver import get_algorithm_class
+
+            _whole_model_cfgs = [
+                c
+                for c in _block_quantizer_configs
+                if (get_algorithm_class(c) is not None and getattr(get_algorithm_class(c), "whole_model_tuning", False))
+            ]
+            if len(_block_quantizer_configs) == 2 and len(_whole_model_cfgs) == 1:
+                self.quantize_config = _whole_model_cfgs[0]
+            else:
+                raise ValueError(
+                    f"Only one block-quantization config is allowed, but got {len(_block_quantizer_configs)}: "
+                    f"{[type(c).__name__ for c in _block_quantizer_configs]}"
+                )
+        elif _block_quantizer_configs:
             self.quantize_config = _block_quantizer_configs[0]
         elif _preprocessor_configs:
             from auto_round.algorithms.quantization.rtn.config import RTNConfig as _RTNConfig
@@ -1519,6 +1533,20 @@ class BaseOrchestrator:
             block_quantizer.to_quant_block_names = self.to_quant_block_names
             block_quantizer.ignore_layers = self.ignore_layers
 
+            # A chained block-wise warm-up quantizer (e.g. the ``signround`` stage
+            # of ``signround,qad``) runs the standard per-block loop too, so it
+            # needs the same resolved plan state as the terminal quantizer.
+            warmup_quantizer = getattr(self._alg_composer, "warmup_quantizer", None)
+            if warmup_quantizer is not None:
+                warmup_quantizer.layer_config = {name: dict(config) for name, config in plan.layer_config.items()}
+                warmup_quantizer.has_qlayer_outside_block = plan.has_qlayer_outside_block
+                warmup_quantizer.regex_config = {name: dict(config) for name, config in plan.regex_config.items()}
+                warmup_quantizer.quant_block_list = (
+                    [list(group) for group in plan.quant_block_list] if plan.quant_block_list is not None else None
+                )
+                warmup_quantizer.to_quant_block_names = self.to_quant_block_names
+                warmup_quantizer.ignore_layers = self.ignore_layers
+
             from auto_round.algorithms.config_resolver import sync_shared_config_from
 
             sync_shared_config_from(block_quantizer.config, [pre.config for pre in self._alg_composer.preprocessors])
@@ -1815,6 +1843,20 @@ class BaseOrchestrator:
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
         if self.formats is None:
+            return
+
+        # Whole-model quantizers (e.g. QAD) tune the entire network in one pass and
+        # never run the per-block loop that packs/writes shards incrementally, so
+        # immediate packing/saving would leave the output dir without model files.
+        # Fall back to packing and saving the whole model after quantization.
+        from auto_round.algorithms.config_resolver import get_algorithm_class
+
+        _qcls = get_algorithm_class(self.quantize_config) if self.quantize_config is not None else None
+        if _qcls is not None and getattr(_qcls, "whole_model_tuning", False):
+            if self.compress_context.is_immediate_packing or self.compress_context.is_immediate_saving:
+                logger.info("Whole-model tuning: disabling immediate packing/saving; the model is saved at the end.")
+            self.compress_context.is_immediate_packing = False
+            self.compress_context.is_immediate_saving = False
             return
 
         formats = getattr(self, "formats", [])

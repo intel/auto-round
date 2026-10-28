@@ -106,16 +106,25 @@ def _resolve_shared_scheme_values(configs: list[Any]) -> None:
                 setattr(config.scheme, attr_name, shared_value)
 
 
-def resolve_shared_config_values(configs: list[Any]) -> list[Any]:
+def resolve_shared_config_values(configs: list[Any], reconcile_non_scheme: bool = True) -> list[Any]:
     """Merge shared public attrs across quantization configs without naming fields.
 
     A field is shared when at least two quantization configs define the same
     public attribute. ``None`` means "not set" and inherits from the single
     non-None value, while conflicting non-None values fail fast. Configs that do
     not define a field do not participate in that field.
+
+    When *reconcile_non_scheme* is ``False`` only the quantization *scheme*
+    fields (bits / group_size / data_type …) are reconciled; the behavioral
+    public attributes are left untouched. This is used when chaining two
+    independent quantization stages (e.g. a block-wise warm-up feeding a
+    whole-model quantizer) that legitimately differ on fields like
+    ``enable_alg_ext`` while still sharing a single scheme.
     """
     quant_configs = _quantization_configs(configs)
     _resolve_shared_scheme_values(quant_configs)
+    if not reconcile_non_scheme:
+        return configs
     attrs_by_config = [(config, _public_config_attrs(config)) for config in quant_configs]
     field_to_configs: dict[str, list[Any]] = defaultdict(list)
     for config, attrs in attrs_by_config:

@@ -173,6 +173,106 @@ class CompressionOrchestrator(BaseOrchestrator):
             first_input_name=first_input_name,
         )
 
+    def _whole_model_tuning_quantizer(self):
+        """Return the block quantizer when it tunes the whole model jointly, else None.
+
+        Whole-model algorithms (e.g. QAD) run a single full-model forward to the
+        LM head instead of the block-by-block loop, so no post-block/lm_head
+        probing or nblocks fusing is needed.
+        """
+        block_quantizer = getattr(self.alg_composer, "block_quantizer", None)
+        if isinstance(block_quantizer, (list, tuple)):
+            block_quantizer = block_quantizer[0] if block_quantizer else None
+        if block_quantizer is not None and getattr(block_quantizer, "whole_model_tuning", False):
+            return block_quantizer
+        return None
+
+    def _resolve_whole_model_token_ids(self, whole_model_quantizer, input_ids_cache):
+        """Return the calibration token ids for the whole-model stage (e.g. QAD).
+
+        The whole-model quantizer may request its own sample count via
+        ``qad_nsamples`` (independent of the block-wise ``nsamples`` used by e.g.
+        the SignRound warm-up). Fewer samples are taken as a prefix of the cached
+        ids; more samples are fetched straight from the calibration dataloader
+        (token ids only, no model forward / block-input caching).
+        """
+        target = getattr(getattr(whole_model_quantizer, "config", None), "qad_nsamples", None)
+        cached = list(input_ids_cache) if input_ids_cache is not None else []
+        if target is None or target == len(cached):
+            return input_ids_cache
+        if target < len(cached):
+            logger.info("Whole-model stage uses the first %d of %d calibration samples.", target, len(cached))
+            return cached[:target]
+        collect = getattr(self.calibration, "collect_token_ids", None)
+        if collect is None:
+            logger.warning(
+                "qad_nsamples=%d is larger than the cached %d samples, but the %s calibrator cannot "
+                "collect extra token ids; falling back to the cached samples.",
+                target,
+                len(cached),
+                type(self.calibration).__name__,
+            )
+            return input_ids_cache
+        logger.info("Collecting %d calibration samples for the whole-model stage.", target)
+        token_ids = collect(target)
+        if len(token_ids) == 0:
+            logger.warning("No extra calibration token ids collected; falling back to the cached samples.")
+            return input_ids_cache
+        return token_ids
+
+    def _run_block_warmup(
+        self,
+        warmup_quantizer,
+        all_blocks: list,
+        all_inputs: dict,
+        all_q_inputs: dict | None,
+        input_ids_cache,
+        pbar: tqdm | None,
+    ) -> None:
+        """Run the block-wise warm-up stage of a chain (e.g. ``sign_round,qad``).
+
+        Temporarily makes *warmup_quantizer* the active block quantizer and runs
+        the standard per-block loop with ``warm_start_collect=True`` so each block
+        is tuned but its FP weight is preserved and the tuned
+        ``value``/``min_scale``/``max_scale`` (+ searched ``init_scale``) are
+        stashed on every layer for the whole-model stage to resume from.
+        """
+        if self.compress_context.is_immediate_saving or self.compress_context.is_immediate_packing:
+            raise NotImplementedError(
+                "Chaining a block-wise warm-up with a whole-model quantizer (e.g. 'sign_round,qad') "
+                "is not supported together with immediate saving/packing."
+            )
+
+        logger.info("Starting block-wise warm-up with %s.", type(warmup_quantizer).__name__)
+        original_block_quantizer = self.alg_composer.block_quantizer
+        self.alg_composer.block_quantizer = warmup_quantizer
+        warmup_quantizer.warm_start_collect = True
+        warmup_pbar = tqdm(range(0, sum(len(block) for block in all_blocks), self.nblocks), desc="Warm-up")
+        try:
+            for block_names in all_blocks:
+                inputs = all_inputs[block_names[0]]
+                all_inputs.pop(block_names[0])
+                q_inputs = None
+                if all_q_inputs is not None and block_names[0] in all_q_inputs:
+                    q_inputs = all_q_inputs[block_names[0]]
+                    all_q_inputs.pop(block_names[0])
+                inputs, q_inputs = _update_inputs(inputs, q_inputs)
+                self._quantize_blocks(
+                    self.model_context.model,
+                    inputs,
+                    block_names,
+                    q_input=q_inputs if q_inputs is not None else None,
+                    nblocks=self.nblocks,
+                    pbar=warmup_pbar,
+                    input_others_extra_blocks=all_inputs,
+                    token_ids=input_ids_cache,
+                )
+        finally:
+            warmup_pbar.close()
+            warmup_quantizer.warm_start_collect = False
+            self.alg_composer.block_quantizer = original_block_quantizer
+        logger.info("Block-wise warm-up done; FP weights preserved with warm-start params stashed.")
+
     def _quantize_blocks(
         self,
         model: torch.nn.Module,
@@ -292,6 +392,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 is_diffusion=self.model_context.is_diffusion,
                 pbar=pbar,
                 block_cnt=(len(block_names) + nblocks - 1) // nblocks,
+                all_block_names=list(block_names),
             )
 
             # ── Run block pipeline (calibration → quantization → collection) ──
@@ -564,6 +665,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             logger.warning("could not find blocks, exit with original model")
             return self.model_context.model, self.layer_config
 
+
         has_gguf = (
             hasattr(self, "formats")
             and self.formats is not None
@@ -655,6 +757,48 @@ class CompressionOrchestrator(BaseOrchestrator):
         start_time = time.time()
 
         self.alg_composer.prepare_run()
+
+        # Whole-model tuning (e.g. QAD): run a single full-model forward to the LM
+        # head instead of the per-block loop. No nblocks fusing or post-block/
+        # lm_head probing is needed.
+        whole_model_quantizer = self._whole_model_tuning_quantizer()
+        if whole_model_quantizer is not None:
+            # Optional block-wise warm-up stage (e.g. ``sign_round,qad``): tune every
+            # block first with the warm-up quantizer, keeping FP weights and stashing
+            # the tuned params on each layer, then let the whole-model quantizer
+            # resume from them.
+            warmup_quantizer = getattr(self.alg_composer, "warmup_quantizer", None)
+            if warmup_quantizer is not None:
+                self._run_block_warmup(
+                    warmup_quantizer,
+                    all_blocks,
+                    all_inputs,
+                    all_q_inputs,
+                    input_ids_cache,
+                    pbar,
+                )
+                # Reuse the warm-up's resolved wrapper class so the stashed
+                # value/min_scale/max_scale/init_scale transfer with identical
+                # quantization semantics.
+                whole_model_quantizer.wrapper_block = getattr(
+                    warmup_quantizer, "wrapper_block", whole_model_quantizer.wrapper_block
+                )
+                # The warm-up block loop may have offloaded blocks; the whole-model
+                # forward needs the full model resident.
+                if self.compress_context.low_cpu_mem_usage:
+                    self._offloader.reload(self.model_context.model)
+            # The block-based pbar is meaningless here (the whole network is tuned
+            # jointly, not block-by-block): the quantizer drives its own progress
+            # bar over the tuning iterations.
+            pbar.close()
+            whole_model_token_ids = self._resolve_whole_model_token_ids(whole_model_quantizer, input_ids_cache)
+            whole_model_quantizer.quantize_model(
+                self.model_context.model,
+                whole_model_token_ids,
+                device=device_manager.device,
+            )
+            self.alg_composer.finalize_run()
+            return self.model_context.model, self.layer_config
 
         # Build one ResumeState per block group (almost always just one group
         # for text-only dense models) when AR_RESUME_DIR is set, so a

@@ -228,6 +228,68 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("min_scale", p_dtype, shape, 1.0, _margins_tunable)
         self._init_params("max_scale", p_dtype, shape, 1.0, _margins_tunable)
 
+        # Optional per-group "zero marker" for low-bit symmetric int weights.
+        # When enabled, entries that quantize to the integer level 0 are pushed to
+        # +0.5/-0.5 * scale based on the sign of a learnable per-group marker (see
+        # ``_apply_zero_marker`` in data_type/int.py). Initialized to 0 so the
+        # default run reproduces plain RTN until the marker is tuned.
+        self.enable_zero_marker = (
+            envs.AR_W2_ZERO_MARKER
+            and self.enable_round_tuning
+            and self.orig_layer.bits < 16
+            and str(self.orig_layer.data_type) == "int"
+            and bool(getattr(self.orig_layer, "sym", True))
+            and not isinstance(orig_layer.group_size, tuple)
+        )
+        if self.enable_zero_marker:
+            self._init_params("zero_marker", p_dtype, shape, 0.0, True)
+
+        # Midrise int (v1 path): the absmax-derived scale (absmax / (maxq-0.5)) is far from the
+        # MSE optimum (~0.5x at W2) and the default [0, 1] max_scale bound with SignSGD can barely
+        # shrink that far. Seed ``init_scale`` with the same imatrix-weighted search used by the v2
+        # path and let ``max_scale`` tune a coefficient around it in both directions.
+        # (SignRoundOptimizedWrapperLinear re-runs the search and keeps its own bound.)
+        if (
+            str(self.orig_layer.data_type).startswith("int_midrise")
+            and type(self).minmax_scale_bound == WrapperLinear.minmax_scale_bound  # plain v1 wrapper only
+            and self.enable_round_tuning
+            and self.orig_layer.bits < 16
+            and not isinstance(orig_layer.group_size, tuple)
+        ):
+            from auto_round.data_type.utils import reshape_imatrix_for_weight, search_optimized_init_scale
+
+            warm_start = getattr(orig_layer, "_ar_warm_start", None)
+            if warm_start and warm_start.get("init_scale") is not None:
+                self.init_scale = warm_start["init_scale"].to(self.device)
+            else:
+                w_r = weight_reshape.to(self.device, torch.float32)
+                imatrix = reshape_imatrix_for_weight(getattr(orig_layer, "imatrix", None), w_r, orig_layer.group_size)
+                self.init_scale = search_optimized_init_scale(
+                    w_r, orig_layer.data_type, orig_layer.bits, imatrix.to(w_r.device), self.q_scale_thresh
+                )
+            self.minmax_scale_bound = (0.5, 1.5)
+
+        # Warm-start: when a prior block-wise pass (e.g. the SignRound -> QAD
+        # chaining) stashed its tuned ``value``/``min_scale``/``max_scale`` on
+        # this layer via ``store_warm_start_params_and_unwrap``, seed the freshly
+        # created tuning parameters with them so this pass continues from that
+        # state instead of starting from RTN (value=0, scale coeff=1).
+        warm_start = getattr(orig_layer, "_ar_warm_start", None)
+        if warm_start:
+            for _key in ("value", "min_scale", "max_scale"):
+                saved = warm_start.get(_key)
+                param = self.params.get(_key)
+                if saved is None or param is None:
+                    continue
+                saved = saved.to(device=param.device, dtype=param.dtype)
+                if saved.shape == param.shape:
+                    param.data.copy_(saved)
+                else:
+                    logger.warning_once(
+                        f"warm-start param '{_key}' shape {tuple(saved.shape)} does not match "
+                        f"{tuple(param.shape)}; keeping the default initialization."
+                    )
+
         self.weight_quant_func, self.data_type = get_quant_func(
             orig_layer.data_type,
             orig_layer.bits,
@@ -281,6 +343,16 @@ class WrapperLinear(torch.nn.Module):
 
         setattr(self, name, p)
 
+    def set_soft_round_progress(self, cur_iter: int, iters: int) -> float:
+        """Update the rounding-branch weight for soft-round int. Returns the new alpha."""
+        if not getattr(self, "enable_soft_round", False):
+            return 1.0
+        from auto_round.data_type.int import soft_round_alpha
+
+        alpha = soft_round_alpha(cur_iter, iters, self.soft_round_init, self.soft_round_ratio)
+        self.soft_round_alpha.fill_(alpha)
+        return alpha
+
     def _qdq_weight(self, value, min_scale, max_scale):
         """Quantizes and dequantizes weights with tuning parameters.
 
@@ -307,6 +379,10 @@ class WrapperLinear(torch.nn.Module):
         if hasattr(self.orig_layer, "super_bits"):
             quant_kwargs["super_bits"] = self.orig_layer.super_bits
             quant_kwargs["super_group_size"] = self.orig_layer.super_group_size
+        if getattr(self, "enable_zero_marker", False):
+            quant_kwargs["zero_marker"] = self.zero_marker
+        if getattr(self, "enable_soft_round", False):
+            quant_kwargs["round_alpha"] = self.soft_round_alpha
         if hasattr(self, "_extra_quant_kwargs"):
             quant_kwargs.update(self._extra_quant_kwargs())
 
@@ -405,6 +481,15 @@ class WrapperLinear(torch.nn.Module):
         v = best_params.get("value", torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get("max_scale", torch.tensor(1.0)).to(self.device)
+
+        # Restore the tuned per-group zero marker so the baked weight matches the
+        # tuned forward (``_qdq_weight`` reads ``self.zero_marker``).
+        if getattr(self, "enable_zero_marker", False) and "zero_marker" in best_params:
+            self.zero_marker = best_params["zero_marker"].to(self.device)
+
+        # The baked weight must be on the pure rounding grid.
+        if getattr(self, "enable_soft_round", False):
+            self.soft_round_alpha.fill_(1.0)
 
         if self.orig_layer.weight.device.type == "meta":
             self.orig_layer.to(self.device)
@@ -789,6 +874,72 @@ class WrapperLlamaNorm(torch.nn.Module):
         return (weight_q * hidden_states.to(input_dtype)).to(self.output_device)
 
 
+class WrapperLinearWoRound(torch.nn.Module):
+    """Tune a *non-quantized* ``torch.nn.Linear`` via fake quantization without rounding.
+
+    This mirrors the LayerNorm/bias tuning strategy (see ``docs/tuning_norm_bias.md``): the weight is
+    constrained inside a quantization space ``W' = s * clip(W/s + zp + v, N, M)`` with a trainable
+    ``v`` in roughly ``[-0.5, 0.5]`` optimized by SignSGD, but the rounding is removed so the final
+    weight stays close to full precision. It is intended for modules kept at high precision
+    (e.g. a ``shared_expert`` that is not selected for quantization) that should still be fine-tuned
+    to compensate for the quantization error introduced elsewhere in the same block.
+    """
+
+    def __init__(self, orig_layer, bit=4, group_size=-1, device="cpu"):
+        super().__init__()
+        self.orig_layer = orig_layer
+        self.bits = bit
+        self.group_size = group_size
+        self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
+        self.output_device = device
+        weight_dtype = torch.float32
+        self.q_scale_thresh = 1e-5
+        weight = self.orig_layer.weight
+        if weight.device.type == "meta":
+            weight = self.orig_layer.get_weight()
+        self.v = torch.nn.Parameter(
+            reshape_pad_tensor_by_group_size(
+                torch.zeros(weight.shape, device=self.device, dtype=weight_dtype), self.group_size
+            )[0],
+            requires_grad=True,
+        )
+        self.params = {"v": self.v}
+        from auto_round.data_type.int import quant_tensor_asym_wo_round
+
+        self.quant_func = quant_tensor_asym_wo_round
+
+    def _qdq_weight(self, v):
+        weight = self.orig_layer.weight
+        if weight.device.type == "meta":
+            weight = self.orig_layer.get_weight().to(self.device)
+        weight_q, _, _ = self.quant_func(
+            weight.to(self.device), self.bits, self.group_size, v, q_scale_thresh=self.q_scale_thresh
+        )
+        return weight_q.to(weight.dtype)
+
+    def unwrapper(self, best_params):
+        if best_params is None:
+            return self.orig_layer
+        v = best_params["v"].to(self.device)
+        weight_q = self._qdq_weight(v)
+        self.orig_layer.q_scale_thresh = self.q_scale_thresh
+        if self.orig_layer.weight.device.type == "meta":
+            self.orig_layer.weight = torch.nn.Parameter(weight_q.to("cpu"), requires_grad=False)
+        else:
+            self.orig_layer.weight.grad = None
+            self.orig_layer.weight.data.copy_(weight_q)
+        return self.orig_layer
+
+    def forward(self, x):
+        x = x.to(self.device)
+        weight_q = self._qdq_weight(self.v)
+        bias = self.orig_layer.bias
+        if bias is not None and bias.device.type == "meta":
+            bias = self.orig_layer.get_bias().to(self.device)
+        # pylint: disable=not-callable
+        return F.linear(x, weight_q, bias).to(self.output_device)
+
+
 NORM_MAPPING = {}
 NORM_MAPPING["LayerNorm"] = WrapperLayerNorm
 NORM_MAPPING["LlamaRMSNorm"] = WrapperLlamaNorm
@@ -827,6 +978,7 @@ def wrapper_block(
     enable_torch_compile=True,
     device="cpu",
     wrapper_cls=WrapperLinear,
+    enable_shared_expert_tuning=False,
     **kwargs,
 ):
     """Wraps the layers in the given block with a custom Wrapper module.
@@ -847,6 +999,19 @@ def wrapper_block(
         if type(m) in SUPPORTED_LAYER_TYPES:
             if not check_to_quantized(m):
                 unquantized_layers.append(n)
+                # Fine-tune a non-quantized shared_expert Linear via fake quantization without
+                # rounding (same strategy as norm/bias tuning). Only kicks in when the layer is
+                # kept at high precision so it is not quantized. Skip the tiny routing gate
+                # (e.g. ``shared_expert_gate``).
+                if (
+                    enable_shared_expert_tuning
+                    and "shared_expert" in n
+                    and "gate" not in n.split(".")[-1]
+                    and isinstance(m, torch.nn.Linear)
+                ):
+                    new_m = WrapperLinearWoRound(m, device=device)
+                    set_module(block, n, new_m)
+                    quantized_layers.append(n)
                 continue
             new_m = wrapper_cls(
                 m,
@@ -925,3 +1090,53 @@ def unwrapper_block(block, best_params):
                 best_param = None
             orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)
+
+
+@torch.no_grad()
+def store_warm_start_params_and_unwrap(block, best_params):
+    """Warm-start variant of :func:`unwrapper_block`: keep the original FP weight.
+
+    Instead of baking the tuned ``value``/``min_scale``/``max_scale`` into the
+    (quantized) weight like :func:`unwrapper_block` does, this stashes them on
+    each ``orig_layer`` under ``_ar_warm_start`` and restores the untouched
+    full-precision layer. A later pass (e.g. QAD whole-model tuning) can then
+    re-wrap the same layers and seed its tuning parameters from the stash via the
+    warm-start branch in :meth:`WrapperLinear._init_tuning_params_and_quant_func`.
+
+    The optimized SignRound wrapper also exposes a searched ``init_scale`` (not a
+    trainable parameter); it is stashed too so the second pass reuses the exact
+    same scale grid instead of re-searching it.
+
+    Args:
+        block: The block (or single wrapped layer) whose wrappers to collect.
+        best_params: Result of ``collect_best_params`` -- either a flat
+            ``{param_name: tensor}`` dict (single-wrapper block) or
+            ``{submodule_name: {param_name: tensor}}``.
+    """
+    best_params = best_params or {}
+    for n, m in list(block.named_modules()):
+        if not hasattr(m, "orig_layer"):
+            continue
+        if n in best_params:
+            layer_params = best_params[n]
+        elif "value" in best_params or "min_scale" in best_params or "max_scale" in best_params:
+            # Flat dict: the block itself is the wrapped layer.
+            layer_params = best_params
+        else:
+            layer_params = {}
+        store = {}
+        for key in ("value", "min_scale", "max_scale"):
+            if key in layer_params and layer_params[key] is not None:
+                store[key] = layer_params[key].detach().to("cpu")
+        init_scale = getattr(m, "init_scale", None)
+        if init_scale is not None:
+            store["init_scale"] = init_scale.detach().to("cpu")
+        # Asym optimized wrapper: stash the searched (min, max) anchor so the
+        # next pass tunes on the same grid (the imatrix is consumed by then).
+        if getattr(m, "_asym_anchor", False):
+            store["anchor_min"] = m.weight_min.detach().to("cpu")
+            store["anchor_max"] = m.weight_max.detach().to("cpu")
+        m.orig_layer._ar_warm_start = store
+        set_module(block, n, m.orig_layer)
+
+
