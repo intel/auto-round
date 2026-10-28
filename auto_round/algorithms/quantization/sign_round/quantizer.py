@@ -587,6 +587,35 @@ class SignRoundQuantizer(BaseQuantizer):
             and (loss_device is None or torch.device(loss_device) == torch.device(device))
         )
 
+        # Non-diffusion (LLM/VLM) SignRound v1/v2: when low_gpu_mem_usage parks
+        # the calibration pools on the host, each batch is copied CPU->CUDA every
+        # iteration on the critical path. Double-buffer the batches onto CUDA on a
+        # background copy stream so the host->device transfer of the next batch
+        # overlaps the forward/backward of the current one. Restricted to the
+        # plain reconstruction path: the LFQ final-block logit loss concatenates
+        # token ids and runs a different forward, so it keeps the legacy gather.
+        _lfq_last_block = (
+            getattr(self, "enable_lfq", False)
+            and input_ids is not None
+            and block_ctx.block_index == block_ctx.block_cnt - 1
+            and self._is_text_decoder_block(block_ctx.block_name)
+        )
+        use_llm_prefetch = (
+            not use_tuning_cache
+            and not getattr(self.model_context, "is_diffusion", False)
+            and isinstance(active_inputs, list)
+            and block_fwd is not None
+            and self.compress_context.low_gpu_mem_usage
+            and str(device).startswith("cuda")
+            and len(device_manager.device_list) == 1
+            and (loss_device is None or torch.device(loss_device) == torch.device(device))
+            and not _lfq_last_block
+        )
+        if use_llm_prefetch:
+            # Auto-size the staging buffers after one warmup iteration (mirrors
+            # the diffusion cache's "auto" budget handling below).
+            cache_budget = "auto"
+
         _perf.stop("prepare")
         _perf.start("loop")
         # iters>0 hot-pool strategy (loop-amortized; the iters=0 lane streams
@@ -615,7 +644,7 @@ class SignRoundQuantizer(BaseQuantizer):
         # stages batches to the GPU itself via pinned slots); a bulk pull
         # onto the loss device would put the cached reference outputs on
         # cuda and the cache would decline every batch signature
-        if fp_outputs and loss_device is not None and not use_tuning_cache:
+        if fp_outputs and loss_device is not None and not use_tuning_cache and not use_llm_prefetch:
             fp_outputs = self.pull_tuning_pool(
                 fp_outputs,
                 loss_device,
@@ -629,10 +658,14 @@ class SignRoundQuantizer(BaseQuantizer):
             for i in range(self.iters):
                 # Auto observes a complete forward/backward/optimizer iteration
                 # on the legacy path before allocating any extra GPU buffers.
-                if use_tuning_cache and i == (1 if cache_budget == "auto" else 0):
-                    from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
+                if (use_tuning_cache or use_llm_prefetch) and i == (1 if cache_budget == "auto" else 0):
+                    from auto_round.algorithms.tuning_cache import (
+                        BlockTuningPrefetchCache,
+                        DiffusionTuningCache,
+                    )
 
-                    tuning_cache = DiffusionTuningCache.create(
+                    cache_cls = DiffusionTuningCache if use_tuning_cache else BlockTuningPrefetchCache
+                    tuning_cache = cache_cls.create(
                         block,
                         block_fwd,
                         active_inputs,
