@@ -63,4 +63,3 @@ register_algorithm(
     config_factory=QATConfig,
     summary="Quantization-aware training on ground-truth labels (no teacher cache).",
 )
-

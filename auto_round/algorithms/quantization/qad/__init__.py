@@ -17,4 +17,3 @@ from auto_round.algorithms.quantization.qad.config import QADConfig
 from auto_round.algorithms.quantization.qad.quantizer import QADQuantizer
 
 __all__ = ["QADConfig", "QADQuantizer"]
-

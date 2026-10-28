@@ -244,7 +244,6 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("min_scale", p_dtype, shape, 1.0, _margins_tunable)
         self._init_params("max_scale", p_dtype, shape, 1.0, _margins_tunable)
 
-
         # Midrise int (v1 path): the absmax-derived scale (absmax / (maxq-0.5)) is far from the
         # MSE optimum (~0.5x at W2) and the default [0, 1] max_scale bound with SignSGD can barely
         # shrink that far. Seed ``init_scale`` with the same imatrix-weighted search used by the v2
@@ -470,7 +469,6 @@ class WrapperLinear(torch.nn.Module):
             **quant_kwargs,
         }
 
-
     def _qdq_weight(self, value, min_scale, max_scale):
         """Quantizes and dequantizes weights with tuning parameters.
 
@@ -596,7 +594,6 @@ class WrapperLinear(torch.nn.Module):
         v = best_params.get("value", torch.tensor(0.0)).to(self.device)
         min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get("max_scale", torch.tensor(1.0)).to(self.device)
-
 
         if self.orig_layer.weight.device.type == "meta":
             self.orig_layer.to(self.device)
@@ -935,7 +932,6 @@ class WrapperLlamaNorm(torch.nn.Module):
         return (weight_q * hidden_states.to(input_dtype)).to(self.output_device)
 
 
-
 NORM_MAPPING = {}
 NORM_MAPPING["LayerNorm"] = WrapperLayerNorm
 NORM_MAPPING["LlamaRMSNorm"] = WrapperLlamaNorm
@@ -1157,5 +1153,3 @@ def store_warm_start_params_and_unwrap(block, best_params):
             store["anchor_max"] = m.weight_max.detach().to("cpu")
         m.orig_layer._ar_warm_start = store
         set_module(block, n, m.orig_layer)
-
-

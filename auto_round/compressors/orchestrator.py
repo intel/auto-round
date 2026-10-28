@@ -920,7 +920,6 @@ class CompressionOrchestrator(BaseOrchestrator):
             logger.warning("could not find blocks, exit with original model")
             return self.model_context.model, self.layer_config
 
-
         has_gguf = (
             hasattr(self, "formats")
             and self.formats is not None

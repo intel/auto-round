@@ -22,4 +22,3 @@ a thin subclass.
 from auto_round.algorithms.quantization.qat.config import QATConfig
 
 __all__ = ["QATConfig"]
-

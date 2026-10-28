@@ -168,7 +168,7 @@ class QADConfig(SignRoundConfig):
         tune_non_quant_params: bool = False,
         non_quant_params_lr: float | None = None,
         **kwargs,
-    ) -> None:        # QAD implies whole-network joint distillation. `enable_qad` forces
+    ) -> None:  # QAD implies whole-network joint distillation. `enable_qad` forces
         # `enable_lfq` and makes the orchestrator fuse all blocks into one group.
         kwargs.setdefault("enable_qad", True)
         # NOTE: QAD distills against the FP teacher's logits: the loss is the
@@ -254,5 +254,3 @@ register_algorithm(
     config_factory=QADConfig,
     summary="Quantization-aware distillation with an offline teacher Top-K cache.",
 )
-
-

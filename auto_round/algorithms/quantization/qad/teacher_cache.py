@@ -255,4 +255,3 @@ class TeacherTopKCache:
                     pass
         if removed:
             logger.debug("QAD: cleared %d cached teacher files from %s", removed, self.workspace)
-

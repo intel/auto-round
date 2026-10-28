@@ -125,11 +125,14 @@ if _HAS_TRITON:
         t = row % S1
         offs = blk * BLOCK + tl.arange(0, BLOCK)
         msk = offs < VOCAB
-        x = tl.load(
-            logits_ptr + b.to(tl.int64) * stride_b + t.to(tl.int64) * stride_t + offs,
-            mask=msk,
-            other=-float("inf"),
-        ).to(tl.float32) * INV_TAU
+        x = (
+            tl.load(
+                logits_ptr + b.to(tl.int64) * stride_b + t.to(tl.int64) * stride_t + offs,
+                mask=msk,
+                other=-float("inf"),
+            ).to(tl.float32)
+            * INV_TAU
+        )
         logz = tl.load(logz_ptr + row)
         y = tl.exp(x - logz)
         tl.store(out_ptr + b.to(tl.int64) * out_stride_b + t.to(tl.int64) * out_stride_t + offs, y, mask=msk)
@@ -142,9 +145,7 @@ def _triton_logsumexp(logits: torch.Tensor, tau: float) -> torch.Tensor:
     M = B * S1
     logz = torch.empty(M, device=logits.device, dtype=torch.float32)
     sb, st, _ = logits.stride()
-    _qad_logsumexp_kernel[(M,)](
-        logits, logz, sb, st, S1, V, 1.0 / tau, BLOCK=_QAD_TRITON_BLOCK, num_warps=8
-    )
+    _qad_logsumexp_kernel[(M,)](logits, logz, sb, st, S1, V, 1.0 / tau, BLOCK=_QAD_TRITON_BLOCK, num_warps=8)
     return logz
 
 
@@ -207,7 +208,7 @@ class _QADDistillLoss(torch.autograd.Function):
 
         S1 = S - 1
         M = B * S1
-        mask = (labels[:, 1:].reshape(M) != -100)
+        mask = labels[:, 1:].reshape(M) != -100
         n_valid = int(mask.sum().item())
 
         ctx.shape = (B, S, V)
@@ -398,11 +399,7 @@ class QADQuantizer(SignRoundQuantizer):
     def _resolve_workspace(self) -> str:
         ws = self.qad_workspace
         # Treat None / NaN / empty as "unset" and fall back to AutoRound's workspace.
-        unset = (
-            ws is None
-            or (isinstance(ws, float) and math.isnan(ws))
-            or (isinstance(ws, str) and not ws.strip())
-        )
+        unset = ws is None or (isinstance(ws, float) and math.isnan(ws)) or (isinstance(ws, str) and not ws.strip())
         if unset:
             ws = os.path.join(envs.AR_WORK_SPACE, "qad_teacher_cache")
         os.makedirs(ws, exist_ok=True)
@@ -919,9 +916,3 @@ class QADQuantizer(SignRoundQuantizer):
         if loss is None:  # defensive: config guarantees at least one active term
             raise RuntimeError("QAD loss has no active term; set --qad_kd_weight or --qad_ce_weight > 0.")
         return loss
-
-
-
-
-
-

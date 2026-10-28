@@ -31,4 +31,3 @@ class QATQuantizer(QADQuantizer):
     optimizer selection and the best-param bookkeeping -- is inherited unchanged
     from :class:`QADQuantizer`.
     """
-

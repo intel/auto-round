@@ -352,7 +352,7 @@ class SignRoundQuantizer(BaseQuantizer):
 
         No-op in the base implementation.
         """
-        return None
+        return
 
     def _lfq_is_kd_block(self, block_ctx) -> bool:
         """Return ``True`` if the KD (LFQ logit-lens) loss applies to this block.
@@ -370,7 +370,6 @@ class SignRoundQuantizer(BaseQuantizer):
         if self.enable_qad:
             return True
         return block_ctx.block_index >= block_ctx.block_cnt - self.lfq_num_blocks
-
 
     def _get_lfq_downstream_blocks(self, block_ctx, device) -> list:
         """Return the (FP, not-yet-quantized) blocks that follow the current one.
@@ -614,7 +613,7 @@ class SignRoundQuantizer(BaseQuantizer):
         vocab = s.size(-1)
         s = s.reshape(-1, vocab).float()
         t = t.reshape(-1, vocab).float()
-        mask = (shift_labels.reshape(-1) != -100)
+        mask = shift_labels.reshape(-1) != -100
 
         if mask.sum() == 0:
             # Keep the graph connected so backward() is a no-op but valid.
@@ -1323,7 +1322,6 @@ class SignRoundQuantizer(BaseQuantizer):
         mv_module_from_gpu(layer)
         dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.3e} -> iter {best_iter}: {last_loss:.3e}"
         logger.info(dump_info)
-
 
     def finalize_run(self) -> None:
         """Clear per-run caches (``_cached_valid_token_mask``, LFQ components)."""
