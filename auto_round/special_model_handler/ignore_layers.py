@@ -18,7 +18,7 @@ from typing import Any
 
 import torch
 
-from auto_round.special_model_handler.matchers import ArchitectureMatcher, ModelTypeMatcher
+from auto_round.special_model_handler.core import ArchitectureMatcher, ModelTypeMatcher
 from auto_round.utils import is_moe_model_via_config, torch_version_at_least
 
 @dataclass

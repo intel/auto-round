@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from auto_round.special_model_handler.constants import SPECIAL_MULTIMODAL_BLOCK
+from auto_round.special_model_handler.core import SPECIAL_MULTIMODAL_BLOCK
 
 def _get_qwen3_tts_multimodal_block(model, quant_vision=False):
     """Get block names for Qwen3-TTS model.

@@ -16,19 +16,20 @@
 Public import path is unchanged: ``from auto_round.special_model_handler import ...``.
 """
 
-from auto_round.special_model_handler.constants import (
+from auto_round.special_model_handler.core import (
     MISTRAL_3_2_MODELS,
     NOT_SUPPORT_ONLY_TEXT_MODELS,
     SPECIAL_MULTIMODAL_BLOCK,
     SPECIAL_SHARED_CACHE_KEYS,
     SUPPORT_ONLY_TEXT_MODELS,
-    check_mllm_only_support_bs1,
-    mllms_with_limited_bs,
-)
-from auto_round.special_model_handler.matchers import (
     ArchitectureMatcher,
     ModelNameMatcher,
     ModelTypeMatcher,
+    _handle_special_model,
+    check_mllm_only_support_bs1,
+    mllms_with_limited_bs,
+    prepare_special_model_block_inputs,
+    update_module,
 )
 from auto_round.special_model_handler.ignore_layers import (
     PreDefinedIgnoreLayers,
@@ -89,12 +90,6 @@ from auto_round.special_model_handler.cosmos3 import (
     _wrap_cosmos3_layer_dual_mode,
     load_cosmos3_diffusion,
 )
-from auto_round.special_model_handler.dispatch import (
-    _handle_special_model,
-    prepare_special_model_block_inputs,
-    update_module,
-)
-
 # Ensure model modules run their SPECIAL_MULTIMODAL_BLOCK registrations.
 # (Already imported above; bagel/ignore also register ignore rules.)
 

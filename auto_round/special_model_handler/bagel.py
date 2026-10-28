@@ -11,9 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from auto_round.special_model_handler.constants import SPECIAL_MULTIMODAL_BLOCK
+from auto_round.special_model_handler.core import SPECIAL_MULTIMODAL_BLOCK
 from auto_round.special_model_handler.ignore_layers import register_ignore_layers
-from auto_round.special_model_handler.matchers import ModelTypeMatcher
+from auto_round.special_model_handler.core import ModelTypeMatcher
 from auto_round.utils import logger
 
 def _get_bagel_multimodal_block(model, quant_vision=False):
