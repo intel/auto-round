@@ -337,6 +337,10 @@ class QADQuantizer(SignRoundQuantizer):
         self.qad_kd_weight = float(getattr(config, "qad_kd_weight", 1.0))
         self.qad_ce_weight = float(getattr(config, "qad_ce_weight", 0.0))
         self._qad_use_teacher = self.qad_kd_weight > 0.0
+        # Optionally train the non-quantized FP params (lm_head/embeddings/norms/
+        # biases) jointly with the quantization params (QAT-style full tuning).
+        self.tune_non_quant_params = bool(getattr(config, "tune_non_quant_params", False))
+        self.non_quant_params_lr = getattr(config, "non_quant_params_lr", None)
         # Vocab chunk width for the streaming KD loss (caps the softmax temporary
         # at [N, chunk] in both forward and backward). 0/None = whole vocab.
         self.qad_loss_vocab_chunk = getattr(config, "qad_loss_vocab_chunk", 32768)
@@ -623,7 +627,11 @@ class QADQuantizer(SignRoundQuantizer):
             if hasattr(m, "orig_layer"):
                 for key in m.params.keys():
                     (minmax_params if ("min" in key or "max" in key) else round_params).append(m.params[key])
-        if not round_params and not minmax_params:
+        # Optionally add the non-quantized FP params (lm_head/embeddings/norms/
+        # biases). Exclude the wrapper tuning params and the frozen original
+        # quantized weights (everything under a wrapper's ``orig_layer``).
+        fp_params = self._collect_non_quant_params(model) if self.tune_non_quant_params else []
+        if not round_params and not minmax_params and not fp_params:
             logger.warning("QAD: no trainable quantization parameters found; nothing to tune.")
             unwrapper_block(model, {})
             return
@@ -634,6 +642,14 @@ class QADQuantizer(SignRoundQuantizer):
         param_groups = [{"params": round_params, "lr": torch.tensor(float(base_lr))}]
         if self.enable_minmax_tuning and minmax_params:
             param_groups.append({"params": minmax_params, "lr": torch.tensor(float(minmax_lr))})
+        if fp_params:
+            fp_lr = self.non_quant_params_lr if self.non_quant_params_lr is not None else base_lr
+            param_groups.append({"params": fp_params, "lr": torch.tensor(float(fp_lr))})
+            logger.info(
+                "QAD: also tuning %d non-quantized FP parameter tensors (lm_head/embeddings/norms/biases) at lr=%.2e.",
+                len(fp_params),
+                float(fp_lr),
+            )
         optimizer = self.optimizer(param_groups, lr=torch.tensor(float(base_lr)), weight_decay=0, **extra_kwargs)
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
@@ -667,6 +683,9 @@ class QADQuantizer(SignRoundQuantizer):
         # (``value`` alone is weight-sized), so always keep it on CPU instead of
         # duplicating it on the accelerator.
         best_cache_device = "cpu"
+        # Non-quantized FP params are tuned in place on the model, so the best-loss
+        # snapshot must cover them too (unwrapper only restores the wrapper params).
+        best_fp_state: list | None = None
         from tqdm import tqdm
 
         # Whole-model tuning has no per-block loop, so progress is tracked over
@@ -702,12 +721,16 @@ class QADQuantizer(SignRoundQuantizer):
                     best_iter = it
                     if not self.not_use_best_mse:
                         best_params = collect_best_params(model, best_cache_device)
+                        if fp_params:
+                            best_fp_state = self._snapshot_fp_params(fp_params, best_cache_device)
                 # Switch: with ``--not_use_best_mse`` keep the LAST iteration's
                 # params instead of the best-loss ones. Collect them explicitly --
                 # an empty dict would make ``unwrapper`` fall back to
                 # value=0/scale=1 (plain RTN), not the tuned state.
                 if self.not_use_best_mse and it == self.iters - 1:
                     best_params = collect_best_params(model, best_cache_device)
+                    if fp_params:
+                        best_fp_state = self._snapshot_fp_params(fp_params, best_cache_device)
                 pbar.set_postfix(loss=f"{total_loss:.3e}", best=f"{best_loss:.3e}@{best_iter}")
                 logger.debug("QAD iter %d loss %.5e", it, total_loss)
                 # # Periodically release cached blocks to curb fragmentation during
@@ -728,10 +751,49 @@ class QADQuantizer(SignRoundQuantizer):
             if self.gradient_checkpointing:
                 self._disable_gradient_checkpointing(model)
                 model.eval()
+            # Restore the best-loss FP params (tuned in place on the model) before
+            # baking the quantized weights.
+            if best_fp_state is not None:
+                self._restore_fp_params(fp_params, best_fp_state)
             unwrapper_block(model, best_params)
             if self._teacher_cache is not None:
                 self._teacher_cache.shutdown()
             clear_memory()
+
+    def _collect_non_quant_params(self, model) -> list:
+        """Return the model's non-quantized FP params to train jointly (QAT-style).
+
+        Excludes every parameter that belongs to a wrapper: both the tuning
+        params (``value``/``min_scale``/``max_scale``) and the frozen original
+        quantized weight/bias (everything under ``wrapper.orig_layer``). What
+        remains are the parameters of modules kept at full precision -- e.g.
+        ``lm_head``, embeddings, norms and biases -- which are enabled for grad
+        and returned.
+        """
+        quant_param_ids: set[int] = set()
+        for _n, m in model.named_modules():
+            if hasattr(m, "orig_layer"):
+                for p in m.params.values():
+                    quant_param_ids.add(id(p))
+                for p in m.orig_layer.parameters(recurse=True):
+                    quant_param_ids.add(id(p))
+        fp_params = []
+        for p in model.parameters():
+            if id(p) not in quant_param_ids:
+                p.requires_grad_(True)
+                fp_params.append(p)
+        return fp_params
+
+    @staticmethod
+    def _snapshot_fp_params(fp_params: list, device) -> list:
+        """Detach-clone the FP params to *device* (CPU) as a best-loss snapshot."""
+        return [p.detach().to(device, copy=True) for p in fp_params]
+
+    @staticmethod
+    def _restore_fp_params(fp_params: list, snapshot: list) -> None:
+        """Copy a snapshot back into the live FP params (in place)."""
+        for p, saved in zip(fp_params, snapshot):
+            p.data.copy_(saved.to(p.device))
 
     def _load_ids_batch(self, sample_indices, token_ids, device) -> torch.Tensor:
         """Stack raw calibration ``input_ids`` for a batch (pure-QAT path).

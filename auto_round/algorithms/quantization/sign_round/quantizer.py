@@ -133,9 +133,6 @@ class SignRoundQuantizer(BaseQuantizer):
         self.lfq_temperature = getattr(config, "lfq_temperature", 1.0)
         self.lfq_num_blocks = getattr(config, "lfq_num_blocks", 1)
         self.lfq_mse_weight = getattr(config, "lfq_mse_weight", 0.0)
-        self.lfq_qad = getattr(config, "lfq_qad", False)
-        self.lfq_block_stride = getattr(config, "lfq_block_stride", 1)
-        self.lfq_mse_stride = getattr(config, "lfq_mse_stride", 1)
         self.enable_qad = getattr(config, "enable_qad", False)
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
@@ -361,8 +358,8 @@ class SignRoundQuantizer(BaseQuantizer):
         """Return ``True`` if the KD (LFQ logit-lens) loss applies to this block.
 
         * QAD off (default): the last ``lfq_num_blocks`` text-decoder blocks.
-        * QAD on: every ``lfq_block_stride`` blocks, counting from the last
-          block backward (deep-supervision checkpoints).
+        * QAD on: every fused group (chunk) is tuned against the final-output
+          LM loss.
 
         Requires LFQ enabled, token IDs available (checked by the caller) and a
         pure text-decoder block.
@@ -372,20 +369,8 @@ class SignRoundQuantizer(BaseQuantizer):
         # QAD: every fused group (chunk) is tuned against the final-output LM loss.
         if self.enable_qad:
             return True
-        depth_from_last = block_ctx.block_cnt - 1 - block_ctx.block_index
-        if self.lfq_qad:
-            return depth_from_last % self.lfq_block_stride == 0
         return block_ctx.block_index >= block_ctx.block_cnt - self.lfq_num_blocks
 
-    def _lfq_is_mse_block(self, block_ctx) -> bool:
-        """Return ``True`` if the MSE reconstruction loss applies to this block.
-
-        Only meaningful in QAD mode, where the MSE loss is applied every
-        ``lfq_mse_stride`` blocks (from the last block backward). Outside QAD
-        mode every block uses MSE (handled directly in the tuning loop).
-        """
-        depth_from_last = block_ctx.block_cnt - 1 - block_ctx.block_index
-        return depth_from_last % self.lfq_mse_stride == 0
 
     def _get_lfq_downstream_blocks(self, block_ctx, device) -> list:
         """Return the (FP, not-yet-quantized) blocks that follow the current one.
@@ -400,7 +385,7 @@ class SignRoundQuantizer(BaseQuantizer):
         block order is unknown, or when a downstream block is not materialized
         (e.g. offloaded / meta), in which case it falls back to the logit-lens.
         """
-        if self.enable_qad or self.lfq_qad:
+        if self.enable_qad:
             return []
         all_names = getattr(block_ctx, "all_block_names", None)
         cur_names = getattr(block_ctx, "block_names", None) or []
@@ -972,14 +957,10 @@ class SignRoundQuantizer(BaseQuantizer):
                 # QAD: every fused group is tuned against the final-output LM loss only
                 # (no MSE); with the whole network fused this is the true final logits.
                 # Non-QAD: KD on the last `lfq_num_blocks`, MSE elsewhere (and on KD
-                # blocks only when `lfq_mse_weight` > 0). lfq_qad: KD every
-                # `lfq_block_stride` blocks, MSE every `lfq_mse_stride` blocks, with an
-                # MSE fallback so no block is ever left untrained.
+                # blocks only when `lfq_mse_weight` > 0).
                 lfq_kd_block = input_ids is not None and self._lfq_is_kd_block(block_ctx)
                 if self.enable_qad:
                     lfq_mse_block = False
-                elif self.lfq_qad:
-                    lfq_mse_block = (not lfq_kd_block) or self._lfq_is_mse_block(block_ctx)
                 else:
                     lfq_mse_block = (not lfq_kd_block) or self.lfq_mse_weight > 0
 

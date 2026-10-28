@@ -118,6 +118,28 @@ class QADConfig(SignRoundConfig):
             help="Optimizer used for QAD tuning: 'signround' (SignSGD) or 'adamw' (torch.optim.AdamW).",
         )
         registry.add_argument(
+            "--tune_non_quant_params",
+            field="tune_non_quant_params",
+            default=False,
+            action="boolean_optional",
+            help=(
+                "Also train the model's non-quantized FP parameters (e.g. lm_head, embeddings, "
+                "norms, biases) jointly with the quantization params during QAD/QAT whole-model "
+                "tuning, instead of freezing them. Useful for QAT where a kept-FP lm_head should "
+                "adapt to the quantized backbone."
+            ),
+        )
+        registry.add_argument(
+            "--non_quant_params_lr",
+            field="non_quant_params_lr",
+            default=None,
+            type=float,
+            help=(
+                "Learning rate for the non-quantized FP parameters when --tune_non_quant_params is "
+                "set. Falls back to the QAD rounding lr when unset."
+            ),
+        )
+        registry.add_argument(
             "--gradient_checkpointing",
             field="gradient_checkpointing",
             default=True,
@@ -143,6 +165,8 @@ class QADConfig(SignRoundConfig):
         gradient_checkpointing: bool = True,
         qad_kd_weight: float = 1.0,
         qad_ce_weight: float = 0.0,
+        tune_non_quant_params: bool = False,
+        non_quant_params_lr: float | None = None,
         **kwargs,
     ) -> None:        # QAD implies whole-network joint distillation. `enable_qad` forces
         # `enable_lfq` and makes the orchestrator fuse all blocks into one group.
@@ -189,6 +213,18 @@ class QADConfig(SignRoundConfig):
             raise ValueError("`topk` must be positive, or -1 to store the full distribution")
         self.qad_workspace = qad_workspace
         self.gradient_checkpointing = bool(gradient_checkpointing)
+        # Optionally fold the non-quantized FP params (lm_head, embeddings, norms,
+        # biases) into the joint tuning instead of freezing them (QAT-style).
+        self.tune_non_quant_params = bool(tune_non_quant_params)
+        if non_quant_params_lr is not None and non_quant_params_lr <= 0:
+            raise ValueError("`non_quant_params_lr` must be positive")
+        self.non_quant_params_lr = non_quant_params_lr
+        if self.tune_non_quant_params and self.qad_optimizer == "signround":
+            logger.warning_once(
+                "`tune_non_quant_params` trains full-precision params (lm_head/embeddings/norms) with "
+                "SignSGD, whose coarse sign-only updates are ill-suited to FP fine-tuning; consider "
+                "`--qad_optimizer adamw` (optionally with a small `--non_quant_params_lr`, e.g. 1e-5)."
+            )
         # Loss mixing: total = kd_weight * KD(teacher) + ce_weight * CE(label).
         # Pure KD (default) keeps the historical behavior; a positive ce_weight
         # mixes in the hard-label objective (QAT), and kd_weight=0 drops the

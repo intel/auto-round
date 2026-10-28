@@ -176,39 +176,6 @@ class SignRoundConfig(QuantizationConfig):
             ),
         )
         registry.add_argument(
-            "--lfq_qad",
-            field="lfq_qad",
-            default=False,
-            action="boolean_optional",
-            help=(
-                "Enable quantization-aware distillation (QAD) mode: apply the LFQ (KD) logit-lens "
-                "loss as a deep-supervision checkpoint every `lfq_block_stride` blocks (counting from "
-                "the last block backward), instead of only the final block. Blocks between checkpoints "
-                "are tuned with the MSE reconstruction loss."
-            ),
-        )
-        registry.add_argument(
-            "--lfq_block_stride",
-            field="lfq_block_stride",
-            default=1,
-            type=int,
-            help=(
-                "QAD mode only: apply the KD logit-lens loss every N text-decoder blocks, counting "
-                "from the last block backward (1 = every block)."
-            ),
-        )
-        registry.add_argument(
-            "--lfq_mse_stride",
-            field="lfq_mse_stride",
-            default=1,
-            type=int,
-            help=(
-                "QAD mode only: apply the MSE block-reconstruction loss every N blocks, counting from "
-                "the last block backward (1 = every block). Blocks that are neither a KD nor an MSE "
-                "checkpoint fall back to MSE so they are never left untrained."
-            ),
-        )
-        registry.add_argument(
             "--enable_qad",
             field="enable_qad",
             default=False,
@@ -256,9 +223,6 @@ class SignRoundConfig(QuantizationConfig):
         lfq_temperature: float = 1.0,
         lfq_num_blocks: int = 1,
         lfq_mse_weight: float = 0.0,
-        lfq_qad: bool = False,
-        lfq_block_stride: int = 1,
-        lfq_mse_stride: int = 1,
         enable_qad: bool = False,
         enable_neuqi: bool = False,
         **kwargs,
@@ -309,13 +273,6 @@ class SignRoundConfig(QuantizationConfig):
                 the KD loss (``loss = kd_loss + lfq_mse_weight * mse_loss``). 0.0
                 replaces MSE with the KD loss (original behavior); >0 combines
                 both.
-            lfq_qad: Enable quantization-aware distillation (QAD) mode: apply the
-                KD logit-lens loss every ``lfq_block_stride`` blocks (deep
-                supervision) instead of only the final block.
-            lfq_block_stride: QAD only. Apply the KD loss every N text-decoder
-                blocks, counting from the last block backward (1 = every block).
-            lfq_mse_stride: QAD only. Apply the MSE reconstruction loss every N
-                blocks, counting from the last block backward (1 = every block).
             enable_qad: Enable QAD (quantization-aware distillation): fuse all
                 text-decoder blocks into a single jointly-optimized group and
                 tune them against the final-output LM loss (``lfq_loss``, default
@@ -381,15 +338,6 @@ class SignRoundConfig(QuantizationConfig):
         self.lfq_mse_weight = lfq_mse_weight
         if self.lfq_mse_weight < 0:
             raise ValueError("`lfq_mse_weight` must be non-negative")
-        self.lfq_qad = lfq_qad
-        if self.lfq_qad:
-            logger.warning_once("the `lfq_qad` (quantization-aware distillation) mode is experimental.")
-        self.lfq_block_stride = lfq_block_stride
-        if self.lfq_block_stride <= 0:
-            raise ValueError("`lfq_block_stride` must be positive")
-        self.lfq_mse_stride = lfq_mse_stride
-        if self.lfq_mse_stride <= 0:
-            raise ValueError("`lfq_mse_stride` must be positive")
         # QAD (quantization-aware distillation): whole-network joint training against
         # the final-output LM loss. Implies LFQ; the whole-network fusing (nblocks) is
         # handled by the orchestrator when this flag is set.
