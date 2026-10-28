@@ -133,8 +133,8 @@ __all__ = [
     "_get_glm_image_multimodal_block",
     "_get_mimo_audio_multimodal_block",
     "_get_qwen2_5_omni_multimodal_block",
-    "_get_qwen3_omni_thinker_layer_info",
     "_get_qwen3_omni_moe_multimodal_block",
+    "_get_qwen3_omni_thinker_layer_info",
     "_get_qwen3_tts_multimodal_block",
     "_handle_special_model",
     "_mimo_audio_forward",
@@ -147,6 +147,7 @@ __all__ = [
     "_rebuild_gemma4_attention_mask",
     "_set_quantizable_bits",
     "_wrap_cosmos3_layer_dual_mode",
+    "apply_replacements",
     "check_mllm_only_support_bs1",
     "get_bagel_ignore_layers",
     "get_glm_flash_ignore_layers",
@@ -160,9 +161,8 @@ __all__ = [
     "prepare_special_model_block_inputs",
     "register_ignore_layers",
     "register_torch_compile_off",
-    "resolve_model_type",
-    "apply_replacements",
     "release_original_module_",
+    "resolve_model_type",
     "update_module",
 ]
 

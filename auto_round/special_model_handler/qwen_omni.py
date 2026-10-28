@@ -48,7 +48,6 @@ def _get_qwen2_5_omni_multimodal_block(model, quant_vision=False):
     return block_names
 
 
-
 def _get_qwen3_omni_thinker_layer_info(model):
     """Return the thinker layer path and module for supported layouts.
 

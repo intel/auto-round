@@ -119,14 +119,13 @@ class TestQwen2_5OmniProcessor:
 
 # ========================= Qwen3-Omni-MoE Tests ===========================
 
+
 def _qwen3_omni_thinker_layers(model):
     from auto_round.special_model_handler import _get_qwen3_omni_thinker_layer_info
 
     layer_prefix, layers = _get_qwen3_omni_thinker_layer_info(model)
     assert layers is not None, "Qwen3-Omni thinker layers not found under known layouts"
     return layer_prefix, layers
-
-
 
 
 class TestQwen3OmniMoeBlockNames:
@@ -152,9 +151,7 @@ class TestQwen3OmniMoeBlockNames:
 
         layer_prefix, _ = _qwen3_omni_thinker_layers(model)
         block_names = get_block_names(model, quant_vision=False)
-        assert any(
-            layer_prefix in str(b) for b in block_names
-        ), f"Expected {layer_prefix}, got: {block_names}"
+        assert any(layer_prefix in str(b) for b in block_names), f"Expected {layer_prefix}, got: {block_names}"
         assert not any(
             "talker.model.layers" in str(b) for b in block_names
         ), f"Did not expect talker.model.layers by default, got: {block_names}"
