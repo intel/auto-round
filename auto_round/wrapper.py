@@ -21,6 +21,11 @@ import transformers
 from torch.functional import F
 
 import auto_round.envs as envs
+from auto_round.algorithms.transforms.teq.protocol import (
+    apply_teq_equivalent_input_transform,
+    apply_teq_equivalent_weight_transform,
+    install_teq_equivalent_input_hook,
+)
 from auto_round.data_type import get_quant_func, reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
 from auto_round.schemes import needs_nvfp_global_scale
@@ -408,11 +413,21 @@ class WrapperLinear(torch.nn.Module):
             weight = weight / self._teq_scale(output_context, weight).view(-1, 1)
         return weight
 
+    def _apply_equivalent_weight_transform(self, weight: torch.Tensor) -> torch.Tensor:
+        """Apply an optional per-layer rotation after all TEQ weight scales."""
+        return apply_teq_equivalent_weight_transform(self.orig_layer, weight)
+
     def _apply_teq_input(self, x: torch.Tensor) -> torch.Tensor:
         context = getattr(self.orig_layer, "_teq_input_context", None)
         if context is None or not context.get("apply_input_transform", True):
             return x
         return x / self._teq_scale(context, x)
+
+    def _apply_equivalent_input_transform(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply the activation-side counterpart of a per-layer rotation."""
+        if getattr(self.orig_layer, "_autoround_teq_equivalent_input_hook_installed", False):
+            return x
+        return apply_teq_equivalent_input_transform(self.orig_layer, x)
 
     def _apply_teq_bias(self, bias: torch.Tensor | None) -> torch.Tensor | None:
         if bias is None:
@@ -438,6 +453,7 @@ class WrapperLinear(torch.nn.Module):
         max_scale = best.get("max_scale", self.max_scale).to(self.device)
         qdq_weight, scale, zp = self._qdq_weight(value, min_scale, max_scale)
         self.orig_layer.weight.data.copy_(qdq_weight)
+        install_teq_equivalent_input_hook(self.orig_layer)
         shape = qdq_weight.t().shape if type(self.orig_layer) == transformers.pytorch_utils.Conv1D else qdq_weight.shape
         if isinstance(scale, torch.Tensor):
             self.orig_layer.scale = (
@@ -649,7 +665,8 @@ class WrapperLinear(torch.nn.Module):
             self._presolved_qdq = None
             return presolved
         if self.orig_layer.bits >= 16:
-            return self._apply_teq_weight(self.orig_layer.weight), None, None
+            weight = self._apply_teq_weight(self.orig_layer.weight)
+            return self._apply_equivalent_weight_transform(weight), None, None
         min_scale, max_scale = self._prepare_minmax_scale(min_scale, max_scale)
         weight = self.orig_layer.weight
         if weight.device.type == "meta":
@@ -657,6 +674,7 @@ class WrapperLinear(torch.nn.Module):
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             weight = weight.t()
         weight = self._apply_teq_weight(weight)
+        weight = self._apply_equivalent_weight_transform(weight)
 
         quant_kwargs = {}
         if hasattr(self.orig_layer, "super_bits"):
@@ -768,6 +786,10 @@ class WrapperLinear(torch.nn.Module):
             "max_scale": max_scale.detach().clone(),
         }
         self._apply_qdq(qdq_weight, scale, zp)
+
+        # The committed source weight is now in the rotated basis. Keep
+        # ordinary block forwards in the matching activation basis as well.
+        install_teq_equivalent_input_hook(self.orig_layer)
 
         # Unwrapper bias
         if self.enable_norm_bias_tuning and "bias_v" in best_params.keys():  ##fake quant
@@ -893,6 +915,7 @@ class WrapperLinear(torch.nn.Module):
                 if result is not None:
                     x = result[0] if isinstance(result, tuple) else result
             x = self._apply_teq_input(x)
+            x = self._apply_equivalent_input_transform(x)
             act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
             x, _, _ = self._qdq_act(
                 x, act_max_scale=self.act_max_scale, act_min_scale=self.act_min_scale, act_max=act_max
@@ -905,8 +928,10 @@ class WrapperLinear(torch.nn.Module):
                 if result is not None:
                     x = result[0] if isinstance(result, tuple) else result
             x = self._apply_teq_input(x)
+            x = self._apply_equivalent_input_transform(x)
         else:
             x = self._apply_teq_input(x)
+            x = self._apply_equivalent_input_transform(x)
 
         # pylint: disable=not-callable
         bias = self.orig_layer.bias
@@ -965,6 +990,8 @@ class WrapperWALayer(torch.nn.Module):
             if result is not None:
                 x = result[0] if isinstance(result, tuple) else result
 
+        if not getattr(self.orig_layer, "_autoround_teq_equivalent_input_hook_installed", False):
+            x = apply_teq_equivalent_input_transform(self.orig_layer, x)
         x = self.qdq_input(x)
         return self.orig_layer.forward(x)
 

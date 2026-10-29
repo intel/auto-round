@@ -38,6 +38,7 @@ from auto_round.algorithms.transforms.awq.mappings import (
 from auto_round.algorithms.transforms.awq.qdq import QDQTool
 from auto_round.algorithms.transforms.base import BasePreprocessor
 from auto_round.algorithms.transforms.teq.config import TEQConfig
+from auto_round.algorithms.transforms.teq.protocol import get_teq_equivalent_transforms
 from auto_round.data_type.utils import compute_optimized_init_scale, get_quant_func
 from auto_round.logger import logger
 from auto_round.utils.model import set_module
@@ -105,9 +106,18 @@ class _TEQLinearFakeQuant(torch.nn.Module):
             quant_func, opt_quant_func = self.qdq_tool.resolve_quant_funcs(params)
             if opt_quant_func is not None:
                 imatrix = self.activation_second_moment
-                if imatrix is not None:
+                if imatrix is not None and not self._equivalent_transforms():
                     scales = self.log_alpha.detach().exp().clamp(self.min_scale, self.max_scale)
                     imatrix = imatrix.to(scales.device) / scales.square()
+                elif imatrix is not None:
+                    # A diagonal imatrix can be reweighted by a diagonal TEQ
+                    # scale, but it cannot be rotated exactly: the diagonal
+                    # of ``V.T @ Cov(x) @ V`` requires off-diagonal
+                    # covariance that calibration does not retain.  Do not
+                    # feed an invalid transformed imatrix into the temporary
+                    # TEQ objective.  Final AR2 collects its imatrix after
+                    # TEQ folding, directly from ``rotate(x / alpha)``.
+                    imatrix = None
                 init_scale = compute_optimized_init_scale(
                     weight.detach(),
                     params["data_type"],
@@ -137,16 +147,84 @@ class _TEQLinearFakeQuant(torch.nn.Module):
         qdq_tensor, _, _ = self.act_quant_func(tensor, **quant_kwargs)
         return qdq_tensor
 
+    def _equivalent_transforms(self) -> dict:
+        """Return optional transforms published by an upstream algorithm.
+
+        The protocol intentionally consists only of a plain mapping stored on
+        the original layer: ``weight`` is called before weight QDQ and
+        ``input`` before TEQ input scaling.  It keeps TEQ independent from a
+        particular rotation implementation while making temporary fake-QDQ
+        semantically match the downstream quantization wrapper.
+        """
+        return get_teq_equivalent_transforms(self.orig_layer)
+
+    @staticmethod
+    def _apply_pre_hooks(layer: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
+        """Replay native pre-hooks when a temporary TEQ wrapper replaces a layer.
+
+        In-place rotations register their online transforms as module hooks.
+        Replacing the module would otherwise silently omit them from the TEQ
+        objective.  Follow PyTorch's pre-hook result convention for the
+        one-positional-input Linear modules used by TEQ.
+        """
+        for hook_id, hook in layer._forward_pre_hooks.items():
+            if layer._forward_pre_hooks_with_kwargs.get(hook_id, False):
+                result = hook(layer, (x,), {})
+                if result is not None:
+                    args, _ = result
+                    x = args[0]
+            else:
+                result = hook(layer, (x,))
+                if result is not None:
+                    x = result[0] if isinstance(result, tuple) else result
+        return x
+
+    @staticmethod
+    def _apply_forward_hooks(layer: torch.nn.Module, x: torch.Tensor, output: torch.Tensor) -> torch.Tensor:
+        """Replay native post-hooks for transformed output-side projections."""
+        for hook_id, hook in layer._forward_hooks.items():
+            if layer._forward_hooks_with_kwargs.get(hook_id, False):
+                result = hook(layer, (x,), {}, output)
+            else:
+                result = hook(layer, (x,), output)
+            if result is not None:
+                output = result
+        return output
+
     def forward(self, x=None, input=None):
         x = input if x is None else x
+        # Preserve hooks installed on the original module (for example the
+        # online part of an inplace rotation) before changing the activation
+        # basis with TEQ.  The transform backend instead publishes the same
+        # operation through the generic per-layer protocol below.
+        x = self._apply_pre_hooks(self.orig_layer, x)
+        transforms = self._equivalent_transforms()
+        input_transform = transforms.get("input")
+        weight = self.orig_layer.weight
+        weight_transform = transforms.get("weight")
         alpha = self._scales(x)
-        weight_alpha = alpha.reshape(1, -1).to(device=self.orig_layer.weight.device, dtype=self.orig_layer.weight.dtype)
-        weight_qdq = self._qdq_weight(self.orig_layer.weight * weight_alpha)
-        x_qdq = self._qdq_activation(x / alpha)
+        weight_alpha = alpha.reshape(1, -1).to(device=weight.device, dtype=weight.dtype)
+
+        # An online transform is mathematically outside the TEQ equivalence:
+        #   (x / alpha) V · (W diag(alpha) V)^T = x W^T.
+        # Therefore scale first, then apply the transform on both sides.  The
+        # reverse order only happens to work for scalar alpha; per-channel
+        # scales and Hadamard matrices do not commute.  In-place rotations
+        # have no published pair: their native pre-hook runs above and TEQ
+        # correctly acts in the already-rotated activation basis.
+        weight = weight * weight_alpha
+        x = x / alpha
+        if weight_transform is not None:
+            weight = weight_transform(weight)
+        if input_transform is not None:
+            x = input_transform(x)
+        weight_qdq = self._qdq_weight(weight)
+        x_qdq = self._qdq_activation(x)
         bias = self.orig_layer.bias
         if bias is not None and bias.dtype != x.dtype:
             bias = bias.to(x.dtype)
-        return F.linear(x_qdq, weight_qdq.to(x.dtype), bias)
+        output = F.linear(x_qdq, weight_qdq.to(x.dtype), bias)
+        return self._apply_forward_hooks(self.orig_layer, x_qdq, output)
 
 
 @register_pipeline_member(TEQConfig)
@@ -163,6 +241,7 @@ class TEQTransform(BasePreprocessor):
         super().__init__(config)
         self.iters = config.teq_iters
         self.lr = config.teq_lr
+        self.optimizer_name = getattr(config, "teq_optimizer", "adam")
         self.min_scale = config.teq_min_scale
         self.max_scale = config.teq_max_scale
         self.sqrt_w_init = config.teq_sqrt_w_init
@@ -176,6 +255,8 @@ class TEQTransform(BasePreprocessor):
         self.optimization_mode = getattr(config, "teq_optimization_mode", "staged")
         self.refine_iters = getattr(config, "teq_refine_iters", 10)
         self.joint_lr = getattr(config, "teq_joint_lr", 1e-4)
+        self.refine_optimizer = getattr(config, "teq_refine_optimizer", "adam")
+        self.ar_first_iters = getattr(config, "teq_ar_first_iters", None)
         self._user_mappings = config.mappings
         self.layer_config: dict | None = None
 
@@ -217,6 +298,16 @@ class TEQTransform(BasePreprocessor):
             quantizer.teq_refinement_mode = self.optimization_mode
             quantizer.teq_refine_iters = self.refine_iters
             quantizer.teq_joint_lr = self.joint_lr
+            quantizer.teq_refine_optimizer = self.refine_optimizer
+            quantizer.teq_ar_first_iters = self.ar_first_iters
+            if self.optimization_mode == "staged_refine":
+                if self.ar_first_iters is None:
+                    raise ValueError("TEQ staged_refine requires `ar_first_iters` to be set.")
+                if self.ar_first_iters > quantizer.iters:
+                    raise ValueError(
+                        "TEQ staged_refine requires `ar_first_iters` to be no greater than the configured "
+                        f"AR iterations ({quantizer.iters}), got {self.ar_first_iters}."
+                    )
         model = self.model
         self._resolved_mappings = resolve_mappings(model, self._user_mappings, skip_moe=self.teq_skip_moe)
         if not self._resolved_mappings:
@@ -246,7 +337,7 @@ class TEQTransform(BasePreprocessor):
         self._finalized = False
 
     def register_fp_input_forward_hooks(self, block) -> list:
-        if self.optimization_mode != "staged":
+        if self.optimization_mode not in {"staged", "staged_refine"}:
             # Experimental refinement starts from an exact identity transform
             # and consumes the block quantizer's normal calibration cache.
             return []
@@ -269,10 +360,10 @@ class TEQTransform(BasePreprocessor):
                 skipped,
                 ctx.block_names[0],
             )
-        if self.optimization_mode == "staged":
+        if self.optimization_mode in {"staged", "staged_refine"}:
             for mapping in active_mappings:
                 self._train_and_apply_mapping(mapping)
-        else:
+        if self.optimization_mode != "staged":
             for mapping in active_mappings:
                 self._prepare_ar_refinement_mapping(mapping)
 
@@ -495,7 +586,16 @@ class TEQTransform(BasePreprocessor):
         weight = torch.cat([layer.weight.detach().float().to(device) for layer in balance_layers], dim=0)
         max_value = torch.sqrt(torch.max(torch.abs(weight), dim=0).values)
         max_value = torch.where(max_value == 0, torch.ones_like(max_value), max_value)
-        return (1.0 / max_value).clamp(self.min_scale, self.max_scale)
+        alpha = 1.0 / max_value
+
+        # Equivalent transforms are invariant to a shared scalar, so keep the
+        # geometric mean at one before applying the safety bounds.  Without
+        # this normalization, typical LLM weights make ``1 / sqrt(max_abs)``
+        # larger than the default upper bound.  Most channels then initialize
+        # at exactly ``max_scale`` and a short TEQ run cannot recover useful
+        # channel-wise variation from the saturated starting point.
+        alpha = alpha / alpha.log().mean().exp()
+        return alpha.clamp(self.min_scale, self.max_scale)
 
     def _layer_config_for(self, layer: torch.nn.Module) -> dict:
         name = getattr(layer, "global_name", None) or ""
@@ -783,7 +883,19 @@ class TEQTransform(BasePreprocessor):
                 initial_alpha = awq_alpha
         initial_alpha = initial_alpha.clamp(self.min_scale, self.max_scale)
         log_alpha = torch.nn.Parameter(initial_alpha.log())
-        optimizer = torch.optim.Adam([log_alpha], lr=self.lr, betas=(0.9, 0.9), weight_decay=0.0)
+        if self.optimizer_name == "lion":
+            from auto_round.algorithms.transforms.teq.lion import Lion
+
+            optimizer = Lion([log_alpha], lr=self.lr, betas=(0.9, 0.99), weight_decay=0.0)
+        else:
+            optimizer = torch.optim.Adam([log_alpha], lr=self.lr, betas=(0.9, 0.9), weight_decay=0.0)
+        logger.info(
+            "TEQ train '%s': optimizer=%s iters=%d lr=%.3e",
+            mapping.smooth_name,
+            self.optimizer_name,
+            self.iters,
+            self.lr,
+        )
         orig_layers = dict(zip(mapping.balance_names, balance_layers))
         best_loss = float("inf")
         best_alpha = initial_alpha.detach().clone()
@@ -802,7 +914,14 @@ class TEQTransform(BasePreprocessor):
                 output_idx = 0
                 param = next(train_parent.parameters(), None)
                 device = param.device if param is not None else torch.device("cpu")
-                loss_sum = torch.zeros((), device=device, dtype=torch.float32)
+                # Do not add differentiable micro-batch losses into one tensor.
+                # That retains every parent-forward graph until the end of the
+                # TEQ step and can exceed VRAM for MXFP4 MLP projections.  The
+                # optimizer owns only ``log_alpha``, so accumulating the
+                # unnormalised gradients eagerly and normalising them once at
+                # the end is mathematically equivalent to backpropagating the
+                # mean loss while releasing each graph immediately.
+                loss_sum = 0.0
                 num_elements = 0
                 for stored_args, stored_kwargs in parent_kwargs_list:
                     for micro_args, micro_kwargs in self._iter_parent_calls(stored_args, stored_kwargs):
@@ -825,8 +944,10 @@ class TEQTransform(BasePreprocessor):
                             logger.warning("TEQ: non-finite loss for '%s'; keeping best scale.", mapping.smooth_name)
                             finite_loss = False
                             break
-                        loss_sum = loss_sum + loss
+                        loss_sum += loss.detach().item()
                         num_elements += ref.numel()
+                        if step < self.iters and loss.requires_grad:
+                            loss.backward()
                         del output, loss, ref, ref_output
                     if not finite_loss:
                         break
@@ -834,20 +955,22 @@ class TEQTransform(BasePreprocessor):
                     finite_loss = False
                 if not finite_loss:
                     break
-                total_loss = loss_sum / max(1, num_elements)
-                total_loss_value = total_loss.detach().item()
+                total_loss_value = loss_sum / max(1, num_elements)
                 if total_loss_value < best_loss:
                     best_loss = total_loss_value
                     best_alpha = log_alpha.detach().exp().clamp(self.min_scale, self.max_scale).clone()
                 if step == self.iters:
                     break
-                if not has_grad_loss or not total_loss.requires_grad:
+                if not has_grad_loss:
                     logger.warning(
                         "TEQ: loss for '%s' is not differentiable; keeping the current scale.",
                         mapping.smooth_name,
                     )
                     break
-                total_loss.backward()
+                for param_group in optimizer.param_groups:
+                    for parameter in param_group["params"]:
+                        if parameter.grad is not None:
+                            parameter.grad.div_(max(1, num_elements))
                 optimizer.step()
                 with torch.no_grad():
                     log_alpha.clamp_(math.log(self.min_scale), math.log(self.max_scale))
