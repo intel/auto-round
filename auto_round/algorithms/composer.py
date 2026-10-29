@@ -580,6 +580,10 @@ class AlgorithmComposer:
             input_ids=input_ids,
         )
 
+        # Quantizer-agnostic block finalization (e.g. NVFP MoE act_max), kept
+        # out of the per-algorithm tuning loop.
+        self.block_quantizer.finalize_block(block, block_ctx)
+
         # ── Step 5: post_quantize_block ─────────────────────────────────────────
         for pre in self.preprocessors:
             pre.post_quantize_block(block_ctx)
