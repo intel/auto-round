@@ -65,7 +65,7 @@ class TestAutoRound:
     def test_diffusion_tune(self, tiny_flux_model_path, tmp_path, monkeypatch, low_gpu_mem_usage, cache_size):
         from diffusers import AutoPipelineForText2Image
 
-        from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache
+        from auto_round.algorithms.tuning_cache import DiffusionTuningCache
 
         caches = []
         create_cache = DiffusionTuningCache.create

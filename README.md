@@ -50,6 +50,8 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 ## 🆕 What's New
 
+* [2026/10] We now show that **W2A16** accuracy improves steadily as more tuning cost is invested. See the [W2A16 accuracy results](./docs/alg_202508.md).
+
 * [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.
 
 * [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.
@@ -213,6 +215,9 @@ auto-round-fast \
 
 In conclusion, we recommend using **auto-round for W4A16 and auto-round-best with `enable_alg_ext` for W2A16**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
+
+> [!TIP]
+> For **INT2 (W2A16)**, accuracy improves steadily as you invest more tuning cost. Increasing knobs such as `--iters` (e.g. 1000 → 2000), `--nsamples`, and `--seqlen`, or switching to the `auto-round-best` recipe with `--enable_alg_ext`, trades additional tuning time for consistently higher accuracy. As you scale up the calibration data (larger `--nsamples`/`--seqlen`), raising the learning rate to `4.0/iters` (e.g. `4e-3` at `--iters 1000`) often helps. See the [W2A16 accuracy results](./docs/alg_202508.md) for details.
 
 ### API Usage
 
