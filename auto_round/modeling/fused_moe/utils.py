@@ -41,6 +41,47 @@ def is_linearized_layout(original: torch.nn.Module) -> bool:
     return all(hasattr(first_expert, attr) for attr in ("gate_proj", "up_proj", "down_proj"))
 
 
+def _prepare_moe_route_batches(
+    hidden_states: torch.Tensor,
+    top_k_index: torch.Tensor,
+    top_k_weights: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[tuple[int, int]]]:
+    """Sort token-expert pairs once and return contiguous batches for active experts."""
+    num_tokens = hidden_states.size(0)
+    top_k = top_k_index.size(-1)
+    token_indices = torch.arange(num_tokens, device=hidden_states.device).unsqueeze(1).expand(-1, top_k).reshape(-1)
+    expert_ids = top_k_index.reshape(-1)
+    sample_weights = top_k_weights.reshape(-1).to(hidden_states.dtype)
+
+    sorted_expert_ids, permutation = torch.sort(expert_ids)
+    if sorted_expert_ids.numel() == 0:
+        return (
+            hidden_states.new_empty((0, hidden_states.size(-1))),
+            sample_weights,
+            permutation,
+            [],
+        )
+
+    active_experts, counts = torch.unique_consecutive(sorted_expert_ids, return_counts=True)
+    route_plan = torch.stack((active_experts.to(torch.int64), counts.to(torch.int64)), dim=1).tolist()
+    sorted_token_indices = token_indices.index_select(0, permutation)
+    sorted_hidden_states = hidden_states.index_select(0, sorted_token_indices)
+    sorted_weights = sample_weights.index_select(0, permutation)
+    return sorted_hidden_states, sorted_weights, permutation, [(expert, count) for expert, count in route_plan]
+
+
+def _restore_moe_route_order(
+    sorted_outputs: torch.Tensor,
+    permutation: torch.Tensor,
+    num_tokens: int,
+    top_k: int,
+) -> torch.Tensor:
+    """Restore original top-k ordering before reducing routed expert outputs."""
+    outputs = torch.zeros_like(sorted_outputs)
+    outputs.index_copy_(0, permutation, sorted_outputs)
+    return outputs.view(num_tokens, top_k, outputs.size(-1)).sum(dim=1)
+
+
 def sequential_moe_forward(
     hidden_states: torch.Tensor,
     top_k_index: torch.Tensor,
@@ -48,18 +89,13 @@ def sequential_moe_forward(
     experts,
     num_experts: int,
 ) -> torch.Tensor:
-    """Sequential per-expert MoE forward using a single sort to group tokens by expert.
+    """Run each active expert on its contiguous batch of routed token-expert pairs.
 
-    Repeatedly issuing dynamic-shape gather kernels (``nonzero()``,
-    ``index_select()`` or boolean-mask indexing) once per expert in a Python
-    loop reliably triggers a driver-level bug on some XPU builds - either a
-    "vectorized gather kernel index out of bounds" device-side assertion or a
-    hard ``UR_RESULT_ERROR_DEVICE_LOST`` - even when every index is valid.
-    Sorting once needs only two dynamic gather/scatter calls in total
-    (regardless of ``num_experts``): one ``index_select`` to group tokens by
-    expert, and one ``index_copy_`` to scatter results back to their original
-    positions. Each expert's slice ``permuted[start:end]`` is a plain view (no
-    gather kernel involved), so this is also efficient.
+    Sorting and counting routes once avoids scanning every route for every expert
+    and avoids per-expert dynamic-shape ``nonzero``/gather operations. The route
+    plan incurs one host synchronization to obtain active expert IDs and counts;
+    expert inputs are contiguous slices, and outputs are scattered back once to
+    preserve the original top-k reduction order.
 
     Args:
         hidden_states: (num_tokens, hidden_dim) input tensor.
@@ -75,31 +111,25 @@ def sequential_moe_forward(
     hidden_dim = hidden_states.size(-1)
     num_tokens = hidden_states.size(0)
     top_k = top_k_index.size(-1)
-    device = hidden_states.device
+    sorted_hidden_states, sorted_weights, permutation, route_plan = _prepare_moe_route_batches(
+        hidden_states, top_k_index, top_k_weights
+    )
+    output_batches = []
+    offset = 0
+    for expert_idx, count in route_plan:
+        expert_input = sorted_hidden_states[offset : offset + count]
+        if 0 <= expert_idx < num_experts:
+            expert_output = experts[expert_idx](expert_input).to(hidden_states.dtype)
+        else:
+            expert_output = torch.zeros_like(expert_input)
+        output_batches.append(expert_output)
+        offset += count
 
-    token_idx = torch.arange(num_tokens, device=device).unsqueeze(1).expand(-1, top_k).reshape(-1)  # (S,)
-    sample_weights = top_k_weights.reshape(-1).to(hidden_states.dtype)  # (S,)
-    expert_ids = top_k_index.reshape(-1)  # (S,)
-
-    selected_hidden_states = hidden_states[token_idx]  # (S, hidden_dim)
-
-    out_per_sample = torch.zeros_like(selected_hidden_states)
-    for expert_idx in range(num_experts):
-        sample_idx = torch.nonzero(expert_ids == expert_idx, as_tuple=False).squeeze(-1)
-        if sample_idx.numel() == 0:
-            continue
-        expert_input = selected_hidden_states.index_select(0, sample_idx)
-        expert_out = experts[expert_idx](expert_input).to(out_per_sample.dtype)
-        out_per_sample.index_copy_(0, sample_idx, expert_out)
-
-    # Apply routing weights
-    out_per_sample = out_per_sample * sample_weights.unsqueeze(-1)  # (S, hidden_dim)
-
-    # Accumulate results using deterministic reshape+sum instead of index_add_
-    # (index_add_ with duplicate indices is non-deterministic on CUDA due to atomicAdd)
-    final_hidden_states = out_per_sample.view(num_tokens, top_k, hidden_dim).sum(dim=1)
-
-    return final_hidden_states
+    if output_batches:
+        sorted_outputs = torch.cat(output_batches, dim=0) * sorted_weights.unsqueeze(-1)
+    else:
+        sorted_outputs = sorted_hidden_states
+    return _restore_moe_route_order(sorted_outputs, permutation, num_tokens, top_k)
 
 
 def grouped_or_sequential_moe_forward(

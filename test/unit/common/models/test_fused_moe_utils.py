@@ -38,7 +38,7 @@ from auto_round.modeling.fused_moe.replace_modules import (
     _apply_custom_replacements,
     is_custom_model,
 )
-from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.modeling.fused_moe.utils import _update_parameter, sequential_moe_forward
 
 # ---------------------------------------------------------------------------
 # fused_moe.utils._update_parameter
@@ -85,6 +85,57 @@ def test_update_parameter_with_custom_attr():
     new_data = torch.full((4,), 3.14)
     _update_parameter(mod, "e_score_correction_bias", new_data)
     assert torch.allclose(mod.e_score_correction_bias, new_data)
+
+
+def test_sequential_moe_forward_batches_routes_without_nonzero(monkeypatch):
+    torch.manual_seed(17)
+    experts = nn.ModuleList([nn.Linear(8, 8) for _ in range(5)])
+    hidden_states = torch.randn(7, 8, requires_grad=True)
+    top_k_index = torch.tensor([[0, 3], [3, 1], [1, 0], [3, 4], [0, 1], [4, 3], [1, 0]])
+    top_k_weights = torch.softmax(torch.randn(7, 2), dim=-1).requires_grad_()
+
+    expected_pairs = hidden_states.new_zeros(14, 8)
+    token_indices = torch.arange(hidden_states.size(0)).unsqueeze(1).expand_as(top_k_index).reshape(-1)
+    for expert_idx in range(len(experts)):
+        route_indices = torch.nonzero(top_k_index.reshape(-1) == expert_idx, as_tuple=False).squeeze(-1)
+        if route_indices.numel():
+            expert_inputs = hidden_states[token_indices.index_select(0, route_indices)]
+            expert_outputs = experts[expert_idx](expert_inputs)
+            weighted = expert_outputs * top_k_weights.reshape(-1).index_select(0, route_indices).unsqueeze(-1)
+            expected_pairs.index_copy_(0, route_indices, weighted)
+    expected = expected_pairs.view(7, 2, 8).sum(dim=1)
+    expected.square().sum().backward()
+    expected_input_grad = hidden_states.grad.clone()
+    expected_weight_grad = top_k_weights.grad.clone()
+    expected_expert_grads = [
+        [param.grad.clone() if param.grad is not None else None for param in expert.parameters()] for expert in experts
+    ]
+
+    hidden_states.grad = None
+    top_k_weights.grad = None
+    for expert in experts:
+        for param in expert.parameters():
+            param.grad = None
+
+    def fail_nonzero(*args, **kwargs):
+        raise AssertionError("batched MoE routing must not call torch.nonzero")
+
+    monkeypatch.setattr(torch, "nonzero", fail_nonzero)
+    actual = sequential_moe_forward(hidden_states, top_k_index, top_k_weights, experts, len(experts))
+    actual.square().sum().backward()
+
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(hidden_states.grad, expected_input_grad, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(top_k_weights.grad, expected_weight_grad, atol=1e-6, rtol=1e-5)
+    for expert, expected_grads in zip(experts, expected_expert_grads):
+        for param, expected_grad in zip(expert.parameters(), expected_grads):
+            if expected_grad is None:
+                assert param.grad is None
+            else:
+                assert torch.allclose(param.grad, expected_grad, atol=1e-6, rtol=1e-5)
+
+    empty_output = sequential_moe_forward(hidden_states[:0], top_k_index[:0], top_k_weights[:0], experts, len(experts))
+    assert empty_output.shape == (0, 8)
 
 
 # ---------------------------------------------------------------------------
