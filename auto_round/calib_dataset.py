@@ -370,6 +370,7 @@ def get_pile_dataset(
     seed=42,
     apply_chat_template=False,
     system_prompt=None,
+    nsamples=512,
 ):
     """Returns a dataloader for the specified dataset and split.
 
@@ -401,10 +402,11 @@ def get_pile_dataset(
         ),
     )
 
-    # Sample-level concat: samples already reaching seqlen are kept as-is, while
-    # samples shorter than seqlen are packed together so they are not dropped by
-    # the downstream length filter.
-    calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen)
+    # Sample-level concat as a *fallback only*: samples already reaching seqlen
+    # are preferred and kept as natural samples; short samples are packed
+    # together only when there are fewer than `nsamples` full-length samples, so
+    # calibration does not randomly pick packed sequences over natural ones.
+    calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen, nsamples)
 
     return calib_dataset
 
@@ -782,10 +784,11 @@ def get_competition_math_dataset(
         ),
     )
 
-    # Sample-level concat by default: pack whole samples until each reaches
-    # seqlen, then reset, so short problem/solution pairs are not dropped by the
-    # downstream length filter.
-    calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen)
+    # Sample-level concat as a fallback: short problem/solution pairs are packed
+    # into full-length sequences only when there are fewer than `nsamples`
+    # natural full-length samples, so natural samples are preferred when
+    # available and short pairs are not dropped by the downstream length filter.
+    calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen, nsamples)
 
     return calib_dataset
 
@@ -1069,15 +1072,15 @@ def get_ultradata_agent_dataset(
         remove_columns=["text"],
     )
 
-    # Pack whole traces up to seqlen before returning. "Preferred" traces are
-    # chosen on their messages-only length (<= seqlen) and can remain shorter
-    # than seqlen even after rendering tools, so returning them unpacked would
-    # let _get_dataset_impl.filter_func drop them -- leaving calibration
-    # undersized despite available oversized fallback data. Sample-level packing
-    # concatenates short traces into full-length sequences, while oversized
-    # traces (already truncated to seqlen) each emit a single full-length
-    # sequence, so no usable data is lost.
-    calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen)
+    # Pack whole traces up to seqlen before returning, but only as a fallback.
+    # "Preferred" traces are chosen on their messages-only length (<= seqlen) and
+    # can remain shorter than seqlen even after rendering tools, so returning them
+    # unpacked would let _get_dataset_impl.filter_func drop them -- leaving
+    # calibration undersized despite available oversized fallback data. Packing
+    # concatenates short traces into full-length sequences only when there are
+    # fewer than `nsamples` natural full-length (oversized/truncated) traces, so
+    # natural traces are preferred and no usable data is lost.
+    calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen, nsamples)
     return calib_dataset
 
 
@@ -1386,8 +1389,21 @@ def get_local_dataset(
     return calib_dataset
 
 
-def _concat_samples_to_seqlen(calib_dataset, seqlen):
-    """Pack short samples together until each reaches ``seqlen`` tokens.
+def _concat_samples_to_seqlen(calib_dataset, seqlen, nsamples=None):
+    """Pack short samples into full-length sequences, as a fallback only.
+
+    Samples that already reach ``seqlen`` are always kept as-is. Short samples
+    (which the downstream length filter would otherwise drop) are packed together
+    into additional ``seqlen``-length sequences.
+
+    When ``nsamples`` is provided this packing happens **only when needed**: if
+    there are already at least ``nsamples`` natural full-length samples, the short
+    samples are left untouched (they will simply be dropped by the length filter),
+    so calibration keeps using real, un-concatenated samples and the random
+    selection never picks a packed sequence over a natural one. Packing kicks in
+    only to make up a shortfall, and stops as soon as enough full-length
+    sequences exist. When ``nsamples`` is ``None`` every short sample is packed
+    (legacy behavior).
 
     Unlike the continuous packing in :func:`concat_dataset_element` (where a
     sample's leftover tokens carry over into the next sequence, splitting
@@ -1396,36 +1412,48 @@ def _concat_samples_to_seqlen(calib_dataset, seqlen):
     sequence and resets the buffer. The next sample therefore starts a fresh
     concatenation; any trailing buffer shorter than ``seqlen`` is dropped.
 
-    Samples that already reach ``seqlen`` are left untouched: they are emitted
-    on their own (truncated to ``seqlen``) instead of being concatenated with
-    other samples, so only short samples are packed together.
-
     Args:
         calib_dataset: A tokenized ``Dataset`` with an ``input_ids`` column.
         seqlen: Target sequence length for each packed sample.
+        nsamples: Desired number of calibration samples. When given, short
+            samples are packed only if fewer than ``nsamples`` full-length
+            samples already exist, and only until the shortfall is filled.
 
     Returns:
-        A new ``Dataset`` with packed ``input_ids`` / ``attention_mask`` columns.
+        A new ``Dataset`` with packed ``input_ids`` / ``attention_mask`` columns,
+        or the original dataset when packing is unnecessary / impossible.
     """
-    packed = []
-    buffer_ids = []
+    # First pass: separate natural full-length samples from the short ones.
+    long_samples, short_samples = [], []
     for example in calib_dataset:
         ids = example["input_ids"]
         if isinstance(ids, torch.Tensor):
             ids = ids.tolist()
-        # Samples already long enough are kept as-is (truncated) rather than
-        # concatenated with their neighbours.
         if len(ids) >= seqlen:
-            packed.append({"input_ids": ids[:seqlen], "attention_mask": [1] * seqlen})
-            continue
+            long_samples.append(ids[:seqlen])
+        else:
+            short_samples.append(ids)
+
+    # Enough natural full-length samples already: don't concat at all, so the
+    # downstream shuffle/selection keeps picking real samples instead of packed
+    # ones. (Short samples are left in place and dropped by the length filter.)
+    if nsamples is not None and len(long_samples) >= nsamples:
+        return calib_dataset
+
+    # Not enough (or nsamples unknown): pack short samples to fill the gap.
+    packed = []
+    buffer_ids = []
+    for ids in short_samples:
         buffer_ids.extend(ids)
         if len(buffer_ids) >= seqlen:
-            trimmed = buffer_ids[:seqlen]
-            packed.append({"input_ids": trimmed, "attention_mask": [1] * seqlen})
+            packed.append(buffer_ids[:seqlen])
             # Reset: the next sample starts a fresh concatenation.
             buffer_ids = []
+            # Stop once the total number of full-length sequences is enough.
+            if nsamples is not None and len(long_samples) + len(packed) >= nsamples:
+                break
 
-    if not packed:
+    if not long_samples and not packed:
         logger.warning(
             "Sample-level concat produced no full-length sequences (all samples "
             "shorter than seqlen=%d combined did not reach it). Returning the "
@@ -1434,7 +1462,21 @@ def _concat_samples_to_seqlen(calib_dataset, seqlen):
         )
         return calib_dataset
 
-    return Dataset.from_list(packed)
+    if packed:
+        logger.info(
+            "Sample-level concat: %d natural full-length samples were not enough "
+            "(target nsamples=%s), packed short samples into %d additional "
+            "seqlen=%d sequences.",
+            len(long_samples),
+            nsamples,
+            len(packed),
+            seqlen,
+        )
+
+    # Natural full-length samples first so they are preferred by the downstream
+    # order-preserving selection; packed sequences only top up the shortfall.
+    all_ids = long_samples + packed
+    return Dataset.from_list([{"input_ids": ids, "attention_mask": [1] * seqlen} for ids in all_ids])
 
 
 def _normalize_split(split):
@@ -1712,9 +1754,12 @@ def _get_generic_dataset(
         ),
     )
 
-    # Pack short samples into full seqlen-length sequences when requested.
+    # Pack short samples into full seqlen-length sequences when requested, as a
+    # fallback only: short samples are packed just enough to make up a shortfall
+    # when fewer than `nsamples` natural full-length samples exist (when
+    # `nsamples` is None, every short sample is packed).
     if concat:
-        calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen)
+        calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen, nsamples)
 
     return calib_dataset
 
@@ -2016,6 +2061,7 @@ def _get_dataset_impl(
                         data_lens.get(name, nsamples) * envs.AR_CALIB_DATA_MULTIPLIER,
                     )
                 elif get_dataset in (
+                    get_pile_dataset,
                     get_cci3_hq_dataset,
                     get_github_code_clean_dataset,
                     get_opencode_instruct_dataset,

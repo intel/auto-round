@@ -240,6 +240,16 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
         # on the single-tensor search_fn path, so search_fn stays None here --
         # AWQ / ``search_optimized_init_scale`` are unaffected).
         if "asym" in dt:
+            # Only the exact ``int_asym`` type has an optimized path pairing the
+            # plain ``quant_tensor_asym`` (rounded integer zero-point) with the
+            # NeUQI (scale, integer zero-point) search. Other asymmetric int
+            # variants deliberately use a different quantizer -- e.g.
+            # ``int_asym_float_zp`` (GGUF q4_1/q5_1) keeps a *floating* zero point
+            # via ``quant_tensor_asym_float_zp`` -- so they must NOT be silently
+            # rerouted to rounded-zero-point quantization (which would write
+            # incompatible metadata). They have no optimized path here.
+            if dt != "int_asym":
+                return None, None
             from auto_round.data_type.int import quant_tensor_asym
 
             return None, quant_tensor_asym
@@ -289,7 +299,11 @@ def resolve_optimized_init_scale_zero_fn(
     incompatible with the stacked single-tensor write-back.
     """
     dt = str(data_type)
-    if dt.endswith("dq") or not dt.startswith("int") or "asym" not in dt:
+    # Only the exact ``int_asym`` type uses the NeUQI integer (scale, zero-point)
+    # search. Other asymmetric int variants keep a different zero-point contract
+    # (e.g. ``int_asym_float_zp`` uses a floating zero point), so they must not be
+    # routed through this integer-zero-point search.
+    if dt != "int_asym":
         return None
     from auto_round.data_type.neuqi import neuqi_search_scale_zero
 
