@@ -30,13 +30,14 @@ stages:
     pool:
       vmImage: "ubuntu-latest"
     dependsOn: ${{ parameters.dependsOn }}
-    # failed('A', 'B', ...) is true when any of the listed stages failed.
-    condition: and(failed('${{ join(''', ''', parameters.dependsOn) }}'), eq(variables['System.StageAttempt'], '1'))
+    # failed() with no arguments checks the direct dependencies listed in dependsOn.
+    condition: and(failed(), eq(variables['System.StageAttempt'], '1'))
     variables:
       - group: "auto-round-bot-secrets"
     jobs:
       - job: AnalyzeFailures
         displayName: "Analyze failed unit tests"
+        timeoutInMinutes: 90
         variables:
           base: $(Build.SourcesDirectory)
           output_dir: $(Build.SourcesDirectory)/ai_analysis_results
@@ -167,8 +168,8 @@ stages:
     pool:
       vmImage: "ubuntu-latest"
     dependsOn: ${{ parameters.dependsOn }}
-    # succeeded('A', 'B', ...) is true when all listed stages succeeded (with or without issues).
-    condition: succeeded('${{ join(''', ''', parameters.dependsOn) }}')
+    # succeeded() with no arguments checks the direct dependencies listed in dependsOn.
+    condition: succeeded()
     variables:
       - group: "auto-round-bot-secrets"
     jobs:
