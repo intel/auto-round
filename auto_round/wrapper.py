@@ -20,9 +20,9 @@ import transformers
 from torch.functional import F
 
 import auto_round.envs as envs
-from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type import get_quant_func, reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
+from auto_round.schemes import needs_nvfp_global_scale
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_to_quantized,
@@ -108,10 +108,12 @@ class WrapperLinear(torch.nn.Module):
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
         self.weight_global_scale = getattr(self.orig_layer, "weight_global_scale", None)
-        if is_nv_fp(self.orig_layer.data_type) and self.weight_global_scale is None:
-            from auto_round.data_type.nvfp import calculate_gparam
+        if needs_nvfp_global_scale(self.orig_layer.data_type) and self.weight_global_scale is None:
+            from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-            weight_global_scale = calculate_gparam(self.orig_layer.weight, self.orig_layer.group_size)
+            weight_global_scale = calculate_gparam_by_dtype(
+                self.orig_layer.weight, self.orig_layer.data_type, self.orig_layer.group_size
+            )
             self.weight_global_scale = weight_global_scale
             self.weight_global_scale = self.weight_global_scale.to(self.orig_layer.weight.device)
         if hasattr(self.orig_layer, "scale_dtype") and self.orig_layer.scale_dtype == torch.float32:
