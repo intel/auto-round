@@ -425,7 +425,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         # torch.compile on the whole block forward is only reliable on torch >= 2.14
         from packaging.version import Version
 
-        return Version(torch.__version__.split("+")[0]) >= Version("2.14")
+        return Version(torch.__version__.split("+")[0]) >= Version("2.13")
 
     def _get_loss(
         self,
