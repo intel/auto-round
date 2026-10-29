@@ -20,17 +20,17 @@ jobs:
           operations-per-run: 500
 
           days-before-issue-stale: 60
-          days-before-issue-close: 30
+          days-before-issue-close: 21
           stale-issue-message: >
             This issue is marked stale after 60 days of inactivity and will be
-            closed in 30 days unless there is new activity.
+            closed in 21 days unless there is new activity.
           close-issue-message: >
             Closed due to inactivity. Feel free to reopen if still relevant.
 
           days-before-pr-stale: 60
-          days-before-pr-close: 30
+          days-before-pr-close: 21
           stale-pr-message: >
             This PR is marked stale after 60 days of inactivity and will be
-            closed in 30 days unless there is new activity.
+            closed in 21 days unless there is new activity.
           close-pr-message: >
             Closed due to inactivity. Feel free to reopen if still relevant.
