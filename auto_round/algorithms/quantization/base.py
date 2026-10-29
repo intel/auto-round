@@ -44,7 +44,17 @@ class BaseQuantizer(BaseAlgorithm):
         - :meth:`quantize_block`               – **must override**: quantize a single block
         - :meth:`quantize_layer_outside_block` – quantize layers outside blocks
         - :meth:`finalize_run`                 – model-level teardown (once after all blocks)
+    A quantizer whose calibration hooks write statistics on modules declares
+    them in :attr:`calibration_stats`.
     """
+
+    #: Statistics this quantizer's calibration hooks write on modules, mapped
+    #: to their shard reduction ("sum" | "max"). Under --data_parallel
+    #: the hook-carrying calibration forwards shard across the block mirrors
+    #: and the engine folds these attributes back into the home block.
+    #: ``None`` = undeclared: if the quantizer registers calibration hooks,
+    #: those passes stay serial. A quantizer without hooks needs no declaration.
+    calibration_stats: dict[str, str] | None = None
 
     def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
@@ -142,6 +152,17 @@ class BaseQuantizer(BaseAlgorithm):
         return is_quantized
 
     # ── Abstract quantization interface ───────────────────────────────────────
+    def parallel_constraints(self) -> dict:
+        """Declare eligibility facts for the single-process data-parallel lane.
+
+        The parallel engine consumes the declaration; algorithm internals stay
+        quantizer internals: ``enable_lfq`` reports LFQ layers whose handling is
+        single-device. A gradient scaler needs no declaration: every rank keeps
+        its own, and the gradients are averaged before ``scaler.step``, so the
+        ranks see the same inf/nan checks and keep the same scale.
+        """
+        return {"enable_lfq": bool(getattr(self, "enable_lfq", False))}
+
     def quantize_block(
         self,
         block: "torch.nn.Module",
@@ -325,8 +346,14 @@ class BaseQuantizer(BaseAlgorithm):
         Bulk pulls are a capacity optimization only: when the user explicitly
         parked memory on the host (``low_gpu_mem_usage`` or
         ``calibration_data_device="cpu"``) the pool stays where that policy
-        put it, however much room the target device has.
+        put it, however much room the target device has. Under data-parallel
+        thread ranks the engine already placed each rank's shard on its device,
+        so the pool stays as it is.
         """
+        from auto_round.algorithms.parallel.spmd import current_rank
+
+        if current_rank() is not None:
+            return pool
         cc = self.compress_context
         if (
             getattr(cc, "low_gpu_mem_usage", False)

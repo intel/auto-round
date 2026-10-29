@@ -41,6 +41,11 @@ from auto_round.algorithms.config_resolver import (
     resolve_shared_config_values,
     split_quantization_configs,
 )
+from auto_round.algorithms.parallel.data_parallel import (
+    ENGINE_CALIBRATION_STATS,
+    calibration_merge_stats,
+    parallel_state,
+)
 from auto_round.algorithms.utils import _has_nvfp4_layer
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
@@ -321,22 +326,30 @@ class AlgorithmComposer:
                 handles.append(module.register_forward_hook(collect_act_max))
         return handles
 
-    def _get_fp_act_hooks(self, block: torch.nn.Module) -> list:
-        """Register FP-input act_max + quantizer forward hooks."""
+    def _get_fp_act_hooks(self, block: torch.nn.Module) -> tuple[list, dict[str, str] | None]:
+        """Register FP-input act_max + quantizer forward hooks.
+
+        Returns ``(handles, merge_stats)``: the shard-merge map of the
+        statistics these hooks write (``None``: the pass stays serial, see
+        ``calibration_merge_stats``).
+        """
         if not self.need_quanted_input():
             # If having q_input, act_max will be collected in q_input forward hook,
             # no need to collect in fp_input forward hook
             handles = self._register_act_max_hooks(block)
         else:
             handles = []
-        handles.extend(self.block_quantizer.register_fp_input_forward_hooks(block))
-        return handles
+        quantizer_hooks = self.block_quantizer.register_fp_input_forward_hooks(block)
+        handles.extend(quantizer_hooks)
+        return handles, calibration_merge_stats(self.block_quantizer, quantizer_hooks)
 
-    def _get_q_act_hooks(self, block: torch.nn.Module) -> list:
-        """Register Q-input act_max + quantizer forward hooks."""
+    def _get_q_act_hooks(self, block: torch.nn.Module) -> tuple[list, dict[str, str] | None]:
+        """Register Q-input act_max + quantizer forward hooks; returns
+        ``(handles, merge_stats)`` like ``_get_fp_act_hooks``."""
         handles = self._register_act_max_hooks(block)
-        handles.extend(self.block_quantizer.register_qinput_forward_hooks(block))
-        return handles
+        quantizer_hooks = self.block_quantizer.register_qinput_forward_hooks(block)
+        handles.extend(quantizer_hooks)
+        return handles, calibration_merge_stats(self.block_quantizer, quantizer_hooks)
 
     def _attach_act_max_for_outside_layer(self, layer: torch.nn.Module, fp_inputs, q_inputs) -> None:
         """Compute and attach act_max for an outside-block layer from cached inputs.
@@ -393,6 +406,62 @@ class AlgorithmComposer:
     def compress_embedding_layer(self):
         return self.block_quantizer.quantize_embedding_layer()
 
+    def _collection_context(self, block, fp_inputs):
+        """TuneParallelContext for the collection phase (P3): mirror devices
+        for sharding the no-grad collection forwards, with the same engagement
+        resolver as the tune so the gates can never diverge."""
+        from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
+
+        return TuneParallelContext.for_collection(self, block, fp_inputs)
+
+    def _collect_forward_timed(self, *args, **kwargs):
+        """_collect_forward with wall accumulation into self.last_collect_wall."""
+        import time as _ctime
+
+        _t0 = _ctime.perf_counter()
+        try:
+            return self._collect_forward(*args, **kwargs)
+        finally:
+            self.last_collect_wall = getattr(self, "last_collect_wall", 0.0) + (_ctime.perf_counter() - _t0)
+
+    def _collect_forward(
+        self,
+        block,
+        inputs,
+        input_others,
+        out_dev=None,
+        allow_shard: bool = True,
+        hook_pass: bool = False,
+        merge_stats=ENGINE_CALIBRATION_STATS,
+    ):
+        """Collection forward: sharded across DDP mirrors when eligible.
+
+        ``out_dev`` optionally overrides the runner's output cache device.
+        ``allow_shard=False`` forces the serial path. ``merge_stats`` is the
+        shard-merge map of the statistics the pass's hooks write (from
+        ``_get_fp_act_hooks`` / ``_get_q_act_hooks``); ``None`` keeps the
+        pass serial (undeclared quantizer statistics).
+
+        ``hook_pass=True`` may cap the concurrent shards (env-driven; default
+        no cap): forward hooks
+        force dynamo graph breaks, leaving the compiled runner as
+        python-bound eager sections that GIL-convoy under many threads.
+        """
+        if self._coll_ctx is None:
+            from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
+
+            self._coll_ctx = TuneParallelContext()
+        return self._coll_ctx.collect_forward(
+            self.block_forward,
+            block,
+            inputs,
+            input_others,
+            out_dev,
+            allow_shard=allow_shard,
+            hook_pass=hook_pass,
+            merge_stats=merge_stats,
+        )
+
     # ── Per-block pipeline orchestration ─────────────────────────────────────
 
     def compress_block(
@@ -431,7 +500,15 @@ class AlgorithmComposer:
               ``enable_quanted_input`` is ``False``).
             - *reference_output*: FP reference output collected before optimization.
         """
+        self.last_collect_wall = 0.0
         block_forward_fn = self.block_forward
+        from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
+
+        self._coll_ctx = self._collection_context(block, fp_inputs)
+        # distributed calibration pool: each DDP device owns its sample
+        # shard (matching the tune shards), so shard-local reads stay
+        # device-local; serial consumers use device-safe cats
+        self._coll_ctx.distribute_pools(fp_inputs, q_inputs)
 
         # ── Step 0: Layer-wise rotation (before any reference/calibration) ────
         # Each rotation member rotates this block's weights and installs online
@@ -483,17 +560,32 @@ class AlgorithmComposer:
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
         if fp_inputs is not None:
             with torch.no_grad():
-                quant_hooks = self._get_fp_act_hooks(block)
+                quant_hooks, merge_stats = self._get_fp_act_hooks(block)
                 if reference_output is None:
-                    reference_output = block_forward_fn(block, fp_inputs, input_others)
+                    reference_output = self._collect_forward_timed(
+                        block,
+                        fp_inputs,
+                        input_others,
+                        # the declared statistics (act_max, the quantizer's
+                        # calibration_stats) are folded from the mirrors, so
+                        # hook-carrying passes may shard
+                        hook_pass=bool(quant_hooks),
+                        merge_stats=merge_stats,
+                    )
                 reference_next_input = getattr(block_forward_fn, "last_output_dict", None) or reference_output
                 for h in quant_hooks:
                     h.remove()
 
                 if self.block_quantizer.enable_quanted_input:
-                    q_hooks = self._get_q_act_hooks(block)
+                    q_hooks, q_merge_stats = self._get_q_act_hooks(block)
                     if q_hooks:
-                        block_forward_fn(block, q_inputs if q_inputs is not None else fp_inputs, input_others)
+                        self._collect_forward_timed(
+                            block,
+                            q_inputs if q_inputs is not None else fp_inputs,
+                            input_others,
+                            hook_pass=bool(q_hooks),
+                            merge_stats=q_merge_stats,
+                        )
                         for h in q_hooks:
                             h.remove()
 
@@ -530,33 +622,109 @@ class AlgorithmComposer:
             # lanes without a separate q-input pool (first block; quanted-input
             # disabled) still get the pre-tuning cache clear the base code had
             clear_memory()
+        # ── Step 3.6: mirror-pool handoff ──────────────────────────────────────
+        # The collection passes may have left a per-block mirror pool alive
+        # (built once, reused across the collection forwards). At iters=0 the
+        # RTN/OptRTN quantize runs on the home block, the mirrors are synced
+        # to it afterwards and the cascade forwards run on them; at iters>0
+        # the tune ranks tune the mirrors (spmd.quantize_block_on_ranks).
+        from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
+        from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+
+        # pool readers: the RTN family (its mirrors are synced to the
+        # quantized home block for the sharded cascade) and the SignRound
+        # family (its tune ranks run on the mirrors). NOTE: this ensure
+        # is only the SAFETY NET for when no collection pass was
+        # shard-eligible -- ref-collect sharding builds the pool lazily for
+        # EVERY lane and is untouched by this gate.
+        _pool_consumer = isinstance(self.block_quantizer, (RTNQuantizer, SignRoundQuantizer))
+        if _pool_consumer and getattr(self._coll_ctx, "devices", None) and len(self._coll_ctx.devices) >= 2:
+            self._coll_ctx.ensure_pool(block)
+        _pool = getattr(self._coll_ctx, "pool", None)
+        if _pool is not None:
+            # the tune ranks take the resident mirrors (no second weight copy);
+            # the RTN family leaves them to _settle_block_pool. A pool nobody
+            # consumed is released before the post-quantize steps below.
+            _state = parallel_state(self.block_quantizer, create=True)
+            _state.pool = _pool
+            _state.pool_used = False
         # ── Step 4: quantize_block ──────────────────────────────────────────────
         # When quantized input is available from the previous block, use it;
         # otherwise fall back to the FP input.
         effective_input = q_inputs if q_inputs is not None else fp_inputs
-        self.block_quantizer.quantize_block(
-            block,
-            effective_input,
-            input_others,
-            reference_output,
-            q_inputs,
-            block_ctx,
-            input_ids=input_ids,
-        )
+        try:
+            # data-parallel tune: the unchanged quantize_block runs once per
+            # rank (one thread per device); otherwise the serial call
+            from auto_round.algorithms.parallel.spmd import quantize_block_on_ranks
 
-        # ── Step 5: post_quantize_block ─────────────────────────────────────────
-        for pre in self.preprocessors:
-            pre.post_quantize_block(block_ctx)
+            engaged, _ = quantize_block_on_ranks(
+                self.block_quantizer,
+                block,
+                effective_input,
+                input_others,
+                reference_output,
+                q_inputs,
+                block_ctx,
+                input_ids=input_ids,
+            )
+            if not engaged:
+                self.block_quantizer.quantize_block(
+                    block,
+                    effective_input,
+                    input_others,
+                    reference_output,
+                    q_inputs,
+                    block_ctx,
+                    input_ids=input_ids,
+                )
 
-        # ── Step 6: Collect quantized-block outputs for the next block ──────────
-        if self.block_quantizer.enable_quanted_input:
-            with torch.no_grad():
-                new_q_input = block_forward_fn(block, effective_input, input_others)
-                new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input
-        else:
-            new_q_input = None
+            _pool = self._settle_block_pool(block, _pool)
+
+            # ── Step 5: post_quantize_block ─────────────────────────────────────
+            for pre in self.preprocessors:
+                pre.post_quantize_block(block_ctx)
+
+            # ── Step 6: Collect quantized-block outputs for the next block ──────
+            if self.block_quantizer.enable_quanted_input:
+                with torch.no_grad():
+                    new_q_input = self._collect_forward_timed(block, effective_input, input_others)
+                    new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input
+            else:
+                new_q_input = None
+        finally:
+            # the pool is block-scoped: drop it even on failures so the next
+            # block's pool starts clean
+            _state = parallel_state(self.block_quantizer)
+            if _state is not None:
+                _state.pool = None
+            self._coll_ctx.release_pool()
 
         return new_q_input, reference_next_input
+
+    def _settle_block_pool(self, block, pool):
+        """Pool disposition after quantize_block; returns the pool kept for the Step-6 cascade.
+
+        - zero-shot RTN/OptRTN quantized the HOME block through main's search
+          lane (which spreads its searches over idle devices itself) -> sync
+          the quantized home state onto the mirrors and keep the pool, so the
+          cascade still runs sharded;
+        - the tune ranks took the mirrors (they end the block in their own
+          tuned state while home was unwrapped with the BEST params) -> drop
+          the pool; the cascade runs on the canonical home block;
+        - unconsumed (declined lane / vanished plan) -> release.
+        """
+        if pool is None:
+            return None
+        from auto_round.algorithms.parallel.mirror_sync import sync_mirrors_to_home
+        from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
+
+        if isinstance(self.block_quantizer, RTNQuantizer):
+            sync_mirrors_to_home(self.block_quantizer, block)
+        _state = parallel_state(self.block_quantizer)
+        if _state is None or _state.pool is None or not _state.pool_used:
+            self._coll_ctx.release_pool()
+            return None
+        return pool
 
     def compress_layer_outside_block(
         self,

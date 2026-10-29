@@ -411,6 +411,16 @@ else:
 4. **性能优化**：如有足够算力，可启用 `AR_ENABLE_COMPILE_PACKING=1`
 5. **自定义工作目录**：将 `AR_WORK_SPACE` 设置为磁盘空间充足的目录
 
+### AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES
+- **描述**：限制携带 hook 的分片采集前向并发使用的设备数（hook 前向会使编译后的执行器在图分段之间退回 Python 绑定，可能在 GIL 上形成串行瓶颈）。仅在 hook 前向出现串行瓶颈的主机上才需要调低；在验证机台上至 world=8 未复现。大于已启用 world 的值等效于不限制。
+- **默认值**：`0`（不限制）
+- **取值**：非负整数
+- **用法**：在弱 CPU 主机上限制并发分片前向线程数。
+
+```bash
+AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES=2 python -m auto_round --model ... --data_parallel 8
+```
+
 ## 注意事项
 
 - 环境变量采用懒加载方式，仅在首次访问时读取

@@ -907,6 +907,34 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 
 通常有两种情况需要启用多 GPU 训练：一是主要针对 lm-head 量化的标定阶段，二是参数量极大（如显存占用超 100GB）的模型。
 
+#### 跨 GPU 并行 block 调优
+当单个 block 可以放入单张 GPU 时，可通过 `--data_parallel` 在同一进程中利用其他 GPU 做数据并行调优：
+block 的调优循环在每张 GPU 上各运行一次（每张 GPU 一个 rank，各占一个线程），使用该 GPU 上的 block 副本和它分到的
+那部分标定样本，各 rank 在每次迭代中对梯度求平均。这与多进程 torchrun 路径的约定（`sync_gradients()`）相同，因此算法
+本身的调优循环不需要修改。
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --data_parallel auto
+```
+
+- `off`（默认）保持串行循环。`N` 指定 rank 数：至少为 2，不超过可见设备数；`--iters > 0` 时必须为 2 的幂
+  （梯度 all-reduce 采用 halving-doubling 交换），启动时校验。`auto` 在 `--iters 0` 时使用全部可见设备，在
+  `--iters > 0` 时取不超过可见设备数的最大 2 的幂，并在日志中说明所选数量。
+- block 必须完整放在一张 GPU 上：不指定 `--device_map`，或使用单设备的 map。跨多张 GPU 放置的 block 会带着原因
+  停止；超过单张 GPU 容量的 block 不在支持范围内。
+- 每个 rank 持有完整的 block 副本及其调优状态。空闲显存估算只会给出告警（指明设备），真正的显存不足会以 OOM
+  错误的形式出现。
+- `--parallel_batch split`（默认）将 `--batch_size` 作为每次迭代的全局 batch，每个 rank 抽取 `batch_size / world`
+  个样本（必须整除）。`--parallel_batch per_replica` 让每个 rank 抽取完整的 `--batch_size`，全局 batch 为
+  `batch_size x world`。
+- 若某个 block 的样本数或 batch 不能被 rank 数整除，或每个 rank 的 batch 超过它分到的样本数，该 block 改为串行
+  调优并在日志中给出原因。不支持 LFQ、字典形式（diffusion 类）的标定池，以及已激活的 torchrun 进程组。
+- 标定前向（参考输出、量化输入链、imatrix 与激活统计）同样在各 GPU 间分片执行，`--iters 0` 时也是如此。量化器通过
+  `calibration_stats` 声明其 hook 写入的统计量及归约方式；带有未声明统计量的 hook 前向保持串行。
+- 每个 rank 从自己那部分标定池中抽样，因此每次迭代的 loss 日志和调优后的权重与串行运行不同。请在模型层面
+  （精度、相对基础模型的 KL 散度）比较不同运行。
+- 如需排除设备，请在启动前设置对应后端的可见性环境变量（如 `CUDA_VISIBLE_DEVICES`）。
+
 #### lm_head 量化中开启多 GPU 标定
 量化 lm-head 时，AutoRound 需要缓存其输入数据以进行高效的标定，这要求**整个模型驻留在 GPU 显存中** ；若 GPU 显存不足，部分层会退回至 Pure RTN 模式。
 

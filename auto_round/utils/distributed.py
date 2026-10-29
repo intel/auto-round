@@ -55,6 +55,14 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
     """
     import torch.distributed as dist
 
+    from auto_round.algorithms.parallel.spmd import current_rank
+
+    rank = current_rank()
+    if rank is not None:
+        # in-process thread ranks (--data_parallel): each rank tunes
+        # its own replica; the hook averages gradients across the ranks
+        return block, lambda: rank.sync_gradients(block)
+
     # The process group can be created and destroyed by individual tests or
     # by successive launcher invocations.  Do not reuse a cached result from
     # a previous process-group lifetime.
@@ -103,6 +111,40 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
 
 def _noop_sync():
     pass
+
+
+def make_index_sampler(nsamples: int, batch_size: int):
+    """The tuning loop's sample sampler.
+
+    Serial and torchrun ranks (whose calibration data the caller already
+    partitioned) draw from all ``nsamples``. An in-process thread rank draws
+    from its own contiguous shard of the calibration pool.
+    """
+    from auto_round.algorithms.parallel.spmd import current_rank
+    from auto_round.compressors.utils import IndexSampler
+
+    rank = current_rank()
+    if rank is not None:
+        return rank.index_sampler(nsamples, batch_size)
+    return IndexSampler(nsamples, batch_size)
+
+
+def all_reduce_loss(loss: float, weight: float = 1.0) -> float:
+    """Global iteration loss across ranks; identity when not data-parallel.
+
+    ``loss`` is the rank's normalized loss and ``weight`` its normalizer
+    (element or valid-token count), so the result is the weighted mean
+    sum(loss * weight) / sum(weight) -- the serial value over the union of
+    the ranks' samples. Every rank must take the same best-iteration and
+    early-stop decisions (it holds the same parameters after each synced
+    step), so the decisions use the global loss.
+    """
+    from auto_round.algorithms.parallel.spmd import current_rank
+
+    rank = current_rank()
+    if rank is not None:
+        return rank.all_reduce_weighted_mean(loss, weight)
+    return loss
 
 
 def _move_block_to_device(module: torch.nn.Module, device):

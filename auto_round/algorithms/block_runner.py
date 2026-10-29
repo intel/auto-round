@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from auto_round.compressors.utils import block_forward
+from auto_round.logger import logger
 from auto_round.utils.device_manager import device_manager
 
 if TYPE_CHECKING:
@@ -87,6 +88,28 @@ register_block_output("GlmMoeDsaDecoderLayer", ["hidden_states", "prev_topk_indi
 
 
 # TODO wenhuach better follow heng's imp to decouple llm/diffusion
+def _cat_device_safe(tensors: list, dim: int) -> torch.Tensor:
+    """Concatenate per-sample tensors that may live on different devices.
+
+    Distributed calibration pools keep each sample on its owning DDP device;
+    batch selection that crosses owners moves the minority to the first
+    piece's device (same-device selections -- the common DDP case -- stay
+    copy-free).
+    """
+    if not tensors:
+        raise ValueError("_cat_device_safe: empty selection")
+    dev = tensors[0].device
+    if any(t.device != dev for t in tensors):
+        logger.debug(
+            "_cat_device_safe: moved %d/%d pieces to %s",
+            sum(1 for t in tensors if t.device != dev),
+            len(tensors),
+            dev,
+        )
+        tensors = [t.to(dev) for t in tensors]
+    return torch.cat(tensors, dim=dim)
+
+
 class BlockForwardRunner:
     """Stateless block-forward execution engine shared across quantizer & compressor.
 
@@ -191,6 +214,15 @@ class BlockForwardRunner:
             if indices is not None, this func returns tensor, otherwise list
             Normalized output tensor on ``cache_device`` (or ``self.cache_device``).
         """
+        if cache_device is None:
+            from auto_round.algorithms.parallel.spmd import current_rank
+
+            rank = current_rank()
+            if rank is not None:
+                # a data-parallel rank keeps its outputs on its own device: the
+                # loss is staged there, and parking them on the shared cache
+                # device would copy every rank's output out and back each step
+                cache_device = rank.device
         out_device = cache_device if cache_device is not None else self.cache_device
         # Per-chunk calibration-data placement (--calibration_data_device): list mode (indices is
         # None -- the cat at the end of indices-mode requires same-device outputs)
@@ -301,32 +333,58 @@ class BlockForwardRunner:
 
     # ── Private ──────────────────────────────────────────────────────────────
 
+    def _forward_device(self, block) -> torch.device:
+        """Staging device for a forward pass through ``block``.
+
+        Normally the runner's global device. The one exception is a block
+        that sits WHOLE on a single accelerator device other than the runner
+        device -- a DDP mirror replica: staging its inputs to the global
+        (primary) device would put the hidden states on a different GPU than
+        the replica's weights. Blocks that span several accelerator devices
+        (upstream sharded placement, routed by their align hooks) and
+        mixed CPU/GPU blocks (CPU-pinned tables) keep the global device, so
+        serial behavior is unchanged.
+        """
+        try:
+            devs = {pp.device for pp in block.parameters()}
+        except Exception as e:  # pragma: no cover - exotic modules
+            logger.warning("block device sniff failed (%s); assuming the runner device", e)
+            return self.device
+        acc = {d for d in devs if d.type in ("cuda", "xpu", "hpu")}
+        if len(acc) == 1 and devs <= (acc | {torch.device("cpu")}):
+            (d,) = acc
+            if d != self.device:
+                return d
+        return self.device
+
     def _forward_one_batch(self, block, batch_inputs, batch_others) -> Any:
         """Forward one already-selected batch through the block (raw output)."""
+        # Stage on the block's actual device (see _forward_device). The shared
+        # kwargs follow the hidden states so masks/position ids reach the same
+        # GPU as the weights; for the serial path both are already there and
+        # the moves are no-ops.
+        from auto_round.utils.model import to_device
+
+        fwd_device = self._forward_device(block)
         if isinstance(batch_inputs, dict):
             batch_inputs = dict(batch_inputs)
             batch_others = dict(batch_others)
             hidden_states = batch_inputs.pop("hidden_states")
             batch_others.update(batch_inputs)
-            return self.block_forward(
-                block,
-                hidden_states,
-                batch_others,
-                self.amp,
-                self.amp_dtype,
-                self.device,
-                None,
-            )
         else:
-            return self.block_forward(
-                block,
-                batch_inputs,
-                batch_others,
-                self.amp,
-                self.amp_dtype,
-                self.device,
-                None,
-            )
+            hidden_states = batch_inputs
+        if torch.is_tensor(hidden_states) and hidden_states.device != fwd_device:
+            hidden_states = hidden_states.to(fwd_device)
+        batch_others = to_device(batch_others, fwd_device)
+        return self.block_forward(
+            block,
+            hidden_states,
+            batch_others,
+            self.amp,
+            self.amp_dtype,
+            fwd_device,
+            None,
+        )
 
     def _count_samples(self, inputs: Any) -> int:
         if isinstance(inputs, dict):
@@ -396,6 +454,11 @@ class BlockForwardRunner:
         """Select a subset of inputs by indices."""
         batch_dim = self.batch_dim
         shared_cache_keys = self.shared_cache_keys
+        # Host ints, resolved once. ``indices`` rides on the inputs' device, so a
+        # per-element ``int(i)`` read syncs an accelerator once per element;
+        # every host-side consumer below draws from this list instead. Device
+        # consumers (index_select on the inputs) keep the original tensor.
+        idx_list = indices.tolist() if isinstance(indices, torch.Tensor) else list(indices)
 
         if isinstance(inputs, dict):
             selected_inputs = {}
@@ -404,13 +467,13 @@ class BlockForwardRunner:
                     if isinstance(val, list) and len(val) == 1:
                         selected_inputs[key] = val[0]
                     elif isinstance(val, list) and len(val) > 1:
-                        idx = int(indices[0]) if len(indices) == 1 else 0
+                        idx = idx_list[0] if len(idx_list) == 1 else 0
                         selected_inputs[key] = val[idx] if idx < len(val) else val[0]
                     else:
                         selected_inputs[key] = val
                 else:
                     if isinstance(val, list):
-                        batch_vals = self._gather_same_device([val[i] for i in indices], self.device)
+                        batch_vals = self._gather_same_device([val[i] for i in idx_list], self.device)
                         selected_inputs[key] = torch.cat(batch_vals, dim=batch_dim)
                     elif isinstance(val, torch.Tensor):
                         # relocate indices like the input_others branch below:
@@ -422,12 +485,39 @@ class BlockForwardRunner:
                         selected_inputs[key] = val
         else:
             if isinstance(inputs, list):
-                batch_vals = self._gather_same_device([inputs[i] for i in indices], self.device)
+                batch_vals = self._gather_same_device([inputs[i] for i in idx_list], self.device)
                 selected_inputs = torch.cat(batch_vals, dim=batch_dim)
             else:
                 selected_inputs = torch.index_select(inputs, batch_dim, indices)
 
         selected_others = {"positional_inputs": input_others.get("positional_inputs")}
+
+        def _take_rows(t, rows):
+            """Rows of ``t`` on the batch dim. A broadcast (size-1) batch dim
+            passes through unsliced, as does a tensor too short for ``rows``
+            (with a warning). The range is checked on the host: on CUDA an
+            out-of-range index_select is a device-side assert, not an exception."""
+            rows = rows.cpu()  # host-side bounds check (no-op for host rows)
+            size = t.shape[batch_dim] if t.dim() > batch_dim else 0
+            if size == 1:
+                return t
+            if not len(rows) or int(rows.max()) >= size:
+                logger.warning_once(
+                    "kwarg row slicing fell back to the unsliced tensor (batch size %d, rows up to %d); "
+                    "sub-batch draws may see the wrong batch's entry",
+                    size,
+                    int(rows.max()) if len(rows) else -1,
+                )
+                return t
+            return t.index_select(batch_dim, rows.to(device=t.device))
+
+        def _slice_shared_entry(entry, rows):
+            """Within-batch row slice of one shared-cache entry (batch pick already done)."""
+            if isinstance(entry, torch.Tensor):
+                return _take_rows(entry, rows)
+            if isinstance(entry, tuple) and entry and all(torch.is_tensor(t) for t in entry):
+                return tuple(_take_rows(t, rows) for t in entry)
+            return entry
 
         for key, val in input_others.items():
             if "positional_inputs" in key:
@@ -435,22 +525,65 @@ class BlockForwardRunner:
             if key in shared_cache_keys:
                 if isinstance(val, list) and len(val) == 1:
                     selected_others[key] = val[0]
+                elif isinstance(val, list) and len(val) > 1 and inputs is not None and len(indices) >= 1:
+                    # Two cached-list layouts exist: per-SAMPLE (len == pool size)
+                    # and per-BATCH (len == pool / collection batch; entries are
+                    # whole collection-batch tensors/tuples). The collection batch
+                    # comes from the cache itself: a data-parallel rank tunes with
+                    # its share of the batch, so its own batch_size is smaller.
+                    _n = self._count_samples(inputs)
+                    _per_entry = -(-_n // len(val)) if _n > len(val) else 1
+                    if len(val) == _n and len(indices) > 1:
+                        # per-sample list: pick the drawn samples' entries
+                        _picks = [val[i] if i < len(val) else val[0] for i in idx_list]
+                        if len(_picks) == 1:
+                            selected_others[key] = _picks[0]
+                        elif all(isinstance(pp, tuple) and pp and all(torch.is_tensor(t) for t in pp) for pp in _picks):
+                            selected_others[key] = tuple(
+                                _cat_device_safe([pp[slot] for pp in _picks], dim=batch_dim)
+                                for slot in range(len(_picks[0]))
+                            )
+                        elif all(torch.is_tensor(pp) for pp in _picks):
+                            selected_others[key] = _cat_device_safe(_picks, dim=batch_dim)
+                        else:
+                            selected_others[key] = val[0]
+                    elif len(indices) < _per_entry:
+                        # draw smaller than the collection batch (a rank's share):
+                        # the owning batch's entry, sliced to the drawn rows
+                        _b = idx_list[0] // _per_entry
+                        _entry = val[_b] if 0 <= _b < len(val) else val[0]
+                        _rows = torch.tensor([i % _per_entry for i in idx_list], dtype=torch.long)
+                        selected_others[key] = _slice_shared_entry(_entry, _rows)
+                    else:
+                        idx = idx_list[0] if len(idx_list) == 1 else 0
+                        selected_others[key] = val[idx] if idx < len(val) else val[0]
                 elif isinstance(val, list) and len(val) > 1:
-                    idx = int(indices[0]) if len(indices) == 1 else 0
+                    idx = idx_list[0] if len(idx_list) == 1 else 0
                     selected_others[key] = val[idx] if idx < len(val) else val[0]
                 else:
                     selected_others[key] = val
             elif isinstance(val, list):
-                batch_vals = self._gather_same_device([val[i] for i in indices], self.device)
+                batch_vals = self._gather_same_device([val[i] for i in idx_list], self.device)
                 if len(batch_vals) == 1:
                     selected_others[key] = batch_vals[0]
                 else:
-                    selected_others[key] = torch.cat(batch_vals, dim=batch_dim)
+                    selected_others[key] = _cat_device_safe(batch_vals, dim=batch_dim)
             elif isinstance(val, torch.Tensor):
                 # ``batch_indices`` are created on CPU by the sampler.  XPU
                 # (and other accelerator backends) require index tensors on
                 # the same device as the indexed value.
                 selected_others[key] = torch.index_select(val, batch_dim, indices.to(device=val.device))
+            elif isinstance(val, tuple) and val and all(torch.is_tensor(t) for t in val):
+                # tuple-of-tensors kwargs (transformers v5 passes rope as
+                # ``position_embeddings=(cos, sin)`` with a per-sample batch
+                # dim). Slice each element like the tensor branch; elements
+                # that are shared across samples (e.g. broadcast [1, S, D]
+                # tables) fail the select and pass through unsliced, preserving their
+                # broadcast behavior. Without this, shard/batch forwards
+                # smaller than the cached batch crash in apply_rotary_pos_emb
+                # (hidden batch N vs cos batch full).
+                _idx = torch.tensor(idx_list, dtype=torch.long)
+                selected_others[key] = tuple(_take_rows(t, _idx) for t in val)
             elif isinstance(val, (str, bool, type(None))):
                 selected_others[key] = val
             else:

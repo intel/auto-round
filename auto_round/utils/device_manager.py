@@ -821,6 +821,9 @@ class DeviceManager:
     @property
     def device_list(self) -> list:
         """All concrete devices selected by the configured ``device_map``."""
+        scoped = self._thread_scope()
+        if scoped is not None:
+            return [scoped]
         if self._device_list is None:
             self.configure(self._device_map)
         return self._device_list
@@ -828,9 +831,34 @@ class DeviceManager:
     @property
     def device(self) -> str:
         """The major (primary, non-CPU when possible) device string."""
+        scoped = self._thread_scope()
+        if scoped is not None:
+            return scoped
         if self._major_device is None:
             self.configure(self._device_map)
         return self._major_device
+
+    def _thread_scope(self) -> str | None:
+        local = self.__dict__.get("_thread_local")
+        return getattr(local, "device", None) if local is not None else None
+
+    @contextlib.contextmanager
+    def thread_device_scope(self, device: str | torch.device):
+        """Pin :attr:`device` / :attr:`device_list` to ``device`` for the calling thread.
+
+        Used by the data-parallel engine: each rank thread runs the unchanged
+        per-block algorithm and must see its own replica device as the major
+        device. Other threads keep the configured devices.
+        """
+        import threading
+
+        local = self.__dict__.setdefault("_thread_local", threading.local())
+        prev = getattr(local, "device", None)
+        local.device = str(device)
+        try:
+            yield
+        finally:
+            local.device = prev
 
     @device.setter
     def device(self, value: str | torch.device) -> None:
