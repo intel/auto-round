@@ -115,7 +115,7 @@ class ModelNameMatcher:
         elif self.mode == "regex":
             return re.search(self.pattern, name) is not None
         else:
-            raise ValueError("unsupported mode {self.mode}")
+            raise ValueError(f"unsupported mode {self.mode}")
 
 
 class ArchitectureMatcher:
