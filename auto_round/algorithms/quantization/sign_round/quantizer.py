@@ -827,7 +827,6 @@ class SignRoundQuantizer(BaseQuantizer):
         _perf.stop("tail")
         _log_tune_phases(_perf, self.iters)
 
-
         logger.infoclean(dump_info)
         return best_params
 

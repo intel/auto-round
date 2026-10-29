@@ -339,4 +339,3 @@ def resolve_tuning_cache_cls(model_context) -> type[BlockTuningPrefetchCache]:
     if getattr(model_context, "is_diffusion", False):
         return DiffusionTuningCache
     return BlockTuningPrefetchCache
-
