@@ -11,9 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
 import json
 import math
 import os
+from dataclasses import replace
 from typing import Any
 
 import torch
@@ -80,6 +82,9 @@ class DiffusionMixin:
                 raise ValueError(
                     "diffusion_tuning_cache_size must be 'auto' or finite and non-negative (GiB)."
                 ) from None
+
+        self._diffusion_user_block_selector = copy.deepcopy(kwargs.get("to_quant_block_names"))
+        self._diffusion_user_layer_config = copy.deepcopy(kwargs.get("layer_config"))
 
         # Store diffusion-specific attributes
         self.guidance_scale = guidance_scale
@@ -260,7 +265,7 @@ class DiffusionMixin:
 
         # Zero-shot (RTN) path: no calibration data needed
         if not self.need_calib:
-            return self._quantize_zero_shot()
+            return self._quantize_all_transformers_zero_shot()
 
         # Get block names and call cache_inter_data to populate self.inputs
         if bool(self.quant_block_list):
@@ -420,6 +425,73 @@ class DiffusionMixin:
 
         return self.model_context.model, self.layer_config
 
+    def _quantize_all_transformers_zero_shot(self):
+        """Quantize every transformer without running pipeline calibration."""
+        from auto_round.utils import find_matching_blocks, get_block_names
+
+        additional = self._find_additional_transformers()
+        if not additional:
+            return self._quantize_zero_shot()
+
+        primary_model = self.model_context.model
+        primary_blocks = self.quant_block_list
+        primary_config = self.layer_config
+        primary_quantized = self.model_context.quantized
+        state_keys = (
+            "compression_plan",
+            "_format_resolution",
+            "_alg_composer",
+            "to_quant_block_names",
+            "ignore_layers",
+            "calibration",
+            "_post_init_done",
+        )
+        primary_state = {key: getattr(self, key, None) for key in state_keys}
+        context = self.compress_context
+        original_flags = (context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving)
+        context.low_cpu_mem_usage = False
+        self._defer_multi_transformer_serialization()
+        extras = {}
+        plans = {}
+        try:
+            self._quantize_zero_shot()
+            primary_quantized = True
+            primary_config = dict(self.layer_config)
+            primary_state["compression_plan"] = getattr(self, "compression_plan", None)
+            for name, transformer in additional:
+                logger.info(f"Quantizing {name} without calibration")
+                self.model_context.model = transformer
+                self.model_context.quantized = False
+                self._post_init_done = False
+                self.calibration = None
+                self.to_quant_block_names = copy.deepcopy(self._diffusion_user_block_selector)
+                self.quant_block_list = find_matching_blocks(
+                    transformer, get_block_names(transformer), self.to_quant_block_names
+                )
+                # Build the component's plan from user overrides, not the primary's expanded plan.
+                self.layer_config = copy.deepcopy(self._diffusion_user_layer_config) or {}
+                self.ignore_layers = primary_state["ignore_layers"]
+                resolution = getattr(self, "_format_resolution", None)
+                if resolution is not None:
+                    self._format_resolution = replace(resolution, quant_block_list=self.quant_block_list)
+                self.post_init()
+                self._defer_multi_transformer_serialization()
+                self._quantize_zero_shot()
+                extras[name] = (self.model_context.model, dict(self.layer_config))
+                plans[name] = getattr(self, "compression_plan", None)
+                setattr(self.model_context.pipe, name, self.model_context.model)
+        finally:
+            self.model_context.model = primary_model
+            for key, value in primary_state.items():
+                setattr(self, key, value)
+            self.layer_config = primary_config
+            self.quant_block_list = primary_blocks
+            self.model_context.quantized = primary_quantized
+            self._quantized_transformers = extras
+            self._quantized_transformer_plans = plans
+            context.low_cpu_mem_usage, context.is_immediate_packing, context.is_immediate_saving = original_flags
+        return primary_model, self.layer_config
+
     def save_quantized(
         self,
         output_dir: str | None = None,
@@ -472,6 +544,13 @@ class DiffusionMixin:
                 # Save secondary quantized transformer
                 saved_model = self.model_context.model
                 saved_lc = self.layer_config
+                saved_plan = getattr(self, "compression_plan", None)
+                saved_selector = self.to_quant_block_names
+                component_plan = getattr(self, "_quantized_transformer_plans", {}).get(name)
+                if component_plan is not None:
+                    self.compression_plan = component_plan
+                    # None lets serialization derive the selector from this component's plan.
+                    self.to_quant_block_names = copy.deepcopy(self._diffusion_user_block_selector)
                 saved_immediate_saving = self.compress_context.is_immediate_saving
                 self.model_context.model, self.layer_config = quantized_transformers[name]
                 saved_subfolder = getattr(self.model_context.model, "_autoround_pipeline_subfolder", None)
@@ -479,18 +558,22 @@ class DiffusionMixin:
                     self.compress_context.is_immediate_saving = False
                     if saved_subfolder is not None:
                         delattr(self.model_context.model, "_autoround_pipeline_subfolder")
-                compressed_model = super().save_quantized(
-                    output_dir=target_output_dir,
-                    format=_format,
-                    inplace=inplace,
-                    return_folders=False,
-                    **kwargs,
-                )
-                self.compress_context.is_immediate_saving = saved_immediate_saving
-                if saved_subfolder is not None:
-                    self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
-                self.model_context.model = saved_model
-                self.layer_config = saved_lc
+                try:
+                    compressed_model = super().save_quantized(
+                        output_dir=target_output_dir,
+                        format=_format,
+                        inplace=inplace,
+                        return_folders=False,
+                        **kwargs,
+                    )
+                finally:
+                    self.compress_context.is_immediate_saving = saved_immediate_saving
+                    if saved_subfolder is not None:
+                        self.model_context.model._autoround_pipeline_subfolder = saved_subfolder
+                    self.model_context.model = saved_model
+                    self.compression_plan = saved_plan
+                    self.to_quant_block_names = saved_selector
+                    self.layer_config = saved_lc
             elif val is self.model_context.model:
                 # Save primary quantized transformer
                 saved_immediate_saving = self.compress_context.is_immediate_saving

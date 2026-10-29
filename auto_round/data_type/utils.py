@@ -13,15 +13,17 @@
 # limitations under the License.
 
 import math
+from collections.abc import Callable
 from functools import lru_cache
 from math import ceil
+from typing import Any
 
 import torch
 from torch.nn import Linear, Module
 
 from auto_round import envs
-from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
+from auto_round.schemes import needs_nvfp_global_scale
 from auto_round.utils import check_to_quantized, logger
 
 
@@ -190,6 +192,28 @@ def get_quant_func(
     )
 
 
+def _int_search_with_thresh(search_scales: Any, q_scale_thresh: float) -> "Callable[..., torch.Tensor]":
+    """Stable partial for the clamped int init-scale search.
+
+    A module-level partial (captures visible as ``keywords``) instead of a
+    per-call closure, so resolved callables compare equal across calls and can
+    safely key same-shape search batches.
+    """
+    import functools
+
+    def _clamped(
+        weight_reshape: torch.Tensor, bits: int, imatrix: "torch.Tensor | None", *, _thresh: float
+    ) -> torch.Tensor:
+        init_scale = search_scales(weight_reshape, bits, imatrix)
+        return torch.where(
+            init_scale < 0,
+            torch.clamp(init_scale, max=-_thresh),
+            torch.clamp(init_scale, min=_thresh),
+        )
+
+    return functools.partial(_clamped, _thresh=q_scale_thresh)
+
+
 def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5):
     """Resolve the SignRound optimized ``(scale_search_fn, quant_func)`` for a data type.
 
@@ -215,15 +239,7 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
             return None, None
         from auto_round.data_type.int import quant_tensor_sym, search_scales
 
-        def search_int(weight_reshape, bits, imatrix):
-            init_scale = search_scales(weight_reshape, bits, imatrix)
-            return torch.where(
-                init_scale < 0,
-                torch.clamp(init_scale, max=-q_scale_thresh),
-                torch.clamp(init_scale, min=q_scale_thresh),
-            )
-
-        return search_int, quant_tensor_sym
+        return _int_search_with_thresh(search_scales, q_scale_thresh), quant_tensor_sym
     if dt.startswith("mx"):
         from auto_round.data_type.mxfp import quant_mx, search_mx_scale
 
@@ -233,6 +249,21 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
 
         return search_nvfp4_scale, nv_fp4
     return None, None
+
+
+def resolve_optimized_init_scale_fn(
+    data_type: str, q_scale_thresh: float = 1e-5
+) -> "Callable[..., torch.Tensor] | None":
+    """Resolve the per-group init-scale search callable for a data type.
+
+    Returns the exact callable ``search_optimized_init_scale`` would invoke --
+    ``(weight_reshape, bits, imatrix) -> init_scale`` -- or ``None`` for data
+    types without an optimized path. The resolved callable can be staged and
+    invoked later (batched wrap searches) with identical semantics, so future
+    dispatch changes travel with the caller automatically.
+    """
+    search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
+    return search_fn
 
 
 def search_optimized_init_scale(
@@ -489,6 +520,10 @@ def update_fused_layer_global_scales(
 
     def _update_global_scales(modules: list[Module]):
         """Update global scales for a list of modules."""
+        from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
+
+        # SVDQuant keeps the quantized projection inside its residual branch.
+        modules = [module.residual_linear if isinstance(module, SVDQuantLinear) else module for module in modules]
         scales = _collect_scales(modules)
         if not scales:
             return
@@ -528,9 +563,9 @@ def update_fused_layer_global_scales(
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):
-    from auto_round.data_type.nvfp import calculate_gparam
+    from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-    has_nvfp = is_nv_fp(data_type)
+    has_nvfp = needs_nvfp_global_scale(data_type)
 
     # Calculate block wise weight global scale
     for _, m in block.named_modules():
@@ -539,10 +574,10 @@ def update_block_global_scale_if_needed(block, data_type, group_size):
         # Check per-layer data_type for mixed-scheme scenarios
         module_data_type = getattr(m, "data_type", data_type)
         module_group_size = getattr(m, "group_size", group_size)
-        if is_nv_fp(module_data_type):
+        if needs_nvfp_global_scale(module_data_type):
             has_nvfp = True
             if not hasattr(m, "weight_global_scale"):
-                weight_global_scale = calculate_gparam(m.weight, module_group_size)
+                weight_global_scale = calculate_gparam_by_dtype(m.weight, module_data_type, module_group_size)
                 m.weight_global_scale = weight_global_scale
 
     if not has_nvfp:

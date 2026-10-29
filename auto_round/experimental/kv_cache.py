@@ -197,7 +197,10 @@ class QuantizedKVParameterCache(DynamicCache):
 
         qdq_tensor, scale = fp8_qdq(tensor, granularity=self.granularity)
         # Detach scale to prevent holding computation graph references
-        _pad_and_append_at_idx_(scales, layer_idx, scale.reshape(-1).detach())
+        scale = scale.reshape(-1).detach()
+        if layer_idx < len(scales) and scales[layer_idx] is not None:
+            scale = torch.maximum(scales[layer_idx], scale)
+        _pad_and_append_at_idx_(scales, layer_idx, scale)
         return qdq_tensor
 
     def _nvfp4_track_amax(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int):
@@ -347,6 +350,9 @@ def kvcache_quant_context(
     model: torch.nn.Module, static_kv_dtype=torch.float8_e4m3fn, static_kv_granularity: str = "tensor"
 ):
     """Context manager for static KV cache quantization (FP8 or NVFP4) operations."""
+    hook_handles = []
+    QuantizedKVParameterCache._instance = None
+    QuantizedKVParameterCache._initialized = False
     try:
         # Setup phase: Initialize KV cache for quantization
         static_kv_dtype = normalize_static_kv_dtype(static_kv_dtype)
@@ -368,11 +374,18 @@ def kvcache_quant_context(
             )
         if static_kv_dtype in (torch.float8_e4m3fn, NVFP4_KV_DTYPE):
             model.apply(initialize_fn)
-            model.apply(prep_attention_module_for_calibration)
+            for module in model.modules():
+                if is_attention_module(module):
+                    hook_handles.append(
+                        module.register_forward_pre_hook(calibrate_kv_cache_input_hook, with_kwargs=True)
+                    )
+                    hook_handles.append(module.register_forward_hook(calibrate_kv_cache_output_hook))
 
         # Provide the model to the with block
         yield model
 
     finally:
         # Cleanup phase: Freeze quantization parameters
+        for handle in hook_handles:
+            handle.remove()
         model.apply(freeze_module_quantization_)

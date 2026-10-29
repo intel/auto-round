@@ -16,7 +16,7 @@ from typing import ClassVar
 from auto_round.algorithms.config import AlgorithmConfig
 from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
+from auto_round.schemes import QuantizationScheme, is_nvfp4_e5m3_family
 
 
 class QuantizationConfig(AlgorithmConfig):
@@ -161,6 +161,7 @@ class QuantizationConfig(AlgorithmConfig):
         if (
             self.is_act_quantize
             and (not self.is_act_nv_fp or "static_gs" not in self.act_data_type)
+            and not is_nvfp4_e5m3_family(self.act_data_type or "")
             and not self.is_act_mx_fp
             and not self.is_dynamic_wint8aint8
             and not self.is_static_afp8

@@ -354,6 +354,8 @@ class TestEvalWithVllm:
         )
 
         captured_kwargs = {}
+        captured_evaluate_kwargs = {}
+        task_manager = object()
         fake_res = {"results": {"mmlu": {}}, "versions": {}, "n-shot": {}, "higher_is_better": {}}
 
         class FakeVLLM:
@@ -371,10 +373,13 @@ class TestEvalWithVllm:
         monkeypatch.setattr(eval_cli, "get_major_device", lambda: "cuda")
         monkeypatch.setattr(eval_cli, "get_device_and_parallelism", lambda device: ("cuda", False))
         monkeypatch.setattr(eval_cli, "get_model_dtype", lambda dtype, default="auto": "auto")
-        monkeypatch.setattr(
-            "lm_eval.evaluator.simple_evaluate",
-            lambda **kwargs: fake_res,
-        )
+        monkeypatch.setattr(eval_cli, "_get_lm_eval_task_manager", lambda tasks: task_manager)
+
+        def fake_simple_evaluate(**kwargs):
+            captured_evaluate_kwargs.update(kwargs)
+            return fake_res
+
+        monkeypatch.setattr("lm_eval.evaluator.simple_evaluate", fake_simple_evaluate)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         monkeypatch.setenv("TOKENIZERS_PARALLELISM", "false")
 
@@ -383,6 +388,32 @@ class TestEvalWithVllm:
 
         assert captured_kwargs["pretrained"] == "model-id"
         assert captured_kwargs["tensor_parallel_size"] == 2
+        assert captured_evaluate_kwargs["task_manager"] is task_manager
+
+    def test_task_manager_finds_nested_yaml_task(self, monkeypatch, tmp_path):
+        tasks_root = tmp_path / "lm_eval" / "tasks"
+        task_dir = tasks_root / "lambada"
+        task_dir.mkdir(parents=True)
+        (task_dir / "lambada_openai.yaml").write_text("task: lambada_openai\n")
+
+        fake_lm_eval = type(sys)("lm_eval")
+        fake_lm_eval.__file__ = str(tmp_path / "lm_eval" / "__init__.py")
+        captured = {}
+
+        class FakeTaskManager:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        fake_tasks = type(sys)("lm_eval.tasks")
+        fake_tasks.TaskManager = FakeTaskManager
+        monkeypatch.setitem(sys.modules, "lm_eval", fake_lm_eval)
+        monkeypatch.setitem(sys.modules, "lm_eval.tasks", fake_tasks)
+
+        task_manager = eval_cli._get_lm_eval_task_manager(["lambada_openai"])
+
+        assert isinstance(task_manager, FakeTaskManager)
+        assert captured["include_defaults"] is False
+        assert captured["include_path"] == [str(task_dir)]
 
     def test_mllm_uses_vllm_vlm(self, monkeypatch):
         args = SimpleNamespace(

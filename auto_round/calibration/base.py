@@ -41,6 +41,7 @@ class Calibrator(ABC):
     def __init__(self, compressor: "BaseCompressor", **kwargs) -> None:
         self.model = compressor.model_context.model
         self.tokenizer = compressor.model_context.tokenizer
+        self.trust_remote_code = getattr(compressor.model_context, "trust_remote_code", False)
         self.dataset = compressor.dataset
         self.seed = compressor.seed
         self.low_gpu_mem_usage = compressor.low_gpu_mem_usage

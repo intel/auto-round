@@ -27,7 +27,11 @@ from tqdm import tqdm
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.config import initialize_quantization
-from auto_round.export.export_to_llmcompressor.utils import generate_ignore_regex_list
+from auto_round.export.export_to_llmcompressor.utils import (
+    add_routed_experts_if_moe,
+    finalize_llmcompressor_config_names,
+    generate_ignore_regex_list,
+)
 from auto_round.export.utils import (
     filter_quantization_config,
     is_immediate_saving_mode,
@@ -36,6 +40,7 @@ from auto_round.export.utils import (
     save_pretrained_artifact,
 )
 from auto_round.logger import logger
+from auto_round.schemes import is_nvfp4_e5m3_family, is_nvfp4_e5m3_gs, needs_nvfp_global_scale
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -87,13 +92,13 @@ def pack_layer(name, model, device=None):
     group_size = layer.group_size
     sym = layer.sym
 
-    if is_nv_fp(act_data_type) and act_bits <= 8:
+    if needs_nvfp_global_scale(act_data_type) and act_bits <= 8:
         input_global_scale = getattr(layer, "input_global_scale", None)
         if input_global_scale is None:
             assert hasattr(layer, "act_max")
-            from auto_round.data_type.nvfp import calculate_gparam
+            from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-            input_global_scale = calculate_gparam(layer.act_max, layer.group_size)  # , model.device
+            input_global_scale = calculate_gparam_by_dtype(layer.act_max, act_data_type, layer.group_size)
             layer.input_global_scale = input_global_scale
             delattr(layer, "act_max")
 
@@ -146,6 +151,8 @@ def _get_scheme(bits, data_type, act_bits=16):
         return "NVFP4"
     if data_type == "nvfp4_v2":
         return "NVFP4_E5M3"
+    if is_nvfp4_e5m3_gs(data_type):
+        return "NVFP4_E5M3_GS"
     return None
 
 
@@ -159,6 +166,8 @@ def _get_group_format(bits, data_type):
         return "nvfp4-pack-quantized"
     if data_type == "nvfp4_v2":
         return "nvfp4-e5m3-pack-quantized"
+    if is_nvfp4_e5m3_gs(data_type):
+        return "nvfp4-e5m3-gs-pack-quantized"
     return "float-quantized"
 
 
@@ -234,7 +243,9 @@ def _build_mixed_fp_quantization_config(
         tmp_quantization_config = initialize_quantization(scheme=scheme)
         tmp_quantization_config = tmp_quantization_config.config_groups["group_0"]
         is_default = (lbits, ldata_type, lact_bits) == global_key
-        tmp_quantization_config.targets = ["Linear"] if is_default else layer_names
+        tmp_quantization_config.targets = (
+            ["Linear"] if is_default else add_routed_experts_if_moe(list(layer_names), layer_names)
+        )
         config_groups[group_name] = tmp_quantization_config
         group_formats[group_name] = _get_group_format(lbits, ldata_type)
 
@@ -350,16 +361,19 @@ def save_quantized_as_fp(
                 orig_layer = m.orig_layer
                 set_module(model, n, orig_layer)
 
-    if is_nv_fp(act_data_type) and "static_gs" in str(act_data_type).lower():
+    if needs_nvfp_global_scale(act_data_type or "") and "static_gs" in str(act_data_type).lower():
         # generate static input_global_scale
         for n, m in model.named_modules():
             if type(m) in SUPPORTED_LAYER_TYPES:
                 layer = m
                 if hasattr(layer, "act_bits") and layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
                     assert hasattr(layer, "act_max")
-                    from auto_round.data_type.nvfp import calculate_gparam
+                    from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-                    input_global_scale = calculate_gparam(layer.act_max, layer.group_size, model.device)
+                    layer_act_data_type = getattr(layer, "act_data_type", None) or act_data_type
+                    input_global_scale = calculate_gparam_by_dtype(
+                        layer.act_max, layer_act_data_type, layer.group_size, model.device
+                    )
                     layer.input_global_scale = input_global_scale
                     delattr(layer, "act_max")
         # update fused input_global_scale
@@ -435,15 +449,20 @@ def save_quantized_as_fp(
                 f"Unsupported layer override data_type={layer_data_type}, bits={layer_bits}, act_bits={layer_act_bits}."
             )
         quantization_config = initialize_quantization(
-            scheme=scheme, targets=targets, kv_cache_scheme=kv_cache_scheme, ignore=ignore
+            scheme=scheme,
+            targets=add_routed_experts_if_moe(list(targets), targets),
+            kv_cache_scheme=kv_cache_scheme,
+            ignore=ignore,
         )
         quantization_config.format = _get_group_format(layer_bits, layer_data_type)
         quantization_config = quantization_config.to_dict()
         quantization_config["provider"] = "auto-round"
-    elif data_type == "nvfp4_v2":
+    elif is_nvfp4_e5m3_family(data_type):
         from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
 
-        quantization_config = initialize_nvfp4_e5m3_quantization(ignore=ignore)
+        quantization_config = initialize_nvfp4_e5m3_quantization(
+            ignore=ignore, with_global_scale=is_nvfp4_e5m3_gs(data_type)
+        )
         quantization_config["provider"] = "auto-round"
     else:
         scheme = _get_scheme(bits, data_type, act_bits if act_bits is not None else 16)
@@ -466,6 +485,12 @@ def save_quantized_as_fp(
         _configure_gaudi2_fp8_dtype(quantization_config)
         if attention_config is not None:
             quantization_config["attention_input_activations"] = attention_config
+    quantization_config = finalize_llmcompressor_config_names(
+        quantization_config,
+        model,
+        [],
+        [name for names in scheme_groups.values() for name in names],
+    )
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:

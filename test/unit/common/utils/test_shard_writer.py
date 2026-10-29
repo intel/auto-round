@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from auto_round.compressors.shard_writer import ShardWriter
@@ -197,3 +199,82 @@ def test_oversized_tensor_does_not_leave_tiny_preceding_shard(tmp_path, monkeypa
 
     assert writer.shard_counter == 1
     assert set(writer.current_shard_tensors) == set()
+
+
+@pytest.mark.parametrize("shard_name", ["model-shard-00001.bin", "model.bin", "model-00001-of-00002.bin"])
+@pytest.mark.parametrize("mapped", [False, True])
+@pytest.mark.parametrize("safe_serialization", [False, True])
+def test_finalize_skips_unpacked_weight_of_resumed_packed_module(
+    tmp_path, monkeypatch, shard_name, mapped, safe_serialization
+):
+    """A module packed before a crash must not be written again as fp weights.
+
+    The resumed run skips tuning for that module, so the model tree still holds
+    the original ``nn.Linear``. Its ``weight`` name never matches the packed
+    ``qweight`` recovered from the crashed run's shard, so the name-exact dedup
+    alone would write both into the final checkpoint.
+    """
+    from auto_round import envs
+
+    if safe_serialization:
+        from safetensors.torch import load_file, save_file
+
+        save = save_file
+        load = load_file
+        shard_name = shard_name.replace(".bin", ".safetensors")
+    else:
+        save = torch.save
+        load = torch.load
+
+    multiple_shards = "-of-" in shard_name
+    suffix = "safetensors" if safe_serialization else "bin"
+    prefix = "saved_blocks" if mapped else "transformer_blocks"
+    # A shard flushed by the crashed run, possibly already renamed by finalize.
+    save(
+        {
+            f"{prefix}.0.linear.qweight": torch.zeros(4, 1, dtype=torch.int32),
+            f"{prefix}.0.linear.scales": torch.ones(4, 1),
+            f"{prefix}.0.linear.bias": torch.full((4,), 7.0),
+        },
+        os.path.join(tmp_path, shard_name),
+    )
+    if multiple_shards:
+        save(
+            {
+                "completed.qweight": torch.ones(2, dtype=torch.int16),
+                "completed.scale": torch.tensor(1.0, dtype=torch.float64),
+                "completed.empty": torch.empty(0, 3, dtype=torch.bfloat16),
+            },
+            str(tmp_path / f"model-00002-of-00002.{suffix}"),
+        )
+
+    monkeypatch.setattr(envs, "AR_RESUME_DIR", str(tmp_path))
+
+    model = _DiffusionStyleModel()
+    writer = _make_writer(model, str(tmp_path), monkeypatch)
+    writer.use_safetensors = safe_serialization
+    writer.shard_suffix = suffix
+    if mapped:
+        writer.reverse_checkpoint_conversion_mapping = {r"^transformer_blocks": "saved_blocks"}
+    writer.finalize()
+
+    saved = {}
+    for name in os.listdir(tmp_path):
+        if name.endswith(f".{suffix}"):
+            saved.update(load(os.path.join(tmp_path, name)))
+
+    assert f"{prefix}.0.linear.qweight" in saved
+    assert (
+        f"{prefix}.0.linear.weight" not in saved
+    ), "the packed module must not also be saved as a floating-point weight"
+    assert torch.equal(saved[f"{prefix}.0.linear.bias"], torch.full((4,), 7.0))
+    if multiple_shards:
+        assert torch.equal(saved["completed.qweight"], torch.ones(2, dtype=torch.int16))
+    # Modules that were never packed are still saved.
+    assert "proj_out.weight" in saved
+
+    # The index covers recovered packed tensors as well as newly written weights.
+    with open(tmp_path / f"model.{suffix}.index.json", encoding="utf-8") as index_file:
+        index = json.load(index_file)
+    assert index["metadata"]["total_parameters"] == sum(tensor.numel() for tensor in saved.values())
+    assert index["metadata"]["total_size"] == sum(tensor.nbytes for tensor in saved.values())

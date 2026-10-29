@@ -5,7 +5,13 @@ import pytest
 import torch
 from transformers.quantizers.auto import AutoHfQuantizer
 
-from auto_round.data_type.nvfp import calculate_gparam, nvfp4_v2
+from auto_round.data_type.nvfp import (
+    calculate_gparam,
+    calculate_gparam_e5m3,
+    nvfp4_v2,
+    nvfp4_v2_gs,
+    nvfp4_v2_with_static_gs,
+)
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _FPLinear
@@ -55,6 +61,80 @@ def test_nvfp4_e5m3_compressed_tensors_loading_uses_no_global_scales():
     assert isinstance(layer, ar_qmodules.NVFP4E5M3QuantLinear)
     assert set(layer.state_dict()) == {"bias", "weight_packed", "weight_scale"}
     assert quantizer._process_model_after_weight_loading(model) is model
+
+
+def test_nvfp4_e5m3_gs_compressed_tensors_loading_uses_global_scales():
+    class TinyModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(model_type="tiny")
+            self.model = torch.nn.Module()
+            self.model.layers = torch.nn.ModuleList([torch.nn.ModuleDict({"fc": torch.nn.Linear(16, 8)})])
+
+    quantizer = AutoHfQuantizer.from_config(initialize_nvfp4_e5m3_quantization([], with_global_scale=True))
+    model = quantizer._process_model_before_weight_loading(TinyModel())
+    layer = model.model.layers[0]["fc"]
+
+    assert isinstance(layer, ar_qmodules.NVFP4E5M3GSQuantLinear)
+    assert set(layer.state_dict()) == {
+        "bias",
+        "weight_packed",
+        "weight_scale",
+        "weight_global_scale",
+        "input_global_scale",
+    }
+
+
+@torch.inference_mode()
+def test_nvfp4_e5m3_gs_pack_and_dequant_round_trip():
+    config = PRESET_SCHEMES["NVFP4_E5M3_GS"]
+    original_layer = torch.nn.Linear(64, 32, bias=False)
+    weight_global_scale = calculate_gparam_e5m3(original_layer.weight)
+    weight_qdq, weight_scale, _ = nvfp4_v2_gs(original_layer.weight, group_size=16, global_scale=weight_global_scale)
+    activation = torch.randn(4, 64)
+    input_global_scale = calculate_gparam_e5m3(activation)
+
+    packed = _FPLinear(4, 16, 64, 32, False, data_type=config.data_type, act_bits=4)
+    packed.pack(
+        original_layer,
+        weight_scale.reshape(32, 4),
+        global_scale=weight_global_scale,
+        input_global_scale=input_global_scale,
+    )
+    assert packed.weight_scale.dtype == torch.uint8
+
+    layer = ar_qmodules.NVFP4E5M3GSQuantLinear.from_original(config, original_layer)
+    for name in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
+        getattr(layer, name).copy_(getattr(packed, name))
+
+    torch.testing.assert_close(layer.dequant_weight_online(), weight_qdq, rtol=1e-6, atol=1e-7)
+    expected_activation, _, _ = nvfp4_v2_with_static_gs(activation, group_size=16, tensor_max=activation.abs().max())
+    torch.testing.assert_close(layer.qdq_input(activation), expected_activation)
+
+
+def test_nvfp4_e5m3_gs_dequant_zero_weight_with_zero_global_scale():
+    config = PRESET_SCHEMES["NVFP4_E5M3_GS"]
+    layer = ar_qmodules.NVFP4E5M3GSQuantLinear(16, 8, config, dtype=torch.float32)
+    layer.weight_packed.zero_()
+    layer.weight_scale.zero_()
+    layer.weight_global_scale.zero_()
+
+    dequantized = layer.dequant_weight_online()
+
+    assert torch.isfinite(dequantized).all()
+    assert torch.equal(dequantized, torch.zeros_like(dequantized))
+
+
+def test_nvfp4_e5m3_gs_cute_falls_back_to_reference_on_cpu():
+    config = PRESET_SCHEMES["NVFP4_E5M3_GS"]
+    layer = ar_qmodules.CuteNVFP4E5M3GSQuantLinear(16, 8, config, dtype=torch.float32)
+    layer.input_global_scale.fill_(123.0)
+    activation = torch.randn(2, 16)
+
+    expected, _, _ = nvfp4_v2_with_static_gs(activation, group_size=16, global_scale=layer.input_global_scale)
+
+    assert torch.equal(layer.qdq_input(activation), expected)
+    assert layer(activation).shape == (2, 8)
 
 
 def test_nvfp4_e5m3_qdq_input_uses_reference_fallback_on_cpu():

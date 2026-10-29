@@ -439,7 +439,10 @@ def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
 
     def is_nvfp4_e5m3(self):
         compression_config = getattr(getattr(self, "compressor", None), "quantization_config", None)
-        return getattr(compression_config, "format", None) == "nvfp4-e5m3-pack-quantized"
+        return getattr(compression_config, "format", None) in (
+            "nvfp4-e5m3-pack-quantized",
+            "nvfp4-e5m3-gs-pack-quantized",
+        )
 
     def patched_before(self, model, **kwargs):
         if not is_nvfp4_e5m3(self):
@@ -723,6 +726,7 @@ class SupportedFormats:
             "mlx",
             "auto_round:mlx",
             "svdquant_nunchaku",
+            "svdquant_omni",
         )
         self._gguf_format = tuple(sorted(GGUF_CONFIG.keys()))
         self._support_list = self._support_format + self._gguf_format
@@ -896,23 +900,26 @@ def to_standard_regex(pattern: str) -> str:
     '.*mlp.*gate.*'
     """
     # Heuristic: if pattern contains regex meta characters, assume partial regex
-    meta_chars = {".*", "^", "$", "|", "(", ")", "[", "]", "?", "+"}
+    meta_chars = {"*", "{", "}", "^", "$", "|", "(", ")", "[", "]", "?", "+", "\\"}
     has_regex = any(tok in pattern for tok in meta_chars)
     if not has_regex:
         # Escape literal dots, etc., and wrap with .* for substring matching
         pattern = re.escape(pattern)
         regex = f".*{pattern}.*"
     else:
-        # Only escape bare dots that are not already part of regex constructs
-        # Avoid double escaping .* sequences
+        # Only escape bare dots that are not already part of regex constructs:
+        # keep escape sequences (e.g. "\\.", "\\d") and quantified dots
+        # (".*", ".+", ".?", ".{n}") unchanged.
         tmp = []
         i = 0
         while i < len(pattern):
+            if pattern[i] == "\\" and i + 1 < len(pattern):
+                tmp.append(pattern[i : i + 2])  # keep escape sequence
+                i += 2
+                continue
             if pattern[i] == ".":
-                if i + 1 < len(pattern) and pattern[i + 1] == "*":
-                    tmp.append(".*")  # keep regex token
-                    i += 2
-                    continue
+                if i + 1 < len(pattern) and pattern[i + 1] in "*+?{":
+                    tmp.append(".")  # keep regex token
                 else:
                     tmp.append("\\.")  # escape bare dot
             else:

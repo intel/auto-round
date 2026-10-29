@@ -5,35 +5,7 @@
 
 trigger: none
 
-pr:
-  autoCancel: true
-  drafts: false
-  branches:
-    include:
-      - main
-  paths:
-    include:
-      - auto_round
-      - auto_round_extension
-      - test/integration/test_cuda
-      - setup.py
-      - requirements.txt
-      - .azure-pipelines/scripts/cuda_unit_test
-      - .azure-pipelines/scripts/ut/detect_changed_tests.sh
-      - .azure-pipelines/nightly-test-cuda.yml
-
-    exclude:
-      - "*.md"
-      - "**/*.md"
-      - auto_round_extension/ark
-
-schedules:
-  - cron: "0 18 * * *"   # 02:00 Asia/Shanghai every day
-    displayName: Daily CUDA nightly run
-    branches:
-      include:
-        - main
-    always: true
+pr: none
 
 variables:
   - name: POOL_NAME

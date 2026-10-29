@@ -116,6 +116,13 @@ class TestIgnoreLayersDigitSuffix:
         assert layer_config["layers.0.fc1"]["bits"] == 16
         assert layer_config["layers.0.fc2"]["bits"] == 16
 
+    def test_layer_name_ending_with_digit(self, model_12layers):
+        """'fc1' and 'layers.0.fc2' end with a digit but name layers, so they must still be ignored."""
+        layer_config, _, _ = _call_set_layer_config(model_12layers, ignore_layers="fc1,layers.0.fc2")
+        assert layer_config["layers.11.fc1"]["bits"] == 16
+        assert layer_config["layers.0.fc2"]["bits"] == 16
+        assert layer_config["layers.1.fc2"]["bits"] == 4
+
 
 class TestUnmatchedLayerConfigWarns:
     """An unrecognised key in layer_config must trigger a warning, not ValueError."""

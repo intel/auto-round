@@ -84,6 +84,26 @@ class BlockContext:
 # ---------------------------------------------------------------------------
 # AlgorithmComposer
 # ---------------------------------------------------------------------------
+def _release_pool_inplace(obj: Any) -> None:
+    """Release a calibration pool's tensors by mutating its containers in place.
+
+    The pool object is shared with the orchestrator (which holds it as the
+    block's ``input_ids``), so dropping a local reference frees nothing. The
+    containers are the same objects on both sides; setting their entries to
+    None drops the last strong references to the tensors (hooks are removed
+    and the tuning loop reads the q pool, so nothing re-reads this pool).
+    Immutable containers (tuples) are skipped: their tensors stay alive until
+    the block-end release, matching the pre-existing behavior.
+    """
+    if isinstance(obj, list):
+        for i in range(len(obj)):
+            obj[i] = None
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _release_pool_inplace(v)
+    return obj
+
+
 class AlgorithmComposer:
     """An ordered composition of pre-processors + one block quantizer, built from
     a list of algorithm config objects and an optional compressor.
@@ -245,10 +265,10 @@ class AlgorithmComposer:
 
         Returns a list of hook handles that the caller must remove when done.
         """
-        from auto_round.compressors.utils import is_nv_fp
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+        from auto_round.schemes import needs_nvfp_global_scale as is_nv_fp
 
-        is_act_nv_fp = getattr(self.block_quantizer.config, "is_act_nv_fp", False)
+        is_act_nv_fp = is_nv_fp(getattr(self.block_quantizer.config, "act_data_type", None) or "")
 
         def collect_act_max(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
@@ -330,8 +350,8 @@ class AlgorithmComposer:
             q_inputs: Optional list of quantized input tensors; used instead of
                 ``fp_inputs`` when provided.
         """
-        from auto_round.compressors.utils import is_nv_fp
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
+        from auto_round.schemes import needs_nvfp_global_scale as is_nv_fp
 
         target_input = q_inputs or fp_inputs
         act_group_size = layer.act_group_size
@@ -420,6 +440,17 @@ class AlgorithmComposer:
         for rotation_member in self._rotation_members:
             rotation_member.on_block_ready(block, block_ctx)
 
+        # Routed-dispatch shape recorders: fire-once pre-hooks on MoE containers
+        # capture (top_k, routed_rows) from the first NATURAL dispatch during
+        # the forwards below, so the iters>0 activation budget can fall back to
+        # pure arg shapes when config spellings are unknown (arch-agnostic).
+        try:
+            from auto_round.algorithms.quantization.tune_memory import _ensure_routed_shape_recorders_
+
+            _ensure_routed_shape_recorders_(block)
+        except Exception as e:  # pragma: no cover - diagnostics only
+            logger.debug("[routed-shape] recorder setup skipped (%s)", e)
+
         # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──────
         with torch.no_grad():
             pre_hooks = []
@@ -443,6 +474,11 @@ class AlgorithmComposer:
         for pre in self.preprocessors:
             pre.pre_quantize_block(block_ctx)
 
+        act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
+        data_type = self.scheme.data_type if self.scheme else "int"
+        group_size = self.scheme.group_size if self.scheme else -1
+        act_data_type = self.scheme.act_data_type if self.scheme else data_type
+
         reference_next_input = None
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
         if fp_inputs is not None:
@@ -463,22 +499,36 @@ class AlgorithmComposer:
 
             # ── Step 3.5: MoE scale alignment + global scale update ─────────────────
             # Must run after calibration hooks (act_max collected) and before quantize_block.
-            act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
-            data_type = self.scheme.data_type if self.scheme else "int"
-            group_size = self.scheme.group_size if self.scheme else -1
-            act_data_type = self.scheme.act_data_type if self.scheme else data_type
             if act_data_type is not None or not act_dynamic:
-                from auto_round.compressors.utils import is_nv_fp
-                from auto_round.data_type.utils import update_block_global_scale_if_needed
+                from auto_round.schemes import needs_nvfp_global_scale
                 from auto_round.utils import set_amax_for_all_moe_layers
 
-                if is_nv_fp(act_data_type) or not act_dynamic:
+                if needs_nvfp_global_scale(act_data_type) or not act_dynamic:
                     set_amax_for_all_moe_layers(block, attr_name="act_max")
-                update_block_global_scale_if_needed(block, data_type, group_size)
+
+        # SVDQuant may have replaced the original linears during pre-quantize.
+        # Update NVFP4 scales after that transformation even on the zero-shot
+        # path, where fp_inputs is None and the calibration block above is skipped.
+        if act_data_type is not None or not act_dynamic:
+            from auto_round.data_type.utils import update_block_global_scale_if_needed
+
+            update_block_global_scale_if_needed(block, data_type, group_size)
 
         if q_inputs is not None and fp_inputs is not q_inputs:
-            clear_memory(fp_inputs)
+            # Release the fp pool at its last use (before tuning): the q pool is
+            # the tuning input and the fp pool is already consumed into
+            # reference_output. The release is IN PLACE -- the orchestrator
+            # holds the same container object as its ``input_ids``, so merely
+            # dropping this local reference freed nothing and the pool stayed
+            # resident through the whole tune loop. Freed VRAM here directly
+            # widens the tune-loop's local-pull decision (hot pools on the
+            # compute device when they fit).
+            _release_pool_inplace(fp_inputs)
+            fp_inputs = None
+            clear_memory()
         else:
+            # lanes without a separate q-input pool (first block; quanted-input
+            # disabled) still get the pre-tuning cache clear the base code had
             clear_memory()
         # ── Step 4: quantize_block ──────────────────────────────────────────────
         # When quantized input is available from the previous block, use it;
@@ -533,13 +583,13 @@ class AlgorithmComposer:
         """
         # Attach act_max for static activation quantization when inputs are available.
         if fp_inputs is not None:
-            from auto_round.compressors.utils import is_nv_fp
+            from auto_round.schemes import needs_nvfp_global_scale
 
             act_data_type = layer.act_data_type
             if act_data_type is None:
                 act_data_type = "fp"
             act_dynamic = getattr(layer, "act_dynamic", True)
-            if is_nv_fp(act_data_type) or not act_dynamic:
+            if needs_nvfp_global_scale(act_data_type) or not act_dynamic:
                 self._attach_act_max_for_outside_layer(layer, fp_inputs, q_inputs)
 
         # Infrastructure: move layer to the tuning device before handing off to the quantizer.
