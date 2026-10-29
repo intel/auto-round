@@ -17,6 +17,7 @@ import re
 
 import torch
 
+from auto_round.compressors.base import SERIALIZATION_KEYS
 from auto_round.utils import matches_any_regex, to_standard_regex
 
 _EXPERT_SEGMENTS = ("experts", "shared_experts")
@@ -196,35 +197,10 @@ def generate_ignore_regex_list(regex_config: dict[str, dict], layer_config: dict
 # Tuning hyper-parameters worth recording so a llm-compressor checkpoint can be
 # traced back to (and re-created with) the AutoRound command that produced it.
 AUTOROUND_CONFIG_KEY = "autoround_config"
-_AUTOROUND_CONFIG_FIELDS = (
-    "autoround_version",
-    "bits",
-    "group_size",
-    "sym",
-    "data_type",
-    "act_bits",
-    "act_group_size",
-    "act_sym",
-    "act_data_type",
-    "act_dynamic",
-    "super_bits",
-    "super_group_size",
-    "iters",
-    "lr",
-    "minmax_lr",
-    "nsamples",
-    "seqlen",
-    "batch_size",
-    "gradient_accumulate_steps",
-    "enable_minmax_tuning",
-    "enable_norm_bias_tuning",
-    "enable_quanted_input",
-    "amp",
-    "low_gpu_mem_usage",
-    "scale_dtype",
-    "static_kv_dtype",
-    "static_attention_dtype",
-)
+# Prefer the shared compressor serialization allowlist so new hyper-parameters
+# land here automatically. ``autoround_version`` is injected into
+# ``serialization_dict`` at export time and is not a SerializedCompressorConfig field.
+_AUTOROUND_CONFIG_FIELDS = ("autoround_version",) + tuple(SERIALIZATION_KEYS)
 
 
 def _to_json_value(value):
