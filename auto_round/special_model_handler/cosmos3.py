@@ -104,6 +104,12 @@ def _bypass_cosmos3_safety_checker():
     def _patched_init(self, *args, **kwargs):
         torch.nn.Module.__init__(self)
 
+    logger.warning(
+        "Cosmos3 calibration monkey-patches the global CosmosSafetyChecker class "
+        "in diffusers (disabling text/video safety checks process-wide). The patch "
+        "is not reverted; avoid reusing this interpreter for non-calibration Cosmos3 "
+        "inference afterward, or restart the process."
+    )
     safety_checker.__init__ = _patched_init
     safety_checker.to = lambda self, *args, **kwargs: self
     safety_checker.check_text_safety = staticmethod(lambda prompt: True)

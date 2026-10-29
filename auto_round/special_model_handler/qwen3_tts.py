@@ -21,7 +21,7 @@ def _get_qwen3_tts_multimodal_block(model, quant_vision=False):
     following possible module layouts depending on the modeling code version:
     - tts_model.model.layers: Main TTS transformer decoder layers
     - talker.model.layers: Alternative attribute name (matches talker_config)
-    - model.model.layers: Standard fallback
+    - model.layers: Standard fallback (via the model.model.layers attribute)
 
     Only the talker backbone is quantized. Audio codec layers are not quantized
     because audio calibration data is not yet supported.
@@ -38,7 +38,7 @@ def _get_qwen3_tts_multimodal_block(model, quant_vision=False):
     # Try talker.model.layers (alternative attr name from talker_config)
     if not block_names and hasattr(model, "talker") and hasattr(getattr(model.talker, "model", None), "layers"):
         block_names.append([f"talker.model.layers.{i}" for i in range(len(model.talker.model.layers))])
-    # Fallback: model.model.layers (standard structure)
+    # Fallback: model.layers named-module path (model.model.layers attribute)
     if not block_names and hasattr(model, "model") and hasattr(model.model, "layers"):
         block_names.append([f"model.layers.{i}" for i in range(len(model.model.layers))])
     return block_names

@@ -25,7 +25,7 @@ from auto_round.utils import is_moe_model_via_config, torch_version_at_least
 @dataclass
 class PreDefinedIgnoreLayers:
     matchers: list[Callable[[Any], bool]]
-    ignore_layers: list[str] = field(default_factory=list)
+    ignore_layers: list[str | Callable[[torch.nn.Module], str | list[str]]] = field(default_factory=list)
 
 
 _PRE_DEFINED_IGNORE_LAYERS: list[PreDefinedIgnoreLayers] = []
