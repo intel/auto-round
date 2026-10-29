@@ -39,6 +39,7 @@ from auto_round.export.formats.compressed_tensors.utils import (
     generate_ignore_regex_list,
 )
 from auto_round.logger import logger
+from auto_round.schemes import is_nvfp4_e5m3_family, is_nvfp4_e5m3_gs, needs_nvfp_global_scale
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -89,13 +90,13 @@ def pack_layer(name, model, device=None):
     group_size = layer.group_size
     sym = layer.sym
 
-    if is_nv_fp(act_data_type) and act_bits <= 8:
+    if needs_nvfp_global_scale(act_data_type) and act_bits <= 8:
         input_global_scale = getattr(layer, "input_global_scale", None)
         if input_global_scale is None:
             assert hasattr(layer, "act_max")
-            from auto_round.data_type.nvfp import calculate_gparam
+            from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-            input_global_scale = calculate_gparam(layer.act_max, layer.group_size)  # , model.device
+            input_global_scale = calculate_gparam_by_dtype(layer.act_max, act_data_type, layer.group_size)
             layer.input_global_scale = input_global_scale
             delattr(layer, "act_max")
 
@@ -148,6 +149,8 @@ def _get_scheme(bits, data_type, act_bits=16):
         return "NVFP4"
     if data_type == "nvfp4_v2":
         return "NVFP4_E5M3"
+    if is_nvfp4_e5m3_gs(data_type):
+        return "NVFP4_E5M3_GS"
     return None
 
 
@@ -161,6 +164,8 @@ def _get_group_format(bits, data_type):
         return "nvfp4-pack-quantized"
     if data_type == "nvfp4_v2":
         return "nvfp4-e5m3-pack-quantized"
+    if is_nvfp4_e5m3_gs(data_type):
+        return "nvfp4-e5m3-gs-pack-quantized"
     return "float-quantized"
 
 
@@ -353,16 +358,19 @@ def save_checkpoint(
                 orig_layer = m.orig_layer
                 set_module(model, n, orig_layer)
 
-    if is_nv_fp(act_data_type) and "static_gs" in str(act_data_type).lower():
+    if needs_nvfp_global_scale(act_data_type or "") and "static_gs" in str(act_data_type).lower():
         # generate static input_global_scale
         for n, m in model.named_modules():
             if type(m) in SUPPORTED_LAYER_TYPES:
                 layer = m
                 if hasattr(layer, "act_bits") and layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
                     assert hasattr(layer, "act_max")
-                    from auto_round.data_type.nvfp import calculate_gparam
+                    from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-                    input_global_scale = calculate_gparam(layer.act_max, layer.group_size, model.device)
+                    layer_act_data_type = getattr(layer, "act_data_type", None) or act_data_type
+                    input_global_scale = calculate_gparam_by_dtype(
+                        layer.act_max, layer_act_data_type, layer.group_size, model.device
+                    )
                     layer.input_global_scale = input_global_scale
                     delattr(layer, "act_max")
         # update fused input_global_scale
@@ -445,10 +453,12 @@ def save_checkpoint(
         quantization_config.format = _get_group_format(layer_bits, layer_data_type)
         quantization_config = quantization_config.to_dict()
         quantization_config["provider"] = "auto-round"
-    elif data_type == "nvfp4_v2":
+    elif is_nvfp4_e5m3_family(data_type):
         from auto_round.export.formats.compressed_tensors.config import initialize_nvfp4_e5m3_quantization
 
-        quantization_config = initialize_nvfp4_e5m3_quantization(ignore=ignore)
+        quantization_config = initialize_nvfp4_e5m3_quantization(
+            ignore=ignore, with_global_scale=is_nvfp4_e5m3_gs(data_type)
+        )
         quantization_config["provider"] = "auto-round"
     else:
         scheme = _get_scheme(bits, data_type, act_bits if act_bits is not None else 16)

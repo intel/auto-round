@@ -125,7 +125,8 @@ def test_fp8_payload_and_checkpoint_preserve_copy(monkeypatch, tmp_path, output)
         assert not captured
 
 
-def test_autoround_e5m3_pairs_ct_packing_with_native_metadata(monkeypatch):
+@pytest.mark.parametrize("suffix", ["", "_gs"])
+def test_autoround_e5m3_pairs_ct_packing_with_native_metadata(monkeypatch, suffix):
     from auto_round.export.formats.autoround import float as native_float
     from auto_round.export.formats.compressed_tensors import float as compressed_float
 
@@ -134,9 +135,9 @@ def test_autoround_e5m3_pairs_ct_packing_with_native_metadata(monkeypatch):
     monkeypatch.setattr(compressed_float, "pack_layer", pack)
     monkeypatch.setattr(native_float, "save_checkpoint", save)
     fmt = object.__new__(AutoRoundFormat)
-    fmt.output_format = "auto_round:nvfp4_v2"
+    fmt.output_format = f"auto_round:nvfp4_v2{suffix}"
     fmt.backend = None
     fmt.pack_layer("linear", None)
     fmt.save_quantized_as_format(None, serialization_dict={})
     assert save.call_args.kwargs["_pack_layer"] is pack
-    assert save.call_args.kwargs["backend"] == "auto_round:llm_compressor_nvfp4_e5m3"
+    assert save.call_args.kwargs["backend"] == f"auto_round:llm_compressor_nvfp4_e5m3{suffix}"

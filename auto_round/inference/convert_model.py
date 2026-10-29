@@ -586,6 +586,8 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
         or BackendDataType.MXINT4.value in layer_backend
         or layer_backend == "auto_round:torch_nvfp4_e5m3"
         or layer_backend == "auto_round:cute_nvfp4_e5m3"
+        or layer_backend == "auto_round:torch_nvfp4_e5m3_gs"
+        or layer_backend == "auto_round:cute_nvfp4_e5m3_gs"
         or layer_backend == "auto_round:fake"
     ):
         return QuantLinear.from_original(config, layer)
@@ -870,21 +872,26 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         if isinstance(quantization_config, dict)
         else getattr(quantization_config, "format", None)
     )
-    if config_format == "nvfp4-e5m3-pack-quantized":
+    if config_format in ("nvfp4-e5m3-pack-quantized", "nvfp4-e5m3-gs-pack-quantized"):
+        with_global_scale = config_format == "nvfp4-e5m3-gs-pack-quantized"
         config_dict = quantization_config if isinstance(quantization_config, dict) else quantization_config.to_dict()
         ignored = config_dict.get("ignore") or []
         # TODO: For experimental purpose, will delete when it's not necessary.
         quantization_config = SimpleNamespace(
             quant_method="auto-round",
-            packing_format="auto_round:llm_compressor_nvfp4_e5m3",
+            packing_format=(
+                "auto_round:llm_compressor_nvfp4_e5m3_gs"
+                if with_global_scale
+                else "auto_round:llm_compressor_nvfp4_e5m3"
+            ),
             bits=4,
             group_size=16,
             sym=True,
-            data_type="nvfp4_v2",
+            data_type="nvfp4_v2_gs" if with_global_scale else "nvfp4_v2",
             act_bits=4,
             act_group_size=16,
             act_sym=True,
-            act_data_type="nvfp4_v2",
+            act_data_type="nvfp4_v2_with_static_gs" if with_global_scale else "nvfp4_v2",
             act_dynamic=True,
             extra_config={name: {"bits": 16, "act_bits": 16} for name in ignored},
         )
