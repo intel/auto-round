@@ -236,14 +236,16 @@ def start(recipe="ar", argv=None):
 
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
+    args._api_format = args.format if format_was_explicit or args.model_free else None
+    _apply_recipe_defaults(args, recipe)
+    tune(args)
+
+
+def _apply_recipe_defaults(args, recipe="ar"):
+    """Normalize recommendations for both command entry points and direct tune calls."""
+    if getattr(args, "_recipe_plan", None) is not None:
+        return
     args.recipe = get_recipe(args.recipe or recipe).name
-    args._explicit_fields = {
-        action.dest
-        for token in argv
-        if token.startswith("-")
-        for action in [parser._option_string_actions.get(token.split("=", 1)[0])]
-        if action is not None
-    }
     definition = get_recipe(args.recipe)
     args._recipe_plan = resolve_recipe(
         definition,
@@ -254,7 +256,6 @@ def start(recipe="ar", argv=None):
             trust_remote_code=not args.disable_trust_remote_code,
         ),
     )
-    args._api_format = args.format if format_was_explicit or args.model_free else None
 
     for key, value in args._recipe_plan.calibration.items():
         if getattr(args, key, None) is None:
@@ -273,10 +274,9 @@ def start(recipe="ar", argv=None):
         args.iters = 0
         args._explicit_fields.add("iters")
 
-    tune(args)
-
 
 def tune(args):
+    _apply_recipe_defaults(args)
     assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
     if args.model is None:
         args.model = args.model_name

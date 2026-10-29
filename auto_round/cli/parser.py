@@ -53,6 +53,24 @@ def _parse_group_size(s: str):
     return tuple(int(x.strip()) for x in s.split(","))
 
 
+class _QuantizeArgumentParser(argparse.ArgumentParser):
+    """Retain explicit options even when parsed args are passed directly to tune()."""
+
+    def parse_known_args(self, args=None, namespace=None):
+        import sys
+
+        argv = list(sys.argv[1:] if args is None else args)
+        parsed, extras = super().parse_known_args(argv, namespace)
+        parsed._explicit_fields = {
+            action.dest
+            for token in argv
+            if token.startswith("-")
+            for action in [self._option_string_actions.get(token.split("=", 1)[0])]
+            if action is not None
+        }
+        return parsed, extras
+
+
 def add_common_quantization_arguments(group) -> None:
     """Add common quantization flags to an argparse group.
 
@@ -123,7 +141,7 @@ def add_common_quantization_arguments(group) -> None:
 
 def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.ArgumentParser:
     """Build the quantize parser with all argument groups."""
-    parser = argparse.ArgumentParser(prog=prog)
+    parser = _QuantizeArgumentParser(prog=prog)
 
     # ---- Model / Runtime ----
     rt = parser.add_argument_group("Runtime Arguments")

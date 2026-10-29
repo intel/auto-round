@@ -305,3 +305,118 @@ def test_legacy_shortcuts_select_named_recipe(monkeypatch, entry_name, recipe_na
     monkeypatch.setattr(sys, "argv", ["auto_round_shortcut", "dummy"])
     getattr(main, entry_name)()
     assert captured["args"].recipe == recipe_name
+
+
+def test_callable_factory_defaults_survive_recipe_parameters(monkeypatch):
+    from auto_round.algorithms.registry import get_algorithm_entry
+    from auto_round.recipes import AlgorithmSpec, Recipe, resolve_recipe
+
+    monkeypatch.setattr(
+        get_algorithm_entry("auto_round"), "config_factory", lambda: SignRoundConfig(iters=17, momentum=0.25)
+    )
+    recipe = Recipe("factory", (AlgorithmSpec("quantizer", "auto_round", {"lr": 0.1}),))
+    config = resolve_recipe(recipe).build_configs()[0]
+    assert config.iters == 17
+    assert config.momentum == 0.25
+    assert config.lr == 0.1
+
+
+def test_alias_factory_defaults_survive_recipe_and_cli_overrides(monkeypatch):
+    from auto_round.cli import main
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.recipes import AlgorithmSpec, Recipe, register_recipe, registry, resolve_recipe
+
+    monkeypatch.setattr(registry, "_RECIPES", dict(registry._RECIPES))
+    monkeypatch.setattr(registry, "_ALIASES", dict(registry._ALIASES))
+    recipe = Recipe(
+        "random-rotation",
+        (
+            AlgorithmSpec("rotation", "random_hadamard", {"block_size": 32}),
+            AlgorithmSpec("quantizer", "auto_round"),
+        ),
+    )
+    register_recipe(recipe)
+    assert resolve_recipe(recipe).build_configs()[0].hadamard_type == "random_hadamard"
+    captured = {}
+    monkeypatch.setattr(main, "tune", lambda args: captured.setdefault("args", args))
+    main.start(argv=["dummy", "--recipe", recipe.name, "--rotation_block_size", "64", "--bits", "4"])
+    configs = AlgorithmHandler.build_configs(captured["args"], {"bits": 4})
+    assert configs[0].hadamard_type == "random_hadamard"
+    assert configs[0].block_size == 64
+    assert configs[1].bits == 4
+
+
+def test_cli_recipe_respects_stage_common_argument_opt_out(monkeypatch):
+    import auto_round.algorithms.registry as algorithms
+    from auto_round.algorithms.config import AlgorithmConfig
+    from auto_round.algorithms.registry import register_algorithm
+    from auto_round.algorithms.transforms.base import BaseRotationConfig
+    from auto_round.cli import main
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.recipes import AlgorithmSpec, Recipe, register_recipe, registry
+
+    class StrictRotationConfig(AlgorithmConfig, BaseRotationConfig):
+        cli_include_common_args = False
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(registry, "_RECIPES", dict(registry._RECIPES))
+    monkeypatch.setattr(registry, "_ALIASES", dict(registry._ALIASES))
+    monkeypatch.setattr(algorithms, "_ALG_REGISTRY", dict(algorithms._ALG_REGISTRY))
+    monkeypatch.setattr(algorithms, "_ALIAS_TO_NAME", dict(algorithms._ALIAS_TO_NAME))
+    register_algorithm("strict-rotation", config_factory=StrictRotationConfig)
+    register_recipe(
+        Recipe(
+            "strict-pipeline",
+            (AlgorithmSpec("rotation", "strict-rotation"), AlgorithmSpec("quantizer", "auto_round")),
+        )
+    )
+    captured = {}
+    monkeypatch.setattr(main, "tune", lambda args: captured.setdefault("args", args))
+    main.start(argv=["dummy", "--recipe", "strict-pipeline", "--bits", "4", "--group_size", "32"])
+    configs = AlgorithmHandler.build_configs(captured["args"], {"bits": 4, "group_size": 32})
+    assert isinstance(configs[0], StrictRotationConfig)
+    assert configs[1].bits == 4
+    assert configs[1].group_size == 32
+
+
+def test_direct_tune_applies_recipe_before_building_configs(monkeypatch):
+    from auto_round.cli import main
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(["dummy", "--recipe", "ar-best", "--nsamples", "128"])
+
+    def check_configs(args, common_kwargs):
+        assert args.recipe == "ar-best"
+        assert args.nsamples == 128
+        assert args.batch_size == 8
+        assert args.seqlen == 2048
+        assert args._recipe_plan.build_configs()[0].iters == 1000
+        raise StopIteration("configuration inspected")
+
+    monkeypatch.setattr(AlgorithmHandler, "build_configs", check_configs)
+    with pytest.raises(StopIteration, match="configuration inspected"):
+        main.tune(args)
+
+
+def test_dataset_omission_inherits_recipe_but_explicit_none_is_deferred(capture_entry):
+    from auto_round.recipes import AlgorithmSpec, Recipe
+
+    recipe = Recipe(
+        "dataset", (AlgorithmSpec("quantizer", "auto_round"),), calibration={"dataset": "custom-calibration"}
+    )
+    assert AutoRound("dummy", recipe=recipe).dataset == "custom-calibration"
+    assert AutoRound("dummy", recipe=recipe, dataset=None).dataset is None
+    assert AutoRound("dummy").dataset is None
+
+
+def test_callable_factory_recipe_still_validates_overrides(monkeypatch):
+    from auto_round.algorithms.registry import get_algorithm_entry
+    from auto_round.recipes import AlgorithmSpec
+
+    entry = get_algorithm_entry("hadamard")
+    monkeypatch.setattr(entry, "config_factory", lambda: entry.alias_factories["random_hadamard"]())
+    with pytest.raises(ValueError):
+        AlgorithmSpec("rotation", "hadamard", {"backend": "invalid"}).build_config()

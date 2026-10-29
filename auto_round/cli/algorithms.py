@@ -236,8 +236,9 @@ class AlgorithmHandler:
                     for parameter in registry.parameters
                     if parameter.dest in explicit and hasattr(args, parameter.dest)
                 }
-                overrides.update({key: value for key, value in common_kwargs.items() if value is not None})
-                configs.append(type(default_config)(**{**stage.params, **overrides}))
+                if getattr(type(default_config), "cli_include_common_args", True):
+                    overrides.update({key: value for key, value in common_kwargs.items() if value is not None})
+                configs.append(stage.build_config(overrides))
             direct = {"iters": args.iters} if "iters" in explicit else {}
             if direct.get("iters") == 0:
                 rtn_cls = cls.get("rtn")

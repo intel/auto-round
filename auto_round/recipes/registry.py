@@ -19,7 +19,7 @@ def register_recipe(recipe: Recipe) -> None:
         raise ValueError("Recipe names and aliases must be nonempty and unique.")
     conflicts = set(keys) & _ALIASES.keys()
     if conflicts:
-        raise ValueError(f"Recipe names already registered: {sorted(conflicts)}")
+        raise ValueError(f"Recipe names/aliases already registered: {sorted(conflicts)}")
     canonical = keys[0]
     _RECIPES[canonical] = copy.deepcopy(recipe)
     _ALIASES.update({key: canonical for key in keys})

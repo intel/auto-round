@@ -38,6 +38,38 @@ class AlgorithmSpec:
     algorithm: str
     params: dict[str, Any] = field(default_factory=dict)
 
+    def build_config(self, overrides: dict[str, Any] | None = None):
+        """Apply constructor overrides while preserving callable-factory defaults."""
+        import copy
+        import inspect
+
+        from auto_round.algorithms.registry import get_algorithm_entry, resolve_alg_config
+
+        entry = get_algorithm_entry(self.algorithm)
+        factory = entry.alias_factories.get(self.algorithm.strip().lower(), entry.config_factory)
+        params = copy.deepcopy({**self.params, **(overrides or {})})
+        if isinstance(factory, type):
+            return factory(**params)
+        config = resolve_alg_config(self.algorithm)
+        if not params:
+            return config
+        fields = set(getattr(type(config), "model_fields", {}))
+        for cls in type(config).__mro__:
+            init = cls.__dict__.get("__init__")
+            if init is None:
+                continue
+            fields.update(
+                name
+                for name, parameter in inspect.signature(init).parameters.items()
+                if name != "self"
+                and parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            )
+        defaults = {name: copy.deepcopy(getattr(config, name)) for name in fields if hasattr(config, name)}
+        result = type(config)(**{**defaults, **params})
+        if hasattr(config, "_user_set_scheme_fields"):
+            result._user_set_scheme_fields.update(config._user_set_scheme_fields)
+        return result
+
 
 @dataclass(frozen=True)
 class RecipeOverlay:
@@ -70,19 +102,4 @@ class ResolvedRecipe:
 
     def build_configs(self) -> list:
         """Construct fresh configs using the existing algorithm registry."""
-        import copy
-
-        from auto_round.algorithms.registry import get_algorithm_entry, resolve_alg_config
-
-        configs = []
-        for stage in self.pipeline:
-            entry = get_algorithm_entry(stage.algorithm)
-            factory = entry.alias_factories.get(stage.algorithm.strip().lower(), entry.config_factory)
-            if isinstance(factory, type):
-                config = factory(**copy.deepcopy(stage.params))
-            else:
-                config = resolve_alg_config(stage.algorithm)
-                if stage.params:
-                    config = type(config)(**copy.deepcopy(stage.params))
-            configs.append(config)
-        return configs
+        return [stage.build_config() for stage in self.pipeline]

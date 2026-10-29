@@ -12,7 +12,7 @@ from auto_round.recipes.registry import get_recipe
 def recipe_context(recipe: Recipe, model, scheme, *, trust_remote_code=True) -> RecipeContext:
     """Obtain metadata only for contextual recipes, without materializing weights."""
     if not isinstance(recipe, Recipe):
-        raise TypeError("recipe must be a registered name or Recipe instance.")
+        raise TypeError("recipe must be a Recipe instance when building context.")
     model_config = getattr(model, "config", None)
     if model_config is None and isinstance(model, str) and recipe.overlays:
         from transformers import AutoConfig
