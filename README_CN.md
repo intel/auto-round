@@ -49,6 +49,8 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 ## 🆕 最新进展
 
+* [2026/10] PTQ 标定数据集研究。当前结果表明，对于 ≥4-bit 量化，采用混合标定数据集（75% UltraChat + 25% OpenCode）能够在通用能力、代码能力和 Agent 任务表现之间取得更好的整体平衡。详见 [文档](./docs/calibration_acc.md)。（WIP）
+
 * [2026/09] 我们将 MoE量化速度提升了 3 倍以上，并显著降低了 RAM 使用量。详细结果请参阅[文档](./docs/moe.md)。请注意，该优化可能会引入一些回归问题或其他问题。
 
 * [2026/09] 现在支持在 CUDA 设备上通过 vLLM 和 Transformers 使用 5/6/7-bit WOQ 模型，感谢 Humming Kernel 的支持。

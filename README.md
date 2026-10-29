@@ -50,6 +50,9 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 ## 🆕 What's New
 
+* [2026/10] Calibration Dataset Study for PTQ. Current results suggest that, for >=4-bit quantization, a mixed calibration dataset (75% UltraChat + 25% OpenCode) provides a better balance across general capabilities, coding performance, and agent-oriented tasks. See [doc](./docs/calibration_acc.md) for detailed benchmark results and multi-run statistics. (WIP)
+
+
 * [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.
 
 * [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.
