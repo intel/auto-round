@@ -46,6 +46,11 @@ from auto_round.algorithms.transforms.awq.mappings import (
 )
 from auto_round.algorithms.transforms.awq.qdq import QDQTool
 from auto_round.algorithms.transforms.base import BasePreprocessor
+from auto_round.algorithms.transforms.teq.protocol import (
+    apply_teq_equivalent_input_transform,
+    apply_teq_equivalent_weight_transform,
+    get_teq_equivalent_transforms,
+)
 from auto_round.data_type.utils import (
     reshape_pad_tensor_by_group_size,
     revert_tensor_by_pad,
@@ -747,36 +752,70 @@ class AWQTransform(BasePreprocessor):
             scales_view = scales.view(1, -1).to(device)
 
             if use_parent_forward:
-                # Quantize each balance layer's smoothed weight and write the
-                # de-smoothed result back, so the parent forward below sees the
-                # weights the layer would actually compute with.
-                for bl in mapping.balance_layers:
-                    quant_func, opt_quant_func = bl_quant_funcs[bl]
-                    w_qdq = self._qdq_tool.qdq(
-                        orig_state[bl] * scales_view,
-                        bl_params[bl],
-                        quant_func=quant_func,
-                        opt_quant_func=opt_quant_func,
-                        imatrix=getattr(bl, "imatrix", None),
-                    )
-                    bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
+                # The candidate must reproduce the final basis exactly:
+                # ``QDQ(rotate(W * s))`` consumes ``rotate(x / s)``.  The
+                # older ``QDQ(W * s) / s`` substitution is equivalent only
+                # without a rotation because channel scale and Hadamard do
+                # not commute.  Temporarily attach the activation-side
+                # operation while the parent is replayed instead.
+                handles = []
+                saved_pre_hooks = {bl: bl._forward_pre_hooks.copy() for bl in mapping.balance_layers}
+                try:
+                    for bl in mapping.balance_layers:
+                        quant_func, opt_quant_func = bl_quant_funcs[bl]
+                        candidate_weight = apply_teq_equivalent_weight_transform(bl, orig_state[bl] * scales_view)
+                        w_qdq = self._qdq_tool.qdq(
+                            candidate_weight,
+                            bl_params[bl],
+                            quant_func=quant_func,
+                            opt_quant_func=opt_quant_func,
+                            imatrix=getattr(bl, "imatrix", None),
+                        )
+                        bl.weight.data.copy_(w_qdq.to(bl.weight.dtype))
+                        layer_scales = scales.detach()
 
-                total_loss = self._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
-                for bl in mapping.balance_layers:
-                    bl.weight.data.copy_(orig_state[bl])
+                        def _candidate_input_hook(layer, args, scales=layer_scales):
+                            if not args:
+                                return None
+                            value = args[0]
+                            scale = scales.to(device=value.device, dtype=value.dtype)
+                            value = value / scale.view((1,) * (value.ndim - 1) + (-1,))
+                            return (apply_teq_equivalent_input_transform(layer, value), *args[1:])
+
+                        # A previous block may already have committed the
+                        # input transform as a source hook.  Remove it until
+                        # the replay finishes so the candidate owns the
+                        # single required ``rotate(x / s)`` operation.
+                        for hook_id, hook in tuple(bl._forward_pre_hooks.items()):
+                            if getattr(hook, "_autoround_teq_equivalent_input_hook", False):
+                                del bl._forward_pre_hooks[hook_id]
+                        handles.append(bl.register_forward_pre_hook(_candidate_input_hook, prepend=True))
+                    total_loss = self._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
+                finally:
+                    for handle in handles:
+                        handle.remove()
+                    for bl in mapping.balance_layers:
+                        bl._forward_pre_hooks.clear()
+                        bl._forward_pre_hooks.update(saved_pre_hooks[bl])
+                        bl.weight.data.copy_(orig_state[bl])
             else:
                 total_loss = 0.0
                 for bl in mapping.balance_layers:
                     quant_func, opt_quant_func = bl_quant_funcs[bl]
                     w_orig = orig_weights[bl].to(device)
+                    candidate_weight = apply_teq_equivalent_weight_transform(bl, w_orig * scales_view)
                     w_qdq = self._qdq_tool.qdq(
-                        w_orig * scales_view,
+                        candidate_weight,
                         bl_params[bl],
                         quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
                         imatrix=getattr(bl, "imatrix", None),
                     )
-                    total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
+                    # Without replay activations we cannot reconstruct the
+                    # scale-before-rotation output metric.  Still compare in
+                    # the final quantizer basis instead of the incorrect raw
+                    # basis; normal AWQ runs use the parent-forward path.
+                    total_loss += (candidate_weight - w_qdq).pow(2).sum().item()
 
             if total_loss < best_error:
                 best_error = total_loss
@@ -973,6 +1012,13 @@ class AWQTransform(BasePreprocessor):
                 )
                 continue
             for bl, name in zip(mapping.balance_layers, mapping.balance_names):
+                if get_teq_equivalent_transforms(bl):
+                    logger.warning_once(
+                        "AWQ clipping is skipped for rotation-aware layer '%s': raw-space clip thresholds "
+                        "do not describe QDQ(rotate(weight)).",
+                        name,
+                    )
+                    continue
                 if self._should_skip_clip(name):
                     logger.debug("AWQ: skip clip for '%s' (avoid-clipping layer).", name)
                     continue

@@ -26,15 +26,24 @@ class TEQConfig(QuantizationConfig):
     compression to the block quantizer, such as SignRoundV2/ARV2.
     """
 
-    _OPTIMIZATION_MODES = frozenset({"staged", "frozen_ar_refine", "joint"})
+    _OPTIMIZATION_MODES = frozenset({"staged", "staged_refine", "frozen_ar_refine", "joint"})
 
     @classmethod
     def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
         registry.add_argument("--teq-iters", field="iters", default=20, type=int)
         registry.add_argument("--teq-lr", field="lr", default=1e-3, type=float)
+        registry.add_argument(
+            "--teq-optimizer",
+            field="optimizer",
+            default="adam",
+            choices=("adam", "lion"),
+            help="Optimizer for the pre-AutoRound TEQ scale optimization.",
+        )
         registry.add_argument("--teq-min-scale", field="min_scale", default=1e-5, type=float)
         registry.add_argument("--teq-max-scale", field="max_scale", default=10.0, type=float)
+        registry.add_argument("--teq-sqrt-w-init", field="sqrt_w_init", default=False, action="store_true")
         registry.add_argument("--teq-awq-init", field="awq_init", default=False, action="store_true")
+        registry.add_argument("--teq-awq-init-n-grid", field="awq_init_n_grid", default=20, type=int)
         registry.add_argument("--teq-nsamples", field="nsamples", default=None, type=int)
         registry.add_argument("--teq-batch-size", field="batch_size", default=None, type=int)
         registry.add_argument("--teq-sample-seqlen", field="sample_seqlen", default=512, type=int)
@@ -45,7 +54,27 @@ class TEQConfig(QuantizationConfig):
             choices=sorted(cls._OPTIMIZATION_MODES),
         )
         registry.add_argument("--teq-refine-iters", field="refine_iters", default=10, type=int)
-        registry.add_argument("--teq-joint-lr", field="joint_lr", default=1e-4, type=float)
+        registry.add_argument(
+            "--teq-joint-lr",
+            "--teq-refine-lr",
+            field="joint_lr",
+            default=1e-4,
+            type=float,
+        )
+        registry.add_argument(
+            "--teq-refine-optimizer",
+            field="refine_optimizer",
+            default="adam",
+            choices=("adam", "lion"),
+            help="Optimizer for the TEQ-only phase of staged_refine.",
+        )
+        registry.add_argument(
+            "--teq-ar-first-iters",
+            field="ar_first_iters",
+            default=None,
+            type=int,
+            help="AR iterations before TEQ refinement in staged_refine mode.",
+        )
         registry.add_argument(
             "--teq-experimental",
             field="experimental",
@@ -59,6 +88,7 @@ class TEQConfig(QuantizationConfig):
         *,
         iters: int = 20,
         lr: float = 1e-3,
+        optimizer: str = "adam",
         min_scale: float = 1e-5,
         max_scale: float = 10.0,
         sqrt_w_init: bool = False,
@@ -71,6 +101,8 @@ class TEQConfig(QuantizationConfig):
         optimization_mode: str = "staged",
         refine_iters: int = 10,
         joint_lr: float = 1e-4,
+        refine_optimizer: str = "adam",
+        ar_first_iters: int | None = None,
         experimental: bool = False,
         mappings: list[dict] | None = None,
         **kwargs,
@@ -80,6 +112,9 @@ class TEQConfig(QuantizationConfig):
         Args:
             iters: Optimization steps per smooth-balance mapping.
             lr: Adam learning rate for trainable transform scales.
+            optimizer: Optimizer for the pre-AutoRound TEQ scale optimization.
+                ``lion`` uses a lightweight sign-momentum update and does not
+                require an external package.
             min_scale: Lower clamp for transform scales.
             max_scale: Upper clamp for transform scales.
             sqrt_w_init: Initialize scales from inverse sqrt channel weight
@@ -97,12 +132,20 @@ class TEQConfig(QuantizationConfig):
             skip_moe: Exclude routed MoE expert mappings when automatic AWQ
                 mappings are used.
             optimization_mode: ``staged`` trains TEQ before AutoRound;
+                ``staged_refine`` trains TEQ before AutoRound, then refines
+                TEQ scales between two AR phases;
                 ``frozen_ar_refine`` starts from plain AutoRound and refines
                 only TEQ scales; ``joint`` refines TEQ and AutoRound parameters
                 together after the plain-AutoRound phase.
             refine_iters: Number of guarded refinement iterations used by the
                 experimental modes.
             joint_lr: Adam learning rate for TEQ scales during refinement.
+            refine_optimizer: Optimizer for the TEQ-only phase of
+                ``staged_refine``. ``lion`` uses a lightweight sign-momentum
+                update and does not require an external package.
+            ar_first_iters: AR iterations in the first phase of
+                ``staged_refine``. The remaining configured AR iterations form
+                the second phase.
             experimental: Required opt-in for non-staged research modes.
             mappings: Optional explicit smooth/balance mappings. The format is
                 compatible with ``AWQConfig.mappings``.
@@ -114,6 +157,8 @@ class TEQConfig(QuantizationConfig):
             raise ValueError(f"`iters` must be non-negative, got {iters!r}")
         if lr <= 0:
             raise ValueError(f"`lr` must be positive, got {lr!r}")
+        if optimizer not in {"adam", "lion"}:
+            raise ValueError(f"`optimizer` must be 'adam' or 'lion', got {optimizer!r}")
         if min_scale <= 0:
             raise ValueError(f"`min_scale` must be positive, got {min_scale!r}")
         if max_scale <= min_scale:
@@ -131,15 +176,20 @@ class TEQConfig(QuantizationConfig):
             raise ValueError(
                 f"`optimization_mode` must be one of {sorted(self._OPTIMIZATION_MODES)}, got {optimization_mode!r}"
             )
-        if optimization_mode != "staged" and not experimental:
+        if optimization_mode in {"staged_refine", "frozen_ar_refine", "joint"} and not experimental:
             raise ValueError("Experimental TEQ modes require `experimental=True`.")
         if refine_iters < 0:
             raise ValueError(f"`refine_iters` must be non-negative, got {refine_iters!r}")
         if joint_lr <= 0:
             raise ValueError(f"`joint_lr` must be positive, got {joint_lr!r}")
+        if refine_optimizer not in {"adam", "lion"}:
+            raise ValueError(f"`refine_optimizer` must be 'adam' or 'lion', got {refine_optimizer!r}")
+        if ar_first_iters is not None and ar_first_iters <= 0:
+            raise ValueError(f"`ar_first_iters` must be positive when set, got {ar_first_iters!r}")
 
         self.teq_iters = iters
         self.teq_lr = lr
+        self.teq_optimizer = optimizer
         self.teq_min_scale = min_scale
         self.teq_max_scale = max_scale
         self.teq_sqrt_w_init = sqrt_w_init
@@ -152,6 +202,8 @@ class TEQConfig(QuantizationConfig):
         self.teq_optimization_mode = optimization_mode
         self.teq_refine_iters = refine_iters
         self.teq_joint_lr = joint_lr
+        self.teq_refine_optimizer = refine_optimizer
+        self.teq_ar_first_iters = ar_first_iters
         self.teq_experimental = experimental
         self.mappings = mappings
         self.infer_bs_coeff = 1
@@ -159,13 +211,15 @@ class TEQConfig(QuantizationConfig):
 
     def __repr__(self) -> str:
         return (
-            f"TEQConfig(iters={self.teq_iters}, lr={self.teq_lr}, min_scale={self.teq_min_scale}, "
+            f"TEQConfig(iters={self.teq_iters}, lr={self.teq_lr}, optimizer={self.teq_optimizer!r}, "
+            f"min_scale={self.teq_min_scale}, "
             f"max_scale={self.teq_max_scale}, bits={self.bits}, group_size={self.group_size}, "
             f"sym={self.sym}, awq_init={self.teq_awq_init}, awq_init_n_grid={self.teq_awq_init_n_grid}, "
             f"nsamples={self.teq_nsamples}, batch_size={self.teq_batch_size}, "
             f"sample_seqlen={self.teq_sample_seqlen}, skip_moe={self.teq_skip_moe}, "
             f"optimization_mode={self.teq_optimization_mode!r}, refine_iters={self.teq_refine_iters}, "
-            f"joint_lr={self.teq_joint_lr}, "
+            f"joint_lr={self.teq_joint_lr}, ar_first_iters={self.teq_ar_first_iters}, "
+            f"refine_optimizer={self.teq_refine_optimizer!r}, "
             f"mappings={'<explicit>' if self.mappings else 'auto'})"
         )
 

@@ -431,8 +431,29 @@ class SignRoundQuantizer(BaseQuantizer):
             params.append({"params": teq_params, "lr": torch.tensor(float(self.teq_joint_lr))})
 
         baseline_iters = self.iters
+        ar_first_iters = None
+        refine_end = None
+        refine_best_loss = torch.finfo(torch.float).max
+        refine_best_params = None
+        second_ar_best_loss = torch.finfo(torch.float).max
+        second_ar_best_params = None
+        second_ar_best_iter = None
+        if teq_mode == "staged_refine":
+            ar_first_iters = int(getattr(self, "teq_ar_first_iters", 0))
+            if not 0 < ar_first_iters < self.iters:
+                raise ValueError(
+                    "TEQ staged_refine requires `teq_ar_first_iters` to be in "
+                    f"[1, {self.iters - 1}], got {ar_first_iters}."
+                )
+            baseline_iters = ar_first_iters
+            refine_end = baseline_iters + int(getattr(self, "teq_refine_iters", 0))
         run_iters = self.iters
-        if teq_mode is not None:
+        if teq_mode == "staged_refine":
+            # One loss-only evaluation selects the post-update TEQ scale before
+            # the second AR phase.  The two AR phases still each receive their
+            # requested counts: ``ar_first_iters`` and ``iters-ar_first_iters``.
+            run_iters += int(getattr(self, "teq_refine_iters", 0)) + 1
+        elif teq_mode is not None:
             refine_iters = int(getattr(self, "teq_refine_iters", 0))
             run_iters += refine_iters + (1 if refine_iters > 0 else 0)
 
@@ -444,8 +465,9 @@ class SignRoundQuantizer(BaseQuantizer):
         )
 
         if self.lr_scheduler is None:
+            ar_schedule_iters = self.iters if teq_mode == "staged_refine" else baseline_iters
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=max(1, baseline_iters)
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=max(1, ar_schedule_iters)
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
@@ -476,6 +498,11 @@ class SignRoundQuantizer(BaseQuantizer):
         block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         block_fwd = self.block_forward
+        # Refinement candidates must be compared on the same calibration
+        # slice.  Otherwise the old schedule compared a first-phase minimum
+        # and a second-phase minimum measured on different shuffled batches,
+        # which mainly selects sampling noise rather than a better TEQ scale.
+        staged_selection_indices = list(range(global_batch_size)) if teq_mode == "staged_refine" else None
 
         # When low_gpu_mem_usage is enabled, active_inputs / fp_outputs are intentionally
         # kept on CPU to limit GPU memory.  However block_fwd normally routes pred_output
@@ -490,35 +517,111 @@ class SignRoundQuantizer(BaseQuantizer):
             else None
         )
 
+        def _restore_staged_params(saved_params):
+            for name, module in block.named_modules():
+                if not hasattr(module, "params") or name not in saved_params:
+                    continue
+                for key, value in saved_params[name].items():
+                    if key in module.params:
+                        module.params[key].data.copy_(value.to(module.params[key].device))
+
+        @torch.no_grad()
+        def _evaluate_staged_candidate(saved_params):
+            """Evaluate one selected checkpoint on the fixed stage slice."""
+            _restore_staged_params(saved_params)
+            selection_loss = 0.0
+            selection_num_elm = 1
+            if valid_token_mask:
+                selection_num_elm = self._get_non_zero_cnt(valid_token_mask, staged_selection_indices)
+            selection_num_elm = max(1, selection_num_elm)
+            for batch_start in range(0, len(staged_selection_indices), batch_size):
+                indices = staged_selection_indices[batch_start : batch_start + batch_size]
+                ref_output = torch.cat([fp_outputs[index] for index in indices], dim=0).to(loss_device)
+                pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
+                if loss_device is not None:
+                    pred_output = pred_output.to(loss_device)
+                if (
+                    block_ctx.block_index == block_ctx.block_cnt - 1
+                    and self.enable_lfq
+                    and input_ids is not None
+                    and self._is_text_decoder_block(block_ctx.block_name)
+                ):
+                    loss = self.lfq_loss(pred_output, torch.cat([input_ids[index] for index in indices], dim=0))
+                else:
+                    loss = self._get_loss(pred_output, ref_output, indices, mse_loss, device, valid_token_mask)
+                selection_loss += loss.item() / selection_num_elm
+            return selection_loss
+
         for i in range(run_iters):
-            is_final_refinement_candidate = teq_mode is not None and i == run_iters - 1 and run_iters > baseline_iters
+            is_final_refinement_candidate = (
+                teq_mode in {"joint", "frozen_ar_refine"} and i == run_iters - 1 and run_iters > baseline_iters
+            )
             if teq_mode is not None and i == baseline_iters:
-                # Start refinement from the exact plain-AutoRound endpoint.
-                # Best-candidate tracking remains shared across both phases,
-                # so a worse TEQ candidate cannot replace that baseline.
-                optimizer = self.optimizer(params, lr=lr, weight_decay=0, **extra_kwargs)
+                # Begin the guarded TEQ phase from the best first AR endpoint.
+                # ``staged_refine`` then resumes AR for the remainder of the
+                # configured budget; the legacy modes retain their old behavior.
+                if teq_mode == "staged_refine":
+                    # TEQ pre-training uses Adam.  A signed, fixed-size AR
+                    # update is well suited to rounding offsets but makes a
+                    # small continuous log-scale correction effectively
+                    # quantized to ``refine_iters * lr``.  Use the same Adam
+                    # optimizer for the isolated TEQ phase, then return to
+                    # SignRound for the remaining AR steps.
+                    refine_optimizer = getattr(self, "teq_refine_optimizer", "adam")
+                    if refine_optimizer == "lion":
+                        from auto_round.algorithms.transforms.teq.lion import Lion
+
+                        optimizer_class = Lion
+                        optimizer_kwargs = {"betas": (0.9, 0.99)}
+                    else:
+                        optimizer_class = torch.optim.Adam
+                        optimizer_kwargs = {"betas": (0.9, 0.9)}
+                    optimizer = optimizer_class(
+                        teq_params,
+                        lr=float(self.teq_joint_lr),
+                        weight_decay=0.0,
+                        **optimizer_kwargs,
+                    )
+                    logger.info(
+                        "TEQ staged refinement: optimizer=%s iters=%d lr=%.3e",
+                        refine_optimizer,
+                        int(getattr(self, "teq_refine_iters", 0)),
+                        float(self.teq_joint_lr),
+                    )
+                else:
+                    optimizer = self.optimizer(params, lr=lr, weight_decay=0, **extra_kwargs)
+                # The TEQ-only phase has its own scheduler.  For staged
+                # refinement, the AR scheduler is rebuilt below with the
+                # *remaining portion of the original 200-step schedule*.
+                # Restarting AR at the initial LR after the handoff changed
+                # the optimization trajectory substantially and made a
+                # 100/100 split unlike the normal 200-step AR recipe.
                 lr_schedule = torch.optim.lr_scheduler.LinearLR(
                     optimizer,
                     start_factor=1.0,
                     end_factor=0.0,
-                    total_iters=max(1, run_iters - baseline_iters),
+                    total_iters=max(1, int(getattr(self, "teq_refine_iters", 0))),
                 )
                 # The first refinement pass is the exact identity TEQ
                 # baseline. Restore the best plain-AR parameters before it so
                 # non-regression is measured against the selected AR result.
                 if best_params:
-                    for name, module in block.named_modules():
-                        if not hasattr(module, "params") or name not in best_params:
-                            continue
-                        for key, value in best_params[name].items():
-                            if key == "teq_log_alpha" or key not in module.params:
-                                continue
-                            module.params[key].data.copy_(value.to(module.params[key].device))
+                    _restore_staged_params(best_params)
+                    # ``best_params`` might have been collected by a legacy
+                    # mode with an incidental TEQ key. Staged refinement
+                    # always starts its incremental transform at identity.
+                    if teq_mode == "staged_refine":
+                        for param in teq_params:
+                            param.data.zero_()
             if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
                 for n, m in block.named_modules():
                     m.cur_iter = i
             total_loss = 0
-            global_indices = index_sampler.next_batch()
+            global_indices = (
+                staged_selection_indices
+                if teq_mode == "staged_refine" and baseline_iters <= i <= refine_end
+                else index_sampler.next_batch()
+            )
             if valid_token_mask:
                 num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
 
@@ -556,6 +659,13 @@ class SignRoundQuantizer(BaseQuantizer):
             elif teq_mode == "frozen_ar_refine":
                 for param in ar_params:
                     param.grad = None
+            elif teq_mode == "staged_refine":
+                if i < refine_end:
+                    for param in ar_params:
+                        param.grad = None
+                else:
+                    for param in teq_params:
+                        param.grad = None
             if is_final_refinement_candidate:
                 optimizer.zero_grad()
 
@@ -569,6 +679,9 @@ class SignRoundQuantizer(BaseQuantizer):
                 if not self.not_use_best_mse:
                     best_params = collect_best_params(block, self.compress_context.cache_device)
                     last_best_iter = i
+            if teq_mode == "staged_refine" and baseline_iters <= i <= refine_end and total_loss < refine_best_loss:
+                refine_best_loss = total_loss
+                refine_best_params = collect_best_params(block, self.compress_context.cache_device)
             if teq_mode is not None and i + 1 == baseline_iters and not self.not_use_best_mse:
                 baseline_loss = best_loss
                 baseline_params = copy.deepcopy(best_params)
@@ -584,6 +697,48 @@ class SignRoundQuantizer(BaseQuantizer):
                     break
             if is_final_refinement_candidate:
                 break
+            if teq_mode == "staged_refine" and i == refine_end:
+                # Restore the best post-update TEQ candidate, then start a
+                # fresh AR optimizer.  This prevents either the TEQ optimizer
+                # state or a suboptimal final TEQ update from contaminating the
+                # second AR phase.
+                if refine_best_params:
+                    _restore_staged_params(refine_best_params)
+                # Do not put TEQ scales back in the AR optimizer.  They were
+                # selected at the handoff and must remain frozen throughout
+                # the second AR phase.
+                ar_optimizer_params = [
+                    {"params": ps, "lr": torch.tensor(group_lr)} for group_lr, ps in round_lr_groups.items()
+                ]
+                if self.enable_minmax_tuning:
+                    ar_optimizer_params += [
+                        {"params": ps, "lr": torch.tensor(group_lr)} for group_lr, ps in minmax_lr_groups.items()
+                    ]
+                optimizer = self.optimizer(ar_optimizer_params, lr=lr, weight_decay=0, **extra_kwargs)
+                if self.lr_scheduler is None:
+                    remaining_iters = self.iters - baseline_iters
+                    lr_schedule = torch.optim.lr_scheduler.LinearLR(
+                        optimizer,
+                        # Continue the original linear 200-step AR schedule
+                        # rather than starting the second phase at full LR.
+                        start_factor=remaining_iters / self.iters,
+                        end_factor=0.0,
+                        total_iters=max(1, remaining_iters),
+                    )
+                else:
+                    lr_schedule = copy.deepcopy(self.lr_scheduler)
+                optimizer.zero_grad()
+                # This is the post-refinement AR starting point.  Retaining
+                # a phase-local best avoids a chance low-loss sample from the
+                # first phase overwriting a selected TEQ correction at unwrap.
+                second_ar_best_loss = total_loss
+                second_ar_best_params = collect_best_params(block, self.compress_context.cache_device)
+                second_ar_best_iter = i
+                continue
+            if teq_mode == "staged_refine" and i > refine_end and total_loss < second_ar_best_loss:
+                second_ar_best_loss = total_loss
+                second_ar_best_params = collect_best_params(block, self.compress_context.cache_device)
+                second_ar_best_iter = i
             sync_gradients()
             self._step(scaler, optimizer, lr_schedule)
             for param in teq_params:
@@ -598,7 +753,30 @@ class SignRoundQuantizer(BaseQuantizer):
         if not self.not_use_best_mse:
             last_loss = best_loss
             best_iter = last_best_iter
-        if baseline_loss is not None and best_loss > baseline_loss:
+        if teq_mode == "staged_refine" and second_ar_best_params is not None and baseline_params is not None:
+            # Compare the two final checkpoints on one identical slice. This
+            # is deliberately separate from the stochastic AR training loss.
+            # It makes the fallback decision meaningful without reducing the
+            # fixed 200-step AR budget or adding a tuning hyperparameter.
+            selection_baseline_loss = _evaluate_staged_candidate(baseline_params)
+            selection_second_loss = _evaluate_staged_candidate(second_ar_best_params)
+            if selection_second_loss <= selection_baseline_loss:
+                best_loss = selection_second_loss
+                best_params = second_ar_best_params
+                last_loss = selection_second_loss
+                best_iter = second_ar_best_iter
+            else:
+                best_loss = selection_baseline_loss
+                best_params = baseline_params
+                last_loss = selection_baseline_loss
+                best_iter = max(0, baseline_iters - 1)
+            logger.info(
+                "TEQ staged fixed-slice selection: baseline_loss=%.3e second_ar_loss=%.3e selected=%s",
+                selection_baseline_loss,
+                selection_second_loss,
+                "second_ar" if selection_second_loss <= selection_baseline_loss else "baseline",
+            )
+        elif baseline_loss is not None and best_loss > baseline_loss:
             best_loss = baseline_loss
             best_params = baseline_params
             last_loss = baseline_loss
@@ -620,11 +798,23 @@ class SignRoundQuantizer(BaseQuantizer):
         with torch.no_grad():
             unwrapper_block(block, best_params)
         if baseline_loss is not None:
+            selected_teq_delta = 0.0
+            for layer_params in best_params.values():
+                log_alpha = layer_params.get("teq_log_alpha")
+                if log_alpha is not None:
+                    selected_teq_delta = max(selected_teq_delta, float(log_alpha.abs().max().item()))
             self.teq_last_refinement = {
                 "baseline_loss": float(baseline_loss),
                 "selected_loss": float(best_loss),
                 "improved": bool(best_loss < baseline_loss),
+                "selected_teq_log_alpha_abs_max": selected_teq_delta,
             }
+            logger.info(
+                "TEQ refinement selection: baseline_loss=%.3e selected_loss=%.3e " "selected_log_alpha_abs_max=%.3e",
+                baseline_loss,
+                best_loss,
+                selected_teq_delta,
+            )
 
         if self.config.is_act_nv_fp:
             # enable moe experts act_max automatic generation for WrapperWALayer

@@ -22,6 +22,7 @@ from torch import autocast
 
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+from auto_round.algorithms.transforms.teq.protocol import apply_teq_equivalent_input_transform
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer
@@ -108,10 +109,11 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         data_type = layer.data_type
         weight_reshape = self._prepare_init_scale_weight()
         imatrix = getattr(layer, "imatrix", None)
-        input_context = getattr(layer, "_teq_input_context", None)
-        if isinstance(imatrix, torch.Tensor) and input_context is not None:
-            alpha = self._teq_scale(input_context, imatrix)
-            imatrix = imatrix / alpha.square()
+        # The imatrix hook records the activation after the complete input
+        # equivalence transform (TEQ scale, then rotation), so no further
+        # channel-wise correction belongs here.  In particular, dividing a
+        # rotated imatrix by alpha**2 is invalid: diagonal TEQ scales and a
+        # Hadamard matrix do not commute.
         imatrix = reshape_imatrix_for_weight(imatrix, weight_reshape, layer.group_size)
 
         self.init_scale = search_optimized_init_scale(
@@ -145,6 +147,7 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         if isinstance(layer, transformers.pytorch_utils.Conv1D):
             weight = weight.t()
         weight = self._apply_teq_weight(weight)
+        weight = self._apply_equivalent_weight_transform(weight)
         weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight.data, layer.group_size)
 
         clip_min = getattr(layer, "awq_clip_min", None)
@@ -419,6 +422,13 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
     def _register_imatrix_hooks(self, model):
         def collect_imatrix(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
+            # The source FP layer remains unrotated until its AR wrapper is
+            # built, but the optimized final QDQ operates on rotated weights.
+            # Collect importance in that same activation basis without
+            # modifying the FP forward used as the block reference.  The
+            # order is essential: ``rotate(x / alpha)``, not
+            # ``rotate(x) / alpha``.
+            input = apply_teq_equivalent_input_transform(module, input)
             flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
             squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 
