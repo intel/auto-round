@@ -40,6 +40,8 @@ class TestAddAutoroundConfig:
         out = add_autoround_config(qconfig, serialization_dict)
         assert out is qconfig
         ar = qconfig[AUTOROUND_CONFIG_KEY]
+        # SERIALIZATION_KEYS (maintainer request) includes compressor fields such as
+        # regex_config / supported_types; dicts stringify via _to_json_value.
         assert ar == {
             "autoround_version": "0.17.0",
             "bits": 4,
@@ -50,6 +52,8 @@ class TestAddAutoroundConfig:
             "nsamples": 128,
             "seqlen": 2048,
             "scale_dtype": "torch.float16",
+            "regex_config": "{'foo': {'bits': 8}}",
+            "supported_types": ["Linear"],
         }
         # untouched top-level keys
         assert qconfig["quant_method"] == "compressed-tensors"
