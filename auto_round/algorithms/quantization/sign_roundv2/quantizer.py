@@ -160,14 +160,14 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
 
     def _assign_search_result(self, result) -> None:
         """Store an init-scale search result (asym also carries an integer zp)."""
-        if self._is_asym:
+        if getattr(self, "_is_asym", False):
             self.init_scale, self.init_zp = result
         else:
             self.init_scale = result
 
     def _extra_quant_kwargs(self) -> dict:
         """Thread the searched integer zero point into the asym quant func."""
-        if self._is_asym and self.init_zp is not None:
+        if getattr(self, "_is_asym", False) and getattr(self, "init_zp", None) is not None:
             return {"init_zp": self.init_zp}
         return {}
 

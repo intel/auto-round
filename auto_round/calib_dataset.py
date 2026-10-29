@@ -59,7 +59,7 @@ _GITHUB_CODE_CLEAN_MAX_DATASETS_VERSION = Version("3.6.0")
 _FINEWEB_EDU_HF_DATASET = "HuggingFaceFW/fineweb-edu"
 _FINEWEB_EDU_MODELSCOPE_DATASET = "AI-ModelScope/fineweb-edu"
 _FINEWEB_EDU_CONFIG = "sample-10BT"
-_FINEWEB_EDU_MIN_CANDIDATES = 500000
+_FINEWEB_EDU_MIN_CANDIDATES = 10000
 _DATASET_RESULT_SUCCESS = "success"
 _DATASET_RESULT_ERROR = "error"
 
@@ -2007,9 +2007,13 @@ def _get_dataset_impl(
                     system_prompt=system_prompt,
                 )
                 if get_dataset is get_fineweb_edu_dataset:
+                    # Scale the candidate pool with nsamples via AR_CALIB_DATA_MULTIPLIER
+                    # (same knob the other streaming datasets use), keeping the
+                    # _FINEWEB_EDU_MIN_CANDIDATES floor so small nsamples still get a
+                    # large enough pool after the downstream length filter.
                     dataset_kwargs["max_samples"] = max(
                         _FINEWEB_EDU_MIN_CANDIDATES,
-                        data_lens.get(name, nsamples),
+                        data_lens.get(name, nsamples) * envs.AR_CALIB_DATA_MULTIPLIER,
                     )
                 elif get_dataset in (
                     get_cci3_hq_dataset,
