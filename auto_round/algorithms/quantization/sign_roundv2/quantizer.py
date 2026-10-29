@@ -41,6 +41,7 @@ from auto_round.data_type.utils import (
     reshape_imatrix_for_weight,
     reshape_pad_tensor_by_group_size,
     resolve_optimized_init_scale_fn,
+    resolve_optimized_init_scale_zero_fn,
     revert_tensor_by_pad,
     round_ste,
     search_optimized_init_scale,
@@ -113,6 +114,9 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
 
         layer = self.orig_layer
         data_type = layer.data_type
+        # asym int threads an extra per-group integer zero point alongside the
+        # searched scale (sym / mx / nv keep the scale-only contract)
+        self._is_asym = "asym" in data_type
         weight_reshape = self._prepare_init_scale_weight()
         # staged deferral keeps only the RAW column imatrix (or None): the
         # expanded full-size copy would be pinned per module for the whole
@@ -122,14 +126,18 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         imatrix = None if defer_search else reshape_imatrix_for_weight(imatrix_raw, weight_reshape, layer.group_size)
 
         self.weight_quant_func = get_optimized_quant_func(data_type)
-        search_fn = resolve_optimized_init_scale_fn(data_type, self.q_scale_thresh)
+        if self._is_asym:
+            search_fn = resolve_optimized_init_scale_zero_fn(data_type, self.q_scale_thresh)
+        else:
+            search_fn = resolve_optimized_init_scale_fn(data_type, self.q_scale_thresh)
         if search_fn is None or self.weight_quant_func is None:
             raise ValueError(
                 f"SignRound optimized path does not support data_type={data_type!r}; "
-                "expected a symmetric int / mx / nv type."
+                "expected a symmetric int / mx / nv type or an asymmetric int type."
             )
         self.data_type = data_type
         self.init_scale = None
+        self.init_zp = None
         self._deferred_search_inputs = None
         if defer_search:
             # staged for run_batched_wrap_search: the exact callable the
@@ -143,23 +151,40 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
                 search_fn,
             )
         else:
-            self.init_scale = search_fn(weight_reshape, layer.bits, imatrix)
+            self._assign_search_result(search_fn(weight_reshape, layer.bits, imatrix))
 
         if hasattr(layer, "imatrix"):
             del layer.imatrix
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
+    def _assign_search_result(self, result) -> None:
+        """Store an init-scale search result (asym also carries an integer zp)."""
+        if self._is_asym:
+            self.init_scale, self.init_zp = result
+        else:
+            self.init_scale = result
+
+    def _extra_quant_kwargs(self) -> dict:
+        """Thread the searched integer zero point into the asym quant func."""
+        if self._is_asym and self.init_zp is not None:
+            return {"init_zp": self.init_zp}
+        return {}
+
     def _run_deferred_search_now(self) -> None:
         """Run the staged search per-module (fallback when batching is off)."""
         weight, _data_type, bits, imatrix_raw, _thresh, search_fn = self._deferred_search_inputs
         imatrix = reshape_imatrix_for_weight(imatrix_raw, weight, self.orig_layer.group_size)
-        self.init_scale = search_fn(weight, bits, imatrix)
+        self._assign_search_result(search_fn(weight, bits, imatrix))
         self._deferred_search_inputs = None
 
     def finalize_batched_search(self, init_scale: "torch.Tensor | list[torch.Tensor]") -> None:
-        """Adopt a search result computed on a stacked same-shape batch."""
-        self.init_scale = init_scale
+        """Adopt a search result computed on a stacked same-shape batch.
+
+        For asym int the per-module (singleton) lane passes the ``(scale, zp)``
+        tuple straight through; sym / mx / nv receive the single scale tensor.
+        """
+        self._assign_search_result(init_scale)
         self._deferred_search_inputs = None
 
     def _prepare_init_scale_weight(self) -> torch.Tensor:
@@ -370,13 +395,15 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         super().prepare_run(composer=composer)
 
         if (
-            self.scheme.sym
-            and self.scheme.super_group_size is None
+            self.scheme.super_group_size is None
             and (
                 self.scheme.data_type.startswith("int")
                 or self.scheme.data_type.startswith("mx")
                 or self.scheme.data_type.startswith("nv")
             )
+            # mx / nv are inherently symmetric; int supports both sym and asym
+            # through the optimized init-scale (+ zero-point) search.
+            and (self.scheme.sym or self.scheme.data_type.startswith("int"))
         ):
             if self.scheme.bits > 2 and not (
                 self.scheme.data_type.startswith("mx") or self.scheme.data_type.startswith("nv")

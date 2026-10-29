@@ -233,10 +233,16 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
     if dt.endswith("dq"):
         return None, None
     if dt.startswith("int"):
-        # The optimized int init-scale search is symmetric-only; asym int uses
-        # the standard tensor_min/tensor_max range instead.
+        # The optimized int init-scale search is symmetric-only for the generic
+        # single-tensor contract; asym int instead pairs the plain
+        # ``quant_tensor_asym`` with a (scale, zero-point) search resolved via
+        # ``resolve_optimized_init_scale_zero_fn`` (its tuple return can't travel
+        # on the single-tensor search_fn path, so search_fn stays None here --
+        # AWQ / ``search_optimized_init_scale`` are unaffected).
         if "asym" in dt:
-            return None, None
+            from auto_round.data_type.int import quant_tensor_asym
+
+            return None, quant_tensor_asym
         from auto_round.data_type.int import quant_tensor_sym, search_scales
 
         return _int_search_with_thresh(search_scales, q_scale_thresh), quant_tensor_sym
@@ -264,6 +270,37 @@ def resolve_optimized_init_scale_fn(
     """
     search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
     return search_fn
+
+
+def resolve_optimized_init_scale_zero_fn(
+    data_type: str, q_scale_thresh: float = 1e-5
+) -> "Callable[..., tuple[torch.Tensor, torch.Tensor]] | None":
+    """Resolve the asym-int joint ``(scale, integer zero-point)`` init search callable.
+
+    Asymmetric sibling of :func:`resolve_optimized_init_scale_fn`. The symmetric
+    optimized path threads a single ``init_scale`` tensor, but asym int also needs
+    a per-group integer zero point, so this returns a callable
+    ``(weight_reshape, bits, imatrix) -> (init_scale, init_zp)`` (NeUQI joint
+    search) for asymmetric int data types, or ``None`` otherwise.
+
+    The returned closure is intentionally per-call: the batched wrap-search
+    dispatcher keys closures by ``repr`` (never merging lookalikes), so asym
+    modules always take the per-module (singleton) lane -- its tuple result is
+    incompatible with the stacked single-tensor write-back.
+    """
+    dt = str(data_type)
+    if dt.endswith("dq") or not dt.startswith("int") or "asym" not in dt:
+        return None
+    from auto_round.data_type.neuqi import neuqi_search_scale_zero
+
+    def _search_scale_zero(weight_reshape, bits, imatrix):
+        qw = imatrix if isinstance(imatrix, torch.Tensor) else None
+        scale, zp = neuqi_search_scale_zero(
+            weight_reshape.to(torch.float32), bits, qw=qw, q_scale_thresh=q_scale_thresh
+        )
+        return scale.to(weight_reshape.dtype), zp.to(weight_reshape.dtype)
+
+    return _search_scale_zero
 
 
 def search_optimized_init_scale(
