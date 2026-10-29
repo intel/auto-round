@@ -124,6 +124,11 @@ class BlockTuningPrefetchCache:
     #: this ``True`` to restrict itself to single-sample (``batch_size == 1``)
     #: batches.
     _require_batch_size_one = False
+    #: The per-block budget / "prefetch enabled" summary is identical across
+    #: blocks, so it is logged at INFO only for the first block that enables the
+    #: cache (subsequent blocks log it at DEBUG). Tracked per class so the
+    #: diffusion and generic variants each announce themselves once.
+    _summary_logged = False
 
     @classmethod
     def create(cls, block, runner, inputs, others, outputs, sampler, iters, budget_gib, device):
@@ -161,7 +166,8 @@ class BlockTuningPrefetchCache:
             _auto_budget_bytes(free_bytes) if budget_gib == "auto" else int(min(budget_gib, free_bytes / 2**30) * 2**30)
         )
         if budget_gib == "auto":
-            logger.info("%s auto cache budget after warmup: %.2f GiB.", cls.LABEL, budget / 2**30)
+            _summary_log = logger.info if not cls._summary_logged else logger.debug
+            _summary_log("%s auto cache budget after warmup: %.2f GiB.", cls.LABEL, budget / 2**30)
         if staging_bytes > budget:
             logger.info("%s prefetch skipped: two batch buffers exceed the cache budget.", cls.LABEL)
             return None
@@ -191,12 +197,14 @@ class BlockTuningPrefetchCache:
             cache.close()
             logger.info("%s prefetch skipped: buffer allocation ran out of memory.", cls.LABEL)
             return None
-        logger.info(
+        _summary_log = logger.info if not cls._summary_logged else logger.debug
+        _summary_log(
             "%s prefetch enabled with %.2f GiB of GPU buffers; best parameters on %s.",
             cls.LABEL,
             (staging_bytes + (best_bytes if cache.best is not None else 0)) / 2**30,
             "GPU" if cache.best is not None else "CPU",
         )
+        cls._summary_logged = True
         return cache
 
     def _select(self, indices):
@@ -316,3 +324,19 @@ class DiffusionTuningCache(BlockTuningPrefetchCache):
 
     LABEL = "Diffusion tuning"
     _require_batch_size_one = True
+
+
+def resolve_tuning_cache_cls(model_context) -> type[BlockTuningPrefetchCache]:
+    """Return the prefetch-cache class for the active model type.
+
+    This is the single place that knows about cache variants, so the SignRound
+    tuning loop never branches on model type: it asks for a class and gets the
+    diffusion specialization for diffusion pipelines, otherwise the generic
+    LLM/VLM cache. New variants are added here (or by overriding the quantizer's
+    ``_resolve_tuning_cache_plan`` hook) instead of threading ``if is_diffusion``
+    checks through the algorithm.
+    """
+    if getattr(model_context, "is_diffusion", False):
+        return DiffusionTuningCache
+    return BlockTuningPrefetchCache
+

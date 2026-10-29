@@ -356,6 +356,23 @@ class BaseQuantizer(BaseAlgorithm):
         block = block.to(device_manager.device)
         return block
 
+    def finalize_block(self, block: "torch.nn.Module", block_ctx: "BlockContext | None" = None) -> None:
+        """Post-tuning, quantizer-agnostic finalization for a compressed block.
+
+        Invoked by the composer right after :meth:`quantize_block` returns, so
+        format-specific post-processing stays out of the per-algorithm tuning
+        loop. The default generates MoE experts' ``act_max`` automatically for
+        NVFP static-activation schemes (``WrapperWALayer``); it is a no-op for
+        schemes/blocks that do not need it. Subclasses may override to add their
+        own finalization.
+        """
+        from auto_round.schemes import is_nvfp4_e5m3_gs
+        from auto_round.utils import set_amax_for_all_moe_layers
+
+        if self.config.is_act_nv_fp or is_nvfp4_e5m3_gs(self.config.act_data_type or ""):
+            # enable moe experts act_max automatic generation for WrapperWALayer
+            set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
+
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Model-level preparation (called once before block iteration starts)."""

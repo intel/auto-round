@@ -59,7 +59,7 @@ _GITHUB_CODE_CLEAN_MAX_DATASETS_VERSION = Version("3.6.0")
 _FINEWEB_EDU_HF_DATASET = "HuggingFaceFW/fineweb-edu"
 _FINEWEB_EDU_MODELSCOPE_DATASET = "AI-ModelScope/fineweb-edu"
 _FINEWEB_EDU_CONFIG = "sample-10BT"
-_FINEWEB_EDU_MIN_CANDIDATES = 10000
+_FINEWEB_EDU_MIN_CANDIDATES = 500000
 _DATASET_RESULT_SUCCESS = "success"
 _DATASET_RESULT_ERROR = "error"
 
@@ -400,6 +400,11 @@ def get_pile_dataset(
             calib_dataset, tokenizer, seqlen, apply_chat_template, system_prompt, "text"
         ),
     )
+
+    # Sample-level concat: samples already reaching seqlen are kept as-is, while
+    # samples shorter than seqlen are packed together so they are not dropped by
+    # the downstream length filter.
+    calib_dataset = _concat_samples_to_seqlen(calib_dataset, seqlen)
 
     return calib_dataset
 
@@ -1382,7 +1387,7 @@ def get_local_dataset(
 
 
 def _concat_samples_to_seqlen(calib_dataset, seqlen):
-    """Pack whole samples together until each reaches ``seqlen`` tokens.
+    """Pack short samples together until each reaches ``seqlen`` tokens.
 
     Unlike the continuous packing in :func:`concat_dataset_element` (where a
     sample's leftover tokens carry over into the next sequence, splitting
@@ -1390,6 +1395,10 @@ def _concat_samples_to_seqlen(calib_dataset, seqlen):
     once the buffer reaches ``seqlen``, emits a single ``seqlen``-length
     sequence and resets the buffer. The next sample therefore starts a fresh
     concatenation; any trailing buffer shorter than ``seqlen`` is dropped.
+
+    Samples that already reach ``seqlen`` are left untouched: they are emitted
+    on their own (truncated to ``seqlen``) instead of being concatenated with
+    other samples, so only short samples are packed together.
 
     Args:
         calib_dataset: A tokenized ``Dataset`` with an ``input_ids`` column.
@@ -1404,6 +1413,11 @@ def _concat_samples_to_seqlen(calib_dataset, seqlen):
         ids = example["input_ids"]
         if isinstance(ids, torch.Tensor):
             ids = ids.tolist()
+        # Samples already long enough are kept as-is (truncated) rather than
+        # concatenated with their neighbours.
+        if len(ids) >= seqlen:
+            packed.append({"input_ids": ids[:seqlen], "attention_mask": [1] * seqlen})
+            continue
         buffer_ids.extend(ids)
         if len(buffer_ids) >= seqlen:
             trimmed = buffer_ids[:seqlen]

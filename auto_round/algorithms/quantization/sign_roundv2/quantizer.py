@@ -383,7 +383,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
             ):
                 logger.warning_once(
                     "algorithm extension has only undergone limited validation on "
-                    "W2A16,INT4, MXFP4 and NVFP4; use with caution."
+                    "W2A16, INT4, MXFP4 and NVFP4; use with caution."
                 )
             if self.scheme.act_bits <= 4 or self.scheme.bits < 4:
                 self._use_outlier_suppressed_loss = True
@@ -395,7 +395,10 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
             self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
 
     def can_compile_block_forward(self):
-        return False
+        # torch.compile on the whole block forward is only reliable on torch >= 2.14
+        from packaging.version import Version
+
+        return Version(torch.__version__.split("+")[0]) >= Version("2.14")
 
     def _get_loss(
         self,

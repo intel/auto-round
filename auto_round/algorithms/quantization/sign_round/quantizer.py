@@ -31,7 +31,6 @@ from auto_round.compressors.utils import (
     snapshot_best_params,
 )
 from auto_round.logger import logger
-from auto_round.schemes import is_nvfp4_e5m3_gs
 from auto_round.utils.perf_counters import _PerfCounters
 
 
@@ -92,7 +91,6 @@ from auto_round.utils import (
     htcore,
     is_hpex_available,
     mv_module_from_gpu,
-    set_amax_for_all_moe_layers,
 )
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
@@ -406,6 +404,59 @@ class SignRoundQuantizer(BaseQuantizer):
         # tensor nor an autograd graph through softmax.
         return soft_cross_entropy(q_logits, fp_logits, valid_mask)
 
+    def _resolve_tuning_cache_plan(
+        self,
+        *,
+        device,
+        loss_device,
+        active_inputs,
+        block_fwd,
+        lfq_last_block,
+    ) -> tuple[type | None, Any]:
+        """Decide the opt-in CUDA batch-prefetch staging for a tuning block.
+
+        Returns ``(cache_cls, cache_budget)`` when the prefetch cache is
+        eligible, or ``(None, 0)`` to keep the legacy synchronous gather. This
+        is the single extension point for prefetch-cache variants: the tuning
+        loop never branches on model type. The diffusion vs LLM/VLM class choice
+        is delegated to
+        :func:`auto_round.algorithms.tuning_cache.resolve_tuning_cache_cls`, and
+        subclasses can override this method wholesale to plug in new variants
+        without editing the algorithm.
+
+        Under ``low_gpu_mem_usage`` the calibration pools are parked on the host,
+        so every iteration copies its batch CPU->CUDA on the critical path. The
+        cache double-buffers the batches onto CUDA on a background copy stream so
+        the next transfer overlaps the current forward/backward.
+        """
+        from auto_round.algorithms.tuning_cache import resolve_tuning_cache_cls
+
+        # Shared hardware eligibility: host-parked pools, a single CUDA device,
+        # and a loss device that matches the compute device.
+        if not (
+            self.compress_context.low_gpu_mem_usage
+            and str(device).startswith("cuda")
+            and len(device_manager.device_list) == 1
+            and (loss_device is None or torch.device(loss_device) == torch.device(device))
+        ):
+            return None, 0
+
+        if getattr(self.model_context, "is_diffusion", False):
+            # Diffusion prefetch is strictly opt-in via diffusion_tuning_cache_size.
+            budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
+            if budget != "auto" and budget <= 0:
+                return None, 0
+        else:
+            # LLM/VLM reconstruction needs a list input pool and a block forward.
+            # The LFQ final-block logit loss concatenates token ids and runs a
+            # different forward, so it keeps the legacy gather.
+            if not (isinstance(active_inputs, list) and block_fwd is not None) or lfq_last_block:
+                return None, 0
+            # Auto-size the staging buffers after one warmup iteration.
+            budget = "auto"
+
+        return resolve_tuning_cache_cls(self.model_context), budget
+
     def quantize_block(
         self,
         block,
@@ -576,45 +627,24 @@ class SignRoundQuantizer(BaseQuantizer):
         )
 
         tuning_cache = None
-        # Only opt-in diffusion tuning can enter the CUDA staging path.
-        cache_budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
-        use_tuning_cache = (
-            getattr(self.model_context, "is_diffusion", False)
-            and (cache_budget == "auto" or cache_budget > 0)
-            and self.compress_context.low_gpu_mem_usage
-            and str(device).startswith("cuda")
-            and len(device_manager.device_list) == 1
-            and (loss_device is None or torch.device(loss_device) == torch.device(device))
-        )
-
-        # Non-diffusion (LLM/VLM) SignRound v1/v2: when low_gpu_mem_usage parks
-        # the calibration pools on the host, each batch is copied CPU->CUDA every
-        # iteration on the critical path. Double-buffer the batches onto CUDA on a
-        # background copy stream so the host->device transfer of the next batch
-        # overlaps the forward/backward of the current one. Restricted to the
-        # plain reconstruction path: the LFQ final-block logit loss concatenates
-        # token ids and runs a different forward, so it keeps the legacy gather.
+        # The LFQ final-block logit loss concatenates token ids and runs a
+        # different forward, so it is excluded from the prefetch staging path.
         _lfq_last_block = (
             getattr(self, "enable_lfq", False)
             and input_ids is not None
             and block_ctx.block_index == block_ctx.block_cnt - 1
             and self._is_text_decoder_block(block_ctx.block_name)
         )
-        use_llm_prefetch = (
-            not use_tuning_cache
-            and not getattr(self.model_context, "is_diffusion", False)
-            and isinstance(active_inputs, list)
-            and block_fwd is not None
-            and self.compress_context.low_gpu_mem_usage
-            and str(device).startswith("cuda")
-            and len(device_manager.device_list) == 1
-            and (loss_device is None or torch.device(loss_device) == torch.device(device))
-            and not _lfq_last_block
+        # Single, variant-free extension point: the plan hook owns all model-type
+        # gating (diffusion vs LLM/VLM) and returns the cache class + budget.
+        cache_cls, cache_budget = self._resolve_tuning_cache_plan(
+            device=device,
+            loss_device=loss_device,
+            active_inputs=active_inputs,
+            block_fwd=block_fwd,
+            lfq_last_block=_lfq_last_block,
         )
-        if use_llm_prefetch:
-            # Auto-size the staging buffers after one warmup iteration (mirrors
-            # the diffusion cache's "auto" budget handling below).
-            cache_budget = "auto"
+        use_prefetch_cache = cache_cls is not None
 
         _perf.stop("prepare")
         _perf.start("loop")
@@ -644,7 +674,7 @@ class SignRoundQuantizer(BaseQuantizer):
         # stages batches to the GPU itself via pinned slots); a bulk pull
         # onto the loss device would put the cached reference outputs on
         # cuda and the cache would decline every batch signature
-        if fp_outputs and loss_device is not None and not use_tuning_cache and not use_llm_prefetch:
+        if fp_outputs and loss_device is not None and not use_prefetch_cache:
             fp_outputs = self.pull_tuning_pool(
                 fp_outputs,
                 loss_device,
@@ -658,13 +688,7 @@ class SignRoundQuantizer(BaseQuantizer):
             for i in range(self.iters):
                 # Auto observes a complete forward/backward/optimizer iteration
                 # on the legacy path before allocating any extra GPU buffers.
-                if (use_tuning_cache or use_llm_prefetch) and i == (1 if cache_budget == "auto" else 0):
-                    from auto_round.algorithms.tuning_cache import (
-                        BlockTuningPrefetchCache,
-                        DiffusionTuningCache,
-                    )
-
-                    cache_cls = DiffusionTuningCache if use_tuning_cache else BlockTuningPrefetchCache
+                if use_prefetch_cache and i == (1 if cache_budget == "auto" else 0):
                     tuning_cache = cache_cls.create(
                         block,
                         block_fwd,
@@ -803,9 +827,6 @@ class SignRoundQuantizer(BaseQuantizer):
         _perf.stop("tail")
         _log_tune_phases(_perf, self.iters)
 
-        if self.config.is_act_nv_fp or is_nvfp4_e5m3_gs(self.config.act_data_type or ""):
-            # enable moe experts act_max automatic generation for WrapperWALayer
-            set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
         logger.infoclean(dump_info)
         return best_params
