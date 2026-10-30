@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
@@ -786,6 +787,8 @@ class AutoRound:
         scheme: str | dict | QuantizationScheme | AutoScheme = "W4A16",
         schemes: str | list | tuple | None = None,
         bits: float | None = None,
+        shared_layers: Iterable[Iterable[str]] | None = None,
+        default_shared_layers: bool | None = None,
         layer_config: dict[str, str | dict | QuantizationScheme] | None = None,
         dataset: str | list | tuple | torch.utils.data.DataLoader | None = None,
         iters: int | None = None,
@@ -818,6 +821,12 @@ class AutoRound:
             direct_kwargs["algorithm"] = algorithm
         if bits is not None:
             direct_kwargs["bits"] = bits
+        # AutoScheme-only options: they are consumed by resolve_entry_scheme when
+        # `schemes` is given and must not reach the algorithm config otherwise.
+        if shared_layers is not None:
+            direct_kwargs["shared_layers"] = shared_layers
+        if default_shared_layers is not None:
+            direct_kwargs["default_shared_layers"] = default_shared_layers
         scheme, direct_kwargs = resolve_entry_scheme(scheme, schemes, direct_kwargs)
 
         configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs, strict=strict_model_free)

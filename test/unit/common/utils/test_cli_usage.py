@@ -715,6 +715,15 @@ def test_shared_layers_normalize():
     assert p.parse_args(["--model", "dummy"]).shared_layers is None
 
 
+def test_disable_default_shared_layers_flag():
+    """--disable_default_shared_layers is a plain on/off switch, off by default."""
+    from auto_round.cli.parser import build_quantize_parser
+
+    p = build_quantize_parser()
+    assert p.parse_args(["--model", "dummy"]).disable_default_shared_layers is False
+    assert p.parse_args(["--model", "dummy", "--disable_default_shared_layers"]).disable_default_shared_layers is True
+
+
 def test_parse_max_shard_size():
     from auto_round.cli.parser import build_quantize_parser
 

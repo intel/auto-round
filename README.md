@@ -323,7 +323,8 @@ ar.quantize_and_save()
 - **`bits` (float)**: Target average bit-width for the entire model when `schemes` is provided. Only quantized layers are included in the average bit calculation. Without `schemes`, `bits` is the plain weight bit width and must be an integer.
 - **`schemes` (str | list[str] | list[QuantizationScheme])**: Candidate quantization schemes to choose from. It can be a single comma-separated string (e.g., `"W4A16,W2A16"`), a list of strings (e.g., `["W4A16", "W2A16"]`), or a list of `QuantizationScheme` objects. Providing schemes enables AutoScheme.
 - **`ignore_scale_zp_bits` (bool)**: Only supported in API usage. Determines whether to exclude the bits of scale and zero-point from the average bit-width calculation (default: `False`).  
-- **`shared_layers` (Iterable[Iterable[str]], optional)**: Only supported in API usage. Defines groups of layers that share quantization settings.  
+- **`shared_layers` (Iterable[Iterable[str]], optional)**: Only supported in API usage. Adds extra groups of layers that share quantization settings, on top of the built-in vLLM fusion groups.
+- **`default_shared_layers` (bool)**: Whether to share one quantization scheme across the projections vLLM/SGLang fuse at serving time (`q_proj`/`k_proj`/`v_proj`, `q_a_proj`/`kv_a_proj_with_mqa`, `gate_proj`/`up_proj`). Default is `True`; set to `False` (or export `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`) to let AutoScheme select per projection. CLI: `--disable_default_shared_layers`.  
 - **`batch_size` (int, optional)**: Only supported in API usage. Can be set to `1` to reduce VRAM usage at the expense of longer tuning time.  
 
 </details>

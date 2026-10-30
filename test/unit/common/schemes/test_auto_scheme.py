@@ -294,6 +294,204 @@ def test_build_expert_groups_skips_fixed_layers():
     assert len(groups) == 0
 
 
+def _fake_transformer(num_blocks=2, mlp_names=("gate_proj", "up_proj", "down_proj")):
+    """Build a minimal transformer-like model for shared-layer grouping tests."""
+    from torch import nn
+
+    class FakeModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = nn.Module()
+            self.model.layers = nn.ModuleList()
+            for _ in range(num_blocks):
+                block = nn.Module()
+                block.self_attn = nn.Module()
+                for proj in ("q_proj", "k_proj", "v_proj", "o_proj"):
+                    setattr(block.self_attn, proj, nn.Linear(8, 8, bias=False))
+                block.mlp = nn.Module()
+                for proj in mlp_names:
+                    setattr(block.mlp, proj, nn.Linear(8, 8, bias=False))
+                self.model.layers.append(block)
+
+    return FakeModel()
+
+
+def test_build_default_shared_layers_groups_vllm_fused_projections():
+    """Default groups mirror vLLM fusion: q/k/v per attention, gate/up per MLP."""
+    from auto_round.auto_scheme.utils import build_default_shared_layers
+
+    model = _fake_transformer(num_blocks=2)
+    groups = build_default_shared_layers(model)
+
+    assert len(groups) == 4  # 2 blocks x (qkv + gate/up)
+    qkv_groups = [g for g in groups if any(n.endswith(".q_proj") for n in g)]
+    gate_up_groups = [g for g in groups if any(n.endswith(".gate_proj") for n in g)]
+    assert len(qkv_groups) == 2 and len(gate_up_groups) == 2
+    for group in qkv_groups:
+        assert [n.rsplit(".", 1)[-1] for n in group] == ["k_proj", "q_proj", "v_proj"]
+        # o_proj is not fused into qkv_proj and must stay independent.
+        assert all(not n.endswith(".o_proj") for n in group)
+    for group in gate_up_groups:
+        assert [n.rsplit(".", 1)[-1] for n in group] == ["gate_proj", "up_proj"]
+        assert all(not n.endswith(".down_proj") for n in group)
+
+
+def test_build_default_shared_layers_uses_exact_leaf_names():
+    """A layer merely containing 'q_proj' as a substring must not join the qkv group."""
+    from auto_round.auto_scheme.utils import build_default_shared_layers
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = torch.nn.Module()
+            self.block.self_attn = torch.nn.Module()
+            for proj in ("q_proj", "k_proj", "v_proj"):
+                setattr(self.block.self_attn, proj, torch.nn.Linear(8, 8, bias=False))
+            self.block.self_attn.q_proj_moe_gen = torch.nn.Linear(8, 8, bias=False)
+
+    groups = build_default_shared_layers(FakeModel())
+    assert len(groups) == 1
+    assert "block.self_attn.q_proj_moe_gen" not in groups[0]
+    assert len(groups[0]) == 3
+
+
+def test_build_default_shared_layers_groups_mla_qkv_a():
+    """DeepSeek-style MLA fuses q_a_proj + kv_a_proj_with_mqa into fused_qkv_a_proj."""
+    from auto_round.auto_scheme.utils import build_default_shared_layers
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = torch.nn.Module()
+            self.block.self_attn = torch.nn.Module()
+            self.block.self_attn.q_a_proj = torch.nn.Linear(8, 8, bias=False)
+            self.block.self_attn.kv_a_proj_with_mqa = torch.nn.Linear(8, 8, bias=False)
+            self.block.self_attn.q_b_proj = torch.nn.Linear(8, 8, bias=False)
+
+    groups = build_default_shared_layers(FakeModel())
+    assert groups == [["block.self_attn.kv_a_proj_with_mqa", "block.self_attn.q_a_proj"]]
+
+
+def test_resolve_shared_layers_default_on_unions_user_groups():
+    """User groups are unioned with the default vLLM groups (merged if interleaved)."""
+    from auto_round.auto_scheme.utils import resolve_shared_layers
+
+    model = _fake_transformer(num_blocks=1)
+    user_groups = [["model.layers.0.self_attn.q_proj", "model.layers.0.mlp.down_proj"]]
+    groups = resolve_shared_layers(model, user_groups)
+
+    # The user group links q_proj to down_proj, so union-find merges the qkv
+    # group and the down_proj into one 4-member group.
+    merged = [g for g in groups if "model.layers.0.mlp.down_proj" in g]
+    assert len(merged) == 1
+    assert set(merged[0]) >= {
+        "model.layers.0.self_attn.q_proj",
+        "model.layers.0.self_attn.k_proj",
+        "model.layers.0.self_attn.v_proj",
+        "model.layers.0.mlp.down_proj",
+    }
+    # gate/up stays its own group, unrelated to the user request.
+    assert ["model.layers.0.mlp.gate_proj", "model.layers.0.mlp.up_proj"] in groups
+
+
+def test_resolve_shared_layers_can_disable_defaults():
+    """default_shared_layers=False restores the pre-feature behavior (user groups only)."""
+    from auto_round.auto_scheme.utils import resolve_shared_layers
+
+    model = _fake_transformer(num_blocks=2)
+    assert resolve_shared_layers(model, None, default_shared_layers=False) == []
+    # User patterns still apply.
+    groups = resolve_shared_layers(
+        model, [["model.layers.0.mlp.gate_proj", "model.layers.0.mlp.down_proj"]], default_shared_layers=False
+    )
+    assert len(groups) == 1
+    assert set(groups[0]) == {"model.layers.0.mlp.gate_proj", "model.layers.0.mlp.down_proj"}
+
+
+def test_resolve_shared_layers_env_escape_hatch(monkeypatch):
+    """AR_DISABLE_DEFAULT_SHARED_LAYERS=1 disables the vLLM defaults globally."""
+    from auto_round.auto_scheme.utils import resolve_shared_layers
+
+    model = _fake_transformer(num_blocks=1)
+    monkeypatch.setenv("AR_DISABLE_DEFAULT_SHARED_LAYERS", "1")
+    assert resolve_shared_layers(model, None) == []
+
+
+def test_default_shared_layers_composes_with_expert_grouping():
+    """Default fused groups and auto MoE expert groups must not clobber each other.
+
+    ``_gen_layer_config`` unions the default/user shared groups with the
+    per-block expert groups, so expert projections land in one group per block
+    while q/k/v and gate/up keep their own fused groups.
+    """
+    from torch import nn
+
+    from auto_round.auto_scheme.utils import build_expert_groups, merge_lists_unionfind, resolve_shared_layers
+
+    class FakeMoeModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = nn.Module()
+            self.model.layers = nn.ModuleList()
+            for _ in range(1):
+                block = nn.Module()
+                block.self_attn = nn.Module()
+                for proj in ("q_proj", "k_proj", "v_proj"):
+                    setattr(block.self_attn, proj, nn.Linear(8, 8, bias=False))
+                block.mlp = nn.Module()
+                block.mlp.experts = nn.ModuleList()
+                for _ in range(2):
+                    expert = nn.Module()
+                    for proj in ("gate_proj", "up_proj", "down_proj"):
+                        setattr(expert, proj, nn.Linear(8, 8, bias=False))
+                    block.mlp.experts.append(expert)
+                self.model.layers.append(block)
+
+    model = FakeMoeModel()
+    quant_layer_names = [n for n, m in model.named_modules() if isinstance(m, nn.Linear)]
+
+    shared = resolve_shared_layers(model, None)
+    expert_groups = build_expert_groups(model, quant_layer_names, {})
+    merged = merge_lists_unionfind(shared + expert_groups)
+
+    # Every expert projection in the block ends up in exactly one combined group.
+    expert_members = {n for n in quant_layer_names if "experts" in n}
+    covering = [g for g in merged if expert_members & set(g)]
+    assert len(covering) == 1
+    assert expert_members <= set(covering[0])
+    # q/k/v stays in its own fused group, outside the expert group.
+    qkv = [g for g in merged if any(n.endswith(".q_proj") for n in g)]
+    assert len(qkv) == 1 and not (set(qkv[0]) & expert_members)
+
+
+def test_autoscheme_default_shared_layers_field_defaults_true():
+    """AutoScheme shares vLLM-fused projections unless explicitly opted out."""
+    assert AutoScheme(avg_bits=4.5, options=("W4A16", "W8A16")).default_shared_layers is True
+    assert (
+        AutoScheme(avg_bits=4.5, options=("W4A16", "W8A16"), default_shared_layers=False).default_shared_layers is False
+    )
+
+
+def test_entry_threads_default_shared_layers_into_auto_scheme():
+    """AutoRound(schemes=..., default_shared_layers=False) reaches the AutoScheme object."""
+    from auto_round.scheme_entry import resolve_entry_scheme
+
+    scheme, kwargs = resolve_entry_scheme("W4A16", ("W4A16", "W8A16"), {"bits": 4.5, "default_shared_layers": False})
+    assert scheme.default_shared_layers is False
+    assert "default_shared_layers" not in kwargs
+
+
+def test_entry_warns_and_drops_shared_layers_without_schemes():
+    """shared_layers/default_shared_layers are AutoScheme-only and must not leak into configs."""
+    from auto_round.scheme_entry import resolve_entry_scheme
+
+    scheme, kwargs = resolve_entry_scheme(
+        "W4A16", None, {"shared_layers": [["q_proj", "k_proj"]], "default_shared_layers": False}
+    )
+    assert scheme == "W4A16"
+    assert "shared_layers" not in kwargs and "default_shared_layers" not in kwargs
+
+
 class TestAutoScheme:
     @pytest.fixture(autouse=True)
     def setup_save_dir(self, tmp_path, monkeypatch):
@@ -590,6 +788,70 @@ class TestAutoScheme:
                 f"Block {prefix!r}: q/k/v should all have the same bits with shared_layers, "
                 f"got {dict(zip(present, bits_values))}"
             )
+
+    def test_default_shared_layers_aligns_vllm_fused_projections(self, micro_opt_model_path, tmp_path):
+        """With no explicit shared_layers, q/k/v and gate/up must share bits per block.
+
+        vLLM fuses these projections at serving time, so a mixed-bit assignment
+        there is not servable. This is the default behavior (issue #2183).
+        """
+        scheme = AutoScheme(avg_bits=5, options=("MXFP4", "MXFP8"), nsamples=1, ignore_scale_zp_bits=True)
+        assert scheme.shared_layers is None  # relies on the built-in defaults
+        ar = AutoRound(
+            model=micro_opt_model_path,
+            scheme=scheme,
+            iters=0,
+            nsamples=1,
+            seqlen=8,
+            dataset=_make_local_calibration_dataset(tmp_path),
+        )
+        _, layer_config = ar.quantize()
+
+        fused_proj_groups = {
+            "qkv": ("q_proj", "k_proj", "v_proj"),
+            "gate_up": ("gate_proj", "up_proj"),
+        }
+        seen_any = False
+        for group_name, projs in fused_proj_groups.items():
+            block_proj_bits: dict[str, dict[str, int]] = {}
+            for name, cfg in layer_config.items():
+                if "bits" not in cfg:
+                    continue
+                for proj in projs:
+                    if name.endswith("." + proj):
+                        prefix = name[: -len(proj) - 1]
+                        block_proj_bits.setdefault(prefix, {})[proj] = cfg["bits"]
+            for prefix, proj_bits in block_proj_bits.items():
+                if len(proj_bits) < 2:
+                    continue
+                seen_any = True
+                assert (
+                    len(set(proj_bits.values())) == 1
+                ), f"Block {prefix!r} ({group_name}): fused projections must share bits, got {proj_bits}"
+        assert seen_any, "expected at least one fused projection group in layer_config"
+
+    def test_disable_default_shared_layers_allows_independent_bits(self, micro_opt_model_path, tmp_path):
+        """default_shared_layers=False must not force q/k/v onto one scheme."""
+        from auto_round.auto_scheme.utils import resolve_shared_layers
+
+        scheme = AutoScheme(
+            avg_bits=5,
+            options=("MXFP4", "MXFP8"),
+            nsamples=1,
+            ignore_scale_zp_bits=True,
+            default_shared_layers=False,
+        )
+        ar = AutoRound(
+            model=micro_opt_model_path,
+            scheme=scheme,
+            iters=0,
+            nsamples=1,
+            seqlen=8,
+            dataset=_make_local_calibration_dataset(tmp_path),
+        )
+        # The opt-out reaches resolve_shared_layers via the AutoScheme object.
+        assert resolve_shared_layers(ar.model, scheme.shared_layers, scheme.default_shared_layers) == []
+        ar.quantize()
 
 
 def test_autoscheme_cache_key_different_for_different_schemes():

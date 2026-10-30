@@ -571,7 +571,9 @@ ar.quantize_and_save()
 
 `device_map (Optional[str,dict,torch.device])`  only supported in API now, as auto-scheme used more VRAM than auto-round tuning, so you could set a different device_map for it.
 
-`shared_layers (Optional[Iterable[Iterable[str]]])`  only supported in API now
+`shared_layers (Optional[Iterable[Iterable[str]]])`  extra groups of layers that must share one quantization scheme, on top of the built-in vLLM fusion groups (see below). Only supported in API now.
+
+`default_shared_layers (bool)` Whether to automatically share one quantization scheme across the projections vLLM/SGLang fuse at serving time: `q_proj`/`k_proj`/`v_proj` (fused into `qkv_proj`), `q_a_proj`/`kv_a_proj_with_mqa` (DeepSeek-style MLA, fused into `fused_qkv_a_proj`), and `gate_proj`/`up_proj` (fused into `gate_up_proj`). Default is `True`; set it to `False`, or export `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`, to let AutoScheme pick a scheme per projection independently. CLI: `--disable_default_shared_layers`.
 
 `batch_size (Optional[int])` could be set to 1 to reduce VRAM but increase time cost
 
@@ -579,7 +581,9 @@ ar.quantize_and_save()
 
 `calibration_data_device (str)` placement of the block calibration data in multi-GPU runs: `auto` (default) | `cpu` | `off` | `1,2` | `cuda:1,cuda:2`. CLI: `--calibration_data_device`.
 
-In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
+In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. `shared_layers` lets you declare such groups explicitly, supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
+
+**Fused projections are shared by default.** Because vLLM and SGLang fuse `q/k/v` into `qkv_proj` and `gate/up` into `gate_up_proj` (and DeepSeek-style MLA fuses `q_a_proj`/`kv_a_proj_with_mqa` into `fused_qkv_a_proj`), a single fused kernel can only apply one quantization scheme. AutoScheme therefore assigns one scheme per fused group out of the box, matching leaf names exactly so look-alike layers such as `q_proj_moe_gen` or `down_proj` are never pulled in. Any `shared_layers` you pass is unioned with these built-in groups. To opt out and let AutoScheme choose per projection, pass `default_shared_layers=False` or export `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`.
 
 **MoE expert layers are automatically grouped per block** — all expert projections (gate/up/down across all experts) within the same transformer block are treated as a single entity during DP optimization. This means they share the same quantization scheme and their losses/numel are summed together. No manual `shared_layers` configuration is needed for expert layers.
 
@@ -587,6 +591,8 @@ In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accel
 ```python
 from auto_round import AutoRound
 
+# The vLLM fusion groups (q/k/v, MLA q_a/kv_a, gate/up) are applied automatically;
+# shared_layers only adds extra groups on top of them.
 shared_layers = [
     ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
     ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
@@ -595,6 +601,18 @@ shared_layers = [
 model_name = "Qwen/Qwen3-0.6B"
 ar = AutoRound(model=model_name, schemes=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
+```
+
+To keep the pre-existing behavior (independent scheme per projection), disable the defaults:
+```python
+ar = AutoRound(
+    model=model_name,
+    schemes=("W4A16", "MXFP8"),
+    bits=5.0,
+    default_shared_layers=False,
+    iters=0,
+    nsamples=1,
+)
 ```
 
 Besides, if you want to fix the scheme for some layers, you could set it via `layer_config` in AutoRound API.

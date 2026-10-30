@@ -40,6 +40,16 @@ export AR_ENABLE_COMPILE_PACKING=1
 export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 ```
 
+### AR_DISABLE_DEFAULT_SHARED_LAYERS
+- **描述**：关闭 AutoScheme 的默认行为：为 vLLM/SGLang 在推理时融合的投影层（`q_proj`/`k_proj`/`v_proj`、MLA 的 `q_a_proj`/`kv_a_proj_with_mqa`、`gate_proj`/`up_proj`）共享同一量化配置。由于单个融合 kernel 只能使用一种量化方案，该共享默认开启。等价于 `AutoScheme(default_shared_layers=False)` 以及命令行参数 `--disable_default_shared_layers`。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示关闭默认共享；其他任何值均保持开启。
+- **用途**：仅当目标运行时不对这些投影层做融合，或确实希望各投影层使用不同方案时才需要关闭。
+
+```bash
+export AR_DISABLE_DEFAULT_SHARED_LAYERS=1
+```
+
 ### AR_USE_MODELSCOPE
 - **描述**：控制是否使用 ModelScope 下载模型
 - **默认值**：`False`

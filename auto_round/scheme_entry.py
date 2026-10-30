@@ -159,8 +159,9 @@ def resolve_entry_scheme(scheme, schemes, direct_kwargs):
 
     Returns ``(scheme, direct_kwargs)``; when ``schemes`` is given, ``scheme``
     is replaced by an :class:`AutoScheme` and the consumed ``bits``/
-    ``shared_layers``/``ignore_scale_zp_bits`` are removed from
-    ``direct_kwargs`` so they no longer flow into the algorithm config.
+    ``shared_layers``/``default_shared_layers``/``ignore_scale_zp_bits`` are
+    removed from ``direct_kwargs`` so they no longer flow into the algorithm
+    config.
     """
     legacy_options = direct_kwargs.pop("options", None)
     legacy_avg_bits = direct_kwargs.pop("avg_bits", None)
@@ -183,6 +184,13 @@ def resolve_entry_scheme(scheme, schemes, direct_kwargs):
             raise ValueError("`bits` must be an integer unless `schemes` is provided (AutoScheme average target bits)")
         if bits is not None:
             direct_kwargs["bits"] = int(bits)
+        # shared_layers/default_shared_layers only make sense for AutoScheme.
+        for key in ("shared_layers", "default_shared_layers"):
+            if direct_kwargs.get(key) is not None:
+                logger.warning_once(
+                    "`%s` only takes effect with `schemes` (AutoScheme); ignoring it for this run.", key
+                )
+                direct_kwargs.pop(key)
         return scheme, direct_kwargs
 
     normalized_scheme = scheme.upper() if isinstance(scheme, str) else scheme
@@ -194,7 +202,7 @@ def resolve_entry_scheme(scheme, schemes, direct_kwargs):
     bits = direct_kwargs.pop("bits", None)
     if bits is not None:
         auto_scheme_kwargs["avg_bits"] = bits
-    for key in ("shared_layers", "ignore_scale_zp_bits"):
+    for key in ("shared_layers", "ignore_scale_zp_bits", "default_shared_layers"):
         if direct_kwargs.get(key) is not None:
             auto_scheme_kwargs[key] = direct_kwargs.pop(key)
     return AutoScheme(options=schemes, **auto_scheme_kwargs), direct_kwargs

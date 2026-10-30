@@ -41,6 +41,12 @@ class AutoScheme:
     enable_torch_compile: bool | None = None
     low_gpu_mem_usage: bool = True
     low_cpu_mem_usage: bool = True
+    # Share one scheme across vLLM-fused projections (q/k/v, MLA q_a/kv_a,
+    # gate/up) by default: a fused serving kernel can only apply a single
+    # scheme, so mixed bits there are not servable. Set to False (or export
+    # AR_DISABLE_DEFAULT_SHARED_LAYERS=1) to let AutoScheme pick independently.
+    # Declared last so positional construction keeps its historical meaning.
+    default_shared_layers: bool = True
 
     def __post_init__(self):
         if isinstance(self.options, str):
