@@ -132,6 +132,30 @@ class SpinQuantConfig(BaseRotationConfig):
     dtype: torch.dtype = torch.float32
     device: str | None = None
 
+    #: CLI descriptions for the flags derived from this dataclass's signature.
+    cli_field_help = {
+        "layerwise": "Rotate each decoder block in lock-step with block-wise quantization "
+        "instead of rotating the whole model up front.",
+        "r1": "Rotate the residual stream (R1).",
+        "r2": "Rotate the attention head dimension (R2).",
+        "r3": "Rotate the attention value path online (R3).",
+        "r4": "Rotate the MLP down-projection online (R4).",
+        "rotation_size": "Override the R1/R4 rotation dimension; must be a power of two. " "R2/R3 always use head_dim.",
+        "random_r1": "Use a random Hadamard matrix for R1 instead of the deterministic one.",
+        "random_r2": "Use a random Hadamard matrix for R2 instead of the deterministic one.",
+        "random_r3": "Use a random Hadamard matrix for R3 instead of the deterministic one.",
+        "random_r4": "Use a random Hadamard matrix for R4 instead of the deterministic one.",
+        "trainable_rotation": "Learn the rotation matrices (SpinQuant mode) instead of using fixed "
+        "Hadamard matrices (QuaRot mode).",
+        "trainable_smooth": "Learn the SmoothQuant smoothing scales jointly with the rotation.",
+        "online_r1_rotation": "Apply R1 through an online forward hook instead of fusing it into the weights.",
+        "smooth_lr": "Learning rate of the smoothing-scale optimizer.",
+        "loss_type": "Training loss: 'kl_top', 'kl_full' or 'mse'.",
+        "kl_top_k": "Number of top logits used by the 'kl_top' loss.",
+        "fuse_rmsnorm": "Fuse the RMSNorm scaling into the adjacent linear layers.",
+        "untie_embeddings": "Untie the input/output embeddings before rotating.",
+    }
+
     def __post_init__(self):
         if self.device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
