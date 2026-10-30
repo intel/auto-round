@@ -82,7 +82,7 @@ class _TestFormat(OutputFormat):
     def pack_layer(self, *args, **kwargs):
         pass
 
-    def save_quantized_as_format(self, output_dir, *, model, **kwargs):
+    def save_quantized(self, output_dir, *, model, **kwargs):
         return model
 
 

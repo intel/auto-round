@@ -133,7 +133,7 @@ def test_fake_format_unwraps_quantized_layers_before_save(tmp_path):
     expected_weight = model.linear.orig_layer.weight.detach().clone()
     output_dir = str(tmp_path / "fake_model")
 
-    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4"], SimpleNamespace(mllm=False)).save_quantized_as_format(
+    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4"], SimpleNamespace(mllm=False)).save_quantized(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -305,7 +305,7 @@ def test_fake_format_omits_woq_quantization_config(tmp_path):
     model = _SaveableModel()
     output_dir = str(tmp_path / "woq_model")
 
-    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized_as_format(
+    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -331,7 +331,7 @@ def test_fake_format_still_saves_when_env_disabled(tmp_path):
     model = _SaveableModel()
     output_dir = str(tmp_path / "save_model_even_when_env_disabled")
 
-    returned = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized_as_format(
+    returned = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -365,7 +365,7 @@ def test_fake_format_meta_device_applies_post_save_source_fixes(tmp_path, monkey
         lambda saved_model, save_dir: fixup_calls.append((saved_model, save_dir)),
     )
 
-    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized_as_format(
+    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized(
         output_dir=output_dir,
         model=model,
     )
@@ -425,7 +425,7 @@ def test_fake_format_restores_fp32_and_copies_mtp_tensors(tmp_path, monkeypatch)
     model = _SaveableSafetensorsModel(source_dir, norm_weight)
     output_dir = str(tmp_path / "fake_qwen35")
 
-    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized_as_format(
+    FakeFormat("fake", PRESET_SCHEMES["INT4"], SimpleNamespace(mllm=False)).save_quantized(
         output_dir=output_dir,
         model=model,
         inplace=False,
@@ -549,9 +549,7 @@ def test_fake_format_keeps_in_memory_wrapper_structure_on_save(tmp_path):
     model = _SaveableModel()
     output_dir = str(tmp_path / "fake_keep_wrapper_model")
 
-    saved_model = FakeFormat(
-        "fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)
-    ).save_quantized_as_format(
+    saved_model = FakeFormat("fake", PRESET_SCHEMES["NVFP4_E5M3"], SimpleNamespace(mllm=False)).save_quantized(
         output_dir=output_dir,
         model=model,
         inplace=False,

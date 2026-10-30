@@ -42,7 +42,7 @@ def test_mlx_save_uses_format_packing_and_writes_metadata(tmp_path):
         packed.append(layer_name)
 
     fmt.pack_layer = pack
-    saved = fmt.save_quantized_as_format(
+    saved = fmt.save_quantized(
         str(tmp_path),
         model=model,
         layer_config={"model.decoder.layers.0.fc1": {}},
@@ -82,6 +82,6 @@ def test_format_copy_does_not_move_input_model(tmp_path, monkeypatch, format_nam
         return original_to(module, *args, **kwargs)
 
     monkeypatch.setattr(torch.nn.Module, "to", record_to)
-    saved = fmt.save_quantized_as_format(str(tmp_path), model=model, inplace=False)
+    saved = fmt.save_quantized(str(tmp_path), model=model, inplace=False)
     assert saved is not model
     assert not moved_original

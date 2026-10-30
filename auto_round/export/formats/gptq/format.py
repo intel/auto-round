@@ -93,7 +93,7 @@ class AutoGPTQFormat(OutputFormat):
             from auto_round.export.formats.gptq.packing import pack_layer
         pack_layer(layer_name, model, backend=self.output_format, device=device)
 
-    def save_quantized_as_format(
+    def save_quantized(
         self,
         output_dir: str,
         model: torch.nn.Module = None,

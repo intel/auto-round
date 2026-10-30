@@ -175,7 +175,7 @@ class AutoRoundFormat(OutputFormat):
         pack, _, _ = self._implementation()
         return pack(layer_name, model, device=device)
 
-    def save_quantized_as_format(
+    def save_quantized(
         self,
         output_dir: str,
         model: torch.nn.Module = None,
@@ -190,7 +190,7 @@ class AutoRoundFormat(OutputFormat):
             extra_kwargs = {}
             if isinstance(self.backend, MLXFormat):
                 extra_kwargs["autoround_format"] = True
-            return self.backend.save_quantized_as_format(
+            return self.backend.save_quantized(
                 output_dir=output_dir,
                 model=model,
                 tokenizer=tokenizer,

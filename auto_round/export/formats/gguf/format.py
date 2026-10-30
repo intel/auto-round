@@ -180,7 +180,7 @@ class GGUFFormat(OutputFormat):
             is_auto_scheme=self.is_auto_scheme,
         )
 
-    def save_quantized_as_format(
+    def save_quantized(
         self,
         output_dir: str,
         model: torch.nn.Module = None,
@@ -191,10 +191,10 @@ class GGUFFormat(OutputFormat):
         serialization_dict: dict | None = None,
         **kwargs,
     ) -> torch.nn.Module:
-        from auto_round.export.formats.gguf.writer import save_quantized_as_format
+        from auto_round.export.formats.gguf.writer import save_quantized
 
         backend = self.get_backend_name()
-        return save_quantized_as_format(
+        return save_quantized(
             output_dir=output_dir,
             model=model,
             backend=backend,

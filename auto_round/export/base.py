@@ -229,7 +229,7 @@ class OutputFormat(ABC):
         """
 
     @abstractmethod
-    def save_quantized_as_format(
+    def save_quantized(
         self,
         output_dir,
         model=None,

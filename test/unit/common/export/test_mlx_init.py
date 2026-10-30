@@ -14,5 +14,5 @@ from auto_round.export.formats.mlx.format import MLXFormat
 def test_mlx_implements_unified_interface():
     assert issubclass(MLXFormat, OutputFormat)
     assert callable(MLXFormat.pack_layer)
-    assert callable(MLXFormat.save_quantized_as_format)
+    assert callable(MLXFormat.save_quantized)
     assert not MLXFormat.__abstractmethods__

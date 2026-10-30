@@ -259,7 +259,7 @@ def pack_layer(
 
 
 @torch.inference_mode()
-def save_quantized_as_format(
+def save_quantized(
     output_dir,
     model=None,
     backend="gguf:q4_0",

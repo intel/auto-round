@@ -47,14 +47,14 @@ def test_custom_format_implements_only_unified_methods(tmp_path):
         def pack_layer(self, layer_name, model, device=None, **kwargs):
             return None
 
-        def save_quantized_as_format(self, output_dir, model=None, **kwargs):
+        def save_quantized(self, output_dir, model=None, **kwargs):
             Path(output_dir, "format.txt").write_text(self.output_format)
             return model
 
     try:
         (fmt,) = resolve_formats(resolve_scheme_value("W4A16", {}), format=name).formats
         model = torch.nn.Linear(4, 4)
-        assert fmt.save_quantized_as_format(tmp_path, model=model) is model
+        assert fmt.save_quantized(tmp_path, model=model) is model
         assert (tmp_path / "format.txt").read_text() == name
     finally:
         OutputFormat._format_list.pop(name, None)

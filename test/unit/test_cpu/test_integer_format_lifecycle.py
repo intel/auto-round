@@ -87,9 +87,7 @@ def test_integer_save_real_checkpoint(kind, with_output, native, tmp_path, monke
     if kind == "awq":
         monkeypatch.setattr(module, "_collect_modules_to_not_convert", lambda *args, **kwargs: [])
     output = str(tmp_path) if with_output else None
-    packed = fmt.save_quantized_as_format(
-        output, model=model, layer_config=layers, serialization_dict=config, inplace=False
-    )
+    packed = fmt.save_quantized(output, model=model, layer_config=layers, serialization_dict=config, inplace=False)
     assert packed is not model
     assert isinstance(model[0], torch.nn.Linear)
     assert hasattr(packed[0], "qweight")

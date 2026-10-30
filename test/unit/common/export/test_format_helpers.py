@@ -163,7 +163,7 @@ class TestSchemeCompatibility:
             def pack_layer(self, *a, **kw):
                 pass
 
-            def save_quantized_as_format(self, *a, **kw):
+            def save_quantized(self, *a, **kw):
                 pass
 
         if support_schemes is not None:

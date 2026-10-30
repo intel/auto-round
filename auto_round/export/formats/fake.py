@@ -129,7 +129,7 @@ class FakeFormat(OutputFormat):
     def pack_layer(self, layer_name, model, device=None, **kwargs):
         pass
 
-    def save_quantized_as_format(
+    def save_quantized(
         self,
         output_dir: str,
         model: torch.nn.Module = None,

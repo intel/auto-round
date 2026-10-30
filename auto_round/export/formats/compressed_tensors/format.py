@@ -205,7 +205,7 @@ class LLMCompressorFormat(OutputFormat):
         pack, _ = self._implementation()
         return pack(layer_name, model, device=device)
 
-    def save_quantized_as_format(
+    def save_quantized(
         self,
         output_dir: str,
         model: torch.nn.Module = None,

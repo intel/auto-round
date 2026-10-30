@@ -2004,7 +2004,7 @@ class BaseOrchestrator:
                         original_block_name, reverted_block_name
                     )
 
-            compressed_model = output_format.save_quantized_as_format(
+            compressed_model = output_format.save_quantized(
                 save_folder,
                 model=self.model_context.model,
                 layer_config=self.layer_config,

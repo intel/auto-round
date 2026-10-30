@@ -188,7 +188,7 @@ def test_format_uses_flux_adapter_and_diffusers_weight_name(monkeypatch, tmp_pat
 
     monkeypatch.setattr(exporter, "save_svdquant_nunchaku_safetensors", fake_export)
 
-    result = output_format.save_quantized_as_format(tmp_path, model=model, model_adapter="flux", device="cpu")
+    result = output_format.save_quantized(tmp_path, model=model, model_adapter="flux", device="cpu")
 
     assert result is model
     assert captured["output_path"] == str(tmp_path / "diffusion_pytorch_model.safetensors")
@@ -233,7 +233,7 @@ def test_format_auto_resolves_sdxl_adapter(monkeypatch, tmp_path):
 
     monkeypatch.setattr(exporter, "save_svdquant_nunchaku_safetensors", fake_export)
 
-    output_format.save_quantized_as_format(tmp_path, model=model, model_adapter="auto", device="cpu")
+    output_format.save_quantized(tmp_path, model=model, model_adapter="auto", device="cpu")
 
     assert captured["output_path"] == str(tmp_path / "diffusion_pytorch_model.safetensors")
     assert isinstance(captured["adapter"], SDXLSVDQuantNunchakuAdapter)

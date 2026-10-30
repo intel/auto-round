@@ -523,7 +523,7 @@ class TestSaveQuantizedAsMlx:
     def test_creates_output_directory(self, tmp_path):
         model = self._make_model()
         output_dir = str(tmp_path / "mlx_model")
-        result = mlx_format.save_quantized_as_format(
+        result = mlx_format.save_quantized(
             output_dir=output_dir,
             model=model,
             tokenizer=None,
@@ -544,7 +544,7 @@ class TestSaveQuantizedAsMlx:
             json.dump({"model_type": "test", "hidden_size": 64}, f)
 
         # Now call the function - it will read config.json and add quantization info
-        mlx_format.save_quantized_as_format(
+        mlx_format.save_quantized(
             output_dir=output_dir,
             model=model,
             tokenizer=None,
@@ -561,7 +561,7 @@ class TestSaveQuantizedAsMlx:
         model = self._make_model()
         output_dir = str(tmp_path / "mlx_model")
         # The function should not raise and should process the autoround_format flag
-        mlx_format.save_quantized_as_format(
+        mlx_format.save_quantized(
             output_dir=output_dir,
             model=model,
             tokenizer=None,
@@ -591,7 +591,7 @@ class TestSaveQuantizedAsMlx:
         )
         output_dir = str(tmp_path / "mlx_model")
         # Should not raise; VLM text_config path is exercised
-        mlx_format.save_quantized_as_format(
+        mlx_format.save_quantized(
             output_dir=output_dir,
             model=model,
             tokenizer=None,
@@ -602,7 +602,7 @@ class TestSaveQuantizedAsMlx:
     def test_inplace_false_creates_copy(self, tmp_path):
         model = self._make_model()
         output_dir = str(tmp_path / "mlx_model")
-        result = mlx_format.save_quantized_as_format(
+        result = mlx_format.save_quantized(
             output_dir=output_dir,
             model=model,
             tokenizer=None,

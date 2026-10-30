@@ -45,7 +45,7 @@ def test_pack_and_save_use_selected_implementation(monkeypatch, format_class, ba
     model = torch.nn.Sequential(torch.nn.Linear(2, 2))
     fmt.pack_layer("0", model, device="cpu")
     assert pack.call_count == 1
-    assert fmt.save_quantized_as_format(None, model=model, serialization_dict={}) == "saved"
+    assert fmt.save_quantized(None, model=model, serialization_dict={}) == "saved"
     selected_pack = save.call_args.kwargs["_pack_layer"]
     selected_pack("0", model, device="cpu")
     assert pack.call_count == 2
@@ -59,7 +59,7 @@ def test_autoround_fp8_metadata_uses_serialization(monkeypatch):
     fmt = object.__new__(AutoRoundFormat)
     fmt.output_format = "auto_round:fp8"
     fmt.backend = None
-    fmt.save_quantized_as_format(None, serialization_dict={"data_type": "fp", "bits": 8, "act_bits": 8})
+    fmt.save_quantized(None, serialization_dict={"data_type": "fp", "bits": 8, "act_bits": 8})
     assert save.call_args.kwargs["backend"] == "auto_round:fp8_static"
 
 
@@ -97,7 +97,7 @@ def test_fp8_payload_and_checkpoint_preserve_copy(monkeypatch, tmp_path, output)
     fmt = object.__new__(AutoRoundFormat)
     fmt.output_format = "auto_round:fp8"
     fmt.backend = None
-    result = fmt.save_quantized_as_format(
+    result = fmt.save_quantized(
         str(tmp_path) if output else None,
         model=model,
         layer_config={
@@ -138,6 +138,6 @@ def test_autoround_e5m3_pairs_ct_packing_with_native_metadata(monkeypatch, suffi
     fmt.output_format = f"auto_round:nvfp4_v2{suffix}"
     fmt.backend = None
     fmt.pack_layer("linear", None)
-    fmt.save_quantized_as_format(None, serialization_dict={})
+    fmt.save_quantized(None, serialization_dict={})
     assert save.call_args.kwargs["_pack_layer"] is pack
     assert save.call_args.kwargs["backend"] == f"auto_round:llm_compressor_nvfp4_e5m3{suffix}"

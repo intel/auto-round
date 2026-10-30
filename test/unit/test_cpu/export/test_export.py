@@ -1088,7 +1088,7 @@ def test_awq_export_lists_unservable_layers(tmp_path):
     }
     serialization_dict = {"bits": 4, "group_size": 128, "sym": True}
 
-    fmt.save_quantized_as_format(
+    fmt.save_quantized(
         str(tmp_path),
         model=model,
         layer_config=layer_config,
@@ -1142,7 +1142,7 @@ def test_awq_export_packs_user_forced_layer(tmp_path):
     }
     serialization_dict = {"bits": 4, "group_size": 128, "sym": True}
 
-    fmt.save_quantized_as_format(
+    fmt.save_quantized(
         str(tmp_path),
         model=model,
         layer_config=layer_config,

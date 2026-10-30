@@ -59,7 +59,7 @@ def test_custom_format_quantize_and_save(tmp_path):
         def pack_layer(self, *args, **kwargs):
             pass
 
-        def save_quantized_as_format(self, output_dir, *, model, **kwargs):
+        def save_quantized(self, output_dir, *, model, **kwargs):
             calls.append((output_dir, model, kwargs))
             Path(output_dir).mkdir(parents=True, exist_ok=True)
             (Path(output_dir) / "export.marker").write_text(self.output_format)

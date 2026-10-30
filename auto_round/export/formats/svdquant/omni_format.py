@@ -39,7 +39,7 @@ class SVDQuantOmniFormat(SVDQuantNunchakuFormat):
         # Do not resolve Nunchaku architecture mappings or reset W4A4 to fake.
         return None, scheme, ctx.layer_config, ctx.quant_block_list
 
-    def save_quantized_as_format(
+    def save_quantized(
         self,
         output_dir,
         model=None,

@@ -60,7 +60,7 @@ def test_omni_tensor_layout_and_adapter_mapping(tmp_path):
             residual.weight.data = quantized.bfloat16()
         output = tmp_path / prefix
         output_format = get_formats("svdquant_omni", SimpleNamespace(scheme="NVFP4"))[0]
-        assert output_format.save_quantized_as_format(output, model=model, adapter=adapter) is model
+        assert output_format.save_quantized(output, model=model, adapter=adapter) is model
         tensors = load_file(output / "diffusion_pytorch_model.safetensors")
         assert set(tensors) == {
             *(

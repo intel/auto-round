@@ -56,7 +56,7 @@ def test_save_gguf_clears_global_state_on_writer_error():
 
     try:
         with pytest.raises(RuntimeError, match="writer failed"):
-            export_module.save_quantized_as_format("unused", model=object())
+            export_module.save_quantized("unused", model=object())
 
         assert not hasattr(export_module, "gguf_model_instance_global")
     finally:

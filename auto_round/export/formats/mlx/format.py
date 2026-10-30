@@ -68,7 +68,7 @@ class MLXFormat(OutputFormat):
 
         pack_layer(layer_name, model, device=device, **kwargs)
 
-    def save_quantized_as_format(
+    def save_quantized(
         self,
         output_dir: str,
         model: nn.Module = None,
