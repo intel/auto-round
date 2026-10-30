@@ -15,6 +15,7 @@ import argparse
 import importlib.util
 import os
 import time
+from pathlib import Path
 
 import torch
 from transformers.utils.versions import require_version
@@ -266,19 +267,10 @@ def eval(args):
 
 
 def eval_with_vllm(args):
-    import multiprocessing as mp
-    import time
+    # set vllm worker method
+    os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
-    if mp.get_start_method(allow_none=True) != "spawn":
-        try:
-            mp.set_start_method("spawn", force=True)
-        except RuntimeError as e:
-            if mp.get_start_method(allow_none=True) != "spawn":
-                raise RuntimeError(
-                    f"Failed to set multiprocessing start method to 'spawn' for vLLM evaluation "
-                    f"(current method: '{mp.get_start_method(allow_none=True)}'). "
-                    f"vLLM requires the 'spawn' start method to prevent CUDA re-initialization errors."
-                ) from e
+    import time
 
     from lm_eval import evaluator  # pylint: disable=E0401
     from lm_eval.models.vllm_causallms import VLLM  # pylint: disable=E0401
@@ -351,6 +343,7 @@ def eval_with_vllm(args):
         vllm_lm = VLLM_VLM(**vllm_kwargs)
     else:
         vllm_lm = VLLM(**vllm_kwargs)
+    task_manager = _get_lm_eval_task_manager(tasks)
     res = evaluator.simple_evaluate(
         model=vllm_lm,
         tasks=tasks,
@@ -358,6 +351,7 @@ def eval_with_vllm(args):
         num_fewshot=getattr(args, "num_fewshot", None),
         gen_kwargs=getattr(args, "eval_gen_kwargs", None),
         fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
+        task_manager=task_manager,
     )
 
     print(make_table(res))
@@ -515,16 +509,21 @@ def _get_lm_eval_task_manager(tasks: list[str]) -> object | None:
     except ImportError:
         return None
 
-    tasks_root = os.path.join(os.path.dirname(lm_eval.__file__), "tasks")
+    tasks_root = Path(lm_eval.__file__).parent / "tasks"
     task_paths = []
     for task in tasks:
-        task_path = os.path.join(tasks_root, task)
-        if not os.path.isdir(task_path):
+        task_path = tasks_root / task
+        if task_path.is_dir():
+            task_paths.append(str(task_path))
+            continue
+
+        task_configs = list(tasks_root.rglob(f"{task}.yaml"))
+        if not task_configs:
             return None
-        task_paths.append(task_path)
+        task_paths.extend(str(task_config.parent) for task_config in task_configs)
 
     try:
-        return TaskManager(include_defaults=False, include_path=task_paths)
+        return TaskManager(include_defaults=False, include_path=list(dict.fromkeys(task_paths)))
     except TypeError:
         return None
 

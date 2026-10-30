@@ -240,6 +240,7 @@ AWQ_FORMAT = ["auto_round:auto_awq"]
 LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor"]
 FAKE_FORMAT = ["auto_round:fake", "auto_round:auto_gptq", "auto_round", "auto_round:auto_awq"]
 NVFP4_E5M3_LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor_nvfp4_e5m3"]
+NVFP4_E5M3_GS_LLM_COMPRESSOR_FORMAT = ["auto_round:llm_compressor_nvfp4_e5m3_gs"]
 WOQ_DEFAULT_ACT_BITS = [None, 16, 32]
 
 # CPU backends that target Intel/x86 (ark / auto_round_kernel) cannot
@@ -441,6 +442,44 @@ BackendInfos["auto_round:cute_nvfp4_e5m3"] = BackendInfo(
     priority=6,
     checkers=[cute_nvfp4_e5m3_checker],
     alias=["cute_nvfp4_e5m3"],
+    requirements=["auto-round>0.12.0"],
+)
+
+BackendInfos["auto_round:torch_nvfp4_e5m3_gs"] = BackendInfo(
+    device=["xpu", "cuda", "cpu"],
+    packing_format=NVFP4_E5M3_GS_LLM_COMPRESSOR_FORMAT,
+    sym=[True],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["nvfp4_v2_gs"],
+    group_size=[16],
+    bits=[4],
+    act_bits=[4],
+    act_group_size=[16],
+    act_sym=[True],
+    act_data_type=["nvfp4_v2_with_static_gs"],
+    act_dynamic=[True],
+    priority=3,
+    checkers=[mxfp_nvfp_feature_checker],
+    alias=["auto_round", "torch"],
+    requirements=["auto-round>0.12.0"],
+)
+
+BackendInfos["auto_round:cute_nvfp4_e5m3_gs"] = BackendInfo(
+    device=["cuda"],
+    packing_format=NVFP4_E5M3_GS_LLM_COMPRESSOR_FORMAT,
+    sym=[True],
+    compute_dtype=["float32", "float16", "bfloat16"],
+    data_type=["nvfp4_v2_gs"],
+    group_size=[16],
+    bits=[4],
+    act_bits=[4],
+    act_group_size=[16],
+    act_sym=[True],
+    act_data_type=["nvfp4_v2_with_static_gs"],
+    act_dynamic=[True],
+    priority=6,
+    checkers=[cute_nvfp4_e5m3_checker],
+    alias=["cute_nvfp4_e5m3_gs"],
     requirements=["auto-round>0.12.0"],
 )
 
@@ -920,6 +959,10 @@ def dynamic_import_inference_linear(backend, config, packing_format=None):
         return ar_qmodules.MXINT4QuantLinear
     if "torch_mxfp4" in backend:
         return ar_qmodules.MXFP4QuantLinear
+    if backend == "auto_round:cute_nvfp4_e5m3_gs":
+        return ar_qmodules.CuteNVFP4E5M3GSQuantLinear
+    if backend == "auto_round:torch_nvfp4_e5m3_gs":
+        return ar_qmodules.NVFP4E5M3GSQuantLinear
     if backend == "auto_round:cute_nvfp4_e5m3":
         return ar_qmodules.CuteNVFP4E5M3QuantLinear
     if backend == "auto_round:torch_nvfp4_e5m3":
