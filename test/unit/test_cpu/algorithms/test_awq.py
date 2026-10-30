@@ -987,7 +987,7 @@ class TestAWQUseV2ScaleSearch:
         assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
 
     def test_v2_scale_search_policy(self):
-        """AWQ policy changes internal QDQ without changing the terminal V2 config."""
+        """AWQ policy changes internal QDQ without disabling the intrinsic terminal V2 extension."""
         from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
         from auto_round.algorithms.transforms.awq.base import AWQTransform
         from auto_round.algorithms.transforms.awq.config import AWQConfig
@@ -1012,7 +1012,7 @@ class TestAWQUseV2ScaleSearch:
             )[1]
             is not None
         )
-        assert block.enable_alg_ext is False
+        assert block.enable_alg_ext is True
 
     def test_v2_scale_search_defaults_off_for_int(self):
         """The default policy uses plain RTN for INT and full search for MX/NV."""
