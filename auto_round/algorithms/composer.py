@@ -356,61 +356,9 @@ class AlgorithmComposer:
 
         Returns a list of hook handles that the caller must remove when done.
         """
-        from auto_round.data_type.utils import reshape_pad_tensor_by_group_size
-        from auto_round.schemes import needs_nvfp_global_scale as is_nv_fp
+        from auto_round.data_type.utils import register_act_max_hooks
 
-        is_act_nv_fp = is_nv_fp(getattr(self.block_quantizer.config, "act_data_type", None) or "")
-
-        def collect_act_max(module, input, output):
-            input = input[0] if isinstance(input, (tuple, list)) else input
-            if input.numel() == 0:
-                return
-            module_act_data_type = getattr(module, "act_data_type", None) or getattr(module, "data_type", None)
-            is_module_act_nv_fp = is_nv_fp(module_act_data_type) if module_act_data_type else is_act_nv_fp
-            input, _, _ = reshape_pad_tensor_by_group_size(input, module.act_group_size)
-            act_max = torch.max(torch.abs(input), dim=-1).values
-            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
-                module.act_max = act_max
-                if is_module_act_nv_fp:
-                    max_val = act_max.max()
-                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-                return
-            act_max = act_max.to(module.act_max.device)
-            if is_module_act_nv_fp:
-                max_val = torch.max(act_max.max(), module.act_max.max())
-                module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-            else:
-                module.act_max = torch.max(act_max, module.act_max)
-
-        def should_collect(name, module):
-            from auto_round.compressors.utils import check_need_act_calibration
-            from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized
-
-            if isinstance(module, tuple(SUPPORTED_LAYER_TYPES)):
-                return (
-                    hasattr(module, "act_dynamic")
-                    and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
-                    and check_to_quantized(module)
-                )
-            if hasattr(module, "bits"):
-                act_dynamic = getattr(module, "act_dynamic", True)
-                act_data_type = getattr(module, "act_data_type", None)
-                act_bits = getattr(module, "act_bits", 16)
-                return (
-                    module.bits <= 8
-                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
-                    and check_to_quantized(module)
-                )
-            return False
-
-        handles = []
-        if should_collect("", block):
-            handles.append(block.register_forward_hook(collect_act_max))
-            return handles
-        for name, module in block.named_modules():
-            if name and should_collect(name, module):
-                handles.append(module.register_forward_hook(collect_act_max))
-        return handles
+        return register_act_max_hooks(block, getattr(self.block_quantizer.config, "act_data_type", None))
 
     def _get_fp_act_hooks(self, block: torch.nn.Module) -> list:
         """Register FP-input act_max + quantizer forward hooks."""

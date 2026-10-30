@@ -567,6 +567,30 @@ class QADQuantizer(SignRoundQuantizer):
         clear_memory()
 
     # ── whole-model tuning entry point ────────────────────────────────────────
+    @torch.no_grad()
+    def _calibrate_activations(self, model, token_ids, device) -> None:
+        """Prepare activation ranges before wrapping, independently of the teacher cache."""
+        from auto_round.data_type.utils import register_act_max_hooks, update_block_global_scale_if_needed
+        from auto_round.utils import set_amax_for_all_moe_layers
+
+        handles = register_act_max_hooks(model, self.config.act_data_type)
+        was_training = model.training
+        try:
+            if handles:
+                model.eval()
+                vocab_size = getattr(getattr(model, "config", None), "vocab_size", None)
+                for ids in token_ids:
+                    batch_ids = self._as_batch_ids(ids, device)
+                    self._forward_logits(model, batch_ids, vocab_size)
+        finally:
+            for handle in handles:
+                handle.remove()
+            model.train(was_training)
+
+        if handles:
+            set_amax_for_all_moe_layers(model, attr_name="act_max")
+        update_block_global_scale_if_needed(model, self.config.data_type or "int", self.config.group_size or -1)
+
     def quantize_model(self, model, token_ids, device=None) -> dict:
         """Tune the whole model jointly against the cached teacher distribution.
 
@@ -586,6 +610,9 @@ class QADQuantizer(SignRoundQuantizer):
         # Make the FP model resident on the compute device and hook-free.
         self._strip_accelerate_hooks(model)
         model.to(device)
+        # Whole-model tuning bypasses the composer's per-block calibration.
+        # Run this even when KD is disabled or all teacher samples are cached.
+        self._calibrate_activations(model, token_ids, device)
 
         # 1) Offline teacher cache from a real full-model forward (no probing).
         #    Skipped entirely for a pure hard-label QAT run (``--qad_kd_weight 0``).

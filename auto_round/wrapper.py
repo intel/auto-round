@@ -109,6 +109,7 @@ class WrapperLinear(torch.nn.Module):
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
         self.weight_global_scale = getattr(self.orig_layer, "weight_global_scale", None)
+        self.input_global_scale = getattr(self.orig_layer, "input_global_scale", None)
         if needs_nvfp_global_scale(self.orig_layer.data_type) and self.weight_global_scale is None:
             from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
@@ -317,6 +318,12 @@ class WrapperLinear(torch.nn.Module):
                 "act_max_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING or (not orig_layer.act_dynamic)
             )
             self._init_params("act_min_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING)
+            if warm_start:
+                for key in ("act_min_scale", "act_max_scale"):
+                    saved = warm_start.get(key)
+                    param = self.params.get(key)
+                    if saved is not None and param is not None and saved.shape == param.shape:
+                        param.data.copy_(saved.to(device=param.device, dtype=param.dtype))
 
         # Bias tuning
         if self.enable_norm_bias_tuning:
@@ -621,8 +628,11 @@ class WrapperLinear(torch.nn.Module):
 
         # Unwrapper act
         if self.enable_act_quant:
+            act_min_scale = best_params.get("act_min_scale", torch.tensor(1.0)).detach().to(self.device).clone()
+            act_max_scale = best_params.get("act_max_scale", torch.tensor(1.0)).detach().to(self.device).clone()
+            act_min_scale.clamp_(0, 1.0)
+            act_max_scale.clamp_(0, 1.0)
             if not self.orig_layer.act_dynamic:
-                act_max_scale = best_params.get("act_max_scale", torch.tensor(1.0)).to(self.device)
                 act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
                 if act_max is not None:
                     tmp_shape = 1
@@ -632,11 +642,11 @@ class WrapperLinear(torch.nn.Module):
                         tmp_shape = (act_max.shape[0], 1)
                     _, act_scale, _ = self._qdq_act(
                         torch.zeros(tmp_shape).to(self.device),
-                        act_min_scale=self.act_min_scale,
-                        act_max_scale=self.act_max_scale,
+                        act_min_scale=act_min_scale,
+                        act_max_scale=act_max_scale,
                         act_max=act_max,
                     )
-                    self.orig_layer.act_max = self.orig_layer.act_max * act_max_scale.item()
+                    # Keep calibration statistics separate from the tuned coefficients.
                     self.orig_layer.act_max = self.orig_layer.act_max.to("cpu")
                 else:
                     act_scale = torch.ones(1, dtype=self.orig_layer.scale_dtype)
@@ -644,8 +654,8 @@ class WrapperLinear(torch.nn.Module):
 
             self.orig_layer.q_scale_thresh = self.q_scale_thresh
             self.orig_layer.data_type = self.data_type
-            self.orig_layer.act_min_scale = self.act_min_scale
-            self.orig_layer.act_max_scale = self.act_max_scale
+            self.orig_layer.act_min_scale = act_min_scale
+            self.orig_layer.act_max_scale = act_max_scale
 
             self.orig_layer.act_data_type = self.act_data_type
             self.orig_layer.act_quant_func = self.act_quant_func
@@ -804,29 +814,18 @@ class WrapperWALayer(torch.nn.Module):
         quant_kwargs = {}
         if hasattr(self.orig_layer, "input_global_scale"):
             quant_kwargs["global_scale"] = self.orig_layer.input_global_scale
-        if act_max is None:
-            x, _, _ = self.orig_layer.act_quant_func(
-                x,
-                bits=self.orig_layer.act_bits,
-                group_size=self.orig_layer.act_group_size,
-                scale_dtype=self.orig_layer.scale_dtype,
-                q_scale_thresh=self.orig_layer.q_scale_thresh,
-                data_type=self.orig_layer.act_data_type,
-                min_scale=min_scale,
-                max_scale=max_scale,
-                **quant_kwargs,
-            )
-        else:
-            x, _, _ = self.orig_layer.act_quant_func(
-                x,
-                bits=self.orig_layer.act_bits,
-                group_size=self.orig_layer.act_group_size,
-                scale_dtype=self.orig_layer.scale_dtype,
-                q_scale_thresh=self.orig_layer.q_scale_thresh,
-                data_type=self.orig_layer.act_data_type,
-                act_max=act_max,
-                **quant_kwargs,
-            )
+        x, _, _ = self.orig_layer.act_quant_func(
+            x,
+            bits=self.orig_layer.act_bits,
+            group_size=self.orig_layer.act_group_size,
+            scale_dtype=self.orig_layer.scale_dtype,
+            q_scale_thresh=self.orig_layer.q_scale_thresh,
+            data_type=self.orig_layer.act_data_type,
+            tensor_max=act_max,
+            min_scale=min_scale,
+            max_scale=max_scale,
+            **quant_kwargs,
+        )
         # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)
 
@@ -1074,7 +1073,8 @@ def unwrapper_layer(model, layer, layer_name, best_params):
     max_scales: A dictionary of maximum scaling values for the wrapped modules.
     """
 
-    if hasattr(layer, "orig_layer"):
+    # WrapperWALayer retains activation QDQ and is not a tuning wrapper.
+    if hasattr(layer, "orig_layer") and callable(getattr(layer, "unwrapper", None)):
         orig_layer = layer.unwrapper(best_params)
         act_max = getattr(orig_layer, "act_max", None)
         act_scale = getattr(orig_layer, "act_scale", None)
@@ -1104,7 +1104,8 @@ def unwrapper_block(block, best_params):
     max_scales: A dictionary of maximum scaling values for the wrapped modules.
     """
     for n, m in block.named_modules():
-        if hasattr(m, "orig_layer"):
+        # Keep persistent activation wrappers, which do not implement unwrapper.
+        if hasattr(m, "orig_layer") and callable(getattr(m, "unwrapper", None)):
             if n in best_params.keys():
                 best_param = best_params[n]
             else:
@@ -1173,7 +1174,7 @@ def store_warm_start_params_and_unwrap(block, best_params, *, before_unwrap=None
             else:
                 layer_params = {}
             store = {}
-            for key in ("value", "min_scale", "max_scale"):
+            for key in ("value", "min_scale", "max_scale", "act_min_scale", "act_max_scale"):
                 if key in layer_params and layer_params[key] is not None:
                     store[key] = layer_params[key].detach().to("cpu")
             init_scale = getattr(m, "init_scale", None)
