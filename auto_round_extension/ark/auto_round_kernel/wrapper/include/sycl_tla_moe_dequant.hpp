@@ -120,6 +120,53 @@ inline float decode_fp8_e5m2_bits(uint8_t byte) {
   return sign ? -v : v;
 }
 
+inline float decode_e8m0_scale(uint8_t byte) {
+  return sycl::ldexp(1.0f, static_cast<int>(byte) - 127);
+}
+
+inline float decode_fp4_e2m1(uint8_t nibble) {
+  const bool sign = (nibble & 0x8u) != 0;
+  const uint8_t mag = nibble & 0x7u;
+  float v;
+  switch (mag) {
+    case 0:
+      v = 0.0f;
+      break;
+    case 1:
+      v = 0.5f;
+      break;
+    case 2:
+      v = 1.0f;
+      break;
+    case 3:
+      v = 1.5f;
+      break;
+    case 4:
+      v = 2.0f;
+      break;
+    case 5:
+      v = 3.0f;
+      break;
+    case 6:
+      v = 4.0f;
+      break;
+    default:
+      v = 6.0f;
+      break;
+  }
+  return sign ? -v : v;
+}
+
+inline uint8_t encode_fp4_e2m1_as_fp8_e4m3(uint8_t nibble) {
+  static constexpr uint8_t kFp4ToFp8E4M3[8] = {0x00, 0x30, 0x38, 0x3c, 0x40, 0x44, 0x48, 0x4c};
+  return static_cast<uint8_t>(kFp4ToFp8E4M3[nibble & 0x7u] | ((nibble & 0x8u) ? 0x80u : 0x00u));
+}
+
+inline void decode_fp4_e2m1_pair(uint8_t packed, float& lo, float& hi) {
+  lo = decode_fp4_e2m1(packed & 0x0Fu);
+  hi = decode_fp4_e2m1((packed >> 4) & 0x0Fu);
+}
+
 // Compile-time dispatch helper. Both branches are resolved via `if constexpr`,
 // so there is no per-element runtime cost regardless of which path is chosen.
 template <bool IsE4M3, bool UseLut>

@@ -25,6 +25,7 @@ import pytest
 import torch
 
 ark = auto_round_kernel
+CRI_SYCL_TARGETS = {"cri", "intel_gpu_cri"}
 
 
 def is_xpu_available():
@@ -43,6 +44,167 @@ def has_moe_gemm_decode():
     if ark.xpu_lib is None:
         return False
     return hasattr(ark.xpu_lib, "moe_gemm_decode")
+
+
+def has_moe_gemm_prefill_mxfp8_mxfp4():
+    """Check if MXFP8 x MXFP4 MoE prefill kernel is available."""
+    if ark.xpu_lib is None:
+        return False
+    return hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp8_mxfp4")
+
+
+def has_moe_gemm_prefill_mxfp4_mxfp4():
+    """Check if MXFP4 x MXFP4 MoE prefill kernel is available."""
+    if ark.xpu_lib is None:
+        return False
+    return hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp4_mxfp4")
+
+
+def has_moe_gemm_prefill_hmt_mxfp4_mxfp4():
+    """Check if the FWHT HMT + MXFP4 x MXFP4 MoE prefill path is available."""
+    if ark.xpu_lib is None:
+        return False
+    return (
+        getattr(ark.xpu_lib, "sycl_target", None) in CRI_SYCL_TARGETS
+        and hasattr(ark.xpu_lib, "mxfp4_hadamard_quant")
+        and hasattr(ark.xpu_lib, "moe_gemm_prefill_mxfp4_mxfp4")
+    )
+
+
+@pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
+@pytest.mark.skipif(
+    not has_moe_gemm_prefill_mxfp8_mxfp4(),
+    reason="MXFP8 x MXFP4 MoE prefill kernel not built (need ARK_SYCL_TLA=ON)",
+)
+class TestMoEGemmPrefillMXFP8MXFP4:
+    """Unit tests for MXFP8 activation x MXFP4 weight MoE prefill."""
+
+    @pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
+    @pytest.mark.parametrize("output_dtype", [torch.float16, torch.bfloat16])
+    def test_constant_block_scaled_values(self, fp8_dtype, output_dtype):
+        num_experts = 2
+        total_tokens = 4
+        N = 16
+        K = 64
+
+        activations = torch.ones(total_tokens, K, dtype=torch.float16, device="xpu").to(fp8_dtype)
+        # 128 -> activation scale 2.0. 126 -> weight scale 0.5. FP4 nibble 0x2 -> 1.0.
+        # Each product is therefore 1.0, so every output element must equal K exactly.
+        activation_scales = torch.full((total_tokens, K // 32), 128, dtype=torch.uint8, device="xpu")
+        weights = torch.full((num_experts, N, K // 2), 0x22, dtype=torch.uint8, device="xpu")
+        weight_scales = torch.full((num_experts, N, K // 32), 126, dtype=torch.uint8, device="xpu")
+        num_tokens_per_expert = torch.tensor([2, 2], dtype=torch.int32, device="xpu")
+
+        output = ark.moe_gemm_prefill_mxfp8_mxfp4(
+            activations,
+            activation_scales,
+            weights,
+            weight_scales,
+            num_tokens_per_expert,
+            output_dtype=output_dtype,
+            group_size=32,
+        )
+
+        expected = torch.full((total_tokens, N), float(K), dtype=torch.float32, device="xpu")
+        torch.testing.assert_close(output.float(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
+@pytest.mark.skipif(
+    not has_moe_gemm_prefill_mxfp4_mxfp4(),
+    reason="MXFP4 x MXFP4 MoE prefill kernel not built (need ARK_SYCL_TLA=ON)",
+)
+class TestMoEGemmPrefillMXFP4MXFP4:
+    """Unit tests for MXFP4 activation x MXFP4 weight MoE prefill."""
+
+    @pytest.mark.parametrize("output_dtype", [torch.float16, torch.bfloat16])
+    def test_constant_block_scaled_values(self, output_dtype):
+        num_experts = 2
+        total_tokens = 4
+        N = 16
+        K = 64
+
+        # 128 -> activation scale 2.0. 126 -> weight scale 0.5. FP4 nibble 0x2 -> 1.0.
+        # Each product is therefore 1.0, so every output element must equal K exactly.
+        activations = torch.full((total_tokens, K // 2), 0x22, dtype=torch.uint8, device="xpu")
+        activation_scales = torch.full((total_tokens, K // 32), 128, dtype=torch.uint8, device="xpu")
+        weights = torch.full((num_experts, N, K // 2), 0x22, dtype=torch.uint8, device="xpu")
+        weight_scales = torch.full((num_experts, N, K // 32), 126, dtype=torch.uint8, device="xpu")
+        num_tokens_per_expert = torch.tensor([2, 2], dtype=torch.int32, device="xpu")
+
+        output = ark.moe_gemm_prefill_mxfp4_mxfp4(
+            activations,
+            activation_scales,
+            weights,
+            weight_scales,
+            num_tokens_per_expert,
+            output_dtype=output_dtype,
+            group_size=32,
+        )
+
+        expected = torch.full((total_tokens, N), float(K), dtype=torch.float32, device="xpu")
+        torch.testing.assert_close(output.float(), expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
+@pytest.mark.skipif(
+    not has_moe_gemm_prefill_hmt_mxfp4_mxfp4(),
+    reason="HMT MXFP4 x MXFP4 MoE prefill kernel was not built for CRI",
+)
+class TestMoEGemmPrefillHMTMXFP4MXFP4:
+    """Unit tests for fused HMT + MXFP4 activation x MXFP4 weight MoE prefill."""
+
+    @pytest.mark.parametrize("activation_dtype", [torch.float16, torch.bfloat16])
+    def test_constant_hadamard_block_scaled_values(self, activation_dtype):
+        num_experts = 2
+        total_tokens = 4
+        N = 16
+        K = 64
+
+        activations = torch.ones(total_tokens, K, dtype=activation_dtype, device="xpu")
+        weights = torch.zeros((num_experts, N, K // 2), dtype=torch.uint8, device="xpu")
+        weights[:, :, 0] = 0x02
+        weights[:, :, 16] = 0x02
+        weight_scales = torch.full((num_experts, N, K // 32), 127, dtype=torch.uint8, device="xpu")
+        num_tokens_per_expert = torch.tensor([2, 2], dtype=torch.int32, device="xpu")
+
+        output = ark.moe_gemm_prefill_hmt_mxfp4_mxfp4(
+            activations,
+            weights,
+            weight_scales,
+            num_tokens_per_expert,
+            output_dtype=torch.bfloat16,
+            group_size=32,
+        )
+
+        expected = torch.full((total_tokens, N), 12.0, dtype=torch.float32, device="xpu")
+        torch.testing.assert_close(output.float(), expected, rtol=0, atol=0)
+
+    def test_custom_hadamard_rejected(self):
+        from auto_round_kernel.mxfp4_hadamard import get_hadamard_matrix
+
+        num_experts = 2
+        total_tokens = 4
+        N = 16
+        K = 64
+
+        activations = torch.ones(total_tokens, K, dtype=torch.bfloat16, device="xpu")
+        weights = torch.zeros((num_experts, N, K // 2), dtype=torch.uint8, device="xpu")
+        weight_scales = torch.full((num_experts, N, K // 32), 127, dtype=torch.uint8, device="xpu")
+        num_tokens_per_expert = torch.tensor([2, 2], dtype=torch.int32, device="xpu")
+        hadamard = get_hadamard_matrix(32, "xpu").clone()
+        hadamard[0, 1] = -hadamard[0, 1]
+
+        with pytest.raises(NotImplementedError, match="Sylvester FWHT"):
+            ark.moe_gemm_prefill_hmt_mxfp4_mxfp4(
+                activations,
+                weights,
+                weight_scales,
+                num_tokens_per_expert,
+                hadamard,
+                output_dtype=torch.bfloat16,
+                group_size=32,
+            )
 
 
 @pytest.mark.skipif(not is_xpu_available(), reason="XPU not available")
@@ -765,64 +927,57 @@ class TestMoEGemmDecode:
         torch.testing.assert_close(out_coalesced, out_scalar, rtol=1e-3, atol=1e-3)
 
     @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-    def test_decode_int4_repack_cache(self, monkeypatch, dtype):
-        """``ARK_MOE_DECODE_INT4_REPACK_CACHE=1`` lets the coalesced int4 kernel
-        reuse the N-tiled weight repack across calls instead of rebuilding it.
+    @pytest.mark.parametrize("asym", [False, True])
+    def test_decode_int4_scratch_reuse(self, monkeypatch, dtype, asym):
+        """Reuse global scratch, grow it, then return to a smaller shape.
 
-        Reuse is keyed on the weight buffer address plus its shape, so it is
-        only valid while the caller keeps that buffer alive. Verify that (a)
-        repeated calls on a live weight tensor keep matching the reference, and
-        (b) ``moe_decode_release_scratch()`` drops the cache so a *different*
-        weight tensor -- which torch's caching allocator may well hand back at
-        the same address -- is repacked again rather than answered from the
-        stale entry.
+        Both repack and asymmetric activation-sum buffers persist without
+        manual creation or release. In-place weight updates must be honoured
+        even though their address and shape have not changed.
         """
         num_experts = 3
-        tokens_per_expert = [4, 0, 5]
-        total_tokens = sum(tokens_per_expert)
-        N, K = 64, 128
         group_size = 32
-
-        activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
-        num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
-
-        def _build():
-            w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
-            scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
-            packed = _pack_int4_sym(w_float, scales, group_size)
-            dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
-            return packed, scales, _moe_decode_reference(activations, dequant, num_tokens_per_expert)
-
-        def _run(packed, scales):
-            return ark.moe_gemm_decode(
-                activations,
-                packed,
-                num_tokens_per_expert,
-                scales=scales,
-                weight_bits=4,
-                group_size=group_size,
-                asym=False,
-            )
-
         monkeypatch.setenv("ARK_MOE_DECODE_DPAS_S4", "0")
         monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_INT4", "1")
         monkeypatch.setenv("ARK_MOE_DECODE_COALESCE_MIN_TOKENS", "0")
-        monkeypatch.setenv("ARK_MOE_DECODE_INT4_REPACK_CACHE", "1")
 
-        try:
-            packed_a, scales_a, ref_a = _build()
-            # First call builds the repack, second must hit the cache.
-            torch.testing.assert_close(_run(packed_a, scales_a), ref_a, rtol=5e-2, atol=5e-2)
-            torch.testing.assert_close(_run(packed_a, scales_a), ref_a, rtol=5e-2, atol=5e-2)
+        for N, K, tokens_per_expert in (
+            (64, 128, [4, 0, 5]),
+            (128, 256, [7, 0, 13]),
+            (64, 128, [4, 0, 5]),
+        ):
+            total_tokens = sum(tokens_per_expert)
+            activations = torch.randn(total_tokens, K, dtype=dtype, device="xpu")
+            num_tokens_per_expert = torch.tensor(tokens_per_expert, dtype=torch.int32, device="xpu")
+            w_float = (torch.randn(num_experts, N, K, dtype=torch.float32, device="xpu") * 0.1).to(dtype)
+            scales = torch.empty(num_experts, N, K // group_size, dtype=dtype, device="xpu")
+            if asym:
+                zeros = torch.empty_like(scales)
+                packed = _pack_int4_asym(w_float, scales, zeros, group_size)
+            else:
+                zeros = None
+                packed = _pack_int4_sym(w_float, scales, group_size)
 
-            # Drop the cached repack before the buffer it was derived from goes
-            # away, then verify a freshly built weight tensor is honoured.
-            del packed_a, scales_a
-            ark.moe_decode_release_scratch()
-            packed_b, scales_b, ref_b = _build()
-            torch.testing.assert_close(_run(packed_b, scales_b), ref_b, rtol=5e-2, atol=5e-2)
-        finally:
-            ark.moe_decode_release_scratch()
+            # Reuse twice, then change the weight contents at the same address.
+            for iteration in range(3):
+                if iteration == 2:
+                    packed.bitwise_xor_(0x11)
+                if asym:
+                    dequant = _dequant_int4_asym(packed, scales, zeros, group_size).to(dtype)
+                else:
+                    dequant = _dequant_int4_sym(packed, scales, group_size).to(dtype)
+                ref = _moe_decode_reference(activations, dequant, num_tokens_per_expert)
+                out = ark.moe_gemm_decode(
+                    activations,
+                    packed,
+                    num_tokens_per_expert,
+                    scales=scales,
+                    zeros=zeros,
+                    weight_bits=4,
+                    group_size=group_size,
+                    asym=asym,
+                )
+                torch.testing.assert_close(out, ref, rtol=5e-2, atol=5e-2)
 
     def test_decode_validation_errors(self):
         """Sanity-check that Python-side validation catches misuse."""
