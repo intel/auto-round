@@ -154,11 +154,22 @@ def block_forward(
     input_others, input_tuple = prepare_special_model_block_inputs(block, input_ids, input_others, input_tuple)
 
     # Use the block's actual parameter name for the first positional argument.
-    import inspect as _inspect
-
-    # For DDP-wrapped blocks, inspect the underlying module's signature
+    # For DDP-wrapped blocks, inspect the underlying module's signature.
     _actual_block = getattr(block, "module", block)
-    param_names = [p for p in _inspect.signature(_actual_block.forward).parameters.keys() if p != "self"]
+    # ``inspect.signature`` is relatively expensive and the forward signature is
+    # fixed for the lifetime of a block, yet this runs on *every* batch of every
+    # reference/quantized-input/tuning pass (hundreds of thousands of calls for
+    # large nsamples). Resolve the parameter names once and cache them on the
+    # module so subsequent calls are a single attribute read.
+    param_names = getattr(_actual_block, "_ar_forward_param_names", None)
+    if param_names is None:
+        import inspect as _inspect
+
+        param_names = [p for p in _inspect.signature(_actual_block.forward).parameters.keys() if p != "self"]
+        try:
+            _actual_block._ar_forward_param_names = param_names
+        except (AttributeError, RuntimeError):  # pragma: no cover - exotic module types
+            pass
     block_input_kwarg = param_names[0] if param_names else "hidden_states"
     if block_input_kwarg not in input_others:
         input_others[block_input_kwarg] = input_ids

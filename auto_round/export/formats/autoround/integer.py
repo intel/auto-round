@@ -212,6 +212,20 @@ def pack_layer(layer_name, model, backend, device=None):
         PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
         return
 
+    # A model-wide INT packing format can contain per-layer FP8 overrides.
+    # Dispatch before the integer activation packer, which cannot represent
+    # FP8 block scales or floating-point weight encodings.
+    if is_standard_fp(getattr(layer, "data_type", "int")) and layer.bits == 8:
+        from auto_round.export.formats.autoround.fp8 import pack_layer as pack_fp8_layer
+
+        PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
+        PACK_PHASES["count"] += 1
+        _t_pack = time.perf_counter()
+        try:
+            return pack_fp8_layer(layer_name, model, layer.data_type, device=device)
+        finally:
+            PACK_PHASES["pack"] += time.perf_counter() - _t_pack
+
     if int(layer.act_bits) <= 8:
         PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
         PACK_PHASES["count"] += 1
@@ -394,7 +408,10 @@ def save_checkpoint(
                     if cfg.get(key) is not None:
                         extra_config[regex_name][key] = cfg[key]
 
-    if len(extra_config) > 0:
+    for layer_name, cfg in layer_config.items():
+        if is_standard_fp(cfg.get("data_type", "int")) and cfg.get("bits") == 8:
+            extra_config.setdefault(layer_name, {})["packing_format"] = "auto_round:fp8"
+    if extra_config:
         quantization_config["extra_config"] = extra_config
 
     names = list(layer_config.keys())
