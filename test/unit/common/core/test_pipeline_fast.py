@@ -138,6 +138,20 @@ def test_needs_calibration_data_when_layer_config_overrides_to_nvfp4():
     assert compressor._needs_calibration_data() is True
 
 
+@pytest.mark.parametrize("resolver", ["resolve_algorithm_names", "resolve_alg_config"])
+def test_unknown_algorithm_error_lists_only_canonical_names(resolver):
+    from auto_round.algorithms import registry
+
+    with pytest.raises(ValueError) as error:
+        getattr(registry, resolver)("haha")
+
+    message = str(error.value)
+    supported = sorted(entry.name for entry in registry.iter_algorithm_entries())
+    assert f"Supported algorithms: {supported}." in message
+    assert "'autoround'" not in message
+    assert "'opt_rtn'" not in message
+
+
 def test_registry_builtin_aliases_and_unknown():
     assert isinstance(_r.resolve_alg_config("RTN"), RTNConfig)
     assert isinstance(_r.resolve_alg_config("awq"), AWQConfig)

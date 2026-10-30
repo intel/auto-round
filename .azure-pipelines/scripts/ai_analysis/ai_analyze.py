@@ -3,7 +3,9 @@
 Ranks the *unknown* failure clusters by occurrence, takes the top N (default 3)
 and asks an AI backend to classify each failure (Code Regression / Environment /
 Dependency / Test Case) and propose a fix. When the model is not confident it is
-instructed to omit the fix and instead give investigation directions.
+instructed to omit the fix and instead give investigation directions. Answers
+that are not ``high`` confidence (or unparsable) can be re-run once with a
+stronger ``--escalation-model``.
 
 The backend is intentionally pluggable behind ``call_backend`` so the current
 GitHub Copilot CLI implementation can be swapped later. With ``--backend none``
@@ -296,6 +298,36 @@ def build_prompt(cluster: dict, pr_files: str, max_excerpt: int, project_root: s
     )
 
 
+def _reset_workspace(args) -> None:
+    """Restore the checkout to a clean state so the escalated run is not influenced by edits from the first run.
+
+    Only runs when ``--project-root`` is given explicitly, and keeps the analysis output / log / trace dirs.
+    """
+    if not args.project_root:
+        return
+    root = os.path.abspath(args.project_root)
+    keep = set()
+    for path in (args.output, args.trace_file, args.clusters_json):
+        if path:
+            keep.add(os.path.dirname(os.path.abspath(path)))
+    if args.log_dir:
+        keep.add(os.path.abspath(args.log_dir))
+    excludes = []
+    for path in keep:
+        rel = os.path.relpath(path, root)
+        if rel != "." and not rel.startswith(".."):
+            top = rel.split(os.sep)[0]
+            if top not in excludes[1::2]:
+                excludes += ["-e", top]
+    print(f"Resetting workspace {root} before escalation (keeping {excludes[1::2]})", file=sys.stderr)
+    _run_git(root, ["checkout", "--", "."])
+    _run_git(root, ["clean", "-fd", *excludes])
+
+
+def _is_high_confidence(parsed: "dict | None") -> bool:
+    return bool(parsed) and str(parsed.get("confidence", "")).strip().lower() == "high"
+
+
 def analyze(cluster: dict, pr_files: str, args) -> dict:
     prompt = build_prompt(cluster, pr_files, args.max_excerpt_chars, args.project_root, args.log_dir)
     raw = call_backend(
@@ -308,11 +340,38 @@ def analyze(cluster: dict, pr_files: str, args) -> dict:
         cluster.get("id"),
     )
     parsed = parse_model_json(raw)
+    model_used = args.model
+    escalated = False
+    # Re-run non-high-confidence (or unparsable) answers once with a stronger model.
+    if args.backend != "none" and args.escalation_model and not _is_high_confidence(parsed):
+        print(
+            f"Cluster {cluster.get('id')}: confidence="
+            f"{(parsed or {}).get('confidence', 'unparsable')}, escalating to {args.escalation_model}",
+            file=sys.stderr,
+        )
+        _reset_workspace(args)
+        esc_raw = call_backend(
+            prompt,
+            args.backend,
+            args.escalation_timeout or args.timeout,
+            args.escalation_model,
+            args.escalation_reasoning_effort,
+            args.trace_file,
+            f"{cluster.get('id')}-escalated",
+        )
+        esc_parsed = parse_model_json(esc_raw)
+        # Keep the first answer if the escalated call produced nothing usable.
+        if esc_parsed or not parsed:
+            raw, parsed = esc_raw, esc_parsed
+            model_used = args.escalation_model
+            escalated = True
     result = {
         "cluster_id": cluster.get("id"),
         "signature": cluster.get("signature"),
         "occurrences": cluster.get("occurrences"),
         "tests": cluster.get("tests", []),
+        "model": model_used if args.backend != "none" else "",
+        "escalated": escalated,
     }
     if parsed:
         # Low-confidence answers must not carry a fix/patch (requirement 3.3).
@@ -361,13 +420,30 @@ def main():
         default="true",
         help="Set to a falsy value (false/0/no) to force the no-model 'none' backend",
     )
-    parser.add_argument("--timeout", type=int, default=300, help="Per-call timeout in seconds")
+    parser.add_argument("--timeout", type=int, default=600, help="Per-call timeout in seconds")
     parser.add_argument("--model", default="", help="Copilot model to use; empty uses the CLI default")
     parser.add_argument(
         "--reasoning-effort",
         choices=["none", "minimal", "low", "medium", "high", "xhigh", "max"],
         default="",
         help="Copilot reasoning effort; empty uses the CLI default",
+    )
+    parser.add_argument(
+        "--escalation-model",
+        default="",
+        help="Stronger model to re-run a cluster with when the first answer is not high confidence; empty disables",
+    )
+    parser.add_argument(
+        "--escalation-reasoning-effort",
+        choices=["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+        default="",
+        help="Reasoning effort for the escalation model; empty uses the CLI default",
+    )
+    parser.add_argument(
+        "--escalation-timeout",
+        type=int,
+        default=0,
+        help="Per-call timeout in seconds for the escalation model; 0 reuses --timeout",
     )
     parser.add_argument("--trace-file", default="", help="JSONL file logging each AI call for auditing")
     parser.add_argument("--project-root", default="", help="Repository checkout root the AI may inspect")
