@@ -48,6 +48,60 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 ```
 
+## Calibration Controls
+
+AWQ has its own calibration budget for activation statistics and for the smoothing and clipping searches. These controls affect AWQ preprocessing only; the downstream RTN or AutoRound quantizer retains the global calibration cache and performs its own final scale search.
+
+| CLI option | `AWQConfig` field | Default | Purpose |
+| --- | --- | --- | --- |
+| `--awq-nsamples` | `awq_nsamples` | `128` | Maximum number of calibration samples used by AWQ activation statistics, smoothing, and clipping. |
+| `--awq_seqlen` | `awq_seqlen` | `512` | Maximum sequence length used by AWQ calibration; `<= 0` disables truncation. |
+| `--awq_smooth_batch_size` | `smooth_batch_size` | `None` | Micro-batch size for replaying the parent module during the AWQ scale search; lower positive values reduce peak VRAM, while `<= 0` disables micro-batching. |
+| `--awq-v2-scale-search` | `v2_scale_search` | `auto` | Scale-search policy for AWQ's internal QDQ when the terminal quantizer is AutoRoundV2. |
+
+`--awq-nsamples` is independent of the global `--nsamples`. AWQ selects a deterministic random subset (seed 42) from the cached calibration inputs and reuses the same subset for every block. The global cache is not modified, so the downstream RTN/AutoRound quantizer and the FP reference forward still use all cached samples. Set `--awq-nsamples` greater than or equal to `--nsamples` to use all of them.
+
+`--awq-v2-scale-search` takes effect only when the terminal quantizer is AutoRoundV2, which is enabled with `--enable_alg_ext` and `--algorithm auto_round` (or `awq,auto_round`). With an RTN terminal quantizer, the option is ignored. The policy changes only the QDQ used to score AWQ candidates; the terminal AutoRoundV2 quantizer always performs its own initialization search.
+
+- `auto` (default): use `off` for INT schemes and `full` for non-INT schemes such as MXFP and NVFP.
+- `off`: use plain RTN for AWQ's candidate loss. This is the fastest option and the recommended default for INT.
+- `full`: reproduce the terminal V2 optimized init-scale search for every AWQ candidate. This is the slowest and most faithful option.
+- `reuse`: run the optimized init-scale search once per balance layer and reuse it for every AWQ candidate. This is a middle ground between `off` and `full`.
+
+When smoothing or hard clipping changes a block, AWQ requests a fresh FP reference forward before quantization, so a stale reference is never used as the quantizer target or passed to the next block.
+
+```bash
+# INT: auto resolves to off; AWQ uses at most 128 samples while the quantizer uses 256.
+auto-round --model <model> --scheme W4A16 --format fake \
+  --algorithm awq,auto_round --enable_alg_ext \
+  --nsamples 256 --awq-nsamples 128
+
+# MXFP4: auto resolves to full; use reuse to cut AWQ calibration time.
+auto-round --model <model> --scheme MXFP4 --format fake \
+  --algorithm awq,auto_round --enable_alg_ext \
+  --awq-v2-scale-search reuse
+
+# INT with an explicit full optimized search for every AWQ candidate.
+auto-round --model <model> --scheme W4A16 --format fake \
+  --algorithm awq,auto_round --enable_alg_ext \
+  --awq-v2-scale-search full
+```
+
+The same settings are available through `AWQConfig`:
+
+```python
+from auto_round import AutoRound, AWQConfig, SignRoundV2Config
+
+ar = AutoRound(
+    model="<model>",
+    scheme="W4A16",
+    alg_configs=[
+        AWQConfig(awq_nsamples=128, awq_seqlen=512, v2_scale_search="auto"),
+        SignRoundV2Config(iters=200),
+    ],
+)
+```
+
 In the result tables, `AR2` denotes AutoRound with `--algorithm auto_round_v2` (formerly `--enable_alg_ext`), and `AWQ_AR2` denotes AWQ followed by AutoRound with the same algorithm extension. Accuracy columns are reported as percentages, so a raw score such as `0.7058` is shown as `70.58`.
 
 The AWQ rows use the default AWQ smoothing flow. They do not include AWQ weight clipping unless `--awq_apply_clip` is explicitly enabled.
@@ -503,6 +557,55 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
 - `AWQ_RTN` is not a strong W4A16 default. It wins 2/4 AVG comparisons against `RTN` and `opt_rtn`.
 - `AWQ_AR2` improves AVG on both models, but the gain is small compared with the added runtime.
 
+## Qwen3.8-27B W4A16 and MXFP4 W4A4 results
+
+The following case study is separate from the `--format fake` tables above. It uses exported checkpoints and vLLM evaluation on a B200 host, with `lm-eval` 0.4.12 and vLLM 0.27.1. HellaSwag, MMLU, PIQA, and Winogrande use `acc`; GSM8K uses `exact_match,strict-match`.
+### Vllm mode Setup
+
+- Model: Qwen3.8-27B, a Qwen3.5 hybrid-attention model with 64 blocks.
+- Calibration: 128 samples, sequence length 2048, AWQ sequence 512(default).
+- W4A16: INT W4A16 with `--format auto_round` and deterministic algorithms enabled.
+- MXFP4: W4A4 with `--format llm_compressor`; evaluation used `FlashInferMxFp4LinearKernel`.
+
+The recipes map to the following settings:
+
+| Table name | Algorithm settings |
+| --- | --- |
+| AWQ + AR2 full / off / reuse | `--algorithm awq,auto_round --enable_alg_ext --awq-v2-scale-search POLICY --iters 200` |
+| AWQ + opt-RTN | `--algorithm awq --enable_opt_rtn --iters 0` |
+| Native AR2 full | `--algorithm auto_round --enable_alg_ext --iters 200` |
+| Native opt-RTN | `--algorithm rtn --enable_opt_rtn --iters 0` |
+| Native plain RTN | `--algorithm rtn --disable_opt_rtn --iters 0 --disable_model_free` |
+| Model-free RTN | `--algorithm rtn --disable_opt_rtn --iters 0 --model_free` |
+
+Replace `POLICY` with one of `full`, `off`, or `reuse`.
+
+### W4A16 INT
+
+| Config | GSM8K (%) | HellaSwag (%) | MMLU (%) | PIQA (%) | WinoGrande (%) | AVG (%) | Quant time (min) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | 96.97 | 63.68 | 83.43 | 80.90 | 75.45 | 80.09 |
+| AWQ + AR2 full | 96.13 | 63.32 | 83.02 | 81.61 | 76.64 | 80.14 | 103 |
+| AWQ + AR2 off | 96.66 | 63.39 | 82.42 | 81.39 | 76.40 | 80.06 | 76 |
+| AWQ + AR2 reuse | 97.19 | 63.11 | 82.46 | 81.01 | 76.72 | 80.10 | 69 |
+
+Quantization times are indicative; Within this run, `off` saved about 27 minutes versus `full` (26.3% of full quantization time) while losing only 0.09 average points. `reuse` was the cheapest AWQ+AR2 variant.
+
+### MXFP4 W4A4
+
+| Config | GSM8K (%) | HellaSwag (%) | MMLU (%) | PIQA (%) | WinoGrande (%) | AVG (%) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 | 96.97 | 63.68 | 83.43 | 80.90 | 75.45 | 80.09 |
+| Native plain RTN | 94.84 | 61.12 | 80.08 | 80.30 | 74.35 | 78.14 |
+| Model-free RTN | 94.54 | 61.12 | 80.08 | 80.30 | 74.35 | 78.08 |
+| Native opt-RTN | 95.22 | 61.10 | 77.97 | 79.65 | 71.35 | 77.06 |
+| Native AR2 full | 93.10 | 61.29 | 80.62 | 80.41 | 74.35 | 77.96 |
+| AWQ + AR2 reuse | 94.01 | 61.18 | 80.37 | 80.47 | 73.95 | 78.00 |
+| AWQ + AR2 full | 94.84 | 61.55 | 81.24 | 80.69 | 73.80 | 78.42 |
+| AWQ + opt-RTN | 95.30 | 61.73 | 80.35 | 79.00 | 75.30 | 78.34 |
+
+The best AWQ W4A4 result is AWQ + AR2 full at **78.42**, only 0.08 points above AWQ + opt-RTN. AWQ + AR2 full improves over native AR2 by 0.46 points, while AWQ + opt-RTN improves over native opt-RTN by 1.28 points.
+
 ## INT8 / W8A8
 
 <table border="1">
@@ -659,3 +762,6 @@ In the observation tables, `AVG Win Rate` counts how often the AWQ-composed meth
 AWQ is most useful for schemes where quantization is sensitive to activation-aware weight smoothing, such as MXFP4. It can improve scheme accuracy, especially when combined with AutoRound plus the algorithm extension (`--algorithm auto_round_v2`).
 
 AWQ does not add persistent memory overhead to the quantized model and is orthogonal to terminal quantization algorithms, so it can be composed with RTN, AutoRound, or AutoRound2 without changing their core quantization logic.
+
+On the Qwen3-8B to Qwen3.8-27B case study, WnA16 INT is insensitive to the AWQ policy: `off` reduces quantization time versus `full` with only a 0.09-point AVG change, while `reuse` and opt-RTN are also competitive. For MXFP4 W4A4, AWQ + AR2 `full` and `reuse` provide the strongest AWQ results.
+
