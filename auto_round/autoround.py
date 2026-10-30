@@ -23,7 +23,7 @@ import torch
 from auto_round.logger import deprecated, logger
 from auto_round.recipes import Recipe, get_recipe, resolve_recipe
 from auto_round.recipes.recipe import UNSET
-from auto_round.recipes.resolver import merge_layer_defaults, recipe_context
+from auto_round.recipes.resolver import merge_layer_defaults
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
     eager_validate_scheme,
@@ -801,7 +801,9 @@ class AutoRound:
         definition = get_recipe(recipe) if isinstance(recipe, str) else recipe
         plan = resolve_recipe(
             definition,
-            recipe_context(definition, model, scheme, trust_remote_code=direct_kwargs.get("trust_remote_code", True)),
+            scheme=scheme,
+            model=model,
+            trust_remote_code=direct_kwargs.get("trust_remote_code", True),
         )
         if alg_configs is None and algorithm is None:
             alg_configs = plan.build_configs()

@@ -27,7 +27,6 @@ from auto_round.cli.parser import (
 from auto_round.compressors.config_resolution import ConfigResolutionError
 from auto_round.logger import logger
 from auto_round.recipes import get_recipe, list_recipes, resolve_recipe
-from auto_round.recipes.resolver import recipe_context
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
@@ -249,12 +248,9 @@ def _apply_recipe_defaults(args, recipe="ar"):
     definition = get_recipe(args.recipe)
     args._recipe_plan = resolve_recipe(
         definition,
-        recipe_context(
-            definition,
-            args.model or args.model_name,
-            args.scheme,
-            trust_remote_code=not args.disable_trust_remote_code,
-        ),
+        model=args.model or args.model_name,
+        scheme=args.scheme,
+        trust_remote_code=not args.disable_trust_remote_code,
     )
 
     for key, value in args._recipe_plan.calibration.items():

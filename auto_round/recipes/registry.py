@@ -4,8 +4,7 @@
 
 import copy
 
-from auto_round.recipes.presets import builtin_recipes
-from auto_round.recipes.recipe import Recipe
+from auto_round.recipes.recipe import Recipe, builtin_recipes
 
 _RECIPES: dict[str, Recipe] = {}
 _ALIASES: dict[str, str] = {}

@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
-"""Data contracts for recommendation definitions and resolved plans."""
+"""Recipe definitions and built-in recommendations."""
 
 from __future__ import annotations
 
@@ -19,15 +19,6 @@ UNSET = _Unset()
 
 def calibration_defaults() -> dict[str, Any]:
     return {"batch_size": 8, "seqlen": 2048, "nsamples": 128}
-
-
-@dataclass(frozen=True)
-class RecipeContext:
-    """Available metadata; resolving a recipe never loads a model."""
-
-    scheme: Any = "W4A16"
-    model_type: str | None = None
-    model_config: Any = None
 
 
 @dataclass(frozen=True)
@@ -71,35 +62,69 @@ class AlgorithmSpec:
         return result
 
 
-@dataclass(frozen=True)
-class RecipeOverlay:
-    name: str
-    matches: Callable[[RecipeContext], bool]
-    pipeline: tuple[AlgorithmSpec, ...] | None = None
-    stage_params: dict[str, dict[str, Any]] = field(default_factory=dict)
-    calibration: dict[str, Any] = field(default_factory=dict)
-    layer_config: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
+@dataclass
 class Recipe:
+    """Defaults with an optional process(recipe, *, scheme, model_config) function.
+
+    The function edits an isolated copy using ordinary Python conditionals.
+    It may replace the pipeline or modify calibration and layer defaults.
+    """
+
     name: str
     pipeline: tuple[AlgorithmSpec, ...]
     calibration: dict[str, Any] = field(default_factory=dict)
     layer_config: dict[str, Any] = field(default_factory=dict)
-    overlays: tuple[RecipeOverlay, ...] = ()
     description: str = ""
     aliases: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class ResolvedRecipe:
-    name: str
-    pipeline: tuple[AlgorithmSpec, ...]
-    calibration: dict[str, Any]
-    layer_config: dict[str, Any]
-    applied_overlays: tuple[str, ...] = ()
+    process: Callable[..., None] | None = None
 
     def build_configs(self) -> list:
         """Construct fresh configs using the existing algorithm registry."""
         return [stage.build_config() for stage in self.pipeline]
+
+
+def builtin_recipes() -> tuple[Recipe, ...]:
+    """Return built-in recommendations; numerical schemes remain in schemes.py."""
+    calibration = calibration_defaults()
+    return (
+        Recipe(
+            "ar",
+            (AlgorithmSpec("quantizer", "auto_round", {"iters": 200}),),
+            dict(calibration),
+            description="Balanced quantization cost and accuracy.",
+            aliases=("default",),
+        ),
+        Recipe(
+            "ar-light",
+            (AlgorithmSpec("quantizer", "auto_round", {"iters": 50, "lr": 5e-3}),),
+            dict(calibration),
+            description="Lower-cost iterative quantization.",
+            aliases=("light",),
+        ),
+        Recipe(
+            "ar-best",
+            (AlgorithmSpec("quantizer", "auto_round", {"iters": 1000}),),
+            {**calibration, "nsamples": 512},
+            description="Accuracy-oriented iterative quantization.",
+            aliases=("best",),
+        ),
+        Recipe(
+            "rtn",
+            (AlgorithmSpec("quantizer", "rtn", {"disable_opt_rtn": True}),),
+            {**calibration, "nsamples": 1},
+            description="Plain round-to-nearest quantization.",
+        ),
+        Recipe(
+            "opt-rtn",
+            (AlgorithmSpec("quantizer", "rtn", {"disable_opt_rtn": False}),),
+            dict(calibration),
+            description="Optimized round-to-nearest quantization.",
+            aliases=("opt_rtn",),
+        ),
+        Recipe(
+            "awq",
+            (AlgorithmSpec("smooth", "awq"), AlgorithmSpec("quantizer", "rtn", {"disable_opt_rtn": True})),
+            dict(calibration),
+            description="AWQ smoothing followed by plain RTN.",
+        ),
+    )

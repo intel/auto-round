@@ -59,26 +59,49 @@ from auto_round.recipes import get_recipe, list_recipes, resolve_recipe
 print(list_recipes())
 definition = get_recipe("ar-best")
 plan = resolve_recipe(definition)
-print(plan.pipeline, plan.calibration, plan.applied_overlays)
+print(plan.pipeline, plan.calibration)
 configs = plan.build_configs()
 ```
 
-定义和解析结果均为独立快照。每次 `build_configs()` 都构造新的算法配置。
+`resolve_recipe()` 返回处理后的独立 `Recipe` 副本。每次 `build_configs()` 都构造新的算法配置。
 构造后的 compressor 通过 `compressor.resolved_recipe` 暴露所选推荐配置；
 它不替代显式覆盖和核心校验后的最终有效配置。
 
-自定义 recipe 可以使用 `auto_round.recipes` 的 `Recipe`、`AlgorithmSpec`、
-`RecipeOverlay`、`RecipeContext`。可以直接把 `Recipe` 传给 `AutoRound`，
-或者通过 `register_recipe` 注册后在 Python 和同进程 CLI 中按名称使用。
-注册拒绝重复名称和别名。Overlay 按声明顺序执行，后匹配项覆盖前匹配项。
-Overlay 的 `pipeline` 整体替换算法组合；`stage_params` 按稳定阶段名称修改参数，
-并拒绝不存在的阶段。校准字段为 `dataset`、`seqlen`、`nsamples`、`batch_size`。
+自定义 recipe 使用 `Recipe`、`AlgorithmSpec`，需要根据 model/scheme 调整时，
+提供普通 Python 函数即可：
 
-公共 resolver 接受调用者提供的模型元信息，不加载模型。入口从已加载模型
-提取元信息；存在 overlay 时才为字符串模型输入查询配置元信息。
-配置查询不可用时，上下文不包含模型元信息。已有模型逐层策略仍在加载模型后
-执行，Python 和 CLI 均适用。其定义位于 `auto_round/recipes/layer_policies.py`，
-原入口保留兼容适配。Shape 限制和模型兼容补丁不归 recipe 管理。
+```python
+from auto_round.recipes import AlgorithmSpec, Recipe, resolve_recipe
 
-未来 `ar-auto` 可以通过这一解析边界扩展上下文并选择推荐方案，目前未注册该入口。
+
+def configure(recipe, *, scheme, model_config):
+    if scheme == "MXFP4":
+        recipe.calibration["nsamples"] = 256
+    if getattr(model_config, "model_type", None) == "some_model":
+        recipe.layer_config["lm_head"] = "BF16"
+
+
+custom = Recipe(
+    "custom",
+    pipeline=(AlgorithmSpec("quantizer", "auto_round", {"iters": 50}),),
+    process=configure,
+)
+plan = resolve_recipe(custom, scheme="MXFP4")
+```
+
+该示例展示接口，不代表经过精度验证的推荐值。函数修改 recipe 的独立副本，
+不需要返回值。可以直接替换 `recipe.pipeline`，或者通过普通 Python 修改
+算法参数、校准和逐层默认值，无需学习条件补丁语法或合并顺序。
+校准字段为 `dataset`、`seqlen`、`nsamples`、`batch_size`。
+
+可以直接把 `Recipe` 传给 `AutoRound`，也可以通过 `register_recipe` 注册后在
+Python 和同进程 CLI 中按名称使用。注册拒绝重复名称和别名。
+Resolver 直接接收 `scheme`、`model_config`。入口提供 model；仅存在处理函数时，
+才为字符串模型输入查询配置元信息。配置查询不可用时，`model_config` 为 `None`。
+Recipe 处理不会加载模型权重。已有 mixed scheme 处理保留在
+`auto_round/schemes.py`，模型逐层默认配置保留在 `auto_round/special_model_handler.py`。
+这些处理仍在加载模型后执行，Python 和 CLI 均适用。
+Shape 限制和模型兼容补丁也不归 recipe 管理。
+
+未来 `ar-auto` 可以使用同样的处理函数选择推荐方案，目前未注册该入口。
 AutoScheme 仍是独立的混合位宽选择功能。

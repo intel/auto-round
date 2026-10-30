@@ -33,47 +33,37 @@ def test_recipe_results_are_isolated():
     assert resolve_recipe("ar-best").build_configs()[0].iters == 1000
 
 
-def test_context_overlays_replace_pipeline_then_patch_stages():
-    from auto_round.recipes import AlgorithmSpec, Recipe, RecipeContext, RecipeOverlay, resolve_recipe
+def test_recipe_function_selects_pipeline_and_parameters():
+    from auto_round.recipes import AlgorithmSpec, Recipe, resolve_recipe
+
+    def process(recipe, *, scheme, model_config):
+        if scheme == "MXFP4":
+            recipe.pipeline = (AlgorithmSpec("smooth", "awq"), AlgorithmSpec("quantizer", "auto_round", {"iters": 50}))
+        if getattr(model_config, "model_type", None) == "tiny":
+            recipe.pipeline[-1].params["iters"] = 7
+            recipe.calibration["nsamples"] = 16
+            recipe.layer_config["lm_head"] = "BF16"
 
     recipe = Recipe(
         name="contextual",
         pipeline=(AlgorithmSpec("quantizer", "auto_round", {"iters": 200}),),
-        overlays=(
-            RecipeOverlay(
-                "mxfp4",
-                matches=lambda context: context.scheme == "MXFP4",
-                pipeline=(AlgorithmSpec("smooth", "awq"), AlgorithmSpec("quantizer", "auto_round", {"iters": 50})),
-            ),
-            RecipeOverlay(
-                "tiny-model",
-                matches=lambda context: context.model_type == "tiny",
-                stage_params={"quantizer": {"iters": 7}},
-                calibration={"nsamples": 16},
-                layer_config={"lm_head": "BF16"},
-            ),
-        ),
+        process=process,
     )
-    plan = resolve_recipe(recipe, RecipeContext(scheme="MXFP4", model_type="tiny"))
+    plan = resolve_recipe(recipe, scheme="MXFP4", model_config=SimpleNamespace(model_type="tiny"))
     assert [stage.algorithm for stage in plan.pipeline] == ["awq", "auto_round"]
     assert plan.build_configs()[1].iters == 7
     assert plan.calibration["nsamples"] == 16
     assert plan.layer_config == {"lm_head": "BF16"}
-    assert plan.applied_overlays == ("mxfp4", "tiny-model")
     assert len(resolve_recipe(recipe).pipeline) == 1
 
 
 def test_recipe_validation():
-    from auto_round.recipes import AlgorithmSpec, Recipe, RecipeOverlay, resolve_recipe
+    from auto_round.recipes import Recipe, resolve_recipe
 
     with pytest.raises(ValueError, match="Unknown recipe"):
         resolve_recipe("ar-bset")
-    recipe = Recipe(
-        "broken",
-        (AlgorithmSpec("quantizer", "auto_round"),),
-        overlays=(RecipeOverlay("bad", matches=lambda context: True, stage_params={"missing": {"iters": 1}}),),
-    )
-    with pytest.raises(ValueError, match="missing"):
+    recipe = Recipe("broken", ())
+    with pytest.raises(ValueError, match="at least one stage"):
         resolve_recipe(recipe)
 
 
@@ -121,17 +111,17 @@ def test_legacy_entry_selectors_override_recipe(capture_entry):
     assert awq.nsamples == 512
 
 
-def test_entry_applies_context_and_layer_overrides(capture_entry):
-    from auto_round.recipes import AlgorithmSpec, Recipe, RecipeOverlay
+def test_entry_applies_recipe_function_and_layer_overrides(capture_entry):
+    from auto_round.recipes import AlgorithmSpec, Recipe
+
+    def process(recipe, *, scheme, model_config):
+        if model_config.model_type == "tiny":
+            recipe.layer_config["proj"] = {"bits": 8}
 
     recipe = Recipe(
         "custom",
         (AlgorithmSpec("quantizer", "auto_round"),),
-        overlays=(
-            RecipeOverlay(
-                "tiny", matches=lambda context: context.model_type == "tiny", layer_config={"proj": {"bits": 8}}
-            ),
-        ),
+        process=process,
     )
     model = SimpleNamespace(config=SimpleNamespace(model_type="tiny"))
     entry = AutoRound(model, recipe=recipe, layer_config={"proj": {"bits": 4}})
@@ -195,7 +185,12 @@ def test_cli_recipe_listing(capsys):
 def test_cli_context_recipe_preserves_stage_defaults_and_layers(monkeypatch, capture_entry):
     from auto_round.cli import main
     from auto_round.cli.algorithms import AlgorithmHandler
-    from auto_round.recipes import AlgorithmSpec, Recipe, RecipeOverlay, register_recipe, registry
+    from auto_round.recipes import AlgorithmSpec, Recipe, register_recipe, registry
+
+    def process(recipe, *, scheme, model_config):
+        if scheme == "MXFP4":
+            recipe.pipeline[0].params.update(enable_minmax_tuning=False, iters=7)
+            recipe.layer_config["proj"] = "BF16"
 
     monkeypatch.setattr(registry, "_RECIPES", dict(registry._RECIPES))
     monkeypatch.setattr(registry, "_ALIASES", dict(registry._ALIASES))
@@ -204,14 +199,7 @@ def test_cli_context_recipe_preserves_stage_defaults_and_layers(monkeypatch, cap
             "test-context",
             (AlgorithmSpec("quantizer", "auto_round"),),
             calibration={"nsamples": 32},
-            overlays=(
-                RecipeOverlay(
-                    "mx",
-                    matches=lambda context: context.scheme == "MXFP4",
-                    stage_params={"quantizer": {"enable_minmax_tuning": False, "iters": 7}},
-                    layer_config={"proj": "BF16"},
-                ),
-            ),
+            process=process,
         )
     )
     captured = {}
@@ -253,10 +241,10 @@ def test_cli_explicit_signround_uses_config_defaults(monkeypatch):
     assert captured["args"].nsamples == 512
 
 
-def test_recipe_context_looks_up_metadata_only_when_needed(monkeypatch, capture_entry):
+def test_recipe_function_looks_up_metadata_only_when_needed(monkeypatch, capture_entry):
     from transformers import AutoConfig
 
-    from auto_round.recipes import AlgorithmSpec, Recipe, RecipeOverlay
+    from auto_round.recipes import AlgorithmSpec, Recipe
 
     calls = []
 
@@ -267,16 +255,15 @@ def test_recipe_context_looks_up_metadata_only_when_needed(monkeypatch, capture_
     monkeypatch.setattr(AutoConfig, "from_pretrained", load_config)
     AutoRound("dummy")
     assert calls == []
+
+    def process(recipe, *, scheme, model_config):
+        if model_config.model_type == "tiny":
+            recipe.pipeline[0].params["iters"] = 7
+
     recipe = Recipe(
         "model-aware",
         (AlgorithmSpec("quantizer", "auto_round"),),
-        overlays=(
-            RecipeOverlay(
-                "tiny",
-                matches=lambda context: context.model_type == "tiny",
-                stage_params={"quantizer": {"iters": 7}},
-            ),
-        ),
+        process=process,
     )
     assert AutoRound("dummy", recipe=recipe).configs[0].iters == 7
     assert calls == ["dummy"]
