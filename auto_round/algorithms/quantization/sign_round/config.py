@@ -342,9 +342,8 @@ class SignRoundConfig(QuantizationConfig):
         self.lfq_mse_weight = lfq_mse_weight
         if self.lfq_mse_weight < 0:
             raise ValueError("`lfq_mse_weight` must be non-negative")
-        # QAD (quantization-aware distillation): whole-network joint training against
-        # the final-output LM loss. Implies LFQ; the whole-network fusing (nblocks) is
-        # handled by the orchestrator when this flag is set.
+        # Legacy QAD flag: configuration normalization routes this to QADConfig
+        # and its whole-model quantizer, independently of block-wise nblocks.
         self.enable_qad = enable_qad
         if self.enable_qad:
             self.enable_lfq = True
@@ -352,7 +351,7 @@ class SignRoundConfig(QuantizationConfig):
         if self.enable_qad and self._warn_enable_qad:
             logger.warning_once(
                 "the `enable_qad` (quantization-aware distillation) mode is experimental: all "
-                "text-decoder blocks are fused and tuned jointly against the final-output LM loss."
+                "text-decoder blocks are tuned jointly with a whole-model forward."
             )
 
     def _lr_for_bits(self, bits: int | None) -> float | None:

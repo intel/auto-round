@@ -226,9 +226,21 @@ def coerce_config_class(config: object, target_cls: type) -> object:
 
 
 def normalize_algorithm_config(config: object) -> object:
+    from auto_round.algorithms.quantization.qad.config import QADConfig
     from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
     from auto_round.algorithms.quantization.sign_round.config import AdamRoundConfig, SignRoundConfig, SignRoundV2Config
 
+    if type(config) in (SignRoundConfig, SignRoundV2Config, AdamRoundConfig) and getattr(config, "enable_qad", False):
+        defaults = QADConfig(
+            topk=getattr(config, "lfq_top_k", 32),
+            qad_optimizer="adamw" if getattr(config, "enable_adam", False) else getattr(config, "optimizer", None),
+        )
+        normalized = coerce_config_class(config, QADConfig)
+        for key, value in vars(defaults).items():
+            if not hasattr(normalized, key):
+                setattr(normalized, key, value)
+        normalized.optimizer = defaults.optimizer
+        return normalized
     if type(config) is OptimizedRTNConfig and getattr(config, "disable_opt_rtn", False):
         return coerce_config_class(config, RTNConfig)
     if type(config) is RTNConfig and not getattr(config, "disable_opt_rtn", False):

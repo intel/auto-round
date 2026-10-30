@@ -212,7 +212,7 @@ class QADConfig(SignRoundConfig):
         self.enable_qad = True
         self.enable_lfq = True
         self.topk = topk
-        if self.topk == 0:
+        if self.topk != -1 and self.topk <= 0:
             raise ValueError("`topk` must be positive, or -1 to store the full distribution")
         self.qad_workspace = qad_workspace
         self.gradient_checkpointing = bool(gradient_checkpointing)

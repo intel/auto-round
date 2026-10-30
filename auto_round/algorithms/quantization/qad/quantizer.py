@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 
@@ -397,6 +399,25 @@ class QADQuantizer(SignRoundQuantizer):
             htcore.mark_step()
 
     # ── workspace / cache management ──────────────────────────────────────────
+    def get_calibration_token_ids(self, token_ids, calibration):
+        """Use original forward inputs, never the block reconstruction labels."""
+        samples = getattr(calibration, "model_input_samples", None)
+        if token_ids is not None and len(token_ids) and isinstance(token_ids[0], dict):
+            samples = token_ids
+        target = self.config.nsamples
+        if target is None:
+            target = len(token_ids) if token_ids is not None else self.calibration_context.nsamples
+        if samples is not None and len(samples) >= target:
+            return samples[:target]
+        collect = getattr(calibration, "collect_token_ids", None)
+        if callable(collect):
+            return collect(target, include_model_inputs=True)
+        # Custom calibrators may already provide raw tokens, but cannot recover
+        # the context that a -100 label has destroyed.
+        if token_ids is not None and any((self._as_batch_ids(ids, "cpu") < 0).any() for ids in token_ids):
+            raise ValueError("QAD requires original input_ids and attention_mask, not loss-masked labels.")
+        return list(token_ids)[:target] if token_ids is not None else None
+
     def _resolve_workspace(self) -> str:
         ws = self.qad_workspace
         # Treat None / NaN / empty as "unset" and fall back to AutoRound's workspace.
@@ -409,6 +430,8 @@ class QADQuantizer(SignRoundQuantizer):
     @staticmethod
     def _as_batch_ids(ids, device) -> torch.Tensor:
         """Normalize one sample's token ids to a ``[1, seq]`` long tensor on *device*."""
+        if isinstance(ids, dict):
+            ids = ids.get("labels", ids["input_ids"])
         if not torch.is_tensor(ids):
             ids = torch.as_tensor(ids)
         ids = ids.to(device=device)
@@ -431,8 +454,7 @@ class QADQuantizer(SignRoundQuantizer):
     def _safe_input_ids(ids: torch.Tensor, vocab_size: int | None) -> torch.Tensor:
         """Return a forward-safe copy of *ids* with out-of-range tokens replaced.
 
-        Calibration ``input_ids`` carry the ``-100`` loss-ignore sentinel at
-        trailing positions (pad tokens, repeated tail tokens, the last position).
+        Legacy tensor-only callers can carry the ``-100`` loss-ignore sentinel.
         Those are invalid embedding indices, so replace anything ``< 0`` or ``>=
         vocab_size`` with ``0``. The original ids are still used as loss labels so
         the masked positions are correctly ignored.
@@ -446,16 +468,30 @@ class QADQuantizer(SignRoundQuantizer):
         return safe
 
     # @torch.no_grad()
-    def _forward_logits(self, model, batch_ids: torch.Tensor, vocab_size: int | None) -> torch.Tensor:
-        """Full-model forward to logits with a padding-aware attention mask.
+    def _forward_logits(self, model, batch_ids, vocab_size: int | None) -> torch.Tensor:
+        """Forward original tokens and attention, independently of loss labels.
 
-        Mirrors normal tuning: the ``-100`` (trailing pad / ignore) positions are
-        excluded via ``attention_mask`` so they neither contribute to nor corrupt
-        the valid positions, and the invalid ids are sanitized for the embedding.
+        Tensor-only callers retain the legacy sentinel handling. Calibration
+        supplies dictionaries so even loss-ignored EOS tokens keep their context.
         """
-        safe_ids = self._safe_input_ids(batch_ids, vocab_size)
-        attention_mask = (batch_ids != -100).to(torch.long)
+        if isinstance(batch_ids, dict):
+            input_ids = batch_ids["input_ids"]
+            attention_mask = batch_ids.get("attention_mask", torch.ones_like(input_ids))
+        else:
+            input_ids = batch_ids
+            attention_mask = (input_ids != -100).long()
+        safe_ids = self._safe_input_ids(input_ids, vocab_size)
         return model(input_ids=safe_ids, attention_mask=attention_mask, use_cache=False).logits
+
+    def _load_model_batch(self, sample_indices, token_ids, device):
+        """Stack raw inputs/masks separately from the teacher's cached labels."""
+        samples = [token_ids[int(i)] for i in sample_indices]
+        if not isinstance(samples[0], dict):
+            return self._load_ids_batch(sample_indices, token_ids, device)
+        return {
+            key: torch.cat([self._as_batch_ids(sample[key], device) for sample in samples], dim=0)
+            for key in ("input_ids", "attention_mask")
+        }
 
     @staticmethod
     def _enable_gradient_checkpointing(model) -> None:
@@ -506,14 +542,34 @@ class QADQuantizer(SignRoundQuantizer):
     def _teacher_cache_signature(model, token_ids) -> dict:
         """Fingerprint of the run so a cache is never reused across models/data.
 
-        Includes the model identity (type + vocab size) and the calibration shape
-        (sample count + sequence length). The Top-K width is merged in by the
-        cache itself. A mismatch triggers a full rebuild of the teacher files.
+        Hash every parameter/buffer and all forward inputs. Config/path alone
+        cannot distinguish fine-tuned or in-memory teachers. Transfer weight
+        chunks to CPU so fingerprinting never duplicates a whole GPU model.
         """
         cfg = getattr(model, "config", None)
+        weights = hashlib.sha256()
+
+        def update_tensor(digest, name, tensor):
+            tensor = tensor.detach()
+            digest.update(f"{name}:{tensor.dtype}:{tuple(tensor.shape)}".encode())
+            flat = tensor.reshape(-1)
+            chunk_size = max(1, (16 * 1024 * 1024) // tensor.element_size())
+            for start in range(0, flat.numel(), chunk_size):
+                chunk = flat[start : start + chunk_size].cpu().contiguous().view(torch.uint8)
+                digest.update(chunk.numpy().tobytes())
+
+        for name, tensor in model.state_dict().items():
+            update_tensor(weights, name, tensor)
+        data_hash = hashlib.sha256()
+        for index, sample in enumerate(token_ids if token_ids is not None else []):
+            fields = sample if isinstance(sample, dict) else {"labels": sample}
+            for key, tensor in sorted(fields.items()):
+                update_tensor(data_hash, f"{index}:{key}", torch.as_tensor(tensor))
         seqlen = None
         if token_ids is not None and len(token_ids) > 0:
             first = token_ids[0]
+            if isinstance(first, dict):
+                first = first["input_ids"]
             if torch.is_tensor(first):
                 seqlen = int(first.reshape(-1).shape[0])
             else:
@@ -525,6 +581,10 @@ class QADQuantizer(SignRoundQuantizer):
             "model_type": getattr(cfg, "model_type", None),
             "vocab_size": getattr(cfg, "vocab_size", None),
             "name_or_path": getattr(cfg, "_name_or_path", None),
+            "model_class": f"{type(model).__module__}.{type(model).__qualname__}",
+            "config": json.dumps(cfg.to_dict(), sort_keys=True, default=str) if hasattr(cfg, "to_dict") else str(cfg),
+            "weights_sha256": weights.hexdigest(),
+            "inputs_sha256": data_hash.hexdigest(),
             "nsamples": None if token_ids is None else len(token_ids),
             "seqlen": seqlen,
         }
@@ -537,13 +597,14 @@ class QADQuantizer(SignRoundQuantizer):
         between the last block and the LM head needs to be probed. Samples already
         on disk are skipped; each sample's logits are freed right after caching.
         """
-        if self._teacher_cache is None:
-            self._teacher_cache = TeacherTopKCache(
-                self._resolve_workspace(),
-                self.qad_top_k,
-                signature=self._teacher_cache_signature(model, token_ids),
-                temperature=float(self.qad_temperature),
-            )
+        if self._teacher_cache is not None:
+            self._teacher_cache.shutdown()
+        self._teacher_cache = TeacherTopKCache(
+            self._resolve_workspace(),
+            self.qad_top_k,
+            signature=self._teacher_cache_signature(model, token_ids),
+            temperature=float(self.qad_temperature),
+        )
         cache = self._teacher_cache
         vocab_size = getattr(getattr(model, "config", None), "vocab_size", None)
         was_training = model.training
@@ -555,7 +616,8 @@ class QADQuantizer(SignRoundQuantizer):
             # stale file from another model/dataset is rebuilt (overwritten).
             if cache.is_valid_for(sample_idx, batch_ids):
                 continue
-            logits = self._forward_logits(model, batch_ids, vocab_size)  # [1, seq, vocab]
+            inputs = self._load_model_batch([sample_idx], token_ids, device)
+            logits = self._forward_logits(model, inputs, vocab_size)  # [1, seq, vocab]
             # Store the original ids (with any -100) so they serve as loss labels.
             cache.build_sample(sample_idx, batch_ids, logits)
             del logits
@@ -579,8 +641,8 @@ class QADQuantizer(SignRoundQuantizer):
             if handles:
                 model.eval()
                 vocab_size = getattr(getattr(model, "config", None), "vocab_size", None)
-                for ids in token_ids:
-                    batch_ids = self._as_batch_ids(ids, device)
+                for sample_idx in range(len(token_ids)):
+                    batch_ids = self._load_model_batch([sample_idx], token_ids, device)
                     self._forward_logits(model, batch_ids, vocab_size)
         finally:
             for handle in handles:
@@ -610,6 +672,18 @@ class QADQuantizer(SignRoundQuantizer):
         # Make the FP model resident on the compute device and hook-free.
         self._strip_accelerate_hooks(model)
         model.to(device)
+        # A previous distributed block stage can leave placement hints on the
+        # original modules. This pass is strictly single-device.
+        for module in model.modules():
+            if hasattr(module, "tuning_device"):
+                del module.tuning_device
+        # Freeze before creating wrapper parameters. Clear any gradients left
+        # by a preceding stage; FP tuning is selectively re-enabled below.
+        existing_tuning = {id(p) for module in model.modules() for p in getattr(module, "params", {}).values()}
+        for parameter in model.parameters():
+            if id(parameter) not in existing_tuning:
+                parameter.requires_grad_(False)
+                parameter.grad = None
         # Whole-model tuning bypasses the composer's per-block calibration.
         # Run this even when KD is disabled or all teacher samples are cached.
         self._calibrate_activations(model, token_ids, device)
@@ -727,21 +801,20 @@ class QADQuantizer(SignRoundQuantizer):
                 total_loss = 0.0
                 for start in range(0, len(global_indices), batch_size):
                     idx = global_indices[start : start + batch_size]
-                    # The teacher cache is the single source of truth: it carries the
-                    # sample's own input_ids together with the teacher Top-K, so no
-                    # separate token-id copy is indexed here. For a pure QAT run
-                    # (no teacher) the labels come straight from ``token_ids``.
+                    # Cached labels supervise the loss only. Forward the original
+                    # input tokens/masks, including any loss-ignored separators.
                     if self._qad_use_teacher:
                         batch_ids, t_index, t_prob = self._load_teacher_batch(idx, device)
                     else:
                         batch_ids, t_index, t_prob = self._load_ids_batch(idx, token_ids, device), None, None
-                    logits = self._forward_logits(model, batch_ids, vocab_size)
+                    model_inputs = self._load_model_batch(idx, token_ids, device)
+                    logits = self._forward_logits(model, model_inputs, vocab_size)
                     loss = self._qad_loss(logits, t_index, t_prob, batch_ids)
                     self._scale_loss_and_backward(scaler, loss)
                     total_loss += loss.item()
                     # Drop the large per-microbatch logits/graph before the next
                     # forward so the cached allocator can reuse the blocks.
-                    del logits, loss, batch_ids, t_index, t_prob
+                    del logits, loss, batch_ids, model_inputs, t_index, t_prob
                 # The loss was measured before the optimizer update: snapshot
                 # that same state, including any jointly tuned FP parameters.
                 if total_loss < best_loss:

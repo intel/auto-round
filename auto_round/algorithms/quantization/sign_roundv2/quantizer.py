@@ -123,10 +123,23 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         _max_tunable = isinstance(getattr(self, "max_scale", None), torch.nn.Parameter)
         if envs.AR_ENABLE_LOG_MINMAX and _min_tunable and _max_tunable:
             self._use_log_minmax = True
-            with torch.no_grad():
-                # theta = 0 <-> coeff = exp(0) = 1.0 (identity initialization)
-                self.min_scale.data.zero_()
-                self.max_scale.data.zero_()
+        warm_start = getattr(self.orig_layer, "_ar_warm_start", None) or {}
+        saved_log = warm_start.get("minmax_parameterization") == "log"
+        with torch.no_grad():
+            for key in ("min_scale", "max_scale"):
+                param = getattr(self, key)
+                if not isinstance(param, torch.nn.Parameter):
+                    continue
+                saved = warm_start.get(key)
+                compatible = saved is not None and saved.shape == param.shape
+                if self._use_log_minmax:
+                    if not compatible:
+                        # theta = 0 <-> coeff = exp(0) = 1.0
+                        param.zero_()
+                    elif not saved_log:
+                        param.clamp_min_(torch.finfo(param.dtype).tiny).log_()
+                elif compatible and saved_log:
+                    param.exp_()
 
         layer = self.orig_layer
         data_type = layer.data_type

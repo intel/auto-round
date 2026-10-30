@@ -60,6 +60,14 @@ def get_scale_shape(weight, group_size):
     return shape
 
 
+def _restore_warm_start_param(orig_layer, name, param):
+    """Restore a compatible parameter without replacing its optimizer identity."""
+    saved = getattr(orig_layer, "_ar_warm_start", {}).get(name)
+    if saved is not None and saved.shape == param.shape:
+        with torch.no_grad():
+            param.copy_(saved.to(device=param.device, dtype=param.dtype))
+
+
 class WrapperLinear(torch.nn.Module):
     """A wrapper for linear/conv1d layers to enable quantization and tuning.
 
@@ -328,6 +336,7 @@ class WrapperLinear(torch.nn.Module):
         # Bias tuning
         if self.enable_norm_bias_tuning:
             self._init_params("bias_v", p_dtype, self.orig_layer.bias.shape, 0, True)
+            _restore_warm_start_param(self.orig_layer, "bias_v", self.bias_v)
             from auto_round.data_type.int import quant_tensor_asym_wo_round
 
             self.bias_quant_func = quant_tensor_asym_wo_round
@@ -857,6 +866,7 @@ class WrapperLayerNorm(torch.nn.Module):
             requires_grad=True,
         )
         self.params = {"v": self.v}
+        _restore_warm_start_param(self.orig_layer, "v", self.v)
         from auto_round.data_type.int import quant_tensor_asym_wo_round
 
         self.quant_func = quant_tensor_asym_wo_round
@@ -908,6 +918,7 @@ class WrapperLlamaNorm(torch.nn.Module):
             requires_grad=True,
         )
         self.params = {"v": self.v}
+        _restore_warm_start_param(self.orig_layer, "v", self.v)
         from auto_round.data_type.int import quant_tensor_asym_wo_round
 
         self.quant_func = quant_tensor_asym_wo_round
@@ -1168,15 +1179,16 @@ def store_warm_start_params_and_unwrap(block, best_params, *, before_unwrap=None
         for n, m in wrapped_layers:
             if n in best_params:
                 layer_params = best_params[n]
-            elif "value" in best_params or "min_scale" in best_params or "max_scale" in best_params:
+            elif any(key in best_params for key in m.params):
                 # Flat dict: the block itself is the wrapped layer.
                 layer_params = best_params
             else:
                 layer_params = {}
             store = {}
-            for key in ("value", "min_scale", "max_scale", "act_min_scale", "act_max_scale"):
+            for key in m.params:
                 if key in layer_params and layer_params[key] is not None:
-                    store[key] = layer_params[key].detach().to("cpu")
+                    store[key] = layer_params[key].detach().to("cpu", copy=True)
+            store["minmax_parameterization"] = "log" if getattr(m, "_use_log_minmax", False) else "linear"
             init_scale = getattr(m, "init_scale", None)
             if init_scale is not None:
                 store["init_scale"] = init_scale.detach().to("cpu")

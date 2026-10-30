@@ -280,6 +280,12 @@ class LFQMixin:
         # QAD: every fused group (chunk) is tuned against the final-output LM loss.
         if self.enable_qad:
             return True
+        all_names = getattr(block_ctx, "all_block_names", None)
+        group_names = getattr(block_ctx, "block_names", None) or []
+        if all_names and group_names and group_names[-1] in all_names:
+            text_names = [name for name in all_names if self._is_text_decoder_block(name)]
+            endpoint = group_names[-1]
+            return endpoint in text_names and text_names.index(endpoint) >= len(text_names) - self.lfq_num_blocks
         return block_ctx.block_index >= block_ctx.block_cnt - self.lfq_num_blocks
 
     def _get_lfq_downstream_blocks(self, block_ctx, device) -> list:
