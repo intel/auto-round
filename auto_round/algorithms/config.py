@@ -16,8 +16,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 
@@ -88,6 +90,12 @@ class AlgorithmConfig:
     """Base mixin for config-owned command-line parameter declarations."""
 
     cli_include_common_args: ClassVar[bool] = True
+
+    #: Optional per-field help text for configs whose CLI arguments are derived
+    #: from their constructor signature instead of ``register_args`` (see the
+    #: CLI fallback registry). Keyed by constructor parameter name.
+    #: Subclasses should override this mapping rather than mutate the base default.
+    cli_field_help: ClassVar[Mapping[str, str]] = MappingProxyType({})
 
     @classmethod
     def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
