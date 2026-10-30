@@ -469,17 +469,22 @@ class WrapperLinear(torch.nn.Module):
             **quant_kwargs,
         }
 
-    def _qdq_weight(self, value, min_scale, max_scale):
-        """Quantizes and dequantizes weights with tuning parameters.
+    def _prepare_minmax_scale(self, min_scale, max_scale):
+        """Clamp the min/max scale coefficients and return what the quant func sees.
 
-        Args:
-            value (torch.Tensor): Value added for rounding for tuning.
-            min_scale (torch.Tensor): Minimum scale for the min value of quantization.
-            max_scale (torch.Tensor): Maximum scale for the max value of quantization.
-
-        Returns:
-            tuple: Quantized weight, scale, and zero point.
+        Default (linear) behavior: the stored parameters *are* the multiplicative
+        coefficients, clamped in place to ``minmax_scale_bound`` and passed
+        through unchanged. Subclasses may override this to tune the coefficients
+        in a different geometry (e.g. log/geometric space) while keeping the
+        quant functions -- which always receive plain multiplicative
+        coefficients -- untouched.
         """
+        min_bound, max_bound = self.minmax_scale_bound
+        min_scale.data.clamp_(min_bound, max_bound)
+        max_scale.data.clamp_(min_bound, max_bound)
+        return min_scale, max_scale
+
+    def _qdq_weight(self, value, min_scale, max_scale):
         presolved = getattr(self, "_presolved_qdq", None)
         if presolved is not None:
             # Batched-search write-back: the search already ran on a stacked
@@ -491,9 +496,7 @@ class WrapperLinear(torch.nn.Module):
             return presolved
         if self.orig_layer.bits >= 16:
             return self.orig_layer.weight, None, None
-        min_bound, max_bound = self.minmax_scale_bound
-        min_scale.data.clamp_(min_bound, max_bound)
-        max_scale.data.clamp_(min_bound, max_bound)
+        min_scale, max_scale = self._prepare_minmax_scale(min_scale, max_scale)
         weight = self.orig_layer.weight
         if weight.device.type == "meta":
             weight = self.orig_layer.get_weight().to(self.device)
@@ -1108,7 +1111,7 @@ def unwrapper_block(block, best_params):
 
 
 @torch.no_grad()
-def store_warm_start_params_and_unwrap(block, best_params):
+def store_warm_start_params_and_unwrap(block, best_params, *, before_unwrap=None):
     """Warm-start variant of :func:`unwrapper_block`: keep the original FP weight.
 
     Instead of baking the tuned ``value``/``min_scale``/``max_scale`` into the
@@ -1127,29 +1130,40 @@ def store_warm_start_params_and_unwrap(block, best_params):
         best_params: Result of ``collect_best_params`` -- either a flat
             ``{param_name: tensor}`` dict (single-wrapper block) or
             ``{submodule_name: {param_name: tensor}}``.
+        before_unwrap: Optional callback receiving the still-wrapped block with
+            its best parameters loaded. Used to collect quantized outputs before
+            restoring FP layers; restoration also happens if the callback raises.
     """
     best_params = best_params or {}
-    for n, m in list(block.named_modules()):
-        if not hasattr(m, "orig_layer"):
-            continue
-        if n in best_params:
-            layer_params = best_params[n]
-        elif "value" in best_params or "min_scale" in best_params or "max_scale" in best_params:
-            # Flat dict: the block itself is the wrapped layer.
-            layer_params = best_params
-        else:
-            layer_params = {}
-        store = {}
-        for key in ("value", "min_scale", "max_scale"):
-            if key in layer_params and layer_params[key] is not None:
-                store[key] = layer_params[key].detach().to("cpu")
-        init_scale = getattr(m, "init_scale", None)
-        if init_scale is not None:
-            store["init_scale"] = init_scale.detach().to("cpu")
-        # Asym optimized wrapper: stash the searched (min, max) anchor so the
-        # next pass tunes on the same grid (the imatrix is consumed by then).
-        if getattr(m, "_asym_anchor", False):
-            store["anchor_min"] = m.weight_min.detach().to("cpu")
-            store["anchor_max"] = m.weight_max.detach().to("cpu")
-        m.orig_layer._ar_warm_start = store
-        set_module(block, n, m.orig_layer)
+    wrapped_layers = [(n, m) for n, m in block.named_modules() if hasattr(m, "orig_layer")]
+    try:
+        for n, m in wrapped_layers:
+            if n in best_params:
+                layer_params = best_params[n]
+            elif "value" in best_params or "min_scale" in best_params or "max_scale" in best_params:
+                # Flat dict: the block itself is the wrapped layer.
+                layer_params = best_params
+            else:
+                layer_params = {}
+            store = {}
+            for key in ("value", "min_scale", "max_scale"):
+                if key in layer_params and layer_params[key] is not None:
+                    store[key] = layer_params[key].detach().to("cpu")
+            init_scale = getattr(m, "init_scale", None)
+            if init_scale is not None:
+                store["init_scale"] = init_scale.detach().to("cpu")
+            # Asym optimized wrapper: preserve the searched grid anchor too.
+            if getattr(m, "_asym_anchor", False):
+                store["anchor_min"] = m.weight_min.detach().to("cpu")
+                store["anchor_max"] = m.weight_max.detach().to("cpu")
+            m.orig_layer._ar_warm_start = store
+            if before_unwrap is not None:
+                for key, saved in layer_params.items():
+                    param = m.params.get(key)
+                    if param is not None and saved is not None:
+                        param.copy_(saved.to(device=param.device, dtype=param.dtype))
+        if before_unwrap is not None:
+            before_unwrap(block)
+    finally:
+        for n, m in wrapped_layers:
+            set_module(block, n, m.orig_layer)

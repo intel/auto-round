@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import copy
 import importlib
+import importlib.util
+import pkgutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -47,6 +49,15 @@ def _ensure_builtin_algorithms_registered() -> None:
         "auto_round.algorithms.transforms.spinquant.preprocessor",
     ):
         importlib.import_module(module_name)
+
+    # Optional quantizers own their registration and CLI parameters. Removing
+    # an experimental package must not require changes to the shared registry.
+    package = importlib.import_module("auto_round.algorithms.quantization")
+    for module in pkgutil.iter_modules(package.__path__, package.__name__ + "."):
+        if module.ispkg:
+            config_module = module.name + ".config"
+            if importlib.util.find_spec(config_module) is not None:
+                importlib.import_module(config_module)
 
     _builtin_algorithms_registered = True
 

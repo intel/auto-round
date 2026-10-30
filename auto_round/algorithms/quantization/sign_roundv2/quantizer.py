@@ -17,6 +17,8 @@ from contextlib import nullcontext
 from functools import partial
 from typing import TYPE_CHECKING
 
+import math
+
 import torch
 import transformers
 from torch import autocast
@@ -48,6 +50,7 @@ from auto_round.data_type.utils import (
 from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized, compile_func, get_reciprocal
 from auto_round.wrapper import WrapperLinear, wrapper_block
+from auto_round import envs
 
 
 def _dq_asym_qdq(tensor, scale, wmin, bits, group_size, v=0):
@@ -102,7 +105,7 @@ def _dq_asym_group_size(bits: int) -> int:
 
 
 class SignRoundOptimizedWrapperLinear(WrapperLinear):
-    minmax_scale_bound = (0.0, 10.0)  # TODO widened from 2.0 for low-bit QAD; verify correctness
+    minmax_scale_bound = (0.1, 10.0)  # TODO widened from 2.0 for low-bit QAD; verify correctness
     # Opt-in protocol for wrapper_block: the init-scale search is weight-local
     # and row-independent, so same-shape modules can be searched as one stacked
     # batch (bit-identical per module, far fewer python/launch round-trips).
@@ -110,6 +113,21 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
 
     def _init_tuning_params_and_quant_func(self, defer_search: bool = False) -> None:
         super()._init_tuning_params_and_quant_func(defer_search=defer_search)
+
+        # Log/geometric min-max tuning (opt-in): re-anchor the tunable min/max
+        # scale coefficients to log space so each SignSGD step is a symmetric
+        # multiplicative move. Only engages when the coefficients are actually
+        # trainable (``nn.Parameter``); constant/frozen coefficients keep the
+        # plain linear path (a constant 1.0 must not be passed through exp()).
+        self._use_log_minmax = False
+        _min_tunable = isinstance(getattr(self, "min_scale", None), torch.nn.Parameter)
+        _max_tunable = isinstance(getattr(self, "max_scale", None), torch.nn.Parameter)
+        if envs.AR_ENABLE_LOG_MINMAX and _min_tunable and _max_tunable:
+            self._use_log_minmax = True
+            with torch.no_grad():
+                # theta = 0 <-> coeff = exp(0) = 1.0 (identity initialization)
+                self.min_scale.data.zero_()
+                self.max_scale.data.zero_()
 
         layer = self.orig_layer
         data_type = layer.data_type
@@ -160,6 +178,31 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
             del layer.imatrix
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
+
+    def _prepare_minmax_scale(self, min_scale, max_scale):
+        """Return the multiplicative coefficients the quant func consumes.
+
+        In log mode the stored parameters are ``theta`` (SignSGD tunes them with
+        symmetric fixed steps); clamp them to the symmetric log bound and return
+        ``exp(theta)`` so the quant function still receives plain multiplicative
+        coefficients, while ``+lr``/``-lr`` steps become ``xe^lr``/``/e^lr``.
+        Gradients flow back through ``exp`` to the ``theta`` parameters.
+        """
+        if not getattr(self, "_use_log_minmax", False):
+            return super()._prepare_minmax_scale(min_scale, max_scale)
+        # The shared ``minmax_scale_bound`` is defined in Euclidean (coefficient)
+        # space; convert it to the log/theta clamp range here so both the linear
+        # and log paths read from one bound. ``log`` is undefined at <= 0, so when
+        # the linear bound starts at 0 fall back to a multiplicatively symmetric
+        # lower end (the reciprocal of the upper coefficient), keeping shrink/expand
+        # equidistant from the identity.
+        coeff_low, coeff_high = self.minmax_scale_bound
+        if coeff_low <= 0.0:
+            coeff_low = 1.0 / coeff_high
+        low, high = math.log(coeff_low), math.log(coeff_high)
+        min_scale.data.clamp_(low, high)
+        max_scale.data.clamp_(low, high)
+        return torch.exp(min_scale), torch.exp(max_scale)
 
     def _run_deferred_search_now(self) -> None:
         """Run the staged search per-module (fallback when batching is off)."""
@@ -269,46 +312,6 @@ class SignRoundOptimizedAsymWrapperLinear(SignRoundOptimizedWrapperLinear):
         if hasattr(layer, "imatrix"):
             del layer.imatrix
 
-
-class SignRoundNVFP4DQWrapperLinear(WrapperLinear):
-    """Algorithm-extension wrapper for int weights with NVFP4 double-quantized scales.
-
-    Used for the ``W{bits}G{group_size}DQ`` schemes (``int_sym_nvfp4_dq`` /
-    ``int_soft_sym_nvfp4_dq``). Mirrors :class:`SignRoundOptimizedWrapperLinear`: the
-    per-group ``init_scale`` comes from :func:`search_int_sym_nvfp4_dq_scale` (int
-    ``search_scales`` + ``search_nvfp4_scale`` evaluated through the NVFP4 double
-    quantization), and ``max_scale`` tunes a coefficient on top of it, instead of the GGUF
-    double-quant search of :class:`SignRoundDQWrapperLinear`.
-    """
-
-    def _init_tuning_params_and_quant_func(self):
-        super()._init_tuning_params_and_quant_func()
-        layer = self.orig_layer
-        if (
-            layer.bits >= 16
-            or "nvfp4_dq" not in str(layer.data_type)
-            or isinstance(layer.group_size, tuple)
-            or not self.enable_round_tuning
-        ):
-            return
-        from auto_round.data_type.nvfp import search_int_sym_nvfp4_dq_scale
-
-        weight = layer.get_weight() if hasattr(layer, "get_weight") else layer.weight
-        if isinstance(layer, transformers.pytorch_utils.Conv1D):
-            weight = weight.t()
-        weight_reshape, _, _ = reshape_pad_tensor_by_group_size(
-            weight.data.to(self.device, torch.float32), layer.group_size
-        )
-        imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
-        self.init_scale = search_int_sym_nvfp4_dq_scale(
-            weight_reshape,
-            layer.bits,
-            imatrix.to(weight_reshape.device),
-            super_group_size=getattr(layer, "super_group_size", None) or 16,
-        )
-        # ``max_scale`` tunes a coefficient around the searched scale in both directions
-        # (same range as the ``search_nvfp4_scale`` grid).
-        self.minmax_scale_bound = (0.5, 1.5)
 
 
 class SignRoundDQWrapperLinear(WrapperLinear):
@@ -516,16 +519,13 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
             self.wrapper_block = _named_wrapper_block(SignRoundOptimizedAsymWrapperLinear, "wrapper_block")
 
         if self.scheme.data_type.endswith("dq"):
-            if "nvfp4_dq" in self.scheme.data_type:
-                # Int weights + NVFP4 double-quantized scales (W{b}G{g}DQ): dedicated
-                # NVFP4-aware scale search instead of the GGUF double-quant search.
-                self._use_outlier_suppressed_loss = self.scheme.act_bits <= 4 or self.scheme.bits < 4
-                self.wrapper_block = _named_wrapper_block(SignRoundNVFP4DQWrapperLinear, "nvfp4_dq_wrapper_block")
-            else:
-                self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
+            self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
 
     def can_compile_block_forward(self):
-        return False
+        # torch.compile on the whole block forward is only reliable on torch >= 2.13
+        from packaging.version import Version
+
+        return Version(torch.__version__.split("+")[0]) >= Version("2.13")
 
     def _get_loss(
         self,

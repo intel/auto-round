@@ -570,6 +570,15 @@ class AlgorithmComposer:
         # When quantized input is available from the previous block, use it;
         # otherwise fall back to the FP input.
         effective_input = q_inputs if q_inputs is not None else fp_inputs
+        warm_start_outputs = []
+        warm_start_kwargs = {}
+        if getattr(self.block_quantizer, "warm_start_collect", False) and self.block_quantizer.enable_quanted_input:
+
+            def collect_warm_start_output(wrapped_block):
+                output = block_forward_fn(wrapped_block, effective_input, input_others)
+                warm_start_outputs.append(getattr(block_forward_fn, "last_output_dict", None) or output)
+
+            warm_start_kwargs["warm_start_forward"] = collect_warm_start_output
         self.block_quantizer.quantize_block(
             block,
             effective_input,
@@ -578,6 +587,7 @@ class AlgorithmComposer:
             q_inputs,
             block_ctx,
             input_ids=input_ids,
+            **warm_start_kwargs,
         )
 
         # Quantizer-agnostic block finalization (e.g. NVFP MoE act_max), kept
@@ -589,7 +599,11 @@ class AlgorithmComposer:
             pre.post_quantize_block(block_ctx)
 
         # ── Step 6: Collect quantized-block outputs for the next block ──────────
-        if self.block_quantizer.enable_quanted_input:
+        if warm_start_outputs:
+            # Warm-up has restored FP weights by now; use the output collected
+            # while the wrappers still held the best quantization parameters.
+            new_q_input = warm_start_outputs[0]
+        elif self.block_quantizer.enable_quanted_input:
             with torch.no_grad():
                 new_q_input = block_forward_fn(block, effective_input, input_others)
                 new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input

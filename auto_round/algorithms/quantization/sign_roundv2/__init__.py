@@ -14,14 +14,12 @@
 
 from auto_round.algorithms.quantization.sign_roundv2.quantizer import (
     SignRoundDQWrapperLinear,
-    SignRoundNVFP4DQWrapperLinear,
     SignRoundOptimizedWrapperLinear,
     SignRoundV2Quantizer,
 )
 
 __all__ = [
     "SignRoundDQWrapperLinear",
-    "SignRoundNVFP4DQWrapperLinear",
     "SignRoundOptimizedWrapperLinear",
     "SignRoundV2Quantizer",
 ]

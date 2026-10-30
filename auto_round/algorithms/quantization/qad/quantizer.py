@@ -712,7 +712,8 @@ class QADQuantizer(SignRoundQuantizer):
                     # Drop the large per-microbatch logits/graph before the next
                     # forward so the cached allocator can reuse the blocks.
                     del logits, loss, batch_ids, t_index, t_prob
-                self._step(scaler, optimizer, lr_schedule)
+                # The loss was measured before the optimizer update: snapshot
+                # that same state, including any jointly tuned FP parameters.
                 if total_loss < best_loss:
                     best_loss = total_loss
                     best_iter = it
@@ -720,6 +721,7 @@ class QADQuantizer(SignRoundQuantizer):
                         best_params = collect_best_params(model, best_cache_device)
                         if fp_params:
                             best_fp_state = self._snapshot_fp_params(fp_params, best_cache_device)
+                self._step(scaler, optimizer, lr_schedule)
                 # Switch: with ``--not_use_best_mse`` keep the LAST iteration's
                 # params instead of the best-loss ones. Collect them explicitly --
                 # an empty dict would make ``unwrapper`` fall back to

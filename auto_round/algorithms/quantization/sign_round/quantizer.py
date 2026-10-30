@@ -757,6 +757,8 @@ class SignRoundQuantizer(BaseQuantizer):
                 sample). Used to derive the valid-token loss mask once (result
                 cached on ``self._cached_valid_token_mask`` for reuse across
                 all blocks). ``None`` disables loss masking.
+            warm_start_forward: Optional callback in kwargs that collects the
+                best quantized block output before warm-up restores FP layers.
             **kwargs: Reserved for forward-compatibility with future parameters.
 
         Returns:
@@ -834,7 +836,7 @@ class SignRoundQuantizer(BaseQuantizer):
             )
             logger.info(dump_info)
             if self.warm_start_collect:
-                store_warm_start_params_and_unwrap(block, {})
+                store_warm_start_params_and_unwrap(block, {}, before_unwrap=kwargs.get("warm_start_forward"))
             else:
                 unwrapper_block(block, {})
             return {}
@@ -1155,8 +1157,8 @@ class SignRoundQuantizer(BaseQuantizer):
         with torch.no_grad():
             if self.warm_start_collect:
                 # Warm-up stage of a chain (e.g. SignRound -> QAD): keep the FP
-                # weight and stash tuned params for the next pass to warm-start from.
-                store_warm_start_params_and_unwrap(block, best_params)
+                # weight, but propagate the best quantized output before restoring it.
+                store_warm_start_params_and_unwrap(block, best_params, before_unwrap=kwargs.get("warm_start_forward"))
             else:
                 unwrapper_block(block, best_params)
 
