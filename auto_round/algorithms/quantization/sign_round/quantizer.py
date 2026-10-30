@@ -101,9 +101,6 @@ from auto_round.wrapper import (
     wrapper_block,
 )
 
-if TYPE_CHECKING:
-    from auto_round.algorithms.composer import BlockContext
-
 
 @register_pipeline_member(SignRoundConfig)
 class SignRoundQuantizer(BaseQuantizer):
@@ -337,13 +334,6 @@ class SignRoundQuantizer(BaseQuantizer):
         """
         name_lower = block_name.lower()
         return not any(kw in name_lower for kw in self._NON_TEXT_BLOCK_KEYWORDS)
-
-    def _maybe_prefetch_teacher(self, indices) -> None:
-        """Hook for subclasses (e.g. QAD) to prefetch per-batch teacher data.
-
-        No-op in the base implementation.
-        """
-        return
 
     def _lfq_is_kd_block(self, block_ctx) -> bool:
         """Return ``True`` if the KD (LFQ logit-lens) loss applies to this block.
@@ -990,9 +980,6 @@ class SignRoundQuantizer(BaseQuantizer):
                 total_loss = 0
                 _perf.start("sampler")
                 global_indices = index_sampler.next_batch()
-                # Hook: let subclasses (e.g. QAD) prefetch this iteration's teacher
-                # data from disk in the background while the forward/loss runs.
-                self._maybe_prefetch_teacher(global_indices)
                 if valid_token_mask:
                     num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
                 _perf.stop("sampler")
