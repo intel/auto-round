@@ -445,6 +445,9 @@ class LFQMixin:
                 conditional_only=(self.lfq_loss_type == "tk"),
             )
 
+        if not (input_ids[..., 1:] != -100).any():
+            return logits.float().sum() * 0.0
+
         if hasattr(self.model, "loss_function"):
             loss = self.model.loss_function(
                 logits=logits,

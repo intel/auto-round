@@ -813,6 +813,20 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         self._check_compatibility()
 
+        if all(quantizer.whole_model_tuning for quantizer in self.alg_composer.quantizers):
+            # Whole-model algorithms collect their own raw model inputs. Building
+            # first-block activation pools here wastes gigabytes and no block
+            # stage exists to consume/release those pools.
+            self.inputs = {}
+            self.calibration.inputs = {}
+
+            def no_block_stage(replay=False):
+                raise RuntimeError("A whole-model-only pipeline must not schedule block tuning.")
+
+            self.alg_composer.compress_model(None, no_block_stage)
+            self.model_context.quantized = True
+            return self.model_context.model, self.layer_config
+
         if bool(self.quant_block_list):
             all_blocks = self.quant_block_list
         else:

@@ -1137,6 +1137,12 @@ def preserve_original_weights(block):
     """
     modules = list(block.named_modules())
     parameters = [(p, p.detach().to("cpu", copy=True), p.requires_grad) for p in block.parameters()]
+    quantization_types = [
+        (module, key, getattr(module, key))
+        for _, module in modules
+        for key in ("data_type", "act_data_type")
+        if hasattr(module, key)
+    ]
     try:
         yield
     finally:
@@ -1147,6 +1153,10 @@ def preserve_original_weights(block):
             for parameter, saved, requires_grad in parameters:
                 parameter.data = saved.to(parameter.device)
                 parameter.requires_grad_(requires_grad)
+            # RTN writes resolved one-shot dtype names during finalization.
+            # Subsequent training stages need the original differentiable types.
+            for module, key, value in quantization_types:
+                setattr(module, key, value)
 
 
 @torch.no_grad()
@@ -1174,7 +1184,11 @@ def store_warm_start_params_and_unwrap(block, best_params, *, before_unwrap=None
             restoring FP layers; restoration also happens if the callback raises.
     """
     best_params = best_params or {}
-    wrapped_layers = [(n, m) for n, m in block.named_modules() if hasattr(m, "orig_layer")]
+    wrapped_layers = [
+        (n, m)
+        for n, m in block.named_modules()
+        if hasattr(m, "orig_layer") and hasattr(m, "params") and callable(getattr(m, "unwrapper", None))
+    ]
     try:
         for n, m in wrapped_layers:
             if n in best_params:

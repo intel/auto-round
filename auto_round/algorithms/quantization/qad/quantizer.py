@@ -105,6 +105,9 @@ if _HAS_TRITON:
         logits_ptr,
         out_ptr,
         logz_ptr,
+        prob_ptr,
+        mask_ptr,
+        scale_ptr,
         stride_b,
         stride_t,
         out_stride_b,
@@ -112,6 +115,7 @@ if _HAS_TRITON:
         S1,
         VOCAB,
         INV_TAU,
+        FULL: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
         """Write ``softmax(s/τ)`` of one row/vocab-block straight into ``out``.
@@ -137,6 +141,12 @@ if _HAS_TRITON:
         )
         logz = tl.load(logz_ptr + row)
         y = tl.exp(x - logz)
+        if FULL:
+            target = tl.load(prob_ptr + row.to(tl.int64) * VOCAB + offs, mask=msk, other=0).to(tl.float32)
+            y -= target
+        valid = tl.load(mask_ptr + row)
+        scale = tl.load(scale_ptr).to(tl.float32)
+        y = tl.where(valid, y * scale, 0.0)
         tl.store(out_ptr + b.to(tl.int64) * out_stride_b + t.to(tl.int64) * out_stride_t + offs, y, mask=msk)
 
 
@@ -151,8 +161,8 @@ def _triton_logsumexp(logits: torch.Tensor, tau: float) -> torch.Tensor:
     return logz
 
 
-def _triton_softmax_into(out: torch.Tensor, logits: torch.Tensor, logz: torch.Tensor, tau: float) -> None:
-    """Fill ``out[:, :S1, :]`` with ``softmax(s/τ)`` via Triton (in place)."""
+def _triton_softmax_into(out, logits, logz, tau, target, mask, scale, full_mode) -> None:
+    """Store completed dense gradients, casting only after FP32 arithmetic."""
     B, S, V = logits.shape
     S1 = S - 1
     M = B * S1
@@ -160,7 +170,22 @@ def _triton_softmax_into(out: torch.Tensor, logits: torch.Tensor, logz: torch.Te
     sb, st, _ = logits.stride()
     osb, ost, _ = out.stride()
     _qad_softmax_kernel[(M, n_blk)](
-        logits, out, logz, sb, st, osb, ost, S1, V, 1.0 / tau, BLOCK=_QAD_TRITON_BLOCK, num_warps=8
+        logits,
+        out,
+        logz,
+        target,
+        mask,
+        scale,
+        sb,
+        st,
+        osb,
+        ost,
+        S1,
+        V,
+        1.0 / tau,
+        FULL=full_mode,
+        BLOCK=_QAD_TRITON_BLOCK,
+        num_warps=8,
     )
 
 
@@ -237,6 +262,9 @@ class _QADDistillLoss(torch.autograd.Function):
             # Full-distribution teacher (already sums to 1). The [B, S1, chunk]
             # product is transient; nothing full-vocab beyond the resident probs.
             p_full = teacher_prob[:, :-1, :].float()  # [B, S1, V] (already resident)
+            # FP16 storage does not preserve unit row mass. Both the KL formula
+            # and its softmax-minus-target derivative require normalized targets.
+            p_full = p_full / p_full.sum(dim=-1, keepdim=True).clamp_min(ctx.eps)
             cross = torch.zeros(B, S1, device=logits.device, dtype=torch.float32)
             neg_ent = torch.zeros(B, S1, device=logits.device, dtype=torch.float32)
             for c0 in range(0, V, vocab_chunk):
@@ -282,30 +310,32 @@ class _QADDistillLoss(torch.autograd.Function):
 
         grad_logits = torch.zeros_like(logits)
         seg = grad_logits[:, :-1, :]  # [B, S1, V] view -> in-place writes land in grad_logits
+        scale = grad_out.float() * (tau / ctx.n_valid)
+        mask3 = mask.view(B, S1, 1)
+        logz3 = logz.view(B, S1, 1)
+        s3 = logits[:, :-1, :]
 
         # Recompute softmax(s/τ) and write it straight into the gradient buffer
         # (no full-vocab softmax retained anywhere else).
         if ctx.use_triton:
-            _triton_softmax_into(grad_logits, logits, logz, tau)
+            _triton_softmax_into(grad_logits, logits, logz, tau, pT.contiguous(), mask, scale, ctx.full_mode)
         else:
-            logz3 = logz.view(B, S1, 1)
-            s3 = logits[:, :-1, :]
             for c0 in range(0, V, vocab_chunk):
                 c1 = min(c0 + vocab_chunk, V)
                 sc = s3[:, :, c0:c1].float() / tau
-                seg[:, :, c0:c1] = torch.exp(sc - logz3).to(grad_logits.dtype)
+                grad = torch.exp(sc - logz3)
+                if ctx.full_mode:
+                    grad -= pT[:, :, c0:c1]
+                grad = torch.where(mask3, grad * scale, 0.0)
+                seg[:, :, c0:c1] = grad.to(grad_logits.dtype)
 
-        # Subtract the teacher distribution: full vector, or Top-K scattered back.
-        if ctx.full_mode:
-            seg -= pT.view(B, S1, V).to(grad_logits.dtype)
-        else:
-            K = ti.shape[-1]
-            seg.scatter_add_(2, ti.view(B, S1, K), (-pT).view(B, S1, K).to(grad_logits.dtype))
-
-        # dL/ds = (τ/N)·mask·(softmax(s/τ) − p_T); fold in the upstream scalar grad.
-        scale = (grad_out * (tau / ctx.n_valid)).to(grad_logits.dtype)
-        seg *= mask.view(B, S1, 1).to(grad_logits.dtype)
-        seg *= scale
+        if not ctx.full_mode:
+            # Overwrite the sparse target positions with their complete FP32
+            # gradient. Subtracting from an already-cast dense gradient would
+            # lose near-equal student/teacher probabilities in FP16/BF16.
+            selected = torch.exp(s3.gather(-1, ti).float() / tau - logz3) - pT
+            selected = torch.where(mask3, selected * scale, 0.0)
+            seg.scatter_(2, ti, selected.to(grad_logits.dtype))
 
         return grad_logits, None, None, None, None, None, None
 
@@ -654,6 +684,14 @@ class QADQuantizer(SignRoundQuantizer):
         update_block_global_scale_if_needed(model, self.config.data_type or "int", self.config.group_size or -1)
 
     def quantize_model(self, model, token_ids, device=None) -> dict:
+        """Tune jointly, releasing the teacher workspace even if setup fails."""
+        try:
+            return self._quantize_model(model, token_ids, device)
+        finally:
+            if self._teacher_cache is not None:
+                self._teacher_cache.shutdown()
+
+    def _quantize_model(self, model, token_ids, device=None) -> dict:
         """Tune the whole model jointly against the cached teacher distribution.
 
         Steps: (1) cache the FP teacher Top-K via a real full-model forward,
@@ -731,6 +769,7 @@ class QADQuantizer(SignRoundQuantizer):
         # biases). Exclude the wrapper tuning params and the frozen original
         # quantized weights (everything under a wrapper's ``orig_layer``).
         fp_params = self._collect_non_quant_params(model) if self.tune_non_quant_params else []
+        fp_optimizer_params, fp_master_pairs = self._prepare_fp_optimizer_params(fp_params)
         if not round_params and not minmax_params and not fp_params:
             logger.warning("QAD: no trainable quantization parameters found; nothing to tune.")
             if self._teacher_cache is not None:
@@ -745,7 +784,7 @@ class QADQuantizer(SignRoundQuantizer):
             param_groups.append({"params": minmax_params, "lr": torch.tensor(float(minmax_lr))})
         if fp_params:
             fp_lr = self.non_quant_params_lr if self.non_quant_params_lr is not None else base_lr
-            param_groups.append({"params": fp_params, "lr": torch.tensor(float(fp_lr))})
+            param_groups.append({"params": fp_optimizer_params, "lr": torch.tensor(float(fp_lr))})
             logger.info(
                 "QAD: also tuning %d non-quantized FP parameter tensors (lm_head/embeddings/norms/biases) at lr=%.2e.",
                 len(fp_params),
@@ -824,7 +863,9 @@ class QADQuantizer(SignRoundQuantizer):
                         best_params = collect_best_params(model, best_cache_device)
                         if fp_params:
                             best_fp_state = self._snapshot_fp_params(fp_params, best_cache_device)
+                self._copy_fp_grads_to_masters(fp_master_pairs)
                 self._step(scaler, optimizer, lr_schedule)
+                self._copy_fp_masters_to_model(fp_master_pairs)
                 # Switch: with ``--not_use_best_mse`` keep the LAST iteration's
                 # params instead of the best-loss ones. Collect them explicitly --
                 # an empty dict would make ``unwrapper`` fall back to
@@ -886,6 +927,31 @@ class QADQuantizer(SignRoundQuantizer):
                 p.requires_grad_(True)
                 fp_params.append(p)
         return fp_params
+
+    @staticmethod
+    def _prepare_fp_optimizer_params(fp_params):
+        """Keep low-precision forward weights but optimize FP32 master copies."""
+        optimizer_params, pairs = [], []
+        for param in fp_params:
+            if param.dtype in (torch.float16, torch.bfloat16):
+                master = torch.nn.Parameter(param.detach().float().clone())
+                optimizer_params.append(master)
+                pairs.append((param, master))
+            else:
+                optimizer_params.append(param)
+        return optimizer_params, pairs
+
+    @staticmethod
+    def _copy_fp_grads_to_masters(pairs):
+        for param, master in pairs:
+            master.grad = None if param.grad is None else param.grad.detach().float()
+            param.grad = None
+
+    @staticmethod
+    @torch.no_grad()
+    def _copy_fp_masters_to_model(pairs):
+        for param, master in pairs:
+            param.copy_(master)
 
     @staticmethod
     def _snapshot_fp_params(fp_params: list, device) -> list:

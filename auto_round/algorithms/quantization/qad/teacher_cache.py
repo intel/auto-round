@@ -37,11 +37,13 @@ On-disk layout (one file per calibration sample)::
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import torch
+from filelock import FileLock
 
 from auto_round.logger import logger
 
@@ -74,7 +76,6 @@ class TeacherTopKCache:
         signature: dict | None = None,
         temperature: float = 1.0,
     ) -> None:
-        self.workspace = workspace
         self.top_k = int(top_k)
         # Distillation temperature τ: the cached teacher target is softmax(t/τ),
         # matching the student's softmax(s/τ) in the KD loss.
@@ -82,11 +83,26 @@ class TeacherTopKCache:
         if self.temperature <= 0:
             raise ValueError("`temperature` must be positive")
         self.store_full = self.top_k == -1
+        # Different teachers never invalidate each other's files. Identical
+        # signatures share a namespace for reuse, with one active owner at a
+        # time so neither rebuilding nor prefetching can race another process.
+        if signature is not None:
+            namespace = json.dumps(
+                {**signature, "top_k": self.top_k, "temperature": self.temperature}, sort_keys=True
+            ).encode()
+            workspace = os.path.join(workspace, hashlib.sha256(namespace).hexdigest())
+        self.workspace = workspace
         os.makedirs(self.workspace, exist_ok=True)
+        self._workspace_lock = FileLock(os.path.join(self.workspace, ".cache.lock"), timeout=0, thread_local=False)
+        self._workspace_lock.acquire()
         self._num_workers = max(1, int(num_workers))
         self._executor: ThreadPoolExecutor | None = None
         self._pending: dict[int, Future] = {}
-        self._reconcile_signature(signature)
+        try:
+            self._reconcile_signature(signature)
+        except BaseException:
+            self._workspace_lock.release()
+            raise
 
     # ── signature / invalidation ──────────────────────────────────────────────
     def _manifest_path(self) -> str:
@@ -193,7 +209,7 @@ class TeacherTopKCache:
             self._path(sample_idx),
         )
 
-    # ── read-ahead prefetching ���───────────────────────────────────────────────
+    # Read-ahead prefetching
     def _pool(self) -> ThreadPoolExecutor:
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=self._num_workers, thread_name_prefix="qad_teacher")
@@ -238,8 +254,9 @@ class TeacherTopKCache:
         """Stop the prefetch thread pool and drop any pending futures."""
         self._pending.clear()
         if self._executor is not None:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
+        self._workspace_lock.release()
 
     def clear(self) -> None:
         """Remove all cached teacher files from the workspace."""
