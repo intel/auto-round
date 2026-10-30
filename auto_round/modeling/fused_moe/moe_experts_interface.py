@@ -41,7 +41,12 @@ from auto_round.modeling.fused_moe.grouped_experts import (
     GROUPED_LINEAR_SLICED_IMPL,
     grouped_linear_experts_forward,
 )
-from auto_round.modeling.fused_moe.utils import build_forced_routing, force_all_experts_routing_enabled
+from auto_round.modeling.fused_moe.utils import (
+    _prepare_moe_route_batches,
+    _restore_moe_route_order,
+    build_forced_routing,
+    force_all_experts_routing_enabled,
+)
 from auto_round.utils import clear_memory, logger
 from auto_round.utils.device import memory_monitor
 
@@ -250,29 +255,23 @@ def linear_loop_experts_forward(
         batch_size, seq_len = None, None
         hidden_dim = hidden_states.size(-1)
 
-    device = hidden_states.device
     num_top_k = top_k_index.size(-1)
     num_tokens = hidden_states.size(0)
     num_experts = self.num_experts
 
     def _run_experts_with_routes(route_indices: torch.Tensor, route_weights: torch.Tensor) -> torch.Tensor:
-        # Reshape for easier indexing
-        # S is the number of selected token-expert pairs (S = num_tokens * num_top_k)
-        token_idx = torch.arange(num_tokens, device=device).unsqueeze(1).expand(-1, num_top_k).reshape(-1)  # (S,)
-        sample_weights = route_weights.reshape(-1).to(hidden_states.dtype)  # (S,)
-        expert_ids = route_indices.reshape(-1)  # (S,)
-
-        # Get current hidden states for selected samples
-        selected_hidden_states = hidden_states[token_idx]  # (S, hidden_dim)
-
-        out_per_sample = torch.zeros_like(selected_hidden_states)
-        for expert_idx in range(num_experts):
-            sample_idx = torch.nonzero(expert_ids == expert_idx, as_tuple=False).squeeze(-1)
-            if sample_idx.numel() == 0:
+        sorted_hidden_states, sorted_weights, permutation, route_plan = _prepare_moe_route_batches(
+            hidden_states, route_indices, route_weights
+        )
+        output_batches = []
+        offset = 0
+        for expert_idx, count in route_plan:
+            expert_input = sorted_hidden_states[offset : offset + count]
+            if not 0 <= expert_idx < num_experts:
+                output_batches.append(torch.zeros_like(expert_input))
+                offset += count
                 continue
-            expert_input = selected_hidden_states.index_select(0, sample_idx)
 
-            # Get this expert's container with its projection layers
             expert = getattr(self, str(expert_idx))
             up_out = expert.up_proj(expert_input)  # (num_samples, intermediate_dim)
 
@@ -293,15 +292,12 @@ def linear_loop_experts_forward(
 
             # Down projection
             expert_out = expert.down_proj(gated_out)  # (num_samples, hidden_dim)
+            output_batches.append(expert_out.to(hidden_states.dtype))
+            offset += count
 
-            out_per_sample.index_copy_(0, sample_idx, expert_out.to(out_per_sample.dtype))
-
-        # Apply routing weights
-        out_per_sample = out_per_sample * sample_weights.unsqueeze(-1)  # (S, hidden_dim)
-
-        # Accumulate results using deterministic reshape+sum instead of index_add_
-        # (index_add_ with duplicate indices is non-deterministic on CUDA due to atomicAdd)
-        return out_per_sample.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
+        sorted_outputs = torch.cat(output_batches, dim=0) if output_batches else sorted_hidden_states
+        sorted_outputs = sorted_outputs * sorted_weights.unsqueeze(-1)
+        return _restore_moe_route_order(sorted_outputs, permutation, num_tokens, num_top_k)
 
     # Main output path: always preserve original router selection.
     final_hidden_states = _run_experts_with_routes(top_k_index, top_k_weights)
@@ -317,7 +313,7 @@ def linear_loop_experts_forward(
             num_experts=num_experts,
             dtype=hidden_states.dtype,
             num_tokens=num_tokens,
-            device=device,
+            device=hidden_states.device,
             normalize=True,
         )
         with torch.no_grad():

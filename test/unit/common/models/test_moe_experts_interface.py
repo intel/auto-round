@@ -216,7 +216,16 @@ def test_linear_loop_forward():
     top_k_weights = torch.softmax(torch.randn(num_tokens, top_k), dim=-1)
 
     # Run forward
-    output = linear_loop_experts_forward(module, hidden_states, top_k_index, top_k_weights)
+    original_nonzero = torch.nonzero
+
+    def fail_nonzero(*args, **kwargs):
+        raise AssertionError("batched MoE routing must not call torch.nonzero")
+
+    torch.nonzero = fail_nonzero
+    try:
+        output = linear_loop_experts_forward(module, hidden_states, top_k_index, top_k_weights)
+    finally:
+        torch.nonzero = original_nonzero
 
     # Verify output shape
     assert output.shape == hidden_states.shape, f"Output shape mismatch: {output.shape} vs {hidden_states.shape}"
