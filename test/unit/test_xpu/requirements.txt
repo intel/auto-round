@@ -2,4 +2,4 @@ pillow
 gguf
 sentencepiece
 diffusers
-compressed-tensors>=0.15.0,<0.20  # 0.20.0 breaks packed int4 asymmetric zero-point decompression
+compressed-tensors
