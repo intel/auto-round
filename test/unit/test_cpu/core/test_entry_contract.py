@@ -108,7 +108,12 @@ def test_cli_awq_rtn_opt_policy():
     cases = [
         (Namespace(algorithm="awq", iters=200, disable_opt_rtn=True), ["AWQConfig", "RTNConfig"], [True, True]),
         (Namespace(algorithm="awq", iters=200, disable_opt_rtn=None), ["AWQConfig", "RTNConfig"], [True, True]),
-        (Namespace(algorithm="awq,rtn", iters=200, disable_opt_rtn=False), ["AWQConfig", "RTNConfig"], [False, False]),
+        (
+            Namespace(algorithm="awq", iters=200, disable_opt_rtn=False),
+            ["AWQConfig", "RTNConfig"],
+            [False, False],
+        ),
+        (Namespace(algorithm="awq,rtn", iters=200, disable_opt_rtn=False), ["AWQConfig", "RTNConfig"], [False, True]),
     ]
 
     for args, expected_types, expected_disable_opt_rtn in cases:
@@ -118,7 +123,7 @@ def test_cli_awq_rtn_opt_policy():
         assert [config.disable_opt_rtn for config in configs] == expected_disable_opt_rtn
 
 
-def test_cli_rtn_inherits_built_awq_config_without_mutating_args(monkeypatch):
+def test_cli_named_rtn_selects_plain_path_without_mutating_args(monkeypatch):
     from argparse import Namespace
 
     from auto_round.algorithms.registry import get_algorithm_entry
@@ -131,6 +136,6 @@ def test_cli_rtn_inherits_built_awq_config_without_mutating_args(monkeypatch):
     configs = AlgorithmHandler.build_configs(args, {})
 
     assert [type(config).__name__ for config in configs] == ["RTNConfig", "AWQConfig"]
-    assert configs[0].disable_opt_rtn is False
+    assert configs[0].disable_opt_rtn is True
     assert configs[1].disable_opt_rtn is False
     assert args.disable_opt_rtn is None

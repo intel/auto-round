@@ -96,6 +96,31 @@ def _patched_stop(self, *args, _orig=_orig_stop, **kwargs):
 
 multiprocessing.resource_tracker.ResourceTracker._stop = _patched_stop
 
+
+def _shutdown_sglang_engine(llm) -> None:
+    """Shut down an in-process sglang engine and reset torch inductor's compile pool.
+
+    ``sgl.Engine.shutdown()`` calls ``kill_process_tree(os.getpid(), include_parent=False)``,
+    which also kills inductor's compile-worker sidecar spawned by the previous
+    ``torch.compile``-enabled quantization. The dead pool stays cached in
+    ``AsyncCompile.process_pool``, so the next quantization that needs a fresh
+    compile fails with ``RuntimeError: Attempting to use a closed pool``.
+    Dropping the cached pool lets inductor spawn a new one on demand.
+    """
+    shutdown = getattr(llm, "shutdown", None)
+    if callable(shutdown):
+        try:
+            shutdown()
+        except Exception:
+            pass
+    try:
+        from torch._inductor.async_compile import shutdown_compile_workers
+
+        shutdown_compile_workers()
+    except Exception:
+        pass
+
+
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.skipif(
@@ -226,12 +251,7 @@ def _run_sglang_benchmark(
             sample_output=outputs[0]["text"],
         )
     finally:
-        shutdown = getattr(llm, "shutdown", None)
-        if callable(shutdown):
-            try:
-                shutdown()
-            except Exception:
-                pass
+        _shutdown_sglang_engine(llm)
         del llm
         gc.collect()
         if torch.cuda.is_available():
@@ -403,10 +423,7 @@ def test_sglang_awq_format_via_cli(require_cuda):
             text = outputs[0]["text"]
             assert text.strip() and "!!!" not in text
         finally:
-            try:
-                llm.shutdown()
-            except Exception:
-                pass
+            _shutdown_sglang_engine(llm)
             del llm
             gc.collect()
             if torch.cuda.is_available():

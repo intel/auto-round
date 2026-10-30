@@ -49,6 +49,9 @@ from auto_round.utils.path_safety import (
 )
 
 _NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
+_NVFP4_E5M3_GS_DATA_TYPE = "nvfp4_v2_gs"
+_NVFP4_E5M3_GS_ACT_DATA_TYPE = "nvfp4_v2_with_static_gs"
+_NVFP4_E5M3_FAMILY_DATA_TYPES = (_NVFP4_E5M3_DATA_TYPE, _NVFP4_E5M3_GS_DATA_TYPE)
 # default_scheme flag restricting quantization to layers stored as NVFP4 in the source checkpoint.
 _NVFP_SOURCE_ONLY_KEY = "_nvfp_source_only"
 _BLOCK_NAME_TO_IGNORE = ("shared_expert_gate.", ".gate.", "embed", "conv")
@@ -70,6 +73,7 @@ SUPPORTED_PRESET_SCHEMES = (
     "MXFP4",
     "MXFP8",
     "NVFP4_E5M3",
+    "NVFP4_E5M3_GS",
     "BF16",
 )
 
@@ -1318,6 +1322,86 @@ def _quantize_weight_nvfp4_e5m3(
     return {f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu")}
 
 
+def _qdq_weight_nvfp4_e5m3_gs(
+    weight: torch.Tensor, layer_name: str, group_size: int, device: str, disable_opt_rtn: bool
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return (fp32 weight, qdq weight, encoded-domain block scale, weight global scale) for NVFP4_E5M3_GS."""
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3, nvfp4_v2_gs, opt_rtn_nvfp4_v2_gs
+
+    in_features = weight.shape[1]
+    if group_size != 16 or in_features % group_size != 0:
+        raise ValueError(
+            f"NVFP4_E5M3_GS requires in_features divisible by group_size=16, got group_size={group_size}, "
+            f"in_features={in_features} for '{layer_name}'."
+        )
+    weight_dev = weight.to(device=device, dtype=torch.float32)
+    global_scale = calculate_gparam_e5m3(weight_dev, group_size).reshape(1)
+    quant_func = nvfp4_v2_gs if disable_opt_rtn else opt_rtn_nvfp4_v2_gs
+    qdq_weight, scale, _ = quant_func(weight_dev, bits=4, group_size=group_size, global_scale=global_scale)
+    return weight_dev, qdq_weight, scale, global_scale
+
+
+def _quantize_weight_nvfp4_e5m3_gs(
+    weight: torch.Tensor,
+    layer_name: str,
+    group_size: int = 16,
+    device: str = "cpu",
+    disable_opt_rtn: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Fake-quantize a 2D weight tensor to NVFP4_E5M3_GS; model-free uses a fixed input global scale of 1."""
+    _, qdq_weight, _, _ = _qdq_weight_nvfp4_e5m3_gs(weight, layer_name, group_size, device, disable_opt_rtn)
+    return {
+        f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu"),
+        f"{layer_name}.input_global_scale": torch.ones(1, dtype=torch.float32),
+    }
+
+
+def _pack_weight_nvfp4_e5m3_gs(
+    weight: torch.Tensor,
+    layer_name: str,
+    group_size: int = 16,
+    device: str = "cpu",
+    disable_opt_rtn: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Pack FP4 E2M1 weights with UE5M3 block scales and a per-tensor weight global scale."""
+    from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+
+    out_features, in_features = weight.shape
+    weight_dev, _, scale, global_scale = _qdq_weight_nvfp4_e5m3_gs(
+        weight, layer_name, group_size, device, disable_opt_rtn
+    )
+    scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
+    with torch.device("meta"):
+        linear = torch.nn.Linear(in_features, out_features, bias=False, dtype=torch.float32)
+    linear.weight = torch.nn.Parameter(weight_dev, requires_grad=False)
+    with torch.device("meta"):
+        qlayer = QuantLinear(
+            4,
+            group_size,
+            in_features,
+            out_features,
+            False,
+            data_type=_NVFP4_E5M3_GS_DATA_TYPE,
+            act_bits=4,
+            act_data_type=_NVFP4_E5M3_GS_ACT_DATA_TYPE,
+        )
+    qlayer.pack(
+        linear,
+        scale,
+        global_scale=global_scale,
+        input_global_scale=torch.ones(1, dtype=torch.float32),
+        device=device,
+    )
+    out = {
+        f"{layer_name}.weight_packed": qlayer.weight_packed.to("cpu"),
+        f"{layer_name}.weight_scale": qlayer.weight_scale.to("cpu"),
+        f"{layer_name}.weight_global_scale": qlayer.weight_global_scale.to("cpu"),
+        f"{layer_name}.input_global_scale": qlayer.input_global_scale.to("cpu"),
+    }
+    del qlayer, linear, weight_dev, scale
+    return out
+
+
 def _quantize_weight_int_fake(
     weight: torch.Tensor,
     layer_name: str,
@@ -1479,6 +1563,24 @@ def _quantize_single_tensor(
             return layer_name, out, layer_name, None
         except Exception as e:
             logger.warning(f"Failed to NVFP4_E5M3-quantize {layer_name}: {e}. Keeping original weight.")
+            return layer_name, {tensor_name: tensor}, None, layer_name
+
+    if data_type == _NVFP4_E5M3_GS_DATA_TYPE:
+        try:
+            quantize_e5m3_gs = (
+                _quantize_weight_nvfp4_e5m3_gs if scheme.get("_output_format") == "fake" else _pack_weight_nvfp4_e5m3_gs
+            )
+            out = quantize_e5m3_gs(
+                weight=tensor,
+                layer_name=layer_name,
+                group_size=group_size,
+                device=device,
+                disable_opt_rtn=disable_opt_rtn,
+            )
+            logger.debug(f"Quantized (NVFP4_E5M3_GS): {layer_name} (bits=4, group_size={group_size})")
+            return layer_name, out, layer_name, None
+        except Exception as e:
+            logger.warning(f"Failed to NVFP4_E5M3_GS-quantize {layer_name}: {e}. Keeping original weight.")
             return layer_name, {tensor_name: tensor}, None, layer_name
 
     # ---- Integer WOQ path ----
@@ -2690,11 +2792,11 @@ def _get_llm_compressor_metadata() -> dict[str, str]:
     return {"provider": "auto-round"}
 
 
-def _build_nvfp4_e5m3_quantization_config(ignored_layers: list[str]) -> dict:
-    """Build compressed-tensors metadata for NVFP4 E5M3 without global scales."""
+def _build_nvfp4_e5m3_quantization_config(ignored_layers: list[str], with_global_scale: bool = False) -> dict:
+    """Build compressed-tensors metadata for NVFP4 E5M3 (optionally with per-tensor global scales)."""
     from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
 
-    qconfig = initialize_nvfp4_e5m3_quantization(ignore=ignored_layers)
+    qconfig = initialize_nvfp4_e5m3_quantization(ignore=ignored_layers, with_global_scale=with_global_scale)
     qconfig.update(_get_llm_compressor_metadata())
     return qconfig
 
@@ -2745,15 +2847,16 @@ def _get_mxfp_group_scheme_and_format(
         tmp_qconfig = initialize_quantization(scheme="NVFP4", ignore=ignore)
         return tmp_qconfig.config_groups["group_0"], "nvfp4-pack-quantized"
 
-    if group_data_type == _NVFP4_E5M3_DATA_TYPE:
-        # NVFP4_E5M3 is not a compressed-tensors preset; use its dedicated builder.
-        nvfp4_dict = initialize_nvfp4_e5m3_quantization(ignore=ignore)
+    if group_data_type in _NVFP4_E5M3_FAMILY_DATA_TYPES:
+        # NVFP4_E5M3(_GS) is not a compressed-tensors preset; use its dedicated builder.
+        with_global_scale = group_data_type == _NVFP4_E5M3_GS_DATA_TYPE
+        nvfp4_dict = initialize_nvfp4_e5m3_quantization(ignore=ignore, with_global_scale=with_global_scale)
         # Extract the QuantizationScheme object from the dict config.
         from compressed_tensors.quantization import QuantizationScheme  # pylint: disable=E0401
 
         raw_scheme = nvfp4_dict["config_groups"]["group_0"]
         scheme_obj = QuantizationScheme.model_validate(raw_scheme)
-        return scheme_obj, "nvfp4-e5m3-pack-quantized"
+        return scheme_obj, nvfp4_dict["format"]
     else:
         scheme_name = "MXFP4" if group_bits == 4 else "MXFP8"
         fmt = "mxfp4-pack-quantized" if group_bits == 4 else "mxfp8-quantized"
@@ -2789,7 +2892,11 @@ def _build_mxfp_quantization_config(
     default_data_type = (default_scheme.get("data_type") or "mx_fp").lower()
     is_fp_default = (bits or 0) >= 16  # BF16/FP16 full-precision default
 
-    if not is_fp_default and bits not in _SUPPORTED_MXFP_BITS and default_data_type != _NVFP4_E5M3_DATA_TYPE:
+    if (
+        not is_fp_default
+        and bits not in _SUPPORTED_MXFP_BITS
+        and default_data_type not in _NVFP4_E5M3_FAMILY_DATA_TYPES
+    ):
         raise ValueError(f"Unsupported MXFP bits={bits} for model-free output.")
 
     # Default ignore list: any layer present in ignored_layers (deduped) that
@@ -2825,13 +2932,15 @@ def _build_mxfp_quantization_config(
             actual_bits, actual_dt = next(iter(scheme_groups.keys()))
         else:
             actual_bits, actual_dt = bits, default_data_type
-        if actual_dt != _NVFP4_E5M3_DATA_TYPE and actual_bits not in _SUPPORTED_MXFP_BITS:
+        if actual_dt not in _NVFP4_E5M3_FAMILY_DATA_TYPES and actual_bits not in _SUPPORTED_MXFP_BITS:
             raise ValueError(f"Unsupported MXFP bits={actual_bits} for model-free output.")
         group_scheme, fmt = _get_mxfp_group_scheme_and_format(actual_bits, actual_dt, ignore)
-        if actual_dt == _NVFP4_E5M3_DATA_TYPE:
+        if actual_dt in _NVFP4_E5M3_FAMILY_DATA_TYPES:
             from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
 
-            qconfig = initialize_nvfp4_e5m3_quantization(ignore=ignore)
+            qconfig = initialize_nvfp4_e5m3_quantization(
+                ignore=ignore, with_global_scale=actual_dt == _NVFP4_E5M3_GS_DATA_TYPE
+            )
             if is_fp_default and scheme_groups:
                 targets = _add_routed_experts_if_moe(list(quantized_layers), quantized_layers)
                 qconfig["config_groups"]["group_0"]["targets"] = targets
@@ -3049,79 +3158,45 @@ def _layer_config_has_nvfp4(layer_config: dict | None) -> bool:
     with a ``"scheme"`` key or a ``"data_type"`` key), or
     :class:`QuantizationScheme` instances.
     """
-    if not layer_config:
-        return False
-    for val in layer_config.values():
-        if isinstance(val, str):
-            try:
-                s = _normalize_scheme(val.upper())
-                dt = (s.data_type or "").lower()
-                if dt == _NVFP4_E5M3_DATA_TYPE or is_nv_fp(dt):
-                    return True
-            except Exception:
-                pass
-        elif isinstance(val, dict):
-            dt = (val.get("data_type") or "").lower()
-            if dt == _NVFP4_E5M3_DATA_TYPE or is_nv_fp(dt):
-                return True
-            scheme_val = val.get("scheme")
-            if isinstance(scheme_val, str):
-                try:
-                    s = _normalize_scheme(scheme_val.upper())
-                    dt = (s.data_type or "").lower()
-                    if dt == _NVFP4_E5M3_DATA_TYPE or is_nv_fp(dt):
-                        return True
-                except Exception:
-                    pass
-        elif isinstance(val, QuantizationScheme):
-            dt = (val.data_type or "").lower()
-            if dt == _NVFP4_E5M3_DATA_TYPE or is_nv_fp(dt):
-                return True
-    return False
+    return _get_layer_config_nvfp4_dt(layer_config) is not None
 
 
 def _get_layer_config_nvfp4_dt(layer_config: dict | None) -> str | None:
     """Return the first NVFP4 data_type found in *layer_config*.
 
     Returns ``"nv_fp"`` for standard NVFP4, ``"nvfp4_v2"`` for NVFP4_E5M3,
-    or ``None`` when no NVFP4 entry is present.
+    ``"nvfp4_v2_gs"`` for NVFP4_E5M3_GS, or ``None`` when no NVFP4 entry is present.
     """
+
+    def _classify(dt: str) -> str | None:
+        if dt in _NVFP4_E5M3_FAMILY_DATA_TYPES:
+            return dt
+        if is_nv_fp(dt):
+            return "nv_fp"
+        return None
+
+    def _scheme_dt(name: str) -> str:
+        try:
+            return (_normalize_scheme(name.upper()).data_type or "").lower()
+        except Exception:
+            return ""
+
     if not layer_config:
         return None
     for val in layer_config.values():
+        candidates = []
         if isinstance(val, str):
-            try:
-                s = _normalize_scheme(val.upper())
-                dt = (s.data_type or "").lower()
-                if dt == _NVFP4_E5M3_DATA_TYPE:
-                    return _NVFP4_E5M3_DATA_TYPE
-                if is_nv_fp(dt):
-                    return "nv_fp"
-            except Exception:
-                pass
+            candidates.append(_scheme_dt(val))
         elif isinstance(val, dict):
-            dt = (val.get("data_type") or "").lower()
-            if dt == _NVFP4_E5M3_DATA_TYPE:
-                return _NVFP4_E5M3_DATA_TYPE
-            if is_nv_fp(dt):
-                return "nv_fp"
-            scheme_val = val.get("scheme")
-            if isinstance(scheme_val, str):
-                try:
-                    s = _normalize_scheme(scheme_val.upper())
-                    dt = (s.data_type or "").lower()
-                    if dt == _NVFP4_E5M3_DATA_TYPE:
-                        return _NVFP4_E5M3_DATA_TYPE
-                    if is_nv_fp(dt):
-                        return "nv_fp"
-                except Exception:
-                    pass
+            candidates.append((val.get("data_type") or "").lower())
+            if isinstance(val.get("scheme"), str):
+                candidates.append(_scheme_dt(val["scheme"]))
         elif isinstance(val, QuantizationScheme):
-            dt = (val.data_type or "").lower()
-            if dt == _NVFP4_E5M3_DATA_TYPE:
-                return _NVFP4_E5M3_DATA_TYPE
-            if is_nv_fp(dt):
-                return "nv_fp"
+            candidates.append((val.data_type or "").lower())
+        for dt in candidates:
+            result = _classify(dt)
+            if result is not None:
+                return result
     return None
 
 
@@ -3184,7 +3259,7 @@ def _derive_dominant_int_scheme(
         "sym": sym,
         "data_type": data_type,
     }
-    if data_type == _NVFP4_E5M3_DATA_TYPE:
+    if data_type in _NVFP4_E5M3_FAMILY_DATA_TYPES:
         for act_key in ("act_bits", "act_data_type", "act_group_size", "act_sym", "act_dynamic"):
             value = scheme.get(act_key)
             if value is not None:
@@ -3217,14 +3292,16 @@ def _build_quantization_config(
     data_type = (default_scheme.get("data_type") or "int").lower()
     default_bits = default_scheme.get("bits", 4)
     is_fp_default = (default_bits or 0) >= 16 and not is_mx_fp(data_type)
-    if data_type == _NVFP4_E5M3_DATA_TYPE and format == "llm_compressor":
+    if data_type in _NVFP4_E5M3_FAMILY_DATA_TYPES and format == "llm_compressor":
         warnings.warn(
             "LLMC/llm-compressor does not currently support the NVFP4_E5M3 scheme. "
             "Please refer to docs/nvfp4_e5m3.md for the recommended export and usage path.",
             UserWarning,
             stacklevel=2,
         )
-        return _build_nvfp4_e5m3_quantization_config(ignored_layers)
+        return _build_nvfp4_e5m3_quantization_config(
+            ignored_layers, with_global_scale=data_type == _NVFP4_E5M3_GS_DATA_TYPE
+        )
     # BF16/FP16 default with NVFP4 layer_config overrides and llm_compressor format:
     # build an NVFP4 config that targets only the explicitly quantized layers.
     if is_fp_default and _layer_config_has_nvfp4(layer_config) and format == "llm_compressor":
@@ -3232,19 +3309,19 @@ def _build_quantization_config(
         targets = list(dict.fromkeys(quantized_layers)) if quantized_layers else ["Linear"]
         if quantized_layers:
             targets = _add_routed_experts_if_moe(targets, quantized_layers)
-        if nvfp4_dt == _NVFP4_E5M3_DATA_TYPE:
+        if nvfp4_dt in _NVFP4_E5M3_FAMILY_DATA_TYPES:
             warnings.warn(
                 "LLMC/llm-compressor does not currently support the NVFP4_E5M3 scheme. "
                 "Please refer to docs/nvfp4_e5m3.md for the recommended export and usage path.",
                 UserWarning,
                 stacklevel=2,
             )
-            # Global-scale-free variant (NVFP4_E5M3)
             from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
 
-            qconfig = initialize_nvfp4_e5m3_quantization(ignore=[])
+            qconfig = initialize_nvfp4_e5m3_quantization(
+                ignore=[], with_global_scale=nvfp4_dt == _NVFP4_E5M3_GS_DATA_TYPE
+            )
             qconfig["config_groups"]["group_0"]["targets"] = targets
-            qconfig["format"] = "nvfp4-e5m3-pack-quantized"
         else:
             # Standard NVFP4 (nv_fp, scale_dtype=float8_e4m3fn)
             from auto_round.export.export_to_llmcompressor.config import initialize_quantization
@@ -3301,6 +3378,8 @@ def _build_quantization_config(
     # So we keep auto_round for asymmetric quantization to maintain compatibility with both.
     if data_type == _NVFP4_E5M3_DATA_TYPE:
         packing_format = "auto_round:fake" if format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
+    elif data_type == _NVFP4_E5M3_GS_DATA_TYPE:
+        packing_format = "auto_round:fake" if format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3_gs"
     else:
         packing_format = _declared_int_packing(default_scheme.get("sym", True))
 
@@ -3316,7 +3395,7 @@ def _build_quantization_config(
         "autoround_version": __version__,
     }
 
-    if data_type == _NVFP4_E5M3_DATA_TYPE:
+    if data_type in _NVFP4_E5M3_FAMILY_DATA_TYPES:
         for act_key in ("act_bits", "act_data_type", "act_group_size", "act_sym", "act_dynamic"):
             value = default_scheme.get(act_key)
             if value is not None:
@@ -3350,7 +3429,7 @@ def _build_quantization_config(
             if non_linear_re.search(layer_name):
                 continue
             extra_config[layer_name] = {"bits": 16, "data_type": "float"}
-            if data_type == _NVFP4_E5M3_DATA_TYPE:
+            if data_type in _NVFP4_E5M3_FAMILY_DATA_TYPES:
                 extra_config[layer_name].update({"act_bits": 16, "act_data_type": "float"})
 
     quantized_layer_set = set(quantized_layers)
@@ -3795,6 +3874,22 @@ def _validate_supported_scheme(
             raise ValueError(
                 f"Model-free NVFP4_E5M3 requires act_data_type='nvfp4_v2' and act_group_size=16, "
                 f"but '{scheme_input}' requests act_data_type='{scheme_obj.act_data_type}', "
+                f"act_group_size={scheme_obj.act_group_size}."
+            )
+        return
+
+    if data_type == _NVFP4_E5M3_GS_DATA_TYPE:
+        if bits != 4 or scheme_obj.group_size != 16 or act_bits != 4:
+            raise ValueError(
+                f"Model-free NVFP4_E5M3_GS requires bits=4, group_size=16, and act_bits=4, "
+                f"but '{scheme_input}' requests bits={bits}, group_size={scheme_obj.group_size}, "
+                f"act_bits={act_bits}."
+            )
+        act_data_type = (scheme_obj.act_data_type or "").lower()
+        if act_data_type != _NVFP4_E5M3_GS_ACT_DATA_TYPE or scheme_obj.act_group_size != 16:
+            raise ValueError(
+                f"Model-free NVFP4_E5M3_GS requires act_data_type='{_NVFP4_E5M3_GS_ACT_DATA_TYPE}' and "
+                f"act_group_size=16, but '{scheme_input}' requests act_data_type='{scheme_obj.act_data_type}', "
                 f"act_group_size={scheme_obj.act_group_size}."
             )
         return

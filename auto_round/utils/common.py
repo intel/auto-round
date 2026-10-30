@@ -439,7 +439,10 @@ def _patch_nvfp4_e5m3_compressed_tensors_quantizer():
 
     def is_nvfp4_e5m3(self):
         compression_config = getattr(getattr(self, "compressor", None), "quantization_config", None)
-        return getattr(compression_config, "format", None) == "nvfp4-e5m3-pack-quantized"
+        return getattr(compression_config, "format", None) in (
+            "nvfp4-e5m3-pack-quantized",
+            "nvfp4-e5m3-gs-pack-quantized",
+        )
 
     def patched_before(self, model, **kwargs):
         if not is_nvfp4_e5m3(self):
