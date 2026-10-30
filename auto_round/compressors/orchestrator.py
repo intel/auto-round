@@ -215,106 +215,6 @@ class CompressionOrchestrator(BaseOrchestrator):
             first_input_name=first_input_name,
         )
 
-    def _whole_model_tuning_quantizer(self):
-        """Return the block quantizer when it tunes the whole model jointly, else None.
-
-        Whole-model algorithms (e.g. QAD) run a single full-model forward to the
-        LM head instead of the block-by-block loop, so no post-block/lm_head
-        probing or nblocks fusing is needed.
-        """
-        block_quantizer = getattr(self.alg_composer, "block_quantizer", None)
-        if isinstance(block_quantizer, (list, tuple)):
-            block_quantizer = block_quantizer[0] if block_quantizer else None
-        if block_quantizer is not None and getattr(block_quantizer, "whole_model_tuning", False):
-            return block_quantizer
-        return None
-
-    def _resolve_whole_model_token_ids(self, whole_model_quantizer, input_ids_cache):
-        """Return the calibration token ids for the whole-model stage (e.g. QAD).
-
-        The whole-model quantizer may request its own sample count via
-        ``qad_nsamples`` (independent of the block-wise ``nsamples`` used by e.g.
-        the SignRound warm-up). Fewer samples are taken as a prefix of the cached
-        ids; more samples are fetched straight from the calibration dataloader
-        (token ids only, no model forward / block-input caching).
-        """
-        target = getattr(getattr(whole_model_quantizer, "config", None), "qad_nsamples", None)
-        cached = list(input_ids_cache) if input_ids_cache is not None else []
-        if target is None or target == len(cached):
-            return input_ids_cache
-        if target < len(cached):
-            logger.info("Whole-model stage uses the first %d of %d calibration samples.", target, len(cached))
-            return cached[:target]
-        collect = getattr(self.calibration, "collect_token_ids", None)
-        if collect is None:
-            logger.warning(
-                "qad_nsamples=%d is larger than the cached %d samples, but the %s calibrator cannot "
-                "collect extra token ids; falling back to the cached samples.",
-                target,
-                len(cached),
-                type(self.calibration).__name__,
-            )
-            return input_ids_cache
-        logger.info("Collecting %d calibration samples for the whole-model stage.", target)
-        token_ids = collect(target)
-        if len(token_ids) == 0:
-            logger.warning("No extra calibration token ids collected; falling back to the cached samples.")
-            return input_ids_cache
-        return token_ids
-
-    def _run_block_warmup(
-        self,
-        warmup_quantizer,
-        all_blocks: list,
-        all_inputs: dict,
-        all_q_inputs: dict | None,
-        input_ids_cache,
-        pbar: tqdm | None,
-    ) -> None:
-        """Run the block-wise warm-up stage of a chain (e.g. ``sign_round,qad``).
-
-        Temporarily makes *warmup_quantizer* the active block quantizer and runs
-        the standard per-block loop with ``warm_start_collect=True`` so each block
-        is tuned but its FP weight is preserved and the tuned
-        ``value``/``min_scale``/``max_scale`` (+ searched ``init_scale``) are
-        stashed on every layer for the whole-model stage to resume from.
-        """
-        if self.compress_context.is_immediate_saving or self.compress_context.is_immediate_packing:
-            raise NotImplementedError(
-                "Chaining a block-wise warm-up with a whole-model quantizer (e.g. 'sign_round,qad') "
-                "is not supported together with immediate saving/packing."
-            )
-
-        logger.info("Starting block-wise warm-up with %s.", type(warmup_quantizer).__name__)
-        original_block_quantizer = self.alg_composer.block_quantizer
-        self.alg_composer.block_quantizer = warmup_quantizer
-        warmup_quantizer.warm_start_collect = True
-        warmup_pbar = tqdm(range(0, sum(len(block) for block in all_blocks), self.nblocks), desc="Warm-up")
-        try:
-            for block_names in all_blocks:
-                inputs = all_inputs[block_names[0]]
-                all_inputs.pop(block_names[0])
-                q_inputs = None
-                if all_q_inputs is not None and block_names[0] in all_q_inputs:
-                    q_inputs = all_q_inputs[block_names[0]]
-                    all_q_inputs.pop(block_names[0])
-                inputs, q_inputs = _update_inputs(inputs, q_inputs)
-                self._quantize_blocks(
-                    self.model_context.model,
-                    inputs,
-                    block_names,
-                    q_input=q_inputs if q_inputs is not None else None,
-                    nblocks=self.nblocks,
-                    pbar=warmup_pbar,
-                    input_others_extra_blocks=all_inputs,
-                    token_ids=input_ids_cache,
-                )
-        finally:
-            warmup_pbar.close()
-            warmup_quantizer.warm_start_collect = False
-            self.alg_composer.block_quantizer = original_block_quantizer
-        logger.info("Block-wise warm-up done; FP weights preserved with warm-start params stashed.")
-
     def _attach_pool_placement(
         self, block: torch.nn.Module, input_ids: Any, q_input: Any = None, input_others: Any = None
     ) -> None:
@@ -755,6 +655,8 @@ class CompressionOrchestrator(BaseOrchestrator):
         self.post_init()
 
         if not self.need_calib:
+            if len(self.alg_composer.quantizers) > 1:
+                raise NotImplementedError("Multiple zero-shot quantizer stages are not supported yet.")
             return self._quantize_zero_shot()
 
         return self._quantize_data_driven()
@@ -1010,157 +912,33 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         start_time = time.time()
 
-        self.alg_composer.prepare_run()
+        resume_states = None
 
-        # Whole-model tuning (e.g. QAD): run a single full-model forward to the LM
-        # head instead of the per-block loop. No nblocks fusing or post-block/
-        # lm_head probing is needed.
-        whole_model_quantizer = self._whole_model_tuning_quantizer()
-        if whole_model_quantizer is not None:
-            # Optional block-wise warm-up stage (e.g. ``sign_round,qad``): tune every
-            # block first with the warm-up quantizer, keeping FP weights and stashing
-            # the tuned params on each layer, then let the whole-model quantizer
-            # resume from them.
-            warmup_quantizer = getattr(self.alg_composer, "warmup_quantizer", None)
-            if warmup_quantizer is not None:
-                self._run_block_warmup(
-                    warmup_quantizer,
-                    all_blocks,
-                    all_inputs,
-                    all_q_inputs,
-                    input_ids_cache,
-                    pbar,
+        def run_blocks(replay=False):
+            nonlocal all_inputs, all_q_inputs, input_ids_cache, resume_states
+            if replay:
+                self._reload_model_for_tuning()
+                all_inputs = self.cache_data(
+                    to_cache_block_names,
+                    self.calibration_context.nsamples,
+                    to_cache_layer_names,
+                    last_cache_name=_last_cache_name,
                 )
-                # Reuse the warm-up's resolved wrapper class so the stashed
-                # value/min_scale/max_scale/init_scale transfer with identical
-                # quantization semantics.
-                whole_model_quantizer.wrapper_block = getattr(
-                    warmup_quantizer, "wrapper_block", whole_model_quantizer.wrapper_block
-                )
-                # The warm-up block loop may have offloaded blocks; the whole-model
-                # forward needs the full model resident.
-                if self.compress_context.low_cpu_mem_usage:
-                    self._offloader.reload(self.model_context.model)
-            # The block-based pbar is meaningless here (the whole network is tuned
-            # jointly, not block-by-block): the quantizer drives its own progress
-            # bar over the tuning iterations.
+                input_ids_cache = all_inputs.pop("input_ids", None)
+                self.inputs = all_inputs
+                all_q_inputs = None
+                self.model_context.model = mv_module_from_gpu(self.model_context.model)
+                pbar.reset()
+            resume_states = self._run_cached_block_stage(all_blocks, all_inputs, all_q_inputs, input_ids_cache, pbar)
+
+        try:
+            handles_whole_model = self.alg_composer.compress_model(input_ids_cache, run_blocks)
+        finally:
             pbar.close()
-            whole_model_token_ids = self._resolve_whole_model_token_ids(whole_model_quantizer, input_ids_cache)
-            whole_model_quantizer.quantize_model(
-                self.model_context.model,
-                whole_model_token_ids,
-                device=device_manager.device,
-            )
-            self.alg_composer.finalize_run()
+        if handles_whole_model:
+            self.model_context.quantized = True
             return self.model_context.model, self.layer_config
 
-        # Build one ResumeState per block group (almost always just one group
-        # for text-only dense models) when AR_RESUME_DIR is set, so a
-        # crash/kill mid-tuning can resume from the first not-yet-quantized
-        # block instead of restarting from block 0. See auto_round/utils/resume.py.
-        resume_states = None
-        if envs.AR_RESUME_DIR:
-            if not self.compress_context.is_immediate_saving and not self.compress_context.low_cpu_mem_usage:
-                logger.warning(
-                    "AR_RESUME_DIR is set but neither immediate saving nor "
-                    "low_cpu_mem_usage is active. Without low_cpu_mem_usage, "
-                    "already-quantized blocks are never offloaded anywhere a "
-                    "resumed process could find them (see OffloadManager's "
-                    "deterministic resume directory in offload.py), so a "
-                    "resumed run's in-memory model will have meta/empty "
-                    "weights for blocks completed in a PRIOR process. Pass "
-                    "low_cpu_mem_usage=True (or a format= to quantize_and_save) "
-                    "for resumability to be meaningful here."
-                )
-            from auto_round.utils.resume import ResumeState, compute_run_signature, layer_config_fingerprint
-
-            model_dir = getattr(self.model_context, "disk_stream_model_dir", None) or getattr(
-                getattr(self.model_context.model, "config", None), "_name_or_path", None
-            )
-            dataset_desc = str(getattr(self, "dataset", None))
-            # str(self.scheme) alone is bits-blind for AutoScheme runs: two runs
-            # with different avg_bits share it, so include the resolved
-            # per-layer allocation (see layer_config_fingerprint docstring).
-            scheme_desc = (
-                str(self.scheme)
-                + "|"
-                + layer_config_fingerprint(getattr(getattr(self, "quantizer", None), "layer_config", None))
-            )
-            resume_states = []
-            for group_idx, block_names in enumerate(all_blocks):
-                sig = compute_run_signature(
-                    model_dir,
-                    scheme_desc,
-                    dataset_desc,
-                    self.calibration_context.nsamples,
-                    self.calibration_context.seqlen,
-                    block_names,
-                )
-                resume_states.append(
-                    ResumeState(os.path.join(envs.AR_RESUME_DIR, f"group_{group_idx}"), sig, block_names)
-                )
-
-        for group_idx, block_names in enumerate(all_blocks):
-            inputs = all_inputs[block_names[0]]
-            all_inputs.pop(block_names[0])
-            q_inputs = None
-            if all_q_inputs is not None:
-                q_inputs = all_q_inputs[block_names[0]]
-                all_q_inputs.pop(block_names[0])
-
-            inputs, q_inputs = _update_inputs(inputs, q_inputs)
-
-            clear_memory(self.inputs)
-
-            resume_state = resume_states[group_idx] if resume_states is not None else None
-            resume_input_ids = None
-            if resume_state is not None and resume_state.resume_index > 0:
-                if self.nblocks != 1:
-                    logger.warning(
-                        "AR_RESUME_DIR is set but nblocks != 1; resuming mid-group is only "
-                        "supported for nblocks=1 -- restarting this group from block 0."
-                    )
-                    resume_state = None
-                else:
-                    resume_name = block_names[resume_state.resume_index]
-                    # Only used here for `input_others` (position/mask info,
-                    # which is legitimately re-sourced from this same cache
-                    # every iteration regardless of resuming); the actual
-                    # chained `input_ids` comes from `resume_input_ids`
-                    # below, not this cache -- see
-                    # auto_round/utils/resume.py's module docstring for why
-                    # the two aren't interchangeable.
-                    if resume_name in all_inputs:
-                        inputs = all_inputs.pop(resume_name)
-                    q_inputs = resume_state.load_q_input()
-                    resume_input_ids = resume_state.load_input_ids()
-                    if resume_input_ids is None:
-                        logger.warning(
-                            "AR_RESUME_DIR manifest is missing its cached input_ids tensor; "
-                            "restarting this group from block 0 instead of resuming with a "
-                            "possibly-inconsistent chain value."
-                        )
-                        resume_state = None
-                    else:
-                        pbar.update(resume_state.resume_index)
-
-            self._quantize_blocks(
-                self.model_context.model,
-                inputs,
-                block_names,
-                q_input=q_inputs if q_inputs is not None else None,
-                nblocks=self.nblocks,
-                pbar=pbar,
-                input_others_extra_blocks=all_inputs,
-                token_ids=input_ids_cache,
-                resume_state=resume_state,
-                resume_input_ids=resume_input_ids,
-            )
-            if self.compress_context.is_immediate_packing and len(self.formats) != 1:
-                raise ValueError(
-                    f"Expected exactly one packing format when 'immediate_packing' is True, "
-                    f"but got {len(self.formats)} formats."
-                )
         if resume_states is not None:
             if self.compress_context.is_immediate_saving:
                 # Don't clear resume state yet when exporting to shards --
@@ -1175,10 +953,6 @@ class CompressionOrchestrator(BaseOrchestrator):
             else:
                 for rs in resume_states:
                     rs.clear()
-
-        # ── Pipeline lifecycle: model-level teardown (also finalizes any
-        #    layer-wise rotation). Symmetric with ``prepare_run`` above. ──────
-        self.alg_composer.finalize_run()
 
         pbar.set_description("Quantizing done")
         pbar.close()
@@ -1242,6 +1016,101 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         self.model_context.quantized = True
         return self.model_context.model, self.layer_config
+
+    def _reload_model_for_tuning(self):
+        """Materialize offloaded/streamed blocks for another model-level pass."""
+        if (
+            self.compress_context.low_cpu_mem_usage
+            or getattr(self.model_context, "_disk_stream_index", None) is not None
+        ):
+            blocks = self.quant_block_list or get_block_names(self.model_context.model)
+            self._offloader.reload(self.model_context.model, flatten_list(blocks))
+
+    def _run_cached_block_stage(self, all_blocks, all_inputs, all_q_inputs, token_ids, pbar):
+        """Execute cached block groups with device/offload/resume infrastructure.
+
+        Algorithm selection and stage state belong to the composer. This service
+        always runs its active block pipeline, including for non-terminal stages.
+        """
+        resume_states = None
+        if envs.AR_RESUME_DIR:
+            if not self.compress_context.is_immediate_saving and not self.compress_context.low_cpu_mem_usage:
+                logger.warning(
+                    "AR_RESUME_DIR is set but neither immediate saving nor low_cpu_mem_usage is active. "
+                    "Pass low_cpu_mem_usage=True (or a format= to quantize_and_save) for resumability."
+                )
+            from auto_round.utils.resume import ResumeState, compute_run_signature, layer_config_fingerprint
+
+            model_dir = getattr(self.model_context, "disk_stream_model_dir", None) or getattr(
+                getattr(self.model_context.model, "config", None), "_name_or_path", None
+            )
+            dataset_desc = str(getattr(self, "dataset", None))
+            # Include resolved per-layer bits: str(self.scheme) is bits-blind
+            # for AutoScheme runs with different allocations.
+            scheme_desc = (
+                str(self.scheme)
+                + "|"
+                + layer_config_fingerprint(getattr(getattr(self, "quantizer", None), "layer_config", None))
+            )
+            resume_states = []
+            for group_idx, block_names in enumerate(all_blocks):
+                sig = compute_run_signature(
+                    model_dir,
+                    scheme_desc,
+                    dataset_desc,
+                    self.calibration_context.nsamples,
+                    self.calibration_context.seqlen,
+                    block_names,
+                )
+                resume_states.append(
+                    ResumeState(os.path.join(envs.AR_RESUME_DIR, f"group_{group_idx}"), sig, block_names)
+                )
+
+        for group_idx, block_names in enumerate(all_blocks):
+            inputs = all_inputs.pop(block_names[0])
+            q_inputs = all_q_inputs.pop(block_names[0], None) if all_q_inputs is not None else None
+            inputs, q_inputs = _update_inputs(inputs, q_inputs)
+            clear_memory(self.inputs)
+            resume_state = resume_states[group_idx] if resume_states is not None else None
+            resume_input_ids = None
+            if resume_state is not None and resume_state.resume_index > 0:
+                if self.nblocks != 1:
+                    logger.warning("AR_RESUME_DIR is set but nblocks != 1; restarting this group from block 0.")
+                    resume_state = None
+                else:
+                    resume_name = block_names[resume_state.resume_index]
+                    # Re-source position/mask metadata, but load the exact chained
+                    # hidden states rather than deriving them from this cache.
+                    if resume_name in all_inputs:
+                        inputs = all_inputs.pop(resume_name)
+                    q_inputs = resume_state.load_q_input()
+                    resume_input_ids = resume_state.load_input_ids()
+                    if resume_input_ids is None:
+                        logger.warning(
+                            "AR_RESUME_DIR manifest is missing its cached input_ids tensor; "
+                            "restarting this group from block 0."
+                        )
+                        resume_state = None
+                    else:
+                        pbar.update(resume_state.resume_index)
+            self._quantize_blocks(
+                self.model_context.model,
+                inputs,
+                block_names,
+                q_input=q_inputs,
+                nblocks=self.nblocks,
+                pbar=pbar,
+                input_others_extra_blocks=all_inputs,
+                token_ids=token_ids,
+                resume_state=resume_state,
+                resume_input_ids=resume_input_ids,
+            )
+            if self.compress_context.is_immediate_packing and len(self.formats) != 1:
+                raise ValueError(
+                    f"Expected exactly one packing format when 'immediate_packing' is True, "
+                    f"but got {len(self.formats)} formats."
+                )
+        return resume_states
 
     def _quantize_layers_outside_blocks(
         self,

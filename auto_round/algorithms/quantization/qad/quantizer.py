@@ -326,6 +326,7 @@ class QADQuantizer(SignRoundQuantizer):
 
     #: Run a single full-model forward instead of the per-block loop.
     whole_model_tuning = True
+    requires_original_weights = True
 
     def __init__(self, config: QADConfig) -> None:
         super().__init__(config)
@@ -566,18 +567,17 @@ class QADQuantizer(SignRoundQuantizer):
         clear_memory()
 
     # ── whole-model tuning entry point ────────────────────────────────────────
-    def quantize_model(self, model, token_ids, device=None) -> None:
+    def quantize_model(self, model, token_ids, device=None) -> dict:
         """Tune the whole model jointly against the cached teacher distribution.
 
         Steps: (1) cache the FP teacher Top-K via a real full-model forward,
         (2) wrap every quantizable layer, (3) optimize all rounding/min-max
         params jointly with a full-model forward → KD loss → backward, and
-        (4) apply the best params and unwrap.
+        (4) return the best params for common composer finalization.
         """
         import copy
 
         from auto_round.compressors.utils import IndexSampler, collect_best_params
-        from auto_round.wrapper import unwrapper_block
 
         device = device or device_manager.device
         if token_ids is None or len(token_ids) == 0:
@@ -613,6 +613,8 @@ class QADQuantizer(SignRoundQuantizer):
             if orig is not None and getattr(orig, "_ar_warm_start", None):
                 n_warm += 1
                 del orig._ar_warm_start
+                if hasattr(orig, "_ar_warm_start_wrapper_cls"):
+                    del orig._ar_warm_start_wrapper_cls
         if n_warm:
             logger.info("QAD: warm-started %d layers from the previous block-wise pass.", n_warm)
         else:
@@ -630,8 +632,9 @@ class QADQuantizer(SignRoundQuantizer):
         fp_params = self._collect_non_quant_params(model) if self.tune_non_quant_params else []
         if not round_params and not minmax_params and not fp_params:
             logger.warning("QAD: no trainable quantization parameters found; nothing to tune.")
-            unwrapper_block(model, {})
-            return
+            if self._teacher_cache is not None:
+                self._teacher_cache.shutdown()
+            return {}
 
         base_lr = self.lr if self.lr is not None else (1.0 / self.iters if self.iters > 0 else 1e-3)
         minmax_lr = self.minmax_lr if self.minmax_lr is not None else base_lr
@@ -737,7 +740,8 @@ class QADQuantizer(SignRoundQuantizer):
                 # if self.iters <= 1 or (it % 10 == 0):
                 #     clear_memory()
         finally:
-            # 5) Apply the best params and unwrap, then release the prefetch pool.
+            # 5) Restore algorithm-specific FP params and release the prefetch pool.
+            # Common wrapper finalization belongs to the composer.
             pbar.close()
             if best_iter >= 0:
                 logger.info(
@@ -754,10 +758,10 @@ class QADQuantizer(SignRoundQuantizer):
             # baking the quantized weights.
             if best_fp_state is not None:
                 self._restore_fp_params(fp_params, best_fp_state)
-            unwrapper_block(model, best_params)
             if self._teacher_cache is not None:
                 self._teacher_cache.shutdown()
             clear_memory()
+        return best_params
 
     def _collect_non_quant_params(self, model) -> list:
         """Return the model's non-quantized FP params to train jointly (QAT-style).

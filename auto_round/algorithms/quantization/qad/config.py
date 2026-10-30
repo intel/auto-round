@@ -101,7 +101,7 @@ class QADConfig(SignRoundConfig):
         )
         registry.add_argument(
             "--qad_nsamples",
-            field="qad_nsamples",
+            field="nsamples",
             default=None,
             type=int,
             help=(
@@ -158,6 +158,7 @@ class QADConfig(SignRoundConfig):
         iters: int = 200,
         lr: float | None = None,
         qad_lr: float | None = None,
+        nsamples: int | None = None,
         qad_nsamples: int | None = None,
         topk: int = 32,
         qad_optimizer: str | None = None,
@@ -190,11 +191,13 @@ class QADConfig(SignRoundConfig):
             if qad_lr <= 0:
                 raise ValueError("`qad_lr` must be positive")
             kwargs["lr"] = qad_lr
-        # `qad_nsamples` lets QAD use a different calibration sample count than the
-        # block-wise warm-up (SignRound); None falls back to the global `nsamples`.
-        if qad_nsamples is not None and int(qad_nsamples) <= 0:
-            raise ValueError("`qad_nsamples` must be positive")
-        self.qad_nsamples = int(qad_nsamples) if qad_nsamples is not None else None
+        # Keep the old Python keyword as an alias; storage and validation belong
+        # to QuantizationConfig. The CLI maps --qad_nsamples directly to nsamples.
+        if qad_nsamples is not None:
+            if nsamples is not None and nsamples != qad_nsamples:
+                raise ValueError("`nsamples` and legacy `qad_nsamples` must agree when both are supplied")
+            nsamples = qad_nsamples
+        kwargs["nsamples"] = nsamples
         # Normalize the optimizer choice before handing it to the base config
         # (SignRound keeps it on ``self.optimizer`` for the quantizer to resolve).
         # ``qad_optimizer`` is the QAD-specific name; a legacy ``optimizer=`` kwarg

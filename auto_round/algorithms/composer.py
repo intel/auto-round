@@ -30,6 +30,7 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +46,7 @@ from auto_round.algorithms.utils import _has_nvfp4_layer
 from auto_round.logger import logger
 from auto_round.utils import clear_memory
 from auto_round.utils.device_manager import device_manager
+from auto_round.wrapper import preserve_original_weights, store_warm_start_params_and_unwrap, unwrapper_block
 
 if TYPE_CHECKING:  # avoid circular imports at runtime
     from auto_round.algorithms.quantization.base import BaseQuantizer
@@ -108,13 +110,14 @@ def _release_pool_inplace(obj: Any) -> None:
 
 
 class AlgorithmComposer:
-    """An ordered composition of pre-processors + one block quantizer, built from
+    """An ordered composition of preprocessors and quantizer stages, built from
     a list of algorithm config objects and an optional compressor.
 
     The ``preprocessors`` list is order-sensitive: preprocessors are applied in
     the listed order (e.g. ``[Rotation, AWQ]``).  The block quantizer is always
     the terminal weight-compression step, regardless of its position in the
-    input config list.  There must be **exactly one** ``block_quantizer``.
+    input config list. Quantizers execute in their relative config order;
+    ``block_quantizer`` exposes the active stage (the terminal stage when idle).
 
     Usage::
 
@@ -129,8 +132,8 @@ class AlgorithmComposer:
         1. If no ``QuantizationConfig`` with a ``BaseQuantizer`` is found in
            *configs*, a default :class:`RTNConfig` is appended automatically.
         2. ``BasePreprocessor`` instances go into ``preprocessors`` (in order).
-        3. Exactly one ``BaseQuantizer`` becomes ``block_quantizer``.
-        4. Multiple block-quantization configs raise ``ValueError``.
+        3. ``BaseQuantizer`` instances form an ordered stage sequence.
+        4. Every stage validates its capabilities before execution.
         5. If *compressor* is provided, every member is bound to it and
            ``block_forward`` / quantization metadata are extracted from it.
 
@@ -146,6 +149,7 @@ class AlgorithmComposer:
         from auto_round.algorithms.quantization.config import QuantizationConfig
         from auto_round.algorithms.transforms.base import BasePreprocessor, BaseRotationConfig
 
+        self._orchestrator = orchestrator
         configs = list(configs)
 
         # Rotation configs travel in the same config list but are not block
@@ -164,18 +168,9 @@ class AlgorithmComposer:
 
             configs = configs + [RTNConfig()]
 
-        # Detect a block-wise warm-up -> whole-model chain (e.g. ``sign_round,qad``)
-        # at the config level. Such chains are two independent quantization stages
-        # that legitimately differ on behavioral fields (e.g. ``enable_alg_ext``),
-        # so only their shared *scheme* is reconciled, not every public attr.
-        def _resolves_to_whole_model(cfg) -> bool:
-            alg_cls = get_algorithm_class(cfg)
-            return alg_cls is not None and getattr(alg_cls, "whole_model_tuning", False)
-
-        whole_model_cfgs = [c for c in block_quantizer_configs if _resolves_to_whole_model(c)]
-        is_warmup_chain = len(block_quantizer_configs) == 2 and len(whole_model_cfgs) == 1
-
-        configs = resolve_shared_config_values(configs, reconcile_non_scheme=not is_warmup_chain)
+        # Sequential quantizers own independent schedules/behavior, but operate
+        # on the same quantization scheme. Do not reconcile their local settings.
+        configs = resolve_shared_config_values(configs, reconcile_non_scheme=len(block_quantizer_configs) <= 1)
 
         preprocessors: list = []
         block_quantizers: list = []
@@ -201,33 +196,21 @@ class AlgorithmComposer:
                     f"Algorithm class {type(q).__name__} must inherit either " "BasePreprocessor or BaseQuantizer."
                 )
 
-        # Chaining a block-wise warm-up with a whole-model quantizer (e.g.
-        # ``sign_round,qad``): the block-wise quantizer first tunes every block to
-        # produce warm-start ``value``/``min_scale``/``max_scale`` (keeping FP
-        # weights), then the whole-model quantizer (QAD) resumes from them. This is
-        # the only supported multi-block-quantizer case; every other combination
-        # still errors below.
-        self.warmup_quantizer = None
-        whole_model_qs = [q for q in block_quantizers if getattr(q, "whole_model_tuning", False)]
-        blockwise_qs = [q for q in block_quantizers if not getattr(q, "whole_model_tuning", False)]
-        if len(block_quantizers) == 2 and len(whole_model_qs) == 1 and len(blockwise_qs) == 1:
-            self.warmup_quantizer = blockwise_qs[0]
-            block_quantizers = whole_model_qs  # the whole-model quantizer is terminal
-            logger.info(
-                "AlgorithmComposer: chaining %s (block-wise warm-up) -> %s (whole-model).",
-                type(self.warmup_quantizer).__name__,
-                type(block_quantizers[0]).__name__,
-            )
-
-        if len(block_quantizers) > 1:
-            raise ValueError(
-                f"AlgorithmComposer allows exactly one block-quantization config, "
-                f"but got {len(block_quantizers)}: "
-                f"{[type(q).__name__ for q in block_quantizers]}. "
-                "Ensure only one of RTNConfig / SignRoundConfig / etc. is in the pipeline."
-            )
         if len(block_quantizers) == 0:
             raise ValueError("No block quantizer found in configs.")
+        self.quantizers = tuple(block_quantizers)
+        self._preserve_weights = False
+        self._preserve_stage_weights = []
+        needs_original_weights = False
+        for quantizer in reversed(self.quantizers):
+            self._preserve_stage_weights.append(needs_original_weights)
+            if quantizer.config.nsamples is not None and not quantizer.whole_model_tuning:
+                raise NotImplementedError(
+                    f"{type(quantizer.config).__name__}.nsamples overrides are only supported for whole-model tuning. "
+                    "Use the common calibration nsamples argument for this stage."
+                )
+            needs_original_weights = needs_original_weights or quantizer.requires_original_weights
+        self._preserve_stage_weights.reverse()
 
         seen = set()
         for pre in preprocessors:
@@ -241,19 +224,18 @@ class AlgorithmComposer:
 
         self.preprocessors = preprocessors
 
-        # TODO wenhuach support multi quantizers
         can_compile_block_forward = False
-        self.block_quantizer = block_quantizers[0]
+        self.block_quantizer = block_quantizers[-1]
+        self.block_forward = None
         if orchestrator is not None:
             user_torch_compile = bool(
                 getattr(getattr(orchestrator, "compress_context", None), "enable_torch_compile", False)
             )
             rotation_configs = getattr(orchestrator, "rotation_configs", ())
             blockers = []
-            if not self.block_quantizer.can_compile_block_forward():
-                blockers.append(type(self.block_quantizer).__name__)
-            if self.warmup_quantizer is not None and not self.warmup_quantizer.can_compile_block_forward():
-                blockers.append(type(self.warmup_quantizer).__name__)
+            for quantizer in self.quantizers:
+                if not quantizer.can_compile_block_forward():
+                    blockers.append(type(quantizer).__name__)
             for component in [*self.preprocessors, *rotation_configs]:
                 if not getattr(component, "can_compile_block_forward", lambda: True)():
                     blockers.append(type(component).__name__)
@@ -275,10 +257,8 @@ class AlgorithmComposer:
                 else None
             )
             # A little tricky
-            if self.block_quantizer is not None:
-                self.block_quantizer.bind_block_forward_runner(self.block_forward)
-            if self.warmup_quantizer is not None:
-                self.warmup_quantizer.bind_block_forward_runner(self.block_forward)
+            for quantizer in self.quantizers:
+                quantizer.bind_block_forward_runner(self.block_forward)
         self.scheme = getattr(orchestrator, "scheme_context", None)
 
         # Rotation is modelled as ordinary pipeline members (see
@@ -293,6 +273,81 @@ class AlgorithmComposer:
                 rotation_member.bind(orchestrator)
         # Guards the one-shot model-level rotation stage (apply_model_transforms).
         self._rotation_prepared: bool = False
+
+    def compress_model(self, token_ids, run_blocks) -> bool:
+        """Run ordered block/model tuning stages using the bound compressor.
+
+        Returns True when the terminal stage handles the whole model (including
+        outside-block layers). Preprocessors/rotations run only in the first
+        block stage. The composer owns weight preservation and cleanup; algorithms
+        only implement block/model tuning and optionally customize sampling.
+        """
+        orchestrator = self._orchestrator
+        if orchestrator is None:
+            raise RuntimeError("compress_model requires a bound compressor.")
+        streaming_export = (
+            orchestrator.compress_context.is_immediate_saving or orchestrator.compress_context.is_immediate_packing
+        )
+        if streaming_export and (len(self.quantizers) > 1 or self.block_quantizer.whole_model_tuning):
+            raise NotImplementedError("Multi-stage/whole-model tuning does not support immediate saving/packing.")
+        from auto_round import envs
+
+        if envs.AR_RESUME_DIR and len(self.quantizers) > 1:
+            raise NotImplementedError("Resuming a multi-stage quantization run is not supported.")
+        if self.quantizers[0].whole_model_tuning and (self.preprocessors or self.has_layerwise_rotation):
+            raise NotImplementedError("Block preprocessors/layer-wise rotation require a leading block-tuning stage.")
+        terminal = self.block_quantizer
+        preprocessors, rotations = self.preprocessors, self._rotation_members
+        try:
+            self.prepare_run()
+            for index, (quantizer, preserve) in enumerate(zip(self.quantizers, self._preserve_stage_weights)):
+                self.block_quantizer = quantizer
+                self._preserve_weights = preserve
+                if index:
+                    self.preprocessors, self._rotation_members = [], []
+                logger.info(
+                    "Starting algorithm stage %d/%d: %s.", index + 1, len(self.quantizers), type(quantizer).__name__
+                )
+                if quantizer.whole_model_tuning:
+                    orchestrator._reload_model_for_tuning()
+                    runner = getattr(self, "block_forward", None)
+                    if runner is not None:
+                        runner.pool_placement = None
+                    stage_token_ids = quantizer.get_calibration_token_ids(token_ids, orchestrator.calibration)
+                    self._run_tuning(
+                        orchestrator.model_context.model,
+                        lambda: quantizer.quantize_model(
+                            orchestrator.model_context.model, stage_token_ids, device=device_manager.device
+                        ),
+                    )
+                else:
+                    run_blocks(index > 0)
+            return terminal.whole_model_tuning
+        finally:
+            self.block_quantizer = terminal
+            self._preserve_weights = False
+            self.preprocessors, self._rotation_members = preprocessors, rotations
+            self.finalize_run()
+
+    def _run_tuning(self, module, tune, collect_output=None):
+        """Common block/model tuning finalization, including failure cleanup."""
+        preserve = getattr(self, "_preserve_weights", False)
+        with preserve_original_weights(module) if preserve else nullcontext():
+            try:
+                best_params = tune() or {}
+                if preserve:
+                    store_warm_start_params_and_unwrap(module, best_params, before_unwrap=collect_output)
+                else:
+                    unwrapper_block(module, best_params)
+            except BaseException:
+                # Do not bake partially tuned parameters when optimization or
+                # output collection fails. Remove any remaining common wrappers.
+                from auto_round.utils import set_module
+
+                for name, wrapped in list(module.named_modules()):
+                    if hasattr(wrapped, "orig_layer"):
+                        set_module(module, name, wrapped.orig_layer)
+                raise
 
     # ── Internal hook helpers (act_max calibration) ───────────────────────────
 
@@ -571,23 +626,19 @@ class AlgorithmComposer:
         # otherwise fall back to the FP input.
         effective_input = q_inputs if q_inputs is not None else fp_inputs
         warm_start_outputs = []
-        warm_start_kwargs = {}
-        if getattr(self.block_quantizer, "warm_start_collect", False) and self.block_quantizer.enable_quanted_input:
+        collect_warm_start_output = None
+        if getattr(self, "_preserve_weights", False) and self.block_quantizer.enable_quanted_input:
 
             def collect_warm_start_output(wrapped_block):
                 output = block_forward_fn(wrapped_block, effective_input, input_others)
                 warm_start_outputs.append(getattr(block_forward_fn, "last_output_dict", None) or output)
 
-            warm_start_kwargs["warm_start_forward"] = collect_warm_start_output
-        self.block_quantizer.quantize_block(
+        self._run_tuning(
             block,
-            effective_input,
-            input_others,
-            reference_output,
-            q_inputs,
-            block_ctx,
-            input_ids=input_ids,
-            **warm_start_kwargs,
+            lambda: self.block_quantizer.quantize_block(
+                block, effective_input, input_others, reference_output, q_inputs, block_ctx, input_ids=input_ids
+            ),
+            collect_warm_start_output,
         )
 
         # Quantizer-agnostic block finalization (e.g. NVFP MoE act_max), kept
@@ -661,24 +712,17 @@ class AlgorithmComposer:
     # ── Convenience act-calib helpers ────────────────────────────────────────
 
     def members(self) -> list:
-        """Return the canonical execution order: preprocessors, rotations, then block quantizer.
+        """Return preprocessors, rotations, then all ordered quantizer stages.
 
-        Preprocessor order follows the input config list. The block quantizer
-        is always returned last, so its position in that input list has no
-        effect on pipeline execution. Rotation members sit between the
-        preprocessors and the block quantizer so ``prepare_run`` / ``finalize_run``
-        cover them like any other member. A warm-up quantizer (block-wise stage
-        of a ``sign_round,qad``-style chain) sits just before the terminal
-        quantizer so its ``prepare_run`` (which resolves the wrapper class) runs
-        too.
+        Run-level preparation and cleanup cover every member exactly once.
+        Per-block work and dispatch use only the currently active quantizer.
         """
-        warmup = [self.warmup_quantizer] if self.warmup_quantizer is not None else []
-        return list(self.preprocessors) + list(self._rotation_members) + warmup + [self.block_quantizer]
+        return list(self.preprocessors) + list(self._rotation_members) + list(self.quantizers)
 
     def dispatch_block(self, block: torch.nn.Module, input_ids, input_others: dict):
         """Dispatch block to device(s) via the pipeline's algorithms.
 
-        Iterates all members; if exactly one overrides the default dispatch_block,
+        Iterates active members; if exactly one overrides the default dispatch_block,
         it is called. If multiple override, warns and uses the first one only.
         If none override, uses the block_quantizer's default (simple .to(device)).
         """
@@ -686,14 +730,13 @@ class AlgorithmComposer:
 
         overriders = []
         seen_ids = set()
-        for member in self.members():
+        for member in [*self.preprocessors, *self._rotation_members, self.block_quantizer]:
             if not hasattr(member, "dispatch_block"):
                 continue
             # Check if the member overrides the base default
             if type(member).dispatch_block is not BaseQuantizer.dispatch_block:
-                # Deduplicate by identity: a chained warm-up quantizer is temporarily
-                # also installed as ``block_quantizer`` during the warm-up stage, so
-                # the same instance can appear twice in ``members()``.
+                # Custom pipelines may expose the same member through more than
+                # one role; dispatch it only once.
                 if id(member) in seen_ids:
                     continue
                 seen_ids.add(id(member))

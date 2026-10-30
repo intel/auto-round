@@ -97,8 +97,6 @@ from auto_round.utils.device_manager import device_manager
 from auto_round.utils.distributed import setup_ddp_if_needed_
 from auto_round.wrapper import (
     WrapperLinear,
-    store_warm_start_params_and_unwrap,
-    unwrapper_block,
     unwrapper_layer,
     wrapper_block,
 )
@@ -135,11 +133,6 @@ class SignRoundQuantizer(BaseQuantizer):
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
-        # Warm-start chaining flag (e.g. SignRound -> QAD): when True, quantize_block
-        # keeps the original FP weight and stashes the tuned params on each layer
-        # instead of baking them into a quantized weight. Set by the orchestrator
-        # for the block-wise warm-up stage that precedes a whole-model quantizer.
-        self.warm_start_collect = False
         # Kept for per-layer (mixed-bit) lr resolution during tuning.
         self._config = config
         self.lr_is_auto = getattr(config, "lr_is_auto", False)
@@ -757,13 +750,12 @@ class SignRoundQuantizer(BaseQuantizer):
                 sample). Used to derive the valid-token loss mask once (result
                 cached on ``self._cached_valid_token_mask`` for reuse across
                 all blocks). ``None`` disables loss masking.
-            warm_start_forward: Optional callback in kwargs that collects the
-                best quantized block output before warm-up restores FP layers.
             **kwargs: Reserved for forward-compatibility with future parameters.
 
         Returns:
             dict: Best quantization parameters found during optimization, or an
-                empty dict if no trainable parameters were found.
+                empty dict if no trainable parameters were found. Wrappers stay
+                installed for the composer to finalize and collect outputs.
         """
         device = device_manager.device
         # None coalesces to the primary: an explicit None from the placement pass
@@ -835,10 +827,6 @@ class SignRoundQuantizer(BaseQuantizer):
                 f"layers in the block"
             )
             logger.info(dump_info)
-            if self.warm_start_collect:
-                store_warm_start_params_and_unwrap(block, {}, before_unwrap=kwargs.get("warm_start_forward"))
-            else:
-                unwrapper_block(block, {})
             return {}
 
         # Build optimizer param groups with a per-layer lr for the rounding
@@ -1154,13 +1142,6 @@ class SignRoundQuantizer(BaseQuantizer):
         self.compress_context.clear_memory()  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
             logger.info(f"Unquantized layers: {unquantized_layer_names}")
-        with torch.no_grad():
-            if self.warm_start_collect:
-                # Warm-up stage of a chain (e.g. SignRound -> QAD): keep the FP
-                # weight, but propagate the best quantized output before restoring it.
-                store_warm_start_params_and_unwrap(block, best_params, before_unwrap=kwargs.get("warm_start_forward"))
-            else:
-                unwrapper_block(block, best_params)
 
         _perf.stop("tail")
         _log_tune_phases(_perf, self.iters)

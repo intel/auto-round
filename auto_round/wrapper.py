@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import math
+from contextlib import contextmanager
 from math import ceil
 
 import torch
@@ -1026,8 +1027,10 @@ def wrapper_block(
             return None
         if kind == "skip":
             return "u"
-        extra = {"defer_search": True} if _defer_batch else {}
-        new_m = wrapper_cls(
+        layer_wrapper_cls = getattr(m, "_ar_warm_start_wrapper_cls", wrapper_cls)
+        defer_search = _defer_batch and getattr(layer_wrapper_cls, "supports_batched_search", False)
+        extra = {"defer_search": True} if defer_search else {}
+        new_m = layer_wrapper_cls(
             m,
             enable_minmax_tuning=enable_minmax_tuning,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
@@ -1037,7 +1040,7 @@ def wrapper_block(
             **extra,
         )
         set_module(block, n, new_m)
-        if _defer_batch:
+        if defer_search:
             deferred_wrappers.append(new_m)
         return "q"
 
@@ -1110,6 +1113,30 @@ def unwrapper_block(block, best_params):
             set_module(block, n, orig_layer)
 
 
+@contextmanager
+def preserve_original_weights(block):
+    """Keep a host snapshot for a composer-owned stage that must not bake weights.
+
+    This also covers algorithms that modify parameters in place instead of using
+    common wrappers. Only the current block is copied on block-tuning paths;
+    ordinary/final stages do not pay this cost. Restore the original module graph
+    and parameter dtype/values on success or failure, leaving warm-start metadata
+    on the original layers available to subsequent stages.
+    """
+    modules = list(block.named_modules())
+    parameters = [(p, p.detach().to("cpu", copy=True), p.requires_grad) for p in block.parameters()]
+    try:
+        yield
+    finally:
+        with torch.no_grad():
+            for name, module in modules:
+                if name:
+                    set_module(block, name, module)
+            for parameter, saved, requires_grad in parameters:
+                parameter.data = saved.to(parameter.device)
+                parameter.requires_grad_(requires_grad)
+
+
 @torch.no_grad()
 def store_warm_start_params_and_unwrap(block, best_params, *, before_unwrap=None):
     """Warm-start variant of :func:`unwrapper_block`: keep the original FP weight.
@@ -1157,6 +1184,8 @@ def store_warm_start_params_and_unwrap(block, best_params, *, before_unwrap=None
                 store["anchor_min"] = m.weight_min.detach().to("cpu")
                 store["anchor_max"] = m.weight_max.detach().to("cpu")
             m.orig_layer._ar_warm_start = store
+            if isinstance(m, WrapperLinear):
+                m.orig_layer._ar_warm_start_wrapper_cls = type(m)
             if before_unwrap is not None:
                 for key, saved in layer_params.items():
                     param = m.params.get(key)

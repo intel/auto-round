@@ -67,7 +67,7 @@ def _public_config_attrs(config: Any) -> dict[str, Any]:
     return {
         key: value
         for key, value in vars(config).items()
-        if key != "scheme" and not key.startswith("_") and not callable(value)
+        if key != "scheme" and key not in config.stage_local_fields and not key.startswith("_") and not callable(value)
     }
 
 
@@ -112,7 +112,8 @@ def resolve_shared_config_values(configs: list[Any], reconcile_non_scheme: bool 
     A field is shared when at least two quantization configs define the same
     public attribute. ``None`` means "not set" and inherits from the single
     non-None value, while conflicting non-None values fail fast. Configs that do
-    not define a field do not participate in that field.
+    not define a field do not participate in that field. Fields declared in
+    ``stage_local_fields`` are never merged or propagated to another stage.
 
     When *reconcile_non_scheme* is ``False`` only the quantization *scheme*
     fields (bits / group_size / data_type …) are reconciled; the behavioral

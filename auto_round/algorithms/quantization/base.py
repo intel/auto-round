@@ -170,6 +170,9 @@ class BaseQuantizer(BaseAlgorithm):
             **kwargs:     Reserved for future parameters.
         Returns:
             dict: Best quantization parameters found, or ``{}`` if not applicable.
+                Leave common tuning wrappers installed: the composer loads these
+                parameters, collects outputs and unwraps/restores FP weights.
+                Algorithms that directly modify weights need no wrapper handling.
         Raises:
             NotImplementedError: Subclasses must override this method.
         """
@@ -375,11 +378,40 @@ class BaseQuantizer(BaseAlgorithm):
 
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
     #: Algorithms that tune the whole model jointly (a single forward to the LM
-    #: head) instead of block-by-block set this to ``True``. The orchestrator then
+    #: head) instead of block-by-block set this to ``True``. The composer then
     #: calls :meth:`quantize_model` once and skips the per-block loop.
     whole_model_tuning: bool = False
 
-    def quantize_model(self, model, token_ids, device=None) -> None:
+    #: The composer preserves original FP weights across all preceding stages
+    #: when a consumer needs them (e.g. to construct a full-precision teacher).
+    #: Algorithms never manage preservation flags or stage cleanup themselves.
+    requires_original_weights: bool = False
+
+    def get_calibration_token_ids(self, token_ids, calibration):
+        """Resolve this algorithm's sample count; override for custom sampling.
+
+        Reuse the common cached samples when nsamples is unset, take a prefix
+        when fewer are needed, or collect raw tokens without block forwards.
+        """
+        target = self.config.nsamples
+        if token_ids is not None:
+            if target is None or target == len(token_ids):
+                return token_ids
+            if target < len(token_ids):
+                logger.info("Algorithm stage uses the first %d of %d calibration samples.", target, len(token_ids))
+                return list(token_ids)[:target]
+        if target is None:
+            target = calibration.nsamples
+        collect = getattr(calibration, "collect_token_ids", None)
+        if callable(collect):
+            logger.info("Collecting %d calibration samples for the algorithm stage.", target)
+            collected = collect(target)
+            if collected is not None and len(collected) > 0:
+                return collected
+        logger.warning("Cannot collect %d calibration token ids; falling back to the cached samples.", target)
+        return token_ids
+
+    def quantize_model(self, model, token_ids, device=None) -> dict:
         """Quantize the entire model jointly (whole-network tuning).
 
         Only invoked when :attr:`whole_model_tuning` is ``True``. The default
@@ -390,6 +422,11 @@ class BaseQuantizer(BaseAlgorithm):
             model: The model to quantize (all quantizable layers tuned jointly).
             token_ids: Per-sample calibration token-id tensors.
             device: Target compute device.
+
+        Returns:
+            Best tuning parameters, with common wrappers left installed for
+            composer finalization, just like quantize_block. In-place algorithms
+            may return an empty dict.
         """
         raise NotImplementedError(
             f"{type(self).__name__} sets whole_model_tuning=True but does not implement quantize_model()."
