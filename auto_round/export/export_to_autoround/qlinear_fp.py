@@ -38,6 +38,7 @@ from auto_round.compressors.utils import BackendDataType, is_mx_fp, is_nv_fp
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, float_to_e5m3_frexp, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.schemes import is_nvfp4_e5m3_gs
 from auto_round.utils import get_packing_device, logger
 
 # from auto_round.utils import get_weight_compress_dtype
@@ -74,6 +75,8 @@ class QuantLinear(nn.Module):
         self.is_mx = is_mx_fp(data_type)
         self.is_nv = is_nv_fp(data_type)
         self.is_nvfp4_e5m3 = data_type == "nvfp4_v2"
+        self.is_nvfp4_e5m3_gs = is_nvfp4_e5m3_gs(data_type)
+        self.has_global_scale = self.is_nv or self.is_nvfp4_e5m3_gs
         if self.is_mx:
             if group_size != 32:
                 raise NotImplementedError(f"Only group_size 32 are supported for {BackendDataType.MX_FP} data type.")
@@ -81,7 +84,7 @@ class QuantLinear(nn.Module):
                 raise NotImplementedError(
                     f"in_feature must be divisible by {group_size} for {BackendDataType.MX_FP} data type."
                 )
-        if self.is_nv or self.is_nvfp4_e5m3:
+        if self.is_nv or self.is_nvfp4_e5m3 or self.is_nvfp4_e5m3_gs:
             if group_size % 16 != 0:
                 raise NotImplementedError(f"Only group_size 16 are supported for {BackendDataType.NV_FP} data type.")
             if infeatures % group_size != 0:
@@ -112,7 +115,7 @@ class QuantLinear(nn.Module):
                 dtype=torch.float16,  ## TODO update to correct scale dtype for different bits
             ),
         )
-        if self.is_nv and self.bits == 4:
+        if self.has_global_scale and self.bits == 4:
             self.register_buffer(
                 "weight_global_scale",
                 torch.zeros(
@@ -120,7 +123,7 @@ class QuantLinear(nn.Module):
                     dtype=torch.float32,
                 ),
             )
-        if self.is_nv and self.act_bits <= 8:
+        if self.has_global_scale and self.act_bits <= 8:
             self.register_buffer(
                 "input_global_scale",
                 torch.zeros(
@@ -151,7 +154,7 @@ class QuantLinear(nn.Module):
 
         tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(W, self.group_size)
         scales = scales.to(device)
-        if self.is_nv:
+        if self.has_global_scale:
             assert global_scale is not None and global_scale.numel() == 1
             global_scale = global_scale.reshape([1])
             global_scale = global_scale.to(device)
@@ -169,7 +172,7 @@ class QuantLinear(nn.Module):
         scaled_tensor = revert_tensor_by_pad(scaled_tensor, orig_shape=orig_shape, pad_len=pad_len)
         if self.is_mx:
             final_scale = (scales + E8M0_EXPONENT_BIAS).clamp(0, E8M0_EXPONENT_NAN_VAL).to(torch.uint8)
-        elif self.is_nvfp4_e5m3:
+        elif self.is_nvfp4_e5m3 or self.is_nvfp4_e5m3_gs:
             final_scale = float_to_e5m3_frexp(scales.to(torch.float32))
         else:
             final_scale = scales.to(torch.float8_e4m3fn)
