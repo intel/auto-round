@@ -1224,12 +1224,10 @@ def find_backend(backend: str, orig_backend: str | None = None):
 
     orig_info = BackendInfos[orig_backend]
 
+    # `packing_format` is a list on BackendInfo; two backends are compatible when they share one.
     for key in matched_keys:
         target_info = BackendInfos[key]
-        if (
-            target_info.packing_format == orig_info.packing_format
-            or orig_info.packing_format in target_info.convertible_format
-        ):
+        if set(target_info.packing_format) & set(orig_info.packing_format):
             return key
 
     raise ValueError(f"{backend} is not compatible with {orig_backend}. " f"Please set `backend` to `auto` and retry.")

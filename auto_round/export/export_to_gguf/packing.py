@@ -167,6 +167,10 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0, qw_
             (constant, repeating) importance weights.
     """
     nmax = 2 ** (bits - 1)
+    # Resolve the sign of rmse_type once; doing it per chunk would make every chunk
+    # after the first lose the early-return behaviour of a negative rmse_type.
+    return_early = rmse_type < 0
+    rmse_type = abs(rmse_type)
     scales_list = []
     L_list = []
     chunk_size = (data.shape[0] + split_num - 1) // split_num
@@ -197,11 +201,6 @@ def make_qx_quants_chunk(data, bits, rmse_type=0, qw=None, split_num=1, v=0, qw_
             scales_list.append(scales)
             L_list.append(L.to(torch.uint8))
             continue
-
-        return_early = False
-        if rmse_type < 0:
-            rmse_type = -rmse_type
-            return_early = True
 
         # Compute weighting tensor w based on rmse_type
         if qw is not None:
@@ -311,8 +310,8 @@ def make_qx_quants(data, bits, rmse_type=0, qw=None):
             continue
         iscales = -(nmax + -0.1 * _is) * get_reciprocal(group_max)
         tmp_L = torch.round(iscales * data).clip(-nmax, nmax - 1)
-        sumlx = torch.sum(w * data * L, dim=-1)
-        suml2 = torch.sum(w * L * L, dim=-1)
+        sumlx = torch.sum(w * data * tmp_L, dim=-1)
+        suml2 = torch.sum(w * tmp_L * tmp_L, dim=-1)
 
         replace_id = (suml2 > 0) & (sumlx * sumlx > best * suml2)
         L[replace_id] = tmp_L[replace_id]
@@ -525,11 +524,13 @@ def make_qp_quants(nmax, data, quant_weights):
 
 @register_qtype("bf16")
 def bf16_quant_block(blocks, scale=None, zp=None, **kwargs):
-    n = blocks.view(torch.uint32)
+    # Work on the raw fp32 bits in int64: comparisons and shifts on torch.uint32 are not
+    # implemented on every device, and int64 holds the rounding carry without overflow.
+    n = blocks.to(torch.float32).contiguous().view(torch.int32).to(torch.int64) & 0xFFFFFFFF
     # force nan to quiet
     n = torch.where((n & 0x7FFFFFFF) > 0x7F800000, (n & 0xFFFF0000) | (64 << 16), n)
     # round to nearest even
-    n = n.to(torch.uint64) + (0x7FFF + ((n >> 16) & 1)) >> 16
+    n = (n + (0x7FFF + ((n >> 16) & 1))) >> 16
     return n.cpu().numpy().astype(np.uint16).view(np.uint8)
 
 
@@ -1014,10 +1015,12 @@ def q6_k_quant_block(blocks: np.array, scale=None, d_scale=None, original=False,
         iscales = -128 * get_reciprocal(max_scales)
         output_d = get_reciprocal(iscales)
         output_scale = (iscales * scales).round_().clamp_(max=127).to(torch.int8)
+        # Requantize against the fp16 super-block scale that is actually stored, as llama.cpp does.
+        output_d = output_d.to(torch.float16).to(torch.float32)
         d_tmp = output_d * output_scale.to(torch.float32)
         replace_ids = d_tmp != 0
         all_L[replace_ids] = (
-            blocks[replace_ids].div(d_tmp[replace_ids]).reshape(-1, 1).add_(32).round_().clamp_(0, 63).to(torch.uint8)
+            blocks[replace_ids].div(d_tmp[replace_ids].unsqueeze(-1)).add_(32).round_().clamp_(0, 63).to(torch.uint8)
         )
     else:
         from auto_round.data_type.gguf import quant_tensor_gguf_sym_dq
