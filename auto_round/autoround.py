@@ -85,13 +85,10 @@ def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, Quantiza
         from auto_round.algorithms.quantization.rtn.config import RTNConfig as _RTNConfig
 
         return preprocessor_configs, block_quant_configs, _RTNConfig()
-    if len(block_quant_configs) > 1:
-        raise ValueError(
-            f"Only one block-quantization config is allowed, but got {len(block_quant_configs)}: "
-            f"{[type(c).__name__ for c in block_quant_configs]}"
-        )
-    if len(block_quant_configs) == 1:
-        return preprocessor_configs, block_quant_configs, block_quant_configs[0]
+    if block_quant_configs:
+        # Stage ordering belongs to the composer. The last quantizer drives
+        # public scheme/format resolution, independently of algorithm identity.
+        return preprocessor_configs, block_quant_configs, block_quant_configs[-1]
     raise ValueError(
         "At least one quantization algorithm config is required. "
         "Pass a block quantizer such as RTNConfig or SignRoundConfig, "
@@ -620,7 +617,7 @@ class _CompressorBuilder:
         else:
             alg_configs = normalize_algorithm_config(alg_configs)
         configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
-        preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
+        preprocessor_configs, quantizer_configs, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
         is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
         if is_svdquant and "svdquant_omni" not in {name.strip().lower() for name in (format or "").split(",")}:
             format = "svdquant_nunchaku"
@@ -647,6 +644,10 @@ class _CompressorBuilder:
         # route predicate; otherwise the fast path silently drops them and
         # cannot emit the required export metadata.
         route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
+        if len(quantizer_configs) > 1:
+            if route_kwargs.get("model_free", False):
+                raise ValueError("model_free=True is not supported with multiple quantizer stages.")
+            route_decision_kwargs["disable_model_free"] = True
         is_svdquant_rtn = type(quant_config) is RTNConfig and is_svdquant
         if is_svdquant_rtn and not route_kwargs.get("model_free", False):
             # SVDQuant must run before plain RTN on the regular blockwise path.
@@ -723,7 +724,7 @@ class _CompressorBuilder:
         # block_forward_hooks -> pre_quantize_block -> post_quantize_block)
         # actually runs; the pipeline auto-appends RTN when no block_quantizer
         # is supplied. SignRound is itself data-driven and shares the same host.
-        if preprocessor_configs or isinstance(quant_config, SignRoundConfig):
+        if preprocessor_configs or len(quantizer_configs) > 1 or not isinstance(quant_config, RTNConfig):
             return _get_compressor_class(model_type, Compressor)(alg_configs, **local_args, **ctor_kwargs)
         elif isinstance(quant_config, RTNConfig):
             base_cls = _select_rtn_compressor_base_cls(quant_config, scheme, format, base_kwargs)

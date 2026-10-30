@@ -38,9 +38,10 @@ class AdamRoundQuantizer(SignRoundQuantizer):
     def _get_scaler(self):
         scaler = None
         if self.model_context.amp and not check_is_cpu(device_manager.device):
-            from torch.cuda.amp import GradScaler
+            from torch.amp import GradScaler
 
-            scaler = GradScaler(init_scale=1024, growth_interval=100000)
+            device_type = torch.device(device_manager.device).type
+            scaler = GradScaler(device_type, init_scale=1024, growth_interval=100000)
         return scaler
 
     def _scale_loss_and_backward(self, scaler, loss):
