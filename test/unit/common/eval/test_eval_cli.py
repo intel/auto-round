@@ -103,6 +103,11 @@ class TestEvalArgumentParser:
         args = parser.parse_args(["--disable_trust_remote_code"])
         assert args.disable_trust_remote_code is True
 
+    def test_trust_remote_code_default_disabled_and_opt_in(self):
+        parser = eval_cli.EvalArgumentParser()
+        assert parser.parse_args([]).disable_trust_remote_code is True
+        assert parser.parse_args(["--trust_remote_code"]).disable_trust_remote_code is False
+
     def test_diffusion_args_are_available(self):
         parser = eval_cli.EvalArgumentParser()
         args = parser.parse_args(

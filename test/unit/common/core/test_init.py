@@ -29,6 +29,16 @@ def test_cli_torch_compile_flags():
     assert parser.parse_args(["--model", "test-model", "--disable_torch_compile"]).enable_torch_compile is False
 
 
+def test_cli_trust_remote_code_is_opt_in():
+    def _kwargs(argv):
+        args = build_quantize_parser().parse_args(["--model", "test-model", *argv])
+        return _to_autoround_kwargs(args, low_cpu_mem_usage=True, enable_torch_compile=None, layer_config={})
+
+    assert _kwargs([])["trust_remote_code"] is False
+    assert _kwargs(["--trust_remote_code"])["trust_remote_code"] is True
+    assert _kwargs(["--disable_trust_remote_code"])["trust_remote_code"] is False
+
+
 def test_cli_deterministic_algorithms_flags_are_forwarded():
     for flag, expected in (
         (None, None),
