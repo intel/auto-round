@@ -405,9 +405,9 @@ class SignRoundQuantizer(BaseQuantizer):
             m = get_module(model, name)
             if m is None or any(p.device.type == "meta" or p.numel() == 0 for p in m.parameters()):
                 logger.warning_once(
-                    "LFQ: downstream block %s is not materialized (offloaded/meta); non-final KD blocks fall "
+                    f"LFQ: downstream block {name} is not materialized (offloaded/meta); non-final KD blocks fall "
                     "back to the logit-lens loss. Disable low_cpu_mem_usage/disk streaming to propagate "
-                    "through the remaining blocks." % name
+                    "through the remaining blocks."
                 )
                 return []
             blocks.append(m)

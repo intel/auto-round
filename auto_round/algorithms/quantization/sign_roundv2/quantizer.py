@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 from collections.abc import Callable
 from contextlib import nullcontext
 from functools import partial
 from typing import TYPE_CHECKING
-
-import math
 
 import torch
 import transformers
@@ -29,6 +28,7 @@ from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQua
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer
 
+from auto_round import envs
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
@@ -50,7 +50,6 @@ from auto_round.data_type.utils import (
 from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_LAYER_TYPES, check_to_quantized, compile_func, get_reciprocal
 from auto_round.wrapper import WrapperLinear, wrapper_block
-from auto_round import envs
 
 
 def _dq_asym_qdq(tensor, scale, wmin, bits, group_size, v=0):
@@ -269,15 +268,17 @@ class SignRoundOptimizedAsymWrapperLinear(SignRoundOptimizedWrapperLinear):
     """
 
     minmax_scale_bound = (0.5, 1.5)
+    # The asymmetric anchor search runs inline and does not stage init-scale inputs.
+    supports_batched_search = False
 
-    def _init_tuning_params_and_quant_func(self):
+    def _init_tuning_params_and_quant_func(self, defer_search: bool = False):
         layer = self.orig_layer
         # Let the anchor below own the NeUQI search: disable the base wrapper's
         # frozen-margin NeUQI branch so margins stay tunable and the search runs once.
         enable_neuqi = self.enable_neuqi
         self.enable_neuqi = False
         try:
-            WrapperLinear._init_tuning_params_and_quant_func(self)
+            WrapperLinear._init_tuning_params_and_quant_func(self, defer_search=defer_search)
         finally:
             self.enable_neuqi = enable_neuqi
         self.init_scale = None
@@ -311,7 +312,6 @@ class SignRoundOptimizedAsymWrapperLinear(SignRoundOptimizedWrapperLinear):
         self._asym_anchor = True
         if hasattr(layer, "imatrix"):
             del layer.imatrix
-
 
 
 class SignRoundDQWrapperLinear(WrapperLinear):

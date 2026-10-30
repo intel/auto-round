@@ -593,12 +593,38 @@ def test_registered_cli_fields_are_accepted_by_config_constructors():
         if entry.config_factory is None:
             continue
         config_cls = entry.config_factory if isinstance(entry.config_factory, type) else type(entry.config_factory())
-        accepted = set(inspect.signature(config_cls.__init__).parameters)
-        accepted.discard("self")
+        accepted = set()
+        for cls in config_cls.__mro__:
+            parameters = inspect.signature(cls.__init__).parameters.values()
+            accepted.update(
+                parameter.name
+                for parameter in parameters
+                if parameter.name != "self"
+                and parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            )
+            if not any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+                break
         accepted.update(getattr(config_cls, "model_fields", {}))
-        assert all(
-            parameter.field in accepted for parameter in algorithm_cli._parameter_registry(config_cls).parameters
-        )
+        registered = {parameter.field for parameter in algorithm_cli._parameter_registry(config_cls).parameters}
+        assert (
+            not registered - accepted
+        ), f"{config_cls.__name__}: unsupported CLI fields {sorted(registered - accepted)}"
+
+
+@pytest.mark.parametrize("algorithm", ["qad", "qat"])
+def test_inherited_cli_fields_are_forwarded_to_config_constructors(algorithm):
+    import auto_round.cli.algorithms as algorithm_cli
+    from auto_round.algorithms.quantization.qad.config import QADConfig
+    from auto_round.algorithms.quantization.qat.config import QATConfig
+
+    config_cls = {"qad": QADConfig, "qat": QATConfig}[algorithm]
+    args = argparse.Namespace(momentum=0.25, lfq_num_blocks=2, qad_lr=0.01)
+    config = config_cls(**algorithm_cli._parameter_registry(config_cls).config_kwargs(args))
+
+    assert config.momentum == 0.25
+    assert config.lfq_num_blocks == 2
+    assert config.qad_lr == 0.01
+    assert config.lr == 0.01
 
 
 def test_svdquant_cli_defaults_compose_before_signround():
