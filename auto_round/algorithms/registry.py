@@ -29,7 +29,6 @@ _ALIAS_TO_NAME: dict[str, str] = {}
 _CONFIG_IMPL_REGISTRY: dict[type, type[BaseAlgorithm]] = {}
 _builtin_algorithms_registered = False
 _pipeline_members_registered = False
-_BUILTIN_ALGORITHM_ORDER = ("rtn", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
 
 
 def _ensure_builtin_algorithms_registered() -> None:
@@ -115,7 +114,7 @@ def resolve_algorithm_alias(alias: str) -> str | None:
     return _ALIAS_TO_NAME.get(alias.strip().lower())
 
 
-def resolve_algorithm_names(algorithms, *, ignore_unknown: bool = False) -> list[str]:
+def resolve_algorithm_names(algorithms) -> list[str]:
     """Resolve one algorithm string or sequence to ordered canonical names.
 
     A comma-separated string and a sequence use exactly the same semantics.
@@ -136,11 +135,8 @@ def resolve_algorithm_names(algorithms, *, ignore_unknown: bool = False) -> list
             continue
         canonical = resolve_algorithm_alias(name)
         if canonical is None:
-            if ignore_unknown:
-                continue
-            supported_aliases = sorted(_ALIAS_TO_NAME.keys())
             raise ValueError(
-                f"Unknown algorithm alias '{name}'. Supported aliases: {supported_aliases}. "
+                f"Unknown algorithm alias '{name}'. Supported algorithms: {sorted(_ALG_REGISTRY)}. "
                 "If you are adding a new algorithm, register it via "
                 "auto_round.algorithms.registry.register_algorithm()."
             )
@@ -160,9 +156,7 @@ def get_algorithm_entry(name: str) -> AlgRegistryEntry:
 
 def iter_algorithm_entries() -> list[AlgRegistryEntry]:
     _ensure_builtin_algorithms_registered()
-    builtin = [_ALG_REGISTRY[name] for name in _BUILTIN_ALGORITHM_ORDER if name in _ALG_REGISTRY]
-    custom = [entry for name, entry in _ALG_REGISTRY.items() if name not in _BUILTIN_ALGORITHM_ORDER]
-    return builtin + custom
+    return list(_ALG_REGISTRY.values())
 
 
 def resolve_alg_config(alias: str) -> object:
@@ -170,7 +164,7 @@ def resolve_alg_config(alias: str) -> object:
     canonical = resolve_algorithm_alias(alias)
     if canonical is None:
         raise ValueError(
-            f"Unknown algorithm alias '{alias}'. Supported aliases: {sorted(_ALIAS_TO_NAME.keys())}. "
+            f"Unknown algorithm alias '{alias}'. Supported algorithms: {sorted(_ALG_REGISTRY)}. "
             "If you are adding a new algorithm, register it via auto_round.algorithms.registry.register_algorithm()."
         )
 
