@@ -61,6 +61,7 @@ class QDQTool:
         self.layer_config: dict | None = None
         self.disable_opt_rtn: bool | None = None
         self.use_v2_scale_search: bool = False
+        self.v2_scale_search: str = "auto"
 
     # ── runtime wiring ────────────────────────────────────────────────────────
     @staticmethod
@@ -80,6 +81,7 @@ class QDQTool:
             awq_disable_opt_rtn = getattr(block_config, "disable_opt_rtn", False)
         self.disable_opt_rtn = bool(awq_disable_opt_rtn)
         self.use_v2_scale_search = self._block_quantizer_is_signroundv2(composer)
+        self.v2_scale_search = getattr(awq_config, "v2_scale_search", "auto")
 
     @staticmethod
     def _block_quantizer_is_signroundv2(block_quantizer_or_composer) -> bool:
@@ -129,9 +131,23 @@ class QDQTool:
             iters=0,
         )
         opt_quant_func = None
-        if self.use_v2_scale_search and params["sym"]:
+        policy = self._resolve_v2_scale_search(self.v2_scale_search, params["data_type"])
+        if self.use_v2_scale_search and policy != "off" and params["sym"]:
             opt_quant_func = get_optimized_quant_func(params["data_type"])
         return quant_func, opt_quant_func
+
+    @staticmethod
+    def _resolve_v2_scale_search(policy: str, data_type: str) -> str:
+        """Resolve ``auto`` to ``off`` for INT and ``full`` for MX/NV schemes.
+
+        The optimized V2 init-scale search is costly inside AWQ's candidate
+        loop and does not repay that cost for INT weight QDQ, while the final
+        SignRoundV2 quantizer still runs its own scale search. Floating-point
+        schemes keep the exact terminal initialization by default.
+        """
+        if policy != "auto":
+            return policy
+        return "off" if str(data_type).lower().startswith("int") else "full"
 
     # ── the unified QDQ for AWQ search ──────────────────────
     @torch.no_grad()
@@ -143,6 +159,7 @@ class QDQTool:
         quant_func=None,
         opt_quant_func=None,
         imatrix: torch.Tensor | None = None,
+        init_scale: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Quantize-dequantize ``weight`` under the resolved ``params``.
 
@@ -151,7 +168,8 @@ class QDQTool:
         the dispatched ``quant_func``; a non-``None`` ``opt_quant_func`` enables
         the SignRoundV2 optimized init-scale path for this weight. Used for
         both the scale grid-search and the clip-search -- reference/loss only,
-        it never mutates stored weights.
+        it never mutates stored weights. ``init_scale`` lets the ``reuse``
+        policy supply a scale computed once before the AWQ smoothing loop.
         """
         if quant_func is None:
             quant_func, opt_quant_func = self.resolve_quant_funcs(params)
@@ -175,9 +193,10 @@ class QDQTool:
 
         active_quant_func = quant_func
         if opt_quant_func is not None:
-            init_scale = compute_optimized_init_scale(
-                weight, params["data_type"], params["bits"], params["group_size"], imatrix=imatrix
-            )
+            if init_scale is None:
+                init_scale = compute_optimized_init_scale(
+                    weight, params["data_type"], params["bits"], params["group_size"], imatrix=imatrix
+                )
             if init_scale is not None:
                 quant_kwargs["init_scale"] = init_scale
                 quant_kwargs["imatrix"] = imatrix if isinstance(imatrix, torch.Tensor) else torch.ones_like(weight)
