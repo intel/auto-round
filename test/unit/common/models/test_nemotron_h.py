@@ -292,3 +292,28 @@ def test_non_streamed_meta_model_still_rejected(monkeypatch):
     monkeypatch.setattr(context_module, "unsupported_meta_device", lambda _: True)
     with pytest.raises(RuntimeError, match="does not support parameters on meta"):
         context_module.ModelContext(model=torch.nn.Linear(2, 2, device="meta"), need_calib=False)
+
+
+def test_install_mamba_ssm_stub():
+    import sys
+
+    from auto_round.modeling.nemotron_h_omni import install_mamba_ssm_stub
+
+    # Ensure clean state if previously injected
+    for k in list(sys.modules):
+        if k.startswith("mamba_ssm"):
+            del sys.modules[k]
+
+    assert install_mamba_ssm_stub()
+    assert not install_mamba_ssm_stub()  # idempotent
+    assert "mamba_ssm" in sys.modules
+    assert "mamba_ssm.ops.triton.layernorm_gated" in sys.modules
+
+    from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn
+
+    x = torch.randn(2, 4, 16)
+    weight = torch.ones(16)
+    gate = torch.randn(2, 4, 16)
+    out = rmsnorm_fn(x=x, weight=weight, z=gate, eps=1e-5, group_size=8, norm_before_gate=False)
+    assert out.shape == x.shape
+    assert out.dtype == x.dtype
