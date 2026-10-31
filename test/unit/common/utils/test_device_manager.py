@@ -351,29 +351,14 @@ class TestAcceleratorHelpers:
 # ---------------------------------------------------------------------------
 class TestGetCurrentDeviceType:
     def test_returns_cpu_when_nothing_available(self):
-        from auto_round.utils.device_manager import (
-            _hpu_available,
-            _torch_accelerator_type,
-            get_current_device_type,
-        )
+        from auto_round.utils.device_manager import get_current_device_type
 
         # Force every discovery path to report "nothing"
         with (
-            patch.object(
-                __import__("auto_round.utils.device_manager", fromlist=["_hpu_available"]),
-                "_hpu_available",
-                return_value=False,
-            ),
-            patch.object(
-                __import__("auto_round.utils.device_manager", fromlist=["_torch_accelerator_type"]),
-                "_torch_accelerator_type",
-                return_value=None,
-            ),
-            patch.object(
-                __import__("auto_round.utils.device_manager", fromlist=["_PREFERRED_ORDER"]),
-                "_PREFERRED_ORDER",
-                (),
-            ),
+            patch("auto_round.utils.device_manager._hpu_available", return_value=False),
+            patch("auto_round.utils.device_manager._torch_accelerator_type", return_value=None),
+            patch("auto_round.utils.device_manager._privateuse1_backend_name", return_value=None),
+            patch("auto_round.utils.device_manager._backend_available", return_value=False),
         ):
             # Need to clear the lru_cache
             get_current_device_type.cache_clear()
@@ -422,6 +407,8 @@ class TestAvailableHelpers:
         with (
             patch("auto_round.utils.device_manager._hpu_available", return_value=False),
             patch("auto_round.utils.device_manager._torch_accelerator_type", return_value=None),
+            patch("auto_round.utils.device_manager._privateuse1_backend_name", return_value=None),
+            patch("auto_round.utils.device_manager._backend_available", return_value=False),
         ):
             assert get_available_device_types() == []
 
@@ -807,3 +794,258 @@ class TestClearMemoryHelper:
             _clear_memory_for_cpu_and_cuda(tensor=tensor_list, device_list=None)
         # After the call, the local list elements should be set to None
         assert all(t is None for t in tensor_list)
+
+
+# ---------------------------------------------------------------------------
+# Extensibility: adding a new device must require no changes in this module
+# ---------------------------------------------------------------------------
+class TestNewBackendSupport:
+    """Guards the two design goals: cheap new devices, automatic discovery."""
+
+    def setup_method(self):
+        from auto_round.utils.device_manager import DeviceManager, get_current_device_type
+
+        DeviceManager._instance = None
+        get_current_device_type.cache_clear()
+
+    def teardown_method(self):
+        from auto_round.utils.device_manager import ARDevice, get_current_device_type
+
+        ARDevice._registry.pop("_fake_npu_zzz", None)
+        ARDevice._registry.pop("_fake_env_zzz", None)
+        get_current_device_type.cache_clear()
+
+    def test_declared_registration_is_enough(self):
+        """A subclass with a device_type + env var is fully usable, no edit needed.
+
+        ``vulkan`` stands in for a PyTorch-known backend without a dedicated
+        handle; a genuinely new name additionally needs the vendor to call
+        ``torch.utils.rename_privateuse1_backend`` (a PyTorch requirement).
+        """
+        from auto_round.utils.device_manager import (
+            ARDevice,
+            get_ar_device,
+            register_ar_device,
+        )
+
+        @register_ar_device
+        class _FakeVulkan(ARDevice):
+            device_type = "vulkan"
+            visible_devices_env_var = "VULKAN_VISIBLE_DEVICES"
+            supports_pipeline_parallel = True
+
+        try:
+            device = get_ar_device("vulkan")
+            assert isinstance(device, _FakeVulkan)
+            assert device.visible_devices_env_var == "VULKAN_VISIBLE_DEVICES"
+            assert device.supports_pipeline_parallel is True
+            assert device.device(2) == torch.device("vulkan:2")
+        finally:
+            from auto_round.utils.device_manager import device_manager
+
+            ARDevice._registry.pop("vulkan", None)
+            device_manager._cache.pop("vulkan", None)
+
+    def test_policy_flags_replace_device_type_checks(self):
+        """Generic code paths read the flags instead of branching on the type."""
+        from auto_round.utils.device import is_pipeline_parallel_supported
+        from auto_round.utils.device_manager import ARDevice, register_ar_device
+
+        class _FakeNpu(ARDevice):
+            device_type = "_fake_npu_zzz"
+            supports_pipeline_parallel = True
+
+        register_ar_device(_FakeNpu)
+        assert is_pipeline_parallel_supported("_fake_npu_zzz") is True
+        assert is_pipeline_parallel_supported("mps") is False
+
+    def test_env_var_opt_in_is_discovered(self):
+        """AR_DEVICE_BACKENDS lets an unknown PyTorch backend be picked up."""
+        from auto_round.utils.device_manager import _candidate_backend_types
+
+        with patch.dict("os.environ", {"AR_DEVICE_BACKENDS": "_fake_env_zzz, cuda"}):
+            candidates = _candidate_backend_types()
+        assert candidates[0] == "_fake_env_zzz"
+        assert "cuda" in candidates
+
+    def test_registered_backend_appears_in_candidates(self):
+        from auto_round.utils.device_manager import (
+            ARDevice,
+            _candidate_backend_types,
+            register_ar_device,
+        )
+
+        class _FakeNpu(ARDevice):
+            device_type = "_fake_npu_zzz"
+
+        register_ar_device(_FakeNpu)
+        assert "_fake_npu_zzz" in _candidate_backend_types()
+
+    def test_available_types_probes_every_candidate(self):
+        """Discovery is driven by is_available(), not by a hardcoded list."""
+        from auto_round.utils.device_manager import get_available_device_types
+
+        with (
+            patch("auto_round.utils.device_manager._hpu_available", return_value=False),
+            patch("auto_round.utils.device_manager._torch_accelerator_type", return_value=None),
+            patch(
+                "auto_round.utils.device_manager._candidate_backend_types",
+                return_value=["cuda", "xpu"],
+            ),
+            patch(
+                "auto_round.utils.device_manager._backend_available",
+                side_effect=lambda name: name == "xpu",
+            ),
+        ):
+            assert get_available_device_types() == ["xpu"]
+
+    def test_unknown_backend_uses_generic_handle(self):
+        """No dedicated subclass still works via torch.get_device_module."""
+        from auto_round.utils.device_manager import ARDevice
+
+        device = ARDevice.create("_brand_new_backend")
+        assert type(device) is ARDevice
+        assert device.type == "_brand_new_backend"
+
+    def test_devices_enumerates_all_cards(self):
+        from auto_round.utils.device_manager import ARDevice
+
+        original = ARDevice._registry.get("cuda")
+
+        class _FakeCuda(ARDevice):
+            device_type = "cuda"
+
+            def device_count(self):
+                return 3
+
+        try:
+            assert _FakeCuda().devices() == [
+                torch.device("cuda:0"),
+                torch.device("cuda:1"),
+                torch.device("cuda:2"),
+            ]
+        finally:
+            ARDevice._registry["cuda"] = original
+
+    def test_get_active_device_respects_opt_out(self):
+        from auto_round.utils.device_manager import get_active_device
+
+        with patch("auto_round.utils.device_manager.get_current_device_type", return_value="mps"):
+            assert get_active_device() == torch.device("cpu")
+        with patch("auto_round.utils.device_manager.get_current_device_type", return_value="cpu"):
+            assert get_active_device() == torch.device("cpu")
+
+    def test_get_active_device_uses_active_accelerator(self):
+        from auto_round.utils.device_manager import get_active_device
+
+        with patch("auto_round.utils.device_manager.get_current_device_type", return_value="cuda"):
+            assert get_active_device() == torch.device("cuda:0")
+            assert get_active_device(3) == torch.device("cuda:3")
+
+    def test_normalize_default_device_map_skips_opt_out_backends(self):
+        from auto_round.utils.device_manager import normalize_default_device_map
+
+        with (
+            patch("auto_round.utils.device_manager.get_available_device_types", return_value=["mps"]),
+            patch("auto_round.utils.device_manager.get_ar_device") as fake_get,
+        ):
+            fake_get.return_value.is_available.return_value = True
+            fake_get.return_value.auto_select_by_default = False
+            assert normalize_default_device_map(None) == "cpu"
+            # An explicit request is never overridden.
+            assert normalize_default_device_map("mps") == "mps"
+
+    def test_normalize_keeps_default_when_no_opt_out_backend(self):
+        """No opt-out backend available -> the caller's default is untouched."""
+        from auto_round.utils.device_manager import normalize_default_device_map
+
+        def fake_device(device_type):
+            fake = MagicMock()
+            fake.is_available.return_value = True
+            fake.auto_select_by_default = True
+            return fake
+
+        with (
+            patch("auto_round.utils.device_manager.get_available_device_types", return_value=["cuda", "xpu"]),
+            patch("auto_round.utils.device_manager.get_ar_device", side_effect=fake_device),
+        ):
+            assert normalize_default_device_map(0) == 0
+            assert normalize_default_device_map(None) is None
+
+    def test_all_default_paths_honour_opt_out(self):
+        """``parse_available_devices`` / ``get_major_device`` agree with normalize.
+
+        Regression test: the MPS opt-out used to be applied only by
+        ``normalize_default_device_map``, while the other default-resolution
+        helpers kept selecting MPS.
+        """
+        from auto_round.utils.device import parse_available_devices
+        from auto_round.utils.device_manager import get_major_device, normalize_default_device_map
+
+        with (
+            patch("auto_round.utils.device_manager.get_available_device_types", return_value=["mps"]),
+            patch("auto_round.utils.device_manager.get_ar_device") as fake_get,
+        ):
+            fake_get.return_value.auto_select_by_default = False
+            fake_get.return_value.is_available.return_value = True
+            assert normalize_default_device_map(0) == "cpu"
+            assert get_major_device(0) == "cpu"
+            assert parse_available_devices(None) == ["cpu"]
+            assert parse_available_devices(0) == ["cpu"]
+            assert parse_available_devices("auto") == ["cpu"]
+
+    def test_get_primary_device_type_prefers_first_selectable(self):
+        from auto_round.utils.device_manager import get_primary_device_type
+
+        assert get_primary_device_type(["cuda", "xpu"]) == "cuda"
+        assert get_primary_device_type(["xpu", "cuda"]) == "xpu"
+        assert get_primary_device_type([]) == "cpu"
+        with patch("auto_round.utils.device_manager.get_ar_device") as fake_get:
+            fake_get.return_value.auto_select_by_default = False
+            assert get_primary_device_type(["mps"]) == "cpu"
+
+    def test_backend_available_uses_custom_is_available_override(self):
+        """A vendor handle's ``is_available`` override drives discovery.
+
+        Regression test: discovery used to call the static
+        ``get_device_module(...).is_available()`` and silently ignored a
+        subclass override, so a registered backend was never discovered.
+        """
+        from auto_round.utils.device_manager import ARDevice, _backend_available, register_ar_device
+
+        @register_ar_device
+        class _AlwaysOn(ARDevice):
+            device_type = "_always_on_zzz"
+
+            def is_available(self):
+                return True
+
+        @register_ar_device
+        class _AlwaysOff(ARDevice):
+            device_type = "_always_off_zzz"
+
+            def is_available(self):
+                return False
+
+        try:
+            assert _backend_available("_always_on_zzz") is True
+            assert _backend_available("_always_off_zzz") is False
+        finally:
+            from auto_round.utils.device_manager import device_manager
+
+            for name in ("_always_on_zzz", "_always_off_zzz"):
+                ARDevice._registry.pop(name, None)
+                device_manager._cache.pop(name, None)
+
+    def test_mps_supports_bf16_probes_macos_version(self):
+        """MPS bf16 is gated on macOS 14 instead of always reporting True."""
+        from auto_round.utils.device_manager import MpsARDevice
+
+        for macos14_supported, expected in ((True, True), (False, False)):
+            device = MpsARDevice()
+            with patch("torch.backends.mps.is_macos_or_newer", return_value=macos14_supported) as probe:
+                assert device.supports_bf16() is expected
+                probe.assert_called_with(14, 0)
+            # Cached after the first probe.
+            with patch("torch.backends.mps.is_macos_or_newer", side_effect=AssertionError("must be cached")):
+                assert device.supports_bf16() is expected

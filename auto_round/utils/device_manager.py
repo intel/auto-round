@@ -30,6 +30,20 @@ device that PyTorch already supports works here with **zero** extra code.  Only
 out-of-tree backends that are not yet integrated into ``torch.accelerator``
 (currently Intel Gaudi / ``hpu``) need a tiny shim, handled below.
 
+Adding a device that needs custom behavior is a single subclass -- the class
+attributes below are the *only* knobs the generic code paths consult::
+
+    from auto_round.utils.device_manager import ARDevice, register_ar_device
+
+    @register_ar_device
+    class NpuARDevice(ARDevice):
+        device_type = "npu"
+        visible_devices_env_var = "ASCEND_RT_VISIBLE_DEVICES"
+        supports_pipeline_parallel = True
+
+If PyTorch exposes the backend but discovery misses it, set
+``AR_DEVICE_BACKENDS=<type>[,<type>...]`` -- no code change at all.
+
 Typical usage::
 
     from auto_round.utils.device_manager import get_current_device_manager, get_ar_device
@@ -47,6 +61,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import gc
+import os
 import re
 import sys
 
@@ -62,6 +77,7 @@ __all__ = [
     "default_enable_torch_compile",
     "detect_device_count",
     "device_manager",
+    "get_active_device",
     "get_ar_device",
     "get_available_device_types",
     "get_current_device_manager",
@@ -70,39 +86,70 @@ __all__ = [
     "get_device_memory",
     "get_major_device",
     "get_packing_device",
+    "get_primary_device_type",
     "is_auto_device_mapping",
     "is_device_available",
     "normalize_default_device_map",
+    "register_ar_device",
 ]
 
 
 # ---------------------------------------------------------------------------
 # Backend discovery helpers
 # ---------------------------------------------------------------------------
-# Priority order used as a *fallback* hint when ``torch.accelerator`` is not
-# available (PyTorch < 2.6).  ``hpu`` is kept explicit because Intel Gaudi is an
-# out-of-tree backend that historically was not registered with
-# ``torch.accelerator``.  Any backend that IS registered with
-# ``torch.accelerator`` (cuda/xpu/mps/npu/...) is discovered automatically and
-# does NOT need to appear in this list.
-_PREFERRED_ORDER = ("cuda", "xpu", "hpu")  # add mps later
+# Backends that PyTorch exposes as ``torch.<name>`` but that are *not* reported
+# by ``torch.accelerator`` (out-of-tree vendor integrations).  Everything that
+# IS registered with ``torch.accelerator`` (cuda/xpu/mps/npu/mtia/...) or with
+# the ``PrivateUse1`` mechanism is discovered automatically and does NOT need to
+# be listed anywhere.
+_OUT_OF_TREE_BACKENDS = ("hpu",)
+
+# Priority hint used when probing manually (PyTorch < 2.6 has no
+# ``torch.accelerator``).  This is only an *ordering* hint -- a new backend does
+# not need to be added here to be supported.
+_PREFERRED_ORDER = ("cuda", "xpu", "hpu")
+
+#: Comma separated escape hatch, e.g. ``AR_DEVICE_BACKENDS=npu,mtia``.  Lets a
+#: brand-new PyTorch backend be used with zero code change.
+_BACKENDS_ENV_VAR = "AR_DEVICE_BACKENDS"
 
 
 def normalize_default_device_map(device_map: None | str | int | torch.device | dict):
     """Normalize default device selection across entry points.
 
-    On Apple Silicon, the default ``0`` / ``"0"`` / ``None`` / ``"auto"``
-    selection would otherwise resolve to MPS.  That tends to OOM on larger
-    models, so keep the historical behavior of defaulting to CPU unless the
-    caller explicitly requests MPS.
+    Some backends should not be picked implicitly (they declare
+    ``auto_select_by_default = False``); Apple Silicon / MPS is the canonical
+    example because it tends to OOM on larger models.  When only such a backend
+    is available, the default ``0`` / ``"0"`` / ``None`` / ``"auto"`` selection
+    falls back to CPU unless the caller asked for it explicitly.
+
+    The decision itself lives in :func:`get_primary_device_type`, which
+    :func:`auto_round.utils.device.parse_available_devices` and
+    :func:`get_major_device` use as well, so every default-resolution path
+    agrees.
     """
-    if torch.mps.is_available() and device_map in (0, "0", None, "auto"):
+    if device_map not in (0, "0", None, "auto"):
+        return device_map
+
+    available = get_available_device_types()
+    if not available:
+        return device_map
+    if get_primary_device_type(available) != "cpu":
+        return device_map
+
+    # Every available backend opts out of implicit selection; keep the
+    # historical CPU default and tell the user how to force the device.
+    for device_type in available:
+        try:
+            if get_ar_device(device_type).auto_select_by_default:
+                continue
+        except Exception:
+            continue
         logger.warning(
-            "MPS detected. Using CPU by default to avoid potential memory issues. "
-            "Set --device_map=mps to force MPS usage."
+            f"{device_type} detected. Using CPU by default to avoid potential memory issues. "
+            f"Set --device_map={device_type} to force {device_type} usage."
         )
-        return "cpu"
-    return device_map
+    return "cpu"
 
 
 def _torch_accelerator_type() -> str | None:
@@ -166,6 +213,72 @@ def _hpu_available() -> bool:
         return False
 
 
+def _privateuse1_backend_name() -> str | None:
+    """Name of the ``PrivateUse1`` backend when a vendor registered one."""
+    try:
+        name = torch._C._get_privateuse1_backend_name()
+    except Exception:
+        return None
+    return name if name and name != "privateuseone" else None
+
+
+def _candidate_backend_types() -> list[str]:
+    """Every backend type worth probing, discovered rather than hardcoded.
+
+    Sources, in priority order: the ``AR_DEVICE_BACKENDS`` env override,
+    out-of-tree backends, ``torch.accelerator``, the ``PrivateUse1`` backend
+    name, the legacy probing hint and finally every :class:`ARDevice` subclass
+    someone registered.  Adding a new device therefore never requires editing
+    this function.
+    """
+    env_backends = (part.strip() for part in os.environ.get(_BACKENDS_ENV_VAR, "").split(",") if part.strip())
+    names: list[str] = []
+    for name in (
+        *env_backends,
+        *_OUT_OF_TREE_BACKENDS,
+        _torch_accelerator_type(),
+        _privateuse1_backend_name(),
+        *_PREFERRED_ORDER,
+        *ARDevice._registry,
+    ):
+        if name and name != "cpu" and name not in names:
+            names.append(name)
+    return names
+
+
+def _backend_available(device_type: str) -> bool:
+    """Whether ``device_type`` is usable, without knowing anything about it.
+
+    A registered :class:`ARDevice` subclass that overrides :meth:`ARDevice.is_available`
+    is the authority for its own backend -- that is how a vendor handle (or a
+    test double) declares availability without touching this function.  Only
+    backends without such an override fall back to the uniform
+    ``<runtime module>.is_available()`` contract every PyTorch backend implements.
+    """
+    if device_type == "cpu":
+        return True
+    if device_type == "hpu":
+        return _hpu_available()
+    device_cls = ARDevice._registry.get(device_type)
+    # ``__dict__`` lookup: only an *overridden* method is authoritative, an
+    # inherited generic probe would just repeat the module check below.
+    if device_cls is not None and "is_available" in device_cls.__dict__:
+        try:
+            return bool(device_cls.create(device_type).is_available())
+        except Exception:
+            # A handle that cannot be instantiated must not silently disable the
+            # backend; fall through to the runtime-module probe below.
+            pass
+    module = ARDevice.get_device_module(device_type)
+    is_avail = getattr(module, "is_available", None)
+    if not callable(is_avail):
+        return False
+    try:
+        return bool(is_avail())
+    except Exception:
+        return False
+
+
 def _normalize_device_type(device: None | str | int | torch.device) -> str | None:
     """Reduce any device spec to a bare backend type string (``"cuda"`` ...)."""
     if device is None:
@@ -178,7 +291,7 @@ def _normalize_device_type(device: None | str | int | torch.device) -> str | Non
         if device in ("auto", "tp"):
             return get_current_device_type()
         return device.split(":")[0]
-    raise ValueError("Device type not recognized")
+    raise ValueError(f"Device type not recognized: {device!r} (type {type(device).__name__})")
 
 
 @functools.lru_cache(None)
@@ -187,8 +300,9 @@ def get_current_device_type() -> str:
 
     Discovery order:
       1. Intel Gaudi ("hpu") -- out-of-tree, may not register with torch.accelerator.
-      2. "torch.accelerator" -- the canonical API, covers cuda/xpu/mps/npu/...
-      3. Manual probing of :data:`_PREFERRED_ORDER` for older PyTorch releases.
+      2. ``torch.accelerator`` -- the canonical API, covers cuda/xpu/mps/npu/...
+      3. Generic probing of :func:`_candidate_backend_types` for older PyTorch
+         releases and vendor backends.
     """
     # "hpu" first: it may not be registered with torch.accelerator.
     if _hpu_available():
@@ -198,29 +312,32 @@ def get_current_device_type() -> str:
     if accel_type is not None:
         return accel_type
 
-    # PyTorch < 2.6: torch.accelerator may not exist; probe common backends.
-    for dtype in _PREFERRED_ORDER:
-        if dtype == "hpu":
-            continue
-        mod = getattr(torch, dtype, None)
-        is_avail = getattr(mod, "is_available", None)
-        if callable(is_avail) and is_avail():
-            return dtype
+    # PyTorch < 2.6 / vendor backends: probe every discovered candidate.
+    for device_type in _candidate_backend_types():
+        if _backend_available(device_type):
+            return device_type
 
     return "cpu"
 
 
 def is_device_available() -> bool:
-    """Whether any (non-CPU) device is available."""
+    """Whether a device backend (CPU included) could be resolved."""
     return get_current_device_type() is not None
 
 
 def get_available_device_types() -> list[str]:
     """Return all available (non-CPU) backend types, in preferred order.
 
-    Uses ``torch.accelerator`` so backends registered with PyTorch -- including
-    out-of-tree ones such as ``npu`` -- are discovered automatically, without
-    callers ever probing ``torch.cuda`` / ``torch.xpu`` / ... by hand.
+    Every candidate reported by :func:`_candidate_backend_types` is probed
+    through the uniform ``is_available()`` contract, so backends registered with
+    PyTorch -- including out-of-tree ones such as ``npu`` -- are discovered
+    automatically, without callers ever touching ``torch.cuda`` / ``torch.xpu``
+    by hand.
+
+    The result is a *priority-ordered* list, not a single choice: the first
+    entry is the most preferred backend, but it may still be one that must not
+    be picked implicitly.  Use :func:`get_primary_device_type` when the caller
+    did not request a specific device.
     """
     available: list[str] = []
     # Out-of-tree hpu first (may not be registered with torch.accelerator).
@@ -230,7 +347,45 @@ def get_available_device_types() -> list[str]:
     accel_type = _torch_accelerator_type()
     if accel_type is not None and accel_type not in available:
         available.append(accel_type)
+    # Anything else PyTorch exposes but does not surface via torch.accelerator.
+    for device_type in _candidate_backend_types():
+        if device_type not in available and _backend_available(device_type):
+            available.append(device_type)
     return available
+
+
+def get_primary_device_type(available: list[str] | None = None) -> str:
+    """Backend to use when the caller did not request a specific device.
+
+    :func:`get_available_device_types` returns *every* usable backend in
+    preference order; picking the first one is not the same decision as picking
+    the *default* one, because a backend may declare
+    ``auto_select_by_default = False`` (Apple Silicon / MPS: unified memory OOMs
+    on larger models).  Centralising the rule here keeps
+    :func:`auto_round.utils.device.parse_available_devices`,
+    :func:`get_major_device` and :func:`normalize_default_device_map` from
+    disagreeing about what "default" means.
+
+    Args:
+        available: Already-detected backend types.  Callers that have resolved
+            the list themselves (and may have monkeypatched the discovery
+            helper) pass it in; otherwise it is looked up.
+
+    Returns:
+        ``"cpu"`` when an available backend opts out of implicit selection (the
+        historical behaviour, kept so every entry point agrees), otherwise the
+        most preferred available backend, or ``"cpu"`` when nothing is
+        available.
+    """
+    if available is None:
+        available = get_available_device_types()
+    for device_type in available:
+        try:
+            if not get_ar_device(device_type).auto_select_by_default:
+                return "cpu"
+        except Exception:
+            continue
+    return available[0] if available else "cpu"
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +433,32 @@ class ARDevice:
     #: the base class, which stays usable as a *generic* fallback for any
     #: PyTorch backend that lacks a dedicated subclass (e.g. a fresh ``npu``).
     device_type: str = ""
+
+    # -- capability / policy knobs -----------------------------------------
+    # Overriding these class attributes is normally the *only* thing a new
+    # backend has to do; every generic code path reads them instead of testing
+    # the device type by hand.
+
+    #: Environment variable used to restrict which cards of this backend are
+    #: visible to the process (e.g. ``CUDA_VISIBLE_DEVICES``).
+    visible_devices_env_var: str | None = None
+
+    #: Whether naive multi-card (pipeline parallel) tuning is supported.
+    supports_pipeline_parallel: bool = False
+
+    #: Whether a block's layers may be spread across several cards of this backend.
+    supports_multi_card_tuning: bool = True
+
+    #: Whether the accelerate ``infer_auto_device_map`` + ``dispatch_model`` path
+    #: may be used for this backend.
+    supports_device_map_dispatch: bool = True
+
+    #: Whether the runtime exposes a usable caching-allocator ``empty_cache``.
+    supports_empty_cache: bool = True
+
+    #: Whether this backend may be selected implicitly when the user did not ask
+    #: for a specific device (see :func:`normalize_default_device_map`).
+    auto_select_by_default: bool = True
 
     _registry: dict[str, type[ARDevice]] = {}
 
@@ -339,7 +520,7 @@ class ARDevice:
 
     def is_available(self) -> bool:
         """Whether this backend type is usable in the current build."""
-        return True
+        return _backend_available(self.type)
 
     def device_count(self) -> int:
         fn = getattr(self._module, "device_count", None)
@@ -371,9 +552,9 @@ class ARDevice:
             return torch.device(index if ":" in index else f"{self.type}:{index}")
         return torch.device(f"{self.type}:{int(index)}")
 
-    # def devices(self) -> list[torch.device]:
-    #     """Enumerate ``torch.device`` for every card of this backend."""
-    #     return [self.device(i) for i in range(self.device_count())]
+    def devices(self) -> list[torch.device]:
+        """Enumerate ``torch.device`` for every card of this backend."""
+        return [self.device(i) for i in range(self.device_count())]
 
     # -- runtime ------------------------------------------------------------
     def synchronize(self, index: int | None = None) -> None:
@@ -493,9 +674,23 @@ class ARDevice:
 
         return torch.compile(func)
 
+    def __repr__(self) -> str:  # pragma: no cover - debug aid
+        return f"{type(self).__name__}(type={self.type!r})"
 
-def __repr__(self) -> str:  # pragma: no cover - debug aid
-    return f"{type(self).__name__}(type={self.type!r})"
+
+class CudaARDevice(ARDevice):
+    """NVIDIA CUDA -- the reference backend."""
+
+    device_type = "cuda"
+    visible_devices_env_var = "CUDA_VISIBLE_DEVICES"
+    supports_pipeline_parallel = True
+
+
+class XpuARDevice(ARDevice):
+    """Intel GPU (XPU)."""
+
+    device_type = "xpu"
+    visible_devices_env_var = "ZE_AFFINITY_MASK"
 
 
 class HpuARDevice(ARDevice):
@@ -507,24 +702,21 @@ class HpuARDevice(ARDevice):
     """
 
     device_type = "hpu"
+    visible_devices_env_var = "HABANA_VISIBLE_MODULES"
+    supports_multi_card_tuning = False
+    supports_empty_cache = False
+    supports_device_map_dispatch = False
+
+    def __init__(self, device_type: str | None = None):
+        # Always drive torch.hpu directly: on builds where Gaudi also registers
+        # with torch.accelerator, the accelerator module lacks the hpu-specific
+        # memory accounting this backend relies on.
+        self.type = "hpu"
+        self._module = self.get_device_module("hpu")
 
     @staticmethod
     def get_device_module(device: None | str | int | torch.device = None):
-        """Return the backend runtime module for ``device`` (e.g. ``torch.cuda``).
-
-        This is a thin, version-tolerant wrapper around ``torch.get_device_module``
-        that also understands ``hpu`` and plain device strings/indices.
-
-        Args:
-            device: ``"cuda"``, ``"xpu:0"``, ``torch.device(...)``, an int index
-                (interpreted against the current device) or ``None`` (current
-                device).
-
-        Returns:
-            The module exposing the device runtime API, or ``None`` for CPU / when
-            no device is available.
-        """
-
+        """Return ``torch.hpu``, falling back to the habana runtime module."""
         if hasattr(torch, "hpu"):
             return torch.hpu
         try:  # pragma: no cover - depends on Gaudi runtime
@@ -558,16 +750,9 @@ class HpuARDevice(ARDevice):
             return torch.compile(func, backend="hpu_backend")
         return func
 
-    def memory_allocated(self, index: int = 0) -> int:
-        return torch.hpu.memory_allocated(index)
-
-    def memory_reserved(self, index: int = 0) -> int:  # TODO have a check
-        return torch.hpu.memory_allocated(index)
-
-    def device_count(self) -> int:
-        import habana_frameworks.torch.hpu as hthpu  # pylint: disable=E0401
-
-        return hthpu.device_count()
+    def memory_reserved(self, index: int = 0) -> int:
+        # HPU has no separate reserved/allocated accounting.
+        return self.memory_allocated(index)
 
 
 class MpsARDevice(ARDevice):
@@ -575,10 +760,13 @@ class MpsARDevice(ARDevice):
 
     MPS's caching allocator is not yet compatible with ``torch.accelerator``'s
     generic ``empty_cache`` path (PyTorch asserts internally), so we bypass it
-    and call ``torch.mps`` methods directly.
+    and call ``torch.mps`` methods directly.  It is also never auto-selected:
+    unified memory makes it OOM easily on larger models.
     """
 
     device_type = "mps"
+    supports_multi_card_tuning = False
+    auto_select_by_default = False
 
     def __init__(self, device_type: str | None = None):
         # Always use torch.mps directly, never torch.accelerator.
@@ -587,28 +775,22 @@ class MpsARDevice(ARDevice):
 
     @staticmethod
     def get_device_module(device: None | str | int | torch.device = None):
-        """Return the backend runtime module for ``device`` (e.g. ``torch.cuda``).
-
-        This is a thin, version-tolerant wrapper around ``torch.get_device_module``
-        that also understands ``hpu`` and plain device strings/indices.
-
-        Args:
-            device: ``"cuda"``, ``"xpu:0"``, ``torch.device(...)``, an int index
-                (interpreted against the current device) or ``None`` (current
-                device).
-
-        Returns:
-            The module exposing the device runtime API, or ``None`` for CPU / when
-            no device is available.
-        """
-        return torch.mps
+        """Return ``torch.mps`` (never the generic accelerator API)."""
+        return getattr(torch, "mps", None)
 
     def is_available(self) -> bool:
         """Whether this backend type is usable in the current build."""
-        return self._module.is_available()
+        is_avail = getattr(self._module, "is_available", None)
+        try:
+            return bool(is_avail()) if callable(is_avail) else False
+        except Exception:
+            return False
 
     def current_device(self) -> int:
         return 0
+
+    def device_count(self) -> int:  # MPS exposes a single unified device.
+        return 1
 
     def set_device(self, index: int | str | torch.device) -> None:
         return None
@@ -617,17 +799,36 @@ class MpsARDevice(ARDevice):
         """Build a ``torch.device`` for this backend / card ``index``."""
         return torch.device("mps")
 
-    def device_index(self, index: int):
-        """Context manager that sets the current device index for this backend.
+    def device_index(self, index: int):  # nothing to switch on MPS.
+        return contextlib.nullcontext()
 
-        Uses ``torch.accelerator.device_index`` when available; otherwise falls
-        back to a tiny save/restore around :meth:`set_device`.
+    # -- numeric format / mixed-precision policy ---------------------------
+    def supports_bf16(self) -> bool:
+        """Whether the MPS backend can execute ``bfloat16``.
+
+        MPS bf16 support arrived with macOS 14 / PyTorch 2.x; older systems
+        silently produce wrong values, so probe the OS instead of inheriting the
+        optimistic base-class default.
         """
-        if self._module is not None:
-            ctx = getattr(self._module, "device_index", None)
-            if callable(ctx):
-                return ctx(index)
-        return _DeviceIndexContext(self, index)
+        cached = getattr(self, "_bf16_supported", None)
+        if cached is not None:
+            return cached
+
+        supports = False
+        backends = getattr(torch, "backends", None)
+        mps_backend = getattr(backends, "mps", None) if backends is not None else None
+        is_macos_or_newer = getattr(mps_backend, "is_macos_or_newer", None)
+        if callable(is_macos_or_newer):
+            try:
+                supports = bool(is_macos_or_newer(14, 0))
+            except Exception:
+                supports = False
+        else:
+            # No version probe available (e.g. older PyTorch): assume the
+            # runtime knows what it is doing rather than disabling bf16.
+            supports = True
+        self._bf16_supported = supports
+        return supports
 
     def total_memory(self, index: int = 0) -> int:
         return torch.mps.recommended_max_memory()
@@ -637,30 +838,6 @@ class MpsARDevice(ARDevice):
 
     def memory_allocated(self, index: int = 0) -> int:
         return torch.mps.current_allocated_memory()
-
-    # def mem_get_info(self, index: int = 0) -> tuple[int, int]:
-    #     """Return ``(free_bytes, total_bytes)`` for ``index``.
-    #
-    #     Falls back to ``total - reserved`` when the backend lacks a native
-    #     ``mem_get_info`` implementation.
-    #     """
-    #     module = self.get_device_module(self.type) if self._module is _accelerator_api() else self._module
-    #     fn = getattr(module, "get_memory_info", None)
-    #
-    #     return fn(index) if callable(fn) else (0, 0)  # pylint: disable=E1102
-
-    # -- numeric format / mixed-precision policy ---------------------------
-    def supports_bf16(self) -> bool:
-        """Whether this backend can execute the ``bfloat16`` data type."""
-        return True
-
-    def prefers_bf16(self) -> bool:
-        """Whether this backend prefers bf16 as the mixed-precision compute dtype.
-
-        Defaults to ``True`` (bf16 is the preferred tuning dtype); backends that
-        would rather honour the model's own non-fp32 dtype can override this.
-        """
-        return True
 
 
 class CpuARDevice(ARDevice):
@@ -675,6 +852,7 @@ class CpuARDevice(ARDevice):
     """
 
     device_type = "cpu"
+    supports_multi_card_tuning = False
 
     @staticmethod
     def get_device_module(device: None | str | int | torch.device = None):
@@ -742,12 +920,6 @@ class CpuARDevice(ARDevice):
 
     def memory_allocated(self, index: int = 0) -> int:
         return self.memory_reserved(index)
-
-    # def mem_get_info(self, index: int = 0) -> tuple[int, int]:
-    #     vm = self._virtual_memory()
-    #     if vm is None:
-    #         return 0, 0
-    #     return int(vm.available), int(vm.total)
 
     def is_torch_compile_supported(self) -> bool:
         return True
@@ -843,12 +1015,14 @@ class DeviceManager:
 
     # -- registration -------------------------------------------------------
     def register(self, device_cls: type[ARDevice]) -> None:
-        """Register a custom :class:`Device` subclass and drop any stale cache."""
+        """Register a custom :class:`ARDevice` subclass and drop any stale cache."""
         dtype = device_cls.device_type
         if not dtype:
             raise ValueError("Device subclass must define a non-empty 'device_type'")
         ARDevice._registry[dtype] = device_cls
         self._cache.pop(dtype, None)
+        # Discovery caches may already have decided this backend does not exist.
+        get_current_device_type.cache_clear()
 
     # -- lookup -------------------------------------------------------------
     def get_ar_device(self, device_type: None | str | int | torch.device = None) -> ARDevice:
@@ -904,8 +1078,24 @@ def _engaged_cache_limit() -> int:
 
 
 def get_ar_device(device_type: None | str | int | torch.device = None) -> ARDevice:
-    """Return the cached :class:`Device` handle for a specific backend type."""
+    """Return the cached :class:`ARDevice` handle for a specific backend type."""
     return device_manager.get_ar_device(device_type)
+
+
+def register_ar_device(device_cls: type[ARDevice]) -> type[ARDevice]:
+    """Register a custom :class:`ARDevice` subclass; usable as a decorator.
+
+    Subclassing :class:`ARDevice` with a non-empty ``device_type`` already
+    self-registers; this helper exists so out-of-tree code can register a handle
+    explicitly (and refresh the discovery caches) in one call::
+
+        @register_ar_device
+        class MyNpuDevice(ARDevice):
+            device_type = "npu"
+            visible_devices_env_var = "ASCEND_RT_VISIBLE_DEVICES"
+    """
+    device_manager.register(device_cls)
+    return device_cls
 
 
 def default_enable_torch_compile(
@@ -931,9 +1121,9 @@ def detect_device_count() -> int:
 def get_device_and_parallelism(device: str | torch.device | int | dict) -> tuple[str, bool]:
     """Resolve a device spec into ``(device, parallelism)``.
 
-    The multi-card *parallelism* policy itself is kept as a standalone function
-    (:func:`auto_round.utils.device.is_pipeline_parallel_supported`) rather than
-    living on the device manager.
+    Whether multi-card (naive pipeline) parallel tuning is possible is read from
+    the backend's :attr:`ARDevice.supports_pipeline_parallel` flag, so a new
+    device only has to declare it once.
     """
     if device is None:
         device = get_major_device(device)
@@ -962,10 +1152,7 @@ def get_device_and_parallelism(device: str | torch.device | int | dict) -> tuple
     if is_multi_card:
         # Pick the active backend generically rather than probing each one by hand.
         device_type = get_current_device_type() or "cpu"
-        # Parallelism policy is intentionally not part of the device manager.
-        from auto_round.utils.device import is_pipeline_parallel_supported
-
-        return device_type, is_pipeline_parallel_supported(device_type)
+        return device_type, get_ar_device(device_type).supports_pipeline_parallel
     elif device == "auto":
         device = get_major_device(device)
         parallelism = True
@@ -973,6 +1160,23 @@ def get_device_and_parallelism(device: str | torch.device | int | dict) -> tuple
         device = get_major_device(device)
         parallelism = False
     return device, parallelism
+
+
+def get_active_device(index: int = 0) -> torch.device:
+    """A ``torch.device`` for the active accelerator, or CPU when there is none.
+
+    Backends that opt out of implicit selection (``auto_select_by_default``,
+    e.g. MPS) resolve to CPU, so callers that only need *a* sensible device stay
+    consistent with :func:`normalize_default_device_map` instead of re-deriving
+    the policy from a device-type check.
+    """
+    device_type = get_current_device_type()
+    if device_type == "cpu":
+        return torch.device("cpu")
+    device = get_ar_device(device_type)
+    if not device.auto_select_by_default:
+        return torch.device("cpu")
+    return device.device(index)
 
 
 def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
@@ -984,10 +1188,7 @@ def get_packing_device(device: str | torch.device | None = "auto") -> torch.devi
     - ``None``: treated as ``"auto"``.
     """
     if device is None or (isinstance(device, str) and device.lower() == "auto"):
-        device_type = get_current_device_type()
-        if device_type is not None and device_type != "cpu":
-            return torch.device(f"{device_type}:0")
-        return torch.device("cpu")
+        return get_active_device()
 
     if isinstance(device, torch.device):
         return device
@@ -1045,7 +1246,10 @@ def get_major_device(device_map: None | str | torch.device | int | dict = None) 
             dev_idx = device_list[0] if device_list else None
             device = "auto"
         if device is None or device == "auto":
-            device_type = get_current_device_type()
+            # ``get_primary_device_type`` applies the ``auto_select_by_default``
+            # policy (MPS opts out), so a default request never resolves to a
+            # backend that must not be picked implicitly.
+            device_type = get_primary_device_type()
             device = torch.device(device_type) if device_type is not None else torch.device("cpu")
             if dev_idx is not None and str(device) != "cpu":
                 device = str(device) + f":{dev_idx}"
@@ -1181,16 +1385,16 @@ class ClearMemory:
         device_list: list | tuple | None = None,
     ):
         # Lazy imports: these symbols live in utils/device.py.
-        from auto_round.utils.device import _force_trim_malloc, is_hpex_available, memory_monitor
+        from auto_round.utils.device import _force_trim_malloc, memory_monitor
 
-        if is_hpex_available():
-            if device_list is not None:
-                self.device_list = device_list
-            final_device_list = self.device_list
-            # Keep peak accounting consistent with non-HPU path: sample first,
-            # then release memory so post-clear values do not hide true peaks.
-            memory_monitor.update_hpu(final_device_list)
-            # Clear CPU-side references so Python can reclaim them.
+        if device_list is not None:
+            self.device_list = device_list
+        final_device_list = self.device_list
+        # Sample peak accounting first, so post-clear values do not hide true peaks.
+        memory_monitor.update(final_device_list)
+
+        if not get_current_device_manager().supports_empty_cache:
+            # No caching allocator to flush (e.g. HPU): only drop CPU-side refs.
             if isinstance(tensor, list):
                 for i in range(len(tensor)):
                     tensor[i] = None
@@ -1198,12 +1402,8 @@ class ClearMemory:
             gc.collect()
             _force_trim_malloc()
             return
-        else:
-            if device_list is not None:
-                self.device_list = device_list
-            final_device_list = self.device_list
-            memory_monitor.update(final_device_list)
-            _clear_memory_for_cpu_and_cuda(tensor, final_device_list)
+
+        _clear_memory_for_cpu_and_cuda(tensor, final_device_list)
 
 
 clear_memory = torch._dynamo.disable()(ClearMemory(device_list=None))
