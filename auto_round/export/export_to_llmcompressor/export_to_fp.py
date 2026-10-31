@@ -28,6 +28,7 @@ from auto_round.compressors.utils import is_mx_fp, is_nv_fp
 from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 from auto_round.export.export_to_llmcompressor.config import initialize_quantization
 from auto_round.export.export_to_llmcompressor.utils import (
+    add_autoround_config,
     add_routed_experts_if_moe,
     finalize_llmcompressor_config_names,
     generate_ignore_regex_list,
@@ -491,6 +492,7 @@ def save_quantized_as_fp(
         [],
         [name for names in scheme_groups.values() for name in names],
     )
+    quantization_config = add_autoround_config(quantization_config, serialization_dict)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:
