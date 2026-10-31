@@ -118,6 +118,15 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
 
   for (int ib = 0; ib < blks; ++ib) {
     clear(tCrC);
+    float thread_scale_a[32];
+    if constexpr (FullTile && size(tCrC) == 64) {
+      CUTE_UNROLL
+      for (int j = 0; j < 32; ++j) {
+        auto coord = tCgC(j);
+        int row = int(get<0>(coord));
+        thread_scale_a[j] = static_cast<float>(scale_a[ib * m + row]);
+      }
+    }
 
     for (int bk = 0; bk < k_tiles_per_block; ++bk) {
       int k_tile = ib * k_tiles_per_block + bk;
@@ -151,7 +160,13 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
       }
 
       float sb = static_cast<float>(scale_b[col * blks + ib]);
-      tFrC(i) += static_cast<float>(tCrC(i)) * sb;
+      float sa;
+      if constexpr (FullTile && size(tCrC) == 64) {
+        sa = thread_scale_a[i < 32 ? i : i - 32];
+      } else {
+        sa = static_cast<float>(scale_a[ib * m + row]);
+      }
+      tFrC(i) += static_cast<float>(tCrC(i)) * sa * sb;
     }
   }
   
@@ -166,7 +181,7 @@ void igemm_kblock_device_impl(TiledMMA const& mma, const int8_t* a, const int8_t
       if (row >= m || col >= n) continue;
     }
 
-    float value = tFrC(i) * static_cast<float>(scale_a[row]);
+    float value = tFrC(i);
     if constexpr (HasBias) {
       value += static_cast<float>(bias[col]);
     }

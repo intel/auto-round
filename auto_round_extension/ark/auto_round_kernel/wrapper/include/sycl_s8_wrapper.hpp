@@ -23,16 +23,87 @@ namespace ark {
 
 class SyclS8Wrapper {
  public:
+  template <typename T>
+  static sycl::event dyn_quant_s8_kblock(sycl::queue* q, int m, int k, const T* a, int8_t* qa, T* scalea,
+                                         int blocksize, int blks) {
+    constexpr int SgSize = 16;
+    constexpr int WGSize = 256;
+    constexpr int SGNum = WGSize / SgSize;
+
+    sycl::range<1> group{WGSize};
+    int groups_per_row = (blks + SGNum - 1) / SGNum;
+    sycl::range<1> problem{static_cast<size_t>(m) * groups_per_row * WGSize};
+    return q->submit([&](sycl::handler& cgh) {
+      cgh.parallel_for(
+          sycl::nd_range<1>(problem, group), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SgSize)]] {
+            int group_idx = int(it.get_group(0));
+            int row = group_idx / groups_per_row;
+            auto sg = it.get_sub_group();
+            int sg_id = int(sg.get_local_id()[0]);
+            int sg_group_id = int(sg.get_group_id()[0]);
+            int block_idx = (group_idx % groups_per_row) * SGNum + sg_group_id;
+            if (block_idx >= blks) return;
+            int base = row * k + block_idx * blocksize;
+
+            float maxabs = 0.0f;
+            for (int idx = sg_id; idx < blocksize; idx += SgSize) {
+              maxabs = sycl::max(maxabs, sycl::fabs(static_cast<float>(a[base + idx])));
+            }
+            maxabs = sycl::reduce_over_group(sg, maxabs, sycl::maximum<float>());
+            float scale = maxabs / 127.0f;
+            float ratio = scale > 0.0f ? 1.0f / scale : 0.0f;
+            for (int idx = sg_id; idx < blocksize; idx += SgSize) {
+              int value = static_cast<int>(sycl::round(static_cast<float>(a[base + idx]) * ratio));
+              value = value < -128 ? -128 : value;
+              value = value > 127 ? 127 : value;
+              qa[base + idx] = static_cast<int8_t>(value);
+            }
+            if (sg_id == 0) {
+              scalea[block_idx * m + row] = static_cast<T>(scale);
+            }
+          });
+    });
+  }
+
    static inline void prepare_qa_and_quantize(sycl::queue* q, int m, int k, const void* a, BTLA_DTYPE act, 
-                                             int8_t*& qa_ptr, int8_t*& scalea_ptr) {
+                                             int blocksize, int8_t*& qa_ptr, int8_t*& scalea_ptr) {
+    bool use_blockwise_a = false;
+#if ARK_SYCL_TLA
+    use_blockwise_a = blocksize > 0 && blocksize < k;
+    if (use_blockwise_a && k % blocksize != 0) {
+      throw std::invalid_argument("SyclS8Wrapper::prepare_qa_and_quantize: blocksize must divide k");
+    }
+#endif
+    int blks = use_blockwise_a ? k / blocksize : 1;
     size_t qa_size = size_t(m) * size_t(k);
     size_t scalea_offset = (qa_size + alignof(float) - 1) & ~(size_t(alignof(float)) - 1);
-    size_t tmp_size = scalea_offset + size_t(m) * sizeof(float);
+    size_t tmp_size = scalea_offset + size_t(m) * size_t(blks) * sizeof(float);
 
     auto tmp_ptr = static_cast<int8_t*>(DeviceMemoryPool::Instance()->get_scratch_mem(tmp_size, 1, q));
     qa_ptr = tmp_ptr;
     scalea_ptr = tmp_ptr + scalea_offset;
 
+#if ARK_SYCL_TLA
+    if (use_blockwise_a) {
+      switch (act) {
+        case BTLA_DTYPE::F32:
+          dyn_quant_s8_kblock(q, m, k, static_cast<const float*>(a), qa_ptr, reinterpret_cast<float*>(scalea_ptr),
+                              blocksize, blks);
+          break;
+        case BTLA_DTYPE::F16:
+          dyn_quant_s8_kblock(q, m, k, static_cast<const sycl::half*>(a), qa_ptr,
+                              reinterpret_cast<sycl::half*>(scalea_ptr), blocksize, blks);
+          break;
+        case BTLA_DTYPE::BF16:
+          dyn_quant_s8_kblock(q, m, k, static_cast<const sycl::ext::oneapi::bfloat16*>(a), qa_ptr,
+                              reinterpret_cast<sycl::ext::oneapi::bfloat16*>(scalea_ptr), blocksize, blks);
+          break;
+        default:
+          throw std::invalid_argument("SyclS8Wrapper::prepare_qa_and_quantize: unsupported activation dtype");
+      }
+      return;
+    }
+#endif
     dyn_quant_s8(q, m, k, a, act, qa_ptr, scalea_ptr, 0);
   }
   
@@ -128,7 +199,7 @@ class SyclS8Wrapper {
                      BTLA_DTYPE act, void* scale_b, void* bias, int blocksize) {
 
     int8_t *qa_ptr, *scalea_ptr;
-    prepare_qa_and_quantize(q, m, k, a, act, qa_ptr, scalea_ptr);
+    prepare_qa_and_quantize(q, m, k, a, act, blocksize, qa_ptr, scalea_ptr);
     igemm_s8s8(q, m, n, k, qa_ptr, b, BT, c, act, scalea_ptr, scale_b, bias, blocksize);
   }
 
