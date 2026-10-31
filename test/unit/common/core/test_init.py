@@ -9,6 +9,7 @@ from auto_round.cli.main import _to_autoround_kwargs
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.compressors.base import MIN_ITERS_FOR_TORCH_COMPILE, BaseOrchestrator
 from auto_round.logger import logger
+from auto_round.recipes.recipe import UNSET
 from auto_round.utils.device_manager import default_enable_torch_compile
 
 
@@ -18,7 +19,7 @@ def test_torch_compile_platform_default_is_deferred():
 
 
 def test_dataset_default_is_deferred():
-    assert inspect.signature(AutoRound.__new__).parameters["dataset"].default is None
+    assert inspect.signature(AutoRound.__new__).parameters["dataset"].default is UNSET
     assert inspect.signature(BaseOrchestrator.__init__).parameters["dataset"].default is None
 
 

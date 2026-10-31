@@ -268,6 +268,39 @@ class AlgorithmHandler:
 
     @classmethod
     def build_configs(cls, args, common_kwargs: dict[str, Any]) -> list:
+        plan = getattr(args, "_recipe_plan", None)
+        if plan is not None and getattr(args, "algorithm", None) is None:
+            from auto_round.autoround import _normalize_alg_configs
+
+            configs = []
+            explicit = args._explicit_fields
+            for stage, default_config in zip(plan.pipeline, plan.build_configs()):
+                registry = _parameter_registry(type(default_config))
+                overrides = {
+                    parameter.field: getattr(args, parameter.dest)
+                    for parameter in registry.parameters
+                    if parameter.dest in explicit and hasattr(args, parameter.dest)
+                }
+                if getattr(type(default_config), "cli_include_common_args", True):
+                    overrides.update({key: value for key, value in common_kwargs.items() if value is not None})
+                configs.append(stage.build_config(overrides))
+            direct = {"iters": args.iters} if "iters" in explicit else {}
+            if direct.get("iters") == 0:
+                rtn_cls = cls.get("rtn")
+                direct.update(
+                    {
+                        parameter.field: getattr(args, parameter.dest)
+                        for parameter in _parameter_registry(rtn_cls).parameters
+                        if parameter.dest in explicit and hasattr(args, parameter.dest)
+                    }
+                )
+            if "disable_opt_rtn" in explicit:
+                direct["disable_opt_rtn"] = args.disable_opt_rtn
+            if getattr(args, "rotation_hadamard_type", None):
+                rotation_cls = cls.get("hadamard")
+                configs.append(rotation_cls(**_parameter_registry(rotation_cls).config_kwargs(args)))
+            return _normalize_alg_configs(configs, direct)
+
         raw = getattr(args, "algorithm", None) or ""
         names = [name.strip().lower() for name in raw.split(",") if name.strip()]
 

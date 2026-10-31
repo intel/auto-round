@@ -106,6 +106,8 @@ Out-of-the-box quantization for 10+ vision-language models [example models](http
 ✅ **Multiple Recipes**
 Choose from `auto-round-best`, `auto-round`, `auto-round-light`, `auto-round-opt-rtn` (optimized RTN) and `auto-round-rtn` (pure RTN, fastest baseline) to suit your needs. Details are shown in [quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
 
+Use the same plans in Python with `AutoRound(..., recipe="ar-best")` or in the CLI with `--recipe ar-best`. Omitting the recipe selects `ar`; legacy commands remain shortcuts. See [built-in recipes and overrides](./docs/recipes.md).
+
 ✅ Advanced Utilities
 Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
 
