@@ -171,6 +171,27 @@ def pack_qact_layer(name, model):
 PACK_PHASES = {"lookup": 0.0, "dispatch": 0.0, "ctor": 0.0, "pack": 0.0, "moves": 0.0, "count": 0}
 
 
+def _validate_fp8_block_override(layer_name, data_type, group_size):
+    """Keep the mixed INT/FP8 path within the native vLLM FP8 block format."""
+    if data_type not in {
+        "fp",
+        "fp8",
+        "fp8_sym",
+        "fp8_e4m3",
+        "block_fp8",
+        "block_fp8_sym",
+        "block_fp8_e4m3",
+    } or not (
+        isinstance(group_size, tuple)
+        and len(group_size) == 2
+        and all(type(size) is int and size > 0 for size in group_size)
+    ):
+        raise ValueError(
+            f"FP8 override '{layer_name}' in the INT export path requires E4M3 weights and a positive 2-D "
+            f"tuple group_size; got data_type={data_type!r}, group_size={group_size!r}."
+        )
+
+
 def pack_layer(layer_name, model, backend, device=None):
     """
     Packs a model layer for quantization based on its type and configuration.
@@ -214,6 +235,7 @@ def pack_layer(layer_name, model, backend, device=None):
     # Dispatch before the integer activation packer, which cannot represent
     # FP8 block scales or floating-point weight encodings.
     if is_standard_fp(getattr(layer, "data_type", "int")) and layer.bits == 8:
+        _validate_fp8_block_override(layer_name, layer.data_type, layer.group_size)
         from auto_round.export.export_to_autoround.export_to_fp8 import pack_layer as pack_fp8_layer
 
         PACK_PHASES["lookup"] += time.perf_counter() - _t_entry
@@ -410,6 +432,13 @@ def save_quantized_as_autoround(
     for layer_name, cfg in layer_config.items():
         if is_standard_fp(cfg.get("data_type", "int")) and cfg.get("bits") == 8:
             extra_config.setdefault(layer_name, {})["packing_format"] = "auto_round:fp8"
+    for layer_name, cfg in extra_config.items():
+        data_type = cfg.get("data_type", quantization_config.get("data_type", "int"))
+        if is_standard_fp(data_type) and cfg.get("bits", quantization_config.get("bits")) == 8:
+            _validate_fp8_block_override(
+                layer_name, data_type, cfg.get("group_size", quantization_config.get("group_size"))
+            )
+            cfg.update(data_type="fp", packing_format="auto_round:fp8")
     if extra_config:
         quantization_config["extra_config"] = extra_config
 
