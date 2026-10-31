@@ -66,7 +66,7 @@ def _dq_asym_qdq(tensor, scale, wmin, bits, group_size, v=0):
 
 def _dq_sym_qdq(tensor, scale, bits, v=0):
     """Pure sym double-quant qdq math given precomputed scale (compilable)."""
-    from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
+    from auto_round.export.formats.gguf.config import GGML_QUANT_SIZES, QK_K
 
     group_size = 16
     super_group_size = 16
@@ -273,7 +273,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 
     @torch.no_grad()
     def _run_search(self, weight, v):
-        from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
+        from auto_round.export.formats.gguf.config import GGML_QUANT_SIZES, QK_K
 
         bits = self.orig_layer.bits
         scale_dtype = self.orig_layer.scale_dtype

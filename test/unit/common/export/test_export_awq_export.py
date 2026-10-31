@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for ``auto_round/export/export_to_awq/export.py``."""
+"""Tests for ``auto_round/export/formats/awq/export.py``."""
 
 import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.export.export_to_awq.export import _is_supported_layer
+from auto_round.export.formats.awq.config import _is_supported_layer
 
 
 class TestIsSupportedLayer:

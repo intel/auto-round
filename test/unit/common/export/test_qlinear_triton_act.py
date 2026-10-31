@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import transformers
 
-from auto_round.export.export_to_autoround.qlinear_triton_act import QuantLinear
+from auto_round.export.formats.autoround.qlinear_triton_act import QuantLinear
 
 
 class TestQuantLinearInit:

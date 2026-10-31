@@ -14,7 +14,7 @@
 
 import torch
 
-from auto_round.export.svdquant_w4a16 import (
+from auto_round.export.formats.svdquant.w4a16 import (
     dequantize_adanorm_w4a16,
     pack_adanorm_w4a16,
     unpack_adanorm_w4a16,

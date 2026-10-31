@@ -28,8 +28,8 @@ from auto_round.algorithms.transforms.svdquant import SVDQuantConfig
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
 from auto_round.data_type.nvfp import nv_fp4
 from auto_round.data_type.utils import update_block_global_scale_if_needed
-from auto_round.export.svdquant_nunchaku import IdentitySVDQuantModelAdapter
-from auto_round.export.svdquant_omni import save_svdquant_omni
+from auto_round.export.formats.svdquant.nunchaku import IdentitySVDQuantModelAdapter
+from auto_round.export.formats.svdquant.omni import save_svdquant_omni
 from auto_round.formats import get_formats
 from auto_round.schemes import PRESET_SCHEMES
 from auto_round.utils.device_manager import device_manager

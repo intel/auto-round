@@ -2,3 +2,5 @@ include requirements.txt
 include requirements-cpu.txt
 include requirements-hpu.txt
 exclude test/*
+
+include auto_round/export/formats/gguf/LLAMA_CPP_CONVERSION_COMMIT

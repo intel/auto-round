@@ -5,7 +5,7 @@
 # You may obtain a copy of the License at
 #
 #    http://www.apache.org/licenses/LICENSE-2.0
-"""Unit tests for ``auto_round.export.utils``."""
+"""Unit tests for ``auto_round.export.common.serialization``."""
 
 import json
 import os
@@ -17,19 +17,18 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.export.utils import (
+from auto_round.export.common.packing import get_autogptq_packing_qlinear, release_layer_safely
+from auto_round.export.common.serialization import (
     _get_state_dict_for_export_dtype,
     _resolve_model_source_dir,
     _resolve_pipeline_source_dir,
     _save_model_configs,
     _state_dict_has_meta_tensor,
     filter_quantization_config,
-    get_autogptq_packing_qlinear,
     is_immediate_saving_mode,
     is_local_pipeline_model_dir,
     is_pipeline_model_dir,
     is_remote_pipeline_model_dir,
-    release_layer_safely,
     resolve_pipeline_export_layout,
     save_model,
     save_pretrained_artifact,
@@ -153,7 +152,7 @@ class TestSourceConfig:
             (output_dir / "config.json").write_text('{"model_type": "changed"}', encoding="utf-8")
 
         model.save_pretrained = MagicMock(side_effect=save_reconstructed_config)
-        with patch("auto_round.export.utils.apply_post_save_source_fixes"):
+        with patch("auto_round.export.common.serialization.apply_post_save_source_fixes"):
             save_model(model, str(output_dir), immediate_saving=immediate_saving, dtype=dtype)
 
         expected = {**original, "quantization_config": quantization_config}
@@ -410,7 +409,7 @@ class TestSaveModel:
             model.dtype = torch.float32
             model.config = MagicMock()
             model.config.quantization_config = None
-            with patch("auto_round.export.utils._resolve_model_source_dir", return_value=None):
+            with patch("auto_round.export.common.serialization._resolve_model_source_dir", return_value=None):
                 save_model(model, tmpdir, safe_serialization=False)
                 # Should have called save_pretrained
                 model.save_pretrained.assert_called()
@@ -425,7 +424,7 @@ class TestSaveModel:
             config_path = os.path.join(tmpdir, "config.json")
             with open(config_path, "w") as f:
                 json.dump({"torch_dtype": "float32", "dtype": "float32"}, f)
-            with patch("auto_round.export.utils._resolve_model_source_dir", return_value=None):
+            with patch("auto_round.export.common.serialization._resolve_model_source_dir", return_value=None):
                 save_model(model, tmpdir, dtype=torch.bfloat16, safe_serialization=False)
             # Check dtype was updated
             with open(config_path, "r") as f:
@@ -443,7 +442,7 @@ class TestSaveModel:
             }
             model._keep_in_fp32_modules = None
             model._keep_in_fp32_modules_strict = None
-            with patch("auto_round.export.utils._resolve_model_source_dir", return_value=None):
+            with patch("auto_round.export.common.serialization._resolve_model_source_dir", return_value=None):
                 save_model(model, tmpdir, dtype=torch.bfloat16, safe_serialization=False)
             state_dict = model.save_pretrained.call_args.kwargs["state_dict"]
             assert state_dict["linear.weight"].dtype == torch.bfloat16

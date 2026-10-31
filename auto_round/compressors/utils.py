@@ -23,7 +23,7 @@ from auto_round.compressors.config_resolution import LayerConfigResolutionError
 # Explicit compatibility exports for callers that historically imported GGUF and
 # ignore-layer helpers from compressors.utils.
 from auto_round.compressors.layer_config_resolver import get_fp_layer_names
-from auto_round.export.formats.backends.gguf import (
+from auto_round.export.formats.gguf.format import (
     _apply_gguf_shape_fallback,
     _infer_gguf_n_layers_from_model,
     _resolve_gguf_n_layers,

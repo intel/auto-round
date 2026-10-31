@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from auto_round.compressors.utils import _infer_gguf_n_layers_from_model, _resolve_gguf_n_layers
-from auto_round.export.export_to_gguf.gguf_dtype import (
+from auto_round.export.formats.gguf.gguf_dtype import (
     GGUFDTypeSelector,
     gguf_format_to_ftype,
     select_llama_cpp_compatible_qtype,

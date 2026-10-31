@@ -598,7 +598,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                         f"write={_perf.get('monitor') + _perf.get('write'):.2f}s",
                     ]
                     try:
-                        from auto_round.export.export_to_autoround.export import PACK_PHASES as _pp
+                        from auto_round.export.formats.autoround.integer import PACK_PHASES as _pp
 
                         # the pack sub-note is no longer printed (pack is stable at
                         # ~1.2s; the sub-phases were the layer_config-hunt probes);

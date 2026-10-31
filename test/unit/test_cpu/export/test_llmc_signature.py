@@ -3,11 +3,11 @@ from types import SimpleNamespace
 
 import torch
 
-from auto_round.export.export_to_llmcompressor.export import (
+from auto_round.export.formats.compressed_tensors.integer import (
     _quant_args_signature,
     _rewrite_config_group_targets,
 )
-from auto_round.export.export_to_llmcompressor.utils import (
+from auto_round.export.formats.compressed_tensors.utils import (
     collect_fused_expert_modules,
     ignore_fused_experts_for_vllm,
     revert_quantization_config_names,

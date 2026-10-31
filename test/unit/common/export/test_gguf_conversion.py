@@ -112,10 +112,10 @@ def _make_mock_model(cls, hparams=None):
 
 @pytest.mark.parametrize("disable_mtp_export", [False, True])
 def test_qwen35_gguf_mtp_export_control(monkeypatch, tmp_path, disable_mtp_export):
-    from auto_round.export.export_to_gguf import export
-    from auto_round.export.export_to_gguf.config import ModelType
-    from auto_round.export.export_to_gguf.conversion.base import ModelBase as ConversionModelBase
-    from auto_round.export.export_to_gguf.conversion.qwen import Qwen3_5TextModel
+    from auto_round.export.formats.gguf import writer as export
+    from auto_round.export.formats.gguf.config import ModelType
+    from auto_round.export.formats.gguf.conversion.base import ModelBase as ConversionModelBase
+    from auto_round.export.formats.gguf.conversion.qwen import Qwen3_5TextModel
 
     hparams = {
         "architectures": ["Qwen3_5ForConditionalGeneration"],
@@ -182,8 +182,8 @@ class TestGraniteMoeConversion:
 
     @staticmethod
     def _make_model(hparams, architecture="GraniteMoeHybridForCausalLM"):
-        from auto_round.export.export_to_gguf.conversion.granite import GraniteMoeModel
-        from auto_round.export.export_to_gguf.special_handle import handle_special_model
+        from auto_round.export.formats.gguf.conversion.granite import GraniteMoeModel
+        from auto_round.export.formats.gguf.special_handle import handle_special_model
 
         obj = _make_mock_model(GraniteMoeModel, hparams)
         return handle_special_model(obj, architecture)
@@ -240,7 +240,7 @@ class TestMimoConversion:
 
     def test_tp_aware_qkv_dequant_tp4(self):
         """Test _tp_aware_qkv_dequant with TP=4 configuration."""
-        from auto_round.export.export_to_gguf.conversion.mimo import MimoV2Model
+        from auto_round.export.formats.gguf.conversion.mimo import MimoV2Model
 
         # n_q=8, n_kv=2, hd=64, vhd=64
         # q_size=512, k_size=128, v_size=128, total=768
@@ -261,7 +261,7 @@ class TestMimoConversion:
 
     def test_tp_aware_qkv_dequant_tp8(self):
         """Test _tp_aware_qkv_dequant with TP=8 configuration."""
-        from auto_round.export.export_to_gguf.conversion.mimo import MimoV2Model
+        from auto_round.export.formats.gguf.conversion.mimo import MimoV2Model
 
         n_q, n_kv, hd, vhd = 8, 2, 64, 64
         total_rows = n_q * hd + n_kv * hd + n_kv * vhd  # 768
@@ -279,7 +279,7 @@ class TestMimoConversion:
 
     def test_tp_aware_qkv_dequant_invalid_rows(self):
         """Test that mismatched weight rows raise ValueError."""
-        from auto_round.export.export_to_gguf.conversion.mimo import MimoV2Model
+        from auto_round.export.formats.gguf.conversion.mimo import MimoV2Model
 
         weight = torch.randn(100, 64)
         scale_inv = torch.randn(2, 1)
@@ -289,7 +289,7 @@ class TestMimoConversion:
 
     def test_tp_aware_qkv_dequant_cannot_detect_tp(self):
         """Test that undetectable TP raises ValueError."""
-        from auto_round.export.export_to_gguf.conversion.mimo import MimoV2Model
+        from auto_round.export.formats.gguf.conversion.mimo import MimoV2Model
 
         n_q, n_kv, hd, vhd = 8, 2, 64, 64
         total_rows = n_q * hd + n_kv * hd + n_kv * vhd
@@ -301,7 +301,7 @@ class TestMimoConversion:
 
     def test_filter_tensors_attention_sink_without_weight_suffix(self):
         """Test filter_tensors appends .weight to attention_sink tensor name."""
-        from auto_round.export.export_to_gguf.conversion.mimo import MimoV2Model
+        from auto_round.export.formats.gguf.conversion.mimo import MimoV2Model
 
         obj = _make_mock_model(MimoV2Model)
         obj.filter_tensors = MimoV2Model.filter_tensors.__get__(obj, MimoV2Model)
@@ -314,7 +314,7 @@ class TestMimoConversion:
 
     def test_filter_tensors_attention_sink_with_weight_suffix(self):
         """Test filter_tensors leaves attention_sink.weight unchanged."""
-        from auto_round.export.export_to_gguf.conversion.mimo import MimoV2Model
+        from auto_round.export.formats.gguf.conversion.mimo import MimoV2Model
 
         obj = _make_mock_model(MimoV2Model)
         obj.filter_tensors = MimoV2Model.filter_tensors.__get__(obj, MimoV2Model)
@@ -327,7 +327,7 @@ class TestMimoConversion:
 
     def test_prepare_tensors_unprocessed_experts_error(self):
         """Test that unprocessed experts raise ValueError."""
-        from auto_round.export.export_to_gguf.conversion.mimo import MimoV2Model
+        from auto_round.export.formats.gguf.conversion.mimo import MimoV2Model
 
         obj = _make_mock_model(
             MimoV2Model,
@@ -341,7 +341,7 @@ class TestMimoConversion:
 
         # Mock super().prepare_tensors() to skip the base class work
         with (
-            patch("auto_round.export.export_to_gguf.conversion.base.ModelBase.prepare_tensors"),
+            patch("auto_round.export.formats.gguf.conversion.base.ModelBase.prepare_tensors"),
             pytest.raises(ValueError, match="Unprocessed experts"),
         ):
             obj.prepare_tensors()
@@ -357,7 +357,7 @@ class TestMiniCPMConversion:
 
     def test_generate_extra_tensors_with_rope_scaling(self):
         """Test generate_extra_tensors yields rope long/short factors."""
-        from auto_round.export.export_to_gguf.conversion.minicpm import MiniCPMModel
+        from auto_round.export.formats.gguf.conversion.minicpm import MiniCPMModel
 
         rope_dims = 64
         long_factors = [1.0] * (rope_dims // 2)
@@ -389,7 +389,7 @@ class TestMiniCPMConversion:
 
     def test_generate_extra_tensors_missing_long_factor_raises(self):
         """Test missing long_factor raises KeyError."""
-        from auto_round.export.export_to_gguf.conversion.minicpm import MiniCPMModel
+        from auto_round.export.formats.gguf.conversion.minicpm import MiniCPMModel
 
         obj = _make_mock_model(
             MiniCPMModel,
@@ -411,7 +411,7 @@ class TestMiniCPMConversion:
 
     def test_generate_extra_tensors_length_mismatch_raises(self):
         """Test mismatched factor lengths raise ValueError."""
-        from auto_round.export.export_to_gguf.conversion.minicpm import MiniCPMModel
+        from auto_round.export.formats.gguf.conversion.minicpm import MiniCPMModel
 
         obj = _make_mock_model(
             MiniCPMModel,
@@ -434,7 +434,7 @@ class TestMiniCPMConversion:
 
     def test_minicpm3_reverse_hf_permute(self):
         """Test MiniCPM3Model._reverse_hf_permute transforms tensor correctly."""
-        from auto_round.export.export_to_gguf.conversion.minicpm import MiniCPM3Model
+        from auto_round.export.formats.gguf.conversion.minicpm import MiniCPM3Model
 
         obj = _make_mock_model(
             MiniCPM3Model,
@@ -458,7 +458,7 @@ class TestMiniCPMConversion:
 
     def test_minicpm3_reverse_hf_permute_same_head(self):
         """Test _reverse_hf_permute when n_kv_head equals n_head."""
-        from auto_round.export.export_to_gguf.conversion.minicpm import MiniCPM3Model
+        from auto_round.export.formats.gguf.conversion.minicpm import MiniCPM3Model
 
         obj = _make_mock_model(
             MiniCPM3Model,
@@ -491,7 +491,7 @@ class TestMiniMaxConversion:
 
     def test_set_gguf_parameters(self):
         """Test MiniMaxM2Model.set_gguf_parameters sets MoE parameters."""
-        from auto_round.export.export_to_gguf.conversion.minimax import MiniMaxM2Model
+        from auto_round.export.formats.gguf.conversion.minimax import MiniMaxM2Model
 
         obj = _make_mock_model(
             MiniMaxM2Model,
@@ -523,7 +523,7 @@ class TestMPTConversion:
 
     def test_modify_tensors_with_scales(self):
         """Test modify_tensors handles names containing 'scales'."""
-        from auto_round.export.export_to_gguf.conversion.mpt import MPTModel
+        from auto_round.export.formats.gguf.conversion.mpt import MPTModel
 
         obj = _make_mock_model(
             MPTModel,
@@ -545,7 +545,7 @@ class TestMPTConversion:
 
     def test_modify_tensors_regular_weight(self):
         """Test regular weight tensor is mapped normally."""
-        from auto_round.export.export_to_gguf.conversion.mpt import MPTModel
+        from auto_round.export.formats.gguf.conversion.mpt import MPTModel
 
         obj = _make_mock_model(
             MPTModel,
@@ -575,7 +575,7 @@ class TestNemotronConversion:
 
     def test_nemotron_modify_tensors_norm_weight_plus_one(self):
         """Test that norm.weight tensors get +1 added."""
-        from auto_round.export.export_to_gguf.conversion.nemotron import NemotronModel
+        from auto_round.export.formats.gguf.conversion.nemotron import NemotronModel
 
         obj = _make_mock_model(
             NemotronModel,
@@ -600,7 +600,7 @@ class TestNemotronConversion:
 
     def test_nemotron_modify_tensors_non_norm_unchanged(self):
         """Test non-norm tensors are passed through unchanged."""
-        from auto_round.export.export_to_gguf.conversion.nemotron import NemotronModel
+        from auto_round.export.formats.gguf.conversion.nemotron import NemotronModel
 
         obj = _make_mock_model(
             NemotronModel,
@@ -625,7 +625,7 @@ class TestNemotronConversion:
 
     def test_nemotron_set_gguf_parameters_rope_scaling_linear(self):
         """Test rope_scaling with LINEAR type."""
-        from auto_round.export.export_to_gguf.conversion.nemotron import NemotronModel
+        from auto_round.export.formats.gguf.conversion.nemotron import NemotronModel
 
         obj = _make_mock_model(
             NemotronModel,
@@ -652,7 +652,7 @@ class TestNemotronConversion:
 
     def test_nemotron_set_gguf_parameters_rope_scaling_none(self):
         """Test when rope_scaling is None."""
-        from auto_round.export.export_to_gguf.conversion.nemotron import NemotronModel
+        from auto_round.export.formats.gguf.conversion.nemotron import NemotronModel
 
         obj = _make_mock_model(
             NemotronModel,
@@ -676,7 +676,7 @@ class TestNemotronConversion:
 
     def test_nemotron_nanov2_filter_tensors_input_conditioner(self):
         """Test NemotronNanoV2VLModel.filter_tensors skips input_conditioner."""
-        from auto_round.export.export_to_gguf.conversion.nemotron import NemotronNanoV2VLModel
+        from auto_round.export.formats.gguf.conversion.nemotron import NemotronNanoV2VLModel
 
         obj = _make_mock_model(
             NemotronNanoV2VLModel,
@@ -694,7 +694,7 @@ class TestNemotronConversion:
 
     def test_nemotron_nanov2_filter_tensors_video_skip(self):
         """Test NemotronNanoV2VLModel.filter_tensors skips video tensors."""
-        from auto_round.export.export_to_gguf.conversion.nemotron import NemotronNanoV2VLModel
+        from auto_round.export.formats.gguf.conversion.nemotron import NemotronNanoV2VLModel
 
         obj = _make_mock_model(
             NemotronNanoV2VLModel,
@@ -714,7 +714,7 @@ class TestNemotronConversion:
 
     def test_nemotron_nanov2_filter_tensors_passes_vision(self):
         """Test NemotronNanoV2VLModel.filter_tensors passes vision tensors."""
-        from auto_round.export.export_to_gguf.conversion.nemotron import NemotronNanoV2VLModel
+        from auto_round.export.formats.gguf.conversion.nemotron import NemotronNanoV2VLModel
 
         obj = _make_mock_model(
             NemotronNanoV2VLModel,
@@ -740,7 +740,7 @@ class TestOlmoConversion:
 
     def test_olmo_modify_tensors_q_proj_permute(self):
         """Test OlmoModel permutes q_proj tensor."""
-        from auto_round.export.export_to_gguf.conversion.olmo import OlmoModel
+        from auto_round.export.formats.gguf.conversion.olmo import OlmoModel
 
         obj = _make_mock_model(
             OlmoModel,
@@ -761,7 +761,7 @@ class TestOlmoConversion:
 
     def test_olmo2_set_gguf_parameters_sliding_window(self):
         """Test Olmo2Model adds sliding window pattern."""
-        from auto_round.export.export_to_gguf.conversion.olmo import Olmo2Model
+        from auto_round.export.formats.gguf.conversion.olmo import Olmo2Model
 
         obj = _make_mock_model(
             Olmo2Model,
@@ -780,7 +780,7 @@ class TestOlmoConversion:
 
     def test_olmo2_set_gguf_parameters_no_layer_types(self):
         """Test Olmo2Model with no layer_types defaults to every-4th."""
-        from auto_round.export.export_to_gguf.conversion.olmo import Olmo2Model
+        from auto_round.export.formats.gguf.conversion.olmo import Olmo2Model
 
         obj = _make_mock_model(
             Olmo2Model,
@@ -799,7 +799,7 @@ class TestOlmoConversion:
 
     def test_olmoe_prepare_tensors_unprocessed_experts_error(self):
         """Test unprocessed experts raise ValueError."""
-        from auto_round.export.export_to_gguf.conversion.olmo import OlmoeModel
+        from auto_round.export.formats.gguf.conversion.olmo import OlmoeModel
 
         obj = _make_mock_model(
             OlmoeModel,
@@ -813,7 +813,7 @@ class TestOlmoConversion:
         obj.tensor_map.mapping = {"tensor": ("KEY", "tensor_name")}
 
         with (
-            patch("auto_round.export.export_to_gguf.conversion.base.ModelBase.prepare_tensors"),
+            patch("auto_round.export.formats.gguf.conversion.base.ModelBase.prepare_tensors"),
             pytest.raises(ValueError, match="Unprocessed experts"),
         ):
             obj.prepare_tensors()
@@ -829,7 +829,7 @@ class TestOpenELMConversion:
 
     def test_find_hparam_n_layers(self):
         """Test find_hparam returns num_transformer_layers for n_layers key."""
-        from auto_round.export.export_to_gguf.conversion.openelm import OpenELMModel
+        from auto_round.export.formats.gguf.conversion.openelm import OpenELMModel
 
         obj = _make_mock_model(
             OpenELMModel,
@@ -856,7 +856,7 @@ class TestOpenELMConversion:
 
     def test_modify_tensors_ffn_split(self):
         """Test OpenELMModel splits ffn.proj_1.weight into gate and up."""
-        from auto_round.export.export_to_gguf.conversion.openelm import OpenELMModel
+        from auto_round.export.formats.gguf.conversion.openelm import OpenELMModel
 
         obj = _make_mock_model(
             OpenELMModel,
@@ -896,7 +896,7 @@ class TestOrionConversion:
 
     def test_set_gguf_parameters_max_sequence_length(self):
         """Test context length from max_sequence_length."""
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
+        from auto_round.export.formats.gguf.conversion.orion import OrionModel
 
         obj = _make_mock_model(
             OrionModel,
@@ -916,7 +916,7 @@ class TestOrionConversion:
 
     def test_set_gguf_parameters_max_position_embeddings(self):
         """Test context length from max_position_embeddings."""
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
+        from auto_round.export.formats.gguf.conversion.orion import OrionModel
 
         obj = _make_mock_model(
             OrionModel,
@@ -936,7 +936,7 @@ class TestOrionConversion:
 
     def test_set_gguf_parameters_model_max_length(self):
         """Test context length from model_max_length."""
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
+        from auto_round.export.formats.gguf.conversion.orion import OrionModel
 
         obj = _make_mock_model(
             OrionModel,
@@ -956,7 +956,7 @@ class TestOrionConversion:
 
     def test_set_gguf_parameters_raises_without_ctx_length(self):
         """Test ValueError when no context length parameter is present."""
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
+        from auto_round.export.formats.gguf.conversion.orion import OrionModel
 
         obj = _make_mock_model(
             OrionModel,
@@ -971,7 +971,7 @@ class TestOrionConversion:
 
         with pytest.raises(ValueError, match="can not find ctx length"):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
+        from auto_round.export.formats.gguf.conversion.orion import OrionModel
 
         obj = _make_mock_model(OrionModel)
         with patch.object(obj, "_set_vocab_sentencepiece") as mock:
@@ -980,7 +980,7 @@ class TestOrionConversion:
 
     def test_set_gguf_parameters_with_max_sequence_length(self):
         """Test set_gguf_parameters picks the right context length key."""
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
+        from auto_round.export.formats.gguf.conversion.orion import OrionModel
 
         obj = _make_mock_model(
             OrionModel,
@@ -997,7 +997,7 @@ class TestOrionConversion:
 
     def test_set_gguf_parameters_with_max_position_embeddings(self):
         """Test set_gguf_parameters falls back to max_position_embeddings."""
-        from auto_round.export.export_to_gguf.conversion.orion import OrionModel
+        from auto_round.export.formats.gguf.conversion.orion import OrionModel
 
         obj = _make_mock_model(
             OrionModel,
@@ -1023,7 +1023,7 @@ class TestPanguConversion:
 
     def test_modify_tensors_tied_lm_head(self):
         """Test that tied lm_head.weight is skipped."""
-        from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
+        from auto_round.export.formats.gguf.conversion.pangu import PanguEmbeddedModel
 
         obj = _make_mock_model(
             PanguEmbeddedModel,
@@ -1044,7 +1044,7 @@ class TestPanguConversion:
 
     def test_modify_tensors_untied_lm_head(self):
         """Test that untied lm_head.weight is passed through."""
-        from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
+        from auto_round.export.formats.gguf.conversion.pangu import PanguEmbeddedModel
 
         obj = _make_mock_model(
             PanguEmbeddedModel,
@@ -1062,7 +1062,7 @@ class TestPanguConversion:
         results = list(obj.modify_tensors(data, "lm_head.weight", bid=None))
 
         assert len(results) == 1
-        from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
+        from auto_round.export.formats.gguf.conversion.pangu import PanguEmbeddedModel
 
         obj = _make_mock_model(
             PanguEmbeddedModel,
@@ -1081,7 +1081,7 @@ class TestPanguConversion:
 
     def test_set_gguf_parameters_without_head_dim(self):
         """Test set_gguf_parameters derives rope_dim from hidden_size/num_heads."""
-        from auto_round.export.export_to_gguf.conversion.pangu import PanguEmbeddedModel
+        from auto_round.export.formats.gguf.conversion.pangu import PanguEmbeddedModel
 
         obj = _make_mock_model(
             PanguEmbeddedModel,
@@ -1111,7 +1111,7 @@ class TestPlamoConversion:
 
     def test_plamo_shuffle_attn_q_weight(self):
         """Test shuffle_attn_q_weight reshapes and permutes correctly."""
-        from auto_round.export.export_to_gguf.conversion.plamo import PlamoModel
+        from auto_round.export.formats.gguf.conversion.plamo import PlamoModel
 
         obj = _make_mock_model(
             PlamoModel,
@@ -1133,7 +1133,7 @@ class TestPlamoConversion:
 
     def test_plamo_shuffle_attn_output_weight(self):
         """Test shuffle_attn_output_weight reshapes and permutes correctly."""
-        from auto_round.export.export_to_gguf.conversion.plamo import PlamoModel
+        from auto_round.export.formats.gguf.conversion.plamo import PlamoModel
 
         obj = _make_mock_model(
             PlamoModel,
@@ -1155,7 +1155,7 @@ class TestPlamoConversion:
 
     def test_plamo_modify_tensors_q_weight_shuffle(self):
         """Test attn_q.weight triggers shuffle."""
-        from auto_round.export.export_to_gguf.conversion.plamo import PlamoModel
+        from auto_round.export.formats.gguf.conversion.plamo import PlamoModel
 
         obj = _make_mock_model(
             PlamoModel,
@@ -1177,7 +1177,7 @@ class TestPlamoConversion:
 
     def test_plamo2_modify_tensors_A_log_transform(self):
         """Test A_log transformation (negate exp)."""
-        from auto_round.export.export_to_gguf.conversion.plamo import Plamo2Model
+        from auto_round.export.formats.gguf.conversion.plamo import Plamo2Model
 
         obj = _make_mock_model(
             Plamo2Model,
@@ -1201,7 +1201,7 @@ class TestPlamoConversion:
 
     def test_plamo2_modify_tensors_pre_mixer_norm_plus_one(self):
         """Test pre_mixer_norm.weight gets +1 added."""
-        from auto_round.export.export_to_gguf.conversion.plamo import Plamo2Model
+        from auto_round.export.formats.gguf.conversion.plamo import Plamo2Model
 
         obj = _make_mock_model(
             Plamo2Model,
@@ -1225,7 +1225,7 @@ class TestPlamoConversion:
 
     def test_plamo2_set_gguf_parameters_mamba_layers(self):
         """Test Plamo2Model with mamba layers sets head counts correctly."""
-        from auto_round.export.export_to_gguf.conversion.plamo import Plamo2Model
+        from auto_round.export.formats.gguf.conversion.plamo import Plamo2Model
 
         obj = _make_mock_model(
             Plamo2Model,
@@ -1251,7 +1251,7 @@ class TestPlamoConversion:
 
     def test_plamo3_modify_tensors_norm_plus_one(self):
         """Test norm.weight gets +1 in Plamo3Model."""
-        from auto_round.export.export_to_gguf.conversion.plamo import Plamo3Model
+        from auto_round.export.formats.gguf.conversion.plamo import Plamo3Model
 
         obj = _make_mock_model(
             Plamo3Model,
@@ -1280,7 +1280,7 @@ class TestRWKVConversion:
 
     def test_rwkv6_set_gguf_parameters(self):
         """Test Rwkv6Model.set_gguf_parameters sets all expected parameters."""
-        from auto_round.export.export_to_gguf.conversion.rwkv import Rwkv6Model
+        from auto_round.export.formats.gguf.conversion.rwkv import Rwkv6Model
 
         obj = _make_mock_model(
             Rwkv6Model,
@@ -1304,7 +1304,7 @@ class TestRWKVConversion:
 
     def test_rwkv7_calc_lora_rank(self):
         """Test Rwkv7Model.calc_lora_rank computes correctly."""
-        from auto_round.export.export_to_gguf.conversion.rwkv import Rwkv7Model
+        from auto_round.export.formats.gguf.conversion.rwkv import Rwkv7Model
 
         obj = _make_mock_model(
             Rwkv7Model,
@@ -1324,7 +1324,7 @@ class TestRWKVConversion:
 
     def test_rwkv7_filter_tensors_unifies_names(self):
         """Test Rwkv7Model.filter_tensors unifies tensor name patterns."""
-        from auto_round.export.export_to_gguf.conversion.rwkv import Rwkv7Model
+        from auto_round.export.formats.gguf.conversion.rwkv import Rwkv7Model
 
         obj = _make_mock_model(
             Rwkv7Model,
@@ -1346,7 +1346,7 @@ class TestRWKVConversion:
 
     def test_rwkv7_filter_tensors_self_attn_renaming(self):
         """Test self_attn and attn are renamed to attention."""
-        from auto_round.export.export_to_gguf.conversion.rwkv import Rwkv7Model
+        from auto_round.export.formats.gguf.conversion.rwkv import Rwkv7Model
 
         obj = _make_mock_model(
             Rwkv7Model,
@@ -1375,7 +1375,7 @@ class TestSmallThinkerConversion:
 
     def test_smallthinker_prepare_tensors_unprocessed_experts_error(self):
         """Test unprocessed experts raise ValueError."""
-        from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
+        from auto_round.export.formats.gguf.conversion.smallthinker import SmallThinkerModel
 
         obj = _make_mock_model(
             SmallThinkerModel,
@@ -1389,14 +1389,14 @@ class TestSmallThinkerConversion:
         obj.tensor_map.mapping = {"tensor": ("KEY", "tensor_name")}
 
         with (
-            patch("auto_round.export.export_to_gguf.conversion.base.ModelBase.prepare_tensors"),
+            patch("auto_round.export.formats.gguf.conversion.base.ModelBase.prepare_tensors"),
             pytest.raises(ValueError, match="Unprocessed experts"),
         ):
             obj.prepare_tensors()
 
     def test_smallthinker_set_gguf_parameters_expert_gating(self):
         """Test expert gating function is set correctly."""
-        from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
+        from auto_round.export.formats.gguf.conversion.smallthinker import SmallThinkerModel
 
         obj = _make_mock_model(
             SmallThinkerModel,
@@ -1413,7 +1413,7 @@ class TestSmallThinkerConversion:
         obj.set_gguf_parameters()
 
         obj.gguf_writer.add_expert_gating_func.assert_called()
-        from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
+        from auto_round.export.formats.gguf.conversion.smallthinker import SmallThinkerModel
 
         obj = _make_mock_model(
             SmallThinkerModel,
@@ -1430,7 +1430,7 @@ class TestSmallThinkerConversion:
         )
         with patch.object(SmallThinkerModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         w = obj.gguf_writer
         w.add_expert_count.assert_called_once_with(32)
@@ -1440,7 +1440,7 @@ class TestSmallThinkerConversion:
 
     def test_set_gguf_parameters_with_sigmoid(self):
         """Test SmallThinkerModel.set_gguf_parameters writes SIGMOID by default."""
-        from auto_round.export.export_to_gguf.conversion.smallthinker import SmallThinkerModel
+        from auto_round.export.formats.gguf.conversion.smallthinker import SmallThinkerModel
 
         obj = _make_mock_model(
             SmallThinkerModel,
@@ -1457,7 +1457,7 @@ class TestSmallThinkerConversion:
         )
         with patch.object(SmallThinkerModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_expert_gating_func.assert_called_once_with(gguf.ExpertGatingFuncType.SIGMOID)
 
@@ -1472,7 +1472,7 @@ class TestStep3Conversion:
 
     def test_step35_filter_tensors_router_bias(self):
         """Test router_bias tensor gets .bias suffix appended."""
-        from auto_round.export.export_to_gguf.conversion.step3 import Step35Model
+        from auto_round.export.formats.gguf.conversion.step3 import Step35Model
 
         obj = _make_mock_model(
             Step35Model,
@@ -1505,7 +1505,7 @@ class TestStep3Conversion:
 
     def test_step35_modify_tensors_norm_plus_one(self):
         """Test norm.weight gets +1 added."""
-        from auto_round.export.export_to_gguf.conversion.step3 import Step35Model
+        from auto_round.export.formats.gguf.conversion.step3 import Step35Model
 
         obj = _make_mock_model(
             Step35Model,
@@ -1534,7 +1534,7 @@ class TestStep3Conversion:
 
     def test_step35_generate_extra_tensors_llama3_rope(self):
         """Test generate_extra_tensors yields rope freqs for llama3 rope scaling."""
-        from auto_round.export.export_to_gguf.conversion.step3 import Step35Model
+        from auto_round.export.formats.gguf.conversion.step3 import Step35Model
 
         obj = _make_mock_model(
             Step35Model,
@@ -1572,7 +1572,7 @@ class TestStep3Conversion:
 
     def test_step35_generate_extra_tensors_non_llama3_returns_empty(self):
         """Test generate_extra_tensors returns empty for non-llama3 rope."""
-        from auto_round.export.export_to_gguf.conversion.step3 import Step35Model
+        from auto_round.export.formats.gguf.conversion.step3 import Step35Model
 
         obj = _make_mock_model(
             Step35Model,
@@ -1612,7 +1612,7 @@ class TestT5Conversion:
 
     def test_modify_tensors_shared_token_first_occurrence(self):
         """Test first shared token embedding is used."""
-        from auto_round.export.export_to_gguf.conversion.t5 import T5Model
+        from auto_round.export.formats.gguf.conversion.t5 import T5Model
 
         obj = _make_mock_model(
             T5Model,
@@ -1638,7 +1638,7 @@ class TestT5Conversion:
 
     def test_modify_tensors_shared_token_second_occurrence_skipped(self):
         """Test second shared token embedding is skipped."""
-        from auto_round.export.export_to_gguf.conversion.t5 import T5Model
+        from auto_round.export.formats.gguf.conversion.t5 import T5Model
 
         obj = _make_mock_model(
             T5Model,
@@ -1671,7 +1671,7 @@ class TestUltravoxConversion:
 
     def test_glmasr_filter_tensors_audio_encoder(self):
         """Test audio_encoder.* tensors are renamed correctly."""
-        from auto_round.export.export_to_gguf.conversion.ultravox import GlmASRWhisperEncoderModel
+        from auto_round.export.formats.gguf.conversion.ultravox import GlmASRWhisperEncoderModel
 
         obj = _make_mock_model(
             GlmASRWhisperEncoderModel,
@@ -1697,7 +1697,7 @@ class TestUltravoxConversion:
 
     def test_glmasr_filter_tensors_skips_lm_tensors(self):
         """Test model.* and lm_head.* tensors are skipped."""
-        from auto_round.export.export_to_gguf.conversion.ultravox import GlmASRWhisperEncoderModel
+        from auto_round.export.formats.gguf.conversion.ultravox import GlmASRWhisperEncoderModel
 
         obj = _make_mock_model(
             GlmASRWhisperEncoderModel,
@@ -1723,7 +1723,7 @@ class TestUltravoxConversion:
 
     def test_whisper_encoder_tensor_force_quant_conv(self):
         """Test conv weights are forced to F16."""
-        from auto_round.export.export_to_gguf.conversion.ultravox import WhisperEncoderModel
+        from auto_round.export.formats.gguf.conversion.ultravox import WhisperEncoderModel
 
         obj = _make_mock_model(
             WhisperEncoderModel,
@@ -1740,7 +1740,7 @@ class TestUltravoxConversion:
         obj.hparams_vision = {}
 
         result = obj.tensor_force_quant("audio.conv1.weight", "audio.conv1.weight", 0, 4)
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         assert result == gguf.GGMLQuantizationType.F16
 
@@ -1755,7 +1755,7 @@ class TestRefactConversion:
 
     def test_modify_tensors_attn_q(self):
         """Test attn.q.weight is passed through."""
-        from auto_round.export.export_to_gguf.conversion.refact import RefactModel
+        from auto_round.export.formats.gguf.conversion.refact import RefactModel
 
         obj = _make_mock_model(
             RefactModel,
@@ -1775,7 +1775,7 @@ class TestRefactConversion:
 
     def test_modify_tensors_attn_kv(self):
         """Test attn.kv.weight is split into k and v."""
-        from auto_round.export.export_to_gguf.conversion.refact import RefactModel
+        from auto_round.export.formats.gguf.conversion.refact import RefactModel
 
         obj = _make_mock_model(
             RefactModel,
@@ -1800,7 +1800,7 @@ class TestRefactConversion:
 
     def test_modify_tensors_gate_up_proj(self):
         """Test gate_up_proj.weight is split into gate and up."""
-        from auto_round.export.export_to_gguf.conversion.refact import RefactModel
+        from auto_round.export.formats.gguf.conversion.refact import RefactModel
 
         obj = _make_mock_model(
             RefactModel,
@@ -1837,7 +1837,7 @@ class TestWavTokenizerConversion:
 
     def test_filter_tensors_skips_codebook_tensors(self):
         """Test codebook.* tensors are skipped."""
-        from auto_round.export.export_to_gguf.conversion.wavtokenizer import WavTokenizerDecModel
+        from auto_round.export.formats.gguf.conversion.wavtokenizer import WavTokenizerDecModel
 
         obj = _make_mock_model(
             WavTokenizerDecModel,
@@ -1859,7 +1859,7 @@ class TestWavTokenizerConversion:
 
     def test_filter_tensors_keeps_other_tensors(self):
         """Test non-codebook tensors are kept."""
-        from auto_round.export.export_to_gguf.conversion.wavtokenizer import WavTokenizerDecModel
+        from auto_round.export.formats.gguf.conversion.wavtokenizer import WavTokenizerDecModel
 
         obj = _make_mock_model(
             WavTokenizerDecModel,
@@ -1888,7 +1888,7 @@ class TestBaichuanConversion:
 
     def test_reverse_hf_permute_standard(self):
         """Test _reverse_hf_permute with n_head == n_kv_head (no GQA)."""
-        from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
+        from auto_round.export.formats.gguf.conversion.baichuan import BaichuanModel
 
         obj = _make_mock_model(BaichuanModel)
         # n_head=8, n_kv_head defaults to None -> equals n_head
@@ -1900,7 +1900,7 @@ class TestBaichuanConversion:
 
     def test_reverse_hf_permute_gqa(self):
         """Test _reverse_hf_permute with grouped-query attention (n_head != n_kv_head)."""
-        from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
+        from auto_round.export.formats.gguf.conversion.baichuan import BaichuanModel
 
         obj = _make_mock_model(BaichuanModel)
         # GQA: 8 q heads, 2 kv heads -> n_kv_head=2 enters the GQA branch
@@ -1912,7 +1912,7 @@ class TestBaichuanConversion:
 
     def test_reverse_hf_permute_part(self):
         """Test _reverse_hf_permute_part splits the W_pack weight into q/k parts."""
-        from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
+        from auto_round.export.formats.gguf.conversion.baichuan import BaichuanModel
 
         obj = _make_mock_model(BaichuanModel)
         # W_pack has 3 * n_embd rows (Q, K, V packed)
@@ -1931,7 +1931,7 @@ class TestBaichuanConversion:
 
     def test_reverse_hf_part(self):
         """Test _reverse_hf_part splits the W_pack weight into v part (no permute)."""
-        from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
+        from auto_round.export.formats.gguf.conversion.baichuan import BaichuanModel
 
         obj = _make_mock_model(BaichuanModel)
         n_embd = 64
@@ -1944,7 +1944,7 @@ class TestBaichuanConversion:
 
     def test_set_vocab_delegates_to_sentencepiece(self):
         """Test set_vocab calls the sentencepiece vocab setter."""
-        from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
+        from auto_round.export.formats.gguf.conversion.baichuan import BaichuanModel
 
         obj = _make_mock_model(BaichuanModel)
         with patch.object(obj, "_set_vocab_sentencepiece") as mock_spm:
@@ -1953,7 +1953,7 @@ class TestBaichuanConversion:
 
     def test_set_gguf_parameters(self):
         """Test set_gguf_parameters writes gguf metadata + baichuan-specific fields."""
-        from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
+        from auto_round.export.formats.gguf.conversion.baichuan import BaichuanModel
 
         obj = _make_mock_model(
             BaichuanModel,
@@ -1973,7 +1973,7 @@ class TestBaichuanConversion:
 
     def test_modify_tensors_w_pack_unpack(self):
         """Test modify_tensors unpacks W_pack into Q, K, V at the right block id."""
-        from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
+        from auto_round.export.formats.gguf.conversion.baichuan import BaichuanModel
 
         obj = _make_mock_model(
             BaichuanModel,
@@ -1996,7 +1996,7 @@ class TestBaichuanConversion:
 
     def test_modify_tensors_non_w_pack_delegates(self):
         """Test modify_tensors for non-W_pack tensors delegates to parent mapping."""
-        from auto_round.export.export_to_gguf.conversion.baichuan import BaichuanModel
+        from auto_round.export.formats.gguf.conversion.baichuan import BaichuanModel
 
         obj = _make_mock_model(
             BaichuanModel,
@@ -2036,7 +2036,7 @@ class TestMaincoderConversion:
 
     def test_set_gguf_parameters_with_head_dim(self):
         """Test set_gguf_parameters writes rope dimension when head_dim is set."""
-        from auto_round.export.export_to_gguf.conversion.maincoder import MaincoderModel
+        from auto_round.export.formats.gguf.conversion.maincoder import MaincoderModel
 
         obj = _make_mock_model(
             MaincoderModel,
@@ -2063,7 +2063,7 @@ class TestCodeShellConversion:
 
     def test_set_gguf_parameters(self):
         """Test set_gguf_parameters writes all CodeShell gguf fields."""
-        from auto_round.export.export_to_gguf.conversion.codeshell import CodeShellModel
+        from auto_round.export.formats.gguf.conversion.codeshell import CodeShellModel
 
         obj = _make_mock_model(
             CodeShellModel,
@@ -2084,7 +2084,7 @@ class TestCodeShellConversion:
         w.add_head_count_kv.assert_called_once_with(1)
         w.add_layer_norm_eps.assert_called_once_with(1e-5)
         w.add_rope_freq_base.assert_called_once_with(10000.0)
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         w.add_rope_scaling_type.assert_called_once_with(gguf.RopeScalingType.LINEAR)
         w.add_rope_scaling_factor.assert_called_once_with(1.0)
@@ -2100,7 +2100,7 @@ class TestStarCoderConversion:
 
     def test_starcoder_set_gguf_parameters(self):
         """Test StarCoderModel.set_gguf_parameters writes gguf metadata for starcoder."""
-        from auto_round.export.export_to_gguf.conversion.starcoder import StarCoderModel
+        from auto_round.export.formats.gguf.conversion.starcoder import StarCoderModel
 
         obj = _make_mock_model(
             StarCoderModel,
@@ -2132,18 +2132,18 @@ class TestLightOnOCRConversion:
 
     def test_set_gguf_parameters_writes_projector_type(self):
         """Test set_gguf_parameters writes LightOnOCR projector type."""
-        from auto_round.export.export_to_gguf.conversion.lighton_ocr import LightOnOCRVisionModel
+        from auto_round.export.formats.gguf.conversion.lighton_ocr import LightOnOCRVisionModel
 
         obj = _make_mock_model(LightOnOCRVisionModel)
         with patch.object(LightOnOCRVisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.LIGHTONOCR)
 
     def test_filter_tensors_replaces_prefixes(self):
         """Test filter_tensors renames vision_encoder/vision_projection prefixes."""
-        from auto_round.export.export_to_gguf.conversion.lighton_ocr import LightOnOCRVisionModel
+        from auto_round.export.formats.gguf.conversion.lighton_ocr import LightOnOCRVisionModel
 
         # Mock parent filter_tensors to just echo the renamed name back
         def parent_filter(item):
@@ -2170,7 +2170,7 @@ class TestDots1Conversion:
 
     def test_set_gguf_parameters_writes_moe_metadata(self):
         """Test Dots1Model.set_gguf_parameters writes MoE-specific fields."""
-        from auto_round.export.export_to_gguf.conversion.dots1 import Dots1Model
+        from auto_round.export.formats.gguf.conversion.dots1 import Dots1Model
 
         obj = _make_mock_model(
             Dots1Model,
@@ -2204,7 +2204,7 @@ class TestSarashina2Conversion:
 
     def test_text_filter_strips_llm_prefix(self):
         """Test Sarashina2VLTextModel.filter_tensors strips leading 'llm.' prefix."""
-        from auto_round.export.export_to_gguf.conversion.sarashina2 import Sarashina2VLTextModel
+        from auto_round.export.formats.gguf.conversion.sarashina2 import Sarashina2VLTextModel
 
         def parent_filter(item):
             name, gen = item
@@ -2216,7 +2216,7 @@ class TestSarashina2Conversion:
 
     def test_text_filter_drops_norm(self):
         """Test Sarashina2VLTextModel.filter_tensors returns None for 'norm.' prefix."""
-        from auto_round.export.export_to_gguf.conversion.sarashina2 import Sarashina2VLTextModel
+        from auto_round.export.formats.gguf.conversion.sarashina2 import Sarashina2VLTextModel
 
         result = Sarashina2VLTextModel.filter_tensors(("norm.weight", lambda: None))
         assert result is None
@@ -2232,7 +2232,7 @@ class TestCogVLMConversion:
 
     def test_vision_filter_only_keeps_vision_prefix(self):
         """Test CogVLMVisionModel.filter_tensors only keeps tensors starting with 'model.vision.'."""
-        from auto_round.export.export_to_gguf.conversion.cogvlm import CogVLMVisionModel
+        from auto_round.export.formats.gguf.conversion.cogvlm import CogVLMVisionModel
 
         # Non-vision tensor should be dropped
         assert CogVLMVisionModel.filter_tensors(("model.embed_tokens.weight", lambda: None)) is None
@@ -2247,12 +2247,12 @@ class TestCogVLMConversion:
 
     def test_vision_set_gguf_parameters(self):
         """Test CogVLMVisionModel.set_gguf_parameters writes projector type and layernorm eps."""
-        from auto_round.export.export_to_gguf.conversion.cogvlm import CogVLMVisionModel
+        from auto_round.export.formats.gguf.conversion.cogvlm import CogVLMVisionModel
 
         obj = _make_mock_model(CogVLMVisionModel, {"layer_norm_eps": 1e-5})
         with patch.object(CogVLMVisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.COGVLM)
         obj.gguf_writer.add_vision_attention_layernorm_eps.assert_called_once_with(1e-5)
@@ -2273,7 +2273,7 @@ class TestLlama4Conversion:
 
     def test_set_gguf_parameters_asserts_gelu(self):
         """Test set_gguf_parameters asserts hidden_act is 'gelu' and writes use_gelu."""
-        from auto_round.export.export_to_gguf.conversion.llama4 import Llama4VisionModel
+        from auto_round.export.formats.gguf.conversion.llama4 import Llama4VisionModel
 
         obj = _make_mock_model(
             Llama4VisionModel,
@@ -2285,7 +2285,7 @@ class TestLlama4Conversion:
         )
         with patch.object(Llama4VisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.LLAMA4)
         obj.gguf_writer.add_vision_attention_layernorm_eps.assert_called_once_with(1e-5)
@@ -2294,7 +2294,7 @@ class TestLlama4Conversion:
 
     def test_filter_tensors_drops_non_vision(self):
         """Test filter_tensors returns None for non-vision tensors."""
-        from auto_round.export.export_to_gguf.conversion.llama4 import Llama4VisionModel
+        from auto_round.export.formats.gguf.conversion.llama4 import Llama4VisionModel
 
         # Without multi_modal_projector or vision_model, drop the tensor
         assert Llama4VisionModel.filter_tensors(("model.embed_tokens.weight", lambda: None)) is None
@@ -2302,7 +2302,7 @@ class TestLlama4Conversion:
 
     def test_filter_tensors_appends_weight_suffix(self):
         """Test filter_tensors adds '.weight' to positional_embedding_vlm tensors missing suffix."""
-        from auto_round.export.export_to_gguf.conversion.llama4 import Llama4VisionModel
+        from auto_round.export.formats.gguf.conversion.llama4 import Llama4VisionModel
 
         def parent_filter(item):
             return item
@@ -2313,8 +2313,8 @@ class TestLlama4Conversion:
 
     def test_modify_tensors_mmproj_linear_1(self):
         """Test Llama4VisionModel.modify_tensors maps multi_modal_projector.linear_1 to V_MMPROJ_FC."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.llama4 import Llama4VisionModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.llama4 import Llama4VisionModel
 
         obj = _make_mock_model(Llama4VisionModel)
         data = torch.randn(8, 8)
@@ -2324,7 +2324,7 @@ class TestLlama4Conversion:
 
     def test_modify_tensors_passthrough(self):
         """Test Llama4VisionModel.modify_tensors passes through non-projector tensors."""
-        from auto_round.export.export_to_gguf.conversion.llama4 import Llama4VisionModel
+        from auto_round.export.formats.gguf.conversion.llama4 import Llama4VisionModel
 
         obj = _make_mock_model(Llama4VisionModel)
         with patch.object(Llama4VisionModel.__mro__[1], "modify_tensors", lambda self, d, n, b: iter([(n, d)])):
@@ -2343,7 +2343,7 @@ class TestPixtralConversion:
 
     def test_set_gguf_parameters(self):
         """Test PixtralModel.set_gguf_parameters writes projector + vision params."""
-        from auto_round.export.export_to_gguf.conversion.pixtral import PixtralModel
+        from auto_round.export.formats.gguf.conversion.pixtral import PixtralModel
 
         obj = _make_mock_model(
             PixtralModel,
@@ -2366,7 +2366,7 @@ class TestPixtralConversion:
         }
         with patch.object(PixtralModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.PIXTRAL)
         obj.gguf_writer.add_vision_use_silu.assert_called_once_with(True)
@@ -2374,7 +2374,7 @@ class TestPixtralConversion:
 
     def test_map_tensor_name_mlp_adapter(self):
         """Test map_tensor_name maps the vision-language adapter weights to mm.*."""
-        from auto_round.export.export_to_gguf.conversion.pixtral import PixtralModel
+        from auto_round.export.formats.gguf.conversion.pixtral import PixtralModel
 
         obj = _make_mock_model(PixtralModel)
         assert obj.map_tensor_name("vision_language_adapter.w_in.weight") == "mm.1.weight"
@@ -2398,7 +2398,7 @@ class TestBitnetConversion:
 
     def test_weight_quant_clamps_to_unit_range(self):
         """Test weight_quant output stays within [-1, +1] (BitNet ternary)."""
-        from auto_round.export.export_to_gguf.conversion.bitnet import BitnetModel
+        from auto_round.export.formats.gguf.conversion.bitnet import BitnetModel
 
         obj = _make_mock_model(BitnetModel)
         # Continuous weights with extreme values
@@ -2414,7 +2414,7 @@ class TestBitnetConversion:
 
     def test_set_gguf_parameters_writes_rope_scaling(self):
         """Test BitnetModel.set_gguf_parameters writes linear rope scaling."""
-        from auto_round.export.export_to_gguf.conversion.bitnet import BitnetModel
+        from auto_round.export.formats.gguf.conversion.bitnet import BitnetModel
 
         obj = _make_mock_model(
             BitnetModel,
@@ -2427,7 +2427,7 @@ class TestBitnetConversion:
         )
         with patch.object(BitnetModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_rope_scaling_type.assert_called_once_with(gguf.RopeScalingType.LINEAR)
         obj.gguf_writer.add_rope_scaling_factor.assert_called_once_with(1.0)
@@ -2443,7 +2443,7 @@ class TestMptConversion:
 
     def test_set_gguf_parameters_with_kv_heads(self):
         """Test MPTModel.set_gguf_parameters writes kv heads when present."""
-        from auto_round.export.export_to_gguf.conversion.mpt import MPTModel
+        from auto_round.export.formats.gguf.conversion.mpt import MPTModel
 
         obj = _make_mock_model(
             MPTModel,
@@ -2466,7 +2466,7 @@ class TestMptConversion:
 
     def test_set_gguf_parameters_with_alibi(self):
         """Test MPTModel.set_gguf_parameters writes alibi_bias_max when alibi=True."""
-        from auto_round.export.export_to_gguf.conversion.mpt import MPTModel
+        from auto_round.export.formats.gguf.conversion.mpt import MPTModel
 
         obj = _make_mock_model(
             MPTModel,
@@ -2491,7 +2491,7 @@ class TestMinimaxConversion:
 
     def test_set_gguf_parameters(self):
         """Test MiniMaxM2Model.set_gguf_parameters writes expert + rope dims."""
-        from auto_round.export.export_to_gguf.conversion.minimax import MiniMaxM2Model
+        from auto_round.export.formats.gguf.conversion.minimax import MiniMaxM2Model
 
         obj = _make_mock_model(
             MiniMaxM2Model,
@@ -2519,7 +2519,7 @@ class TestFalconConversion:
 
     def test_set_gguf_parameters(self):
         """Test FalconModel.set_gguf_parameters uses jploski layout and writes metadata."""
-        from auto_round.export.export_to_gguf.conversion.falcon import FalconModel
+        from auto_round.export.formats.gguf.conversion.falcon import FalconModel
 
         obj = _make_mock_model(
             FalconModel,
@@ -2549,7 +2549,7 @@ class TestGptNeoxConversion:
 
     def test_set_gguf_parameters(self):
         """Test GPTNeoXModel.set_gguf_parameters computes rope dim from rotary_pct."""
-        from auto_round.export.export_to_gguf.conversion.gptneox import GPTNeoXModel
+        from auto_round.export.formats.gguf.conversion.gptneox import GPTNeoXModel
 
         obj = _make_mock_model(
             GPTNeoXModel,
@@ -2580,7 +2580,7 @@ class TestBloomConversion:
 
     def test_set_gguf_parameters(self):
         """Test BloomModel.set_gguf_parameters writes metadata with kv == q heads."""
-        from auto_round.export.export_to_gguf.conversion.bloom import BloomModel
+        from auto_round.export.formats.gguf.conversion.bloom import BloomModel
 
         obj = _make_mock_model(
             BloomModel,
@@ -2610,7 +2610,7 @@ class TestXverseConversion:
 
     def test_set_gguf_parameters(self):
         """Test XverseModel.set_gguf_parameters writes Meta layout and rope dim."""
-        from auto_round.export.export_to_gguf.conversion.xverse import XverseModel
+        from auto_round.export.formats.gguf.conversion.xverse import XverseModel
 
         obj = _make_mock_model(
             XverseModel,
@@ -2628,7 +2628,7 @@ class TestXverseConversion:
 
     def test_reverse_hf_permute(self):
         """Test _reverse_hf_permute round-trips shape."""
-        from auto_round.export.export_to_gguf.conversion.xverse import XverseModel
+        from auto_round.export.formats.gguf.conversion.xverse import XverseModel
 
         obj = _make_mock_model(XverseModel)
         weights = torch.randn(4096, 1024)
@@ -2637,7 +2637,7 @@ class TestXverseConversion:
 
     def test_reverse_hf_permute_gqa(self):
         """Test _reverse_hf_permute with GQA (n_head != n_kv_head)."""
-        from auto_round.export.export_to_gguf.conversion.xverse import XverseModel
+        from auto_round.export.formats.gguf.conversion.xverse import XverseModel
 
         obj = _make_mock_model(XverseModel)
         weights = torch.randn(4096, 1024)
@@ -2655,7 +2655,7 @@ class TestPlmConversion:
 
     def test_set_vocab_uses_gpt2(self):
         """Test PLMModel.set_vocab calls _set_vocab_gpt2."""
-        from auto_round.export.export_to_gguf.conversion.plm import PLMModel
+        from auto_round.export.formats.gguf.conversion.plm import PLMModel
 
         obj = _make_mock_model(PLMModel)
         with patch.object(obj, "_set_vocab_gpt2") as mock:
@@ -2664,7 +2664,7 @@ class TestPlmConversion:
 
     def test_set_gguf_parameters_writes_kv_lora_params(self):
         """Test PLMModel.set_gguf_parameters writes kv_lora_rank and head dims."""
-        from auto_round.export.export_to_gguf.conversion.plm import PLMModel
+        from auto_round.export.formats.gguf.conversion.plm import PLMModel
 
         obj = _make_mock_model(
             PLMModel,
@@ -2701,7 +2701,7 @@ class TestChameleonConversion:
 
     def test_set_gguf_parameters(self):
         """Test ChameleonModel.set_gguf_parameters writes swin_norm flag."""
-        from auto_round.export.export_to_gguf.conversion.chameleon import ChameleonModel
+        from auto_round.export.formats.gguf.conversion.chameleon import ChameleonModel
 
         obj = _make_mock_model(
             ChameleonModel,
@@ -2719,7 +2719,7 @@ class TestChameleonConversion:
 
     def test_set_vocab_delegates_to_gpt2(self):
         """Test set_vocab calls _set_vocab_gpt2."""
-        from auto_round.export.export_to_gguf.conversion.chameleon import ChameleonModel
+        from auto_round.export.formats.gguf.conversion.chameleon import ChameleonModel
 
         obj = _make_mock_model(ChameleonModel)
         with patch.object(obj, "_set_vocab_gpt2") as mock:
@@ -2728,7 +2728,7 @@ class TestChameleonConversion:
 
     def test_filter_tensors_drops_vqmodel(self):
         """Test filter_tensors returns None for model.vqmodel tensors."""
-        from auto_round.export.export_to_gguf.conversion.chameleon import ChameleonModel
+        from auto_round.export.formats.gguf.conversion.chameleon import ChameleonModel
 
         result = ChameleonModel.filter_tensors(("model.vqmodel.encoder.weight", lambda: None))
         assert result is None
@@ -2744,7 +2744,7 @@ class TestDreamConversion:
 
     def test_set_gguf_parameters_disables_causal_attention(self):
         """Test DreamModel.set_gguf_parameters sets non-causal attention."""
-        from auto_round.export.export_to_gguf.conversion.dream import DreamModel
+        from auto_round.export.formats.gguf.conversion.dream import DreamModel
 
         obj = _make_mock_model(
             DreamModel,
@@ -2761,7 +2761,7 @@ class TestDreamConversion:
 
     def test_set_gguf_parameters_with_mask_token_id(self):
         """Test DreamModel.set_gguf_parameters writes mask_token_id when present."""
-        from auto_round.export.export_to_gguf.conversion.dream import DreamModel
+        from auto_round.export.formats.gguf.conversion.dream import DreamModel
 
         obj = _make_mock_model(
             DreamModel,
@@ -2788,7 +2788,7 @@ class TestDbrxConversion:
 
     def test_set_gguf_parameters(self):
         """Test DbrxModel.set_gguf_parameters writes MoE and rope params."""
-        from auto_round.export.export_to_gguf.conversion.dbrx import DbrxModel
+        from auto_round.export.formats.gguf.conversion.dbrx import DbrxModel
 
         obj = _make_mock_model(
             DbrxModel,
@@ -2823,7 +2823,7 @@ class TestDbrxConversion:
 
     def test_tensor_force_quant_returns_n_dims_gt_1(self):
         """Test tensor_force_quant returns True when n_dims > 1, False otherwise."""
-        from auto_round.export.export_to_gguf.conversion.dbrx import DbrxModel
+        from auto_round.export.formats.gguf.conversion.dbrx import DbrxModel
 
         obj = _make_mock_model(DbrxModel)
         assert obj.tensor_force_quant("name", "new_name", 0, n_dims=2) is True
@@ -2840,7 +2840,7 @@ class TestGpt2Conversion:
 
     def test_gpt2_set_gguf_parameters(self):
         """Test GPT2Model.set_gguf_parameters writes GPT-2 metadata."""
-        from auto_round.export.export_to_gguf.conversion.gpt2 import GPT2Model
+        from auto_round.export.formats.gguf.conversion.gpt2 import GPT2Model
 
         obj = _make_mock_model(
             GPT2Model,
@@ -2870,7 +2870,7 @@ class TestAfmoeConversion:
 
     def test_filter_tensors_adds_bias_suffix(self):
         """Test filter_tensors appends '.bias' to expert_bias tensors."""
-        from auto_round.export.export_to_gguf.conversion.afmoe import AfmoeModel
+        from auto_round.export.formats.gguf.conversion.afmoe import AfmoeModel
 
         def parent_filter(item):
             return item
@@ -2895,7 +2895,7 @@ class TestOpenElmConversion:
 
     def test_make_divisible_rounds_correctly(self):
         """Test _make_divisible rounds up to nearest multiple of divisor."""
-        from auto_round.export.export_to_gguf.conversion.openelm import OpenELMModel
+        from auto_round.export.formats.gguf.conversion.openelm import OpenELMModel
 
         # Standard rounding: int(v + divisor/2) // divisor * divisor
         assert OpenELMModel._make_divisible(100, 64) == 128  # (100+32)//64*64 = 132//64*64 = 2*64
@@ -2915,7 +2915,7 @@ class TestCommandRConversion:
 
     def test_command_r2_set_gguf_parameters(self):
         """Test CommandR2Model.set_gguf_parameters writes logit_scale + rope none."""
-        from auto_round.export.export_to_gguf.conversion.command_r import CommandR2Model
+        from auto_round.export.formats.gguf.conversion.command_r import CommandR2Model
 
         obj = _make_mock_model(
             CommandR2Model,
@@ -2930,14 +2930,14 @@ class TestCommandRConversion:
         )
         with patch.object(CommandR2Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_logit_scale.assert_called_once_with(0.0625)
         obj.gguf_writer.add_rope_scaling_type.assert_called_once_with(gguf.RopeScalingType.NONE)
 
     def test_cohere2_set_gguf_parameters(self):
         """Test Cohere2Model.set_gguf_parameters writes sliding_window and rope dims."""
-        from auto_round.export.export_to_gguf.conversion.command_r import Cohere2Model
+        from auto_round.export.formats.gguf.conversion.command_r import Cohere2Model
 
         obj = _make_mock_model(
             Cohere2Model,
@@ -2954,7 +2954,7 @@ class TestCommandRConversion:
         )
         with patch.object(Cohere2Model.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         w = obj.gguf_writer
         w.add_logit_scale.assert_called_once_with(0.0625)
@@ -2974,7 +2974,7 @@ class TestStableLmConversion:
 
     def test_set_gguf_parameters(self):
         """Test StableLMModel.set_gguf_parameters computes rope dim from partial_rotary_factor."""
-        from auto_round.export.export_to_gguf.conversion.stablelm import StableLMModel
+        from auto_round.export.formats.gguf.conversion.stablelm import StableLMModel
 
         obj = _make_mock_model(
             StableLMModel,
@@ -3007,7 +3007,7 @@ class TestMistral3Conversion:
 
     def test_ministral3_set_gguf_parameters_with_yarn(self):
         """Test Ministral3Model.set_gguf_parameters writes yarn rope params."""
-        from auto_round.export.export_to_gguf.conversion.mistral3 import Mistral3Model
+        from auto_round.export.formats.gguf.conversion.mistral3 import Mistral3Model
 
         # The inner class
         cls = Mistral3Model.Ministral3Model
@@ -3033,7 +3033,7 @@ class TestMistral3Conversion:
 
     def test_ministral3_asserts_yarn_rope_type(self):
         """Test Ministral3Model.set_gguf_parameters asserts rope_type must be 'yarn'."""
-        from auto_round.export.export_to_gguf.conversion.mistral3 import Mistral3Model
+        from auto_round.export.formats.gguf.conversion.mistral3 import Mistral3Model
 
         cls = Mistral3Model.Ministral3Model
         obj = _make_mock_model(
@@ -3064,7 +3064,7 @@ class TestInternVlConversion:
 
     def test_set_gguf_parameters_with_gelu(self):
         """Test InternVisionModel.set_gguf_parameters writes vision_use_gelu for gelu activation."""
-        from auto_round.export.export_to_gguf.conversion.internvl import InternVisionModel
+        from auto_round.export.formats.gguf.conversion.internvl import InternVisionModel
 
         obj = _make_mock_model(
             InternVisionModel,
@@ -3084,7 +3084,7 @@ class TestInternVlConversion:
         obj.global_config = {"downsample_ratio": 0.5}
         with patch.object(InternVisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.INTERNVL)
         obj.gguf_writer.add_vision_use_gelu.assert_called_once_with(True)
@@ -3101,7 +3101,7 @@ class TestSmolVlmConversion:
 
     def test_set_gguf_parameters_with_defaults(self):
         """Test SmolVLMModel.set_gguf_parameters writes IDEFICS3 projector and uses defaults."""
-        from auto_round.export.export_to_gguf.conversion.smolvlm import SmolVLMModel
+        from auto_round.export.formats.gguf.conversion.smolvlm import SmolVLMModel
 
         obj = _make_mock_model(
             SmolVLMModel,
@@ -3126,7 +3126,7 @@ class TestSmolVlmConversion:
         obj.global_config = {"scale_factor": 2}
         with patch.object(SmolVLMModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.IDEFICS3)
         obj.gguf_writer.add_vision_use_gelu.assert_called_once_with(True)
@@ -3144,7 +3144,7 @@ class TestDotsOcrConversion:
 
     def test_set_gguf_parameters(self):
         """Test DotsOCRVisionModel.set_gguf_parameters writes DOTSOCR projector + preproc pixels."""
-        from auto_round.export.export_to_gguf.conversion.dotsocr import DotsOCRVisionModel
+        from auto_round.export.formats.gguf.conversion.dotsocr import DotsOCRVisionModel
 
         obj = _make_mock_model(DotsOCRVisionModel)
         obj.hparams_vision = {
@@ -3160,7 +3160,7 @@ class TestDotsOcrConversion:
         obj.preprocessor_config = {"min_pixels": 256, "max_pixels": 1280 * 28 * 28}
         with patch.object(DotsOCRVisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.DOTSOCR)
         obj.gguf_writer.add_vision_min_pixels.assert_called_once_with(256)
@@ -3178,7 +3178,7 @@ class TestYoutuVlConversion:
 
     def test_set_gguf_parameters_with_gelu(self):
         """Test YoutuVLVisionModel.set_gguf_parameters writes YOUTUVL projector and use_gelu."""
-        from auto_round.export.export_to_gguf.conversion.youtuvl import YoutuVLVisionModel
+        from auto_round.export.formats.gguf.conversion.youtuvl import YoutuVLVisionModel
 
         obj = _make_mock_model(
             YoutuVLVisionModel,
@@ -3200,7 +3200,7 @@ class TestYoutuVlConversion:
         }
         with patch.object(YoutuVLVisionModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         obj.gguf_writer.add_clip_projector_type.assert_called_once_with(gguf.VisionProjectorType.YOUTUVL)
         obj.gguf_writer.add_vision_use_gelu.assert_called_once_with(True)
@@ -3219,7 +3219,7 @@ class TestChatGlmConversion:
 
     def test_set_gguf_parameters_with_attention_dim(self):
         """Test ChatGLMModel.set_gguf_parameters uses attention_dim for rope when present."""
-        from auto_round.export.export_to_gguf.conversion.chatglm import ChatGLMModel
+        from auto_round.export.formats.gguf.conversion.chatglm import ChatGLMModel
 
         obj = _make_mock_model(
             ChatGLMModel,
@@ -3250,7 +3250,7 @@ class TestChatGlmConversion:
 
     def test_set_gguf_parameters_rope_ratio(self):
         """Test ChatGLMModel.set_gguf_parameters multiplies rope_freq by rope_ratio."""
-        from auto_round.export.export_to_gguf.conversion.chatglm import ChatGLMModel
+        from auto_round.export.formats.gguf.conversion.chatglm import ChatGLMModel
 
         obj = _make_mock_model(
             ChatGLMModel,
@@ -3268,7 +3268,7 @@ class TestChatGlmConversion:
 
     def test_bpe_static_method(self):
         """Test ChatGLMModel.bpe static method merges bpe pairs greedily."""
-        from auto_round.export.export_to_gguf.conversion.chatglm import ChatGLMModel
+        from auto_round.export.formats.gguf.conversion.chatglm import ChatGLMModel
 
         # Simple rank: ab = 10, bc = 20, abc = 30
         mergeable_ranks = {b"ab": 10, b"bc": 20, b"abc": 30}
@@ -3278,7 +3278,7 @@ class TestChatGlmConversion:
 
     def test_bpe_with_smaller_rank(self):
         """Test ChatGLMModel.bpe splits token when a sub-merge has a smaller rank."""
-        from auto_round.export.export_to_gguf.conversion.chatglm import ChatGLMModel
+        from auto_round.export.formats.gguf.conversion.chatglm import ChatGLMModel
 
         # ab = 5 (smaller rank means more likely merge), cd = 10
         mergeable_ranks = {b"ab": 5, b"cd": 10}
@@ -3299,7 +3299,7 @@ class TestJaisConversion:
 
     def test_jais2_set_gguf_parameters(self):
         """Test Jais2Model.set_gguf_parameters writes rope_dimension_count from head_dim."""
-        from auto_round.export.export_to_gguf.conversion.jais import Jais2Model
+        from auto_round.export.formats.gguf.conversion.jais import Jais2Model
 
         obj = _make_mock_model(
             Jais2Model,
@@ -3317,7 +3317,7 @@ class TestJaisConversion:
 
     def test_jais2_set_gguf_parameters_without_head_dim(self):
         """Test Jais2Model.set_gguf_parameters derives head_dim from hidden_size/num_heads."""
-        from auto_round.export.export_to_gguf.conversion.jais import Jais2Model
+        from auto_round.export.formats.gguf.conversion.jais import Jais2Model
 
         obj = _make_mock_model(
             Jais2Model,
@@ -3335,7 +3335,7 @@ class TestJaisConversion:
 
     def test_jais_set_vocab_uses_gpt2(self):
         """Test JaisModel.set_vocab calls _set_vocab_gpt2."""
-        from auto_round.export.export_to_gguf.conversion.jais import JaisModel
+        from auto_round.export.formats.gguf.conversion.jais import JaisModel
 
         obj = _make_mock_model(JaisModel)
         with patch.object(obj, "_set_vocab_gpt2") as mock:
@@ -3344,14 +3344,14 @@ class TestJaisConversion:
 
     def test_filter_tensors_drops_attn_bias(self):
         """Test JaisModel.filter_tensors returns None for .attn.bias tensors."""
-        from auto_round.export.export_to_gguf.conversion.jais import JaisModel
+        from auto_round.export.formats.gguf.conversion.jais import JaisModel
 
         result = JaisModel.filter_tensors(("transformer.h.0.attn.bias", lambda: None))
         assert result is None
 
     def test_jais_modify_tensors_alibi_slopes(self):
         """Test JaisModel.modify_tensors computes max_alibi_bias from slopes."""
-        from auto_round.export.export_to_gguf.conversion.jais import JaisModel
+        from auto_round.export.formats.gguf.conversion.jais import JaisModel
 
         obj = _make_mock_model(
             JaisModel,
@@ -3376,7 +3376,7 @@ class TestJaisConversion:
 
     def test_jais_modify_tensors_transpose(self):
         """Test JaisModel.modify_tensors transposes .c_attn/c_proj/c_fc/c_fc2 weights."""
-        from auto_round.export.export_to_gguf.conversion.jais import JaisModel
+        from auto_round.export.formats.gguf.conversion.jais import JaisModel
 
         obj = _make_mock_model(
             JaisModel,
@@ -3403,7 +3403,7 @@ class TestGrokConversion:
 
     def test_set_gguf_parameters_with_yarn(self):
         """Test GrokModel.set_gguf_parameters writes yarn rope params."""
-        from auto_round.export.export_to_gguf.conversion.grok import GrokModel
+        from auto_round.export.formats.gguf.conversion.grok import GrokModel
 
         obj = _make_mock_model(
             GrokModel,
@@ -3429,7 +3429,7 @@ class TestGrokConversion:
         )
         with patch.object(GrokModel.__mro__[1], "set_gguf_parameters", lambda self: None):
             obj.set_gguf_parameters()
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         w = obj.gguf_writer
         w.add_attn_logit_softcapping.assert_called_once_with(30.0)
@@ -3452,7 +3452,7 @@ class TestJambaConversion:
 
     def test_set_gguf_parameters(self):
         """Test JambaModel.set_gguf_parameters writes SSM and MoE fields."""
-        from auto_round.export.export_to_gguf.conversion.jamba import JambaModel
+        from auto_round.export.formats.gguf.conversion.jamba import JambaModel
 
         obj = _make_mock_model(
             JambaModel,
@@ -3488,7 +3488,7 @@ class TestJambaConversion:
 
     def test_modify_tensors_a_log_negation(self):
         """Test JambaModel.modify_tensors negates exp of A_log."""
-        from auto_round.export.export_to_gguf.conversion.jamba import JambaModel
+        from auto_round.export.formats.gguf.conversion.jamba import JambaModel
 
         obj = _make_mock_model(
             JambaModel,
@@ -3506,7 +3506,7 @@ class TestJambaConversion:
 
     def test_modify_tensors_ssm_conv1d_squeeze(self):
         """Test JambaModel.modify_tensors squeezes SSM_CONV1D tensors."""
-        from auto_round.export.export_to_gguf.conversion.jamba import JambaModel
+        from auto_round.export.formats.gguf.conversion.jamba import JambaModel
 
         obj = _make_mock_model(
             JambaModel,
@@ -3524,7 +3524,7 @@ class TestJambaConversion:
 
     def test_modify_tensors_experts_merge_mini_jamba(self):
         """Test JambaModel.modify_tensors merges feed_forward.experts tensors (Mini-Jamba)."""
-        from auto_round.export.export_to_gguf.conversion.jamba import JambaModel
+        from auto_round.export.formats.gguf.conversion.jamba import JambaModel
 
         obj = _make_mock_model(
             JambaModel,
@@ -3561,7 +3561,7 @@ class TestJanusProConversion:
 
     def test_text_filter_drops_vision_model(self):
         """Test JanusProModel.filter_tensors drops vision, aligner, generation tensors."""
-        from auto_round.export.export_to_gguf.conversion.januspro import JanusProModel
+        from auto_round.export.formats.gguf.conversion.januspro import JanusProModel
 
         for skip in (
             "model.vision_model.encoder",
@@ -3584,7 +3584,7 @@ class TestGroveMoeConversion:
 
     def test_set_gguf_parameters_writes_moe_defaults(self):
         """Test GroveMoeModel.set_gguf_parameters writes MoE + hardcoded per-group values."""
-        from auto_round.export.export_to_gguf.conversion.grovemoe import GroveMoeModel
+        from auto_round.export.formats.gguf.conversion.grovemoe import GroveMoeModel
 
         obj = _make_mock_model(
             GroveMoeModel,
@@ -3607,7 +3607,7 @@ class TestGroveMoeConversion:
 
     def test_modify_tensors_drops_expert_bias(self):
         """Test GroveMoeModel.modify_tensors drops .expert_bias tensors."""
-        from auto_round.export.export_to_gguf.conversion.grovemoe import GroveMoeModel
+        from auto_round.export.formats.gguf.conversion.grovemoe import GroveMoeModel
 
         obj = _make_mock_model(GroveMoeModel)
         result = list(obj.modify_tensors(torch.zeros(8), "model.layers.0.mlp.experts.0.expert_bias", bid=0))
@@ -3615,7 +3615,7 @@ class TestGroveMoeConversion:
 
     def test_modify_tensors_chunk_experts_merge(self):
         """Test GroveMoeModel.modify_tensors merges chunk_experts tensors."""
-        from auto_round.export.export_to_gguf.conversion.grovemoe import GroveMoeModel
+        from auto_round.export.formats.gguf.conversion.grovemoe import GroveMoeModel
 
         obj = _make_mock_model(
             GroveMoeModel,
@@ -3639,7 +3639,7 @@ class TestGroveMoeConversion:
 
     def test_modify_tensors_experts_merge(self):
         """Test GroveMoeModel.modify_tensors merges regular experts tensors."""
-        from auto_round.export.export_to_gguf.conversion.grovemoe import GroveMoeModel
+        from auto_round.export.formats.gguf.conversion.grovemoe import GroveMoeModel
 
         obj = _make_mock_model(
             GroveMoeModel,
@@ -3671,7 +3671,7 @@ class TestFalconH1Conversion:
 
     def test_set_gguf_parameters(self):
         """Test FalconH1Model.set_gguf_parameters writes vocab, attention head dims."""
-        from auto_round.export.export_to_gguf.conversion.falcon_h1 import FalconH1Model
+        from auto_round.export.formats.gguf.conversion.falcon_h1 import FalconH1Model
 
         obj = _make_mock_model(
             FalconH1Model,
@@ -3708,7 +3708,7 @@ class TestFalconH1Conversion:
 
     def test_modify_tensors_mlp_multipliers(self):
         """Test FalconH1Model.modify_tensors applies mlp_multipliers to down_proj/gate_proj."""
-        from auto_round.export.export_to_gguf.conversion.falcon_h1 import FalconH1Model
+        from auto_round.export.formats.gguf.conversion.falcon_h1 import FalconH1Model
 
         obj = _make_mock_model(FalconH1Model)
         obj.mlp_multipliers = [0.5, 2.0]
@@ -3733,7 +3733,7 @@ class TestFalconH1Conversion:
 
     def test_modify_tensors_attention_multipliers(self):
         """Test FalconH1Model.modify_tensors applies attention multipliers."""
-        from auto_round.export.export_to_gguf.conversion.falcon_h1 import FalconH1Model
+        from auto_round.export.formats.gguf.conversion.falcon_h1 import FalconH1Model
 
         obj = _make_mock_model(FalconH1Model)
         obj.mlp_multipliers = [1.0, 1.0]
@@ -3758,7 +3758,7 @@ class TestFalconH1Conversion:
 
     def test_modify_tensors_in_proj_ssm(self):
         """Test FalconH1Model.modify_tensors applies ssm_in + zxbcdt multipliers on in_proj."""
-        from auto_round.export.export_to_gguf.conversion.falcon_h1 import FalconH1Model
+        from auto_round.export.formats.gguf.conversion.falcon_h1 import FalconH1Model
 
         obj = _make_mock_model(
             FalconH1Model,
@@ -3786,7 +3786,7 @@ class TestFalconH1Conversion:
 
     def test_modify_tensors_lm_head_and_embed(self):
         """Test FalconH1Model.modify_tensors applies lm_head/embedding multipliers."""
-        from auto_round.export.export_to_gguf.conversion.falcon_h1 import FalconH1Model
+        from auto_round.export.formats.gguf.conversion.falcon_h1 import FalconH1Model
 
         obj = _make_mock_model(
             FalconH1Model,
@@ -3825,7 +3825,7 @@ class TestGptOssConversion:
 
     def test_set_vocab_uses_gpt2(self):
         """Test GptOssModel.set_vocab calls _set_vocab_gpt2."""
-        from auto_round.export.export_to_gguf.conversion.gpt_oss import GptOssModel
+        from auto_round.export.formats.gguf.conversion.gpt_oss import GptOssModel
 
         obj = _make_mock_model(GptOssModel)
         with patch.object(obj, "_set_vocab_gpt2") as mock:
@@ -3834,7 +3834,7 @@ class TestGptOssConversion:
 
     def test_set_gguf_parameters(self):
         """Test GptOssModel.set_gguf_parameters writes sliding_window and expert FF length."""
-        from auto_round.export.export_to_gguf.conversion.gpt_oss import GptOssModel
+        from auto_round.export.formats.gguf.conversion.gpt_oss import GptOssModel
 
         obj = _make_mock_model(
             GptOssModel,
@@ -3853,7 +3853,7 @@ class TestGptOssConversion:
 
     def test_filter_tensors_appends_weight_to_sinks(self):
         """Test GptOssModel.filter_tensors appends .weight to sinks tensors."""
-        from auto_round.export.export_to_gguf.conversion.gpt_oss import GptOssModel
+        from auto_round.export.formats.gguf.conversion.gpt_oss import GptOssModel
 
         def parent_filter(item):
             return item
@@ -3864,7 +3864,7 @@ class TestGptOssConversion:
 
     def test_transform_nibble_layout_runs(self):
         """Test transform_nibble_layout returns a uint8 tensor of the same shape."""
-        from auto_round.export.export_to_gguf.conversion.gpt_oss import GptOssModel
+        from auto_round.export.formats.gguf.conversion.gpt_oss import GptOssModel
 
         obj = _make_mock_model(GptOssModel)
         # Single 16-element uint8 tensor with mixed nibbles
@@ -3887,7 +3887,7 @@ class TestDeciConversion:
 
     def test_find_multiple(self):
         """Test DeciModel._find_multiple rounds up to nearest multiple of k."""
-        from auto_round.export.export_to_gguf.conversion.deci import DeciModel
+        from auto_round.export.formats.gguf.conversion.deci import DeciModel
 
         # 128 % 256 != 0 -> round up to 256 (uses k - n%k = 256 - 128)
         assert DeciModel._find_multiple(128, 256) == 256
@@ -3898,7 +3898,7 @@ class TestDeciConversion:
 
     def test_permute_preserves_shape(self):
         """Test DeciModel.permute preserves tensor shape."""
-        from auto_round.export.export_to_gguf.conversion.deci import DeciModel
+        from auto_round.export.formats.gguf.conversion.deci import DeciModel
 
         weights = torch.randn(4096, 1024)
         out = DeciModel.permute(weights, n_head=32, n_head_kv=32)
@@ -3915,7 +3915,7 @@ class TestLladaConversion:
 
     def test_llada_set_gguf_parameters(self):
         """Test LLaDAModel.set_gguf_parameters writes non-causal + diffusion shift flags."""
-        from auto_round.export.export_to_gguf.conversion.llada import LLaDAModel
+        from auto_round.export.formats.gguf.conversion.llada import LLaDAModel
 
         obj = _make_mock_model(
             LLaDAModel,
@@ -3941,7 +3941,7 @@ class TestLladaConversion:
 
     def test_llada_moe_set_gguf_parameters(self):
         """Test LLaDAMoEModel.set_gguf_parameters writes expert FF + mask token."""
-        from auto_round.export.export_to_gguf.conversion.llada import LLaDAMoEModel
+        from auto_round.export.formats.gguf.conversion.llada import LLaDAMoEModel
 
         obj = _make_mock_model(
             LLaDAMoEModel,
@@ -3970,7 +3970,7 @@ class TestKimiLinearConversion:
 
     def test_set_gguf_parameters_with_mla(self):
         """Test KimiLinearModel.set_gguf_parameters writes MLA + KDA parameters."""
-        from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
+        from auto_round.export.formats.gguf.conversion.kimi_linear import KimiLinearModel
 
         obj = _make_mock_model(
             KimiLinearModel,
@@ -4019,7 +4019,7 @@ class TestKimiLinearConversion:
 
     def test_modify_tensors_conv1d_reshape(self):
         """Test KimiLinearModel.modify_tensors reshapes 2D conv1d weights to (1, d_inner, 1, d_conv)."""
-        from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
+        from auto_round.export.formats.gguf.conversion.kimi_linear import KimiLinearModel
 
         obj = _make_mock_model(
             KimiLinearModel,
@@ -4036,7 +4036,7 @@ class TestKimiLinearConversion:
 
     def test_modify_tensors_conv1d_3d_reshape(self):
         """Test KimiLinearModel.modify_tensors reshapes 3D conv1d weights."""
-        from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
+        from auto_round.export.formats.gguf.conversion.kimi_linear import KimiLinearModel
 
         obj = _make_mock_model(
             KimiLinearModel,
@@ -4052,7 +4052,7 @@ class TestKimiLinearConversion:
 
     def test_modify_tensors_a_log_negation(self):
         """Test KimiLinearModel.modify_tensors negates exp of A_log."""
-        from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
+        from auto_round.export.formats.gguf.conversion.kimi_linear import KimiLinearModel
 
         obj = _make_mock_model(
             KimiLinearModel,
@@ -4067,7 +4067,7 @@ class TestKimiLinearConversion:
 
     def test_modify_tensors_dt_bias_rename(self):
         """Test KimiLinearModel.modify_tensors renames dt_bias to dt_proj.bias."""
-        from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
+        from auto_round.export.formats.gguf.conversion.kimi_linear import KimiLinearModel
 
         obj = _make_mock_model(
             KimiLinearModel,
@@ -4086,7 +4086,7 @@ class TestKimiLinearConversion:
 
     def test_modify_tensors_experts_merge(self):
         """Test KimiLinearModel.modify_tensors merges block_sparse_moe.experts tensors."""
-        from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
+        from auto_round.export.formats.gguf.conversion.kimi_linear import KimiLinearModel
 
         obj = _make_mock_model(
             KimiLinearModel,
@@ -4109,7 +4109,7 @@ class TestKimiLinearConversion:
 
     def test_modify_tensors_kv_b_split(self):
         """Test KimiLinearModel.modify_tensors splits kv_b_proj.weight into k_b/v_b."""
-        from auto_round.export.export_to_gguf.conversion.kimi_linear import KimiLinearModel
+        from auto_round.export.formats.gguf.conversion.kimi_linear import KimiLinearModel
 
         obj = _make_mock_model(
             KimiLinearModel,
@@ -4145,7 +4145,7 @@ class TestArcticConversion:
 
     def test_set_gguf_parameters(self):
         """Test ArcticModel.set_gguf_parameters writes vocab_size and rope_dimension_count."""
-        from auto_round.export.export_to_gguf.conversion.arctic import ArcticModel
+        from auto_round.export.formats.gguf.conversion.arctic import ArcticModel
 
         obj = _make_mock_model(
             ArcticModel,
@@ -4166,7 +4166,7 @@ class TestArcticConversion:
 
     def test_modify_tensors_qk_permute(self):
         """Test ArcticModel.modify_tensors permutes q_proj/k_proj via LlamaModel.permute."""
-        from auto_round.export.export_to_gguf.conversion.arctic import ArcticModel
+        from auto_round.export.formats.gguf.conversion.arctic import ArcticModel
 
         obj = _make_mock_model(
             ArcticModel,
@@ -4188,7 +4188,7 @@ class TestArcticConversion:
 
     def test_modify_tensors_expert_merging(self):
         """Test ArcticModel.modify_tensors merges block_sparse_moe.experts tensors."""
-        from auto_round.export.export_to_gguf.conversion.arctic import ArcticModel
+        from auto_round.export.formats.gguf.conversion.arctic import ArcticModel
 
         obj = _make_mock_model(
             ArcticModel,
@@ -4225,7 +4225,7 @@ class TestBailingMoeConversion:
 
     def test_bailingmoe_set_gguf_parameters(self):
         """Test BailingMoeModel.set_gguf_parameters writes MoE + first_k_dense_replace."""
-        from auto_round.export.export_to_gguf.conversion.bailingmoe import BailingMoeModel
+        from auto_round.export.formats.gguf.conversion.bailingmoe import BailingMoeModel
 
         obj = _make_mock_model(
             BailingMoeModel,
@@ -4255,7 +4255,7 @@ class TestBailingMoeConversion:
 
     def test_bailingmoe_v2_set_gguf_parameters(self):
         """Test BailingMoeV2Model.set_gguf_parameters handles partial_rotary_factor + nextn."""
-        from auto_round.export.export_to_gguf.conversion.bailingmoe import BailingMoeV2Model
+        from auto_round.export.formats.gguf.conversion.bailingmoe import BailingMoeV2Model
 
         obj = _make_mock_model(
             BailingMoeV2Model,
@@ -4288,7 +4288,7 @@ class TestBailingMoeConversion:
 
     def test_bailingmoe_permute_static(self):
         """Test BailingMoeModel.permute preserves tensor shape."""
-        from auto_round.export.export_to_gguf.conversion.bailingmoe import BailingMoeModel
+        from auto_round.export.formats.gguf.conversion.bailingmoe import BailingMoeModel
 
         weights = torch.randn(4096, 1024)
         out = BailingMoeModel.permute(weights, n_head=32, n_head_kv=32)
@@ -4296,7 +4296,7 @@ class TestBailingMoeConversion:
 
     def test_bailingmoe_modify_tensors_dense(self):
         """Test BailingMoeModel.modify_tensors splits qkv + dense rename."""
-        from auto_round.export.export_to_gguf.conversion.bailingmoe import BailingMoeModel
+        from auto_round.export.formats.gguf.conversion.bailingmoe import BailingMoeModel
 
         obj = _make_mock_model(
             BailingMoeModel,
@@ -4321,7 +4321,7 @@ class TestBailingMoeConversion:
 
     def test_bailingmoe_modify_tensors_qkv_split(self):
         """Test BailingMoeModel.modify_tensors splits query_key_value.weight into q/k/v."""
-        from auto_round.export.export_to_gguf.conversion.bailingmoe import BailingMoeModel
+        from auto_round.export.formats.gguf.conversion.bailingmoe import BailingMoeModel
 
         obj = _make_mock_model(
             BailingMoeModel,
@@ -4355,7 +4355,7 @@ class TestExaoneConversion:
 
     def test_set_gguf_parameters(self):
         """Test ExaoneModel.set_gguf_parameters writes rope dim from partial_rotary_factor."""
-        from auto_round.export.export_to_gguf.conversion.exaone import ExaoneModel
+        from auto_round.export.formats.gguf.conversion.exaone import ExaoneModel
 
         obj = _make_mock_model(
             ExaoneModel,
@@ -4384,7 +4384,7 @@ class TestInternlmConversion:
 
     def test_filter_tensors_drops_mlp_and_vision(self):
         """Test InternLM2Model.filter_tensors drops tensors whose name starts with 'mlp' or 'vision_model'."""
-        from auto_round.export.export_to_gguf.conversion.internlm import InternLM2Model
+        from auto_round.export.formats.gguf.conversion.internlm import InternLM2Model
 
         # Names starting with "mlp" or "vision_model" should be dropped
         assert InternLM2Model.filter_tensors(("mlp.down_proj.weight", lambda: None)) is None
@@ -4392,7 +4392,7 @@ class TestInternlmConversion:
 
     def test_modify_tensors_q_permute(self):
         """Test InternLM2Model.modify_tensors permutes q_proj via LlamaModel.permute."""
-        from auto_round.export.export_to_gguf.conversion.internlm import InternLM2Model
+        from auto_round.export.formats.gguf.conversion.internlm import InternLM2Model
 
         obj = _make_mock_model(
             InternLM2Model,
@@ -4419,7 +4419,7 @@ class TestGlm4Conversion:
 
     def test_set_gguf_parameters_with_head_dim(self):
         """Test Glm4Model.set_gguf_parameters writes rope dim using head_dim * partial_rotary_factor."""
-        from auto_round.export.export_to_gguf.conversion.glm import Glm4Model
+        from auto_round.export.formats.gguf.conversion.glm import Glm4Model
 
         obj = _make_mock_model(
             Glm4Model,
@@ -4452,7 +4452,7 @@ class TestLfm2Conversion:
 
     def test_lfm2_set_gguf_parameters(self):
         """Test LFM2Model.set_gguf_parameters writes vocab + lfm2-specific fields."""
-        from auto_round.export.export_to_gguf.conversion.lfm2 import LFM2Model
+        from auto_round.export.formats.gguf.conversion.lfm2 import LFM2Model
 
         obj = _make_mock_model(
             LFM2Model,
@@ -4483,8 +4483,8 @@ class TestLfm2Conversion:
 
     def test_lfm2moe_set_gguf_parameters(self):
         """Test LFM2MoeModel.set_gguf_parameters writes MoE fields and gating func."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.lfm2 import LFM2MoeModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.lfm2 import LFM2MoeModel
 
         obj = _make_mock_model(
             LFM2MoeModel,
@@ -4512,7 +4512,7 @@ class TestLfm2Conversion:
 
     def test_lfm2_modify_tensors_conv_squeeze(self):
         """Test LFM2Model.modify_tensors squeezes dim 1 of conv.conv weights."""
-        from auto_round.export.export_to_gguf.conversion.lfm2 import LFM2Model
+        from auto_round.export.formats.gguf.conversion.lfm2 import LFM2Model
 
         obj = _make_mock_model(LFM2Model)
         data = torch.randn(8, 1, 4)  # has a length-1 dim at position 1
@@ -4523,7 +4523,7 @@ class TestLfm2Conversion:
 
     def test_lfm2moe_modify_tensors_experts_merge(self):
         """Test LFM2MoeModel.modify_tensors merges feed_forward.experts tensors."""
-        from auto_round.export.export_to_gguf.conversion.lfm2 import LFM2MoeModel
+        from auto_round.export.formats.gguf.conversion.lfm2 import LFM2MoeModel
 
         obj = _make_mock_model(
             LFM2MoeModel,
@@ -4555,7 +4555,7 @@ class TestGemmaConversion:
 
     def test_gemma_set_gguf_parameters(self):
         """Test GemmaModel.set_gguf_parameters writes gemma fields."""
-        from auto_round.export.export_to_gguf.conversion.gemma import GemmaModel
+        from auto_round.export.formats.gguf.conversion.gemma import GemmaModel
 
         obj = _make_mock_model(
             GemmaModel,
@@ -4582,7 +4582,7 @@ class TestGemmaConversion:
 
     def test_gemma_set_gguf_parameters_defaults_kv_to_heads(self):
         """Test GemmaModel.set_gguf_parameters defaults num_key_value_heads to num_attention_heads."""
-        from auto_round.export.export_to_gguf.conversion.gemma import GemmaModel
+        from auto_round.export.formats.gguf.conversion.gemma import GemmaModel
 
         obj = _make_mock_model(
             GemmaModel,
@@ -4601,7 +4601,7 @@ class TestGemmaConversion:
 
     def test_gemma_modify_tensors_norm_plus_one(self):
         """Test GemmaModel.modify_tensors adds 1.0 to .norm.weight."""
-        from auto_round.export.export_to_gguf.conversion.gemma import GemmaModel
+        from auto_round.export.formats.gguf.conversion.gemma import GemmaModel
 
         obj = _make_mock_model(GemmaModel, {})
         data = torch.zeros(8)
@@ -4616,7 +4616,7 @@ class TestGemmaConversion:
 
     def test_gemma2_set_gguf_parameters_softcap(self):
         """Test Gemma2Model.set_gguf_parameters writes softcap and sliding_window."""
-        from auto_round.export.export_to_gguf.conversion.gemma import Gemma2Model
+        from auto_round.export.formats.gguf.conversion.gemma import Gemma2Model
 
         obj = _make_mock_model(
             Gemma2Model,
@@ -4641,7 +4641,7 @@ class TestGemmaConversion:
 
     def test_gemma3_set_gguf_parameters(self):
         """Test Gemma3Model.set_gguf_parameters writes gemma3 fields + asserts attn_softcapping is None."""
-        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3Model
+        from auto_round.export.formats.gguf.conversion.gemma import Gemma3Model
 
         obj = _make_mock_model(
             Gemma3Model,
@@ -4676,7 +4676,7 @@ class TestGemmaConversion:
 
     def test_gemma3_set_gguf_parameters_no_sliding_window(self):
         """Test Gemma3Model.set_gguf_parameters skips sliding_window when pattern == 1."""
-        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3Model
+        from auto_round.export.formats.gguf.conversion.gemma import Gemma3Model
 
         obj = _make_mock_model(
             Gemma3Model,
@@ -4699,7 +4699,7 @@ class TestGemmaConversion:
 
     def test_gemma3_norm_shift(self):
         """Test Gemma3Model.norm_shift returns 1.0 for norm.weight, else 0.0."""
-        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3Model
+        from auto_round.export.formats.gguf.conversion.gemma import Gemma3Model
 
         # norm_shift is a plain instance method; call it on a bare object
         obj = Gemma3Model.__new__(Gemma3Model)
@@ -4708,7 +4708,7 @@ class TestGemmaConversion:
 
     def test_gemma3_modify_tensors_norm_shift(self):
         """Test Gemma3Model.modify_tensors adds norm_shift to .norm.weight tensors."""
-        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3Model
+        from auto_round.export.formats.gguf.conversion.gemma import Gemma3Model
 
         obj = _make_mock_model(Gemma3Model, {})
         data = torch.zeros(8)
@@ -4719,8 +4719,8 @@ class TestGemmaConversion:
 
     def test_gemma3_vision_set_gguf_parameters(self):
         """Test Gemma3VisionModel.set_gguf_parameters writes GEMMA3 projector + use_gelu."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3VisionModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.gemma import Gemma3VisionModel
 
         obj = _make_mock_model(
             Gemma3VisionModel,
@@ -4741,8 +4741,8 @@ class TestGemmaConversion:
 
     def test_gemma3_vision_tensor_force_quant(self):
         """Test Gemma3VisionModel.tensor_force_quant forces F16/F32 for input_projection/embeddings."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3VisionModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.gemma import Gemma3VisionModel
 
         obj = Gemma3VisionModel.__new__(Gemma3VisionModel)
         # input_projection forces F16
@@ -4755,7 +4755,7 @@ class TestGemmaConversion:
 
     def test_gemma3_vision_filter_tensors(self):
         """Test Gemma3VisionModel.filter_tensors drops non-vision tensors."""
-        from auto_round.export.export_to_gguf.conversion.gemma import Gemma3VisionModel
+        from auto_round.export.formats.gguf.conversion.gemma import Gemma3VisionModel
 
         # Non-vision tensors are dropped
         assert Gemma3VisionModel.filter_tensors(("model.embed_tokens.weight", lambda: None)) is None
@@ -4772,8 +4772,8 @@ class TestKimiVlConversion:
 
     def test_set_gguf_parameters(self):
         """Test KimiVLModel.set_gguf_parameters writes vision projector type and layernorm eps."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.kimivl import KimiVLModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.kimivl import KimiVLModel
 
         obj = _make_mock_model(KimiVLModel)
         obj.hparams_vision = {"layer_norm_eps": 1e-5}
@@ -4788,7 +4788,7 @@ class TestKimiVlConversion:
 
     def test_filter_tensors_drops_non_vision(self):
         """Test KimiVLModel.filter_tensors drops non-vision tensors."""
-        from auto_round.export.export_to_gguf.conversion.kimivl import KimiVLModel
+        from auto_round.export.formats.gguf.conversion.kimivl import KimiVLModel
 
         # Non-vision tensors should be dropped
         assert KimiVLModel.filter_tensors(("model.embed_tokens.weight", lambda: None)) is None
@@ -4805,7 +4805,7 @@ class TestPhiConversion:
 
     def test_phi2_set_gguf_parameters(self):
         """Test Phi2Model.set_gguf_parameters writes phi2 fields."""
-        from auto_round.export.export_to_gguf.conversion.phi import Phi2Model
+        from auto_round.export.formats.gguf.conversion.phi import Phi2Model
 
         obj = _make_mock_model(
             Phi2Model,
@@ -4832,7 +4832,7 @@ class TestPhiConversion:
 
     def test_phi3_set_gguf_parameters(self):
         """Test Phi3MiniModel.set_gguf_parameters writes phi3 fields with sliding_window=0 default."""
-        from auto_round.export.export_to_gguf.conversion.phi import Phi3MiniModel
+        from auto_round.export.formats.gguf.conversion.phi import Phi3MiniModel
 
         obj = _make_mock_model(
             Phi3MiniModel,
@@ -4864,7 +4864,7 @@ class TestPhiConversion:
 
     def test_phi3_set_gguf_parameters_with_sliding_window(self):
         """Test Phi3MiniModel.set_gguf_parameters uses sliding_window from hparams when present."""
-        from auto_round.export.export_to_gguf.conversion.phi import Phi3MiniModel
+        from auto_round.export.formats.gguf.conversion.phi import Phi3MiniModel
 
         obj = _make_mock_model(
             Phi3MiniModel,
@@ -4885,7 +4885,7 @@ class TestPhiConversion:
 
     def test_phi3_generate_extra_tensors_longrope(self):
         """Test Phi3MiniModel.generate_extra_tensors produces ROPE_FACTORS_LONG/SHORT."""
-        from auto_round.export.export_to_gguf.conversion.phi import Phi3MiniModel
+        from auto_round.export.formats.gguf.conversion.phi import Phi3MiniModel
 
         obj = _make_mock_model(
             Phi3MiniModel,
@@ -4918,14 +4918,14 @@ class TestPhiConversion:
         assert len(results) == 2
         # format_tensor_name(prefix) yields a fully qualified name like "blk.0.rope_factors_long.weight"
         # ensure both tensors are present and contain the expected tensor kinds
-        from auto_round.export.export_to_gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.base import gguf
 
         assert any(gguf.MODEL_TENSOR.ROPE_FACTORS_LONG.name in n for n, _ in results)
         assert any(gguf.MODEL_TENSOR.ROPE_FACTORS_SHORT.name in n for n, _ in results)
 
     def test_phimoe_set_gguf_parameters(self):
         """Test PhiMoeModel.set_gguf_parameters adds expert_count and expert_used_count."""
-        from auto_round.export.export_to_gguf.conversion.phi import PhiMoeModel
+        from auto_round.export.formats.gguf.conversion.phi import PhiMoeModel
 
         obj = _make_mock_model(
             PhiMoeModel,
@@ -4949,7 +4949,7 @@ class TestPhiConversion:
 
     def test_phimoe_modify_tensors_experts_merge(self):
         """Test PhiMoeModel.modify_tensors merges block_sparse_moe.experts tensors."""
-        from auto_round.export.export_to_gguf.conversion.phi import PhiMoeModel
+        from auto_round.export.formats.gguf.conversion.phi import PhiMoeModel
 
         obj = _make_mock_model(
             PhiMoeModel,
@@ -4978,8 +4978,8 @@ class TestPhiConversion:
 
     def test_phi4_vision_set_gguf_parameters(self):
         """Test Phi4VisionMmprojModel.set_gguf_parameters writes PHI4 projector + use_gelu."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.phi import Phi4VisionMmprojModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.phi import Phi4VisionMmprojModel
 
         obj = _make_mock_model(
             Phi4VisionMmprojModel,
@@ -5003,7 +5003,7 @@ class TestPhiConversion:
 
     def test_phi4_vision_filter_tensors(self):
         """Test Phi4VisionMmprojModel.filter_tensors handles vision_tower/mm_projector paths."""
-        from auto_round.export.export_to_gguf.conversion.phi import Phi4VisionMmprojModel
+        from auto_round.export.formats.gguf.conversion.phi import Phi4VisionMmprojModel
 
         # Vision tower non-prefixed -> None
         assert Phi4VisionMmprojModel.filter_tensors(("model.embed_tokens.weight", lambda: None)) is None
@@ -5021,8 +5021,8 @@ class TestPhiConversion:
 
     def test_phi4_vision_modify_tensors_mm_projector(self):
         """Test Phi4VisionMmprojModel.modify_tensors maps mm_projector.0./2. to V_MMPROJ."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.phi import Phi4VisionMmprojModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.phi import Phi4VisionMmprojModel
 
         obj = _make_mock_model(Phi4VisionMmprojModel, {})
         # Test mm_projector.0 mapping (becomes V_MMPROJ.0.weight)
@@ -5042,7 +5042,7 @@ class TestPhiConversion:
 
     def test_phi4_vision_modify_tensors_patch_embedding_reshape(self):
         """Test Phi4VisionMmprojModel reshapes 2D patch_embedding to (out, c, p, p)."""
-        from auto_round.export.export_to_gguf.conversion.phi import Phi4VisionMmprojModel
+        from auto_round.export.formats.gguf.conversion.phi import Phi4VisionMmprojModel
 
         obj = _make_mock_model(Phi4VisionMmprojModel, {})
         obj.vision_last_layer_idx = 99  # so we don't drop on bid
@@ -5068,7 +5068,7 @@ class TestQwenConversion:
 
     def test_qwen_bpe_merges_pairs(self):
         """Test QwenModel.bpe merges the highest-rank adjacent bytes."""
-        from auto_round.export.export_to_gguf.conversion.qwen import QwenModel
+        from auto_round.export.formats.gguf.conversion.qwen import QwenModel
 
         # Pair ranks: ('a','b') -> 0, ('b','c') -> 1, ('c','d') -> 2
         ranks = {b"ab": 0, b"bc": 1, b"cd": 2}
@@ -5081,7 +5081,7 @@ class TestQwenConversion:
 
     def test_qwen_bpe_respects_max_rank(self):
         """Test QwenModel.bpe stops merging when min rank >= max_rank."""
-        from auto_round.export.export_to_gguf.conversion.qwen import QwenModel
+        from auto_round.export.formats.gguf.conversion.qwen import QwenModel
 
         ranks = {b"ab": 0}
         # max_rank=0 -> merge stops immediately at rank 0
@@ -5090,7 +5090,7 @@ class TestQwenConversion:
 
     def test_qwen_bpe_no_matchable_pairs(self):
         """Test QwenModel.bpe returns parts unchanged when no pair is mergeable."""
-        from auto_round.export.export_to_gguf.conversion.qwen import QwenModel
+        from auto_round.export.formats.gguf.conversion.qwen import QwenModel
 
         ranks = {b"xx": 0}  # no matching pairs in "abcd"
         parts = QwenModel.bpe(ranks, b"abcd")
@@ -5098,7 +5098,7 @@ class TestQwenConversion:
 
     def test_qwen2_modify_tensors_qwen2model_prefix(self):
         """Test Qwen2Model.modify_tensors adds model. prefix when hf_arch=Qwen2Model."""
-        from auto_round.export.export_to_gguf.conversion.qwen import Qwen2Model
+        from auto_round.export.formats.gguf.conversion.qwen import Qwen2Model
 
         obj = _make_mock_model(Qwen2Model, {})
         obj.hf_arch = "Qwen2Model"
@@ -5113,7 +5113,7 @@ class TestQwenConversion:
 
     def test_qwen2_modify_tensors_for_causal_lm_passthrough(self):
         """Test Qwen2Model.modify_tensors does NOT prefix when hf_arch=Qwen2ForCausalLM."""
-        from auto_round.export.export_to_gguf.conversion.qwen import Qwen2Model
+        from auto_round.export.formats.gguf.conversion.qwen import Qwen2Model
 
         obj = _make_mock_model(Qwen2Model, {})
         obj.hf_arch = "Qwen2ForCausalLM"
@@ -5128,7 +5128,7 @@ class TestQwenConversion:
 
     def test_qwen2moe_set_gguf_parameters(self):
         """Test Qwen2MoeModel.set_gguf_parameters writes expert FF / shared FF lengths."""
-        from auto_round.export.export_to_gguf.conversion.qwen import Qwen2MoeModel
+        from auto_round.export.formats.gguf.conversion.qwen import Qwen2MoeModel
 
         obj = _make_mock_model(
             Qwen2MoeModel,
@@ -5145,7 +5145,7 @@ class TestQwenConversion:
 
     def test_qwen2moe_set_gguf_parameters_no_shared(self):
         """Test Qwen2MoeModel.set_gguf_parameters when shared_expert_intermediate_size is missing."""
-        from auto_round.export.export_to_gguf.conversion.qwen import Qwen2MoeModel
+        from auto_round.export.formats.gguf.conversion.qwen import Qwen2MoeModel
 
         obj = _make_mock_model(Qwen2MoeModel, {"moe_intermediate_size": 1536})
         with patch.object(Qwen2MoeModel.__mro__[1], "set_gguf_parameters", lambda self: None):
@@ -5155,7 +5155,7 @@ class TestQwenConversion:
 
     def test_qwen2moe_modify_tensors_gate_up_split(self):
         """Test Qwen2MoeModel.modify_tensors splits mlp.experts.gate_up_proj into gate/up."""
-        from auto_round.export.export_to_gguf.conversion.qwen import Qwen2MoeModel
+        from auto_round.export.formats.gguf.conversion.qwen import Qwen2MoeModel
 
         obj = _make_mock_model(Qwen2MoeModel, {"num_local_experts": 2})
         captured = []
@@ -5172,7 +5172,7 @@ class TestQwenConversion:
 
     def test_qwen2moe_modify_tensors_gate_up_invalid_shape(self):
         """Test Qwen2MoeModel.modify_tensors raises on invalid gate_up_proj shape."""
-        from auto_round.export.export_to_gguf.conversion.qwen import Qwen2MoeModel
+        from auto_round.export.formats.gguf.conversion.qwen import Qwen2MoeModel
 
         obj = _make_mock_model(Qwen2MoeModel, {})
         # ndim < 3 or shape[-2] % 2 != 0 -> ValueError
@@ -5182,7 +5182,7 @@ class TestQwenConversion:
 
     def test_qwen2moe_modify_tensors_down_proj(self):
         """Test Qwen2MoeModel.modify_tensors handles mlp.experts.down_proj passthrough."""
-        from auto_round.export.export_to_gguf.conversion.qwen import Qwen2MoeModel
+        from auto_round.export.formats.gguf.conversion.qwen import Qwen2MoeModel
 
         obj = _make_mock_model(Qwen2MoeModel, {})
         data = torch.randn(2, 4, 8)
@@ -5205,8 +5205,8 @@ class TestQwen3VlConversion:
 
     def test_set_gguf_parameters(self):
         """Test Qwen3VLVisionModel.set_gguf_parameters writes vision projector fields."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.qwen3vl import Qwen3VLVisionModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.qwen3vl import Qwen3VLVisionModel
 
         obj = _make_mock_model(Qwen3VLVisionModel)
         # has_audio_encoder is required on the object
@@ -5247,7 +5247,7 @@ class TestErnieConversion:
 
     def test_ernie4_5_filter_tensors_renames_ernie_prefix(self):
         """Test Ernie4_5Model.filter_tensors renames 'ernie.' prefix to 'model.'."""
-        from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5Model
+        from auto_round.export.formats.gguf.conversion.ernie import Ernie4_5Model
 
         def parent_filter(item):
             return item
@@ -5259,7 +5259,7 @@ class TestErnieConversion:
 
     def test_ernie4_5_moe_set_gguf_parameters(self):
         """Test Ernie4_5MoeModel.set_gguf_parameters writes MoE-specific fields."""
-        from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5MoeModel
+        from auto_round.export.formats.gguf.conversion.ernie import Ernie4_5MoeModel
 
         obj = _make_mock_model(
             Ernie4_5MoeModel,
@@ -5293,7 +5293,7 @@ class TestErnieConversion:
 
     def test_ernie4_5_moe_filter_drops_mtp(self):
         """Test Ernie4_5MoeModel.filter_tensors drops MTP tensors."""
-        from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5MoeModel
+        from auto_round.export.formats.gguf.conversion.ernie import Ernie4_5MoeModel
 
         # All MTP-related prefixes should be filtered out
         for name in [
@@ -5306,8 +5306,8 @@ class TestErnieConversion:
 
     def test_paddleocr_vision_set_gguf_parameters(self):
         """Test PaddleOCRVisionModel.set_gguf_parameters writes vision projector fields."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.ernie import PaddleOCRVisionModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.ernie import PaddleOCRVisionModel
 
         obj = _make_mock_model(PaddleOCRVisionModel)
         obj.hparams_vision = {"rms_norm_eps": 1e-6}
@@ -5326,7 +5326,7 @@ class TestErnieConversion:
 
     def test_paddleocr_vision_filter_drops_non_vision(self):
         """Test PaddleOCRVisionModel.filter_tensors drops non-vision / non-mlp_AR tensors."""
-        from auto_round.export.export_to_gguf.conversion.ernie import PaddleOCRVisionModel
+        from auto_round.export.formats.gguf.conversion.ernie import PaddleOCRVisionModel
 
         # tensors without 'vision_model' or 'mlp_AR' should be dropped
         assert PaddleOCRVisionModel.filter_tensors(("lm_head.weight", lambda: None)) is None
@@ -5339,7 +5339,7 @@ class TestErnieConversion:
 
     def test_ernie4_5_modify_tensors_qkv_split(self):
         """Test Ernie4_5Model.modify_tensors splits qkv_proj into q/k/v."""
-        from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5Model
+        from auto_round.export.formats.gguf.conversion.ernie import Ernie4_5Model
 
         obj = _make_mock_model(
             Ernie4_5Model,
@@ -5364,7 +5364,7 @@ class TestErnieConversion:
 
     def test_ernie4_5_modify_tensors_up_gate_split(self):
         """Test Ernie4_5Model.modify_tensors splits up_gate_proj into gate/up."""
-        from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5Model
+        from auto_round.export.formats.gguf.conversion.ernie import Ernie4_5Model
 
         obj = _make_mock_model(
             Ernie4_5Model,
@@ -5388,7 +5388,7 @@ class TestErnieConversion:
 
     def test_ernie4_5_modify_tensors_passthrough(self):
         """Test Ernie4_5Model.modify_tensors passes through non-qkv/up_gate tensors."""
-        from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5Model
+        from auto_round.export.formats.gguf.conversion.ernie import Ernie4_5Model
 
         obj = _make_mock_model(
             Ernie4_5Model,
@@ -5409,7 +5409,7 @@ class TestErnieConversion:
 
     def test_ernie4_5_moe_modify_tensors_expert_merge(self):
         """Test Ernie4_5MoeModel.modify_tensors merges mlp.experts tensors."""
-        from auto_round.export.export_to_gguf.conversion.ernie import Ernie4_5MoeModel
+        from auto_round.export.formats.gguf.conversion.ernie import Ernie4_5MoeModel
 
         obj = _make_mock_model(
             Ernie4_5MoeModel,
@@ -5448,7 +5448,7 @@ class TestMistralConversion:
 
     def test_dequant_model_sets_fp8_quantization_config(self):
         """Test MistralModel.dequant_model converts qformat_weight=fp8_e4m3 to fp8 config."""
-        from auto_round.export.export_to_gguf.conversion.mistral import MistralModel
+        from auto_round.export.formats.gguf.conversion.mistral import MistralModel
 
         obj = _make_mock_model(MistralModel)
         obj.hparams["quantization"] = {"qformat_weight": "fp8_e4m3"}
@@ -5460,8 +5460,8 @@ class TestMistralConversion:
 
     def test_set_mistral_config_with_yarn(self):
         """Test MistralModel.set_mistral_config writes yarn rope params."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.mistral import MistralModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.mistral import MistralModel
 
         hparams = {
             "yarn": {
@@ -5481,7 +5481,7 @@ class TestMistralConversion:
 
     def test_set_mistral_config_with_llama_4_scaling(self):
         """Test MistralModel.set_mistral_config writes attn_temperature_scale."""
-        from auto_round.export.export_to_gguf.conversion.mistral import MistralModel
+        from auto_round.export.formats.gguf.conversion.mistral import MistralModel
 
         hparams = {"llama_4_scaling": {"beta": 0.5}}
         gguf_writer = MagicMock()
@@ -5490,7 +5490,7 @@ class TestMistralConversion:
 
     def test_mistral_filter_tensors_renames_expert_tensors(self):
         """Test MistralMoeModel.filter_tensors renames w1/w2/w3 to gate/down/up."""
-        from auto_round.export.export_to_gguf.conversion.mistral import MistralMoeModel
+        from auto_round.export.formats.gguf.conversion.mistral import MistralMoeModel
 
         def parent_filter(item):
             return item
@@ -5511,7 +5511,7 @@ class TestHunyuanConversion:
 
     def test_hunyuan_moe_set_gguf_parameters(self):
         """Test HunYuanMoEModel.set_gguf_parameters writes expert shared FF length and top-k."""
-        from auto_round.export.export_to_gguf.conversion.hunyuan import HunYuanMoEModel
+        from auto_round.export.formats.gguf.conversion.hunyuan import HunYuanMoEModel
 
         obj = _make_mock_model(
             HunYuanMoEModel,
@@ -5536,15 +5536,15 @@ class TestHunyuanConversion:
 
     def test_hunyuan_dense_get_eod_token_id(self):
         """Test HunYuanModel._get_eod_token_id reads from hparams."""
-        from auto_round.export.export_to_gguf.conversion.hunyuan import HunYuanModel
+        from auto_round.export.formats.gguf.conversion.hunyuan import HunYuanModel
 
         obj = _make_mock_model(HunYuanModel, {"eod_token_id": 120000})
         assert obj._get_eod_token_id() == 120000
 
     def test_hunyuan_vl_vision_set_gguf_parameters(self):
         """Test HunyuanVLVisionModel.set_gguf_parameters writes vision projector fields."""
-        from auto_round.export.export_to_gguf.conversion.base import gguf
-        from auto_round.export.export_to_gguf.conversion.hunyuan import HunyuanVLVisionModel
+        from auto_round.export.formats.gguf.conversion.base import gguf
+        from auto_round.export.formats.gguf.conversion.hunyuan import HunyuanVLVisionModel
 
         obj = _make_mock_model(HunyuanVLVisionModel)
         obj.hparams_vision = {
@@ -5565,7 +5565,7 @@ class TestHunyuanConversion:
 
     def test_hunyuan_vl_vision_filter_drops_non_vit(self):
         """Test HunyuanVLVisionModel.filter_tensors drops non-vit tensors."""
-        from auto_round.export.export_to_gguf.conversion.hunyuan import HunyuanVLVisionModel
+        from auto_round.export.formats.gguf.conversion.hunyuan import HunyuanVLVisionModel
 
         # tensors not starting with 'vit.' should be dropped
         assert HunyuanVLVisionModel.filter_tensors(("model.layers.0.weight", lambda: None)) is None
@@ -5573,7 +5573,7 @@ class TestHunyuanConversion:
 
     def test_hunyuan_vl_text_set_gguf_parameters(self):
         """Test HunyuanVLTextModel.set_gguf_parameters writes xdrope fields when applicable."""
-        from auto_round.export.export_to_gguf.conversion.hunyuan import HunyuanVLTextModel
+        from auto_round.export.formats.gguf.conversion.hunyuan import HunyuanVLTextModel
 
         obj = _make_mock_model(
             HunyuanVLTextModel,
@@ -5600,7 +5600,7 @@ class TestHunyuanConversion:
 
     def test_hunyuan_moe_modify_tensors_expert_merge(self):
         """Test HunYuanMoEModel.modify_tensors merges mlp.experts tensors."""
-        from auto_round.export.export_to_gguf.conversion.hunyuan import HunYuanMoEModel
+        from auto_round.export.formats.gguf.conversion.hunyuan import HunYuanMoEModel
 
         obj = _make_mock_model(
             HunYuanMoEModel,
@@ -5623,7 +5623,7 @@ class TestHunyuanConversion:
 
     def test_hunyuan_moe_modify_tensors_drops_tied_lm_head(self):
         """Test HunYuanMoEModel.modify_tensors drops lm_head when tied."""
-        from auto_round.export.export_to_gguf.conversion.hunyuan import HunYuanMoEModel
+        from auto_round.export.formats.gguf.conversion.hunyuan import HunYuanMoEModel
 
         obj = _make_mock_model(HunYuanMoEModel, {"tie_word_embeddings": True})
         result = list(obj.modify_tensors(torch.zeros(8), "lm_head.weight", bid=None))
@@ -5631,7 +5631,7 @@ class TestHunyuanConversion:
 
     def test_hunyuan_dense_modify_tensors_passthrough(self):
         """Test HunYuanModel.modify_tensors passes through non-expert tensors."""
-        from auto_round.export.export_to_gguf.conversion.hunyuan import HunYuanModel
+        from auto_round.export.formats.gguf.conversion.hunyuan import HunYuanModel
 
         obj = _make_mock_model(HunYuanModel)
         with patch.object(HunYuanModel.__mro__[1], "modify_tensors", lambda self, d, n, b: iter([(n, d)])):
@@ -5641,7 +5641,7 @@ class TestHunyuanConversion:
 
     def test_hunyuan_vl_vision_modify_tensors_strips_cls_position(self):
         """Test HunyuanVLVisionModel.modify_tensors strips CLS row from position_embedding."""
-        from auto_round.export.export_to_gguf.conversion.hunyuan import HunyuanVLVisionModel
+        from auto_round.export.formats.gguf.conversion.hunyuan import HunyuanVLVisionModel
 
         obj = _make_mock_model(HunyuanVLVisionModel)
         # position_embedding: [n_patches+1, n_embd] -> [n_patches, n_embd]
@@ -5662,7 +5662,7 @@ class TestBertConversion:
 
     def test_bert_init_drops_dummy_labels(self):
         """Test BertModel.__init__ drops dummy 'LABEL_0'-style id2label entries."""
-        from auto_round.export.export_to_gguf.conversion.bert import BertModel
+        from auto_round.export.formats.gguf.conversion.bert import BertModel
 
         # When id2label has only "LABEL_0", "LABEL_1", it should be cleared to None
         obj = _make_mock_model(BertModel, {"id2label": {0: "LABEL_0", 1: "LABEL_1"}})
@@ -5675,7 +5675,7 @@ class TestBertConversion:
 
     def test_bert_init_keeps_real_labels(self):
         """Test BertModel.__init__ keeps real id2label mapping."""
-        from auto_round.export.export_to_gguf.conversion.bert import BertModel
+        from auto_round.export.formats.gguf.conversion.bert import BertModel
 
         obj = _make_mock_model(BertModel, {"id2label": {0: "positive", 1: "negative"}})
         # Manually run the init logic for cls_out_labels
@@ -5687,7 +5687,7 @@ class TestBertConversion:
 
     def test_bert_set_gguf_parameters(self):
         """Test BertModel.set_gguf_parameters writes non-causal flag."""
-        from auto_round.export.export_to_gguf.conversion.bert import BertModel
+        from auto_round.export.formats.gguf.conversion.bert import BertModel
 
         obj = _make_mock_model(BertModel)
         obj.cls_out_labels = None
@@ -5700,7 +5700,7 @@ class TestBertConversion:
 
     def test_bert_set_gguf_parameters_with_classifier_labels(self):
         """Test BertModel.set_gguf_parameters adds classifier labels when present."""
-        from auto_round.export.export_to_gguf.conversion.bert import BertModel
+        from auto_round.export.formats.gguf.conversion.bert import BertModel
 
         obj = _make_mock_model(BertModel)
         obj.cls_out_labels = {"0": "NEGATIVE", "1": "POSITIVE"}
@@ -5713,7 +5713,7 @@ class TestBertConversion:
 
     def test_bert_filter_tensors_strips_bert_prefix(self):
         """Test BertModel.filter_tensors strips leading 'bert.' prefix."""
-        from auto_round.export.export_to_gguf.conversion.bert import BertModel
+        from auto_round.export.formats.gguf.conversion.bert import BertModel
 
         def parent_filter(item):
             return item
@@ -5724,7 +5724,7 @@ class TestBertConversion:
 
     def test_bert_filter_tensors_renames_gamma_beta(self):
         """Test BertModel.filter_tensors converts .gamma -> .weight and .beta -> .bias."""
-        from auto_round.export.export_to_gguf.conversion.bert import BertModel
+        from auto_round.export.formats.gguf.conversion.bert import BertModel
 
         def parent_filter(item):
             return item
@@ -5737,7 +5737,7 @@ class TestBertConversion:
 
     def test_bert_filter_tensors_drops_position_ids_pooler_cls(self):
         """Test BertModel.filter_tensors drops position_ids, pooler, cls.predictions, cls.seq_relationship."""
-        from auto_round.export.export_to_gguf.conversion.bert import BertModel
+        from auto_round.export.formats.gguf.conversion.bert import BertModel
 
         for name in [
             "embeddings.position_ids",
@@ -5750,7 +5750,7 @@ class TestBertConversion:
 
     def test_bert_modify_tensors_classifier_rename(self):
         """Test BertModel.modify_tensors renames classifier.weight/bias when cls_out_labels present."""
-        from auto_round.export.export_to_gguf.conversion.bert import BertModel
+        from auto_round.export.formats.gguf.conversion.bert import BertModel
 
         obj = _make_mock_model(BertModel)
         obj.cls_out_labels = {"0": "NEGATIVE", "1": "POSITIVE"}
@@ -5770,7 +5770,7 @@ class TestBertConversion:
 
     def test_bert_modify_tensors_no_classifier_labels(self):
         """Test BertModel.modify_tensors leaves classifier.* unchanged when no labels."""
-        from auto_round.export.export_to_gguf.conversion.bert import BertModel
+        from auto_round.export.formats.gguf.conversion.bert import BertModel
 
         obj = _make_mock_model(BertModel)
         obj.cls_out_labels = None
