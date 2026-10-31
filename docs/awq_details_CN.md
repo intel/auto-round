@@ -31,7 +31,7 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 auto-round --model <model> --scheme <scheme> --format fake \
-  --enable_alg_ext --algorithm auto_round \
+  --algorithm auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 # AWQ + RTN / AWQ + AutoRound / AWQ + 启用算法扩展的 AutoRound
@@ -44,11 +44,65 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 auto-round --model <model> --scheme <scheme> --format fake \
-  --enable_alg_ext --algorithm awq,auto_round \
+  --algorithm awq,auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 ```
 
-表中 `AR2` 表示启用 `--enable_alg_ext` 的 AutoRound，`AWQ_AR2` 表示 AWQ 后接启用 `--enable_alg_ext` 的 AutoRound。准确率列以百分制展示，例如原始值 `0.7058` 写作 `70.58`。
+## 标定数据选择
+
+AWQ 为激活统计以及 smoothing、clipping 搜索维护独立的校准预算。这些设置只影响 AWQ 的预处理；下游 RTN 或 AutoRound 量化算法仍使用完整的全局校准缓存，并自行执行最终的 scale 搜索。
+
+| CLI 选项 | `AWQConfig` 字段 | 默认值 | 作用 |
+| --- | --- | --- | --- |
+| `--awq-nsamples` | `awq_nsamples` | `128` | AWQ 激活统计、smoothing 和 clipping 使用的最大校准样本数。 |
+| `--awq_seqlen` | `awq_seqlen` | `512` | AWQ 校准使用的最大序列长度；`<= 0` 表示关闭截断。 |
+| `--awq_smooth_batch_size` | `smooth_batch_size` | `None` | AWQ scale 搜索中重放 parent 模块的 micro-batch 大小；较小的正数可降低峰值显存，`<= 0` 表示关闭 micro-batching。 |
+| `--awq-v2-scale-search` | `v2_scale_search` | `auto` | 终端量化算法为 AutoRoundV2 时，AWQ 内部 QDQ 使用的 scale 搜索策略。 |
+
+`--awq-nsamples` 独立于全局 `--nsamples`。AWQ 会从已缓存的校准输入中确定性地随机抽取一个子集（随机种子固定为 42），并在所有 block 中复用同一子集。全局缓存不会被修改，因此下游 RTN/AutoRound 量化算法和 FP reference forward 仍使用全部已缓存样本。将 `--awq-nsamples` 设置为大于等于 `--nsamples` 即可使用全部样本。
+
+`--awq-v2-scale-search` 仅在终端量化算法为 AutoRoundV2 时生效，即同时启用 `--enable_alg_ext` 和 `--algorithm auto_round`（或 `awq,auto_round`）。终端量化算法为 RTN 时，该选项会被忽略。此策略只改变用于给 AWQ 候选打分的 QDQ；终端 AutoRoundV2 量化算法始终会执行自己的初始化搜索。
+
+- `auto`（默认）：INT scheme 使用 `off`，MXFP、NVFP 等非 INT scheme 使用 `full`。
+- `off`：AWQ 候选损失使用普通 RTN。速度最快，也是 INT 的推荐默认值。
+- `full`：对每个 AWQ 候选都复现终端 V2 的优化 init-scale 搜索。速度最慢，但最贴近终端量化。
+- `reuse`：每个 balance layer 只做一次优化 init-scale 搜索，并在所有 AWQ 候选中复用。速度介于 `off` 和 `full` 之间。
+
+当 smoothing 或 hard clipping 修改了某个 block 时，AWQ 会在量化前重新执行一次 FP reference forward，避免使用过期的 reference 作为量化目标或传递给下一个 block。
+
+```bash
+# INT：auto 解析为 off；AWQ 最多使用 128 个样本，终端量化使用 256 个。
+auto-round --model <model> --scheme W4A16 --format fake \
+  --algorithm awq,auto_round --enable_alg_ext \
+  --nsamples 256 --awq-nsamples 128
+
+# MXFP4：auto 解析为 full；使用 reuse 可缩短 AWQ 校准时间。
+auto-round --model <model> --scheme MXFP4 --format fake \
+  --algorithm awq,auto_round --enable_alg_ext \
+  --awq-v2-scale-search reuse
+
+# INT：显式对每个 AWQ 候选执行完整的优化搜索。
+auto-round --model <model> --scheme W4A16 --format fake \
+  --algorithm awq,auto_round --enable_alg_ext \
+  --awq-v2-scale-search full
+```
+
+这些参数也可以通过 `AWQConfig` 设置：
+
+```python
+from auto_round import AutoRound, AWQConfig, SignRoundV2Config
+
+ar = AutoRound(
+    model="<model>",
+    scheme="W4A16",
+    alg_configs=[
+        AWQConfig(awq_nsamples=128, awq_seqlen=512, v2_scale_search="auto"),
+        SignRoundV2Config(iters=200),
+    ],
+)
+```
+
+表中 `AR2` 表示启用 `--algorithm auto_round_v2`（原 `--enable_alg_ext`）的 AutoRound，`AWQ_AR2` 表示 AWQ 后接启用同一算法扩展的 AutoRound。准确率列以百分制展示，例如原始值 `0.7058` 写作 `70.58`。
 
 AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply_clip`，否则不包含 AWQ weight clipping。
 
@@ -260,6 +314,6 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 
 ## 总结
 
-AWQ 更适合量化误差对 activation-aware weight smoothing 敏感的 scheme，例如 MXFP4。它可以提升 scheme 准确率，尤其是与启用 `--enable_alg_ext` 的 AutoRound 组合时。
+AWQ 更适合量化误差对 activation-aware weight smoothing 敏感的 scheme，例如 MXFP4。它可以提升 scheme 准确率，尤其是与启用算法扩展（`--algorithm auto_round_v2`）的 AutoRound 组合时。
 
 AWQ 不会给最终量化模型增加持续性内存开销，并且与终端量化算法正交，因此可以与 RTN、AutoRound 或 AutoRound2 组合，而不改变这些算法本身的核心量化逻辑。
