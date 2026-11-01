@@ -643,7 +643,11 @@ def _register_missing_modules_in_ct_ignore(target_dir: str, missing_tensors_dict
         return
 
     def _is_compressed_tensors(qcfg: dict) -> bool:
-        return isinstance(qcfg, dict) and isinstance(qcfg.get("config_groups"), dict)
+        return (
+            isinstance(qcfg, dict)
+            and qcfg.get("quant_method") == "compressed-tensors"
+            and isinstance(qcfg.get("config_groups"), dict)
+        )
 
     def _already_ignored(ignore_list: list, module_name: str) -> bool:
         for entry in ignore_list:
@@ -651,7 +655,7 @@ def _register_missing_modules_in_ct_ignore(target_dir: str, missing_tensors_dict
                 return True
             if isinstance(entry, str) and entry.startswith("re:"):
                 try:
-                    if _re.search(entry[len("re:") :], module_name):
+                    if _re.match(entry[len("re:") :], module_name):
                         return True
                 except _re.error:
                     continue

@@ -966,6 +966,57 @@ class TestRegisterMissingModulesInCtIgnore:
             ignore = json.load(f)["quantization_config"]["ignore"]
         assert ignore == ["re:.*mtp.*"], "a covering regex should suppress redundant exact-name entries"
 
+    def test_non_prefix_regex_does_not_suppress_exact_name(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        qcfg = _make_compressed_tensors_config(ignore=["re:mtp"])
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"model.mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore == ["re:mtp", "model.mtp.fc"]
+
+    def test_save_model_preserves_ignore_in_both_config_files(self, tmp_path):
+        from types import SimpleNamespace
+
+        from auto_round.export.utils import save_model
+
+        src, tgt = str(tmp_path / "src"), str(tmp_path / "tgt")
+        os.makedirs(src)
+        os.makedirs(tgt)
+        _save_safetensors({"mtp.fc.weight": torch.randn(32, 64)}, os.path.join(src, "model.safetensors"))
+        _save_safetensors({"model.embed_tokens.weight": torch.randn(8, 64)}, os.path.join(tgt, "model.safetensors"))
+        with open(os.path.join(src, "config.json"), "w") as f:
+            json.dump({}, f)
+        qcfg = _make_compressed_tensors_config()
+        model = SimpleNamespace(name_or_path=src, config=SimpleNamespace(quantization_config=qcfg))
+
+        save_model(model, tgt, immediate_saving=True)
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            embedded_ignore = json.load(f)["quantization_config"]["ignore"]
+        with open(os.path.join(tgt, "quantization_config.json")) as f:
+            standalone_ignore = json.load(f)["ignore"]
+        assert "mtp.fc" in embedded_ignore
+        assert "mtp.fc" in standalone_ignore
+
+    def test_config_groups_with_other_quant_method_untouched(self, tmp_path):
+        tgt = str(tmp_path / "tgt")
+        os.makedirs(tgt)
+        qcfg = _make_compressed_tensors_config()
+        qcfg["quant_method"] = "other"
+        with open(os.path.join(tgt, "config.json"), "w") as f:
+            json.dump({"quantization_config": qcfg}, f)
+
+        _register_missing_modules_in_ct_ignore(tgt, {"mtp.fc.weight": torch.randn(32, 64)})
+
+        with open(os.path.join(tgt, "config.json")) as f:
+            ignore = json.load(f)["quantization_config"]["ignore"]
+        assert ignore == []
+
     def test_idempotent_no_duplicate_exact_names(self, tmp_path):
         tgt = str(tmp_path / "tgt")
         os.makedirs(tgt)
