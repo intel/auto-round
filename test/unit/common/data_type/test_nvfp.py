@@ -25,6 +25,8 @@ from auto_round.data_type.nvfp import (
     FLOAT8_E4M3_MIN,
     FLOAT8_UE5M3_MAX,
     calculate_gparam,
+    calculate_gparam_by_dtype,
+    calculate_gparam_e5m3,
     cast_to_fp4,
     cast_to_ue5m3,
     cast_to_ue5m3_ste,
@@ -34,13 +36,16 @@ from auto_round.data_type.nvfp import (
     nv_fp4,
     nv_fp4_with_static_gs,
     nvfp4_v2,
+    nvfp4_v2_gs,
     nvfp4_v2_with_global_scale,
+    nvfp4_v2_with_static_gs,
+    opt_rtn_nvfp4_v2_gs,
     ref_fp4_quant,
     ref_nvfp4_quant,
     search_nvfp4_scale,
     search_nvfp4_v2_scale,
 )
-from auto_round.data_type.utils import update_fused_layer_global_scales
+from auto_round.data_type.utils import get_quant_func, update_fused_layer_global_scales
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -747,6 +752,81 @@ class TestNvfp4V2:
         # group_size=32 divides 50 with padding to 64
         q, s, z = nvfp4_v2(t, group_size=32)
         assert q.shape == t.shape
+
+
+# ---------------------------------------------------------------------------
+# NVFP4_E5M3_GS: nvfp4_v2_gs / nvfp4_v2_with_static_gs
+# ---------------------------------------------------------------------------
+
+
+class TestNvfp4V2GlobalScale:
+    """Test the NVFP4 E5M3 data types with a per-tensor global scale."""
+
+    def test_calculate_gparam_e5m3_uses_ue5m3_max(self):
+        t = torch.randn(4, 32)
+        expected = FLOAT8_UE5M3_MAX * FLOAT4_E2M1_MAX / t.abs().max()
+        torch.testing.assert_close(calculate_gparam_e5m3(t), expected)
+        torch.testing.assert_close(calculate_gparam_by_dtype(t, "opt_rtn_nvfp4_v2_gs"), expected)
+        torch.testing.assert_close(calculate_gparam_by_dtype(t, "nv_fp"), calculate_gparam(t))
+
+    def test_default_global_scale_fills_ue5m3_range(self):
+        t = torch.randn(8, 64)
+        q, s, z = nvfp4_v2_gs(t, group_size=16)
+        assert q.shape == t.shape and z is None
+        assert s.max().item() == FLOAT8_UE5M3_MAX
+
+    def test_matches_ref_with_explicit_global_scale(self):
+        t = torch.randn(8, 64)
+        global_scale = torch.tensor([1234.5])
+        q, s, _ = nvfp4_v2_gs(t, group_size=16, global_scale=global_scale)
+        ref_q, ref_s = ref_fp4_quant(t.reshape(-1, 16), global_scale, 16)
+        torch.testing.assert_close(q, ref_q.reshape(t.shape))
+        torch.testing.assert_close(s, ref_s)
+
+    def test_global_scale_one_matches_nvfp4_v2(self):
+        t = torch.randn(8, 64)
+        q, _, _ = nvfp4_v2_gs(t, group_size=16, global_scale=torch.ones(1))
+        ref, _, _ = nvfp4_v2(t, group_size=16)
+        torch.testing.assert_close(q, ref)
+
+    def test_per_group_max_scale(self):
+        t = torch.randn(4, 32)
+        max_scale = torch.full((8,), 0.9)
+        q, _, _ = nvfp4_v2_gs(t, group_size=16, max_scale=max_scale)
+        ref, _, _ = nvfp4_v2_gs(t, group_size=16, max_scale=0.9)
+        torch.testing.assert_close(q, ref)
+
+    def test_opt_rtn_does_not_increase_error(self):
+        t = torch.randn(32, 128)
+        baseline, _, _ = nvfp4_v2_gs(t, group_size=16)
+        optimized, _, _ = opt_rtn_nvfp4_v2_gs(t, group_size=16)
+        assert (optimized - t).pow(2).sum() <= (baseline - t).pow(2).sum()
+
+    def test_opt_rtn_handles_multiple_groups(self):
+        t = torch.randn(4, 32)
+
+        optimized, scale, _ = opt_rtn_nvfp4_v2_gs(t, group_size=16)
+
+        assert optimized.shape == t.shape
+        assert scale.shape == (8, 1)
+        assert torch.isfinite(optimized).all()
+
+    def test_static_gs_tensor_max_matches_global_scale(self):
+        t = torch.randn(4, 64)
+        tensor_max = torch.tensor([3.0])
+        from_max, _, _ = nvfp4_v2_with_static_gs(t, group_size=16, tensor_max=tensor_max)
+        from_gs, _, _ = nvfp4_v2_with_static_gs(t, group_size=16, global_scale=calculate_gparam_e5m3(tensor_max))
+        torch.testing.assert_close(from_max, from_gs)
+
+    def test_static_gs_empty_tensor(self):
+        t = torch.empty(0, 16)
+        q, s, z = nvfp4_v2_with_static_gs(t, group_size=16)
+        assert q is t and s is None and z is None
+
+    def test_registered_quant_funcs(self):
+        assert get_quant_func("nvfp4_v2_gs", 4, True, iters=0)[1] == "opt_rtn_nvfp4_v2_gs"
+        assert get_quant_func("nvfp4_v2_gs", 4, True, iters=200)[1] == "nvfp4_v2_gs"
+        assert get_quant_func("nvfp4_v2_with_static_gs", 4, True, iters=0)[1] == "nvfp4_v2_with_static_gs"
 
 
 # ---------------------------------------------------------------------------

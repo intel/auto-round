@@ -23,8 +23,8 @@ import torch
 from torch.nn import Linear, Module
 
 from auto_round import envs
-from auto_round.compressors.utils import is_nv_fp
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
+from auto_round.schemes import needs_nvfp_global_scale
 from auto_round.utils import check_to_quantized, logger
 
 
@@ -233,13 +233,26 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
     if dt.endswith("dq"):
         return None, None
     if dt.startswith("int"):
-        # The optimized int init-scale search is symmetric-only; asym int uses
-        # the standard tensor_min/tensor_max range instead. The clamp binds via
-        # functools.partial (a stable callable: same threshold resolves to the
-        # same key) so batched-search keying (_fn_key) can merge same-config
-        # modules into one stacked call.
+        # The optimized int init-scale search is symmetric-only for the generic
+        # single-tensor contract; asym int instead pairs the plain
+        # ``quant_tensor_asym`` with a (scale, zero-point) search resolved via
+        # ``resolve_optimized_init_scale_zero_fn`` (its tuple return can't travel
+        # on the single-tensor search_fn path, so search_fn stays None here --
+        # AWQ / ``search_optimized_init_scale`` are unaffected).
         if "asym" in dt:
-            return None, None
+            # Only the exact ``int_asym`` type has an optimized path pairing the
+            # plain ``quant_tensor_asym`` (rounded integer zero-point) with the
+            # NeUQI (scale, integer zero-point) search. Other asymmetric int
+            # variants deliberately use a different quantizer -- e.g.
+            # ``int_asym_float_zp`` (GGUF q4_1/q5_1) keeps a *floating* zero point
+            # via ``quant_tensor_asym_float_zp`` -- so they must NOT be silently
+            # rerouted to rounded-zero-point quantization (which would write
+            # incompatible metadata). They have no optimized path here.
+            if dt != "int_asym":
+                return None, None
+            from auto_round.data_type.int import quant_tensor_asym
+
+            return None, quant_tensor_asym
         from auto_round.data_type.int import quant_tensor_sym, search_scales
 
         return _int_search_with_thresh(search_scales, q_scale_thresh), quant_tensor_sym
@@ -267,6 +280,41 @@ def resolve_optimized_init_scale_fn(
     """
     search_fn, _ = _resolve_optimized_dtype_funcs(data_type, q_scale_thresh)
     return search_fn
+
+
+def resolve_optimized_init_scale_zero_fn(
+    data_type: str, q_scale_thresh: float = 1e-5
+) -> "Callable[..., tuple[torch.Tensor, torch.Tensor]] | None":
+    """Resolve the asym-int joint ``(scale, integer zero-point)`` init search callable.
+
+    Asymmetric sibling of :func:`resolve_optimized_init_scale_fn`. The symmetric
+    optimized path threads a single ``init_scale`` tensor, but asym int also needs
+    a per-group integer zero point, so this returns a callable
+    ``(weight_reshape, bits, imatrix) -> (init_scale, init_zp)`` (NeUQI joint
+    search) for asymmetric int data types, or ``None`` otherwise.
+
+    The returned closure is intentionally per-call: the batched wrap-search
+    dispatcher keys closures by ``repr`` (never merging lookalikes), so asym
+    modules always take the per-module (singleton) lane -- its tuple result is
+    incompatible with the stacked single-tensor write-back.
+    """
+    dt = str(data_type)
+    # Only the exact ``int_asym`` type uses the NeUQI integer (scale, zero-point)
+    # search. Other asymmetric int variants keep a different zero-point contract
+    # (e.g. ``int_asym_float_zp`` uses a floating zero point), so they must not be
+    # routed through this integer-zero-point search.
+    if dt != "int_asym":
+        return None
+    from auto_round.data_type.neuqi import neuqi_search_scale_zero
+
+    def _search_scale_zero(weight_reshape, bits, imatrix):
+        qw = imatrix if isinstance(imatrix, torch.Tensor) else None
+        scale, zp = neuqi_search_scale_zero(
+            weight_reshape.to(torch.float32), bits, qw=qw, q_scale_thresh=q_scale_thresh
+        )
+        return scale.to(weight_reshape.dtype), zp.to(weight_reshape.dtype)
+
+    return _search_scale_zero
 
 
 def search_optimized_init_scale(
@@ -478,6 +526,61 @@ def get_gaudi_fp8_ste_func():
     return fn
 
 
+def register_act_max_hooks(block: Module, act_data_type=None) -> list:
+    """Collect static activation maxima, including NVFP's per-tensor global maximum.
+
+    The caller owns the returned handles and must remove them after calibration.
+    """
+    from auto_round.compressors.utils import check_need_act_calibration
+    from auto_round.utils import SUPPORTED_LAYER_TYPES
+
+    @torch.no_grad()
+    def collect_act_max(module, inputs, output):
+        inputs = inputs[0] if isinstance(inputs, (tuple, list)) else inputs
+        if inputs.numel() == 0:
+            return
+        module_dtype = getattr(module, "act_data_type", None) or getattr(module, "data_type", None) or act_data_type
+        is_nvfp = needs_nvfp_global_scale(module_dtype or "")
+        inputs, _, _ = reshape_pad_tensor_by_group_size(inputs, module.act_group_size)
+        act_max = inputs.abs().amax(dim=-1)
+        if is_nvfp:
+            act_max = act_max.amax().reshape(1)
+        previous = getattr(module, "act_max", None)
+        if previous is not None and previous.numel():
+            act_max = act_max.to(previous.device)
+            if is_nvfp:
+                previous = previous.amax().reshape(1)
+            act_max = torch.maximum(act_max, previous)
+        module.act_max = act_max
+
+    def should_collect(module):
+        if isinstance(module, tuple(SUPPORTED_LAYER_TYPES)):
+            return (
+                hasattr(module, "act_dynamic")
+                and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
+                and check_to_quantized(module)
+            )
+        if hasattr(module, "bits"):
+            return (
+                module.bits <= 8
+                and check_need_act_calibration(
+                    getattr(module, "act_dynamic", True),
+                    getattr(module, "act_data_type", None),
+                    getattr(module, "act_bits", 16),
+                )
+                and check_to_quantized(module)
+            )
+        return False
+
+    if should_collect(block):
+        return [block.register_forward_hook(collect_act_max)]
+    return [
+        module.register_forward_hook(collect_act_max)
+        for name, module in block.named_modules()
+        if name and should_collect(module)
+    ]
+
+
 # please refer from https://github.com/vllm-project/llm-compressor/blob/
 # 29f4d5644b48e9c8ebb7e36d5be9f7c92747ceb7/src/llmcompressor/modifiers/utils/helpers.py#L11
 def update_fused_layer_global_scales(
@@ -525,6 +628,10 @@ def update_fused_layer_global_scales(
 
     def _update_global_scales(modules: list[Module]):
         """Update global scales for a list of modules."""
+        from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
+
+        # SVDQuant keeps the quantized projection inside its residual branch.
+        modules = [module.residual_linear if isinstance(module, SVDQuantLinear) else module for module in modules]
         scales = _collect_scales(modules)
         if not scales:
             return
@@ -564,9 +671,9 @@ def update_fused_layer_global_scales(
 
 
 def update_block_global_scale_if_needed(block, data_type, group_size):
-    from auto_round.data_type.nvfp import calculate_gparam
+    from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-    has_nvfp = is_nv_fp(data_type)
+    has_nvfp = needs_nvfp_global_scale(data_type)
 
     # Calculate block wise weight global scale
     for _, m in block.named_modules():
@@ -575,10 +682,10 @@ def update_block_global_scale_if_needed(block, data_type, group_size):
         # Check per-layer data_type for mixed-scheme scenarios
         module_data_type = getattr(m, "data_type", data_type)
         module_group_size = getattr(m, "group_size", group_size)
-        if is_nv_fp(module_data_type):
+        if needs_nvfp_global_scale(module_data_type):
             has_nvfp = True
             if not hasattr(m, "weight_global_scale"):
-                weight_global_scale = calculate_gparam(m.weight, module_group_size)
+                weight_global_scale = calculate_gparam_by_dtype(m.weight, module_data_type, module_group_size)
                 m.weight_global_scale = weight_global_scale
 
     if not has_nvfp:

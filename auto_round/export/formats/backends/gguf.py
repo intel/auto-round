@@ -129,7 +129,8 @@ class GGUFFormat(OutputFormat):
         if ctx.iters != 0 and scheme.bits != 3 and not ctx.enable_alg_ext:
             logger.warning_once(
                 "`iters=0` is recommended when exporting to current GGUF format"
-                " or add `enable_alg_ext` for better accuracy with much more tuning cost."
+                " or use `--algorithm auto_round_v2` (the former `enable_alg_ext`) for better accuracy"
+                " with much more tuning cost."
                 " Please refer to https://github.com/intel/auto-round/tree/main/docs/gguf_alg_ext_acc.md"
                 " for the accuracy results."
             )

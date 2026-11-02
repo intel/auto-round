@@ -101,6 +101,32 @@ tokenizer = AutoTokenizer.from_pretrained("./nvfp4_e5m3_model")
 
 ---
 
+## NVFP4_E5M3_GS：带全局 scale 的 E5M3 块级 scale
+
+`NVFP4_E5M3_GS` 保留 FP4 E2M1 数值和 UE5M3 块级 scale，并像标准 NVFP4 一样为权重和激活额外增加一个张量级 FP32 全局 scale：
+
+$$\text{global\_scale} = \frac{114688 \times 6}{\text{amax}}, \qquad x \approx q \cdot \frac{\text{UE5M3}(\text{block\_scale})}{\text{global\_scale}}$$
+
+| 参数 | 值 |
+|---|---|
+| 预设名称 | `NVFP4_E5M3_GS` |
+| 权重数据类型 | `nvfp4_v2_gs` |
+| 激活数据类型 | `nvfp4_v2_with_static_gs` |
+| 额外张量 | `.weight_global_scale`、`.input_global_scale`（FP32） |
+| `auto_round` 打包格式 | `auto_round:llm_compressor_nvfp4_e5m3_gs` |
+| `llm_compressor` 格式 | `nvfp4-e5m3-gs-pack-quantized` |
+| 推理后端 | `auto_round:cute_nvfp4_e5m3_gs`、`auto_round:torch_nvfp4_e5m3_gs` |
+
+- **常规调优流程**：全局 scale 的计算方式与 NVFP4 一致。权重全局 scale 由权重 amax 得到，`input_global_scale` 由校准得到的激活 amax 得到。q/k/v 及 gate/up 投影共享最小的全局 scale。
+- **无模型量化流程**：按层计算权重全局 scale，`input_global_scale` 固定为 `1`。
+
+```bash
+auto-round --model <model_id_or_path> --scheme NVFP4_E5M3_GS --output_dir ./nvfp4_e5m3_gs_model
+auto-round --model <model_id_or_path> --scheme NVFP4_E5M3_GS --model_free --output_dir ./nvfp4_e5m3_gs_model
+```
+
+---
+
 ## 环境变量
 
 ### `AR_NVFP4_E5M3_CACHE_HP_WEIGHT`

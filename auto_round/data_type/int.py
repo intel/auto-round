@@ -249,6 +249,8 @@ def quant_tensor_asym(
     tensor_min=None,
     tensor_max=None,
     q_scale_thresh=1e-5,
+    init_scale=None,
+    init_zp=None,
     **kwargs
 ):
     """Quantize and de-quantize tensor asymmetrically.
@@ -264,12 +266,34 @@ def quant_tensor_asym(
         tensor_max (Tensor, optional): Maximum tensor value for quantization. Defaults to None.
         scale_dtype: dtype of the quantized scale,as most kernels only support FP16 or FP32, while this value is import
         q_scale_thresh: clip the quantized scale's magnitude to this value to improve the numerical stability
+        init_scale (Tensor, optional): Pre-searched per-group scale (SignRound optimized path). When set,
+            ``max_scale`` tunes a coefficient on top of it and ``init_zp`` supplies the integer zero point,
+            mirroring the symmetric ``quant_tensor_sym`` init branch.
+        init_zp (Tensor, optional): Pre-searched per-group integer zero point paired with ``init_scale``.
 
     Returns:
         Quantized and de-quantized tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = int(2.0**bits) - 1
+
+    if init_scale is not None:
+        # SignRound optimized asym path: the (scale, integer zp) were searched
+        # once at wrap time; ``max_scale`` is the per-group tuning coefficient
+        # (Tensor) during tuning, or a plain scalar for a one-shot QDQ.
+        if isinstance(max_scale, torch.Tensor):
+            scale = init_scale * max_scale.unsqueeze(dim=-1)
+        else:
+            scale = init_scale * max_scale
+        scale = scale.to(scale_dtype)
+        scale = torch.clamp(scale, min=q_scale_thresh)
+        zp = init_zp
+        int_w = round_ste(tensor / scale + v)
+        q = torch.clamp(int_w + zp, 0, maxq)
+        qdq_result = (scale * (q - zp)).to(tensor.dtype)
+        qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
+        return qdq_result, scale, zp
+
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)

@@ -412,7 +412,7 @@ def test_fake_format_restores_fp32_and_copies_mtp_tensors(tmp_path, monkeypatch)
     source_dir = str(tmp_path / "source")
     os.makedirs(source_dir)
     norm_weight = torch.tensor([1.0001, -2.0002, 3.0003, 4.0004], dtype=torch.float32)
-    mtp_weight = torch.randn(8, 4)
+    mtp_weight = torch.randn(8, 4, dtype=torch.bfloat16)
     save_file(
         {
             "model.language_model.layers.0.linear_attn.norm.weight": norm_weight,

@@ -231,14 +231,14 @@ def iterate_residual_decomposition(
         deployed_up = up.to(low_rank_dtype)
         deployed_low_rank = deployed_up.to(weight.dtype) @ deployed_down.to(weight.dtype)
         error = torch.sum((weight - (quantized_residual + deployed_low_rank)).square()).item()
-        accepted = math.isfinite(error) and error <= best_error
+        accepted = math.isfinite(error) and error < best_error
 
         if accepted:
             best_down = deployed_down.clone()
             best_up = deployed_up.clone()
             best_error = error
             best_iteration = iteration
-        elif early_stop and best_iteration is not None:
+        elif early_stop and best_iteration is not None and (not math.isfinite(error) or error > best_error):
             break
 
     if best_down is None or best_up is None or best_iteration is None:

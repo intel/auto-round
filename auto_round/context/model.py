@@ -399,8 +399,10 @@ class ModelContext(BaseContext):
         runs, in ``__init__``, via ``_materialize_disk_stream_non_block_params``.
         """
         from auto_round.utils.disk_stream_util import build_meta_model
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
 
         model, tokenizer, index = build_meta_model(model_name, trust_remote_code=self.trust_remote_code)
+        keep_special_fp32_params(model, model_name)
         model.path = model_name
         # Stash the index on the model object
         # itself so downstream code that only has a reference to the model
