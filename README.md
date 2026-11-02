@@ -50,7 +50,7 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 ## 🆕 What's New
 
-* [2026/10] Calibration Dataset Study for PTQ. Current results suggest that, for 4-bit quantization, a mixed calibration dataset (75% UltraChat + 25% OpenCode) provides a better balance across general capabilities, coding performance, and agent-oriented tasks. See [doc](./docs/calibration_acc.md) for detailed benchmark results and multi-run statistics. (WIP)
+* - [WIP] For quantization at 4 bits and above, we currently recommend mixing 75% UltraChat with 25% OpenCode to improve reasoning capabilities and agent compatibility. With the default `nsamples=128`, use `--dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"`. See the [calibration dataset documentation](./docs/step_by_step.md#default-dataset) for details. We will update the default calibration dataset after the evaluation is complete.
 
 * [2026/10] We now show that **W2A16** accuracy improves steadily as more tuning cost is invested. See the [W2A16 accuracy results](./docs/alg_202508.md).
 
