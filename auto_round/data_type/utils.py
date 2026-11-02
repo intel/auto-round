@@ -524,6 +524,61 @@ def get_gaudi_fp8_ste_func():
     return fn
 
 
+def register_act_max_hooks(block: Module, act_data_type=None) -> list:
+    """Collect static activation maxima, including NVFP's per-tensor global maximum.
+
+    The caller owns the returned handles and must remove them after calibration.
+    """
+    from auto_round.compressors.utils import check_need_act_calibration
+    from auto_round.utils import SUPPORTED_LAYER_TYPES
+
+    @torch.no_grad()
+    def collect_act_max(module, inputs, output):
+        inputs = inputs[0] if isinstance(inputs, (tuple, list)) else inputs
+        if inputs.numel() == 0:
+            return
+        module_dtype = getattr(module, "act_data_type", None) or getattr(module, "data_type", None) or act_data_type
+        is_nvfp = needs_nvfp_global_scale(module_dtype or "")
+        inputs, _, _ = reshape_pad_tensor_by_group_size(inputs, module.act_group_size)
+        act_max = inputs.abs().amax(dim=-1)
+        if is_nvfp:
+            act_max = act_max.amax().reshape(1)
+        previous = getattr(module, "act_max", None)
+        if previous is not None and previous.numel():
+            act_max = act_max.to(previous.device)
+            if is_nvfp:
+                previous = previous.amax().reshape(1)
+            act_max = torch.maximum(act_max, previous)
+        module.act_max = act_max
+
+    def should_collect(module):
+        if isinstance(module, tuple(SUPPORTED_LAYER_TYPES)):
+            return (
+                hasattr(module, "act_dynamic")
+                and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
+                and check_to_quantized(module)
+            )
+        if hasattr(module, "bits"):
+            return (
+                module.bits <= 8
+                and check_need_act_calibration(
+                    getattr(module, "act_dynamic", True),
+                    getattr(module, "act_data_type", None),
+                    getattr(module, "act_bits", 16),
+                )
+                and check_to_quantized(module)
+            )
+        return False
+
+    if should_collect(block):
+        return [block.register_forward_hook(collect_act_max)]
+    return [
+        module.register_forward_hook(collect_act_max)
+        for name, module in block.named_modules()
+        if name and should_collect(module)
+    ]
+
+
 # please refer from https://github.com/vllm-project/llm-compressor/blob/
 # 29f4d5644b48e9c8ebb7e36d5be9f7c92747ceb7/src/llmcompressor/modifiers/utils/helpers.py#L11
 def update_fused_layer_global_scales(
