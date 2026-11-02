@@ -1060,6 +1060,24 @@ class TestModelFreeQuantize:
             out_keys = set(sf.keys())
         assert "layer.qweight" in out_keys
 
+    def test_download_single_shard_replaces_invalid_cached_safetensors(self, tmp_path):
+        from auto_round.utils.model_free_utils import _download_single_shard
+
+        source_dir = tmp_path / "source"
+        cache_dir = tmp_path / "cache"
+        source_dir.mkdir()
+        cache_dir.mkdir()
+        shard_name = "model-00001-of-00001.safetensors"
+        save_file({"layer.weight": torch.ones(8, 8)}, source_dir / shard_name)
+        cached_path = cache_dir / shard_name
+        cached_path.write_bytes(b"truncated safetensors")
+
+        result = _download_single_shard(str(source_dir), shard_name, str(cache_dir))
+
+        assert result == str(cached_path)
+        with safe_open(result, framework="pt") as shard:
+            assert shard.keys() == ["layer.weight"]
+
     @staticmethod
     def _make_resume_core(model_dir, output_dir, *, scheme="W4A16"):
         core = _ModelFreeCompressorCore(
@@ -2868,6 +2886,160 @@ def test_streaming_worker_receives_disable_opt_rtn(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "_merge_shard_task_result", lambda result: None)
     core._process_all_shards_streaming_pipeline()
     assert received == [True]
+
+
+def test_streaming_pipeline_bounds_downloaded_and_queued_shards(tmp_path, monkeypatch):
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
+
+    import auto_round.compressors.model_free as module
+
+    cache_dir = tmp_path / ".cache" / "model_free_source_shards"
+    cache_dir.mkdir(parents=True)
+    core = _ModelFreeCompressorCore("org/dummy", str(tmp_path), enable_torch_compile=False)
+    core.is_streaming = True
+    core.work_dir = str(tmp_path)
+    core.shard_names = [f"shard-{index:02}.safetensors" for index in range(8)]
+    core.shard_parallelism = 2
+    max_cached = 0
+    cache_lock = Lock()
+    quantized = []
+
+    def prefetch(_model, shard_name, *_args):
+        nonlocal max_cached
+        path = cache_dir / shard_name
+        path.write_bytes(b"source")
+        with cache_lock:
+            max_cached = max(max_cached, len(list(cache_dir.glob("*.safetensors"))))
+        return str(path)
+
+    def quantize(_shard_idx, shard_name, *, shard_path, **_kwargs):
+        time.sleep(0.03)
+        os.remove(shard_path)
+        quantized.append(shard_name)
+        return 0, shard_name, shard_path, f"out-{shard_name}", [], [], []
+
+    monkeypatch.setattr(module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers))
+    monkeypatch.setattr(module, "_prefetch_shard", prefetch)
+    monkeypatch.setattr(module, "_quantize_local_shard_task", quantize)
+    monkeypatch.setattr(core, "_merge_shard_task_result", lambda _result: None)
+
+    core._process_all_shards_streaming_pipeline()
+
+    assert set(quantized) == set(core.shard_names)
+    assert max_cached <= core.shard_parallelism + max(2, core.shard_parallelism)
+
+
+def test_compact_donor_shard_keeps_only_required_scales(tmp_path):
+    donor = "donor.safetensors"
+    scale_name = "layer.weight_scale_inv"
+    shard_path = tmp_path / donor
+    save_file(
+        {
+            "layer.weight": torch.randn(256, 256),
+            scale_name: torch.ones(2, 2),
+            "other.weight": torch.randn(256, 256),
+        },
+        shard_path,
+    )
+    core = _ModelFreeCompressorCore("org/dummy", str(tmp_path), enable_torch_compile=False)
+    core.donor_shard_tensors = {donor: {scale_name}}
+
+    compact_path = core._compact_donor_shard(donor, str(shard_path))
+
+    assert not shard_path.exists()
+    with safe_open(compact_path, framework="pt") as shard:
+        assert shard.keys() == [scale_name]
+
+
+def _make_fp8_donor_recipient_core(tmp_path, monkeypatch, failed_shard):
+    """Streaming core where the recipient's FP8 weight_scale_inv lives in the donor shard."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+
+    donor, recipient = "model-00002-of-00002.safetensors", "model-00001-of-00002.safetensors"
+    weight_name = "model.layers.3.mlp.experts.30.gate_proj.weight"
+    scale_name = weight_name + "_scale_inv"
+    cache_dir = tmp_path / ".cache" / "model_free_source_shards"
+    cache_dir.mkdir(parents=True)
+    save_file({weight_name: torch.full((128, 128), 448.0).to(torch.float8_e4m3fn)}, cache_dir / recipient)
+    save_file({scale_name: torch.full((1, 1), 2**-13)}, cache_dir / donor)
+    with open(tmp_path / "model.safetensors.index.json", "w") as f:
+        json.dump({"weight_map": {weight_name: recipient, scale_name: donor}}, f)
+
+    output_dir = tmp_path / "output"
+    core = _ModelFreeCompressorCore("org/ds", str(output_dir), enable_torch_compile=False, disable_opt_rtn=True)
+    core.is_streaming = True
+    core.work_dir = str(tmp_path)
+    core.shard_names = [donor, recipient]
+    core.cross_shard_deps = {recipient: {donor: [scale_name]}}
+    core.donor_shard_tensors = {donor: {scale_name}}
+    core.shard_parallelism = 2
+    core.fp8_block_size = [128, 128]
+    core.model_type = "deepseek_v32"
+    core.default_scheme = {"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2_gs"}
+    core._prepare_resume_state()
+
+    def prefetch(model, shard_name, *args):
+        if shard_name != donor:
+            # Keep the donor result first in the pipeline.
+            time.sleep(0.2)
+        return None if shard_name == failed_shard else str(cache_dir / shard_name)
+
+    quantized_shards = []
+    original_task = module._quantize_local_shard_task
+
+    def quantize(shard_idx, shard_name, **kwargs):
+        quantized_shards.append(shard_name)
+        return original_task(shard_idx, shard_name, **kwargs)
+
+    monkeypatch.setattr(
+        module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers=max_workers)
+    )
+    monkeypatch.setattr(module, "_prefetch_shard", prefetch)
+    monkeypatch.setattr(module, "_quantize_local_shard_task", quantize)
+    return core, output_dir, donor, recipient, quantized_shards
+
+
+def test_streaming_donor_prefetch_failure_aborts_before_recipient(tmp_path, monkeypatch):
+    """A failed donor download must not let the recipient quantize raw FP8 bytes (DeepSeek-V3.2 GS=1536 bug)."""
+    core, output_dir, donor, _, quantized_shards = _make_fp8_donor_recipient_core(
+        tmp_path, monkeypatch, failed_shard="model-00002-of-00002.safetensors"
+    )
+
+    with pytest.raises(RuntimeError, match=f"Failed to download source shard {donor}"):
+        core._process_all_shards_streaming_pipeline()
+
+    assert quantized_shards == []
+    assert not list(output_dir.glob("*.safetensors"))
+    assert core._resume_processed_shards == {}
+
+
+def test_streaming_recipient_hydrates_global_scale_from_donor(tmp_path, monkeypatch):
+    core, output_dir, donor, recipient, quantized_shards = _make_fp8_donor_recipient_core(
+        tmp_path, monkeypatch, failed_shard=None
+    )
+
+    core._process_all_shards_streaming_pipeline()
+
+    assert sorted(quantized_shards) == sorted([donor, recipient])
+    assert not (tmp_path / ".cache" / "model_free_source_shards" / donor).exists()
+    assert not (tmp_path / ".cache" / "model_free_donor_scales" / donor).exists()
+    recipient_output = core._resume_processed_shards[recipient]["output_file"]
+    with safe_open(str(output_dir / recipient_output), framework="pt") as f:
+        global_scale = f.get_tensor("model.layers.3.mlp.experts.30.gate_proj.weight_global_scale").item()
+    # Decoded amax is 448 * 2**-13; raw FP8 bytes would give 114688 * 6 / 448 = 1536.
+    assert global_scale == pytest.approx(114688 * 6 / (448 * 2**-13), rel=1e-6)
+
+
+def test_merge_shard_task_result_raises_for_missing_shard():
+    core = _ModelFreeCompressorCore("org/ds", "unused", enable_torch_compile=False)
+
+    with pytest.raises(RuntimeError, match="model-00001.safetensors could not be loaded"):
+        core._merge_shard_task_result((0, "model-00001.safetensors", None, None, None, None, None))
 
 
 @pytest.mark.parametrize("component", ["transformer", "transformer_2"])

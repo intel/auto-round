@@ -1772,7 +1772,7 @@ def _hydrate_missing_fp8_scales_from_index(
             logger.warning(
                 f"{shard_prefix}Donor shard '{target_shard}' not found in '{donor_dir}' while hydrating "
                 f"{len(scale_names)} FP8 scale_inv tensor(s); the affected weight(s) will remain in "
-                f"float8_e4m3fn and may fail downstream quantization. This usually indicates a shard "
+                f"float8_e4m3fn and cannot be safely processed. This usually indicates a shard "
                 f"scheduling/ordering issue (donor shard processed/downloaded after its recipient)."
             )
             continue
@@ -2175,10 +2175,8 @@ def _dequant_fp8_tensors(
             index_dir=index_dir,
             donor_shard_dir=donor_shard_dir,
         )
-    if hydrate_only:
-        return raw_tensors
-
     quant_entries: list[tuple[str, str]] = []
+    missing_scale_weights: list[str] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
             continue
@@ -2188,8 +2186,39 @@ def _dequant_fp8_tensors(
         scale_inv_name = f"{name[: -len('.weight')]}.weight_scale_inv"
         if scale_inv_name in raw_tensors:
             quant_entries.append((name, scale_inv_name))
+        else:
+            missing_scale_weights.append(name)
 
-    if not quant_entries:
+    if missing_scale_weights:
+        examples = ", ".join(missing_scale_weights[:5])
+        shard_prefix = f"[{shard_name}] " if shard_name else ""
+        raise ValueError(
+            f"{shard_prefix}Cannot process {len(missing_scale_weights)} FP8 weight tensor(s): required "
+            f".weight_scale_inv tensors are missing after shard hydration. Affected weights: {examples}."
+        )
+
+    dequantized_weight_names = (
+        {weight_name for weight_name, _scale_name in quant_entries} if not hydrate_only else set()
+    )
+    unhandled_low_precision = [
+        (name, tensor)
+        for name, tensor in raw_tensors.items()
+        if name.endswith((".weight", ".weight_packed"))
+        and tensor.element_size() == 1
+        and name not in dequantized_weight_names
+    ]
+    if unhandled_low_precision:
+        examples = ", ".join(
+            f"{_normalize_tensor_name_for_warning(name)} ({tensor.dtype})"
+            for name, tensor in unhandled_low_precision[:5]
+        )
+        shard_prefix = f"[{shard_name}] " if shard_name else ""
+        logger.warning(
+            f"{shard_prefix}{len(unhandled_low_precision)} low-precision source weight tensor(s) were not dequantized; "
+            f"they will remain in their original representation. Examples: {examples}."
+        )
+
+    if hydrate_only or not quant_entries:
         return raw_tensors
 
     # device has already been resolved by the caller; use it directly here.
@@ -2677,8 +2706,23 @@ def _download_single_shard(
     os.makedirs(local_dir, exist_ok=True)
     local_path = os.path.join(local_dir, sanitize_shard_name(shard_filename, origin="shard list"))
     if os.path.exists(local_path):
-        logger.info(f"Shard '{shard_filename}' already exists at '{local_path}', skipping download.")
-        return local_path
+        if local_path.endswith(".safetensors"):
+            try:
+                from safetensors import safe_open
+
+                with safe_open(local_path, framework="pt") as shard:
+                    shard.keys()
+            except Exception as exc:
+                logger.warning(
+                    f"Cached shard '{shard_filename}' at '{local_path}' is invalid ({exc}); fetching it again."
+                )
+                os.remove(local_path)
+            else:
+                logger.info(f"Shard '{shard_filename}' already exists at '{local_path}', skipping download.")
+                return local_path
+        else:
+            logger.info(f"Shard '{shard_filename}' already exists at '{local_path}', skipping download.")
+            return local_path
 
     if os.path.isdir(model_name_or_path):
         src = str(resolve_within_directory(model_name_or_path, shard_filename, origin="shard list"))

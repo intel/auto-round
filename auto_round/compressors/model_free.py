@@ -1344,8 +1344,10 @@ class _ModelFreeCompressorCore:
         """Merge one shard-task result into global stats and weight map."""
         shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored = result
         if shard_path is None or out_shard_name is None or tensor_names is None or quantized is None or ignored is None:
-            logger.warning(f"Shard not found: {shard_name}, skipping")
-            return
+            raise RuntimeError(
+                f"Source shard {shard_name} could not be loaded; aborting model-free quantization. "
+                "Rerun the same command to resume from the completed shards."
+            )
 
         memory_monitor.update()
         clear_memory()
@@ -1406,6 +1408,53 @@ class _ModelFreeCompressorCore:
             except OSError as e:
                 logger.warning(f"Failed to remove donor shard cache file {donor_name}: {e}")
 
+    def _compact_donor_shard(self, shard_name: str, shard_path: str, *, remove_source: bool = True) -> str:
+        """Keep only scale tensors needed by pending recipients in a donor shard."""
+        scale_names = self.donor_shard_tensors.get(shard_name, set())
+        if not scale_names:
+            return shard_path
+
+        with safe_open(shard_path, framework="pt", device="cpu") as shard:
+            available_names = set(shard.keys())
+            missing_names = scale_names - available_names
+            if missing_names:
+                raise RuntimeError(
+                    f"Donor shard {shard_name} is missing required FP8 scale tensor(s): "
+                    f"{', '.join(sorted(missing_names)[:5])}"
+                )
+            scales = {name: shard.get_tensor(name) for name in scale_names}
+
+        from safetensors.torch import save_file
+
+        scale_cache_dir = os.path.join(self.work_dir, ".cache", "model_free_donor_scales")
+        os.makedirs(scale_cache_dir, exist_ok=True)
+        fd, compact_path = tempfile.mkstemp(
+            prefix=f".{shard_name}.scales-",
+            suffix=".safetensors",
+            dir=scale_cache_dir,
+        )
+        os.close(fd)
+        try:
+            save_file(scales, compact_path)
+            final_path = os.path.join(scale_cache_dir, shard_name)
+            os.replace(compact_path, final_path)
+        except Exception:
+            try:
+                os.remove(compact_path)
+            except OSError:
+                pass
+            raise
+
+        logger.info(
+            f"Compacted donor shard {shard_name} to {len(scales)} required FP8 scale tensor(s)."
+        )
+        if remove_source:
+            try:
+                os.remove(shard_path)
+            except OSError as exc:
+                logger.warning(f"Could not remove full donor source shard {shard_name}: {exc}")
+        return final_path
+
     def _process_all_shards_streaming_pipeline(self) -> None:
         """Streaming-mode shard pipeline with dedicated downloader and quant workers.
 
@@ -1433,19 +1482,39 @@ class _ModelFreeCompressorCore:
 
         worker_count = max(1, min(self.shard_parallelism, len(pending_names) or 1))
         prefetch_depth = max(2, worker_count)
+        max_in_flight = worker_count + prefetch_depth
         total_shards = len(self.shard_names)
         total_pipeline_shards = len(pipeline_shards)
+
+        shard_cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+        keep_cached_shards = {name for _, name in pipeline_shards[:max_in_flight]}
+        if os.path.isdir(shard_cache_dir):
+            for entry in os.scandir(shard_cache_dir):
+                if entry.is_file() and entry.name in self.shard_names and entry.name not in keep_cached_shards:
+                    try:
+                        os.remove(entry.path)
+                    except OSError as exc:
+                        logger.warning(f"Could not prune prefetched source shard {entry.name}: {exc}")
+        donor_scale_cache_dir = os.path.join(self.work_dir, ".cache", "model_free_donor_scales")
+        if os.path.isdir(donor_scale_cache_dir):
+            for entry in os.scandir(donor_scale_cache_dir):
+                if entry.is_file() and entry.name not in required_donors:
+                    try:
+                        os.remove(entry.path)
+                    except OSError as exc:
+                        logger.warning(f"Could not prune unused donor scale cache {entry.name}: {exc}")
 
         download_pool: ThreadPoolExecutor | None = None
         quant_pool: ProcessPoolExecutor | None = None
         download_futures: dict = {}
-        quant_futures = set()
+        quant_futures: dict = {}
+        donor_source_paths: dict[str, str] = {}
         next_download_idx = 0
         completed_pipeline_shards = 0
 
         def _submit_next_download() -> bool:
             nonlocal next_download_idx
-            if next_download_idx >= total_pipeline_shards:
+            if next_download_idx >= total_pipeline_shards or len(download_futures) + len(quant_futures) >= max_in_flight:
                 return False
             shard_idx, shard_name = pipeline_shards[next_download_idx]
             future = download_pool.submit(
@@ -1465,29 +1534,35 @@ class _ModelFreeCompressorCore:
             download_pool = ThreadPoolExecutor(max_workers=1)
             quant_pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
 
-            for _ in range(min(prefetch_depth, total_pipeline_shards)):
+            for _ in range(min(prefetch_depth, max_in_flight, total_pipeline_shards)):
                 _submit_next_download()
 
             progress = self._create_shard_progress(_tqdm)
 
             while completed_pipeline_shards < total_pipeline_shards:
-                wait_set = set(download_futures.keys()) | set(quant_futures)
+                wait_set = set(download_futures.keys()) | set(quant_futures.keys())
                 if not wait_set:
                     break
 
                 done, _ = wait(wait_set, return_when=FIRST_COMPLETED)
-                for future in done:
+                for future in sorted(
+                    done,
+                    key=lambda item: download_futures[item][0] if item in download_futures else total_shards,
+                ):
                     if future in download_futures:
                         shard_idx, shard_name = download_futures.pop(future)
                         shard_path = future.result()
                         if shard_path is None or not os.path.exists(shard_path):
-                            logger.warning(f"Prefetch failed for shard {shard_name}, skipping")
-                            completed_pipeline_shards += 1
-                            if progress is not None and shard_name in pending_names:
-                                progress.update(1)
+                            # Skipping would leave an incomplete model and recipients without donor scales.
+                            raise RuntimeError(
+                                f"Failed to download source shard {shard_name}; aborting model-free quantization. "
+                                "Rerun the same command to resume from the completed shards."
+                            )
                         elif shard_name not in pending_names:
-                            self._donor_shard_paths[shard_name] = shard_path
+                            compact_path = self._compact_donor_shard(shard_name, shard_path)
+                            self._donor_shard_paths[shard_name] = compact_path
                             self._donor_self_consumed[shard_name] = True
+                            self._maybe_cleanup_donor_shard(shard_name)
                             completed_pipeline_shards += 1
                         else:
                             # Donor shards must stay on disk until every recipient
@@ -1500,9 +1575,13 @@ class _ModelFreeCompressorCore:
                             # stragglers are swept up at the end by
                             # _cleanup_streaming_shard_cache.
                             shard_cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+                            donor_scale_cache_dir = os.path.join(self.work_dir, ".cache", "model_free_donor_scales")
                             is_donor = shard_name in self.donor_shard_tensors
                             if is_donor:
-                                self._donor_shard_paths[shard_name] = shard_path
+                                self._donor_shard_paths[shard_name] = self._compact_donor_shard(
+                                    shard_name, shard_path, remove_source=False
+                                )
+                                donor_source_paths[shard_name] = shard_path
                             donor_tensors = list(self.donor_shard_tensors.get(shard_name, ())) or None
                             qf = quant_pool.submit(
                                 _quantize_local_shard_task,
@@ -1527,19 +1606,24 @@ class _ModelFreeCompressorCore:
                                 # find the index.json that was downloaded during
                                 # metadata fetch (not in the shard cache sub-dir).
                                 index_dir=self.work_dir,
-                                donor_shard_dir=shard_cache_dir,
+                                donor_shard_dir=donor_scale_cache_dir,
                             )
-                            quant_futures.add(qf)
-
-                        while len(download_futures) < prefetch_depth and _submit_next_download():
-                            pass
+                            quant_futures[qf] = shard_name
                     elif future in quant_futures:
-                        quant_futures.remove(future)
+                        quant_futures.pop(future)
                         result = future.result()
+                        shard_name = result[1]
+                        if shard_name in self.donor_shard_tensors and shard_name in self._donor_shard_paths:
+                            source_path = donor_source_paths.pop(shard_name, None)
+                            if source_path and os.path.exists(source_path):
+                                os.remove(source_path)
                         self._merge_shard_task_result(result)
                         completed_pipeline_shards += 1
                         if progress is not None:
                             progress.update(1)
+
+                    while len(download_futures) + len(quant_futures) < max_in_flight and _submit_next_download():
+                        pass
 
             if progress is not None:
                 progress.close()

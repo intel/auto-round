@@ -1590,6 +1590,25 @@ class TestFP8Source:
         result = _dequant_fp8_tensors(raw, block_size=None)
         assert result["layer.weight"].dtype == torch.float32 and "layer.weight_scale_inv" not in result
 
+    @pytest.mark.parametrize("hydrate_only", [False, True])
+    def test_fp8_weight_without_scale_raises(self, hydrate_only):
+        raw = {"layer.weight": torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)}
+
+        with pytest.raises(ValueError, match="layer.weight"):
+            _dequant_fp8_tensors(raw, block_size=None, hydrate_only=hydrate_only)
+
+    def test_warns_when_fp8_dequant_is_skipped(self, caplog):
+        raw = {
+            "layer.weight": torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn),
+            "layer.weight_scale_inv": torch.tensor(0.5),
+        }
+
+        with caplog.at_level("WARNING"):
+            result = _dequant_fp8_tensors(raw, block_size=None, hydrate_only=True)
+
+        assert result["layer.weight"].dtype == torch.float8_e4m3fn
+        assert "low-precision source weight tensor(s) were not dequantized" in caplog.text
+
     def test_no_fp8_noop(self):
         raw = {"layer.weight": torch.randn(64, 128)}
         assert _dequant_fp8_tensors(raw, block_size=None) is raw
