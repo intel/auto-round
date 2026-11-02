@@ -23,6 +23,7 @@ from auto_round.algorithms.transforms.hadamard.config import RotationConfig
 from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme
+from auto_round.parallel import ParallelConfig
 from auto_round.utils import LazyImport
 from auto_round.utils import monkey_patch
 
@@ -40,6 +41,7 @@ __all__ = [
     "AutoRoundMLLM",
     "AutoScheme",
     "OptimizedRTNConfig",
+    "ParallelConfig",
     "QuantizationScheme",
     "RTNConfig",
     "RotationConfig",

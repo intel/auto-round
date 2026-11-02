@@ -346,7 +346,8 @@ class AlgorithmComposer:
 
                 for name, wrapped in list(module.named_modules()):
                     if hasattr(wrapped, "orig_layer"):
-                        set_module(module, name, wrapped.orig_layer)
+                        restore = getattr(wrapped, "restore_original", None)
+                        set_module(module, name, restore() if callable(restore) else wrapped.orig_layer)
                 raise
 
     # ── Internal hook helpers (act_max calibration) ───────────────────────────

@@ -238,6 +238,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         else:
             return inputs.shape[self.calibration_context.batch_dim]
 
+
     def _resolve_tuning_cache_plan(
         self,
         *,

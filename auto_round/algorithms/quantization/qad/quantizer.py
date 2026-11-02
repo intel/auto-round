@@ -454,6 +454,10 @@ class QADQuantizer(SignRoundQuantizer):
         unset = ws is None or (isinstance(ws, float) and math.isnan(ws)) or (isinstance(ws, str) and not ws.strip())
         if unset:
             ws = os.path.join(envs.AR_WORK_SPACE, "qad_teacher_cache")
+        if getattr(self, "_native_tp", False):
+            import torch.distributed as dist
+
+            ws = os.path.join(ws, f"tp_rank_{dist.get_rank()}")
         os.makedirs(ws, exist_ok=True)
         return ws
 
@@ -511,7 +515,9 @@ class QADQuantizer(SignRoundQuantizer):
             input_ids = batch_ids
             attention_mask = (input_ids != -100).long()
         safe_ids = self._safe_input_ids(input_ids, vocab_size)
-        return model(input_ids=safe_ids, attention_mask=attention_mask, use_cache=False).logits
+        from auto_round.parallel.runtime import replicated_tensor
+
+        return replicated_tensor(model(input_ids=safe_ids, attention_mask=attention_mask, use_cache=False).logits)
 
     def _load_model_batch(self, sample_indices, token_ids, device):
         """Stack raw inputs/masks separately from the teacher's cached labels."""
@@ -581,6 +587,11 @@ class QADQuantizer(SignRoundQuantizer):
 
         def update_tensor(digest, name, tensor):
             tensor = tensor.detach()
+            from auto_round.parallel.runtime import is_dtensor
+
+            if is_dtensor(tensor):
+                digest.update(f"{tensor.shape}:{tensor.placements}".encode())
+                tensor = tensor.to_local()
             digest.update(f"{name}:{tensor.dtype}:{tuple(tensor.shape)}".encode())
             flat = tensor.reshape(-1)
             chunk_size = max(1, (16 * 1024 * 1024) // tensor.element_size())
@@ -644,7 +655,14 @@ class QADQuantizer(SignRoundQuantizer):
             batch_ids = self._as_batch_ids(ids, device)
             # Skip only when the cached file was produced by *this* sample; a
             # stale file from another model/dataset is rebuilt (overwritten).
-            if cache.is_valid_for(sample_idx, batch_ids):
+            valid = cache.is_valid_for(sample_idx, batch_ids)
+            if getattr(self, "_native_tp", False):
+                import torch.distributed as dist
+
+                cache_hit = torch.tensor(int(valid), device=device)
+                dist.all_reduce(cache_hit, op=dist.ReduceOp.MIN)
+                valid = bool(cache_hit.item())
+            if valid:
                 continue
             inputs = self._load_model_batch([sample_idx], token_ids, device)
             logits = self._forward_logits(model, inputs, vocab_size)  # [1, seq, vocab]
@@ -707,9 +725,20 @@ class QADQuantizer(SignRoundQuantizer):
         if token_ids is None or len(token_ids) == 0:
             raise ValueError("QAD requires calibration token_ids but none were provided.")
 
-        # Make the FP model resident on the compute device and hook-free.
-        self._strip_accelerate_hooks(model)
-        model.to(device)
+        from auto_round.parallel.runtime import is_tp_model
+
+        self._native_tp = is_tp_model(model)
+        if self._native_tp:
+            import torch.distributed as dist
+
+            # TP ranks must consume identical inputs, not data-parallel shards.
+            # Calibration samples are small CPU objects, broadcast once per run.
+            samples = [token_ids if dist.get_rank() == 0 else None]
+            dist.broadcast_object_list(samples)
+            token_ids = samples[0]
+        else:
+            self._strip_accelerate_hooks(model)
+            model.to(device)
         # A previous distributed block stage can leave placement hints on the
         # original modules. This pass is strictly single-device.
         for module in model.modules():
@@ -834,6 +863,12 @@ class QADQuantizer(SignRoundQuantizer):
         try:
             for it in pbar:
                 global_indices = sampler.next_batch()
+                if self._native_tp:
+                    # Sampling must not depend on rank-local RNG consumption
+                    # during sharded model loading or checkpoint recomputation.
+                    indices = torch.as_tensor(global_indices, dtype=torch.long, device=device)
+                    dist.broadcast(indices, src=0)
+                    global_indices = indices.cpu().tolist()
                 if self._qad_use_teacher:
                     self._teacher_cache.prefetch(global_indices)
                 optimizer.zero_grad()

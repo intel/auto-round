@@ -239,6 +239,7 @@ class BaseOrchestrator:
         low_gpu_mem_usage: bool = False,
         calibration_data_device: str = "auto",
         device_map: str | torch.device | int | dict = 0,
+        parallel_config=None,
         enable_torch_compile: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
@@ -258,7 +259,10 @@ class BaseOrchestrator:
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
+        from auto_round.parallel import ParallelConfig
         from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
+
+        self.parallel_config = ParallelConfig.from_value(parallel_config)
 
         # Normalize CalibDataset objects to spec strings
         if isinstance(dataset, CalibDataset):
@@ -447,6 +451,7 @@ class BaseOrchestrator:
             formats=self.formats,
             is_act_quantize=self.quantize_config.is_act_quantize,
             quant_nontext_module=quant_nontext_module,
+            parallel_config=self.parallel_config,
         )
         # Reset the singleton so each new orchestrator gets a fresh CompressContext.
         # CompressContext uses AutoSkipInitMeta (singleton), so without a reset the
@@ -1229,6 +1234,7 @@ class BaseOrchestrator:
 
         if (
             not self.enable_torch_compile
+            and getattr(getattr(self, "parallel_config", None), "tp_size", 1) == 1
             and TORCH_VERSION_AT_LEAST_2_6
             and not is_debug_mode()
             and not is_raw_nv_fp
@@ -1306,6 +1312,10 @@ class BaseOrchestrator:
 
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
+        if getattr(getattr(self, "parallel_config", None), "tp_size", 1) > 1:
+            self.enable_torch_compile = False
+            self._torch_compile_off_reason = "native TP QDQ does not support torch.compile yet"
+            return
         self.enable_torch_compile = enable_torch_compile
         # Why compilation ended up off, used by ``_log_torch_compile_state``.  When the
         # incoming value is already False, keep the reason recorded by the earlier
@@ -1946,6 +1956,28 @@ class BaseOrchestrator:
         Returns:
             object: The compressed model object.
         """
+        from auto_round.parallel.runtime import gather_for_export, is_tp_model, synchronized_export
+
+        if is_tp_model(self.model_context.model):
+            if not self.model_context.quantized:
+                raise RuntimeError("Quantize the TP model before exporting it.")
+            original = self.model_context.model
+            with synchronized_export():
+                exported = gather_for_export(original)
+                if exported is None:
+                    return (original, []) if return_folders else original
+                self.model_context.model = exported
+                try:
+                    return self.save_quantized(
+                        output_dir=output_dir,
+                        format=format,
+                        inplace=inplace,
+                        return_folders=return_folders,
+                        max_shard_size=max_shard_size,
+                        **kwargs,
+                    )
+                finally:
+                    self.model_context.model = original
         if max_shard_size is not None:
             self.max_shard_size = max_shard_size
         self.output_dir = output_dir
@@ -2023,7 +2055,13 @@ class BaseOrchestrator:
                 layer_config=self.layer_config,
                 inplace=inplace,
                 tokenizer=self.model_context.tokenizer,
-                device=device_manager.device,
+                # TP export reconstructs full tensors in host RAM. Packing
+                # must not copy those tensors back onto a single accelerator.
+                device=(
+                    "cpu"
+                    if getattr(getattr(self, "parallel_config", None), "tp_size", 1) > 1
+                    else device_manager.device
+                ),
                 serialization_dict=serialization_dict,
                 **kwargs,
             )

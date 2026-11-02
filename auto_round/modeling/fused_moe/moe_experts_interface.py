@@ -665,6 +665,13 @@ def _unfuse_experts_weights_inplace(
         logger.debug(f"Skipping unfuse for {module.__class__.__name__}: does not support @use_experts_implementation")
         return False
 
+    from auto_round.parallel.runtime import is_dtensor
+
+    if any(is_dtensor(getattr(module, name)) for name in detected_projections):
+        raise NotImplementedError(
+            "Generic MoE unfusing cannot split DTensor weights; use the native TP adapter via parallel_config."
+        )
+
     global _logged_memory_before_replacement
     if not _logged_memory_before_replacement:
         _logged_memory_before_replacement = True

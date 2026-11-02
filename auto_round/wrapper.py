@@ -309,6 +309,9 @@ class WrapperLinear(torch.nn.Module):
             iters=orig_layer.iters,
             enable_neuqi=self.enable_neuqi,
         )
+        # Grouped MoE uses eager QDQ for router-sized tails and compiled QDQ
+        # only for fixed-size chunks. Preserve the callable before compilation.
+        self.weight_quant_func_eager = self.weight_quant_func
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
@@ -1038,6 +1041,14 @@ def wrapper_block(
         if kind == "skip":
             return "u"
         layer_wrapper_cls = getattr(m, "_ar_warm_start_wrapper_cls", wrapper_cls)
+        from auto_round.parallel.runtime import is_dtensor
+
+        if is_dtensor(m.weight):
+            from auto_round.parallel.qdq import TensorParallelQDQLinear
+
+            if layer_wrapper_cls is not WrapperLinear:
+                raise NotImplementedError("This algorithm's QDQ wrapper has not been adapted for native TP.")
+            layer_wrapper_cls = TensorParallelQDQLinear
         defer_search = _defer_batch and getattr(layer_wrapper_cls, "supports_batched_search", False)
         extra = {"defer_search": True} if defer_search else {}
         new_m = layer_wrapper_cls(

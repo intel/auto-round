@@ -32,6 +32,8 @@
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
+[QAD 原生 TP 与统一并行配置](./docs/parallelism_CN.md)
+
 ---
 <div align="left">
 

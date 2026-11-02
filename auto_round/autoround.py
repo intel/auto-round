@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from auto_round.logger import deprecated, logger
+from auto_round.parallel import ParallelConfig
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
     eager_validate_scheme,
@@ -575,6 +576,7 @@ class _CompressorBuilder:
         low_gpu_mem_usage: bool = False,
         calibration_data_device: str = "auto",
         device_map: str | torch.device | int | dict = 0,
+        parallel_config: ParallelConfig | dict[str, int] | None = None,
         iters: int | None = None,
         enable_torch_compile: bool = False,
         seed: int = 42,
@@ -591,6 +593,9 @@ class _CompressorBuilder:
         from auto_round.compressors.utils import check_need_act_calibration
         from auto_round.utils.dataset_utils import CalibDataset
         from auto_round.utils.model import is_model_free_route
+
+        parallel_config = ParallelConfig.from_value(parallel_config)
+        device_map = parallel_config.resolve_device_map(device_map)
 
         # Normalize CalibDataset objects to spec strings
         if isinstance(dataset, CalibDataset):
@@ -618,6 +623,27 @@ class _CompressorBuilder:
             alg_configs = normalize_algorithm_config(alg_configs)
         configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
         preprocessor_configs, quantizer_configs, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
+        if parallel_config.tp_size > 1:
+            from auto_round.algorithms.quantization.qad.config import QADConfig
+            from auto_round.auto_scheme import AutoScheme
+
+            if preprocessor_configs or len(quantizer_configs) != 1 or not isinstance(quant_config, QADConfig):
+                raise NotImplementedError("Native TP currently supports a single QAD stage without preprocessors.")
+            if platform != "hf" or isinstance(scheme, AutoScheme):
+                raise NotImplementedError("Native TP currently requires a Hugging Face model and a fixed scheme.")
+            if enable_torch_compile:
+                raise NotImplementedError("Native TP QDQ does not support torch.compile yet.")
+            enable_torch_compile = False
+            if route_kwargs.get("model_free", False):
+                raise ValueError("Native TP cannot be combined with model_free=True.")
+            route_kwargs["disable_model_free"] = True
+            if getattr(quant_config, "tune_non_quant_params", False) or quant_config.enable_norm_bias_tuning:
+                raise NotImplementedError("Native TP QAD currently tunes quantization parameters only.")
+        if parallel_config.pp_size > 1:
+            from auto_round.algorithms.quantization.qad.config import QADConfig
+
+            if isinstance(quant_config, QADConfig):
+                raise NotImplementedError("QAD/QAT do not yet support the PP device-placement path.")
         is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
         if is_svdquant and "svdquant_omni" not in {name.strip().lower() for name in (format or "").split(",")}:
             format = "svdquant_nunchaku"
@@ -667,6 +693,12 @@ class _CompressorBuilder:
         # Runs before the model-free early return so both routes enforce the
         # same config-level constraints (e.g. the format-scoped 8-bit asym rule).
         eager_validate_scheme(quant_config, scheme, format=format)
+        if parallel_config.tp_size > 1:
+            from auto_round.parallel.policy import validate_tp_quantization
+
+            validate_tp_quantization(route_scheme)
+            if base_kwargs.get("static_kv_dtype") is not None or base_kwargs.get("static_attention_dtype") is not None:
+                raise NotImplementedError("Native TP does not support static KV/attention quantization yet.")
         # NOTE: the W8-asym opt-in is the AR_ALLOW_W8_ASYM environment
         # variable, read directly by parse_scheme and the generation-time
         # gates; nothing is threaded through the compressor here.
@@ -708,6 +740,7 @@ class _CompressorBuilder:
             low_gpu_mem_usage=low_gpu_mem_usage,
             calibration_data_device=calibration_data_device,
             device_map=device_map,
+            parallel_config=parallel_config,
             iters=iters,
             enable_torch_compile=enable_torch_compile,
             seed=seed,
@@ -769,6 +802,8 @@ class AutoRound:
             RAM), or an explicit csv such as ``"cuda:1,cuda:2"``. Forwards still
             run on the compute devices; only the at-rest pool placement changes.
         device_map: Device or device mapping used for quantization.
+        parallel_config: Optional ParallelConfig or mapping. Native TP currently
+            supports dense INT weight-only QAD; PP uses existing device placement.
         enable_torch_compile: Whether to use ``torch.compile`` where supported.
         seed: Random seed used by calibration and tuning.
         **kwargs: Additional compressor, model-type, evaluation, and legacy
@@ -797,6 +832,7 @@ class AutoRound:
         low_gpu_mem_usage: bool = False,
         calibration_data_device: str = "auto",
         device_map: str | torch.device | int | dict = 0,
+        parallel_config: ParallelConfig | dict[str, int] | None = None,
         enable_torch_compile: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
@@ -835,6 +871,7 @@ class AutoRound:
             low_gpu_mem_usage=low_gpu_mem_usage,
             calibration_data_device=calibration_data_device,
             device_map=normalize_default_device_map(device_map),
+            parallel_config=parallel_config,
             iters=None,
             enable_torch_compile=enable_torch_compile,
             seed=seed,

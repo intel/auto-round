@@ -154,6 +154,14 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--device_map", "--device", "--devices", default="0", type=str, help="Device mapping used for quantization."
     )
+    rt.add_argument(
+        "--tp_size",
+        type=int,
+        default=None,
+        help="Native Transformers TP size for QAD; defaults to torchrun WORLD_SIZE (otherwise 1).",
+    )
+    rt.add_argument("--pp_size", type=int, default=1, help="Number of GPUs for existing pipeline device placement.")
+    rt.add_argument("--dp_size", type=int, default=1, help="Reserved data-parallel axis; currently must be 1.")
     rt.add_argument("--dataset", default=None, type=str, help="Calibration dataset or local dataset path.")
     rt.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
     rt.add_argument(

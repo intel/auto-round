@@ -188,6 +188,7 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
 
         if hasattr(layer, "imatrix"):
             del layer.imatrix
+        self.weight_quant_func_eager = self.weight_quant_func
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 

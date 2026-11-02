@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
 import sys
+from contextlib import nullcontext
 
 from auto_round.cli.algorithms import AlgorithmHandler
 from auto_round.cli.parser import (
@@ -176,6 +178,14 @@ def _normalize_scheme_list(raw) -> str | None:
 
 
 def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
+    tp_size = getattr(args, "tp_size", None)
+    if tp_size is None:
+        # Infer a single TP axis only; do not silently create hybrid parallelism.
+        tp_size = 1
+        if getattr(args, "pp_size", 1) == getattr(args, "dp_size", 1) == 1:
+            tp_size = int(os.environ.get("WORLD_SIZE", "1"))
+        if tp_size > 1:
+            logger.info("Inferred tp_size=%s from torchrun WORLD_SIZE.", tp_size)
     return {
         "platform": args.platform,
         "format": getattr(args, "_api_format", args.format),
@@ -187,6 +197,11 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "calibration_data_device": args.calibration_data_device,
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
+        "parallel_config": {
+            "tp_size": tp_size,
+            "pp_size": getattr(args, "pp_size", 1),
+            "dp_size": getattr(args, "dp_size", 1),
+        },
         "enable_torch_compile": enable_torch_compile,
         "enable_deterministic_algorithms": args.enable_deterministic_algorithms,
         "seed": args.seed,
@@ -580,12 +595,20 @@ def tune(args):
         format=getattr(args, "_api_format", args.format),
         max_shard_size=args.max_shard_size,
     )
-    tokenizer = autoround.tokenizer  # pylint: disable=no-member
-    clear_memory()
+    evaluation_context = nullcontext(True)
+    if autoround.parallel_config.tp_size > 1:
+        from auto_round.parallel.evaluation import rank_zero_evaluation
 
-    from auto_round.eval.evaluation import run_model_evaluation
+        evaluation_context = rank_zero_evaluation()
+    with evaluation_context as should_evaluate:
+        if not should_evaluate:
+            return
+        tokenizer = autoround.tokenizer  # pylint: disable=no-member
+        clear_memory()
 
-    run_model_evaluation(model, tokenizer, autoround, folders, formats, args)
+        from auto_round.eval.evaluation import run_model_evaluation
+
+        run_model_evaluation(model, tokenizer, autoround, folders, formats, args)
 
 
 # ============================================================================
