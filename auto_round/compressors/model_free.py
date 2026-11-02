@@ -1445,9 +1445,7 @@ class _ModelFreeCompressorCore:
                 pass
             raise
 
-        logger.info(
-            f"Compacted donor shard {shard_name} to {len(scales)} required FP8 scale tensor(s)."
-        )
+        logger.info(f"Compacted donor shard {shard_name} to {len(scales)} required FP8 scale tensor(s).")
         if remove_source:
             try:
                 os.remove(shard_path)
@@ -1514,7 +1512,10 @@ class _ModelFreeCompressorCore:
 
         def _submit_next_download() -> bool:
             nonlocal next_download_idx
-            if next_download_idx >= total_pipeline_shards or len(download_futures) + len(quant_futures) >= max_in_flight:
+            if (
+                next_download_idx >= total_pipeline_shards
+                or len(download_futures) + len(quant_futures) >= max_in_flight
+            ):
                 return False
             shard_idx, shard_name = pipeline_shards[next_download_idx]
             future = download_pool.submit(
