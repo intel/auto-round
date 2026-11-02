@@ -466,6 +466,11 @@ def run_batched_wrap_search(deferred_wrappers: list[WrapperLinear], max_batch: i
     for w in deferred_wrappers:
         inputs = w._deferred_search_inputs
         if inputs is None:
+            # Warm-started wrappers (e.g. QAD chaining `signround,qad`) resolve
+            # ``init_scale`` directly and stage no search; skip them. A wrapper
+            # with neither staged inputs nor a resolved init_scale is a real bug.
+            if getattr(w, "init_scale", None) is not None:
+                continue
             raise RuntimeError(
                 f"{type(w).__name__} was queued for batched wrap search without staged inputs; "
                 "the defer_search flag never reached its search init"

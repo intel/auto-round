@@ -36,13 +36,22 @@ class QuantizationConfig(AlgorithmConfig):
         act_dynamic: Whether activation quantization should be dynamic.
         super_bits: Bit width used for double quantization metadata.
         super_group_size: Group size used for double quantization metadata.
+        nsamples: Optional algorithm-local calibration sample count. None reuses
+            the common calibration samples. Currently only whole-model tuning
+            supports this override; other stages reject it during composition.
+            Algorithm CLI flags should map to this field, not a private name.
     """
 
     need_calib = True
 
     _scheme_fields: ClassVar[set[str]] = set(QuantizationScheme.get_attributes())
+    # These fields belong to each stage, not the shared quantization setup.
+    stage_local_fields: ClassVar[frozenset[str]] = frozenset({"nsamples"})
 
-    def __init__(self, *, scheme: QuantizationScheme = None, **kwargs) -> None:
+    def __init__(self, *, scheme: QuantizationScheme = None, nsamples: int | None = None, **kwargs) -> None:
+        if nsamples is not None and (isinstance(nsamples, bool) or not isinstance(nsamples, int) or nsamples <= 0):
+            raise ValueError("`nsamples` must be a positive integer or None")
+        self.nsamples = nsamples
         object.__setattr__(self, "scheme", scheme if scheme is not None else QuantizationScheme.empty())
         object.__setattr__(self, "_user_set_scheme_fields", set())
 
