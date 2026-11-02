@@ -47,8 +47,10 @@ _ZERO_EPS = 1e-12
 # set ``AR_DISABLE_DEFAULT_SHARED_LAYERS=1`` or pass
 # ``AutoScheme(default_shared_layers=False)`` to opt out.
 VLLM_FUSED_SHARED_LAYERS: tuple[tuple[str, ...], ...] = (
-    # Attention: fused into ``qkv_proj``. Also covers MQA checkpoints that store
-    # a fused ``kv_proj`` (it contains ``v_proj``) so q and kv stay aligned.
+    # Attention: fused into ``qkv_proj``. Matching is by exact leaf name, so a
+    # checkpoint that already stores a fused ``kv_proj`` (k and v in one leaf)
+    # has no ``k_proj``/``v_proj`` leaves and simply forms no qkv group here;
+    # use ``shared_layers`` to align ``q_proj`` with such a ``kv_proj``.
     ("q_proj", "k_proj", "v_proj"),
     # DeepSeek-style MLA: fused into ``fused_qkv_a_proj``.
     ("q_a_proj", "kv_a_proj_with_mqa"),
@@ -283,16 +285,17 @@ def merge_lists_unionfind(list_of_lists):
     return list(groups.values())
 
 
-def parse_shared_layers(model: torch.nn.Module, shared_patterns: Iterable[Iterable[str]]) -> list[list[str]]:
+def parse_shared_layers(model: torch.nn.Module, shared_patterns: Iterable[Iterable[str]] | None) -> list[list[str]]:
     """
     Parse shared layer groups based on regex or substring matches.
 
     Args:
         model (torch.nn.Module): The model whose modules will be analyzed.
-        shared_patterns (Iterable[Iterable[str]]):
+        shared_patterns (Iterable[Iterable[str]] | None):
             Each inner iterable defines one shared group. Each element can be:
               - a string: checked by full-name or substring match
               - a regex pattern: checked by re.fullmatch or re.search
+            ``None`` or an empty iterable yields no groups.
 
     Returns:
         list[list[str]]: A list of matched shared layer groups.
@@ -419,7 +422,7 @@ def resolve_shared_layers(
     groups = merge_lists_unionfind(default_groups + user_groups) if user_groups else default_groups
 
     if default_groups:
-        logger.info(
+        logger.info_once(
             "AutoScheme: sharing one quantization scheme across vLLM-fused projections "
             "(q/k/v, MLA q_a/kv_a, gate/up) by default. Set "
             "AR_DISABLE_DEFAULT_SHARED_LAYERS=1 or "

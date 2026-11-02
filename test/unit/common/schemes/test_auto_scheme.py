@@ -372,6 +372,36 @@ def test_build_default_shared_layers_groups_mla_qkv_a():
     assert groups == [["block.self_attn.kv_a_proj_with_mqa", "block.self_attn.q_a_proj"]]
 
 
+def test_build_default_shared_layers_leaves_fused_kv_proj_alone():
+    """A checkpoint storing a fused `kv_proj` gets no default qkv group.
+
+    vLLM fuses k/v into `kv_proj` for some MQA models, but this leaf is not part
+    of the default groups; callers must add it via `shared_layers` explicitly.
+    """
+    from torch import nn
+
+    from auto_round.auto_scheme.utils import build_default_shared_layers, resolve_shared_layers
+
+    class FakeModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = nn.Module()
+            self.model.layers = nn.ModuleList()
+            block = nn.Module()
+            block.self_attn = nn.Module()
+            block.self_attn.q_proj = nn.Linear(8, 8, bias=False)
+            block.self_attn.kv_proj = nn.Linear(8, 16, bias=False)
+            self.model.layers.append(block)
+
+    model = FakeModel()
+    assert build_default_shared_layers(model) == []
+    # ... and the escape hatch for aligning them is an explicit user group.
+    user_groups = [["model.layers.0.self_attn.q_proj", "model.layers.0.self_attn.kv_proj"]]
+    assert [sorted(g) for g in resolve_shared_layers(model, user_groups)] == [
+        ["model.layers.0.self_attn.kv_proj", "model.layers.0.self_attn.q_proj"]
+    ]
+
+
 def test_resolve_shared_layers_default_on_unions_user_groups():
     """User groups are unioned with the default vLLM groups (merged if interleaved)."""
     from auto_round.auto_scheme.utils import resolve_shared_layers
