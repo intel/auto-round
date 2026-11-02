@@ -104,6 +104,7 @@ def _dq_asym_group_size(bits: int) -> int:
 
 
 class SignRoundOptimizedWrapperLinear(WrapperLinear):
+    supports_tensor_parallel = True
     minmax_scale_bound = (0.1, 10.0)  # TODO widened from 2.0 for low-bit QAD; verify correctness
     # Opt-in protocol for wrapper_block: the init-scale search is weight-local
     # and row-independent, so same-shape modules can be searched as one stacked
@@ -281,6 +282,7 @@ class SignRoundOptimizedAsymWrapperLinear(SignRoundOptimizedWrapperLinear):
     ``min_scale``/``max_scale`` tunable around that anchor (both shrink and expand).
     """
 
+    supports_tensor_parallel = True
     minmax_scale_bound = (0.5, 1.5)
     # The asymmetric anchor search runs inline and does not stage init-scale inputs.
     supports_batched_search = False
@@ -489,6 +491,10 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 
 @register_pipeline_member(SignRoundV2Config)
 class SignRoundV2Quantizer(SignRoundQuantizer):
+    @classmethod
+    def parallel_capabilities(cls):
+        return super().parallel_capabilities()
+
     """SignRound variant using the open algorithm-extension path in the new architecture."""
 
     def __init__(self, config: SignRoundConfig) -> None:
@@ -595,6 +601,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
     def _register_imatrix_hooks(self, model):
         def collect_imatrix(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
+            input = self.parallel.replicated(input)
             flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
             squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 

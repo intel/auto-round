@@ -147,47 +147,14 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             self._logged_low_bit_lr = True
 
     def dispatch_block(self, block, input_ids, input_others):
-        """Multi-GPU aware block dispatch for SignRound tuning.
+        """Use the same placement contract for local, PP-placement and TP runs."""
+        return super().dispatch_block(block, input_ids, input_others)
 
-        Stores _card_0_in_high_risk and _loss_device on self for use in quantize_block.
-        Returns the block after device placement.
-        """
-        from auto_round.utils import is_auto_device_mapping
+    @classmethod
+    def parallel_capabilities(cls):
+        from auto_round.parallel.execution import ParallelCapabilities
 
-        if (
-            is_auto_device_mapping(device_manager.device_map)
-            and len(device_manager.device_list) > 1
-            and not self.model_context.is_diffusion
-        ):
-            from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
-
-            card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                block,
-                device_manager.device_list,
-                input_ids,
-                self.compress_context.low_gpu_mem_usage,
-                self.calibration_context.batch_size,
-                device_manager.device,
-            )
-            if len(device_manager.device_list) > 1:
-                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-                for _n, _mod in block.named_modules():
-                    if len(list(_mod.children())) != 0 or not hasattr(_mod, "tuning_device"):
-                        continue
-                    add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
-        else:
-            from auto_round.utils.model import move_to_device_preserving_cpu_pinned, place_ngram_embeddings_for_tuning_
-
-            # Honor AR_NGRAM_DEVICE even on a single GPU (default keeps the table on CPU and
-            # logs a hint); this also surfaces the ngram size / placement info to the user.
-            place_ngram_embeddings_for_tuning_(block)
-            block = move_to_device_preserving_cpu_pinned(block, device_manager.device)
-            card_0_in_high_risk, loss_device = False, device_manager.device
-
-        self._card_0_in_high_risk = card_0_in_high_risk
-        self._loss_device = loss_device
-        return block
+        return ParallelCapabilities(tensor_parallel=True)
 
     def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
         current_tensors = [tensor[i] for i in indices]
@@ -237,7 +204,6 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             return len(inputs)
         else:
             return inputs.shape[self.calibration_context.batch_dim]
-
 
     def _resolve_tuning_cache_plan(
         self,
@@ -444,7 +410,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             if isinstance(active_inputs, list):  # dict for diffusion, tricky setting, not sure whether it's correct
                 num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
 
-        block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
+        block, sync_gradients = self.parallel.prepare_gradients(self, block)
         index_sampler = IndexSampler(nsamples, global_batch_size)
         block_fwd = self.block_forward
 
@@ -563,7 +529,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                         m.cur_iter = i
                 total_loss = 0
                 _perf.start("sampler")
-                global_indices = index_sampler.next_batch()
+                global_indices = self.parallel.sample_indices(index_sampler)
                 if valid_token_mask:
                     num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
                 _perf.stop("sampler")

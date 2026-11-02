@@ -158,7 +158,7 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--tp_size",
         type=int,
         default=None,
-        help="Native Transformers TP size for QAD; defaults to torchrun WORLD_SIZE (otherwise 1).",
+        help="Native Transformers TP size for supported algorithms; defaults to torchrun WORLD_SIZE (otherwise 1).",
     )
     rt.add_argument("--pp_size", type=int, default=1, help="Number of GPUs for existing pipeline device placement.")
     rt.add_argument("--dp_size", type=int, default=1, help="Reserved data-parallel axis; currently must be 1.")

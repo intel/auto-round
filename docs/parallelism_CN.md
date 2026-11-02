@@ -1,4 +1,4 @@
-# QAD 并行支持
+# 统一并行执行
 
 AutoRound 将张量并行（TP）交给 Transformers：由 Transformers 加载权重分片、
 安装原生前向逻辑并完成布局重分布。AutoRound 仅适配本地权重分片的
@@ -31,10 +31,13 @@ compressor.quantize_and_save("./quantized", format="auto_round")
 torchrun --nproc-per-node 4 train_qad_tp.py
 ```
 
-CLI 提供相同的配置维度：
+CLI 提供相同的配置维度。省略 `--tp_size` 时，默认使用 torchrun 的
+`WORLD_SIZE`（未使用 torchrun 时为 `1`）；已选择其他并行维度时不自动推断 TP：
 
 ```bash
 torchrun --nproc-per-node 4 -m auto_round quantize Qwen/Qwen3-0.6B --alg qad --tp_size 4 --scheme W4A16
+torchrun --nproc-per-node 4 -m auto_round quantize Qwen/Qwen3-0.6B --alg auto_round --scheme W4A16 --group_size 32
+torchrun --nproc-per-node 4 -m auto_round quantize Qwen/Qwen3-0.6B --alg awq,auto_round_v2 --scheme W4A16 --group_size 32
 ```
 
 TP 要求 Transformers 版本同时提供 `DistributedConfig` 和原生 DTensor
@@ -53,17 +56,72 @@ TP 要求 Transformers 版本同时提供 `DistributedConfig` 和原生 DTensor
 - 采用普通列切分和行切分 Linear 方案的稠密 decoder-only 语言模型，
   包括原生 embedding／输出边界以及复制的归一化层。
 - 下文所述的标准 decoder-only fused MoE 布局，已使用 Qwen3-MoE 测试。
-- INT、MXFP4 和 NVFP4 仅权重量化的 QAD 及其硬标签 QAT 变体；TP 暂不支持 block 预处理器
-  或多阶段量化流水线。
+- 仅权重量化的 QAD/QAT、AutoRound/SignRound、AutoRound v2、RTN 和优化 RTN。
+- INT AWQ 平滑后接 RTN、优化 RTN、AutoRound 或 AutoRound v2。
+  暂不支持 AWQ clipping／clip-as-init 和 FP4 AWQ 平滑。
+- 单个量化阶段，可在前面组合已支持的逐 block 预处理器。
+  没有前置逐 block 阶段时，全模型量化器不能直接接在 block 预处理器后面。
 - 一维 TP mesh，权重分片必须大小一致且非空。
 - 正整数 group size。行切分的本地分片必须包含完整的量化组；
   `group_size=-1` 仅支持列切分权重。
 - 梯度检查点及现有 QAD 优化器。暂不支持非量化参数联合训练、norm／bias
   调优、激活量化、`torch.compile`、非标准 fused MoE 布局和 AutoScheme。
+- 块级 LFQ/QAD 损失和旋转预处理器尚未实现对应 TP 契约，会明确报错，
+  不会退回完整权重复制执行。
 
 不支持的组合会明确报错，不会静默退回单卡或改变量化方案。
-公共 QDQ 适配层可以复用，但逐 block 算法仍需独立验证校准与调度路径，
-才能声明支持原生 TP。
+公共 QDQ 适配层可以复用，但算法必须声明并行能力后才能使用原生 TP。
+
+## 统一算法接口
+
+算法通过 `BaseAlgorithm.parallel` 访问由 `QuantizationRunContext` 注入的共享
+`ParallelExecution`。单设备、既有 PP 放置和原生 TP 使用同一组服务，
+调度不依赖算法名：
+
+- `dispatch_block(...)` 返回 `BlockPlacement`，包含已放置的 block、loss 设备
+  和主设备内存风险判断；保留 SignRound 既有的 PP 启发式。
+- `prepare_gradients(...)` 为非 TP 执行保留既有实验性 DP 同步；
+  TP 由原生 autograd 通信，不能再对 TP 分片套 DDP。
+- `sample_indices(...)` 从 rank 0 广播 TP 微批次索引，不依赖各 rank 本地的随机数消耗；
+  `offload_block(...)` 在每个 block 完成后将权重分片及量化张量元数据释放到 CPU。
+- `replicated(...)` 在缓存／损失边界将分布式**激活**转换为普通张量，
+  并保留反向传播；它不是权重聚合接口。
+- `tensor_ops` 提供本地权重更新、通道向量裁切、分布式通道统计和 scale 折叠。
+  AWQ 通过这些服务执行自己的权重数学逻辑。
+
+`parallel_capabilities()` 默认拒绝 TP。仅使用公共服务的算法可以继承已经验证过的
+实现契约；新的自定义数学实现必须显式声明支持并验证其布局。
+重写调优、放置、校准或预处理 hook 后必须重新声明能力，不能静默信任继承的支持标记。
+`validate_parallel_config(config, execution)` 用于在执行前拒绝不支持的选项。
+能力校验同时覆盖预处理器和量化器。
+
+自定义 QDQ wrapper 还需要在自己的类体声明 `supports_tensor_parallel=True`。
+`tensor_parallel_wrapper(...)` 工厂将分片传输／原生 forward 与原有本地 wrapper
+组合，不会用标准舍入替换算法自定义的权重逻辑。未适配的 wrapper 会明确报错。
+
+## 逐块 TP 与 CPU 驻留
+
+逐块算法中，每个 rank 将非当前 block 的**本地权重分片**保留在 CPU 内存。
+只有当前 block 的分片搬到该 rank 的加速器上执行校准、forward、backward 和优化，
+完成后再搬回 CPU。校准前向也采用同样的逐块流式调度；block 之外的 embedding、
+norm 和输出模块可在这次前向期间保持驻留。不会重建完整 block 权重。
+各 rank 使用相同的样本和调优索引。通道统计可以归约／聚合，
+但权重矩阵在整个调优过程中始终保持分片。
+
+TP 使用上述主机分片驻留替代单进程磁盘 offloader。
+即时打包／保存被禁用：调优结束后以 collective 方式导出，
+只在写入 rank 上打包完整 CPU 模型。多进程运行时禁用跨设备搜索借卡，
+防止某个 rank 使用另一个 rank 的加速器。
+QAD/QAT 保留原来的全模型执行方式，不使用上述逐块调度。
+这里改变的是校准／调优阶段的驻留，不改变 Transformers 原生加载过程：
+初次加载仍可能先把全部本地分片放到加速器上，再 offload。
+此执行服务尚未实现加载期的 CPU 流式方案。
+逐块调优结束后，若要对返回的 TP 模型执行前向，全部 rank 需要先将分片搬回
+各自的本地加速器；导出的模型则不带 TP。
+
+离线双 rank 测试覆盖稠密 Llama 的逐块算法、AWQ 通道统计／scale 折叠、
+导出 logits，以及调优期间禁止完整权重聚合。
+这不代表已经验证逐块 MoE 精度或 CUDA/NCCL 显存行为。
 
 ## FP4 仅权重量化
 
@@ -73,6 +131,8 @@ TP 要求 Transformers 版本同时提供 `DistributedConfig` 和原生 DTensor
 例如，将上文的方案和算法配置替换为：
 
 ```python
+from auto_round.algorithms.quantization.qad.config import QADConfig
+
 scheme = "MXFP4"
 algorithm = QADConfig(iters=200, act_bits=16, act_data_type="float", group_size=32)
 ```
@@ -124,6 +184,10 @@ teacher 前向由全部 rank 参与，各 rank 使用独立的 teacher 缓存目
 原始 TP 模型保持不变。非写入 rank 调用
 `save_quantized(return_folders=True)` 时，返回 TP 模型和空目录列表。
 应在 collective 聚合完成后，仅由 rank 0 评测导出的模型。
+
+CLI 在仅由 rank 0 评估之前，会由全部 TP rank 关闭训练进程组，
+并临时清除 torchrun／Accelerate 的分布式状态。
+fake 和打包检查点评估都适用；Python API 不会自动销毁调用方持有的进程组。
 
 离线双进程 CPU/Gloo 测试覆盖 FP4 前向及 STE 梯度一致性、QAD/QAT 生命周期、
 普通导出模型的 logits 和真实 `auto_round` 打包结果。

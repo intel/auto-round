@@ -1044,11 +1044,9 @@ def wrapper_block(
         from auto_round.parallel.runtime import is_dtensor
 
         if is_dtensor(m.weight):
-            from auto_round.parallel.qdq import TensorParallelQDQLinear
+            from auto_round.parallel.qdq import tensor_parallel_wrapper
 
-            if layer_wrapper_cls is not WrapperLinear:
-                raise NotImplementedError("This algorithm's QDQ wrapper has not been adapted for native TP.")
-            layer_wrapper_cls = TensorParallelQDQLinear
+            layer_wrapper_cls = tensor_parallel_wrapper(layer_wrapper_cls)
         defer_search = _defer_batch and getattr(layer_wrapper_cls, "supports_batched_search", False)
         extra = {"defer_search": True} if defer_search else {}
         new_m = layer_wrapper_cls(

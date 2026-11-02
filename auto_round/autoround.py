@@ -623,12 +623,27 @@ class _CompressorBuilder:
             alg_configs = normalize_algorithm_config(alg_configs)
         configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
         preprocessor_configs, quantizer_configs, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
+        if parallel_config.tp_size > 1 or parallel_config.pp_size > 1:
+            from auto_round.algorithms.config_resolver import get_algorithm_class
+            from auto_round.parallel.execution import ParallelExecution
+
+            if parallel_config.tp_size > 1 and len(quantizer_configs) != 1:
+                raise NotImplementedError("Native TP currently supports a single quantizer stage.")
+            execution = ParallelExecution(parallel_config)
+            for config in [*preprocessor_configs, *quantizer_configs]:
+                algorithm_class = get_algorithm_class(config)
+                if algorithm_class is None:
+                    raise NotImplementedError(f"{type(config).__name__} has no parallel capability contract.")
+                execution.validate(algorithm_class, config)
+            if (
+                parallel_config.tp_size > 1
+                and preprocessor_configs
+                and getattr(get_algorithm_class(quant_config), "whole_model_tuning", False)
+            ):
+                raise NotImplementedError("Whole-model TP tuning cannot run block preprocessors without a block stage.")
         if parallel_config.tp_size > 1:
-            from auto_round.algorithms.quantization.qad.config import QADConfig
             from auto_round.auto_scheme import AutoScheme
 
-            if preprocessor_configs or len(quantizer_configs) != 1 or not isinstance(quant_config, QADConfig):
-                raise NotImplementedError("Native TP currently supports a single QAD stage without preprocessors.")
             if platform != "hf" or isinstance(scheme, AutoScheme):
                 raise NotImplementedError("Native TP currently requires a Hugging Face model and a fixed scheme.")
             if enable_torch_compile:
@@ -637,13 +652,6 @@ class _CompressorBuilder:
             if route_kwargs.get("model_free", False):
                 raise ValueError("Native TP cannot be combined with model_free=True.")
             route_kwargs["disable_model_free"] = True
-            if getattr(quant_config, "tune_non_quant_params", False) or quant_config.enable_norm_bias_tuning:
-                raise NotImplementedError("Native TP QAD currently tunes quantization parameters only.")
-        if parallel_config.pp_size > 1:
-            from auto_round.algorithms.quantization.qad.config import QADConfig
-
-            if isinstance(quant_config, QADConfig):
-                raise NotImplementedError("QAD/QAT do not yet support the PP device-placement path.")
         is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
         if is_svdquant and "svdquant_omni" not in {name.strip().lower() for name in (format or "").split(",")}:
             format = "svdquant_nunchaku"

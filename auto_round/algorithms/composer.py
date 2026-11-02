@@ -186,6 +186,9 @@ class AlgorithmComposer:
                 raise ValueError(f"Unknown algorithm config type {type(cfg).__name__!r}.")
             q = alg_cls(cfg)
             if orchestrator is not None:
+                execution = getattr(orchestrator, "parallel_execution", None)
+                if execution is not None:
+                    execution.validate(type(q), cfg)
                 q.bind(orchestrator)
             if isinstance(q, BasePreprocessor):
                 preprocessors.append(q)
@@ -703,6 +706,9 @@ class AlgorithmComposer:
         return self.block_quantizer.dispatch_block(block, input_ids, input_others)
 
     def prepare_run(self, composer: AlgorithmComposer = None):
+        execution = getattr(getattr(self, "_orchestrator", None), "parallel_execution", None)
+        if execution is not None and not self.block_quantizer.whole_model_tuning:
+            execution.prepare_blockwise_model(self._orchestrator.model_context.model)
         for alg in self.members():
             alg.prepare_run(composer=self)
 

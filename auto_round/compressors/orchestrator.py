@@ -523,7 +523,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                             _immediate_pack(module_name, _layer_cfg)
                 _perf.tick("pack")
 
-                mv_module_from_gpu(m)
+                self.parallel_execution.offload_block(m)
                 _perf.tick("mv")
                 clear_memory(device_list=device_manager.device_list)
                 _perf.tick("clear")
@@ -766,7 +766,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                     self.shard_writer.write(name=block_name)
                     block.to("meta")
                 else:
-                    mv_module_from_gpu(block)
+                    self.parallel_execution.offload_block(block)
                     if self.compress_context.low_cpu_mem_usage:
                         self._offloader(self.model, block_name)
 

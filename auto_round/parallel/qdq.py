@@ -15,6 +15,7 @@
 """Local quantization math with native DTensor layout and autograd semantics."""
 
 import copy
+from functools import cache
 from typing import cast
 
 import torch
@@ -70,6 +71,14 @@ class TensorParallelQDQLinear(WrapperLinear):
             local_layer.bias = torch.nn.Parameter(local_bias.detach(), requires_grad=False)
         local_layer.in_features = local_weight.shape[1]
         local_layer.out_features = local_weight.shape[0]
+        imatrix = getattr(local_layer, "imatrix", None)
+        if imatrix is not None:
+            if isinstance(imatrix, DTensor):
+                imatrix = imatrix.full_tensor()
+            if axis == 1 and imatrix.shape[-1] == weight.shape[1]:
+                start = weight.device_mesh.get_local_rank() * local_weight.shape[1]
+                imatrix = imatrix[..., start : start + local_weight.shape[1]]
+            local_layer.imatrix = imatrix
         # Placement hints must never move a shard onto another rank's device.
         local_layer.tuning_device = local_weight.device
         kwargs["device"] = local_weight.device
@@ -135,3 +144,15 @@ class TensorParallelQDQLinear(WrapperLinear):
             original.weight_global_scale = self.weight_global_scale.detach().clone()
         original.q_scale_thresh = self.q_scale_thresh
         return original
+
+
+@cache
+def tensor_parallel_wrapper(wrapper_class):
+    """Compose TP transport with explicitly shard-local algorithm weight math."""
+    if wrapper_class is WrapperLinear:
+        return TensorParallelQDQLinear
+    if not issubclass(wrapper_class, WrapperLinear) or not wrapper_class.__dict__.get(
+        "supports_tensor_parallel", False
+    ):
+        raise NotImplementedError(f"{wrapper_class.__name__} has not implemented the native TP wrapper contract.")
+    return type(f"TensorParallel{wrapper_class.__name__}", (TensorParallelQDQLinear, wrapper_class), {})

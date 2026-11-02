@@ -263,6 +263,9 @@ class BaseOrchestrator:
         from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
 
         self.parallel_config = ParallelConfig.from_value(parallel_config)
+        from auto_round.parallel.execution import ParallelExecution
+
+        self.parallel_execution = ParallelExecution(self.parallel_config)
 
         # Normalize CalibDataset objects to spec strings
         if isinstance(dataset, CalibDataset):
@@ -1727,6 +1730,8 @@ class BaseOrchestrator:
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
         self._finalize_torch_compile()
         self.compress_context.enable_torch_compile = self.enable_torch_compile
+        if self.parallel_execution.is_tp:
+            self.compress_context.low_cpu_mem_usage = False
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()
 
@@ -1824,6 +1829,10 @@ class BaseOrchestrator:
     def _adjust_immediate_packing_and_saving(self):
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
+        if getattr(getattr(self, "parallel_execution", None), "is_tp", False):
+            self.compress_context.is_immediate_packing = False
+            self.compress_context.is_immediate_saving = False
+            return
         if self.formats is None:
             return
 

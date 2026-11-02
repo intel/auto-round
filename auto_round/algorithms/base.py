@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from auto_round.compressors import BaseOrchestrator
     from auto_round.context.compress import CompressContext
     from auto_round.context.model import ModelContext
+    from auto_round.parallel.execution import ParallelExecution
     from auto_round.schemes import QuantizationScheme
 
 
@@ -57,6 +58,7 @@ class QuantizationRunContext:
     calibration_context: "CalibrationContext | None" = None
     scale_dtype: "torch.dtype | None" = None
     scheme: "QuantizationScheme | None" = None
+    parallel_execution: "ParallelExecution | None" = None
 
 
 class BaseAlgorithm:
@@ -82,6 +84,18 @@ class BaseAlgorithm:
             return cls(config)
         return alg_cls(config)
 
+    @classmethod
+    def parallel_capabilities(cls):
+        """Opt in only after custom tensor math satisfies the TP contract."""
+        from auto_round.parallel.execution import ParallelCapabilities
+
+        return ParallelCapabilities()
+
+    @classmethod
+    def validate_parallel_config(cls, config, execution):
+        """Override to reject unsupported parallel algorithm options early."""
+        return
+
     def bind(self, orchestrator: "BaseOrchestrator") -> None:
         """Wire compressor-owned state into a frozen :class:`QuantizationRunContext`.
         Called once before block iteration starts.  Fields not present on the
@@ -93,6 +107,7 @@ class BaseAlgorithm:
             calibration_context=getattr(orchestrator, "calibration_context", None),
             scale_dtype=getattr(orchestrator, "scale_dtype", None),
             scheme=getattr(orchestrator, "scheme_context", None),
+            parallel_execution=getattr(orchestrator, "parallel_execution", None),
         )
 
     def bind_block_forward_runner(self, block_forward_runner: "type[BlockForwardRunner]") -> None:
@@ -102,6 +117,15 @@ class BaseAlgorithm:
         self.__block_forward_runner = block_forward_runner
 
     # ── Read-only context accessors ───────────────────────────────────────────
+    @property
+    def parallel(self) -> "ParallelExecution":
+        """Shared placement, activation and synchronization services."""
+        from auto_round.parallel.execution import ParallelExecution
+
+        if self.__run_ctx is not None and self.__run_ctx.parallel_execution is not None:
+            return self.__run_ctx.parallel_execution
+        return ParallelExecution()
+
     @property
     def model_context(self) -> "ModelContext | None":
         return self.__run_ctx.model_context if self.__run_ctx is not None else None

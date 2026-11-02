@@ -126,7 +126,9 @@ def _gather_cpu_tensor(value, chunk_bytes=4 * 1024 * 1024):
     width = (value.shape[axis] + size - 1) // size
     output = torch.empty(value.shape, dtype=value.dtype, device="cpu") if writer else None
     # Gloo stages on CPU; NCCL stages at most chunk_bytes on the local GPU.
-    device = value.device if dist.get_backend(group) == "nccl" else torch.device("cpu")
+    device = (
+        torch.device("cuda", torch.cuda.current_device()) if dist.get_backend(group) == "nccl" else torch.device("cpu")
+    )
     for source in range(size):
         shape = list(value.shape)
         start = min(source * width, value.shape[axis])

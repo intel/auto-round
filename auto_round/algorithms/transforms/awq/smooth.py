@@ -98,6 +98,7 @@ class AWQSmoothStrategy:
     def prepare(self, group: SmoothGroup, x_mean: torch.Tensor) -> None:
         mapping = self.mapping
         owner = self.owner
+        tensor_ops = owner.parallel.tensor_ops
         device = mapping.balance_layers[0].weight.device
         x_mean = x_mean.to(device)
 
@@ -118,7 +119,7 @@ class AWQSmoothStrategy:
             if not fp16_outputs or all(f.numel() == 0 for f in fp16_outputs):
                 use_parent_forward = False
 
-        orig_state = {bl: bl.weight.data.clone() for bl in mapping.balance_layers}
+        orig_state = {bl: tensor_ops.local(bl.weight).detach().clone() for bl in mapping.balance_layers}
         if not use_parent_forward:
             orig_weights = orig_state  # same reference is fine
 
@@ -141,28 +142,42 @@ class AWQSmoothStrategy:
 
         def score(candidate):
             _, scales = candidate
-            scales_view = scales.view(1, -1).to(device)
+
+            def scaled_input(layer):
+                return tensor_ops.channel_scale(layer.weight, scales, 1).view(1, -1)
+
+            def local_imatrix(layer):
+                imatrix = getattr(layer, "imatrix", None)
+                if imatrix is not None:
+                    imatrix = owner.parallel.replicated(imatrix)
+                    imatrix = tensor_ops.channel_scale(layer.weight, imatrix, 1)
+                return imatrix
+
             if use_parent_forward:
                 # Quantize each balance layer's smoothed weight and write the
                 # de-smoothed result back, so the parent forward below sees the
                 # weights the layer would actually compute with.
                 for bl in mapping.balance_layers:
+                    scales_view = scaled_input(bl)
                     quant_func, opt_quant_func = bl_quant_funcs[bl]
                     w_qdq = owner._qdq_tool.qdq(
                         orig_state[bl] * scales_view,
                         bl_params[bl],
                         quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
-                        imatrix=getattr(bl, "imatrix", None),
+                        imatrix=local_imatrix(bl),
                     )
-                    bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
+                    tensor_ops.copy_weight(bl, (w_qdq / scales_view).to(bl.weight.dtype))
 
-                total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
-                for bl in mapping.balance_layers:
-                    bl.weight.data.copy_(orig_state[bl])
+                try:
+                    total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
+                finally:
+                    for bl in mapping.balance_layers:
+                        tensor_ops.copy_weight(bl, orig_state[bl])
             else:
                 total_loss = 0.0
                 for bl in mapping.balance_layers:
+                    scales_view = scaled_input(bl)
                     quant_func, opt_quant_func = bl_quant_funcs[bl]
                     w_orig = orig_weights[bl].to(device)
                     w_qdq = owner._qdq_tool.qdq(
@@ -170,9 +185,9 @@ class AWQSmoothStrategy:
                         bl_params[bl],
                         quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
-                        imatrix=getattr(bl, "imatrix", None),
+                        imatrix=local_imatrix(bl),
                     )
-                    total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
+                    total_loss += tensor_ops.weight_sum(bl.weight, (w_orig - w_qdq / scales_view).pow(2).sum()).item()
 
             return total_loss
 
@@ -213,6 +228,12 @@ def get_grid_search_params(n_grid: int, duo_scaling: bool | str) -> list[tuple[f
 
 def compute_layer_means(layers: list[torch.nn.Module], group_size: int) -> torch.Tensor:
     """Per-channel mean of normalised weights across all balance layers."""
+    from auto_round.parallel.runtime import is_dtensor
+
+    if any(is_dtensor(layer.weight) for layer in layers):
+        from auto_round.parallel.tensor_ops import ParallelTensorOps
+
+        return ParallelTensorOps.input_channel_means(layers, group_size)
     weight = torch.cat([m.weight.detach().float() for m in layers], dim=0)
     org_shape = weight.shape
     gs = group_size if group_size is not None and group_size > 0 else org_shape[1]
@@ -235,6 +256,13 @@ def fold_scales_into_smooth_layer(smooth: torch.nn.Module, scales: torch.Tensor)
 
     Any bias is always divided by ``s``.
     """
+    from auto_round.parallel.runtime import is_dtensor
+
+    if is_dtensor(smooth.weight):
+        from auto_round.parallel.tensor_ops import ParallelTensorOps
+
+        ParallelTensorOps.divide_outputs(smooth, scales, unit_offset=_rmsnorm_has_unit_offset(smooth))
+        return
     s = scales.to(smooth.weight.device)
     weight = smooth.weight.data
     if weight.ndim == 1:

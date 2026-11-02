@@ -207,6 +207,13 @@ class BaseQuantizer(BaseAlgorithm):
         layer_name = layer.global_name
         layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
         set_module(self.model, layer_name, layer)
+        from auto_round.parallel.runtime import is_dtensor
+
+        wrapper_class = WrapperLinear
+        if is_dtensor(layer.weight):
+            from auto_round.parallel.qdq import tensor_parallel_wrapper
+
+            wrapper_class = tensor_parallel_wrapper(wrapper_class)
         tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device
         try:
             if disable_opt_rtn is None:
@@ -225,7 +232,7 @@ class BaseQuantizer(BaseAlgorithm):
                     "Use `--enable_opt_rtn` to force-enable it for MoE layers."
                 )
             layer = layer.to(tuning_device)
-            layer = WrapperLinear(
+            layer = wrapper_class(
                 layer,
                 device=tuning_device,
                 enable_minmax_tuning=False,
@@ -244,6 +251,8 @@ class BaseQuantizer(BaseAlgorithm):
                 return layer
             layer = layer.unwrapper({})
         except torch.OutOfMemoryError:
+            if self.parallel.is_tp:
+                raise
             from auto_round.algorithms.quantization.search_dispatch import dump_oom_tensor_census_
 
             dump_oom_tensor_census_("rtn layer search")
@@ -356,8 +365,18 @@ class BaseQuantizer(BaseAlgorithm):
         Returns the block after device placement.
         Subclasses override for multi-GPU tensor-parallel dispatch.
         """
-        block = block.to(device_manager.device)
-        return block
+        placement = self.parallel.dispatch_block(
+            block,
+            input_ids,
+            input_others,
+            tuning=getattr(self, "iters", 0) > 0,
+            is_diffusion=getattr(self.model_context, "is_diffusion", False),
+            low_gpu_mem_usage=getattr(self.compress_context, "low_gpu_mem_usage", False),
+            batch_size=getattr(self.calibration_context, "batch_size", 1),
+        )
+        self._card_0_in_high_risk = placement.primary_device_at_risk
+        self._loss_device = placement.loss_device
+        return placement.block
 
     def finalize_block(self, block: "torch.nn.Module", block_ctx: "BlockContext | None" = None) -> None:
         """Post-tuning, quantizer-agnostic finalization for a compressed block.

@@ -360,6 +360,12 @@ class QADQuantizer(SignRoundQuantizer):
     whole_model_tuning = True
     requires_original_weights = True
 
+    @classmethod
+    def parallel_capabilities(cls):
+        from auto_round.parallel.execution import ParallelCapabilities
+
+        return ParallelCapabilities(tensor_parallel=True, pipeline_placement=False)
+
     def __init__(self, config: QADConfig) -> None:
         super().__init__(config)
         self.qad_top_k = getattr(config, "topk", 32)

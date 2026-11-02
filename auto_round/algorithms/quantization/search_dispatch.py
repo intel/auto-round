@@ -157,7 +157,9 @@ def run_items_by_device(
 
 def cross_device_search_disabled() -> bool:
     """Kill switch for running batched searches on idle devices."""
-    return bool(envs.AR_DISABLE_CROSS_DEVICE_SEARCH)
+    import torch.distributed as dist
+
+    return bool(envs.AR_DISABLE_CROSS_DEVICE_SEARCH) or (dist.is_initialized() and dist.get_world_size() > 1)
 
 
 def pick_search_worker_devices(

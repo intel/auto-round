@@ -39,6 +39,12 @@ from auto_round.utils.perf_counters import _PerfCounters
 @register_pipeline_member(RTNConfig)
 class RTNQuantizer(BaseQuantizer):
 
+    @classmethod
+    def parallel_capabilities(cls):
+        from auto_round.parallel.execution import ParallelCapabilities
+
+        return ParallelCapabilities(tensor_parallel=True)
+
     def __init__(self, config: RTNConfig) -> None:
         BaseQuantizer.__init__(self, config)
 
@@ -83,6 +89,10 @@ class RTNQuantizer(BaseQuantizer):
 @register_pipeline_member(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):
 
+    @classmethod
+    def parallel_capabilities(cls):
+        return super().parallel_capabilities()
+
     def __init__(self, config: RTNConfig) -> None:
         super().__init__(config)
 
@@ -98,6 +108,7 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def _register_imatrix_hooks(self, model, *, with_count: bool = False):
         def collect_imatrix(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
+            input = self.parallel.replicated(input)
             flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
             squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 

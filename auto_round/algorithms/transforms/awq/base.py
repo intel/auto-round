@@ -177,6 +177,20 @@ class AWQTransform(BasePreprocessor):
     SignRound) is performed by the pipeline's ``block_quantizer``.
     """
 
+    @classmethod
+    def parallel_capabilities(cls):
+        from auto_round.parallel.execution import ParallelCapabilities
+
+        return ParallelCapabilities(tensor_parallel=True)
+
+    @classmethod
+    def validate_parallel_config(cls, config, execution):
+        if execution.is_tp:
+            if config.apply_clip or config.clip_as_init:
+                raise NotImplementedError("AWQ TP clipping has not implemented the shard-local clipping contract yet.")
+            if config.data_type not in (None, "int"):
+                raise NotImplementedError("AWQ TP currently supports INT weight-only smoothing.")
+
     def __init__(self, config: AWQConfig) -> None:
         super().__init__(config)
         self.duo_scaling: bool | str = config.duo_scaling
@@ -423,6 +437,7 @@ class AWQTransform(BasePreprocessor):
 
                 def hook_fn(mod, args):
                     x = args[0] if isinstance(args, tuple) else args
+                    x = self.parallel.tensor_ops.input_activation(mod, x)
                     if x is None or not isinstance(x, torch.Tensor) or x.numel() == 0:
                         return
 
@@ -483,7 +498,7 @@ class AWQTransform(BasePreprocessor):
                         if hasattr(v, "key_cache"):
                             return None
                         if isinstance(v, torch.Tensor):
-                            v = v.detach()
+                            v = self.parallel.replicated(v).detach()
                             if w_dtype and v.is_floating_point() and v.dtype != w_dtype:
                                 v = v.to(w_dtype)
                             return v.to("cpu", non_blocking=False)
@@ -667,8 +682,10 @@ class AWQTransform(BasePreprocessor):
     def _normalize_parent_output(out: Any) -> torch.Tensor:
         """Extract the tensor output used by AWQ parent-output loss."""
         if isinstance(out, tuple):
-            return out[0]
-        return out
+            out = out[0]
+        from auto_round.parallel.execution import ParallelExecution
+
+        return ParallelExecution.replicated(out)
 
     @torch.no_grad()
     def _run_parent_samples(
@@ -756,7 +773,7 @@ class AWQTransform(BasePreprocessor):
         shifted off the balance weights.
         """
         for bl in mapping.balance_layers:
-            bl.weight.data.mul_(scales.to(bl.weight.device).view(1, -1))
+            self.parallel.tensor_ops.scale_inputs(bl, scales)
 
         self._fold_scales_into_smooth_layer(mapping.smooth_layer, scales)
 

@@ -312,7 +312,7 @@ class ModelContext(BaseContext):
         if not getattr(config, "base_model_tp_plan", None):
             raise ValueError("The model config must define base_model_tp_plan for native TP.")
         if getattr(config, "is_encoder_decoder", False):
-            raise NotImplementedError("Native QAD TP currently supports decoder-only language models.")
+            raise NotImplementedError("Native TP currently supports decoder-only language models.")
         if isinstance(self.model, str):
             name = self.model
             self.model = AutoModelForCausalLM.from_pretrained(

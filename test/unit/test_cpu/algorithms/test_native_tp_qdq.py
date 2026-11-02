@@ -75,12 +75,13 @@ def test_unsupported_tp_scheme_fails_before_loading(scheme):
 
 def test_unsupported_tp_algorithm_fails_before_loading():
     from auto_round import AutoRound
+    from auto_round.algorithms.transforms.awq.config import AWQConfig
 
     with (
         patch.object(ParallelConfig, "resolve_device_map", return_value="cpu"),
-        pytest.raises(NotImplementedError, match="single QAD stage"),
+        pytest.raises(NotImplementedError, match="AWQ TP clipping"),
     ):
-        AutoRound(torch.nn.Linear(4, 4), alg_configs="signround", parallel_config={"tp_size": 2})
+        AutoRound(torch.nn.Linear(4, 4), alg_configs=AWQConfig(apply_clip=True), parallel_config={"tp_size": 2})
 
 
 @pytest.mark.parametrize("data_type,group_size", [("mx_fp", 16), ("nv_fp", 32)])
