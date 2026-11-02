@@ -1,7 +1,7 @@
 # 统一并行执行
 
 AutoRound 将张量并行（TP）交给 Transformers：由 Transformers 加载权重分片、
-安装原生前向逻辑并完成布局重分布。AutoRound 仅适配本地权重分片的
+安装原生前向逻辑并完成布局重分布。AutoRound 仅适配本地权重和激活分片的
 量化与反量化（QDQ）计算，不另行实现一套张量并行后端。
 
 ## 公共配置
@@ -57,15 +57,16 @@ TP 要求 Transformers 版本同时提供 `DistributedConfig` 和原生 DTensor
   包括原生 embedding／输出边界以及复制的归一化层。
 - 下文所述的标准 decoder-only fused MoE 布局，已使用 Qwen3-MoE 测试。
 - 仅权重量化的 QAD/QAT、AutoRound/SignRound、AutoRound v2、RTN 和优化 RTN。
+- 通过公共 QDQ 适配层支持 MXFP4/NVFP4 激活量化，具体约束见下文。
 - INT AWQ 平滑后接 RTN、优化 RTN、AutoRound 或 AutoRound v2。
   暂不支持 AWQ clipping／clip-as-init 和 FP4 AWQ 平滑。
-- 单个量化阶段，可在前面组合已支持的逐 block 预处理器。
+- 共享固定量化方案的有序多量化阶段，可在前面组合已支持的逐 block 预处理器。
   没有前置逐 block 阶段时，全模型量化器不能直接接在 block 预处理器后面。
 - 一维 TP mesh，权重分片必须大小一致且非空。
 - 正整数 group size。行切分的本地分片必须包含完整的量化组；
   `group_size=-1` 仅支持列切分权重。
 - 梯度检查点及现有 QAD 优化器。暂不支持非量化参数联合训练、norm／bias
-  调优、激活量化、`torch.compile`、非标准 fused MoE 布局和 AutoScheme。
+  调优、INT 激活量化、`torch.compile`、非标准 fused MoE 布局和 AutoScheme。
 - 块级 LFQ/QAD 损失和旋转预处理器尚未实现对应 TP 契约，会明确报错，
   不会退回完整权重复制执行。
 
@@ -99,6 +100,34 @@ TP 要求 Transformers 版本同时提供 `DistributedConfig` 和原生 DTensor
 `tensor_parallel_wrapper(...)` 工厂将分片传输／原生 forward 与原有本地 wrapper
 组合，不会用标准舍入替换算法自定义的权重逻辑。未适配的 wrapper 会明确报错。
 
+## 算法阶段与执行策略
+
+TP 使用与本地执行相同的有序算法流水线，不对特定算法组合做特殊处理。
+每个预处理器和量化器都必须满足自身的并行能力及选项检查。例如，逐块
+AutoRound 阶段可以后接另一个逐块阶段或全模型 QAD/QAT；加入尚未支持的成员
+仍会在调优前报错。已有的多阶段限制继续生效，包括不支持即时保存／打包和断点恢复。
+
+每个算法可以重写 `create_parallel_execution(config, default_execution)`，
+返回基于已加载拓扑的专用 `ParallelExecution`。这样各算法可采用不同的 block
+放置、流式调度和阶段局部 hook 策略，而无需在 composer 中按算法名分支。
+`algorithm_stage(algorithm, model)` 是安装这些 hook 的上下文管理器，
+应通过 `finally` 在正常结束及初始化／调优异常时移除 hook。
+提前校验时也会选择策略，因此工厂不能修改模型或安装 hook。
+
+Composer 进入当前成员的策略，只准备这些成员，执行阶段后依次完成成员清理和
+策略退出，再启动下一阶段。预处理器仅在首个逐块阶段运行。校准、block forward
+和 compressor 放置使用当前阶段的执行服务；阶段边界清空缓存的 block 放置状态，
+异常时恢复原执行引用。如果后续算法需要原始 FP 权重，前序阶段保留这些权重，
+并将分片本地的 warm-start 参数（包括优化版初始 scale）保存在 native 层上，
+而不是临时本地视图上，以便跨阶段传递。
+
+Transformers 原生 TP forward 和 DTensor placement 属于模型的通信／分片基础，
+不是可随算法丢弃的 hook。阶段切换不会移除或重新应用这层基础，不会聚合完整权重，
+也不会重建进程组。目前所有策略必须保留已加载的 `ParallelConfig`。
+不同 TP/PP 度数、TP 切换到 PP，以及修改原生分片方案，都需要显式重分片权重、
+元数据和 warm-start 状态并重建模型；当前阶段接口尚未实现这些功能。
+选择不同拓扑的策略会明确报错，不会静默将本地 shard 当作未分片模型执行。
+
 ## 逐块 TP 与 CPU 驻留
 
 逐块算法中，每个 rank 将非当前 block 的**本地权重分片**保留在 CPU 内存。
@@ -123,10 +152,11 @@ QAD/QAT 保留原来的全模型执行方式，不使用上述逐块调度。
 导出 logits，以及调优期间禁止完整权重聚合。
 这不代表已经验证逐块 MoE 精度或 CUDA/NCCL 显存行为。
 
-## FP4 仅权重量化
+## FP4 权重与激活量化
 
-`MXFP4` 和 `NVFP4` 预设默认采用 W4A4。当前原生 TP 必须显式覆盖
-`act_bits=16, act_data_type="float"`；W4A4 会报错，不会被静默转换。
+`MXFP4` 和 `NVFP4` 预设默认采用 W4A4，原生 TP 无需覆盖激活配置。
+同时支持 `MXFP4_RCEIL`。如果仅量化权重，请显式设置
+`act_bits=16, act_data_type="float"`。
 必须同时设置两个字段，否则 NVFP4 中带位宽的激活类型会恢复 `act_bits=4`。
 例如，将上文的方案和算法配置替换为：
 
@@ -147,6 +177,18 @@ MXFP4 的 block scale 在本地计算。NVFP4 通过 TP mesh 内的标量 `MAX`
 归约，为每个 Linear 计算统一的权重 global scale，再执行本地 block QDQ，
 不会为计算该 scale 聚合完整权重。打包检查点导出也会保留 global scale。
 
+激活 QDQ 保留输入的原生 DTensor 布局。MXFP 激活使用大小为 32 的本地量化组，
+支持 4、6 或 8 位（`mx_fp` / `mx_fp_rceil`）；NVFP4 激活使用大小为 16 的
+量化组，支持 4 位（`nv_fp4` / `nv_fp4_with_static_gs`）。两者均要求
+`act_sym=True` 和 `act_dynamic=True`；NVFP4 的静态 global scale 变体仍使用
+动态 block scale。其他激活类型或静态 block scale 会明确报错。
+行切分后的本地宽度也必须包含完整的激活量化组。
+
+NVFP4 的校准最大值在权重的 TP mesh 内同步。如果没有校准或显式提供的
+global scale，则每次前向通过标量 `MAX` 归约计算激活最大值，不会为计算此 scale
+聚合完整激活或权重。可调优的激活裁剪系数保持复制，其分片局部梯度在 mesh 内
+求和。解包后保留激活 QDQ；导出时重建不依赖 TP collective 的普通 CPU 激活包装层。
+
 ## Fused MoE 与原生 TP
 
 支持标准拼接式、非转置、无 bias 的 experts，其三维权重为 `gate_up_proj`
@@ -163,7 +205,8 @@ CPU 导出排除这些别名并重建拆分的 expert 模块树。
 交错布局、expert bias／额外 norm，以及未被 TP 分片的 fused experts。
 
 双进程测试比较 fused／unfused 输出、输入／路由／QDQ 梯度和未命中 expert
-的行为，再运行 Qwen3-MoE 的 INT／MXFP4／NVFP4 仅权重调优、CPU 导出
+的行为，再运行 Qwen3-MoE 的 INT／MXFP4／NVFP4 仅权重调优、
+MXFP4／NVFP4 W4A4 调优、CPU 导出
 logits 和 FP4 打包。这不代表已验证 fused kernel 性能或 CUDA/NCCL 执行。
 
 ## 校准与检查点导出
@@ -191,6 +234,9 @@ fake 和打包检查点评估都适用；Python API 不会自动销毁调用方�
 
 离线双进程 CPU/Gloo 测试覆盖 FP4 前向及 STE 梯度一致性、QAD/QAT 生命周期、
 普通导出模型的 logits 和真实 `auto_round` 打包结果。
+激活测试包括稠密和 MoE W4A4、MXFP6/8 激活、零输入和空输入、并列全局最大值、
+裁剪系数梯度及激活量化组边界。逐块测试还覆盖 AutoRound/SignRound、
+AutoRound v2、RTN 和优化 RTN 的 FP4 激活量化，包括元数据 offload 和导出 logits。
 CUDA/NCCL 显存、性能及部署后端推理仍未验证。
 
 ## PP 与后续 DP

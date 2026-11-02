@@ -139,6 +139,7 @@ def prepare_tp_moe(model):
                     requires_grad=False,
                 )
                 linear.forward = MethodType(_local_linear_forward, linear)
+                linear._auto_round_tp_local_forward = True
                 expert.add_module(key, linear)
             module.add_module(str(index), expert)
         module.config._experts_implementation = "linear_loop"

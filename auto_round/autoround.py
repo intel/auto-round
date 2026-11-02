@@ -627,18 +627,17 @@ class _CompressorBuilder:
             from auto_round.algorithms.config_resolver import get_algorithm_class
             from auto_round.parallel.execution import ParallelExecution
 
-            if parallel_config.tp_size > 1 and len(quantizer_configs) != 1:
-                raise NotImplementedError("Native TP currently supports a single quantizer stage.")
             execution = ParallelExecution(parallel_config)
-            for config in [*preprocessor_configs, *quantizer_configs]:
+            parallel_quantizer_configs = quantizer_configs or [quant_config]
+            for config in [*preprocessor_configs, *parallel_quantizer_configs]:
                 algorithm_class = get_algorithm_class(config)
                 if algorithm_class is None:
                     raise NotImplementedError(f"{type(config).__name__} has no parallel capability contract.")
-                execution.validate(algorithm_class, config)
+                execution.for_algorithm(algorithm_class, config)
             if (
                 parallel_config.tp_size > 1
                 and preprocessor_configs
-                and getattr(get_algorithm_class(quant_config), "whole_model_tuning", False)
+                and getattr(get_algorithm_class(parallel_quantizer_configs[0]), "whole_model_tuning", False)
             ):
                 raise NotImplementedError("Whole-model TP tuning cannot run block preprocessors without a block stage.")
         if parallel_config.tp_size > 1:

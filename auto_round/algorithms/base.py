@@ -96,18 +96,31 @@ class BaseAlgorithm:
         """Override to reject unsupported parallel algorithm options early."""
         return
 
+    @classmethod
+    def create_parallel_execution(cls, config, default_execution):
+        """Select this algorithm's TP/PP execution policy on the loaded topology.
+
+        Return a ParallelExecution subclass to customize block placement,
+        streaming or the exception-safe algorithm_stage() context. The default
+        shares the compressor's service; no algorithm-name dispatch is needed.
+        """
+        return default_execution
+
     def bind(self, orchestrator: "BaseOrchestrator") -> None:
         """Wire compressor-owned state into a frozen :class:`QuantizationRunContext`.
         Called once before block iteration starts.  Fields not present on the
         compressor (e.g. ``calibration_context`` for preprocessors) default to ``None``.
         """
+        execution = getattr(orchestrator, "parallel_execution", None)
+        if execution is not None:
+            execution = execution.for_algorithm(type(self), self.config)
         self.__run_ctx = QuantizationRunContext(
             model_context=orchestrator.model_context,
             compress_context=orchestrator.compress_context,
             calibration_context=getattr(orchestrator, "calibration_context", None),
             scale_dtype=getattr(orchestrator, "scale_dtype", None),
             scheme=getattr(orchestrator, "scheme_context", None),
-            parallel_execution=getattr(orchestrator, "parallel_execution", None),
+            parallel_execution=execution,
         )
 
     def bind_block_forward_runner(self, block_forward_runner: "type[BlockForwardRunner]") -> None:

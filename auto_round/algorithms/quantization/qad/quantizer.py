@@ -744,9 +744,12 @@ class QADQuantizer(SignRoundQuantizer):
             token_ids = samples[0]
         else:
             self._strip_accelerate_hooks(model)
-            model.to(device)
+        # A block-wise stage can leave every shard (including embeddings) on
+        # CPU. Restore whole-model residency even with a fully cached teacher
+        # or hard-label QAT; neither path is guaranteed to run a setup forward.
+        self.parallel.prepare_whole_model(model, device)
         # A previous distributed block stage can leave placement hints on the
-        # original modules. This pass is strictly single-device.
+        # original modules. This pass uses one device per rank.
         for module in model.modules():
             if hasattr(module, "tuning_device"):
                 del module.tuning_device

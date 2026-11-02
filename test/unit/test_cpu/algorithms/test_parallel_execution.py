@@ -67,6 +67,9 @@ def test_inherited_tp_support_requires_unchanged_execution_hooks():
     class CustomWrapper(SignRoundOptimizedWrapperLinear):
         pass
 
+    class CustomTPWrapper(tensor_parallel_wrapper(SignRoundOptimizedWrapperLinear)):
+        pass
+
     execution = ParallelExecution({"tp_size": 2})
     execution.validate(SharedAlgorithm, SimpleNamespace())
     execution.validate(AdaptedAlgorithm, SimpleNamespace())
@@ -74,6 +77,40 @@ def test_inherited_tp_support_requires_unchanged_execution_hooks():
         execution.validate(CustomAlgorithm, SimpleNamespace())
     with pytest.raises(NotImplementedError, match="TP wrapper contract"):
         tensor_parallel_wrapper(CustomWrapper)
+    with pytest.raises(NotImplementedError, match="TP wrapper contract"):
+        tensor_parallel_wrapper(CustomTPWrapper)
+
+
+def test_algorithm_selects_parallel_execution_policy():
+    from auto_round.algorithms.base import BaseAlgorithm
+
+    class PlacementExecution(ParallelExecution):
+        pass
+
+    class PlacementAlgorithm(BaseAlgorithm):
+        @classmethod
+        def create_parallel_execution(cls, config, default_execution):
+            return PlacementExecution(default_execution.config)
+
+    default = ParallelExecution({"pp_size": 2})
+    selected = default.for_algorithm(PlacementAlgorithm, SimpleNamespace())
+    assert type(selected) is PlacementExecution
+    assert selected.config == default.config
+    assert default.for_algorithm(BaseAlgorithm, SimpleNamespace()) is default
+
+
+@pytest.mark.parametrize("policy", [None, ParallelExecution(), ParallelExecution({"pp_size": 2})])
+def test_algorithm_policy_cannot_silently_change_loaded_topology(policy):
+    from auto_round.algorithms.base import BaseAlgorithm
+
+    class InvalidAlgorithm(BaseAlgorithm):
+        @classmethod
+        def create_parallel_execution(cls, config, default_execution):
+            return policy
+
+    expected_error = TypeError if policy is None else NotImplementedError
+    with pytest.raises(expected_error, match="ParallelExecution|resharding"):
+        ParallelExecution({"tp_size": 2}).for_algorithm(InvalidAlgorithm, SimpleNamespace())
 
 
 def test_pipeline_placement_keeps_signround_heuristic():
@@ -140,6 +177,7 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
     from auto_round.algorithms.transforms.awq.config import AWQConfig
     from auto_round.parallel.runtime import gather_for_export, is_dtensor
+    from auto_round.wrapper import WrapperWALayer
 
     torch.set_num_threads(1)
     if device_type == "cuda":
@@ -166,9 +204,42 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
             [AWQConfig(n_grid=3, group_size=8), RTNConfig(group_size=8)],
             [AWQConfig(n_grid=3, group_size=8), SignRoundConfig(iters=2, group_size=8)],
             [AWQConfig(n_grid=3, group_size=8), SignRoundV2Config(iters=2, group_size=8)],
+            [SignRoundConfig(iters=2, group_size=8), SignRoundConfig(iters=2, group_size=8)],
+            [RTNConfig(group_size=8, disable_opt_rtn=True), SignRoundV2Config(iters=2, group_size=8)],
+            [
+                AWQConfig(n_grid=3, group_size=8),
+                SignRoundV2Config(iters=2, group_size=8),
+                SignRoundConfig(iters=2, group_size=8),
+            ],
+            AWQConfig(n_grid=3, group_size=8),
         ]
         if device_type == "cuda":
-            configs = [configs[0], configs[5]]
+            configs = [configs[0], configs[5], configs[7]]
+        else:
+            for config_class, data_type, group_size, act_type in (
+                (SignRoundConfig, "mx_fp", 32, "mx_fp"),
+                (SignRoundV2Config, "nv_fp", 16, "nv_fp4_with_static_gs"),
+                (RTNConfig, "nv_fp", 16, "nv_fp4_with_static_gs"),
+                (OptimizedRTNConfig, "mx_fp", 32, "mx_fp"),
+            ):
+                tuning = (
+                    {"iters": 2, "not_use_best_mse": True}
+                    if config_class in (SignRoundConfig, SignRoundV2Config)
+                    else {}
+                )
+                configs.append(
+                    config_class(
+                        bits=4,
+                        group_size=group_size,
+                        data_type=data_type,
+                        act_bits=4,
+                        act_group_size=group_size,
+                        act_data_type=act_type,
+                        act_sym=True,
+                        act_dynamic=True,
+                        **tuning,
+                    )
+                )
         original_full_tensor = DTensor.full_tensor
 
         def no_weight_gather(value, *args, **kwargs):
@@ -210,11 +281,16 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
             ):
                 model, _ = compressor.quantize()
             for block in model.model.layers:
-                assert is_dtensor(block.self_attn.q_proj.weight)
-                assert is_dtensor(block.self_attn.q_proj.scale)
-                assert block.self_attn.q_proj.weight.to_local().numel() * 2 == block.self_attn.q_proj.weight.numel()
+
+                projection = block.self_attn.q_proj
+                if isinstance(projection, WrapperWALayer):
+                    projection = projection.orig_layer
+                    assert projection.act_max_scale.device.type == "cpu"
+                assert is_dtensor(projection.weight)
+                assert is_dtensor(projection.scale)
+                assert projection.weight.to_local().numel() * 2 == projection.weight.numel()
                 assert all(parameter.device.type == "cpu" for parameter in block.parameters())
-                assert block.self_attn.q_proj.scale.device.type == "cpu"
+                assert projection.scale.device.type == "cpu"
             exported = gather_for_export(model)
             if device_type == "cuda":
                 model.to(f"cuda:{rank}")

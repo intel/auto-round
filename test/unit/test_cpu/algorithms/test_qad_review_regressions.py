@@ -85,6 +85,57 @@ def _calibrator():
     return calibrator
 
 
+@pytest.mark.parametrize("native_tp", [False, True])
+@pytest.mark.parametrize("use_teacher", [False, True])
+def test_whole_model_residency_precedes_cached_teacher_and_wrapping(tmp_path, monkeypatch, native_tp, use_teacher):
+    quantizer = _quantizer(
+        tmp_path, qad_kd_weight=1.0 if use_teacher else 0.0, qad_ce_weight=0.0 if use_teacher else 1.0
+    )
+    model = _TinyLM()
+    model.proj.weight_global_scale = torch.tensor(1.0)
+    model.proj.act_max = torch.ones(8)
+    original_forward = model.embedding.forward
+    hook = model.embedding.register_forward_pre_hook(lambda module, inputs: None)
+    events = []
+    monkeypatch.setattr("auto_round.parallel.runtime.is_tp_model", lambda model: native_tp)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
+    monkeypatch.setattr(torch.distributed, "broadcast_object_list", lambda samples: None)
+    monkeypatch.setattr(quantizer, "_strip_accelerate_hooks", lambda model: events.append("strip"))
+
+    def check_residency(model, *args, **kwargs):
+        # A real device change catches the CPU->CPU no-op that hid this bug in
+        # CPU/Gloo tests. Stop before any meta tensor is used for computation.
+        assert model.embedding.weight.device.type == "meta"
+        assert all(parameter.device.type == "meta" for parameter in model.parameters())
+        assert model.proj.weight_global_scale.device.type == "meta"
+        assert model.proj.act_max.device.type == "meta"
+        assert model.embedding.forward == original_forward
+        assert hook.id in model.embedding._forward_pre_hooks
+
+    def calibrate(model, *args):
+        check_residency(model)
+        events.append("calibrate")  # W*A16: no activation calibration forward.
+
+    def cached_teacher(model, *args):
+        check_residency(model)
+        events.append("cached_teacher")  # All samples hit: no teacher forward.
+
+    def wrap(model, *args, **kwargs):
+        check_residency(model)
+        events.append("wrap")
+        raise RuntimeError("stop before meta computation")
+
+    monkeypatch.setattr(quantizer, "_calibrate_activations", calibrate)
+    monkeypatch.setattr(quantizer, "_build_teacher_cache_from_model", cached_teacher)
+    monkeypatch.setattr(quantizer, "wrapper_block", wrap)
+    with pytest.raises(RuntimeError, match="stop before meta computation"):
+        quantizer.quantize_model(model, [torch.tensor([1, 2, 3])], device="meta")
+    assert events == ([] if native_tp else ["strip"]) + ["calibrate"] + (["cached_teacher"] if use_teacher else []) + [
+        "wrap"
+    ]
+    hook.remove()
+
+
 @pytest.mark.parametrize("last_padded", [False, True])
 def test_original_context_is_independent_of_labels(tmp_path, last_padded):
     calibrator = _calibrator()

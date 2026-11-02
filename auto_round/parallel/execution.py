@@ -14,7 +14,7 @@
 
 """Algorithm-facing execution services shared by local, PP-placement and TP runs."""
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 
 import torch
@@ -49,6 +49,54 @@ class ParallelExecution:
 
     def __init__(self, config=None):
         self.config = ParallelConfig.from_value(config)
+
+    def for_algorithm(self, algorithm_class, config):
+        """Select and validate an algorithm's execution policy before tuning.
+
+        Policies can specialize placement/streaming and stage-local hooks, but
+        cannot reinterpret shards loaded for a different process topology.
+        """
+        execution = algorithm_class.create_parallel_execution(config, self)
+        if not isinstance(execution, ParallelExecution):
+            raise TypeError("create_parallel_execution() must return a ParallelExecution instance.")
+        if execution.config != self.config:
+            raise NotImplementedError(
+                "Algorithm execution policies must retain the loaded parallel topology. "
+                "Changing TP/PP degrees requires explicit model and state resharding."
+            )
+        execution.validate(algorithm_class, config)
+        return execution
+
+    @contextmanager
+    def algorithm_stage(self, algorithm, model):
+        """Override to apply/remove an algorithm-specific policy with try/finally.
+
+        Native Transformers forwards and DTensor layouts are transport, not
+        stage-local hooks: leave them intact unless state is explicitly resharded.
+        """
+        yield
+
+    @contextmanager
+    def stage(self, algorithm, orchestrator):
+        """Route shared infrastructure through this policy for one stage only."""
+        runner = getattr(algorithm, "block_forward", None)
+        calibration = getattr(orchestrator, "calibration", None)
+        with ExitStack() as cleanup:
+            for owner, name in (
+                (orchestrator, "parallel_execution"),
+                (calibration, "parallel"),
+                (runner, "parallel_execution"),
+            ):
+                if owner is not None and hasattr(owner, name):
+                    cleanup.callback(setattr, owner, name, getattr(owner, name))
+                    setattr(owner, name, self)
+            if runner is not None:
+                # Cached placement from the previous stage must not survive a
+                # policy change, including when policy setup or tuning raises.
+                runner.pool_placement = None
+                cleanup.callback(setattr, runner, "pool_placement", None)
+            with self.algorithm_stage(algorithm, orchestrator.model_context.model):
+                yield
 
     @property
     def is_tp(self):
@@ -209,12 +257,31 @@ class ParallelExecution:
         if self.is_tp:
             self.move_block(model, "cpu")
 
+    def prepare_whole_model(self, model, device):
+        """Restore all local shards and metadata before whole-model forwards.
+
+        Block tuning/calibration may leave embeddings and inactive blocks on
+        CPU. Module.to() preserves native DTensor layouts and forwards; moving
+        a model here must not depend on a teacher-cache miss or calibration.
+        """
+        return self.move_block(model, device)
+
     @staticmethod
     def move_block(block, device):
         """Move registered shards and unregistered quantization tensor metadata."""
         block.to(device)
         for module in block.modules():
-            for name in ("scale", "zp", "weight_global_scale", "imatrix", "act_max"):
+            for name in (
+                "scale",
+                "zp",
+                "weight_global_scale",
+                "imatrix",
+                "act_max",
+                "act_scale",
+                "act_min_scale",
+                "act_max_scale",
+                "input_global_scale",
+            ):
                 if name in module._parameters or name in module._buffers:
                     continue
                 value = getattr(module, name, None)

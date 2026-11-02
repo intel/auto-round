@@ -158,7 +158,18 @@ def gather_for_export(model):
     Shards are copied to CPU before bounded transfers; full tensors exist only
     in writer host memory, never temporarily on a GPU.
     """
+    from auto_round.parallel.activation import TensorParallelActivationQuantizer
+    from auto_round.wrapper import WrapperWALayer
+
     writer = dist.get_rank() == 0
+    activation_wrappers = {name for name, module in model.named_modules() if isinstance(module, WrapperWALayer)}
+
+    def export_name(name):
+        for wrapper_name in sorted(activation_wrappers, key=len, reverse=True):
+            prefix = f"{wrapper_name}.orig_layer"
+            if name == prefix or name.startswith(prefix + "."):
+                name = wrapper_name + name[len(prefix):]
+        return name
 
     def gather(value):
         if isinstance(value, torch.Tensor):
@@ -169,6 +180,7 @@ def gather_for_export(model):
     aliases = {f"{name}.{key}" for name in moe_names for key in ("gate_up_proj", "down_proj")}
     state = {}
     for name, value in model.state_dict().items():
+        name = export_name(name)
         if name in aliases:
             continue
         full = gather(value)
@@ -178,7 +190,7 @@ def gather_for_export(model):
     for name, value in model.named_buffers():
         full = gather(value)
         if writer:
-            buffers[name] = full
+            buffers[export_name(name)] = full
     metadata = {}
     names = (
         "bits",
@@ -195,16 +207,24 @@ def gather_for_export(model):
         "act_group_size",
         "act_sym",
         "act_dynamic",
+        "act_max",
+        "act_scale",
+        "act_min_scale",
+        "act_max_scale",
+        "input_global_scale",
+        "act_quant_func",
     )
     for name, module in model.named_modules():
         attributes = {}
         for key in names:
             if hasattr(module, key):
                 full = gather(getattr(module, key))
+                if isinstance(full, TensorParallelActivationQuantizer):
+                    full = full.quant_func
                 if writer:
                     attributes[key] = full
         if writer and attributes:
-            metadata[name] = attributes
+            metadata.setdefault(export_name(name), {}).update(attributes)
     if not writer:
         return None
     export_config = copy.deepcopy(model.config)
@@ -227,6 +247,11 @@ def gather_for_export(model):
         module = exported.get_submodule(name)
         for key, value in attributes.items():
             setattr(module, key, value)
+    for name in sorted(activation_wrappers):
+        parent, _, key = name.rpartition(".")
+        exported.get_submodule(parent).add_module(
+            key, WrapperWALayer(exported.get_submodule(name), enable_torch_compile=False, device="cpu")
+        )
     if hasattr(model, "generation_config"):
         exported.generation_config = copy.deepcopy(model.generation_config)
     return exported.eval()

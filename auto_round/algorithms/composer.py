@@ -30,7 +30,7 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -186,9 +186,6 @@ class AlgorithmComposer:
                 raise ValueError(f"Unknown algorithm config type {type(cfg).__name__!r}.")
             q = alg_cls(cfg)
             if orchestrator is not None:
-                execution = getattr(orchestrator, "parallel_execution", None)
-                if execution is not None:
-                    execution.validate(type(q), cfg)
                 q.bind(orchestrator)
             if isinstance(q, BasePreprocessor):
                 preprocessors.append(q)
@@ -277,6 +274,23 @@ class AlgorithmComposer:
         # Guards the one-shot model-level rotation stage (apply_model_transforms).
         self._rotation_prepared: bool = False
 
+    @contextmanager
+    def active_stage(self):
+        """Apply the active members' policies and lifecycle, including zero-shot."""
+        orchestrator = self._orchestrator
+        if orchestrator is None:
+            raise RuntimeError("active_stage requires a bound compressor.")
+        with ExitStack() as stage:
+            active_members = [*self.preprocessors, *self._rotation_members, self.block_quantizer]
+            for member in active_members:
+                stage.enter_context(member.parallel.stage(member, orchestrator))
+            if not self.block_quantizer.whole_model_tuning:
+                self.block_quantizer.parallel.prepare_blockwise_model(orchestrator.model_context.model)
+            for member in active_members:
+                stage.callback(member.finalize_run)
+                member.prepare_run(composer=self)
+            yield
+
     def compress_model(self, token_ids, run_blocks) -> bool:
         """Run ordered block/model tuning stages using the bound compressor.
 
@@ -302,7 +316,6 @@ class AlgorithmComposer:
         terminal = self.block_quantizer
         preprocessors, rotations = self.preprocessors, self._rotation_members
         try:
-            self.prepare_run()
             for index, (quantizer, preserve) in enumerate(zip(self.quantizers, self._preserve_stage_weights)):
                 self.block_quantizer = quantizer
                 self._preserve_weights = preserve
@@ -311,26 +324,26 @@ class AlgorithmComposer:
                 logger.info(
                     "Starting algorithm stage %d/%d: %s.", index + 1, len(self.quantizers), type(quantizer).__name__
                 )
-                if quantizer.whole_model_tuning:
-                    orchestrator._reload_model_for_tuning()
-                    runner = getattr(self, "block_forward", None)
-                    if runner is not None:
-                        runner.pool_placement = None
-                    stage_token_ids = quantizer.get_calibration_token_ids(token_ids, orchestrator.calibration)
-                    self._run_tuning(
-                        orchestrator.model_context.model,
-                        lambda: quantizer.quantize_model(
-                            orchestrator.model_context.model, stage_token_ids, device=device_manager.device
-                        ),
-                    )
-                else:
-                    run_blocks(index > 0)
+                # Each member may specialize placement/streaming on the same
+                # loaded topology. Exit all old policies before the next stage;
+                # never strip native TP forwards or discard DTensor layouts.
+                with self.active_stage():
+                    if quantizer.whole_model_tuning:
+                        orchestrator._reload_model_for_tuning()
+                        stage_token_ids = quantizer.get_calibration_token_ids(token_ids, orchestrator.calibration)
+                        self._run_tuning(
+                            orchestrator.model_context.model,
+                            lambda: quantizer.quantize_model(
+                                orchestrator.model_context.model, stage_token_ids, device=device_manager.device
+                            ),
+                        )
+                    else:
+                        run_blocks(index > 0)
             return terminal.whole_model_tuning
         finally:
             self.block_quantizer = terminal
             self._preserve_weights = False
             self.preprocessors, self._rotation_members = preprocessors, rotations
-            self.finalize_run()
 
     def _run_tuning(self, module, tune, collect_output=None):
         """Common block/model tuning finalization, including failure cleanup."""

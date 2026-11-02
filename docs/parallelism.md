@@ -2,7 +2,7 @@
 
 AutoRound delegates tensor parallelism (TP) to Transformers. Transformers loads
 the shards, installs its native forwards and owns layout redistribution. AutoRound
-only adapts quantize-dequantize (QDQ) math to local weight shards. It does not
+only adapts quantize-dequantize (QDQ) math to local weight and activation shards. It does not
 implement another tensor-parallel backend.
 
 ## Public configuration
@@ -58,15 +58,16 @@ group. Fast interconnects such as NVLink are recommended.
   Linear plans, including native embedding/output boundaries and replicated norms.
 - Standard decoder-only fused MoE layouts described below, tested with Qwen3-MoE.
 - Weight-only QAD/QAT, AutoRound/SignRound, AutoRound v2, RTN and optimized RTN.
+- MXFP4/NVFP4 activation quantization through the shared QDQ adapter, as described below.
 - INT AWQ smoothing followed by RTN, optimized RTN, AutoRound or AutoRound v2.
   AWQ clipping/clip-as-init and FP4 AWQ smoothing are not supported yet.
-- One quantizer stage, optionally preceded by supported block preprocessors.
+- Ordered quantizer stages sharing a fixed scheme, optionally preceded by supported block preprocessors.
   Whole-model quantizers cannot follow block preprocessors without a leading block stage.
 - A one-dimensional TP mesh with evenly sized, nonempty weight shards.
 - Positive integer group sizes. Row-wise shards must contain complete groups;
   `group_size=-1` is supported only for column-wise weights.
 - Gradient checkpointing and the existing QAD optimizers. Joint tuning of
-  non-quantized parameters, norm/bias tuning, activation quantization,
+  non-quantized parameters, norm/bias tuning, INT activation quantization,
   `torch.compile`, non-standard fused MoE layouts and AutoScheme are not supported yet.
 - Block-level LFQ/QAD losses and rotation preprocessors have not implemented
   their TP contracts. They fail explicitly, rather than falling back to replicated weights.
@@ -106,6 +107,42 @@ Custom QDQ wrappers also require `supports_tensor_parallel=True` in their own cl
 with the algorithm's original local wrapper; it never replaces custom weight math
 with standard rounding. Unadapted wrappers fail explicitly.
 
+## Algorithm stages and execution policies
+
+TP uses the same ordered algorithm pipeline as local execution, rather than a
+special case for a named algorithm pair. Each preprocessor and quantizer must
+satisfy its own parallel capability and option checks. For example, block-wise
+AutoRound stages can precede another block stage or whole-model QAD/QAT; adding
+an unsupported member still fails before tuning. Existing multi-stage restrictions,
+including immediate saving/packing and resume, remain in effect.
+
+Each algorithm can override
+`create_parallel_execution(config, default_execution)` to return a specialized
+`ParallelExecution` on the loaded topology. This allows different block-placement,
+streaming and stage-local hook policies without algorithm-name branches in the
+composer. `algorithm_stage(algorithm, model)` is a context manager for installing
+such hooks and removing them in `finally`, including when setup or tuning fails.
+Policy selection is also performed during early validation, so the factory must
+not mutate the model or install hooks.
+
+The composer enters the active members' policies, prepares only those members,
+runs the stage, finalizes them and exits their policies before starting the next
+stage. Preprocessors run only in the first block stage. Calibration, block forwards
+and compressor placement use the active stage's execution service; cached block
+placement is cleared at stage boundaries and execution references are restored on
+failure. When a later algorithm requires original FP weights, earlier stages keep
+those weights and transfer shard-local warm-start parameters (including optimized
+initial scales) on the native layers, not temporary local views.
+
+The native Transformers TP forward and DTensor placements are the model's
+transport, not disposable algorithm hooks. Stages do not remove or reapply this
+transport, gather full weights or rebuild process groups. Currently all policies
+must retain the loaded `ParallelConfig`. Different TP/PP degrees, switching TP to
+PP, and changing native sharding plans require explicit weight/metadata/warm-start
+resharding and model reconstruction; they are not implemented by this stage API.
+Selecting a policy with a different topology raises an error rather than silently
+running shard-local tensors as an unsharded model.
+
 ## Block-wise TP and CPU residency
 
 For block-wise algorithms each rank keeps inactive **local weight shards** in CPU
@@ -131,10 +168,11 @@ Offline two-rank tests cover dense Llama block-wise algorithms, AWQ channel
 statistics/scale folding, export logits and rejection of full-weight gathers during
 tuning. This does not establish block-wise MoE accuracy or CUDA/NCCL memory behavior.
 
-## Weight-only FP4
+## FP4 weight and activation quantization
 
-The `MXFP4` and `NVFP4` presets default to W4A4. Native TP currently requires
-explicit `act_bits=16, act_data_type="float"` overrides; W4A4 is rejected, not silently converted.
+The `MXFP4` and `NVFP4` presets default to W4A4, which native TP supports
+without activation overrides. `MXFP4_RCEIL` is also supported.
+For weight-only quantization, explicitly set `act_bits=16, act_data_type="float"`.
 Set both fields: NVFP4's bit-encoded activation type otherwise restores `act_bits=4`.
 For example, replace the scheme and algorithm configuration above with:
 
@@ -156,6 +194,20 @@ scale per Linear using a scalar `MAX` reduction over the TP mesh, then performs
 local block QDQ. It does not gather full weights to compute that scale. The
 global scale is preserved for packed checkpoint export.
 
+Activation QDQ preserves the incoming native DTensor layout. MXFP activations use
+local groups of 32 with 4, 6 or 8 bits (`mx_fp` / `mx_fp_rceil`); NVFP4 activations
+use groups of 16 with 4 bits (`nv_fp4` / `nv_fp4_with_static_gs`). Both require
+`act_sym=True` and `act_dynamic=True`; NVFP4's static-global-scale variant still
+uses dynamic block scales. Other activation types and static block scales fail
+explicitly. Row-wise local widths must also contain complete activation groups.
+
+NVFP4 calibration maxima are synchronized over the weight's TP mesh. Without a
+calibrated or supplied global scale, a scalar `MAX` reduction computes the
+activation maximum at each forward; full activations and weights are not gathered
+for this scale. Tunable activation clipping coefficients remain replicated, with
+shard-local gradients summed over the mesh. Unwrapping retains activation QDQ,
+and export reconstructs ordinary CPU activation wrappers without TP collectives.
+
 ## Fused MoE and native TP
 
 Standard concatenated, non-transposed, bias-free experts with 3-D `gate_up_proj`
@@ -173,7 +225,8 @@ Generic unfusing of DTensors is rejected before weight mutation. EP, transposed 
 interleaved layouts, expert bias/post-norm and unsharded fused experts are not supported.
 
 Two-process tests compare fused/unfused outputs, input/routing/QDQ gradients and
-unused-expert behavior, then run Qwen3-MoE INT/MXFP4/NVFP4 weight-only tuning,
+unused-expert behavior, then run Qwen3-MoE INT/MXFP4/NVFP4 weight-only tuning
+and MXFP4/NVFP4 W4A4 tuning,
 CPU export logits and FP4 packing. This does not validate fused-kernel performance
 or CUDA/NCCL execution.
 
@@ -205,6 +258,10 @@ destroy caller-owned process groups.
 
 Offline two-process CPU/Gloo tests cover FP4 forward and STE-gradient parity,
 QAD/QAT lifecycle, plain export logits and real `auto_round` packed output.
+Activation tests include dense and MoE W4A4, MXFP6/8 activations, zero and empty
+inputs, tied global maxima, clipping gradients and activation-group boundaries.
+Block-wise tests also cover FP4 activations with AutoRound/SignRound,
+AutoRound v2, RTN and optimized RTN, including metadata offload and export logits.
 CUDA/NCCL memory, performance and deployment-backend inference remain unvalidated.
 
 ## PP and future DP

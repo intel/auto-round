@@ -62,13 +62,13 @@ def test_native_distributed_config_and_cli():
     assert (args.tp_size, args.pp_size, args.dp_size) == (2, 1, 1)
 
 
-@pytest.mark.parametrize("scheme", ["MXFP4", "NVFP4", "INT8_W8A8"])
+@pytest.mark.parametrize("scheme", ["INT8_W8A8"])
 def test_unsupported_tp_scheme_fails_before_loading(scheme):
     from auto_round import AutoRound
 
     with (
         patch.object(ParallelConfig, "resolve_device_map", return_value="cpu"),
-        pytest.raises(NotImplementedError, match="weight-only"),
+        pytest.raises(NotImplementedError, match="activation quantization"),
     ):
         AutoRound(torch.nn.Linear(4, 4), scheme=scheme, alg_configs="qad", parallel_config={"tp_size": 2})
 
@@ -84,6 +84,21 @@ def test_unsupported_tp_algorithm_fails_before_loading():
         AutoRound(torch.nn.Linear(4, 4), alg_configs=AWQConfig(apply_clip=True), parallel_config={"tp_size": 2})
 
 
+def test_multistage_tp_validates_later_algorithm_before_loading():
+    from auto_round import AutoRound
+    from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+
+    with (
+        patch.object(ParallelConfig, "resolve_device_map", return_value="cpu"),
+        pytest.raises(NotImplementedError, match="enable_lfq"),
+    ):
+        AutoRound(
+            torch.nn.Linear(4, 4),
+            alg_configs=[SignRoundConfig(), SignRoundConfig(enable_lfq=True)],
+            parallel_config={"tp_size": 2},
+        )
+
+
 @pytest.mark.parametrize("data_type,group_size", [("mx_fp", 16), ("nv_fp", 32)])
 def test_invalid_fp4_block_size(data_type, group_size):
     from auto_round.parallel.policy import validate_tp_quantization
@@ -93,6 +108,29 @@ def test_invalid_fp4_block_size(data_type, group_size):
         validate_tp_quantization(QuantizationScheme(data_type=data_type, group_size=group_size, act_bits=16))
 
 
+@pytest.mark.parametrize("scheme", ["MXFP4", "MXFP4_RCEIL", "NVFP4"])
+def test_tp_fp4_activation_policy(scheme):
+    from auto_round.parallel.policy import validate_tp_quantization
+    from auto_round.schemes import preset_name_to_scheme
+
+    config = preset_name_to_scheme(scheme).copy()
+    validate_tp_quantization(config)
+    config.act_group_size //= 2
+    with pytest.raises(NotImplementedError, match="act_group_size"):
+        validate_tp_quantization(config)
+
+
+@pytest.mark.parametrize("override", [{"act_sym": False}, {"act_dynamic": False}, {"act_bits": 2}])
+def test_invalid_tp_activation_options(override):
+    from auto_round.parallel.policy import validate_tp_quantization
+    from auto_round.schemes import preset_name_to_scheme
+
+    scheme = preset_name_to_scheme("MXFP4").copy()
+    scheme.update_from_dict(override)
+    with pytest.raises(NotImplementedError, match="requires act_bits"):
+        validate_tp_quantization(scheme)
+
+
 def _configure_linear(layer):
     for key, value in dict(bits=4, group_size=2, sym=True, data_type="int", act_bits=16).items():
         setattr(layer, key, value)
@@ -100,11 +138,11 @@ def _configure_linear(layer):
     return layer.requires_grad_(False)
 
 
-def _check_qdq_numerics(rank, mesh, symmetric, data_type="int", group_size=2, width=8):
+def _check_qdq_numerics(rank, mesh, symmetric, data_type="int", group_size=2, width=8, act_type=None, act_bits=4):
     from transformers.distributed.tensor_parallel import ColwiseParallel, RowwiseParallel
 
     from auto_round.parallel.qdq import TensorParallelQDQLinear
-    from auto_round.wrapper import WrapperLinear
+    from auto_round.wrapper import WrapperLinear, WrapperWALayer
 
     torch.manual_seed(7)
     col = _configure_linear(torch.nn.Linear(width, width))
@@ -112,6 +150,15 @@ def _check_qdq_numerics(rank, mesh, symmetric, data_type="int", group_size=2, wi
     col.sym = row.sym = symmetric
     col.data_type = row.data_type = data_type
     col.group_size = row.group_size = group_size
+    if act_type:
+        for layer in (col, row):
+            layer.act_bits = act_bits
+            layer.act_group_size = group_size
+            layer.act_data_type = act_type
+            layer.act_sym = True
+            layer.act_dynamic = True
+            if act_type == "nv_fp4_with_static_gs":
+                layer.act_max = torch.tensor([20.0])
     # Distinct shard maxima catch accidentally computing NVFP global scales
     # independently per rank, for both output- and input-axis sharding.
     if data_type != "int":
@@ -120,33 +167,54 @@ def _check_qdq_numerics(rank, mesh, symmetric, data_type="int", group_size=2, wi
             row.weight[:, width // 2 :].mul_(17)
     reference_col = WrapperLinear(copy.deepcopy(col), enable_torch_compile=False)
     reference_row = WrapperLinear(copy.deepcopy(row), enable_torch_compile=False)
-    for layer, style in ((col, ColwiseParallel()), (row, RowwiseParallel())):
+    for layer, style in ((col, ColwiseParallel(use_local_output=not bool(act_type))), (row, RowwiseParallel())):
         style.shard_param(layer, "weight", mesh)
         style.shard_param(layer, "bias", mesh)
         style.install_forward(layer, mesh)
     col_before = col.weight.to_local().clone()
+    if act_type == "nv_fp4_with_static_gs" and rank == 0:
+        col.act_max = row.act_max = torch.tensor([3.0])
     wrapped_col = TensorParallelQDQLinear(col, enable_torch_compile=False)
     wrapped_row = TensorParallelQDQLinear(row, enable_torch_compile=False)
+    if act_type:
+        for wrapper in (reference_col, reference_row, wrapped_col, wrapped_row):
+            wrapper.act_max_scale.data.fill_(0.8)
     x = torch.randn(2, 3, width)
-    expected = reference_row(reference_col(x))
-    actual = wrapped_row(wrapped_col(x))
+    actual_x = x.clone().requires_grad_(bool(act_type))
+    expected_x = x.clone().requires_grad_(bool(act_type))
+    expected = reference_row(reference_col(expected_x))
+    actual = wrapped_row(wrapped_col(actual_x))
     torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
     actual.square().mean().backward()
     expected.square().mean().backward()
+    # FP4 cases amplify half the weights by 17; reduction order differs in TP.
+    torch.testing.assert_close(actual_x.grad, expected_x.grad, rtol=2e-4, atol=2e-5)
+    grad_tolerance = dict(rtol=2e-4, atol=1e-4) if data_type != "int" else dict(rtol=3e-5, atol=3e-6)
     for key, parameter in wrapped_col.params.items():
         full_grad = reference_col.params[key].grad
         if full_grad is not None:
-            torch.testing.assert_close(parameter.grad, full_grad.chunk(2, dim=0)[rank], rtol=3e-5, atol=3e-6)
+            expected_grad = full_grad if key.startswith("act_") else full_grad.chunk(2, dim=0)[rank]
+            torch.testing.assert_close(parameter.grad, expected_grad, **grad_tolerance)
     for key, parameter in wrapped_row.params.items():
         full_grad = reference_row.params[key].grad
         if full_grad is not None:
-            expected_grad = full_grad.reshape(4, width // group_size, -1).chunk(2, dim=1)[rank].reshape_as(parameter)
-            torch.testing.assert_close(parameter.grad, expected_grad, rtol=3e-5, atol=3e-6)
+            expected_grad = (
+                full_grad
+                if key.startswith("act_")
+                else full_grad.reshape(4, width // group_size, -1).chunk(2, dim=1)[rank].reshape_as(parameter)
+            )
+            torch.testing.assert_close(parameter.grad, expected_grad, **grad_tolerance)
     torch.testing.assert_close(col.weight.to_local(), col_before)
-    wrapped_col.unwrapper({key: value.detach() for key, value in wrapped_col.params.items()})
-    wrapped_row.unwrapper({key: value.detach() for key, value in wrapped_row.params.items()})
+    result_col = wrapped_col.unwrapper({key: value.detach() for key, value in wrapped_col.params.items()})
+    result_row = wrapped_row.unwrapper({key: value.detach() for key, value in wrapped_row.params.items()})
     ref_col = reference_col.unwrapper({key: value.detach() for key, value in reference_col.params.items()})
     ref_row = reference_row.unwrapper({key: value.detach() for key, value in reference_row.params.items()})
+    with torch.no_grad():
+        torch.testing.assert_close(result_row(result_col(x)), ref_row(ref_col(x)), rtol=2e-5, atol=2e-6)
+    if act_type:
+        assert isinstance(result_col, WrapperWALayer)
+        assert isinstance(result_row, WrapperWALayer)
+        ref_col, ref_row = ref_col.orig_layer, ref_row.orig_layer
     for actual_layer, reference in ((col, ref_col), (row, ref_row)):
         torch.testing.assert_close(actual_layer.weight.full_tensor(), reference.weight)
         torch.testing.assert_close(actual_layer.scale.full_tensor(), reference.scale)
@@ -201,7 +269,50 @@ def _check_qdq_numerics(rank, mesh, symmetric, data_type="int", group_size=2, wi
     torch.testing.assert_close(scalar_result.zp.full_tensor(), scalar_reference.zp.reshape(2, 1))
 
 
-def _check_tp_moe_numerics(rank, mesh):
+def _check_tp_activation_edges(rank, mesh):
+    from torch.distributed.tensor import DTensor, Shard
+    from transformers.distributed.tensor_parallel import RowwiseParallel
+
+    from auto_round.data_type.nvfp import nv_fp4
+    from auto_round.parallel.activation import TensorParallelActivationQuantizer
+    from auto_round.parallel.qdq import TensorParallelQDQLinear
+
+    weight = DTensor.from_local(torch.ones(4, 32), mesh, [Shard(1)], run_check=False)
+    quantize = TensorParallelActivationQuantizer(nv_fp4, weight)
+    for data in (torch.zeros(2, 64), torch.ones(2, 64)):
+        data[:, 0] *= -1
+        expected_x = data.clone().requires_grad_()
+        local_x = data.chunk(2, dim=-1)[rank].clone().requires_grad_()
+        distributed_x = DTensor.from_local(local_x, mesh, [Shard(-1)], run_check=False)
+        expected, _, _ = nv_fp4(expected_x, group_size=16)
+        with patch.object(DTensor, "full_tensor", side_effect=AssertionError("activation gather is forbidden")):
+            actual, _, _ = quantize(distributed_x, group_size=16, data_type="nv_fp4")
+        torch.testing.assert_close(actual.to_local(), expected.chunk(2, dim=-1)[rank])
+        actual.to_local().sum().backward()
+        expected.sum().backward()
+        torch.testing.assert_close(local_x.grad, expected_x.grad.chunk(2, dim=-1)[rank])
+        assert torch.isfinite(local_x.grad).all()
+    empty = DTensor.from_local(torch.empty(0, 32), mesh, [Shard(-1)], run_check=False)
+    assert quantize(empty, group_size=16, data_type="nv_fp4")[0].numel() == 0
+
+    invalid = _configure_linear(torch.nn.Linear(32, 4, bias=False))
+    invalid.act_bits, invalid.act_group_size, invalid.act_data_type = 4, 32, "mx_fp"
+    invalid.act_sym = invalid.act_dynamic = True
+    RowwiseParallel().shard_param(invalid, "weight", mesh)
+    with pytest.raises(ValueError, match="activation quantization group"):
+        TensorParallelQDQLinear(invalid, enable_torch_compile=False)
+
+    calibrated = _configure_linear(torch.nn.Linear(64, 4, bias=False))
+    calibrated.data_type, calibrated.group_size = "nv_fp", 16
+    calibrated.act_bits, calibrated.act_group_size, calibrated.act_data_type = 4, 16, "nv_fp4_with_static_gs"
+    calibrated.act_sym = calibrated.act_dynamic = True
+    calibrated.act_max = torch.empty(0) if rank == 0 else torch.tensor([20.0])
+    RowwiseParallel().shard_param(calibrated, "weight", mesh)
+    wrapped = TensorParallelQDQLinear(calibrated, enable_torch_compile=False)
+    torch.testing.assert_close(wrapped.orig_layer.act_max, torch.tensor([20.0]))
+
+
+def _check_tp_moe_numerics(rank, mesh, fp4=None):
     from transformers import Qwen3MoeConfig
     from transformers.distributed.tensor_parallel import MoeExpertsParallel, PackedColwiseParallel, RowwiseParallel
     from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeExperts
@@ -213,7 +324,9 @@ def _check_tp_moe_numerics(rank, mesh):
     from auto_round.wrapper import WrapperLinear
 
     torch.manual_seed(19)
-    config = Qwen3MoeConfig(hidden_size=8, moe_intermediate_size=8, num_experts=4, num_experts_per_tok=2)
+    width = 64 if fp4 else 8
+    group_size = {"mx_fp": 32, "nv_fp": 16}.get(fp4, 2)
+    config = Qwen3MoeConfig(hidden_size=width, moe_intermediate_size=width, num_experts=4, num_experts_per_tok=2)
     native = Qwen3MoeExperts(config).requires_grad_(False)
     with torch.no_grad():
         for parameter in native.parameters():
@@ -252,10 +365,10 @@ def _check_tp_moe_numerics(rank, mesh):
     with pytest.raises(NotImplementedError, match="packed_colwise"):
         validate_tp_model(probe, 2)
     probe._tp_plan = {}
-    probe.add_module("experts", torch.nn.Sequential(torch.nn.Linear(8, 8)))
+    probe.add_module("experts", torch.nn.Sequential(torch.nn.Linear(width, width)))
     with pytest.raises(NotImplementedError, match="natively sharded"):
         validate_tp_model(probe, 2)
-    x = torch.randn(4, 8)
+    x = torch.randn(4, width)
     routes = torch.tensor([[0, 1], [1, 2], [2, 0], [1, 0]])  # expert 3 intentionally unused
     weights = torch.softmax(torch.randn(4, 2), dim=-1)
     expected = reference(x, routes, weights)
@@ -272,6 +385,15 @@ def _check_tp_moe_numerics(rank, mesh):
         for key in ("gate_proj", "up_proj", "down_proj"):
             actual_layer = _configure_linear(getattr(native.get_submodule(str(index)), key))
             ref_layer = _configure_linear(getattr(reference.get_submodule(str(index)), key))
+            if fp4:
+                for layer in (actual_layer, ref_layer):
+                    layer.data_type = fp4
+                    layer.group_size = layer.act_group_size = group_size
+                    layer.act_bits = 4
+                    layer.act_data_type = "nv_fp4_with_static_gs" if fp4 == "nv_fp" else "mx_fp"
+                    layer.act_dynamic = layer.act_sym = True
+                    if fp4 == "nv_fp":
+                        layer.act_max = torch.tensor([2.0])
             native.get_submodule(str(index)).add_module(
                 key, TensorParallelQDQLinear(actual_layer, enable_torch_compile=False)
             )
@@ -297,7 +419,13 @@ def _check_tp_moe_numerics(rank, mesh):
                     assert parameter.grad is None
                 else:
                     axis = 1 if key == "down_proj" else 0
-                    shard = full_grad.reshape(8, 4, -1).chunk(2, dim=axis)[rank].reshape_as(parameter)
+                    shard = (
+                        full_grad
+                        if name.startswith("act_")
+                        else full_grad.reshape(width, width // group_size, -1)
+                        .chunk(2, dim=axis)[rank]
+                        .reshape_as(parameter)
+                    )
                     torch.testing.assert_close(parameter.grad, shard, rtol=3e-5, atol=3e-6)
             native.get_submodule(str(index)).add_module(
                 key, layer.unwrapper({k: p.detach() for k, p in layer.params.items()})
@@ -308,7 +436,48 @@ def _check_tp_moe_numerics(rank, mesh):
     torch.testing.assert_close(native(x, routes, weights), reference(x, routes, weights))
 
 
-def _check_qad_lifecycle(rank, checkpoint, workspace, algorithm, fp4=None):
+def _check_stage_warm_start(rank, mesh, optimized):
+    from transformers.distributed.tensor_parallel import ColwiseParallel, RowwiseParallel
+
+    from auto_round.algorithms.quantization.sign_roundv2.quantizer import SignRoundOptimizedWrapperLinear
+    from auto_round.parallel.qdq import tensor_parallel_wrapper
+    from auto_round.parallel.runtime import is_dtensor
+    from auto_round.wrapper import WrapperLinear, preserve_original_weights, store_warm_start_params_and_unwrap
+
+    local_class = SignRoundOptimizedWrapperLinear if optimized else WrapperLinear
+    wrapper_class = tensor_parallel_wrapper(local_class)
+    assert tensor_parallel_wrapper(wrapper_class) is wrapper_class
+    for style in (ColwiseParallel(), RowwiseParallel()):
+        layer = _configure_linear(torch.nn.Linear(8, 8, bias=False))
+        style.shard_param(layer, "weight", mesh)
+        style.install_forward(layer, mesh)
+        original = layer.weight.to_local().clone()
+        block = torch.nn.Sequential(layer)
+        with preserve_original_weights(block):
+            wrapped = wrapper_class(layer, enable_torch_compile=False)
+            with torch.no_grad():
+                wrapped.value.fill_(0.1 * (rank + 1))
+            best = {key: value.detach().clone() for key, value in wrapped.params.items()}
+            block[0] = wrapped
+            store_warm_start_params_and_unwrap(block, {"0": best})
+            # Check before the outer snapshot restores the graph: the warm-start
+            # helper itself must never replace a native layer with its local view.
+            assert block[0] is layer
+            assert is_dtensor(layer.weight)
+        torch.testing.assert_close(layer.weight.to_local(), original)
+        assert layer._ar_warm_start_wrapper_cls is local_class
+        resumed = tensor_parallel_wrapper(layer._ar_warm_start_wrapper_cls)(layer, enable_torch_compile=False)
+        for key, value in best.items():
+            torch.testing.assert_close(resumed.params[key], value)
+        if optimized:
+            torch.testing.assert_close(resumed.init_scale.cpu(), layer._ar_warm_start["init_scale"])
+        assert resumed.unwrapper(best) is layer
+        assert is_dtensor(layer.weight)
+        assert not hasattr(layer, "_ar_warm_start")
+        assert not hasattr(layer, "_ar_warm_start_wrapper_cls")
+
+
+def _check_qad_lifecycle(rank, checkpoint, workspace, algorithm, fp4=None, activation=False, block_stages=()):
     from auto_round import AutoRound
     from auto_round.algorithms.quantization.qad.config import QADConfig
     from auto_round.algorithms.quantization.qat.config import QATConfig
@@ -321,17 +490,20 @@ def _check_qad_lifecycle(rank, checkpoint, workspace, algorithm, fp4=None):
         checkpoint,
         scheme={"mx_fp": "MXFP4", "nv_fp": "NVFP4"}.get(fp4, "W4A16"),
         parallel_config=ParallelConfig(tp_size=2),
-        alg_configs=config_cls(
-            iters=2,
-            bits=4,
-            group_size=group_size,
-            act_bits=16,
-            act_data_type="float",
-            nsamples=2,
-            topk=8,
-            gradient_checkpointing=True,
-            qad_workspace=workspace,
-        ),
+        alg_configs=[
+            *block_stages,
+            config_cls(
+                iters=2,
+                bits=4,
+                group_size=group_size,
+                act_bits=4 if activation else 16,
+                act_data_type=({"mx_fp": "mx_fp", "nv_fp": "nv_fp4_with_static_gs"}[fp4] if activation else "float"),
+                nsamples=2,
+                topk=8,
+                gradient_checkpointing=True,
+                qad_workspace=workspace,
+            ),
+        ],
         dataset=torch.utils.data.DataLoader(tokens, batch_size=1),
         nsamples=2,
         seqlen=4,
@@ -340,16 +512,38 @@ def _check_qad_lifecycle(rank, checkpoint, workspace, algorithm, fp4=None):
         low_cpu_mem_usage=False,
         enable_torch_compile=False,
     )
+    if block_stages:
+        compressor.post_init()
+        terminal = compressor.alg_composer.block_quantizer
+        quantize_model = terminal.quantize_model
+
+        def check_warm_start(model, *args, **kwargs):
+            projection = model.model.layers[0].self_attn.q_proj
+            assert is_dtensor(projection.weight)
+            assert projection._ar_warm_start
+            assert projection._ar_warm_start["value"].numel() == projection.weight.to_local().numel()
+            return quantize_model(model, *args, **kwargs)
+
+        terminal.quantize_model = check_warm_start
     model, _ = compressor.quantize()
     projection = model.model.layers[0].self_attn.q_proj
+    if activation:
+        from auto_round.wrapper import WrapperWALayer
+
+        assert isinstance(projection, WrapperWALayer)
+        projection = projection.orig_layer
     assert is_dtensor(projection.weight)
     assert is_dtensor(projection.scale)
     assert not any(hasattr(module, "params") for module in model.modules())
+    assert not any(hasattr(module, "_ar_warm_start") for module in model.modules())
     if model.config.model_type == "qwen3_moe":
         experts = model.model.layers[0].mlp.experts
         assert experts._auto_round_tp_moe
         assert experts.config._experts_implementation == "linear_loop"
-        assert is_dtensor(experts.get_submodule("0.gate_proj").scale)
+        expert_projection = experts.get_submodule("0.gate_proj")
+        if activation:
+            expert_projection = expert_projection.orig_layer
+        assert is_dtensor(expert_projection.scale)
     with torch.no_grad():
         logits = model(input_ids=tokens).logits
     assert torch.isfinite(logits).all()
@@ -361,11 +555,13 @@ def _check_qad_lifecycle(rank, checkpoint, workspace, algorithm, fp4=None):
         assert not any(is_dtensor(parameter) for parameter in exported.parameters())
         with torch.no_grad():
             torch.testing.assert_close(exported(input_ids=tokens).logits, logits, rtol=2e-4, atol=2e-5)
-        assert exported.model.layers[0].self_attn.q_proj.scale.shape == (64, 64 // group_size)
+        exported_projection = exported.model.layers[0].self_attn.q_proj
+        if activation:
+            assert isinstance(exported_projection, WrapperWALayer)
+            exported_projection = exported_projection.orig_layer
+        assert exported_projection.scale.shape == (64, 64 // group_size)
         if fp4 == "nv_fp":
-            torch.testing.assert_close(
-                exported.model.layers[0].self_attn.q_proj.weight_global_scale, projection.weight_global_scale.cpu()
-            )
+            torch.testing.assert_close(exported_projection.weight_global_scale, projection.weight_global_scale.cpu())
         if model.config.tie_word_embeddings:
             assert exported.lm_head.weight is exported.model.embed_tokens.weight
     quantizer = compressor.alg_composer.block_quantizer
@@ -422,24 +618,67 @@ def _check_qad_lifecycle(rank, checkpoint, workspace, algorithm, fp4=None):
 
 
 def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_checkpoint, workspace):
+    from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
+
     torch.set_num_threads(1)
     dist.init_process_group(
         "gloo", init_method=Path(rendezvous).as_uri(), rank=rank, world_size=2, timeout=timedelta(seconds=90)
     )
     try:
         mesh = dist.init_device_mesh("cpu", (2,))
+        _check_stage_warm_start(rank, mesh, optimized=False)
+        _check_stage_warm_start(rank, mesh, optimized=True)
         _check_qdq_numerics(rank, mesh, symmetric=True)
         _check_qdq_numerics(rank, mesh, symmetric=False)
         _check_qdq_numerics(rank, mesh, symmetric=True, data_type="mx_fp", group_size=32, width=128)
         _check_qdq_numerics(rank, mesh, symmetric=True, data_type="nv_fp", group_size=16, width=64)
+        with patch.dict("os.environ", {"AR_ENABLE_ACT_MINMAX_TUNING": "1"}):
+            for data_type, group_size, width, act_type in (
+                ("mx_fp", 32, 128, "mx_fp"),
+                ("mx_fp", 32, 128, "mx_fp_rceil"),
+                ("nv_fp", 16, 64, "nv_fp4"),
+                ("nv_fp", 16, 64, "nv_fp4_with_static_gs"),
+            ):
+                _check_qdq_numerics(rank, mesh, True, data_type, group_size, width, act_type)
+            for act_bits in (6, 8):
+                _check_qdq_numerics(rank, mesh, True, "mx_fp", 32, 128, "mx_fp", act_bits)
+        _check_tp_activation_edges(rank, mesh)
         _check_tp_moe_numerics(rank, mesh)
+        with patch.dict("os.environ", {"AR_ENABLE_ACT_MINMAX_TUNING": "1"}):
+            _check_tp_moe_numerics(rank, mesh, fp4="mx_fp")
+            _check_tp_moe_numerics(rank, mesh, fp4="nv_fp")
         _check_qad_lifecycle(rank, checkpoint, workspace, "qad")
         _check_qad_lifecycle(rank, qwen_checkpoint, workspace, "qat")
+        _check_qad_lifecycle(
+            rank,
+            checkpoint,
+            workspace + "_staged",
+            "qad",
+            block_stages=[SignRoundConfig(iters=2, group_size=8)],
+        )
+        _check_qad_lifecycle(
+            rank,
+            qwen_checkpoint,
+            workspace + "_v2_staged",
+            "qat",
+            block_stages=[SignRoundV2Config(iters=2, group_size=8)],
+        )
+        _check_qad_lifecycle(
+            rank,
+            checkpoint,
+            workspace + "_three_stages",
+            "qad",
+            block_stages=[SignRoundV2Config(iters=2, group_size=8), SignRoundConfig(iters=2, group_size=8)],
+        )
         _check_qad_lifecycle(rank, checkpoint, workspace + "_mx", "qad", fp4="mx_fp")
         _check_qad_lifecycle(rank, qwen_checkpoint, workspace + "_nv", "qat", fp4="nv_fp")
         _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe", "qad")
         _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe_mx", "qat", fp4="mx_fp")
         _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe_nv", "qat", fp4="nv_fp")
+        _check_qad_lifecycle(rank, checkpoint, workspace + "_mx_act", "qad", fp4="mx_fp", activation=True)
+        _check_qad_lifecycle(rank, qwen_checkpoint, workspace + "_nv_act", "qat", fp4="nv_fp", activation=True)
+        _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe_mx_act", "qat", fp4="mx_fp", activation=True)
+        _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe_nv_act", "qat", fp4="nv_fp", activation=True)
     finally:
         dist.destroy_process_group()
 
@@ -532,7 +771,7 @@ def test_two_rank_native_tp_qdq_and_qad(tmp_path):
     try:
         import time
 
-        deadline = time.monotonic() + 180
+        deadline = time.monotonic() + 240
         while not context.join(timeout=1):
             if time.monotonic() > deadline:
                 pytest.fail("Native TP workers exceeded the test timeout.")

@@ -1219,9 +1219,11 @@ def store_warm_start_params_and_unwrap(block, best_params, *, before_unwrap=None
             if getattr(m, "_asym_anchor", False):
                 store["anchor_min"] = m.weight_min.detach().to("cpu")
                 store["anchor_max"] = m.weight_max.detach().to("cpu")
-            m.orig_layer._ar_warm_start = store
+            restore = getattr(m, "restore_original", None)
+            original = restore() if callable(restore) else m.orig_layer
+            original._ar_warm_start = store
             if isinstance(m, WrapperLinear):
-                m.orig_layer._ar_warm_start_wrapper_cls = type(m)
+                original._ar_warm_start_wrapper_cls = getattr(m, "_local_wrapper_cls", type(m))
             if before_unwrap is not None:
                 for key, saved in layer_params.items():
                     param = m.params.get(key)
@@ -1231,4 +1233,5 @@ def store_warm_start_params_and_unwrap(block, best_params, *, before_unwrap=None
             before_unwrap(block)
     finally:
         for n, m in wrapped_layers:
-            set_module(block, n, m.orig_layer)
+            restore = getattr(m, "restore_original", None)
+            set_module(block, n, restore() if callable(restore) else m.orig_layer)

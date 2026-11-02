@@ -663,6 +663,11 @@ class CompressionOrchestrator(BaseOrchestrator):
 
     @torch.no_grad()
     def _quantize_zero_shot(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+        """Run zero-shot quantization under the same stage policies as tuning."""
+        with self.alg_composer.active_stage():
+            return self._run_zero_shot_stage()
+
+    def _run_zero_shot_stage(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Zero-shot (RTN) quantization path — no calibration data needed.
 
         This replaces the standalone ``ZeroShotCompressor.quantize()`` method.
@@ -773,9 +778,6 @@ class CompressionOrchestrator(BaseOrchestrator):
                 clear_memory()
                 memory_monitor.log_summary()
                 pbar.update(1)
-
-        # ── Pipeline lifecycle: model-level teardown (also finalizes rotation) ─
-        self.alg_composer.finalize_run()
 
         remain_layer_names = []
         block_name_set = {name for block in all_blocks for name in block}
