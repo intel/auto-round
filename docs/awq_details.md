@@ -48,6 +48,60 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 ```
 
+## Calibration Controls
+
+AWQ has its own calibration budget for activation statistics and for the smoothing and clipping searches. These controls affect AWQ preprocessing only; the downstream RTN or AutoRound quantizer retains the global calibration cache and performs its own final scale search.
+
+| CLI option | `AWQConfig` field | Default | Purpose |
+| --- | --- | --- | --- |
+| `--awq-nsamples` | `awq_nsamples` | `128` | Maximum number of calibration samples used by AWQ activation statistics, smoothing, and clipping. |
+| `--awq_seqlen` | `awq_seqlen` | `512` | Maximum sequence length used by AWQ calibration; `<= 0` disables truncation. |
+| `--awq_smooth_batch_size` | `smooth_batch_size` | `None` | Micro-batch size for replaying the parent module during the AWQ scale search; lower positive values reduce peak VRAM, while `<= 0` disables micro-batching. |
+| `--awq-v2-scale-search` | `v2_scale_search` | `auto` | Scale-search policy for AWQ's internal QDQ when the terminal quantizer is AutoRoundV2. |
+
+`--awq-nsamples` is independent of the global `--nsamples`. AWQ selects a deterministic random subset (seed 42) from the cached calibration inputs and reuses the same subset for every block. The global cache is not modified, so the downstream RTN/AutoRound quantizer and the FP reference forward still use all cached samples. Set `--awq-nsamples` greater than or equal to `--nsamples` to use all of them.
+
+`--awq-v2-scale-search` takes effect only when the terminal quantizer is AutoRoundV2, which is enabled with `--enable_alg_ext` and `--algorithm auto_round` (or `awq,auto_round`). With an RTN terminal quantizer, the option is ignored. The policy changes only the QDQ used to score AWQ candidates; the terminal AutoRoundV2 quantizer always performs its own initialization search.
+
+- `auto` (default): use `off` for INT schemes and `full` for non-INT schemes such as MXFP and NVFP.
+- `off`: use plain RTN for AWQ's candidate loss. This is the fastest option and the recommended default for INT.
+- `full`: reproduce the terminal V2 optimized init-scale search for every AWQ candidate. This is the slowest and most faithful option.
+- `reuse`: run the optimized init-scale search once per balance layer and reuse it for every AWQ candidate. This is a middle ground between `off` and `full`.
+
+When smoothing or hard clipping changes a block, AWQ requests a fresh FP reference forward before quantization, so a stale reference is never used as the quantizer target or passed to the next block.
+
+```bash
+# INT: auto resolves to off; AWQ uses at most 128 samples while the quantizer uses 256.
+auto-round --model <model> --scheme W4A16 --format fake \
+  --algorithm awq,auto_round --enable_alg_ext \
+  --nsamples 256 --awq-nsamples 128
+
+# MXFP4: auto resolves to full; use reuse to cut AWQ calibration time.
+auto-round --model <model> --scheme MXFP4 --format fake \
+  --algorithm awq,auto_round --enable_alg_ext \
+  --awq-v2-scale-search reuse
+
+# INT with an explicit full optimized search for every AWQ candidate.
+auto-round --model <model> --scheme W4A16 --format fake \
+  --algorithm awq,auto_round --enable_alg_ext \
+  --awq-v2-scale-search full
+```
+
+The same settings are available through `AWQConfig`:
+
+```python
+from auto_round import AutoRound, AWQConfig, SignRoundV2Config
+
+ar = AutoRound(
+    model="<model>",
+    scheme="W4A16",
+    alg_configs=[
+        AWQConfig(awq_nsamples=128, awq_seqlen=512, v2_scale_search="auto"),
+        SignRoundV2Config(iters=200),
+    ],
+)
+```
+
 In the result tables, `AR2` denotes AutoRound with `--algorithm auto_round_v2` (formerly `--enable_alg_ext`), and `AWQ_AR2` denotes AWQ followed by AutoRound with the same algorithm extension. Accuracy columns are reported as percentages, so a raw score such as `0.7058` is shown as `70.58`.
 
 The AWQ rows use the default AWQ smoothing flow. They do not include AWQ weight clipping unless `--awq_apply_clip` is explicitly enabled.

@@ -63,9 +63,12 @@ def test_pipeline_duplicate_preprocessor_rejected():
         AlgorithmComposer([AWQConfig(), AWQConfig()])
 
 
-def test_pipeline_multiple_block_quantizers_rejected():
-    with pytest.raises(ValueError, match="exactly one block-quantization config"):
-        AlgorithmComposer([RTNConfig(), SignRoundConfig()])
+def test_pipeline_multiple_block_quantizers_keep_config_order():
+    pipeline = AlgorithmComposer([RTNConfig(), SignRoundConfig()])
+    assert len(pipeline.quantizers) == 2
+    assert isinstance(pipeline.quantizers[0], RTNQuantizer)
+    assert pipeline.block_quantizer is pipeline.quantizers[-1]
+    assert isinstance(pipeline.block_quantizer.config, SignRoundConfig)
 
 
 @pytest.mark.parametrize(
