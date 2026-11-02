@@ -49,7 +49,7 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 ## 🆕 最新进展
 
-* [2026/10] PTQ 标定数据集研究。当前结果表明，对于 4-bit 量化，采用混合标定数据集（75% UltraChat + 25% OpenCode）能够在通用能力、代码能力和 Agent 任务表现之间取得更好的整体平衡。详见 [文档](./docs/calibration_acc.md)。（WIP）
+* [WIP] 对于 4 bit 及以上的量化，我们目前建议采用 75% UltraChat + 25% OpenCode 的混合数据集，以提升模型的推理能力和 Agentic 任务能力。使用默认配置 nsamples=128 时，请指定 --dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"。详情请参阅校准数据集[文档](./docs/calibration_acc.md)。待评测全部完成后，我们将更新默认校准数据集。
 
 * [2026/10] 我们现在展示：**W2A16** 的精度会随着调优成本的增加而稳步提升。详细精度数据见 [W2A16 精度数据](./docs/alg_202508.md)。
 
