@@ -166,10 +166,6 @@ def _add_registered_arguments(group, registry: AlgorithmParameterRegistry) -> No
         _add_parameter(target, parameter)
 
 
-# Algorithms that supply the block-quantization tuning step themselves. Selecting
-# any of them must not append the implicit `auto_round` fallback below.
-_BLOCK_QUANTIZER_ALGORITHMS = frozenset({"rtn", "opt-rtn", "auto_round", "auto_round_v2"})
-
 # `auto_round_v2` is a SignRound variant: with zero tuning iterations there is
 # nothing to tune, so it degrades to RTN exactly like `auto_round`.
 _ITERS_ZERO_ALGORITHMS = {"auto_round": "rtn", "auto_round_v2": "rtn"}
@@ -267,6 +263,27 @@ class AlgorithmHandler:
             _add_registered_arguments(group, registry)
 
     @classmethod
+    def _has_block_quantizer(cls, names) -> bool:
+        """Whether any algorithm in *names* is a terminal block quantizer.
+
+        Block-quantization algorithms (rtn, auto_round, qad, …) already provide a
+        block quantizer, so the CLI must not append a default one. Preprocessors
+        (awq, hadamard, svdquant, …) do not count.
+        """
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+        from auto_round.algorithms.registry import pipeline_member_for_config_class
+
+        for name in names:
+            try:
+                config_cls = cls.get(name)
+            except KeyError:
+                continue
+            member = pipeline_member_for_config_class(config_cls)
+            if member is not None and issubclass(member, BaseQuantizer):
+                return True
+        return False
+
+    @classmethod
     def build_configs(cls, args, common_kwargs: dict[str, Any]) -> list:
         raw = getattr(args, "algorithm", None) or ""
         names = [name.strip().lower() for name in raw.split(",") if name.strip()]
@@ -281,7 +298,7 @@ class AlgorithmHandler:
         # `opt-rtn` carries the plain-vs-optimized intent.
         explicit_names = set(canonical)
         seen = set(canonical)
-        if not (_BLOCK_QUANTIZER_ALGORITHMS & seen):
+        if not cls._has_block_quantizer(canonical):
             canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
             canonical = [_ITERS_ZERO_ALGORITHMS.get(name, name) for name in canonical]

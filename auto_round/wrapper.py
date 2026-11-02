@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import math
+from contextlib import contextmanager
 from math import ceil
 
 import torch
@@ -57,6 +58,14 @@ def get_scale_shape(weight, group_size):
         shape = weight.shape[0] * ceil(weight.shape[1] / group_size)
 
     return shape
+
+
+def _restore_warm_start_param(orig_layer, name, param):
+    """Restore a compatible parameter without replacing its optimizer identity."""
+    saved = getattr(orig_layer, "_ar_warm_start", {}).get(name)
+    if saved is not None and saved.shape == param.shape:
+        with torch.no_grad():
+            param.copy_(saved.to(device=param.device, dtype=param.dtype))
 
 
 class WrapperLinear(torch.nn.Module):
@@ -108,6 +117,7 @@ class WrapperLinear(torch.nn.Module):
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
         self.weight_global_scale = getattr(self.orig_layer, "weight_global_scale", None)
+        self.input_global_scale = getattr(self.orig_layer, "input_global_scale", None)
         if needs_nvfp_global_scale(self.orig_layer.data_type) and self.weight_global_scale is None:
             from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
@@ -244,6 +254,52 @@ class WrapperLinear(torch.nn.Module):
         self._init_params("min_scale", p_dtype, shape, 1.0, _margins_tunable)
         self._init_params("max_scale", p_dtype, shape, 1.0, _margins_tunable)
 
+        # Midrise int (v1 path): the absmax-derived scale (absmax / (maxq-0.5)) is far from the
+        # MSE optimum (~0.5x at W2) and the default [0, 1] max_scale bound with SignSGD can barely
+        # shrink that far. Seed ``init_scale`` with the same imatrix-weighted search used by the v2
+        # path and let ``max_scale`` tune a coefficient around it in both directions.
+        # (SignRoundOptimizedWrapperLinear re-runs the search and keeps its own bound.)
+        if (
+            str(self.orig_layer.data_type).startswith("int_midrise")
+            and type(self).minmax_scale_bound == WrapperLinear.minmax_scale_bound  # plain v1 wrapper only
+            and self.enable_round_tuning
+            and self.orig_layer.bits < 16
+            and not isinstance(orig_layer.group_size, tuple)
+        ):
+            from auto_round.data_type.utils import reshape_imatrix_for_weight, search_optimized_init_scale
+
+            warm_start = getattr(orig_layer, "_ar_warm_start", None)
+            if warm_start and warm_start.get("init_scale") is not None:
+                self.init_scale = warm_start["init_scale"].to(self.device)
+            else:
+                w_r = weight_reshape.to(self.device, torch.float32)
+                imatrix = reshape_imatrix_for_weight(getattr(orig_layer, "imatrix", None), w_r, orig_layer.group_size)
+                self.init_scale = search_optimized_init_scale(
+                    w_r, orig_layer.data_type, orig_layer.bits, imatrix.to(w_r.device), self.q_scale_thresh
+                )
+            self.minmax_scale_bound = (0.5, 1.5)
+
+        # Warm-start: when a prior block-wise pass (e.g. the SignRound -> QAD
+        # chaining) stashed its tuned ``value``/``min_scale``/``max_scale`` on
+        # this layer via ``store_warm_start_params_and_unwrap``, seed the freshly
+        # created tuning parameters with them so this pass continues from that
+        # state instead of starting from RTN (value=0, scale coeff=1).
+        warm_start = getattr(orig_layer, "_ar_warm_start", None)
+        if warm_start:
+            for _key in ("value", "min_scale", "max_scale"):
+                saved = warm_start.get(_key)
+                param = self.params.get(_key)
+                if saved is None or param is None:
+                    continue
+                saved = saved.to(device=param.device, dtype=param.dtype)
+                if saved.shape == param.shape:
+                    param.data.copy_(saved)
+                else:
+                    logger.warning_once(
+                        f"warm-start param '{_key}' shape {tuple(saved.shape)} does not match "
+                        f"{tuple(param.shape)}; keeping the default initialization."
+                    )
+
         self.weight_quant_func, self.data_type = get_quant_func(
             orig_layer.data_type,
             orig_layer.bits,
@@ -270,10 +326,17 @@ class WrapperLinear(torch.nn.Module):
                 "act_max_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING or (not orig_layer.act_dynamic)
             )
             self._init_params("act_min_scale", p_dtype, (1), 1.0, envs.AR_ENABLE_ACT_MINMAX_TUNING)
+            if warm_start:
+                for key in ("act_min_scale", "act_max_scale"):
+                    saved = warm_start.get(key)
+                    param = self.params.get(key)
+                    if saved is not None and param is not None and saved.shape == param.shape:
+                        param.data.copy_(saved.to(device=param.device, dtype=param.dtype))
 
         # Bias tuning
         if self.enable_norm_bias_tuning:
             self._init_params("bias_v", p_dtype, self.orig_layer.bias.shape, 0, True)
+            _restore_warm_start_param(self.orig_layer, "bias_v", self.bias_v)
             from auto_round.data_type.int import quant_tensor_asym_wo_round
 
             self.bias_quant_func = quant_tensor_asym_wo_round
@@ -423,17 +486,22 @@ class WrapperLinear(torch.nn.Module):
             **quant_kwargs,
         }
 
-    def _qdq_weight(self, value, min_scale, max_scale):
-        """Quantizes and dequantizes weights with tuning parameters.
+    def _prepare_minmax_scale(self, min_scale, max_scale):
+        """Clamp the min/max scale coefficients and return what the quant func sees.
 
-        Args:
-            value (torch.Tensor): Value added for rounding for tuning.
-            min_scale (torch.Tensor): Minimum scale for the min value of quantization.
-            max_scale (torch.Tensor): Maximum scale for the max value of quantization.
-
-        Returns:
-            tuple: Quantized weight, scale, and zero point.
+        Default (linear) behavior: the stored parameters *are* the multiplicative
+        coefficients, clamped in place to ``minmax_scale_bound`` and passed
+        through unchanged. Subclasses may override this to tune the coefficients
+        in a different geometry (e.g. log/geometric space) while keeping the
+        quant functions -- which always receive plain multiplicative
+        coefficients -- untouched.
         """
+        min_bound, max_bound = self.minmax_scale_bound
+        min_scale.data.clamp_(min_bound, max_bound)
+        max_scale.data.clamp_(min_bound, max_bound)
+        return min_scale, max_scale
+
+    def _qdq_weight(self, value, min_scale, max_scale):
         presolved = getattr(self, "_presolved_qdq", None)
         if presolved is not None:
             # Batched-search write-back: the search already ran on a stacked
@@ -445,9 +513,7 @@ class WrapperLinear(torch.nn.Module):
             return presolved
         if self.orig_layer.bits >= 16:
             return self.orig_layer.weight, None, None
-        min_bound, max_bound = self.minmax_scale_bound
-        min_scale.data.clamp_(min_bound, max_bound)
-        max_scale.data.clamp_(min_bound, max_bound)
+        min_scale, max_scale = self._prepare_minmax_scale(min_scale, max_scale)
         weight = self.orig_layer.weight
         if weight.device.type == "meta":
             weight = self.orig_layer.get_weight().to(self.device)
@@ -571,8 +637,11 @@ class WrapperLinear(torch.nn.Module):
 
         # Unwrapper act
         if self.enable_act_quant:
+            act_min_scale = best_params.get("act_min_scale", torch.tensor(1.0)).detach().to(self.device).clone()
+            act_max_scale = best_params.get("act_max_scale", torch.tensor(1.0)).detach().to(self.device).clone()
+            act_min_scale.clamp_(0, 1.0)
+            act_max_scale.clamp_(0, 1.0)
             if not self.orig_layer.act_dynamic:
-                act_max_scale = best_params.get("act_max_scale", torch.tensor(1.0)).to(self.device)
                 act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
                 if act_max is not None:
                     tmp_shape = 1
@@ -582,11 +651,11 @@ class WrapperLinear(torch.nn.Module):
                         tmp_shape = (act_max.shape[0], 1)
                     _, act_scale, _ = self._qdq_act(
                         torch.zeros(tmp_shape).to(self.device),
-                        act_min_scale=self.act_min_scale,
-                        act_max_scale=self.act_max_scale,
+                        act_min_scale=act_min_scale,
+                        act_max_scale=act_max_scale,
                         act_max=act_max,
                     )
-                    self.orig_layer.act_max = self.orig_layer.act_max * act_max_scale.item()
+                    # Keep calibration statistics separate from the tuned coefficients.
                     self.orig_layer.act_max = self.orig_layer.act_max.to("cpu")
                 else:
                     act_scale = torch.ones(1, dtype=self.orig_layer.scale_dtype)
@@ -594,8 +663,8 @@ class WrapperLinear(torch.nn.Module):
 
             self.orig_layer.q_scale_thresh = self.q_scale_thresh
             self.orig_layer.data_type = self.data_type
-            self.orig_layer.act_min_scale = self.act_min_scale
-            self.orig_layer.act_max_scale = self.act_max_scale
+            self.orig_layer.act_min_scale = act_min_scale
+            self.orig_layer.act_max_scale = act_max_scale
 
             self.orig_layer.act_data_type = self.act_data_type
             self.orig_layer.act_quant_func = self.act_quant_func
@@ -754,29 +823,18 @@ class WrapperWALayer(torch.nn.Module):
         quant_kwargs = {}
         if hasattr(self.orig_layer, "input_global_scale"):
             quant_kwargs["global_scale"] = self.orig_layer.input_global_scale
-        if act_max is None:
-            x, _, _ = self.orig_layer.act_quant_func(
-                x,
-                bits=self.orig_layer.act_bits,
-                group_size=self.orig_layer.act_group_size,
-                scale_dtype=self.orig_layer.scale_dtype,
-                q_scale_thresh=self.orig_layer.q_scale_thresh,
-                data_type=self.orig_layer.act_data_type,
-                min_scale=min_scale,
-                max_scale=max_scale,
-                **quant_kwargs,
-            )
-        else:
-            x, _, _ = self.orig_layer.act_quant_func(
-                x,
-                bits=self.orig_layer.act_bits,
-                group_size=self.orig_layer.act_group_size,
-                scale_dtype=self.orig_layer.scale_dtype,
-                q_scale_thresh=self.orig_layer.q_scale_thresh,
-                data_type=self.orig_layer.act_data_type,
-                act_max=act_max,
-                **quant_kwargs,
-            )
+        x, _, _ = self.orig_layer.act_quant_func(
+            x,
+            bits=self.orig_layer.act_bits,
+            group_size=self.orig_layer.act_group_size,
+            scale_dtype=self.orig_layer.scale_dtype,
+            q_scale_thresh=self.orig_layer.q_scale_thresh,
+            data_type=self.orig_layer.act_data_type,
+            tensor_max=act_max,
+            min_scale=min_scale,
+            max_scale=max_scale,
+            **quant_kwargs,
+        )
         # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
         return self.orig_layer.forward(x)
 
@@ -808,6 +866,7 @@ class WrapperLayerNorm(torch.nn.Module):
             requires_grad=True,
         )
         self.params = {"v": self.v}
+        _restore_warm_start_param(self.orig_layer, "v", self.v)
         from auto_round.data_type.int import quant_tensor_asym_wo_round
 
         self.quant_func = quant_tensor_asym_wo_round
@@ -859,6 +918,7 @@ class WrapperLlamaNorm(torch.nn.Module):
             requires_grad=True,
         )
         self.params = {"v": self.v}
+        _restore_warm_start_param(self.orig_layer, "v", self.v)
         from auto_round.data_type.int import quant_tensor_asym_wo_round
 
         self.quant_func = quant_tensor_asym_wo_round
@@ -977,8 +1037,10 @@ def wrapper_block(
             return None
         if kind == "skip":
             return "u"
-        extra = {"defer_search": True} if _defer_batch else {}
-        new_m = wrapper_cls(
+        layer_wrapper_cls = getattr(m, "_ar_warm_start_wrapper_cls", wrapper_cls)
+        defer_search = _defer_batch and getattr(layer_wrapper_cls, "supports_batched_search", False)
+        extra = {"defer_search": True} if defer_search else {}
+        new_m = layer_wrapper_cls(
             m,
             enable_minmax_tuning=enable_minmax_tuning,
             enable_norm_bias_tuning=enable_norm_bias_tuning,
@@ -988,7 +1050,7 @@ def wrapper_block(
             **extra,
         )
         set_module(block, n, new_m)
-        if _defer_batch:
+        if defer_search:
             deferred_wrappers.append(new_m)
         return "q"
 
@@ -1022,7 +1084,8 @@ def unwrapper_layer(model, layer, layer_name, best_params):
     max_scales: A dictionary of maximum scaling values for the wrapped modules.
     """
 
-    if hasattr(layer, "orig_layer"):
+    # WrapperWALayer retains activation QDQ and is not a tuning wrapper.
+    if hasattr(layer, "orig_layer") and callable(getattr(layer, "unwrapper", None)):
         orig_layer = layer.unwrapper(best_params)
         act_max = getattr(orig_layer, "act_max", None)
         act_scale = getattr(orig_layer, "act_scale", None)
@@ -1052,10 +1115,111 @@ def unwrapper_block(block, best_params):
     max_scales: A dictionary of maximum scaling values for the wrapped modules.
     """
     for n, m in block.named_modules():
-        if hasattr(m, "orig_layer"):
+        # Keep persistent activation wrappers, which do not implement unwrapper.
+        if hasattr(m, "orig_layer") and callable(getattr(m, "unwrapper", None)):
             if n in best_params.keys():
                 best_param = best_params[n]
             else:
                 best_param = None
             orig_layer = m.unwrapper(best_param)
             set_module(block, n, orig_layer)
+
+
+@contextmanager
+def preserve_original_weights(block):
+    """Keep a host snapshot for a composer-owned stage that must not bake weights.
+
+    This also covers algorithms that modify parameters in place instead of using
+    common wrappers. Only the current block is copied on block-tuning paths;
+    ordinary/final stages do not pay this cost. Restore the original module graph
+    and parameter dtype/values on success or failure, leaving warm-start metadata
+    on the original layers available to subsequent stages.
+    """
+    modules = list(block.named_modules())
+    parameters = [(p, p.detach().to("cpu", copy=True), p.requires_grad) for p in block.parameters()]
+    quantization_types = [
+        (module, key, getattr(module, key))
+        for _, module in modules
+        for key in ("data_type", "act_data_type")
+        if hasattr(module, key)
+    ]
+    try:
+        yield
+    finally:
+        with torch.no_grad():
+            for name, module in modules:
+                if name:
+                    set_module(block, name, module)
+            for parameter, saved, requires_grad in parameters:
+                parameter.data = saved.to(parameter.device)
+                parameter.requires_grad_(requires_grad)
+            # RTN writes resolved one-shot dtype names during finalization.
+            # Subsequent training stages need the original differentiable types.
+            for module, key, value in quantization_types:
+                setattr(module, key, value)
+
+
+@torch.no_grad()
+def store_warm_start_params_and_unwrap(block, best_params, *, before_unwrap=None):
+    """Warm-start variant of :func:`unwrapper_block`: keep the original FP weight.
+
+    Instead of baking the tuned ``value``/``min_scale``/``max_scale`` into the
+    (quantized) weight like :func:`unwrapper_block` does, this stashes them on
+    each ``orig_layer`` under ``_ar_warm_start`` and restores the untouched
+    full-precision layer. A later pass (e.g. QAD whole-model tuning) can then
+    re-wrap the same layers and seed its tuning parameters from the stash via the
+    warm-start branch in :meth:`WrapperLinear._init_tuning_params_and_quant_func`.
+
+    The optimized SignRound wrapper also exposes a searched ``init_scale`` (not a
+    trainable parameter); it is stashed too so the second pass reuses the exact
+    same scale grid instead of re-searching it.
+
+    Args:
+        block: The block (or single wrapped layer) whose wrappers to collect.
+        best_params: Result of ``collect_best_params`` -- either a flat
+            ``{param_name: tensor}`` dict (single-wrapper block) or
+            ``{submodule_name: {param_name: tensor}}``.
+        before_unwrap: Optional callback receiving the still-wrapped block with
+            its best parameters loaded. Used to collect quantized outputs before
+            restoring FP layers; restoration also happens if the callback raises.
+    """
+    best_params = best_params or {}
+    wrapped_layers = [
+        (n, m)
+        for n, m in block.named_modules()
+        if hasattr(m, "orig_layer") and hasattr(m, "params") and callable(getattr(m, "unwrapper", None))
+    ]
+    try:
+        for n, m in wrapped_layers:
+            if n in best_params:
+                layer_params = best_params[n]
+            elif any(key in best_params for key in m.params):
+                # Flat dict: the block itself is the wrapped layer.
+                layer_params = best_params
+            else:
+                layer_params = {}
+            store = {}
+            for key in m.params:
+                if key in layer_params and layer_params[key] is not None:
+                    store[key] = layer_params[key].detach().to("cpu", copy=True)
+            store["minmax_parameterization"] = "log" if getattr(m, "_use_log_minmax", False) else "linear"
+            init_scale = getattr(m, "init_scale", None)
+            if init_scale is not None:
+                store["init_scale"] = init_scale.detach().to("cpu")
+            # Asym optimized wrapper: preserve the searched grid anchor too.
+            if getattr(m, "_asym_anchor", False):
+                store["anchor_min"] = m.weight_min.detach().to("cpu")
+                store["anchor_max"] = m.weight_max.detach().to("cpu")
+            m.orig_layer._ar_warm_start = store
+            if isinstance(m, WrapperLinear):
+                m.orig_layer._ar_warm_start_wrapper_cls = type(m)
+            if before_unwrap is not None:
+                for key, saved in layer_params.items():
+                    param = m.params.get(key)
+                    if param is not None and saved is not None:
+                        param.copy_(saved.to(device=param.device, dtype=param.dtype))
+        if before_unwrap is not None:
+            before_unwrap(block)
+    finally:
+        for n, m in wrapped_layers:
+            set_module(block, n, m.orig_layer)

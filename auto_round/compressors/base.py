@@ -285,13 +285,10 @@ class BaseOrchestrator:
         from auto_round.algorithms.config_resolver import split_quantization_configs
 
         _preprocessor_configs, _block_quantizer_configs = split_quantization_configs(self._alg_configs)
-        if len(_block_quantizer_configs) > 1:
-            raise ValueError(
-                f"Only one block-quantization config is allowed, but got {len(_block_quantizer_configs)}: "
-                f"{[type(c).__name__ for c in _block_quantizer_configs]}"
-            )
         if _block_quantizer_configs:
-            self.quantize_config = _block_quantizer_configs[0]
+            # The terminal stage drives public scheme/format resolution. Stage
+            # ordering and compatibility are exclusively the composer's job.
+            self.quantize_config = _block_quantizer_configs[-1]
         elif _preprocessor_configs:
             from auto_round.algorithms.quantization.rtn.config import RTNConfig as _RTNConfig
 
@@ -1512,14 +1509,15 @@ class BaseOrchestrator:
         plan = getattr(self, "compression_plan", None)
         if plan is not None:
             block_quantizer = self._alg_composer.block_quantizer
-            block_quantizer.layer_config = {name: dict(config) for name, config in plan.layer_config.items()}
-            block_quantizer.has_qlayer_outside_block = plan.has_qlayer_outside_block
-            block_quantizer.regex_config = {name: dict(config) for name, config in plan.regex_config.items()}
-            block_quantizer.quant_block_list = (
-                [list(group) for group in plan.quant_block_list] if plan.quant_block_list is not None else None
-            )
-            block_quantizer.to_quant_block_names = self.to_quant_block_names
-            block_quantizer.ignore_layers = self.ignore_layers
+            for quantizer in self._alg_composer.quantizers:
+                quantizer.layer_config = {name: dict(config) for name, config in plan.layer_config.items()}
+                quantizer.has_qlayer_outside_block = plan.has_qlayer_outside_block
+                quantizer.regex_config = {name: dict(config) for name, config in plan.regex_config.items()}
+                quantizer.quant_block_list = (
+                    [list(group) for group in plan.quant_block_list] if plan.quant_block_list is not None else None
+                )
+                quantizer.to_quant_block_names = self.to_quant_block_names
+                quantizer.ignore_layers = self.ignore_layers
 
             from auto_round.algorithms.config_resolver import sync_shared_config_from
 
@@ -1817,6 +1815,21 @@ class BaseOrchestrator:
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
         if self.formats is None:
+            return
+
+        # Whole-model quantizers (e.g. QAD) tune the entire network in one pass and
+        # never run the per-block loop that packs/writes shards incrementally, so
+        # immediate packing/saving would leave the output dir without model files.
+        # Fall back to packing and saving the whole model after quantization.
+        from auto_round.algorithms.config_resolver import get_algorithm_class, split_quantization_configs
+
+        _qcls = get_algorithm_class(self.quantize_config) if self.quantize_config is not None else None
+        _, quantizer_configs = split_quantization_configs(self._alg_configs)
+        if len(quantizer_configs) > 1 or (_qcls is not None and getattr(_qcls, "whole_model_tuning", False)):
+            if self.compress_context.is_immediate_packing or self.compress_context.is_immediate_saving:
+                logger.info("Staged/whole-model tuning: disabling immediate packing/saving; saving at the end.")
+            self.compress_context.is_immediate_packing = False
+            self.compress_context.is_immediate_saving = False
             return
 
         formats = getattr(self, "formats", [])
