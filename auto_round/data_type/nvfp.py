@@ -224,10 +224,15 @@ def nvfp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=No
 
 
 @register_dtype("nvfp4_v2")
-def nvfp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, **kwargs):
+def nvfp4_v2(tensor, bits=4, group_size=32, v=0, max_scale=1.0, init_scale=None, **kwargs):
     assert group_size == 32 or group_size == 16
     orig_dtype = tensor.dtype
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if init_scale is not None:
+        if isinstance(max_scale, torch.Tensor):
+            max_scale = max_scale.reshape(-1) * init_scale.reshape(-1).to(max_scale.device)
+        else:
+            max_scale = init_scale.reshape(-1) * max_scale
     global_scale = 1.0
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v, max_scale)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
@@ -434,6 +439,31 @@ def search_nvfp4_v2_scale(tensor, bits=4, qw=None):
     """Search per-group scales for the legacy-registry NVFP4 E5M3 quantizer."""
     qw = 1.0 if qw is None else qw
     return search_nvfp4_scale(tensor, bits, qw, quant_func=nvfp4_v2, group_size=tensor.shape[-1]).squeeze(-1)
+
+
+@register_dtype("rtn_nvfp4_v2")
+def rtn_nvfp4_v2(tensor, **kwargs):
+    return nvfp4_v2(tensor, **kwargs)
+
+
+@register_dtype("opt_rtn_nvfp4_v2")
+def opt_rtn_nvfp4_v2(tensor, bits=4, group_size=16, v=0, max_scale=1.0, imatrix=None, **kwargs):
+    if group_size not in (16, 32):
+        raise ValueError(f"nvfp4_v2 only supports group_size=16 or 32, got {group_size}")
+    grouped, _, _ = reshape_pad_tensor_by_group_size(tensor, group_size)
+    if isinstance(imatrix, torch.Tensor):
+        imatrix = imatrix.reshape(1, -1)
+        imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
+        imatrix = imatrix.expand(grouped.numel() // imatrix.numel(), -1).reshape(grouped.shape)
+        qw = _imatrix_handle_zero(imatrix, grouped, bits, group_size)
+    else:
+        qw = 1.0
+    init_scale = search_nvfp4_v2_scale(grouped, bits, qw)
+    if isinstance(max_scale, torch.Tensor):
+        init_scale = init_scale * max_scale.reshape(-1).to(init_scale.device)
+    else:
+        init_scale = init_scale * max_scale
+    return nvfp4_v2(tensor, bits=bits, group_size=group_size, v=v, max_scale=init_scale)
 
 
 @register_dtype("opt_rtn_nv_fp4")

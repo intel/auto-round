@@ -116,7 +116,7 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         data_type = layer.data_type
         # asym int threads an extra per-group integer zero point alongside the
         # searched scale (sym / mx / nv keep the scale-only contract)
-        self._is_asym = "asym" in data_type
+        self._is_asym = not layer.sym
         weight_reshape = self._prepare_init_scale_weight()
         # staged deferral keeps only the RAW column imatrix (or None): the
         # expanded full-size copy would be pinned per module for the whole

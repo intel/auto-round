@@ -25,3 +25,4 @@ from auto_round.data_type.utils import (
 import auto_round.data_type.nvfp
 import auto_round.data_type.gguf
 import auto_round.data_type.neuqi
+import auto_round.data_type.exp

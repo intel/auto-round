@@ -800,6 +800,26 @@ NVFP4_E5M3 = QuantizationScheme.from_dict(
     }
 )
 
+EXP_NVSINT4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 16,
+        "data_type": "exp_nvsint4",
+        "sym": True,
+        "act_bits": 16,
+    }
+)
+
+EXP_NVINT4 = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 16,
+        "data_type": "exp_nvint4",
+        "sym": False,
+        "act_bits": 16,
+    }
+)
+
 NVFP4_E5M3_GS = QuantizationScheme.from_dict(
     {
         "bits": 4,
@@ -923,6 +943,9 @@ PRESET_SCHEMES = {
     "MXFP8_RCEIL": MXFP8_RCEIL,
     "NVFP4": NVFP4,
     "NVFP4_E5M3": NVFP4_E5M3,
+    "EXP-FP4": NVFP4_E5M3,
+    "EXP-NVSINT4": EXP_NVSINT4,
+    "EXP-NVINT4": EXP_NVINT4,
     "NVFP4_E5M3_GS": NVFP4_E5M3_GS,
     "FPW8A16": FPW8A16,
     # Group-size variants for the 2-8 bit int presets: the bare presets default
