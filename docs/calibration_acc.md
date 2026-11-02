@@ -1,106 +1,72 @@
 ## Calibration Dataset Study (WIP)
 
-**Current Recommendation**: For 4-bit quantization, current results suggest **75% UltraChat + 25% OpenCode (Mix2 recipe)**. This recipe can be applied using `--dataset 'HuggingFaceH4/ultrachat_200k:apply_chat_template=true:num=96,nvidia/OpenCodeInstruct:num=32'`
-
----
+**Current Recommendation**: For 4-bit quantization, current results suggest **75% UltraChat + 25% OpenCode (Mix2 recipe)**. With the default `nsamples=128`, this recipe can be applied using `--dataset 'HuggingFaceH4/ultrachat_200k:apply_chat_template=true:num=96,nvidia/OpenCodeInstruct:num=32'`.
 
 ### Qwen3.8-27B-W4A16
 
 | Calibration Dataset | AIME26 | GPQA Diamond | IFBench Strict | MMLU-Pro | LiveCodeBench |
 |---|---:|---:|---:|---:|---:|
-| cci3hq | 96.67 | 90.40 | 74.92 | 85.03 | 91.18 |
-| OpenCode | 98.00 | 89.27 | 75.23 | 85.26 | 92.51 |
-| pile10k | 97.33 | 89.09 | 73.67 | 85.00 | 91.37 |
-| UltraChat | 98.00 | **90.78** | 74.75 | 85.20 | 91.75 |
-| UltraFineWeb | 97.33 | 89.90 | 71.63 | 84.96 | 91.75 |
-| Mix1 | **99.34** | 90.10 | 73.65 | 85.40 | **92.70** |
-| Mix2 | 98.02 | 90.40 | **76.00** | **85.50** | 92.20 |
-| Mix2 (Chat Temp) | 99.18 | 89.53 | - | - | - |
-| Mix3 | 96.67 | 88.40 | 73.00 | - | - |
-
+| cci3hq | 96.67, 90, 100, 100, 96.67=96.67 | 91.92, 90.4, 88.89, 91.41, 89.39=90.40 | 73.67, 76.16=74.92 | 85.03 | 91.18 |
+| OpenCode | 96.67, 96.67, 100, 100, 96.67=98.00 | 89.39, 87.88, 90.4, 89.39, -=89.27 | 74, 76.45=75.23 | 85.26 | 92.51 |
+| pile10k | 100, 93.33, 100, 93.33, 100=97.33 | 87.88, 88.38, 88.89, 89.9, 90.4=89.09 | 72.33, 75=73.67 | 85.00 | 91.37 |
+| UltraChat | 100, 93.33, 100, 100, 96.67=98.00 | 90.91, 91.41, 90.4, 90.4, -=**90.78** | 73.33, 76.16=74.75 | 85.20 | 91.75 |
+| UltraFineWeb | 96.67, 100, 100, 96.67, 93.33=97.33 | 89.39, 90.4, 90.4, 90.4, 88.89=89.90 | 70, 73.26=71.63 | 84.96 | 91.75 |
+| mix_a (ultrachat 50% | OpenCode 25% | cci3hq 12.5% | pile10k 12.5%) | 100,100,100,96.7,100=**99.34** | 90.9,89.4,90.9,90.4,88.9=90.10 | 72.3, 75=73.65 | 85.40 | **92.70** |
+| mix_b (ultrachat 75% | OpenCode 25%) | 96.7, 100, 96.7, 100, 96.7=98.02 | 87.9, 90.9, 89.9, 91.9, 91.4=90.4 | 74.7, 77.3=**76.00** | **85.50** | 92.20 |
+| mix_b (ultrachat 75% (apply_chat_template=true) | OpenCode 25%) | 100, 100, 96.7, 100, -=99.18 | 87.9, 90.4, 89.4, 90.4,  -=89.53 | - | - | - |
+| mix_c (ultrachat 87.5% | OpenCode 12.5%) | 93.3, 100, 96.7, -, -=96.67 | 88.4, 90.4, 86.4, -, -=88.40 | 71.3, 74.7=73.00 | - | - |
 
 ### Gemma-4-12B-it-W4A16
 
 | Calibration Dataset | AIME26 | GPQA Diamond | IFBench Strict |
 |---|---:|---:|---:|
-| cci3hq | 49.34 | 38.70 | 58.70 |
-| OpenCode | 66.00 | 52.00 | 64.25 |
-| pile10k | 58.66 |  | 65.95 |
-| UltraChat | 68.00 | 62.60 | 68.75 |
-| UltraFineWeb | 57.34 |  | 67.80 |
-| Mix1 | 56.70 | 53.50 | 67.15 |
-| Mix2 | **76.70** | 58.60 | 67.95 |
-| Mix2 (Chat Temp) | 70.00 | **64.32** | **69.05** |
-| Mix3 | 66.68 | 62.82 | 68.75 |
-
----
-
-#### Detailed Dataset Definitions
-
-| Name | Composition |
-|---|---|
-| Mix1 | 50% UltraChat + 25% OpenCode + 12.5% cci3hq + 12.5% pile10k |
-| Mix2 | 75% UltraChat + 25% OpenCode |
-| Mix2 (Chat Temp) | 75% UltraChat + 25% OpenCode (Chat Template Variant) |
-| Mix3 | 87.5% UltraChat + 12.5% OpenCode |
+| cci3hq | 46.7, 46.7, 50, 50, 53.3=49.34 | 42.4, 35.4, 36.9, 40.4, 38.4=38.70 | 59, 58.4=58.70 |
+| OpenCode | 63.3, 76.7, 60, 60, 70=66.00 | 51.5, 50.5, 54, -, -=52.00 | 63.7, 64.8=64.25 |
+| pile10k | 53.3, 53.3, 66.7, 56.7, 63.3=58.66 | - | 65.3, 66.6=65.95 |
+| UltraChat | 66.7, 63.3, 66.7, 70, 73.3=68.00 | 61.6, 61.1, 65.1, -, -=62.60 | 67.7, 69.8=68.75 |
+| UltraFineWeb | 56.7, 60, 60, 56.7, 53.3=57.34 | - | 66.7, 68.9=67.80|
+| mix_a (ultrachat 50% | OpenCode 25% | cci3hq 12.5% | pile10k 12.5%) | 56.70 | 53.50 | 66.3, 68=67.15 |
+| mix_b (ultrachat 75% | OpenCode 25%) | **76.70** | 58.60 | 67.95 |
+| mix_b (ultrachat 75% (apply_chat_template=true) | OpenCode 25%) | 73.3,  66.7, 76.7, 80, 53.3=70.00 | 65.1, 63.6, 65.7, 62.1, 65.1=**64.32** | 68, 70.1=**69.05** |
+| mix_c (ultrachat 87.5% | OpenCode 12.5%) | 66.7, 66.7, 66.7, 63.3, 70=66.68 | 60.1, 61.6, 66.7, 64.6, 61.1=62.82 | 67.7, 69.8=68.75 |
 
 
-<details>
-<summary><strong>Qwen3.8-27B Multi-Run Statistics</strong></summary>
+### Reproduction Setup
+**(1) Environment**
+- Quantization & vLLM: Python 3.11.17, AutoRound 0.16.0, PyTorch 2.13.0+cu130, vLLM 0.29.0
+- Standard Evaluation: Python 3.11.17, EvalScope 1.12.0
+- Agent Evaluation: Python 3.12.15, EvalScope 1.12.0
 
+**(2) Model Configurations**
+**Qwen**
+- Hardware: H200 / B200
+- Quantization: W4A16g128
+- Generation: temperature=1, top_p=1, top_k=20, min_p=0
+- Max tokens: 131,072
+- Evaluation: batch_size=32, timeout=14,400s, seed=42
+- Thinking: enabled, preserve_thinking=true
+- Streaming: disabled
 
-| AIME26-Dataset | Run1 | Run2 | Run3 | Run4 | Run5 | Avg |
-|---|---:|---:|---:|---:|---:|---:|
-| cci3hq | 96.67 | 90.00 | 100.00 | 100.00 | 96.67 | 96.67 |
-| OpenCode | 96.67 | 96.67 | 100.00 | 100.00 | 96.67 | 98.00 |
-| pile10k | 100.00 | 93.33 | 100.00 | 93.33 | 100.00 | 97.33 |
-| UltraChat | 100.00 | 93.33 | 100.00 | 100.00 | 96.67 | 98.00 |
-| UltraFineWeb | 96.67 | 100.00 | 100.00 | 96.67 | 93.33 | 97.33 |
-| Mix1 | 100.00 | 100.00 | 100.00 | 96.70 | 100.00 | 99.34 |
-| Mix2 | 96.70 | 100.00 | 96.70 | 100.00 | 96.70 | 98.02 |
-| Mix2 (Chat Temp) | 100.00 | 100.00 | 96.70 | 100.00 | - | 99.18 |
-| Mix3 | 93.30 | 100.00 | 96.70 | - | - | 96.67 |
+**Gemma**
+- Model: /models/gemma-4-12B-it
+- Served model name: gemma4_bf16
+- Hardware: A100
+- Dtype: bfloat16
+- Thinking: enabled
+- Reasoning parser: gemma4
+- Generation: temperature=1, top_p=0.95, top_k=64, min_p=0
+- Repetition penalty: 1
+- Max tokens: 32,768
+- Evaluation: batch_size=16, timeout=7,200s
+- Enforce eager: enabled
+- Max model length: not explicitly set
 
-| GPQA Diamond-Dataset | Run1 | Run2 | Run3 | Run4 | Run5 | Avg |
-|---|---:|---:|---:|---:|---:|---:|
-| cci3hq | 91.92 | 90.40 | 88.89 | 91.41 | 89.39 | 90.40 |
-| OpenCode | 89.39 | 87.88 | 90.40 | 89.39 | - | 89.27 |
-| pile10k | 87.88 | 88.38 | 88.89 | 89.90 | 90.40 | 89.09 |
-| UltraChat | 90.91 | 91.41 | 90.40 | 90.40 | - | 90.78 |
-| UltraFineWeb | 89.39 | 90.40 | 90.40 | 90.40 | 88.89 | 89.90 |
-| Mix1 | 90.90 | 89.40 | 90.90 | 90.40 | 88.90 | 90.10 |
-| Mix2 | 87.90 | 90.90 | 89.90 | 91.90 | 91.40 | 90.40 |
-| Mix2 (Chat Temp) | 87.90 | 90.40 | 89.40 | 90.40 | - | 89.53 |
-| Mix3 | 88.40 | 90.40 | 86.40 | - | - | 88.40 |
+**Benchmark Datasets**
 
-</details>
-
-<details>
-<summary><strong>Gemma-4-12B-it Multi-Run Statistics</strong></summary>
-
-| AIME26-Dataset | Run1 | Run2 | Run3 | Run4 | Run5 | Avg |
-|---|---:|---:|---:|---:|---:|---:|
-| cci3hq | 46.70 | 46.70 | 50.00 | 50.00 | 53.30 | 49.34 |
-| OpenCode | 63.30 | 76.70 | 60.00 | 60.00 | 70.00 | 66.00 |
-| pile10k | 53.30 | 53.30 | 66.70 | 56.70 | 63.30 | 58.66 |
-| UltraChat | 66.70 | 63.30 | 66.70 | 70.00 | 73.30 | 68.00 |
-| UltraFineWeb | 56.70 | 60.00 | 60.00 | 56.70 | 53.30 | 57.34 |
-| Mix1 | 56.70 | - | - | - | - | 56.70 |
-| Mix2 | 76.70 | - | - | - | - | 76.70 |
-| Mix2 (Chat Temp) | 73.30 | 66.70 | 76.70 | 80.00 | 53.30 | 70.00 |
-| Mix3 | 66.70 | 66.70 | 66.70 | 63.30 | 70.00 | 66.68 |
-
-| GPQA Diamond-Dataset | Run1 | Run2 | Run3 | Run4 | Run5 | Avg |
-|---|---:|---:|---:|---:|---:|---:|
-| cci3hq | 42.40 | 35.40 | 36.90 | 40.40 | 38.40 | 38.70 |
-| OpenCode | 51.50 | 50.50 | 54.00 | - | - | 52.00 |
-| pile10k | - | - | - | - | - | - |
-| UltraChat | 61.60 | 61.10 | 65.10 | - | - | 62.60 |
-| UltraFineWeb | - | - | - | - | - | - |
-| Mix1 | 53.50 | - | - | - | - | 53.50 |
-| Mix2 | 58.60 | - | - | - | - | 58.60 |
-| Mix2 (Chat Temp) | 65.10 | 63.60 | 65.70 | 62.10 | 65.10 | 64.32 |
-| Mix3 | 60.10 | 61.60 | 66.70 | 64.60 | 61.10 | 62.82 |
-
-
-</details>
+| Benchmark | Samples |
+|---|---:|
+| AIME26 | 30 |
+| GPQA Diamond | 198 |
+| IFBench (Prompts & Instructions) Strict Prompt Strict, Instruction Strict=avg) | 300 & 344 |
+| LiveCodeBench (release_v6) | 1,055 |
+| MMLU-Pro | 12,032 |
