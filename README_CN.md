@@ -49,6 +49,8 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 ## 🆕 最新进展
 
+* [WIP] 对于 4 bit 及以上的量化，我们目前建议采用 75% UltraChat + 25% OpenCode 的混合数据集，以提升模型的推理能力和 Agentic 任务能力。使用默认配置 nsamples=128 时，请指定 --dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"。详情请参阅校准数据集[文档](./docs/calibration_acc.md)。待评测全部完成后，我们将更新默认校准数据集。
+
 * [2026/10] 我们现在展示：**W2A16** 的精度会随着调优成本的增加而稳步提升。详细精度数据见 [W2A16 精度数据](./docs/alg_202508.md)。
 
 * [2026/09] 我们将 MoE量化速度提升了 3 倍以上，并显著降低了 RAM 使用量。详细结果请参阅[文档](./docs/moe.md)。请注意，该优化可能会引入一些回归问题或其他问题。
