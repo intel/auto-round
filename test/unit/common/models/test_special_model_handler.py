@@ -695,26 +695,97 @@ class TestGetQwen25OmniMultimodalBlock:
     """Test _get_qwen2_5_omni_multimodal_block function."""
 
     def test_returns_thinker_layers(self):
+        from types import SimpleNamespace
+
         from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
 
-        mock_model = MagicMock()
-        mock_model.thinker.model.layers = [MagicMock() for _ in range(8)]
-        block_names = _get_qwen2_5_omni_multimodal_block(mock_model)
-        assert len(block_names) == 1
-        assert len(block_names[0]) == 8
+        model = SimpleNamespace(thinker=SimpleNamespace(model=SimpleNamespace(layers=[MagicMock() for _ in range(8)])))
+        block_names = _get_qwen2_5_omni_multimodal_block(model)
+        assert block_names == [[f"thinker.model.layers.{i}" for i in range(8)]]
 
     def test_with_quant_vision_true(self):
+        from types import SimpleNamespace
+
         from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
 
-        mock_model = MagicMock()
-        mock_model.thinker.visual.blocks = [MagicMock() for _ in range(5)]
-        mock_model.thinker.audio_tower.layers = [MagicMock() for _ in range(3)]
-        mock_model.thinker.model.layers = [MagicMock() for _ in range(8)]
-        block_names = _get_qwen2_5_omni_multimodal_block(mock_model, quant_vision=True)
-        assert len(block_names) == 3
-        assert len(block_names[0]) == 5  # visual blocks
-        assert len(block_names[1]) == 3  # audio tower layers
-        assert len(block_names[2]) == 8  # thinker model layers
+        model = SimpleNamespace(
+            thinker=SimpleNamespace(
+                visual=SimpleNamespace(blocks=[MagicMock() for _ in range(5)]),
+                audio_tower=SimpleNamespace(layers=[MagicMock() for _ in range(3)]),
+                model=SimpleNamespace(layers=[MagicMock() for _ in range(8)]),
+            )
+        )
+        block_names = _get_qwen2_5_omni_multimodal_block(model, quant_vision=True)
+        assert block_names == [
+            [f"thinker.visual.blocks.{i}" for i in range(5)],
+            [f"thinker.audio_tower.layers.{i}" for i in range(3)],
+            [f"thinker.model.layers.{i}" for i in range(8)],
+        ]
+
+    def test_nested_layout_without_quant_vision(self):
+        from types import SimpleNamespace
+
+        from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
+
+        model = SimpleNamespace(
+            thinker=SimpleNamespace(
+                model=SimpleNamespace(
+                    visual=SimpleNamespace(blocks=[MagicMock() for _ in range(2)]),
+                    audio_tower=SimpleNamespace(layers=[MagicMock() for _ in range(3)]),
+                    language_model=SimpleNamespace(layers=[MagicMock() for _ in range(4)]),
+                )
+            )
+        )
+        block_names = _get_qwen2_5_omni_multimodal_block(model, quant_vision=False)
+        assert block_names == [[f"thinker.model.language_model.layers.{i}" for i in range(4)]]
+
+    def test_empty_towers_are_skipped(self):
+        from types import SimpleNamespace
+
+        from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
+
+        model = SimpleNamespace(
+            thinker=SimpleNamespace(
+                model=SimpleNamespace(
+                    visual=SimpleNamespace(blocks=[]),
+                    audio_tower=SimpleNamespace(layers=[]),
+                    language_model=SimpleNamespace(layers=[MagicMock()]),
+                )
+            )
+        )
+        block_names = _get_qwen2_5_omni_multimodal_block(model, quant_vision=True)
+        assert block_names == [["thinker.model.language_model.layers.0"]]
+
+    def test_nested_language_model_layout(self):
+        """Newer Transformers wraps the decoder and towers under ``thinker.model``."""
+        from types import SimpleNamespace
+
+        from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
+
+        model = SimpleNamespace(
+            thinker=SimpleNamespace(
+                model=SimpleNamespace(
+                    visual=SimpleNamespace(blocks=[MagicMock() for _ in range(2)]),
+                    audio_tower=SimpleNamespace(layers=[MagicMock() for _ in range(3)]),
+                    language_model=SimpleNamespace(layers=[MagicMock() for _ in range(4)]),
+                )
+            )
+        )
+        block_names = _get_qwen2_5_omni_multimodal_block(model, quant_vision=True)
+        assert block_names == [
+            ["thinker.model.visual.blocks.0", "thinker.model.visual.blocks.1"],
+            [
+                "thinker.model.audio_tower.layers.0",
+                "thinker.model.audio_tower.layers.1",
+                "thinker.model.audio_tower.layers.2",
+            ],
+            [
+                "thinker.model.language_model.layers.0",
+                "thinker.model.language_model.layers.1",
+                "thinker.model.language_model.layers.2",
+                "thinker.model.language_model.layers.3",
+            ],
+        ]
 
     def test_no_thinker_model(self):
         from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
