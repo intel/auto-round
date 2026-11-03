@@ -339,7 +339,8 @@ def test_zero_iters_selects_rtn_and_forwards_disable_opt_rtn():
 
 def test_awq_rtn_opt_policy_defaults_and_explicit_overrides():
     cases = [
-        (_normalize_alg_configs("awq"), ["AWQConfig", "RTNConfig"], [True, True]),
+        (_normalize_alg_configs("awq"), ["AWQConfig", "OptimizedRTNConfig"], [False, False]),
+        (_normalize_alg_configs(AWQConfig()), ["AWQConfig", "OptimizedRTNConfig"], [False, False]),
         (
             _normalize_alg_configs("awq,rtn", direct_kwargs={"disable_opt_rtn": True}),
             ["AWQConfig", "RTNConfig"],
