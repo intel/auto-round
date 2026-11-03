@@ -1804,9 +1804,11 @@ class TestSetVisibleDevicesBackendAgnostic:
         from auto_round.utils.device import set_visible_devices
 
         os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"
-        with patch("auto_round.utils.device.get_current_device_type", return_value="cuda"):
-            with pytest.raises(ValueError, match="smaller than the number of available devices"):
-                set_visible_devices("0,5")
+        with (
+            patch("auto_round.utils.device.get_current_device_type", return_value="cuda"),
+            pytest.raises(ValueError, match="smaller than the number of available devices"),
+        ):
+            set_visible_devices("0,5")
 
     def test_alias_delegates_to_the_generic_helper(self):
         from auto_round.utils import device as device_mod
