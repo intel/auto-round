@@ -244,6 +244,9 @@ def _apply_recipe_defaults(args, recipe="ar"):
     """Normalize recommendations for both command entry points and direct tune calls."""
     if getattr(args, "_recipe_plan", None) is not None:
         return
+    if not hasattr(args, "_explicit_fields"):
+        # Namespaces built outside the quantize parser: treat every set value as explicit.
+        args._explicit_fields = {key for key, value in vars(args).items() if value is not None}
     args.recipe = get_recipe(args.recipe or recipe).name
     definition = get_recipe(args.recipe)
     args._recipe_plan = resolve_recipe(
@@ -454,7 +457,7 @@ def tune(args):
     autoround: BaseCompressor = AutoRound(
         model_name,
         scheme=scheme,
-        recipe=args.recipe,
+        recipe=args._recipe_plan,
         alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
         **_to_autoround_kwargs(
             args,

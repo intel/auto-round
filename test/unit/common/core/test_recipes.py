@@ -407,3 +407,83 @@ def test_callable_factory_recipe_still_validates_overrides(monkeypatch):
     monkeypatch.setattr(entry, "config_factory", lambda: entry.alias_factories["random_hadamard"]())
     with pytest.raises(ValueError):
         AlgorithmSpec("rotation", "hadamard", {"backend": "invalid"}).build_config()
+
+
+def test_exact_user_layer_wins_over_recipe_regex():
+    import torch.nn as nn
+
+    from auto_round.compressors.config_resolution import ResolvedScheme
+    from auto_round.compressors.layer_config_resolver import resolve_layer_config
+    from auto_round.recipes.resolver import merge_layer_defaults
+    from auto_round.schemes import QuantizationScheme
+
+    model = nn.Module()
+    model.a_proj = nn.Linear(32, 32)
+    model.b_proj = nn.Linear(32, 32)
+    layer_config = merge_layer_defaults({r".*proj$": {"bits": 8}}, {"a_proj": {"bits": 16}})
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float")),
+        layer_config=layer_config,
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+    assert resolved["a_proj"]["bits"] == 16
+    assert resolved["b_proj"]["bits"] == 8
+
+
+def test_cli_resolves_contextual_recipe_once(monkeypatch, capture_entry):
+    from auto_round.cli import main
+    from auto_round.recipes import AlgorithmSpec, Recipe, register_recipe, registry
+
+    calls = []
+
+    def process(recipe, *, scheme, model_config):
+        calls.append(scheme)
+        recipe.calibration["nsamples"] = 16 + len(calls)
+
+    monkeypatch.setattr(registry, "_RECIPES", dict(registry._RECIPES))
+    monkeypatch.setattr(registry, "_ALIASES", dict(registry._ALIASES))
+    register_recipe(Recipe("test-once", (AlgorithmSpec("quantizer", "auto_round"),), process=process))
+    import auto_round
+
+    seen = {}
+
+    def fake_entry(*args, **kwargs):
+        entry = AutoRound(*args, **kwargs)
+        seen["entry"] = entry
+        raise StopIteration
+
+    monkeypatch.setattr(auto_round, "AutoRound", fake_entry)
+    with pytest.raises(StopIteration):
+        main.start(argv=["dummy", "--recipe", "test-once"])
+    assert calls == ["W4A16"]
+    assert seen["entry"].nsamples == 17
+
+
+@pytest.mark.parametrize("option", ["--iter", "--iters", "--iters="])
+def test_cli_option_spellings_override_recipe(monkeypatch, option):
+    from auto_round.cli import main
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    captured = {}
+    monkeypatch.setattr(main, "tune", lambda args: captured.setdefault("args", args))
+    argv = ["dummy", "--recipe", "ar-best", "--disable_minmax"]
+    argv += [option + "5"] if option.endswith("=") else [option, "5"]
+    main.start(argv=argv)
+    config = AlgorithmHandler.build_configs(captured["args"], {})[0]
+    assert config.iters == 5
+    assert config.enable_minmax_tuning is False
+
+
+def test_tune_accepts_namespace_without_explicit_fields():
+    import argparse
+
+    from auto_round.cli import main
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = argparse.Namespace(**vars(build_quantize_parser().parse_args(["dummy", "--iters", "5"])))
+    del args._explicit_fields
+    main._apply_recipe_defaults(args)
+    assert args.iters == 5
+    assert args._recipe_plan.name == "ar"

@@ -44,6 +44,8 @@ def resolve_recipe(
             scheme=scheme.upper() if isinstance(scheme, str) else scheme,
             model_config=copy.deepcopy(model_config),
         )
+        # The returned plan is already processed; resolving it again must not rerun the callback.
+        definition.process = None
     pipeline = definition.pipeline
     calibration = definition.calibration
     if not pipeline or len({stage.name for stage in pipeline}) != len(pipeline):

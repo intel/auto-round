@@ -61,14 +61,25 @@ class _QuantizeArgumentParser(argparse.ArgumentParser):
 
         argv = list(sys.argv[1:] if args is None else args)
         parsed, extras = super().parse_known_args(argv, namespace)
-        parsed._explicit_fields = {
-            action.dest
-            for token in argv
-            if token.startswith("-")
-            for action in [self._option_string_actions.get(token.split("=", 1)[0])]
-            if action is not None
-        }
+        parsed._explicit_fields = self._explicit_dests(argv)
         return parsed, extras
+
+    def _explicit_dests(self, argv) -> set[str]:
+        """Return destinations set on the command line, including abbreviated options."""
+        defaults = [(action, action.default) for action in self._actions]
+        parser_defaults = dict(self._defaults)
+        try:
+            for action, _ in defaults:
+                action.default = argparse.SUPPRESS
+            self._defaults.clear()
+            seen, _ = super().parse_known_args(argv, argparse.Namespace())
+        except SystemExit:
+            return set()
+        finally:
+            for action, default in defaults:
+                action.default = default
+            self._defaults.update(parser_defaults)
+        return {dest for dest in vars(seen) if dest != "model"}
 
 
 def add_common_quantization_arguments(group) -> None:
