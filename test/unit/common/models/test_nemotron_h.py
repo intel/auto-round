@@ -7,15 +7,20 @@
 #    http://www.apache.org/licenses/LICENSE-2.0
 """CPU regressions for Nemotron-H Omni wrapper loading (Super VL / Bolt)."""
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
+import torch.nn.functional as F
 from safetensors.torch import save_file
 from transformers import NemotronHConfig, conversion_mapping
 
+from auto_round.modeling import nemotron_h_omni
 from auto_round.modeling.nemotron_h_omni import (
+    _rmsnorm_fn_fallback,
     apply_nemotron_h_omni_post_load,
+    install_mamba_ssm_stub,
     prefer_remote_omni_class,
     register_nemotron_h_omni_checkpoint_mapping,
 )
@@ -30,7 +35,8 @@ def _omni_config(text_model_type="nemotron_h_puzzle"):
 
 @pytest.fixture
 def mapping_registry(monkeypatch):
-    """Isolate transformers' global conversion-mapping registry."""
+    """Isolate transformers' global conversion-mapping registry (and keep the mamba_ssm stub out of sys.modules)."""
+    monkeypatch.setattr(nemotron_h_omni, "install_mamba_ssm_stub", lambda: False)
     store = {}
     monkeypatch.setattr(conversion_mapping, "get_checkpoint_conversion_mapping", lambda t: list(store.get(t, [])))
 
@@ -294,26 +300,70 @@ def test_non_streamed_meta_model_still_rejected(monkeypatch):
         context_module.ModelContext(model=torch.nn.Linear(2, 2, device="meta"), need_calib=False)
 
 
-def test_install_mamba_ssm_stub():
-    import sys
+def _mamba_ssm_module_names():
+    return [name for name in sys.modules if name == "mamba_ssm" or name.startswith("mamba_ssm.")]
 
-    from auto_round.modeling.nemotron_h_omni import install_mamba_ssm_stub
 
-    # Ensure clean state if previously injected
-    for k in list(sys.modules):
-        if k.startswith("mamba_ssm"):
-            del sys.modules[k]
+@pytest.fixture
+def mamba_ssm_unavailable():
+    """Make ``mamba_ssm`` unimportable, even where it is installed; restore ``sys.modules`` afterwards."""
+    saved = {name: sys.modules.pop(name) for name in _mamba_ssm_module_names()}
+    sys.modules["mamba_ssm"] = None  # ``import mamba_ssm`` now raises ModuleNotFoundError
+    yield
+    for name in _mamba_ssm_module_names():
+        del sys.modules[name]
+    sys.modules.update(saved)
 
+
+def test_mamba_ssm_stub_installed_when_unavailable(mamba_ssm_unavailable):
     assert install_mamba_ssm_stub()
-    assert not install_mamba_ssm_stub()  # idempotent
-    assert "mamba_ssm" in sys.modules
-    assert "mamba_ssm.ops.triton.layernorm_gated" in sys.modules
+    assert not install_mamba_ssm_stub()  # idempotent: the stub now satisfies the probe
 
     from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn
 
-    x = torch.randn(2, 4, 16)
-    weight = torch.ones(16)
-    gate = torch.randn(2, 4, 16)
-    out = rmsnorm_fn(x=x, weight=weight, z=gate, eps=1e-5, group_size=8, norm_before_gate=False)
-    assert out.shape == x.shape
+    assert rmsnorm_fn is _rmsnorm_fn_fallback
+
+
+def test_mamba_ssm_stub_installed_over_partial_install(mamba_ssm_unavailable):
+    # An importable top-level package without the Triton ops must not block the fallback.
+    sys.modules["mamba_ssm"] = ModuleType("mamba_ssm")
+    assert install_mamba_ssm_stub()
+
+    from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn
+
+    assert rmsnorm_fn is _rmsnorm_fn_fallback
+
+
+def _reference_rmsnorm_fn(x, weight, bias, z, eps, group_size, norm_before_gate):
+    """Port of mamba_ssm's ``rms_norm_ref``, the oracle its fused ``rmsnorm_fn`` kernel is tested against."""
+    x, weight = x.float(), weight.float()
+    gate = F.silu(z.float()) if z is not None else None
+    if gate is not None and not norm_before_gate:
+        x = x * gate
+    groups = x.split(group_size or x.shape[-1], dim=-1)
+    out = torch.cat([g / torch.sqrt(g.square().mean(dim=-1, keepdim=True) + eps) for g in groups], dim=-1) * weight
+    if bias is not None:
+        out = out + bias.float()
+    if gate is not None and norm_before_gate:
+        out = out * gate
+    return out
+
+
+@pytest.mark.parametrize("gate_order", [None, "gate_then_norm", "norm_then_gate"])
+@pytest.mark.parametrize("group_size", [None, 8])
+@pytest.mark.parametrize("with_bias", [False, True])
+def test_rmsnorm_fallback_matches_reference(gate_order, group_size, with_bias):
+    torch.manual_seed(0)
+    x = torch.randn(2, 3, 32, dtype=torch.bfloat16)
+    kwargs = {
+        "x": x,
+        "weight": torch.randn(32, dtype=torch.bfloat16),
+        "bias": torch.randn(32, dtype=torch.bfloat16) if with_bias else None,
+        "z": torch.randn(2, 3, 32, dtype=torch.bfloat16) if gate_order else None,
+        "eps": 1e-5,
+        "group_size": group_size,
+        "norm_before_gate": gate_order == "norm_then_gate",
+    }
+    out = _rmsnorm_fn_fallback(**kwargs)
     assert out.dtype == x.dtype
+    torch.testing.assert_close(out, _reference_rmsnorm_fn(**kwargs).to(x.dtype))

@@ -92,42 +92,40 @@ def nemotron_h_omni_load_kwargs(config) -> dict:
     return {"key_mapping": {r"^language_model\.backbone\.": _NESTED_TRUNK_TARGET}}
 
 
+def _rmsnorm_fn_fallback(x, weight, bias, z=None, eps=1e-6, group_size=None, norm_before_gate=True):
+    """Pure-PyTorch ``mamba_ssm.ops.triton.layernorm_gated.rmsnorm_fn`` (same signature).
+
+    Mirrors the fused kernel and its reference ``rms_norm_ref``: (grouped) RMS norm in float32,
+    then ``* weight + bias``; the SiLU gate ``z`` applies before the norm, or after the bias when
+    ``norm_before_gate``. Returns ``x.dtype``.
+    """
+    out = x.float()
+    gate = nn.functional.silu(z.float()) if z is not None else None
+    if gate is not None and not norm_before_gate:
+        out = out * gate
+    groups = out.reshape(*out.shape[:-1], -1, group_size or out.shape[-1])
+    out = (groups * torch.rsqrt(groups.square().mean(-1, keepdim=True) + eps)).reshape(x.shape) * weight.float()
+    if bias is not None:
+        out = out + bias.float()
+    if gate is not None and norm_before_gate:
+        out = out * gate
+    return out.to(x.dtype)
+
+
 def install_mamba_ssm_stub() -> bool:
-    """Install a pure-PyTorch stub for mamba_ssm if it is not installed.
+    """Install a pure-PyTorch ``rmsnorm_fn`` stub when mamba_ssm cannot provide it.
 
     Nemotron-H remote code (modeling_nemotron_h.py) unconditionally imports rmsnorm_fn
     from mamba_ssm.ops.triton.layernorm_gated, even though it provides a pure-PyTorch
-    torch_forward fallback for non-CUDA platforms.
+    torch_forward fallback for non-CUDA platforms. Probe that exact import, so a partial or
+    CUDA-only install that cannot provide it also gets the stub. Returns whether it was installed.
     """
-    if "mamba_ssm" in sys.modules:
-        return False
     try:
-        import mamba_ssm  # noqa: F401
+        from mamba_ssm.ops.triton.layernorm_gated import rmsnorm_fn  # noqa: F401
 
         return False
-    except (ImportError, ModuleNotFoundError, Exception):
-        pass
-
-    def _rmsnorm_gated(
-        x: torch.Tensor, z: torch.Tensor | None, w: torch.Tensor, eps: float, group: int, norm_before_gate: bool = False
-    ) -> torch.Tensor:
-        dim = x.shape[-1]
-        v = x.float()
-        if z is not None and not norm_before_gate:
-            v = v * (z.float() * torch.sigmoid(z.float()))
-        vg = v.reshape(*v.shape[:-1], dim // group, group)
-        ms = (vg * vg).mean(-1)
-        rstd = torch.rsqrt(ms + eps)
-        out = (vg * rstd[..., None]).reshape(v.shape) * w.float()
-        if z is not None and norm_before_gate:
-            out = out * (z.float() * torch.sigmoid(z.float()))
-        return out.to(x.dtype)
-
-    def _rmsnorm_fn(x, weight, bias=None, z=None, eps=1e-5, group_size=None, norm_before_gate=False, upcast=True):
-        out = _rmsnorm_gated(x, z, weight, eps, group_size or x.shape[-1], norm_before_gate)
-        if bias is not None:
-            out = out + bias
-        return out
+    except ImportError as exc:
+        logger.info("mamba_ssm rmsnorm_fn is unavailable (%s); installing a PyTorch fallback", exc)
 
     mods = {}
     for name in ("mamba_ssm", "mamba_ssm.ops", "mamba_ssm.ops.triton"):
@@ -135,7 +133,7 @@ def install_mamba_ssm_stub() -> bool:
         m.__path__ = []
         mods[name] = m
     ln = types.ModuleType("mamba_ssm.ops.triton.layernorm_gated")
-    ln.rmsnorm_fn = _rmsnorm_fn
+    ln.rmsnorm_fn = _rmsnorm_fn_fallback
     mods["mamba_ssm.ops.triton.layernorm_gated"] = ln
     for name, m in mods.items():
         m.__spec__ = importlib.machinery.ModuleSpec(name, None, is_package=hasattr(m, "__path__"))
@@ -143,7 +141,6 @@ def install_mamba_ssm_stub() -> bool:
     mods["mamba_ssm"].ops = mods["mamba_ssm.ops"]
     mods["mamba_ssm.ops"].triton = mods["mamba_ssm.ops.triton"]
     mods["mamba_ssm.ops"].triton.layernorm_gated = ln
-    logger.info("Installed PyTorch fallback stub for mamba_ssm (rmsnorm_fn)")
     return True
 
 
