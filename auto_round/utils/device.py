@@ -388,8 +388,16 @@ def set_visible_devices(device: str, device_type: str | None = None) -> None:
 
 
 def set_cuda_visible_devices(device: str):
-    """Backward-compatible alias of :func:`set_visible_devices`."""
-    set_visible_devices(device)
+    """Backward-compatible CUDA-specific alias of :func:`set_visible_devices`.
+
+    Explicitly bound to ``cuda`` rather than inferring the active backend: this
+    name promises ``CUDA_VISIBLE_DEVICES`` semantics, and callers may run it on
+    a host whose active backend is different (the index translation then has to
+    be done against the CUDA-visible list, not e.g. ``ZE_AFFINITY_MASK``).
+    New code that wants the backend-aware behaviour should call
+    :func:`set_visible_devices` directly.
+    """
+    set_visible_devices(device, device_type="cuda")
 
 
 class override_cuda_device_capability(ContextDecorator):

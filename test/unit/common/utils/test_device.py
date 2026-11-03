@@ -1713,6 +1713,126 @@ class TestSetCudaVisibleDevicesExtra:
                 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 
 
+class TestSetVisibleDevicesBackendAgnostic:
+    """Backend-agnostic branches of ``set_visible_devices``.
+
+    A new backend only declares ``visible_devices_env_var``, so every branch
+    below (explicit backend, inferred backend, missing env var, non-numeric
+    specs, out-of-range index) is shared by all devices and must stay stable.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_env(self):
+        original = {k: os.environ.get(k) for k in ("CUDA_VISIBLE_DEVICES", "ZE_AFFINITY_MASK")}
+        try:
+            yield
+        finally:
+            for key, value in original.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_none_is_a_no_op(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        set_visible_devices(None)
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+    def test_empty_and_auto_are_no_ops(self):
+        from auto_round.utils.device import set_visible_devices
+
+        for device in ("", "auto", " ", "  auto  "):
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            set_visible_devices(device)
+            assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+    def test_explicit_backend_writes_its_own_env_var(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("ZE_AFFINITY_MASK", None)
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        set_visible_devices("0,1", device_type="xpu")
+        assert os.environ.get("ZE_AFFINITY_MASK") == "0,1"
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+    def test_backend_is_inferred_from_a_typed_spec(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("ZE_AFFINITY_MASK", None)
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        set_visible_devices("xpu:2")
+        assert os.environ.get("ZE_AFFINITY_MASK") == "2"
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+    def test_bare_backend_name_selects_index_zero(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        set_visible_devices("cuda")
+        assert os.environ.get("CUDA_VISIBLE_DEVICES") == "0"
+
+    def test_bare_numeric_falls_back_to_current_device(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        with patch(
+            "auto_round.utils.device.get_current_device_type",
+            return_value="cuda",
+        ):
+            set_visible_devices("3")
+        assert os.environ.get("CUDA_VISIBLE_DEVICES") == "3"
+
+    def test_backend_without_env_var_is_ignored(self):
+        """``cpu`` declares no ``visible_devices_env_var`` -> silent no-op."""
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        set_visible_devices("0", device_type="cpu")
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+    def test_remaps_indices_through_existing_env_var(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6"
+        with patch("auto_round.utils.device.get_current_device_type", return_value="cuda"):
+            set_visible_devices("0,2")
+        assert os.environ.get("CUDA_VISIBLE_DEVICES") == "4,6"
+
+    def test_out_of_range_index_raises(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"
+        with patch("auto_round.utils.device.get_current_device_type", return_value="cuda"):
+            with pytest.raises(ValueError, match="smaller than the number of available devices"):
+                set_visible_devices("0,5")
+
+    def test_alias_delegates_to_the_generic_helper(self):
+        from auto_round.utils import device as device_mod
+
+        with patch.object(device_mod, "set_visible_devices") as mock_set:
+            device_mod.set_cuda_visible_devices("0,1")
+            mock_set.assert_called_once_with("0,1", device_type="cuda")
+
+    def test_alias_stays_cuda_bound_off_cuda_hosts(self):
+        """The alias must target ``CUDA_VISIBLE_DEVICES`` on an XPU/HPU host.
+
+        Regression test: delegating without ``device_type`` inferred the active
+        backend, so on an XPU/HPU runner the alias silently wrote
+        ``ZE_AFFINITY_MASK`` / ``HABANA_VISIBLE_MODULES`` (or became a no-op on
+        CPU-only hosts) instead of ``CUDA_VISIBLE_DEVICES``.
+        """
+        from auto_round.utils.device import set_cuda_visible_devices
+
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        os.environ.pop("ZE_AFFINITY_MASK", None)
+        with patch("auto_round.utils.device.get_current_device_type", return_value="xpu"):
+            set_cuda_visible_devices("0")
+        assert os.environ.get("CUDA_VISIBLE_DEVICES") == "0"
+        assert "ZE_AFFINITY_MASK" not in os.environ
+
+
 # ===========================================================================
 # patch_xpu_sdpa_drop_causal_mask - more coverage
 # ===========================================================================

@@ -229,7 +229,12 @@ class TestNormalizeDefaultDeviceMap:
         """On Apple Silicon, default 0/'0'/None/'auto' should fall back to cpu."""
         from auto_round.utils.device_manager import normalize_default_device_map
 
-        with patch("torch.mps.is_available", return_value=True):
+        with (
+            patch("auto_round.utils.device_manager.get_available_device_types", return_value=["mps"]),
+            patch("auto_round.utils.device_manager.get_ar_device") as fake_get,
+            patch("auto_round.utils.device_manager.logger"),
+        ):
+            fake_get.return_value.auto_select_by_default = False
             for value in (0, "0", None, "auto"):
                 assert normalize_default_device_map(value) == "cpu"
 
@@ -382,24 +387,25 @@ class TestGetCurrentDeviceType:
 # is_device_available / get_available_device_types
 # ---------------------------------------------------------------------------
 class TestAvailableHelpers:
-    def test_is_device_available(self):
+    def test_is_device_available_false_on_cpu(self):
         from auto_round.utils.device_manager import is_device_available
 
-        # On a CPU-only machine, no accelerator -> still "available" (cpu is non-None)
+        # CPU is always present, so a CPU-only machine reports no *accelerator*.
         with patch(
             "auto_round.utils.device_manager.get_current_device_type",
             return_value="cpu",
         ):
-            assert is_device_available() is True
+            assert is_device_available() is False
 
     def test_is_device_available_when_accelerator(self):
         from auto_round.utils.device_manager import is_device_available
 
-        with patch(
-            "auto_round.utils.device_manager.get_current_device_type",
-            return_value="cuda",
-        ):
-            assert is_device_available() is True
+        for device_type in ("cuda", "xpu", "hpu", "mps"):
+            with patch(
+                "auto_round.utils.device_manager.get_current_device_type",
+                return_value=device_type,
+            ):
+                assert is_device_available() is True
 
     def test_get_available_device_types_cpu_only(self):
         from auto_round.utils.device_manager import get_available_device_types
@@ -955,6 +961,30 @@ class TestNewBackendSupport:
             # An explicit request is never overridden.
             assert normalize_default_device_map("mps") == "mps"
 
+    def test_normalize_warns_once_for_all_opt_out_backends(self):
+        """Several opt-out backends produce a single warning naming all of them."""
+        from auto_round.utils.device_manager import normalize_default_device_map
+
+        def fake_device(device_type):
+            fake = MagicMock()
+            fake.is_available.return_value = True
+            fake.auto_select_by_default = False
+            return fake
+
+        with (
+            patch(
+                "auto_round.utils.device_manager.get_available_device_types",
+                return_value=["mps", "foo"],
+            ),
+            patch("auto_round.utils.device_manager.get_ar_device", side_effect=fake_device),
+            patch("auto_round.utils.device_manager.logger") as fake_logger,
+        ):
+            assert normalize_default_device_map(None) == "cpu"
+            assert fake_logger.warning.call_count == 1
+            message = fake_logger.warning.call_args.args[0]
+            assert "mps/foo" in message
+            assert "--device_map=mps" in message
+
     def test_normalize_keeps_default_when_no_opt_out_backend(self):
         """No opt-out backend available -> the caller's default is untouched."""
         from auto_round.utils.device_manager import normalize_default_device_map
@@ -1003,6 +1033,41 @@ class TestNewBackendSupport:
         with patch("auto_round.utils.device_manager.get_ar_device") as fake_get:
             fake_get.return_value.auto_select_by_default = False
             assert get_primary_device_type(["mps"]) == "cpu"
+
+    def test_get_primary_device_type_skips_only_the_opt_out_backend(self):
+        """An opt-out backend must not veto the other available backends.
+
+        Regression test: a mixed list used to resolve to ``"cpu"`` as soon as
+        *any* member opted out, even when a selectable backend was present.
+        """
+        from auto_round.utils.device_manager import get_primary_device_type
+
+        def fake_device(device_type):
+            fake = MagicMock()
+            fake.auto_select_by_default = device_type != "mps"
+            return fake
+
+        with patch("auto_round.utils.device_manager.get_ar_device", side_effect=fake_device):
+            # mps first, but it opted out -> fall through to cuda.
+            assert get_primary_device_type(["mps", "cuda"]) == "cuda"
+            assert get_primary_device_type(["cuda", "mps"]) == "cuda"
+            # Nothing selectable -> cpu.
+            assert get_primary_device_type(["mps"]) == "cpu"
+
+    def test_get_primary_device_type_survives_broken_handle(self):
+        """A handle that raises on the policy lookup is skipped, not fatal."""
+        from auto_round.utils.device_manager import get_primary_device_type
+
+        def fake_device(device_type):
+            if device_type == "broken":
+                raise RuntimeError("no policy")
+            fake = MagicMock()
+            fake.auto_select_by_default = True
+            return fake
+
+        with patch("auto_round.utils.device_manager.get_ar_device", side_effect=fake_device):
+            assert get_primary_device_type(["broken"]) == "cpu"
+            assert get_primary_device_type(["broken", "cuda"]) == "cuda"
 
     def test_backend_available_uses_custom_is_available_override(self):
         """A vendor handle's ``is_available`` override drives discovery.

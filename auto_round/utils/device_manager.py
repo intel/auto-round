@@ -138,16 +138,21 @@ def normalize_default_device_map(device_map: None | str | int | torch.device | d
         return device_map
 
     # Every available backend opts out of implicit selection; keep the
-    # historical CPU default and tell the user how to force the device.
+    # historical CPU default and tell the user how to force the device.  Emit a
+    # single warning listing all of them instead of one per backend.
+    opted_out = []
     for device_type in available:
         try:
             if get_ar_device(device_type).auto_select_by_default:
                 continue
         except Exception:
             continue
+        opted_out.append(device_type)
+    if opted_out:
+        names = "/".join(opted_out)
         logger.warning(
-            f"{device_type} detected. Using CPU by default to avoid potential memory issues. "
-            f"Set --device_map={device_type} to force {device_type} usage."
+            f"{names} detected. Using CPU by default to avoid potential memory issues. "
+            f"Set --device_map={opted_out[0]} to force {opted_out[0]} usage."
         )
     return "cpu"
 
@@ -321,8 +326,13 @@ def get_current_device_type() -> str:
 
 
 def is_device_available() -> bool:
-    """Whether a device backend (CPU included) could be resolved."""
-    return get_current_device_type() is not None
+    """Whether any (non-CPU) accelerator backend is available.
+
+    CPU is always present, so ``get_current_device_type()`` never returns
+    ``None``; this therefore reports whether an *accelerator* was resolved and
+    is ``False`` on a CPU-only machine.
+    """
+    return get_current_device_type() != "cpu"
 
 
 def get_available_device_types() -> list[str]:
@@ -372,20 +382,24 @@ def get_primary_device_type(available: list[str] | None = None) -> str:
             helper) pass it in; otherwise it is looked up.
 
     Returns:
-        ``"cpu"`` when an available backend opts out of implicit selection (the
-        historical behaviour, kept so every entry point agrees), otherwise the
-        most preferred available backend, or ``"cpu"`` when nothing is
-        available.
+        The most preferred available backend that opts *in* to implicit
+        selection, or ``"cpu"`` when nothing is available or every available
+        backend opts out.  A backend that opts out is skipped, not treated as a
+        veto for the whole process: with ``available=["cuda", "mps"]`` the
+        answer is ``"cuda"``.
     """
     if available is None:
         available = get_available_device_types()
     for device_type in available:
         try:
             if not get_ar_device(device_type).auto_select_by_default:
-                return "cpu"
+                continue
         except Exception:
+            # A handle that cannot even report its policy is not trustworthy to
+            # be picked implicitly.
             continue
-    return available[0] if available else "cpu"
+        return device_type
+    return "cpu"
 
 
 # ---------------------------------------------------------------------------
