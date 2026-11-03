@@ -151,6 +151,7 @@ def test_full_model_format_disables_immediate_packing_and_saving():
             is_immediate_saving=True,
         ),
         quantize_config=SimpleNamespace(data_type="mx_fp"),
+        _alg_configs=[],
         output_dir="unused",
         _ensure_shard_writer=lambda: pytest.fail("full-model export must not create a shard writer"),
     )

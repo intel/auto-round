@@ -34,6 +34,7 @@ from auto_round.export.common.serialization import (
 from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 from auto_round.export.formats.compressed_tensors.config import initialize_quantization
 from auto_round.export.formats.compressed_tensors.utils import (
+    add_autoround_config,
     add_routed_experts_if_moe,
     finalize_llmcompressor_config_names,
     generate_ignore_regex_list,
@@ -487,6 +488,7 @@ def save_checkpoint(
         [],
         [name for names in scheme_groups.values() for name in names],
     )
+    quantization_config = add_autoround_config(quantization_config, serialization_dict)
     if hasattr(model, "config"):
         model.config.quantization_config = quantization_config
     if output_dir is None:

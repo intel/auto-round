@@ -26,6 +26,7 @@ from auto_round.export.common.serialization import (
     save_model,
 )
 from auto_round.export.formats.compressed_tensors.utils import (
+    add_autoround_config,
     add_routed_experts_if_moe,
     finalize_llmcompressor_config_names,
 )
@@ -387,6 +388,8 @@ def save_checkpoint(
         [],
         [n for n, m in model.named_modules() if getattr(m, "quantization_scheme", None) is not None],
     )
+    quantization_config_dict["provider"] = "auto-round"
+    quantization_config_dict = add_autoround_config(quantization_config_dict, serialization_dict)
     model.config.quantization_config = quantization_config_dict
 
     if output_dir is None:

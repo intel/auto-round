@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 from collections.abc import Callable
 from contextlib import nullcontext
 from functools import partial
@@ -27,6 +28,7 @@ from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQua
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer
 
+from auto_round import envs
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
@@ -41,7 +43,6 @@ from auto_round.data_type.utils import (
     reshape_imatrix_for_weight,
     reshape_pad_tensor_by_group_size,
     resolve_optimized_init_scale_fn,
-    resolve_optimized_init_scale_zero_fn,
     revert_tensor_by_pad,
     round_ste,
     search_optimized_init_scale,
@@ -103,7 +104,7 @@ def _dq_asym_group_size(bits: int) -> int:
 
 
 class SignRoundOptimizedWrapperLinear(WrapperLinear):
-    minmax_scale_bound = (0.0, 2.0)
+    minmax_scale_bound = (0.1, 10.0)  # TODO widened from 2.0 for low-bit QAD; verify correctness
     # Opt-in protocol for wrapper_block: the init-scale search is weight-local
     # and row-independent, so same-shape modules can be searched as one stacked
     # batch (bit-identical per module, far fewer python/launch round-trips).
@@ -112,11 +113,44 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
     def _init_tuning_params_and_quant_func(self, defer_search: bool = False) -> None:
         super()._init_tuning_params_and_quant_func(defer_search=defer_search)
 
+        # Log/geometric min-max tuning (opt-in): re-anchor the tunable min/max
+        # scale coefficients to log space so each SignSGD step is a symmetric
+        # multiplicative move. Only engages when the coefficients are actually
+        # trainable (``nn.Parameter``); constant/frozen coefficients keep the
+        # plain linear path (a constant 1.0 must not be passed through exp()).
+        self._use_log_minmax = False
+        _min_tunable = isinstance(getattr(self, "min_scale", None), torch.nn.Parameter)
+        _max_tunable = isinstance(getattr(self, "max_scale", None), torch.nn.Parameter)
+        if envs.AR_ENABLE_LOG_MINMAX and _min_tunable and _max_tunable:
+            self._use_log_minmax = True
+        warm_start = getattr(self.orig_layer, "_ar_warm_start", None) or {}
+        saved_log = warm_start.get("minmax_parameterization") == "log"
+        with torch.no_grad():
+            for key in ("min_scale", "max_scale"):
+                param = getattr(self, key)
+                if not isinstance(param, torch.nn.Parameter):
+                    continue
+                saved = warm_start.get(key)
+                compatible = saved is not None and saved.shape == param.shape
+                if self._use_log_minmax:
+                    if not compatible:
+                        # theta = 0 <-> coeff = exp(0) = 1.0
+                        param.zero_()
+                    elif not saved_log:
+                        param.clamp_min_(torch.finfo(param.dtype).tiny).log_()
+                elif compatible and saved_log:
+                    param.exp_()
+
         layer = self.orig_layer
         data_type = layer.data_type
-        # asym int threads an extra per-group integer zero point alongside the
-        # searched scale (sym / mx / nv keep the scale-only contract)
-        self._is_asym = "asym" in data_type
+
+        # Warm-start reuse: a prior pass (SignRound -> QAD chaining) may have
+        # stashed the searched ``init_scale`` on this layer. Reuse it verbatim so
+        # the second pass tunes on the exact same scale grid (re-searching here
+        # would differ because the imatrix was consumed/deleted in the first pass).
+        warm_start = getattr(layer, "_ar_warm_start", None)
+        warm_init_scale = warm_start.get("init_scale") if warm_start else None
+
         weight_reshape = self._prepare_init_scale_weight()
         # staged deferral keeps only the RAW column imatrix (or None): the
         # expanded full-size copy would be pinned per module for the whole
@@ -126,20 +160,19 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         imatrix = None if defer_search else reshape_imatrix_for_weight(imatrix_raw, weight_reshape, layer.group_size)
 
         self.weight_quant_func = get_optimized_quant_func(data_type)
-        if self._is_asym:
-            search_fn = resolve_optimized_init_scale_zero_fn(data_type, self.q_scale_thresh)
-        else:
-            search_fn = resolve_optimized_init_scale_fn(data_type, self.q_scale_thresh)
+        search_fn = resolve_optimized_init_scale_fn(data_type, self.q_scale_thresh)
         if search_fn is None or self.weight_quant_func is None:
             raise ValueError(
                 f"SignRound optimized path does not support data_type={data_type!r}; "
-                "expected a symmetric int / mx / nv type or an asymmetric int type."
+                "expected a symmetric int / mx / nv type."
             )
         self.data_type = data_type
         self.init_scale = None
-        self.init_zp = None
         self._deferred_search_inputs = None
-        if defer_search:
+        if warm_init_scale is not None:
+            # Warm-started from a prior pass: reuse the exact scale, skip any search.
+            self.init_scale = warm_init_scale.to(self.device)
+        elif defer_search:
             # staged for run_batched_wrap_search: the exact callable the
             # per-module path would invoke travels with the module
             self._deferred_search_inputs = (
@@ -151,40 +184,52 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
                 search_fn,
             )
         else:
-            self._assign_search_result(search_fn(weight_reshape, layer.bits, imatrix))
+            self.init_scale = search_fn(weight_reshape, layer.bits, imatrix)
 
         if hasattr(layer, "imatrix"):
             del layer.imatrix
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
-    def _assign_search_result(self, result) -> None:
-        """Store an init-scale search result (asym also carries an integer zp)."""
-        if getattr(self, "_is_asym", False):
-            self.init_scale, self.init_zp = result
-        else:
-            self.init_scale = result
+    def _prepare_minmax_scale(self, min_scale, max_scale):
+        """Return the multiplicative coefficients the quant func consumes.
 
-    def _extra_quant_kwargs(self) -> dict:
-        """Thread the searched integer zero point into the asym quant func."""
-        if getattr(self, "_is_asym", False) and getattr(self, "init_zp", None) is not None:
-            return {"init_zp": self.init_zp}
-        return {}
+        In log mode the stored parameters are ``theta`` (SignSGD tunes them with
+        symmetric fixed steps); clamp them to the symmetric log bound and return
+        ``exp(theta)`` so the quant function still receives plain multiplicative
+        coefficients, while ``+lr``/``-lr`` steps become ``xe^lr``/``/e^lr``.
+        Gradients flow back through ``exp`` to the ``theta`` parameters.
+        """
+        if not getattr(self, "_use_log_minmax", False):
+            return super()._prepare_minmax_scale(min_scale, max_scale)
+        # The shared ``minmax_scale_bound`` is defined in Euclidean (coefficient)
+        # space; convert it to the log/theta clamp range here so both the linear
+        # and log paths read from one bound. ``log`` is undefined at <= 0, so when
+        # the linear bound starts at 0 fall back to a multiplicatively symmetric
+        # lower end (the reciprocal of the upper coefficient), keeping shrink/expand
+        # equidistant from the identity.
+        coeff_low, coeff_high = self.minmax_scale_bound
+        if coeff_low <= 0.0:
+            coeff_low = 1.0 / coeff_high
+        low, high = math.log(coeff_low), math.log(coeff_high)
+        min_scale.data.clamp_(low, high)
+        max_scale.data.clamp_(low, high)
+        return torch.exp(min_scale), torch.exp(max_scale)
 
     def _run_deferred_search_now(self) -> None:
         """Run the staged search per-module (fallback when batching is off)."""
+        # Warm-started wrappers (QAD chaining) resolve ``init_scale`` directly and
+        # stage no search inputs; there is nothing to run for them.
+        if self._deferred_search_inputs is None:
+            return
         weight, _data_type, bits, imatrix_raw, _thresh, search_fn = self._deferred_search_inputs
         imatrix = reshape_imatrix_for_weight(imatrix_raw, weight, self.orig_layer.group_size)
-        self._assign_search_result(search_fn(weight, bits, imatrix))
+        self.init_scale = search_fn(weight, bits, imatrix)
         self._deferred_search_inputs = None
 
     def finalize_batched_search(self, init_scale: "torch.Tensor | list[torch.Tensor]") -> None:
-        """Adopt a search result computed on a stacked same-shape batch.
-
-        For asym int the per-module (singleton) lane passes the ``(scale, zp)``
-        tuple straight through; sym / mx / nv receive the single scale tensor.
-        """
-        self._assign_search_result(init_scale)
+        """Adopt a search result computed on a stacked same-shape batch."""
+        self.init_scale = init_scale
         self._deferred_search_inputs = None
 
     def _prepare_init_scale_weight(self) -> torch.Tensor:
@@ -220,6 +265,66 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
                     f"incompatible with grouped weight shape {tuple(weight_reshape.shape)}."
                 )
         return weight_reshape
+
+
+class SignRoundOptimizedAsymWrapperLinear(SignRoundOptimizedWrapperLinear):
+    """Algorithm-extension wrapper for asymmetric INT weights.
+
+    The plain asym path seeds the grid from the raw per-group min/max
+    (``scale=(max-min)/maxq``, ``zp=round(-min/scale)``), which at low bit-widths
+    is a poor init: the step is too coarse for bell-shaped groups and the integer
+    zero-point rounding clips one side. This wrapper instead anchors the grid to an
+    imatrix-weighted joint ``(scale, zp)`` search (NeUQI), expressed as per-group
+    ``(tensor_min, tensor_max)`` margins that ``quant_tensor_asym`` reproduces
+    exactly, and -- unlike ``--enable_neuqi`` on the plain path -- keeps
+    ``min_scale``/``max_scale`` tunable around that anchor (both shrink and expand).
+    """
+
+    minmax_scale_bound = (0.5, 1.5)
+    # The asymmetric anchor search runs inline and does not stage init-scale inputs.
+    supports_batched_search = False
+
+    def _init_tuning_params_and_quant_func(self, defer_search: bool = False):
+        layer = self.orig_layer
+        # Let the anchor below own the NeUQI search: disable the base wrapper's
+        # frozen-margin NeUQI branch so margins stay tunable and the search runs once.
+        enable_neuqi = self.enable_neuqi
+        self.enable_neuqi = False
+        try:
+            WrapperLinear._init_tuning_params_and_quant_func(self, defer_search=defer_search)
+        finally:
+            self.enable_neuqi = enable_neuqi
+        self.init_scale = None
+        self._asym_anchor = False
+
+        if self.weight_min is None or layer.bits >= 16 or isinstance(layer.group_size, tuple):
+            return
+
+        warm_start = getattr(layer, "_ar_warm_start", None)
+        if warm_start and warm_start.get("anchor_min") is not None and warm_start.get("anchor_max") is not None:
+            wmin = warm_start["anchor_min"].to(self.device, torch.float32)
+            wmax = warm_start["anchor_max"].to(self.device, torch.float32)
+        else:
+            from auto_round.data_type.neuqi import neuqi_anchor_margins
+
+            weight_reshape = self._prepare_init_scale_weight()
+            wmin, wmax = neuqi_anchor_margins(
+                weight_reshape,
+                layer.bits,
+                layer.group_size,
+                getattr(layer, "imatrix", None),
+                self.device,
+                sym=False,
+            )
+        if wmin.numel() != self.weight_min.numel() or wmax.numel() != self.weight_max.numel():
+            logger.warning_once("SignRoundV2 asym: anchor shape mismatch, falling back to min/max init.")
+            return
+        # Keep the anchor in fp32 so quant_tensor_asym re-derives the searched zp exactly.
+        self.weight_min = wmin.reshape(self.weight_min.shape).to(self.device, torch.float32)
+        self.weight_max = wmax.reshape(self.weight_max.shape).to(self.device, torch.float32)
+        self._asym_anchor = True
+        if hasattr(layer, "imatrix"):
+            del layer.imatrix
 
 
 class SignRoundDQWrapperLinear(WrapperLinear):
@@ -395,34 +500,42 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         super().prepare_run(composer=composer)
 
         if (
-            self.scheme.super_group_size is None
+            self.scheme.sym
+            and self.scheme.super_group_size is None
             and (
                 self.scheme.data_type.startswith("int")
                 or self.scheme.data_type.startswith("mx")
                 or self.scheme.data_type.startswith("nv")
             )
-            # mx / nv are inherently symmetric; int supports both sym and asym
-            # through the optimized init-scale (+ zero-point) search.
-            and (self.scheme.sym or self.scheme.data_type.startswith("int"))
         ):
             if self.scheme.bits > 2 and not (
                 self.scheme.data_type.startswith("mx") or self.scheme.data_type.startswith("nv")
             ):
                 logger.warning_once(
                     "algorithm extension has only undergone limited validation on "
-                    "W2A16, INT4, MXFP4 and NVFP4; use with caution."
+                    "W2A16,INT4, MXFP4 and NVFP4; use with caution."
                 )
             if self.scheme.act_bits <= 4 or self.scheme.bits < 4:
                 self._use_outlier_suppressed_loss = True
             else:
                 self._use_outlier_suppressed_loss = False
             self.wrapper_block = _named_wrapper_block(SignRoundOptimizedWrapperLinear, "wrapper_block")
+        elif (
+            not self.scheme.sym
+            and self.scheme.super_group_size is None
+            and self.scheme.data_type == "int"
+            and self.scheme.bits < 16
+        ):
+            # Asym INT: searched (scale, zp) anchor + tunable margins, and the same
+            # outlier-suppressed block loss the sym path uses at low bits.
+            self._use_outlier_suppressed_loss = self.scheme.act_bits <= 4 or self.scheme.bits < 4
+            self.wrapper_block = _named_wrapper_block(SignRoundOptimizedAsymWrapperLinear, "wrapper_block")
 
         if self.scheme.data_type.endswith("dq"):
             self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
 
     def can_compile_block_forward(self):
-        # torch.compile on the whole block forward is only reliable on torch >= 2.14
+        # torch.compile on the whole block forward is only reliable on torch >= 2.13
         from packaging.version import Version
 
         return Version(torch.__version__.split("+")[0]) >= Version("2.13")

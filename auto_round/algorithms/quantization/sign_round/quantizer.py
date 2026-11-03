@@ -23,6 +23,7 @@ from torch import autocast
 from auto_round.algorithms.block_runner import BlockForwardRunner
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.quantization.sign_round.lfq import LFQMixin
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
 from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.compressors.utils import (
@@ -95,14 +96,15 @@ from auto_round.utils import (
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
 from auto_round.utils.distributed import setup_ddp_if_needed_
-from auto_round.wrapper import WrapperLinear, unwrapper_block, unwrapper_layer, wrapper_block
-
-if TYPE_CHECKING:
-    from auto_round.algorithms.composer import BlockContext
+from auto_round.wrapper import (
+    WrapperLinear,
+    unwrapper_layer,
+    wrapper_block,
+)
 
 
 @register_pipeline_member(SignRoundConfig)
-class SignRoundQuantizer(BaseQuantizer):
+class SignRoundQuantizer(LFQMixin, BaseQuantizer):
 
     def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)
@@ -120,6 +122,12 @@ class SignRoundQuantizer(BaseQuantizer):
         self.enable_quanted_input = config.enable_quanted_input
         self.dynamic_max_gap = config.dynamic_max_gap
         self.enable_lfq = config.enable_lfq
+        self.lfq_loss_type = getattr(config, "lfq_loss", "ce")
+        self.lfq_top_k = getattr(config, "lfq_top_k", 32)
+        self.lfq_temperature = getattr(config, "lfq_temperature", 1.0)
+        self.lfq_num_blocks = getattr(config, "lfq_num_blocks", 1)
+        self.lfq_mse_weight = getattr(config, "lfq_mse_weight", 0.0)
+        self.enable_qad = getattr(config, "enable_qad", False)
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
         self.wrapper_block = wrapper_block
@@ -230,180 +238,6 @@ class SignRoundQuantizer(BaseQuantizer):
         else:
             return inputs.shape[self.calibration_context.batch_dim]
 
-    def _init_lm_components(self) -> None:
-        """Lazily locate and cache ``_post_block_modules`` and ``_lm_head`` for LFQ loss.
-
-        ``_post_block_modules`` is an ordered list of modules that must be applied
-        between the last transformer-block output and the lm_head projection.
-        Most architectures have a single final norm; OPT additionally has an
-        optional ``project_out`` projection.
-
-        Supported without manual configuration:
-            LLaMA / Qwen / Gemma / Mistral / InternLM / Phi-3 — ``model.model.norm``
-            OPT — ``model.model.decoder.{final_layer_norm, project_out}`` (both optional)
-            GPT-2 / Falcon / Bloom — ``model.transformer.ln_f``
-            GPT-NeoX / Pythia — ``model.gpt_neox.final_layer_norm``
-            Phi / Phi-2 — ``model.model.final_layernorm``
-            MPT — ``model.transformer.norm_f``
-            ChatGLM — ``model.transformer.encoder.final_layernorm``
-            RWKV — ``model.rwkv.ln_out``
-
-        Raises ``AttributeError`` if no lm_head equivalent can be found.
-        """
-        if hasattr(self, "_lm_head"):
-            return
-
-        model = self.model
-
-        # ── lm_head ──────────────────────────────────────────────────────────
-        for name in ("lm_head", "embed_out", "output", "head"):
-            if hasattr(model, name):
-                self._lm_head = getattr(model, name)
-                break
-        else:
-            raise AttributeError(
-                f"Cannot locate lm_head in {type(model).__name__}. " "Checked: lm_head, embed_out, output, head."
-            )
-
-        # ── post-block processing (ordered list applied before lm_head) ───────
-        # OPT: decoder has both an optional final_layer_norm *and* an optional
-        # project_out that maps ffn_dim → word_embed_proj_dim.  Detect by probing
-        # for the characteristic project_out attribute (may be None).
-        try:
-            decoder = model.model.decoder
-            _ = decoder.project_out  # raises AttributeError if not an OPT decoder
-            self._post_block_modules = [m for m in (decoder.final_layer_norm, decoder.project_out) if m is not None]
-            return
-        except AttributeError:
-            pass
-
-        # All other architectures: single optional final norm.
-        norm_getters = [
-            lambda: model.model.norm,  # LLaMA / Qwen / Gemma / Mistral / InternLM / Phi-3
-            lambda: model.transformer.ln_f,  # GPT-2 / Falcon / Bloom
-            lambda: model.gpt_neox.final_layer_norm,  # GPT-NeoX / Pythia
-            lambda: model.model.final_layernorm,  # Phi / Phi-2
-            lambda: model.transformer.norm_f,  # MPT
-            lambda: model.transformer.encoder.final_layernorm,  # ChatGLM
-            lambda: model.rwkv.ln_out,  # RWKV
-        ]
-        self._post_block_modules = []
-        for getter in norm_getters:
-            try:
-                norm = getter()
-                if norm is not None:
-                    self._post_block_modules = [norm]
-                    break
-            except AttributeError:
-                continue
-
-    # Keywords that identify non-text (visual / audio / multimodal) blocks.
-    # LFQ loss is only meaningful for pure language-model decoder blocks.
-    _NON_TEXT_BLOCK_KEYWORDS = frozenset(
-        {
-            "vis",
-            "vision",
-            "visual",
-            "image",
-            "img",
-            "audio",
-            "video",
-            "patch",
-            "pixel",
-            "clip",
-            "vit",
-            "perceiver",
-            "resampler",
-            "connector",
-            "projector",
-        }
-    )
-
-    def _is_text_decoder_block(self, block_name: str) -> bool:
-        """Return ``True`` if *block_name* refers to a text-decoder block.
-
-        Blocks whose names contain any of the non-text keywords (vision, audio,
-        image, …) are considered multimodal and excluded from LFQ loss.
-        """
-        name_lower = block_name.lower()
-        return not any(kw in name_lower for kw in self._NON_TEXT_BLOCK_KEYWORDS)
-
-    def lfq_loss(
-        self,
-        q_hidden_state: torch.Tensor,
-        fp_hidden_state: torch.Tensor,
-        input_ids: torch.Tensor = None,
-    ) -> torch.Tensor:
-        """Compute the LFQ loss between the FP and quantized token distributions.
-
-        Implements Eq. 3 of the LFQ paper: the cross-entropy between the FP
-        model's logit distribution and the quantized model's logit distribution,
-
-            L_CE = -(1/L) Σ_{i,j} σ(X·W_FP·W_Head)_{i,j} · log σ(X·W_q·W_Head)_{i,j}
-
-        where ``σ`` is the softmax over the vocabulary dimension. Both logits are
-        obtained by applying every post-block module (final norm, optional
-        projection, …) in order followed by ``lm_head``. The FP distribution is
-        the (detached) soft target; gradients flow only through the quantized
-        branch. This is a distribution-matching objective, *not* a hard-label
-        next-token cross-entropy.
-
-        Args:
-            q_hidden_state:  Quantized last-block output ``X·W_q``, shape
-                             ``[batch, seq_len, hidden]``.
-            fp_hidden_state: FP last-block output ``X·W_FP`` used to build the
-                             soft target distribution, same shape as above.
-            input_ids:       Optional token-ID labels with ``-100`` for ignored
-                             (e.g. padding) positions, shape ``[batch, seq_len]``.
-                             When provided, those positions are excluded from the
-                             loss; token values themselves are not used as targets.
-
-        Returns:
-            Scalar LFQ loss tensor.
-        """
-        from .lfq_loss import soft_cross_entropy
-
-        self._init_lm_components()
-        device = q_hidden_state.device
-
-        for module in self._post_block_modules:
-            module.to(device)
-        self._lm_head.to(device)
-
-        def _to_logits(hidden: torch.Tensor) -> torch.Tensor:
-            for module in self._post_block_modules:
-                hidden = module(hidden)
-            return self._lm_head(hidden)
-
-        # FP logits form the (detached) soft target distribution σ(X·W_FP·W_Head).
-        with torch.no_grad():
-            fp_logits = _to_logits(fp_hidden_state.to(device))
-
-        # Quantized logits: gradients flow through this branch only.
-        q_logits = _to_logits(q_hidden_state)
-
-        # Position mask for the soft-CE objective.
-        #
-        # IMPORTANT: this is a *deliberate same-position* mask — no next-token
-        # shift is applied. LFQ (Eq. 3) matches the FP and quantized output
-        # distributions σ(X·W_FP·W_Head) vs σ(X·W_q·W_Head) at each position; it
-        # is a per-position distillation objective, not next-token prediction,
-        # so logits and the target distribution are aligned position-for-position
-        # (unlike the legacy hard-label CE path that used shift_logits/labels).
-        #
-        # ``input_ids`` already carries the calibrator's -100 ignore markers
-        # (pad tokens, trailing repeated tokens, and the last position of each
-        # sample). Those positions are simply dropped here; the token *values*
-        # are never used as targets.
-        valid_mask = None
-        if input_ids is not None:
-            valid_mask = input_ids.to(device) != -100
-
-        # Memory-efficient soft cross-entropy (Unsloth-style logsumexp + analytic
-        # gradient + row chunking): never materializes a full float32 log_softmax
-        # tensor nor an autograd graph through softmax.
-        return soft_cross_entropy(q_logits, fp_logits, valid_mask)
-
     def _resolve_tuning_cache_plan(
         self,
         *,
@@ -493,7 +327,8 @@ class SignRoundQuantizer(BaseQuantizer):
 
         Returns:
             dict: Best quantization parameters found during optimization, or an
-                empty dict if no trainable parameters were found.
+                empty dict if no trainable parameters were found. Wrappers stay
+                installed for the composer to finalize and collect outputs.
         """
         device = device_manager.device
         # None coalesces to the primary: an explicit None from the placement pass
@@ -565,7 +400,6 @@ class SignRoundQuantizer(BaseQuantizer):
                 f"layers in the block"
             )
             logger.info(dump_info)
-            unwrapper_block(block, {})
             return {}
 
         # Build optimizer param groups with a per-layer lr for the rounding
@@ -646,6 +480,29 @@ class SignRoundQuantizer(BaseQuantizer):
         )
         use_prefetch_cache = cache_cls is not None
 
+        # LFQ with lfq_num_blocks > 1: a non-final KD block's output must pass
+        # through the remaining (FP) blocks before reaching the final norm/lm_head.
+        lfq_downstream_blocks = []
+        lfq_teacher_final = None
+        if (
+            input_ids is not None
+            and isinstance(fp_outputs, list)
+            and isinstance(active_inputs, list)
+            and self._lfq_is_kd_block(block_ctx)
+        ):
+            lfq_downstream_blocks = self._get_lfq_downstream_blocks(block_ctx, device)
+            if lfq_downstream_blocks and self.lfq_loss_type in ("dtk", "rkl", "tk"):
+                # The teacher path is fixed across iterations: precompute it once.
+                lfq_teacher_final = []
+                with torch.no_grad():
+                    for s in range(0, nsamples, batch_size):
+                        idx = list(range(s, min(s + batch_size, nsamples)))
+                        ref = torch.cat([fp_outputs[j] for j in idx], dim=0)
+                        out = self._forward_lfq_downstream(
+                            ref, lfq_downstream_blocks, active_inputs, input_others, idx, device
+                        )
+                        lfq_teacher_final.extend(o.to(fp_outputs[0].device) for o in torch.split(out, 1, dim=0))
+
         _perf.stop("prepare")
         _perf.start("loop")
         # iters>0 hot-pool strategy (loop-amortized; the iters=0 lane streams
@@ -710,6 +567,19 @@ class SignRoundQuantizer(BaseQuantizer):
                     num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
                 _perf.stop("sampler")
 
+                # Per-block loss schedule (constant across batches/iters):
+                #   lfq_kd_block  -> apply the KD logit-lens loss on this block
+                #   lfq_mse_block -> add the MSE reconstruction loss on this block
+                # QAD: every fused group is tuned against the final-output LM loss only
+                # (no MSE); with the whole network fused this is the true final logits.
+                # Non-QAD: KD on the last `lfq_num_blocks`, MSE elsewhere (and on KD
+                # blocks only when `lfq_mse_weight` > 0).
+                lfq_kd_block = input_ids is not None and self._lfq_is_kd_block(block_ctx)
+                if self.enable_qad:
+                    lfq_mse_block = False
+                else:
+                    lfq_mse_block = (not lfq_kd_block) or self.lfq_mse_weight > 0
+
                 for batch_start in range(0, len(global_indices), batch_size):
                     indices = global_indices[batch_start : batch_start + batch_size]
                     _perf.start("s_fwd")
@@ -733,17 +603,34 @@ class SignRoundQuantizer(BaseQuantizer):
                         pred_output = pred_output.to(loss_device)
                     _perf.stop("s_fwd")
                     _perf.start("s_loss")
-                    if (
-                        block_ctx.block_index == block_ctx.block_cnt - 1
-                        and self.enable_lfq
-                        and input_ids is not None
-                        and self._is_text_decoder_block(block_ctx.block_name)
-                    ):
+                    if lfq_kd_block:
+                        # For KD losses ("dtk"/"rkl"/"tk"), ref_output (FP block output) is the teacher.
+                        teacher_output = ref_output if self.lfq_loss_type in ("dtk", "rkl", "tk") else None
+                        lfq_student = pred_output
+                        if lfq_downstream_blocks:
+                            lfq_student = self._forward_lfq_downstream(
+                                pred_output, lfq_downstream_blocks, active_inputs, input_others, indices, device
+                            )
+                            if lfq_teacher_final is not None:
+                                teacher_output = torch.cat([lfq_teacher_final[j] for j in indices], dim=0).to(
+                                    lfq_student.device
+                                )
                         loss = self.lfq_loss(
-                            pred_output,
-                            ref_output,
+                            lfq_student,
                             torch.cat([input_ids[i] for i in indices], dim=0),
+                            teacher_hidden_state=teacher_output,
+                            sample_indices=indices,
                         )
+                        # Optionally combine with the MSE block-reconstruction loss so the
+                        # block keeps its reconstruction fidelity while adding logit alignment.
+                        if lfq_mse_block:
+                            mse_term = self._get_loss(
+                                pred_output, ref_output, indices, mse_loss, device, valid_token_mask
+                            )
+                            # In QAD a scheduled MSE checkpoint defaults to weight 1.0; outside
+                            # QAD the explicit `lfq_mse_weight` controls the combination.
+                            mse_w = self.lfq_mse_weight if self.lfq_mse_weight > 0 else 1.0
+                            loss = loss + mse_w * mse_term
                     else:
                         # the mask must land on the same device pred/ref were staged
                         # on (loss_device, which card-0-risk relocation may move off
@@ -799,6 +686,10 @@ class SignRoundQuantizer(BaseQuantizer):
         finally:
             if tuning_cache is not None:
                 tuning_cache.close()
+            for m in lfq_downstream_blocks:
+                mv_module_from_gpu(m)
+            del lfq_teacher_final
+
         _perf.stop("loop")
         _perf.start("tail")
 
@@ -821,8 +712,6 @@ class SignRoundQuantizer(BaseQuantizer):
         self.compress_context.clear_memory()  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
             logger.info(f"Unquantized layers: {unquantized_layer_names}")
-        with torch.no_grad():
-            unwrapper_block(block, best_params)
 
         _perf.stop("tail")
         _log_tune_phases(_perf, self.iters)
