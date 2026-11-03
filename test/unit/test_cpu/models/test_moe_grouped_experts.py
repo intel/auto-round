@@ -214,6 +214,158 @@ def _observe_grouped_forward(experts, hidden_states, index, weights):
     return output, [call.args[1] for call in slots.call_args_list]
 
 
+def _wrap_fake_eval_layer(layer, expert_id=0, scale_mode="global"):
+    from auto_round.data_type.nvfp import nv_fp4_with_static_gs
+    from auto_round.wrapper import WrapperWALayer
+
+    _mark_quantizable(layer, act_bits=4)
+    layer.act_data_type = "nv_fp4_with_static_gs"
+    layer.act_group_size = 16
+    layer.act_quant_func = nv_fp4_with_static_gs
+    layer.q_scale_thresh = 1e-5
+    layer.act_max_scale, layer.act_min_scale = 1.0, 1.0
+    if scale_mode == "global":
+        layer.input_global_scale = torch.tensor(128.0 * (expert_id + 1))
+    elif scale_mode == "calibrated":
+        layer.act_max = torch.tensor([2.0 + expert_id, 1.0 + expert_id])
+    return WrapperWALayer(layer, enable_torch_compile=False)
+
+
+def _wrap_fake_eval_experts(experts, scale_mode="global"):
+    for i in range(experts.num_experts):
+        expert = getattr(experts, str(i))
+        for slot in ("gate_proj", "up_proj", "down_proj"):
+            setattr(expert, slot, _wrap_fake_eval_layer(getattr(expert, slot), i, scale_mode))
+    return experts
+
+
+@pytest.mark.parametrize("scale_mode", ["global", "calibrated", "dynamic"])
+@pytest.mark.parametrize("bias", [False, True])
+def test_fake_eval_nvfp_grouped_matches_loop(scale_mode, bias):
+    torch.manual_seed(101)
+    experts = _wrap_fake_eval_experts(_Experts(bias=bias), scale_mode)
+    x = torch.randn(NUM_TOKENS, HIDDEN)
+    # Unbalanced routes, inactive experts and a single-token expert.
+    index = torch.tensor([[1, 4]] * (NUM_TOKENS - 1) + [[1, 2]])
+    weights = torch.full((NUM_TOKENS, TOP_K), 0.5)
+    expected = linear_loop_experts_forward(experts, x, index, weights)
+    got, slots = _observe_grouped_forward(experts, x, index, weights)
+    assert len(slots) == 3, "fake-eval must execute grouped slots instead of silently falling back"
+    assert not any(slots), "fake-eval weights are already quantized, not tuning-time QDQ"
+    torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("width", [8, 20, 32])
+@pytest.mark.parametrize("scale_mode", ["global", "calibrated", "dynamic"])
+def test_fake_eval_fused_nvfp_qdq_keeps_expert_scales(width, scale_mode):
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    torch.manual_seed(102)
+    layers = [_wrap_fake_eval_layer(nn.Linear(width, 4), i, scale_mode) for i in range(3)]
+    counts = [2, 1, 4]
+    x = torch.randn(sum(counts), width)
+    x[0] = 0
+    expected = torch.cat([layer.qdq_input(part) for layer, part in zip(layers, x.split(counts))])
+    # Successful fusion must bypass all individual QDQ methods.
+    with patch.object(layers[0], "qdq_input", side_effect=AssertionError("unexpected per-expert QDQ")):
+        got = ge._quantize_slot_activation(layers, counts, x)
+    torch.testing.assert_close(got, expected, rtol=0, atol=0)
+
+
+def test_fake_eval_nvfp_grouped_gradients_match_loop():
+    torch.manual_seed(103)
+    loop = _wrap_fake_eval_experts(_Experts(bias=True))
+    grouped = copy.deepcopy(loop)
+    x_loop = torch.randn(NUM_TOKENS, HIDDEN, requires_grad=True)
+    x_grouped = x_loop.detach().clone().requires_grad_(True)
+    index, weights = _make_routing()
+    expected = linear_loop_experts_forward(loop, x_loop, index, weights)
+    got, slots = _observe_grouped_forward(grouped, x_grouped, index, weights)
+    assert len(slots) == 3
+    expected.square().sum().backward()
+    got.square().sum().backward()
+    torch.testing.assert_close(x_grouped.grad, x_loop.grad, rtol=1e-4, atol=1e-6)
+    for first, second in zip(loop.parameters(), grouped.parameters()):
+        assert (first.grad is None) == (second.grad is None)
+        if first.grad is not None:
+            torch.testing.assert_close(second.grad, first.grad, rtol=1e-4, atol=1e-6)
+
+
+def test_fake_eval_generic_quantizer_keeps_per_expert_qdq():
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    layers = [_wrap_fake_eval_layer(nn.Linear(16, 4), i) for i in range(2)]
+    calls = []
+
+    def custom(x, **kwargs):
+        calls.append(x.shape[0])
+        return x * 0.5, None, None
+
+    for layer in layers:
+        layer.act_quant_func = custom
+    x = torch.randn(5, 16)
+    got = ge._quantize_slot_activation(layers, [2, 3], x)
+    assert calls == [2, 3]
+    torch.testing.assert_close(got, x * 0.5)
+
+
+@pytest.mark.parametrize("hook_location", ["stolen", "wrapper", "original", "hf_offload"])
+def test_fake_eval_grouped_falls_back_for_hooks(hook_location):
+    experts = _Experts()
+    if hook_location == "stolen":
+        getattr(experts, "1").up_proj.register_forward_pre_hook(lambda module, args: (args[0] * 0.5,))
+    experts = _wrap_fake_eval_experts(experts)
+    layer = getattr(experts, "1").up_proj
+    if hook_location == "wrapper":
+        layer.register_forward_pre_hook(lambda module, args: (args[0] * 0.5,))
+    elif hook_location == "original":
+        layer.orig_layer.register_forward_hook(lambda module, args, output: output * 0.5)
+    elif hook_location == "hf_offload":
+        from accelerate.hooks import AlignDevicesHook
+
+        layer.orig_layer._hf_hook = AlignDevicesHook(offload=True)
+    x = torch.randn(NUM_TOKENS, HIDDEN)
+    index = torch.tensor([[1, 4]] * NUM_TOKENS)
+    weights = torch.full((NUM_TOKENS, TOP_K), 0.5)
+    expected = linear_loop_experts_forward(experts, x, index, weights)
+    got, slots = _observe_grouped_forward(experts, x, index, weights)
+    assert not slots
+    torch.testing.assert_close(got, expected)
+
+
+def test_fake_eval_grouped_rejects_meta_weights():
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    layer = _wrap_fake_eval_layer(nn.Linear(16, 8, device="meta"))
+    assert not ge._projection_is_supported(layer)
+
+
+def test_fake_eval_vector_global_scale_keeps_per_expert_calls():
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    layers = [_wrap_fake_eval_layer(nn.Linear(16, 4), i) for i in range(2)]
+    counts = [2, 3]
+    for layer, count in zip(layers, counts):
+        layer.orig_layer.input_global_scale = torch.full((count, 1), 256.0)
+    x = torch.randn(sum(counts), 16)
+    expected = torch.cat([layer.qdq_input(part) for layer, part in zip(layers, x.split(counts))])
+    assert ge._fused_eval_nvfp_activation(layers, counts, x) is None
+    got = ge._quantize_slot_activation(layers, counts, x)
+    torch.testing.assert_close(got, expected)
+
+
+def test_fake_eval_grouped_falls_back_for_mixed_schemes():
+    experts = _wrap_fake_eval_experts(_Experts())
+    getattr(experts, "1").up_proj.orig_layer.bits = 8
+    x = torch.randn(NUM_TOKENS, HIDDEN)
+    index = torch.tensor([[1, 4]] * NUM_TOKENS)
+    weights = torch.full((NUM_TOKENS, TOP_K), 0.5)
+    expected = linear_loop_experts_forward(experts, x, index, weights)
+    got, slots = _observe_grouped_forward(experts, x, index, weights)
+    assert not slots
+    torch.testing.assert_close(got, expected)
+
+
 def test_grouped_disabled_for_mixed_bits_across_experts():
     """Mixed-bit MoE must not be batched: the loop backend keeps ownership."""
     torch.manual_seed(7)

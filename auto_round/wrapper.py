@@ -877,7 +877,11 @@ class WrapperWALayer(torch.nn.Module):
             if result is not None:
                 x = result[0] if isinstance(result, tuple) else result
 
-        # 2) Activation quantization on the smoothed activation
+        x = self.qdq_input(x)
+        return self.orig_layer.forward(x)
+
+    def qdq_input(self, x):
+        """Quantize an already transformed input without running the Linear projection."""
         import auto_round.envs as envs
 
         act_scale = envs.AR_ACT_SCALE
@@ -888,7 +892,7 @@ class WrapperWALayer(torch.nn.Module):
         quant_kwargs = {}
         if hasattr(self.orig_layer, "input_global_scale"):
             quant_kwargs["global_scale"] = self.orig_layer.input_global_scale
-        x, _, _ = self.orig_layer.act_quant_func(
+        x, _, _ = self.act_quant_func(
             x,
             bits=self.orig_layer.act_bits,
             group_size=self.orig_layer.act_group_size,
@@ -900,8 +904,7 @@ class WrapperWALayer(torch.nn.Module):
             max_scale=max_scale,
             **quant_kwargs,
         )
-        # 3) Linear computation via orig_layer (pre_hooks already removed, no double execution)
-        return self.orig_layer.forward(x)
+        return x
 
     def extra_repr(self):
         return f"{self.extra_repr_org()}, weight_type={self.data_type}, act_data_type={self.act_data_type}"

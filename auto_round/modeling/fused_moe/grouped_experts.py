@@ -62,7 +62,7 @@ is usable during tuning and not only for calibration/inference.
 Fallbacks
 ---------
 The grouped path only kicks in when the layer really is a stack of plain ``nn.Linear`` /
-``WrapperLinear`` projections that all share one quantization scheme. Anything else
+``WrapperLinear`` / fake-eval ``WrapperWALayer`` projections sharing one scheme. Anything else
 transparently falls back to ``linear_loop_experts_forward``:
 
 * **mixed-bit MoE** — experts (or projections) quantized with different
@@ -70,8 +70,8 @@ transparently falls back to ``linear_loop_experts_forward``:
   of wrapper classes;
 * Conv1D / LinearAllreduce experts, which need their own forward;
 * forward hooks on the expert layers (e.g. online Hadamard rotation);
-* activation quantization that is not row-independent (static ranges, per-tensor groups,
-  per-expert tunable min/max, NVFP per-layer global scales);
+* tuning-time activation quantization that is not row-independent (static ranges,
+  per-tensor groups, per-expert tunable min/max, NVFP per-layer global scales);
 * experts spread over different devices.
 
 Step 4 has its own, narrower eligibility check on top of that. It covers plain group-wise
@@ -80,6 +80,10 @@ experts, NVFP ``global_scale`` and per-expert ``imatrix``; it steps aside (keepi
 grouped GEMM) for GGUF super-blocks that would span two experts and for wrappers that
 override ``_qdq_weight`` (GGUF double-quant search, AutoScheme scoring).
 See ``_supports_batched_qdq``.
+
+Fake-eval wrappers use their already quantized weights. Standard NVFP4 activation QDQ
+is fused with a per-group column of each expert's own global scale; other activation
+quantizers keep per-expert QDQ over contiguous slices before the grouped GEMM.
 """
 
 from __future__ import annotations
@@ -106,7 +110,7 @@ _NATIVE_GROUPED_MM_DISABLED = False
 _LOGGED_FALLBACK_REASONS: set[tuple[str, str]] = set()
 # Bumped whenever the plan-building path changes; logged once per process so a
 # log unambiguously identifies which grouped implementation produced it.
-GROUPED_PLANS_VERSION = "slot-stage-v3"
+GROUPED_PLANS_VERSION = "slot-stage-v4-fake-act"
 _LOGGED_VERSION = False
 
 
@@ -131,6 +135,7 @@ def _log_fallback_once(reason: str, detail: str = "") -> None:
 
 
 _WRAPPER_LINEAR_CLS: type | None = None
+_WRAPPER_WA_CLS: type | None = None
 
 
 def _is_wrapper_linear(layer: nn.Module) -> bool:
@@ -147,6 +152,16 @@ def _is_wrapper_linear(layer: nn.Module) -> bool:
             return False
         _WRAPPER_LINEAR_CLS = WrapperLinear
     return isinstance(layer, _WRAPPER_LINEAR_CLS)
+
+
+def _is_wrapper_wa(layer: nn.Module) -> bool:
+    """Only the standard fake-eval wrapper: subclasses may override forward semantics."""
+    global _WRAPPER_WA_CLS
+    if _WRAPPER_WA_CLS is None:
+        from auto_round.wrapper import WrapperWALayer
+
+        _WRAPPER_WA_CLS = WrapperWALayer
+    return type(layer) is _WRAPPER_WA_CLS
 
 
 def _act_signature(layer: nn.Module):
@@ -179,10 +194,11 @@ def _quant_signature(layer: nn.Module):
     the GGUF double-quant wrapper and the AutoScheme scoring wrappers all carry their own
     tuning state and ``minmax_scale_bound``, so they must not be mixed inside one group.
     """
-    if not _is_wrapper_linear(layer):
+    is_eval = _is_wrapper_wa(layer)
+    if not _is_wrapper_linear(layer) and not is_eval:
         return None
     orig = layer.orig_layer
-    enable_act_quant = bool(getattr(layer, "enable_act_quant", False))
+    enable_act_quant = is_eval or bool(getattr(layer, "enable_act_quant", False))
     return (
         type(layer),
         getattr(orig, "bits", 16),
@@ -195,6 +211,7 @@ def _quant_signature(layer: nn.Module):
         bool(getattr(layer, "disable_opt_rtn", True)),
         enable_act_quant,
         _act_signature(layer) if enable_act_quant else None,
+        bool(getattr(layer, "enable_torch_compile", False)) if is_eval else None,
     )
 
 
@@ -267,6 +284,10 @@ def _hooks_are_alignment_only(module: nn.Module) -> bool:
     hooks and remain a hard fallback so they keep firing.
     """
     hooks = list(module._forward_pre_hooks.values()) + list(module._forward_hooks.values())
+    # Accelerate can replace forward directly without registering a PyTorch hook.
+    hf_hook = getattr(module, "_hf_hook", None)
+    if hf_hook is not None:
+        hooks.extend(getattr(hf_hook, "hooks", (hf_hook,)))
     if not hooks:
         return True
     hook_classes = _accelerate_hook_whitelist()
@@ -293,8 +314,11 @@ def _projection_is_supported(layer: nn.Module) -> bool:
         # move itself (mapped multi-GPU placement attaches them to off-primary experts).
         hooks = layer._forward_pre_hooks or layer._forward_hooks
         return not hooks or _hooks_are_alignment_only(layer)
-    if not _is_wrapper_linear(layer):
+    is_eval = _is_wrapper_wa(layer)
+    if not _is_wrapper_linear(layer) and not is_eval:
         return False
+    if is_eval and layer._stolen_pre_hooks:
+        return False  # transforms must run before QDQ, not be skipped by grouped GEMM
     # accelerate's stage hooks attach to the tree module -- the wrapper itself.
     if (layer._forward_pre_hooks or layer._forward_hooks) and not _hooks_are_alignment_only(layer):
         return False
@@ -303,6 +327,12 @@ def _projection_is_supported(layer: nn.Module) -> bool:
         return False  # Conv1D / LinearAllreduce need their own forward
     if (orig._forward_pre_hooks or orig._forward_hooks) and not _hooks_are_alignment_only(orig):
         return False  # e.g. online Hadamard rotation must run per layer
+    if is_eval:
+        # A forward-replacement hook can own weight loading even when both PyTorch
+        # hook dictionaries are empty. Grouped GEMM must never bypass that offload.
+        return (
+            orig.weight.device.type != "meta" and _hooks_are_alignment_only(layer) and _hooks_are_alignment_only(orig)
+        )
     return not (getattr(layer, "enable_act_quant", False) and not _act_quant_is_row_independent(layer))
 
 
@@ -801,6 +831,57 @@ def _quantize_activation(layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
     return x
 
 
+def _fused_eval_nvfp_activation(layers: list[nn.Module], counts: list[int], x: torch.Tensor) -> torch.Tensor | None:
+    """Batch canonical NVFP4 QDQ while keeping each expert's global scale independent."""
+    from auto_round.data_type.nvfp import FLOAT4_E2M1_MAX, FLOAT8_E4M3_MAX, get_reciprocal, nv_fp4_with_static_gs
+
+    if any(
+        layer.orig_layer.act_data_type != "nv_fp4_with_static_gs"
+        or layer.orig_layer.act_bits != 4
+        or layer.orig_layer.act_group_size != 16
+        or getattr(layer.act_quant_func, "_torchdynamo_orig_callable", layer.act_quant_func)
+        is not nv_fp4_with_static_gs
+        for layer in layers
+    ):
+        return None
+
+    scales = []
+    row_counts = []
+    start = 0
+    for layer, count in zip(layers, counts):
+        orig = layer.orig_layer
+        scale = getattr(orig, "input_global_scale", None)
+        if scale is None:
+            maximum = getattr(orig, "act_max", None)
+            if maximum is None:
+                maximum = x[start : start + count].float().abs().max()
+            else:
+                maximum = torch.as_tensor(maximum, device=x.device, dtype=torch.float32)
+                if maximum.numel() != 1:
+                    maximum = maximum.abs().max()
+            scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(maximum)
+        scale = torch.as_tensor(scale, device=x.device, dtype=torch.float32)
+        if scale.numel() != 1:
+            return None  # nonstandard scale layout: preserve the wrapper's own call
+        scales.append(scale.reshape(()))
+        row_counts.append(_grouped_row_count(count, x.shape[-1], 16))
+        start += count
+    repeats = torch.tensor(row_counts, device=x.device)
+    global_scale = torch.repeat_interleave(torch.stack(scales), repeats, output_size=sum(row_counts)).unsqueeze(-1)
+    return layers[0].act_quant_func(x, bits=4, group_size=16, global_scale=global_scale)[0]
+
+
+def _quantize_slot_activation(layers: list[nn.Module], counts: list[int], x: torch.Tensor) -> torch.Tensor:
+    if not _is_wrapper_wa(layers[0]):
+        return _quantize_activation(layers[0], x)
+    fused = _fused_eval_nvfp_activation(layers, counts, x)
+    if fused is not None:
+        return fused
+    # Generic eval quantizers can depend on per-expert calibrated statistics or min/max
+    # coefficients. Keep those calls intact; grouping the GEMM does not require fusing QDQ.
+    return torch.cat([layer.qdq_input(part) for layer, part in zip(layers, x.split(counts, dim=0))], dim=0)
+
+
 def _sliced_grouped_mm_requested() -> bool:
     """Whether the sliced per-expert GEMM loop was explicitly requested.
 
@@ -1070,10 +1151,14 @@ def _run_routes(
     if has_gate:
         for expert_id in active_ids:
             expert = getattr(module, str(expert_id))
-            gate_act = _act_signature(expert.gate_proj) if _is_wrapper_linear(expert.gate_proj) else None
-            up_act = _act_signature(expert.up_proj) if _is_wrapper_linear(expert.up_proj) else None
-            gate_enabled = bool(getattr(expert.gate_proj, "enable_act_quant", False))
-            up_enabled = bool(getattr(expert.up_proj, "enable_act_quant", False))
+            gate_wrapped = _is_wrapper_linear(expert.gate_proj) or _is_wrapper_wa(expert.gate_proj)
+            up_wrapped = _is_wrapper_linear(expert.up_proj) or _is_wrapper_wa(expert.up_proj)
+            gate_act = _act_signature(expert.gate_proj) if gate_wrapped else None
+            up_act = _act_signature(expert.up_proj) if up_wrapped else None
+            gate_enabled = _is_wrapper_wa(expert.gate_proj) or bool(
+                getattr(expert.gate_proj, "enable_act_quant", False)
+            )
+            up_enabled = _is_wrapper_wa(expert.up_proj) or bool(getattr(expert.up_proj, "enable_act_quant", False))
             if gate_enabled != up_enabled or (gate_enabled and gate_act != up_act):
                 _log_fallback_once("gate_proj/up_proj activation quantization differ")
                 return None
@@ -1100,9 +1185,10 @@ def _run_routes(
             x_g = inp.index_select(0, rows).to(dev)
             offsets = torch.tensor(counts, device=dev, dtype=torch.int32).cumsum(0).to(torch.int32)
             experts_g = [getattr(module, str(active_ids[p])) for p in positions]
-            x_g = _quantize_activation(getattr(experts_g[0], slot_name), x_g)
-            batched = all(_supports_batched_qdq(getattr(e, slot_name)) for e in experts_g)
-            w = _slot_weights([getattr(e, slot_name) for e in experts_g], batched)
+            layers = [getattr(e, slot_name) for e in experts_g]
+            x_g = _quantize_slot_activation(layers, counts, x_g)
+            batched = all(_supports_batched_qdq(layer) for layer in layers)
+            w = _slot_weights(layers, batched)
             out_g = _grouped_linear(x_g, w, counts, offsets)
             if out_buf is None:
                 out_buf = torch.zeros(num_valid, out_g.size(-1), device=inp.device, dtype=out_g.dtype)
