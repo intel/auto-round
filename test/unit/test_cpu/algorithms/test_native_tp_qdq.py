@@ -477,8 +477,86 @@ def _check_stage_warm_start(rank, mesh, optimized):
         assert not hasattr(layer, "_ar_warm_start_wrapper_cls")
 
 
+def _check_export_state(model, exported):
+    from torch.distributed.tensor import DTensor
+
+    from auto_round.parallel.activation import TensorParallelActivationQuantizer
+    from auto_round.parallel.runtime import _gather_cpu_tensor
+
+    writer = dist.get_rank() == 0
+    # Native MoE packed parameters alias the per-expert weights used for export.
+    aliases = {
+        f"{name}.{key}"
+        for name, module in model.named_modules()
+        if getattr(module, "_auto_round_tp_moe", False)
+        for key in ("gate_up_proj", "down_proj")
+    }
+    state = {name: value for name, value in model.state_dict().items() if name not in aliases}
+    exported_state = exported.state_dict() if writer else None
+    if writer:
+        assert state.keys() == exported_state.keys()
+        assert exported.dtype == model.dtype
+
+    def check_tensor(name, value, actual):
+        expected = _gather_cpu_tensor(value)
+        if writer:
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0, msg=lambda message: f"{name}: {message}")
+
+    with patch.object(DTensor, "full_tensor", side_effect=AssertionError("GPU gather is forbidden")):
+        for name, value in state.items():
+            check_tensor(name, value, exported_state[name] if writer else None)
+        exported_buffers = dict(exported.named_buffers()) if writer else None
+        for name, value in model.named_buffers():
+            check_tensor(name, value, exported_buffers[name] if writer else None)
+        # Quantization metadata is not necessarily registered in state_dict.
+        attributes = (
+            "bits",
+            "group_size",
+            "sym",
+            "data_type",
+            "scale_dtype",
+            "scale",
+            "zp",
+            "q_scale_thresh",
+            "weight_global_scale",
+            "act_bits",
+            "act_data_type",
+            "act_group_size",
+            "act_sym",
+            "act_dynamic",
+            "act_max",
+            "act_scale",
+            "act_min_scale",
+            "act_max_scale",
+            "input_global_scale",
+            "act_quant_func",
+        )
+        for name, module in model.named_modules():
+            for key in attributes:
+                if not hasattr(module, key):
+                    continue
+                expected = getattr(module, key)
+                actual = getattr(exported.get_submodule(name), key) if writer else None
+                if isinstance(expected, torch.Tensor):
+                    check_tensor(f"{name}.{key}", expected, actual)
+                else:
+                    if isinstance(expected, TensorParallelActivationQuantizer):
+                        expected = expected.quant_func
+                    if writer:
+                        assert actual == expected, f"{name}.{key} changed during export"
+
+
 def _check_qad_lifecycle(
-    rank, checkpoint, workspace, algorithm, fp4=None, activation=False, block_stages=(), lora_rank=0, round_tuning=True
+    rank,
+    checkpoint,
+    workspace,
+    algorithm,
+    fp4=None,
+    activation=False,
+    block_stages=(),
+    lora_rank=0,
+    round_tuning=True,
+    dtype=torch.float32,
 ):
     from auto_round import AutoRound
     from auto_round.algorithms.quantization.qad.config import QADConfig
@@ -512,7 +590,9 @@ def _check_qad_lifecycle(
         nsamples=2,
         seqlen=4,
         batch_size=1,
-        model_dtype="float32",
+        model_dtype=dtype,
+        # Test FP32 and actual BF16 training explicitly, independent of CPU defaults.
+        amp=dtype == torch.bfloat16,
         low_cpu_mem_usage=False,
         enable_torch_compile=False,
     )
@@ -530,6 +610,7 @@ def _check_qad_lifecycle(
 
         terminal.quantize_model = check_warm_start
     model, _ = compressor.quantize()
+    assert model.dtype == dtype
     projection = model.model.layers[0].self_attn.q_proj
     if activation:
         from auto_round.wrapper import WrapperWALayer
@@ -555,10 +636,20 @@ def _check_qad_lifecycle(
 
     with patch.object(DTensor, "full_tensor", side_effect=AssertionError("GPU gather is forbidden")):
         exported = gather_for_export(model)
+    _check_export_state(model, exported)
     if rank == 0:
         assert not any(is_dtensor(parameter) for parameter in exported.parameters())
         with torch.no_grad():
-            torch.testing.assert_close(exported(input_ids=tokens).logits, logits, rtol=2e-4, atol=2e-5)
+            exported_logits = exported(input_ids=tokens).logits
+        if dtype == torch.bfloat16:
+            assert exported_logits.dtype == logits.dtype == torch.bfloat16
+            # Rowwise BF16 partial sums round before reduction, unlike a dense GEMM.
+            # Bound absolute error by one BF16 epsilon at the peak logit magnitude;
+            # near-zero logits must not turn harmless rounding into large relative errors.
+            atol = torch.finfo(dtype).eps * logits.float().abs().amax().item()
+            torch.testing.assert_close(exported_logits, logits, rtol=0, atol=atol)
+        else:
+            torch.testing.assert_close(exported_logits, logits, rtol=2e-4, atol=2e-5)
         exported_projection = exported.model.layers[0].self_attn.q_proj
         if activation:
             assert isinstance(exported_projection, WrapperWALayer)
@@ -621,7 +712,7 @@ def _check_qad_lifecycle(
     dist.barrier()
 
 
-def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_checkpoint, workspace):
+def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_checkpoint, workspace, dtype):
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
 
     torch.set_num_threads(1)
@@ -629,6 +720,24 @@ def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_check
         "gloo", init_method=Path(rendezvous).as_uri(), rank=rank, world_size=2, timeout=timedelta(seconds=90)
     )
     try:
+        if dtype == torch.bfloat16:
+            from auto_round.utils.device_manager import CpuARDevice
+
+            # PyTorch can run these tiny models with software BF16 kernels even
+            # without native BF16 instructions. Bypass only the FP32 fallback policy.
+            with patch.object(CpuARDevice, "supports_bf16", return_value=True):
+                _check_qad_lifecycle(rank, checkpoint, workspace, "qad", lora_rank=2, dtype=dtype)
+                _check_qad_lifecycle(
+                    rank,
+                    qwen_checkpoint,
+                    workspace + "_nv_act",
+                    "qat",
+                    fp4="nv_fp",
+                    activation=True,
+                    lora_rank=2,
+                    dtype=dtype,
+                )
+            return
         mesh = dist.init_device_mesh("cpu", (2,))
         _check_stage_warm_start(rank, mesh, optimized=False)
         _check_stage_warm_start(rank, mesh, optimized=True)
@@ -691,7 +800,8 @@ def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_check
 
 
 @pytest.mark.skipif(not dist.is_available() or not dist.is_gloo_available(), reason="requires distributed Gloo")
-def test_two_rank_native_tp_qdq_and_qad(tmp_path):
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["fp32", "bf16"])
+def test_two_rank_native_tp_qdq_and_qad(tmp_path, dtype):
     transformers = pytest.importorskip("transformers")
     if not hasattr(transformers, "DistributedConfig"):
         pytest.skip("requires native Transformers DistributedConfig")
@@ -771,6 +881,7 @@ def test_two_rank_native_tp_qdq_and_qad(tmp_path):
                 str(qwen_checkpoint),
                 str(moe_checkpoint),
                 str(tmp_path / "teacher"),
+                dtype,
             ),
             nprocs=2,
             join=False,

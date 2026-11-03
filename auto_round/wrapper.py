@@ -127,6 +127,7 @@ class WrapperLinear(torch.nn.Module):
             qad_lora_alpha = lora_alpha
         self.lora_rank = qad_lora_rank
         self.qad_lora_rank = qad_lora_rank
+        self.lora_alpha = qad_lora_alpha
         self.qad_lora_scaling = (
             (qad_lora_alpha / qad_lora_rank if qad_lora_alpha is not None else 1.0) if qad_lora_rank else 1.0
         )

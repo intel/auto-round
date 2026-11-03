@@ -60,7 +60,11 @@ class SignRoundConfig(QuantizationConfig):
             field="lora_alpha",
             default=None,
             type=float,
-            help="Scale rounding LoRA by alpha/rank; defaults to rank (unit scaling).",
+            help=(
+                "Scale rounding LoRA by alpha/rank. When omitted, SignSGD with the default linear scheduler "
+                "uses a rank-, initialization-, and learning-rate-budget-based scale to bound the new "
+                "rounding offset within [-4, 4]; other optimizers/schedulers use unit scaling."
+            ),
         )
         registry.add_argument(
             "--momentum", field="momentum", default=0.0, type=float, help="Momentum factor for the optimizer."
@@ -261,7 +265,10 @@ class SignRoundConfig(QuantizationConfig):
                 falls back to ``lr``.
             lora_rank: Low-rank rounding rank per local weight shard. Zero
                 retains dense rounding tuning.
-            lora_alpha: Optional alpha/rank scaling; defaults to unit scaling.
+            lora_alpha: Optional alpha/rank scaling. When omitted, SignSGD with
+                the default linear scheduler bounds the new rounding offset
+                within [-4, 4] using the initialization and learning-rate budget.
+                Other optimizers or custom schedulers retain unit scaling.
             lr_scheduler: Optional learning-rate scheduler name or
                 scheduler object used by the optimizer.
             momentum: Momentum factor used by the optimizer.

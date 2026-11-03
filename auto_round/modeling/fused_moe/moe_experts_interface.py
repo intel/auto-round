@@ -41,7 +41,11 @@ from auto_round.modeling.fused_moe.grouped_experts import (
     GROUPED_LINEAR_SLICED_IMPL,
     grouped_linear_experts_forward,
 )
-from auto_round.modeling.fused_moe.utils import build_forced_routing, force_all_experts_routing_enabled
+from auto_round.modeling.fused_moe.utils import (
+    build_forced_routing,
+    force_all_experts_routing_enabled,
+    log_moe_execution_once,
+)
 from auto_round.utils import clear_memory, logger
 from auto_round.utils.device import memory_monitor
 
@@ -81,7 +85,7 @@ def resolve_experts_implementation() -> str:
         return GROUPED_LINEAR_IMPL
     if requested == LINEAR_LOOP_IMPL:
         return LINEAR_LOOP_IMPL
-    logger.warning(
+    logger.warning_once(
         f"Unknown AR_MOE_EXPERTS_IMPL='{requested}', expected one of "
         f"{['auto', GROUPED_LINEAR_IMPL, GROUPED_LINEAR_SLICED_IMPL, LINEAR_LOOP_IMPL]}. "
         f"Falling back to '{LINEAR_LOOP_IMPL}'."
@@ -239,6 +243,8 @@ def linear_loop_experts_forward(
         final_hidden_states: Output tensor of shape (num_tokens, hidden_dim)
     """
     logger.debug(f"Using {LINEAR_LOOP_IMPL} experts forward for {self.__class__.__name__}")
+    if str(envs.AR_MOE_EXPERTS_IMPL).lower() == LINEAR_LOOP_IMPL:
+        log_moe_execution_once("Grouped MoE not used", "AR_MOE_EXPERTS_IMPL=linear_loop was explicitly requested")
 
     # Handle [batch_size, seq_len, hidden_dim] input format
     if hidden_states.dim() == 3:

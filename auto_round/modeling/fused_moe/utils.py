@@ -16,6 +16,22 @@ import torch
 import torch.nn as nn
 
 from auto_round import envs
+from auto_round.logger import logger
+
+
+def log_moe_execution_once(path: str, reason: str, *, suggest_issue: bool = False) -> None:
+    """Report each execution state once, without routing-dependent cache keys."""
+    if suggest_issue:
+        logger.warning_once(
+            "[MoE grouped] %s: %s. Correctness-preserving fallback is used. "
+            "Supporting this case may provide substantial speedups; actual gains depend on the model and hardware. "
+            "Please open an issue at https://github.com/intel/auto-round/issues with the model, quantization config, "
+            "hardware, PyTorch/Transformers versions and this log.",
+            path,
+            reason,
+        )
+    else:
+        logger.info_once("[MoE grouped] %s: %s.", path, reason)
 
 
 def _update_parameter(
@@ -47,6 +63,8 @@ def sequential_moe_forward(
     top_k_weights: torch.Tensor,
     experts,
     num_experts: int,
+    *,
+    _log_execution: bool = True,
 ) -> torch.Tensor:
     """Sequential per-expert MoE forward using a single sort to group tokens by expert.
 
@@ -72,6 +90,15 @@ def sequential_moe_forward(
     Returns:
         final_hidden_states: (num_tokens, hidden_dim) output tensor.
     """
+    if _log_execution:
+        if str(envs.AR_MOE_EXPERTS_IMPL).lower() == "linear_loop":
+            log_moe_execution_once("Grouped MoE not used", "AR_MOE_EXPERTS_IMPL=linear_loop was explicitly requested")
+        else:
+            log_moe_execution_once(
+                "Grouped MoE not used",
+                "this architecture invokes the sequential expert implementation directly",
+                suggest_issue=True,
+            )
     hidden_dim = hidden_states.size(-1)
     num_tokens = hidden_states.size(0)
     top_k = top_k_index.size(-1)
@@ -142,7 +169,22 @@ def grouped_or_sequential_moe_forward(
         from auto_round.modeling.fused_moe.grouped_experts import grouped_linear_experts_forward
 
         return grouped_linear_experts_forward(experts, hidden_states, top_k_index, top_k_weights)
-    return sequential_moe_forward(hidden_states, top_k_index, top_k_weights, experts, num_experts)
+    requested = str(envs.AR_MOE_EXPERTS_IMPL).lower()
+    if requested == LINEAR_LOOP_IMPL:
+        log_moe_execution_once("Grouped MoE not used", "AR_MOE_EXPERTS_IMPL=linear_loop was explicitly requested")
+    elif hidden_states.device.type != "cuda":
+        log_moe_execution_once(
+            "Grouped MoE not used",
+            f"grouped dispatch is not enabled for device type {hidden_states.device.type}",
+            suggest_issue=True,
+        )
+    elif not (hasattr(experts, "act_fn") or hasattr(experts, "_apply_gate")):
+        log_moe_execution_once(
+            "Grouped MoE not used", "expert container has no supported activation/gating interface", suggest_issue=True
+        )
+    else:
+        log_moe_execution_once("Grouped MoE not used", "AR_MOE_EXPERTS_IMPL resolved to linear_loop; check its value")
+    return sequential_moe_forward(hidden_states, top_k_index, top_k_weights, experts, num_experts, _log_execution=False)
 
 
 def get_num_experts(original: torch.nn.Module) -> int:

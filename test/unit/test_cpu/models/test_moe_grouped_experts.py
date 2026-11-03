@@ -266,9 +266,10 @@ def test_fake_eval_fused_nvfp_qdq_keeps_expert_scales(width, scale_mode):
     x = torch.randn(sum(counts), width)
     x[0] = 0
     expected = torch.cat([layer.qdq_input(part) for layer, part in zip(layers, x.split(counts))])
-    # Successful fusion must bypass all individual QDQ methods.
-    with patch.object(layers[0], "qdq_input", side_effect=AssertionError("unexpected per-expert QDQ")):
-        got = ge._quantize_slot_activation(layers, counts, x)
+    fused = ge._fused_eval_nvfp_activation(layers, counts, x)
+    assert fused is not None
+    torch.testing.assert_close(fused, expected, rtol=0, atol=0)
+    got = ge._quantize_slot_activation(layers, counts, x)
     torch.testing.assert_close(got, expected, rtol=0, atol=0)
 
 
@@ -307,6 +308,269 @@ def test_fake_eval_generic_quantizer_keeps_per_expert_qdq():
     got = ge._quantize_slot_activation(layers, [2, 3], x)
     assert calls == [2, 3]
     torch.testing.assert_close(got, x * 0.5)
+
+
+def _wrap_fake_eval_mx_layer(layer, expert_id=0, act_dtype="mx_fp", bits=4):
+    from auto_round.data_type.utils import get_quant_func
+    from auto_round.wrapper import WrapperWALayer
+
+    _mark_quantizable(layer, act_bits=bits)
+    layer.data_type, layer.group_size = "mx_fp", 32
+    layer.act_data_type, layer.act_group_size = act_dtype, 32
+    layer.act_quant_func, _ = get_quant_func(act_dtype, bits, True)
+    layer.q_scale_thresh = 1e-5
+    layer.act_min_scale = 1.0
+    layer.act_max_scale = torch.tensor([0.5 + expert_id * 0.125])
+    return WrapperWALayer(layer, enable_torch_compile=False)
+
+
+@pytest.mark.parametrize("act_dtype,bits", [("mx_fp", 4), ("mx_fp4", 4), ("mx_fp8", 8), ("mx_fp_rceil", 4)])
+@pytest.mark.parametrize("width", [8, 33, 64])
+@pytest.mark.parametrize("group_size", [-1, 32])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_fake_eval_fused_mx_keeps_expert_scales(act_dtype, bits, width, group_size, chunked, monkeypatch):
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    if chunked:
+        padded_width = (
+            width if group_size == -1 or width < group_size else ((width + group_size - 1) // group_size) * group_size
+        )
+        monkeypatch.setattr(ge, "_QDQ_FUSED_WORKINGSET_BYTES", padded_width * 64 * 2)
+    torch.manual_seed(104)
+    layers = [_wrap_fake_eval_mx_layer(nn.Linear(width, 4), i, act_dtype, bits) for i in range(3)]
+    for layer in layers:
+        layer.orig_layer.act_group_size = group_size
+    layers[0].orig_layer.act_max_scale = torch.tensor(0.5)
+    layers[2].orig_layer.act_max_scale = 0.875
+    counts = [2, 1, 4]
+    x = torch.randn(sum(counts), width)
+    x[0] = 0
+    expected = torch.cat([layer.qdq_input(part) for layer, part in zip(layers, x.split(counts))])
+    fused = ge._fused_eval_mx_activation(layers, counts, x)
+    assert fused is not None
+    torch.testing.assert_close(fused, expected, rtol=0, atol=0)
+    actual = ge._quantize_slot_activation(layers, counts, x)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("act_dtype", ["mx_fp", "mx_fp_rceil"])
+@pytest.mark.parametrize("override", [1.0, 0.75])
+def test_fake_eval_fused_mx_gradients_and_env_override(act_dtype, override, monkeypatch):
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    monkeypatch.setenv("AR_ACT_SCALE", str(override))
+    monkeypatch.setattr(ge, "_QDQ_FUSED_WORKINGSET_BYTES", 64 * 64 * 2)
+    torch.manual_seed(105)
+    layers = [_wrap_fake_eval_mx_layer(nn.Linear(33, 4), i, act_dtype) for i in range(3)]
+    scales = []
+    for layer in layers:
+        scale = nn.Parameter(layer.orig_layer.act_max_scale.clone())
+        layer.orig_layer.act_max_scale = scale
+        scales.append(scale)
+    counts = [2, 1, 4]
+    first = torch.randn(sum(counts), 33, requires_grad=True)
+    second = first.detach().clone().requires_grad_(True)
+    expected = torch.cat([layer.qdq_input(part) for layer, part in zip(layers, first.split(counts))])
+    actual = ge._quantize_slot_activation(layers, counts, second)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    expected_grads = torch.autograd.grad(expected.square().sum(), [first, *scales], allow_unused=True)
+    actual_grads = torch.autograd.grad(actual.square().sum(), [second, *scales], allow_unused=True)
+    for expected_grad, actual_grad in zip(expected_grads, actual_grads):
+        assert (expected_grad is None) == (actual_grad is None)
+        if expected_grad is not None:
+            torch.testing.assert_close(actual_grad, expected_grad, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("act_dtype,bits", [("mx_fp", 4), ("mx_fp", 8), ("mx_fp_rceil", 4)])
+def test_fake_eval_mx_grouped_matches_loop(act_dtype, bits):
+    torch.manual_seed(106)
+    experts = _Experts(bias=True)
+    for i in range(experts.num_experts):
+        expert = getattr(experts, str(i))
+        for slot in ("gate_proj", "up_proj", "down_proj"):
+            setattr(expert, slot, _wrap_fake_eval_mx_layer(getattr(expert, slot), i, act_dtype, bits))
+    x = torch.randn(NUM_TOKENS, HIDDEN)
+    index = torch.tensor([[1, 4]] * (NUM_TOKENS - 1) + [[1, 2]])
+    weights = torch.full((NUM_TOKENS, TOP_K), 0.5)
+    expected = linear_loop_experts_forward(experts, x, index, weights)
+    got, slots = _observe_grouped_forward(experts, x, index, weights)
+    assert len(slots) == 3
+    torch.testing.assert_close(got, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "static",
+        "per_tensor",
+        "vector_scale",
+        "scale_dtype",
+        "custom",
+        "mixed",
+        "unknown",
+        "format_bits",
+        "function",
+        "rceil_v2",
+    ],
+)
+def test_fake_eval_mx_unsupported_layout_keeps_per_expert_qdq(reason):
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    layers = [_wrap_fake_eval_mx_layer(nn.Linear(32, 4), i) for i in range(2)]
+    if reason == "static":
+        for layer in layers:
+            layer.orig_layer.act_dynamic = False
+    elif reason == "per_tensor":
+        for layer in layers:
+            layer.orig_layer.act_group_size = 0
+    elif reason == "vector_scale":
+        layers[0].orig_layer.act_max_scale = torch.tensor([0.5, 0.75])
+    elif reason == "scale_dtype":
+        layers[0].orig_layer.act_max_scale = torch.tensor(0.5, dtype=torch.float64)
+    elif reason == "custom":
+        original = layers[0].act_quant_func
+        layers[0].act_quant_func = lambda x, **kwargs: original(x, **kwargs)
+    elif reason == "mixed":
+        layers[1].orig_layer.act_bits = 8
+    elif reason == "unknown":
+        for layer in layers:
+            layer.orig_layer.act_data_type = "mx_fp_future"
+    elif reason == "format_bits":
+        for layer in layers:
+            layer.orig_layer.act_data_type, layer.orig_layer.act_bits = "mx_fp4", 8
+    elif reason == "function":
+        for layer in layers:
+            layer.orig_layer.act_data_type = "mx_fp_rceil"  # actual function is still quant_mx
+    elif reason == "rceil_v2":
+        from auto_round.data_type.utils import get_quant_func
+
+        for layer in layers:
+            layer.orig_layer.act_data_type = "mx_fp4_rceil_v2"
+            layer.act_quant_func, _ = get_quant_func("mx_fp4_rceil_v2", 4, True)
+    x = torch.randn(4, 32)
+    counts = [2, 2]
+    assert ge._fused_eval_mx_activation(layers, counts, x) is None
+    expected = torch.cat([layer.qdq_input(part) for layer, part in zip(layers, x.split(counts))])
+    with patch.object(layers[0], "qdq_input", wraps=layers[0].qdq_input) as calls:
+        actual = ge._quantize_slot_activation(layers, counts, x)
+        calls.assert_called_once()
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("kind", ["mx", "nvfp"])
+def test_fused_eval_respects_instance_qdq_override(kind):
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    build = _wrap_fake_eval_mx_layer if kind == "mx" else _wrap_fake_eval_layer
+    layers = [build(nn.Linear(32, 4), i) for i in range(2)]
+    original = layers[1].qdq_input
+    layers[1].qdq_input = lambda x: original(x) * 0.5
+    x = torch.randn(4, 32, requires_grad=True)
+    expected = torch.cat([layer.qdq_input(part) for layer, part in zip(layers, x.split([2, 2]))])
+    fuse = ge._fused_eval_mx_activation if kind == "mx" else ge._fused_eval_nvfp_activation
+    assert fuse(layers, [2, 2], x) is None
+    actual = ge._quantize_slot_activation(layers, [2, 2], x)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    expected_grad = torch.autograd.grad(expected.sum(), x)[0]
+    actual_grad = torch.autograd.grad(actual.sum(), x)[0]
+    torch.testing.assert_close(actual_grad, expected_grad)
+
+
+@pytest.mark.parametrize("kind", ["mx", "nvfp"])
+def test_fused_eval_not_implemented_falls_back(kind):
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    build = _wrap_fake_eval_mx_layer if kind == "mx" else _wrap_fake_eval_layer
+    layers = [build(nn.Linear(32, 4), i) for i in range(2)]
+    x = torch.randn(4, 32)
+    expected = torch.cat([layer.qdq_input(part) for layer, part in zip(layers, x.split([2, 2]))])
+    name = "_fused_eval_mx_activation" if kind == "mx" else "_fused_eval_nvfp_activation"
+    with patch.object(ge, name, side_effect=NotImplementedError("batched layout unsupported")):
+        actual = ge._quantize_slot_activation(layers, [2, 2], x)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_fused_eval_does_not_hide_runtime_errors():
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    layers = [_wrap_fake_eval_mx_layer(nn.Linear(32, 4), i) for i in range(2)]
+    with (
+        patch.object(ge, "_fused_eval_mx_activation", side_effect=RuntimeError("out of memory")),
+        pytest.raises(RuntimeError, match="out of memory"),
+    ):
+        ge._quantize_slot_activation(layers, [2, 2], torch.randn(4, 32))
+
+
+def test_fused_eval_missing_scale_does_not_invent_default():
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    layers = [_wrap_fake_eval_mx_layer(nn.Linear(32, 4), i) for i in range(2)]
+    del layers[0].orig_layer.act_max_scale
+    x = torch.randn(4, 32)
+    assert ge._fused_eval_mx_activation(layers, [2, 2], x) is None
+    with pytest.raises(AttributeError, match="act_max_scale"):
+        ge._quantize_slot_activation(layers, [2, 2], x)
+
+
+def test_grouped_unknown_eval_quantizer_preserves_call_order():
+    experts = _wrap_fake_eval_experts(_Experts())
+    calls = []
+
+    def record(original, expert_id, slot):
+        def custom(x, **kwargs):
+            calls.append((expert_id, slot))
+            return original(x, **kwargs)
+
+        return custom
+
+    for i in range(experts.num_experts):
+        for slot in ("gate_proj", "up_proj", "down_proj"):
+            layer = getattr(getattr(experts, str(i)), slot)
+            layer.act_quant_func = record(layer.act_quant_func, i, slot)
+    x = torch.randn(NUM_TOKENS, HIDDEN)
+    index = torch.tensor([[1, 4]] * NUM_TOKENS)
+    weights = torch.full((NUM_TOKENS, TOP_K), 0.5)
+    expected = linear_loop_experts_forward(experts, x, index, weights)
+    expected_calls = calls.copy()
+    calls.clear()
+    actual, slots = _observe_grouped_forward(experts, x, index, weights)
+    assert not slots
+    assert calls == expected_calls
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("target", ["plain", "wrapper", "original"])
+def test_grouped_does_not_bypass_instance_forward(target):
+    experts = _Experts() if target == "plain" else _wrap_fake_eval_experts(_Experts())
+    layer = getattr(experts, "1").up_proj
+    if target == "original":
+        layer = layer.orig_layer
+    original = layer.forward
+    layer.forward = lambda x: original(x) * 0.5
+    x = torch.randn(NUM_TOKENS, HIDDEN)
+    index = torch.tensor([[1, 4]] * NUM_TOKENS)
+    weights = torch.full((NUM_TOKENS, TOP_K), 0.5)
+    expected = linear_loop_experts_forward(experts, x, index, weights)
+    actual, slots = _observe_grouped_forward(experts, x, index, weights)
+    assert not slots
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_batched_weight_qdq_rejects_independent_scalar_coefficients():
+    from auto_round.modeling.fused_moe import grouped_experts as ge
+
+    experts = _wrap_experts(_Experts())
+    layers = [getattr(experts, str(i)).up_proj for i in range(2)]
+    for i, layer in enumerate(layers):
+        layer.max_scale = nn.Parameter(torch.tensor(0.5 + i * 0.25))
+    assert ge._cat_tuning_tensors(layers, "max_scale") is ge._UNBATCHABLE
+    assert ge._batched_qdq_weights(layers) is None
+    expected = [ge._effective_weight_and_bias(layer)[0] for layer in layers]
+    actual = ge._slot_weights(layers, batched=True).weights
+    for first, second in zip(actual, expected):
+        torch.testing.assert_close(first, second)
+    sum(weight.sum() for weight in actual).backward()
+    assert all(layer.max_scale.grad is not None for layer in layers)
 
 
 @pytest.mark.parametrize("hook_location", ["stolen", "wrapper", "original", "hf_offload"])
@@ -508,7 +772,17 @@ def _make_imatrix_experts(shared: bool, group_size=8, data_type="opt_rtn_mx_fp")
                 layer.imatrix = shared_imatrix
             else:
                 layer.imatrix = torch.rand(in_features) + 0.1
-    return _wrap_experts_preserving_marks(experts, enable_minmax_tuning=False, enable_round_tuning=False)
+    experts = _wrap_experts_preserving_marks(experts, enable_minmax_tuning=False, enable_round_tuning=False)
+    # This fixture tests imatrix fusion, so make its known non-tunable scalar
+    # constants explicitly shared. Independent scalars must conservatively fall back.
+    for slot in ("gate_proj", "up_proj", "down_proj"):
+        first = getattr(getattr(experts, "0"), slot)
+        for name in ("value", "min_scale", "max_scale"):
+            constant = getattr(first, name, None)
+            if isinstance(constant, torch.Tensor) and constant.ndim == 0 and not constant.requires_grad:
+                for i in range(1, NUM_EXPERTS):
+                    setattr(getattr(getattr(experts, str(i)), slot), name, constant)
+    return experts
 
 
 def test_batched_qdq_supports_shared_imatrix():

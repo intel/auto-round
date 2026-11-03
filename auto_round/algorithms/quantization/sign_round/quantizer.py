@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import math
 import time as _ptime
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -151,6 +152,47 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         self.minmax_lr_is_auto = getattr(config, "minmax_lr_is_auto", False)
         # Emit the low-bit lr notice at most once across all blocks/layers.
         self._logged_low_bit_lr = False
+
+    def _configure_lora_scaling(self, module, optimizer) -> None:
+        """Bound the new SignSGD rounding offset by +/-4 over the tuning budget.
+
+        This bounds s * B @ A, not any frozen offset from an earlier stage.
+        Explicit alpha and non-SignSGD optimizers retain their existing scaling.
+        """
+        if not isinstance(optimizer, SignSGD) or self.iters <= 0:
+            return
+        wrappers = [
+            m
+            for m in module.modules()
+            if isinstance(m, WrapperLinear) and hasattr(m, "lora_A") and m.lora_alpha is None
+        ]
+        if not wrappers:
+            return
+        if self.lr_scheduler is not None:
+            logger.warning_once(
+                "Automatic SignSGD LoRA scaling requires the default linear scheduler; "
+                "keeping unit scaling. Set lora_alpha explicitly for a custom scheduler."
+            )
+            return
+        # optimizer.step() precedes scheduler.step(): the T used learning rates
+        # are lr * (1 - t/T), t=0,...,T-1, whose sum is lr * (T+1)/2.
+        budgets = {
+            id(p): float(group["lr"]) * (self.iters + 1) / 2
+            for group in optimizer.param_groups
+            for p in group["params"]
+        }
+        for wrapper in wrappers:
+            budget_a = budgets.get(id(wrapper.lora_A), 0.0)
+            budget_b = budgets.get(id(wrapper.lora_B), 0.0)
+            # Each sign update moves a factor element by at most its lr.
+            # Include initialization, rather than assuming both factors start
+            # at zero (which would prevent either factor from learning).
+            a0 = wrapper.lora_A.detach().abs().amax().item()
+            b0 = wrapper.lora_B.detach().abs().amax().item()
+            bound = wrapper.lora_rank * (a0 + budget_a) * (b0 + budget_b)
+            if bound > 0 and math.isfinite(bound):
+                wrapper.lora_scaling = 4.0 / bound
+                wrapper.qad_lora_scaling = wrapper.lora_scaling
 
     def _maybe_log_low_bit_lr(self, bits) -> None:
         """Log once when low-bit (<=3) layers get the higher 2.0/iters lr."""
@@ -404,6 +446,8 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
+
+        self._configure_lora_scaling(block, optimizer)
 
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
@@ -807,6 +851,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
+        self._configure_lora_scaling(wrapper_linear, optimizer)
         nsamples = len(fp_inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
