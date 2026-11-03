@@ -137,6 +137,9 @@ from auto_round.utils.model_free_utils import (
     _convert_auto_scheme_layer_config,
     _download_metadata_files,
     _download_single_shard,
+    _dequant_fp8_tensors,
+    _dequant_mxfp_tensors,
+    _fused_nvfp4_projection_groups,
     _get_model_cache_status,
     _is_full_precision_default,
     _is_weight_shard,
@@ -148,6 +151,7 @@ from auto_round.utils.model_free_utils import (
     _load_weight_map_from_index,
     _looks_like_auto_scheme,
     _normalize_scheme,
+    _fused_nvfp4_projection_groups,
     _PatternMatcher,
     _process_shard,
     _resolve_source_dir,
@@ -379,6 +383,7 @@ def _process_single_shard_task(
     enable_torch_compile: bool = False,
     disable_opt_rtn: bool = False,
     donor_tensors_to_exclude: list[str] | None = None,
+    fused_global_scale_overrides: dict[str, float] | None = None,
 ) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
     """Process one shard in an isolated subprocess task.
 
@@ -412,6 +417,7 @@ def _process_single_shard_task(
         disable_opt_rtn=disable_opt_rtn,
         cleanup_source_shard=is_streaming,
         donor_tensors_to_exclude=donor_tensors_to_exclude,
+        fused_global_scale_overrides=fused_global_scale_overrides,
     )
 
 
@@ -435,6 +441,7 @@ def _quantize_local_shard_task(
     donor_tensors_to_exclude: list[str] | None = None,
     index_dir: str | None = None,
     donor_shard_dir: str | None = None,
+    fused_global_scale_overrides: dict[str, float] | None = None,
 ) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
     """Quantize one already-downloaded shard and write the output shard.
 
@@ -458,6 +465,7 @@ def _quantize_local_shard_task(
         index_dir=index_dir,
         donor_shard_dir=donor_shard_dir,
         donor_tensors_to_exclude=set(donor_tensors_to_exclude) if donor_tensors_to_exclude else None,
+        fused_global_scale_overrides=fused_global_scale_overrides,
     )
 
     out_shard_name = f"model-{shard_idx + 1:05d}-of-{total_shards:05d}.safetensors"
@@ -638,6 +646,8 @@ class _ModelFreeCompressorCore:
         # donor_shard_tensors: {donor_shard: set(scale_inv names it donates)}
         self.cross_shard_deps: dict[str, dict[str, list[str]]] = {}
         self.donor_shard_tensors: dict[str, set[str]] = {}
+        self.source_weight_map: dict[str, str] = {}
+        self.fused_global_scale_overrides: dict[str, float] = {}
         # Reference-counting state so donor shard cache files can be deleted as
         # soon as they are no longer needed, instead of waiting until the end
         # of the whole run. A donor file is safe to delete once (a) its own
@@ -958,10 +968,12 @@ class _ModelFreeCompressorCore:
             weight_map = _load_weight_map_from_index(index_path)
         except Exception as e:
             logger.warning(f"Could not load weight_map for cross-shard dep analysis: {e}")
+            self.source_weight_map = {}
             self.cross_shard_deps = {}
             self.donor_shard_tensors = {}
             return
 
+        self.source_weight_map = weight_map
         self.cross_shard_deps, self.donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(weight_map)
         if self.cross_shard_deps:
             n_pairs = sum(len(t) for donors in self.cross_shard_deps.values() for t in donors.values())
@@ -980,6 +992,158 @@ class _ModelFreeCompressorCore:
                 donor_recipients.setdefault(donor, set()).add(recipient)
         self._donor_remaining_recipients = {donor: len(recipients) for donor, recipients in donor_recipients.items()}
         self._donor_self_consumed = {donor: False for donor in self.donor_shard_tensors}
+
+    def _prepare_fused_global_scale_overrides(self) -> None:
+        """Precompute one NVFP4 E5M3 GS for each indexed cross-shard fused group."""
+        self.fused_global_scale_overrides = {}
+        if not envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE or not self.source_weight_map:
+            return
+
+        matcher = _PatternMatcher(self.ignore_patterns, self.layer_config, self.default_scheme)
+        groups = _fused_nvfp4_projection_groups(self.source_weight_map, matcher)
+        groups = [
+            group
+            for group in groups
+            if len({self.source_weight_map[f"{layer}.weight"] for layer in group}) > 1
+        ]
+        if not groups:
+            return
+
+        from auto_round.data_type.nvfp import calculate_gparam_e5m3
+
+        layers_by_shard: dict[str, list[str]] = {}
+        for group in groups:
+            for layer in group:
+                layers_by_shard.setdefault(self.source_weight_map[f"{layer}.weight"], []).append(layer)
+
+        source_cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+        index_dir = self.work_dir if self.is_streaming else self.source_dir
+        donor_shard_dir = source_cache_dir if self.is_streaming else self.source_dir
+        candidate_scales: dict[str, float] = {}
+
+        for shard_name, layer_names in layers_by_shard.items():
+            created_paths: set[str] = set()
+            cache_path = os.path.join(source_cache_dir, shard_name)
+            cached_before = os.path.isfile(cache_path)
+            try:
+                shard_path = _prefetch_shard(
+                    self.model_name_or_path,
+                    shard_name,
+                    self.work_dir,
+                    self.source_dir,
+                    self.is_streaming,
+                    self.diffusion_component if self.is_diffusion_model else None,
+                )
+                if shard_path is None or not os.path.isfile(shard_path):
+                    raise RuntimeError(f"Cannot pre-scan fused NVFP4 weights: failed to load shard '{shard_name}'.")
+                if self.is_streaming and not cached_before:
+                    created_paths.add(shard_path)
+
+                raw_tensors: dict[str, torch.Tensor] = {}
+                external_scales: dict[str, tuple[str, str]] = {}
+                with safe_open(shard_path, framework="pt", device="cpu") as shard:
+                    available = set(shard.keys())
+                    for layer in layer_names:
+                        weight_name = f"{layer}.weight"
+                        if weight_name not in available:
+                            raise RuntimeError(f"Index lists '{weight_name}' but it is missing from '{shard_name}'.")
+                        raw_tensors[weight_name] = shard.get_tensor(weight_name)
+                        for suffix in ("weight_scale_inv", "weight_scale"):
+                            scale_name = f"{layer}.{suffix}"
+                            scale_shard = self.source_weight_map.get(scale_name)
+                            if scale_name in available:
+                                raw_tensors[scale_name] = shard.get_tensor(scale_name)
+                            elif scale_shard and scale_shard != shard_name:
+                                external_scales[scale_name] = (scale_shard, suffix)
+
+                fetched_donors: dict[str, str] = {}
+                for scale_name, (donor_name, _) in external_scales.items():
+                    donor_path = fetched_donors.get(donor_name)
+                    if donor_path is None:
+                        if self.is_streaming:
+                            donor_cache_path = os.path.join(source_cache_dir, donor_name)
+                            donor_cached_before = os.path.isfile(donor_cache_path)
+                            donor_path = _prefetch_shard(
+                                self.model_name_or_path,
+                                donor_name,
+                                self.work_dir,
+                                self.source_dir,
+                                True,
+                                self.diffusion_component if self.is_diffusion_model else None,
+                            )
+                            if donor_path and not donor_cached_before:
+                                created_paths.add(donor_path)
+                        else:
+                            donor_path = os.path.join(self.source_dir, donor_name)
+                        if donor_path is None or not os.path.isfile(donor_path):
+                            raise RuntimeError(f"Cannot pre-scan fused NVFP4 weights: donor shard '{donor_name}' missing.")
+                        fetched_donors[donor_name] = donor_path
+                    with safe_open(donor_path, framework="pt", device="cpu") as donor:
+                        if scale_name not in donor.keys():
+                            raise RuntimeError(f"Index lists donor tensor '{scale_name}' but it is missing.")
+                        raw_tensors[scale_name] = donor.get_tensor(scale_name)
+
+                fp8_weights = {
+                    name
+                    for name, tensor in raw_tensors.items()
+                    if name.endswith(".weight")
+                    and tensor.dtype == torch.float8_e4m3fn
+                    and f"{name[:-len('.weight')]}.weight_scale_inv" in self.source_weight_map
+                }
+                if fp8_weights:
+                    selected = {name: raw_tensors[name] for name in fp8_weights}
+                    for scale_name, tensor in raw_tensors.items():
+                        if scale_name.endswith(".weight_scale_inv"):
+                            weight_name = scale_name[: -len(".weight_scale_inv")] + ".weight"
+                            if weight_name in fp8_weights:
+                                selected[scale_name] = tensor
+                    selected = _dequant_fp8_tensors(
+                        selected,
+                        block_size=self.fp8_block_size,
+                        shard_name=shard_name,
+                        shard_path=shard_path,
+                        index_dir=index_dir,
+                        donor_shard_dir=donor_shard_dir,
+                    )
+                    raw_tensors.update(selected)
+
+                mxfp_weights = {
+                    name
+                    for name, tensor in raw_tensors.items()
+                    if name.endswith(".weight")
+                    and tensor.dtype == torch.float8_e4m3fn
+                    and f"{name[:-len('.weight')]}.weight_scale_inv" not in self.source_weight_map
+                }
+                if mxfp_weights:
+                    selected = {name: raw_tensors[name] for name in mxfp_weights}
+                    for scale_name, tensor in raw_tensors.items():
+                        if scale_name.endswith(".weight_scale"):
+                            weight_name = scale_name[: -len(".weight_scale")] + ".weight"
+                            if weight_name in mxfp_weights:
+                                selected[scale_name] = tensor
+                    raw_tensors.update(_dequant_mxfp_tensors(selected, device="cpu", shard_name=shard_name))
+
+                for layer in layer_names:
+                    weight = raw_tensors[f"{layer}.weight"]
+                    if not weight.is_floating_point() or weight.dtype == torch.float8_e4m3fn:
+                        raise RuntimeError(f"Cannot calculate fused GS for '{layer}' from source dtype {weight.dtype}.")
+                    candidate_scales[layer] = float(calculate_gparam_e5m3(weight, group_size=16).item())
+            finally:
+                if self.is_streaming:
+                    for path in created_paths:
+                        try:
+                            os.remove(path)
+                        except FileNotFoundError:
+                            pass
+                        except OSError as exc:
+                            logger.warning(f"Could not remove pre-scan cache file {path}: {exc}")
+
+        for group in groups:
+            shared_scale = min(candidate_scales[layer] for layer in group)
+            self.fused_global_scale_overrides.update({layer: shared_scale for layer in group})
+        logger.info(
+            f"Prepared shared GS values for {len(self.fused_global_scale_overrides)} cross-shard fused weights."
+        )
 
     def _reorder_shards_by_dependency(self) -> None:
         """Reorder shard_names via topological sort so donors precede recipients.
@@ -1141,6 +1305,8 @@ class _ModelFreeCompressorCore:
             "disable_opt_rtn": self.disable_opt_rtn,
             "model_type": self.model_type,
             "source_quantization_config": self.source_quantization_config,
+            "fused_global_scale_enabled": envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE,
+            "fused_global_scale_policy": 1,
         }
         return json.loads(json.dumps(parameters, sort_keys=True, default=str))
 
@@ -1317,6 +1483,7 @@ class _ModelFreeCompressorCore:
                         quant_output_dir=self._quant_output_dir,
                         total_shards=len(self.shard_names),
                         donor_tensors_to_exclude=donor_tensors,
+                        fused_global_scale_overrides=self.fused_global_scale_overrides,
                     )
                 )
 
@@ -1608,6 +1775,7 @@ class _ModelFreeCompressorCore:
                                 # metadata fetch (not in the shard cache sub-dir).
                                 index_dir=self.work_dir,
                                 donor_shard_dir=donor_scale_cache_dir,
+                                fused_global_scale_overrides=self.fused_global_scale_overrides,
                             )
                             quant_futures[qf] = shard_name
                     elif future in quant_futures:
@@ -1838,6 +2006,7 @@ class _ModelFreeCompressorCore:
         self._reorder_shards_by_dependency()
         self.shard_parallelism, shard_parallelism_source = self._resolve_shard_parallelism()
         self._prepare_resume_state()
+        self._prepare_fused_global_scale_overrides()
 
         # Determine the output packing format based on scheme data type
         data_type = (self.default_scheme.get("data_type") or "int").lower()

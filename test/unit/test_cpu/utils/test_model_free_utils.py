@@ -1590,6 +1590,21 @@ class TestFP8Source:
         result = _dequant_fp8_tensors(raw, block_size=None)
         assert result["layer.weight"].dtype == torch.float32 and "layer.weight_scale_inv" not in result
 
+    def test_deepseek_v32_uses_numeric_weight_scale_inv(self):
+        weight = torch.full((128, 128), 2.0, dtype=torch.float8_e4m3fn)
+        scale = torch.full((1, 1), 0.3, dtype=torch.float32)
+        raw = {"layer.weight": weight, "layer.weight_scale_inv": scale}
+        quantization_config = {"quant_method": "fp8", "fmt": "e4m3", "scale_fmt": "ue8m0"}
+
+        raw, source_state = _preprocess_model_type_source_tensors(
+            raw, model_type="deepseek_v32", group_size=32, quantization_config=quantization_config
+        )
+        result = _dequant_fp8_tensors(raw, block_size=[128, 128])
+
+        assert source_state == {}
+        assert torch.equal(result["layer.weight"], weight.float() * scale.item())
+        assert "layer.weight_scale_inv" not in result
+
     @pytest.mark.parametrize("hydrate_only", [False, True])
     def test_fp8_weight_without_scale_raises(self, hydrate_only):
         raw = {"layer.weight": torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)}

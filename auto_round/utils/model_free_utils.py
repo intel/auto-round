@@ -1323,7 +1323,12 @@ def _quantize_weight_nvfp4_e5m3(
 
 
 def _qdq_weight_nvfp4_e5m3_gs(
-    weight: torch.Tensor, layer_name: str, group_size: int, device: str, disable_opt_rtn: bool
+    weight: torch.Tensor,
+    layer_name: str,
+    group_size: int,
+    device: str,
+    disable_opt_rtn: bool,
+    global_scale_override: torch.Tensor | float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return (fp32 weight, qdq weight, encoded-domain block scale, weight global scale) for NVFP4_E5M3_GS."""
     from auto_round.data_type.nvfp import calculate_gparam_e5m3, nvfp4_v2_gs, opt_rtn_nvfp4_v2_gs
@@ -1335,7 +1340,12 @@ def _qdq_weight_nvfp4_e5m3_gs(
             f"in_features={in_features} for '{layer_name}'."
         )
     weight_dev = weight.to(device=device, dtype=torch.float32)
-    global_scale = calculate_gparam_e5m3(weight_dev, group_size).reshape(1)
+    if global_scale_override is None:
+        global_scale = calculate_gparam_e5m3(weight_dev, group_size).reshape(1)
+    else:
+        global_scale = torch.as_tensor(global_scale_override, dtype=torch.float32, device=device).reshape(1)
+        if not torch.isfinite(global_scale).all() or (global_scale <= 0).any():
+            raise ValueError(f"Invalid NVFP4_E5M3_GS global scale override for '{layer_name}': {global_scale}.")
     quant_func = nvfp4_v2_gs if disable_opt_rtn else opt_rtn_nvfp4_v2_gs
     qdq_weight, scale, _ = quant_func(weight_dev, bits=4, group_size=group_size, global_scale=global_scale)
     return weight_dev, qdq_weight, scale, global_scale
@@ -1347,9 +1357,12 @@ def _quantize_weight_nvfp4_e5m3_gs(
     group_size: int = 16,
     device: str = "cpu",
     disable_opt_rtn: bool = False,
+    global_scale_override: torch.Tensor | float | None = None,
 ) -> dict[str, torch.Tensor]:
     """Fake-quantize a 2D weight tensor to NVFP4_E5M3_GS; model-free uses a fixed input global scale of 1."""
-    _, qdq_weight, _, _ = _qdq_weight_nvfp4_e5m3_gs(weight, layer_name, group_size, device, disable_opt_rtn)
+    _, qdq_weight, _, _ = _qdq_weight_nvfp4_e5m3_gs(
+        weight, layer_name, group_size, device, disable_opt_rtn, global_scale_override
+    )
     return {
         f"{layer_name}.weight": qdq_weight.to(dtype=weight.dtype, device="cpu"),
         f"{layer_name}.input_global_scale": torch.ones(1, dtype=torch.float32),
@@ -1362,13 +1375,14 @@ def _pack_weight_nvfp4_e5m3_gs(
     group_size: int = 16,
     device: str = "cpu",
     disable_opt_rtn: bool = False,
+    global_scale_override: torch.Tensor | float | None = None,
 ) -> dict[str, torch.Tensor]:
     """Pack FP4 E2M1 weights with UE5M3 block scales and a per-tensor weight global scale."""
     from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
 
     out_features, in_features = weight.shape
     weight_dev, _, scale, global_scale = _qdq_weight_nvfp4_e5m3_gs(
-        weight, layer_name, group_size, device, disable_opt_rtn
+        weight, layer_name, group_size, device, disable_opt_rtn, global_scale_override
     )
     scale = scale.reshape(out_features, in_features // group_size).to(torch.float32)
     with torch.device("meta"):
@@ -1492,6 +1506,7 @@ def _quantize_single_tensor(
     device: str = "cpu",
     quantize_func: Callable = quantize_weight_rtn,
     disable_opt_rtn: bool = False,
+    global_scale_override: torch.Tensor | float | None = None,
 ) -> tuple[str, dict[str, torch.Tensor], str | None, str | None]:
     """Quantize one eligible weight tensor and return packed outputs.
 
@@ -1576,6 +1591,7 @@ def _quantize_single_tensor(
                 group_size=group_size,
                 device=device,
                 disable_opt_rtn=disable_opt_rtn,
+                global_scale_override=global_scale_override,
             )
             logger.debug(f"Quantized (NVFP4_E5M3_GS): {layer_name} (bits=4, group_size={group_size})")
             return layer_name, out, layer_name, None
@@ -2255,6 +2271,91 @@ def _dequant_fp8_tensors(
     return raw_tensors
 
 
+_FUSED_NVFP4_PROJECTION_GROUPS = {
+    "q_proj": ("q_proj", "k_proj", "v_proj"),
+    "k_proj": ("q_proj", "k_proj", "v_proj"),
+    "v_proj": ("q_proj", "k_proj", "v_proj"),
+    "gate_proj": ("gate_proj", "up_proj"),
+    "up_proj": ("gate_proj", "up_proj"),
+    "w1": ("w1", "w3"),
+    "w3": ("w1", "w3"),
+}
+
+
+def _fused_nvfp4_projection_groups(weight_map: dict[str, str], matcher: _PatternMatcher) -> list[tuple[str, ...]]:
+    """Find complete NVFP4_E5M3_GS fused projection groups in a checkpoint index."""
+    indexed_layers = {name[: -len(".weight")] for name in weight_map if name.endswith(".weight")}
+    groups: dict[tuple[str, tuple[str, ...]], dict[str, str]] = {}
+    for layer_name in indexed_layers:
+        weight_name = f"{layer_name}.weight"
+        if matcher.should_ignore(weight_name) or matcher.should_skip(weight_name):
+            continue
+        scheme = matcher.resolve_scheme(weight_name)
+        if not scheme or (scheme.get("data_type") or "int").lower() != _NVFP4_E5M3_GS_DATA_TYPE:
+            continue
+        if scheme.get("bits", 4) != 4 or scheme.get("group_size", 16) != 16:
+            continue
+
+        parent, projection = layer_name.rsplit(".", 1) if "." in layer_name else ("", layer_name)
+        projection_group = _FUSED_NVFP4_PROJECTION_GROUPS.get(projection)
+        if projection_group is not None:
+            groups.setdefault((parent, projection_group), {})[projection] = layer_name
+
+    return [
+        tuple(members[projection] for projection in projection_group)
+        for (_, projection_group), members in groups.items()
+        if all(projection in members for projection in projection_group)
+    ]
+
+
+def _fused_nvfp4_global_scale_overrides(
+    raw_tensors: dict[str, torch.Tensor],
+    matcher: _PatternMatcher,
+    external_overrides: dict[str, float | torch.Tensor] | None = None,
+) -> dict[str, torch.Tensor]:
+    """Resolve shared GS values for complete same-shard groups and indexed external overrides."""
+    from auto_round import envs
+
+    if not envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE:
+        return {}
+
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3
+
+    groups: dict[tuple[str, tuple[str, ...]], dict[str, tuple[str, torch.Tensor]]] = {}
+    for tensor_name, tensor in raw_tensors.items():
+        if not tensor_name.endswith(".weight") or tensor.ndim != 2 or tensor.shape[1] % 16:
+            continue
+        if matcher.should_ignore(tensor_name) or matcher.should_skip(tensor_name):
+            continue
+        scheme = matcher.resolve_scheme(tensor_name)
+        if not scheme or (scheme.get("data_type") or "int").lower() != _NVFP4_E5M3_GS_DATA_TYPE:
+            continue
+        if scheme.get("bits", 4) != 4 or scheme.get("group_size", 16) != 16:
+            continue
+
+        layer_name = tensor_name[: -len(".weight")]
+        parent, projection = layer_name.rsplit(".", 1) if "." in layer_name else ("", layer_name)
+        projection_group = _FUSED_NVFP4_PROJECTION_GROUPS.get(projection)
+        if projection_group is not None:
+            groups.setdefault((parent, projection_group), {})[projection] = (tensor_name, tensor)
+
+    overrides: dict[str, torch.Tensor] = {}
+    for (_, projection_group), members in groups.items():
+        if any(projection not in members for projection in projection_group):
+            continue
+        scales = [calculate_gparam_e5m3(tensor, group_size=16).reshape(1) for _, tensor in members.values()]
+        shared_scale = torch.stack(scales).amin().reshape(1)
+        for tensor_name, _ in members.values():
+            overrides[tensor_name] = shared_scale
+
+    if external_overrides:
+        for layer_name, value in external_overrides.items():
+            tensor_name = f"{layer_name}.weight"
+            if tensor_name in raw_tensors:
+                overrides[tensor_name] = torch.as_tensor(value, dtype=torch.float32).reshape(1)
+    return overrides
+
+
 def _process_shard(
     shard_path: str,
     default_scheme: dict | None = None,
@@ -2272,6 +2373,7 @@ def _process_shard(
     index_dir: str | None = None,
     donor_shard_dir: str | None = None,
     donor_tensors_to_exclude: set[str] | None = None,
+    fused_global_scale_overrides: dict[str, float | torch.Tensor] | None = None,
 ) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
     """Quantize eligible weights in a single safetensors shard.
 
@@ -2456,6 +2558,10 @@ def _process_shard(
     # ``raw_tensors`` now owns these; drop the duplicate references.
     preserved_tensors.clear()
 
+    global_scale_overrides = _fused_nvfp4_global_scale_overrides(
+        raw_tensors, matcher, external_overrides=fused_global_scale_overrides
+    )
+
     for tensor_name in list(raw_tensors.keys()):
         tensor = raw_tensors.pop(tensor_name)
         _layer_name, out_dict, q_layer, _ig_layer = _quantize_single_tensor(
@@ -2465,6 +2571,7 @@ def _process_shard(
             device,
             quantize_func,
             disable_opt_rtn,
+            global_scale_override=global_scale_overrides.get(tensor_name),
         )
         # Cross-shard hydrated FP8 scale_inv tensors are FP32 sources, not dequantized weights.
         if (
@@ -4406,15 +4513,8 @@ def preprocess_model_type_source_tensors(
 ) -> tuple[dict[str, torch.Tensor], dict[str, int]]:
     """Apply model-type-specific source tensor normalization."""
     model_type = (model_type or "").lower()
-    quantization_config = quantization_config or {}
     is_deepseek_v4 = model_type == "deepseek_v4"
-    is_deepseek_v32_ue8m0 = (
-        model_type == "deepseek_v32"
-        and quantization_config.get("quant_method") == "fp8"
-        and str(quantization_config.get("fmt", "")).lower() == "e4m3"
-        and str(quantization_config.get("scale_fmt", "")).lower() == "ue8m0"
-    )
-    if not is_deepseek_v4 and not is_deepseek_v32_ue8m0:
+    if not is_deepseek_v4:
         return raw_tensors, {}
 
     entries: list[tuple[str, str, bool]] = []
@@ -4422,11 +4522,8 @@ def preprocess_model_type_source_tensors(
         if not name.endswith(".weight"):
             continue
         layer_name = name[: -len(".weight")]
-        scale_candidates = [f"{layer_name}.scale"]
-        if is_deepseek_v32_ue8m0:
-            scale_candidates.extend((f"{layer_name}.weight_scale", f"{layer_name}.weight_scale_inv"))
-        scale_name = next((candidate for candidate in scale_candidates if candidate in raw_tensors), None)
-        if scale_name is None:
+        scale_name = f"{layer_name}.scale"
+        if scale_name not in raw_tensors:
             continue
         if tensor.dtype == torch.float8_e4m3fn:
             entries.append((name, scale_name, True))

@@ -721,6 +721,105 @@ def test_nvfp4_e5m3_gs_model_free_fake_quantization():
     assert is_model_free_supported_scheme("NVFP4_E5M3_GS")
 
 
+def test_nvfp4_e5m3_gs_fused_alignment_respects_environment(tmp_path, monkeypatch):
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3
+
+    gate = "model.layers.0.mlp.gate_proj"
+    up = "model.layers.0.mlp.up_proj"
+    gate_weight = torch.full((16, 32), 0.1)
+    up_weight = torch.full((16, 32), 4.0)
+    shard_path = str(tmp_path / "model.safetensors")
+    save_file({f"{gate}.weight": gate_weight, f"{up}.weight": up_weight}, shard_path)
+    default_scheme = {"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2_gs"}
+
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
+    aligned, _, _ = _process_shard(
+        shard_path,
+        default_scheme=default_scheme,
+        layer_config={},
+        ignore_patterns=[],
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    expected_scale = min(
+        calculate_gparam_e5m3(weight, group_size=16).item() for weight in (gate_weight, up_weight)
+    )
+    torch.testing.assert_close(aligned[f"{gate}.weight_global_scale"], torch.tensor([expected_scale]))
+    torch.testing.assert_close(aligned[f"{up}.weight_global_scale"], torch.tensor([expected_scale]))
+
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "0")
+    unaligned, _, _ = _process_shard(
+        shard_path,
+        default_scheme=default_scheme,
+        layer_config={},
+        ignore_patterns=[],
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    assert not torch.equal(
+        unaligned[f"{gate}.weight_global_scale"], unaligned[f"{up}.weight_global_scale"]
+    )
+
+
+def test_nvfp4_e5m3_gs_aligns_cross_shard_fused_weights(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
+    model_dir = tmp_path / "source_model"
+    model_dir.mkdir()
+    with open(model_dir / "config.json", "w") as config_file:
+        json.dump(
+            {
+                **_LLAMA_CFG,
+                "quantization_config": {
+                    "quant_method": "fp8",
+                    "fmt": "e4m3",
+                    "scale_fmt": "ue8m0",
+                    "weight_block_size": [128, 128],
+                },
+            },
+            config_file,
+        )
+
+    gate = "model.layers.0.mlp.gate_proj"
+    up = "model.layers.0.mlp.up_proj"
+    shard1 = "model-00001-of-00002.safetensors"
+    shard2 = "model-00002-of-00002.safetensors"
+    save_file(
+        {
+            f"{gate}.weight": torch.full((16, 32), 1.0).to(torch.float8_e4m3fn),
+            f"{gate}.weight_scale_inv": torch.full((1, 1), 0.5),
+            f"{up}.weight_scale_inv": torch.full((1, 1), 0.5),
+        },
+        str(model_dir / shard1),
+    )
+    save_file({f"{up}.weight": torch.full((16, 32), 5.0).to(torch.float8_e4m3fn)}, str(model_dir / shard2))
+    weight_map = {
+        f"{gate}.weight": shard1,
+        f"{gate}.weight_scale_inv": shard1,
+        f"{up}.weight": shard2,
+        f"{up}.weight_scale_inv": shard1,
+    }
+    with open(model_dir / "model.safetensors.index.json", "w") as index_file:
+        json.dump({"weight_map": weight_map}, index_file)
+
+    output_dir = str(tmp_path / "output")
+    core = _ModelFreeCompressorCore(
+        str(model_dir),
+        output_dir,
+        scheme="NVFP4_E5M3_GS",
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    core.run()
+
+    scales = {}
+    for layer_name in (gate, up):
+        tensor_name = f"{layer_name}.weight_global_scale"
+        shard_file = core.output_weight_map[tensor_name]
+        with safe_open(os.path.join(output_dir, shard_file), framework="pt") as shard:
+            scales[layer_name] = shard.get_tensor(tensor_name)
+    torch.testing.assert_close(scales[gate], scales[up])
+
+
 @pytest.mark.parametrize("fmt", ["auto_round", "llm_compressor"])
 def test_nvfp4_e5m3_gs_model_free_end_to_end(tmp_path, fmt):
     from safetensors import safe_open
