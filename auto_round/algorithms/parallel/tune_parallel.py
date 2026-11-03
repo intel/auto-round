@@ -127,6 +127,7 @@ class TuneParallelContext:
         allow_shard: bool = True,
         hook_pass: bool = False,
         merge_stats=ENGINE_CALIBRATION_STATS,
+        fresh_replicas: bool = False,
     ):
         """Collection forward: sharded across DDP mirrors when eligible.
 
@@ -145,6 +146,11 @@ class TuneParallelContext:
         default 0 = no cap): forward
         hooks force dynamo graph breaks, leaving the compiled runner as
         python-bound eager sections that can GIL-convoy under many threads.
+
+        ``fresh_replicas=True`` shards over one-pass copies of the block and
+        leaves the block's mirror pool alone: for passes that run BEFORE a
+        preprocessor transforms the block (the pool built there would carry
+        the untransformed weights into the later passes).
         """
         if self.devices is None or not allow_shard:
             return block_forward(block, inputs, input_others, cache_device=out_dev)
@@ -162,7 +168,7 @@ class TuneParallelContext:
         cap = int(self.collect_forward_cap or 0)
         n = len(inputs) if isinstance(inputs, (list, tuple)) else 0
         pool = None
-        if world >= 2 and isinstance(block, torch.nn.Module):
+        if world >= 2 and isinstance(block, torch.nn.Module) and not fresh_replicas:
             # ceil/floor split: any n >= world shards (a remainder lands on
             # an earlier replica); n < world runs below the pool's width and
             # stays serial
@@ -190,6 +196,15 @@ class TuneParallelContext:
             max_devices=cap if hook_pass else 0,
             pool=pool,
         )
+
+    def search_seam(self):
+        """Search seam over the collection devices for the preprocessors'
+        no-grad searches (``pre_quantize_block``); ``None`` keeps them serial."""
+        if not self.devices or len(self.devices) < 2:
+            return None
+        from auto_round.algorithms.parallel.search_shard import SearchShardSeam
+
+        return SearchShardSeam(self.devices)
 
     def ensure_pool(self, block) -> None:
         """Build the per-block mirror pool if absent (block-wide, not tied to

@@ -293,7 +293,7 @@ AR_DISABLE_BATCHED_SEARCH=1 python -m auto_round --model ... --device_map 0,1,2,
 ```
 
 ### AR_PERF_COUNTERS
-- **Description**: Emits one per-block `[perf] tune phases` INFO line with the wall time of each tuning phase (wrap / prepare / loop / tail) and, inside the loop, the sampler draw, best-params snapshots, gradient sync + optimizer step, rest, and the serial forward+loss+backward time. Intended for performance attribution of large multi-device quantization runs; adds negligible overhead.
+- **Description**: Emits one per-block `[perf] tune phases` INFO line with the wall time of each tuning phase (wrap / prepare / loop / tail) and, inside the loop, the sampler draw, best-params snapshots, gradient sync + optimizer step, rest, and the serial forward+loss+backward time. Also one per-block `[perf] pipeline phases` line (preprocessor calibration forward, pre-quantize transforms, reference and quantized-input collection, tuning, quantized-output cascade) and, with AWQ, a per-block `[perf] awq searches` line (grid and clip search walls, how many ran sharded under `--data_parallel`) and one `[perf] awq grid split` line per grid search (reference replay, candidate QDQ, candidate replay; sharded searches add the replica build and call staging). Intended for performance attribution of large multi-device quantization runs; adds negligible overhead.
 - **Default**: `0` (disabled)
 - **Valid Values**: `0` / `1`
 - **Usage**: Set during benchmarking runs to attribute block time to wrap searches vs the tuning loop.

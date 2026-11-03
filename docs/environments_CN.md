@@ -293,7 +293,7 @@ AR_DISABLE_BATCHED_SEARCH=1 python -m auto_round --model ... --device_map 0,1,2,
 ```
 
 ### AR_PERF_COUNTERS
-- **描述**：为每个 block 输出一行 `[perf] tune phases` INFO 日志，包含各调优阶段（wrap / prepare / loop / tail）的耗时，以及循环内部的采样器抽取、最优参数快照、梯度同步 + 优化器步进、剩余时间和串行 forward+loss+backward 时间。用于大型多设备量化运行的性能归因；开销可忽略。
+- **描述**：为每个 block 输出一行 `[perf] tune phases` INFO 日志，包含各调优阶段（wrap / prepare / loop / tail）的耗时，以及循环内部的采样器抽取、最优参数快照、梯度同步 + 优化器步进、剩余时间和串行 forward+loss+backward 时间。此外为每个 block 输出一行 `[perf] pipeline phases`（预处理器标定前向、量化前变换、参考输出与量化输入采集、调优、量化输出级联）；使用 AWQ 时，还会为每个 block 输出一行 `[perf] awq searches`（网格搜索与 clip 搜索的耗时，以及在 `--data_parallel` 下有多少搜索以分片方式执行），并为每次网格搜索输出一行 `[perf] awq grid split`（参考输出重放、候选 QDQ、候选重放；分片搜索另含副本构建与调用暂存）。用于大型多设备量化运行的性能归因；开销可忽略。
 - **默认值**：`0`（关闭）
 - **有效取值**：`0` / `1`
 - **用法**：在基准测试运行中设置，用于将 block 时间归因到封装搜索或调优循环。

@@ -38,6 +38,31 @@ class BasePreprocessor(BaseAlgorithm):
     hooks below.
     """
 
+    # Data-parallel search seam (``SearchShardSeam``) attached by the composer
+    # around ``pre_quantize_block``; ``None`` keeps the searches serial.
+    _parallel_search = None
+
+    def set_parallel_search(self, seam) -> None:
+        """Attach (or detach with ``None``) the engine's search seam.
+
+        Preprocessors whose ``pre_quantize_block`` runs no-grad searches may
+        shard them through the seam; the default implementation ignores it.
+        """
+        self._parallel_search = seam
+
+    def sharded_calibration(self, devices):
+        """Context manager for a calibration pass sharded over ``devices``.
+
+        The calibration forward (the pass carrying this preprocessor's
+        ``register_fp_input_forward_hooks`` hooks) runs on one copy of the
+        block per device, each over a contiguous slice of the samples. A
+        preprocessor whose hooks can capture per shard returns a context
+        manager that routes the captures by device during the pass and merges
+        them, in device (= sample) order, on exit. ``None`` (the default)
+        keeps the pass serial.
+        """
+        return
+
     def pre_quantize_block(self, ctx) -> None:
         """Apply this transform before reference collection and block quantization."""
         return
