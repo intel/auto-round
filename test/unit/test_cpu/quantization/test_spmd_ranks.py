@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Thread ranks (auto_round.parallel.spmd): collectives, turnstile,
+"""Thread ranks (auto_round.parallel.dp.spmd): collectives, turnstile,
 samplers, failure handling, and the unchanged SignRound loop run per rank
 on CPU against the serial run."""
 
@@ -21,7 +21,7 @@ import threading
 import pytest
 import torch
 
-from auto_round.parallel import spmd
+from auto_round.parallel.dp import spmd
 
 CPU2 = [torch.device("cpu"), torch.device("cpu", 1)]
 
@@ -149,7 +149,7 @@ class TestRankScope:
         assert device_manager.device == outside
 
     def test_index_sampler_draws_from_the_rank_shard(self):
-        from auto_round.utils.distributed import make_index_sampler
+        from auto_round.parallel.distributed import make_index_sampler
 
         def _draws():
             s = make_index_sampler(8, 2)
@@ -209,10 +209,10 @@ def _pinned_sampler(nsamples, batch_size):
 
 
 def _quantize(model_path, monkeypatch, world, **extra):
-    import auto_round.parallel.tune_parallel as tp
-    import auto_round.utils.distributed as distributed
+    import auto_round.parallel.distributed as distributed
+    import auto_round.parallel.dp.tune_parallel as tp
     from auto_round import AutoRound
-    from auto_round.parallel.data_parallel import DDPPlan, ParallelPolicy
+    from auto_round.parallel.dp.engine import DDPPlan, ParallelPolicy
 
     monkeypatch.setattr(distributed, "make_index_sampler", _pinned_sampler)
     engaged = []

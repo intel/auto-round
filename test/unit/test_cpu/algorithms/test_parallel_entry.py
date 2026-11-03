@@ -25,7 +25,7 @@ import torch.distributed as dist
 from auto_round import AutoRound, ParallelConfig, quantize_and_save
 from auto_round.cli.main import _build_parallel_config, start
 from auto_round.cli.parser import build_quantize_parser
-from auto_round.parallel import launcher
+from auto_round.parallel.tp import launcher
 
 
 @pytest.fixture(autouse=True)
@@ -34,10 +34,10 @@ def clean_launcher_environment(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-@pytest.mark.parametrize("name", ["data_parallel", "mirror_sync", "spmd", "tune_parallel"])
+@pytest.mark.parametrize("name", ["engine", "mirror_sync", "spmd", "tune_parallel"])
 def test_parallel_engines_live_in_shared_package(name):
-    module = importlib.import_module(f"auto_round.parallel.{name}")
-    assert module.__package__ == "auto_round.parallel"
+    module = importlib.import_module(f"auto_round.parallel.dp.{name}")
+    assert module.__package__ == "auto_round.parallel.dp"
 
 
 def test_config_aliases_and_roundtrip():
@@ -50,6 +50,21 @@ def test_config_aliases_and_roundtrip():
     assert ParallelConfig.from_value(raw).data_parallel == "4"
     assert raw["data_parallel"] == 4
     assert ParallelConfig(data_parallel=1).data_parallel == "off"
+
+
+def test_dp_uses_one_unambiguous_public_option():
+    assert "dp_size" not in inspect.signature(ParallelConfig).parameters
+    assert "dp_size" not in asdict(ParallelConfig())
+    assert "--dp_size" not in build_quantize_parser().format_help()
+    with pytest.raises(SystemExit):
+        build_quantize_parser().parse_args(["--dp_size", "2"])
+    with pytest.raises(TypeError, match="data_parallel"):
+        ParallelConfig.from_value({"dp_size": 2})
+    with pytest.raises(TypeError, match="data_parallel"):
+        AutoRound("not-loaded", dp_size=2)
+    with pytest.raises(TypeError, match="data_parallel"):
+        quantize_and_save("not-loaded", "output", dp_size=2)
+    assert ParallelConfig.from_value({"data_parallel": 2}).data_parallel == "2"
 
 
 @pytest.mark.parametrize("value", [True, 0, -1, 1.5, "invalid", None])
@@ -261,7 +276,7 @@ def test_api_dp_policy_attached_before_model_loading():
     )
     with (
         patch("torch.cuda.device_count", return_value=2),
-        patch("auto_round.parallel.data_parallel.check_parallel_device_map_compat_"),
+        patch("auto_round.parallel.dp.engine.check_parallel_device_map_compat_"),
     ):
         compressor = AutoRound(
             model,

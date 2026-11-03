@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shared capability checks for native TP entry points and individual layers."""
+"""Capability checks for native tensor-parallel entry points and layers."""
 
 
 def validate_tp_quantization(scheme):

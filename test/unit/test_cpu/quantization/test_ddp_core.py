@@ -26,7 +26,7 @@ import pytest
 import torch
 
 from auto_round.algorithms.block_runner import _cat_device_safe
-from auto_round.parallel.data_parallel import (
+from auto_round.parallel.dp.engine import (
     _transport_segment,
     distribute_pool,
     parallel_state,
@@ -40,7 +40,7 @@ def _with_policy(q, world=2):
     (the policy rides on the compress context; env vars are gone)."""
     from types import SimpleNamespace
 
-    from auto_round.parallel.data_parallel import ParallelPolicy
+    from auto_round.parallel.dp.engine import ParallelPolicy
 
     q.compress_context = SimpleNamespace(parallel_policy=ParallelPolicy(world=world))
     return q
@@ -76,7 +76,7 @@ class TestResolveDDPPlan:
         assert sum(1 for n in plan.notes if "low free VRAM on" in n) == 3  # mirrors only, not home
 
     def test_batch_smaller_than_world_demotes_to_pow2(self):
-        from auto_round.parallel.data_parallel import resolve_ddp_plan as _rdp
+        from auto_round.parallel.dp.engine import resolve_ddp_plan as _rdp
 
         def _resolve(batch, world):
             return _rdp(
@@ -104,7 +104,7 @@ class TestResolveDDPPlan:
         assert p.world == 4
 
     def test_batch_demotion_is_exact_when_pow2_floor_off(self):
-        from auto_round.parallel.data_parallel import resolve_ddp_plan as _rdp
+        from auto_round.parallel.dp.engine import resolve_ddp_plan as _rdp
 
         def _resolve(batch, world):
             return _rdp(
@@ -221,7 +221,7 @@ class TestDistributePool:
         # distribute_pool gives device r the contiguous range [r*shard,(r+1)*shard);
         # on uniform CPU devices that is a no-op, so pin the layout arithmetic
         # through the plan the pool follows
-        from auto_round.parallel.data_parallel import resolve_ddp_plan
+        from auto_round.parallel.dp.engine import resolve_ddp_plan
 
         plan = resolve_ddp_plan(
             4,
@@ -262,7 +262,7 @@ class TestSingleDevicePlacement:
     def test_block_spanning_two_cuda_devices_declines(self, monkeypatch):
         from types import SimpleNamespace
 
-        from auto_round.parallel.data_parallel import resolve_tune_ddp_plan_
+        from auto_round.parallel.dp.engine import resolve_tune_ddp_plan_
 
         block = SimpleNamespace(parameters=lambda: iter([self._param("cuda:0"), self._param("cuda:1")]))
         with pytest.raises(RuntimeError, match="spans 2 CUDA devices"):
@@ -271,8 +271,8 @@ class TestSingleDevicePlacement:
     def test_non_cuda_accelerator_home_is_eligible(self, monkeypatch):
         """cuda/xpu/hpu homes are eligible; a fake xpu home with explicit
         devices resolves a plan on CPU (no xpu runtime touched)."""
-        from auto_round.parallel import data_parallel as dp
-        from auto_round.parallel.data_parallel import resolve_ddp_plan
+        from auto_round.parallel.dp import engine as dp
+        from auto_round.parallel.dp.engine import resolve_ddp_plan
 
         free_map = dp._accel_free_bytes_map("xpu")  # None on a box without xpu
         block = SimpleNamespace(
@@ -309,7 +309,7 @@ class TestSingleDevicePlacement:
         """CPU-pinned subtrees alongside the CUDA home are legal placement."""
         from types import SimpleNamespace
 
-        from auto_round.parallel.data_parallel import resolve_tune_ddp_plan_
+        from auto_round.parallel.dp.engine import resolve_tune_ddp_plan_
 
         block = SimpleNamespace(
             parameters=lambda: iter([self._param("cpu"), self._param("cuda:0")]),
@@ -326,7 +326,7 @@ class TestSingleDevicePlacement:
     def test_iters0_engages_non_pow2_world(self, monkeypatch):
         """A world=3 plan engages when the tune loop is empty (iters=0):
         no gradient exchange runs, so the halving-doubling pow2 rule lifts."""
-        from auto_round.parallel import data_parallel as dp
+        from auto_round.parallel.dp import engine as dp
 
         q = SimpleNamespace(iters=0, gradient_accumulate_steps=1, enable_lfq=False)
         q._get_scaler = lambda: None
@@ -349,7 +349,7 @@ class TestSingleDevicePlacement:
     def test_iters_above_zero_declines_non_pow2_world(self, monkeypatch):
         """The same world=3 with a live tune loop raises: the gradient
         exchange (recursive halving-doubling) needs a power-of-two world."""
-        from auto_round.parallel import data_parallel as dp
+        from auto_round.parallel.dp import engine as dp
 
         q = SimpleNamespace(iters=10, gradient_accumulate_steps=1, enable_lfq=False)
         q._get_scaler = lambda: None
@@ -371,7 +371,7 @@ class TestSingleDevicePlacement:
 
     def test_ddp_engagement_raises_dynamo_cache_limit_by_world(self, monkeypatch):
         """Engaging a parallel plan bumps the dynamo cache limit to base x world."""
-        from auto_round.parallel import data_parallel as dp
+        from auto_round.parallel.dp import engine as dp
         from auto_round.utils import device as _dev
 
         calls = []
@@ -396,8 +396,8 @@ class TestSingleDevicePlacement:
 
     def test_accumulation_engages(self, monkeypatch):
         """gradient_accumulate_steps > 1 no longer gates the lane."""
-        from auto_round.parallel import data_parallel as dp
-        from auto_round.parallel.data_parallel import resolve_tune_ddp_plan_
+        from auto_round.parallel.dp import engine as dp
+        from auto_round.parallel.dp.engine import resolve_tune_ddp_plan_
 
         q = SimpleNamespace(iters=10, gradient_accumulate_steps=2, enable_lfq=False)
         q._get_scaler = lambda: None
@@ -423,7 +423,7 @@ class TestSingleDevicePlacement:
         leaves each replica with the averaged gradient -- a positive rescale
         of the serial accumulated (summed) gradient, so sign-SGD updates and
         momentum directions match serial."""
-        from auto_round.parallel import data_parallel as dp
+        from auto_round.parallel.dp import engine as dp
 
         world = 2
         # replicas hold the SAME parameters (mirrors); each accumulates the
@@ -460,14 +460,14 @@ class TestPolicyDefaults:
     def test_quantizer_without_context_defaults_to_off(self):
         from types import SimpleNamespace
 
-        from auto_round.parallel.data_parallel import _quantizer_policy
+        from auto_round.parallel.dp.engine import _quantizer_policy
 
         assert _quantizer_policy(SimpleNamespace()).world == 1
 
     def test_policy_world_round_trip(self):
         from types import SimpleNamespace
 
-        from auto_round.parallel.data_parallel import ParallelPolicy, _quantizer_policy
+        from auto_round.parallel.dp.engine import ParallelPolicy, _quantizer_policy
 
         q = _with_policy(SimpleNamespace(), world=4)
         assert _quantizer_policy(q).world == 4
@@ -480,7 +480,7 @@ class TestPolicyDefaults:
 
         import torch
 
-        from auto_round.parallel.data_parallel import resolve_tune_ddp_plan_
+        from auto_round.parallel.dp.engine import resolve_tune_ddp_plan_
 
         q = _with_policy(SimpleNamespace(iters=10, gradient_accumulate_steps=1))
         q.parallel_constraints = lambda: {"enable_lfq": True}
@@ -646,7 +646,7 @@ class TestLoggingGlobals:
         because a CPU home declines before the sig block (CPU tests cannot
         reach the engaged path)."""
         from auto_round.algorithms.quantization.search_dispatch import _ENGAGED_LOGGED
-        from auto_round.parallel import data_parallel as dp
+        from auto_round.parallel.dp import engine as dp
 
         assert dp._ENGAGED_LOGGED_SIG is None
         # _coll_mirror_setup_logged was removed with its once-per-process
@@ -683,7 +683,7 @@ class TestActivationPricing:
         enter the mirror budget: cuda:1 fits the weights-only mirror (plus
         the 2GiB margin) but misses once the activation charge (>= the flat
         1GiB ``additional_memory``) lands on top."""
-        from auto_round.parallel import data_parallel as dp
+        from auto_round.parallel.dp import engine as dp
 
         block = self._block()
         weight_bytes = sum(p.numel() * p.element_size() for p in block.parameters())
@@ -707,7 +707,7 @@ class TestActivationPricing:
     def test_estimator_failure_is_a_warning(self, monkeypatch, caplog, _autoround_log_propagate):
         """A failed estimate is a degraded state (weights-only budget): the
         skip line must be WARNING-level, not buried at INFO."""
-        from auto_round.parallel import data_parallel as dp
+        from auto_round.parallel.dp import engine as dp
         from auto_round.utils import device as _dev
 
         def _boom(*_a, **_k):
@@ -731,33 +731,33 @@ class TestEarlyDeviceMapEligibility:
     block 0; the runtime check remains the second line of defense."""
 
     def test_multi_device_map_with_live_loop_raises_before_load(self):
-        from auto_round.parallel.data_parallel import check_parallel_device_map_compat_
+        from auto_round.parallel.dp.engine import check_parallel_device_map_compat_
 
         with pytest.raises(RuntimeError, match="spans 2 CUDA devices; parallel tuning requires"):
             check_parallel_device_map_compat_(4, {"a": "cuda:0", "b": "cuda:1"}, iters=10)
 
     def test_message_lists_the_fixes(self):
-        from auto_round.parallel.data_parallel import check_parallel_device_map_compat_
+        from auto_round.parallel.dp.engine import check_parallel_device_map_compat_
 
         with pytest.raises(RuntimeError, match="--data_parallel off"):
             check_parallel_device_map_compat_(4, {"a": "cuda:0", "b": "cuda:1"}, iters=10)
 
     def test_single_device_map_passes(self):
-        from auto_round.parallel.data_parallel import check_parallel_device_map_compat_
+        from auto_round.parallel.dp.engine import check_parallel_device_map_compat_
 
         check_parallel_device_map_compat_(4, {"a": "cuda:0"}, iters=10)  # one device
         check_parallel_device_map_compat_(4, "0", iters=10)  # CLI default
         check_parallel_device_map_compat_(4, None, iters=10)  # no map
 
     def test_iters0_and_world1_are_not_cli_blocked(self):
-        from auto_round.parallel.data_parallel import check_parallel_device_map_compat_
+        from auto_round.parallel.dp.engine import check_parallel_device_map_compat_
 
         multi = {"a": "cuda:0", "b": "cuda:1"}
         check_parallel_device_map_compat_(4, multi, iters=0)  # no tune loop: runtime decides
         check_parallel_device_map_compat_(1, multi, iters=10)  # lane off
 
     def test_cpu_entries_do_not_count(self):
-        from auto_round.parallel.data_parallel import check_parallel_device_map_compat_
+        from auto_round.parallel.dp.engine import check_parallel_device_map_compat_
 
         check_parallel_device_map_compat_(4, {"a": "cpu", "b": "cpu"}, iters=10)
 
@@ -770,7 +770,7 @@ class TestEarlyDeviceMapEligibility:
         monkeypatch.setenv("WORLD_SIZE", "1")
         with (
             patch("torch.cuda.device_count", return_value=2),
-            patch("auto_round.parallel.data_parallel.check_parallel_device_map_compat_") as early,
+            patch("auto_round.parallel.dp.engine.check_parallel_device_map_compat_") as early,
         ):
             policy = ParallelConfig(data_parallel=2).resolve_data_parallel_policy("0", iters=10)
         early.assert_called_once_with(2, "0", 10)
@@ -780,7 +780,7 @@ class TestEarlyDeviceMapEligibility:
         """Second line of defense: the resolver's per-block span check."""
         from types import SimpleNamespace
 
-        from auto_round.parallel.data_parallel import resolve_tune_ddp_plan_
+        from auto_round.parallel.dp.engine import resolve_tune_ddp_plan_
 
         block = SimpleNamespace(
             parameters=lambda: iter(
@@ -802,7 +802,7 @@ class TestZeroShotParallelNotice:
     silent; nothing refuses to run."""
 
     def test_explicit_request_logs_one_info_line(self, caplog, _autoround_log_propagate):
-        from auto_round.parallel.data_parallel import ParallelPolicy, log_zero_shot_parallel_noop_
+        from auto_round.parallel.dp.engine import ParallelPolicy, log_zero_shot_parallel_noop_
 
         with caplog.at_level("INFO"):
             log_zero_shot_parallel_noop_(ParallelPolicy(world=4, source="explicit"))
@@ -813,7 +813,7 @@ class TestZeroShotParallelNotice:
         assert "quantizing serially" in infos[0].message
 
     def test_auto_and_off_are_silent(self, caplog, _autoround_log_propagate):
-        from auto_round.parallel.data_parallel import ParallelPolicy, log_zero_shot_parallel_noop_
+        from auto_round.parallel.dp.engine import ParallelPolicy, log_zero_shot_parallel_noop_
 
         with caplog.at_level("INFO"):
             log_zero_shot_parallel_noop_(ParallelPolicy(world=8, source="auto"))
@@ -865,7 +865,7 @@ class TestPeakVramReplicaDevices:
         assert mm._extra_devices == {"cuda:2"}  # peaks reset, registration kept
 
     def test_engaging_plan_registers_its_devices(self, monkeypatch, _memory_monitor_clean):
-        from auto_round.parallel import data_parallel as dp
+        from auto_round.parallel.dp import engine as dp
 
         mm = _memory_monitor_clean
         monkeypatch.setattr(dp, "_accel_device_count", lambda _t: 2)
@@ -886,7 +886,7 @@ class TestPeakVramReplicaDevices:
         assert mm._extra_devices == {"cuda:0", "cuda:1"}
 
     def test_serial_plan_registers_nothing(self, _memory_monitor_clean):
-        from auto_round.parallel.data_parallel import resolve_ddp_plan
+        from auto_round.parallel.dp.engine import resolve_ddp_plan
 
         assert resolve_ddp_plan(1, torch.device("cuda", 0), 8).world == 1
         assert _memory_monitor_clean._extra_devices == set()
@@ -947,8 +947,8 @@ class TestEngagedLineBatchMode:
     def test_engaged_line_reports_batch_mode_and_effective_batch(self, monkeypatch, caplog, _autoround_log_propagate):
         """F7: the engaged line logs the batch mode and the effective global
         batch (per_replica scales it by the world)."""
-        from auto_round.parallel import data_parallel as dp
-        from auto_round.parallel.data_parallel import ParallelPolicy
+        from auto_round.parallel.dp import engine as dp
+        from auto_round.parallel.dp.engine import ParallelPolicy
 
         monkeypatch.setattr(dp, "_accel_device_count", lambda _t: 2)
         monkeypatch.setattr(
@@ -1019,7 +1019,7 @@ class TestSyncMirrorsToHome:
     def _ddp_quantizer(quantizer_cls, block, with_pool=True):
         from types import SimpleNamespace
 
-        from auto_round.parallel.data_parallel import MirrorPool
+        from auto_round.parallel.dp.engine import MirrorPool
 
         devices = [torch.device("cpu", 0), torch.device("cpu", 1)]
         q = quantizer_cls.__new__(quantizer_cls)
@@ -1070,7 +1070,7 @@ class TestSyncMirrorsToHome:
 
     def test_sync_pushes_home_state_and_marks_pool_consumed(self):
         from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
-        from auto_round.parallel.mirror_sync import sync_mirrors_to_home
+        from auto_round.parallel.dp.mirror_sync import sync_mirrors_to_home
 
         block = self._block()
         q, pool = self._ddp_quantizer(RTNQuantizer, block)
@@ -1087,8 +1087,8 @@ class TestSyncMirrorsToHome:
 
     def test_sync_without_aligned_pool_is_a_noop(self):
         from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
-        from auto_round.parallel.data_parallel import MirrorPool
-        from auto_round.parallel.mirror_sync import sync_mirrors_to_home
+        from auto_round.parallel.dp.engine import MirrorPool
+        from auto_round.parallel.dp.mirror_sync import sync_mirrors_to_home
 
         block = self._block()
         q, _pool = self._ddp_quantizer(RTNQuantizer, block, with_pool=False)
@@ -1151,7 +1151,7 @@ class TestRequestedWorldErrors:
     def test_infeasible_world_raises(self, monkeypatch):
         import torch
 
-        from auto_round.parallel.data_parallel import resolve_tune_ddp_plan_
+        from auto_round.parallel.dp.engine import resolve_tune_ddp_plan_
 
         block = torch.nn.Sequential(torch.nn.Linear(4, 4))
         with pytest.raises(RuntimeError, match="ineligible"):
@@ -1163,7 +1163,7 @@ class TestRequestedWorldErrors:
         ineligibility reason left must be the non-CUDA home, never iters."""
         import torch
 
-        from auto_round.parallel.data_parallel import resolve_tune_ddp_plan_
+        from auto_round.parallel.dp.engine import resolve_tune_ddp_plan_
 
         q = self._fake_quantizer()
         q.iters = 0
@@ -1176,7 +1176,7 @@ class TestRequestedWorldErrors:
     def test_no_policy_stays_serial(self, monkeypatch):
         import torch
 
-        from auto_round.parallel.data_parallel import resolve_tune_ddp_plan_
+        from auto_round.parallel.dp.engine import resolve_tune_ddp_plan_
 
         block = torch.nn.Sequential(torch.nn.Linear(4, 4))
         plan = resolve_tune_ddp_plan_(self._fake_quantizer(), block, [torch.zeros(1)], None, "cpu")
@@ -1272,7 +1272,7 @@ class TestMirrorPoolUnit:
         return b
 
     def test_sync_hooks_copies_and_clears(self):
-        from auto_round.parallel.data_parallel import MirrorPool
+        from auto_round.parallel.dp.engine import MirrorPool
 
         block = self._block_with_hook()
         pool = MirrorPool(block, [torch.device("cpu", 0), torch.device("cpu", 1)])
@@ -1290,7 +1290,7 @@ class TestMirrorPoolUnit:
         assert len(block._seen) == 1, "stale hook must not fire after sync"
 
     def test_release_drops_mirrors(self):
-        from auto_round.parallel.data_parallel import MirrorPool
+        from auto_round.parallel.dp.engine import MirrorPool
 
         block = self._block_with_hook()
         pool = MirrorPool(block, [torch.device("cpu", 0), torch.device("cpu", 1)])
@@ -1429,7 +1429,7 @@ class TestRotationHookPoolInteraction:
     def test_hadamard_input_hook_parity_and_resync(self):
         from auto_round.algorithms.transforms import RotationConfig
         from auto_round.algorithms.transforms.hadamard.apply import _apply_input_transform
-        from auto_round.parallel.data_parallel import MirrorPool
+        from auto_round.parallel.dp.engine import MirrorPool
 
         class _B(torch.nn.Module):
             def __init__(self):
@@ -1468,11 +1468,11 @@ class TestHomeQuantizeThenCascade:
         from types import SimpleNamespace
 
         from auto_round.algorithms.quantization.rtn.quantizer import OptimizedRTNQuantizer
-        from auto_round.parallel.data_parallel import (
+        from auto_round.parallel.dp.engine import (
             MirrorPool,
             sharded_nograd_forward,
         )
-        from auto_round.parallel.mirror_sync import sync_mirrors_to_home
+        from auto_round.parallel.dp.mirror_sync import sync_mirrors_to_home
 
         torch.manual_seed(0)
 
@@ -1550,7 +1550,7 @@ class TestMirrorPoolMultiPass:
     def test_two_pool_passes_keep_the_pool_alive(self):
         import torch as _t
 
-        from auto_round.parallel.data_parallel import (
+        from auto_round.parallel.dp.engine import (
             MirrorPool,
             sharded_nograd_forward,
         )
@@ -1596,7 +1596,7 @@ class TestMergeMirrorStats:
     _STATS = {"imatrix": "sum", "imatrix_cnt": "sum", "act_max": "max"}
 
     def test_cold_expert_cnt_cotravels_with_imatrix(self):
-        from auto_round.parallel.data_parallel import _merge_mirror_stats
+        from auto_round.parallel.dp.engine import _merge_mirror_stats
 
         home = torch.nn.Linear(4, 4)
         mirror = torch.nn.Linear(4, 4)
@@ -1607,7 +1607,7 @@ class TestMergeMirrorStats:
         assert getattr(home, "imatrix_cnt", None) == 7
 
     def test_cnt_sums_across_mirrors(self):
-        from auto_round.parallel.data_parallel import _merge_mirror_stats
+        from auto_round.parallel.dp.engine import _merge_mirror_stats
 
         home = torch.nn.Linear(4, 4)
         home.imatrix = torch.zeros(4)
@@ -1621,7 +1621,7 @@ class TestMergeMirrorStats:
         assert torch.equal(home.imatrix, torch.full((4,), 2.0))
 
     def test_tensor_cnt_also_merges(self):
-        from auto_round.parallel.data_parallel import _merge_mirror_stats
+        from auto_round.parallel.dp.engine import _merge_mirror_stats
 
         home = torch.nn.Linear(4, 4)
         mirror = torch.nn.Linear(4, 4)
@@ -1631,7 +1631,7 @@ class TestMergeMirrorStats:
         assert home.imatrix_cnt == 7
 
     def test_non_numeric_attrs_ignored(self):
-        from auto_round.parallel.data_parallel import _merge_mirror_stats
+        from auto_round.parallel.dp.engine import _merge_mirror_stats
 
         home = torch.nn.Linear(4, 4)
         mirror = torch.nn.Linear(4, 4)
@@ -1640,7 +1640,7 @@ class TestMergeMirrorStats:
         assert not hasattr(home, "imatrix_cnt")
 
     def test_mirror_values_are_removed_once_folded(self):
-        from auto_round.parallel.data_parallel import _merge_mirror_stats
+        from auto_round.parallel.dp.engine import _merge_mirror_stats
 
         home = torch.nn.Linear(4, 4)
         mirror = torch.nn.Linear(4, 4)
@@ -1654,7 +1654,7 @@ class TestMergeMirrorStats:
         """Pool mirrors live across a block's collection passes: a sharded hook
         pass followed by any other sharded pass must leave the serial totals
         (the second merge used to add the mirrors' share again)."""
-        from auto_round.parallel.data_parallel import MirrorPool, sharded_nograd_forward
+        from auto_round.parallel.dp.engine import MirrorPool, sharded_nograd_forward
 
         class _B(torch.nn.Module):
             def __init__(self):
@@ -1700,7 +1700,7 @@ class TestCalibrationStatsContract:
     def test_merge_map_is_engine_act_max_plus_declaration(self):
         from types import SimpleNamespace
 
-        from auto_round.parallel.data_parallel import calibration_merge_stats
+        from auto_round.parallel.dp.engine import calibration_merge_stats
 
         q = SimpleNamespace(calibration_stats={"hess": "sum"})
         assert calibration_merge_stats(q, ["h"]) == {"act_max": "max", "hess": "sum"}
@@ -1708,7 +1708,7 @@ class TestCalibrationStatsContract:
     def test_undeclared_hooks_keep_the_pass_serial(self):
         from types import SimpleNamespace
 
-        from auto_round.parallel.data_parallel import calibration_merge_stats
+        from auto_round.parallel.dp.engine import calibration_merge_stats
 
         assert calibration_merge_stats(SimpleNamespace(calibration_stats=None), ["h"]) is None
         # no quantizer hooks: nothing to declare, the engine's act_max still folds
@@ -1717,7 +1717,7 @@ class TestCalibrationStatsContract:
     def test_unknown_reduction_is_rejected(self):
         from types import SimpleNamespace
 
-        from auto_round.parallel.data_parallel import calibration_merge_stats
+        from auto_round.parallel.dp.engine import calibration_merge_stats
 
         with pytest.raises(ValueError, match="supported shard reductions"):
             calibration_merge_stats(SimpleNamespace(calibration_stats={"hess": "mean"}), ["h"])
@@ -1733,7 +1733,7 @@ class TestCalibrationStatsContract:
 
     @staticmethod
     def _sharded_hook_pass(hook, stats):
-        from auto_round.parallel.data_parallel import MirrorPool, sharded_nograd_forward
+        from auto_round.parallel.dp.engine import MirrorPool, sharded_nograd_forward
 
         class _B(torch.nn.Module):
             def __init__(self):
@@ -1808,7 +1808,7 @@ class TestCappedPassReusesPool:
     def test_capped_pass_runs_subset_of_pool_replicas(self):
         import torch as _t
 
-        from auto_round.parallel.data_parallel import (
+        from auto_round.parallel.dp.engine import (
             MirrorPool,
             sharded_nograd_forward,
         )
@@ -1853,7 +1853,7 @@ class TestCappedPassReusesPool:
     def test_full_width_pass_with_pool_unchanged(self):
         import torch as _t
 
-        from auto_round.parallel.data_parallel import (
+        from auto_round.parallel.dp.engine import (
             MirrorPool,
             sharded_nograd_forward,
         )
@@ -1891,7 +1891,7 @@ class TestEnsurePool:
     the tune consume resident mirrors regardless of forward eligibility."""
 
     def test_ensure_pool_builds_once(self):
-        from auto_round.parallel.tune_parallel import TuneParallelContext
+        from auto_round.parallel.dp.tune_parallel import TuneParallelContext
 
         class _B(torch.nn.Module):
             def __init__(self):
@@ -1909,7 +1909,7 @@ class TestEnsurePool:
         assert ctx.pool is first
 
     def test_ensure_pool_noop_without_devices(self):
-        from auto_round.parallel.tune_parallel import TuneParallelContext
+        from auto_round.parallel.dp.tune_parallel import TuneParallelContext
 
         ctx = TuneParallelContext()
         ctx.devices = None
@@ -1923,7 +1923,7 @@ class TestContiguousShardSplit:
     instead of running serial; pools are withheld when the pass narrows."""
 
     def test_bounds_remainder_on_earlier_shards(self):
-        from auto_round.parallel.data_parallel import contiguous_shard_bounds
+        from auto_round.parallel.dp.engine import contiguous_shard_bounds
 
         assert contiguous_shard_bounds(129, 4) == [0, 33, 65, 97, 129]  # 33/32/32/32
         assert contiguous_shard_bounds(128, 4) == [0, 32, 64, 96, 128]
@@ -1932,7 +1932,7 @@ class TestContiguousShardSplit:
     def test_uneven_n_shards_instead_of_serial(self):
         import torch as _t
 
-        from auto_round.parallel.data_parallel import sharded_nograd_forward
+        from auto_round.parallel.dp.engine import sharded_nograd_forward
 
         class _B(_t.nn.Module):
             def __init__(self):
@@ -1961,7 +1961,7 @@ class TestContiguousShardSplit:
     def test_fewer_samples_than_devices_shrinks_world(self):
         import torch as _t
 
-        from auto_round.parallel.data_parallel import MirrorPool, sharded_nograd_forward
+        from auto_round.parallel.dp.engine import MirrorPool, sharded_nograd_forward
 
         class _B(_t.nn.Module):
             def __init__(self):
@@ -1994,7 +1994,7 @@ class TestResolverRtnSafe:
 
         import torch
 
-        from auto_round.parallel.data_parallel import resolve_tune_ddp_plan_
+        from auto_round.parallel.dp.engine import resolve_tune_ddp_plan_
 
         q = SimpleNamespace(iters=0, gradient_accumulate_steps=1, enable_lfq=False)
         # missing parallel_constraints and calibration_context must still
@@ -2020,7 +2020,7 @@ class TestCollectionShardingFailVisible:
     def test_requirement_error_propagates(self, monkeypatch):
         import torch
 
-        import auto_round.parallel.tune_parallel as tp
+        import auto_round.parallel.dp.tune_parallel as tp
 
         def _raise(quantizer, block, fp_inputs, fp_outputs, home, world=None, log=True):
             raise RuntimeError("parallel tuning with world=4 is ineligible: no mirror device")
@@ -2033,7 +2033,7 @@ class TestCollectionShardingFailVisible:
     def test_reachability_error_warns_and_declines(self, monkeypatch, caplog, _autoround_log_propagate):
         import torch
 
-        import auto_round.parallel.tune_parallel as tp
+        import auto_round.parallel.dp.tune_parallel as tp
 
         def _raise(quantizer, block, fp_inputs, fp_outputs, home, world=None, log=True):
             raise OSError("boom")
@@ -2059,7 +2059,7 @@ class TestSyncPoolDevices:
     """Phase barriers synchronize every distinct CUDA pool device once (CPU skipped)."""
 
     def test_syncs_each_cuda_device_once(self):
-        from auto_round.parallel.mirror_sync import _sync_pool_devices
+        from auto_round.parallel.dp.mirror_sync import _sync_pool_devices
 
         devices = [
             torch.device("cpu"),
@@ -2100,7 +2100,7 @@ class TestDistributeSearchStats:
     def test_distributes_to_every_mirror(self):
         import torch.nn as nn
 
-        from auto_round.parallel.mirror_sync import _distribute_search_stats
+        from auto_round.parallel.dp.mirror_sync import _distribute_search_stats
 
         block = nn.Module()
         block.l1 = nn.Linear(4, 4, bias=False)
@@ -2189,8 +2189,8 @@ class TestHomeQuantizeMirrorParity:
     def _run_parity(self, quantizer_cls, config):
         from types import SimpleNamespace
 
-        from auto_round.parallel.data_parallel import MirrorPool
-        from auto_round.parallel.mirror_sync import sync_mirrors_to_home
+        from auto_round.parallel.dp.engine import MirrorPool
+        from auto_round.parallel.dp.mirror_sync import sync_mirrors_to_home
 
         blk_s, blk_d = self._block()
         model_s, model_d = self._model(blk_s), self._model(blk_d)

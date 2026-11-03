@@ -534,7 +534,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 _perf.tick("clear")
                 clear_memory(device_list=device_manager.device_list)
                 _perf.tick("monitor")
-                memory_monitor.log_summary()
+                self.parallel_execution.log_memory_summary()
                 _perf.tick("write")
 
                 input_ids = next_input_ids
@@ -664,9 +664,12 @@ class CompressionOrchestrator(BaseOrchestrator):
         if not self.need_calib:
             if len(self.alg_composer.quantizers) > 1:
                 raise NotImplementedError("Multiple zero-shot quantizer stages are not supported yet.")
-            return self._quantize_zero_shot()
-
-        return self._quantize_data_driven()
+            result = self._quantize_zero_shot()
+        else:
+            result = self._quantize_data_driven()
+        if self.parallel_execution.is_tp:
+            self.parallel_execution.log_memory_summary()
+        return result
 
     @torch.no_grad()
     def _quantize_zero_shot(self) -> tuple[torch.nn.Module, dict[str, Any]]:
@@ -696,7 +699,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         # an explicit --data_parallel N cannot engage here (no
         # calibration forward for the data-parallel lane to shard): one INFO
         # line, no refusal -- weights-only RTN has nothing to parallelize
-        from auto_round.parallel.data_parallel import log_zero_shot_parallel_noop_
+        from auto_round.parallel.dp.engine import log_zero_shot_parallel_noop_
 
         log_zero_shot_parallel_noop_(getattr(self.compress_context, "parallel_policy", None))
 
@@ -790,7 +793,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                         self._offloader(self.model, block_name)
 
                 clear_memory()
-                memory_monitor.log_summary()
+                self.parallel_execution.log_memory_summary()
                 pbar.update(1)
 
         remain_layer_names = []
@@ -910,7 +913,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
         self.model_context.model = mv_module_from_gpu(self.model_context.model)
         clear_memory(device_list=device_manager.device_list)
-        memory_monitor.log_summary()
+        self.parallel_execution.log_memory_summary()
         logger.info("caching done")
         if self.compress_context.low_cpu_mem_usage:
             if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:

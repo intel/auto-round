@@ -23,7 +23,7 @@ import torch.distributed as dist
 from torch.distributed.tensor import DTensor, Shard
 from torch.func import functional_call
 
-from auto_round.parallel.policy import validate_tp_quantization
+from auto_round.parallel.tp.policy import validate_tp_quantization
 from auto_round.schemes import needs_nvfp_global_scale
 from auto_round.wrapper import WrapperLinear, WrapperWALayer
 
@@ -118,7 +118,7 @@ class TensorParallelQDQLinear(WrapperLinear):
                 local_layer.input_global_scale = input_scale
         super().__init__(local_layer, **kwargs)
         if self.enable_act_quant:
-            from auto_round.parallel.activation import TensorParallelActivationQuantizer
+            from auto_round.parallel.tp.activation import TensorParallelActivationQuantizer
 
             self.act_quant_func = TensorParallelActivationQuantizer(
                 self.act_quant_func, weight, local_forward=getattr(orig_layer, "_auto_round_tp_local_forward", False)

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Algorithm-facing execution services shared by local, PP-placement and TP runs."""
+"""Algorithm-facing services shared by local, naive pipeline-parallel and TP runs."""
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import torch
 
 from auto_round.parallel.config import ParallelConfig
-from auto_round.parallel.runtime import is_dtensor
+from auto_round.parallel.tp.runtime import is_dtensor
 from auto_round.utils.device_manager import device_manager
 
 
@@ -43,8 +43,9 @@ class ParallelExecution:
     """Place shards, normalize activations, and synchronize *data*-parallel grads.
 
     TP never gathers weights here. CPU residency retains DTensor placements and
-    moves only each rank's local shard. PP means the existing multi-device block
-    placement, not a pipeline training schedule. Hybrid TP/PP remains unsupported.
+    moves only each rank's local shard. PP is naive pipeline parallelism, with
+    layers partitioned across devices but no overlapping microbatch schedule.
+    Hybrid TP/PP remains unsupported.
     """
 
     def __init__(self, config=None):
@@ -115,9 +116,19 @@ class ParallelExecution:
     def is_tp(self):
         return self.config.tp_size > 1
 
+    def log_memory_summary(self, msg="", level="info"):
+        """Report memory at a successful boundary reached by every model-parallel rank."""
+        if self.is_tp:
+            from auto_round.parallel.tp.runtime import log_memory_summary
+
+            return log_memory_summary(msg, level)
+        from auto_round.utils.device import memory_monitor
+
+        return memory_monitor.log_summary(msg, level)
+
     @property
     def tensor_ops(self):
-        from auto_round.parallel.tensor_ops import ParallelTensorOps
+        from auto_round.parallel.tp.tensor_ops import ParallelTensorOps
 
         return ParallelTensorOps
 
@@ -166,7 +177,7 @@ class ParallelExecution:
                         "Implement parallel_capabilities() explicitly after adapting those hooks for TP."
                     )
         if self.config.pp_size > 1 and not capabilities.pipeline_placement:
-            raise NotImplementedError(f"{algorithm_class.__name__} does not support PP (pipeline device placement).")
+            raise NotImplementedError(f"{algorithm_class.__name__} does not support naive pipeline parallelism (PP).")
         if self.is_tp:
             unsupported = ["enable_norm_bias_tuning", "tune_non_quant_params"]
             if not getattr(algorithm_class, "whole_model_tuning", False):
@@ -190,22 +201,18 @@ class ParallelExecution:
             and len(device_manager.device_list) > 1
             and not is_diffusion
         ):
-            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+            from auto_round.parallel.pp.placement import dispatch_auto_block
 
-            from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
-
-            at_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                block,
-                device_manager.device_list,
-                inputs,
-                low_gpu_mem_usage,
-                batch_size,
-                device_manager.device,
+            return BlockPlacement(
+                *dispatch_auto_block(
+                    block,
+                    inputs,
+                    device_list=device_manager.device_list,
+                    device=device_manager.device,
+                    low_gpu_mem_usage=low_gpu_mem_usage,
+                    batch_size=batch_size,
+                )
             )
-            for _, module in block.named_modules():
-                if not list(module.children()) and hasattr(module, "tuning_device"):
-                    add_hook_to_module(module, AlignDevicesHook(module.tuning_device, io_same_device=True), True)
-            return BlockPlacement(block, loss_device, at_risk)
         if self.is_tp:
             block = self.move_block(block, device_manager.device)
         else:
@@ -251,13 +258,13 @@ class ParallelExecution:
         """TP autograd already communicates; only DP uses gradient all-reduce."""
         if self.is_tp:
             return block, lambda: None
-        from auto_round.utils.distributed import setup_ddp_if_needed_
+        from auto_round.parallel.distributed import setup_ddp_if_needed_
 
         return setup_ddp_if_needed_(algorithm, block, device_manager.device_list)
 
     def collection_context(self, composer, block, inputs):
         """Select collection transport without replicating native TP weight shards."""
-        from auto_round.parallel.tune_parallel import TuneParallelContext
+        from auto_round.parallel.dp.tune_parallel import TuneParallelContext
 
         if self.is_tp:
             context = getattr(composer.block_quantizer, "compress_context", None)
@@ -270,7 +277,7 @@ class ParallelExecution:
     ):
         """Run the same algorithm on local/TP shards or on data-parallel replicas."""
         if not self.is_tp:
-            from auto_round.parallel.spmd import quantize_block_on_ranks
+            from auto_round.parallel.dp.spmd import quantize_block_on_ranks
 
             engaged, result = quantize_block_on_ranks(
                 quantizer, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, input_ids=input_ids
@@ -290,7 +297,7 @@ class ParallelExecution:
 
     def index_sampler(self, nsamples, batch_size):
         """DP ranks draw disjoint shards; TP ranks draw identical global batches."""
-        from auto_round.utils.distributed import make_index_sampler
+        from auto_round.parallel.distributed import make_index_sampler
 
         return make_index_sampler(nsamples, batch_size)
 
@@ -298,7 +305,7 @@ class ParallelExecution:
         """Only data-parallel replicas reduce independently computed losses."""
         if self.is_tp:
             return loss
-        from auto_round.utils.distributed import all_reduce_loss
+        from auto_round.parallel.distributed import all_reduce_loss
 
         return all_reduce_loss(loss, weight)
 

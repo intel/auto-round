@@ -1107,10 +1107,10 @@ def wrapper_block(
         if kind == "skip":
             return "u"
         layer_wrapper_cls = getattr(m, "_ar_warm_start_wrapper_cls", wrapper_cls)
-        from auto_round.parallel.runtime import is_dtensor
+        from auto_round.parallel.tp.runtime import is_dtensor
 
         if is_dtensor(m.weight):
-            from auto_round.parallel.qdq import tensor_parallel_wrapper
+            from auto_round.parallel.tp.qdq import tensor_parallel_wrapper
 
             layer_wrapper_cls = tensor_parallel_wrapper(layer_wrapper_cls)
         defer_search = _defer_batch and getattr(layer_wrapper_cls, "supports_batched_search", False)
@@ -1140,7 +1140,7 @@ def wrapper_block(
         # stacked same-shape batches per (device, shape, config, search fn);
         # singletons and the kill-switch fall back to the identical per-module call.
         # Data-parallel ranks shard the searches across the ranks instead.
-        from auto_round.parallel.spmd import current_rank, run_rank_sharded_wrap_searches
+        from auto_round.parallel.dp.spmd import current_rank, run_rank_sharded_wrap_searches
 
         rank = current_rank()
         if not (rank is not None and run_rank_sharded_wrap_searches(rank, deferred_wrappers)):

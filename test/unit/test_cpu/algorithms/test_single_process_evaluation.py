@@ -30,8 +30,8 @@ from accelerate.state import AcceleratorState, PartialState
 from accelerate.utils import DistributedType
 
 from auto_round.parallel import ParallelConfig
-from auto_round.parallel.evaluation import _DISTRIBUTED_ENV_VARS, rank_zero_evaluation
-from auto_round.utils.distributed import is_distributed
+from auto_round.parallel.distributed import is_distributed
+from auto_round.parallel.tp.evaluation import _DISTRIBUTED_ENV_VARS, rank_zero_evaluation
 
 
 @pytest.fixture(autouse=True)

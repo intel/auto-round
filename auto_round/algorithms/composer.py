@@ -44,7 +44,7 @@ from auto_round.algorithms.config_resolver import (
 )
 from auto_round.algorithms.utils import _has_nvfp4_layer
 from auto_round.logger import logger
-from auto_round.parallel.data_parallel import (
+from auto_round.parallel.dp.engine import (
     ENGINE_CALIBRATION_STATS,
     calibration_merge_stats,
     parallel_state,
@@ -500,7 +500,7 @@ class AlgorithmComposer:
         python-bound eager sections that GIL-convoy under many threads.
         """
         if self._coll_ctx is None:
-            from auto_round.parallel.tune_parallel import TuneParallelContext
+            from auto_round.parallel.dp.tune_parallel import TuneParallelContext
 
             self._coll_ctx = TuneParallelContext()
         return self._coll_ctx.collect_forward(
@@ -794,7 +794,7 @@ class AlgorithmComposer:
         if pool is None:
             return None
         from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
-        from auto_round.parallel.mirror_sync import sync_mirrors_to_home
+        from auto_round.parallel.dp.mirror_sync import sync_mirrors_to_home
 
         if isinstance(self.block_quantizer, RTNQuantizer):
             sync_mirrors_to_home(self.block_quantizer, block)

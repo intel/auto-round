@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 
 def _reject_parallel_kwargs(kwargs):
+    if "dp_size" in kwargs:
+        raise TypeError("dp_size is not supported; configure DP replicas through parallel_config with data_parallel.")
     misplaced = {"tensor_parallel", "pipeline_parallel", "data_parallel", "parallel_batch"}.intersection(kwargs)
     if misplaced:
         names = ", ".join(sorted(misplaced))
@@ -27,17 +29,17 @@ def _reject_parallel_kwargs(kwargs):
 
 @dataclass(frozen=True, init=False)
 class ParallelConfig:
-    """Configure independent tensor, pipeline-placement and data parallel axes.
+    """Configure tensor, naive pipeline and data parallelism.
 
-    TP uses Transformers' native automatic plan. ``pp_size`` selects the existing
-    single-process multi-device placement path, not a pipeline training schedule.
+    TP uses Transformers' native automatic plan. ``pp_size`` selects naive
+    pipeline parallelism: single-process layer partitioning without overlapping
+    microbatch scheduling.
     ``data_parallel`` selects the single-process replica engine. Hybrid execution
-    and the reserved process-mesh ``dp_size`` axis are not implemented.
+    is not implemented.
     """
 
     tp_size: int = 1
     pp_size: int = 1
-    dp_size: int = 1
     data_parallel: str = "off"
     parallel_batch: str = "split"
 
@@ -45,7 +47,6 @@ class ParallelConfig:
         self,
         tp_size=None,
         pp_size=None,
-        dp_size=1,
         *,
         tensor_parallel=None,
         pipeline_parallel=None,
@@ -59,7 +60,6 @@ class ParallelConfig:
             if old is not None and new is not None and old != new:
                 raise ValueError(f"Conflicting {short} and {long} values.")
             object.__setattr__(self, short, new if new is not None else (old if old is not None else 1))
-        object.__setattr__(self, "dp_size", dp_size)
         if isinstance(data_parallel, bool):
             raise ValueError("data_parallel accepts off|auto|N, not a boolean.")
         dp = str(data_parallel).strip().lower()
@@ -74,14 +74,10 @@ class ParallelConfig:
         self._validate()
 
     def _validate(self) -> None:
-        for name in ("tp_size", "pp_size", "dp_size"):
+        for name in ("tp_size", "pp_size"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer, got {value!r}.")
-        if self.dp_size != 1:
-            raise NotImplementedError(
-                "Process-mesh DP is not supported; dp_size must be 1. Use data_parallel for single-process DP."
-            )
         if self.tp_size > 1 and self.pp_size > 1:
             raise NotImplementedError("Hybrid TP/PP is not supported yet.")
         if self.data_parallel != "off" and (self.tp_size > 1 or self.pp_size > 1):
@@ -105,6 +101,8 @@ class ParallelConfig:
         if isinstance(value, cls):
             return value
         if isinstance(value, Mapping):
+            if "dp_size" in value:
+                raise TypeError("dp_size is not supported; use data_parallel to select the DP replica count.")
             return cls(**dict(value))
         raise TypeError("parallel_config must be a ParallelConfig, mapping, or None.")
 
@@ -117,7 +115,7 @@ class ParallelConfig:
 
         from auto_round import envs
         from auto_round.logger import logger
-        from auto_round.parallel.data_parallel import (
+        from auto_round.parallel.dp.engine import (
             ParallelPolicy,
             check_parallel_device_map_compat_,
             resolve_parallel_world,
@@ -141,7 +139,7 @@ class ParallelConfig:
         )
 
     def resolve_device_map(self, device_map):
-        """Resolve rank-local TP placement or the existing multi-device PP path."""
+        """Resolve rank-local TP devices or naive pipeline-parallel stages."""
         import os
 
         import torch
@@ -165,9 +163,9 @@ class ParallelConfig:
                 torch.cuda.set_device(local_rank)
                 return f"cuda:{local_rank}"
             return "cpu"
-        if not torch.cuda.is_available() or torch.cuda.device_count() < self.pp_size:
-            raise ValueError(f"pp_size={self.pp_size} requires that many visible CUDA devices.")
-        return ",".join(str(index) for index in range(self.pp_size))
+        from auto_round.parallel.pp.placement import resolve_device_map
+
+        return resolve_device_map(self.pp_size)
 
     def to_transformers_config(self):
         """Create the native loading config, without deprecated tp_plan kwargs."""

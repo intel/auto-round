@@ -21,7 +21,7 @@ weight matrix, and writes preserve native DTensor parameters and forward hooks.
 import torch
 import torch.distributed as dist
 
-from auto_round.parallel.runtime import is_dtensor
+from auto_round.parallel.tp.runtime import is_dtensor
 
 
 class ParallelTensorOps:

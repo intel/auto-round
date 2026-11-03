@@ -182,9 +182,8 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         type=int,
         default=1,
         action=_ParallelSizeAction,
-        help="GPUs for single-process pipeline device placement (not a microbatch pipeline schedule).",
+        help="GPUs for naive pipeline parallelism (single process, no overlapping microbatch schedule).",
     )
-    rt.add_argument("--dp_size", type=int, default=1, help="Reserved data-parallel axis; currently must be 1.")
     rt.add_argument(
         "--data_parallel",
         default="off",

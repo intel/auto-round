@@ -90,7 +90,7 @@ class BaseQuantizer(BaseAlgorithm):
 
         This does not automatically adapt arbitrary weight math or closure-based
         optimizers. Use the existing tensor services for shard-sensitive math.
-        Whole-model pipeline placement and unsupported topologies fail early.
+        Whole-model naive pipeline parallelism and unsupported topologies fail early.
         """
         return self.parallel.prepare_run(model, samples, device, whole_model=whole_model)
 
@@ -258,11 +258,11 @@ class BaseQuantizer(BaseAlgorithm):
         layer_name = layer.global_name
         layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
         set_module(self.model, layer_name, layer)
-        from auto_round.parallel.runtime import is_dtensor
+        from auto_round.parallel.tp.runtime import is_dtensor
 
         wrapper_class = WrapperLinear
         if is_dtensor(layer.weight):
-            from auto_round.parallel.qdq import tensor_parallel_wrapper
+            from auto_round.parallel.tp.qdq import tensor_parallel_wrapper
 
             wrapper_class = tensor_parallel_wrapper(wrapper_class)
         tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device
@@ -392,7 +392,7 @@ class BaseQuantizer(BaseAlgorithm):
         thread ranks the engine already placed each rank's shard on its device,
         so the pool stays as it is.
         """
-        from auto_round.parallel.spmd import current_rank
+        from auto_round.parallel.dp.spmd import current_rank
 
         if current_rank() is not None:
             return pool

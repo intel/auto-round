@@ -671,7 +671,7 @@ def _unfuse_experts_weights_inplace(
         logger.debug(f"Skipping unfuse for {module.__class__.__name__}: does not support @use_experts_implementation")
         return False
 
-    from auto_round.parallel.runtime import is_dtensor
+    from auto_round.parallel.tp.runtime import is_dtensor
 
     if any(is_dtensor(getattr(module, name)) for name in detected_projections):
         raise NotImplementedError(

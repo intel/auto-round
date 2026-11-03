@@ -625,9 +625,17 @@ def set_non_auto_device_map(
     if not device_map or device_map == "auto" or isinstance(device_map, int):
         return
     if isinstance(device_map, str):
+        device_map = device_map.replace(" ", "")
+        # A rank-local device is not a module-pattern mapping ("cuda" -> "0").
+        # DeviceManager already handles placement for these standard device IDs.
+        try:
+            torch.device(device_map)
+        except (RuntimeError, ValueError):
+            pass
+        else:
+            return
         if "," in device_map:  # auto device map
             return
-        device_map = device_map.replace(" ", "")
         infos = device_map.split(",")
         device_map_dict = {}
         for info in infos:
@@ -656,7 +664,7 @@ def set_non_auto_device_map(
             for name in matching_names:
                 set_tuning_device_for_layer(model, name, device)
             if not matching_names:
-                logger.warning(f"{key} in `device_map` dose not match any modules, please have a check")
+                logger.warning(f"{key} in `device_map` does not match any modules; please check the mapping")
 
 
 def _resolve_moe_chunk() -> int:
@@ -1588,6 +1596,11 @@ class MemoryMonitor:
         # devices registered for sampling BEYOND the caller's device_map list
         # (e.g. DDP replica devices the parallel lane engaged outside the map)
         self._extra_devices: set[str] = set()
+        self._tensor_parallel = False
+
+    def set_tensor_parallel(self, enabled: bool) -> None:
+        """Use explicit all-rank reporting boundaries for tensor parallelism."""
+        self._tensor_parallel = enabled
 
     @staticmethod
     def _process_tree_rss() -> float:
@@ -1715,12 +1728,13 @@ class MemoryMonitor:
         self.peak_ram = 0.0
         self.peak_vram = {}
 
-    def get_summary(self):
+    def get_summary(self, *, peak_vram=None):
         """Get summary of peak memory usage."""
         summary = f"'peak_ram': {round(self.peak_ram, 2)}GB"
-        if len(self.peak_vram) > 0:
-            sorted_items = sorted(self.peak_vram.items())
-            if len(self.peak_vram) == 1:
+        vram = self.peak_vram if peak_vram is None else peak_vram
+        if len(vram) > 0:
+            sorted_items = sorted(vram.items())
+            if len(vram) == 1 and not self._tensor_parallel:
                 key, value = sorted_items[0]
                 summary += f", 'peak_vram': {round(value, 2)}GB"
             else:
@@ -1728,9 +1742,14 @@ class MemoryMonitor:
                 summary += f", 'peak_vram': {{{items_str}}}"
         return summary
 
-    def log_summary(self, msg: str = "", level: str = "info"):
+    def log_summary(self, msg: str = "", level: str = "info", *, peak_vram=None):
         """Log memory usage summary."""
-        summary = self.get_summary()
+        summary = self.get_summary(peak_vram=peak_vram)
+        # Ordinary logging sites can be rank-local or writer-only. They must not
+        # communicate or print an incomplete TP report. The execution service
+        # supplies a merged dictionary at explicit, successful all-rank boundaries.
+        if self._tensor_parallel and peak_vram is None:
+            return summary
         logger_method = getattr(logger, level.lower(), logger.info)
         if len(msg):
             logger_method(f"{msg} {summary}")

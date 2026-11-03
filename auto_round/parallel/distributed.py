@@ -55,7 +55,7 @@ def setup_ddp_if_needed_(ar, block: torch.nn.Module, device_list: list[int]):
     """
     import torch.distributed as dist
 
-    from auto_round.parallel.spmd import current_rank
+    from auto_round.parallel.dp.spmd import current_rank
 
     rank = current_rank()
     if rank is not None:
@@ -121,7 +121,7 @@ def make_index_sampler(nsamples: int, batch_size: int):
     from its own contiguous shard of the calibration pool.
     """
     from auto_round.compressors.utils import IndexSampler
-    from auto_round.parallel.spmd import current_rank
+    from auto_round.parallel.dp.spmd import current_rank
 
     rank = current_rank()
     if rank is not None:
@@ -139,7 +139,7 @@ def all_reduce_loss(loss: float, weight: float = 1.0) -> float:
     early-stop decisions (it holds the same parameters after each synced
     step), so the decisions use the global loss.
     """
-    from auto_round.parallel.spmd import current_rank
+    from auto_round.parallel.dp.spmd import current_rank
 
     rank = current_rank()
     if rank is not None:

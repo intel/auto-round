@@ -218,7 +218,7 @@ class BlockForwardRunner:
             Normalized output tensor on ``cache_device`` (or ``self.cache_device``).
         """
         if cache_device is None:
-            from auto_round.parallel.spmd import current_rank
+            from auto_round.parallel.dp.spmd import current_rank
 
             rank = current_rank()
             if rank is not None:

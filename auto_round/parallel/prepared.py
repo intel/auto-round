@@ -22,7 +22,7 @@ from collections.abc import Callable
 import torch
 import torch.distributed as dist
 
-from auto_round.parallel import runtime
+from auto_round.parallel.tp import runtime
 from auto_round.utils.device_manager import device_manager
 
 
@@ -174,7 +174,7 @@ class PreparedRun:
         if self._entered:
             raise RuntimeError("PreparedRun cannot be entered twice.")
         if self.whole_model and self.execution.config.pp_size > 1:
-            raise NotImplementedError("Whole-model PreparedRun does not support pipeline placement.")
+            raise NotImplementedError("Whole-model PreparedRun does not support naive pipeline parallelism (PP).")
         if self._tensor_parallel:
             samples = [self.samples if dist.get_rank() == self._source else None]
             dist.broadcast_object_list(samples, src=self._source, group=self._group)

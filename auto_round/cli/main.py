@@ -186,7 +186,7 @@ def _build_parallel_config(args) -> dict:
     if tp_size is None:
         # Infer a single TP axis only; do not silently create hybrid parallelism.
         tp_size = 1
-        if getattr(args, "pp_size", 1) == getattr(args, "dp_size", 1) == 1 and str(
+        if getattr(args, "pp_size", 1) == 1 and str(
             getattr(args, "data_parallel", "off")
         ) in ("off", "1"):
             tp_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -195,7 +195,6 @@ def _build_parallel_config(args) -> dict:
     return {
         "tp_size": tp_size,
         "pp_size": getattr(args, "pp_size", 1),
-        "dp_size": getattr(args, "dp_size", 1),
         "data_parallel": getattr(args, "data_parallel", "off"),
         "parallel_batch": getattr(args, "parallel_batch", "split"),
     }
@@ -400,7 +399,7 @@ def start(recipe="default", argv=None):
     args._api_format = args.format if format_was_explicit or args.model_free else None
 
     from auto_round.parallel import ParallelConfig
-    from auto_round.parallel.launcher import launch, needs_local_launch
+    from auto_round.parallel.tp.launcher import launch, needs_local_launch
 
     parallel = ParallelConfig.from_value(_build_parallel_config(args))
     # Validate before launching workers or loading any model. In particular DP
@@ -625,7 +624,7 @@ def tune(args):
     evaluation_context = nullcontext(True)
     parallel_config = getattr(autoround, "parallel_config", None)
     if parallel_config is not None and parallel_config.tp_size > 1:
-        from auto_round.parallel.evaluation import rank_zero_evaluation
+        from auto_round.parallel.tp.evaluation import rank_zero_evaluation
 
         evaluation_context = rank_zero_evaluation()
     with evaluation_context as should_evaluate:

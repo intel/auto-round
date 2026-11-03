@@ -532,7 +532,7 @@ def register_act_max_hooks(block: Module, act_data_type=None) -> list:
     The caller owns the returned handles and must remove them after calibration.
     """
     from auto_round.compressors.utils import check_need_act_calibration
-    from auto_round.parallel.runtime import is_dtensor
+    from auto_round.parallel.tp.runtime import is_dtensor
     from auto_round.utils import SUPPORTED_LAYER_TYPES
 
     @torch.no_grad()

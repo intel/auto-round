@@ -303,8 +303,8 @@ class ModelContext(BaseContext):
         """Use native loading; never combine parameter sharding with device_map."""
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        from auto_round.parallel.moe import prepare_tp_moe
-        from auto_round.parallel.runtime import validate_tp_model
+        from auto_round.parallel.tp.moe import prepare_tp_moe
+        from auto_round.parallel.tp.runtime import validate_tp_model
 
         config = self.config if isinstance(self.model, str) else getattr(self.model, "config", None)
         if config is None:

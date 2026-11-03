@@ -20,7 +20,7 @@ from contextlib import contextmanager
 import torch.distributed as dist
 
 from auto_round.logger import logger
-from auto_round.utils.distributed import is_distributed
+from auto_round.parallel.distributed import is_distributed
 
 _DISTRIBUTED_ENV_VARS = (
     "RANK",

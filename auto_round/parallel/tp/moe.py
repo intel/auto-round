@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unfuse standard packed MoE shards without replacing native TP communication."""
+"""Tensor-parallel MoE shard views preserving native communication."""
 
 from types import MethodType
 

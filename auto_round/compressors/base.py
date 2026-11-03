@@ -263,6 +263,7 @@ class BaseOrchestrator:
         from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
 
         self.parallel_config = ParallelConfig.from_value(parallel_config)
+        memory_monitor.set_tensor_parallel(self.parallel_config.tp_size > 1)
         from auto_round.parallel.execution import ParallelExecution
 
         self.parallel_execution = ParallelExecution(self.parallel_config)
@@ -1969,7 +1970,7 @@ class BaseOrchestrator:
         Returns:
             object: The compressed model object.
         """
-        from auto_round.parallel.runtime import gather_for_export, is_tp_model, synchronized_export
+        from auto_round.parallel.tp.runtime import gather_for_export, is_tp_model, synchronized_export
 
         if is_tp_model(self.model_context.model):
             if not self.model_context.quantized:
@@ -2272,7 +2273,7 @@ class BaseOrchestrator:
 
         # Save the quantized model in the specified format_list
         model, folders = self.save_quantized(output_dir, inplace=inplace, return_folders=True, **kwargs)
-        memory_monitor.log_summary()
+        self.parallel_execution.log_memory_summary()
 
         # Only now -- after the full export (packing pass, config/tokenizer
         # writes) has actually succeeded -- is it safe to drop the resume

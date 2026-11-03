@@ -39,6 +39,38 @@ def replicated_tensor(value):
     return value.full_tensor() if is_dtensor(value) else value
 
 
+def log_memory_summary(msg="", level="info"):
+    """Collect local peaks; call only at a successful boundary reached by all TP ranks.
+
+    Never call this from writer-only export or arbitrary logging/cleanup hooks.
+    Report data is kept separate from local allocator statistics so a later report
+    cannot mistake rank zero's merged values for its own device's allocations.
+    """
+    from auto_round.utils.device import memory_monitor
+
+    if not dist.is_initialized() or dist.get_world_size() < 2:
+        return memory_monitor.log_summary(msg, level, peak_vram=dict(memory_monitor.peak_vram))
+    report = {}
+    if torch.cuda.is_available():
+        index = torch.cuda.current_device()
+        memory_monitor.update(device_list=[f"cuda:{index}"])
+        report[str(index)] = max(
+            memory_monitor.peak_vram.get(str(index), 0.0),
+            torch.cuda.max_memory_reserved(index) / 1024**3,
+        )
+    else:
+        memory_monitor.update_cpu()
+    reports: list[dict[str, float]] = [{} for _ in range(dist.get_world_size())]
+    dist.all_gather_object(reports, report)
+    if dist.get_rank() != 0:
+        return None
+    merged = {}
+    for peer in reports:
+        for device, peak in peer.items():
+            merged[device] = max(merged.get(device, 0.0), peak)
+    return memory_monitor.log_summary(msg, level, peak_vram=merged)
+
+
 @contextmanager
 def synchronized_export():
     """Share writer completion/failure after collective checkpoint gathering."""
@@ -158,7 +190,7 @@ def gather_for_export(model):
     Shards are copied to CPU before bounded transfers; full tensors exist only
     in writer host memory, never temporarily on a GPU.
     """
-    from auto_round.parallel.activation import TensorParallelActivationQuantizer
+    from auto_round.parallel.tp.activation import TensorParallelActivationQuantizer
     from auto_round.wrapper import WrapperWALayer
 
     writer = dist.get_rank() == 0

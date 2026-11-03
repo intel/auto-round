@@ -477,11 +477,6 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
                 target.disable_opt_rtn = opt_rtn_value
                 if hasattr(target, "orig_disable_opt_rtn"):
                     target.orig_disable_opt_rtn = opt_rtn_value
-            logger.warning(
-                "Passing '%s' directly to AutoRound is supported, but the recommended usage is "
-                "'alg_configs=\"awq\"' or 'alg_configs=\"rtn\"'.",
-                key,
-            )
             continue
         if key in _SCHEME_FIELDS:
             targets = block_configs
@@ -514,13 +509,6 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
             continue
         target = targets[0]
         setattr(target, key, value)
-        recommended_config_name = type(target).__name__.replace("Config", "")
-        logger.warning(
-            "Passing '%s' directly to AutoRound is supported, but the recommended usage is "
-            "'alg_configs=%sConfig(...)'.",
-            key,
-            recommended_config_name,
-        )
     sync_rtn_opt_rtn_from_awq(configs)
     if named_rtn_variants:
         # Applied last, on RTN configs only (AWQ keeps its own policy), so the
@@ -706,7 +694,7 @@ class _CompressorBuilder:
         # same config-level constraints (e.g. the format-scoped 8-bit asym rule).
         eager_validate_scheme(quant_config, scheme, format=format)
         if parallel_config.tp_size > 1:
-            from auto_round.parallel.policy import validate_tp_quantization
+            from auto_round.parallel.tp.policy import validate_tp_quantization
 
             validate_tp_quantization(route_scheme)
             if base_kwargs.get("static_kv_dtype") is not None or base_kwargs.get("static_attention_dtype") is not None:
@@ -815,7 +803,7 @@ class AutoRound:
             run on the compute devices; only the at-rest pool placement changes.
         device_map: Device or device mapping used for quantization.
         parallel_config: Optional ParallelConfig or mapping, shared with the CLI.
-            Configure TP, PP placement, DP and DP batch semantics here. Native TP
+            Configure TP, naive pipeline parallelism (PP), DP and DP batch semantics here. Native TP
             requires all ranks to call AutoRound; use auto_round.quantize_and_save
             with the same parallel_config for automatic local worker launch.
         enable_torch_compile: Whether to use ``torch.compile`` where supported.

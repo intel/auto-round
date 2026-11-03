@@ -29,14 +29,13 @@ from auto_round.logger import logger
 @pytest.mark.parametrize(
     "world_size,options,expected",
     [
-        (None, [], (1, 1, 1)),
-        ("1", [], (1, 1, 1)),
-        ("2", [], (2, 1, 1)),
-        ("8", [], (8, 1, 1)),
-        ("2", ["--tp_size", "1"], (1, 1, 1)),
-        ("2", ["--tp_size", "2"], (2, 1, 1)),
-        ("2", ["--pp_size", "2"], (1, 2, 1)),
-        ("2", ["--dp_size", "2"], (1, 1, 2)),
+        (None, [], (1, 1)),
+        ("1", [], (1, 1)),
+        ("2", [], (2, 1)),
+        ("8", [], (8, 1)),
+        ("2", ["--tp_size", "1"], (1, 1)),
+        ("2", ["--tp_size", "2"], (2, 1)),
+        ("2", ["--pp_size", "2"], (1, 2)),
     ],
 )
 def test_cli_infers_tp_from_world_size(monkeypatch, world_size, options, expected):
@@ -48,7 +47,7 @@ def test_cli_infers_tp_from_world_size(monkeypatch, world_size, options, expecte
     args = build_quantize_parser().parse_args(["local-model", "--alg", "qad", *options])
     kwargs = _build_entry_base_kwargs(args, low_cpu_mem_usage=True, enable_torch_compile=None, layer_config={})
     assert kwargs["parallel_config"] == {
-        **dict(zip(("tp_size", "pp_size", "dp_size"), expected)),
+        **dict(zip(("tp_size", "pp_size"), expected)),
         "data_parallel": "off",
         "parallel_batch": "split",
     }

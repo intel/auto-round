@@ -939,7 +939,7 @@ There are typically two scenarios that require multi-GPU tuning: one is the cali
 #### Parallel block tuning across GPUs
 Choose `--data_parallel N` for block replicas, `--tensor_parallel N` for native
 weight sharding with automatic local worker launch, or `--pipeline_parallel N`
-for existing multi-device placement. Select only one mode per run.
+for naive pipeline parallelism. Select only one mode per run.
 
 ~~~bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --data_parallel auto
@@ -947,7 +947,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 
 See the [unified parallelism guide](./parallelism.md) for mode selection, matching
 CLI/Python interfaces, DP batch/eligibility constraints, TP launch/export behavior
-and supported combinations. PP placement is not microbatch pipeline training.
+and supported combinations. PP executes pipeline stages sequentially without
+overlapping microbatch scheduling.
 
 #### Enable multiple gpus calibration in lm_head quantization
 For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which requires the entire model to reside on 

@@ -79,8 +79,8 @@ def _autoround(model_path, iters, disable_opt_rtn=False, world=1):
 
 
 def _run(model_path, iters, disable_opt_rtn, monkeypatch, pin_draws, world=1):
-    import auto_round.utils.distributed as distributed
-    from auto_round.parallel import spmd
+    import auto_round.parallel.distributed as distributed
+    from auto_round.parallel.dp import spmd
 
     if pin_draws:
         # serial lane: batches [0, 1] then [2, 3]; rank r draws the r-th

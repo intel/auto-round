@@ -355,7 +355,7 @@ def resolve_tune_ddp_plan_(quantizer, block, fp_inputs, fp_outputs, home, world=
 
     Returns the DDPPlan (world=1 => not engaged).
     """
-    from auto_round.utils.distributed import is_distributed
+    from auto_round.parallel.distributed import is_distributed
 
     _st = parallel_state(quantizer)
     cached = _st.plan if _st is not None else None

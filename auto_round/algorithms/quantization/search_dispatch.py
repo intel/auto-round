@@ -186,7 +186,7 @@ def pick_search_worker_devices(
     """
     if cross_device_search_disabled():
         return [home_device] if home_device is not None else []
-    from auto_round.parallel.spmd import current_rank
+    from auto_round.parallel.dp.spmd import current_rank
 
     if current_rank() is not None:
         # a data-parallel rank owns only its device: the "idle" ones are the

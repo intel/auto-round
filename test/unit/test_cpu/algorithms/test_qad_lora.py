@@ -182,7 +182,7 @@ def _tp_lora_worker(rank, rendezvous):
     from torch.distributed.tensor import DTensor
     from transformers.distributed.tensor_parallel import ColwiseParallel, RowwiseParallel
 
-    from auto_round.parallel.qdq import TensorParallelQDQLinear
+    from auto_round.parallel.tp.qdq import TensorParallelQDQLinear
 
     torch.set_num_threads(1)
     dist.init_process_group(

@@ -31,7 +31,7 @@ from auto_round.parallel.execution import ParallelExecution
 
 def test_unadapted_algorithm_and_wrapper_fail_explicitly():
     from auto_round.algorithms.base import BaseAlgorithm
-    from auto_round.parallel.qdq import tensor_parallel_wrapper
+    from auto_round.parallel.tp.qdq import tensor_parallel_wrapper
     from auto_round.wrapper import WrapperLinear
 
     class CustomAlgorithm(BaseAlgorithm):
@@ -50,7 +50,7 @@ def test_unadapted_algorithm_and_wrapper_fail_explicitly():
 def test_inherited_tp_support_requires_unchanged_execution_hooks():
     from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
     from auto_round.algorithms.quantization.sign_roundv2.quantizer import SignRoundOptimizedWrapperLinear
-    from auto_round.parallel.qdq import tensor_parallel_wrapper
+    from auto_round.parallel.tp.qdq import tensor_parallel_wrapper
 
     class SharedAlgorithm(SignRoundQuantizer):
         pass
@@ -137,14 +137,14 @@ def test_pipeline_placement_keeps_signround_heuristic():
 
 def test_tp_uses_native_backward_not_dp():
     block = torch.nn.Linear(4, 4)
-    with patch("auto_round.utils.distributed.setup_ddp_if_needed_", side_effect=AssertionError("not DP")):
+    with patch("auto_round.parallel.distributed.setup_ddp_if_needed_", side_effect=AssertionError("not DP")):
         actual, synchronize = ParallelExecution({"tp_size": 2}).prepare_gradients(None, block)
         synchronize()
     assert actual is block
 
 
 def test_local_execution_preserves_dp_rank_hooks(monkeypatch):
-    from auto_round.parallel import spmd
+    from auto_round.parallel.dp import spmd
 
     sampler = object()
     rank = SimpleNamespace(
@@ -166,7 +166,7 @@ def test_local_execution_preserves_dp_rank_hooks(monkeypatch):
 
 
 def test_tp_collection_and_tuning_never_create_dp_mirrors():
-    from auto_round.parallel.data_parallel import ParallelPolicy
+    from auto_round.parallel.dp.engine import ParallelPolicy
 
     execution = ParallelExecution({"tp_size": 2})
     quantizer = SimpleNamespace(
@@ -177,9 +177,9 @@ def test_tp_collection_and_tuning_never_create_dp_mirrors():
     block = torch.nn.Linear(4, 4)
     inputs = [torch.randn(1, 2, 4)]
     with (
-        patch("auto_round.parallel.tune_parallel.TuneParallelContext.for_collection") as collect,
-        patch("auto_round.parallel.spmd.quantize_block_on_ranks") as tune,
-        patch("auto_round.utils.distributed.all_reduce_loss") as reduce_loss,
+        patch("auto_round.parallel.dp.tune_parallel.TuneParallelContext.for_collection") as collect,
+        patch("auto_round.parallel.dp.spmd.quantize_block_on_ranks") as tune,
+        patch("auto_round.parallel.distributed.all_reduce_loss") as reduce_loss,
     ):
         ctx = execution.collection_context(composer, block, inputs)
         assert ctx.devices is None
@@ -194,7 +194,7 @@ def test_tp_collection_and_tuning_never_create_dp_mirrors():
 @pytest.mark.parametrize("engaged", [False, True])
 def test_local_tuning_delegates_to_dp_engine(engaged):
     quantizer = SimpleNamespace(quantize_block=Mock(return_value="local"))
-    with patch("auto_round.parallel.spmd.quantize_block_on_ranks", return_value=(engaged, "replica")) as tune:
+    with patch("auto_round.parallel.dp.spmd.quantize_block_on_ranks", return_value=(engaged, "replica")) as tune:
         result = ParallelExecution().quantize_block(quantizer, "block", "fp", {}, "out", None, "ctx")
     assert result == ("replica" if engaged else "local")
     tune.assert_called_once_with(quantizer, "block", "fp", {}, "out", None, "ctx", input_ids=None)
@@ -203,7 +203,7 @@ def test_local_tuning_delegates_to_dp_engine(engaged):
 
 @pytest.mark.parametrize("topology", [{"tp_size": 2}, {"pp_size": 2}])
 def test_stage_rejects_hybrid_dp_before_installing_hooks(topology):
-    from auto_round.parallel.data_parallel import ParallelPolicy
+    from auto_round.parallel.dp.engine import ParallelPolicy
 
     execution = ParallelExecution(topology)
     orchestrator = SimpleNamespace(compress_context=SimpleNamespace(parallel_policy=ParallelPolicy(world=2)))
@@ -215,7 +215,7 @@ def _check_tensor_ops(mesh):
     from transformers.distributed.tensor_parallel import ColwiseParallel, RowwiseParallel
 
     from auto_round.algorithms.transforms.awq.smooth import compute_layer_means
-    from auto_round.parallel.tensor_ops import ParallelTensorOps
+    from auto_round.parallel.tp.tensor_ops import ParallelTensorOps
 
     torch.manual_seed(7)
     for style in (ColwiseParallel(), RowwiseParallel()):
@@ -244,7 +244,7 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
     from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
     from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
     from auto_round.algorithms.transforms.awq.config import AWQConfig
-    from auto_round.parallel.runtime import gather_for_export, is_dtensor
+    from auto_round.parallel.tp.runtime import gather_for_export, is_dtensor
     from auto_round.wrapper import WrapperWALayer
 
     torch.set_num_threads(1)
@@ -346,7 +346,9 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
                 return result
 
             with (
-                patch("auto_round.utils.distributed.setup_ddp_if_needed_", side_effect=AssertionError("TP is not DP")),
+                patch(
+                    "auto_round.parallel.distributed.setup_ddp_if_needed_", side_effect=AssertionError("TP is not DP")
+                ),
                 patch.object(DTensor, "full_tensor", no_weight_gather),
                 patch.object(compressor.alg_composer, "dispatch_block", check_residency),
             ):

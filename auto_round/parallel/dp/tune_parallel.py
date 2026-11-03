@@ -25,7 +25,7 @@ import time as _ptime
 import torch
 
 from auto_round.logger import logger
-from auto_round.parallel.data_parallel import (
+from auto_round.parallel.dp.engine import (
     ENGINE_CALIBRATION_STATS,
     _quantizer_policy,
     distribute_pool,
@@ -168,7 +168,7 @@ class TuneParallelContext:
             # stays serial
             if n >= world:
                 if self.pool is None:
-                    from auto_round.parallel.data_parallel import MirrorPool
+                    from auto_round.parallel.dp.engine import MirrorPool
 
                     _t0 = _ptime.perf_counter()
                     self.pool = MirrorPool(block, self.devices)
@@ -196,7 +196,7 @@ class TuneParallelContext:
         any single pass's forward eligibility): the searches and the tune
         consume it even when a collection pass fell back serial."""
         if self.pool is None and self.devices and len(self.devices) >= 2:
-            from auto_round.parallel.data_parallel import MirrorPool
+            from auto_round.parallel.dp.engine import MirrorPool
 
             _t0 = _ptime.perf_counter()
             self.pool = MirrorPool(block, self.devices)

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Local TP process orchestration, shared by CLI and task-oriented Python APIs."""
+"""Tensor-parallel worker orchestration for CLI and Python task APIs."""
 
 import os
 

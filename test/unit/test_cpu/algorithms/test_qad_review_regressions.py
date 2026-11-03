@@ -97,7 +97,7 @@ def test_whole_model_residency_precedes_cached_teacher_and_wrapping(tmp_path, mo
     original_forward = model.embedding.forward
     hook = model.embedding.register_forward_pre_hook(lambda module, inputs: None)
     events = []
-    monkeypatch.setattr("auto_round.parallel.runtime.is_tp_model", lambda model: native_tp)
+    monkeypatch.setattr("auto_round.parallel.tp.runtime.is_tp_model", lambda model: native_tp)
     monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
     monkeypatch.setattr(torch.distributed, "broadcast_object_list", lambda samples, **kwargs: None)
     monkeypatch.setattr(

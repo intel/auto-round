@@ -89,6 +89,12 @@ def test_local_tp_task_api_and_cli(tmp_path):
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    memory_lines = [line for line in output.splitlines() if "'peak_vram':" in line]
+    assert memory_lines
+    assert all("'0':" in line and "'1':" in line for line in memory_lines), memory_lines
+    assert "[TP rank" not in output
+    assert "cuda in `device_map`" not in output
     assert list((tmp_path / "cli").rglob("model*.safetensors"))
 
 
@@ -97,7 +103,7 @@ def _whole_model_worker(rank, rendezvous, checkpoint, algorithm):
     from auto_round.algorithms.quantization.qad.config import QADConfig
     from auto_round.algorithms.quantization.qat.config import QATConfig
     from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
-    from auto_round.parallel.runtime import is_dtensor
+    from auto_round.parallel.tp.runtime import is_dtensor
 
     torch.set_num_threads(1)
     os.environ["LOCAL_RANK"] = str(rank)

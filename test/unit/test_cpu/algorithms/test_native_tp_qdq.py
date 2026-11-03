@@ -27,7 +27,7 @@ from auto_round import ParallelConfig
 
 
 @pytest.mark.parametrize("value", [0, -1, True, 1.5, "2"])
-@pytest.mark.parametrize("axis", ["tp_size", "pp_size", "dp_size"])
+@pytest.mark.parametrize("axis", ["tp_size", "pp_size"])
 def test_parallel_sizes_are_positive_integers(axis, value):
     with pytest.raises(ValueError, match=axis):
         ParallelConfig(**{axis: value})
@@ -36,7 +36,7 @@ def test_parallel_sizes_are_positive_integers(axis, value):
 def test_parallel_policy_validation(monkeypatch):
     assert ParallelConfig.from_value(None) == ParallelConfig()
     assert ParallelConfig.from_value({"tp_size": 2}).tp_size == 2
-    with pytest.raises(NotImplementedError, match="DP"):
+    with pytest.raises(TypeError, match="dp_size"):
         ParallelConfig(dp_size=2)
     with pytest.raises(NotImplementedError, match="Hybrid"):
         ParallelConfig(tp_size=2, pp_size=2)
@@ -59,7 +59,8 @@ def test_native_distributed_config_and_cli():
     assert native.tp_size == 2
     assert native.tp_plan == "auto"
     args = build_quantize_parser().parse_args(["local-model", "--tp_size", "2"])
-    assert (args.tp_size, args.pp_size, args.dp_size) == (2, 1, 1)
+    assert (args.tp_size, args.pp_size) == (2, 1)
+    assert not hasattr(args, "dp_size")
 
 
 @pytest.mark.parametrize("scheme", ["INT8_W8A8"])
@@ -101,7 +102,7 @@ def test_multistage_tp_validates_later_algorithm_before_loading():
 
 @pytest.mark.parametrize("data_type,group_size", [("mx_fp", 16), ("nv_fp", 32)])
 def test_invalid_fp4_block_size(data_type, group_size):
-    from auto_round.parallel.policy import validate_tp_quantization
+    from auto_round.parallel.tp.policy import validate_tp_quantization
     from auto_round.schemes import QuantizationScheme
 
     with pytest.raises(NotImplementedError, match="group_size"):
@@ -110,7 +111,7 @@ def test_invalid_fp4_block_size(data_type, group_size):
 
 @pytest.mark.parametrize("scheme", ["MXFP4", "MXFP4_RCEIL", "NVFP4"])
 def test_tp_fp4_activation_policy(scheme):
-    from auto_round.parallel.policy import validate_tp_quantization
+    from auto_round.parallel.tp.policy import validate_tp_quantization
     from auto_round.schemes import preset_name_to_scheme
 
     config = preset_name_to_scheme(scheme).copy()
@@ -122,7 +123,7 @@ def test_tp_fp4_activation_policy(scheme):
 
 @pytest.mark.parametrize("override", [{"act_sym": False}, {"act_dynamic": False}, {"act_bits": 2}])
 def test_invalid_tp_activation_options(override):
-    from auto_round.parallel.policy import validate_tp_quantization
+    from auto_round.parallel.tp.policy import validate_tp_quantization
     from auto_round.schemes import preset_name_to_scheme
 
     scheme = preset_name_to_scheme("MXFP4").copy()
@@ -141,7 +142,7 @@ def _configure_linear(layer):
 def _check_qdq_numerics(rank, mesh, symmetric, data_type="int", group_size=2, width=8, act_type=None, act_bits=4):
     from transformers.distributed.tensor_parallel import ColwiseParallel, RowwiseParallel
 
-    from auto_round.parallel.qdq import TensorParallelQDQLinear
+    from auto_round.parallel.tp.qdq import TensorParallelQDQLinear
     from auto_round.wrapper import WrapperLinear, WrapperWALayer
 
     torch.manual_seed(7)
@@ -221,7 +222,7 @@ def _check_qdq_numerics(rank, mesh, symmetric, data_type="int", group_size=2, wi
         if not symmetric:
             torch.testing.assert_close(actual_layer.zp.full_tensor(), reference.zp)
     if data_type != "int":
-        from auto_round.parallel.runtime import _gather_cpu_tensor
+        from auto_round.parallel.tp.runtime import _gather_cpu_tensor
 
         if data_type == "nv_fp":
             torch.testing.assert_close(col.weight_global_scale, reference_col.weight_global_scale)
@@ -274,8 +275,8 @@ def _check_tp_activation_edges(rank, mesh):
     from transformers.distributed.tensor_parallel import RowwiseParallel
 
     from auto_round.data_type.nvfp import nv_fp4
-    from auto_round.parallel.activation import TensorParallelActivationQuantizer
-    from auto_round.parallel.qdq import TensorParallelQDQLinear
+    from auto_round.parallel.tp.activation import TensorParallelActivationQuantizer
+    from auto_round.parallel.tp.qdq import TensorParallelQDQLinear
 
     weight = DTensor.from_local(torch.ones(4, 32), mesh, [Shard(1)], run_check=False)
     quantize = TensorParallelActivationQuantizer(nv_fp4, weight)
@@ -318,9 +319,9 @@ def _check_tp_moe_numerics(rank, mesh, fp4=None):
     from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeExperts
 
     from auto_round.modeling.fused_moe.moe_experts_interface import prepare_model_for_moe_quantization
-    from auto_round.parallel.moe import prepare_tp_moe
-    from auto_round.parallel.qdq import TensorParallelQDQLinear
-    from auto_round.parallel.runtime import validate_tp_model
+    from auto_round.parallel.tp.moe import prepare_tp_moe
+    from auto_round.parallel.tp.qdq import TensorParallelQDQLinear
+    from auto_round.parallel.tp.runtime import validate_tp_model
     from auto_round.wrapper import WrapperLinear
 
     torch.manual_seed(19)
@@ -440,8 +441,8 @@ def _check_stage_warm_start(rank, mesh, optimized):
     from transformers.distributed.tensor_parallel import ColwiseParallel, RowwiseParallel
 
     from auto_round.algorithms.quantization.sign_roundv2.quantizer import SignRoundOptimizedWrapperLinear
-    from auto_round.parallel.qdq import tensor_parallel_wrapper
-    from auto_round.parallel.runtime import is_dtensor
+    from auto_round.parallel.tp.qdq import tensor_parallel_wrapper
+    from auto_round.parallel.tp.runtime import is_dtensor
     from auto_round.wrapper import WrapperLinear, preserve_original_weights, store_warm_start_params_and_unwrap
 
     local_class = SignRoundOptimizedWrapperLinear if optimized else WrapperLinear
@@ -480,8 +481,8 @@ def _check_stage_warm_start(rank, mesh, optimized):
 def _check_export_state(model, exported):
     from torch.distributed.tensor import DTensor
 
-    from auto_round.parallel.activation import TensorParallelActivationQuantizer
-    from auto_round.parallel.runtime import _gather_cpu_tensor
+    from auto_round.parallel.tp.activation import TensorParallelActivationQuantizer
+    from auto_round.parallel.tp.runtime import _gather_cpu_tensor
 
     writer = dist.get_rank() == 0
     # Native MoE packed parameters alias the per-expert weights used for export.
@@ -561,7 +562,7 @@ def _check_qad_lifecycle(
     from auto_round import AutoRound
     from auto_round.algorithms.quantization.qad.config import QADConfig
     from auto_round.algorithms.quantization.qat.config import QATConfig
-    from auto_round.parallel.runtime import gather_for_export, is_dtensor
+    from auto_round.parallel.tp.runtime import gather_for_export, is_dtensor
 
     tokens = torch.tensor([[3, 4, 5, 6], [7, 8, 9, 10]])
     config_cls = QADConfig if algorithm == "qad" else QATConfig

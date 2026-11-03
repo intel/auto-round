@@ -909,7 +909,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 
 #### 跨 GPU 并行 block 调优
 选择 `--data_parallel N` 使用 block 副本，`--tensor_parallel N` 使用原生权重
-分片并自动启动本地 worker，或 `--pipeline_parallel N` 使用现有多设备放置。
+分片并自动启动本地 worker，或 `--pipeline_parallel N` 使用朴素流水线并行。
 每次运行只能选择一种模式。
 
 ```bash
@@ -917,7 +917,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 ```
 
 模式选择、对齐的 CLI/Python 接口、DP batch／适用条件、TP 启动／导出行为和
-支持的组合统一见[并行指南](./parallelism_CN.md)。PP 放置并非微批次流水线训练。
+支持的组合统一见[并行指南](./parallelism_CN.md)。PP 顺序执行流水线阶段，
+尚无微批次重叠调度。
 
 #### lm_head 量化中开启多 GPU 标定
 量化 lm-head 时，AutoRound 需要缓存其输入数据以进行高效的标定，这要求**整个模型驻留在 GPU 显存中** ；若 GPU 显存不足，部分层会退回至 Pure RTN 模式。

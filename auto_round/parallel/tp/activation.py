@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Shard-local activation QDQ without replacing native TP layout transforms."""
+"""Tensor-parallel activation QDQ preserving native shard layouts."""
 
 import torch
 import torch.distributed as dist

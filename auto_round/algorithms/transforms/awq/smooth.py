@@ -252,10 +252,10 @@ def get_grid_search_params(n_grid: int, duo_scaling: bool | str) -> list[tuple[f
 
 def compute_layer_means(layers: list[torch.nn.Module], group_size: int) -> torch.Tensor:
     """Per-channel mean of normalised weights across all balance layers."""
-    from auto_round.parallel.runtime import is_dtensor
+    from auto_round.parallel.tp.runtime import is_dtensor
 
     if any(is_dtensor(layer.weight) for layer in layers):
-        from auto_round.parallel.tensor_ops import ParallelTensorOps
+        from auto_round.parallel.tp.tensor_ops import ParallelTensorOps
 
         return ParallelTensorOps.input_channel_means(layers, group_size)
     weight = torch.cat([m.weight.detach().float() for m in layers], dim=0)
@@ -280,10 +280,10 @@ def fold_scales_into_smooth_layer(smooth: torch.nn.Module, scales: torch.Tensor)
 
     Any bias is always divided by ``s``.
     """
-    from auto_round.parallel.runtime import is_dtensor
+    from auto_round.parallel.tp.runtime import is_dtensor
 
     if is_dtensor(smooth.weight):
-        from auto_round.parallel.tensor_ops import ParallelTensorOps
+        from auto_round.parallel.tp.tensor_ops import ParallelTensorOps
 
         ParallelTensorOps.divide_outputs(smooth, scales, unit_offset=_rmsnorm_has_unit_offset(smooth))
         return
