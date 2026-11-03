@@ -168,7 +168,7 @@ def gather_for_export(model):
         for wrapper_name in sorted(activation_wrappers, key=len, reverse=True):
             prefix = f"{wrapper_name}.orig_layer"
             if name == prefix or name.startswith(prefix + "."):
-                name = wrapper_name + name[len(prefix):]
+                name = wrapper_name + name[len(prefix) :]
         return name
 
     def gather(value):
