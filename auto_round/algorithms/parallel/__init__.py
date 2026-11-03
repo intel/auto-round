@@ -17,6 +17,6 @@ import importlib
 import sys
 
 for _name in ("data_parallel", "mirror_sync", "spmd", "tune_parallel"):
-	_module = importlib.import_module(f"auto_round.parallel.{_name}")
-	sys.modules[f"{__name__}.{_name}"] = _module
-	globals()[_name] = _module
+    _module = importlib.import_module(f"auto_round.parallel.{_name}")
+    sys.modules[f"{__name__}.{_name}"] = _module
+    globals()[_name] = _module
