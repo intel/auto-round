@@ -18,7 +18,9 @@ from auto_round.export.export_to_awq import export as awq_export
 from auto_round.export.formats import resolve_formats
 
 
-@pytest.mark.parametrize("data_type", ["fp", "block_fp8", "fp8"])
+@pytest.mark.parametrize(
+    "data_type", ["fp", "fp8", "fp8_sym", "fp8_e4m3", "block_fp8", "block_fp8_sym", "block_fp8_e4m3"]
+)
 def test_int_backend_packs_fp8_block_override(data_type, monkeypatch):
     fp8_dtype = getattr(torch, "float8_e4m3fn", None)
     if fp8_dtype is None:
@@ -69,6 +71,7 @@ def test_fp8_override_pack_phase_accounting(monkeypatch, packing_fails):
     model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias=False))
     model[0].data_type = "fp"
     model[0].bits = 8
+    model[0].group_size = (128, 128)
     phases = dict.fromkeys(autoround_export.PACK_PHASES, 0)
     monkeypatch.setattr(autoround_export, "PACK_PHASES", phases)
     ticks = iter([0.0, 1.0, 2.0, 3.0])
@@ -89,16 +92,23 @@ def test_fp8_override_pack_phase_accounting(monkeypatch, packing_fails):
     assert phases["pack"] == 1.0
 
 
-@pytest.mark.parametrize("mixed", [False, True])
-def test_autoround_fp8_override_packing_metadata(monkeypatch, mixed):
+@pytest.mark.parametrize(
+    "data_type", [None, "fp", "fp8", "fp8_sym", "fp8_e4m3", "block_fp8", "block_fp8_sym", "block_fp8_e4m3"]
+)
+@pytest.mark.parametrize("config_source", ["exact", "exact_and_regex", "regex"])
+def test_autoround_fp8_override_packing_metadata(monkeypatch, data_type, config_source):
     model = torch.nn.Sequential(*(torch.nn.Linear(128, 128, bias=False) for _ in range(3)))
     model.config = SimpleNamespace()
     default_scheme = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int", "act_bits": 16}
     layer_config = {str(i): {**default_scheme, "in_blocks": True} for i in range(3)}
     layer_config["1"]["bits"] = 8  # An integer override must not acquire FP8 packing metadata.
-    if mixed:
-        layer_config["0"].update(bits=8, group_size=(128, 128), data_type="fp", act_bits=8)
+    if data_type is not None:
+        layer_config["0"].update(bits=8, group_size=(128, 128), data_type=data_type, act_bits=8)
     serialization = {**default_scheme, "regex_config": None}
+    if config_source != "exact" and data_type is not None:
+        serialization["regex_config"] = {"0": dict(layer_config["0"])}
+        if config_source == "regex":
+            layer_config["0"] = {**default_scheme, "in_blocks": True}
     # Isolate serialization from kernel dispatch; real FP8 packing is tested above.
     monkeypatch.setattr(autoround_export, "pack_layer", lambda *args: None)
 
@@ -113,14 +123,71 @@ def test_autoround_fp8_override_packing_metadata(monkeypatch, mixed):
     config = json.loads(json.dumps(saved.config.quantization_config))
     assert config["packing_format"] == "auto_round:auto_gptq"
     overrides = config["extra_config"]
-    if mixed:
-        assert overrides["0"]["packing_format"] == "auto_round:fp8"
-        assert overrides["0"]["bits"] == 8
-        assert overrides["0"]["data_type"] == "fp"
+    if data_type is not None:
+        fp8_config = overrides[".*0.*" if config_source == "regex" else "0"]
+        assert fp8_config["packing_format"] == "auto_round:fp8"
+        assert fp8_config["bits"] == 8
+        assert fp8_config["data_type"] == "fp"
+        for cfg in overrides.values():
+            assert cfg.get("data_type", "int") in ("int", "fp")
+            if cfg.get("data_type") == "fp":
+                assert cfg["packing_format"] == "auto_round:fp8"
     else:
         assert "0" not in overrides
     assert "packing_format" not in overrides["1"]
     assert "2" not in overrides
+    if data_type is not None and config_source != "regex":
+        assert layer_config["0"]["data_type"] == data_type
+
+
+@pytest.mark.parametrize("config_source", ["pack", "save", "regex"])
+@pytest.mark.parametrize(
+    "data_type,group_size",
+    [
+        ("fp", -1),
+        ("fp8", 128),
+        ("fp", (128,)),
+        ("fp", (128, 128, 128)),
+        ("fp", (0, 128)),
+        ("fp", (128, -1)),
+        ("fp", (128.0, 128)),
+        ("fp", [128, 128]),
+        ("fp8_e5m2", (128, 128)),
+        ("block_fp8_e5m2", (128, 128)),
+        ("fp8_e4m3fnuz", (128, 128)),
+    ],
+)
+def test_int_backend_rejects_unsupported_fp8_overrides(monkeypatch, config_source, data_type, group_size):
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias=False))
+    default_scheme = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int", "act_bits": 16}
+    cfg = {**default_scheme, "bits": 8, "data_type": data_type, "group_size": group_size, "in_blocks": True}
+    for key, value in cfg.items():
+        setattr(model[0], key, value)
+
+    def reject_packer(*args, **kwargs):
+        pytest.fail("Unsupported FP8 overrides must fail before packing")
+
+    monkeypatch.setattr(autoround_fp8_export, "pack_layer", reject_packer)
+    if config_source != "pack":
+        # Metadata must also be checked when weights have already been offloaded.
+        model.to("meta")
+        monkeypatch.setattr(autoround_export, "pack_layer", reject_packer)
+        layer_config = {"0": cfg}
+        serialization = {**default_scheme, "regex_config": None}
+        if config_source == "regex":
+            layer_config = {"0": {**default_scheme, "in_blocks": True}}
+            serialization["regex_config"] = {"0": cfg}
+        with pytest.raises(ValueError, match="FP8 override.*0.*E4M3.*2-D"):
+            autoround_export.save_quantized_as_autoround(
+                output_dir=None,
+                model=model,
+                layer_config=layer_config,
+                serialization_dict=serialization,
+                backend="auto_round:auto_gptq",
+            )
+    else:
+        with pytest.raises(ValueError, match="FP8 override.*0.*E4M3.*2-D"):
+            autoround_export.pack_layer("0", model, "auto_round:auto_gptq", device="cpu")
 
 
 def _get_folder_size(path: str) -> float:
