@@ -96,14 +96,14 @@ function run_unit_test() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==${TORCH_VERSION} torchvision torchao --index-url https://download.pytorch.org/whl/cu130
-    uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
+    uv pip install torch==${TORCH_VERSION} torchvision torchao --index-url https://download.pytorch.org/whl/cu132
+    uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu132
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git@master#subdirectory=gguf-py'
     uv pip install -r unit/test_cuda/requirements.txt
     uv pip install -r unit/test_cuda/requirements_diffusion.txt
     uv pip install -U transformers chardet timm
     uv pip uninstall torch torchvision
-    uv pip install torch==${TORCH_VERSION} torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==${TORCH_VERSION} torchvision torchao --index-url https://download.pytorch.org/whl/cu132
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
 
     pip list > ${LOG_DIR}/ut_pip_list.txt
@@ -132,10 +132,10 @@ function run_unit_test_vlm() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
 
-    uv pip install torch==${TORCH_VERSION} torchvision --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==${TORCH_VERSION} torchvision --index-url https://download.pytorch.org/whl/cu132
     uv pip install git+https://github.com/haotian-liu/LLaVA.git@v1.2.2 --no-deps
     uv pip install -r unit/test_cuda/requirements_vlm.txt \
-        --extra-index-url https://download.pytorch.org/whl/cu130 \
+        --extra-index-url https://download.pytorch.org/whl/cu132 \
         --index-strategy unsafe-best-match
     uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
@@ -167,7 +167,7 @@ function run_unit_test_llmc() {
     cd ${REPO_PATH}/test
     rm -rf .coverage* *.xml *.html
     BUILD_TYPE="nightly" uv pip install -r integration/test_cuda/requirements_llmc.txt \
-        --extra-index-url https://download.pytorch.org/whl/cu130 \
+        --extra-index-url https://download.pytorch.org/whl/cu132 \
         --index-strategy unsafe-best-match
     uv pip install -U chardet
     cd ${REPO_PATH} && uv pip install . && cd ${REPO_PATH}/test
