@@ -963,6 +963,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 - The calibration forwards (reference outputs, the quantized-input chain, imatrix and activation statistics) are
   sharded across the GPUs too, also at `--iters 0`. Quantizers declare the statistics their hooks write and how they
   reduce (`calibration_stats`); a hook pass with undeclared statistics stays serial.
+- With AWQ, its calibration forward (activation statistics and the cached parent-module calls), the
+  smoothing-ratio grid search and the weight-clip search are sharded across the GPUs as well: every GPU captures
+  and keeps its share of the samples, replays its share of the cached calls on its own copy of the mapping's parent
+  module, and each clip search runs on one GPU. The captured statistics are merged in sample order, so the
+  quantized model matches a serial run. A mapping whose parent module lies outside the block is searched serially.
+  The captured calls stay on their GPUs until the block's searches finish (about 1-2 GB more per GPU on
+  27B-class blocks than a serial run, which parks them in host memory).
 - Each rank samples from its own share of the calibration pool, so per-iteration loss lines and tuned weights differ
   from a serial run. Compare runs at the model level (accuracy, KL divergence against the base model).
 - To exclude devices, set the backend's visibility variable (e.g. `CUDA_VISIBLE_DEVICES`) before launch.

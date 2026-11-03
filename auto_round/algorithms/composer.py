@@ -30,12 +30,14 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+import time
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
 
+from auto_round import envs
 from auto_round.algorithms.block_runner import BlockForwardRunner
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
@@ -501,6 +503,43 @@ class AlgorithmComposer:
             merge_stats=merge_stats,
         )
 
+    def _preprocessor_calibration_forward(self, block, inputs, input_others, preprocessors) -> None:
+        """Step-1 calibration forward carrying the preprocessors' hooks.
+
+        Under --data_parallel the pass shards over one-pass copies of the
+        block when every preprocessor in it captures per shard
+        (``sharded_calibration``); otherwise it runs serially on the home
+        block. The output is not used (the reference is collected after the
+        preprocessors transform the block).
+        """
+        devices = getattr(self._coll_ctx, "devices", None)
+        scopes = None
+        # the same eligibility the engine applies (a list pool of at least
+        # one sample per device): a pass the engine would run serially must
+        # also capture serially (host-parked), not into on-device buffers
+        if devices and len(devices) >= 2 and preprocessors and isinstance(inputs, list) and len(inputs) >= len(devices):
+            scopes = [pre.sharded_calibration(list(devices)) for pre in preprocessors]
+            if any(scope is None for scope in scopes):
+                scopes = None
+        if scopes is None:
+            self.block_forward(block, inputs, input_others)
+            return
+        with ExitStack() as stack:
+            for scope in scopes:
+                stack.enter_context(scope)
+            # no engine statistics on these hooks: the preprocessors own and
+            # merge their captures; one-pass copies keep the block's mirror
+            # pool for the post-transform passes
+            self._coll_ctx.collect_forward(
+                self.block_forward,
+                block,
+                inputs,
+                input_others,
+                hook_pass=True,
+                merge_stats={},
+                fresh_replicas=True,
+            )
+
     # ── Per-block pipeline orchestration ─────────────────────────────────────
 
     def compress_block(
@@ -541,6 +580,9 @@ class AlgorithmComposer:
         """
         self.last_collect_wall = 0.0
         block_forward_fn = self.block_forward
+        # per-phase walls for the [perf] pipeline phases line (AR_PERF_COUNTERS)
+        _phases = dict.fromkeys(("pre_calib", "pre_quant", "ref_collect", "q_collect", "tune", "q_cascade"), 0.0)
+        _ptime = time.perf_counter
 
         self._coll_ctx = self._collection_context(block, fp_inputs)
         # distributed calibration pool: each DDP device owns its sample
@@ -567,8 +609,10 @@ class AlgorithmComposer:
             logger.debug("[routed-shape] recorder setup skipped (%s)", e)
 
         # ── Step 1: Preprocessor calibration (e.g. AWQ activation stats) ──────
+        _t0 = _ptime()
         with torch.no_grad():
             pre_hooks = []
+            joint_pres = []
             for pre in self.preprocessors:
                 hooks = pre.register_fp_input_forward_hooks(block)
                 if not hooks:
@@ -576,12 +620,13 @@ class AlgorithmComposer:
                 pre_inputs, pre_others = pre.select_calibration_samples(fp_inputs, input_others)
                 if pre_inputs is fp_inputs and pre_others is input_others:
                     pre_hooks.extend(hooks)
+                    joint_pres.append(pre)
                     continue
-                block_forward_fn(block, pre_inputs, pre_others)
+                self._preprocessor_calibration_forward(block, pre_inputs, pre_others, [pre])
                 for h in hooks:
                     h.remove()
             if pre_hooks:
-                block_forward_fn(block, fp_inputs, input_others)
+                self._preprocessor_calibration_forward(block, fp_inputs, input_others, joint_pres)
             for h in pre_hooks:
                 h.remove()
 
@@ -593,10 +638,22 @@ class AlgorithmComposer:
                 block_forward_fn(block, q_inputs if q_inputs is not None else fp_inputs, input_others)
             for h in pre_q_hooks:
                 h.remove()
+        _phases["pre_calib"] = _ptime() - _t0
 
         # ── Step 2: pre_quantize_block (stats consolidation + weight transforms) ──
+        _t0 = _ptime()
+        # Under --data_parallel the preprocessors' no-grad searches (AWQ's
+        # smoothing grid and clip search) may shard over the collection
+        # devices through the engine's search seam; it is block-scoped.
+        _seam_fn = getattr(self._coll_ctx, "search_seam", None)
+        search_seam = _seam_fn() if callable(_seam_fn) else None
         for pre in self.preprocessors:
-            pre.pre_quantize_block(block_ctx)
+            pre.set_parallel_search(search_seam)
+            try:
+                pre.pre_quantize_block(block_ctx)
+            finally:
+                pre.set_parallel_search(None)
+        _phases["pre_quant"] = _ptime() - _t0
 
         act_dynamic = self.scheme.act_dynamic if (self.scheme and self.scheme.act_dynamic is not None) else True
         data_type = self.scheme.data_type if self.scheme else "int"
@@ -613,6 +670,7 @@ class AlgorithmComposer:
         # ── Step 3: Quantizer calibration (act_max, imatrix, etc.) ─────────────
         if fp_inputs is not None:
             with torch.no_grad():
+                _t0 = _ptime()
                 quant_hooks, merge_stats = self._get_fp_act_hooks(block)
                 if reference_output is None or reference_invalidated:
                     reference_output = self._collect_forward_timed(
@@ -632,8 +690,10 @@ class AlgorithmComposer:
                     reference_next_input = reference_output
                 for h in quant_hooks:
                     h.remove()
+                _phases["ref_collect"] = _ptime() - _t0
 
                 if self.block_quantizer.enable_quanted_input:
+                    _t0 = _ptime()
                     q_hooks, q_merge_stats = self._get_q_act_hooks(block)
                     if q_hooks:
                         self._collect_forward_timed(
@@ -645,6 +705,7 @@ class AlgorithmComposer:
                         )
                         for h in q_hooks:
                             h.remove()
+                    _phases["q_collect"] = _ptime() - _t0
 
             # ── Step 3.5: MoE scale alignment + global scale update ─────────────────
             # Must run after calibration hooks (act_max collected) and before quantize_block.
@@ -739,7 +800,9 @@ class AlgorithmComposer:
             )
 
         try:
+            _t0 = _ptime()
             self._run_tuning(block, tune_block, collect_warm_start_output)
+            _phases["tune"] = _ptime() - _t0
 
             # Quantizer-agnostic block finalization (e.g. NVFP MoE act_max), kept
             # out of the per-algorithm tuning loop.
@@ -760,9 +823,11 @@ class AlgorithmComposer:
                 # while the wrappers still held the best quantization parameters.
                 new_q_input = warm_start_outputs[0]
             elif self.block_quantizer.enable_quanted_input:
+                _t0 = _ptime()
                 with torch.no_grad():
                     new_q_input = self._collect_forward_timed(block, effective_input, input_others)
                     new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input
+                _phases["q_cascade"] = _ptime() - _t0
             else:
                 new_q_input = None
         finally:
@@ -773,6 +838,12 @@ class AlgorithmComposer:
                 _state.pool = None
             self._coll_ctx.release_pool()
 
+        if envs.AR_PERF_COUNTERS:
+            logger.info(
+                "[perf] pipeline phases: pre_calib=%.2fs pre_quant=%.2fs ref_collect=%.2fs q_collect=%.2fs "
+                "tune=%.2fs q_cascade=%.2fs",
+                *_phases.values(),
+            )
         return new_q_input, reference_next_input
 
     def _settle_block_pool(self, block, pool):

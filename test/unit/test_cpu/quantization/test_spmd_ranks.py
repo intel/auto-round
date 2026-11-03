@@ -375,3 +375,118 @@ def test_adamround_on_two_cpu_ranks_matches_serial(tiny_opt_model_path, monkeypa
     assert engaged and all(e and name == "AdamRoundQuantizer" for e, name in engaged), engaged
     diff = [k for k in serial if not torch.equal(serial[k], ranks[k])]
     assert not diff, f"rank run diverged from serial: {diff[:8]}"
+
+
+@pytest.mark.enable_torch_compile
+class TestConcurrentTraces:
+    """A rank that (re)compiles must not break its peers' compiled calls.
+
+    torch<2.14 keeps "symbolic tracing in progress" in a process-wide flag;
+    the flag is simulated here (setting it is what a peer's dynamo/AOT trace
+    does) and compiled functions are called from engine threads. torch>=2.14
+    keeps the flag per thread: there is no race, and the guard is a no-op.
+    """
+
+    @staticmethod
+    def _compiled():
+        def f(x):
+            return x * 2 + 1
+
+        return torch.compile(f, backend="eager")
+
+    @staticmethod
+    def _tracing(monkeypatch):
+        import torch.fx._symbolic_trace as st
+
+        from auto_round.algorithms.parallel.data_parallel import fx_tracing_flag_is_process_wide
+
+        if not fx_tracing_flag_is_process_wide():
+            pytest.skip("torch.fx keeps its tracing flag per thread here (torch>=2.14): no cross-thread race")
+        monkeypatch.setattr(st, "_is_fx_tracing_flag", True)
+
+    def test_compiled_call_raises_while_a_peer_traces(self, monkeypatch):
+        fn = self._compiled()
+        self._tracing(monkeypatch)
+        out = {}
+
+        def _peer():
+            try:
+                fn(torch.ones(2))
+            except RuntimeError as e:
+                out["err"] = str(e)
+
+        t = threading.Thread(target=_peer)
+        t.start()
+        t.join()
+        assert "symbolically trace" in out.get("err", "")
+
+    def test_guard_runs_the_call_eagerly_and_restores(self, monkeypatch):
+        import torch._dynamo.config as dynamo_config
+
+        from auto_round.algorithms.parallel.data_parallel import tolerate_concurrent_traces
+
+        fn = self._compiled()
+        before = dynamo_config.error_on_nested_fx_trace
+        self._tracing(monkeypatch)
+        with tolerate_concurrent_traces():
+            with tolerate_concurrent_traces():  # re-entrant
+                assert torch.equal(fn(torch.ones(2)), torch.full((2,), 3.0))
+            assert dynamo_config.error_on_nested_fx_trace is False
+        assert dynamo_config.error_on_nested_fx_trace == before
+
+    def test_ranks_tolerate_a_tracing_peer(self, monkeypatch):
+        import torch._dynamo.config as dynamo_config
+
+        fn = self._compiled()
+        before = dynamo_config.error_on_nested_fx_trace
+        self._tracing(monkeypatch)
+        out = _run([lambda: fn(torch.ones(1)).item(), lambda: fn(torch.zeros(1)).item()])
+        assert out == [3.0, 1.0]
+        assert dynamo_config.error_on_nested_fx_trace == before  # rank 0 runs in this thread
+
+    def test_threaded_spawn_tolerates_a_tracing_peer(self, monkeypatch):
+        from auto_round.algorithms.parallel.data_parallel import run_threaded_spawn
+
+        fn = self._compiled()
+        self._tracing(monkeypatch)
+        out = [None, None]
+
+        def _go(i):
+            out[i] = fn(torch.full((1,), float(i))).item()
+
+        run_threaded_spawn([lambda: _go(0), lambda: _go(1)])
+        assert out == [1.0, 3.0]
+
+    def test_guard_is_a_noop_with_a_per_thread_flag(self, monkeypatch):
+        import torch._dynamo.config as dynamo_config
+        import torch.fx._symbolic_trace as st
+
+        from auto_round.algorithms.parallel.data_parallel import tolerate_concurrent_traces
+
+        monkeypatch.setattr(st, "_is_fx_tracing_tls", threading.local(), raising=False)
+        before = dynamo_config.error_on_nested_fx_trace
+        with tolerate_concurrent_traces():
+            assert dynamo_config.error_on_nested_fx_trace == before
+
+    def test_a_per_thread_flag_hides_a_peer_trace(self):
+        import torch.fx._symbolic_trace as st
+
+        from auto_round.algorithms.parallel.data_parallel import fx_tracing_flag_is_process_wide
+
+        if fx_tracing_flag_is_process_wide():
+            pytest.skip("torch.fx keeps its tracing flag process-wide here (torch<2.14)")
+        fn = self._compiled()
+        out = {}
+
+        def _peer():
+            try:
+                out["y"] = fn(torch.ones(2))
+            except RuntimeError as e:  # pragma: no cover - the race this test rules out
+                out["err"] = str(e)
+
+        with st._is_fx_tracing_context(True):  # this thread "traces"
+            t = threading.Thread(target=_peer)
+            t.start()
+            t.join()
+        assert "err" not in out
+        assert torch.equal(out["y"], torch.full((2,), 3.0))
