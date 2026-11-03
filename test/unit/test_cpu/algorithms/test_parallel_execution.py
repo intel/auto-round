@@ -19,7 +19,7 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
@@ -141,6 +141,76 @@ def test_tp_uses_native_backward_not_dp():
         actual, synchronize = ParallelExecution({"tp_size": 2}).prepare_gradients(None, block)
         synchronize()
     assert actual is block
+
+
+def test_local_execution_preserves_dp_rank_hooks(monkeypatch):
+    from auto_round.algorithms.parallel import spmd
+
+    sampler = object()
+    rank = SimpleNamespace(
+        index_sampler=Mock(return_value=sampler),
+        all_reduce_weighted_mean=Mock(return_value=2.5),
+        sync_gradients=Mock(),
+    )
+    monkeypatch.setattr(spmd, "current_rank", lambda: rank)
+    execution = ParallelExecution()
+    block = torch.nn.Linear(4, 4)
+    actual, sync = execution.prepare_gradients(None, block)
+    sync()
+    assert actual is block
+    rank.sync_gradients.assert_called_once_with(block)
+    assert execution.index_sampler(16, 4) is sampler
+    rank.index_sampler.assert_called_once_with(16, 4)
+    assert execution.reduce_loss(3.0, 8) == 2.5
+    rank.all_reduce_weighted_mean.assert_called_once_with(3.0, 8)
+
+
+def test_tp_collection_and_tuning_never_create_dp_mirrors():
+    from auto_round.algorithms.parallel.data_parallel import ParallelPolicy
+
+    execution = ParallelExecution({"tp_size": 2})
+    quantizer = SimpleNamespace(
+        compress_context=SimpleNamespace(parallel_policy=ParallelPolicy()),
+        quantize_block=Mock(return_value={"tp": True}),
+    )
+    composer = SimpleNamespace(block_quantizer=quantizer)
+    block = torch.nn.Linear(4, 4)
+    inputs = [torch.randn(1, 2, 4)]
+    with (
+        patch("auto_round.algorithms.parallel.tune_parallel.TuneParallelContext.for_collection") as collect,
+        patch("auto_round.algorithms.parallel.spmd.quantize_block_on_ranks") as tune,
+        patch("auto_round.utils.distributed.all_reduce_loss") as reduce_loss,
+    ):
+        ctx = execution.collection_context(composer, block, inputs)
+        assert ctx.devices is None
+        assert execution.quantize_block(quantizer, block, inputs, {}, inputs, None, None) == {"tp": True}
+        assert execution.reduce_loss(3.0, 8) == 3.0
+    collect.assert_not_called()
+    tune.assert_not_called()
+    reduce_loss.assert_not_called()
+    quantizer.quantize_block.assert_called_once_with(block, inputs, {}, inputs, None, None, input_ids=None)
+
+
+@pytest.mark.parametrize("engaged", [False, True])
+def test_local_tuning_delegates_to_dp_engine(engaged):
+    quantizer = SimpleNamespace(quantize_block=Mock(return_value="local"))
+    with patch(
+        "auto_round.algorithms.parallel.spmd.quantize_block_on_ranks", return_value=(engaged, "replica")
+    ) as tune:
+        result = ParallelExecution().quantize_block(quantizer, "block", "fp", {}, "out", None, "ctx")
+    assert result == ("replica" if engaged else "local")
+    tune.assert_called_once_with(quantizer, "block", "fp", {}, "out", None, "ctx", input_ids=None)
+    assert quantizer.quantize_block.call_count == (0 if engaged else 1)
+
+
+@pytest.mark.parametrize("topology", [{"tp_size": 2}, {"pp_size": 2}])
+def test_stage_rejects_hybrid_dp_before_installing_hooks(topology):
+    from auto_round.algorithms.parallel.data_parallel import ParallelPolicy
+
+    execution = ParallelExecution(topology)
+    orchestrator = SimpleNamespace(compress_context=SimpleNamespace(parallel_policy=ParallelPolicy(world=2)))
+    with pytest.raises(NotImplementedError, match="hybrid"), execution.stage(None, orchestrator):
+        pytest.fail("must reject before entering the stage")
 
 
 def _check_tensor_ops(mesh):

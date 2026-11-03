@@ -96,12 +96,10 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
-from auto_round.utils.distributed import setup_ddp_if_needed_
-from auto_round.wrapper import (
-    WrapperLinear,
-    unwrapper_layer,
-    wrapper_block,
-)
+from auto_round.wrapper import WrapperLinear, unwrapper_layer, wrapper_block
+
+if TYPE_CHECKING:
+    from auto_round.algorithms.composer import BlockContext
 
 
 @register_pipeline_member(SignRoundConfig)
@@ -453,7 +451,10 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
         mse_reduction = "mean"
-        if self.gradient_accumulate_steps != 1:
+        # a masked loss is a SUM over the valid elements, normalized by the
+        # valid-token count below (num_elm) -- also at accumulation == 1, where
+        # a mean over all elements divided again by that count normalizes twice
+        if self.gradient_accumulate_steps != 1 or valid_token_mask:
             mse_reduction = "sum"
         mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
         scaler = self._get_scaler()  # pylint: disable=assignment-from-none
@@ -471,7 +472,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                 num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
 
         block, sync_gradients = self.parallel.prepare_gradients(self, block)
-        index_sampler = IndexSampler(nsamples, global_batch_size)
+        index_sampler = self.parallel.index_sampler(nsamples, global_batch_size)
         block_fwd = self.block_forward
 
         # When low_gpu_mem_usage is enabled, active_inputs / fp_outputs are intentionally
@@ -679,6 +680,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                         # clear memory to avoid OOM due to memory fragmentation
                         clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
 
+                total_loss = self.parallel.reduce_loss(total_loss, num_elm)
                 if i == 0:
                     init_loss = total_loss
                 current_lr = optimizer.param_groups[0]["lr"]

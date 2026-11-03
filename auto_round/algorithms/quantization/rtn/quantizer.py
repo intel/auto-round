@@ -93,6 +93,11 @@ class OptimizedRTNQuantizer(RTNQuantizer):
     def parallel_capabilities(cls):
         return super().parallel_capabilities()
 
+    # imatrix_cnt (a python int row count) must co-travel with imatrix: a cold
+    # expert can collect zero routed rows on the home shard and receive only
+    # the merged tensor, and the normalize step (imatrix /= imatrix_cnt) needs both
+    calibration_stats = {"imatrix": "sum", "imatrix_cnt": "sum"}
+
     def __init__(self, config: RTNConfig) -> None:
         super().__init__(config)
 

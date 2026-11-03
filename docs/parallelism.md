@@ -86,6 +86,11 @@ TP use the same services; algorithm names are not used to select placement:
   and primary-device memory-risk decision. SignRound's PP heuristic is unchanged.
 - `prepare_gradients(...)` retains existing experimental DP synchronization for
   non-TP execution. TP uses native autograd and must not apply DDP to TP shards.
+- `collection_context(...)` and `quantize_block(...)` select calibration and tuning
+  transport. Single-process DP reuses the mainline mirror pool and thread ranks;
+  TP keeps native weight shards and never creates DP mirrors.
+- `index_sampler(...)` preserves DP's disjoint replica draws; `reduce_loss(...)`
+  combines DP losses for consistent best-iteration decisions and is an identity for TP.
 - `sample_indices(...)` broadcasts TP minibatch indices from rank zero, independent
   of rank-local RNG consumption. `offload_block(...)` releases both weight shards
   and quantization tensor metadata to CPU after each block.
@@ -264,15 +269,26 @@ Block-wise tests also cover FP4 activations with AutoRound/SignRound,
 AutoRound v2, RTN and optimized RTN, including metadata offload and export logits.
 CUDA/NCCL memory, performance and deployment-backend inference remain unvalidated.
 
-## PP and future DP
+## PP and single-process DP
 
 `ParallelConfig(pp_size=N)` selects the existing single-process device-placement
 path on the first `N` visible CUDA devices. It is not a microbatch pipeline
 training schedule, and QAD does not yet support this path. Existing `device_map`
 calls remain unchanged when no parallel axes are requested.
 
-`dp_size` reserves a separate data-parallel axis; values greater than one and
-hybrid TP/PP combinations currently raise `NotImplementedError`. Existing
-experimental block-level DDP behavior is not replaced by this API. Future DP
-support must explicitly manage data partitioning, replica groups and gradient
-synchronization rather than treating a TP group as a DP group.
+Use `--data_parallel auto` or `--data_parallel N` for mainline single-process
+data-parallel block calibration/tuning, without `torchrun`. Each replica owns a
+full block and a disjoint sample shard. `--parallel_batch split` preserves the
+requested global batch; `per_replica` uses that batch on every replica. See the
+[step-by-step guide](./step_by_step.md)
+for eligibility and batch constraints.
+
+`--data_parallel` cannot be combined with native TP or explicit `pp_size > 1`.
+The CLI rejects these combinations before model loading, and the shared execution
+service validates API-supplied policies at stage entry. These modes share execution
+services, not process topology: a TP group must never be treated as a DP group.
+
+`dp_size` remains reserved for a process-mesh data-parallel axis; values greater
+than one still raise `NotImplementedError`. It is not an alias for the existing
+single-process `--data_parallel` option. Hybrid TP/DP and TP/PP execution require
+explicit subgroup and resharding support and are not implemented.

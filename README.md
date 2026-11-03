@@ -52,6 +52,8 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 ## 🆕 What's New
 
+* [WIP] For quantization at 4 bits and above, we currently recommend mixing 75% UltraChat with 25% OpenCode to improve reasoning capabilities and agent compatibility. With the default `nsamples=128`, use `--dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"`. See the [doc](./docs/calibration_acc.md) for details. We will update the default calibration dataset after the evaluation is complete.
+
 * [2026/10] We now show that **W2A16** accuracy improves steadily as more tuning cost is invested. See the [W2A16 accuracy results](./docs/alg_202508.md).
 
 * [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.

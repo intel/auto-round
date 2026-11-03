@@ -90,6 +90,8 @@ class ParallelExecution:
     @contextmanager
     def stage(self, algorithm, orchestrator):
         """Route shared infrastructure through this policy for one stage only."""
+        compress_context = getattr(orchestrator, "compress_context", None)
+        self.validate_data_parallel_policy(getattr(compress_context, "parallel_policy", None))
         runner = getattr(algorithm, "block_forward", None)
         calibration = getattr(orchestrator, "calibration", None)
         with ExitStack() as cleanup:
@@ -252,6 +254,53 @@ class ParallelExecution:
         from auto_round.utils.distributed import setup_ddp_if_needed_
 
         return setup_ddp_if_needed_(algorithm, block, device_manager.device_list)
+
+    def collection_context(self, composer, block, inputs):
+        """Select collection transport without replicating native TP weight shards."""
+        from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
+
+        if self.is_tp:
+            context = getattr(composer.block_quantizer, "compress_context", None)
+            self.validate_data_parallel_policy(getattr(context, "parallel_policy", None))
+            return TuneParallelContext()
+        return TuneParallelContext.for_collection(composer, block, inputs)
+
+    def quantize_block(
+        self, quantizer, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, input_ids=None
+    ):
+        """Run the same algorithm on local/TP shards or on data-parallel replicas."""
+        if not self.is_tp:
+            from auto_round.algorithms.parallel.spmd import quantize_block_on_ranks
+
+            engaged, result = quantize_block_on_ranks(
+                quantizer, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, input_ids=input_ids
+            )
+            if engaged:
+                return result
+        return quantizer.quantize_block(
+            block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, input_ids=input_ids
+        )
+
+    def validate_data_parallel_policy(self, policy):
+        """Thread-based DP mirrors and native TP/explicit PP are separate modes."""
+        if policy is not None and policy.world > 1 and (self.is_tp or self.config.pp_size > 1):
+            raise NotImplementedError(
+                "--data_parallel cannot be combined with TP/PP; hybrid execution is not supported."
+            )
+
+    def index_sampler(self, nsamples, batch_size):
+        """DP ranks draw disjoint shards; TP ranks draw identical global batches."""
+        from auto_round.utils.distributed import make_index_sampler
+
+        return make_index_sampler(nsamples, batch_size)
+
+    def reduce_loss(self, loss, weight=1.0):
+        """Only data-parallel replicas reduce independently computed losses."""
+        if self.is_tp:
+            return loss
+        from auto_round.utils.distributed import all_reduce_loss
+
+        return all_reduce_loss(loss, weight)
 
     def sample_indices(self, sampler):
         """TP ranks optimize identical examples even after rank-local RNG use."""

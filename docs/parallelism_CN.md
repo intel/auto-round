@@ -83,6 +83,10 @@ TP 要求 Transformers 版本同时提供 `DistributedConfig` 和原生 DTensor
   和主设备内存风险判断；保留 SignRound 既有的 PP 启发式。
 - `prepare_gradients(...)` 为非 TP 执行保留既有实验性 DP 同步；
   TP 由原生 autograd 通信，不能再对 TP 分片套 DDP。
+- `collection_context(...)` 和 `quantize_block(...)` 选择校准与调优的执行方式。
+  单进程 DP 复用主线的镜像池及线程 rank；TP 保留原生权重分片，不创建 DP 镜像。
+- `index_sampler(...)` 保留 DP 各副本互不重叠的采样；`reduce_loss(...)`
+  归并 DP 损失以统一最佳迭代决策，在 TP 下直接返回原损失。
 - `sample_indices(...)` 从 rank 0 广播 TP 微批次索引，不依赖各 rank 本地的随机数消耗；
   `offload_block(...)` 在每个 block 完成后将权重分片及量化张量元数据释放到 CPU。
 - `replicated(...)` 在缓存／损失边界将分布式**激活**转换为普通张量，
@@ -239,13 +243,21 @@ fake 和打包检查点评估都适用；Python API 不会自动销毁调用方�
 AutoRound v2、RTN 和优化 RTN 的 FP4 激活量化，包括元数据 offload 和导出 logits。
 CUDA/NCCL 显存、性能及部署后端推理仍未验证。
 
-## PP 与后续 DP
+## PP 与单进程 DP
 
 `ParallelConfig(pp_size=N)` 将现有单进程设备放置路径配置到前 `N` 张可见
 CUDA 设备。这不是微批次流水线训练调度，QAD 目前也不支持此路径。
 不启用并行配置维度时，现有 `device_map` 调用方式保持不变。
 
-`dp_size` 预留独立的数据并行维度；大于一的值及 TP／PP 混合组合目前
-均抛出 `NotImplementedError`。本接口不替换现有实验性的 block 级 DDP 行为。
-后续 DP 支持需要显式管理数据切分、副本进程组和梯度同步，
-而不能将 TP 进程组当成 DP 进程组使用。
+使用 `--data_parallel auto` 或 `--data_parallel N` 启用主线的单进程数据并行
+block 校准／调优，无需 `torchrun`。每个副本持有完整 block 和互不重叠的样本分片。
+`--parallel_batch split` 保持请求的全局 batch 大小；`per_replica` 则让每个副本
+都使用该 batch 大小。适用条件及 batch 约束见[操作指南](./step_by_step_CN.md)。
+
+`--data_parallel` 不能与原生 TP 或显式的 `pp_size > 1` 组合使用。
+CLI 在加载模型前拒绝这些组合，共享执行服务也会在阶段入口校验 API 设置的策略。
+这些模式共享执行服务，而不是进程拓扑：不能将 TP 进程组当成 DP 进程组使用。
+
+`dp_size` 仍预留为进程 mesh 的数据并行维度，大于一的值仍抛出
+`NotImplementedError`。它不是现有单进程 `--data_parallel` 选项的别名。
+TP／DP 和 TP／PP 混合执行需要显式的子进程组及重分片支持，目前尚未实现。

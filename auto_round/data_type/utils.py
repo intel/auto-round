@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import math
 from collections.abc import Callable
 from functools import lru_cache
@@ -199,7 +200,6 @@ def _int_search_with_thresh(search_scales: Any, q_scale_thresh: float) -> "Calla
     per-call closure, so resolved callables compare equal across calls and can
     safely key same-shape search batches.
     """
-    import functools
 
     def _clamped(
         weight_reshape: torch.Tensor, bits: int, imatrix: "torch.Tensor | None", *, _thresh: float
@@ -372,10 +372,12 @@ def reshape_imatrix_for_weight(imatrix, weight_reshape: torch.Tensor, group_size
     """
     if imatrix is None or not isinstance(imatrix, torch.Tensor):
         return torch.ones_like(weight_reshape)
-    imatrix = imatrix.reshape(1, -1)
+    # relocate the RAW column first: moving the expanded copy after the fact
+    # would pay a weight-sized cross-device transfer for sharded placements
+    imatrix = imatrix.reshape(1, -1).to(weight_reshape.device)
     imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
     imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)
-    return imatrix.reshape(weight_reshape.shape).to(weight_reshape.device)
+    return imatrix.reshape(weight_reshape.shape)
 
 
 def compute_optimized_init_scale(

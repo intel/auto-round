@@ -50,6 +50,37 @@ def test_cli_infers_tp_from_world_size(monkeypatch, world_size, options, expecte
     assert kwargs["parallel_config"] == dict(zip(("tp_size", "pp_size", "dp_size"), expected))
 
 
+def test_cli_keeps_data_parallel_batch_options():
+    args = build_quantize_parser().parse_args(
+        ["local-model", "--data_parallel", "auto", "--parallel_batch", "per_replica"]
+    )
+    assert args.data_parallel == "auto"
+    assert args.parallel_batch == "per_replica"
+    assert args.tp_size is None
+    assert build_quantize_parser().parse_args([]).data_parallel == "off"
+
+
+@pytest.mark.parametrize(
+    "world,options",
+    [
+        ("1", ["--tp_size", "2"]),
+        ("1", ["--pp_size", "2"]),
+        ("2", []),
+        ("2", ["--tp_size", "1"]),
+    ],
+)
+def test_cli_rejects_mixed_dp_before_loading_or_device_planning(monkeypatch, world, options):
+    from auto_round.cli.main import start
+
+    monkeypatch.setenv("WORLD_SIZE", world)
+    with (
+        patch("torch.cuda.device_count", side_effect=AssertionError("must validate topology first")),
+        patch("auto_round.AutoRound", side_effect=AssertionError("must not load a model")),
+        pytest.raises(NotImplementedError, match="data_parallel"),
+    ):
+        start(argv=["local-model", "--format", "fake", "--data_parallel", "auto", *options])
+
+
 @pytest.mark.parametrize("rank", [None, "0", "1", "3"])
 def test_routine_logs_only_on_global_rank_zero(monkeypatch, rank):
     monkeypatch.delenv("RANK", raising=False)
