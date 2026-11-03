@@ -651,7 +651,8 @@ def tune(args):
         max_shard_size=args.max_shard_size,
     )
     evaluation_context = nullcontext(True)
-    if autoround.parallel_config.tp_size > 1:
+    parallel_config = getattr(autoround, "parallel_config", None)
+    if parallel_config is not None and parallel_config.tp_size > 1:
         from auto_round.parallel.evaluation import rank_zero_evaluation
 
         evaluation_context = rank_zero_evaluation()

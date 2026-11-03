@@ -109,20 +109,23 @@ def test_nonzero_rank_closes_group_without_evaluating(monkeypatch):
 
 
 @pytest.mark.parametrize("format_name", ["fake", "auto_round"])
-@pytest.mark.parametrize("tp_size,rank", [(1, 0), (2, 0), (2, 1)])
+@pytest.mark.parametrize("tp_size,rank", [(None, 0), (1, 0), (2, 0), (2, 1)])
 def test_cli_evaluates_only_after_tp_cleanup(monkeypatch, format_name, tp_size, rank):
     from auto_round.cli.main import start
 
+    has_parallel_config = tp_size is not None
+    tp_size = tp_size or 1
     group = _mock_process_group(monkeypatch, rank)
     monkeypatch.setenv("RANK", str(rank))
     monkeypatch.setenv("WORLD_SIZE", str(tp_size))
     monkeypatch.setenv("LOCAL_RANK", str(rank))
     model, tokenizer = Mock(), Mock()
     compressor = SimpleNamespace(
-        parallel_config=ParallelConfig(tp_size=tp_size),
         tokenizer=tokenizer,
         quantize_and_save=Mock(return_value=(model, "exported-model")),
     )
+    if has_parallel_config:
+        compressor.parallel_config = ParallelConfig(tp_size=tp_size)
 
     def evaluate(*args):
         assert args[:5] == (model, tokenizer, compressor, "exported-model", [format_name])
