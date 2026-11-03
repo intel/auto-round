@@ -10,7 +10,7 @@ description: "Add a new model export format to AutoRound (e.g., auto_round, auto
 This skill guides you through adding a new export format for saving quantized
 models. An export format defines how quantized weights, scales, and zero-points
 are packed and serialized for deployment. Each format is registered via the
-`@OutputFormat.register()` decorator in `auto_round/formats.py`.
+`@register_format()` decorator in `auto_round/export/formats/<name>/format.py` (see `docs/export_formats.md`).
 
 ## Prerequisites
 
@@ -29,7 +29,7 @@ Before starting, determine:
 Create a new directory:
 
 ```
-auto_round/export/export_to_yourformat/
+auto_round/export/formats/yourformat/
 ├── __init__.py
 └── export.py
 ```
@@ -120,7 +120,7 @@ def save_quantized_as_yourformat(output_dir, model, tokenizer, layer_config, ser
 
 ## Step 3: Register the Format
 
-Create the `OutputFormat` subclass in `auto_round/formats.py`:
+Create the `OutputFormat` subclass in `auto_round/export/formats/yourformat/format.py`:
 
 ```python
 @OutputFormat.register("yourformat")
@@ -137,12 +137,12 @@ class YourFormat(OutputFormat):
         return scheme.bits in [4, 8] and scheme.data_type == "int" and scheme.act_bits >= 16
 
     def pack_layer(self, layer_name, model, output_dtype=torch.float16):
-        from auto_round.export.export_to_yourformat.export import pack_layer
+        from auto_round.export.formats.yourformat.packing import pack_layer
 
         return pack_layer(layer_name, model, self.get_backend_name(), output_dtype)
 
     def save_quantized(self, output_dir, model, tokenizer, layer_config, serialization_dict=None, **kwargs):
-        from auto_round.export.export_to_yourformat.export import save_quantized_as_yourformat
+        from auto_round.export.formats.yourformat.packing import save_quantized_as_yourformat
 
         return save_quantized_as_yourformat(
             output_dir, model, tokenizer, layer_config, serialization_dict=serialization_dict, **kwargs
@@ -217,17 +217,17 @@ def test_yourformat_export(tiny_opt_model_path, dataloader):
 
 | Directory | Format Name | Key Patterns |
 |-----------|-------------|--------------|
-| `export_to_autoround/` | auto_round | Native format, QuantLinear packing, safetensors |
-| `export_to_autogptq/` | auto_gptq | GPTQ-compatible INT packing |
-| `export_to_awq/` | auto_awq | AWQ-compatible format |
-| `export_to_gguf/` | gguf | Binary GGUF format with super-block quantization, uses `@register_qtype()` |
-| `export_to_llmcompressor/` | llm_compressor | CompressedTensors format for vLLM |
+| `formats/autoround/` | auto_round | Native format, QuantLinear packing, safetensors |
+| `formats/gptq/` | auto_gptq | GPTQ-compatible INT packing |
+| `formats/awq/` | auto_awq | AWQ-compatible format |
+| `formats/gguf/` | gguf | Binary GGUF format with super-block quantization, uses `@register_qtype()` |
+| `formats/compressed_tensors/` | llm_compressor | CompressedTensors format for vLLM |
 
 ## Key Registration Points
 
 | What | Where | Mechanism |
 |------|-------|-----------|
-| Format class | `auto_round/formats.py` | `@OutputFormat.register("name")` |
+| Format class | `auto_round/export/formats/<name>/format.py` + `registry.load_builtin_formats` | `@register_format("name")` |
 | Support matrix | `OutputFormat.support_schemes` | Class attribute list |
 | Backend info | `auto_round/inference/backend.py` | `BackendInfos["name"]` dict |
 | CLI format registry | `auto_round/utils/common.py` | `SupportedFormats._support_format` tuple |

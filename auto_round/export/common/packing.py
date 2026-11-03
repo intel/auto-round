@@ -36,21 +36,12 @@ def pack_layers(model, layer_names, pack_layer, device=None):
     return model
 
 
-def get_autogptq_packing_qlinear(backend, bits=4, group_size=128, sym=False):
+def get_autogptq_packing_qlinear(*args, **kwargs):
+    """Return the QuantLinear used to pack GPTQ-style integer layers.
+
+    All GPTQ-style integer packing uses the torch zero-point QuantLinear; the
+    arguments are accepted for call-site compatibility and are ignored.
     """
-    Configures and returns a QuantLinear class based on the specified backend and parameters.
-
-    Args:
-        backend (str): The backend to be used for quantization. Supported values include "qigen", "triton", "marlin",
-                       "exllama", and "cuda".
-        bits (int, optional): The number of bits for quantization. Default is 4.
-        group_size (int, optional): The group size for quantization. Default is 128.
-        sym (bool, optional): Flag indicating whether to use symmetric quantization. Default is False.
-
-    Returns:
-        class: The dynamically imported QuantLinear class configured according to the specified parameters.
-    """
-
     from auto_round_extension.torch.qlinear_torch_zp import QuantLinear
 
     return QuantLinear

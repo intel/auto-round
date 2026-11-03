@@ -20,4 +20,5 @@ def save_artifacts(output_dir, tokenizer=None, processor=None, image_processor=N
     if output_dir is None:
         return
     for name, artifact in (("tokenizer", tokenizer), ("processor", processor), ("image_processor", image_processor)):
-        save_pretrained_artifact(artifact, output_dir, artifact_name=name)
+        if artifact is not None:
+            save_pretrained_artifact(artifact, output_dir, artifact_name=name)

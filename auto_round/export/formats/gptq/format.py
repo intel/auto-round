@@ -1,5 +1,16 @@
-# # Copyright (C) 2026 Intel Corporation
-# # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2023 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import os
 import re
@@ -122,7 +133,7 @@ class AutoGPTQFormat(OutputFormat):
                 _pack_layer=self.pack_layer,
                 **kwargs,
             )
-        model = prepare_model(model, inplace, device=None)
+        model = prepare_model(model, inplace, device="cpu")
         # --- 1️⃣ Extract inputs & configs ---
         quantization_config = serialization_dict
         quant_block_list = serialization_dict.get("quant_block_list") or get_block_names(model)

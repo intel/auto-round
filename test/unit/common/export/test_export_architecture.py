@@ -94,3 +94,23 @@ def test_support_matrix_loads_builtins_in_fresh_process():
         check=True,
         timeout=60,
     )
+
+
+@pytest.mark.parametrize(
+    "module",
+    ["auto_round.export.base", "auto_round.export.registry", "auto_round.export.resolver", "auto_round.export.formats"],
+)
+def test_export_modules_import_in_isolation(module):
+    import subprocess
+    import sys
+
+    subprocess.run([sys.executable, "-c", f"import {module}"], check=True)
+
+
+def test_save_artifacts_skips_missing_artifacts_silently(tmp_path, monkeypatch):
+    from auto_round.export.common import artifacts
+
+    calls = []
+    monkeypatch.setattr(artifacts, "save_pretrained_artifact", lambda a, d, artifact_name: calls.append(artifact_name))
+    artifacts.save_artifacts(str(tmp_path), tokenizer=object(), processor=None, image_processor=None)
+    assert calls == ["tokenizer"]
