@@ -79,7 +79,7 @@ function setup_basic_test_env() {
     cd "${BUILD_SOURCESDIRECTORY}" || exit 1
     rm -rf /root/.venv
     uv venv --python=3.14 /root/.venv
-    uv pip install torch==2.14.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.15.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu130
     uv pip install 'git+https://github.com/ggml-org/llama.cpp.git@master#subdirectory=gguf-py'
     uv pip install -r test/unit/test_cuda/requirements.txt
@@ -88,7 +88,7 @@ function setup_basic_test_env() {
     uv pip install -U pytest-cov pytest-timeout
     uv pip install kernels==0.17.2 # For sm120: https://github.com/huggingface/transformers/blob/v5.19.0/setup.py#L94
     uv pip uninstall torch torchvision
-    uv pip install torch==2.14.1 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
+    uv pip install torch==2.15.0 torchvision torchao --index-url https://download.pytorch.org/whl/cu130
     uv pip install .
 
     echo "List dependencies ..."
