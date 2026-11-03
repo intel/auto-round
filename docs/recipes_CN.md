@@ -1,6 +1,6 @@
 # 量化 Recipe
 
-Recipe 是 Python API 与 CLI 共用的推荐配置来源。不传 `recipe` 等价于选择 `ar`。
+Recipe 是 Python API 与 CLI 共用的推荐配置来源。不传 `recipe` 等价于选择 `auto-round`。
 Recipe 提供完整算法组合、校准默认值和可选的逐层推荐配置。
 Scheme 定义和算法实现保持独立。
 
@@ -8,16 +8,25 @@ Scheme 定义和算法实现保持独立。
 
 | Recipe | 初始算法组合 | 迭代次数 | 样本数 |
 | --- | --- | --- | --- |
-| `ar` | SignRound | 200 | 128 |
-| `ar-light` | SignRound，学习率 0.005 | 50 | 128 |
-| `ar-best` | SignRound | 1000 | 512 |
+| `auto-round` | SignRound | 200 | 128 |
+| `auto-round-light` | SignRound，学习率 0.005 | 50 | 128 |
+| `auto-round-best` | SignRound | 1000 | 512 |
 | `rtn` | 普通 RTN | — | 1 |
 | `opt-rtn` | 优化 RTN | — | 128 |
 | `awq` | AWQ 平滑 → 普通 RTN | — | 128 |
 
-所有初始方案的序列长度为 2048，batch size 为 8。`default`、`light`、`best`、
-`opt_rtn` 分别是 `ar`、`ar-light`、`ar-best`、`opt-rtn` 的别名。
-三个 `ar` 档位表达成本与效果目标，未来可增加经过验证的 scheme 专属推荐组合，
+所有初始方案的序列长度为 2048，batch size 为 8。名称不区分大小写，
+Python 和 CLI 均支持以下别名：
+
+| 正式名称 | 别名 |
+| --- | --- |
+| `auto-round` | `auto_round`、`ar`、`default` |
+| `auto-round-light` | `auto_round_light`、`ar-light`、`ar_light`、`light` |
+| `auto-round-best` | `auto_round_best`、`ar-best`、`ar_best`、`best` |
+| `opt-rtn` | `opt_rtn` |
+
+列表和解析后的 recipe 名称统一使用正式名称，与现有 CLI 命名保持一致。
+三个 `auto-round` 档位表达成本与效果目标，未来可增加经过验证的 scheme 专属推荐组合，
 但不保证每个模型上的精度严格按档位排序。核心校准要求仍然适用，例如 RTN
 在需要时仍要进行静态激活校准。
 
@@ -26,19 +35,19 @@ Scheme 定义和算法实现保持独立。
 ```python
 from auto_round import AutoRound, SignRoundConfig
 
-compressor = AutoRound("Qwen/Qwen3-0.6B", scheme="MXFP4", recipe="ar-best")
+compressor = AutoRound("Qwen/Qwen3-0.6B", scheme="MXFP4", recipe="auto-round-best")
 
 # 显式值优先，即使它等于旧 API 默认值。
-compressor = AutoRound("Qwen/Qwen3-0.6B", recipe="ar-best", nsamples=128)
+compressor = AutoRound("Qwen/Qwen3-0.6B", recipe="auto-round-best", nsamples=128)
 
-# 整体替换算法组合，同时继承 ar-best 的校准默认值。
-compressor = AutoRound("Qwen/Qwen3-0.6B", recipe="ar-best", alg_configs=SignRoundConfig(iters=20))
+# 整体替换算法组合，同时继承 auto-round-best 的校准默认值。
+compressor = AutoRound("Qwen/Qwen3-0.6B", recipe="auto-round-best", alg_configs=SignRoundConfig(iters=20))
 ```
 
 ```bash
-auto_round Qwen/Qwen3-0.6B --scheme MXFP4 --recipe ar-best
-auto_round Qwen/Qwen3-0.6B --recipe ar-best --nsamples 128 --iters 20
-auto_round Qwen/Qwen3-0.6B --recipe ar-best --algorithm awq
+auto_round Qwen/Qwen3-0.6B --scheme MXFP4 --recipe auto-round-best
+auto_round Qwen/Qwen3-0.6B --recipe auto-round-best --nsamples 128 --iters 20
+auto_round Qwen/Qwen3-0.6B --recipe auto-round-best --algorithm awq
 auto_round list recipes
 auto_round list recipe awq
 ```
@@ -57,7 +66,7 @@ auto_round list recipe awq
 from auto_round.recipes import get_recipe, list_recipes, resolve_recipe
 
 print(list_recipes())
-definition = get_recipe("ar-best")
+definition = get_recipe("auto-round-best")
 plan = resolve_recipe(definition)
 print(plan.pipeline, plan.calibration)
 configs = plan.build_configs()
@@ -103,5 +112,4 @@ Recipe 处理不会加载模型权重。已有 mixed scheme 处理保留在
 这些处理仍在加载模型后执行，Python 和 CLI 均适用。
 Shape 限制和模型兼容补丁也不归 recipe 管理。
 
-未来 `ar-auto` 可以使用同样的处理函数选择推荐方案，目前未注册该入口。
 AutoScheme 仍是独立的混合位宽选择功能。

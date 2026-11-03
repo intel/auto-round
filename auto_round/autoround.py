@@ -730,7 +730,7 @@ class AutoRound:
         alg_configs: Algorithm alias, config instance, or sequence of either.
             Use config instances to provide algorithm-specific options, such
             as ``SignRoundConfig(iters=50)`` or ``AWQConfig(apply_clip=True)``.
-        recipe: Recommended quantization plan, defaulting to ``"ar"``.
+        recipe: Recommended quantization plan, defaulting to ``"auto-round"``.
             Explicit alg_configs replaces its pipeline while inheriting calibration defaults.
         layer_config: Optional per-layer quantization overrides.
         dataset: Calibration dataset name, samples, dataloader, or a
@@ -778,7 +778,7 @@ class AutoRound:
         low_cpu_mem_usage: bool = True,
         alg_configs=None,
         algorithm: str | None = None,
-        recipe: str | Recipe = "ar",
+        recipe: str | Recipe = "auto-round",
         **kwargs,
     ) -> BaseCompressor:
         direct_kwargs = dict(kwargs)

@@ -221,7 +221,7 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     return True
 
 
-def start(recipe="ar", argv=None):
+def start(recipe="auto-round", argv=None):
     from auto_round.utils.oom import install_oom_census_hook
 
     install_oom_census_hook()  # last-resort tensor census for uncaught CUDA OOMs
@@ -240,7 +240,7 @@ def start(recipe="ar", argv=None):
     tune(args)
 
 
-def _apply_recipe_defaults(args, recipe="ar"):
+def _apply_recipe_defaults(args, recipe="auto-round"):
     """Normalize recommendations for both command entry points and direct tune calls."""
     if getattr(args, "_recipe_plan", None) is not None:
         return

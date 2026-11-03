@@ -88,25 +88,25 @@ def builtin_recipes() -> tuple[Recipe, ...]:
     calibration = calibration_defaults()
     return (
         Recipe(
-            "ar",
+            "auto-round",
             (AlgorithmSpec("quantizer", "auto_round", {"iters": 200}),),
             dict(calibration),
             description="Balanced quantization cost and accuracy.",
-            aliases=("default",),
+            aliases=("auto_round", "ar", "default"),
         ),
         Recipe(
-            "ar-light",
+            "auto-round-light",
             (AlgorithmSpec("quantizer", "auto_round", {"iters": 50, "lr": 5e-3}),),
             dict(calibration),
             description="Lower-cost iterative quantization.",
-            aliases=("light",),
+            aliases=("auto_round_light", "ar-light", "ar_light", "light"),
         ),
         Recipe(
-            "ar-best",
+            "auto-round-best",
             (AlgorithmSpec("quantizer", "auto_round", {"iters": 1000}),),
             {**calibration, "nsamples": 512},
             description="Accuracy-oriented iterative quantization.",
-            aliases=("best",),
+            aliases=("auto_round_best", "ar-best", "ar_best", "best"),
         ),
         Recipe(
             "rtn",

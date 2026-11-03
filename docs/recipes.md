@@ -1,7 +1,7 @@
 # Quantization recipes
 
 Recipes are the shared recommendation source for the Python API and CLI.
-Omitting `recipe` selects `ar`. A recipe chooses a complete algorithm pipeline,
+Omitting `recipe` selects `auto-round`. A recipe chooses a complete algorithm pipeline,
 calibration defaults, and optional per-layer recommendations. Scheme definitions
 and algorithm implementations remain independent of recipes.
 
@@ -9,16 +9,25 @@ and algorithm implementations remain independent of recipes.
 
 | Recipe | Initial pipeline | Iterations | Samples |
 | --- | --- | --- | --- |
-| `ar` | SignRound | 200 | 128 |
-| `ar-light` | SignRound, learning rate 0.005 | 50 | 128 |
-| `ar-best` | SignRound | 1000 | 512 |
+| `auto-round` | SignRound | 200 | 128 |
+| `auto-round-light` | SignRound, learning rate 0.005 | 50 | 128 |
+| `auto-round-best` | SignRound | 1000 | 512 |
 | `rtn` | Plain RTN | — | 1 |
 | `opt-rtn` | Optimized RTN | — | 128 |
 | `awq` | AWQ smoothing → plain RTN | — | 128 |
 
-All initial plans use sequence length 2048 and batch size 8. `default`, `light`,
-`best`, and `opt_rtn` are aliases for `ar`, `ar-light`, `ar-best`, and `opt-rtn`.
-The three `ar` tiers express cost/accuracy goals: their pipelines may gain
+All initial plans use sequence length 2048 and batch size 8. Names are case-insensitive
+and accept the following aliases in both Python and the CLI:
+
+| Canonical name | Aliases |
+| --- | --- |
+| `auto-round` | `auto_round`, `ar`, `default` |
+| `auto-round-light` | `auto_round_light`, `ar-light`, `ar_light`, `light` |
+| `auto-round-best` | `auto_round_best`, `ar-best`, `ar_best`, `best` |
+| `opt-rtn` | `opt_rtn` |
+
+Listings and resolved recipe names use the canonical names, matching the existing CLI naming.
+The three `auto-round` tiers express cost/accuracy goals: their pipelines may gain
 validated scheme-specific recommendations in future releases. They do not
 guarantee an accuracy ordering on every model. Core calibration requirements
 still apply, including static activation calibration for RTN when required.
@@ -28,19 +37,19 @@ still apply, including static activation calibration for RTN when required.
 ```python
 from auto_round import AutoRound, SignRoundConfig
 
-compressor = AutoRound("Qwen/Qwen3-0.6B", scheme="MXFP4", recipe="ar-best")
+compressor = AutoRound("Qwen/Qwen3-0.6B", scheme="MXFP4", recipe="auto-round-best")
 
 # Explicit values win even when equal to an older API default.
-compressor = AutoRound("Qwen/Qwen3-0.6B", recipe="ar-best", nsamples=128)
+compressor = AutoRound("Qwen/Qwen3-0.6B", recipe="auto-round-best", nsamples=128)
 
-# Replace the entire algorithm pipeline, retaining ar-best calibration defaults.
-compressor = AutoRound("Qwen/Qwen3-0.6B", recipe="ar-best", alg_configs=SignRoundConfig(iters=20))
+# Replace the entire algorithm pipeline, retaining auto-round-best calibration defaults.
+compressor = AutoRound("Qwen/Qwen3-0.6B", recipe="auto-round-best", alg_configs=SignRoundConfig(iters=20))
 ```
 
 ```bash
-auto_round Qwen/Qwen3-0.6B --scheme MXFP4 --recipe ar-best
-auto_round Qwen/Qwen3-0.6B --recipe ar-best --nsamples 128 --iters 20
-auto_round Qwen/Qwen3-0.6B --recipe ar-best --algorithm awq
+auto_round Qwen/Qwen3-0.6B --scheme MXFP4 --recipe auto-round-best
+auto_round Qwen/Qwen3-0.6B --recipe auto-round-best --nsamples 128 --iters 20
+auto_round Qwen/Qwen3-0.6B --recipe auto-round-best --algorithm awq
 auto_round list recipes
 auto_round list recipe awq
 ```
@@ -63,7 +72,7 @@ An explicit `--recipe` overrides the shortcut's default selection.
 from auto_round.recipes import get_recipe, list_recipes, resolve_recipe
 
 print(list_recipes())
-definition = get_recipe("ar-best")
+definition = get_recipe("auto-round-best")
 plan = resolve_recipe(definition)
 print(plan.pipeline, plan.calibration)
 configs = plan.build_configs()
@@ -113,6 +122,4 @@ defaults remain in `auto_round/special_model_handler.py`. They run after model
 loading for both Python and CLI. Shape restrictions and model compatibility
 patches also remain outside recipes.
 
-Future `ar-auto` recommendation strategies can use the same processing function.
-`ar-auto` is not currently registered. AutoScheme remains
-the independent mixed-bit scheme-selection feature.
+AutoScheme remains the independent mixed-bit scheme-selection feature.

@@ -10,8 +10,12 @@ from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 def test_builtin_recipes():
     from auto_round.recipes import list_recipes, resolve_recipe
 
-    assert {"ar", "ar-light", "ar-best", "rtn", "opt-rtn", "awq"} <= set(list_recipes())
-    for name, iters, nsamples in [("ar", 200, 128), ("ar-light", 50, 128), ("ar-best", 1000, 512)]:
+    assert list_recipes() == ["auto-round", "auto-round-light", "auto-round-best", "rtn", "opt-rtn", "awq"]
+    for name, iters, nsamples in [
+        ("auto-round", 200, 128),
+        ("auto-round-light", 50, 128),
+        ("auto-round-best", 1000, 512),
+    ]:
         plan = resolve_recipe(name)
         assert plan.build_configs()[0].iters == iters
         assert plan.calibration["nsamples"] == nsamples
@@ -128,8 +132,31 @@ def test_entry_applies_recipe_function_and_layer_overrides(capture_entry):
     assert entry.layer_config["proj"]["bits"] == 4
 
 
-@pytest.mark.parametrize("recipe", ["ar", "ar-light", "ar-best", "awq", "rtn", "opt-rtn"])
-def test_cli_python_recipe_parity(recipe, capture_entry, monkeypatch):
+@pytest.mark.parametrize(
+    "recipe,canonical",
+    [
+        ("auto-round", "auto-round"),
+        ("auto_round", "auto-round"),
+        ("ar", "auto-round"),
+        ("default", "auto-round"),
+        ("auto-round-light", "auto-round-light"),
+        ("auto_round_light", "auto-round-light"),
+        ("ar-light", "auto-round-light"),
+        ("ar_light", "auto-round-light"),
+        ("light", "auto-round-light"),
+        ("auto-round-best", "auto-round-best"),
+        ("auto_round_best", "auto-round-best"),
+        ("ar-best", "auto-round-best"),
+        ("ar_best", "auto-round-best"),
+        ("best", "auto-round-best"),
+        (" AR_LIGHT ", "auto-round-light"),
+        ("awq", "awq"),
+        ("rtn", "rtn"),
+        ("opt-rtn", "opt-rtn"),
+        ("opt_rtn", "opt-rtn"),
+    ],
+)
+def test_cli_python_recipe_parity(recipe, canonical, capture_entry, monkeypatch):
     from auto_round.cli import main
     from auto_round.cli.algorithms import AlgorithmHandler
 
@@ -139,6 +166,7 @@ def test_cli_python_recipe_parity(recipe, capture_entry, monkeypatch):
     args = captured["args"]
     configs = AlgorithmHandler.build_configs(args, main._extract_common_quantization_kwargs(args))
     entry = AutoRound("dummy", recipe=recipe)
+    assert args.recipe == entry.resolved_recipe.name == canonical
     assert [type(config) for config in configs] == [type(config) for config in entry.configs]
     assert args.nsamples == entry.nsamples
     for cli_config, api_config in zip(configs, entry.configs):
@@ -155,7 +183,7 @@ def test_cli_explicit_pipeline_and_shortcut_override(monkeypatch):
     main.start("best", argv=["dummy", "--recipe", "ar-light", "--algorithm", "awq", "--nsamples", "512"])
     args = captured["args"]
     configs = AlgorithmHandler.build_configs(args, {})
-    assert args.recipe == "ar-light"
+    assert args.recipe == "auto-round-light"
     assert args.nsamples == 512
     assert [type(config).__name__ for config in configs] == ["AWQConfig", "RTNConfig"]
 
@@ -176,7 +204,9 @@ def test_cli_recipe_listing(capsys):
     from auto_round.cli.main import list_item
 
     list_item(["recipes"])
-    assert "ar-best" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "auto-round-best" in output
+    assert "ar-best" not in output
     list_item(["recipe", "awq"])
     output = capsys.readouterr().out
     assert "awq" in output and "rtn" in output
@@ -214,7 +244,7 @@ def test_cli_context_recipe_preserves_stage_defaults_and_layers(monkeypatch, cap
 
 def test_entry_keeps_recipe_resolution_for_inspection(capture_entry):
     entry = AutoRound("dummy", recipe="best")
-    assert entry.resolved_recipe.name == "ar-best"
+    assert entry.resolved_recipe.name == "auto-round-best"
 
 
 def test_cli_zero_iters_retains_rtn_search_options(monkeypatch):
@@ -281,7 +311,7 @@ def test_entry_rejects_invalid_recipe_type(capture_entry):
         AutoRound("dummy", recipe=None)
 
 
-@pytest.mark.parametrize("entry_name,recipe_name", [("run_best", "ar-best"), ("run_light", "ar-light")])
+@pytest.mark.parametrize("entry_name,recipe_name", [("run_best", "auto-round-best"), ("run_light", "auto-round-light")])
 def test_legacy_shortcuts_select_named_recipe(monkeypatch, entry_name, recipe_name):
     import sys
 
@@ -376,7 +406,7 @@ def test_direct_tune_applies_recipe_before_building_configs(monkeypatch):
     args = build_quantize_parser().parse_args(["dummy", "--recipe", "ar-best", "--nsamples", "128"])
 
     def check_configs(args, common_kwargs):
-        assert args.recipe == "ar-best"
+        assert args.recipe == "auto-round-best"
         assert args.nsamples == 128
         assert args.batch_size == 8
         assert args.seqlen == 2048
@@ -486,4 +516,4 @@ def test_tune_accepts_namespace_without_explicit_fields():
     del args._explicit_fields
     main._apply_recipe_defaults(args)
     assert args.iters == 5
-    assert args._recipe_plan.name == "ar"
+    assert args._recipe_plan.name == "auto-round"
