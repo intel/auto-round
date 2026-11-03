@@ -1169,12 +1169,26 @@ def sharded_nograd_forward(
     return pieces
 
 
+def fx_tracing_flag_is_process_wide() -> bool:
+    """Whether torch.fx's "tracing in progress" flag is shared by all threads.
+
+    torch<2.14 keeps it in a module global (``_is_fx_tracing_flag``);
+    torch>=2.14 keeps it per thread (``_is_fx_tracing_tls``), so a peer's
+    trace is invisible to the other threads.
+    """
+    try:
+        import torch.fx._symbolic_trace as fx_trace
+    except Exception:  # pragma: no cover - builds without torch.fx
+        return False
+    return not hasattr(fx_trace, "_is_fx_tracing_tls")
+
+
 @contextlib.contextmanager
 def tolerate_concurrent_traces():
     """Let this thread's compiled calls run while another thread traces.
 
-    torch.fx keeps its "symbolic tracing in progress" flag in a process-wide
-    global. While one engine thread (re)compiles a ``torch.compile``'d
+    On torch<2.14 torch.fx keeps its "symbolic tracing in progress" flag in a
+    process-wide global. While one engine thread (re)compiles a ``torch.compile``'d
     function -- a shape, device or grad mode first seen by that rank --
     every other thread that enters a compiled function sees the flag and
     dynamo raises "Detected that you are using FX to symbolically trace a
@@ -1185,8 +1199,12 @@ def tolerate_concurrent_traces():
 
     Dynamo's config lives in context variables, so the setting is scoped to
     the calling thread: every engine thread that may call compiled code
-    enters this scope itself.
+    enters this scope itself. Where the flag is per thread (torch>=2.14) no
+    peer can see another thread's trace and this scope changes nothing.
     """
+    if not fx_tracing_flag_is_process_wide():
+        yield
+        return
     try:
         import torch._dynamo.config as dynamo_config
     except Exception:  # pragma: no cover - builds without dynamo

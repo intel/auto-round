@@ -161,9 +161,13 @@ class TestSeam:
     def test_workers_tolerate_concurrent_traces(self):
         import torch._dynamo.config as dynamo_config
 
+        from auto_round.algorithms.parallel.data_parallel import fx_tracing_flag_is_process_wide
+
+        # the guard only acts where torch.fx's tracing flag is process-wide (torch<2.14)
+        expected = False if fx_tracing_flag_is_process_wide() else dynamo_config.error_on_nested_fx_trace
         flags = []
         SearchShardSeam(CPU2).map(lambda d, xs: flags.append(dynamo_config.error_on_nested_fx_trace) or xs, [0, 1])
-        assert flags == [False, False]
+        assert flags == [expected, expected]
 
     def test_context_seam_needs_two_devices(self):
         ctx = TuneParallelContext()
