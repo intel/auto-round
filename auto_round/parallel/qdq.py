@@ -140,7 +140,7 @@ class TensorParallelQDQLinear(WrapperLinear):
 
     def forward(self, x):
         """Use functional parameter substitution so native TP transforms still run."""
-        quantized, _, _ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
+        quantized, _, _ = self._qdq_weight(self._rounding_value(), self.min_scale, self.max_scale)
         handle = None
         if self.enable_act_quant:
 

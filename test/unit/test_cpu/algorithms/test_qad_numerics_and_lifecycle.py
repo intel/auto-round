@@ -179,7 +179,8 @@ def test_warm_start_skips_persistent_activation_wrapper():
 
 
 @pytest.mark.parametrize("algorithm", ["qad", "qat", "rtn_qad"])
-def test_whole_model_and_rtn_qad_without_downloads(tmp_path, monkeypatch, algorithm):
+@pytest.mark.parametrize("lora_rank", [0, 2])
+def test_whole_model_and_rtn_qad_without_downloads(tmp_path, monkeypatch, algorithm, lora_rank):
     from tokenizers import Tokenizer, models
     from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
 
@@ -208,7 +209,7 @@ def test_whole_model_and_rtn_qad_without_downloads(tmp_path, monkeypatch, algori
         eos_token="</s>",
         unk_token="<unk>",
     )
-    kwargs = dict(iters=2, bits=4, group_size=8, nsamples=2, gradient_checkpointing=False)
+    kwargs = dict(iters=2, bits=4, group_size=8, nsamples=2, gradient_checkpointing=False, qad_lora_rank=lora_rank)
     configs = [QATConfig(**kwargs)] if algorithm == "qat" else [QADConfig(qad_workspace=str(tmp_path), **kwargs)]
     if algorithm == "rtn_qad":
         configs.insert(0, RTNConfig(bits=4, group_size=8, act_bits=8, act_data_type="int", act_dynamic=True))

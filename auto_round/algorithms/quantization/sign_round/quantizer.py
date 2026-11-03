@@ -130,6 +130,20 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         self.enable_qad = getattr(config, "enable_qad", False)
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
+        lora_rank = getattr(config, "qad_lora_rank", getattr(config, "lora_rank", 0))
+        if (
+            lora_rank > 0
+            and self.iters > 0
+            and getattr(config, "qad_enable_round_tuning", True)
+            and isinstance(self.optimizer, type)
+            and issubclass(self.optimizer, SignSGD)
+        ):
+            alternative = "--qad_optimizer adamw" if self.enable_qad else "--enable_adam"
+            logger.warning_once(
+                "LoRA rounding with SignSGD is not recommended: sign-only updates discard gradient magnitudes "
+                "for the low-rank factors. Prefer Adam/AdamW with a suitable learning rate "
+                f"(e.g. `{alternative}`). The selected optimizer is unchanged."
+            )
         self.wrapper_block = wrapper_block
         # Kept for per-layer (mixed-bit) lr resolution during tuning.
         self._config = config
@@ -327,6 +341,8 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
             enable_neuqi=getattr(self.config, "enable_neuqi", False),
+            lora_rank=getattr(self.config, "lora_rank", 0),
+            lora_alpha=getattr(self.config, "lora_alpha", None),
         )
         _perf.stop("wrap")
         _perf.start("prepare")
@@ -749,6 +765,8 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
             enable_neuqi=getattr(self.config, "enable_neuqi", False),
+            lora_rank=getattr(self.config, "lora_rank", 0),
+            lora_alpha=getattr(self.config, "lora_alpha", None),
         ).to(device)
         round_params = []
         minmax_params = []
@@ -756,7 +774,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             if "min" in key or "max" in key:
                 minmax_params.append(wrapper_linear.params[key])
             else:
-                round_params.append(wrapper_linear.value)
+                round_params.append(wrapper_linear.params[key])
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = f"quantized {layer_name}"
             logger.info(dump_info)

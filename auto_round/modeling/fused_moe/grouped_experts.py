@@ -325,7 +325,7 @@ def _effective_weight_and_bias(layer: nn.Module) -> tuple[torch.Tensor, torch.Te
     tuning parameters, so autograd reaches ``value`` / ``min_scale`` / ``max_scale``.
     """
     if _is_wrapper_linear(layer):
-        weight, _, _ = layer._qdq_weight(layer.value, layer.min_scale, layer.max_scale)
+        weight, _, _ = layer._qdq_weight(layer._rounding_value(), layer.min_scale, layer.max_scale)
         return weight, _effective_bias(layer)
     return layer.weight, layer.bias
 
@@ -423,6 +423,10 @@ def _fusion_group_size(layer: nn.Module) -> int | tuple | None:
 def _supports_batched_qdq(layer: nn.Module) -> bool:
     """Whether this projection's fake-quantization may be fused with its siblings'."""
     if not _is_wrapper_linear(layer):
+        return False
+    if hasattr(layer, "lora_A"):
+        # The fused path concatenates raw `value` tensors, not low-rank factors.
+        # Keep LoRA QDQ per expert rather than silently dropping its rounding.
         return False
     if type(layer)._qdq_weight is not _WRAPPER_LINEAR_CLS._qdq_weight:
         return False  # custom qdq: GGUF double-quant search, AutoScheme scoring, ...

@@ -50,6 +50,17 @@ class ParallelExecution:
     def __init__(self, config=None):
         self.config = ParallelConfig.from_value(config)
 
+    def prepare_run(self, model, samples=None, device=None, *, whole_model=False):
+        """Create a managed model scope; entering it prepares residency and data.
+
+        The algorithm retains its own loop. After installing trainable wrappers,
+        bind training once and use the scope's forward/next_batch/step methods.
+        Cache coordination uses the model's actual mesh, not the global DP group.
+        """
+        from auto_round.parallel.prepared import PreparedRun
+
+        return PreparedRun(self, model, samples, device, whole_model=whole_model)
+
     def for_algorithm(self, algorithm_class, config):
         """Select and validate an algorithm's execution policy before tuning.
 

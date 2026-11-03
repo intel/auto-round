@@ -18,6 +18,7 @@ import torch
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
+    from auto_round.parallel.prepared import PreparedRun
 
 from auto_round.algorithms.base import BaseAlgorithm
 from auto_round.algorithms.quantization.config import QuantizationConfig
@@ -53,6 +54,35 @@ class BaseQuantizer(BaseAlgorithm):
         # override this from their config.  Defaults to False for zero-shot algorithms
         # (RTN) where activations are not used during weight optimization.
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
+
+    def prepare_model_run(
+        self, model: torch.nn.Module, samples=None, device=None, *, whole_model: bool = False
+    ) -> "PreparedRun":
+        """Enter this scope to execute a custom algorithm without TP/DP branches.
+
+        Execution contract for block and whole-model algorithms:
+          1. Enter before calibration/teacher construction; use ``run.samples``.
+             Whole-model scopes restore residency and clear old dispatch hints;
+             block scopes keep the composer's placement.
+          2. Install trainable wrappers and configure checkpointing, then call
+             ``run.prepare_training(self)`` once, before student forwards.
+          3. Use ``run.forward(..., output='logits')`` (or no output selector for
+             block tensors) and ``run.next_batch(sampler)``. DTensor outputs are
+             materialized with autograd preserved; ordinary tensors must already
+             be complete activations. Weights remain sharded.
+          4. Keep custom loss/backward logic. After accumulation call
+             ``run.step(update_callback)`` instead of synchronizing gradients.
+             The callback owns optimizer/scaler/scheduler updates and any FP
+             master copies. Do not separately synchronize the same gradients.
+          5. For forward-result caches, use ``run.cache.workspace/signature`` and
+             ``run.cache.ensure(local_valid, build_callback)`` on every model-
+             parallel participant, never a rank-local branch around a forward.
+
+        This does not automatically adapt arbitrary weight math or closure-based
+        optimizers. Use the existing tensor services for shard-sensitive math.
+        Whole-model pipeline placement and unsupported topologies fail early.
+        """
+        return self.parallel.prepare_run(model, samples, device, whole_model=whole_model)
 
     def can_compile_block_forward(self):
         return True

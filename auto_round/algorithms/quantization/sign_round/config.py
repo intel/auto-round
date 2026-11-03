@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
 from collections.abc import Callable
 
 from auto_round.algorithms.config import AlgorithmParameterRegistry
@@ -41,6 +42,25 @@ class SignRoundConfig(QuantizationConfig):
         )
         registry.add_argument(
             "--minmax_lr", field="minmax_lr", default=None, type=float, help="Learning rate for min-max tuning."
+        )
+        registry.add_argument(
+            "--lora_rank",
+            "--signround_lora_rank",
+            field="lora_rank",
+            default=0,
+            type=int,
+            help=(
+                "Replace dense rounding tuning with low-rank B @ A parameters; 0 disables LoRA. "
+                "Rank is per local weight shard under TP. FP weights and inference stay unchanged."
+            ),
+        )
+        registry.add_argument(
+            "--lora_alpha",
+            "--signround_lora_alpha",
+            field="lora_alpha",
+            default=None,
+            type=float,
+            help="Scale rounding LoRA by alpha/rank; defaults to rank (unit scaling).",
         )
         registry.add_argument(
             "--momentum", field="momentum", default=0.0, type=float, help="Momentum factor for the optimizer."
@@ -206,6 +226,8 @@ class SignRoundConfig(QuantizationConfig):
         iters: int = 200,
         lr: float | None = None,
         minmax_lr: float | None = None,
+        lora_rank: int = 0,
+        lora_alpha: float | None = None,
         lr_scheduler: Callable | None = None,
         momentum: float = 0.0,
         nblocks: int = 1,
@@ -237,6 +259,9 @@ class SignRoundConfig(QuantizationConfig):
                 If None, a heuristic based on ``iters`` is used.
             minmax_lr: Learning rate used by min-max tuning. If None, it
                 falls back to ``lr``.
+            lora_rank: Low-rank rounding rank per local weight shard. Zero
+                retains dense rounding tuning.
+            lora_alpha: Optional alpha/rank scaling; defaults to unit scaling.
             lr_scheduler: Optional learning-rate scheduler name or
                 scheduler object used by the optimizer.
             momentum: Momentum factor used by the optimizer.
@@ -294,6 +319,12 @@ class SignRoundConfig(QuantizationConfig):
                 data_type, and activation quantization fields.
         """
         super().__init__(**kwargs)
+        if isinstance(lora_rank, bool) or not isinstance(lora_rank, int) or lora_rank < 0:
+            raise ValueError("`lora_rank` must be a non-negative integer")
+        if lora_alpha is not None and (not math.isfinite(lora_alpha) or lora_alpha <= 0):
+            raise ValueError("`lora_alpha` must be finite and positive")
+        self.lora_rank = lora_rank
+        self.lora_alpha = lora_alpha
         self.enable_neuqi = enable_neuqi
         self.gradient_accumulate_steps = gradient_accumulate_steps
         self.iters = iters

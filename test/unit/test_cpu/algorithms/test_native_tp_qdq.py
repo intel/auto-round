@@ -477,7 +477,9 @@ def _check_stage_warm_start(rank, mesh, optimized):
         assert not hasattr(layer, "_ar_warm_start_wrapper_cls")
 
 
-def _check_qad_lifecycle(rank, checkpoint, workspace, algorithm, fp4=None, activation=False, block_stages=()):
+def _check_qad_lifecycle(
+    rank, checkpoint, workspace, algorithm, fp4=None, activation=False, block_stages=(), lora_rank=0, round_tuning=True
+):
     from auto_round import AutoRound
     from auto_round.algorithms.quantization.qad.config import QADConfig
     from auto_round.algorithms.quantization.qat.config import QATConfig
@@ -502,6 +504,8 @@ def _check_qad_lifecycle(rank, checkpoint, workspace, algorithm, fp4=None, activ
                 topk=8,
                 gradient_checkpointing=True,
                 qad_workspace=workspace,
+                qad_lora_rank=lora_rank,
+                qad_enable_round_tuning=round_tuning,
             ),
         ],
         dataset=torch.utils.data.DataLoader(tokens, batch_size=1),
@@ -647,21 +651,24 @@ def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_check
         with patch.dict("os.environ", {"AR_ENABLE_ACT_MINMAX_TUNING": "1"}):
             _check_tp_moe_numerics(rank, mesh, fp4="mx_fp")
             _check_tp_moe_numerics(rank, mesh, fp4="nv_fp")
-        _check_qad_lifecycle(rank, checkpoint, workspace, "qad")
-        _check_qad_lifecycle(rank, qwen_checkpoint, workspace, "qat")
+        _check_qad_lifecycle(rank, checkpoint, workspace, "qad", lora_rank=2)
+        _check_qad_lifecycle(rank, qwen_checkpoint, workspace, "qat", lora_rank=2)
         _check_qad_lifecycle(
             rank,
             checkpoint,
             workspace + "_staged",
             "qad",
-            block_stages=[SignRoundConfig(iters=2, group_size=8)],
+            block_stages=[SignRoundConfig(iters=2, group_size=8, lora_rank=2)],
+            lora_rank=2,
+            round_tuning=False,
         )
         _check_qad_lifecycle(
             rank,
             qwen_checkpoint,
             workspace + "_v2_staged",
             "qat",
-            block_stages=[SignRoundV2Config(iters=2, group_size=8)],
+            block_stages=[SignRoundV2Config(iters=2, group_size=8, lora_rank=2)],
+            lora_rank=2,
         )
         _check_qad_lifecycle(
             rank,
@@ -670,12 +677,12 @@ def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_check
             "qad",
             block_stages=[SignRoundV2Config(iters=2, group_size=8), SignRoundConfig(iters=2, group_size=8)],
         )
-        _check_qad_lifecycle(rank, checkpoint, workspace + "_mx", "qad", fp4="mx_fp")
-        _check_qad_lifecycle(rank, qwen_checkpoint, workspace + "_nv", "qat", fp4="nv_fp")
-        _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe", "qad")
+        _check_qad_lifecycle(rank, checkpoint, workspace + "_mx", "qad", fp4="mx_fp", lora_rank=2)
+        _check_qad_lifecycle(rank, qwen_checkpoint, workspace + "_nv", "qat", fp4="nv_fp", lora_rank=2)
+        _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe", "qad", lora_rank=2)
         _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe_mx", "qat", fp4="mx_fp")
         _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe_nv", "qat", fp4="nv_fp")
-        _check_qad_lifecycle(rank, checkpoint, workspace + "_mx_act", "qad", fp4="mx_fp", activation=True)
+        _check_qad_lifecycle(rank, checkpoint, workspace + "_mx_act", "qad", fp4="mx_fp", activation=True, lora_rank=2)
         _check_qad_lifecycle(rank, qwen_checkpoint, workspace + "_nv_act", "qat", fp4="nv_fp", activation=True)
         _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe_mx_act", "qat", fp4="mx_fp", activation=True)
         _check_qad_lifecycle(rank, moe_checkpoint, workspace + "_moe_nv_act", "qat", fp4="nv_fp", activation=True)

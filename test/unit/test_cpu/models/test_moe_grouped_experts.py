@@ -14,6 +14,7 @@
 
 """Grouped-GEMM MoE experts forward must match the per-expert loop backend."""
 
+import copy
 from unittest.mock import patch
 
 import pytest
@@ -74,7 +75,7 @@ def _mark_quantizable(layer, act_bits=16, act_dynamic=True):
     return layer
 
 
-def _wrap_experts(experts, wrapper_cls=None, **mark_kwargs):
+def _wrap_experts(experts, wrapper_cls=None, wrapper_kwargs=None, **mark_kwargs):
     from auto_round.wrapper import WrapperLinear
 
     wrapper_cls = wrapper_cls or WrapperLinear
@@ -91,6 +92,7 @@ def _wrap_experts(experts, wrapper_cls=None, **mark_kwargs):
                     enable_norm_bias_tuning=False,
                     enable_torch_compile=False,
                     device="cpu",
+                    **(wrapper_kwargs or {}),
                 ),
             )
     return experts
@@ -605,6 +607,40 @@ def test_grouped_matches_loop_with_signround_v2_wrapper():
     got = grouped_linear_experts_forward(experts, hidden_states, index, weights)
 
     torch.testing.assert_close(got, expected, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_grouped_lora_matches_loop_outputs_and_factor_gradients(optimized):
+    from auto_round.algorithms.quantization.sign_roundv2.quantizer import SignRoundOptimizedWrapperLinear
+    from auto_round.wrapper import WrapperLinear
+
+    torch.manual_seed(25)
+    cls = SignRoundOptimizedWrapperLinear if optimized else WrapperLinear
+    experts = _wrap_experts(_Experts(), wrapper_cls=cls, wrapper_kwargs={"lora_rank": 2})
+    for module in experts.modules():
+        if hasattr(module, "lora_B"):
+            with torch.no_grad():
+                module.lora_B.uniform_(-0.3, 0.3)
+    reference = copy.deepcopy(experts)
+    hidden_states = torch.randn(NUM_TOKENS, HIDDEN)
+    index, weights = _make_routing()
+    expected = linear_loop_experts_forward(reference, hidden_states, index, weights)
+    got, batched = _observe_grouped_forward(experts, hidden_states, index, weights)
+    assert batched == [False, False, False]
+    torch.testing.assert_close(got, expected, rtol=1e-4, atol=1e-4)
+    got.square().sum().backward()
+    expected.square().sum().backward()
+    factor_grads = []
+    for name, parameter in experts.named_parameters():
+        if "lora_" not in name:
+            continue
+        expected_grad = reference.get_parameter(name).grad
+        if expected_grad is None:
+            assert parameter.grad is None
+        else:
+            torch.testing.assert_close(parameter.grad, expected_grad, rtol=1e-4, atol=1e-5)
+            factor_grads.append(parameter.grad)
+    assert factor_grads and any(grad.abs().sum() > 0 for grad in factor_grads)
 
 
 # --------------------------------------------------------------------------------------

@@ -94,6 +94,10 @@ class WrapperLinear(torch.nn.Module):
         enable_torch_compile=True,
         disable_opt_rtn=True,
         enable_neuqi=False,
+        qad_lora_rank=0,
+        qad_lora_alpha=None,
+        lora_rank=None,
+        lora_alpha=None,
         **kwargs,
     ):
         """Initializes the WrapperLinear module.
@@ -113,6 +117,20 @@ class WrapperLinear(torch.nn.Module):
         self.device = self.orig_layer.tuning_device if hasattr(self.orig_layer, "tuning_device") else device
         self.enable_minmax_tuning = enable_minmax_tuning
         self.enable_round_tuning = enable_round_tuning
+        if lora_rank is not None:
+            if qad_lora_rank and qad_lora_rank != lora_rank:
+                raise ValueError("`lora_rank` and `qad_lora_rank` must agree when both are supplied")
+            qad_lora_rank = lora_rank
+        if lora_alpha is not None:
+            if qad_lora_alpha is not None and qad_lora_alpha != lora_alpha:
+                raise ValueError("`lora_alpha` and `qad_lora_alpha` must agree when both are supplied")
+            qad_lora_alpha = lora_alpha
+        self.lora_rank = qad_lora_rank
+        self.qad_lora_rank = qad_lora_rank
+        self.qad_lora_scaling = (
+            (qad_lora_alpha / qad_lora_rank if qad_lora_alpha is not None else 1.0) if qad_lora_rank else 1.0
+        )
+        self.lora_scaling = self.qad_lora_scaling
         self.enable_torch_compile = enable_torch_compile
         self.enable_norm_bias_tuning = enable_norm_bias_tuning and (orig_layer.bias is not None)
         self.enable_act_quant = self.orig_layer.act_bits <= 8
@@ -243,9 +261,23 @@ class WrapperLinear(torch.nn.Module):
                 self._neuqi_frozen_margins = True
                 self.weight_min = _wmin.to(self.weight_min.dtype)
                 self.weight_max = _wmax.to(self.weight_max.dtype)
-        self._init_params(
-            "value", p_dtype, weight_reshape.shape, 0, self.enable_round_tuning and self.orig_layer.bits < 16
-        )
+        round_tunable = self.enable_round_tuning and self.orig_layer.bits < 16
+        if self.lora_rank and round_tunable:
+            # The base remains frozen, including any previous stage's rounding.
+            # Factorize the unpadded weight layout, not flattened quant groups.
+            self.register_buffer("value", torch.tensor(0.0, device=self.device, dtype=p_dtype))
+            self.lora_A = torch.nn.Parameter(
+                torch.empty((self.lora_rank, orig_weight.shape[1]), device=self.device, dtype=p_dtype)
+            )
+            self.lora_B = torch.nn.Parameter(
+                torch.zeros((orig_weight.shape[0], self.lora_rank), device=self.device, dtype=p_dtype)
+            )
+            torch.nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+            self.params.update(lora_A=self.lora_A, lora_B=self.lora_B)
+        elif not round_tunable:
+            self.register_buffer("value", torch.tensor(0.0, device=self.device, dtype=p_dtype))
+        else:
+            self._init_params("value", p_dtype, weight_reshape.shape, 0, round_tunable)
         # Min-max scale initialization
         shape = get_scale_shape(orig_weight, orig_layer.group_size)
         _margins_tunable = (self.enable_minmax_tuning and self.orig_layer.bits < 16) and (
@@ -286,6 +318,12 @@ class WrapperLinear(torch.nn.Module):
         # state instead of starting from RTN (value=0, scale coeff=1).
         warm_start = getattr(orig_layer, "_ar_warm_start", None)
         if warm_start:
+            saved_value = warm_start.get("value")
+            if (hasattr(self, "lora_A") or not self.enable_round_tuning) and saved_value is not None:
+                if saved_value.shape == weight_reshape.shape:
+                    self.value = saved_value.detach().to(device=self.device, dtype=p_dtype).clone()
+                else:
+                    raise ValueError("Frozen warm-start rounding shape does not match the local quantization groups.")
             for _key in ("value", "min_scale", "max_scale"):
                 saved = warm_start.get(_key)
                 param = self.params.get(_key)
@@ -362,6 +400,30 @@ class WrapperLinear(torch.nn.Module):
             p = torch.tensor(1.0 * value, device=self.device, dtype=dtype)
 
         setattr(self, name, p)
+
+    def _rounding_value(self, best_params=None):
+        """Materialize only the rounding offset; LoRA never perturbs FP weights.
+
+        Native TP wrappers use these same factors on each local shard. They are
+        independent shard-local parameters, just like dense rounding, so neither
+        weight gathering nor an extra gradient all-reduce is needed.
+        """
+        if not hasattr(self, "lora_A"):
+            if best_params is None:
+                return self.value
+            default = self.value if not self.enable_round_tuning else torch.tensor(0.0)
+            return best_params.get("value", default).to(self.device)
+        if best_params is None:
+            a, b = self.lora_A, self.lora_B
+        elif "lora_A" in best_params and "lora_B" in best_params:
+            a, b = best_params["lora_A"].to(self.device), best_params["lora_B"].to(self.device)
+        else:
+            return best_params.get("value", torch.tensor(0.0)).to(self.device)
+        # Keep FP32 rounding and gradients even inside an AMP model forward.
+        with torch.autocast(device_type=a.device.type, enabled=False):
+            delta = (b.float() @ a.float()) * self.lora_scaling
+        delta, _, _ = reshape_pad_tensor_by_group_size(delta, self.orig_layer.group_size)
+        return self.value + delta
 
     def _apply_qdq(self, qdq_weight: torch.Tensor, scale: "torch.Tensor | dict", zp: "torch.Tensor | dict") -> None:
         """Write a quantize-dequantized result back onto the original layer.
@@ -614,7 +676,7 @@ class WrapperLinear(torch.nn.Module):
             return layer
 
         best_params = best_params or {}
-        v = best_params.get("value", torch.tensor(0.0)).to(self.device)
+        v = self._rounding_value(best_params)
         min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get("max_scale", torch.tensor(1.0)).to(self.device)
 
@@ -738,7 +800,7 @@ class WrapperLinear(torch.nn.Module):
         """
         # logger.info(self.orig_layer.global_name)
         x = x.to(self.device)
-        weight_q, *_ = self._qdq_weight(self.value, self.min_scale, self.max_scale)
+        weight_q, *_ = self._qdq_weight(self._rounding_value(), self.min_scale, self.max_scale)
 
         if self.enable_act_quant:
             # Run orig_layer's forward_pre_hooks (e.g., online Hadamard transform)
@@ -1211,6 +1273,11 @@ def store_warm_start_params_and_unwrap(block, best_params, *, before_unwrap=None
             for key in m.params:
                 if key in layer_params and layer_params[key] is not None:
                     store[key] = layer_params[key].detach().to("cpu", copy=True)
+            if isinstance(m, WrapperLinear) and (hasattr(m, "lora_A") or not m.enable_round_tuning):
+                # Preserve effective rounding for both dense and low-rank stages.
+                store["value"] = m._rounding_value(layer_params).detach().to("cpu", copy=True)
+                store.pop("lora_A", None)
+                store.pop("lora_B", None)
             store["minmax_parameterization"] = "log" if getattr(m, "_use_log_minmax", False) else "linear"
             init_scale = getattr(m, "init_scale", None)
             if init_scale is not None:

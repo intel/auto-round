@@ -99,8 +99,10 @@ def test_whole_model_residency_precedes_cached_teacher_and_wrapping(tmp_path, mo
     events = []
     monkeypatch.setattr("auto_round.parallel.runtime.is_tp_model", lambda model: native_tp)
     monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
-    monkeypatch.setattr(torch.distributed, "broadcast_object_list", lambda samples: None)
-    monkeypatch.setattr(quantizer, "_strip_accelerate_hooks", lambda model: events.append("strip"))
+    monkeypatch.setattr(torch.distributed, "broadcast_object_list", lambda samples, **kwargs: None)
+    monkeypatch.setattr(
+        "auto_round.parallel.prepared.PreparedRun._strip_dispatch_hooks", lambda self, model: events.append("strip")
+    )
 
     def check_residency(model, *args, **kwargs):
         # A real device change catches the CPU->CPU no-op that hid this bug in
