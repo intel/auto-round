@@ -27,6 +27,7 @@ World size 1 (default) executes none of this code.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import threading
 from collections.abc import Mapping, Sequence
@@ -1168,18 +1169,54 @@ def sharded_nograd_forward(
     return pieces
 
 
+@contextlib.contextmanager
+def tolerate_concurrent_traces():
+    """Let this thread's compiled calls run while another thread traces.
+
+    torch.fx keeps its "symbolic tracing in progress" flag in a process-wide
+    global. While one engine thread (re)compiles a ``torch.compile``'d
+    function -- a shape, device or grad mode first seen by that rank --
+    every other thread that enters a compiled function sees the flag and
+    dynamo raises "Detected that you are using FX to symbolically trace a
+    dynamo-optimized function". With ``error_on_nested_fx_trace`` off, dynamo
+    runs that one call eagerly instead (same result, no compile for that
+    call). The tracing thread is unaffected: the tracer's dispatch modes are
+    thread-local, so other threads' ops are not recorded into its graph.
+
+    Dynamo's config lives in context variables, so the setting is scoped to
+    the calling thread: every engine thread that may call compiled code
+    enters this scope itself.
+    """
+    try:
+        import torch._dynamo.config as dynamo_config
+    except Exception:  # pragma: no cover - builds without dynamo
+        dynamo_config = None
+    if dynamo_config is None or not hasattr(dynamo_config, "error_on_nested_fx_trace"):
+        yield
+        return
+    saved = dynamo_config.error_on_nested_fx_trace
+    dynamo_config.error_on_nested_fx_trace = False
+    try:
+        yield
+    finally:
+        dynamo_config.error_on_nested_fx_trace = saved
+
+
 def run_threaded_spawn(fns: Sequence) -> None:
     """Run one callable per item in parallel SPAWNED threads (legacy path).
 
     Exceptions propagate: the first failure (by thread index) is re-raised
     in the joining thread -- a swallowed worker failure would otherwise
     leave missing shard losses/grads and corrupt the step silently.
+    Compiled calls stay legal while a peer thread compiles
+    (:func:`tolerate_concurrent_traces`).
     """
     errors: dict = {}
 
     def _guarded(idx, fn):
         try:
-            fn()
+            with tolerate_concurrent_traces():
+                fn()
         except BaseException as exc:  # noqa: BLE001 - re-raised below
             errors[idx] = exc
 

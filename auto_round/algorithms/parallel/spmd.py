@@ -58,6 +58,7 @@ from auto_round.algorithms.parallel.data_parallel import (
     halving_doubling_allreduce,
     parallel_state,
     resolve_tune_ddp_plan_,
+    tolerate_concurrent_traces,
 )
 from auto_round.algorithms.parallel.mirror_sync import (
     _POOL_SEARCH_STATS,
@@ -395,7 +396,10 @@ def run_ranks(rank_fns: list[Callable[[], Any]], devices: list[torch.device], gr
     Every rank sees its own device as ``device_manager.device`` and as the
     current CUDA device. A failure in any rank aborts the group (peers raise
     RankAborted at their next collective) and the first real error is
-    re-raised here.
+    re-raised here. A rank may (re)compile a ``torch.compile``'d function at
+    any point -- a shape, device or grad mode it meets first -- while its
+    peers run compiled code: :func:`tolerate_concurrent_traces` keeps those
+    peer calls legal.
     """
     from auto_round.algorithms.parallel.tune_parallel import _device_scope
     from auto_round.utils.device_manager import device_manager
@@ -407,7 +411,11 @@ def run_ranks(rank_fns: list[Callable[[], Any]], devices: list[torch.device], gr
     def _run(r: int) -> None:
         _tls.ctx = RankContext(group, r)
         try:
-            with device_manager.thread_device_scope(devices[r]), _device_scope(devices[r]):
+            with (
+                device_manager.thread_device_scope(devices[r]),
+                _device_scope(devices[r]),
+                tolerate_concurrent_traces(),
+            ):
                 group.wait_turn(r)
                 results[r] = rank_fns[r]()
         except BaseException as e:  # noqa: BLE001 - re-raised by the caller below
