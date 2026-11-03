@@ -326,6 +326,9 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
                 seqlen=4,
                 batch_size=1,
                 model_dtype="float32",
+                # Loading in fp32 alone does not stop AMP from casting to bf16.
+                # Compare TP reductions with full GEMMs at fp32 precision.
+                amp=False,
                 low_cpu_mem_usage=True,
                 enable_torch_compile=False,
                 format="auto_round",
@@ -350,6 +353,7 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
                 patch.object(compressor.alg_composer, "dispatch_block", check_residency),
             ):
                 model, _ = compressor.quantize()
+            assert model.dtype == torch.float32
             for block in model.model.layers:
 
                 projection = block.self_attn.q_proj

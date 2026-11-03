@@ -11,6 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Engine-level single-process data-parallel machinery (policy, plans,
-mirroring, collectives, sharded execution). Algorithm code consumes it
-through ``TuneParallelContext``; it owns no algorithm specifics."""
+"""Compatibility imports; parallel engines now live in :mod:`auto_round.parallel`."""
+
+import importlib
+import sys
+
+for _name in ("data_parallel", "mirror_sync", "spmd", "tune_parallel"):
+	_module = importlib.import_module(f"auto_round.parallel.{_name}")
+	sys.modules[f"{__name__}.{_name}"] = _module
+	globals()[_name] = _module
