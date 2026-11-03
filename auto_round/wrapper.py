@@ -1140,7 +1140,7 @@ def wrapper_block(
         # stacked same-shape batches per (device, shape, config, search fn);
         # singletons and the kill-switch fall back to the identical per-module call.
         # Data-parallel ranks shard the searches across the ranks instead.
-        from auto_round.algorithms.parallel.spmd import current_rank, run_rank_sharded_wrap_searches
+        from auto_round.parallel.spmd import current_rank, run_rank_sharded_wrap_searches
 
         rank = current_rank()
         if not (rank is not None and run_rank_sharded_wrap_searches(rank, deferred_wrappers)):

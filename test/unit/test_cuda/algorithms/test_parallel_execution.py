@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import subprocess
 import sys
 import time
 from datetime import timedelta
@@ -33,6 +34,62 @@ import torch.multiprocessing as mp
 def test_two_rank_blockwise_tp_cpu_residency(tmp_path):
     checkpoint = _make_checkpoint(tmp_path)
     _run_workers(tmp_path, checkpoint, device_type="cuda")
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2 or not dist.is_nccl_available(),
+    reason="requires two CUDA devices and NCCL",
+)
+def test_local_tp_task_api_and_cli(tmp_path):
+    from auto_round import ParallelConfig, SignRoundConfig, quantize_and_save
+
+    checkpoint = _make_checkpoint(tmp_path)
+    tokens = torch.tensor([[3, 4, 5, 6], [7, 8, 9, 10]])
+    folders = quantize_and_save(
+        str(checkpoint),
+        str(tmp_path / "api"),
+        parallel_config=ParallelConfig(tensor_parallel=2),
+        alg_configs=SignRoundConfig(iters=2, group_size=8, not_use_best_mse=True),
+        dataset=torch.utils.data.DataLoader(tokens, batch_size=1),
+        nsamples=2,
+        seqlen=4,
+        batch_size=1,
+        model_dtype="float32",
+        amp=False,
+        enable_torch_compile=False,
+        low_cpu_mem_usage=False,
+        save_kwargs={"format": "fake"},
+    )
+    assert len(folders) == 1
+    assert (Path(folders[0]) / "config.json").is_file()
+    assert list(Path(folders[0]).glob("*.safetensors"))
+    assert not dist.is_initialized(), "the parent must not acquire a worker process group"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "auto_round",
+            "quantize",
+            str(checkpoint),
+            "--tensor_parallel",
+            "2",
+            "--algorithm",
+            "rtn",
+            "--group_size",
+            "8",
+            "--format",
+            "fake",
+            "--output_dir",
+            str(tmp_path / "cli"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert list((tmp_path / "cli").rglob("model*.safetensors"))
 
 
 def _whole_model_worker(rank, rendezvous, checkpoint, algorithm):
@@ -79,13 +136,13 @@ def _whole_model_worker(rank, rendezvous, checkpoint, algorithm):
         forward = quantizer._forward_logits
         calls = []
 
-        def check_forward(model, inputs, vocab_size):
+        def check_forward(model, inputs, vocab_size, run=None):
             assert model.model.embed_tokens.weight.device == device
             assert all(parameter.device == device for parameter in model.parameters())
             input_ids = inputs["input_ids"] if isinstance(inputs, dict) else inputs
             assert input_ids.device == device
             calls.append(True)
-            return forward(model, inputs, vocab_size)
+            return forward(model, inputs, vocab_size, run)
 
         with patch.object(quantizer, "_forward_logits", side_effect=check_forward):
             model, _ = compressor.quantize()

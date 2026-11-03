@@ -47,7 +47,11 @@ def test_cli_infers_tp_from_world_size(monkeypatch, world_size, options, expecte
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
     args = build_quantize_parser().parse_args(["local-model", "--alg", "qad", *options])
     kwargs = _build_entry_base_kwargs(args, low_cpu_mem_usage=True, enable_torch_compile=None, layer_config={})
-    assert kwargs["parallel_config"] == dict(zip(("tp_size", "pp_size", "dp_size"), expected))
+    assert kwargs["parallel_config"] == {
+        **dict(zip(("tp_size", "pp_size", "dp_size"), expected)),
+        "data_parallel": "off",
+        "parallel_batch": "split",
+    }
 
 
 def test_cli_keeps_data_parallel_batch_options():

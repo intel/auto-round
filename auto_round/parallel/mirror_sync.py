@@ -22,8 +22,8 @@ still run sharded on them."""
 
 import torch
 
-from auto_round.algorithms.parallel.data_parallel import parallel_state
 from auto_round.logger import logger
+from auto_round.parallel.data_parallel import parallel_state
 from auto_round.utils import check_to_quantized
 
 
@@ -37,7 +37,7 @@ def sync_mirrors_to_home(quantizer, block) -> bool:
     the home search stats and mark the pool consumed. Returns False (nothing
     done) when no pool aligned with this block and plan is resident.
     """
-    from auto_round.algorithms.parallel.data_parallel import MirrorPool
+    from auto_round.parallel.data_parallel import MirrorPool
 
     _st = parallel_state(quantizer)
     plan = getattr(_st, "plan", None) if _st is not None else None
@@ -123,7 +123,7 @@ def _sync_quantized_to_mirrors(pool, block, targets):
     # per-MIRROR threads: each replica's copies are independent, so a serial
     # loop pays the sum of all mirrors' copies while threading collapses the
     # wall to the slowest single mirror
-    from auto_round.algorithms.parallel.data_parallel import run_threaded_spawn
+    from auto_round.parallel.data_parallel import run_threaded_spawn
 
     def _sync_mirror(r):
         rep = pool.reps[r]

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Single-process data parallelism for the SignRound tuning loop.
+"""Shared single-process data-parallel calibration and tuning engine.
 
 Runs one block's iteration loop on the home GPU plus W-1 mirror replicas
 (persistent deep copies of the wrapped block). Per iteration the global

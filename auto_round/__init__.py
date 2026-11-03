@@ -24,6 +24,7 @@ from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantCon
 from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme
 from auto_round.parallel import ParallelConfig
+from auto_round.parallel.launcher import quantize_and_save
 from auto_round.utils import LazyImport
 from auto_round.utils import monkey_patch
 
@@ -49,4 +50,5 @@ __all__ = [
     "SignRoundV2Config",
     "SpinQuantConfig",
     "__version__",
+    "quantize_and_save",
 ]

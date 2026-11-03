@@ -24,7 +24,7 @@ from unittest import mock
 import pytest
 import torch
 
-from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
+from auto_round.parallel.tune_parallel import TuneParallelContext
 
 
 class TestCollectionContext:
@@ -43,11 +43,11 @@ class TestCollectionContext:
         ctx = TuneParallelContext()
         ctx.devices = [torch.device("cpu"), torch.device("cpu")]
         with mock.patch(
-            "auto_round.algorithms.parallel.tune_parallel.sharded_nograd_forward",
+            "auto_round.parallel.tune_parallel.sharded_nograd_forward",
             return_value="sharded",
         ) as snf:
             assert ctx.collect_forward("bf", "blk", "inp", "oth") == "sharded"
-        from auto_round.algorithms.parallel.data_parallel import ENGINE_CALIBRATION_STATS
+        from auto_round.parallel.data_parallel import ENGINE_CALIBRATION_STATS
 
         snf.assert_called_once_with(
             "bf",
@@ -68,7 +68,7 @@ class TestCollectionContext:
         ctx = TuneParallelContext()
         ctx.devices = [torch.device("cpu"), torch.device("cpu")]
         bf = mock.Mock(return_value="serial")
-        with mock.patch("auto_round.algorithms.parallel.tune_parallel.sharded_nograd_forward") as snf:
+        with mock.patch("auto_round.parallel.tune_parallel.sharded_nograd_forward") as snf:
             assert ctx.collect_forward(bf, "blk", "inp", "oth", hook_pass=True, merge_stats=None) == "serial"
         snf.assert_not_called()
         bf.assert_called_once_with("blk", "inp", "oth", cache_device=None)
@@ -77,7 +77,7 @@ class TestCollectionContext:
         ctx = TuneParallelContext()
         ctx.devices = [torch.device("cpu")] * 8
         with mock.patch(
-            "auto_round.algorithms.parallel.tune_parallel.sharded_nograd_forward",
+            "auto_round.parallel.tune_parallel.sharded_nograd_forward",
             return_value="sharded",
         ) as snf:
             ctx.collect_forward("bf", "blk", "inp", "oth", hook_pass=True)
@@ -102,7 +102,7 @@ class TestCollectionContext:
         ctx.pool = sentinel
         blk = torch.nn.Linear(2, 2)  # pool eligibility requires a real Module
         with mock.patch(
-            "auto_round.algorithms.parallel.tune_parallel.sharded_nograd_forward",
+            "auto_round.parallel.tune_parallel.sharded_nograd_forward",
             return_value="sharded",
         ) as snf:
             assert ctx.collect_forward("bf", blk, [1] * 8, "oth", hook_pass=True) == "sharded"
@@ -112,7 +112,7 @@ class TestCollectionContext:
     def test_distribute_pools_noop_without_devices(self):
         ctx = TuneParallelContext()
         pool = [torch.zeros(1), torch.zeros(1)]
-        with mock.patch("auto_round.algorithms.parallel.tune_parallel.distribute_pool") as dp:
+        with mock.patch("auto_round.parallel.tune_parallel.distribute_pool") as dp:
             ctx.distribute_pools(pool, None)
         dp.assert_not_called()
 

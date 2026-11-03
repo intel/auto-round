@@ -48,7 +48,8 @@ from typing import Any
 
 import torch
 
-from auto_round.algorithms.parallel.data_parallel import (
+from auto_round.logger import logger
+from auto_round.parallel.data_parallel import (
     MirrorPool,
     _param_grad_buffers,
     _quantizer_policy,
@@ -59,12 +60,11 @@ from auto_round.algorithms.parallel.data_parallel import (
     parallel_state,
     resolve_tune_ddp_plan_,
 )
-from auto_round.algorithms.parallel.mirror_sync import (
+from auto_round.parallel.mirror_sync import (
     _POOL_SEARCH_STATS,
     _distribute_search_stats,
     _sync_pool_devices,
 )
-from auto_round.logger import logger
 
 _tls = threading.local()
 # (block shape, devices) signatures whose rank kernels are compiled already
@@ -397,7 +397,7 @@ def run_ranks(rank_fns: list[Callable[[], Any]], devices: list[torch.device], gr
     RankAborted at their next collective) and the first real error is
     re-raised here.
     """
-    from auto_round.algorithms.parallel.tune_parallel import _device_scope
+    from auto_round.parallel.tune_parallel import _device_scope
     from auto_round.utils.device_manager import device_manager
 
     world = len(rank_fns)

@@ -576,7 +576,7 @@ class _CompressorBuilder:
         low_gpu_mem_usage: bool = False,
         calibration_data_device: str = "auto",
         device_map: str | torch.device | int | dict = 0,
-        parallel_config: ParallelConfig | dict[str, int] | None = None,
+        parallel_config: ParallelConfig | dict[str, int | str] | None = None,
         iters: int | None = None,
         enable_torch_compile: bool = False,
         seed: int = 42,
@@ -614,6 +614,11 @@ class _CompressorBuilder:
         base_kwargs = dict(split_kwargs["base"])
         mllm_kwargs = dict(split_kwargs["mllm"])
         diffusion_kwargs = dict(split_kwargs["diffusion"])
+
+        if parallel_config.data_parallel != "off":
+            if route_kwargs.get("model_free", False):
+                raise ValueError("data_parallel cannot be combined with model_free=True.")
+            route_kwargs["disable_model_free"] = True
 
         # Resolve string alias(es) to config instance(s) before routing.
         alg_configs = cls._resolve_config(alg_configs)
@@ -809,8 +814,10 @@ class AutoRound:
             RAM), or an explicit csv such as ``"cuda:1,cuda:2"``. Forwards still
             run on the compute devices; only the at-rest pool placement changes.
         device_map: Device or device mapping used for quantization.
-        parallel_config: Optional ParallelConfig or mapping. Native TP currently
-            supports dense INT weight-only QAD; PP uses existing device placement.
+        parallel_config: Optional ParallelConfig or mapping, shared with the CLI.
+            Configure TP, PP placement, DP and DP batch semantics here. Native TP
+            requires all ranks to call AutoRound; use auto_round.quantize_and_save
+            with the same parallel_config for automatic local worker launch.
         enable_torch_compile: Whether to use ``torch.compile`` where supported.
         seed: Random seed used by calibration and tuning.
         **kwargs: Additional compressor, model-type, evaluation, and legacy
@@ -839,7 +846,7 @@ class AutoRound:
         low_gpu_mem_usage: bool = False,
         calibration_data_device: str = "auto",
         device_map: str | torch.device | int | dict = 0,
-        parallel_config: ParallelConfig | dict[str, int] | None = None,
+        parallel_config: ParallelConfig | dict[str, int | str] | None = None,
         enable_torch_compile: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
@@ -847,6 +854,10 @@ class AutoRound:
         algorithm: str | None = None,
         **kwargs,
     ) -> BaseCompressor:
+        from auto_round.parallel.config import _reject_parallel_kwargs
+
+        _reject_parallel_kwargs(kwargs)
+        parallel_config = ParallelConfig.from_value(parallel_config)
         direct_kwargs = dict(kwargs)
         strict_model_free = bool(direct_kwargs.get("model_free", False))
         legacy_device = direct_kwargs.pop("device", None)

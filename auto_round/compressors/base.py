@@ -313,6 +313,9 @@ class BaseOrchestrator:
                     _cfg.block_size = block_size  # TODO not robust
                 self.rotation_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
+        parallel_policy = self.parallel_config.resolve_data_parallel_policy(
+            device_map, iters=max(int(getattr(cfg, "iters", 0) or 0) for cfg in self._alg_configs)
+        )
 
         # Compressor-level layer params (do not live in QuantizationConfig).
         # Calibration params (nsamples/seqlen/batch_size) are owned by
@@ -494,6 +497,7 @@ class BaseOrchestrator:
             static_attention_dtype=self.static_attention_dtype,
             static_kv_granularity=self.static_kv_granularity,
             static_attention_granularity=self.static_attention_granularity,
+            parallel_policy=parallel_policy,
         )
         self.shard_writer = None
         # Resumability state deferred from Orchestrator._quantize_data_driven() until

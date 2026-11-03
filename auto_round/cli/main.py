@@ -44,6 +44,9 @@ _OVERVIEW_ARGUMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("seqlen", ("--seqlen",)),
     ("batch_size", ("--batch_size",)),
     ("device_map", ("--device_map",)),
+    ("tp_size", ("--tensor_parallel",)),
+    ("pp_size", ("--pipeline_parallel",)),
+    ("data_parallel", ("--data_parallel",)),
     ("format", ("--format",)),
     ("output_dir", ("--output_dir",)),
     ("asym", ("--asym",)),
@@ -183,7 +186,9 @@ def _build_parallel_config(args) -> dict:
     if tp_size is None:
         # Infer a single TP axis only; do not silently create hybrid parallelism.
         tp_size = 1
-        if getattr(args, "pp_size", 1) == getattr(args, "dp_size", 1) == 1:
+        if getattr(args, "pp_size", 1) == getattr(args, "dp_size", 1) == 1 and str(
+            getattr(args, "data_parallel", "off")
+        ) in ("off", "1"):
             tp_size = int(os.environ.get("WORLD_SIZE", "1"))
         if tp_size > 1:
             logger.info("Inferred tp_size=%s from torchrun WORLD_SIZE.", tp_size)
@@ -191,6 +196,8 @@ def _build_parallel_config(args) -> dict:
         "tp_size": tp_size,
         "pp_size": getattr(args, "pp_size", 1),
         "dp_size": getattr(args, "dp_size", 1),
+        "data_parallel": getattr(args, "data_parallel", "off"),
+        "parallel_batch": getattr(args, "parallel_batch", "split"),
     }
 
 
@@ -371,6 +378,10 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     return True
 
 
+def _start_worker(recipe, argv):
+    return start(recipe, argv=argv)
+
+
 def start(recipe="default", argv=None):
     from auto_round.utils.oom import install_oom_census_hook
 
@@ -387,6 +398,17 @@ def start(recipe="default", argv=None):
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
     args._api_format = args.format if format_was_explicit or args.model_free else None
+
+    from auto_round.parallel import ParallelConfig
+    from auto_round.parallel.launcher import launch, needs_local_launch
+
+    parallel = ParallelConfig.from_value(_build_parallel_config(args))
+    # Validate before launching workers or loading any model. In particular DP
+    # must not silently run independently on each rank of an external launcher.
+    if parallel.data_parallel != "off" and int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        raise NotImplementedError("--data_parallel is single-process; do not launch it with torchrun.")
+    if needs_local_launch(parallel):
+        return launch(parallel, _start_worker, recipe, argv)
 
     # Apply recipe defaults for fields the user didn't set
     for key, value in recipe_defaults.items():
@@ -465,51 +487,6 @@ def tune(args):
     from auto_round.utils import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
-
-    _parallel = str(getattr(args, "data_parallel", "off") or "off").strip().lower()
-    _parallel_policy = None
-    if _parallel != "off":
-        import torch
-
-        from auto_round import envs as _envs
-        from auto_round.algorithms.parallel.data_parallel import (
-            ParallelPolicy,
-            resolve_parallel_world,
-        )
-        from auto_round.parallel.execution import ParallelExecution
-
-        execution = ParallelExecution(_build_parallel_config(args))
-        execution.validate_data_parallel_policy(ParallelPolicy(world=2))
-        if int(os.environ.get("WORLD_SIZE", "1")) > 1:
-            raise NotImplementedError("--data_parallel is single-process; do not launch it with torchrun.")
-
-        _n = torch.cuda.device_count()
-        _iters_cli = int(getattr(args, "iters", 0) or 0)
-        _world = resolve_parallel_world(_parallel, _n, iters=_iters_cli)
-        # early eligibility: a multi-device --device_map cannot host the
-        # data-parallel lane at iters > 0 (blocks shard across GPUs in a
-        # pipeline-style placement) -- stop here, before the model loads,
-        # with the same message the runtime resolver raises at block 0
-        from auto_round.algorithms.parallel.data_parallel import check_parallel_device_map_compat_
-
-        check_parallel_device_map_compat_(_world, args.device_map, _iters_cli)
-        _parallel_policy = ParallelPolicy(
-            world=_world,
-            source="auto" if _parallel == "auto" else "explicit",
-            collect_forward_cap=int(getattr(_envs, "AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES", 0) or 0),
-            batch_mode=str(getattr(args, "parallel_batch", "split") or "split").strip().lower(),
-        )
-        if _parallel == "auto" and _world < _n:
-            # only `auto` adds information here (the reduction from the
-            # visible count); an explicit N either validates silently or
-            # raises, and the engagement line reports the resolved plan
-            logger.info(
-                "[tune-ddp] --data_parallel auto -> world=%d (largest power of two <= %d visible "
-                "devices; %d unused)",
-                _world,
-                _n,
-                _n - _world,
-            )
 
     if args.enable_torch_compile is False:
         logger.info("`torch.compile` is explicitly disabled with `--disable_torch_compile`.")
@@ -639,11 +616,6 @@ def tune(args):
             layer_config=layer_config,
         ),
     )
-
-    if _parallel_policy is not None:
-        # the resolved --data_parallel policy is set on the compress
-        # context; the data-parallel engine reads it from there
-        autoround.compress_context.parallel_policy = _parallel_policy
 
     model, folders = autoround.quantize_and_save(  # pylint: disable=no-member
         args.output_dir,

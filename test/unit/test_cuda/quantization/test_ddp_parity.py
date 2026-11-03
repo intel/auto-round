@@ -57,7 +57,7 @@ class _FixedSampler:
         return out
 
 
-def _autoround(model_path, iters, disable_opt_rtn=False):
+def _autoround(model_path, iters, disable_opt_rtn=False, world=1):
     from auto_round import AutoRound
 
     return AutoRound(
@@ -74,13 +74,13 @@ def _autoround(model_path, iters, disable_opt_rtn=False):
         enable_torch_compile=False,
         disable_opt_rtn=disable_opt_rtn,
         disable_model_free=True,
+        parallel_config={"data_parallel": world},
     )
 
 
 def _run(model_path, iters, disable_opt_rtn, monkeypatch, pin_draws, world=1):
-    import auto_round.algorithms.quantization.sign_round.quantizer as v1
-    from auto_round.algorithms.parallel import spmd
-    from auto_round.algorithms.parallel.data_parallel import ParallelPolicy
+    import auto_round.utils.distributed as distributed
+    from auto_round.parallel import spmd
 
     if pin_draws:
         # serial lane: batches [0, 1] then [2, 3]; rank r draws the r-th
@@ -91,12 +91,21 @@ def _run(model_path, iters, disable_opt_rtn, monkeypatch, pin_draws, world=1):
                 return _FixedSampler([[0, 1], [2, 3]])
             return _FixedSampler([[0], [2]]) if rank.rank == 0 else _FixedSampler([[1], [3]])
 
-        monkeypatch.setattr(v1, "make_index_sampler", _pinned)
-    ar = _autoround(model_path, iters, disable_opt_rtn)
-    if world > 1:
-        # the policy is set on the compress context (the CLI does it the same way)
-        ar.compress_context.parallel_policy = ParallelPolicy(world=world)
-    model, layer_config = ar.quantize()
+        monkeypatch.setattr(distributed, "make_index_sampler", _pinned)
+    ar = _autoround(model_path, iters, disable_opt_rtn, world=world)
+    engaged = []
+    quantize_on_ranks = spmd.quantize_block_on_ranks
+
+    def track_engagement(*args, **kwargs):
+        result = quantize_on_ranks(*args, **kwargs)
+        engaged.append(result[0])
+        return result
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(spmd, "quantize_block_on_ranks", track_engagement)
+        model, layer_config = ar.quantize()
+    if world > 1 and iters > 0:
+        assert engaged and all(engaged), "the two-GPU run must actually engage DP tuning"
     sd = model.state_dict()
     state = {}
     for name, cfg in layer_config.items():

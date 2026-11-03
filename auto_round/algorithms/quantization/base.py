@@ -392,7 +392,7 @@ class BaseQuantizer(BaseAlgorithm):
         thread ranks the engine already placed each rank's shard on its device,
         so the pool stays as it is.
         """
-        from auto_round.algorithms.parallel.spmd import current_rank
+        from auto_round.parallel.spmd import current_rank
 
         if current_rank() is not None:
             return pool

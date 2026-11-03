@@ -23,6 +23,18 @@ from auto_round.eval.eval_cli import EvalArgumentParser
 from auto_round.logger import logger
 
 
+class _ParallelSizeAction(argparse.Action):
+    """Allow repeated aliases only when they request the same degree."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        seen = dict(getattr(namespace, "_parallel_sizes", {}))
+        if self.dest in seen and seen[self.dest] != values:
+            parser.error(f"conflicting parallel sizes for {option_string}")
+        seen[self.dest] = values
+        namespace._parallel_sizes = seen
+        setattr(namespace, self.dest, values)
+
+
 class _LegacyAliasAction(argparse.Action):
     """Parse a deprecated flag into its canonical argument, hidden from --help.
 
@@ -155,12 +167,23 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "--device_map", "--device", "--devices", default="0", type=str, help="Device mapping used for quantization."
     )
     rt.add_argument(
+        "--tensor_parallel",
         "--tp_size",
+        dest="tp_size",
+        action=_ParallelSizeAction,
         type=int,
         default=None,
-        help="Native Transformers TP size for supported algorithms; defaults to torchrun WORLD_SIZE (otherwise 1).",
+        help="Native TP degree; starts local workers automatically, or reuses torchrun WORLD_SIZE.",
     )
-    rt.add_argument("--pp_size", type=int, default=1, help="Number of GPUs for existing pipeline device placement.")
+    rt.add_argument(
+        "--pipeline_parallel",
+        "--pp_size",
+        dest="pp_size",
+        type=int,
+        default=1,
+        action=_ParallelSizeAction,
+        help="GPUs for single-process pipeline device placement (not a microbatch pipeline schedule).",
+    )
     rt.add_argument("--dp_size", type=int, default=1, help="Reserved data-parallel axis; currently must be 1.")
     rt.add_argument(
         "--data_parallel",

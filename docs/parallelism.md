@@ -1,5 +1,26 @@
 # Parallel execution
 
+## Choose a mode
+
+All parallel engines live in `auto_round.parallel` and share configuration and
+algorithm execution interfaces. Choose one mode per run; hybrid execution is not implemented.
+
+| Mode | CLI / Python option | Execution | Use case |
+| --- | --- | --- | --- |
+| DP | `data_parallel=N` or `"auto"` | One process, full block replicas, disjoint samples | Increase throughput when a block fits on one GPU |
+| TP | `tensor_parallel=N` | N processes, native Transformers weight shards | Split supported weight computation across GPUs |
+| PP placement | `pipeline_parallel=N` | One process, layers/blocks placed across GPUs | Spread model placement; not a microbatch pipeline schedule |
+
+Set `CUDA_VISIBLE_DEVICES` before starting Python or the CLI. Degrees refer to
+visible GPUs, not physical GPU indices. DP/PP run without torchrun; TP automatically
+starts local workers when necessary, requiring N visible CUDA devices.
+
+```bash
+auto_round quantize Qwen/Qwen3-0.6B --data_parallel 4 --parallel_batch split
+auto_round quantize Qwen/Qwen3-0.6B --tensor_parallel 4
+auto_round quantize Qwen/Qwen3-0.6B --pipeline_parallel 4
+```
+
 AutoRound delegates tensor parallelism (TP) to Transformers. Transformers loads
 the shards, installs its native forwards and owns layout redistribution. AutoRound
 only adapts quantize-dequantize (QDQ) math to local weight and activation shards. It does not
@@ -7,9 +28,41 @@ implement another tensor-parallel backend.
 
 ## Public configuration
 
-`ParallelConfig` is independent of algorithm configs and accepts three positive
-integer axes: `tp_size`, `pp_size`, and `dp_size` (all default to `1`). Python also
-accepts an equivalent mapping through `parallel_config`.
+`ParallelConfig` is independent of algorithm configs. The CLI exposes
+`--tensor_parallel`, `--pipeline_parallel`, `--data_parallel` and `--parallel_batch`.
+Python puts those settings inside `parallel_config=ParallelConfig(...)` or an
+equivalent mapping; they are not top-level AutoRound/task API arguments.
+TP/PP default to `1`; DP defaults to `"off"` (`1` also disables DP).
+Legacy `tp_size` / `pp_size` remain aliases. `dp_size` is reserved for process-mesh
+DP and must remain `1`; use `data_parallel` for the implemented replica engine.
+Conflicting aliases/options fail explicitly. Python also accepts a mapping.
+
+For automatic TP launch in Python, use the task API below. It loads the model and
+tokenizer inside workers and returns checkpoint folders, **not** a distributed
+model in the parent. Constructor arguments must support multiprocessing
+serialization; save-only options go in `save_kwargs`. A main guard is required.
+
+```python
+from auto_round import ParallelConfig, quantize_and_save
+
+if __name__ == "__main__":
+    folders = quantize_and_save(
+        "Qwen/Qwen3-0.6B",
+        "./quantized",
+        parallel_config=ParallelConfig(tensor_parallel=4),
+        alg_configs="auto_round",
+        scheme="W4A16",
+        save_kwargs={"format": "auto_round"},
+    )
+```
+
+Use the same `parallel_config` argument on both Python entry points. For DP, pass
+`ParallelConfig(data_parallel=4, parallel_batch="split")`; for PP placement, pass
+`ParallelConfig(pipeline_parallel=4)`. Mappings such as
+`parallel_config={"tensor_parallel": 4}` are equivalent. Do not mix these modes.
+
+For a preloaded model/custom tokenizer or direct access to the TP model, use the
+rank-local `AutoRound` API on every rank under torchrun:
 
 ```python
 from auto_round import AutoRound, ParallelConfig
@@ -19,7 +72,7 @@ compressor = AutoRound(
     "Qwen/Qwen3-0.6B",
     scheme="W4A16",
     alg_configs=QADConfig(iters=200, group_size=128),
-    parallel_config=ParallelConfig(tp_size=4),
+    parallel_config=ParallelConfig(tensor_parallel=4),
     enable_torch_compile=False,
     low_cpu_mem_usage=False,
 )
@@ -32,7 +85,7 @@ Save the example as `train_qad_tp.py` and launch every TP rank:
 torchrun --nproc-per-node 4 train_qad_tp.py
 ```
 
-The CLI exposes the same axes. If `--tp_size` is omitted, it defaults to
+The CLI also supports external launchers. If `--tensor_parallel` / `--tp_size` is omitted, it defaults to
 torchrun's `WORLD_SIZE` (or `1` without torchrun), unless another axis is selected:
 
 ```bash
@@ -52,7 +105,13 @@ Do not pass a custom `device_map` with TP. AutoRound binds each process to
 distributed mesh when necessary. AutoRound never destroys a caller-owned process
 group. Fast interconnects such as NVLink are recommended.
 
-## Supported scope
+Inside an existing distributed environment, the launcher validates `WORLD_SIZE`
+and reuses it without recursive worker launch. Worker failures propagate to the
+parent, with no automatic retries. Locally launched worker groups are cleaned up
+on exit; caller-owned groups remain intact. Automatic launch is single-node;
+use an external launcher for multi-node jobs.
+
+## TP supported scope
 
 - Dense decoder-only language models using ordinary column-wise and row-wise
   Linear plans, including native embedding/output boundaries and replicated norms.
@@ -171,7 +230,10 @@ their shards back to their rank-local accelerator; exported models are non-TP.
 
 Offline two-rank tests cover dense Llama block-wise algorithms, AWQ channel
 statistics/scale folding, export logits and rejection of full-weight gathers during
-tuning. This does not establish block-wise MoE accuracy or CUDA/NCCL memory behavior.
+tuning. Two-GPU CUDA/NCCL smoke tests also cover dense INT block CPU residency,
+QAD/QAT stage transitions, automatic CLI/task API launch and collective fake export.
+These small-model tests do not establish block-wise MoE accuracy or large-model
+peak memory usage and performance.
 
 ## FP4 weight and activation quantization
 
@@ -267,11 +329,12 @@ Activation tests include dense and MoE W4A4, MXFP6/8 activations, zero and empty
 inputs, tied global maxima, clipping gradients and activation-group boundaries.
 Block-wise tests also cover FP4 activations with AutoRound/SignRound,
 AutoRound v2, RTN and optimized RTN, including metadata offload and export logits.
-CUDA/NCCL memory, performance and deployment-backend inference remain unvalidated.
+FP4/MoE CUDA/NCCL correctness, large-model peak memory/performance and
+deployment-backend inference remain unvalidated by these tests.
 
 ## PP and single-process DP
 
-`ParallelConfig(pp_size=N)` selects the existing single-process device-placement
+`ParallelConfig(pipeline_parallel=N)` (or `pp_size=N`) selects the existing single-process device-placement
 path on the first `N` visible CUDA devices. It is not a microbatch pipeline
 training schedule, and QAD does not yet support this path. Existing `device_map`
 calls remain unchanged when no parallel axes are requested.
@@ -279,9 +342,39 @@ calls remain unchanged when no parallel axes are requested.
 Use `--data_parallel auto` or `--data_parallel N` for mainline single-process
 data-parallel block calibration/tuning, without `torchrun`. Each replica owns a
 full block and a disjoint sample shard. `--parallel_batch split` preserves the
-requested global batch; `per_replica` uses that batch on every replica. See the
-[step-by-step guide](./step_by_step.md)
-for eligibility and batch constraints.
+requested global batch; `per_replica` uses that batch on every replica. Python uses
+the same policy:
+
+```python
+from auto_round import AutoRound, ParallelConfig
+
+compressor = AutoRound(
+    "Qwen/Qwen3-0.6B",
+    parallel_config=ParallelConfig(data_parallel="auto", parallel_batch="split"),
+)
+compressor.quantize_and_save("./quantized")
+```
+
+- Explicit N must be at least 2 and no greater than the visible CUDA device count.
+  With iterative tuning (`iters > 0`), N must be a power of two for gradient
+  exchange. `auto` selects the largest available power of two for tuning, or all
+  visible devices at `iters=0`.
+- The block must fit wholly on one GPU. Do not request a multi-device `device_map`
+  for iterative DP. Each replica holds the full block and tuning state. Free-VRAM
+  estimates only warn; actual shortages raise out-of-memory errors.
+- `split` treats `batch_size` as the global batch, requiring exact division over
+  replicas. `per_replica` makes the effective global batch `batch_size * N`.
+  An indivisible sample pool/batch or an oversized per-rank batch makes that block
+  tune serially, with a reason logged.
+- LFQ, dictionary-shaped diffusion calibration pools and active torchrun groups
+  are not supported. Existing runtime eligibility checks remain.
+- Calibration forwards and declared calibration statistics are sharded too,
+  including at `iters=0`; hook passes with undeclared reductions remain serial.
+- Replica sampling differs from serial sampling. Compare accuracy or model-level
+  KL divergence rather than expecting identical loss logs or tuned weights.
+- Plain weight-only RTN has nothing to parallelize and reports an explicit DP
+  request as a no-op. `model_free=True` cannot be combined with DP; model-free
+  shard parallelism is a separate feature.
 
 `--data_parallel` cannot be combined with native TP or explicit `pp_size > 1`.
 The CLI rejects these combinations before model loading, and the shared execution

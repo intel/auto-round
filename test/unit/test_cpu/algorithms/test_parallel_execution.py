@@ -144,7 +144,7 @@ def test_tp_uses_native_backward_not_dp():
 
 
 def test_local_execution_preserves_dp_rank_hooks(monkeypatch):
-    from auto_round.algorithms.parallel import spmd
+    from auto_round.parallel import spmd
 
     sampler = object()
     rank = SimpleNamespace(
@@ -166,7 +166,7 @@ def test_local_execution_preserves_dp_rank_hooks(monkeypatch):
 
 
 def test_tp_collection_and_tuning_never_create_dp_mirrors():
-    from auto_round.algorithms.parallel.data_parallel import ParallelPolicy
+    from auto_round.parallel.data_parallel import ParallelPolicy
 
     execution = ParallelExecution({"tp_size": 2})
     quantizer = SimpleNamespace(
@@ -177,8 +177,8 @@ def test_tp_collection_and_tuning_never_create_dp_mirrors():
     block = torch.nn.Linear(4, 4)
     inputs = [torch.randn(1, 2, 4)]
     with (
-        patch("auto_round.algorithms.parallel.tune_parallel.TuneParallelContext.for_collection") as collect,
-        patch("auto_round.algorithms.parallel.spmd.quantize_block_on_ranks") as tune,
+        patch("auto_round.parallel.tune_parallel.TuneParallelContext.for_collection") as collect,
+        patch("auto_round.parallel.spmd.quantize_block_on_ranks") as tune,
         patch("auto_round.utils.distributed.all_reduce_loss") as reduce_loss,
     ):
         ctx = execution.collection_context(composer, block, inputs)
@@ -194,9 +194,7 @@ def test_tp_collection_and_tuning_never_create_dp_mirrors():
 @pytest.mark.parametrize("engaged", [False, True])
 def test_local_tuning_delegates_to_dp_engine(engaged):
     quantizer = SimpleNamespace(quantize_block=Mock(return_value="local"))
-    with patch(
-        "auto_round.algorithms.parallel.spmd.quantize_block_on_ranks", return_value=(engaged, "replica")
-    ) as tune:
+    with patch("auto_round.parallel.spmd.quantize_block_on_ranks", return_value=(engaged, "replica")) as tune:
         result = ParallelExecution().quantize_block(quantizer, "block", "fp", {}, "out", None, "ctx")
     assert result == ("replica" if engaged else "local")
     tune.assert_called_once_with(quantizer, "block", "fp", {}, "out", None, "ctx", input_ids=None)
@@ -205,7 +203,7 @@ def test_local_tuning_delegates_to_dp_engine(engaged):
 
 @pytest.mark.parametrize("topology", [{"tp_size": 2}, {"pp_size": 2}])
 def test_stage_rejects_hybrid_dp_before_installing_hooks(topology):
-    from auto_round.algorithms.parallel.data_parallel import ParallelPolicy
+    from auto_round.parallel.data_parallel import ParallelPolicy
 
     execution = ParallelExecution(topology)
     orchestrator = SimpleNamespace(compress_context=SimpleNamespace(parallel_policy=ParallelPolicy(world=2)))
@@ -368,8 +366,9 @@ def _block_worker(rank, rendezvous, checkpoint, device_type="cpu"):
             exported = gather_for_export(model)
             if device_type == "cuda":
                 model.to(f"cuda:{rank}")
+            inference_ids = tokens.to(f"cuda:{rank}" if device_type == "cuda" else "cpu")
             with torch.no_grad():
-                logits = ParallelExecution.replicated(model(input_ids=tokens).logits)
+                logits = ParallelExecution.replicated(model(input_ids=inference_ids).logits)
             assert torch.isfinite(logits).all()
             if rank == 0:
                 with torch.no_grad():

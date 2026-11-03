@@ -257,7 +257,7 @@ class ParallelExecution:
 
     def collection_context(self, composer, block, inputs):
         """Select collection transport without replicating native TP weight shards."""
-        from auto_round.algorithms.parallel.tune_parallel import TuneParallelContext
+        from auto_round.parallel.tune_parallel import TuneParallelContext
 
         if self.is_tp:
             context = getattr(composer.block_quantizer, "compress_context", None)
@@ -270,7 +270,7 @@ class ParallelExecution:
     ):
         """Run the same algorithm on local/TP shards or on data-parallel replicas."""
         if not self.is_tp:
-            from auto_round.algorithms.parallel.spmd import quantize_block_on_ranks
+            from auto_round.parallel.spmd import quantize_block_on_ranks
 
             engaged, result = quantize_block_on_ranks(
                 quantizer, block, fp_inputs, input_others, fp_outputs, q_inputs, block_ctx, input_ids=input_ids

@@ -696,7 +696,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         # an explicit --data_parallel N cannot engage here (no
         # calibration forward for the data-parallel lane to shard): one INFO
         # line, no refusal -- weights-only RTN has nothing to parallelize
-        from auto_round.algorithms.parallel.data_parallel import log_zero_shot_parallel_noop_
+        from auto_round.parallel.data_parallel import log_zero_shot_parallel_noop_
 
         log_zero_shot_parallel_noop_(getattr(self.compress_context, "parallel_policy", None))
 

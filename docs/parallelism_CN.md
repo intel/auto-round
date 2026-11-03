@@ -1,14 +1,65 @@
 # 统一并行执行
 
+## 选择并行模式
+
+所有并行引擎统一位于 `auto_round.parallel`，共享配置与算法执行接口。
+每次运行选择一种模式；暂不支持混合并行。
+
+| 模式 | CLI / Python 选项 | 执行方式 | 适用场景 |
+| --- | --- | --- | --- |
+| DP | `data_parallel=N` 或 `"auto"` | 单进程，完整 block 副本，样本分片 | 单个 block 能放入单卡时提高吞吐 |
+| TP | `tensor_parallel=N` | N 个进程，Transformers 原生权重分片 | 跨 GPU 分摊已支持的权重计算 |
+| PP 放置 | `pipeline_parallel=N` | 单进程，跨 GPU 放置层或 block | 分散模型放置；并非微批次流水线调度 |
+
+在启动 Python 或 CLI 前设置 `CUDA_VISIBLE_DEVICES`。并行度对应可见 GPU
+数量，而不是物理编号。DP/PP 无需 torchrun；TP 在需要时自动启动本地 worker，
+要求至少 N 张可见 CUDA 设备。
+
+```bash
+auto_round quantize Qwen/Qwen3-0.6B --data_parallel 4 --parallel_batch split
+auto_round quantize Qwen/Qwen3-0.6B --tensor_parallel 4
+auto_round quantize Qwen/Qwen3-0.6B --pipeline_parallel 4
+```
+
 AutoRound 将张量并行（TP）交给 Transformers：由 Transformers 加载权重分片、
 安装原生前向逻辑并完成布局重分布。AutoRound 仅适配本地权重和激活分片的
 量化与反量化（QDQ）计算，不另行实现一套张量并行后端。
 
 ## 公共配置
 
-`ParallelConfig` 独立于算法配置，提供三个正整数维度：`tp_size`、`pp_size`
-和 `dp_size`，默认值均为 `1`。Python 接口也支持通过 `parallel_config`
-传入等价的映射。
+`ParallelConfig` 独立于算法配置。CLI 提供 `--tensor_parallel`、
+`--pipeline_parallel`、`--data_parallel` 和 `--parallel_batch`。Python 将这些设置
+统一放在 `parallel_config=ParallelConfig(...)` 或等价映射中，不作为 AutoRound／
+任务式 API 的顶层参数。TP/PP 默认为 `1`；
+DP 默认为 `"off"`（`1` 也表示关闭 DP）。保留 `tp_size` / `pp_size` 兼容别名。
+`dp_size` 仍预留为进程 mesh 的 DP 维度，必须为 `1`；已实现的副本引擎使用
+`data_parallel`。别名或配置冲突时明确报错，Python 也可传入等价映射。
+
+Python 自动启动 TP 时使用下面的任务式 API。它在 worker 内加载模型与 tokenizer，
+返回检查点文件夹，**不会**向父进程返回分布式模型。构造参数必须支持多进程序列化，
+仅保存阶段使用的选项放入 `save_kwargs`。启动 worker 时必须使用 main 保护。
+
+```python
+from auto_round import ParallelConfig, quantize_and_save
+
+if __name__ == "__main__":
+    folders = quantize_and_save(
+        "Qwen/Qwen3-0.6B",
+        "./quantized",
+        parallel_config=ParallelConfig(tensor_parallel=4),
+        alg_configs="auto_round",
+        scheme="W4A16",
+        save_kwargs={"format": "auto_round"},
+    )
+```
+
+两个 Python 入口均使用同一个 `parallel_config` 参数。DP 使用
+`ParallelConfig(data_parallel=4, parallel_batch="split")`；PP 放置使用
+`ParallelConfig(pipeline_parallel=4)`。也可以传入等价映射，例如
+`parallel_config={"tensor_parallel": 4}`。不要组合这些模式。
+
+传入预加载模型、自定义 tokenizer 或需要直接访问 TP 模型时，保留 rank 本地的
+`AutoRound` API，并通过 torchrun 在全部 rank 调用：
 
 ```python
 from auto_round import AutoRound, ParallelConfig
@@ -18,7 +69,7 @@ compressor = AutoRound(
     "Qwen/Qwen3-0.6B",
     scheme="W4A16",
     alg_configs=QADConfig(iters=200, group_size=128),
-    parallel_config=ParallelConfig(tp_size=4),
+    parallel_config=ParallelConfig(tensor_parallel=4),
     enable_torch_compile=False,
     low_cpu_mem_usage=False,
 )
@@ -31,7 +82,7 @@ compressor.quantize_and_save("./quantized", format="auto_round")
 torchrun --nproc-per-node 4 train_qad_tp.py
 ```
 
-CLI 提供相同的配置维度。省略 `--tp_size` 时，默认使用 torchrun 的
+CLI 也支持外部启动器。省略 `--tensor_parallel` / `--tp_size` 时，默认使用 torchrun 的
 `WORLD_SIZE`（未使用 torchrun 时为 `1`）；已选择其他并行维度时不自动推断 TP：
 
 ```bash
@@ -51,7 +102,11 @@ TP 要求 Transformers 版本同时提供 `DistributedConfig` 和原生 DTensor
 流程初始化分布式 mesh；AutoRound 不会销毁调用方持有的进程组。
 建议使用 NVLink 等高速互连。
 
-## 支持范围
+已有分布式环境中，启动器校验并复用 `WORLD_SIZE`，不会递归启动 worker。
+worker 失败会向父进程传播，不自动重试。本地启动的 worker 在退出时清理进程组；
+调用方持有的进程组保持不变。自动启动仅支持单节点；多节点请使用外部启动器。
+
+## TP 支持范围
 
 - 采用普通列切分和行切分 Linear 方案的稠密 decoder-only 语言模型，
   包括原生 embedding／输出边界以及复制的归一化层。
@@ -154,7 +209,9 @@ QAD/QAT 保留原来的全模型执行方式，不使用上述逐块调度。
 
 离线双 rank 测试覆盖稠密 Llama 的逐块算法、AWQ 通道统计／scale 折叠、
 导出 logits，以及调优期间禁止完整权重聚合。
-这不代表已经验证逐块 MoE 精度或 CUDA/NCCL 显存行为。
+双卡 CUDA/NCCL 冒烟测试还覆盖稠密 INT block 的 CPU 驻留、QAD/QAT 阶段切换、
+CLI／任务式 API 自动启动和集体 fake 导出。这些小模型测试不代表已经验证
+逐块 MoE 精度或大模型的峰值显存与性能。
 
 ## FP4 权重与激活量化
 
@@ -241,18 +298,46 @@ fake 和打包检查点评估都适用；Python API 不会自动销毁调用方�
 激活测试包括稠密和 MoE W4A4、MXFP6/8 激活、零输入和空输入、并列全局最大值、
 裁剪系数梯度及激活量化组边界。逐块测试还覆盖 AutoRound/SignRound、
 AutoRound v2、RTN 和优化 RTN 的 FP4 激活量化，包括元数据 offload 和导出 logits。
-CUDA/NCCL 显存、性能及部署后端推理仍未验证。
+这些测试仍未验证 FP4/MoE 的 CUDA/NCCL 正确性、大模型峰值显存／性能，
+以及部署后端推理。
 
 ## PP 与单进程 DP
 
-`ParallelConfig(pp_size=N)` 将现有单进程设备放置路径配置到前 `N` 张可见
+`ParallelConfig(pipeline_parallel=N)`（或 `pp_size=N`）将现有单进程设备放置路径配置到前 `N` 张可见
 CUDA 设备。这不是微批次流水线训练调度，QAD 目前也不支持此路径。
 不启用并行配置维度时，现有 `device_map` 调用方式保持不变。
 
 使用 `--data_parallel auto` 或 `--data_parallel N` 启用主线的单进程数据并行
 block 校准／调优，无需 `torchrun`。每个副本持有完整 block 和互不重叠的样本分片。
 `--parallel_batch split` 保持请求的全局 batch 大小；`per_replica` 则让每个副本
-都使用该 batch 大小。适用条件及 batch 约束见[操作指南](./step_by_step_CN.md)。
+都使用该 batch 大小。Python 使用同一策略：
+
+```python
+from auto_round import AutoRound, ParallelConfig
+
+compressor = AutoRound(
+    "Qwen/Qwen3-0.6B",
+    parallel_config=ParallelConfig(data_parallel="auto", parallel_batch="split"),
+)
+compressor.quantize_and_save("./quantized")
+```
+
+- 显式 N 至少为 2，且不超过可见 CUDA 设备数。有迭代调优（`iters > 0`）时，
+  N 必须为 2 的幂以完成梯度交换。`auto` 在调优时选择可用的最大 2 的幂，
+  在 `iters=0` 时选择全部可见设备。
+- block 必须完整放入单张 GPU；迭代 DP 不要使用多设备 `device_map`。每个副本
+  持有完整 block 与调优状态。空闲显存估算仅告警，实际不足会抛出 OOM。
+- `split` 将 `batch_size` 视为全局 batch，要求能被副本数整除；`per_replica`
+  的有效全局 batch 为 `batch_size * N`。样本池／batch 无法均分或每个 rank 的
+  batch 超过分片样本数时，该 block 串行调优，并记录原因。
+- 不支持 LFQ、字典形式的 diffusion 校准池和已激活的 torchrun 进程组。
+  保留现有运行时适用条件检查。
+- 校准前向及已声明归约方式的校准统计同样分片，`iters=0` 时也是如此；
+  未声明归约方式的 hook 前向保持串行。
+- 副本采样与串行采样不同。请比较模型精度或模型级 KL 散度，不应期待 loss
+  日志或调优权重完全一致。
+- 普通仅权重 RTN 没有可并行的校准或调优；显式请求 DP 时会提示无效操作。
+  DP 不能与 `model_free=True` 组合，免模型的 shard 并行是另一项独立功能。
 
 `--data_parallel` 不能与原生 TP 或显式的 `pp_size > 1` 组合使用。
 CLI 在加载模型前拒绝这些组合，共享执行服务也会在阶段入口校验 API 设置的策略。
