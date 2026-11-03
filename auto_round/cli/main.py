@@ -186,9 +186,7 @@ def _build_parallel_config(args) -> dict:
     if tp_size is None:
         # Infer a single TP axis only; do not silently create hybrid parallelism.
         tp_size = 1
-        if getattr(args, "pp_size", 1) == 1 and str(
-            getattr(args, "data_parallel", "off")
-        ) in ("off", "1"):
+        if getattr(args, "pp_size", 1) == 1 and str(getattr(args, "data_parallel", "off")) in ("off", "1"):
             tp_size = int(os.environ.get("WORLD_SIZE", "1"))
         if tp_size > 1:
             logger.info("Inferred tp_size=%s from torchrun WORLD_SIZE.", tp_size)
