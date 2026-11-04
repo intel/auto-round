@@ -44,7 +44,17 @@ class BaseQuantizer(BaseAlgorithm):
         - :meth:`quantize_block`               – **must override**: quantize a single block
         - :meth:`quantize_layer_outside_block` – quantize layers outside blocks
         - :meth:`finalize_run`                 – model-level teardown (once after all blocks)
+    A quantizer whose calibration hooks write statistics on modules declares
+    them in :attr:`calibration_stats`.
     """
+
+    #: Statistics this quantizer's calibration hooks write on modules, mapped
+    #: to their shard reduction ("sum" | "max"). Under --data_parallel
+    #: the hook-carrying calibration forwards shard across the block mirrors
+    #: and the engine folds these attributes back into the home block.
+    #: ``None`` = undeclared: if the quantizer registers calibration hooks,
+    #: those passes stay serial. A quantizer without hooks needs no declaration.
+    calibration_stats: dict[str, str] | None = None
 
     def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
@@ -142,6 +152,17 @@ class BaseQuantizer(BaseAlgorithm):
         return is_quantized
 
     # ── Abstract quantization interface ───────────────────────────────────────
+    def parallel_constraints(self) -> dict:
+        """Declare eligibility facts for the single-process data-parallel lane.
+
+        The parallel engine consumes the declaration; algorithm internals stay
+        quantizer internals: ``enable_lfq`` reports LFQ layers whose handling is
+        single-device. A gradient scaler needs no declaration: every rank keeps
+        its own, and the gradients are averaged before ``scaler.step``, so the
+        ranks see the same inf/nan checks and keep the same scale.
+        """
+        return {"enable_lfq": bool(getattr(self, "enable_lfq", False))}
+
     def quantize_block(
         self,
         block: "torch.nn.Module",
@@ -170,6 +191,9 @@ class BaseQuantizer(BaseAlgorithm):
             **kwargs:     Reserved for future parameters.
         Returns:
             dict: Best quantization parameters found, or ``{}`` if not applicable.
+                Leave common tuning wrappers installed: the composer loads these
+                parameters, collects outputs and unwraps/restores FP weights.
+                Algorithms that directly modify weights need no wrapper handling.
         Raises:
             NotImplementedError: Subclasses must override this method.
         """
@@ -325,8 +349,14 @@ class BaseQuantizer(BaseAlgorithm):
         Bulk pulls are a capacity optimization only: when the user explicitly
         parked memory on the host (``low_gpu_mem_usage`` or
         ``calibration_data_device="cpu"``) the pool stays where that policy
-        put it, however much room the target device has.
+        put it, however much room the target device has. Under data-parallel
+        thread ranks the engine already placed each rank's shard on its device,
+        so the pool stays as it is.
         """
+        from auto_round.algorithms.parallel.spmd import current_rank
+
+        if current_rank() is not None:
+            return pool
         cc = self.compress_context
         if (
             getattr(cc, "low_gpu_mem_usage", False)
@@ -356,7 +386,79 @@ class BaseQuantizer(BaseAlgorithm):
         block = block.to(device_manager.device)
         return block
 
+    def finalize_block(self, block: "torch.nn.Module", block_ctx: "BlockContext | None" = None) -> None:
+        """Post-tuning, quantizer-agnostic finalization for a compressed block.
+
+        Invoked by the composer right after :meth:`quantize_block` returns, so
+        format-specific post-processing stays out of the per-algorithm tuning
+        loop. The default generates MoE experts' ``act_max`` automatically for
+        NVFP static-activation schemes (``WrapperWALayer``); it is a no-op for
+        schemes/blocks that do not need it. Subclasses may override to add their
+        own finalization.
+        """
+        from auto_round.schemes import is_nvfp4_e5m3_gs
+        from auto_round.utils import set_amax_for_all_moe_layers
+
+        if self.config.is_act_nv_fp or is_nvfp4_e5m3_gs(self.config.act_data_type or ""):
+            # enable moe experts act_max automatic generation for WrapperWALayer
+            set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
+
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
+    #: Algorithms that tune the whole model jointly (a single forward to the LM
+    #: head) instead of block-by-block set this to ``True``. The composer then
+    #: calls :meth:`quantize_model` once and skips the per-block loop.
+    whole_model_tuning: bool = False
+
+    #: The composer preserves original FP weights across all preceding stages
+    #: when a consumer needs them (e.g. to construct a full-precision teacher).
+    #: Algorithms never manage preservation flags or stage cleanup themselves.
+    requires_original_weights: bool = False
+
+    def get_calibration_token_ids(self, token_ids, calibration):
+        """Resolve this algorithm's sample count; override for custom sampling.
+
+        Reuse the common cached samples when nsamples is unset, take a prefix
+        when fewer are needed, or collect raw tokens without block forwards.
+        """
+        target = self.config.nsamples
+        if token_ids is not None:
+            if target is None or target == len(token_ids):
+                return token_ids
+            if target < len(token_ids):
+                logger.info("Algorithm stage uses the first %d of %d calibration samples.", target, len(token_ids))
+                return list(token_ids)[:target]
+        if target is None:
+            target = calibration.nsamples
+        collect = getattr(calibration, "collect_token_ids", None)
+        if callable(collect):
+            logger.info("Collecting %d calibration samples for the algorithm stage.", target)
+            collected = collect(target)
+            if collected is not None and len(collected) > 0:
+                return collected
+        logger.warning("Cannot collect %d calibration token ids; falling back to the cached samples.", target)
+        return token_ids
+
+    def quantize_model(self, model, token_ids, device=None) -> dict:
+        """Quantize the entire model jointly (whole-network tuning).
+
+        Only invoked when :attr:`whole_model_tuning` is ``True``. The default
+        implementation is intentionally absent; whole-model algorithms (e.g. QAD)
+        override it to run their own full-model forward/optimize loop.
+
+        Args:
+            model: The model to quantize (all quantizable layers tuned jointly).
+            token_ids: Per-sample calibration token-id tensors.
+            device: Target compute device.
+
+        Returns:
+            Best tuning parameters, with common wrappers left installed for
+            composer finalization, just like quantize_block. In-place algorithms
+            may return an empty dict.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} sets whole_model_tuning=True but does not implement quantize_model()."
+        )
+
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Model-level preparation (called once before block iteration starts)."""
         return

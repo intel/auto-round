@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import copy
 import importlib
+import importlib.util
+import pkgutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -27,7 +29,6 @@ _ALIAS_TO_NAME: dict[str, str] = {}
 _CONFIG_IMPL_REGISTRY: dict[type, type[BaseAlgorithm]] = {}
 _builtin_algorithms_registered = False
 _pipeline_members_registered = False
-_BUILTIN_ALGORITHM_ORDER = ("rtn", "auto_round", "awq", "svdquant", "hadamard", "quarot", "spinquant")
 
 
 def _ensure_builtin_algorithms_registered() -> None:
@@ -39,12 +40,23 @@ def _ensure_builtin_algorithms_registered() -> None:
     for module_name in (
         "auto_round.algorithms.quantization.rtn.config",
         "auto_round.algorithms.quantization.sign_round.config",
+        "auto_round.algorithms.quantization.qad.config",
+        "auto_round.algorithms.quantization.qat.config",
         "auto_round.algorithms.transforms.awq.config",
         "auto_round.algorithms.transforms.svdquant.config",
         "auto_round.algorithms.transforms.hadamard.config",
         "auto_round.algorithms.transforms.spinquant.preprocessor",
     ):
         importlib.import_module(module_name)
+
+    # Optional quantizers own their registration and CLI parameters. Removing
+    # an experimental package must not require changes to the shared registry.
+    package = importlib.import_module("auto_round.algorithms.quantization")
+    for module in pkgutil.iter_modules(package.__path__, package.__name__ + "."):
+        if module.ispkg:
+            config_module = module.name + ".config"
+            if importlib.util.find_spec(config_module) is not None:
+                importlib.import_module(config_module)
 
     _builtin_algorithms_registered = True
 
@@ -57,6 +69,8 @@ def _ensure_pipeline_members_registered() -> None:
         "auto_round.algorithms.quantization.rtn.quantizer",
         "auto_round.algorithms.quantization.sign_round.quantizer",
         "auto_round.algorithms.quantization.sign_roundv2.quantizer",
+        "auto_round.algorithms.quantization.qad.quantizer",
+        "auto_round.algorithms.quantization.qat.quantizer",
         "auto_round.algorithms.quantization.adam_round.adam",
         "auto_round.algorithms.transforms.awq.base",
         "auto_round.algorithms.transforms.svdquant.apply",
@@ -100,7 +114,7 @@ def resolve_algorithm_alias(alias: str) -> str | None:
     return _ALIAS_TO_NAME.get(alias.strip().lower())
 
 
-def resolve_algorithm_names(algorithms, *, ignore_unknown: bool = False) -> list[str]:
+def resolve_algorithm_names(algorithms) -> list[str]:
     """Resolve one algorithm string or sequence to ordered canonical names.
 
     A comma-separated string and a sequence use exactly the same semantics.
@@ -121,11 +135,8 @@ def resolve_algorithm_names(algorithms, *, ignore_unknown: bool = False) -> list
             continue
         canonical = resolve_algorithm_alias(name)
         if canonical is None:
-            if ignore_unknown:
-                continue
-            supported_aliases = sorted(_ALIAS_TO_NAME.keys())
             raise ValueError(
-                f"Unknown algorithm alias '{name}'. Supported aliases: {supported_aliases}. "
+                f"Unknown algorithm alias '{name}'. Supported algorithms: {sorted(_ALG_REGISTRY)}. "
                 "If you are adding a new algorithm, register it via "
                 "auto_round.algorithms.registry.register_algorithm()."
             )
@@ -145,9 +156,7 @@ def get_algorithm_entry(name: str) -> AlgRegistryEntry:
 
 def iter_algorithm_entries() -> list[AlgRegistryEntry]:
     _ensure_builtin_algorithms_registered()
-    builtin = [_ALG_REGISTRY[name] for name in _BUILTIN_ALGORITHM_ORDER if name in _ALG_REGISTRY]
-    custom = [entry for name, entry in _ALG_REGISTRY.items() if name not in _BUILTIN_ALGORITHM_ORDER]
-    return builtin + custom
+    return list(_ALG_REGISTRY.values())
 
 
 def resolve_alg_config(alias: str) -> object:
@@ -155,7 +164,7 @@ def resolve_alg_config(alias: str) -> object:
     canonical = resolve_algorithm_alias(alias)
     if canonical is None:
         raise ValueError(
-            f"Unknown algorithm alias '{alias}'. Supported aliases: {sorted(_ALIAS_TO_NAME.keys())}. "
+            f"Unknown algorithm alias '{alias}'. Supported algorithms: {sorted(_ALG_REGISTRY)}. "
             "If you are adding a new algorithm, register it via auto_round.algorithms.registry.register_algorithm()."
         )
 
@@ -189,6 +198,21 @@ def resolve_pipeline_member(config: object) -> type[BaseAlgorithm]:
     raise ValueError(f"Unknown algorithm config type {config_cls.__name__!r}.")
 
 
+def pipeline_member_for_config_class(config_cls: type):
+    """Return the pipeline member class for a config *class* (or ``None``).
+
+    Class-level counterpart of :func:`resolve_pipeline_member` (which needs an
+    instance). Used by the CLI to tell whether an algorithm is a terminal block
+    quantizer without constructing its config.
+    """
+    _ensure_pipeline_members_registered()
+    for cls in config_cls.__mro__:
+        member_cls = _CONFIG_IMPL_REGISTRY.get(cls)
+        if member_cls is not None:
+            return member_cls
+    return None
+
+
 def coerce_config_class(config: object, target_cls: type) -> object:
     if type(config) is target_cls:
         return config
@@ -202,9 +226,21 @@ def coerce_config_class(config: object, target_cls: type) -> object:
 
 
 def normalize_algorithm_config(config: object) -> object:
+    from auto_round.algorithms.quantization.qad.config import QADConfig
     from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
     from auto_round.algorithms.quantization.sign_round.config import AdamRoundConfig, SignRoundConfig, SignRoundV2Config
 
+    if type(config) in (SignRoundConfig, SignRoundV2Config, AdamRoundConfig) and getattr(config, "enable_qad", False):
+        defaults = QADConfig(
+            topk=getattr(config, "lfq_top_k", 32),
+            qad_optimizer="adamw" if getattr(config, "enable_adam", False) else getattr(config, "optimizer", None),
+        )
+        normalized = coerce_config_class(config, QADConfig)
+        for key, value in vars(defaults).items():
+            if not hasattr(normalized, key):
+                setattr(normalized, key, value)
+        normalized.optimizer = defaults.optimizer
+        return normalized
     if type(config) is OptimizedRTNConfig and getattr(config, "disable_opt_rtn", False):
         return coerce_config_class(config, RTNConfig)
     if type(config) is RTNConfig and not getattr(config, "disable_opt_rtn", False):

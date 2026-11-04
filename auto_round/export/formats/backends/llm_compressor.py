@@ -31,6 +31,7 @@ class LLMCompressorFormat(OutputFormat):
         "MXFP8",
         "NVFP4",
         "NVFP4_E5M3",
+        "NVFP4_E5M3_GS",
         "FPW8A16",
         "FP8_STATIC",
         "INT8",
@@ -61,11 +62,11 @@ class LLMCompressorFormat(OutputFormat):
         if re.search("^(auto_round:)?llm_compressor", format):
             self.output_format = format
             self.backend = None
-            if scheme.data_type == "nvfp4_v2":
+            if scheme.data_type in ("nvfp4_v2", "nvfp4_v2_gs"):
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
                 check_compressed_tensors_supported(raise_error=True)
-                self.output_format = "llm_compressor:nvfp4_v2"
+                self.output_format = f"llm_compressor:{scheme.data_type}"
             elif scheme.is_nv_fp() or scheme.is_mx_fp() or (scheme.bits >= 16 and scheme.data_type in ("fp", "float")):
                 from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
 
@@ -156,7 +157,7 @@ class LLMCompressorFormat(OutputFormat):
             )
 
         if scheme.act_bits <= 8 and (not scheme.is_act_standard_fp() or scheme.act_dynamic):
-            if scheme.act_data_type == "nvfp4_v2":
+            if scheme.act_data_type in ("nvfp4_v2", "nvfp4_v2_with_static_gs"):
                 return None, scheme, layer_config, quant_block_list
             if (
                 (scheme.is_act_nv_fp() and "static_gs" in scheme.act_data_type)

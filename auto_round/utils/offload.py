@@ -911,6 +911,12 @@ class OffloadManager:
             from safetensors.torch import load_file as safe_load_file
 
             state_dict = safe_load_file(save_path, device="cpu")
+            # Replace every tensor with a private copy so the mapping is
+            # released as soon as this method returns.
+            for key in list(state_dict.keys()):
+                tensor = state_dict[key]
+                state_dict[key] = tensor.clone()
+                del tensor
             _load_state_dict_into_module(state_dict, module)
         except Exception as e:
             logger.warning(f"OffloadManager: failed to load {name}: {e}")

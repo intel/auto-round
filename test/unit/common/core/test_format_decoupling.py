@@ -94,6 +94,33 @@ def test_nvfp4_e5m3_autoround_uses_llm_compressor_packing_and_torch_fallback():
     )
 
 
+def test_nvfp4_e5m3_gs_autoround_uses_llm_compressor_packing_and_torch_fallback():
+    scheme = _resolved_scheme("NVFP4_E5M3_GS")
+    resolution = resolve_formats(
+        ResolvedScheme.from_scheme(scheme), format="auto_round", model=nn.Sequential(nn.Linear(16, 16))
+    )
+
+    assert resolution.formats[0].get_backend_name() == "auto_round:nvfp4_v2_gs"
+    assert BackendInfos["auto_round:torch_nvfp4_e5m3_gs"].packing_format == ["auto_round:llm_compressor_nvfp4_e5m3_gs"]
+    assert dynamic_import_inference_linear("auto_round:torch_nvfp4_e5m3_gs", scheme) is (
+        ar_qmodules.NVFP4E5M3GSQuantLinear
+    )
+    assert dynamic_import_inference_linear("auto_round:cute_nvfp4_e5m3_gs", scheme) is (
+        ar_qmodules.CuteNVFP4E5M3GSQuantLinear
+    )
+    assert (
+        get_layer_backend(
+            "cpu",
+            "auto",
+            "auto_round:llm_compressor_nvfp4_e5m3_gs",
+            scheme,
+            in_features=16,
+            out_features=16,
+        )
+        == "auto_round:torch_nvfp4_e5m3_gs"
+    )
+
+
 def test_gguf_correction_propagates_to_scheme_and_quantize_config(monkeypatch):
     # W4A16's plain int-woq fields don't match every field gguf_args_check enforces
     # for a GGUF target; after resolving "gguf:q4_k_m" the scheme-bearing objects

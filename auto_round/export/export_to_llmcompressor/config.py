@@ -103,8 +103,8 @@ def initialize_quantization(scheme, targets=None, config_groups=None, kv_cache_s
     )
 
 
-def initialize_nvfp4_e5m3_quantization(ignore=None):
-    """Build stable compressed-tensors metadata for global-scale-free NVFP4 E5M3."""
+def initialize_nvfp4_e5m3_quantization(ignore=None, with_global_scale=False):
+    """Build stable compressed-tensors metadata for NVFP4 E5M3 (optionally with per-tensor global scales)."""
 
     def quant_args(dynamic):
         return {
@@ -129,7 +129,7 @@ def initialize_nvfp4_e5m3_quantization(ignore=None):
                 "weights": quant_args(False),
             }
         },
-        "format": "nvfp4-e5m3-pack-quantized",
+        "format": "nvfp4-e5m3-gs-pack-quantized" if with_global_scale else "nvfp4-e5m3-pack-quantized",
         "global_compression_ratio": None,
         "ignore": list(dict.fromkeys(ignore or ["lm_head"])),
         "kv_cache_scheme": None,

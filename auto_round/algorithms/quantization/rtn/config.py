@@ -31,7 +31,7 @@ class RTNConfig(QuantizationConfig):
             dest="disable_opt_rtn",
             action="store_const",
             const=True,
-            help="Force plain RTN (disable optimized path).",
+            help="Force plain RTN (disable optimized path). Equivalent to `--algorithm rtn`.",
         )
         mutex.add_argument(
             "--enable_opt_rtn",
@@ -39,7 +39,7 @@ class RTNConfig(QuantizationConfig):
             dest="disable_opt_rtn",
             action="store_const",
             const=False,
-            help="Force optimized RTN path.",
+            help="Force optimized RTN path. Equivalent to `--algorithm opt-rtn`.",
         )
         registry.add_argument(
             "--enable_neuqi",
@@ -112,9 +112,31 @@ class OptimizedRTNConfig(RTNConfig):
     need_calib = True
 
 
+#: RTN variants selectable by algorithm name, mapped to the ``disable_opt_rtn``
+#: value the name forces. ``rtn`` means plain RTN and ``opt-rtn`` the optimized
+#: path; both the CLI and the entry API resolve the names through this mapping so
+#: the name means the same thing everywhere.
+RTN_VARIANT_DISABLE_OPT_RTN = {"rtn": True, "opt-rtn": False}
+
+
+def validate_rtn_variant_names(names) -> None:
+    """Reject conflicting canonical RTN variant names before constructing configs."""
+    variants = {name for name in names if isinstance(name, str) and name in RTN_VARIANT_DISABLE_OPT_RTN}
+    if len(variants) > 1:
+        raise ValueError("Cannot select both 'rtn' and 'opt-rtn'; choose one RTN variant.")
+
+
 register_algorithm(
     "rtn",
     aliases=("rtn",),
     config_factory=RTNConfig,
-    summary="Round-To-Nearest quantization.",
+    summary="Round-To-Nearest quantization (plain, no optimized initialization).",
+)
+
+
+register_algorithm(
+    "opt-rtn",
+    aliases=("opt-rtn", "opt_rtn", "optimized_rtn", "optimized-rtn"),
+    config_factory=OptimizedRTNConfig,
+    summary="Round-To-Nearest quantization with the optimized initialization path.",
 )

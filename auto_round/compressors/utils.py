@@ -154,11 +154,22 @@ def block_forward(
     input_others, input_tuple = prepare_special_model_block_inputs(block, input_ids, input_others, input_tuple)
 
     # Use the block's actual parameter name for the first positional argument.
-    import inspect as _inspect
-
-    # For DDP-wrapped blocks, inspect the underlying module's signature
+    # For DDP-wrapped blocks, inspect the underlying module's signature.
     _actual_block = getattr(block, "module", block)
-    param_names = [p for p in _inspect.signature(_actual_block.forward).parameters.keys() if p != "self"]
+    # ``inspect.signature`` is relatively expensive and the forward signature is
+    # fixed for the lifetime of a block, yet this runs on *every* batch of every
+    # reference/quantized-input/tuning pass (hundreds of thousands of calls for
+    # large nsamples). Resolve the parameter names once and cache them on the
+    # module so subsequent calls are a single attribute read.
+    param_names = getattr(_actual_block, "_ar_forward_param_names", None)
+    if param_names is None:
+        import inspect as _inspect
+
+        param_names = [p for p in _inspect.signature(_actual_block.forward).parameters.keys() if p != "self"]
+        try:
+            _actual_block._ar_forward_param_names = param_names
+        except (AttributeError, RuntimeError):  # pragma: no cover - exotic module types
+            pass
     block_input_kwarg = param_names[0] if param_names else "hidden_states"
     if block_input_kwarg not in input_others:
         input_others[block_input_kwarg] = input_ids
@@ -173,6 +184,64 @@ def block_forward(
                 if param_name not in input_others:
                     input_others[param_name] = val
         positional_inputs = ()
+
+    # DDP-mirror device audit (last line of defense): every tensor kwarg must
+    # sit on the same accelerator device as the block's parameters. A stale
+    # kwarg (e.g. an entry recorded on the primary GPU while the replica
+    # lives elsewhere) silently overrides the staged first-arg inside this
+    # function and crashes cross-device inside the block forward -- serial
+    # runs with a single shared device stay unaffected. Move the stragglers
+    # onto the block's device AND name them (fail-visible).
+    try:
+        _block_dev = next(block.parameters()).device
+    except StopIteration:  # pragma: no cover - param-less blocks
+        _block_dev = device
+
+    def _audit(value, prefix, bad):
+        if torch.is_tensor(value):
+            if value.device.type in ("cuda", "xpu", "hpu") and value.device != _block_dev:
+                bad.append(f"{prefix}:{value.device}")
+        elif isinstance(value, (list, tuple)):
+            for _i, _v in enumerate(value):
+                _audit(_v, f"{prefix}[{_i}]", bad)
+        elif isinstance(value, dict):
+            for _k, _v in value.items():
+                _audit(_v, f"{prefix}.{_k}", bad)
+
+    def _relocate(value):
+        # Mirror _audit's condition exactly: only accelerator tensors that
+        # mismatch the block device move. A wholesale to_device() here would
+        # also migrate host tensors nested in lists/dicts onto the accelerator
+        # (semantic change + VRAM), which the audit never flagged.
+        if torch.is_tensor(value):
+            if value.device.type in ("cuda", "xpu", "hpu") and value.device != _block_dev:
+                return value.to(_block_dev)
+            return value
+        if isinstance(value, list):
+            return [_relocate(_v) for _v in value]
+        if isinstance(value, tuple):
+            return tuple(_relocate(_v) for _v in value)
+        if isinstance(value, dict):
+            return {k: _relocate(v) for k, v in value.items()}
+        return value
+
+    _bad = []
+    for _k, _v in input_others.items():
+        _audit(_v, str(_k), _bad)
+    if _bad:
+        logger.warning(
+            "[block-forward] device sweep: moving %d stale kwarg tensor(s) onto %s: %s%s",
+            len(_bad),
+            _block_dev,
+            ", ".join(_bad[:8]),
+            " ..." if len(_bad) > 8 else "",
+        )
+        for _k in list(input_others.keys()):
+            if torch.is_tensor(input_others[_k]) and input_others[_k].device.type in ("cuda", "xpu", "hpu"):
+                if input_others[_k].device != _block_dev:
+                    input_others[_k] = input_others[_k].to(_block_dev)
+            elif isinstance(input_others[_k], (list, tuple, dict)):
+                input_others[_k] = _relocate(input_others[_k])
 
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
@@ -441,19 +510,35 @@ class IndexSampler:
         nsamples (int): Total number of samples.
         batch_size (int): Number of indices to return in each batch.
         index (int): Current position in the index list.
-        indices (List[int]): Shuffled list of indices.
+        indices (list[int]): Shuffled list of indices.
     """
 
-    def __init__(self, nsamples: int, batch_size: int) -> None:
+    def __init__(
+        self,
+        nsamples: int,
+        batch_size: int,
+        indices: "list[int] | None" = None,
+        rng: "random.Random | None" = None,
+    ) -> None:
         """Initializes the sampler.
 
         Args:
             nsamples (int): Total number of samples (must be >= batch_size).
             batch_size (int): Number of indices per batch.
+            indices (list[int], optional): Explicit index pool to shuffle
+                (defaults to ``range(nsamples)``). Used by shard-constrained
+                DDP sampling; ``nsamples`` must equal ``len(indices)``.
+            rng (random.Random, optional): Private shuffle generator (defaults
+                to the global ``random`` module). Data-parallel rank threads
+                pass their own so concurrent reshuffles stay reproducible.
 
         Raises:
             ValueError: If batch_size is not in the range (0, nsamples].
         """
+        if indices is None:
+            indices = list(range(nsamples))
+        elif len(indices) != nsamples:
+            raise ValueError(f"indices pool ({len(indices)}) does not match nsamples ({nsamples})")
         if batch_size <= 0 or batch_size > nsamples:
             raise ValueError("batch_size must be > 0 and <= nsamples")
 
@@ -461,8 +546,9 @@ class IndexSampler:
         self.batch_size: int = batch_size
         self.index: int = 0
 
-        self.indices: list[int] = list(range(nsamples))
-        random.shuffle(self.indices)
+        self._rng = rng if rng is not None else random
+        self.indices: list[int] = list(indices)
+        self._rng.shuffle(self.indices)
 
     def next_batch(self) -> list[int]:
         """Returns the next batch of shuffled indices.
@@ -474,7 +560,7 @@ class IndexSampler:
             list[int]: A list of size `batch_size` containing sample indices.
         """
         if self.index + self.batch_size > self.nsamples:
-            random.shuffle(self.indices)
+            self._rng.shuffle(self.indices)
             self.index = 0
 
         batch = self.indices[self.index : self.index + self.batch_size]

@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 import torch
 
 from auto_round.export.export_to_llmcompressor.utils import (
+    add_autoround_config,
     add_routed_experts_if_moe,
     finalize_llmcompressor_config_names,
 )
@@ -311,6 +312,13 @@ def pack_layer(name, model, device=None):
     delattr(layer, "scale")
 
     _compress_and_set_format(layer, scheme, device)
+    if hasattr(layer, "weight_zero_point"):
+        zero_point = layer.weight_zero_point.data.contiguous()
+        if scheme.weights.num_bits == 4 and zero_point.ndim >= 2 and zero_point.shape[-2] == 1:
+            stride = list(zero_point.stride())
+            stride[-2] = 1
+            zero_point = zero_point.as_strided(zero_point.shape, stride)
+        layer.weight_zero_point.data = zero_point
 
 
 @torch.no_grad()
@@ -382,6 +390,8 @@ def save_quantized_as_llmcompressor(
         [],
         [n for n, m in model.named_modules() if getattr(m, "quantization_scheme", None) is not None],
     )
+    quantization_config_dict["provider"] = "auto-round"
+    quantization_config_dict = add_autoround_config(quantization_config_dict, serialization_dict)
     model.config.quantization_config = quantization_config_dict
 
     if output_dir is None:

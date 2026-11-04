@@ -274,6 +274,42 @@ class TestWrapperBlock:
         assert isinstance(quantized, list)
 
 
+class TestUnwrapperActivationLayer:
+    """Activation QDQ wrappers must survive tuning-wrapper cleanup."""
+
+    @pytest.mark.parametrize("unwrap_single_layer", [False, True])
+    def test_preserves_activation_quantization(self, unwrap_single_layer):
+        from auto_round.wrapper import WrapperLayerNorm, WrapperWALayer, unwrapper_block, unwrapper_layer
+
+        layer = torch.nn.Linear(4, 4, bias=False)
+        layer.act_quant_func = MagicMock(side_effect=lambda x, **kwargs: (torch.zeros_like(x), None, None))
+        layer.act_bits = 8
+        layer.act_group_size = -1
+        layer.scale_dtype = torch.float32
+        layer.q_scale_thresh = 1e-5
+        layer.act_data_type = "int"
+        layer.act_min_scale = 1.0
+        layer.act_max_scale = 1.0
+        activation_wrapper = WrapperWALayer(layer, enable_torch_compile=False)
+        norm = torch.nn.LayerNorm(4)
+        block = torch.nn.Sequential(activation_wrapper, WrapperLayerNorm(norm))
+
+        # Repeated cleanup must not remove activation QDQ or call its missing unwrapper.
+        for _ in range(2):
+            if unwrap_single_layer:
+                unwrapper_layer(block, block[0], "0", None)
+                unwrapper_layer(block, block[1], "1", None)
+            else:
+                unwrapper_block(block, {})
+
+        assert block[0] is activation_wrapper
+        assert block[0].orig_layer is layer
+        assert block[1] is norm
+        output = block[0](torch.ones(2, 4))
+        torch.testing.assert_close(output, torch.zeros_like(output))
+        layer.act_quant_func.assert_called_once()
+
+
 class TestWrapperLinearQdqBias:
     """Tests for WrapperLinear._qdq_bias method."""
 

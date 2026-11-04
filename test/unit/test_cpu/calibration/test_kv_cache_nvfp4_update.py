@@ -14,7 +14,6 @@ from auto_round.experimental.kv_cache import QuantizedKVParameterCache
 
 
 def _reset_singleton():
-    # ``reset`` is an instance method; clear the class state directly.
     QuantizedKVParameterCache._instance = None
     QuantizedKVParameterCache._initialized = False
 
@@ -125,3 +124,207 @@ def test_nvfp4_kv_incompatible_head_dim_raises_at_update():
     bad = torch.randn(1, 1, 16, 88)
     with pytest.raises(ValueError, match="divisible by 16"):
         cache.update(bad, bad.clone(), layer_idx=0)
+
+
+class ObservedAttention(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer_idx = 0
+        self.head_dim = 16
+        self.k_proj = torch.nn.Linear(16, 16, bias=False)
+        self.v_proj = torch.nn.Linear(16, 16, bias=False)
+
+    def forward(self, hidden_states, past_key_values=None, use_cache=False):
+        key_states = self.k_proj(hidden_states).unsqueeze(1)
+        value_states = self.v_proj(hidden_states).unsqueeze(1)
+        if past_key_values is not None:
+            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx)
+        query_states = hidden_states.unsqueeze(1)
+        return torch.nn.functional.scaled_dot_product_attention(query_states, key_states, value_states)
+
+
+def test_nvfp4_observer_preserves_optimization_trajectory():
+    import copy
+    from contextlib import nullcontext
+
+    from auto_round.experimental.kv_cache import kvcache_quant_context
+
+    torch.manual_seed(42)
+    baseline = ObservedAttention()
+    observed = copy.deepcopy(baseline)
+    inputs = [torch.randn(2, 4, 16) for _ in range(3)]
+    targets = [torch.randn(2, 1, 4, 16) for _ in inputs]
+    trajectories = []
+    for model, context in ((baseline, nullcontext()), (observed, kvcache_quant_context(observed, "nvfp4"))):
+        trajectory = []
+        parameters = [model.k_proj.weight, model.v_proj.weight]
+        with context:
+            for hidden_states, target in zip(inputs, targets):
+                model.zero_grad(set_to_none=True)
+                output = model(hidden_states, past_key_values=None)
+                loss = torch.nn.functional.mse_loss(output, target)
+                loss.backward()
+                gradients = [parameter.grad.detach().clone() for parameter in parameters]
+                with torch.no_grad():
+                    for parameter in parameters:
+                        parameter.sub_(0.01 * parameter.grad.sign())
+                trajectory.append((output.detach(), loss.detach(), gradients))
+        trajectories.append(trajectory)
+    for expected, actual in zip(*trajectories):
+        torch.testing.assert_close(actual[0], expected[0])
+        torch.testing.assert_close(actual[1], expected[1])
+        for expected_gradient, actual_gradient in zip(expected[2], actual[2]):
+            torch.testing.assert_close(actual_gradient, expected_gradient)
+            torch.testing.assert_close(actual_gradient.sign(), expected_gradient.sign(), rtol=0, atol=0)
+    for name, expected in baseline.named_parameters():
+        torch.testing.assert_close(observed.get_parameter(name), expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("dtype", ["nvfp4", "fp8"])
+def test_kv_context_removes_its_hooks(dtype):
+    from auto_round.experimental.kv_cache import kvcache_quant_context
+
+    model = ObservedAttention()
+    inputs = torch.randn(1, 4, 16)
+    expected = model(inputs, past_key_values=None)
+    with kvcache_quant_context(model, dtype):
+        model(inputs, past_key_values=None)
+    actual = model(inputs, past_key_values=None)
+    torch.testing.assert_close(actual, expected)
+
+
+def test_kv_context_does_not_reuse_previous_amax():
+    from auto_round.experimental.kv_cache import kvcache_quant_context
+
+    model = ObservedAttention()
+    with kvcache_quant_context(model, "nvfp4"):
+        model.kv_cache.update(torch.full((1, 1, 1, 16), 100.0), torch.ones(1, 1, 1, 16), 0)
+    with kvcache_quant_context(model, "nvfp4"):
+        model.kv_cache.update(torch.ones(1, 1, 1, 16), torch.ones(1, 1, 1, 16), 0)
+        assert model.kv_cache.k_amax[0] == 1.0
+
+
+def test_kv_context_cleans_up_after_exception():
+    from auto_round.experimental.kv_cache import kvcache_quant_context
+
+    model = ObservedAttention()
+    with pytest.raises(RuntimeError, match="calibration failed"), kvcache_quant_context(model, "nvfp4"):
+        raise RuntimeError("calibration failed")
+    assert not hasattr(model, "kv_cache")
+    model(torch.randn(1, 4, 16), past_key_values=None)
+
+
+def test_kv_context_preserves_unrelated_hooks():
+    from auto_round.experimental.kv_cache import kvcache_quant_context
+
+    model = ObservedAttention()
+    calls = []
+    handle = model.register_forward_hook(lambda module, args, output: calls.append(True))
+    with kvcache_quant_context(model, "nvfp4"):
+        model(torch.randn(1, 4, 16), past_key_values=None)
+    model(torch.randn(1, 4, 16), past_key_values=None)
+    assert calls == [True, True]
+    handle.remove()
+
+
+@pytest.mark.parametrize("granularity", ["tensor", "head"])
+def test_fp8_update_quantizes_and_keeps_running_max_scale(granularity):
+    cache = QuantizedKVParameterCache(dtype="fp8", granularity=granularity)
+    key_states = torch.linspace(-3.1, 2.7, 64).reshape(1, 2, 2, 16)
+    value_states = key_states * 2.7
+    actual_keys, actual_values = cache.update(key_states, value_states, 0)
+    assert not torch.equal(actual_keys, key_states)
+    assert not torch.equal(actual_values, value_states)
+    initial_k_scale = cache.k_scales[0].clone()
+    initial_v_scale = cache.v_scales[0].clone()
+    cache.update(key_states / 4, value_states / 4, 0)
+    torch.testing.assert_close(cache.k_scales[0], initial_k_scale)
+    torch.testing.assert_close(cache.v_scales[0], initial_v_scale)
+
+
+@pytest.mark.parametrize("granularity", ["tensor", "head"])
+def test_fp8_update_running_max_per_side_head_and_layer(granularity):
+    cache = QuantizedKVParameterCache(dtype="fp8", granularity=granularity)
+    first_keys = torch.tensor([8.0, 1.0]).reshape(1, 2, 1, 1).expand(1, 2, 2, 16)
+    first_values = torch.tensor([2.0, 16.0]).reshape(1, 2, 1, 1).expand(1, 2, 2, 16)
+    cache.update(first_keys, first_values, 2)
+    second_keys = torch.tensor([2.0, 4.0]).reshape(1, 2, 1, 1).expand(1, 2, 2, 16)
+    second_values = torch.tensor([32.0, 1.0]).reshape(1, 2, 1, 1).expand(1, 2, 2, 16)
+    cache.reset_states()
+    cache.update(second_keys, second_values, 2)
+    expected_keys = torch.tensor([8.0, 4.0] if granularity == "head" else [8.0]) / 448
+    expected_values = torch.tensor([32.0, 16.0] if granularity == "head" else [32.0]) / 448
+    torch.testing.assert_close(cache.k_scales[2], expected_keys)
+    torch.testing.assert_close(cache.v_scales[2], expected_values)
+    assert not cache.k_scales[2].requires_grad
+    assert not cache.v_scales[2].requires_grad
+
+    cache.update(second_keys / 8, second_values / 8, 0)
+    expected_layer_keys = torch.tensor([0.25, 0.5] if granularity == "head" else [0.5]) / 448
+    expected_layer_values = torch.tensor([4.0, 0.125] if granularity == "head" else [4.0]) / 448
+    torch.testing.assert_close(cache.k_scales[0], expected_layer_keys)
+    torch.testing.assert_close(cache.v_scales[0], expected_layer_values)
+    torch.testing.assert_close(cache.k_scales[2], expected_keys)
+    torch.testing.assert_close(cache.v_scales[2], expected_values)
+
+
+@pytest.mark.parametrize("scheme", ["W4A16", "NVFP4"])
+def test_nvfp4_observer_preserves_autoround_tuned_weights(scheme):
+    import copy
+    from contextlib import nullcontext
+
+    from tokenizers import Tokenizer
+    from tokenizers.models import WordLevel
+    from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
+
+    from auto_round import AutoRound
+    from auto_round.experimental.kv_cache import kvcache_quant_context
+
+    torch.manual_seed(42)
+    config = LlamaConfig(
+        vocab_size=16,
+        hidden_size=32,
+        intermediate_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        max_position_embeddings=16,
+        attn_implementation="eager",
+    )
+    baseline = LlamaForCausalLM(config).eval()
+    observed = copy.deepcopy(baseline)
+    original_weight = baseline.model.layers[0].self_attn.k_proj.weight.detach().clone()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=Tokenizer(WordLevel({str(index): index for index in range(config.vocab_size)}, unk_token="0")),
+        unk_token="0",
+        pad_token="0",
+        eos_token="1",
+    )
+    dataset = torch.randint(0, config.vocab_size, (2, 4))
+    for model, dtype in ((baseline, None), (observed, "nvfp4")):
+        compressor = AutoRound(
+            model,
+            tokenizer=tokenizer,
+            scheme=scheme,
+            group_size=16,
+            iters=2,
+            batch_size=1,
+            nsamples=2,
+            seqlen=4,
+            dataset=[{"input_ids": sample.unsqueeze(0).clone()} for sample in dataset],
+            device_map="cpu",
+            amp=False,
+            seed=42,
+            static_kv_dtype=dtype,
+        )
+        context = nullcontext() if dtype is None else kvcache_quant_context(model, dtype)
+        with context:
+            compressor.quantize()
+    for name, expected in baseline.named_parameters():
+        torch.testing.assert_close(observed.get_parameter(name), expected)
+    assert not torch.equal(baseline.model.layers[0].self_attn.k_proj.weight, original_weight)
+    for layer in observed.model.layers:
+        assert layer.self_attn.k_global_scale.item() > 0
+        assert layer.self_attn.v_global_scale.item() > 0
+    with torch.no_grad():
+        torch.testing.assert_close(observed(dataset).logits, baseline(dataset).logits)
