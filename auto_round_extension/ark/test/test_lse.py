@@ -201,3 +201,125 @@ class TestLseSequenceParallelMerge:
         if not LSE_close:
             err = (lse_merged - lse_full).abs().max().item()
             pytest.fail(f"LSE merged vs full max_err={err:.2e} atol={atol_lse:.2e}")
+
+
+# ── LSE value correctness (issue #2556) ──────────────────────────────────
+
+
+def _ref_lse_log2(q, k, scale):
+    """Reference LSE in log2 units: log2(sum_j exp(scale * q . k_j))."""
+    return torch.logsumexp((q.float() @ k.float().transpose(-1, -2)) * scale, dim=-1) / math.log(2.0)
+
+
+def _distinct_rows(B, Hq, Sq, D, device="xpu", seed=0):
+    """Q whose rows have clearly different magnitudes, so every row has its own LSE.
+
+    Plain ``randn`` masks this bug: every row's LSE lands near log2(kv_len), so
+    the error from collapsing 16 rows onto one value stays below 0.5.
+    """
+    torch.manual_seed(seed)
+    q = torch.randn(B, Hq, Sq, D, device=device).bfloat16()
+    row_scale = torch.linspace(0.25, 4.0, Sq, device=device).view(1, 1, Sq, 1)
+    return (q.float() * row_scale).bfloat16()
+
+
+def _zero_mean_k(B, Hq, Skv, D, device="xpu", seed=1):
+    """K whose per-head sequence mean is ~0.
+
+    Needed to isolate the row-indexing bug: with ``smooth_k=True`` the LSE
+    restoration adds ``scale * q . mean(k)``, which varies per query row and
+    would otherwise hide a collapsed row index behind correct-looking values.
+    """
+    torch.manual_seed(seed)
+    k = torch.randn(B, Hq, Skv, D, device=device).float()
+    return (k - k.mean(dim=2, keepdim=True)).bfloat16()
+
+
+LSE_APIS = {
+    "sdpa": lambda q, k, v, scale: ark.sdpa(q, k, v, scale=scale, tensor_layout="HND", return_lse=True),
+    "sagev1": lambda q, k, v, scale: ark.sagev1(q, k, v, scale=scale, tensor_layout="HND", return_lse=True),
+    "sagev1_smooth_off": lambda q, k, v, scale: ark.sagev1(
+        q, k, v, scale=scale, tensor_layout="HND", return_lse=True, smooth_k=False
+    ),
+    "sageattn_v1_pvhalf": lambda q, k, v, scale: ark.sageattn(
+        q, k, v, tensor_layout="HND", sm_scale=scale, return_lse=True, kernel="v1_pvhalf"
+    ),
+    "sageattn_v1_pvi8": lambda q, k, v, scale: ark.sageattn(
+        q, k, v, tensor_layout="HND", sm_scale=scale, return_lse=True, kernel="v1_pvi8"
+    ),
+}
+
+
+class TestLseValues:
+    """Compare returned LSE against a torch reference (regression for #2556).
+
+    The pre-existing tests only check that a split-KV merge is self-consistent;
+    they never compare against a reference, so a wrong LSE passed unnoticed.
+    """
+
+    @pytest.mark.parametrize("api_name", list(LSE_APIS))
+    def test_lse_has_one_value_per_query_row(self, api_name):
+        """No two query rows in the same 16-row block may share an LSE value."""
+        B, Hq, Sq, Skv, D = 1, 4, 64, 1000, 128
+        scale = D**-0.5
+        q = _distinct_rows(B, Hq, Sq, D)
+        # Zero-mean K so smooth_k's LSE restoration contributes ~0 and cannot
+        # artificially decorrelate rows that the kernel collapsed.
+        k = _zero_mean_k(B, Hq, Skv, D)
+        torch.manual_seed(7)
+        v = torch.randn(B, Hq, Skv, D, device="xpu").bfloat16()
+
+        _, lse = LSE_APIS[api_name](q, k, v, scale)
+        got = lse[0, 0].float()
+
+        # Every 16-consecutive-row block must contain 16 distinct values.
+        for start in range(0, Sq, 16):
+            block = got[start : start + 16]
+            assert len(torch.unique(block)) == block.numel(), (
+                f"{api_name}: rows {start}-{start+15} collapsed to "
+                f"{len(torch.unique(block))} distinct LSE value(s): {torch.unique(block).tolist()}"
+            )
+
+    @pytest.mark.parametrize("api_name", list(LSE_APIS))
+    def test_lse_matches_reference(self, api_name):
+        """LSE must equal log2(sum_j exp(scale * q . k_j)) per query row."""
+        B, Hq, Sq, Skv, D = 1, 4, 64, 1000, 128
+        scale = D**-0.5
+        q = _distinct_rows(B, Hq, Sq, D)
+        k = _zero_mean_k(B, Hq, Skv, D)
+        torch.manual_seed(7)
+        v = torch.randn(B, Hq, Skv, D, device="xpu").bfloat16()
+
+        _, lse = LSE_APIS[api_name](q, k, v, scale)
+        ref = _ref_lse_log2(q, k, scale)
+
+        err = (lse.float() - ref).abs().max().item()
+        # SDPA has no quantization, so it must match almost exactly.  The SAGE
+        # paths quantize Q/K to INT8 per quant_block_size tokens, which perturbs
+        # the logits; measured error is ~0.1 for this shape (independent of the
+        # row-indexing bug, which showed up as ~9.0 before the fix).  Keep the
+        # same 1e-1 tolerance the pre-existing split-KV tests use for SAGE.
+        atol = 0.15 if "sage" in api_name else 0.02
+        assert err <= atol, f"{api_name}: max |LSE - reference| = {err:.3f}, atol={atol}"
+
+    @pytest.mark.parametrize("api_name", ["sagev1", "sageattn_v1_pvhalf", "sageattn_v1_pvi8"])
+    def test_lse_unsmoothed_with_smooth_k(self, api_name):
+        """smooth_k=True must still report the LSE of the original logits.
+
+        Smoothing subtracts mean(k) from K, so the kernel-side LSE misses
+        ``scale * q . mean(k)``.  An offset K makes that term large.
+        """
+        B, Hq, Sq, Skv, D = 1, 4, 32, 512, 128
+        scale = D**-0.5
+        # All 16 rows of each block identical -> isolates the smoothing term.
+        q = _distinct_rows(B, Hq, Sq, D)[:, :, ::16].repeat_interleave(16, dim=2)
+        torch.manual_seed(2)
+        k = (torch.randn(B, Hq, Skv, D, device="xpu").float() + 0.5).bfloat16()
+        v = torch.randn(B, Hq, Skv, D, device="xpu").bfloat16()
+
+        _, lse = LSE_APIS[api_name](q, k, v, scale)
+        ref = _ref_lse_log2(q, k, scale)
+
+        err = (lse.float() - ref).abs().max().item()
+        # Pre-fix error was ~3.7 for the smoothed path.
+        assert err <= 0.15, f"{api_name}: max |LSE - reference| = {err:.3f} with K offset"
