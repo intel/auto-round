@@ -340,6 +340,29 @@ class TestResolveModelDir:
 
 
 class TestBuildWeightMap:
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "model.safetensors",
+            "diffusion_pytorch_model.safetensors",
+            "pytorch_model.bin",
+            "diffusion_pytorch_model.bin",
+        ],
+    )
+    def test_single_checkpoint(self, tmp_path, filename):
+        from safetensors.torch import save_file
+
+        from auto_round.utils.offload import _build_weight_map
+
+        state_dict = {"blocks.0.weight": torch.ones(2, 2)}
+        checkpoint = tmp_path / filename
+        if filename.endswith(".safetensors"):
+            save_file(state_dict, str(checkpoint))
+        else:
+            torch.save(state_dict, checkpoint)
+
+        assert _build_weight_map(str(tmp_path)) == {"blocks.0.weight": filename}
+
     def test_custom_diffusers_safetensors_index(self, tmp_path):
         from auto_round.utils.offload import _build_weight_map
 

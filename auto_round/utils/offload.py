@@ -231,12 +231,16 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
             # before any caller joins one onto model_dir.
             return validate_weight_map(json.load(f)["weight_map"], model_dir, index_path=index_path)
 
-    single_path = os.path.join(model_dir, "model.safetensors")
-    if os.path.exists(single_path):
-        from safetensors import safe_open
+    # Diffusers components (UNet, VAE, transformer) use a different basename.
+    # Use explicit names rather than globbing: a directory can also contain
+    # precision variants or non-PyTorch artifacts such as openvino_model.bin.
+    for filename in ("model.safetensors", "diffusion_pytorch_model.safetensors"):
+        single_path = os.path.join(model_dir, filename)
+        if os.path.exists(single_path):
+            from safetensors import safe_open
 
-        with safe_open(single_path, framework="pt") as f:
-            return {k: "model.safetensors" for k in f.keys()}
+            with safe_open(single_path, framework="pt") as f:
+                return {k: filename for k in f.keys()}
 
     bin_index_path = os.path.join(model_dir, "pytorch_model.bin.index.json")
     if not os.path.exists(bin_index_path) and os.path.isdir(model_dir):
@@ -247,11 +251,12 @@ def _build_weight_map(model_dir: str) -> dict[str, str]:
         with open(bin_index_path) as f:
             return validate_weight_map(json.load(f)["weight_map"], model_dir, index_path=bin_index_path)
 
-    single_bin = os.path.join(model_dir, "pytorch_model.bin")
-    if os.path.exists(single_bin):
-        # No unrestricted fallback: this pickle comes from an untrusted artifact.
-        state_dict = torch.load(single_bin, map_location="cpu", weights_only=True)
-        return {k: "pytorch_model.bin" for k in state_dict.keys()}
+    for filename in ("pytorch_model.bin", "diffusion_pytorch_model.bin"):
+        single_bin = os.path.join(model_dir, filename)
+        if os.path.exists(single_bin):
+            # No unrestricted fallback: this pickle comes from an untrusted artifact.
+            state_dict = torch.load(single_bin, map_location="cpu", weights_only=True)
+            return {k: filename for k in state_dict.keys()}
 
     raise FileNotFoundError(
         f"Could not find model weight files in {model_dir}. "
