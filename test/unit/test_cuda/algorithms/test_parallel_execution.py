@@ -40,6 +40,21 @@ def test_two_rank_blockwise_tp_cpu_residency(tmp_path):
     not torch.cuda.is_available() or torch.cuda.device_count() < 2 or not dist.is_nccl_available(),
     reason="requires two CUDA devices and NCCL",
 )
+def test_two_rank_export_failure_safe_points_cuda(tmp_path):
+    from test.unit.test_cpu.algorithms.test_parallel_lora_safety import _export_failure_worker
+
+    mp.spawn(
+        _export_failure_worker,
+        args=((tmp_path / "export-rendezvous").as_uri(), "cuda"),
+        nprocs=2,
+        join=True,
+    )
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2 or not dist.is_nccl_available(),
+    reason="requires two CUDA devices and NCCL",
+)
 def test_local_tp_task_api_and_cli(tmp_path):
     from auto_round import ParallelConfig, SignRoundConfig, quantize_and_save
 
@@ -92,7 +107,8 @@ def test_local_tp_task_api_and_cli(tmp_path):
     output = result.stdout + result.stderr
     memory_lines = [line for line in output.splitlines() if "'peak_vram':" in line]
     assert memory_lines
-    assert all("'0':" in line and "'1':" in line for line in memory_lines), memory_lines
+    assert all("'cuda:0':" in line and "'cuda:1':" in line for line in memory_lines), memory_lines
+    assert all("rank0:cuda:" not in line and "rank1:cuda:" not in line for line in memory_lines), memory_lines
     assert "[TP rank" not in output
     assert "cuda in `device_map`" not in output
     assert list((tmp_path / "cli").rglob("model*.safetensors"))

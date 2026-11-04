@@ -41,15 +41,17 @@ def test_dp_splits_global_batch_without_an_extra_flag(monkeypatch):
 
 
 @pytest.mark.parametrize("rank", [0, 1])
-def test_tp_memory_is_merged_once_on_rank_zero(monkeypatch, rank):
+@pytest.mark.parametrize("shared_device", [False, True])
+def test_tp_memory_is_merged_once_on_rank_zero(monkeypatch, rank, shared_device):
     monkeypatch.setattr(device_manager, "_tensor_parallel", True)
     monkeypatch.setattr(memory_monitor, "peak_ram", 1.0)
-    local_peaks = {"0": 2.5 + rank}
+    index = 0 if shared_device else rank
+    local_peaks = {str(index): 2.5 + rank}
     monkeypatch.setattr(memory_monitor, "peak_vram", local_peaks.copy())
 
     def gather(reports, local):
-        assert local == {f"rank{rank}:cuda:0": local_peaks["0"]}
-        reports[:] = [{"rank0:cuda:0": 2.5}, {"rank1:cuda:0": 3.5}]
+        assert local == {f"cuda:{index}": local_peaks[str(index)]}
+        reports[:] = [{"cuda:0": 2.5}, {f"cuda:{0 if shared_device else 1}": 3.5}]
 
     output = StringIO()
     handler = logging.StreamHandler(output)
@@ -62,8 +64,8 @@ def test_tp_memory_is_merged_once_on_rank_zero(monkeypatch, rank):
             patch.object(dist, "get_world_size", return_value=2),
             patch.object(dist, "get_rank", return_value=rank),
             patch("torch.cuda.is_available", return_value=True),
-            patch("torch.cuda.current_device", return_value=0),
-            patch("torch.cuda.max_memory_reserved", return_value=local_peaks["0"] * 1024**3),
+            patch("torch.cuda.current_device", return_value=index),
+            patch("torch.cuda.max_memory_reserved", return_value=local_peaks[str(index)] * 1024**3),
             patch.object(memory_monitor, "update"),
             patch.object(dist, "all_gather_object", side_effect=gather) as collective,
         ):
@@ -74,7 +76,8 @@ def test_tp_memory_is_merged_once_on_rank_zero(monkeypatch, rank):
     collective.assert_called_once()
     assert memory_monitor.peak_vram == local_peaks, "merged peer statistics must not pollute local sampling"
     if rank == 0:
-        assert "'peak_vram': {'rank0:cuda:0': 2.5GB, 'rank1:cuda:0': 3.5GB}" in summary
+        expected = "{'cuda:0': 3.5GB}" if shared_device else "{'cuda:0': 2.5GB, 'cuda:1': 3.5GB}"
+        assert f"'peak_vram': {expected}" in summary
         assert len(output.getvalue().splitlines()) == 1
         assert "TP rank" not in output.getvalue()
     else:
@@ -140,7 +143,7 @@ def test_tp_memory_reporting_without_cuda_still_participates(monkeypatch):
 
     def gather(reports, local):
         assert local == {}
-        reports[:] = [{}, {"rank1:cuda:0": 3.5}]
+        reports[:] = [{}, {"cuda:0": 3.5}]
 
     with (
         patch.object(dist, "is_initialized", return_value=True),
@@ -154,7 +157,7 @@ def test_tp_memory_reporting_without_cuda_still_participates(monkeypatch):
         assert device_manager.log_memory_summary() == "summary"
     update.assert_called_once_with()
     collective.assert_called_once()
-    log.assert_called_once_with("", "info", peak_vram={"rank1:cuda:0": 3.5})
+    log.assert_called_once_with("", "info", peak_vram={"cuda:0": 3.5})
 
 
 def _memory_reporting_worker(rank, rendezvous):
@@ -174,7 +177,7 @@ def _memory_reporting_worker(rank, rendezvous):
                 summary = device_manager.log_memory_summary(phase)
                 assert memory_monitor.peak_vram == local_peaks
                 if rank == 0:
-                    assert "'peak_vram': {'rank0:cuda:0': 2.5GB, 'rank1:cuda:0': 3.5GB}" in summary
+                    assert "'peak_vram': {'cuda:0': 3.5GB}" in summary
                 else:
                     assert summary is None
             assert info.call_count == (2 if rank == 0 else 0)

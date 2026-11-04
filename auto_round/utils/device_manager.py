@@ -899,7 +899,7 @@ class DeviceManager:
         if torch.cuda.is_available():
             index = torch.cuda.current_device()
             memory_monitor.update(device_list=[f"cuda:{index}"])
-            report[f"rank{dist.get_rank()}:cuda:{index}"] = max(
+            report[f"cuda:{index}"] = max(
                 memory_monitor.peak_vram.get(str(index), 0.0),
                 torch.cuda.max_memory_reserved(index) / 1024**3,
             )

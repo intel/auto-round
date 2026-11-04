@@ -419,7 +419,7 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
                 f"alg_configs entries must be algorithm or QuantizationConfig instances, "
                 f"got {type(config).__name__}."
             )
-        configs.append(normalize_algorithm_config(config))
+        configs.append(config)
 
     awq_opt_rtn_policy = awq_disable_opt_rtn(configs)
     for index in pending_rtn_indices:
@@ -457,66 +457,65 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
         fallback_rtn_kwargs = rtn_inherited_opt_kwargs(config_kwargs, awq_disable_opt_rtn(configs))
         configs.append(normalize_algorithm_config(RTNConfig(**fallback_rtn_kwargs)))
 
-    # Normalize the legacy QAD selector before discovering stage-specific fields,
-    # independently of the insertion order of direct kwargs.
-    if config_kwargs.get("enable_qad"):
-        targets = [config for config in configs if "enable_qad" in _config_fields(config)]
-        if len(targets) == 1:
-            targets[0].enable_qad = True
-            configs = [normalize_algorithm_config(config) for config in configs]
-
-    _, block_configs = split_quantization_configs(configs)
-    for key, value in config_kwargs.items():
-        if value is None:
-            continue
-        if key in ("disable_opt_rtn", "enable_opt_rtn"):
-            if key == "enable_opt_rtn" and not value:
+    # Apply existing fields before deriving defaults for a different algorithm
+    # class. Only then resolve fields introduced by that conversion (e.g. QAD
+    # topk/qad_lora_rank), independently of direct-kwargs insertion order.
+    known_fields = set().union(*(_config_fields(config) for config in configs))
+    before_conversion = {key: value for key, value in config_kwargs.items() if key in known_fields}
+    after_conversion = {key: value for key, value in config_kwargs.items() if key not in known_fields}
+    for overrides in (before_conversion, after_conversion):
+        _, block_configs = split_quantization_configs(configs)
+        for key, value in overrides.items():
+            if value is None:
                 continue
-            opt_rtn_value = False if key == "enable_opt_rtn" else value
-            targets = [config for config in configs if "disable_opt_rtn" in _config_fields(config)]
+            if key in ("disable_opt_rtn", "enable_opt_rtn"):
+                if key == "enable_opt_rtn" and not value:
+                    continue
+                opt_rtn_value = False if key == "enable_opt_rtn" else value
+                targets = [config for config in configs if "disable_opt_rtn" in _config_fields(config)]
+                if not targets:
+                    logger.warning_once(
+                        "RTN-specific parameter '%s' was provided, but RTN/AWQ is not enabled by alg_configs. "
+                        "The parameter is ignored.",
+                        key,
+                    )
+                    continue
+                for target in targets:
+                    target.disable_opt_rtn = opt_rtn_value
+                    if hasattr(target, "orig_disable_opt_rtn"):
+                        target.orig_disable_opt_rtn = opt_rtn_value
+                continue
+            if key in _SCHEME_FIELDS:
+                targets = block_configs
+            else:
+                targets = [config for config in configs if key in _config_fields(config)]
             if not targets:
-                logger.warning_once(
-                    "RTN-specific parameter '%s' was provided, but RTN/AWQ is not enabled by alg_configs. "
+                # ``iters`` is a legacy route selector. RTN intentionally has no
+                # iterative parameter after the zero-iteration route is selected.
+                if key == "iters" and any(isinstance(config, RTNConfig) for config in configs):
+                    continue
+                if strict:
+                    raise TypeError(f"Unsupported parameter '{key}' for the selected algorithm with model_free=True.")
+                owners = _owning_algorithm_names(key)
+                owner = "/".join(owners) if owners else "the selected algorithm"
+                logger.error(
+                    "%s-specific parameter '%s' was provided, but %s is not enabled by alg_configs. "
                     "The parameter is ignored.",
+                    owner,
+                    key,
+                    owner,
+                )
+                continue
+            if len(targets) > 1:
+                logger.error(
+                    "Parameter '%s' matches multiple algorithm configs. Pass it through the matching "
+                    "config object in 'alg_configs'; the direct value is ignored.",
                     key,
                 )
                 continue
-            for target in targets:
-                target.disable_opt_rtn = opt_rtn_value
-                if hasattr(target, "orig_disable_opt_rtn"):
-                    target.orig_disable_opt_rtn = opt_rtn_value
-            continue
-        if key in _SCHEME_FIELDS:
-            targets = block_configs
-        else:
-            targets = [config for config in configs if key in _config_fields(config)]
-        if not targets:
-            # ``iters`` is a legacy route selector.  RTN intentionally has no
-            # iterative parameter, so ``iters=0`` must not be reported as an
-            # ignored algorithm-specific error after selecting RTN.
-            if key == "iters" and any(isinstance(config, RTNConfig) for config in configs):
-                continue
-            if strict:
-                raise TypeError(f"Unsupported parameter '{key}' for the selected algorithm with model_free=True.")
-            owners = _owning_algorithm_names(key)
-            owner = "/".join(owners) if owners else "the selected algorithm"
-            logger.error(
-                "%s-specific parameter '%s' was provided, but %s is not enabled by alg_configs. "
-                "The parameter is ignored.",
-                owner,
-                key,
-                owner,
-            )
-            continue
-        if len(targets) > 1:
-            logger.error(
-                "Parameter '%s' matches multiple algorithm configs. Pass it through the matching "
-                "config object in 'alg_configs'; the direct value is ignored.",
-                key,
-            )
-            continue
-        target = targets[0]
-        setattr(target, key, value)
+            target = targets[0]
+            setattr(target, key, value)
+        configs = [normalize_algorithm_config(config) for config in configs]
     sync_rtn_opt_rtn_from_awq(configs)
     if named_rtn_variants:
         # Applied last, on RTN configs only (AWQ keeps its own policy), so the
