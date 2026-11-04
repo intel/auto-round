@@ -34,8 +34,8 @@ def _patch_composer(composer, fp_inputs):
     composer.block_forward = mock_forward
     composer.block_quantizer.quantize_block = MagicMock()
     composer.block_quantizer.enable_quanted_input = False
-    composer._get_fp_act_hooks = MagicMock(return_value=[])
-    composer._get_q_act_hooks = MagicMock(return_value=[])
+    composer._get_fp_act_hooks = MagicMock(return_value=([], {"act_max": "max"}))
+    composer._get_q_act_hooks = MagicMock(return_value=([], {"act_max": "max"}))
     composer.preprocessors = []
     return mock_forward
 
@@ -127,8 +127,8 @@ def test_weight_changing_preprocessor_recomputes_seeded_reference():
     composer.block_forward = BlockForwardRunner(batch_size=1, amp=False, enable_torch_compile=False)
     composer.block_quantizer.quantize_block = MagicMock()
     composer.block_quantizer.enable_quanted_input = False
-    composer._get_fp_act_hooks = MagicMock(return_value=[])
-    composer._get_q_act_hooks = MagicMock(return_value=[])
+    composer._get_fp_act_hooks = MagicMock(return_value=([], None))
+    composer._get_q_act_hooks = MagicMock(return_value=([], None))
     composer.preprocessors = [_WeightChangingPreprocessor()]
 
     _, reference_next_input = composer.compress_block(
