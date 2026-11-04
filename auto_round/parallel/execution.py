@@ -116,15 +116,6 @@ class ParallelExecution:
     def is_tp(self):
         return self.config.tp_size > 1
 
-    def log_memory_summary(self, msg="", level="info"):
-        """Report memory at a successful boundary reached by every model-parallel rank."""
-        if self.is_tp:
-            from auto_round.parallel.tp.runtime import log_memory_summary
-
-            return log_memory_summary(msg, level)
-        from auto_round.utils.device import memory_monitor
-
-        return memory_monitor.log_summary(msg, level)
 
     @property
     def tensor_ops(self):

@@ -534,7 +534,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                 _perf.tick("clear")
                 clear_memory(device_list=device_manager.device_list)
                 _perf.tick("monitor")
-                self.parallel_execution.log_memory_summary()
+                device_manager.log_memory_summary()
                 _perf.tick("write")
 
                 input_ids = next_input_ids
@@ -667,8 +667,8 @@ class CompressionOrchestrator(BaseOrchestrator):
             result = self._quantize_zero_shot()
         else:
             result = self._quantize_data_driven()
-        if self.parallel_execution.is_tp:
-            self.parallel_execution.log_memory_summary()
+        if device_manager.is_tensor_parallel:
+            device_manager.log_memory_summary()
         return result
 
     @torch.no_grad()
@@ -793,7 +793,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                         self._offloader(self.model, block_name)
 
                 clear_memory()
-                self.parallel_execution.log_memory_summary()
+                device_manager.log_memory_summary()
                 pbar.update(1)
 
         remain_layer_names = []
@@ -913,7 +913,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
         self.model_context.model = mv_module_from_gpu(self.model_context.model)
         clear_memory(device_list=device_manager.device_list)
-        self.parallel_execution.log_memory_summary()
+        device_manager.log_memory_summary()
         logger.info("caching done")
         if self.compress_context.low_cpu_mem_usage:
             if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:

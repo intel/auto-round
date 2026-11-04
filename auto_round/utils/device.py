@@ -35,6 +35,7 @@ from auto_round.logger import logger
 from auto_round.utils.device_manager import (
     clear_memory,
     detect_device_count,
+    device_manager,
     get_ar_device,
     get_available_device_types,
     get_current_device_manager,
@@ -1596,11 +1597,6 @@ class MemoryMonitor:
         # devices registered for sampling BEYOND the caller's device_map list
         # (e.g. DDP replica devices the parallel lane engaged outside the map)
         self._extra_devices: set[str] = set()
-        self._tensor_parallel = False
-
-    def set_tensor_parallel(self, enabled: bool) -> None:
-        """Use explicit all-rank reporting boundaries for tensor parallelism."""
-        self._tensor_parallel = enabled
 
     @staticmethod
     def _process_tree_rss() -> float:
@@ -1734,7 +1730,7 @@ class MemoryMonitor:
         vram = self.peak_vram if peak_vram is None else peak_vram
         if len(vram) > 0:
             sorted_items = sorted(vram.items())
-            if len(vram) == 1 and not self._tensor_parallel:
+            if len(vram) == 1 and not device_manager.is_tensor_parallel:
                 key, value = sorted_items[0]
                 summary += f", 'peak_vram': {round(value, 2)}GB"
             else:
@@ -1746,9 +1742,9 @@ class MemoryMonitor:
         """Log memory usage summary."""
         summary = self.get_summary(peak_vram=peak_vram)
         # Ordinary logging sites can be rank-local or writer-only. They must not
-        # communicate or print an incomplete TP report. The execution service
+        # communicate or print an incomplete TP report. The device manager
         # supplies a merged dictionary at explicit, successful all-rank boundaries.
-        if self._tensor_parallel and peak_vram is None:
+        if device_manager.is_tensor_parallel and peak_vram is None:
             return summary
         logger_method = getattr(logger, level.lower(), logger.info)
         if len(msg):

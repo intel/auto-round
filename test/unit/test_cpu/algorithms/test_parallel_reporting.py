@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import logging
+from datetime import timedelta
 from io import StringIO
 from unittest.mock import patch
 
@@ -25,8 +26,8 @@ from auto_round.autoround import _prepare_entry_kwargs
 from auto_round.cli.main import _build_parallel_config
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.logger import RankZeroFilter, logger
-from auto_round.parallel.execution import ParallelExecution
 from auto_round.utils.device import memory_monitor, set_non_auto_device_map
+from auto_round.utils.device_manager import DeviceManager, device_manager
 
 
 def test_dp_splits_global_batch_without_an_extra_flag(monkeypatch):
@@ -41,7 +42,7 @@ def test_dp_splits_global_batch_without_an_extra_flag(monkeypatch):
 
 @pytest.mark.parametrize("rank", [0, 1])
 def test_tp_memory_is_merged_once_on_rank_zero(monkeypatch, rank):
-    monkeypatch.setattr(memory_monitor, "_tensor_parallel", True)
+    monkeypatch.setattr(device_manager, "_tensor_parallel", True)
     monkeypatch.setattr(memory_monitor, "peak_ram", 1.0)
     local_peaks = {str(rank): 2.5 + rank}
     monkeypatch.setattr(memory_monitor, "peak_vram", local_peaks.copy())
@@ -66,7 +67,7 @@ def test_tp_memory_is_merged_once_on_rank_zero(monkeypatch, rank):
             patch.object(memory_monitor, "update"),
             patch.object(dist, "all_gather_object", side_effect=gather) as collective,
         ):
-            summary = ParallelExecution({"tp_size": 2}).log_memory_summary()
+            summary = device_manager.log_memory_summary()
     finally:
         logger.removeHandler(handler)
         logger.setLevel(level)
@@ -91,13 +92,104 @@ def test_rank_one_cannot_bypass_routine_log_filter(monkeypatch):
 
 
 def test_arbitrary_tp_log_sites_do_not_communicate_or_print_partial_reports(monkeypatch):
-    monkeypatch.setattr(memory_monitor, "_tensor_parallel", True)
+    monkeypatch.setattr(device_manager, "_tensor_parallel", True)
     with (
         patch.object(dist, "all_gather_object", side_effect=AssertionError("not an all-rank boundary")),
         patch.object(logger, "info") as info,
     ):
         memory_monitor.log_summary()
     info.assert_not_called()
+
+
+def test_device_manager_tp_reporting_state_can_be_reset(monkeypatch):
+    monkeypatch.setattr(device_manager, "_tensor_parallel", False)
+    device_manager.set_tensor_parallel(True)
+    assert DeviceManager().is_tensor_parallel
+    device_manager.set_tensor_parallel(False)
+    assert not device_manager.is_tensor_parallel
+
+
+def test_non_tp_memory_reporting_does_not_consult_process_group(monkeypatch):
+    monkeypatch.setattr(device_manager, "_tensor_parallel", False)
+    with (
+        patch.object(dist, "is_initialized", side_effect=AssertionError("non-TP reporting is local")),
+        patch.object(dist, "all_gather_object", side_effect=AssertionError("not TP")),
+        patch.object(memory_monitor, "log_summary", return_value="summary") as log,
+    ):
+        assert device_manager.log_memory_summary("done", "warning") == "summary"
+    log.assert_called_once_with("done", "warning")
+
+
+@pytest.mark.parametrize("initialized", [False, True])
+def test_tp_memory_reporting_without_multiple_ranks_stays_local(monkeypatch, initialized):
+    monkeypatch.setattr(device_manager, "_tensor_parallel", True)
+    monkeypatch.setattr(memory_monitor, "peak_vram", {"0": 2.5})
+    with (
+        patch.object(dist, "is_initialized", return_value=initialized),
+        patch.object(dist, "get_world_size", return_value=1),
+        patch.object(dist, "all_gather_object", side_effect=AssertionError("no multi-rank group")),
+        patch.object(memory_monitor, "log_summary", return_value="summary") as log,
+    ):
+        assert device_manager.log_memory_summary("done", "warning") == "summary"
+    log.assert_called_once_with("done", "warning", peak_vram={"0": 2.5})
+    assert log.call_args.kwargs["peak_vram"] is not memory_monitor.peak_vram
+
+
+def test_tp_memory_reporting_without_cuda_still_participates(monkeypatch):
+    monkeypatch.setattr(device_manager, "_tensor_parallel", True)
+
+    def gather(reports, local):
+        assert local == {}
+        reports[:] = [{}, {"1": 3.5}]
+
+    with (
+        patch.object(dist, "is_initialized", return_value=True),
+        patch.object(dist, "get_world_size", return_value=2),
+        patch.object(dist, "get_rank", return_value=0),
+        patch("torch.cuda.is_available", return_value=False),
+        patch.object(memory_monitor, "update_cpu") as update,
+        patch.object(dist, "all_gather_object", side_effect=gather) as collective,
+        patch.object(memory_monitor, "log_summary", return_value="summary") as log,
+    ):
+        assert device_manager.log_memory_summary() == "summary"
+    update.assert_called_once_with()
+    collective.assert_called_once()
+    log.assert_called_once_with("", "info", peak_vram={"1": 3.5})
+
+
+def _memory_reporting_worker(rank, rendezvous):
+    dist.init_process_group(
+        "gloo", init_method=rendezvous, rank=rank, world_size=2, timeout=timedelta(seconds=30)
+    )
+    try:
+        device_manager.set_tensor_parallel(True)
+        local_peaks = {str(rank): 2.5 + rank}
+        memory_monitor.peak_vram = local_peaks.copy()
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.current_device", return_value=rank),
+            patch("torch.cuda.max_memory_reserved", return_value=local_peaks[str(rank)] * 1024**3),
+            patch.object(memory_monitor, "update"),
+            patch.object(logger, "info") as info,
+        ):
+            for phase in ("cache", "block"):
+                summary = device_manager.log_memory_summary(phase)
+                assert memory_monitor.peak_vram == local_peaks
+                if rank == 0:
+                    assert "'peak_vram': {'0': 2.5GB, '1': 3.5GB}" in summary
+                else:
+                    assert summary is None
+            assert info.call_count == (2 if rank == 0 else 0)
+    finally:
+        device_manager.set_tensor_parallel(False)
+        dist.destroy_process_group()
+
+
+@pytest.mark.skipif(not dist.is_available() or not dist.is_gloo_available(), reason="requires Gloo")
+def test_two_rank_memory_reporting(tmp_path):
+    torch.multiprocessing.spawn(
+        _memory_reporting_worker, args=((tmp_path / "rendezvous").as_uri(),), nprocs=2, join=True
+    )
 
 
 @pytest.mark.parametrize("device", ["cuda", "cuda:0", "cuda:1", "cpu", "xpu:0", "hpu:0", "cuda:0,cuda:1"])
@@ -122,7 +214,7 @@ def test_explicit_module_maps_still_apply_and_invalid_patterns_warn():
 
 
 def test_non_tp_summary_retains_single_device_format(monkeypatch):
-    monkeypatch.setattr(memory_monitor, "_tensor_parallel", False)
+    monkeypatch.setattr(device_manager, "_tensor_parallel", False)
     monkeypatch.setattr(memory_monitor, "peak_vram", {"0": 2.5})
     assert "'peak_vram': 2.5GB" in memory_monitor.get_summary()
 
