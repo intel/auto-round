@@ -104,7 +104,9 @@ class QADConfig(SignRoundConfig):
             default=None,
             help=(
                 "Directory where the offline teacher Top-K cache is written. "
-                "Defaults to <AR_WORK_SPACE>/qad_teacher_cache when unset."
+                "Defaults to <AR_WORK_SPACE>/qad_teacher_cache, where AR_WORK_SPACE is an environment variable "
+                "defaulting to the local directory 'ar_work_space'. Relative paths are resolved against "
+                "the current working directory."
             ),
         )
 

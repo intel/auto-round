@@ -97,7 +97,7 @@ class AutoRound:
 
             compressor = AutoRound("Qwen/Qwen3-0.6B", platform="model_scope")
 
-        Enable experimental QAD (teacher distillation) or QAT (hard labels)::
+        Enable **experimental** quantization-aware distillation (QAD) or training (QAT)::
 
             from auto_round.algorithms.quantization.qad.config import QADConfig
             from auto_round.algorithms.quantization.qat.config import QATConfig
@@ -105,7 +105,7 @@ class AutoRound:
             compressor = AutoRound("Qwen/Qwen3-0.6B", alg_configs=QADConfig(qad_iters=100))
             compressor = AutoRound("Qwen/Qwen3-0.6B", alg_configs=QATConfig(qad_iters=100))
 
-        Enable experimental DP in one process::
+        Enable **experimental** data parallelism (DP) in one process::
 
             from auto_round import ParallelConfig
 
@@ -114,7 +114,7 @@ class AutoRound:
                 parallel_config=ParallelConfig(data_parallel=2),
             )
 
-        Automatically launch experimental TP from a standalone script::
+        Automatically launch **experimental** tensor parallelism (TP) from a standalone script::
 
             from auto_round import ParallelConfig, quantize_and_save
 

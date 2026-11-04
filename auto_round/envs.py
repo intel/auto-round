@@ -22,8 +22,8 @@ if TYPE_CHECKING:
     AR_LOG_LEVEL: str = "INFO"
     AR_USE_MODELSCOPE: bool = "False"
     AR_MODEL_FREE_SHARD_PARALLELISM: int | None = None
-    AUTO_ROUND_CACHE: str | None = None
-    AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
+    AR_CACHE: str | None = None
+    AR_GGUF_AUTO_UPDATE: bool = False
     AR_DISABLE_GGUF_MTP_EXPORT: bool = False
     LLAMA_CPP_ROOT: str | None = None
     AR_AUTO_SCHEME_NSAMPLES: int | None = None
@@ -136,9 +136,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # not exceed dynamo's default limit (8) and fall back to eager.
     "AR_DYNAMO_CACHE_SIZE_LIMIT": lambda: int(os.getenv("AR_DYNAMO_CACHE_SIZE_LIMIT", "16")),
     "AR_MODEL_FREE_SHARD_PARALLELISM": lambda: _get_optional_positive_int_env("AR_MODEL_FREE_SHARD_PARALLELISM"),
-    "AUTO_ROUND_CACHE": lambda: os.getenv("AUTO_ROUND_CACHE", None),
-    "AUTO_ROUND_GGUF_AUTO_UPDATE": lambda: os.getenv("AUTO_ROUND_GGUF_AUTO_UPDATE", "0").lower()
-    in ("1", "true", "yes", "on"),
+    "AR_CACHE": lambda: os.getenv("AR_CACHE", None),
+    "AR_GGUF_AUTO_UPDATE": lambda: os.getenv("AR_GGUF_AUTO_UPDATE", "0").lower() in ("1", "true", "yes", "on"),
     "AR_DISABLE_GGUF_MTP_EXPORT": lambda: os.getenv("AR_DISABLE_GGUF_MTP_EXPORT", "0").lower()
     in ("1", "true", "yes", "on"),
     "LLAMA_CPP_ROOT": lambda: os.getenv("LLAMA_CPP_ROOT", None),

@@ -15,7 +15,9 @@
 """Offline regressions for QAD review findings and chained tuning state."""
 
 import copy
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -77,6 +79,30 @@ def _quantizer(tmp_path, **kwargs):
     )
     quantizer._get_scaler = lambda: None
     return quantizer
+
+
+@pytest.mark.parametrize("workspace_source", ["default", "environment", "explicit"])
+def test_teacher_cache_log_identifies_absolute_local_directory(tmp_path, monkeypatch, workspace_source):
+    monkeypatch.chdir(tmp_path)
+    workspace = "configured-workspace" if workspace_source == "environment" else "ar_work_space"
+    monkeypatch.delenv("AR_WORK_SPACE", raising=False)
+    if workspace_source == "environment":
+        monkeypatch.setenv("AR_WORK_SPACE", workspace)
+    quantizer = _quantizer(tmp_path)
+    quantizer.qad_workspace = "teacher files" if workspace_source == "explicit" else None
+    expected_root = tmp_path / ("teacher files" if workspace_source == "explicit" else workspace + "/qad_teacher_cache")
+    info = Mock()
+    monkeypatch.setattr("auto_round.algorithms.quantization.qad.quantizer.logger.info", info)
+    try:
+        quantizer._build_teacher_cache_from_model(_TinyLM(), [torch.tensor([[1, 2, 3]])], "cpu")
+        directory = Path(quantizer._teacher_cache.workspace).resolve()
+        assert directory.parent == expected_root
+        expected = f'QAD: cached teacher Top-3 for 1 samples in local cache directory: "{directory}"'
+        messages = [call.args[0] % call.args[1:] for call in info.call_args_list]
+        assert expected in messages
+    finally:
+        if quantizer._teacher_cache is not None:
+            quantizer._teacher_cache.shutdown()
 
 
 def _calibrator():

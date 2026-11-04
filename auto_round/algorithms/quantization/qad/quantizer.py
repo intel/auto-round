@@ -707,7 +707,12 @@ class QADQuantizer(SignRoundQuantizer):
             model.train(was_training)
         if n_built:
             target = "full vocabulary" if self.qad_top_k == -1 else f"Top-{self.qad_top_k}"
-            logger.info("QAD: cached teacher %s for %d samples at %s", target, n_built, cache.workspace)
+            logger.info(
+                'QAD: cached teacher %s for %d samples in local cache directory: "%s"',
+                target,
+                n_built,
+                os.path.abspath(cache.workspace),
+            )
         clear_memory()
 
     # ── whole-model tuning entry point ────────────────────────────────────────
