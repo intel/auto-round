@@ -741,9 +741,7 @@ def test_nvfp4_e5m3_gs_fused_alignment_respects_environment(tmp_path, monkeypatc
         enable_torch_compile=False,
         disable_opt_rtn=True,
     )
-    expected_scale = min(
-        calculate_gparam_e5m3(weight, group_size=16).item() for weight in (gate_weight, up_weight)
-    )
+    expected_scale = min(calculate_gparam_e5m3(weight, group_size=16).item() for weight in (gate_weight, up_weight))
     torch.testing.assert_close(aligned[f"{gate}.weight_global_scale"], torch.tensor([expected_scale]))
     torch.testing.assert_close(aligned[f"{up}.weight_global_scale"], torch.tensor([expected_scale]))
 
@@ -756,9 +754,7 @@ def test_nvfp4_e5m3_gs_fused_alignment_respects_environment(tmp_path, monkeypatc
         enable_torch_compile=False,
         disable_opt_rtn=True,
     )
-    assert not torch.equal(
-        unaligned[f"{gate}.weight_global_scale"], unaligned[f"{up}.weight_global_scale"]
-    )
+    assert not torch.equal(unaligned[f"{gate}.weight_global_scale"], unaligned[f"{up}.weight_global_scale"])
 
 
 def test_nvfp4_e5m3_gs_aligns_cross_shard_fused_weights(tmp_path, monkeypatch):

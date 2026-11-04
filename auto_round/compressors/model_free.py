@@ -135,10 +135,10 @@ from auto_round.utils.model_free_utils import (
     _build_cross_shard_pairs_from_weight_map,
     _build_quantization_config,
     _convert_auto_scheme_layer_config,
-    _download_metadata_files,
-    _download_single_shard,
     _dequant_fp8_tensors,
     _dequant_mxfp_tensors,
+    _download_metadata_files,
+    _download_single_shard,
     _fused_nvfp4_projection_groups,
     _get_model_cache_status,
     _is_full_precision_default,
@@ -151,7 +151,6 @@ from auto_round.utils.model_free_utils import (
     _load_weight_map_from_index,
     _looks_like_auto_scheme,
     _normalize_scheme,
-    _fused_nvfp4_projection_groups,
     _PatternMatcher,
     _process_shard,
     _resolve_source_dir,
@@ -1001,11 +1000,7 @@ class _ModelFreeCompressorCore:
 
         matcher = _PatternMatcher(self.ignore_patterns, self.layer_config, self.default_scheme)
         groups = _fused_nvfp4_projection_groups(self.source_weight_map, matcher)
-        groups = [
-            group
-            for group in groups
-            if len({self.source_weight_map[f"{layer}.weight"] for layer in group}) > 1
-        ]
+        groups = [group for group in groups if len({self.source_weight_map[f"{layer}.weight"] for layer in group}) > 1]
         if not groups:
             return
 
@@ -1076,7 +1071,9 @@ class _ModelFreeCompressorCore:
                         else:
                             donor_path = os.path.join(self.source_dir, donor_name)
                         if donor_path is None or not os.path.isfile(donor_path):
-                            raise RuntimeError(f"Cannot pre-scan fused NVFP4 weights: donor shard '{donor_name}' missing.")
+                            raise RuntimeError(
+                                f"Cannot pre-scan fused NVFP4 weights: donor shard '{donor_name}' missing."
+                            )
                         fetched_donors[donor_name] = donor_path
                     with safe_open(donor_path, framework="pt", device="cpu") as donor:
                         if scale_name not in donor.keys():
