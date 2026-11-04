@@ -22,8 +22,6 @@ cached to disk; the student reads those compact tensors during tuning.
 
 from __future__ import annotations
 
-import math
-
 from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.registry import register_algorithm
@@ -114,11 +112,11 @@ class QADConfig(SignRoundConfig):
         registry.add_argument(
             "--qad_lora_rank",
             field="qad_lora_rank",
-            default=0,
+            default=None,
             type=int,
             help=(
                 "Replace dense rounding parameters with low-rank B @ A tuning. "
-                "0 disables LoRA (default). Under TP, rank is per local weight shard; "
+                "0 disables LoRA; when omitted, inherit --lora_rank (default 0). Under TP, rank is per local weight shard; "
                 "only rounding is changed, not the FP weights or inference forward."
             ),
         )
@@ -203,7 +201,7 @@ class QADConfig(SignRoundConfig):
         topk: int = 32,
         qad_optimizer: str | None = None,
         qad_workspace: str | None = None,
-        qad_lora_rank: int = 0,
+        qad_lora_rank: int | None = None,
         qad_lora_alpha: float | None = None,
         qad_enable_round_tuning: bool = True,
         gradient_checkpointing: bool = True,
@@ -250,16 +248,10 @@ class QADConfig(SignRoundConfig):
             raise ValueError(f"`qad_optimizer` must be 'signround' or 'adamw', got {optimizer!r}")
         self.qad_optimizer = optimizer
         kwargs["optimizer"] = optimizer
-        if isinstance(qad_lora_rank, bool) or not isinstance(qad_lora_rank, int) or qad_lora_rank < 0:
-            raise ValueError("`qad_lora_rank` must be a non-negative integer")
-        if qad_lora_alpha is not None and (not math.isfinite(qad_lora_alpha) or qad_lora_alpha <= 0):
-            raise ValueError("`qad_lora_alpha` must be finite and positive")
         self.qad_lora_rank = qad_lora_rank
         self.qad_lora_alpha = qad_lora_alpha
         super().__init__(**kwargs)
-        # Shared LoRA settings also apply to QAD; stage-specific settings win.
-        self.qad_lora_rank = qad_lora_rank or self.lora_rank
-        self.qad_lora_alpha = qad_lora_alpha if qad_lora_alpha is not None else self.lora_alpha
+        self.validate_lora_config()
         self.qad_enable_round_tuning = bool(qad_enable_round_tuning)
         # Force QAD semantics regardless of CLI arg defaults.
         self.enable_qad = True
@@ -302,6 +294,23 @@ class QADConfig(SignRoundConfig):
                 "the `QAD` algorithm is experimental: the full-precision teacher Top-K is cached to disk "
                 "and all text-decoder blocks are tuned jointly against it."
             )
+
+    @property
+    def qad_lora_rank(self):
+        """Only an omitted stage-specific rank inherits the shared setting."""
+        return self.lora_rank if self._qad_lora_rank is None else self._qad_lora_rank
+
+    @qad_lora_rank.setter
+    def qad_lora_rank(self, value):
+        self._qad_lora_rank = value
+
+    @property
+    def qad_lora_alpha(self):
+        return self.lora_alpha if self._qad_lora_alpha is None else self._qad_lora_alpha
+
+    @qad_lora_alpha.setter
+    def qad_lora_alpha(self, value):
+        self._qad_lora_alpha = value
 
 
 register_algorithm(

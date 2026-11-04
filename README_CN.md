@@ -32,7 +32,6 @@
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
-[并行指南：DP、TP 与 PP —— CLI 和 Python API](./docs/parallelism_CN.md)
 
 ---
 <div align="left">

@@ -149,20 +149,25 @@ class ParallelConfig:
             return device_map
         if device_map not in (None, 0, "0"):
             raise ValueError("parallel_config cannot be combined with an explicit device_map.")
+        world_size = dist.get_world_size() if dist.is_initialized() else int(os.environ.get("WORLD_SIZE", "1"))
         if self.tp_size > 1:
-            world_size = dist.get_world_size() if dist.is_initialized() else int(os.environ.get("WORLD_SIZE", "1"))
             if world_size != self.tp_size:
                 raise ValueError(
                     f"TP requires WORLD_SIZE={self.tp_size}, got {world_size}. "
                     "Use auto_round.quantize_and_save for automatic local launch, or launch AutoRound with torchrun."
                 )
             if torch.cuda.is_available():
-                local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+                local_rank = (
+                    int(os.environ["LOCAL_RANK"]) if "LOCAL_RANK" in os.environ else torch.cuda.current_device()
+                )
                 if not 0 <= local_rank < torch.cuda.device_count():
                     raise ValueError("LOCAL_RANK exceeds the number of visible CUDA devices.")
-                torch.cuda.set_device(local_rank)
+                if "LOCAL_RANK" in os.environ:
+                    torch.cuda.set_device(local_rank)
                 return f"cuda:{local_rank}"
             return "cpu"
+        if world_size > 1 or int(os.environ.get("WORLD_SIZE", "1")) > 1:
+            raise NotImplementedError("Pipeline parallelism is single-process; do not launch it with torchrun.")
         from auto_round.parallel.pp.placement import resolve_device_map
 
         return resolve_device_map(self.pp_size)

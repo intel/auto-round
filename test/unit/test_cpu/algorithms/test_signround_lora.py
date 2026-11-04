@@ -317,4 +317,6 @@ def test_outside_block_optimizer_uses_both_factors(tiny_model_and_tokenizer, mon
     assert sorted(tuple(parameter.shape) for parameter in factors) == [(2, 32), (32, 2)]
     assert len({id(parameter) for parameter in optimized}) == len(optimized)
     assert factors[1].abs().sum() > 0
-    assert torch.isfinite(compressor.model.lm_head(torch.randn(1, 32))).all()
+    lm_head = compressor.model.lm_head
+    inputs = torch.randn(1, lm_head.in_features, dtype=lm_head.weight.dtype, device=lm_head.weight.device)
+    assert torch.isfinite(lm_head(inputs)).all()

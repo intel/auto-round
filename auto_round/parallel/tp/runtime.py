@@ -40,8 +40,27 @@ def replicated_tensor(value):
 
 
 @contextmanager
+def _export_step():
+    """Agree on local work before any rank enters the next export collective.
+
+    Only local operations belong here, never a tensor collective. Transport
+    failures propagate directly without attempting a different collective.
+    """
+    failure = None
+    try:
+        yield
+    except Exception as exc:
+        failure = f"{type(exc).__name__}: {exc}"
+    failures = [None] * dist.get_world_size()
+    dist.all_gather_object(failures, failure)
+    for rank, error in enumerate(failures):
+        if error is not None:
+            raise RuntimeError(f"TP checkpoint gathering failed on rank {rank}: {error}")
+
+
+@contextmanager
 def synchronized_export():
-    """Share writer completion/failure after collective checkpoint gathering."""
+    """Share writer-only completion/failure, strictly after checkpoint gathering."""
     failure = None
     try:
         yield
@@ -109,22 +128,28 @@ def _gather_cpu_tensor(value, chunk_bytes=4 * 1024 * 1024):
     from torch.distributed.tensor import Replicate, Shard
 
     writer = dist.get_rank() == 0
-    if not is_dtensor(value):
-        return value.detach().cpu() if writer else None
-    if value.device_mesh.ndim != 1 or len(value.placements) != 1:
-        raise NotImplementedError("CPU export requires a one-dimensional TP mesh.")
-    placement = value.placements[0]
-    local = value.to_local().detach().cpu().contiguous()
+    distributed = is_dtensor(value)
+    with _export_step():
+        if not distributed:
+            local = value.detach().cpu() if writer else None
+        else:
+            if value.device_mesh.ndim != 1 or len(value.placements) != 1:
+                raise NotImplementedError("CPU export requires a one-dimensional TP mesh.")
+            placement = value.placements[0]
+            if not isinstance(placement, (Replicate, Shard)):
+                raise NotImplementedError("CPU export supports only replicated or sharded tensors.")
+            local = value.to_local().detach().cpu().contiguous()
+    if not distributed:
+        return local
     if isinstance(placement, Replicate):
         return local if writer else None
-    if not isinstance(placement, Shard):
-        raise NotImplementedError("CPU export supports only replicated or sharded tensors.")
     group = value.device_mesh.get_group()
     size = dist.get_world_size(group)
     rank = dist.get_rank(group)
     axis = placement.dim % value.ndim
     width = (value.shape[axis] + size - 1) // size
-    output = torch.empty(value.shape, dtype=value.dtype, device="cpu") if writer else None
+    with _export_step():
+        output = torch.empty(value.shape, dtype=value.dtype, device="cpu") if writer else None
     # Gloo stages on CPU; NCCL stages at most chunk_bytes on the local GPU.
     device = (
         torch.device("cuda", torch.cuda.current_device()) if dist.get_backend(group) == "nccl" else torch.device("cpu")
@@ -133,20 +158,24 @@ def _gather_cpu_tensor(value, chunk_bytes=4 * 1024 * 1024):
         shape = list(value.shape)
         start = min(source * width, value.shape[axis])
         shape[axis] = min(width, value.shape[axis] - start)
-        shard = local if source == rank else (torch.empty(shape, dtype=value.dtype) if writer else None)
+        with _export_step():
+            shard = local if source == rank else (torch.empty(shape, dtype=value.dtype) if writer else None)
         byte_count = value.element_size()
         for dimension in shape:
             byte_count *= dimension
         for offset in range(0, byte_count, chunk_bytes):
             count = min(chunk_bytes, byte_count - offset)
-            staging = torch.empty(count, dtype=torch.uint8, device=device)
-            if source == rank:
-                staging.copy_(local.reshape(-1).view(torch.uint8)[offset : offset + count])
+            with _export_step():
+                staging = torch.empty(count, dtype=torch.uint8, device=device)
+                if source == rank:
+                    staging.copy_(local.reshape(-1).view(torch.uint8)[offset : offset + count])
             dist.broadcast(staging, src=dist.get_global_rank(group, source), group=group)
+            with _export_step():
+                if writer:
+                    shard.reshape(-1).view(torch.uint8)[offset : offset + count].copy_(staging.cpu())
+        with _export_step():
             if writer:
-                shard.reshape(-1).view(torch.uint8)[offset : offset + count].copy_(staging.cpu())
-        if writer:
-            output.narrow(axis, start, shape[axis]).copy_(shard)
+                output.narrow(axis, start, shape[axis]).copy_(shard)
     return output
 
 
@@ -162,7 +191,13 @@ def gather_for_export(model):
     from auto_round.wrapper import WrapperWALayer
 
     writer = dist.get_rank() == 0
-    activation_wrappers = {name for name, module in model.named_modules() if isinstance(module, WrapperWALayer)}
+    with _export_step():
+        activation_wrappers = {name for name, module in model.named_modules() if isinstance(module, WrapperWALayer)}
+        moe_names = [name for name, module in model.named_modules() if getattr(module, "_auto_round_tp_moe", False)]
+        aliases = {f"{name}.{key}" for name in moe_names for key in ("gate_up_proj", "down_proj")}
+        state_items = list(model.state_dict().items())
+        buffer_items = list(model.named_buffers())
+        modules = list(model.named_modules())
 
     def export_name(name):
         for wrapper_name in sorted(activation_wrappers, key=len, reverse=True):
@@ -176,21 +211,21 @@ def gather_for_export(model):
             value = _gather_cpu_tensor(value)
         return value
 
-    moe_names = [name for name, module in model.named_modules() if getattr(module, "_auto_round_tp_moe", False)]
-    aliases = {f"{name}.{key}" for name in moe_names for key in ("gate_up_proj", "down_proj")}
     state = {}
-    for name, value in model.state_dict().items():
+    for name, value in state_items:
         name = export_name(name)
         if name in aliases:
             continue
         full = gather(value)
-        if writer:
-            state[name] = full
+        with _export_step():
+            if writer:
+                state[name] = full
     buffers = {}
-    for name, value in model.named_buffers():
+    for name, value in buffer_items:
         full = gather(value)
-        if writer:
-            buffers[export_name(name)] = full
+        with _export_step():
+            if writer:
+                buffers[export_name(name)] = full
     metadata = {}
     names = (
         "bits",
@@ -214,44 +249,50 @@ def gather_for_export(model):
         "input_global_scale",
         "act_quant_func",
     )
-    for name, module in model.named_modules():
+    for name, module in modules:
         attributes = {}
         for key in names:
             if hasattr(module, key):
                 full = gather(getattr(module, key))
-                if isinstance(full, TensorParallelActivationQuantizer):
-                    full = full.quant_func
-                if writer:
-                    attributes[key] = full
-        if writer and attributes:
-            metadata.setdefault(export_name(name), {}).update(attributes)
-    if not writer:
-        return None
-    export_config = copy.deepcopy(model.config)
-    # A full checkpoint is deliberately not a distributed training checkpoint.
-    # Retaining this policy makes native save_pretrained enter TP barriers even
-    # though its tensors have already been gathered and only rank zero writes.
-    export_config.distributed_config = None
-    with torch.device("meta"):
-        exported = type(model)(export_config)
-        if moe_names:
-            from auto_round.modeling.fused_moe.moe_experts_interface import prepare_model_for_moe_quantization
+                with _export_step():
+                    if isinstance(full, TensorParallelActivationQuantizer):
+                        full = full.quant_func
+                    if writer:
+                        attributes[key] = full
+        with _export_step():
+            if writer and attributes:
+                metadata.setdefault(export_name(name), {}).update(attributes)
 
-            prepare_model_for_moe_quantization(exported, implementation="linear_loop")
-    exported.load_state_dict(state, strict=True, assign=True)
-    exported.tie_weights()
-    for name, value in buffers.items():
-        parent, _, key = name.rpartition(".")
-        exported.get_submodule(parent)._buffers[key] = value
-    for name, attributes in metadata.items():
-        module = exported.get_submodule(name)
-        for key, value in attributes.items():
-            setattr(module, key, value)
-    for name in sorted(activation_wrappers):
-        parent, _, key = name.rpartition(".")
-        exported.get_submodule(parent).add_module(
-            key, WrapperWALayer(exported.get_submodule(name), enable_torch_compile=False, device="cpu")
-        )
-    if hasattr(model, "generation_config"):
-        exported.generation_config = copy.deepcopy(model.generation_config)
-    return exported.eval()
+    def build_exported():
+        export_config = copy.deepcopy(model.config)
+        # A full checkpoint is deliberately not a distributed training checkpoint.
+        # Retaining this policy makes native save_pretrained enter TP barriers even
+        # though its tensors have already been gathered and only rank zero writes.
+        export_config.distributed_config = None
+        with torch.device("meta"):
+            exported = type(model)(export_config)
+            if moe_names:
+                from auto_round.modeling.fused_moe.moe_experts_interface import prepare_model_for_moe_quantization
+
+                prepare_model_for_moe_quantization(exported, implementation="linear_loop")
+        exported.load_state_dict(state, strict=True, assign=True)
+        exported.tie_weights()
+        for name, value in buffers.items():
+            parent, _, key = name.rpartition(".")
+            exported.get_submodule(parent)._buffers[key] = value
+        for name, attributes in metadata.items():
+            module = exported.get_submodule(name)
+            for key, value in attributes.items():
+                setattr(module, key, value)
+        for name in sorted(activation_wrappers):
+            parent, _, key = name.rpartition(".")
+            exported.get_submodule(parent).add_module(
+                key, WrapperWALayer(exported.get_submodule(name), enable_torch_compile=False, device="cpu")
+            )
+        if hasattr(model, "generation_config"):
+            exported.generation_config = copy.deepcopy(model.generation_config)
+        return exported.eval()
+
+    with _export_step():
+        result = build_exported() if writer else None
+    return result

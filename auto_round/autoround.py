@@ -457,6 +457,14 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
         fallback_rtn_kwargs = rtn_inherited_opt_kwargs(config_kwargs, awq_disable_opt_rtn(configs))
         configs.append(normalize_algorithm_config(RTNConfig(**fallback_rtn_kwargs)))
 
+    # Normalize the legacy QAD selector before discovering stage-specific fields,
+    # independently of the insertion order of direct kwargs.
+    if config_kwargs.get("enable_qad"):
+        targets = [config for config in configs if "enable_qad" in _config_fields(config)]
+        if len(targets) == 1:
+            targets[0].enable_qad = True
+            configs = [normalize_algorithm_config(config) for config in configs]
+
     _, block_configs = split_quantization_configs(configs)
     for key, value in config_kwargs.items():
         if value is None:
@@ -522,7 +530,11 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
                 config.disable_opt_rtn = forced_disable_opt_rtn
                 if hasattr(config, "orig_disable_opt_rtn"):
                     config.orig_disable_opt_rtn = forced_disable_opt_rtn
-    return [normalize_algorithm_config(config) for config in configs]
+    configs = [normalize_algorithm_config(config) for config in configs]
+    for config in configs:
+        if isinstance(config, SignRoundConfig):
+            config.validate_lora_config()
+    return configs
 
 
 def _prepare_entry_kwargs(alg_configs, direct_kwargs, *, strict=False):
@@ -606,6 +618,11 @@ class _CompressorBuilder:
         if parallel_config.data_parallel != "off":
             if route_kwargs.get("model_free", False):
                 raise ValueError("data_parallel cannot be combined with model_free=True.")
+            route_kwargs["disable_model_free"] = True
+
+        if parallel_config.pp_size > 1:
+            if route_kwargs.get("model_free", False):
+                raise ValueError("Pipeline parallelism cannot be combined with model_free=True.")
             route_kwargs["disable_model_free"] = True
 
         # Resolve string alias(es) to config instance(s) before routing.

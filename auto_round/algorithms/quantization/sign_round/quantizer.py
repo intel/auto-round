@@ -789,6 +789,14 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             )
             return
 
+        from auto_round.parallel.tp.runtime import is_dtensor
+
+        if is_dtensor(layer.weight):
+            raise NotImplementedError(
+                "Calibrated outside-block tuning does not support DTensor weights yet; "
+                "keep this layer unquantized or use RTN without calibration inputs."
+            )
+
         # Derive valid_token_mask from raw token IDs when not supplied by caller.
         # Reuse the cached mask if already computed by a previous block.
         valid_token_mask = None

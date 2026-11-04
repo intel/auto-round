@@ -1976,8 +1976,8 @@ class BaseOrchestrator:
             if not self.model_context.quantized:
                 raise RuntimeError("Quantize the TP model before exporting it.")
             original = self.model_context.model
+            exported = gather_for_export(original)
             with synchronized_export():
-                exported = gather_for_export(original)
                 if exported is None:
                     return (original, []) if return_folders else original
                 self.model_context.model = exported

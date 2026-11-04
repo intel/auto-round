@@ -326,10 +326,7 @@ class SignRoundConfig(QuantizationConfig):
                 data_type, and activation quantization fields.
         """
         super().__init__(**kwargs)
-        if isinstance(lora_rank, bool) or not isinstance(lora_rank, int) or lora_rank < 0:
-            raise ValueError("`lora_rank` must be a non-negative integer")
-        if lora_alpha is not None and (not math.isfinite(lora_alpha) or lora_alpha <= 0):
-            raise ValueError("`lora_alpha` must be finite and positive")
+        self._validate_lora_settings(lora_rank, lora_alpha)
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
         self.enable_neuqi = enable_neuqi
@@ -391,6 +388,24 @@ class SignRoundConfig(QuantizationConfig):
                 "the `enable_qad` (quantization-aware distillation) mode is experimental: all "
                 "text-decoder blocks are tuned jointly with a whole-model forward."
             )
+
+    @staticmethod
+    def _validate_lora_settings(rank, alpha, prefix="lora") -> None:
+        if isinstance(rank, bool) or not isinstance(rank, int) or rank < 0:
+            raise ValueError(f"`{prefix}_rank` must be a non-negative integer")
+        if alpha is not None:
+            try:
+                valid_alpha = not isinstance(alpha, bool) and math.isfinite(alpha) and alpha > 0
+            except (TypeError, ValueError, OverflowError):
+                valid_alpha = False
+            if not valid_alpha:
+                raise ValueError(f"`{prefix}_alpha` must be finite and positive")
+
+    def validate_lora_config(self) -> None:
+        """Validate effective settings, including overrides applied after construction."""
+        self._validate_lora_settings(self.lora_rank, self.lora_alpha)
+        if hasattr(self, "qad_lora_rank"):
+            self._validate_lora_settings(self.qad_lora_rank, self.qad_lora_alpha, "qad_lora")
 
     def _lr_for_bits(self, bits: int | None) -> float | None:
         """Return the auto lr heuristic for a given bit-width.
