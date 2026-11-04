@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import numpy as np
 import pytest
 import torch
 
@@ -19,9 +20,10 @@ from auto_round.data_type.nvfp import nvfp4_v2_with_global_scale
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_cpu_tensor_max_with_cuda_input():
+@pytest.mark.parametrize("to_value", [list, np.array, torch.tensor], ids=["list", "numpy", "tensor"])
+def test_cpu_tensor_max_with_cuda_input(to_value):
     tensor = torch.ones(1, 16, device="cuda")
     q_float, scale_float, _ = nvfp4_v2_with_global_scale(tensor, tensor_max=2.0)
-    q_cpu, scale_cpu, _ = nvfp4_v2_with_global_scale(tensor, tensor_max=torch.tensor([2.0]))
+    q_cpu, scale_cpu, _ = nvfp4_v2_with_global_scale(tensor, tensor_max=to_value([1.0, 2.0]))
     torch.testing.assert_close(q_cpu, q_float)
     torch.testing.assert_close(scale_cpu, scale_float)

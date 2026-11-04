@@ -15,6 +15,7 @@
 
 import math
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -692,13 +693,14 @@ class TestFp4V2WithGlobalScale:
         assert q.shape == t.shape
 
     @pytest.mark.parametrize("group_size", [16, 32])
-    def test_tensor_max_vector_matches_its_scalar_maximum(self, group_size):
+    @pytest.mark.parametrize("to_value", [list, np.array, torch.tensor], ids=["list", "numpy", "tensor"])
+    def test_tensor_max_vector_matches_its_scalar_maximum(self, group_size, to_value):
         tensor = torch.ones(1, group_size)
         q_scalar, scale_scalar, _ = nvfp4_v2_with_global_scale(
             tensor, group_size=group_size, tensor_max=torch.tensor(2.0)
         )
         q_vector, scale_vector, _ = nvfp4_v2_with_global_scale(
-            tensor, group_size=group_size, tensor_max=torch.tensor([1.0, 2.0])
+            tensor, group_size=group_size, tensor_max=to_value([1.0, 2.0])
         )
         torch.testing.assert_close(q_vector, q_scalar)
         torch.testing.assert_close(scale_vector, scale_scalar)

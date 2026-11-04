@@ -217,8 +217,8 @@ def nvfp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=No
             tensor_max = torch.tensor(tensor_max, device=tensor.device, dtype=torch.float32)
         else:
             tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
-            if tensor_max.numel() != 1:
-                tensor_max = tensor_max.abs().max()
+        if tensor_max.numel() != 1:
+            tensor_max = tensor_max.abs().max()
     global_scale = FLOAT8_UE5M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
     qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
