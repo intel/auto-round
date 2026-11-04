@@ -97,6 +97,7 @@ class RankGroup:
         self._next_turn = 0 if serial_first_phase else self.world
         self._released = [False] * self.world
         self._broken = False
+        self._lora_state = None
         # one shuffle seed per rank, drawn in rank order from the run's RNG
         self.seeds = [random.getrandbits(63) for _ in range(self.world)]
 
@@ -203,6 +204,33 @@ class RankContext:
 
     def sync_gradients(self, module: torch.nn.Module) -> None:
         self.group.all_reduce_grads(self.rank, module)
+
+    def synchronize_lora(self, module: torch.nn.Module) -> None:
+        """Publish rank-zero factors/scaling without advancing the compile turnstile.
+
+        Rank zero never waits for peers: cold peers cannot start until its first
+        forward/backward finishes. Warm peers wait only for the published state.
+        """
+        wrappers = {name: m for name, m in module.named_modules() if hasattr(m, "lora_A")}
+        if not wrappers:
+            return
+        with self.group._turn:
+            if self.rank == 0:
+                self.group._lora_state = {
+                    name: (m.lora_A.detach().cpu().clone(), m.lora_B.detach().cpu().clone(), m.lora_scaling)
+                    for name, m in wrappers.items()
+                }
+                self.group._turn.notify_all()
+            else:
+                self.group._turn.wait_for(lambda: self.group._broken or self.group._lora_state is not None)
+                if self.group._broken:
+                    raise RankAborted("rank group aborted before LoRA initialization")
+                with torch.no_grad():
+                    for name, m in wrappers.items():
+                        a, b, scaling = self.group._lora_state[name]
+                        m.lora_A.copy_(a)
+                        m.lora_B.copy_(b)
+                        m.lora_scaling = m.qad_lora_scaling = scaling
 
     def all_reduce_mean(self, value: float) -> float:
         return self.group.all_reduce_mean(self.rank, value)

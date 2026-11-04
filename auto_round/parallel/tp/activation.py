@@ -140,8 +140,8 @@ class TensorParallelActivationQuantizer:
             **kwargs: Quantization options, including group size, data type, and scales.
 
         Returns:
-            A tuple of quantized activations, scale, and zero point. Empty shards return
-            the input and two None values; DTensor inputs retain their original layout.
+            A tuple of quantized activations, scale, and zero point. Empty shards retain
+            backward dependencies and return two None values; DTensors retain their layout.
 
         Raises:
             NotImplementedError: The activation mesh differs or its layout is partial.
@@ -180,8 +180,14 @@ class TensorParallelActivationQuantizer:
                 local.device
             )
         if local.numel() == 0:
-            return x, None, None
-        quantized, scale, zp = self.quant_func(local, **kwargs)
+            # Traverse the same QDQ graph as nonempty peers, but contribute zero
+            # gradients. Returning x directly drops scale/amax backward reductions.
+            width = local.shape[-1] or max(1, kwargs["group_size"])
+            probe = local.new_zeros((1, width)) + local.sum() * 0
+            probe, _, _ = self.quant_func(probe, **kwargs)
+            quantized, scale, zp = local + probe.sum() * 0, None, None
+        else:
+            quantized, scale, zp = self.quant_func(local, **kwargs)
         if isinstance(x, DTensor):
             quantized = DTensor.from_local(
                 quantized, self.mesh, x.placements, run_check=False, shape=x.shape, stride=x.stride()

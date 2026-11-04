@@ -459,6 +459,12 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
 
         self._configure_lora_scaling(block, optimizer)
 
+        from auto_round.parallel.dp.spmd import current_rank
+
+        rank = current_rank()
+        if rank is not None:
+            rank.synchronize_lora(block)
+
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1

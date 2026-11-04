@@ -92,10 +92,12 @@ def _validate_experts(module: nn.Module) -> None:
 def prepare_tp_moe(model: nn.Module) -> list[str]:
     """Expose local expert projections for QDQ; keep every native TP forward.
 
-    Native fused parameters are retained as zero-copy aliases. Transformers
+    Native fused parameters are replaced with empty sharded markers. Transformers
     checks for sharded parameters after forward to decide whether to reduce the
     output; QDQ wrappers hide their originals from registered parameter walks.
-    These aliases preserve that check and are omitted from CPU export.
+    These markers preserve that check and are omitted from CPU export. Keeping
+    full aliases would duplicate expert storage when Module.to() moves each
+    parent and child parameter independently.
 
     Args:
         model: Native TP model to adapt in place after validating all candidate experts.
@@ -170,6 +172,16 @@ def prepare_tp_moe(model: nn.Module) -> list[str]:
                 linear._auto_round_tp_local_forward = True
                 expert.add_module(key, linear)
             module.add_module(str(index), expert)
+        for key in ("gate_up_proj", "down_proj"):
+            module.register_parameter(
+                key,
+                nn.Parameter(
+                    DTensor.from_local(
+                        gate_up.to_local().new_empty(0), gate_up.device_mesh, [Shard(0)], run_check=False
+                    ),
+                    requires_grad=False,
+                ),
+            )
         module.config._experts_implementation = "linear_loop"
         module._unfused_experts = True
         module._auto_round_tp_moe = True

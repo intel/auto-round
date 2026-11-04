@@ -296,6 +296,27 @@ def _check_tp_activation_edges(rank, mesh):
     empty = DTensor.from_local(torch.empty(0, 32), mesh, [Shard(-1)], run_check=False)
     assert quantize(empty, group_size=16, data_type="nv_fp4")[0].numel() == 0
 
+    # One rank owns no tokens. Both amax and trainable scale backward
+    # reductions must still match the nonempty rank's collective sequence.
+    for axis in (0, 1):
+        data = torch.linspace(-2, 3, 32).reshape(1, 1, 32)
+        local_x = data if rank == 0 else data.narrow(axis, 0, 0)
+        local_x = local_x.clone().requires_grad_()
+        distributed_x = DTensor.from_local(
+            local_x, mesh, [Shard(axis)], run_check=False, shape=data.shape, stride=data.stride()
+        )
+        coefficient = torch.tensor(0.8, requires_grad=True)
+        expected_x = data.clone().requires_grad_()
+        expected_coefficient = coefficient.detach().clone().requires_grad_()
+        expected, _, _ = nv_fp4(expected_x, group_size=16, max_scale=expected_coefficient)
+        actual, _, _ = quantize(distributed_x, group_size=16, data_type="nv_fp4", max_scale=coefficient)
+        actual.to_local().sum().backward()
+        expected.sum().backward()
+        torch.testing.assert_close(coefficient.grad, expected_coefficient.grad)
+        expected_grad = expected_x.grad if rank == 0 else expected_x.grad.narrow(axis, 0, 0)
+        torch.testing.assert_close(local_x.grad, expected_grad)
+        dist.barrier()
+
     invalid = _configure_linear(torch.nn.Linear(32, 4, bias=False))
     invalid.act_bits, invalid.act_group_size, invalid.act_data_type = 4, 32, "mx_fp"
     invalid.act_sym = invalid.act_dynamic = True
@@ -380,6 +401,11 @@ def _check_tp_moe_numerics(rank, mesh, fp4=None):
     prepare_tp_moe(native)
     assert native.forward is original_forward
     assert prepare_tp_moe(native) == []  # idempotent
+    assert native.gate_up_proj.numel() == native.down_proj.numel() == 0
+    # dtype conversions force new storage just like CPU/GPU transfers, even on
+    # CPU-only CI. Only child projections should retain expert-weight payload.
+    native.to(torch.float64).to(torch.float32)
+    assert sum(p.to_local().numel() for p in native.parameters()) == 3 * 4 * width * width // mesh.size()
     torch.testing.assert_close(native(x, routes, weights), expected)
     prepare_model_for_moe_quantization(reference, implementation="linear_loop")
     for index in range(4):
@@ -711,6 +737,24 @@ def _check_qad_lifecycle(
                     packed_projection.weight_global_scale.reshape(()), projection.weight_global_scale.cpu().reshape(())
                 )
     dist.barrier()
+
+
+def _empty_shard_worker(rank, rendezvous):
+    from torch.distributed.tensor import DeviceMesh
+
+    torch.set_num_threads(1)
+    dist.init_process_group("gloo", init_method=rendezvous, rank=rank, world_size=2, timeout=timedelta(seconds=30))
+    try:
+        mesh = DeviceMesh("cpu", torch.arange(2))
+        _check_tp_activation_edges(rank, mesh)
+        _check_tp_moe_numerics(rank, mesh)
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.skipif(not dist.is_available() or not dist.is_gloo_available(), reason="requires Gloo")
+def test_two_rank_empty_shard_backward_and_moe_residency(tmp_path):
+    mp.spawn(_empty_shard_worker, args=((tmp_path / "empty-shards").as_uri(),), nprocs=2, join=True)
 
 
 def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_checkpoint, workspace, dtype):

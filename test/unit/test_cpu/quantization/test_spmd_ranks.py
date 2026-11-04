@@ -69,6 +69,34 @@ def test_engagement_logs_once_per_quantizer_run(monkeypatch):
 
 
 class TestCollectives:
+    @pytest.mark.parametrize("serial_first_phase", [True, False])
+    def test_lora_initialization_matches_without_releasing_turn(self, serial_first_phase):
+        group = spmd.RankGroup(CPU2, serial_first_phase=serial_first_phase)
+        replicas = []
+        for rank in range(2):
+            module = torch.nn.Module()
+            generator = torch.Generator().manual_seed(123 + rank)
+            module.lora_A = torch.nn.Parameter(torch.randn(2, 4, generator=generator))
+            module.lora_B = torch.nn.Parameter(torch.randn(4, 2, generator=generator))
+            module.lora_scaling = module.qad_lora_scaling = 1.0 + rank
+            replicas.append(module)
+
+        def tune(rank):
+            ctx = spmd.current_rank()
+            module = replicas[rank]
+            ctx.synchronize_lora(module)
+            assert not group._released[rank]
+            assert module.lora_scaling == module.qad_lora_scaling == 1.0
+            (module.lora_scaling * module.lora_B @ module.lora_A).sum().backward()
+            ctx.sync_gradients(module)
+            with torch.no_grad():
+                for parameter in module.parameters():
+                    parameter.add_(parameter.grad, alpha=-0.1)
+
+        spmd.run_ranks([lambda: tune(0), lambda: tune(1)], CPU2, group)
+        for p0, p1 in zip(replicas[0].parameters(), replicas[1].parameters()):
+            torch.testing.assert_close(p0, p1)
+
     def test_weighted_mean_reproduces_the_union(self):
         # rank 0: 2 tokens with loss 1.0, rank 1: 6 tokens with loss 3.0
         out = _run(

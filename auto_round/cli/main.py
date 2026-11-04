@@ -625,8 +625,13 @@ def tune(args):
     evaluation_context = nullcontext(True)
     parallel_config = getattr(autoround, "parallel_config", None)
     if parallel_config is not None and parallel_config.tp_size > 1:
+        from auto_round.parallel.execution import ParallelExecution
         from auto_round.parallel.tp.evaluation import rank_zero_evaluation
 
+        # Whole-model QAD/QAT leaves native shards resident. The returned model
+        # is a separate CPU export; retain it for fake-model evaluation.
+        ParallelExecution.move_block(autoround.model_context.model, "cpu")
+        clear_memory()
         evaluation_context = rank_zero_evaluation()
     with evaluation_context as should_evaluate:
         if not should_evaluate:

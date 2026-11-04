@@ -13,10 +13,13 @@
 # limitations under the License.
 
 import logging
+from contextlib import contextmanager
 from io import StringIO
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
+import torch
 import torch.distributed as dist
 
 from auto_round import AutoRound, ParallelConfig
@@ -150,6 +153,44 @@ def test_tp_explicit_compile_request_fails_before_model_loading():
         pytest.raises(NotImplementedError, match="Native TP QDQ does not support torch.compile"),
     ):
         AutoRound("local-model", alg_configs="qad", parallel_config={"tp_size": 2}, enable_torch_compile=True)
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_tp_cli_offloads_training_model_before_evaluation(rank):
+    from auto_round.cli.main import start
+
+    native, exported = torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)
+    compressor = Mock(
+        parallel_config=ParallelConfig(tp_size=2),
+        model_context=SimpleNamespace(model=native),
+    )
+    compressor.quantize_and_save.return_value = (exported, [])
+    events = []
+
+    def offload(model, device):
+        assert model is native and device == "cpu"
+        events.append("offload")
+
+    @contextmanager
+    def evaluation_scope():
+        assert events == ["offload"]
+        events.append("teardown")
+        yield rank == 0
+
+    with (
+        patch("auto_round.AutoRound", return_value=compressor),
+        patch("auto_round.parallel.tp.launcher.needs_local_launch", return_value=False),
+        patch("auto_round.parallel.execution.ParallelExecution.move_block", side_effect=offload),
+        patch("auto_round.parallel.tp.evaluation.rank_zero_evaluation", evaluation_scope),
+        patch("auto_round.utils.clear_memory"),
+        patch("auto_round.eval.evaluation.run_model_evaluation") as evaluate,
+    ):
+        start(argv=["local-model", "--format", "fake", "--device", "cpu", "--tp_size", "2"])
+    assert events == ["offload", "teardown"]
+    if rank == 0:
+        assert evaluate.call_args.args[0] is exported
+    else:
+        evaluate.assert_not_called()
 
 
 def test_non_tp_compile_can_remain_enabled():

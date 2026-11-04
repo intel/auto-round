@@ -1391,14 +1391,6 @@ class BaseOrchestrator:
         else:
             logger.info("`torch.compile` is disabled, as %s", reason)
 
-    def _get_calibration_dataset(self) -> str:
-        """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
-        dataset = self.calibration_context.dataset
-        if dataset is not None:
-            return dataset
-
-        return "NeelNanda/pile-10k"
-
     def post_init(self) -> None:
         """One-time initialization that requires a loaded model.
 
