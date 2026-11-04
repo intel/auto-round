@@ -202,6 +202,10 @@ def _resolve_model_dir(model_dir: str, revision: str | None = None) -> str:
             "model.safetensors",
             "pytorch_model.bin.index.json",
             "pytorch_model.bin",
+            "diffusion_pytorch_model.safetensors.index.json",
+            "diffusion_pytorch_model.safetensors",
+            "diffusion_pytorch_model.bin.index.json",
+            "diffusion_pytorch_model.bin",
         ):
             cached_file = try_to_load_from_cache(model_dir, filename, revision=revision)
             if isinstance(cached_file, str):
@@ -607,11 +611,8 @@ class OffloadManager:
         for name in names:
             self._reload(model, name)
 
-    def _reload(self, model: torch.nn.Module, name: str) -> None:
-        """Reload a single named module (internal helper)."""
-        module = get_module(model, name)
-        if module is None:
-            return
+    def _get_checkpoint_dir(self, model: torch.nn.Module | None) -> str | None:
+        """Resolve the active component directory for both clearing and reloading."""
         model_dir = self.model_dir
         component_subfolder = getattr(model, "_autoround_checkpoint_subfolder", None)
         if model_dir is not None and component_subfolder:
@@ -619,6 +620,14 @@ class OffloadManager:
             component_dir = os.path.join(resolved_dir, component_subfolder)
             if os.path.isdir(component_dir):
                 model_dir = component_dir
+        return model_dir
+
+    def _reload(self, model: torch.nn.Module, name: str) -> None:
+        """Reload a single named module (internal helper)."""
+        module = get_module(model, name)
+        if module is None:
+            return
+        model_dir = self._get_checkpoint_dir(model)
         if self.mode == "offload":
             if name not in self._saved:
                 # Before falling back to the
@@ -974,7 +983,7 @@ class OffloadManager:
             return None
         try:
             if self._weight_map is None:
-                model_dir = _resolve_model_dir(self.model_dir)
+                model_dir = _resolve_model_dir(self._get_checkpoint_dir(self._model_ref))
                 self._weight_map = _build_weight_map(model_dir)
             weight_map = self._weight_map
         except Exception as e:
