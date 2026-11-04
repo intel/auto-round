@@ -45,8 +45,9 @@ reference implementation; see ``test/unit/test_cpu/test_qwen4_exp_qsa.py``.
 
 from __future__ import annotations
 
+import inspect
 import math
-from functools import wraps
+from functools import lru_cache, wraps
 
 import torch
 
@@ -58,6 +59,26 @@ _PAD_SENTINEL = -1
 _SCORE_ELEMENT_BUDGET = 1 << 25  # ~32M float32 elements ≈ 128 MiB
 
 
+def _upstream_forward():
+    """The transformers implementation, whether or not the patch is installed."""
+    from transformers.models.qwen4_exp.modeling_qwen4_exp import Qwen4ExpTextQSAIndexer
+
+    return getattr(Qwen4ExpTextQSAIndexer.forward, "_auto_round_original", Qwen4ExpTextQSAIndexer.forward)
+
+
+@lru_cache(maxsize=1)
+def _upstream_returns_additive_mask() -> bool:
+    """Whether upstream converts the selection mask to float for float attention masks.
+
+    transformers <= 5.22 does; newer versions always return a bool mask and let the
+    attention layer convert it (``~selected_token_mask``), which breaks on floats.
+    """
+    try:
+        return "is_floating_point" in inspect.getsource(_upstream_forward())
+    except (OSError, TypeError):
+        return False
+
+
 def _visible_mask(attention_mask: torch.Tensor) -> torch.Tensor:
     """Normalize a 4D attention mask to a boolean "key is visible" mask."""
     if attention_mask.dtype == torch.bool:
@@ -65,12 +86,17 @@ def _visible_mask(attention_mask: torch.Tensor) -> torch.Tensor:
     return attention_mask == 0
 
 
-def _visible_lengths(visible: torch.Tensor) -> torch.Tensor:
-    """Length of the visible *prefix* for every ``(batch, query)`` pair.
+def _is_prefix_mask(visible: torch.Tensor) -> bool:
+    """True when every query row sees exactly keys ``[0, count)``."""
+    counts = visible.sum(dim=-1, keepdim=True)
+    positions = torch.arange(visible.shape[-1], device=visible.device)
+    return bool((visible == (positions < counts)).all())
 
-    ``visible`` has shape ``(batch, 1, seq_len, kv_len)``. A causal mask is a
-    prefix of ones for left-aligned inputs, so the visible length is exactly
-    "last visible index + 1". Returns ``(batch, seq_len)``.
+
+def _visible_lengths(visible: torch.Tensor) -> torch.Tensor:
+    """Visible key count per ``(batch, query)``; only valid for prefix masks.
+
+    ``visible`` has shape ``(batch, 1, seq_len, kv_len)``. Returns ``(batch, seq_len)``.
     """
     return visible.sum(dim=-1, dtype=torch.int64).squeeze(1)
 
@@ -132,7 +158,7 @@ def _to_attention_mask(selected: torch.Tensor, attention_mask: torch.Tensor) -> 
     scatter_indices = torch.where(selected >= 0, selected.long(), full)
     mask = torch.zeros((*selected.shape[:-1], kv_length + 1), device=attention_mask.device, dtype=torch.bool)
     mask = mask.scatter(-1, scatter_indices, True)[..., :kv_length].unsqueeze(1)
-    if attention_mask.is_floating_point():
+    if attention_mask.is_floating_point() and _upstream_returns_additive_mask():
         min_dtype = torch.finfo(attention_mask.dtype).min
         mask = torch.where(mask, attention_mask.new_zeros(()), min_dtype)
     return mask
@@ -148,14 +174,15 @@ def qsa_indexer_forward(
 ) -> torch.Tensor:
     """Drop-in replacement for ``Qwen4ExpTextQSAIndexer.forward``.
 
-    The returned mask is used as an additive/broadcast attention mask and never
-    needs gradients: the reference implementation builds it by scattering booleans
-    into a fresh zeros tensor, so it already detaches (``grad_fn is None``). Running
-    under ``no_grad`` therefore keeps results identical while dropping the useless
-    autograd bookkeeping for the q/k projections, which matters during tuning when
-    the full-attention blocks are the memory high-water mark.
+    Runs under ``no_grad``: upstream's mask is built by scattering booleans into fresh
+    zeros, so it never carried a graph, and skipping autograd saves tuning memory.
+    Masks that are not a causal prefix (e.g. left padding) use the upstream loop.
     """
     from transformers.models.qwen4_exp.modeling_qwen4_exp import apply_rotary_pos_emb
+
+    visible = _visible_mask(attention_mask)
+    if not _is_prefix_mask(visible):
+        return _upstream_forward()(indexer, hidden_states, position_embeddings, attention_mask, past_key_values)
 
     batch_size, seq_length, _ = hidden_states.shape
     head_dim = indexer.index_head_dim
@@ -177,7 +204,6 @@ def qsa_indexer_forward(
     if past_key_values is not None:
         raw_keys = past_key_values.update_indexer(raw_keys, indexer.layer_idx)
 
-    visible = _visible_mask(attention_mask)
     kv_length = attention_mask.shape[-1]
     lengths = _visible_lengths(visible)  # (B, S)
     n_complete = torch.div(lengths, compress_ratio, rounding_mode="floor")  # (B, S)
@@ -206,9 +232,7 @@ def qsa_indexer_forward(
         topk_idx = _topk_blocks(q, block_key_states, n_complete, block_topk)  # (B,S,k)
         k_sel = topk_idx.shape[-1]
 
-        # Scores are non-increasing along the block id for a causal mask, so the
-        # reference's "sort valid blocks first, drop -inf" compaction is exactly
-        # "keep the leading ``valid`` entries".
+        # Masked blocks score -inf and rank last, so the valid entries form a prefix.
         offsets = torch.arange(compress_ratio, device=device)
         block_tokens = (topk_idx * compress_ratio).unsqueeze(-1) + offsets.view(1, 1, 1, compress_ratio)
         block_tokens = block_tokens.reshape(batch_size, seq_length, k_sel * compress_ratio)
