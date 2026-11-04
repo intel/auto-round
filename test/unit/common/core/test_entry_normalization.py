@@ -1,4 +1,5 @@
 import inspect
+from types import SimpleNamespace
 
 import pytest
 
@@ -126,12 +127,12 @@ def test_hidden_calibration_kwargs_keep_defaults_and_overrides(monkeypatch, stri
     def build(model, scheme, configs, **kwargs):
         captured.update(kwargs)
         captured["configs"] = configs
-        return captured
+        return SimpleNamespace(**captured)
 
     monkeypatch.setattr(autoround, "_CompressorBuilder", build)
     result = autoround.AutoRound("unused-model", alg_configs=config, model_free=strict, **overrides)
-    assert (result["seqlen"], result["nsamples"], result["batch_size"]) == expected[:3]
-    assert result["configs"][0].gradient_accumulate_steps == expected[3]
+    assert (result.seqlen, result.nsamples, result.batch_size) == expected[:3]
+    assert result.configs[0].gradient_accumulate_steps == expected[3]
 
 
 def test_public_entry_documents_options_and_experimental_features():
@@ -178,19 +179,21 @@ def test_hidden_iters_keeps_config_default_or_applies_override(monkeypatch, over
     def build(model, scheme, configs, **kwargs):
         captured["configs"] = configs
         captured.update(kwargs)
-        return captured
+        return SimpleNamespace(**captured)
 
     monkeypatch.setattr(autoround, "_CompressorBuilder", build)
     result = autoround.AutoRound("unused-model", alg_configs=SignRoundConfig(iters=5), **overrides)
-    assert isinstance(result["configs"][0], SignRoundConfig)
-    assert result["configs"][0].iters == expected
-    assert result["iters"] is None  # The resolved config, not the builder, owns the schedule.
+    assert isinstance(result.configs[0], SignRoundConfig)
+    assert result.configs[0].iters == expected
+    assert result.iters is None  # The resolved config, not the builder, owns the schedule.
 
 
 @pytest.mark.parametrize("alg_configs", [None, "signround", SignRoundConfig(iters=5)])
 def test_hidden_zero_iters_preserves_public_rtn_routing(monkeypatch, alg_configs):
-    monkeypatch.setattr(autoround, "_CompressorBuilder", lambda model, scheme, configs, **kwargs: configs)
-    configs = autoround.AutoRound("unused-model", alg_configs=alg_configs, iters=0, disable_opt_rtn=True)
+    monkeypatch.setattr(
+        autoround, "_CompressorBuilder", lambda model, scheme, configs, **kwargs: SimpleNamespace(configs=configs)
+    )
+    configs = autoround.AutoRound("unused-model", alg_configs=alg_configs, iters=0, disable_opt_rtn=True).configs
     assert len(configs) == 1
     assert isinstance(configs[0], RTNConfig)
     assert configs[0].disable_opt_rtn is True
@@ -231,7 +234,7 @@ def test_public_entry_forwards_dataset_and_hidden_placement(monkeypatch, placeme
     def build(model, scheme, configs, **kwargs):
         captured.update(kwargs)
         captured["scheme"] = scheme
-        return captured
+        return SimpleNamespace(**captured)
 
     monkeypatch.setattr(autoround, "_CompressorBuilder", build)
     result = autoround.AutoRound(
@@ -242,9 +245,9 @@ def test_public_entry_forwards_dataset_and_hidden_placement(monkeypatch, placeme
         dataset=dataset,
         calibration_data_device=placement,
     )
-    assert result["dataset"] is dataset
-    assert result["calibration_data_device"] == placement
-    assert result["scheme"].avg_bits == 4.2
+    assert result.dataset is dataset
+    assert result.calibration_data_device == placement
+    assert result.scheme.avg_bits == 4.2
 
 
 @pytest.mark.parametrize(

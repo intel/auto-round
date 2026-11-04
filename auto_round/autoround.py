@@ -20,8 +20,11 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from auto_round.logger import logger
+from auto_round.logger import deprecated, logger
 from auto_round.parallel import ParallelConfig
+from auto_round.recipes import Recipe, get_recipe, resolve_recipe
+from auto_round.recipes.recipe import UNSET
+from auto_round.recipes.resolver import merge_layer_defaults
 from auto_round.scheme_entry import (
     eager_validate_scheme,
     is_gguf_k_target,
@@ -135,7 +138,7 @@ class AutoRound:
         alg_configs=None,
         bits: float | None = None,
         layer_config: dict[str, str | dict | QuantizationScheme] | None = None,
-        dataset: str | CalibDataset | list | tuple | torch.utils.data.DataLoader | None = None,
+        dataset: str | CalibDataset | list | tuple | torch.utils.data.DataLoader | None = UNSET,
         low_gpu_mem_usage: bool = False,
         device_map: str | torch.device | int | dict = 0,
         parallel_config: ParallelConfig | dict[str, int | str] | None = None,
@@ -143,6 +146,7 @@ class AutoRound:
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
         platform: str = "hf",
+        recipe: str | Recipe = "auto-round",
         **kwargs,
     ) -> BaseCompressor:
         """Configure model quantization; see the class documentation for examples.
@@ -173,7 +177,8 @@ class AutoRound:
                 scheme. Example: ``{"lm_head": {"bits": 16}}`` skips that layer.
             dataset: Dataset name/local file, CalibDataset, list/tuple of dataset
                 specifications or samples, or ``torch.utils.data.DataLoader``.
-                ``None`` (default) lets the calibration flow select its dataset.
+                Omitted values inherit the recipe; explicit ``None`` lets the
+                calibration flow select its dataset.
             low_gpu_mem_usage: ``False`` (default) or ``True`` to reduce GPU
                 memory usage, potentially at the cost of tuning/calibration speed.
             device_map: Device index (default ``0``), device string such as
@@ -195,6 +200,10 @@ class AutoRound:
             platform: ``"hf"`` (default, Hugging Face) or ``"model_scope"``
                 (ModelScope; requires the ``modelscope`` package).
                 ``AR_USE_MODELSCOPE=1`` also selects ModelScope in the model loader.
+            recipe: Registered recipe name or Recipe object. Default:
+                ``"auto-round"``. Explicit ``alg_configs`` replaces its pipeline
+                while retaining recipe calibration defaults; explicit calibration
+                values and layer overrides take precedence over recipe defaults.
             **kwargs: The runtime keys below, scheme overrides, and fields of the
                 selected algorithm configs. Applicability depends on model type,
                 algorithm, scheme, and export format; not every combination is
@@ -323,9 +332,9 @@ class AutoRound:
         _reject_parallel_kwargs(kwargs)
         parallel_config = ParallelConfig.from_value(parallel_config)
         direct_kwargs = dict(kwargs)
-        seqlen = direct_kwargs.pop("seqlen", 2048)
-        nsamples = direct_kwargs.pop("nsamples", 128)
-        batch_size = direct_kwargs.pop("batch_size", 8)
+        seqlen = direct_kwargs.pop("seqlen", UNSET)
+        nsamples = direct_kwargs.pop("nsamples", UNSET)
+        batch_size = direct_kwargs.pop("batch_size", UNSET)
         calibration_data_device = direct_kwargs.pop("calibration_data_device", "auto")
         strict_model_free = bool(direct_kwargs.get("model_free", False))
         legacy_device = direct_kwargs.pop("device", None)
@@ -335,10 +344,27 @@ class AutoRound:
             direct_kwargs["bits"] = bits
         scheme, direct_kwargs = resolve_entry_scheme(scheme, direct_kwargs)
 
+        definition = get_recipe(recipe) if isinstance(recipe, str) else recipe
+        plan = resolve_recipe(
+            definition,
+            scheme=scheme,
+            model=model,
+            trust_remote_code=direct_kwargs.get("trust_remote_code", True),
+        )
+        if alg_configs is None:
+            alg_configs = plan.build_configs()
+        calibration = plan.calibration
+        dataset = calibration.get("dataset") if dataset is UNSET else dataset
+        seqlen = calibration["seqlen"] if seqlen is UNSET else seqlen
+        nsamples = calibration["nsamples"] if nsamples is UNSET else nsamples
+        batch_size = calibration["batch_size"] if batch_size is UNSET else batch_size
+        if plan.layer_config:
+            layer_config = merge_layer_defaults(plan.layer_config, layer_config)
+
         configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs, strict=strict_model_free)
         runtime_kwargs["batch_size"] = batch_size
 
-        return _CompressorBuilder(
+        compressor = _CompressorBuilder(
             model,
             scheme,
             configs,
@@ -359,6 +385,8 @@ class AutoRound:
             seqlen=seqlen,
             **runtime_kwargs,
         )
+        compressor.resolved_recipe = plan
+        return compressor
 
 
 # ---------------------------------------------------------------------------

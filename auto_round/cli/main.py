@@ -1,7 +1,7 @@
 # # Copyright (C) 2026 Intel Corporation
 # # SPDX-License-Identifier: Apache-2.0
 
-"""CLI entry points: command routing, RECIPES, tune, eval, list.
+"""CLI entry points: command routing, recipes, tune, eval, list.
 
 This module is the single place that wires together:
     parser.py     - argparse construction (all flag declarations here)
@@ -29,6 +29,7 @@ from auto_round.cli.parser import (
 )
 from auto_round.compressors.config_resolution import ConfigResolutionError
 from auto_round.logger import logger
+from auto_round.recipes import get_recipe, list_recipes, resolve_recipe
 
 # Flags surfaced by `auto_round --help`. Entries are (dest, shown option strings):
 # the overview is a curated subset, so a few flags list only their primary name
@@ -275,32 +276,6 @@ def _to_autoround_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer
     return kwargs
 
 
-RECIPES = {
-    "default": {
-        "batch_size": 8,
-        "iters": 200,
-        "seqlen": 2048,
-        "nsamples": 128,
-        "lr": None,
-    },
-    "best": {
-        "batch_size": 8,
-        "iters": 1000,
-        "seqlen": 2048,
-        "nsamples": 512,
-        "lr": None,
-    },
-    "light": {
-        "batch_size": 8,
-        "iters": 50,
-        "seqlen": 2048,
-        "nsamples": 128,
-        "lr": 5e-3,
-    },
-    "rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 1, "lr": None, "disable_opt_rtn": True},
-    "opt_rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 128, "lr": None, "disable_opt_rtn": False},
-}
-
 # ============================================================================
 # list subcommand
 # ============================================================================
@@ -320,6 +295,14 @@ def list_item(argv=None):
             print("AutoRound supported algorithms:")
             print(AlgorithmHandler.format_listing())
             print("\nUse `auto_round list alg <name>` or `auto_round --algorithm <name> --help` for details.")
+    elif args.item in {"recipe", "recipes"}:
+        for name in [args.name] if args.name else list_recipes():
+            definition = get_recipe(name)
+            print(f"{definition.name}: {definition.description}")
+            if args.name:
+                plan = resolve_recipe(definition)
+                print("Pipeline: " + " -> ".join(f"{stage.algorithm}({stage.params})" for stage in plan.pipeline))
+                print(f"Calibration: {plan.calibration}")
     else:
         raise ValueError(f"Unsupported list target: {args.item}")
 
@@ -394,11 +377,10 @@ def _start_worker(recipe: str, argv: Sequence[str]) -> None:
     return start(recipe, argv=argv)
 
 
-def start(recipe="default", argv=None):
+def start(recipe="auto-round", argv=None):
     from auto_round.utils.oom import install_oom_census_hook
 
     install_oom_census_hook()  # last-resort tensor census for uncaught CUDA OOMs
-    recipe_defaults = RECIPES[recipe]
     argv = list(sys.argv[1:] if argv is None else argv)
     format_was_explicit = any(
         arg in {"--format", "--formats"} or arg.startswith(("--format=", "--formats=")) for arg in argv
@@ -422,17 +404,46 @@ def start(recipe="default", argv=None):
     if needs_local_launch(parallel):
         return launch(parallel, _start_worker, recipe, argv)
 
-    # Apply recipe defaults for fields the user didn't set
-    for key, value in recipe_defaults.items():
-        if getattr(args, key, None) is None:
-            setattr(args, key, value)
-    if args.model_free:
-        args.iters = 0
-
+    _apply_recipe_defaults(args, recipe)
     tune(args)
 
 
+def _apply_recipe_defaults(args, recipe="auto-round"):
+    """Normalize recommendations for both command entry points and direct tune calls."""
+    if getattr(args, "_recipe_plan", None) is not None:
+        return
+    if not hasattr(args, "_explicit_fields"):
+        # Namespaces built outside the quantize parser: treat every set value as explicit.
+        args._explicit_fields = {key for key, value in vars(args).items() if value is not None}
+    args.recipe = get_recipe(args.recipe or recipe).name
+    definition = get_recipe(args.recipe)
+    args._recipe_plan = resolve_recipe(
+        definition,
+        model=args.model or args.model_name,
+        scheme=args.scheme,
+        trust_remote_code=not args.disable_trust_remote_code,
+    )
+
+    for key, value in args._recipe_plan.calibration.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, value)
+    # Keep effective legacy attributes available to integrations inspecting tune(args).
+    if args.algorithm is None:
+        configs = args._recipe_plan.build_configs()
+        for config in configs:
+            for key in ("iters", "lr", "disable_opt_rtn"):
+                if key not in args._explicit_fields and hasattr(config, key):
+                    setattr(args, key, getattr(config, key))
+        if all(not hasattr(config, "iters") for config in configs):
+            if "iters" not in args._explicit_fields:
+                args.iters = 0
+    if args.model_free:
+        args.iters = 0
+        args._explicit_fields.add("iters")
+
+
 def tune(args):
+    _apply_recipe_defaults(args)
     assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
     if args.model is None:
         args.model = args.model_name
@@ -608,6 +619,7 @@ def tune(args):
     autoround: BaseCompressor = AutoRound(
         model_name,
         scheme=scheme,
+        recipe=args._recipe_plan,
         alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
         **_to_autoround_kwargs(
             args,
