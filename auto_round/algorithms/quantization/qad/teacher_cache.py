@@ -29,7 +29,7 @@ On-disk layout (one file per calibration sample)::
     <workspace>/teacher_<sample_idx>.pt  -> {
         "input_ids": int32[seq],          # the tokens that produced the teacher
         "index": int32[seq, K] | None,    # teacher Top-K token ids (None = full vocab)
-        "prob":  float32[seq, K] | float16/float32[seq, vocab],
+        "prob":  float32[seq, K] | float16/bfloat16/float32[seq, vocab],
                                           # Top-K: softmax(topk(logits)/τ) re-normalized over K
                                           # full:  softmax(logits/τ)
     }
@@ -87,7 +87,8 @@ class TeacherTopKCache:
             temperature: Positive temperature applied before teacher softmax.
             full_dtype: Storage dtype for full-vocabulary probabilities. Defaults to
                 float32 to preserve small teacher probabilities, especially for reverse KL.
-                Float16 is an explicit storage-saving opt-in; Top-K always stays float32.
+                Float16 and bfloat16 are explicit storage-saving opt-ins; bfloat16
+                retains float32's exponent range but reduces precision. Top-K always stays float32.
 
         Raises:
             ValueError: Temperature is non-positive or the storage dtype is unsupported.
@@ -98,8 +99,8 @@ class TeacherTopKCache:
         self.temperature = float(temperature)
         if self.temperature <= 0:
             raise ValueError("`temperature` must be positive")
-        if full_dtype not in (torch.float16, torch.float32):
-            raise ValueError("`full_dtype` must be torch.float16 or torch.float32")
+        if full_dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            raise ValueError("`full_dtype` must be torch.float16, torch.bfloat16 or torch.float32")
         # Reverse KL needs small teacher probabilities that FP16 may round to zero.
         self.full_dtype = full_dtype
         self.store_full = self.top_k == -1

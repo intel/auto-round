@@ -32,6 +32,11 @@ from auto_round.logger import logger
 class QADConfig(SignRoundConfig):
     """Configure experimental whole-model quantization-aware distillation (QAD).
 
+    Args:
+        qad_nsamples (int | None): QAD/QAT-specific calibration sample count.
+            None reuses the common calibration samples; an explicit value overrides
+            an inherited ``nsamples`` value without changing other pipeline stages.
+
     Attributes:
         qad_iters (int | None): QAD/QAT iteration override. None inherits ``iters``;
             the effective count drives the automatic learning rate, scheduler,
@@ -178,12 +183,12 @@ class QADConfig(SignRoundConfig):
         )
         registry.add_argument(
             "--qad_nsamples",
-            field="nsamples",
+            field="qad_nsamples",
             default=None,
             type=int,
             help=(
                 "Number of calibration samples used by QAD tuning. Lets QAD use a different "
-                "sample count from block-wise SignRound (e.g. '--algs sign_round,qad'); "
+                "sample count from block-wise SignRound (e.g. '--alg_configs sign_round,qad'); "
                 "falls back to --nsamples when unset."
             ),
         )
@@ -240,7 +245,6 @@ class QADConfig(SignRoundConfig):
         qad_iters: int | None = None,
         lr: float | None = None,
         qad_lr: float | None = None,
-        nsamples: int | None = None,
         qad_nsamples: int | None = None,
         topk: int = 32,
         loss: str = "tk",
@@ -280,13 +284,10 @@ class QADConfig(SignRoundConfig):
             if qad_lr <= 0:
                 raise ValueError("`qad_lr` must be positive")
             kwargs["lr"] = qad_lr
-        # Keep the old Python keyword as an alias; storage and validation belong
-        # to QuantizationConfig. The CLI maps --qad_nsamples directly to nsamples.
+        # Keep a single source of truth in QuantizationConfig.nsamples. None
+        # inherits common sampling; an explicit QAD count overrides only this stage.
         if qad_nsamples is not None:
-            if nsamples is not None and nsamples != qad_nsamples:
-                raise ValueError("`nsamples` and legacy `qad_nsamples` must agree when both are supplied")
-            nsamples = qad_nsamples
-        kwargs["nsamples"] = nsamples
+            kwargs["nsamples"] = qad_nsamples
         # Normalize the optimizer choice before handing it to the base config
         # (SignRound keeps it on ``self.optimizer`` for the quantizer to resolve).
         # ``qad_optimizer`` is the QAD-specific name; a legacy ``optimizer=`` kwarg

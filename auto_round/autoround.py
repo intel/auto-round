@@ -39,6 +39,7 @@ from auto_round.utils.device_manager import normalize_default_device_map
 if TYPE_CHECKING:
     from auto_round.algorithms.quantization.config import QuantizationConfig
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
+    from auto_round.algorithms.transforms.base import BaseRotationConfig
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
     from auto_round.compressors.base import BaseCompressor
 
@@ -135,7 +136,14 @@ class AutoRound:
         model: torch.nn.Module | str,
         tokenizer=None,
         scheme: str | dict | QuantizationScheme | AutoScheme | list | tuple = "W4A16",
-        alg_configs=None,
+        alg_configs: (
+            str
+            | QuantizationConfig
+            | BaseRotationConfig
+            | list[str | QuantizationConfig | BaseRotationConfig]
+            | tuple[str | QuantizationConfig | BaseRotationConfig, ...]
+            | None
+        ) = None,
         bits: float | None = None,
         layer_config: dict[str, str | dict | QuantizationScheme] | None = None,
         dataset: str | CalibDataset | list | tuple | torch.utils.data.DataLoader | None = UNSET,
