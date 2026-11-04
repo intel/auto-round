@@ -116,7 +116,6 @@ class ParallelExecution:
     def is_tp(self):
         return self.config.tp_size > 1
 
-
     @property
     def tensor_ops(self):
         from auto_round.parallel.tp.tensor_ops import ParallelTensorOps
@@ -258,7 +257,7 @@ class ParallelExecution:
         from auto_round.parallel.dp.tune_parallel import TuneParallelContext
 
         if self.is_tp:
-            context = getattr(composer.block_quantizer, "compress_context", None)
+            context = getattr(composer.active_quantizer, "compress_context", None)
             self.validate_data_parallel_policy(getattr(context, "parallel_policy", None))
             return TuneParallelContext()
         return TuneParallelContext.for_collection(composer, block, inputs)

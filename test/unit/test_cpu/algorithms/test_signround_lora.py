@@ -264,7 +264,7 @@ def test_qad_rounding_disabled_keeps_other_tuning(tiny_model_and_tokenizer, monk
 def test_signround_block_optimizes_low_rank_factors(tiny_model_and_tokenizer, monkeypatch, config_cls, minmax):
     config = config_cls(iters=3, bits=4, group_size=8, lora_rank=2, enable_minmax_tuning=minmax, not_use_best_mse=True)
     compressor, tokens = _compressor(tiny_model_and_tokenizer, config)
-    quantizer = compressor.alg_composer.block_quantizer
+    quantizer = compressor.alg_composer.active_quantizer
     wrapper_init = WrapperLinear.__init__
     wrappers = []
 
@@ -297,7 +297,7 @@ def test_signround_block_optimizes_low_rank_factors(tiny_model_and_tokenizer, mo
 def test_outside_block_optimizer_uses_both_factors(tiny_model_and_tokenizer, monkeypatch, minmax):
     config = SignRoundConfig(iters=3, bits=4, group_size=8, lora_rank=2, enable_minmax_tuning=minmax)
     compressor, _ = _compressor(tiny_model_and_tokenizer, config)
-    quantizer = compressor.alg_composer.block_quantizer
+    quantizer = compressor.alg_composer.active_quantizer
     layer = compressor.model.lm_head
     for name, value in dict(bits=4, group_size=8, sym=True, data_type="int", act_bits=16).items():
         setattr(layer, name, value)

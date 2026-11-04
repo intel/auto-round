@@ -303,7 +303,7 @@ def test_whole_model_freezes_base_and_clears_placement(tmp_path, use_teacher, tu
 @pytest.mark.parametrize("config_cls", [SignRoundConfig, SignRoundV2Config, AdamRoundConfig])
 def test_enable_qad_routes_to_whole_model(config_cls):
     composer = AlgorithmComposer([config_cls(enable_qad=True, iters=2, nblocks=1, lfq_top_k=5)])
-    quantizer = composer.block_quantizer
+    quantizer = composer.active_quantizer
     assert isinstance(quantizer, QADQuantizer)
     assert quantizer.whole_model_tuning
     assert quantizer.requires_original_weights

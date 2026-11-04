@@ -32,8 +32,8 @@ def _patch_composer(composer, fp_inputs):
     mock_forward.last_output_dict = None
     mock_forward.enable_torch_compile = False
     composer.block_forward = mock_forward
-    composer.block_quantizer.quantize_block = MagicMock()
-    composer.block_quantizer.enable_quanted_input = False
+    composer.active_quantizer.quantize_block = MagicMock()
+    composer.active_quantizer.enable_quanted_input = False
     composer._get_fp_act_hooks = MagicMock(return_value=([], {"act_max": "max"}))
     composer._get_q_act_hooks = MagicMock(return_value=([], {"act_max": "max"}))
     composer.preprocessors = []
@@ -125,8 +125,8 @@ def test_weight_changing_preprocessor_recomputes_seeded_reference():
         block_index=0,
     )
     composer.block_forward = BlockForwardRunner(batch_size=1, amp=False, enable_torch_compile=False)
-    composer.block_quantizer.quantize_block = MagicMock()
-    composer.block_quantizer.enable_quanted_input = False
+    composer.active_quantizer.quantize_block = MagicMock()
+    composer.active_quantizer.enable_quanted_input = False
     composer._get_fp_act_hooks = MagicMock(return_value=([], None))
     composer._get_q_act_hooks = MagicMock(return_value=([], None))
     composer.preprocessors = [_WeightChangingPreprocessor()]
@@ -141,7 +141,7 @@ def test_weight_changing_preprocessor_recomputes_seeded_reference():
 
     expected = torch.tensor([[6.0]])
     assert torch.equal(reference_next_input[0], expected)
-    quantizer_reference = composer.block_quantizer.quantize_block.call_args.args[3]
+    quantizer_reference = composer.active_quantizer.quantize_block.call_args.args[3]
     assert torch.equal(quantizer_reference[0], expected)
 
 

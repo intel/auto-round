@@ -755,7 +755,7 @@ class _CompressorBuilder:
         # Preprocessor algorithms (AWQ, …) require a data-driven host so that
         # the per-block preprocessor lifecycle (prepare_block_group ->
         # block_forward_hooks -> pre_quantize_block -> post_quantize_block)
-        # actually runs; the pipeline auto-appends RTN when no block_quantizer
+        # actually runs; the pipeline auto-appends RTN when no quantizer
         # is supplied. SignRound is itself data-driven and shares the same host.
         if preprocessor_configs or len(quantizer_configs) > 1 or not isinstance(quant_config, RTNConfig):
             return _get_compressor_class(model_type, Compressor)(alg_configs, **local_args, **ctor_kwargs)

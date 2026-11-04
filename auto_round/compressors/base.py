@@ -292,11 +292,11 @@ class BaseOrchestrator:
         self._alg_configs: list = list(_config_list)
         from auto_round.algorithms.config_resolver import split_quantization_configs
 
-        _preprocessor_configs, _block_quantizer_configs = split_quantization_configs(self._alg_configs)
-        if _block_quantizer_configs:
+        _preprocessor_configs, _quantizer_configs = split_quantization_configs(self._alg_configs)
+        if _quantizer_configs:
             # The terminal stage drives public scheme/format resolution. Stage
             # ordering and compatibility are exclusively the composer's job.
-            self.quantize_config = _block_quantizer_configs[-1]
+            self.quantize_config = _quantizer_configs[-1]
         elif _preprocessor_configs:
             from auto_round.algorithms.quantization.rtn.config import RTNConfig as _RTNConfig
 
@@ -1499,19 +1499,19 @@ class BaseOrchestrator:
                         been synced back to ``self.quantize_config``.
 
         Work performed:
-          - Constructs the block_quantizer from the resolved config.
+          - Constructs the quantizers from the resolved configs.
           - Wraps it in a :class:`~auto_round.algorithms.pipeline.AlgorithmComposer`
             so that the entire compressor operates through the bundle abstraction.
           - Calls ``quantizer.bind(self)`` so the quantizer pulls
             ``model_context`` / ``compress_context`` / ``scale_dtype`` /
             ``CalibrationContext`` from this compressor.  ``quantizer.model``
             is a property that reads ``model_context.model``.
-          - Exposes ``self.alg_composer.block_quantizer`` so all quantization
-            call-sites can reach the block quantizer directly.
+          - Exposes ``self.alg_composer.active_quantizer`` so all quantization
+            call-sites can reach the current quantizer directly.
 
         Postconditions:
           - ``self.alg_composer`` is an ``AlgorithmComposer`` wrapping the block quantizer.
-          - ``self.alg_composer.block_quantizer`` is ready and shares ``CalibrationContext``
+          - ``self.alg_composer.active_quantizer`` is ready and shares ``CalibrationContext``
             with the compressor.
         """
         from auto_round.algorithms.composer import AlgorithmComposer
@@ -1526,7 +1526,7 @@ class BaseOrchestrator:
         # picked up the final ``self.scale_dtype``/``self.scheme_context`` above.
         plan = getattr(self, "compression_plan", None)
         if plan is not None:
-            block_quantizer = self._alg_composer.block_quantizer
+            active_quantizer = self._alg_composer.active_quantizer
             for quantizer in self._alg_composer.quantizers:
                 quantizer.layer_config = {name: dict(config) for name, config in plan.layer_config.items()}
                 quantizer.has_qlayer_outside_block = plan.has_qlayer_outside_block
@@ -1539,13 +1539,13 @@ class BaseOrchestrator:
 
             from auto_round.algorithms.config_resolver import sync_shared_config_from
 
-            sync_shared_config_from(block_quantizer.config, [pre.config for pre in self._alg_composer.preprocessors])
+            sync_shared_config_from(active_quantizer.config, [pre.config for pre in self._alg_composer.preprocessors])
 
             # Also sync runtime-only state to all preprocessors so they have access to
             # per-layer quant config during pre-processing (e.g. AWQ grid search uses
             # layer_config to look up bits/group_size for each layer).
             for pre in self._alg_composer.preprocessors:
-                pre.layer_config = block_quantizer.layer_config
+                pre.layer_config = active_quantizer.layer_config
 
     @property
     def alg_composer(self) -> Any:
@@ -1768,14 +1768,14 @@ class BaseOrchestrator:
         if name.startswith("_"):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
-        # Delegate to block_quantizer: access _alg_composer directly from __dict__
+        # Delegate to active_quantizer: access _alg_composer directly from __dict__
         # to avoid recursion (quantizer attribute access forwards through
-        # _alg_composer.block_quantizer; going through a property inside
+        # _alg_composer.active_quantizer; going through a property inside
         # __getattr__ would re-trigger __getattr__ if _alg_composer isn't ready yet).
         _alg_composer = self.__dict__.get("_alg_composer")
         if _alg_composer is not None:
             try:
-                return object.__getattribute__(_alg_composer.block_quantizer, name)
+                return object.__getattribute__(_alg_composer.active_quantizer, name)
             except AttributeError:
                 pass
 

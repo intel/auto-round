@@ -190,7 +190,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         self.calibration_context.is_only_supported_bs1 = self.calibration.is_only_supported_bs1
         # Reset gradient_accumulate_steps in case batch_size was clamped to 1 for some models
         if self.calibration_context.is_only_supported_bs1:
-            compressors = self.alg_composer.block_quantizer
+            compressors = self.alg_composer.active_quantizer
             if not isinstance(compressors, (list, tuple)):
                 compressors = [compressors]
             else:
@@ -241,7 +241,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             n_chunks = _pool_chunk_count(input_ids)
             primary = str(self.compress_context.cache_device)
             mode = getattr(self.compress_context, "calibration_data_device", "auto")
-            _iters = int(getattr(getattr(self.alg_composer, "block_quantizer", None), "iters", 0) or 0)
+            _iters = int(getattr(getattr(self.alg_composer, "active_quantizer", None), "iters", 0) or 0)
             # iters>0 lane: the tune loop consumes outputs on the block's LOSS
             # device (card_0_in_high_risk deflects it off the cache primary on
             # multi-GPU MoE lanes; set per block by dispatch_block) -- prefer
@@ -250,7 +250,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             # The runner's own .device is NOT it: BlockForwardRunner is built
             # once at orchestrator init with device_manager.device, so it always
             # equals the primary on this lane and the retarget would never fire.
-            _loss_dev = getattr(getattr(self.alg_composer, "block_quantizer", None), "_loss_device", None)
+            _loss_dev = getattr(getattr(self.alg_composer, "active_quantizer", None), "_loss_device", None)
             _consumer = str(_loss_dev) if _loss_dev is not None else str(getattr(runner, "device", primary))
             _consumer = (
                 _consumer

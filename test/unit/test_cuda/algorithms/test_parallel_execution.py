@@ -138,7 +138,7 @@ def _whole_model_worker(rank, rendezvous, checkpoint, algorithm):
             enable_torch_compile=False,
         )
         compressor.post_init()
-        quantizer = compressor.alg_composer.block_quantizer
+        quantizer = compressor.alg_composer.active_quantizer
         forward = quantizer._forward_logits
         calls = []
 

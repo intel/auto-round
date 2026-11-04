@@ -1111,7 +1111,7 @@ class TestSyncMirrorsToHome:
                 self._qdq(m)
         released = []
         composer = AlgorithmComposer.__new__(AlgorithmComposer)
-        composer.block_quantizer = q
+        composer.active_quantizer = q
         composer._coll_ctx = type("_Ctx", (), {"release_pool": lambda self: released.append(1)})()
         assert composer._settle_block_pool(block, pool) is pool
         assert released == []
@@ -1126,7 +1126,7 @@ class TestSyncMirrorsToHome:
         q, pool = self._ddp_quantizer(SignRoundQuantizer, block)
         released = []
         composer = AlgorithmComposer.__new__(AlgorithmComposer)
-        composer.block_quantizer = q
+        composer.active_quantizer = q
         composer._coll_ctx = type("_Ctx", (), {"release_pool": lambda self: released.append(1)})()
         # not the RTN family and nothing consumed the pool: no sync, released
         assert composer._settle_block_pool(block, pool) is None
@@ -1354,7 +1354,7 @@ class TestComposerPoolHandoff:
         ctx.devices = [torch.device("cpu", 0), torch.device("cpu", 1)]  # DDP on
         composer._coll_ctx = ctx
         composer._block = None
-        composer.block_quantizer = q
+        composer.active_quantizer = q
         composer.preprocessors = []
         return composer, ctx, pool, q, events
 
@@ -1366,15 +1366,15 @@ class TestComposerPoolHandoff:
             composer._coll_ctx.ensure_pool(composer._block)
         _pool = getattr(composer._coll_ctx, "pool", None)
         if _pool is not None:
-            _state = parallel_state(composer.block_quantizer, create=True)
+            _state = parallel_state(composer.active_quantizer, create=True)
             _state.pool = _pool
             _state.pool_used = False
         try:
-            composer.block_quantizer.quantize_block(None)
+            composer.active_quantizer.quantize_block(None)
             _pool = composer._settle_block_pool(composer._block, _pool)
             composer._coll_ctx.mark("step5+6")
         finally:
-            _state = parallel_state(composer.block_quantizer)
+            _state = parallel_state(composer.active_quantizer)
             if _state is not None:
                 _state.pool = None
             composer._coll_ctx.release_pool()
@@ -2014,7 +2014,7 @@ class TestCollectionShardingFailVisible:
 
         composer = AlgorithmComposer.__new__(AlgorithmComposer)
         composer.block_forward = type("R", (), {"output_config": ["hidden_states"]})()
-        composer.block_quantizer = SimpleNamespace(parallel=ParallelExecution())
+        composer.active_quantizer = SimpleNamespace(parallel=ParallelExecution())
         return composer
 
     def test_requirement_error_propagates(self, monkeypatch):

@@ -599,7 +599,7 @@ def _check_qad_lifecycle(
     )
     if block_stages:
         compressor.post_init()
-        terminal = compressor.alg_composer.block_quantizer
+        terminal = compressor.alg_composer.active_quantizer
         quantize_model = terminal.quantize_model
 
         def check_warm_start(model, *args, **kwargs):
@@ -660,7 +660,7 @@ def _check_qad_lifecycle(
             torch.testing.assert_close(exported_projection.weight_global_scale, projection.weight_global_scale.cpu())
         if model.config.tie_word_embeddings:
             assert exported.lm_head.weight is exported.model.embed_tokens.weight
-    quantizer = compressor.alg_composer.block_quantizer
+    quantizer = compressor.alg_composer.active_quantizer
     if algorithm == "qad":
         assert Path(workspace, f"tp_rank_{rank}").is_dir()
         # A cache missing only on rank one must rebuild collectively, rather

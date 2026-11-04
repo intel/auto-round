@@ -160,7 +160,9 @@ def test_awq_rtn_uses_regular_model_loaded_route(monkeypatch):
 def test_direct_signround_kwargs_apply_without_warning(monkeypatch):
     warnings = []
     monkeypatch.setattr("auto_round.autoround.logger.warning", lambda message, *args: warnings.append(message % args))
-    monkeypatch.setattr("auto_round.autoround.logger.warning_once", lambda message, *args: warnings.append(message % args))
+    monkeypatch.setattr(
+        "auto_round.autoround.logger.warning_once", lambda message, *args: warnings.append(message % args)
+    )
 
     configs = _normalize_alg_configs(None, direct_kwargs={"iters": 7, "lr": 0.2})
 
@@ -346,7 +348,7 @@ def test_legacy_and_unified_composition_select_same_v1_quantizer(configs):
     composer = AlgorithmComposer(configs())
 
     assert [type(pre).__name__ for pre in composer.preprocessors] == ["AWQTransform"]
-    assert type(composer.block_quantizer).__name__ == "SignRoundQuantizer"
+    assert type(composer.active_quantizer).__name__ == "SignRoundQuantizer"
 
 
 def test_direct_enable_opt_rtn_forces_optimized_rtn():

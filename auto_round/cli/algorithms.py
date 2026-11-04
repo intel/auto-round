@@ -263,11 +263,11 @@ class AlgorithmHandler:
             _add_registered_arguments(group, registry)
 
     @classmethod
-    def _has_block_quantizer(cls, names) -> bool:
-        """Whether any algorithm in *names* is a terminal block quantizer.
+    def _has_quantizer(cls, names) -> bool:
+        """Whether any algorithm in *names* is a quantizer.
 
-        Block-quantization algorithms (rtn, auto_round, qad, …) already provide a
-        block quantizer, so the CLI must not append a default one. Preprocessors
+        Quantization algorithms (rtn, auto_round, qad, …) already provide a
+        quantizer, so the CLI must not append a default one. Preprocessors
         (awq, hadamard, svdquant, …) do not count.
         """
         from auto_round.algorithms.quantization.base import BaseQuantizer
@@ -298,7 +298,7 @@ class AlgorithmHandler:
         # `opt-rtn` carries the plain-vs-optimized intent.
         explicit_names = set(canonical)
         seen = set(canonical)
-        if not cls._has_block_quantizer(canonical):
+        if not cls._has_quantizer(canonical):
             canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
             canonical = [_ITERS_ZERO_ALGORITHMS.get(name, name) for name in canonical]

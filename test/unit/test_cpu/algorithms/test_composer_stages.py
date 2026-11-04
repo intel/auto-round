@@ -46,7 +46,7 @@ def test_three_stages_preserve_original_bf16_without_algorithm_hooks(monkeypatch
     block_calls, output_values = [], []
 
     def run_blocks(replay):
-        block_calls.append((composer.block_quantizer, replay))
+        block_calls.append((composer.active_quantizer, replay))
         torch.testing.assert_close(model[0].weight, original)
 
         def tune():
@@ -58,6 +58,8 @@ def test_three_stages_preserve_original_bf16_without_algorithm_hooks(monkeypatch
         torch.testing.assert_close(model[0].weight, original)
 
     def tune_model(module, tokens, device=None):
+        assert composer.active_quantizer is composer.quantizers[-1]
+        assert composer.active_quantizer.whole_model_tuning
         torch.testing.assert_close(module[0].weight, original)
         assert tokens == [1, 2]
         with torch.no_grad():
@@ -73,6 +75,7 @@ def test_three_stages_preserve_original_bf16_without_algorithm_hooks(monkeypatch
     assert torch.all(model[0].weight == 7)
     assert model[0].weight.dtype == torch.bfloat16
     assert composer._preserve_weights is False
+    assert composer.active_quantizer is composer.quantizers[-1]
     composer._orchestrator._reload_model_for_tuning.assert_called_once()
     for quantizer in composer.quantizers:
         assert not hasattr(quantizer, "begin_stage")
@@ -103,7 +106,7 @@ def test_block_stages_consume_previous_weights_when_originals_not_required(monke
 
 def test_stage_failure_restores_weights_and_composer(monkeypatch):
     composer, model = _pipeline([SignRoundConfig(), QADConfig()], monkeypatch)
-    terminal = composer.block_quantizer
+    terminal = composer.active_quantizer
     original_layer = model[0]
     original = original_layer.weight.detach().clone()
     for quantizer in composer.quantizers:
@@ -122,7 +125,7 @@ def test_stage_failure_restores_weights_and_composer(monkeypatch):
         composer.compress_model([1], run_blocks)
     assert model[0] is original_layer
     torch.testing.assert_close(model[0].weight, original)
-    assert composer.block_quantizer is terminal
+    assert composer.active_quantizer is terminal
     assert composer._preserve_weights is False
     composer.quantizers[0].finalize_run.assert_called_once()
     composer.quantizers[1].finalize_run.assert_not_called()
@@ -212,7 +215,7 @@ def test_algorithm_parallel_policies_are_scoped_to_each_stage(monkeypatch, failu
     assert runner.parallel_execution is default
     assert runner.pool_placement is None
     assert not model._forward_pre_hooks
-    assert composer.block_quantizer is composer.quantizers[-1]
+    assert composer.active_quantizer is composer.quantizers[-1]
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -224,7 +227,7 @@ def test_zero_shot_uses_parallel_stage_and_finalizes_once(monkeypatch, fail):
     orchestrator = composer._orchestrator
     orchestrator.alg_composer = composer
     orchestrator.parallel_execution = ParallelExecution()
-    quantizer = composer.block_quantizer
+    quantizer = composer.active_quantizer
     quantizer.bind(orchestrator)
     events = []
 

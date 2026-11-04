@@ -173,7 +173,7 @@ def test_tp_collection_and_tuning_never_create_dp_mirrors():
         compress_context=SimpleNamespace(parallel_policy=ParallelPolicy()),
         quantize_block=Mock(return_value={"tp": True}),
     )
-    composer = SimpleNamespace(block_quantizer=quantizer)
+    composer = SimpleNamespace(active_quantizer=quantizer)
     block = torch.nn.Linear(4, 4)
     inputs = [torch.randn(1, 2, 4)]
     with (

@@ -20,7 +20,7 @@ Algorithm:
 3. Apply the best channel-wise scaling:
    - balance_layer.weight *= scales
    - smooth_layer.weight /= scales (or smooth_layer.bias /= scales if 1-D)
-4. Weight compression is delegated to the pipeline's block_quantizer.
+4. Weight compression is delegated to the pipeline's active_quantizer.
 
 Reference implementations:
   - AutoAWQ: https://github.com/casper-hansen/AutoAWQ
@@ -174,7 +174,7 @@ class AWQTransform(BasePreprocessor):
 
     Inherits :class:`~auto_round.algorithms.transforms.base.BasePreprocessor`.
     It smooths block weights in-place; actual weight compression (RTN /
-    SignRound) is performed by the pipeline's ``block_quantizer``.
+    SignRound) is performed by the pipeline's ``active_quantizer``.
     """
 
     @classmethod

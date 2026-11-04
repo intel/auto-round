@@ -89,7 +89,7 @@ def test_nsamples_is_not_shared_or_synced():
 def test_warmup_keeps_common_sampling():
     composer = AlgorithmComposer([SignRoundConfig(), QADConfig(nsamples=16)])
     assert composer.quantizers[0].config.nsamples is None
-    assert composer.block_quantizer.config.nsamples == 16
+    assert composer.active_quantizer.config.nsamples == 16
 
 
 def test_unsupported_block_sampling_fails_explicitly():

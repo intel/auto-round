@@ -24,7 +24,7 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
 - All block-wise scheduling in ``Compressor`` operates against
   ``AlgorithmComposer``, never against a concrete ``AWQTransform``.
 - Single-algorithm use is expressed as
-  ``AlgorithmComposer(preprocessors=[], block_quantizer=q)``, which is
+  ``AlgorithmComposer(configs=[config])``, which is
   semantically identical to the current direct-quantizer path.
 """
 
@@ -119,10 +119,11 @@ class AlgorithmComposer:
     a list of algorithm config objects and an optional compressor.
 
     The ``preprocessors`` list is order-sensitive: preprocessors are applied in
-    the listed order (e.g. ``[Rotation, AWQ]``).  The block quantizer is always
+    the listed order (e.g. ``[Rotation, AWQ]``).  Quantization is always
     the terminal weight-compression step, regardless of its position in the
     input config list. Quantizers execute in their relative config order;
-    ``block_quantizer`` exposes the active stage (the terminal stage when idle).
+    ``active_quantizer`` exposes the active stage (the terminal stage when idle),
+    whether it tunes individual blocks or the whole model.
 
     Usage::
 
@@ -167,18 +168,18 @@ class AlgorithmComposer:
         # rotation config (``BaseRotationConfig.layerwise``).
         self._rotation_configs = [c for c in configs if isinstance(c, BaseRotationConfig)]
 
-        _, block_quantizer_configs = split_quantization_configs(configs)
-        if not block_quantizer_configs:
+        _, quantizer_configs = split_quantization_configs(configs)
+        if not quantizer_configs:
             from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
             configs = configs + [RTNConfig()]
 
         # Sequential quantizers own independent schedules/behavior, but operate
         # on the same quantization scheme. Do not reconcile their local settings.
-        configs = resolve_shared_config_values(configs, reconcile_non_scheme=len(block_quantizer_configs) <= 1)
+        configs = resolve_shared_config_values(configs, reconcile_non_scheme=len(quantizer_configs) <= 1)
 
         preprocessors: list = []
-        block_quantizers: list = []
+        quantizers: list = []
 
         for cfg in configs:
             if not isinstance(cfg, QuantizationConfig):
@@ -195,15 +196,15 @@ class AlgorithmComposer:
             if isinstance(q, BasePreprocessor):
                 preprocessors.append(q)
             elif isinstance(q, BaseQuantizer):
-                block_quantizers.append(q)
+                quantizers.append(q)
             else:
                 raise TypeError(
                     f"Algorithm class {type(q).__name__} must inherit either " "BasePreprocessor or BaseQuantizer."
                 )
 
-        if len(block_quantizers) == 0:
-            raise ValueError("No block quantizer found in configs.")
-        self.quantizers = tuple(block_quantizers)
+        if len(quantizers) == 0:
+            raise ValueError("No quantizer found in configs.")
+        self.quantizers = tuple(quantizers)
         self._preserve_weights = False
         self._preserve_stage_weights = []
         needs_original_weights = False
@@ -230,7 +231,7 @@ class AlgorithmComposer:
         self.preprocessors = preprocessors
 
         can_compile_block_forward = False
-        self.block_quantizer = block_quantizers[-1]
+        self.active_quantizer = quantizers[-1]
         self.block_forward = None
         if orchestrator is not None:
             user_torch_compile = bool(
@@ -286,11 +287,11 @@ class AlgorithmComposer:
         if orchestrator is None:
             raise RuntimeError("active_stage requires a bound compressor.")
         with ExitStack() as stage:
-            active_members = [*self.preprocessors, *self._rotation_members, self.block_quantizer]
+            active_members = [*self.preprocessors, *self._rotation_members, self.active_quantizer]
             for member in active_members:
                 stage.enter_context(member.parallel.stage(member, orchestrator))
-            if not self.block_quantizer.whole_model_tuning:
-                self.block_quantizer.parallel.prepare_blockwise_model(orchestrator.model_context.model)
+            if not self.active_quantizer.whole_model_tuning:
+                self.active_quantizer.parallel.prepare_blockwise_model(orchestrator.model_context.model)
             for member in active_members:
                 stage.callback(member.finalize_run)
                 member.prepare_run(composer=self)
@@ -310,7 +311,7 @@ class AlgorithmComposer:
         streaming_export = (
             orchestrator.compress_context.is_immediate_saving or orchestrator.compress_context.is_immediate_packing
         )
-        if streaming_export and (len(self.quantizers) > 1 or self.block_quantizer.whole_model_tuning):
+        if streaming_export and (len(self.quantizers) > 1 or self.active_quantizer.whole_model_tuning):
             raise NotImplementedError("Multi-stage/whole-model tuning does not support immediate saving/packing.")
         from auto_round import envs
 
@@ -318,11 +319,11 @@ class AlgorithmComposer:
             raise NotImplementedError("Resuming a multi-stage quantization run is not supported.")
         if self.quantizers[0].whole_model_tuning and (self.preprocessors or self.has_layerwise_rotation):
             raise NotImplementedError("Block preprocessors/layer-wise rotation require a leading block-tuning stage.")
-        terminal = self.block_quantizer
+        terminal = self.active_quantizer
         preprocessors, rotations = self.preprocessors, self._rotation_members
         try:
             for index, (quantizer, preserve) in enumerate(zip(self.quantizers, self._preserve_stage_weights)):
-                self.block_quantizer = quantizer
+                self.active_quantizer = quantizer
                 self._preserve_weights = preserve
                 if index:
                     self.preprocessors, self._rotation_members = [], []
@@ -346,7 +347,7 @@ class AlgorithmComposer:
                         run_blocks(index > 0)
             return terminal.whole_model_tuning
         finally:
-            self.block_quantizer = terminal
+            self.active_quantizer = terminal
             self._preserve_weights = False
             self.preprocessors, self._rotation_members = preprocessors, rotations
 
@@ -380,7 +381,7 @@ class AlgorithmComposer:
         """
         from auto_round.data_type.utils import register_act_max_hooks
 
-        return register_act_max_hooks(block, getattr(self.block_quantizer.config, "act_data_type", None))
+        return register_act_max_hooks(block, getattr(self.active_quantizer.config, "act_data_type", None))
 
     def _get_fp_act_hooks(self, block: torch.nn.Module) -> tuple[list, dict[str, str] | None]:
         """Register FP-input act_max + quantizer forward hooks.
@@ -395,17 +396,17 @@ class AlgorithmComposer:
             handles = self._register_act_max_hooks(block)
         else:
             handles = []
-        quantizer_hooks = self.block_quantizer.register_fp_input_forward_hooks(block)
+        quantizer_hooks = self.active_quantizer.register_fp_input_forward_hooks(block)
         handles.extend(quantizer_hooks)
-        return handles, calibration_merge_stats(self.block_quantizer, quantizer_hooks)
+        return handles, calibration_merge_stats(self.active_quantizer, quantizer_hooks)
 
     def _get_q_act_hooks(self, block: torch.nn.Module) -> tuple[list, dict[str, str] | None]:
         """Register Q-input act_max + quantizer forward hooks; returns
         ``(handles, merge_stats)`` like ``_get_fp_act_hooks``."""
         handles = self._register_act_max_hooks(block)
-        quantizer_hooks = self.block_quantizer.register_qinput_forward_hooks(block)
+        quantizer_hooks = self.active_quantizer.register_qinput_forward_hooks(block)
         handles.extend(quantizer_hooks)
-        return handles, calibration_merge_stats(self.block_quantizer, quantizer_hooks)
+        return handles, calibration_merge_stats(self.active_quantizer, quantizer_hooks)
 
     def _attach_act_max_for_outside_layer(self, layer: torch.nn.Module, fp_inputs, q_inputs) -> None:
         """Compute and attach act_max for an outside-block layer from cached inputs.
@@ -457,14 +458,14 @@ class AlgorithmComposer:
         for preprocessor in self.preprocessors:
             if getattr(preprocessor, "enable_quanted_input", False):
                 return True
-        return bool(getattr(self.block_quantizer, "enable_quanted_input", False))
+        return bool(getattr(self.active_quantizer, "enable_quanted_input", False))
 
     def compress_embedding_layer(self):
-        return self.block_quantizer.quantize_embedding_layer()
+        return self.active_quantizer.quantize_embedding_layer()
 
     def _collection_context(self, block, fp_inputs):
         """Use the active algorithm's execution policy for calibration transport."""
-        return self.block_quantizer.parallel.collection_context(self, block, fp_inputs)
+        return self.active_quantizer.parallel.collection_context(self, block, fp_inputs)
 
     def _collect_forward_timed(self, *args, **kwargs):
         """_collect_forward with wall accumulation into self.last_collect_wall."""
@@ -646,7 +647,7 @@ class AlgorithmComposer:
                 for h in quant_hooks:
                     h.remove()
 
-                if self.block_quantizer.enable_quanted_input:
+                if self.active_quantizer.enable_quanted_input:
                     q_hooks, q_merge_stats = self._get_q_act_hooks(block)
                     if q_hooks:
                         self._collect_forward_timed(
@@ -707,7 +708,7 @@ class AlgorithmComposer:
         # is only the SAFETY NET for when no collection pass was
         # shard-eligible -- ref-collect sharding builds the pool lazily for
         # EVERY lane and is untouched by this gate.
-        _pool_consumer = isinstance(self.block_quantizer, (RTNQuantizer, SignRoundQuantizer))
+        _pool_consumer = isinstance(self.active_quantizer, (RTNQuantizer, SignRoundQuantizer))
         if _pool_consumer and getattr(self._coll_ctx, "devices", None) and len(self._coll_ctx.devices) >= 2:
             self._coll_ctx.ensure_pool(block)
         _pool = getattr(self._coll_ctx, "pool", None)
@@ -715,7 +716,7 @@ class AlgorithmComposer:
             # the tune ranks take the resident mirrors (no second weight copy);
             # the RTN family leaves them to _settle_block_pool. A pool nobody
             # consumed is released before the post-quantize steps below.
-            _state = parallel_state(self.block_quantizer, create=True)
+            _state = parallel_state(self.active_quantizer, create=True)
             _state.pool = _pool
             _state.pool_used = False
         # ── Step 4: quantize_block ──────────────────────────────────────────────
@@ -724,15 +725,15 @@ class AlgorithmComposer:
         effective_input = q_inputs if q_inputs is not None else fp_inputs
         warm_start_outputs = []
         collect_warm_start_output = None
-        if getattr(self, "_preserve_weights", False) and self.block_quantizer.enable_quanted_input:
+        if getattr(self, "_preserve_weights", False) and self.active_quantizer.enable_quanted_input:
 
             def collect_warm_start_output(wrapped_block):
                 output = block_forward_fn(wrapped_block, effective_input, input_others)
                 warm_start_outputs.append(getattr(block_forward_fn, "last_output_dict", None) or output)
 
         def tune_block():
-            return self.block_quantizer.parallel.quantize_block(
-                self.block_quantizer,
+            return self.active_quantizer.parallel.quantize_block(
+                self.active_quantizer,
                 block,
                 effective_input,
                 input_others,
@@ -747,7 +748,7 @@ class AlgorithmComposer:
 
             # Quantizer-agnostic block finalization (e.g. NVFP MoE act_max), kept
             # out of the per-algorithm tuning loop.
-            self.block_quantizer.finalize_block(block, block_ctx)
+            self.active_quantizer.finalize_block(block, block_ctx)
 
             # the pool is block-scoped and belongs to the shared tune state:
             # settle it (sync the mirrors for the RTN family, keep or release
@@ -763,7 +764,7 @@ class AlgorithmComposer:
                 # Warm-up has restored FP weights by now; use the output collected
                 # while the wrappers still held the best quantization parameters.
                 new_q_input = warm_start_outputs[0]
-            elif self.block_quantizer.enable_quanted_input:
+            elif self.active_quantizer.enable_quanted_input:
                 with torch.no_grad():
                     new_q_input = self._collect_forward_timed(block, effective_input, input_others)
                     new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input
@@ -772,7 +773,7 @@ class AlgorithmComposer:
         finally:
             # the pool is block-scoped: drop it even on failures so the next
             # block's pool starts clean
-            _state = parallel_state(self.block_quantizer)
+            _state = parallel_state(self.active_quantizer)
             if _state is not None:
                 _state.pool = None
             self._coll_ctx.release_pool()
@@ -796,9 +797,9 @@ class AlgorithmComposer:
         from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
         from auto_round.parallel.dp.mirror_sync import sync_mirrors_to_home
 
-        if isinstance(self.block_quantizer, RTNQuantizer):
-            sync_mirrors_to_home(self.block_quantizer, block)
-        _state = parallel_state(self.block_quantizer)
+        if isinstance(self.active_quantizer, RTNQuantizer):
+            sync_mirrors_to_home(self.active_quantizer, block)
+        _state = parallel_state(self.active_quantizer)
         if _state is None or _state.pool is None or not _state.pool_used:
             self._coll_ctx.release_pool()
             return None
@@ -842,7 +843,7 @@ class AlgorithmComposer:
         device = getattr(layer, "tuning_device", device_manager.device)  # TODO this should be handled by compressor
         layer = layer.to(device)
 
-        return self.block_quantizer.quantize_layer_outside_block(
+        return self.active_quantizer.quantize_layer_outside_block(
             layer,
             fp_inputs=fp_inputs,
             q_inputs=q_inputs,
@@ -865,13 +866,13 @@ class AlgorithmComposer:
 
         Iterates active members; if exactly one overrides the default dispatch_block,
         it is called. If multiple override, warns and uses the first one only.
-        If none override, uses the block_quantizer's default (simple .to(device)).
+        If none override, uses the active_quantizer's default.
         """
         from auto_round.algorithms.quantization.base import BaseQuantizer
 
         overriders = []
         seen_ids = set()
-        for member in [*self.preprocessors, *self._rotation_members, self.block_quantizer]:
+        for member in [*self.preprocessors, *self._rotation_members, self.active_quantizer]:
             if not hasattr(member, "dispatch_block"):
                 continue
             # Check if the member overrides the base default
@@ -892,11 +893,11 @@ class AlgorithmComposer:
 
         if overriders:
             return overriders[0].dispatch_block(block, input_ids, input_others)
-        return self.block_quantizer.dispatch_block(block, input_ids, input_others)
+        return self.active_quantizer.dispatch_block(block, input_ids, input_others)
 
     def prepare_run(self, composer: AlgorithmComposer = None):
         execution = getattr(getattr(self, "_orchestrator", None), "parallel_execution", None)
-        if execution is not None and not self.block_quantizer.whole_model_tuning:
+        if execution is not None and not self.active_quantizer.whole_model_tuning:
             execution.prepare_blockwise_model(self._orchestrator.model_context.model)
         for alg in self.members():
             alg.prepare_run(composer=self)
@@ -922,8 +923,8 @@ class AlgorithmComposer:
         """Best-effort resolution of the quantization data_type for rotation dispatch."""
         if self.scheme is not None and getattr(self.scheme, "data_type", None):
             return self.scheme.data_type
-        if self.block_quantizer is not None:
-            return getattr(self.block_quantizer.config, "data_type", "mx_fp")
+        if self.active_quantizer is not None:
+            return getattr(self.active_quantizer.config, "data_type", "mx_fp")
         return "mx_fp"
 
     def apply_model_transforms(self, model: torch.nn.Module) -> torch.nn.Module:

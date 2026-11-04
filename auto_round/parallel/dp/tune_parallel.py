@@ -93,7 +93,7 @@ class TuneParallelContext:
             logger.warning("[tune-ddp] collection sharding declined: cannot resolve the block home device (%s)", e)
             return ctx
         try:
-            plan = resolve_tune_ddp_plan_(composer.block_quantizer, block, fp_inputs, None, home, log=False)
+            plan = resolve_tune_ddp_plan_(composer.active_quantizer, block, fp_inputs, None, home, log=False)
         except RuntimeError:
             # the resolver raises when a requested world is ineligible
             # (requirement semantics) -- let it propagate: silently continuing
@@ -103,7 +103,7 @@ class TuneParallelContext:
             logger.warning("[tune-ddp] collection sharding declined: resolver unreachable (%s)", e)
             return ctx
         ctx.devices = plan.devices if plan.world > 1 else None
-        ctx.collect_forward_cap = _quantizer_policy(composer.block_quantizer).collect_forward_cap
+        ctx.collect_forward_cap = _quantizer_policy(composer.active_quantizer).collect_forward_cap
         return ctx
 
     def distribute_pools(self, fp_inputs, q_inputs) -> None:

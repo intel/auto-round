@@ -35,7 +35,7 @@ def is_preprocessor_config(config: Any) -> bool:
     return alg_cls is not None and issubclass(alg_cls, BasePreprocessor)
 
 
-def is_block_quantizer_config(config: Any) -> bool:
+def is_quantizer_config(config: Any) -> bool:
     """Whether *config* resolves to a BaseQuantizer implementation."""
     from auto_round.algorithms.quantization.base import BaseQuantizer
 
@@ -44,15 +44,15 @@ def is_block_quantizer_config(config: Any) -> bool:
 
 
 def split_quantization_configs(configs: list[Any]) -> tuple[list[Any], list[Any]]:
-    """Split configs into preprocessor and block-quantizer config lists."""
+    """Split configs into preprocessor and quantizer config lists."""
     preprocessors = []
-    block_quantizers = []
+    quantizers = []
     for config in configs:
         if is_preprocessor_config(config):
             preprocessors.append(config)
-        elif is_block_quantizer_config(config):
-            block_quantizers.append(config)
-    return preprocessors, block_quantizers
+        elif is_quantizer_config(config):
+            quantizers.append(config)
+    return preprocessors, quantizers
 
 
 def _quantization_configs(configs: list[Any]) -> list[Any]:
