@@ -141,12 +141,13 @@ class ParallelTuneState:
     lane consumed that pool.
     """
 
-    __slots__ = ("plan", "pool", "pool_used")
+    __slots__ = ("engagement_logged", "plan", "pool", "pool_used")
 
     def __init__(self) -> None:
         self.plan: DDPPlan | None = None
         self.pool: MirrorPool | None = None
         self.pool_used: bool = False
+        self.engagement_logged: bool = False
 
 
 def parallel_state(quantizer, create: bool = False) -> ParallelTuneState | None:

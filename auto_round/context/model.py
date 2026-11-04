@@ -299,8 +299,16 @@ class ModelContext(BaseContext):
             if hasattr(m, "tuning_device"):
                 delattr(m, "tuning_device")
 
-    def _load_tp_model(self):
-        """Use native loading; never combine parameter sharding with device_map."""
+    def _load_tp_model(self) -> None:
+        """Load or validate native TP parameters without combining them with device_map.
+
+        Update this context's model and tokenizer, adapt supported MoE experts in place,
+        and disable disk-stream loading for the resulting distributed model.
+
+        Raises:
+            ValueError: The model lacks a TP plan, requires a tokenizer, or has invalid shards.
+            NotImplementedError: The architecture, mesh, or expert layout is unsupported.
+        """
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         from auto_round.parallel.tp.moe import prepare_tp_moe

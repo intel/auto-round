@@ -20,7 +20,13 @@ from auto_round.logger import logger
 
 
 def log_moe_execution_once(path: str, reason: str, *, suggest_issue: bool = False) -> None:
-    """Report each execution state once, without routing-dependent cache keys."""
+    """Report each execution state once, without routing-dependent cache keys.
+
+    Args:
+        path (str): Stable label identifying the selected or fallback execution path.
+        reason (str): Configuration-based explanation independent of routed token counts.
+        suggest_issue (bool): Whether to warn and suggest reporting the unsupported case.
+    """
     if suggest_issue:
         logger.warning_once(
             "[MoE grouped] %s: %s. Correctness-preserving fallback is used. "

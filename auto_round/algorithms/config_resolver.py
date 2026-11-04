@@ -36,7 +36,14 @@ def is_preprocessor_config(config: Any) -> bool:
 
 
 def is_quantizer_config(config: Any) -> bool:
-    """Whether *config* resolves to a BaseQuantizer implementation."""
+    """Check whether a configuration resolves to a BaseQuantizer implementation.
+
+    Args:
+        config (Any): Algorithm configuration to resolve through the implementation registry.
+
+    Returns:
+        bool: Whether a registered implementation exists and subclasses BaseQuantizer.
+    """
     from auto_round.algorithms.quantization.base import BaseQuantizer
 
     alg_cls = get_algorithm_class(config)

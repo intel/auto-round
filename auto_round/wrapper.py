@@ -402,12 +402,19 @@ class WrapperLinear(torch.nn.Module):
 
         setattr(self, name, p)
 
-    def _rounding_value(self, best_params=None):
+    def _rounding_value(self, best_params: dict[str, torch.Tensor] | None = None) -> torch.Tensor:
         """Materialize only the rounding offset; LoRA never perturbs FP weights.
 
         Native TP wrappers use these same factors on each local shard. They are
         independent shard-local parameters, just like dense rounding, so neither
         weight gathering nor an extra gradient all-reduce is needed.
+
+        Args:
+            best_params (dict[str, torch.Tensor] | None): Saved rounding or LoRA parameters;
+                None selects the current trainable parameters.
+
+        Returns:
+            torch.Tensor: Dense or group-padded rounding offsets, including any LoRA contribution.
         """
         if not hasattr(self, "lora_A"):
             if best_params is None:
@@ -881,8 +888,15 @@ class WrapperWALayer(torch.nn.Module):
         x = self.qdq_input(x)
         return self.orig_layer.forward(x)
 
-    def qdq_input(self, x):
-        """Quantize an already transformed input without running the Linear projection."""
+    def qdq_input(self, x: torch.Tensor) -> torch.Tensor:
+        """Quantize an already transformed input without running the Linear projection.
+
+        Args:
+            x (torch.Tensor): Activations after any input-transform hooks have run.
+
+        Returns:
+            torch.Tensor: Quantize-dequantized activations using the layer's stored statistics.
+        """
         import auto_round.envs as envs
 
         act_scale = envs.AR_ACT_SCALE

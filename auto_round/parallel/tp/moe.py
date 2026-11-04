@@ -21,15 +21,32 @@ from torch import nn
 from torch.distributed.tensor import DTensor, Shard
 
 
-def _local_linear_forward(self, x):
+def _local_linear_forward(self: nn.Linear, x: torch.Tensor) -> torch.Tensor:
+    """Apply an expert projection without duplicating parent-owned TP collectives.
+
+    Args:
+        self: Expert Linear module containing local or distributed weight storage.
+        x: Local expert input activations.
+
+    Returns:
+        The shard-local linear projection output.
+    """
     # The parent MoeExpertsParallel owns input-gradient and output reductions.
     # Installing colwise/rowwise communication on these children would double it.
     weight = self.weight.to_local() if isinstance(self.weight, DTensor) else self.weight
     return torch.nn.functional.linear(x, weight, self.bias)
 
 
-def _validate_experts(module):
-    """Accept only the native concatenated [expert, output, input] TP layout."""
+def _validate_experts(module: nn.Module) -> None:
+    """Accept only the native concatenated [expert, output, input] TP layout.
+
+    Args:
+        module: Fused expert module with gate/up and down projection parameters.
+
+    Raises:
+        NotImplementedError: Storage, expert features, mesh, or placements are unsupported.
+        ValueError: Projection shapes disagree or intermediate shards are uneven or empty.
+    """
     gate_up, down = module.gate_up_proj, module.down_proj
     if not isinstance(gate_up, DTensor) or not isinstance(down, DTensor):
         raise NotImplementedError("Fused TP experts require DTensor gate_up_proj and down_proj weights.")
@@ -72,13 +89,24 @@ def _validate_experts(module):
         raise ValueError("TP MoE requires evenly sized, nonempty intermediate shards and matching expert shapes.")
 
 
-def prepare_tp_moe(model):
+def prepare_tp_moe(model: nn.Module) -> list[str]:
     """Expose local expert projections for QDQ; keep every native TP forward.
 
     Native fused parameters are retained as zero-copy aliases. Transformers
     checks for sharded parameters after forward to decide whether to reduce the
     output; QDQ wrappers hide their originals from registered parameter walks.
     These aliases preserve that check and are omitted from CPU export.
+
+    Args:
+        model: Native TP model to adapt in place after validating all candidate experts.
+
+    Returns:
+        Names of the fused expert modules adapted during this call.
+
+    Raises:
+        NotImplementedError: Fused projections or their native TP layouts are unsupported.
+        ValueError: Expert shapes are incompatible or shards are uneven or empty.
+        RuntimeError: Transformers does not provide the required experts interface.
     """
     from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
     from auto_round.modeling.fused_moe.moe_experts_interface import (

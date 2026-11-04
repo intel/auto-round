@@ -85,7 +85,15 @@ logging.Logger.infoclean = infoclean
 class RankZeroFilter(logging.Filter):
     """Deduplicate routine logs while keeping failures visible on every rank."""
 
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Keep routine records on rank zero and errors on every rank.
+
+        Args:
+            record (logging.LogRecord): Record considered by the logging handler.
+
+        Returns:
+            bool: Whether this rank should emit the record.
+        """
         if record.levelno >= logging.ERROR:
             return True
         # torchrun supplies RANK before process-group initialization. Also support

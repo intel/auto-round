@@ -15,13 +15,23 @@
 """Small runtime operations shared by distributed model consumers."""
 
 import copy
+from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
 import torch
 import torch.distributed as dist
 
 
-def is_dtensor(value) -> bool:
+def is_dtensor(value: object) -> bool:
+    """Check for a DTensor without requiring distributed tensor support.
+
+    Args:
+        value: Object to inspect.
+
+    Returns:
+        True if DTensor is available and the value is a DTensor instance.
+    """
     # Keep DTensor optional for non-distributed installations.
     try:
         from torch.distributed.tensor import DTensor
@@ -30,21 +40,42 @@ def is_dtensor(value) -> bool:
     return isinstance(value, DTensor)
 
 
-def is_tp_model(model) -> bool:
+def is_tp_model(model: torch.nn.Module) -> bool:
+    """Check whether a model contains native distributed parameters.
+
+    Args:
+        model: Module whose parameters are inspected recursively.
+
+    Returns:
+        True if at least one parameter is a DTensor.
+    """
     return any(is_dtensor(parameter) for parameter in model.parameters())
 
 
-def replicated_tensor(value):
-    """Gather a distributed result while preserving its autograd connection."""
+def replicated_tensor(value: Any) -> Any:
+    """Gather a distributed result while preserving its autograd connection.
+
+    Args:
+        value: Distributed tensor or value to leave unchanged.
+
+    Returns:
+        A full tensor for DTensor input, otherwise the original value.
+    """
     return value.full_tensor() if is_dtensor(value) else value
 
 
 @contextmanager
-def _export_step():
+def _export_step() -> Iterator[None]:
     """Agree on local work before any rank enters the next export collective.
 
     Only local operations belong here, never a tensor collective. Transport
     failures propagate directly without attempting a different collective.
+
+    Yields:
+        None while ranks perform local export preparation.
+
+    Raises:
+        RuntimeError: Any rank reports a failure in the local export step.
     """
     failure = None
     try:
@@ -59,8 +90,18 @@ def _export_step():
 
 
 @contextmanager
-def synchronized_export():
-    """Share writer-only completion/failure, strictly after checkpoint gathering."""
+def synchronized_export() -> Iterator[None]:
+    """Share writer-only completion/failure, strictly after checkpoint gathering.
+
+    Every rank must enter; only rank zero should perform checkpoint writing.
+    The writer's original exception propagates unchanged on rank zero.
+
+    Yields:
+        None while the writer saves the gathered checkpoint.
+
+    Raises:
+        RuntimeError: Rank zero reports a writer failure to a non-writer rank.
+    """
     failure = None
     try:
         yield
@@ -74,8 +115,17 @@ def synchronized_export():
             raise RuntimeError(f"TP checkpoint writer failed: {status[0]}")
 
 
-def validate_tp_model(model, tp_size: int) -> None:
-    """Reject unsupported plans before calibration or wrapper mutation."""
+def validate_tp_model(model: torch.nn.Module, tp_size: int) -> None:
+    """Reject unsupported plans before calibration or wrapper mutation.
+
+    Args:
+        model: Model loaded with native tensor-parallel parameters.
+        tp_size: Required process-group and one-dimensional mesh size.
+
+    Raises:
+        ValueError: The process group is incompatible or no DTensor parameters exist.
+        NotImplementedError: A mesh, expert layout, or native TP style is unsupported.
+    """
     if not dist.is_initialized() or dist.get_world_size() != tp_size:
         raise ValueError("The initialized process group must match parallel_config.tp_size.")
     if not is_tp_model(model):
@@ -118,12 +168,22 @@ def validate_tp_model(model, tp_size: int) -> None:
 
 
 @torch.no_grad()
-def _gather_cpu_tensor(value, chunk_bytes=4 * 1024 * 1024):
-    """Gather a 1-D DTensor to writer CPU memory with bounded device staging.
+def _gather_cpu_tensor(value: torch.Tensor, chunk_bytes: int = 4 * 1024 * 1024) -> torch.Tensor | None:
+    """Gather a tensor on a 1-D TP mesh to writer CPU memory with bounded staging.
 
     Broadcast byte chunks so NCCL does not require a separate Gloo group and
     communication does not depend on support for the tensor's storage dtype.
     No rank ever materializes a full distributed tensor on its accelerator.
+
+    Args:
+        value: Local tensor or DTensor to gather; every rank must participate.
+        chunk_bytes: Maximum byte count staged for each broadcast.
+
+    Returns:
+        The complete detached CPU tensor on rank zero, or None on other ranks.
+
+    Raises:
+        RuntimeError: A rank reports unsupported placement or a local export failure.
     """
     from torch.distributed.tensor import Replicate, Shard
 
@@ -179,13 +239,22 @@ def _gather_cpu_tensor(value, chunk_bytes=4 * 1024 * 1024):
     return output
 
 
-def gather_for_export(model):
+def gather_for_export(model: torch.nn.Module) -> torch.nn.Module | None:
     """Return a non-TP CPU model on rank zero; all TP ranks must participate.
 
     Build a clean model instead of trying to undo Transformers' private forward
     closures. The caller retains its original TP model for further inference.
     Shards are copied to CPU before bounded transfers; full tensors exist only
     in writer host memory, never temporarily on a GPU.
+
+    Args:
+        model: Native TP model containing quantized weights and optional wrappers.
+
+    Returns:
+        A standalone CPU evaluation model on rank zero, or None on other ranks.
+
+    Raises:
+        RuntimeError: A rank fails during local gathering or model reconstruction.
     """
     from auto_round.parallel.tp.activation import TensorParallelActivationQuantizer
     from auto_round.wrapper import WrapperWALayer
@@ -199,14 +268,30 @@ def gather_for_export(model):
         buffer_items = list(model.named_buffers())
         modules = list(model.named_modules())
 
-    def export_name(name):
+    def export_name(name: str) -> str:
+        """Remove activation-wrapper path components from an exported name.
+
+        Args:
+            name: State, buffer, or module path in the wrapped model.
+
+        Returns:
+            The equivalent path in the standalone export model.
+        """
         for wrapper_name in sorted(activation_wrappers, key=len, reverse=True):
             prefix = f"{wrapper_name}.orig_layer"
             if name == prefix or name.startswith(prefix + "."):
                 name = wrapper_name + name[len(prefix) :]
         return name
 
-    def gather(value):
+    def gather(value: Any) -> Any:
+        """Gather tensor values while passing non-tensor metadata through unchanged.
+
+        Args:
+            value: Tensor or metadata value to prepare for export.
+
+        Returns:
+            The gathered tensor on the writer, None on peers, or unchanged metadata.
+        """
         if isinstance(value, torch.Tensor):
             value = _gather_cpu_tensor(value)
         return value
@@ -263,7 +348,12 @@ def gather_for_export(model):
             if writer and attributes:
                 metadata.setdefault(export_name(name), {}).update(attributes)
 
-    def build_exported():
+    def build_exported() -> torch.nn.Module:
+        """Reconstruct the writer's standalone model from gathered CPU state.
+
+        Returns:
+            An evaluation model with restored buffers, metadata, and activation wrappers.
+        """
         export_config = copy.deepcopy(model.config)
         # A full checkpoint is deliberately not a distributed training checkpoint.
         # Retaining this policy makes native save_pretrained enter TP barriers even

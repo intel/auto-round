@@ -100,6 +100,7 @@ from auto_round.wrapper import WrapperLinear, unwrapper_layer, wrapper_block
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import BlockContext
+    from auto_round.parallel.execution import ParallelCapabilities
 
 
 @register_pipeline_member(SignRoundConfig)
@@ -151,11 +152,15 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         # Emit the low-bit lr notice at most once across all blocks/layers.
         self._logged_low_bit_lr = False
 
-    def _configure_lora_scaling(self, module, optimizer) -> None:
+    def _configure_lora_scaling(self, module: torch.nn.Module, optimizer: torch.optim.Optimizer) -> None:
         """Bound the new SignSGD rounding offset by +/-4 over the tuning budget.
 
         This bounds s * B @ A, not any frozen offset from an earlier stage.
         Explicit alpha and non-SignSGD optimizers retain their existing scaling.
+
+        Args:
+            module (torch.nn.Module): Module containing LoRA-enabled rounding wrappers to update.
+            optimizer (torch.optim.Optimizer): Optimizer whose learning-rate budget bounds the offset.
         """
         if not isinstance(optimizer, SignSGD) or self.iters <= 0:
             return
@@ -205,7 +210,12 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         return super().dispatch_block(block, input_ids, input_others)
 
     @classmethod
-    def parallel_capabilities(cls):
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Declare support for shard-local SignRound tuning.
+
+        Returns:
+            ParallelCapabilities: Capabilities enabling TP and pipeline placement.
+        """
         from auto_round.parallel.execution import ParallelCapabilities
 
         return ParallelCapabilities(tensor_parallel=True)

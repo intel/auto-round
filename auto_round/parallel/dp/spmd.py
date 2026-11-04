@@ -365,14 +365,16 @@ def quantize_block_on_ranks(
         warm = signature in _WARM_SIGNATURES
     group = RankGroup(devices, serial_first_phase=not warm)
     rank_qs = [rank_quantizer(quantizer, world, split) for _ in range(world)]
-    logger.info(
-        "[tune-ranks] engaged: world=%d, batch per rank=%d (%s), first phase %s, devices=%s",
-        world,
-        rank_qs[0].calibration_context.batch_size,
-        "split" if split else "per_replica",
-        "concurrent" if warm else "serial (compile)",
-        [str(d) for d in devices],
-    )
+    if not getattr(_st, "engagement_logged", False):
+        logger.info(
+            "[tune-ranks] engaged: world=%d, batch per rank=%d (%s), first phase %s, devices=%s",
+            world,
+            rank_qs[0].calibration_context.batch_size,
+            "split" if split else "per_replica",
+            "concurrent" if warm else "serial (compile)",
+            [str(d) for d in devices],
+        )
+        _st.engagement_logged = True
 
     def _rank_fn(r):
         return lambda: rank_qs[r].quantize_block(

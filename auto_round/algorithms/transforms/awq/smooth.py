@@ -133,7 +133,15 @@ class AWQSmoothStrategy:
         # coupling to the first layer and makes direct calls robust.
         bl_quant_funcs = {bl: owner._qdq_tool.resolve_quant_funcs(bl_params[bl]) for bl in mapping.balance_layers}
 
-        def local_imatrix(layer):
+        def local_imatrix(layer: torch.nn.Module) -> torch.Tensor | None:
+            """Select importance statistics for the layer's local input channels.
+
+            Args:
+                layer (torch.nn.Module): Projection with optional input-importance statistics.
+
+            Returns:
+                torch.Tensor | None: Local channel statistics, or None when unavailable.
+            """
             imatrix = getattr(layer, "imatrix", None)
             if imatrix is not None:
                 imatrix = owner.parallel.replicated(imatrix)
@@ -172,7 +180,15 @@ class AWQSmoothStrategy:
         def score(candidate):
             _, scales = candidate
 
-            def scaled_input(layer):
+            def scaled_input(layer: torch.nn.Module) -> torch.Tensor:
+                """Shape candidate scales for the layer's local weight columns.
+
+                Args:
+                    layer (torch.nn.Module): Projection whose shard layout selects the scales.
+
+                Returns:
+                    torch.Tensor: Local input-channel scales with shape ``(1, channels)``.
+                """
                 return tensor_ops.channel_scale(layer.weight, scales, 1).view(1, -1)
 
             if use_parent_forward:

@@ -50,8 +50,8 @@ def test_tp_memory_is_merged_once_on_rank_zero(monkeypatch, rank, shared_device)
     monkeypatch.setattr(memory_monitor, "peak_vram", local_peaks.copy())
 
     def gather(reports, local):
-        assert local == {f"cuda:{index}": local_peaks[str(index)]}
-        reports[:] = [{"cuda:0": 2.5}, {f"cuda:{0 if shared_device else 1}": 3.5}]
+        assert local == {str(index): local_peaks[str(index)]}
+        reports[:] = [{"0": 2.5}, {str(0 if shared_device else 1): 3.5}]
 
     output = StringIO()
     handler = logging.StreamHandler(output)
@@ -76,7 +76,7 @@ def test_tp_memory_is_merged_once_on_rank_zero(monkeypatch, rank, shared_device)
     collective.assert_called_once()
     assert memory_monitor.peak_vram == local_peaks, "merged peer statistics must not pollute local sampling"
     if rank == 0:
-        expected = "{'cuda:0': 3.5GB}" if shared_device else "{'cuda:0': 2.5GB, 'cuda:1': 3.5GB}"
+        expected = "{'0': 3.5GB}" if shared_device else "{'0': 2.5GB, '1': 3.5GB}"
         assert f"'peak_vram': {expected}" in summary
         assert len(output.getvalue().splitlines()) == 1
         assert "TP rank" not in output.getvalue()
@@ -143,7 +143,7 @@ def test_tp_memory_reporting_without_cuda_still_participates(monkeypatch):
 
     def gather(reports, local):
         assert local == {}
-        reports[:] = [{}, {"cuda:0": 3.5}]
+        reports[:] = [{}, {"0": 3.5}]
 
     with (
         patch.object(dist, "is_initialized", return_value=True),
@@ -157,7 +157,7 @@ def test_tp_memory_reporting_without_cuda_still_participates(monkeypatch):
         assert device_manager.log_memory_summary() == "summary"
     update.assert_called_once_with()
     collective.assert_called_once()
-    log.assert_called_once_with("", "info", peak_vram={"cuda:0": 3.5})
+    log.assert_called_once_with("", "info", peak_vram={"0": 3.5})
 
 
 def _memory_reporting_worker(rank, rendezvous):
@@ -177,7 +177,7 @@ def _memory_reporting_worker(rank, rendezvous):
                 summary = device_manager.log_memory_summary(phase)
                 assert memory_monitor.peak_vram == local_peaks
                 if rank == 0:
-                    assert "'peak_vram': {'cuda:0': 3.5GB}" in summary
+                    assert "'peak_vram': {'0': 3.5GB}" in summary
                 else:
                     assert summary is None
             assert info.call_count == (2 if rank == 0 else 0)

@@ -30,6 +30,7 @@ Design invariants (see AWQ_REFACTOR_PLAN.md §0.0 and §3.0):
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -281,8 +282,15 @@ class AlgorithmComposer:
         self._rotation_prepared: bool = False
 
     @contextmanager
-    def active_stage(self):
-        """Apply the active members' policies and lifecycle, including zero-shot."""
+    def active_stage(self) -> Iterator[None]:
+        """Apply the active members' policies and lifecycle, including zero-shot.
+
+        Yields:
+            None while active members are prepared; their finalizers run on scope exit.
+
+        Raises:
+            RuntimeError: No compressor has been bound to the composer.
+        """
         orchestrator = self._orchestrator
         if orchestrator is None:
             raise RuntimeError("active_stage requires a bound compressor.")

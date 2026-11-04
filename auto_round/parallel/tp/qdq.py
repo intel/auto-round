@@ -16,7 +16,7 @@
 
 import copy
 from functools import cache
-from typing import cast
+from typing import Any, cast
 
 import torch
 import torch.distributed as dist
@@ -39,7 +39,19 @@ class TensorParallelQDQLinear(WrapperLinear):
     _tp_layer: torch.nn.Linear
     _local_wrapper_cls = WrapperLinear
 
-    def __init__(self, orig_layer: torch.nn.Linear, **kwargs):
+    def __init__(self, orig_layer: torch.nn.Linear, **kwargs: Any) -> None:
+        """Create a local QDQ view without replacing native TP parameters.
+
+        Args:
+            orig_layer: Native Linear layer with an evenly sharded DTensor weight.
+            **kwargs: WrapperLinear options; the device is forced to the local shard.
+
+        Raises:
+            TypeError: The layer is not an ordinary Linear with a DTensor weight.
+            NotImplementedError: Layout, quantization, norm/bias tuning, or compilation
+                options are unsupported.
+            ValueError: Shards are uneven, empty, or split weight/activation groups.
+        """
         weight = orig_layer.weight
         if type(orig_layer) is not torch.nn.Linear or not isinstance(weight, DTensor):
             raise TypeError("TensorParallelQDQLinear requires an nn.Linear with a DTensor weight.")
@@ -127,7 +139,15 @@ class TensorParallelQDQLinear(WrapperLinear):
         # tree: optimizer/state_dict traversal must see each parameter only once.
         object.__setattr__(self, "_tp_layer", orig_layer)
 
-    def _distributed_weight(self, local_weight):
+    def _distributed_weight(self, local_weight: torch.Tensor) -> DTensor:
+        """Attach the original distributed layout to a local quantized weight.
+
+        Args:
+            local_weight: Quantized local shard retaining its autograd connection.
+
+        Returns:
+            A DTensor with the original weight's mesh, placements, shape, and stride.
+        """
         weight = self._tp_layer.weight
         return DTensor.from_local(
             local_weight,
@@ -138,13 +158,29 @@ class TensorParallelQDQLinear(WrapperLinear):
             stride=weight.stride(),
         )
 
-    def forward(self, x):
-        """Use functional parameter substitution so native TP transforms still run."""
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Use functional parameter substitution so native TP transforms still run.
+
+        Args:
+            x: Projection input accepted by the original TP forward.
+
+        Returns:
+            The native projection output computed with quantized local weights.
+        """
         quantized, _, _ = self._qdq_weight(self._rounding_value(), self.min_scale, self.max_scale)
         handle = None
         if self.enable_act_quant:
 
-            def quantize_input(module, inputs):
+            def quantize_input(module: torch.nn.Module, inputs: tuple[Any, ...]) -> tuple[Any, ...]:
+                """Quantize activations after the original input-transform hooks.
+
+                Args:
+                    module: Original TP projection receiving the hook call.
+                    inputs: Positional projection inputs, starting with activations.
+
+                Returns:
+                    Input arguments with the first activation replaced by its QDQ result.
+                """
                 activation, _, _ = self._qdq_act(
                     inputs[0],
                     act_min_scale=self.act_min_scale,
@@ -162,12 +198,23 @@ class TensorParallelQDQLinear(WrapperLinear):
                 handle.remove()
 
     def restore_original(self) -> torch.nn.Linear:
-        """Restore the native module after an aborted tuning attempt."""
+        """Restore the native module after an aborted tuning attempt.
+
+        Returns:
+            The original tensor-parallel Linear layer.
+        """
         return self._tp_layer
 
     @torch.no_grad()
-    def unwrapper(self, best_params):
-        """Bake the local shard and retain distributed scale/zero-point metadata."""
+    def unwrapper(self, best_params: dict[str, torch.Tensor]) -> torch.nn.Linear | WrapperWALayer:
+        """Bake the local shard and retain distributed scale/zero-point metadata.
+
+        Args:
+            best_params: Saved tuning parameters consumed by the local wrapper.
+
+        Returns:
+            The original TP layer with quantized weights, optionally activation-wrapped.
+        """
         local_result = super().unwrapper(best_params)
         local_layer = local_result.orig_layer if isinstance(local_result, WrapperWALayer) else local_result
         original = self._tp_layer
@@ -215,8 +262,18 @@ class TensorParallelQDQLinear(WrapperLinear):
 
 
 @cache
-def tensor_parallel_wrapper(wrapper_class):
-    """Compose TP transport with explicitly shard-local algorithm weight math."""
+def tensor_parallel_wrapper(wrapper_class: type[WrapperLinear]) -> type[TensorParallelQDQLinear]:
+    """Compose TP transport with explicitly shard-local algorithm weight math.
+
+    Args:
+        wrapper_class: WrapperLinear implementation declaring native TP support.
+
+    Returns:
+        A cached wrapper class combining native TP transport with local weight math.
+
+    Raises:
+        NotImplementedError: The wrapper has not explicitly implemented the TP contract.
+    """
     if wrapper_class in (WrapperLinear, TensorParallelQDQLinear):
         return TensorParallelQDQLinear
     if not issubclass(wrapper_class, WrapperLinear) or not wrapper_class.__dict__.get(

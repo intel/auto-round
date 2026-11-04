@@ -15,6 +15,7 @@
 """Transition from CLI-owned tensor-parallel quantization to local evaluation."""
 
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 
 import torch.distributed as dist
@@ -42,13 +43,17 @@ _DISTRIBUTED_ENV_VARS = (
 
 
 @contextmanager
-def rank_zero_evaluation():
+def rank_zero_evaluation() -> Iterator[bool]:
     """Finish CLI TP execution and yield whether this rank should evaluate.
 
     Every rank must enter after export completes. This permanently destroys the
     process groups, so it must not be used by APIs that retain a live TP model.
     Both fake-model and checkpoint-reload evaluation then run without training
     collectives or Accelerate's cached multi-process state.
+
+    Yields:
+        True on rank zero, which may evaluate without distributed launcher state;
+        False on other ranks, which must skip evaluation.
     """
     from accelerate.state import AcceleratorState
 

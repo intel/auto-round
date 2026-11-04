@@ -14,9 +14,26 @@
 
 """Capability checks for native tensor-parallel entry points and layers."""
 
+from __future__ import annotations
 
-def validate_tp_quantization(scheme):
-    """Reject unsupported schemes without changing their quantization semantics."""
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch
+
+    from auto_round.schemes import QuantizationScheme
+
+
+def validate_tp_quantization(scheme: QuantizationScheme | torch.nn.Module) -> None:
+    """Reject unsupported schemes without changing their quantization semantics.
+
+    Args:
+        scheme: Configuration or layer exposing weight and activation quantization fields.
+
+    Raises:
+        NotImplementedError: A data type, bit width, group size, symmetry, or activation
+            policy is outside the native TP quantization contract.
+    """
     data_type = scheme.data_type
     blocks = {"mx_fp": 32, "mx_fp4": 32, "nv_fp": 16, "nv_fp4": 16}
     if data_type != "int" and data_type not in blocks:

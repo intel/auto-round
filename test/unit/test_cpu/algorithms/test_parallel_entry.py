@@ -52,12 +52,9 @@ def test_config_aliases_and_roundtrip():
     assert ParallelConfig(data_parallel=1).data_parallel == "off"
 
 
-def test_dp_uses_one_unambiguous_public_option():
+def test_dp_uses_one_unambiguous_python_config_field():
     assert "dp_size" not in inspect.signature(ParallelConfig).parameters
     assert "dp_size" not in asdict(ParallelConfig())
-    assert "--dp_size" not in build_quantize_parser().format_help()
-    with pytest.raises(SystemExit):
-        build_quantize_parser().parse_args(["--dp_size", "2"])
     with pytest.raises(TypeError, match="data_parallel"):
         ParallelConfig.from_value({"dp_size": 2})
     with pytest.raises(TypeError, match="data_parallel"):
@@ -120,9 +117,25 @@ def test_cli_aliases(flag, dest):
         parser.parse_args([f"--{flag}", "2", f"--{dest}", "4"])
 
 
-def test_dp_prevents_implicit_tp(monkeypatch):
+@pytest.mark.parametrize("value", ["off", "auto", "2", "4"])
+@pytest.mark.parametrize("equals", [False, True])
+@pytest.mark.parametrize("flag", ["--dp", "--dp_size"])
+def test_cli_dp_alias(value, equals, flag):
+    parser = build_quantize_parser()
+    options = [f"{flag}={value}"] if equals else [flag, value]
+    args = parser.parse_args(options)
+    full_args = parser.parse_args(["--data_parallel", value])
+    assert args.data_parallel == value
+    assert vars(args) == vars(full_args)
+    assert _build_parallel_config(args) == _build_parallel_config(full_args)
+    assert flag in parser._option_string_actions
+    assert flag in parser.format_help()
+
+
+@pytest.mark.parametrize("flag", ["--data_parallel", "--dp", "--dp_size"])
+def test_dp_prevents_implicit_tp(monkeypatch, flag):
     monkeypatch.setenv("WORLD_SIZE", "4")
-    args = build_quantize_parser().parse_args(["--data_parallel", "auto"])
+    args = build_quantize_parser().parse_args([flag, "auto"])
     assert _build_parallel_config(args)["tp_size"] == 1
 
 

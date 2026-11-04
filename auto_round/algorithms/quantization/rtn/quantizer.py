@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import time as _ptime
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
@@ -35,12 +36,20 @@ from auto_round.utils import (
 from auto_round.utils.device_manager import device_manager
 from auto_round.utils.perf_counters import _PerfCounters
 
+if TYPE_CHECKING:
+    from auto_round.parallel.execution import ParallelCapabilities
+
 
 @register_pipeline_member(RTNConfig)
 class RTNQuantizer(BaseQuantizer):
 
     @classmethod
-    def parallel_capabilities(cls):
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Declare support for shard-local RTN quantization.
+
+        Returns:
+            ParallelCapabilities: Capabilities enabling TP and pipeline placement.
+        """
         from auto_round.parallel.execution import ParallelCapabilities
 
         return ParallelCapabilities(tensor_parallel=True)
@@ -90,7 +99,12 @@ class RTNQuantizer(BaseQuantizer):
 class OptimizedRTNQuantizer(RTNQuantizer):
 
     @classmethod
-    def parallel_capabilities(cls):
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Retain RTN's parallel contract for statistics-assisted quantization.
+
+        Returns:
+            ParallelCapabilities: The parallel capabilities inherited from RTN.
+        """
         return super().parallel_capabilities()
 
     # imatrix_cnt (a python int row count) must co-travel with imatrix: a cold

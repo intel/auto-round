@@ -14,16 +14,27 @@
 
 """Managed execution boundaries for algorithms with their own tuning loops."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Self, TypeVar
 
 import torch
 import torch.distributed as dist
 
 from auto_round.parallel.tp import runtime
 from auto_round.utils.device_manager import device_manager
+
+if TYPE_CHECKING:
+    from auto_round.algorithms.base import BaseAlgorithm
+    from auto_round.compressors.utils import IndexSampler
+    from auto_round.parallel.execution import ParallelExecution
+
+_ResultT = TypeVar("_ResultT")
 
 
 class RunCache:
@@ -33,13 +44,31 @@ class RunCache:
     The build callback runs on every participant when *any* participant misses;
     it must not contain rank-local branches around collective model forwards.
     Data-parallel replicas have independent caches and independent decisions.
+
+    Attributes:
+        run: Execution scope that owns the cache and its collective group.
     """
 
-    def __init__(self, run):
+    def __init__(self, run: PreparedRun) -> None:
+        """Bind cache operations to an execution scope.
+
+        Args:
+            run: PreparedRun providing model state, device, and process-group ownership.
+        """
         self.run = run
 
-    def workspace(self, path):
-        """Keep independently owned cache writers out of the same directory."""
+    def workspace(self, path: str | os.PathLike[str]) -> str:
+        """Keep independently owned cache writers out of the same directory.
+
+        Args:
+            path: Base cache directory, optionally implementing the path protocol.
+
+        Returns:
+            The created rank-local directory as a string.
+
+        Raises:
+            RuntimeError: The owning run has already exited.
+        """
         self.run._check_open()
         if self.run._tensor_parallel:
             path = os.path.join(path, f"tp_rank_{dist.get_rank()}")
@@ -48,11 +77,21 @@ class RunCache:
         os.makedirs(path, exist_ok=True)
         return os.fspath(path)
 
-    def ensure(self, valid, build):
+    def ensure(self, valid: bool, build: Callable[[], None]) -> bool:
         """Build on a coordinated miss; return whether the callback was run.
 
         ``valid`` describes local storage only. Never branch on it before calling
         this method: other ranks may still need a collective model forward.
+
+        Args:
+            valid: Whether this rank's local cache is usable.
+            build: No-argument callback that rebuilds this rank's cache on a miss.
+
+        Returns:
+            True if the build callback ran, otherwise False.
+
+        Raises:
+            RuntimeError: The owning run has already exited.
         """
         self.run._check_open()
         if self.run._tensor_parallel:
@@ -64,17 +103,33 @@ class RunCache:
         build()
         return True
 
-    def signature(self, samples):
+    def signature(self, samples: Sequence[Any] | None) -> dict[str, Any]:
         """Fingerprint model state and inputs without gathering full weights.
 
         Include every shard's digest so changing a remote shard invalidates all
         participants' caches, even if a participant's own tensors are unchanged.
+
+        Args:
+            samples: Input samples to fingerprint, or None when no data is available.
+
+        Returns:
+            A dictionary of model metadata, weight/input digests, and sample dimensions.
+
+        Raises:
+            RuntimeError: The owning run has already exited.
         """
         self.run._check_open()
         model = self.run.model
         cfg = getattr(model, "config", None)
 
-        def update_tensor(digest, name, tensor):
+        def update_tensor(digest: Any, name: str, tensor: torch.Tensor) -> None:
+            """Update a digest from tensor metadata and bounded CPU byte chunks.
+
+            Args:
+                digest: Hash object to update in place.
+                name: Tensor name included in the fingerprint.
+                tensor: Local or distributed tensor whose local storage is hashed.
+            """
             tensor = tensor.detach()
             if runtime.is_dtensor(tensor):
                 digest.update(f"{tensor.shape}:{tensor.placements}".encode())
@@ -136,9 +191,38 @@ class PreparedRun:
     Whole-model execution supports local/native TP, not pipeline scheduling.
     Block scopes retain the composer's existing placement. The caller owns model
     residency after exit; this scope only releases its temporary training wrapper.
+
+    Attributes:
+        execution: Parallel execution service managing placement and synchronization.
+        model: Original model or block executed by the scope.
+        samples: Samples synchronized across the TP mesh on entry.
+        device: Execution device for local model tensors.
+        whole_model: Whether entry restores residency for the complete model.
+        cache: Rank-aware cache operations bound to this scope.
     """
 
-    def __init__(self, execution, model, samples=None, device=None, *, whole_model=False):
+    def __init__(
+        self,
+        execution: ParallelExecution,
+        model: torch.nn.Module,
+        samples: Sequence[Any] | None = None,
+        device: str | torch.device | None = None,
+        *,
+        whole_model: bool = False,
+    ) -> None:
+        """Initialize an execution scope without entering or moving the model.
+
+        Args:
+            execution: Parallel execution service for the loaded topology.
+            model: Model or block to execute.
+            samples: Optional input samples shared by TP participants on entry.
+            device: Target device, defaulting to the current managed device.
+            whole_model: Whether to restore whole-model residency on entry.
+
+        Raises:
+            NotImplementedError: Parameters use multiple or non-one-dimensional TP meshes.
+            ValueError: A TP execution service receives a model without DTensor parameters.
+        """
         self.execution = execution
         self.model = model
         self.samples = samples
@@ -165,11 +249,25 @@ class PreparedRun:
         self._entered = False
         self._closed = False
 
-    def _check_open(self):
+    def _check_open(self) -> None:
+        """Reject operations after the scope has exited.
+
+        Raises:
+            RuntimeError: The scope has already exited.
+        """
         if self._closed:
             raise RuntimeError("PreparedRun has already exited.")
 
-    def __enter__(self):
+    def __enter__(self) -> Self:
+        """Synchronize samples and prepare model residency for execution.
+
+        Returns:
+            This execution scope, ready for calibration and training preparation.
+
+        Raises:
+            RuntimeError: The scope was already entered or closed.
+            NotImplementedError: Whole-model execution requests pipeline placement.
+        """
         self._check_open()
         if self._entered:
             raise RuntimeError("PreparedRun cannot be entered twice.")
@@ -190,17 +288,28 @@ class PreparedRun:
         return self
 
     @staticmethod
-    def _strip_dispatch_hooks(model):
+    def _strip_dispatch_hooks(model: torch.nn.Module) -> None:
+        """Remove stale Accelerate placement hooks before whole-model execution.
+
+        Args:
+            model: Model whose existing device map may have installed dispatch hooks.
+        """
         if getattr(model, "hf_device_map", None):
             from accelerate.hooks import remove_hook_from_submodules
 
             remove_hook_from_submodules(model)
 
-    def prepare_training(self, algorithm):
+    def prepare_training(self, algorithm: BaseAlgorithm) -> None:
         """Bind once, AFTER installing all trainable parameters and placement.
 
         TP retains native autograd; legacy DP uses the existing preparation
         policy. In particular, do not DDP-wrap before creating quantizer wrappers.
+
+        Args:
+            algorithm: Algorithm providing the gradient-synchronization policy.
+
+        Raises:
+            RuntimeError: The scope is closed, not entered, or already bound for training.
         """
         self._check_open()
         if not self._entered or self._sync_gradients is not None:
@@ -210,13 +319,24 @@ class PreparedRun:
         else:
             self._training_model, self._sync_gradients = self.execution.prepare_gradients(algorithm, self.model)
 
-    def forward(self, *args, output=None, **kwargs):
+    def forward(self, *args: Any, output: str | None = None, **kwargs: Any) -> Any:
         """Return replicated outputs with autograd intact, never gather weights.
 
         Select an attribute/key (e.g. ``output='logits'``) before normalization to
         avoid materializing unused model outputs. The default suits block tensors.
         DTensor outputs carry layout metadata; ordinary tensors are assumed to be
         complete already. Unlabelled local-shard outputs need an explicit adapter.
+
+        Args:
+            *args: Positional arguments forwarded to the training model.
+            output: Optional output key or attribute to select before replication.
+            **kwargs: Keyword arguments forwarded to the training model.
+
+        Returns:
+            The selected output with DTensors materialized and autograd preserved.
+
+        Raises:
+            RuntimeError: The scope has already exited.
         """
         self._check_open()
         result = self._training_model(*args, **kwargs)
@@ -224,8 +344,18 @@ class PreparedRun:
             result = result[output] if isinstance(result, dict) else getattr(result, output)
         return self.execution.replicated(result)
 
-    def next_batch(self, sampler):
-        """Sample once per TP mesh; DP retains its existing sampler semantics."""
+    def next_batch(self, sampler: IndexSampler) -> list[int]:
+        """Sample once per TP mesh; DP retains its existing sampler semantics.
+
+        Args:
+            sampler: Sampler exposing a ``next_batch`` method.
+
+        Returns:
+            Local sample indices, or indices broadcast from the TP mesh source.
+
+        Raises:
+            RuntimeError: The scope has already exited.
+        """
         self._check_open()
         if not self._tensor_parallel:
             return sampler.next_batch()
@@ -233,12 +363,23 @@ class PreparedRun:
         dist.broadcast_object_list(indices, src=self._source, group=self._group)
         return indices[0]
 
-    def step(self, update, *args, **kwargs):
+    def step(self, update: Callable[..., _ResultT], *args: Any, **kwargs: Any) -> _ResultT:
         """Synchronize accumulated grads, then run the algorithm's update callback.
 
         The callback may keep existing scaler/scheduler logic. Copy gradients to
         FP optimizer masters *inside* the callback, after synchronization. Closure
         optimizers that perform backward inside step require a separate policy.
+
+        Args:
+            update: Callback performing optimizer, scaler, and scheduler updates.
+            *args: Positional arguments passed to the update callback.
+            **kwargs: Keyword arguments passed to the update callback.
+
+        Returns:
+            The value returned by the update callback.
+
+        Raises:
+            RuntimeError: The scope is closed or training has not been prepared.
         """
         self._check_open()
         if self._sync_gradients is None:
@@ -246,7 +387,19 @@ class PreparedRun:
         self._sync_gradients()
         return update(*args, **kwargs)
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Release temporary training state without suppressing exceptions.
+
+        Args:
+            exc_type: Exception type raised inside the scope, or None.
+            exc_value: Exception raised inside the scope, or None.
+            traceback: Traceback associated with the exception, or None.
+        """
         self._training_model = self.model
         self._sync_gradients = None
         self._closed = True

@@ -296,20 +296,31 @@ class QADConfig(SignRoundConfig):
             )
 
     @property
-    def qad_lora_rank(self):
-        """Only an omitted stage-specific rank inherits the shared setting."""
+    def qad_lora_rank(self) -> int:
+        """int: Stage-specific LoRA rank, inheriting the shared rank only when omitted."""
         return self.lora_rank if self._qad_lora_rank is None else self._qad_lora_rank
 
     @qad_lora_rank.setter
-    def qad_lora_rank(self, value):
+    def qad_lora_rank(self, value: int | None) -> None:
+        """Set the QAD-specific rank override without changing the shared rank.
+
+        Args:
+            value (int | None): Stage-specific rank, or None to inherit the shared setting.
+        """
         self._qad_lora_rank = value
 
     @property
-    def qad_lora_alpha(self):
+    def qad_lora_alpha(self) -> float | None:
+        """float | None: Stage-specific LoRA alpha, falling back to the shared alpha."""
         return self.lora_alpha if self._qad_lora_alpha is None else self._qad_lora_alpha
 
     @qad_lora_alpha.setter
-    def qad_lora_alpha(self, value):
+    def qad_lora_alpha(self, value: float | None) -> None:
+        """Set the QAD-specific alpha override without changing the shared alpha.
+
+        Args:
+            value (float | None): Stage-specific alpha, or None to inherit the shared setting.
+        """
         self._qad_lora_alpha = value
 
 

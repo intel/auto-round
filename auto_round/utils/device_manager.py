@@ -872,19 +872,27 @@ class DeviceManager:
 
     @property
     def is_tensor_parallel(self) -> bool:
-        """Whether the current run uses tensor-parallel device ownership."""
+        """bool: Whether the current run uses tensor-parallel device ownership."""
         return self._tensor_parallel
 
     def set_tensor_parallel(self, enabled: bool) -> None:
-        """Set reporting topology explicitly; a process group alone need not be TP."""
+        """Set reporting topology explicitly; a process group alone need not be TP.
+
+        Args:
+            enabled (bool): Whether memory reporting should coordinate tensor-parallel ranks.
+        """
         self._tensor_parallel = enabled
 
-    def log_memory_summary(self, msg: str = "", level: str = "info"):
+    def log_memory_summary(self, msg: str = "", level: str = "info") -> str | None:
         """Report peaks at a successful boundary reached by every TP rank.
 
         Unlike ordinary MemoryMonitor logging, this performs a collective in TP
         mode. Never call it from rank-local cleanup or writer-only export hooks.
         Merged reports must not overwrite local allocator statistics.
+
+        Args:
+            msg (str): Optional prefix included in the memory summary.
+            level (str): Logging level used to emit the summary.
         """
         from auto_round.utils.device import memory_monitor
 
@@ -899,7 +907,7 @@ class DeviceManager:
         if torch.cuda.is_available():
             index = torch.cuda.current_device()
             memory_monitor.update(device_list=[f"cuda:{index}"])
-            report[f"cuda:{index}"] = max(
+            report[str(index)] = max(
                 memory_monitor.peak_vram.get(str(index), 0.0),
                 torch.cuda.max_memory_reserved(index) / 1024**3,
             )

@@ -34,6 +34,8 @@ Usage (the same unified QDQ serves both the scale grid-search and clip-search)::
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import torch
 
 from auto_round.data_type.utils import (
@@ -41,6 +43,9 @@ from auto_round.data_type.utils import (
     get_optimized_quant_func,
     get_quant_func,
 )
+
+if TYPE_CHECKING:
+    from auto_round.algorithms.quantization.config import QuantizationConfig
 
 
 class QDQTool:
@@ -65,8 +70,15 @@ class QDQTool:
 
     # ── runtime wiring ────────────────────────────────────────────────────────
     @staticmethod
-    def _quantizer_config(quantizer_or_composer):
-        """Return the active quantizer config from new or legacy hosts."""
+    def _quantizer_config(quantizer_or_composer: object) -> QuantizationConfig | None:
+        """Return the active quantizer config from new or legacy hosts.
+
+        Args:
+            quantizer_or_composer (object): Quantizer, composer, or legacy host exposing its config.
+
+        Returns:
+            QuantizationConfig | None: Active configuration, or None when none is exposed.
+        """
         quantizer = getattr(quantizer_or_composer, "active_quantizer", quantizer_or_composer)
         config = getattr(quantizer, "config", None)
         if config is not None:
@@ -84,8 +96,15 @@ class QDQTool:
         self.v2_scale_search = getattr(awq_config, "v2_scale_search", "auto")
 
     @staticmethod
-    def _quantizer_is_signroundv2(quantizer_or_composer) -> bool:
-        """Return ``True`` if the active quantizer is SignRoundV2."""
+    def _quantizer_is_signroundv2(quantizer_or_composer: object) -> bool:
+        """Check whether the active quantizer uses SignRoundV2.
+
+        Args:
+            quantizer_or_composer (object): Quantizer, composer, or legacy configuration host.
+
+        Returns:
+            bool: Whether the resolved configuration is a SignRoundV2Config instance.
+        """
         from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
 
         config = QDQTool._quantizer_config(quantizer_or_composer)

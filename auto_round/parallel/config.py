@@ -14,11 +14,27 @@
 
 """Public parallelism policy; process groups remain owned by the caller/Transformers."""
 
+from __future__ import annotations
+
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from transformers import DistributedConfig
+
+    from auto_round.parallel.dp.engine import ParallelPolicy
 
 
-def _reject_parallel_kwargs(kwargs):
+def _reject_parallel_kwargs(kwargs: Mapping[str, Any]) -> None:
+    """Reject parallel options passed outside the public configuration.
+
+    Args:
+        kwargs (Mapping[str, Any]): Constructor keyword arguments to inspect without modifying.
+
+    Raises:
+        TypeError: A removed or misplaced parallel option is present.
+    """
     if "dp_size" in kwargs:
         raise TypeError("dp_size is not supported; configure DP replicas through parallel_config with data_parallel.")
     misplaced = {"tensor_parallel", "pipeline_parallel", "data_parallel", "parallel_batch"}.intersection(kwargs)
@@ -36,6 +52,12 @@ class ParallelConfig:
     microbatch scheduling.
     ``data_parallel`` selects the single-process replica engine. Hybrid execution
     is not implemented.
+
+    Attributes:
+        tp_size (int): Number of tensor-parallel ranks.
+        pp_size (int): Number of devices used for pipeline placement.
+        data_parallel (str): Replica policy, specified as ``off``, ``auto``, or a count.
+        parallel_batch (str): Whether replicas split a batch or each receive a full batch.
     """
 
     tp_size: int = 1
@@ -45,14 +67,28 @@ class ParallelConfig:
 
     def __init__(
         self,
-        tp_size=None,
-        pp_size=None,
+        tp_size: int | None = None,
+        pp_size: int | None = None,
         *,
-        tensor_parallel=None,
-        pipeline_parallel=None,
-        data_parallel="off",
-        parallel_batch="split",
-    ):
+        tensor_parallel: int | None = None,
+        pipeline_parallel: int | None = None,
+        data_parallel: str | int = "off",
+        parallel_batch: str = "split",
+    ) -> None:
+        """Initialize and validate a non-hybrid parallel policy.
+
+        Args:
+            tp_size (int | None): Tensor-parallel degree, defaulting to one.
+            pp_size (int | None): Pipeline-parallel degree, defaulting to one.
+            tensor_parallel (int | None): Alias for ``tp_size``.
+            pipeline_parallel (int | None): Alias for ``pp_size``.
+            data_parallel (str | int): ``off``, ``auto``, or a replica count; one disables DP.
+            parallel_batch (str): Batch policy, either ``split`` or ``per_replica``.
+
+        Raises:
+            ValueError: Aliases conflict or a degree or policy is invalid.
+            NotImplementedError: Multiple parallel modes are requested together.
+        """
         for short, long, old, new in (
             ("tp_size", "tensor_parallel", tp_size, tensor_parallel),
             ("pp_size", "pipeline_parallel", pp_size, pipeline_parallel),
@@ -74,6 +110,12 @@ class ParallelConfig:
         self._validate()
 
     def _validate(self) -> None:
+        """Validate degrees and reject unsupported parallel combinations.
+
+        Raises:
+            ValueError: A parallel degree or batch policy is invalid.
+            NotImplementedError: A hybrid parallel topology is requested.
+        """
         for name in ("tp_size", "pp_size"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -86,16 +128,30 @@ class ParallelConfig:
             raise ValueError("parallel_batch must be split or per_replica.")
 
     @property
-    def tensor_parallel(self):
+    def tensor_parallel(self) -> int:
+        """int: Number of tensor-parallel ranks."""
         return self.tp_size
 
     @property
-    def pipeline_parallel(self):
+    def pipeline_parallel(self) -> int:
+        """int: Number of pipeline-placement devices."""
         return self.pp_size
 
     @classmethod
-    def from_value(cls, value: "ParallelConfig | Mapping | None") -> "ParallelConfig":
-        """Normalize the public API without mutating caller-owned mappings."""
+    def from_value(cls, value: ParallelConfig | Mapping | None) -> ParallelConfig:
+        """Normalize the public API without mutating caller-owned mappings.
+
+        Args:
+            value (ParallelConfig | Mapping[str, Any] | None): Configuration, option mapping, or None.
+
+        Returns:
+            ParallelConfig: The existing configuration or a newly constructed configuration.
+
+        Raises:
+            TypeError: The value has an unsupported type or contains ``dp_size``.
+            ValueError: Configuration options are invalid or conflicting.
+            NotImplementedError: Configuration options request hybrid execution.
+        """
         if value is None:
             return cls()
         if isinstance(value, cls):
@@ -106,8 +162,22 @@ class ParallelConfig:
             return cls(**dict(value))
         raise TypeError("parallel_config must be a ParallelConfig, mapping, or None.")
 
-    def resolve_data_parallel_policy(self, device_map, *, iters=0):
-        """Build the same replica policy for CLI and API before loading weights."""
+    def resolve_data_parallel_policy(
+        self, device_map: str | int | dict[str, Any] | None, *, iters: int = 0
+    ) -> ParallelPolicy | None:
+        """Build the same replica policy for CLI and API before loading weights.
+
+        Args:
+            device_map (str | int | dict | None): Requested placement used to validate DP compatibility.
+            iters (int): Number of tuning iterations, including zero-shot execution.
+
+        Returns:
+            ParallelPolicy | None: Resolved replica policy, or None when DP is disabled.
+
+        Raises:
+            NotImplementedError: DP is requested in a multi-process environment.
+            ValueError: The replica count or device mapping is incompatible.
+        """
         import os
 
         import torch
@@ -138,8 +208,19 @@ class ParallelConfig:
             batch_mode=self.parallel_batch,
         )
 
-    def resolve_device_map(self, device_map):
-        """Resolve rank-local TP devices or naive pipeline-parallel stages."""
+    def resolve_device_map(self, device_map: str | int | dict[str, Any] | None) -> str | int | dict[str, Any] | None:
+        """Resolve rank-local TP devices or naive pipeline-parallel stages.
+
+        Args:
+            device_map (str | int | dict | None): Existing placement; explicit maps cannot accompany TP/PP.
+
+        Returns:
+            str | int | dict | None: Unchanged map, rank-local device, or pipeline device list string.
+
+        Raises:
+            ValueError: Placement, world size, rank, or available devices are invalid.
+            NotImplementedError: PP is requested in a multi-process environment.
+        """
         import os
 
         import torch
@@ -172,8 +253,15 @@ class ParallelConfig:
 
         return resolve_device_map(self.pp_size)
 
-    def to_transformers_config(self):
-        """Create the native loading config, without deprecated tp_plan kwargs."""
+    def to_transformers_config(self) -> DistributedConfig | None:
+        """Create the native loading config, without deprecated tp_plan kwargs.
+
+        Returns:
+            transformers.DistributedConfig | None: Native loading configuration, or None without TP.
+
+        Raises:
+            ImportError: Transformers does not expose ``DistributedConfig``.
+        """
         if self.tp_size == 1:
             return None
         try:

@@ -429,3 +429,94 @@ def _run_workers(tmp_path, checkpoint, device_type="cpu"):
             if process.is_alive():
                 process.terminate()
             process.join(timeout=10)
+
+
+class _BrokenExportModel(torch.nn.Module):
+    def __init__(self, config=None):
+        super().__init__()
+        if config is not None:
+            raise MemoryError("injected model reconstruction failure")
+        self.config = SimpleNamespace()
+        self.weight = torch.nn.Parameter(torch.ones(2, 4))
+
+
+def _export_failure_worker(rank, rendezvous, device_type="cpu"):
+    from torch.distributed.tensor import DeviceMesh, Shard, distribute_tensor
+
+    from auto_round.parallel.tp.runtime import _gather_cpu_tensor, gather_for_export, synchronized_export
+
+    if device_type == "cuda":
+        torch.cuda.set_device(rank)
+    dist.init_process_group(
+        "nccl" if device_type == "cuda" else "gloo",
+        init_method=rendezvous,
+        rank=rank,
+        world_size=2,
+        timeout=timedelta(seconds=60),
+    )
+    try:
+        mesh = DeviceMesh(device_type, torch.arange(2))
+        value = distribute_tensor(
+            torch.arange(8, dtype=torch.float32, device=device_type).reshape(2, 4), mesh, [Shard(1)]
+        )
+        original_empty = torch.empty
+        original_cpu = torch.Tensor.cpu
+        original_broadcast = dist.broadcast
+        for phase in ("local_copy", "writer_allocation", "staging", "writer_copy"):
+            injected = False
+            broadcasted = False
+
+            def broadcast(*args, **kwargs):
+                nonlocal broadcasted
+                result = original_broadcast(*args, **kwargs)
+                broadcasted = True
+                return result
+
+            def allocate(*args, **kwargs):
+                nonlocal injected
+                if phase == "writer_allocation" and rank == 0 and not injected and args[0] == value.shape:
+                    injected = True
+                    raise MemoryError("injected writer allocation failure")
+                if phase == "staging" and rank == 1 and not injected and args[0] == 16:
+                    injected = True
+                    raise MemoryError("injected staging failure")
+                return original_empty(*args, **kwargs)
+
+            def to_cpu(tensor, *args, **kwargs):
+                nonlocal injected
+                if phase == "local_copy" and rank == 1 and not injected:
+                    injected = True
+                    raise MemoryError("injected local copy failure")
+                if phase == "writer_copy" and rank == 0 and broadcasted and not injected:
+                    injected = True
+                    raise MemoryError("injected writer copy failure")
+                return original_cpu(tensor, *args, **kwargs)
+
+            with (
+                patch("torch.empty", side_effect=allocate),
+                patch.object(torch.Tensor, "cpu", to_cpu),
+                patch.object(dist, "broadcast", side_effect=broadcast),
+                pytest.raises(RuntimeError, match="TP checkpoint gathering failed.*injected"),
+            ):
+                _gather_cpu_tensor(value, chunk_bytes=16)
+            # Every rank must have exited at the same safe point; group stays usable.
+            dist.barrier()
+
+        model = _BrokenExportModel()
+        model.weight = torch.nn.Parameter(value)
+        with pytest.raises(RuntimeError, match="injected model reconstruction failure"):
+            gather_for_export(model)
+        dist.barrier()
+
+        # Writer-only errors still reach peers after successful gathering.
+        with pytest.raises((OSError, RuntimeError), match="injected writer failure"), synchronized_export():
+            if rank == 0:
+                raise OSError("injected writer failure")
+        dist.barrier()
+    finally:
+        dist.destroy_process_group()
+
+
+@pytest.mark.skipif(not dist.is_available() or not dist.is_gloo_available(), reason="requires Gloo")
+def test_two_rank_export_failure_safe_points(tmp_path):
+    mp.spawn(_export_failure_worker, args=((tmp_path / "export-rendezvous").as_uri(),), nprocs=2, join=True)

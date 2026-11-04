@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any, get_args, get_origin, get_type_hints
 
@@ -263,12 +264,18 @@ class AlgorithmHandler:
             _add_registered_arguments(group, registry)
 
     @classmethod
-    def _has_quantizer(cls, names) -> bool:
+    def _has_quantizer(cls, names: Iterable[str]) -> bool:
         """Whether any algorithm in *names* is a quantizer.
 
         Quantization algorithms (rtn, auto_round, qad, …) already provide a
         quantizer, so the CLI must not append a default one. Preprocessors
         (awq, hadamard, svdquant, …) do not count.
+
+        Args:
+            names (Iterable[str]): Algorithm names or aliases to resolve in the registry.
+
+        Returns:
+            bool: Whether at least one resolved implementation subclasses BaseQuantizer.
         """
         from auto_round.algorithms.quantization.base import BaseQuantizer
         from auto_round.algorithms.registry import pipeline_member_for_config_class

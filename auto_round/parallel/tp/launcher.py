@@ -15,15 +15,29 @@
 """Tensor-parallel worker orchestration for CLI and Python task APIs."""
 
 import os
+from collections.abc import Callable, Mapping
+from typing import Any, TypeVar
 
 import torch
 import torch.distributed as dist
 
 from auto_round.parallel.config import ParallelConfig, _reject_parallel_kwargs
 
+_ResultT = TypeVar("_ResultT")
 
-def needs_local_launch(config):
-    """Never recursively launch from torchrun or a caller-owned process group."""
+
+def needs_local_launch(config: ParallelConfig | Mapping[str, Any] | None) -> bool:
+    """Determine whether TP needs local workers without recursively launching.
+
+    Args:
+        config: ParallelConfig, option mapping, or None.
+
+    Returns:
+        True when TP is requested outside an existing distributed environment.
+
+    Raises:
+        ValueError: The existing world size differs from the requested TP degree.
+    """
     config = ParallelConfig.from_value(config)
     world = dist.get_world_size() if dist.is_initialized() else int(os.environ.get("WORLD_SIZE", "1"))
     if config.tp_size <= 1:
@@ -35,8 +49,16 @@ def needs_local_launch(config):
     return True
 
 
-def _worker(function, args):
-    """Groups created in our disposable workers belong to this launcher."""
+def _worker(function: Callable[..., _ResultT], args: tuple[Any, ...]) -> _ResultT:
+    """Run a disposable worker and destroy its process group on exit.
+
+    Args:
+        function: Worker entry point invoked inside the launched process.
+        args: Positional arguments passed to the entry point.
+
+    Returns:
+        The value returned by the worker entry point.
+    """
     try:
         return function(*args)
     finally:
@@ -44,11 +66,26 @@ def _worker(function, args):
             dist.destroy_process_group()
 
 
-def launch(config, function, *args):
+def launch(
+    config: ParallelConfig | Mapping[str, Any] | None,
+    function: Callable[..., _ResultT],
+    *args: Any,
+) -> _ResultT:
     """Run directly or start one local worker per TP shard; propagate failures.
 
     ``function`` must be a module-level callable and its arguments must support
     multiprocessing serialization. Existing distributed groups remain caller-owned.
+
+    Args:
+        config: ParallelConfig, option mapping, or None.
+        function: Serializable module-level worker entry point.
+        *args: Serializable positional arguments passed to the entry point.
+
+    Returns:
+        The direct call's result or the result returned by local worker zero.
+
+    Raises:
+        ValueError: The world size is incompatible or too few CUDA devices are visible.
     """
     config = ParallelConfig.from_value(config)
     if not needs_local_launch(config):
@@ -70,7 +107,23 @@ def launch(config, function, *args):
     return results[0]
 
 
-def _quantize_task(model, output_dir, constructor_kwargs, save_kwargs):
+def _quantize_task(
+    model: str,
+    output_dir: str,
+    constructor_kwargs: dict[str, Any],
+    save_kwargs: dict[str, Any],
+) -> list[str]:
+    """Quantize and save a model inside one launcher worker.
+
+    Args:
+        model: Model name or checkpoint path loaded by the worker.
+        output_dir: Root directory for exported checkpoints.
+        constructor_kwargs: AutoRound constructor options, including parallel configuration.
+        save_kwargs: Options passed to the compressor's quantize-and-save method.
+
+    Returns:
+        Checkpoint folders, normalized to a list for a single string result.
+    """
     from auto_round import AutoRound
 
     compressor = AutoRound(model, **constructor_kwargs)
@@ -79,13 +132,13 @@ def _quantize_task(model, output_dir, constructor_kwargs, save_kwargs):
 
 
 def quantize_and_save(
-    model,
-    output_dir,
+    model: str,
+    output_dir: str,
     *,
-    parallel_config=None,
-    save_kwargs=None,
-    **kwargs,
-):
+    parallel_config: ParallelConfig | Mapping[str, Any] | None = None,
+    save_kwargs: Mapping[str, Any] | None = None,
+    **kwargs: Any,
+) -> list[str]:
     """Quantize a model path and return checkpoint folders, automatically launching TP.
 
     Call from an ``if __name__ == "__main__":`` guard when TP workers are started.
@@ -93,6 +146,21 @@ def quantize_and_save(
     options in ``save_kwargs``. Preloaded models/tokenizers are intentionally excluded
     from this task API; use rank-local ``AutoRound`` under torchrun for those cases.
     This function does not return a distributed model to the parent process.
+
+    Args:
+        model: Model name or checkpoint path to load independently in each worker.
+        output_dir: Root directory for exported checkpoints.
+        parallel_config: ParallelConfig, option mapping, or None.
+        save_kwargs: Optional mapping of checkpoint export options.
+        **kwargs: Serialization-safe AutoRound constructor options.
+
+    Returns:
+        Exported checkpoint folders returned by worker zero or direct local execution.
+
+    Raises:
+        TypeError: The model is preloaded or parallel options appear in top-level kwargs.
+        ValueError: A tokenizer or ``return_folders`` is supplied, or launch devices or
+            world size do not match the requested topology.
     """
     _reject_parallel_kwargs(kwargs)
     if not isinstance(model, str):

@@ -89,8 +89,10 @@ quantizers keep per-expert QDQ over contiguous slices before the grouped GEMM.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from math import ceil, isclose
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -164,7 +166,14 @@ def _is_wrapper_linear(layer: nn.Module) -> bool:
 
 
 def _is_wrapper_wa(layer: nn.Module) -> bool:
-    """Only the standard fake-eval wrapper: subclasses may override forward semantics."""
+    """Identify the standard fake-eval wrapper without accepting custom subclasses.
+
+    Args:
+        layer (nn.Module): Expert projection to inspect.
+
+    Returns:
+        bool: Whether the layer's exact type is WrapperWALayer.
+    """
     global _WRAPPER_WA_CLS
     if _WRAPPER_WA_CLS is None:
         from auto_round.wrapper import WrapperWALayer
@@ -190,7 +199,14 @@ def _act_signature(layer: nn.Module):
 
 
 def _eval_qdq_is_standard(layer: nn.Module) -> bool:
-    """Only known deterministic QDQ may be reordered into projection-slot stages."""
+    """Check whether deterministic QDQ can be reordered into projection-slot stages.
+
+    Args:
+        layer (nn.Module): Standard fake-eval wrapper whose activation method is inspected.
+
+    Returns:
+        bool: Whether both the input-QDQ method and quantization callable are supported.
+    """
     from auto_round.data_type.mxfp import quant_mx, quant_mx_rceil, quant_mx_rceil_v2
     from auto_round.data_type.nvfp import nv_fp4_with_static_gs
 
@@ -323,7 +339,16 @@ def _hooks_are_alignment_only(module: nn.Module) -> bool:
     return True
 
 
-def _forward_is_standard(module: nn.Module, expected) -> bool:
+def _forward_is_standard(module: nn.Module, expected: Callable[..., Any]) -> bool:
+    """Check for a standard forward, optionally wrapped by alignment-only hooks.
+
+    Args:
+        module (nn.Module): Projection or wrapper whose forward is inspected.
+        expected (Callable): Expected unbound forward implementation.
+
+    Returns:
+        bool: Whether grouped execution can preserve the module's forward semantics.
+    """
     if getattr(module.forward, "__func__", None) is expected:
         return True
     return (
@@ -387,7 +412,14 @@ def _compute_device(layer: nn.Module) -> torch.device:
 
 
 def _projection_fallback_reason(layer: nn.Module) -> str:
-    """Explain a rejected projection without changing its eligibility decision."""
+    """Explain a rejected projection without changing its eligibility decision.
+
+    Args:
+        layer (nn.Module): Expert projection rejected by the grouped-path capability check.
+
+    Returns:
+        str: Human-readable reason to preserve the original per-expert forward.
+    """
     is_eval = _is_wrapper_wa(layer)
     is_tuning = _is_wrapper_linear(layer)
     if type(layer) is not nn.Linear and not is_eval and not is_tuning:
@@ -923,7 +955,16 @@ def _quantize_activation(layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
 
 
 def _eval_activation_batch_is_supported(layers: list[nn.Module], counts: list[int], x: torch.Tensor) -> bool:
-    """Fail closed before bypassing any expert's original activation-QDQ method."""
+    """Check batch eligibility before bypassing an expert's activation-QDQ method.
+
+    Args:
+        layers (list[nn.Module]): Fake-eval wrappers ordered like the routed activation rows.
+        counts (list[int]): Positive row counts for the corresponding experts.
+        x (torch.Tensor): Concatenated two-dimensional expert activations.
+
+    Returns:
+        bool: Whether storage, dtype, device, row counts, and wrapper methods are supported.
+    """
     return (
         bool(layers)
         and len(layers) == len(counts)
@@ -943,7 +984,16 @@ def _eval_activation_batch_is_supported(layers: list[nn.Module], counts: list[in
 
 
 def _fused_eval_nvfp_activation(layers: list[nn.Module], counts: list[int], x: torch.Tensor) -> torch.Tensor | None:
-    """Batch canonical NVFP4 QDQ while keeping each expert's global scale independent."""
+    """Batch canonical NVFP4 QDQ while preserving per-expert global scales.
+
+    Args:
+        layers (list[nn.Module]): NVFP4 fake-eval wrappers in routed-row order.
+        counts (list[int]): Number of activation rows assigned to each wrapper.
+        x (torch.Tensor): Concatenated expert inputs with shape ``(sum(counts), channels)``.
+
+    Returns:
+        torch.Tensor | None: Batched QDQ activations, or None when fusion is unsupported.
+    """
     from auto_round.data_type.nvfp import FLOAT4_E2M1_MAX, FLOAT8_E4M3_MAX, get_reciprocal, nv_fp4_with_static_gs
 
     if not _eval_activation_batch_is_supported(layers, counts, x):
@@ -987,7 +1037,16 @@ def _fused_eval_nvfp_activation(layers: list[nn.Module], counts: list[int], x: t
 
 
 def _fused_eval_mx_activation(layers: list[nn.Module], counts: list[int], x: torch.Tensor) -> torch.Tensor | None:
-    """Fuse standard dynamic MXFP QDQ with each expert's own scalar max_scale."""
+    """Fuse standard dynamic MXFP QDQ with each expert's scalar maximum scale.
+
+    Args:
+        layers (list[nn.Module]): Compatible MXFP fake-eval wrappers in routed-row order.
+        counts (list[int]): Number of activation rows assigned to each wrapper.
+        x (torch.Tensor): Concatenated expert inputs with shape ``(sum(counts), channels)``.
+
+    Returns:
+        torch.Tensor | None: Batched QDQ activations, or None when fusion is unsupported.
+    """
     from auto_round.data_type.mxfp import quant_mx, quant_mx_rceil
 
     if not _eval_activation_batch_is_supported(layers, counts, x):
@@ -1075,6 +1134,16 @@ def _fused_eval_mx_activation(layers: list[nn.Module], counts: list[int], x: tor
 
 
 def _quantize_slot_activation(layers: list[nn.Module], counts: list[int], x: torch.Tensor) -> torch.Tensor:
+    """Quantize a projection slot using safe fusion or per-expert activation calls.
+
+    Args:
+        layers (list[nn.Module]): Nonempty sequence of compatible expert projections.
+        counts (list[int]): Routed activation row count for each projection.
+        x (torch.Tensor): Expert inputs concatenated in projection order.
+
+    Returns:
+        torch.Tensor: QDQ activations retaining routed-row order and expert coefficients.
+    """
     if not _is_wrapper_wa(layers[0]):
         return _quantize_activation(layers[0], x)
     for fuse in (_fused_eval_nvfp_activation, _fused_eval_mx_activation):

@@ -18,7 +18,7 @@ Algorithm authors implement BaseQuantizer's stage hooks, not these callbacks.
 The composer owns sequencing; the compressor owns caching, devices and storage.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +27,20 @@ from auto_round.logger import logger
 
 @dataclass
 class ModelCompressionContext:
+    """Provide compressor-owned services to model-level algorithm stages.
+
+    Attributes:
+        model (torch.nn.Module): Model being compressed.
+        device (str | torch.device): Device used for model-level execution.
+        token_ids (Sequence | None): Cached calibration samples, if available.
+        run_blocks (Callable[[], None]): Callback executing the blockwise pipeline.
+        reload_model (Callable[[], None]): Callback restoring the original model weights.
+        collect_token_ids (Callable[[int], Sequence | None] | None): Optional sample collector.
+        nsamples (int): Default number of calibration samples.
+        streaming_export (bool): Whether the run writes checkpoints incrementally.
+        resuming (bool): Whether compression resumes an existing run.
+    """
+
     model: Any
     device: Any
     token_ids: Any
@@ -37,8 +51,16 @@ class ModelCompressionContext:
     streaming_export: bool = False
     resuming: bool = False
 
-    def resolve_token_ids(self, nsamples: int | None):
-        """Reuse a cached prefix or collect raw tokens without block forwards."""
+    def resolve_token_ids(self, nsamples: int | None) -> Sequence[Any] | None:
+        """Reuse a cached prefix or collect raw tokens without block forwards.
+
+        Args:
+            nsamples (int | None): Requested sample count, or None to use the stage default.
+
+        Returns:
+            Sequence | None: Cached or freshly collected samples, falling back to the
+            existing cache if collection is unavailable or empty.
+        """
         target = self.nsamples if nsamples is None else nsamples
         cached = self.token_ids
         if cached is not None:

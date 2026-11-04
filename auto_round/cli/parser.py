@@ -26,7 +26,21 @@ from auto_round.logger import logger
 class _ParallelSizeAction(argparse.Action):
     """Allow repeated aliases only when they request the same degree."""
 
-    def __call__(self, parser, namespace, values, option_string=None):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: int,
+        option_string: str | None = None,
+    ) -> None:
+        """Store a parallel degree while rejecting conflicting aliases.
+
+        Args:
+            parser (argparse.ArgumentParser): Parser reporting conflicting-size errors.
+            namespace (argparse.Namespace): Parsed arguments updated in place.
+            values (int): Parsed parallel degree requested by this option.
+            option_string (str | None): Option spelling used for diagnostic messages.
+        """
         seen = dict(getattr(namespace, "_parallel_sizes", {}))
         if self.dest in seen and seen[self.dest] != values:
             parser.error(f"conflicting parallel sizes for {option_string}")
@@ -186,6 +200,8 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     rt.add_argument(
         "--data_parallel",
+        "--dp",
+        "--dp_size",
         default="off",
         type=str,
         help="Single-process data-parallel SignRound tuning: 'off' (default), 'auto' (all visible CUDA "

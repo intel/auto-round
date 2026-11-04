@@ -682,6 +682,9 @@ class CompressionOrchestrator(BaseOrchestrator):
 
         This replaces the standalone ``ZeroShotCompressor.quantize()`` method.
         Block-wise RTN quantization without any input data.
+
+        Returns:
+            tuple[torch.nn.Module, dict[str, Any]]: Quantized model and its layer configuration.
         """
         from auto_round.algorithms.composer import BlockContext
 

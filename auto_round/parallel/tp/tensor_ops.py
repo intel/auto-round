@@ -18,6 +18,9 @@ Only channel statistics are gathered/reduced. No operation materializes a full
 weight matrix, and writes preserve native DTensor parameters and forward hooks.
 """
 
+from collections.abc import Sequence
+from typing import Any
+
 import torch
 import torch.distributed as dist
 
@@ -25,20 +28,51 @@ from auto_round.parallel.tp.runtime import is_dtensor
 
 
 class ParallelTensorOps:
+    """Provide local weight transforms and collective channel statistics.
+
+    Operations preserve native DTensor layouts and never gather full weight matrices.
+    Ranks sharing a weight mesh must invoke collective operations in the same order.
+    """
+
     @staticmethod
-    def local(value):
+    def local(value: Any) -> Any:
+        """Extract local storage without gathering distributed tensors.
+
+        Args:
+            value: DTensor or value to leave unchanged.
+
+        Returns:
+            The rank-local tensor for DTensor input, otherwise the original value.
+        """
         return value.to_local() if is_dtensor(value) else value
 
     @staticmethod
-    def shard_axis(value):
+    def shard_axis(value: torch.Tensor) -> int | None:
+        """Find the sharded axis for a tensor on a one-dimensional mesh.
+
+        Args:
+            value: Tensor whose first placement is inspected.
+
+        Returns:
+            The non-negative shard axis, or None for local or unsharded tensors.
+        """
         if not is_dtensor(value):
             return None
         placement = value.placements[0]
         return placement.dim % value.ndim if placement.is_shard() else None
 
     @classmethod
-    def channel_scale(cls, weight, scales, axis):
-        """Slice a replicated channel vector to the weight's local channel span."""
+    def channel_scale(cls, weight: torch.Tensor, scales: torch.Tensor, axis: int) -> torch.Tensor:
+        """Slice a replicated channel vector to the weight's local channel span.
+
+        Args:
+            weight: Local or distributed weight defining the channel layout.
+            scales: Global channel scales or an already-local scale vector.
+            axis: Weight dimension corresponding to the scale vector.
+
+        Returns:
+            Channel scales on the weight device, sliced when the axis is sharded.
+        """
         scales = scales.to(weight.device)
         if cls.shard_axis(weight) == axis:
             width = cls.local(weight).shape[axis]
@@ -49,8 +83,16 @@ class ParallelTensorOps:
         return scales
 
     @classmethod
-    def input_activation(cls, layer, value):
-        """Recover global channels from an explicitly row-sharded local input."""
+    def input_activation(cls, layer: torch.nn.Module, value: torch.Tensor) -> torch.Tensor:
+        """Recover global channels from an explicitly row-sharded local input.
+
+        Args:
+            layer: Projection whose weight defines the input-channel layout.
+            value: DTensor activation, local channel shard, or complete activation.
+
+        Returns:
+            The full activation when a distributed layout is identifiable, else the input.
+        """
         from torch.distributed.tensor import DTensor, Shard
 
         if is_dtensor(value):
@@ -72,22 +114,51 @@ class ParallelTensorOps:
 
     @classmethod
     @torch.no_grad()
-    def copy_weight(cls, layer, local_weight):
+    def copy_weight(cls, layer: torch.nn.Module, local_weight: torch.Tensor) -> None:
+        """Overwrite local weight storage without replacing its distributed parameter.
+
+        Args:
+            layer: Module whose weight is updated in place.
+            local_weight: Replacement tensor with the same shape as the local shard.
+
+        Raises:
+            ValueError: The replacement changes the local weight shape.
+        """
         target = cls.local(layer.weight)
         if target.shape != local_weight.shape:
             raise ValueError("A shard-local weight update must preserve the local weight shape.")
         target.copy_(local_weight)
 
     @classmethod
-    def weight_sum(cls, weight, local_sum):
-        """Sum disjoint weight errors, without multiplying replicated errors."""
+    def weight_sum(cls, weight: torch.Tensor, local_sum: torch.Tensor) -> torch.Tensor:
+        """Sum disjoint weight errors, without multiplying replicated errors.
+
+        Args:
+            weight: Weight whose placement determines whether reduction is required.
+            local_sum: Local error sum, reduced in place for sharded weights.
+
+        Returns:
+            The error sum across unique weight elements.
+        """
         if cls.shard_axis(weight) is not None:
             dist.all_reduce(local_sum, group=weight.device_mesh.get_group())
         return local_sum
 
     @classmethod
     @torch.no_grad()
-    def input_channel_means(cls, layers, group_size):
+    def input_channel_means(cls, layers: Sequence[torch.nn.Module], group_size: int | None) -> torch.Tensor:
+        """Compute global input-channel means of group-normalized absolute weights.
+
+        Args:
+            layers: Nonempty collection of projections sharing an input-channel width.
+            group_size: Quantization group size; non-positive values use the full width.
+
+        Returns:
+            A replicated vector of normalized weight means for each input channel.
+
+        Raises:
+            NotImplementedError: A row-wise shard splits a quantization group.
+        """
         from torch.distributed.tensor import DTensor, Shard
 
         from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
@@ -123,13 +194,26 @@ class ParallelTensorOps:
 
     @classmethod
     @torch.no_grad()
-    def scale_inputs(cls, layer, scales):
+    def scale_inputs(cls, layer: torch.nn.Module, scales: torch.Tensor) -> None:
+        """Multiply local weight columns by their input-channel scales in place.
+
+        Args:
+            layer: Projection whose local weight is modified.
+            scales: Global or already-local input-channel scale vector.
+        """
         local = cls.local(layer.weight)
         local.mul_(cls.channel_scale(layer.weight, scales, 1).view(1, -1))
 
     @classmethod
     @torch.no_grad()
-    def divide_outputs(cls, layer, scales, *, unit_offset=False):
+    def divide_outputs(cls, layer: torch.nn.Module, scales: torch.Tensor, *, unit_offset: bool = False) -> None:
+        """Divide output weights and optional bias by channel scales in place.
+
+        Args:
+            layer: Projection or normalization layer to modify.
+            scales: Output scales, optionally covering only trailing projection rows.
+            unit_offset: Whether one-dimensional weights represent a scale offset from one.
+        """
         weight = layer.weight
         local = cls.local(weight)
         if weight.ndim == 1:

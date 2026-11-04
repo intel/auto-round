@@ -27,6 +27,7 @@ from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQua
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer
+    from auto_round.parallel.execution import ParallelCapabilities
 
 from auto_round import envs
 from auto_round.algorithms.registry import register_pipeline_member
@@ -492,7 +493,12 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 @register_pipeline_member(SignRoundV2Config)
 class SignRoundV2Quantizer(SignRoundQuantizer):
     @classmethod
-    def parallel_capabilities(cls):
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Retain SignRound's parallel contract for the V2 quantizer.
+
+        Returns:
+            ParallelCapabilities: The parallel capabilities inherited from SignRound.
+        """
         return super().parallel_capabilities()
 
     """SignRound variant using the open algorithm-extension path in the new architecture."""

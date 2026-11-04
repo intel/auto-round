@@ -59,6 +59,7 @@ from auto_round.utils.model import move_to_device
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
+    from auto_round.parallel.execution import ParallelCapabilities, ParallelExecution
 
 
 def _slice_seq_tensor(v: Any, actual_seq: int, seqlen: int) -> Any:
@@ -178,13 +179,27 @@ class AWQTransform(BasePreprocessor):
     """
 
     @classmethod
-    def parallel_capabilities(cls):
+    def parallel_capabilities(cls) -> ParallelCapabilities:
+        """Declare support for shard-aware AWQ smoothing.
+
+        Returns:
+            ParallelCapabilities: Capabilities enabling TP and pipeline placement.
+        """
         from auto_round.parallel.execution import ParallelCapabilities
 
         return ParallelCapabilities(tensor_parallel=True)
 
     @classmethod
-    def validate_parallel_config(cls, config, execution):
+    def validate_parallel_config(cls, config: AWQConfig, execution: ParallelExecution) -> None:
+        """Reject AWQ options that do not satisfy the shard-local TP contract.
+
+        Args:
+            config (AWQConfig): Smoothing and clipping configuration to validate.
+            execution (ParallelExecution): Execution service defining the active topology.
+
+        Raises:
+            NotImplementedError: TP requests clipping or a non-INT weight data type.
+        """
         if execution.is_tp:
             if config.apply_clip or config.clip_as_init:
                 raise NotImplementedError("AWQ TP clipping has not implemented the shard-local clipping contract yet.")

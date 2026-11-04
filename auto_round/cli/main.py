@@ -16,6 +16,7 @@ import argparse
 import difflib
 import os
 import sys
+from collections.abc import Sequence
 from contextlib import nullcontext
 
 from auto_round.cli.algorithms import AlgorithmHandler
@@ -180,8 +181,15 @@ def _normalize_scheme_list(raw) -> str | None:
     return ",".join(p.strip() for p in flat.split(",") if p.strip())
 
 
-def _build_parallel_config(args) -> dict:
-    """Resolve launcher topology once for both entry validation and construction."""
+def _build_parallel_config(args: argparse.Namespace) -> dict[str, int | str]:
+    """Resolve launcher topology once for both entry validation and construction.
+
+    Args:
+        args (argparse.Namespace): Parsed CLI options, optionally omitting parallel fields.
+
+    Returns:
+        dict[str, int | str]: Parallel degrees and replica/batch policies for ParallelConfig.
+    """
     tp_size = getattr(args, "tp_size", None)
     if tp_size is None:
         # Infer a single TP axis only; do not silently create hybrid parallelism.
@@ -375,7 +383,14 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     return True
 
 
-def _start_worker(recipe, argv):
+def _start_worker(recipe: str, argv: Sequence[str]) -> None:
+    """Run the CLI recipe inside a locally launched TP worker.
+
+    Args:
+        recipe (str): Registered recipe name passed to the CLI entry point.
+        argv (Sequence[str]): Command-line arguments replayed in the worker.
+
+    """
     return start(recipe, argv=argv)
 
 

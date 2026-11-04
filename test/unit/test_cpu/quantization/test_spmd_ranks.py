@@ -17,6 +17,8 @@ on CPU against the serial run."""
 
 import logging
 import threading
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -29,6 +31,41 @@ CPU2 = [torch.device("cpu"), torch.device("cpu", 1)]
 def _run(fns, devices=None):
     devices = devices or CPU2[: len(fns)]
     return spmd.run_ranks(fns, devices, spmd.RankGroup(devices))
+
+
+def test_engagement_logs_once_per_quantizer_run(monkeypatch):
+    from auto_round.parallel.dp.engine import DDPPlan, parallel_state
+
+    class Pool:
+        def __init__(self, block, devices):
+            self.reps = [block] * len(devices)
+
+        def release(self):
+            pass
+
+    info = Mock()
+    monkeypatch.setattr(spmd.logger, "info", info)
+    monkeypatch.setattr(spmd, "MirrorPool", Pool)
+    monkeypatch.setattr(spmd, "distribute_pool", lambda *a: None)
+    monkeypatch.setattr(spmd, "_sync_pool_devices", lambda *a: None)
+    monkeypatch.setattr(spmd, "resolve_tune_ddp_plan_", lambda *a: DDPPlan(2, CPU2, 2))
+    monkeypatch.setattr(
+        spmd, "rank_quantizer", lambda *a: SimpleNamespace(calibration_context=SimpleNamespace(batch_size=1))
+    )
+    monkeypatch.setattr(spmd, "run_ranks", lambda *a: ["rank zero result", None])
+    monkeypatch.setattr(spmd, "_WARM_SIGNATURES", set())
+    inputs = [torch.zeros(1)] * 4
+    for run in range(2):
+        quantizer = SimpleNamespace(iters=0, calibration_context=SimpleNamespace(batch_size=2))
+        assert spmd.quantize_block_on_ranks(quantizer, None, inputs, {}, inputs, None, None) == (False, None)
+        assert info.call_count == run
+        quantizer.iters = 2
+        for width in (4, 4, 8):
+            result = spmd.quantize_block_on_ranks(quantizer, torch.nn.Linear(4, width), inputs, {}, inputs, None, None)
+            assert result == (True, "rank zero result")
+            assert info.call_count == run + 1
+        assert parallel_state(quantizer).engagement_logged
+    assert all(call.args[0].startswith("[tune-ranks] engaged:") for call in info.call_args_list)
 
 
 class TestCollectives:

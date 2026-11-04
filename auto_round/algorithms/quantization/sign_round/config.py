@@ -390,7 +390,17 @@ class SignRoundConfig(QuantizationConfig):
             )
 
     @staticmethod
-    def _validate_lora_settings(rank, alpha, prefix="lora") -> None:
+    def _validate_lora_settings(rank: int, alpha: float | None, prefix: str = "lora") -> None:
+        """Validate a LoRA rank and optional scaling coefficient.
+
+        Args:
+            rank (int): Non-negative factorization rank; zero disables LoRA.
+            alpha (float | None): Finite positive scaling coefficient, or None for automatic scaling.
+            prefix (str): Option-name prefix included in validation errors.
+
+        Raises:
+            ValueError: The rank is invalid or alpha is not finite and positive.
+        """
         if isinstance(rank, bool) or not isinstance(rank, int) or rank < 0:
             raise ValueError(f"`{prefix}_rank` must be a non-negative integer")
         if alpha is not None:
@@ -402,7 +412,11 @@ class SignRoundConfig(QuantizationConfig):
                 raise ValueError(f"`{prefix}_alpha` must be finite and positive")
 
     def validate_lora_config(self) -> None:
-        """Validate effective settings, including overrides applied after construction."""
+        """Validate effective settings, including overrides applied after construction.
+
+        Raises:
+            ValueError: Shared or QAD-specific LoRA rank or alpha settings are invalid.
+        """
         self._validate_lora_settings(self.lora_rank, self.lora_alpha)
         if hasattr(self, "qad_lora_rank"):
             self._validate_lora_settings(self.qad_lora_rank, self.qad_lora_alpha, "qad_lora")

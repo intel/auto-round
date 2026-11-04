@@ -23,11 +23,12 @@ from auto_round.algorithms.registry import resolve_pipeline_member
 if TYPE_CHECKING:
     from auto_round.algorithms.block_runner import BlockForwardRunner
     from auto_round.algorithms.composer import AlgorithmComposer
+    from auto_round.algorithms.config import AlgorithmConfig
     from auto_round.calibration.state import CalibrationContext
     from auto_round.compressors import BaseOrchestrator
     from auto_round.context.compress import CompressContext
     from auto_round.context.model import ModelContext
-    from auto_round.parallel.execution import ParallelExecution
+    from auto_round.parallel.execution import ParallelCapabilities, ParallelExecution
     from auto_round.schemes import QuantizationScheme
 
 
@@ -85,24 +86,44 @@ class BaseAlgorithm:
         return alg_cls(config)
 
     @classmethod
-    def parallel_capabilities(cls):
-        """Opt in only after custom tensor math satisfies the TP contract."""
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Declare supported parallel modes for this algorithm.
+
+        Subclasses should opt in only after their tensor math satisfies the TP contract.
+
+        Returns:
+            ParallelCapabilities: Default capabilities with TP disabled and pipeline placement enabled.
+        """
         from auto_round.parallel.execution import ParallelCapabilities
 
         return ParallelCapabilities()
 
     @classmethod
-    def validate_parallel_config(cls, config, execution):
-        """Override to reject unsupported parallel algorithm options early."""
+    def validate_parallel_config(cls, config: "AlgorithmConfig", execution: "ParallelExecution") -> None:
+        """Provide an override point for early parallel-option validation.
+
+        Args:
+            config (AlgorithmConfig): Algorithm configuration to inspect.
+            execution (ParallelExecution): Parallel execution policy selected for the algorithm.
+        """
         return
 
     @classmethod
-    def create_parallel_execution(cls, config, default_execution):
+    def create_parallel_execution(
+        cls, config: "AlgorithmConfig", default_execution: "ParallelExecution"
+    ) -> "ParallelExecution":
         """Select this algorithm's TP/PP execution policy on the loaded topology.
 
         Return a ParallelExecution subclass to customize block placement,
         streaming or the exception-safe algorithm_stage() context. The default
         shares the compressor's service; no algorithm-name dispatch is needed.
+
+        Args:
+            config (AlgorithmConfig): Algorithm configuration available to specialized policies.
+            default_execution (ParallelExecution): Compressor-owned service for the loaded topology.
+
+        Returns:
+            ParallelExecution: Default service unless a subclass supplies a specialized policy.
         """
         return default_execution
 
@@ -132,7 +153,7 @@ class BaseAlgorithm:
     # ── Read-only context accessors ───────────────────────────────────────────
     @property
     def parallel(self) -> "ParallelExecution":
-        """Shared placement, activation and synchronization services."""
+        """ParallelExecution: Bound execution services, or local defaults when unbound."""
         from auto_round.parallel.execution import ParallelExecution
 
         if self.__run_ctx is not None and self.__run_ctx.parallel_execution is not None:

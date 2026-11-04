@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import math
 import os
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -29,6 +30,9 @@ from auto_round.algorithms.registry import register_pipeline_member
 from auto_round.logger import logger
 from auto_round.utils import check_is_cpu, clear_memory, htcore, is_hpex_available
 from auto_round.utils.device_manager import device_manager
+
+if TYPE_CHECKING:
+    from auto_round.parallel.execution import ParallelCapabilities
 
 try:  # CUDA-only fast path; falls back to the chunked PyTorch implementation.
     import triton
@@ -359,7 +363,12 @@ class QADQuantizer(SignRoundQuantizer):
     requires_original_weights = True
 
     @classmethod
-    def parallel_capabilities(cls):
+    def parallel_capabilities(cls) -> ParallelCapabilities:
+        """Declare whole-model QAD support for native TP but not pipeline placement.
+
+        Returns:
+            ParallelCapabilities: Capabilities enabling TP and disabling pipeline placement.
+        """
         from auto_round.parallel.execution import ParallelCapabilities
 
         return ParallelCapabilities(tensor_parallel=True, pipeline_placement=False)
@@ -596,7 +605,8 @@ class QADQuantizer(SignRoundQuantizer):
             for sample_idx, ids in enumerate(token_ids):
                 batch_ids = self._as_batch_ids(ids, device)
 
-                def build_sample():
+                def build_sample() -> None:
+                    """Cache teacher logits for the current sample after a coordinated miss."""
                     inputs = self._load_model_batch([sample_idx], token_ids, device)
                     logits = self._forward_logits(model, inputs, vocab_size, run)
                     # Preserve labels separately from the original forward inputs.
@@ -762,7 +772,8 @@ class QADQuantizer(SignRoundQuantizer):
         else:
             model.eval()  # deterministic forward; wrapper params still train via STE
 
-        def update_parameters():
+        def update_parameters() -> None:
+            """Update FP masters from synchronized gradients and copy them back to the model."""
             self._copy_fp_grads_to_masters(fp_master_pairs)
             self._step(scaler, optimizer, lr_schedule)
             self._copy_fp_masters_to_model(fp_master_pairs)

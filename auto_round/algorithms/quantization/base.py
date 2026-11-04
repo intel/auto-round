@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import traceback
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -66,7 +67,12 @@ class BaseQuantizer(BaseAlgorithm):
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
 
     def prepare_model_run(
-        self, model: torch.nn.Module, samples=None, device=None, *, whole_model: bool = False
+        self,
+        model: torch.nn.Module,
+        samples: Sequence[Any] | None = None,
+        device: str | torch.device | None = None,
+        *,
+        whole_model: bool = False,
     ) -> "PreparedRun":
         """Enter this scope to execute a custom algorithm without TP/DP branches.
 
@@ -91,6 +97,15 @@ class BaseQuantizer(BaseAlgorithm):
         This does not automatically adapt arbitrary weight math or closure-based
         optimizers. Use the existing tensor services for shard-sensitive math.
         Whole-model naive pipeline parallelism and unsupported topologies fail early.
+
+        Args:
+            model (torch.nn.Module): Model or block to execute inside the managed scope.
+            samples (Sequence | None): Optional input samples synchronized across TP participants on entry.
+            device (str | torch.device | None): Execution device, defaulting to the current managed device.
+            whole_model (bool): Whether entering the scope restores the entire model's residency.
+
+        Returns:
+            PreparedRun: Context manager for the algorithm's custom execution loop.
         """
         return self.parallel.prepare_run(model, samples, device, whole_model=whole_model)
 
