@@ -116,7 +116,6 @@ class ParallelExecution:
     def is_tp(self):
         return self.config.tp_size > 1
 
-
     @property
     def tensor_ops(self):
         from auto_round.parallel.tp.tensor_ops import ParallelTensorOps
