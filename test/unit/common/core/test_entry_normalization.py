@@ -157,16 +157,17 @@ def test_awq_rtn_uses_regular_model_loaded_route(monkeypatch):
         )
 
 
-def test_direct_signround_kwargs_warn_and_apply(monkeypatch):
+def test_direct_signround_kwargs_apply_without_warning(monkeypatch):
     warnings = []
     monkeypatch.setattr("auto_round.autoround.logger.warning", lambda message, *args: warnings.append(message % args))
+    monkeypatch.setattr("auto_round.autoround.logger.warning_once", lambda message, *args: warnings.append(message % args))
 
     configs = _normalize_alg_configs(None, direct_kwargs={"iters": 7, "lr": 0.2})
 
     assert isinstance(configs[0], SignRoundConfig)
     assert configs[0].iters == 7
     assert configs[0].lr == 0.2
-    assert any("alg_configs" in message for message in warnings)
+    assert not warnings
 
 
 def test_zero_iters_selects_rtn_and_forwards_disable_opt_rtn():

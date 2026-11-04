@@ -928,7 +928,7 @@ class TestPerfPrepSpan:
             ('_perf.tick("pack")', "if self.compress_context.is_immediate_packing:"),
             ('_perf.tick("mv")', "self.parallel_execution.offload_block(m)"),
             ('_perf.tick("clear")', "clear_memory(device_list=device_manager.device_list)"),
-            ('_perf.tick("monitor")', "memory_monitor.log_summary()"),
+            ('_perf.tick("monitor")', "self.parallel_execution.log_memory_summary()"),
             ('_perf.tick("write")', "_bg_writer.dispatch(_bg_write)"),
         ]
         pos = 0
