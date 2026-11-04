@@ -20,7 +20,6 @@ import argparse
 
 from auto_round.cli.algorithms import AlgorithmHandler
 from auto_round.eval.eval_cli import EvalArgumentParser
-from auto_round.logger import logger
 
 
 class _ParallelSizeAction(argparse.Action):
@@ -50,7 +49,7 @@ class _ParallelSizeAction(argparse.Action):
 
 
 class _LegacyAliasAction(argparse.Action):
-    """Parse a deprecated flag into its canonical argument, hidden from --help.
+    """Parse a compatibility flag into its canonical argument, hidden from --help.
 
     e.g. ``--avg_bits``/``--target_bits`` store into ``bits`` and
     ``--options``/``--option`` store into ``schemes``, so the legacy CLI usage
@@ -60,9 +59,6 @@ class _LegacyAliasAction(argparse.Action):
     _CANONICAL_FLAGS = {"bits": "--bits", "schemes": "--schemes"}
 
     def __call__(self, parser, namespace, values, option_string=None):
-        logger.warning_once(
-            "`%s` is deprecated, please use `%s` instead", option_string, self._CANONICAL_FLAGS[self.dest]
-        )
         current_value = getattr(namespace, self.dest, None)
         if current_value is not None and current_value != values:
             parser.error(

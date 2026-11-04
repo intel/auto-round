@@ -359,8 +359,6 @@ class BaseOrchestrator:
         trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         quant_nontext_module = kwargs.pop("quant_nontext_module", False)
         device = kwargs.pop("device", None)
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
 
         from auto_round.experimental.utils import normalize_fp8_granularity
 
@@ -1752,9 +1750,7 @@ class BaseOrchestrator:
         ):
             self.inplace = False
 
-        if not hasattr(self, "formats"):
-            logger.warning("this API is deprecated, please use `quantize_and_save` instead")
-        else:
+        if hasattr(self, "formats"):
             self._adjust_immediate_packing_and_saving()
 
     # backward compatible with the legacy API

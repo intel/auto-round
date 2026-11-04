@@ -26,7 +26,7 @@ from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.lfq import LFQMixin
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_quantizer
 from auto_round.compressors.utils import (
     IndexSampler,
     collect_best_params,
@@ -103,7 +103,7 @@ if TYPE_CHECKING:
     from auto_round.parallel.execution import ParallelCapabilities
 
 
-@register_pipeline_member(SignRoundConfig)
+@register_quantizer(SignRoundConfig)
 class SignRoundQuantizer(LFQMixin, BaseQuantizer):
 
     def __init__(self, config: SignRoundConfig) -> None:
@@ -141,8 +141,10 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             alternative = "--qad_optimizer adamw" if self.enable_qad else "--enable_adam"
             logger.warning_once(
                 "LoRA rounding with SignSGD is not recommended: sign-only updates discard gradient magnitudes "
-                "for the low-rank factors. Prefer Adam/AdamW with a suitable learning rate "
-                f"(e.g. `{alternative}`). The selected optimizer is unchanged."
+                "for the low-rank factors. Prefer Adam/AdamW and a suitable learning rate "
+                f"(e.g. `{alternative}`). Adam/AdamW requires substantially more optimizer-state GPU memory "
+                "than SignSGD because it stores two moment tensors per trainable parameter. "
+                "The selected optimizer is unchanged."
             )
         self.wrapper_block = wrapper_block
         # Kept for per-layer (mixed-bit) lr resolution during tuning.

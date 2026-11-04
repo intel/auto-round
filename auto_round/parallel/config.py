@@ -47,6 +47,7 @@ def _reject_parallel_kwargs(kwargs: Mapping[str, Any]) -> None:
 class ParallelConfig:
     """Configure tensor, naive pipeline and data parallelism.
 
+    Tensor parallelism (TP) and data parallelism (DP) are experimental.
     TP uses Transformers' native automatic plan. ``pp_size`` selects naive
     pipeline parallelism: single-process layer partitioning without overlapping
     microbatch scheduling.

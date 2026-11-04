@@ -320,3 +320,70 @@ def test_outside_block_optimizer_uses_both_factors(tiny_model_and_tokenizer, mon
     lm_head = compressor.model.lm_head
     inputs = torch.randn(1, lm_head.in_features, dtype=lm_head.weight.dtype, device=lm_head.weight.device)
     assert torch.isfinite(lm_head(inputs)).all()
+
+
+@pytest.mark.parametrize("qad_iters", [1, 3])
+@pytest.mark.parametrize("optimizer_name", ["signround", "adamw"])
+@pytest.mark.parametrize("alpha", [None, 4.0])
+def test_qad_whole_model_uses_effective_lora_budget(
+    tiny_model_and_tokenizer, monkeypatch, qad_iters, optimizer_name, alpha
+):
+    from auto_round.algorithms.quantization.qad.quantizer import QADQuantizer
+
+    config = QADConfig(
+        iters=20,
+        qad_iters=qad_iters,
+        bits=4,
+        group_size=8,
+        qad_lora_rank=2,
+        qad_lora_alpha=alpha,
+        qad_optimizer=optimizer_name,
+        qad_kd_weight=0,
+        qad_ce_weight=1,
+        gradient_checkpointing=False,
+        not_use_best_mse=True,
+    )
+    compressor, tokens = _compressor(tiny_model_and_tokenizer, config)
+    quantizer = compressor.alg_composer.active_quantizer
+    assert isinstance(quantizer, QADQuantizer)
+    assert quantizer.iters == qad_iters
+    assert quantizer.lr == pytest.approx(1 / qad_iters)
+    configure_scaling = quantizer._configure_lora_scaling
+    configured = []
+
+    def capture_scaling(model, optimizer):
+        budgets = {
+            id(parameter): float(group["lr"]) * (qad_iters + 1) / 2
+            for group in optimizer.param_groups
+            for parameter in group["params"]
+        }
+        expected = []
+        for module in model.modules():
+            if not isinstance(module, WrapperLinear) or not hasattr(module, "lora_A"):
+                continue
+            scaling = alpha / 2 if alpha is not None else 1.0
+            if optimizer_name == "signround" and alpha is None:
+                a_bound = module.lora_A.detach().abs().max().item() + budgets[id(module.lora_A)]
+                b_bound = module.lora_B.detach().abs().max().item() + budgets[id(module.lora_B)]
+                scaling = 4 / (module.lora_rank * a_bound * b_bound)
+            expected.append((module, scaling))
+        assert expected
+        configure_scaling(model, optimizer)
+        for module, scaling in expected:
+            assert module.lora_scaling == pytest.approx(scaling)
+        configured.append(True)
+
+    step = quantizer._step
+    updates = []
+
+    def capture_step(scaler, optimizer, scheduler):
+        assert scheduler.total_iters == qad_iters
+        updates.append(True)
+        return step(scaler, optimizer, scheduler)
+
+    monkeypatch.setattr(quantizer, "_configure_lora_scaling", capture_scaling)
+    monkeypatch.setattr(quantizer, "_step", capture_step)
+    model, _ = compressor.quantize()
+    assert len(configured) == 1
+    assert len(updates) == qad_iters
+    assert torch.isfinite(model(input_ids=tokens).logits).all()

@@ -20,7 +20,7 @@ import torch.nn as nn
 
 from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_quantizer
 from auto_round.logger import logger
 
 
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from auto_round.parallel.execution import ParallelCapabilities
 
 
-@register_pipeline_member(RTNConfig)
+@register_quantizer(RTNConfig)
 class RTNQuantizer(BaseQuantizer):
 
     @classmethod
@@ -95,7 +95,7 @@ class RTNQuantizer(BaseQuantizer):
         return {}
 
 
-@register_pipeline_member(OptimizedRTNConfig)
+@register_quantizer(OptimizedRTNConfig)
 class OptimizedRTNQuantizer(RTNQuantizer):
 
     @classmethod

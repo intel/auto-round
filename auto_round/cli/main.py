@@ -456,18 +456,6 @@ def tune(args):
 
     from auto_round.utils import logger
 
-    if args.low_cpu_mem_usage:
-        logger.warning(
-            "`low_cpu_mem_usage` is deprecated and is now enabled by default. "
-            "To disable it, use `--disable_low_cpu_mem_usage`."
-        )
-
-    if getattr(args, "enable_alg_ext", False):
-        logger.warning(
-            "`--enable_alg_ext` is deprecated; use `--algorithm auto_round_v2` instead. "
-            "Both select the same algorithm and remain equivalent."
-        )
-
     if args.format is None:
         args.format = "auto_round"
 
@@ -545,7 +533,7 @@ def tune(args):
 
     # Supplying multiple schemes enables AutoScheme: the schemes are the
     # candidate options and --bits is the average target bits.
-    # --options/--avg_bits/--target_bits are deprecated aliases that argparse
+    # --options/--avg_bits/--target_bits are compatibility aliases that argparse
     # merges into --schemes/--bits (see _LegacyAliasAction in parser.py); they
     # stay functional but are hidden from --help.
     scheme_options = None

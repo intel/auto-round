@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from auto_round.parallel.execution import ParallelCapabilities
 
 from auto_round import envs
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_quantizer
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
     quant_tensor_gguf_asym_dq,
@@ -490,7 +490,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
         return weight_q, scale_out, zp_out
 
 
-@register_pipeline_member(SignRoundV2Config)
+@register_quantizer(SignRoundV2Config)
 class SignRoundV2Quantizer(SignRoundQuantizer):
     @classmethod
     def parallel_capabilities(cls) -> "ParallelCapabilities":

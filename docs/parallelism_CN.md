@@ -1,5 +1,9 @@
 # 多 GPU 量化指南
 
+**实验特性（Experimental）：** 数据并行（DP）、张量并行（TP）、
+量化感知训练（QAT）和量化感知蒸馏（QAD）均为实验特性，
+其 API 和支持的组合可能发生变化。
+
 ## 选哪种并行？
 
 | 模式 | 什么时候用 | CLI | Python 的 `parallel_config` |

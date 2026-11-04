@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_preprocessor
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import (
     AWQ_DYNAMIC_MAPPING_REGISTRY,
@@ -169,7 +169,7 @@ def _iter_block_names_for_mapping(model: torch.nn.Module) -> list[str]:
     return sorted((name for name in flatten_list(get_block_names(model)) if name), key=len, reverse=True)
 
 
-@register_pipeline_member(AWQConfig)
+@register_preprocessor(AWQConfig)
 class AWQTransform(BasePreprocessor):
     """AWQ transform: activation-aware weight smoothing pre-processor.
 

@@ -1,5 +1,9 @@
 # Multi-GPU quantization guide
 
+**Experimental:** Data parallelism (DP), tensor parallelism (TP),
+quantization-aware training (QAT), and quantization-aware distillation (QAD)
+are experimental; their APIs and supported combinations may change.
+
 ## Which mode should I use?
 
 | Mode | When to use it | CLI | Python `parallel_config` |

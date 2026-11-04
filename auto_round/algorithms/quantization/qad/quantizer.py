@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -26,7 +26,7 @@ from auto_round.algorithms.quantization.qad.config import QADConfig
 from auto_round.algorithms.quantization.qad.teacher_cache import TeacherTopKCache
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_quantizer
 from auto_round.logger import logger
 from auto_round.utils import check_is_cpu, clear_memory, htcore, is_hpex_available
 from auto_round.utils.device_manager import device_manager
@@ -342,7 +342,96 @@ class _QADDistillLoss(torch.autograd.Function):
         return grad_logits, None, None, None, None, None, None
 
 
-@register_pipeline_member(QADConfig)
+class _QADReverseKLLoss(torch.autograd.Function):
+    """Compute full-vocabulary reverse KL with bounded softmax temporaries.
+
+    The forward retains one KL value and log-normalizer per shifted token. The
+    backward recomputes probabilities in vocabulary chunks, using
+    ``tau * p_S * (log(p_S / p_T) - KL(p_S || p_T))`` for the logit gradient.
+    Teacher zeros are floored at the smallest positive normal FP32 value before
+    normalization so storage underflow does not produce infinite loss or gradients.
+    """
+
+    @staticmethod
+    def forward(
+        ctx: Any,
+        logits: torch.Tensor,
+        teacher_prob: torch.Tensor,
+        labels: torch.Tensor,
+        tau: float,
+        vocab_chunk: int,
+    ) -> torch.Tensor:
+        """Compute temperature-scaled reverse KL over valid next-token positions.
+
+        Args:
+            ctx: Autograd context receiving tensors and scalar reduction metadata.
+            logits: Student logits with shape ``[batch, sequence, vocabulary]``.
+            teacher_prob: Full-vocabulary teacher probabilities at temperature ``tau``.
+            labels: Token labels; shifted positions equal to -100 are ignored.
+            tau: Positive distillation temperature.
+            vocab_chunk: Maximum temporary vocabulary width; zero uses the full width.
+
+        Returns:
+            Mean reverse KL multiplied by the squared temperature.
+        """
+        batch, sequence, vocab = logits.shape
+        tau = float(tau)
+        vocab_chunk = max(1, min(int(vocab_chunk or vocab), vocab))
+        mask = labels[:, 1:] != -100
+        ctx.n_valid = int(mask.sum().item())
+        ctx.tau = tau
+        ctx.vocab_chunk = vocab_chunk
+        if ctx.n_valid == 0:
+            ctx.save_for_backward(logits)
+            return logits.new_zeros(())
+
+        if _HAS_TRITON and logits.is_cuda:
+            if logits.stride(-1) != 1:
+                logits = logits.contiguous()
+            logz = _triton_logsumexp(logits, tau).view(batch, sequence - 1, 1)
+        else:
+            logz = _streaming_logsumexp(logits[:, :-1, :].reshape(-1, vocab), tau, vocab_chunk).view(
+                batch, sequence - 1, 1
+            )
+        target = teacher_prob[:, :-1, :].float().clamp_min(torch.finfo(torch.float32).tiny)
+        target = target / target.sum(dim=-1, keepdim=True)
+        row_kl = torch.zeros_like(logz[..., 0])
+        for start in range(0, vocab, vocab_chunk):
+            stop = min(start + vocab_chunk, vocab)
+            log_student = logits[:, :-1, start:stop].float() / tau - logz
+            log_ratio = log_student - target[..., start:stop].log()
+            row_kl += (log_student.exp() * log_ratio).sum(dim=-1)
+        ctx.save_for_backward(logits, target, logz, row_kl, mask)
+        return tau * tau * torch.where(mask, row_kl, 0.0).sum() / ctx.n_valid
+
+    @staticmethod
+    def backward(ctx: Any, *grad_outputs: torch.Tensor) -> tuple[torch.Tensor, None, None, None, None]:
+        """Recompute chunked student probabilities and return only logit gradients.
+
+        Args:
+            ctx: Autograd context populated by the forward pass.
+            *grad_outputs: Output gradients; the first belongs to the scalar loss.
+
+        Returns:
+            The student logit gradient followed by None for all fixed inputs.
+        """
+        if ctx.n_valid == 0:
+            (logits,) = ctx.saved_tensors
+            return torch.zeros_like(logits), None, None, None, None
+
+        logits, target, logz, row_kl, mask = ctx.saved_tensors
+        grad_logits = torch.zeros_like(logits)
+        scale = grad_outputs[0].float() * (ctx.tau / ctx.n_valid)
+        for start in range(0, logits.shape[-1], ctx.vocab_chunk):
+            stop = min(start + ctx.vocab_chunk, logits.shape[-1])
+            log_student = logits[:, :-1, start:stop].float() / ctx.tau - logz
+            log_ratio = log_student - target[..., start:stop].log()
+            grad = log_student.exp() * (log_ratio - row_kl.unsqueeze(-1)) * scale
+            grad_logits[:, :-1, start:stop] = torch.where(mask.unsqueeze(-1), grad, 0.0).to(logits.dtype)
+        return grad_logits, None, None, None, None
+
+
+@register_quantizer(QADConfig)
 class QADQuantizer(SignRoundQuantizer):
     """Whole-model QAD: distill the FP teacher's cached Top-K into the student.
 
@@ -351,10 +440,10 @@ class QADQuantizer(SignRoundQuantizer):
     no nblocks fusing and no probing of the modules between the last block and the
     LM head:
 
-    * The full-precision teacher is forwarded once (offline); only the Top-K
-      ``(index, prob)`` per token is cached to disk.
+    * The full-precision teacher is forwarded once (offline); Top-K targets are
+      cached for ``tk`` and full-vocabulary targets for ``kl``/``rkl``.
     * All quantizable layers are wrapped and tuned jointly against a
-      temperature-scaled soft-label cross-entropy over the teacher Top-K, so
+      temperature-scaled forward or reverse KL objective, so
       neither the teacher model nor full-vocab logits stay resident.
     """
 
@@ -375,7 +464,8 @@ class QADQuantizer(SignRoundQuantizer):
 
     def __init__(self, config: QADConfig) -> None:
         super().__init__(config)
-        self.qad_top_k = getattr(config, "topk", 32)
+        self.qad_loss_type = config.loss
+        self.qad_top_k = getattr(config, "topk", 32) if self.qad_loss_type == "tk" else -1
         self.qad_temperature = getattr(config, "lfq_temperature", 1.0)
         self.qad_workspace = getattr(config, "qad_workspace", None)
         # Loss mixing weights: total = kd_weight * KD(teacher) + ce_weight * CE(label).
@@ -581,7 +671,7 @@ class QADQuantizer(SignRoundQuantizer):
 
     @torch.no_grad()
     def _build_teacher_cache_from_model(self, model, token_ids, device, run=None) -> None:
-        """Forward the FP model to the LM head once per sample and cache the Top-K.
+        """Forward the FP model once per sample and cache the selected teacher target.
 
         Uses the real model forward (``model(input_ids).logits``), so no module
         between the last block and the LM head needs to be probed. Samples already
@@ -616,7 +706,8 @@ class QADQuantizer(SignRoundQuantizer):
         finally:
             model.train(was_training)
         if n_built:
-            logger.info("QAD: cached teacher Top-%d for %d samples at %s", self.qad_top_k, n_built, cache.workspace)
+            target = "full vocabulary" if self.qad_top_k == -1 else f"Top-{self.qad_top_k}"
+            logger.info("QAD: cached teacher %s for %d samples at %s", target, n_built, cache.workspace)
         clear_memory()
 
     # ── whole-model tuning entry point ────────────────────────────────────────
@@ -751,13 +842,14 @@ class QADQuantizer(SignRoundQuantizer):
                 len(fp_params),
                 float(fp_lr),
             )
-        optimizer = self.optimizer(param_groups, lr=torch.tensor(float(base_lr)), weight_decay=0, **extra_kwargs)
+        optimizer = self.optimizer(param_groups, lr=torch.tensor(float(base_lr)), weight_decay=0.0, **extra_kwargs)
         if self.lr_scheduler is None:
             lr_schedule = torch.optim.lr_scheduler.LinearLR(
                 optimizer, start_factor=1.0, end_factor=0.0, total_iters=max(1, self.iters)
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
+        self._configure_lora_scaling(model, optimizer)
         scaler = self._get_scaler()
 
         # 4) Joint tuning loop: full-model forward → KD loss → step.
@@ -963,21 +1055,20 @@ class QADQuantizer(SignRoundQuantizer):
         teacher_index = None if full_mode else torch.stack(idx_list, dim=0)
         return batch_ids, teacher_index, teacher_prob
 
-    def _qad_kd_loss(self, student_logits, teacher_index, teacher_prob, labels):
-        """Temperature-scaled forward KL against the FP teacher's distribution.
+    def _qad_kd_loss(
+        self,
+        student_logits: torch.Tensor,
+        teacher_index: torch.Tensor | None,
+        teacher_prob: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute the configured temperature-scaled teacher-distillation objective.
 
-        Per next-token position, the loss is ``KL(p_T || p_S)`` with
-        ``p_T = softmax(t/τ)`` from the cached teacher logits and
-        ``p_S = softmax(s/τ)``. When
-        *teacher_index* is given, the sum is over the teacher's Top-K set (teacher
-        probs renormalized within it); when it is ``None`` the teacher is the full
-        vocabulary distribution. Positions with label ``-100`` are ignored.
-
-        The heavy lifting is delegated to :class:`_QADDistillLoss`, a custom
-        autograd Function that -- following Unsloth's fused cross-entropy -- keeps
-        only the per-row ``logsumexp`` in the graph and recomputes ``softmax`` in
-        the backward (Triton on CUDA, chunked PyTorch otherwise), so no full-vocab
-        ``log_softmax`` tensor is ever retained.
+        ``tk`` aligns teacher and student probabilities renormalized within the
+        teacher's Top-K set, without penalizing probability mass outside that set.
+        ``kl`` and ``rkl`` compare full-vocabulary distributions in the forward and
+        reverse direction respectively. Custom autograd functions recompute
+        probabilities in vocabulary chunks rather than retain dense log-softmax.
 
         Args:
             student_logits: ``[B, seq, vocab]``.
@@ -988,7 +1079,25 @@ class QADQuantizer(SignRoundQuantizer):
 
         Returns:
             Scalar loss tensor (mean over valid next-token positions).
+
+        Raises:
+            ValueError: A full-vocabulary KL objective receives a truncated teacher cache.
         """
+        if self.qad_loss_type in ("kl", "rkl") and teacher_index is not None:
+            raise ValueError("QAD kl/rkl losses require a full-vocabulary teacher cache.")
+        if self.qad_loss_type == "rkl":
+            return _QADReverseKLLoss.apply(
+                student_logits,
+                teacher_prob,
+                labels,
+                float(self.qad_temperature),
+                self.qad_loss_vocab_chunk,
+            )
+        if self.qad_loss_type == "tk" and teacher_index is not None:
+            # Gathering first makes the student's normalizer conditional on the
+            # same Top-K support as the cached teacher, preserving sparse gradients.
+            student_logits = student_logits.gather(-1, teacher_index)
+            teacher_index = None
         return _QADDistillLoss.apply(
             student_logits,
             teacher_index,
