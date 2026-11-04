@@ -2202,6 +2202,8 @@ def _dequant_fp8_tensors(
         scale_inv_name = f"{name[: -len('.weight')]}.weight_scale_inv"
         if scale_inv_name in raw_tensors:
             quant_entries.append((name, scale_inv_name))
+        elif hydrate_only and f"{name[: -len('.weight')]}.weight_scale" in raw_tensors:
+            continue
         else:
             missing_scale_weights.append(name)
 
@@ -2353,6 +2355,44 @@ def _fused_nvfp4_global_scale_overrides(
             tensor_name = f"{layer_name}.weight"
             if tensor_name in raw_tensors:
                 overrides[tensor_name] = torch.as_tensor(value, dtype=torch.float32).reshape(1)
+    return overrides
+
+
+def _compute_cross_shard_fused_global_scales(
+    groups: list[tuple[str, ...]],
+    weight_map: dict[str, str],
+    shard_dir: str,
+    *,
+    fp8_block_size: list | None = None,
+    device: str = "cpu",
+) -> dict[str, float]:
+    """Return the shared NVFP4 E5M3 GS of fused groups whose members live in different local shards."""
+    from safetensors import safe_open
+
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3
+
+    def _load(tensor_name: str) -> torch.Tensor:
+        path = resolve_within_directory(shard_dir, weight_map[tensor_name], origin="weight_map")
+        with safe_open(str(path), framework="pt", device="cpu") as shard:
+            return shard.get_tensor(tensor_name)
+
+    overrides: dict[str, float] = {}
+    for group in groups:
+        scales = []
+        for layer in group:
+            tensors = {f"{layer}.weight": _load(f"{layer}.weight")}
+            if tensors[f"{layer}.weight"].dtype == torch.float8_e4m3fn:
+                if f"{layer}.weight_scale_inv" in weight_map:
+                    tensors[f"{layer}.weight_scale_inv"] = _load(f"{layer}.weight_scale_inv")
+                    tensors = _dequant_fp8_tensors(tensors, block_size=fp8_block_size, device=device)
+                elif f"{layer}.weight_scale" in weight_map:
+                    tensors[f"{layer}.weight_scale"] = _load(f"{layer}.weight_scale")
+                    tensors = _dequant_mxfp_tensors(tensors, device=device)
+            weight = tensors[f"{layer}.weight"]
+            if not weight.is_floating_point() or weight.dtype == torch.float8_e4m3fn:
+                raise RuntimeError(f"Cannot calculate fused GS for '{layer}' from source dtype {weight.dtype}.")
+            scales.append(float(calculate_gparam_e5m3(weight, group_size=16).item()))
+        overrides.update(dict.fromkeys(group, min(scales)))
     return overrides
 
 
@@ -2815,10 +2855,7 @@ def _download_single_shard(
     if os.path.exists(local_path):
         if local_path.endswith(".safetensors"):
             try:
-                from safetensors import safe_open
-
-                with safe_open(local_path, framework="pt") as shard:
-                    shard.keys()
+                _validate_safetensors_file(local_path)
             except Exception as exc:
                 logger.warning(
                     f"Cached shard '{shard_filename}' at '{local_path}' is invalid ({exc}); fetching it again."
@@ -2845,6 +2882,14 @@ def _download_single_shard(
         filename=shard_filename,
         local_dir=local_dir,
     )
+
+
+def _validate_safetensors_file(path: str) -> None:
+    """Raise when a safetensors file cannot be opened and enumerated."""
+    from safetensors import safe_open
+
+    with safe_open(path, framework="pt") as shard:
+        shard.keys()
 
 
 def _download_metadata_files(

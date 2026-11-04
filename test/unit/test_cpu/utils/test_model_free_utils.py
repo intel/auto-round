@@ -1612,6 +1612,17 @@ class TestFP8Source:
         with pytest.raises(ValueError, match="layer.weight"):
             _dequant_fp8_tensors(raw, block_size=None, hydrate_only=hydrate_only)
 
+    def test_hydrate_only_keeps_mxfp8_weight_scale(self):
+        weight = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        scale = torch.ones(64, 1, dtype=torch.float8_e8m0fnu)
+        raw = {"layer.weight": weight, "layer.weight_scale": scale}
+
+        result = _dequant_fp8_tensors(raw, block_size=None, hydrate_only=True)
+
+        assert result is raw
+        assert result["layer.weight"].dtype == torch.float8_e4m3fn
+        assert result["layer.weight_scale"] is scale
+
     def test_warns_when_fp8_dequant_is_skipped(self, caplog):
         raw = {
             "layer.weight": torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn),
