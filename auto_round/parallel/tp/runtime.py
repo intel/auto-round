@@ -39,7 +39,6 @@ def replicated_tensor(value):
     return value.full_tensor() if is_dtensor(value) else value
 
 
-
 @contextmanager
 def synchronized_export():
     """Share writer completion/failure after collective checkpoint gathering."""

@@ -158,9 +158,7 @@ def test_tp_memory_reporting_without_cuda_still_participates(monkeypatch):
 
 
 def _memory_reporting_worker(rank, rendezvous):
-    dist.init_process_group(
-        "gloo", init_method=rendezvous, rank=rank, world_size=2, timeout=timedelta(seconds=30)
-    )
+    dist.init_process_group("gloo", init_method=rendezvous, rank=rank, world_size=2, timeout=timedelta(seconds=30))
     try:
         device_manager.set_tensor_parallel(True)
         local_peaks = {str(rank): 2.5 + rank}
