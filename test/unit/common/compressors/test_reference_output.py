@@ -95,6 +95,28 @@ class TestCompressBlockReferenceOutputSkip:
 
         assert ref_next is pre_computed
 
+    def test_hook_calibration_pass_runs_eager(self):
+        """Hook-bearing forwards must bypass the compiled runner.
+
+        Dynamo does not re-trace a graph cached before the hooks were installed,
+        so a compiled calibration pass can silently miss ``act_max`` and make
+        the NVFP4 packer fail later.
+        """
+        mock_forward = _patch_composer(self.composer, self.fp_inputs)
+        hook = MagicMock()
+        self.composer._get_fp_act_hooks = MagicMock(return_value=([hook], {"act_max": "max"}))
+
+        self.composer.compress_block(
+            self.block,
+            self.fp_inputs,
+            self.input_others,
+            block_ctx=self.ctx,
+            reference_output=None,
+        )
+
+        assert mock_forward.call_args.kwargs["eager"] is True
+        hook.remove.assert_called_once()
+
 
 class _WeightChangingPreprocessor(BasePreprocessor):
     """Minimal transform used to exercise reference invalidation."""

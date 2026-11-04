@@ -126,6 +126,7 @@ class TuneParallelContext:
         out_dev=None,
         allow_shard: bool = True,
         hook_pass: bool = False,
+        eager: bool = False,
         merge_stats=ENGINE_CALIBRATION_STATS,
     ):
         """Collection forward: sharded across DDP mirrors when eligible.
@@ -145,14 +146,25 @@ class TuneParallelContext:
         default 0 = no cap): forward
         hooks force dynamo graph breaks, leaving the compiled runner as
         python-bound eager sections that can GIL-convoy under many threads.
+
+        ``eager=True`` bypasses the compiled block runner.  Callers set it for
+        forwards that carry calibration hooks: Dynamo does not re-trace a graph
+        that was cached before the hooks were installed, so hook-written
+        statistics (``act_max``, imatrix, ...) would otherwise be lost.  This
+        is deliberately independent of ``hook_pass`` because the shard cap is a
+        performance knob, while eager execution is a correctness requirement.
         """
         if self.devices is None or not allow_shard:
+            if eager:
+                return block_forward(block, inputs, input_others, cache_device=out_dev, eager=True)
             return block_forward(block, inputs, input_others, cache_device=out_dev)
         if merge_stats is None:
             logger.warning_once(
                 "[tune-ddp] the block quantizer registers calibration hooks without declaring calibration_stats; "
                 "those calibration passes run serially (declare each statistic's shard reduction to shard them)"
             )
+            if eager:
+                return block_forward(block, inputs, input_others, cache_device=out_dev, eager=True)
             return block_forward(block, inputs, input_others, cache_device=out_dev)
         # The pool is ALWAYS built at the full device width and reused by
         # every sharding-eligible pass; a hook pass capped below the world
@@ -179,6 +191,13 @@ class TuneParallelContext:
                         _ptime.perf_counter() - _t0,
                     )
                 pool = self.pool
+        kwargs = {
+            "merge_stats": merge_stats,
+            "max_devices": cap if hook_pass else 0,
+            "pool": pool,
+        }
+        if eager:
+            kwargs["eager"] = True
         return sharded_nograd_forward(
             block_forward,
             block,
@@ -186,9 +205,7 @@ class TuneParallelContext:
             input_others,
             out_dev,
             self.devices,
-            merge_stats=merge_stats,
-            max_devices=cap if hook_pass else 0,
-            pool=pool,
+            **kwargs,
         )
 
     def ensure_pool(self, block) -> None:

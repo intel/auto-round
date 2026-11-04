@@ -110,6 +110,16 @@ def test_awq_disables_block_forward_compile():
     assert not pipeline.block_forward.enable_torch_compile
 
 
+def test_nvfp4_keeps_block_forward_compile():
+    """NVFP4 used to ban block-forward compile as well as the quant kernels."""
+    orchestrator = _compile_orchestrator()
+    orchestrator.data_type = "nv_fp"
+
+    pipeline = AlgorithmComposer([SignRoundConfig()], orchestrator)
+
+    assert pipeline.block_forward.enable_torch_compile
+
+
 def test_detect_nvfp4_from_layer_config_scheme_override():
     orchestrator = SimpleNamespace(
         data_type="mx_fp",
