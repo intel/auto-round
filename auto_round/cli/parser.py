@@ -21,6 +21,8 @@ import argparse
 from auto_round.cli.algorithms import AlgorithmHandler
 from auto_round.eval.eval_cli import EvalArgumentParser
 
+ALGORITHM_FLAGS = ("--alg_configs", "--alg_config", "--algorithm", "--algorithms", "--alg", "--algs")
+
 
 class _ParallelSizeAction(argparse.Action):
     """Allow repeated aliases only when they request the same degree."""
@@ -49,18 +51,20 @@ class _ParallelSizeAction(argparse.Action):
 
 
 class _LegacyAliasAction(argparse.Action):
-    """Parse a compatibility flag into its canonical argument, hidden from --help.
+    """Parse aliases into their canonical argument, rejecting conflicting values.
 
     e.g. ``--avg_bits``/``--target_bits`` store into ``bits`` and
-    ``--options``/``--option`` store into ``schemes``, so the legacy CLI usage
+    ``--options``/``--option`` store into ``scheme``, so the legacy CLI usage
     keeps working while the old names stay out of ``--help``.
     """
 
-    _CANONICAL_FLAGS = {"bits": "--bits", "schemes": "--schemes"}
+    _CANONICAL_FLAGS = {"bits": "--bits", "scheme": "--scheme"}
 
     def __call__(self, parser, namespace, values, option_string=None):
         current_value = getattr(namespace, self.dest, None)
-        if current_value is not None and current_value != values:
+        if self.dest == "scheme":
+            values = ",".join(part.strip() for value in values for part in value.split(",") if part.strip())
+        if current_value is not None and current_value != self.default and current_value != values:
             parser.error(
                 f"conflicting values for {self._CANONICAL_FLAGS[self.dest]}: "
                 f"{current_value!r} was already provided, but {option_string!r} set {values!r}"
@@ -110,13 +114,22 @@ def add_common_quantization_arguments(group) -> None:
     To add a new flag, append an add_argument() call here and mirror it in
     _extract_common_quantization_kwargs() in main.py.
     """
-    group.add_argument("--scheme", default="W4A16", type=str, help="Quantization scheme preset, e.g. W4A16, W8A16.")
+    group.add_argument(
+        "--scheme",
+        "--schemes",
+        default="W4A16",
+        type=str,
+        nargs="+",
+        action=_LegacyAliasAction,
+        help="Quantization preset, or comma/space-separated AutoScheme candidates. "
+        "With multiple candidates, --bits sets the average target bits.",
+    )
     group.add_argument(
         "--bits",
         "--bit",
         default=None,
         type=float,
-        help="Weight quantization bit width. With --schemes, the average target bits for AutoScheme.",
+        help="Weight quantization bit width. With multiple --scheme candidates, the AutoScheme average target bits.",
     )
     group.add_argument(
         "--group_size",
@@ -258,26 +271,14 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     # TODO wenhuach need to add choice or verify the correctness
     rt.add_argument(
-        "--algorithm",
-        "--algorithms",
-        "--alg",
-        "--algs",
-        "--alg_config",
-        "--alg_configs",
+        *ALGORITHM_FLAGS,
+        dest="alg_configs",
         default=None,
         type=str,
         help="Comma-separated algorithms such as 'auto_round', 'auto_round_v2', 'rtn', 'opt-rtn' "
         "or 'awq'. Run `auto_round list alg` for the full list.",
     )
     rt.add_argument("--output_dir", default="./tmp_autoround", type=str, help="Directory to save quantized artifacts.")
-    rt.add_argument(
-        "--schemes",
-        default=None,
-        type=str,
-        nargs="+",
-        help="Candidate quantization schemes for AutoScheme, e.g. 'W4A16,W8A16'. "
-        "Providing schemes enables AutoScheme; use --bits to set the average target bits.",
-    )
     rt.add_argument(
         "--avg_bits",
         "--target_bits",
@@ -290,8 +291,8 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument(
         "--options",
         "--option",
-        dest="schemes",
-        default=None,
+        dest="scheme",
+        default="W4A16",
         type=str,
         nargs="+",
         help=argparse.SUPPRESS,

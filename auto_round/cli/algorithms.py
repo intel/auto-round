@@ -292,8 +292,11 @@ class AlgorithmHandler:
 
     @classmethod
     def build_configs(cls, args, common_kwargs: dict[str, Any]) -> list:
+        raw = getattr(args, "alg_configs", None)
+        if raw is None:
+            raw = getattr(args, "algorithm", None)
         plan = getattr(args, "_recipe_plan", None)
-        if plan is not None and getattr(args, "algorithm", None) is None:
+        if plan is not None and raw is None:
             from auto_round.autoround import _normalize_alg_configs
 
             configs = []
@@ -325,8 +328,7 @@ class AlgorithmHandler:
                 configs.append(rotation_cls(**_parameter_registry(rotation_cls).config_kwargs(args)))
             return _normalize_alg_configs(configs, direct)
 
-        raw = getattr(args, "algorithm", None) or ""
-        names = [name.strip().lower() for name in raw.split(",") if name.strip()]
+        names = [name.strip().lower() for name in (raw or "").split(",") if name.strip()]
 
         if getattr(args, "rotation_hadamard_type", None) and "hadamard" not in names:
             names.append("hadamard")

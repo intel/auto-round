@@ -21,6 +21,7 @@ from contextlib import nullcontext
 
 from auto_round.cli.algorithms import AlgorithmHandler
 from auto_round.cli.parser import (
+    ALGORITHM_FLAGS,
     add_common_quantization_arguments,
     build_eval_parser,
     build_list_parser,
@@ -38,7 +39,7 @@ _OVERVIEW_ARGUMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("model", ()),
     ("model_name", ("--model",)),
     ("scheme", ("--scheme",)),
-    ("algorithm", ("--algorithm",)),
+    ("alg_configs", ("--alg_configs",)),
     ("bits", ("--bits",)),
     ("group_size", ("--group_size",)),
     ("iters", ("--iters",)),
@@ -68,9 +69,9 @@ commands:
 
 examples:
   auto_round --model facebook/opt-125m --bits 4 --group_size 128
-  auto_round --model Qwen/Qwen3-0.6B --algorithm auto_round_v2 --iters 200
-  auto_round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round_v2
-  auto_round --model <model> --schemes W2A16,W4A16 --bits 3 --ignore_scale_zp_bits
+  auto_round --model Qwen/Qwen3-0.6B --alg_configs auto_round_v2 --iters 200
+  auto_round --model Qwen/Qwen3-0.6B --alg_configs awq,auto_round_v2
+  auto_round --model <model> --scheme W2A16,W4A16 --bits 3 --ignore_scale_zp_bits
   auto_round eval --model <quantized_model> --tasks lambada_openai
   auto_round list alg
 
@@ -80,7 +81,7 @@ This is only the commonly used subset of the quantize arguments.
 _OVERVIEW_EPILOG = """\
 see also:
   auto_round quantize --help            every quantize argument
-  auto_round --algorithm <name> --help  the flags of one algorithm
+  auto_round --alg_configs <name> --help  the flags of one algorithm
   auto_round list alg                   the supported algorithms
   auto_round list format                the supported output formats
 """
@@ -171,13 +172,15 @@ def _extract_common_quantization_kwargs(args) -> dict:
 
 
 def _normalize_scheme_list(raw) -> str | None:
-    """Normalize --schemes/--options into a comma-joined scheme list.
+    """Normalize --scheme and its aliases into a comma-joined scheme list.
 
     Accepts both space-separated (nargs="+" list) and comma-separated forms,
     e.g. 'W4A16 W8A16' or 'W4A16,W8A16' -> 'W4A16,W8A16'.
     """
     if raw is None:
         return None
+    if isinstance(raw, str):
+        raw = [raw]
     flat = ",".join(raw)  # handles list; each element may itself contain commas
     return ",".join(p.strip() for p in flat.split(",") if p.strip())
 
@@ -294,7 +297,7 @@ def list_item(argv=None):
         else:
             print("AutoRound supported algorithms:")
             print(AlgorithmHandler.format_listing())
-            print("\nUse `auto_round list alg <name>` or `auto_round --algorithm <name> --help` for details.")
+            print("\nUse `auto_round list alg <name>` or `auto_round --alg_configs <name> --help` for details.")
     elif args.item in {"recipe", "recipes"}:
         for name in [args.name] if args.name else list_recipes():
             definition = get_recipe(name)
@@ -313,16 +316,16 @@ def list_item(argv=None):
 
 
 def _print_algorithm_help(argv: list[str]) -> bool:
-    """If --algorithm <name> --help is present, print algorithm-focused help and return True."""
+    """If --alg_configs (or an alias) and --help are present, print algorithm-focused help."""
     if not any(flag in argv for flag in ("-h", "--help")):
         return False
 
-    # Pre-parse just --algorithm
+    # Pre-parse the same algorithm selector and aliases as the quantize parser.
 
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--algorithm", default=None)
+    pre.add_argument(*ALGORITHM_FLAGS, dest="alg_configs", default=None)
     known, _ = pre.parse_known_args(argv)
-    names = [n.strip().lower() for n in (known.algorithm or "").split(",") if n.strip()]
+    names = [n.strip().lower() for n in (known.alg_configs or "").split(",") if n.strip()]
     if not names:
         return False
 
@@ -352,7 +355,7 @@ def _print_algorithm_help(argv: list[str]) -> bool:
         return False
 
     mini = argparse.ArgumentParser(
-        prog=f"auto_round --algorithm {','.join(canonical_names)}",
+        prog=f"auto_round --alg_configs {','.join(canonical_names)}",
         description=f"Flags for algorithm(s): {', '.join(canonical_names)}. "
         "Use `auto_round --help` for the full argument list.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -428,7 +431,7 @@ def _apply_recipe_defaults(args, recipe="auto-round"):
         if getattr(args, key, None) is None:
             setattr(args, key, value)
     # Keep effective legacy attributes available to integrations inspecting tune(args).
-    if args.algorithm is None:
+    if getattr(args, "alg_configs", None) is None and getattr(args, "algorithm", None) is None:
         configs = args._recipe_plan.build_configs()
         for config in configs:
             for key in ("iters", "lr", "disable_opt_rtn"):
@@ -522,11 +525,12 @@ def tune(args):
                 )
 
     enable_torch_compile = args.enable_torch_compile
-    scheme = args.scheme.upper()
+    scheme = _normalize_scheme_list(args.scheme).upper()
+    scheme_options = scheme if "," in scheme else None
 
     from auto_round.schemes import PRESET_SCHEMES
 
-    if scheme not in PRESET_SCHEMES:
+    if scheme_options is None and scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
 
     from auto_round.utils import parse_layer_config_arg
@@ -542,16 +546,8 @@ def tune(args):
 
     from auto_round.auto_scheme import AutoScheme
 
-    # Supplying multiple schemes enables AutoScheme: the schemes are the
-    # candidate options and --bits is the average target bits.
-    # --options/--avg_bits/--target_bits are compatibility aliases that argparse
-    # merges into --schemes/--bits (see _LegacyAliasAction in parser.py); they
-    # stay functional but are hidden from --help.
-    scheme_options = None
-    if args.schemes is not None:
-        if args.scheme.upper() != "W4A16":
-            raise ValueError("`--scheme` and `--schemes` cannot be used together, please use only `--schemes`")
-        scheme_options = _normalize_scheme_list(args.schemes)
+    # Multiple --scheme candidates enable AutoScheme; --schemes is an alias.
+    # Legacy --options/--avg_bits/--target_bits remain hidden compatibility aliases.
 
     # Normalize --shared_layers: supports three forms per invocation:
     #   - all bare tokens (no commas): treated as one group
@@ -602,7 +598,7 @@ def tune(args):
         # the candidate options carry their own bit widths.
         common_kwargs.pop("bits", None)
     else:
-        # Without --schemes, `--bits` is a plain weight bit width and must be an integer.
+        # With one scheme, `--bits` is a plain weight bit width and must be an integer.
         bits = common_kwargs.get("bits")
         if bits is not None:
             if float(bits).is_integer():
@@ -610,7 +606,7 @@ def tune(args):
             else:
                 raise ValueError(
                     "`--bits` must be an integer for weight quantization; "
-                    "use `--schemes` to set a fractional AutoScheme average target"
+                    "use multiple `--scheme` candidates to set a fractional AutoScheme average target"
                 )
     alg_configs = AlgorithmHandler.build_configs(args, common_kwargs)
 

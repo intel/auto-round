@@ -122,6 +122,7 @@ def test_cli_evaluates_only_after_tp_cleanup(monkeypatch, format_name, tp_size, 
     model, tokenizer = Mock(), Mock()
     compressor = SimpleNamespace(
         tokenizer=tokenizer,
+        model_context=SimpleNamespace(model=torch.nn.Linear(1, 1, device="cpu")),
         quantize_and_save=Mock(return_value=(model, "exported-model")),
     )
     if has_parallel_config:

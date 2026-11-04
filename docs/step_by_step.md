@@ -421,18 +421,20 @@ AWQ (Activation-Aware Weight Quantization) is available as an alternative quanti
 
 The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **INT8** is AutoRound's W8A8 scheme and can use AWQ smoothing before RTN quantization for vLLM's compressed_tensors backend (cutlass INT8 GEMM).
 
-AWQ can also be composed with AutoRound optimization (`--algorithm awq,auto_round`). See [AWQ algorithm results](./awq_details.md) for accuracy and cost comparisons across W4A16, MXFP4, and INT8.
+AWQ can also be composed with AutoRound optimization (`--alg_configs awq,auto_round`). See [AWQ algorithm results](./awq_details.md) for accuracy and cost comparisons across W4A16, MXFP4, and INT8.
 
 #### CLI Usage
 
+The canonical algorithm selector is `--alg_configs`, matching the Python API's `alg_configs`. `--alg_config`, `--algorithm`, `--algorithms`, `--alg`, and `--algs` remain aliases.
+
 ```bash
-auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq --format "auto_round"
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --alg_configs awq --format "auto_round"
 ```
 
 AWQ can also be paired with AutoRound optimization:
 
 ```bash
-auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq,auto_round
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --alg_configs awq,auto_round
 ```
 
 Recommended INT8/W8A8 recipe using AWQ smoothing:
@@ -441,7 +443,7 @@ Recommended INT8/W8A8 recipe using AWQ smoothing:
 auto-round \
   --model Qwen/Qwen3-0.6B \
   --scheme INT8 \
-  --algorithm awq \
+  --alg_configs awq \
   --nsamples 256 \
   --awq_seqlen 512 \
   --awq_apply_clip \
@@ -502,7 +504,7 @@ RTN (recommended starting point):
 
 ```bash
 auto-round-rtn --model /path/to/FLUX.1-dev --model_dtype bf16 \
-  --scheme MXFP4 --algorithm svdquant --device 0 \
+  --scheme MXFP4 --alg_configs svdquant --device 0 \
   --format svdquant_nunchaku \
   --output_dir ./flux-dev-mxfp4-svdquant-rtn
 ```
@@ -511,7 +513,7 @@ SignRound:
 
 ```bash
 auto-round --model /path/to/FLUX.1-dev --model_dtype bf16 \
-  --scheme MXFP4 --algorithm svdquant,auto_round \
+  --scheme MXFP4 --alg_configs svdquant,auto_round \
   --format svdquant_nunchaku \
   --dataset /path/to/captions.tsv --batch_size 1 --device 0 \
   --output_dir ./flux-dev-mxfp4-svdquant-signround
@@ -544,12 +546,12 @@ We recommend exporting to the llm_compressor format for now, as it can be easily
 - **`--iters 0`**: RTN. Fast (seconds to minutes).
 - **`--iters 200`**: Tuning-aware scheme selection. More accurate but much slower.
 
-Providing multiple `--schemes` enables AutoScheme; `--bits` is then the average target bits.
+Providing multiple candidates through `--scheme` (alias: `--schemes`) enables AutoScheme; `--bits` is then the average target bits. A single candidate selects a fixed quantization preset.
 
 ~~~bash
 auto_round \
   --model_name  $model_name \
-  --schemes "mxfp4,mxfp8" \
+  --scheme "mxfp4,mxfp8" \
   --bits 6 \
   --ignore_scale_zp_bits \
   --iters 0 \
@@ -558,14 +560,14 @@ auto_round \
 
 #### API Usage
 ~~~
-ar = AutoRound(model=model_name, schemes=("W2A16G64", "W4A16", "W8A16"), bits=3.0, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, scheme=("W2A16G64", "W4A16", "W8A16"), bits=3.0, iters=0, nsamples=1)
 ar.quantize_and_save()
 ~~~
 
 #### Hyperparameters in AutoScheme
-`bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation. Without `schemes`, `bits` is the plain weight bit width and must be an integer.
+`bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation. With a fixed scheme rather than an AutoScheme candidate list or tuple, `bits` is the plain weight bit width and must be an integer.
 
-`schemes(Union[str, list[Union[QuantizationScheme, str]])` the candidate quantization schemes to choose from, e.g. a string like "W4A16,W8A16", or a list of strings or QuantizationScheme objects. Providing schemes enables AutoScheme.
+`scheme(list[Union[QuantizationScheme, str]] | tuple[Union[QuantizationScheme, str], ...])` the candidate quantization schemes to choose from, e.g. `["W4A16", "W8A16"]` or `("W4A16", "W8A16")`. Pass a list or tuple of strings or QuantizationScheme objects to enable AutoScheme in Python; a single string selects a fixed preset. The Python API does not accept `schemes=`.
 
 `ignore_scale_zp_bits(bool)` Whether to ignore the bits of scale and zero point in average bits calculation. Default is False.
 
@@ -593,7 +595,7 @@ shared_layers = [
     ("fc1", "fc2"),
 ]
 model_name = "Qwen/Qwen3-0.6B"
-ar = AutoRound(model=model_name, schemes=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, scheme=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
 ```
 
@@ -606,7 +608,7 @@ layer_config = {"lm_head": "GGUF:Q6_K"}
 
 ar = AutoRound(
     model=model_name,
-    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    scheme=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
     bits=3.0,
     ignore_scale_zp_bits=True,
     layer_config=layer_config,
