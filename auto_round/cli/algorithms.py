@@ -182,7 +182,7 @@ def _find_merge_target(merged_parameters, locations, group_name, parameter) -> i
     """Find an already-declared parameter that ``parameter`` should merge into.
 
     Option strings are matched before the destination. A mutually exclusive pair
-    (e.g. ``--enable_minmax_tuning`` / ``--no-enable_minmax_tuning``) declares two
+    (e.g. ``--enable_quanted_input`` / ``--no-enable_quanted_input``) declares two
     actions that share one ``dest``, so matching on ``dest`` alone would report a
     conflict between the two halves of the same pair when a second algorithm
     redeclares it. Parameters that share only a ``dest`` are merged when their
