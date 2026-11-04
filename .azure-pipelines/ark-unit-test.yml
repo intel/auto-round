@@ -26,8 +26,8 @@ parameters:
     displayName: "Torch versions"
     type: string
     # Comma-separated list to align with pythonVersions runtime input style.
-    # For example, "2.14.0"
-    default: "2.14.0"
+    # For example, "2.15.0"
+    default: "2.15.0"
   - name: publishTarget
     displayName: "Publish wheels to"
     type: string
