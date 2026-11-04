@@ -67,10 +67,18 @@ using namespace cute;
 //   partition of the global-coordinate tensor (tOgO), so each (q, v) element is
 //   written by its single owner and only the v == 0 lane writes the row's LSE.
 //
+//   Local delta on top of that upstream fix: the LSE base offset uses
+//   seq_len_qo_param (the configured maximum query length) for its batch and
+//   head strides instead of this batch item's own query length. In the varlen
+//   kernel these differ, and the caller allocates LSE as
+//   [batch, Hq, max_seqlen_q] with a flat [total_q, Hq, D] Q buffer, so
+//   stepping by the per-sequence length would write later sequences at the
+//   wrong offsets.
+//
 // ARK's include_directories(wrapper/include) precedes the fetched sycl-tla
 // tree, so this header shadows the upstream copy for SDPA and SAGE kernels.
 // Keep the rest of this file in sync with the pinned upstream revision; remove
-// it once the pin is bumped to a revision that carries the fix.
+// it once the pin is bumped to a revision that carries both fixes.
 // ---------------------------------------------------------------------------
 
 template <class CollectiveMainloop, // Attention mainloop
@@ -227,8 +235,14 @@ public:
          After rA_sum inversion: log2(1/rA_sum) = log(1/rA_sum) * log2(e) */
       constexpr float kLog2e = 1.4426950408889634f;
       int total_q_global = size<0>(O.shape());
-      int64_t lse_base = (int64_t)idx_b * (int64_t)num_heads_q_param * (int64_t)total_q_global +
-                         (int64_t)head_q * (int64_t)total_q_global;
+      /* In the varlen kernel, O spans a single sequence so total_q_global is
+         only that sequence's length, but the caller allocates LSE as
+         [batch, Hq, max_seqlen_q] and scatters rows into [b, h, q] slots by
+         that padded stride. Use the configured maximum query length for the
+         batch/head strides; keep total_q_global for the row-bound check. */
+      int64_t lse_stride_qo = seq_len_qo_param > 0 ? seq_len_qo_param : total_q_global;
+      int64_t lse_base = (int64_t)idx_b * (int64_t)num_heads_q_param * lse_stride_qo +
+                         (int64_t)head_q * lse_stride_qo;
       /* The reduced O fragment (rA) is aligned with the per-thread partition of
          the global-coordinate tensor (tOgO): tOgO(i) == (q, v) global coordinate
          of rA(i) (the same tensor used by the O store).  Per-row max/sum are

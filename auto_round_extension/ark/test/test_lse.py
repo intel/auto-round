@@ -323,3 +323,122 @@ class TestLseValues:
         err = (lse.float() - ref).abs().max().item()
         # Pre-fix error was ~3.7 for the smoothed path.
         assert err <= 0.15, f"{api_name}: max |LSE - reference| = {err:.3f} with K offset"
+
+
+class TestLseLayoutAndGQA:
+    """Regression tests for the HND/NHD and GQA code paths of
+    ``_query_key_dot_mean_k`` and the varlen LSE store.
+
+    The pre-existing :class:`TestLseValues` cases only exercise the default
+    HND layout with ``Hq == Hkv``, so a permutation mistake in the NHD branch
+    or a wrong ``repeat_interleave`` factor for GQA would slip through
+    unnoticed.  ``sdpa`` only allows 1:1 head ratios (``_validate_head_ratio``
+    combined with the canonical-strides check), so the GQA math is exercised
+    directly on the helper the fix introduced.
+    """
+
+    @pytest.mark.parametrize("tensor_layout", ["HND", "NHD"])
+    def test_query_key_dot_mean_k_matches_torch(self, tensor_layout):
+        """``scale * (q . mean_k) / log(2)`` must equal a naive torch reference."""
+        B, Hq, Sq, Skv, D, scale = 2, 6, 56, 1024, 32, 0.123
+        torch.manual_seed(11)
+        q = torch.randn(B, Hq, Sq, D, device="xpu").float()
+        k = torch.randn(B, Hq, Skv, D, device="xpu").float()
+        q_ = q.to(torch.bfloat16)
+        k_ = k.to(torch.bfloat16)
+        if tensor_layout == "NHD":
+            q_ = q_.permute(0, 2, 1, 3).contiguous()
+            k_ = k_.permute(0, 2, 1, 3).contiguous()
+
+        got = ark._query_key_dot_mean_k(q_, k_, scale, tensor_layout)
+        ref = (
+            (q @ k.mean(dim=2, keepdim=True, dtype=torch.float32).transpose(-1, -2)).squeeze(-1) * scale / math.log(2.0)
+        )
+
+        err = (got.float() - ref).abs().max().item()
+        # bf16 input, float32 accumulation -> tiny rounding error expected.
+        assert err <= 1e-3, f"{tensor_layout}: max |dot_mean - ref| = {err:.3e}"
+
+    @pytest.mark.parametrize("layout", ["HND", "NHD"])
+    @pytest.mark.parametrize("Hq,Hkv", [(8, 2), (8, 1), (4, 1)])
+    def test_query_key_dot_mean_k_gqa(self, layout, Hq, Hkv):
+        """``repeat_interleave`` must map each of the Hkv means onto its Hq/Hkv group."""
+        Sq, Skv, D, scale = 32, 256, 32, 0.5
+        torch.manual_seed(13)
+        q_hnd = torch.randn(1, Hq, Sq, D, device="xpu").bfloat16()
+        k_hnd = torch.randn(1, Hkv, Skv, D, device="xpu").bfloat16()
+
+        if layout == "NHD":
+            q_in = q_hnd.permute(0, 2, 1, 3).contiguous()
+            k_in = k_hnd.permute(0, 2, 1, 3).contiguous()
+        else:
+            q_in, k_in = q_hnd, k_hnd
+
+        got = ark._query_key_dot_mean_k(q_in, k_in, scale, layout)
+
+        # Reference from the HND tensors: average over the KV sequence first,
+        # then map each KV head onto the Hq//Hkv query heads it serves.
+        # (Expanding before the mean would be wrong: the duplicated copies get
+        # averaged again.)
+        km = k_hnd.float().mean(dim=2, keepdim=True).repeat_interleave(Hq // Hkv, dim=1)
+        ref = (q_hnd.float() @ km.transpose(-1, -2)).squeeze(-1) * scale / math.log(2.0)
+
+        err = (got.float() - ref).abs().max().item()
+        assert err <= 1e-3, f"{layout} Hq={Hq} Hkv={Hkv}: max |dot_mean - ref| = {err:.3e}"
+
+    def test_varlen_lse_unequal_lengths(self):
+        """``sageattn_varlen`` with ``return_lse=True`` and different query lengths
+        must still write each sequence's LSE into the right ``[batch, head, q]``
+        slot (no cross-sequence offset corruption on ``max_seqlen_q``); padding
+        rows must stay ``-inf``.
+        """
+        B, Hq, D = 2, 4, 64
+        lens_q = [32, 16]
+        lens_k = [64, 32]
+        scale = D**-0.5
+        cu_q = torch.tensor([0, sum(lens_q[:1]), sum(lens_q[:2])], dtype=torch.int32, device="xpu")
+        cu_k = torch.tensor([0, sum(lens_k[:1]), sum(lens_k[:2])], dtype=torch.int32, device="xpu")
+
+        torch.manual_seed(21)
+        q = torch.randn(sum(lens_q), Hq, D, device="xpu").bfloat16()
+        k = (torch.randn(sum(lens_k), Hq, D, device="xpu").float() + 0.5).bfloat16()
+        v = torch.randn(sum(lens_k), Hq, D, device="xpu").bfloat16()
+        max_sq = max(lens_q)
+        max_sk = max(lens_k)
+
+        O, lse = ark.sageattn_varlen(
+            q,
+            k,
+            v,
+            cu_q,
+            cu_k,
+            max_sq,
+            max_sk,
+            sm_scale=scale,
+            return_lse=True,
+            quant_block_size=64,
+            kernel="v1_pvhalf",
+        )
+
+        assert lse.shape == (B, Hq, max_sq), f"unexpected LSE shape {tuple(lse.shape)}"
+
+        sq, sk = 0, 0
+        for b in range(B):
+            lq, lk = lens_q[b], lens_k[b]
+            # Flat slices are [len, heads, dim]; move heads first to matmul.
+            qb = q[sq : sq + lq].float().transpose(0, 1)  # [Hq, lq, D]
+            kb = k[sk : sk + lk].float().transpose(0, 1)  # [Hq, lk, D]
+            # The fix restores the smooth_k offset, so the returned LSE must be
+            # the LSE of the *unsmoothed* logits: log2(sum_j exp(scale*q.k_j)).
+            ref = torch.logsumexp((qb @ kb.transpose(-1, -2)) * scale, dim=-1) / math.log(2.0)
+            got = lse[b, :, :lq].float()
+            err = (got - ref).abs().max().item()
+            # Same tolerance the existing SAGE value test uses; the extra
+            # padding-slot assertion is independent of numeric tolerance.
+            assert err <= 0.20, f"sequence {b}: max |LSE - ref| = {err:.3f}"
+
+            # Padding slots beyond this sequence's length must remain -inf.
+            if lq < max_sq:
+                assert not torch.isfinite(lse[b, :, lq:]).any(), f"seq {b}: padding row(s) not -inf"
+            sq += lq
+            sk += lk
