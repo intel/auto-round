@@ -61,14 +61,21 @@ class _LegacyAliasAction(argparse.Action):
     _CANONICAL_FLAGS = {"bits": "--bits", "scheme": "--scheme"}
 
     def __call__(self, parser, namespace, values, option_string=None):
+        seen = dict(getattr(namespace, "_legacy_alias_values", {}))
         current_value = getattr(namespace, self.dest, None)
         if self.dest == "scheme":
             values = ",".join(part.strip() for value in values for part in value.split(",") if part.strip())
-        if current_value is not None and current_value != self.default and current_value != values:
+        if (
+            current_value is not None
+            and (self.dest in seen or current_value != self.default)
+            and current_value != values
+        ):
             parser.error(
                 f"conflicting values for {self._CANONICAL_FLAGS[self.dest]}: "
                 f"{current_value!r} was already provided, but {option_string!r} set {values!r}"
             )
+        seen[self.dest] = values
+        namespace._legacy_alias_values = seen
         setattr(namespace, self.dest, values)
 
 
@@ -105,7 +112,7 @@ class _QuantizeArgumentParser(argparse.ArgumentParser):
             for action, default in defaults:
                 action.default = default
             self._defaults.update(parser_defaults)
-        return {dest for dest in vars(seen) if dest != "model"}
+        return {dest for dest in vars(seen) if dest not in {"model", "_legacy_alias_values"}}
 
 
 def add_common_quantization_arguments(group) -> None:

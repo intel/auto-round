@@ -715,6 +715,40 @@ def test_scheme_aliases_reject_conflicting_values():
         p.parse_args(["--scheme", "W8A16", "--schemes", "W2A16,W4A16"])
 
 
+@pytest.mark.parametrize("first_flag", ["--scheme", "--schemes", "--options", "--option"])
+@pytest.mark.parametrize("second_flag", ["--scheme", "--schemes", "--options", "--option"])
+@pytest.mark.parametrize("schemes", [("W4A16", "W8A16"), ("W8A16", "W4A16")])
+def test_scheme_alias_conflicts_fail_before_explicit_reparse(first_flag, second_flag, schemes, monkeypatch, capsys):
+    from auto_round.cli.parser import build_quantize_parser
+
+    p = build_quantize_parser()
+
+    def unexpected_reparse(argv):
+        pytest.fail("Conflicting aliases must fail during the initial parse")
+
+    monkeypatch.setattr(p, "_explicit_dests", unexpected_reparse)
+    with pytest.raises(SystemExit) as exc_info:
+        p.parse_args([first_flag, schemes[0], second_flag, schemes[1], "--iters", "0"])
+
+    assert exc_info.value.code == 2
+    assert "conflicting values for --scheme" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("scheme", ["W4A16", "W8A16", "W4A16,W8A16"])
+def test_matching_scheme_aliases_preserve_explicit_overrides(scheme):
+    from auto_round.cli.parser import build_quantize_parser
+
+    p = build_quantize_parser()
+    args = p.parse_args(["--scheme", scheme, "--schemes", scheme, "--iters", "0"])
+
+    assert args.scheme == scheme
+    assert args.iters == 0
+    assert {"scheme", "iters"} <= args._explicit_fields
+    assert "_legacy_alias_values" not in args._explicit_fields
+    assert p.parse_args(["--scheme", "W8A16"]).scheme == "W8A16"
+    assert p.parse_args([]).scheme == "W4A16"
+
+
 def test_legacy_auto_scheme_flags_alias_and_hidden():
     """--options/--avg_bits/--target_bits alias --scheme/--bits but are hidden from --help."""
     import io
