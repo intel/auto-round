@@ -32,6 +32,7 @@ from typing import Any
 import torch
 
 from auto_round.algorithms.quantization.search_dispatch import (
+    SearchSummary,
     _fn_key,
     _plan_capacity_chunks,
     _search_fn_stackable,
@@ -43,7 +44,6 @@ from auto_round.algorithms.quantization.search_dispatch import (
 )
 from auto_round.logger import logger
 from auto_round.utils import set_module
-from auto_round.utils.perf_counters import perf_counters_enabled
 from auto_round.wrapper import WrapperLinear
 
 
@@ -313,8 +313,9 @@ def run_batched_rtn_search(
     for worker, _home, chunk in planned:
         buckets.setdefault(str(worker), []).append(chunk)
 
-    # per-worker execution stats for the wrap-grammar summary line
-    stats: OrderedDict[str, dict] = OrderedDict()
+    # per-worker calls and search time for the summary line
+    summary = SearchSummary()
+    summary.offloaded = sum(1 for worker, home, _chunk in planned if worker != home)
 
     def _worker_of(chunk: list[dict[str, Any]]) -> str:
         for wk, cs in buckets.items():
@@ -346,7 +347,7 @@ def run_batched_rtn_search(
 
     @torch.no_grad()
     def _run_chunk(chunk: list[dict[str, Any]], worker: str, threaded: bool = False) -> None:
-        st = stats.setdefault(str(worker), {"wall": 0.0, "modules": 0, "batches": 0, "singletons": 0})
+        st = summary.device(worker)
         st["modules"] += len(chunk)
         if len(chunk) > 1:
             st["batches"] += 1
@@ -450,16 +451,9 @@ def run_batched_rtn_search(
             set_module(model, e["name"], layer)
 
     def _run_chunks(wk: str, cs: list[list[dict[str, Any]]]) -> None:
-        import time as _ptime
-
-        _t0 = _ptime.perf_counter()
-        try:
+        with summary.timed(wk):
             for c in cs:
                 _run_chunk_guarded(c, _worker_of(c), threaded=True)
-        finally:
-            stats.setdefault(str(wk), {"wall": 0.0, "modules": 0, "batches": 0, "singletons": 0})["wall"] += (
-                _ptime.perf_counter() - _t0
-            )
 
     if len(buckets) > 1:
         keyed = OrderedDict()
@@ -470,31 +464,8 @@ def run_batched_rtn_search(
         for wk, cs in buckets.items():
             _run_chunks(str(wk), cs)
 
-    if stats and perf_counters_enabled():
-        # one timing line, same grammar and gating as the wrap-search lane:
-        # calls are chunks (each chunk is one stacked or per-module search
-        # call), so the counts cannot read as "one call per module"
-        from auto_round.utils.pool_placement import _short_device_key
-
-        _n_mod = sum(st["modules"] for st in stats.values())
-        _n_batch = sum(st["batches"] for st in stats.values())
-        _n_single = sum(st["singletons"] for st in stats.values())
-        _n_offloaded = sum(1 for worker, home, _chunk in planned if worker != home)
-        _walls = sum(st.get("wall", 0.0) for st in stats.values())
-        per_device = (
-            "{" + ", ".join(f"'{_short_device_key(dev)}': {st.get('wall', 0.0):.2f}" for dev, st in stats.items()) + "}"
-        )
-        logger.info(
-            "[rtn-batch] %d modules, %d batch + %d singleton search calls"
-            + (f" ({_n_offloaded} chunk(s) offloaded to idle devices)" if _n_offloaded else "")
-            + ", %.2fs device-wall (%.2fs summed) walls %s",
-            _n_mod,
-            _n_batch,
-            _n_single,
-            max((st.get("wall", 0.0) for st in stats.values()), default=0.0),
-            _walls,
-            per_device,
-        )
+    if summary.devices:
+        summary.finish().log("[rtn-batch]")
 
 
 def _relocate_tensor_kwargs(kwargs: dict[str, Any], device: str) -> dict[str, Any]:

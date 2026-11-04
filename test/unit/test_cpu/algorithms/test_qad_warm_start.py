@@ -128,7 +128,7 @@ def test_warmup_propagates_best_quantized_output(monkeypatch, wrapper_cls, outpu
     expected_outputs = []
     calls = []
 
-    def forward(module, samples, others):
+    def forward(module, samples, others, cache_device=None):
         calls.append(module[0])
         result = [module(sample) for sample in samples]
         forward.last_output_dict = {"hidden_states": result} if output_dict else None
@@ -163,8 +163,8 @@ def test_warmup_propagates_best_quantized_output(monkeypatch, wrapper_cls, outpu
     composer.preprocessors = []
     composer._rotation_members = []
     composer.scheme = None
-    composer._get_fp_act_hooks = lambda block: []
-    composer._get_q_act_hooks = lambda block: []
+    composer._get_fp_act_hooks = lambda block: ([], None)
+    composer._get_q_act_hooks = lambda block: ([], None)
     monkeypatch.setattr("auto_round.algorithms.composer.clear_memory", lambda: None)
     ctx = BlockContext(model=block, block_names=["0"], block_name="0", block_index=0)
     quantized, reference = composer.compress_block(block, inputs, {}, ctx)
