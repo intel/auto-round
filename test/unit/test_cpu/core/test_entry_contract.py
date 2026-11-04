@@ -137,7 +137,7 @@ def test_cli_awq_rtn_opt_policy():
         (Namespace(algorithm="awq", iters=200, disable_opt_rtn=True), ["AWQConfig", "RTNConfig"], [True, True]),
         (
             Namespace(algorithm="awq", iters=200, disable_opt_rtn=None),
-            ["AWQConfig", "OptimizedRTNConfig"],
+            ["AWQConfig", "RTNConfig"],
             [False, False],
         ),
         (
