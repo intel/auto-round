@@ -40,10 +40,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import torch
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from auto_round.logger import logger
 
@@ -64,6 +65,9 @@ class TeacherTopKCache:
     teacher files are cleared, so a cache written for one model/config is never
     silently reused by another (which would, e.g., feed out-of-range token ids
     from a larger vocabulary into a smaller model's ``gather``).
+
+    If another run owns the same namespace, use a temporary isolated cache
+    rather than failing or waiting for the entire tuning run to finish.
     """
 
     _MANIFEST = "manifest.json"
@@ -116,15 +120,31 @@ class TeacherTopKCache:
             workspace = os.path.join(workspace, hashlib.sha256(namespace).hexdigest())
         self.workspace = workspace
         os.makedirs(self.workspace, exist_ok=True)
+        self._private_workspace: tempfile.TemporaryDirectory | None = None
         self._workspace_lock = FileLock(os.path.join(self.workspace, ".cache.lock"), timeout=0, thread_local=False)
-        self._workspace_lock.acquire()
         self._num_workers = max(1, int(num_workers))
         self._executor: ThreadPoolExecutor | None = None
         self._pending: dict[int, Future] = {}
         try:
+            try:
+                self._workspace_lock.acquire()
+            except Timeout:
+                self._private_workspace = tempfile.TemporaryDirectory(prefix="concurrent_", dir=workspace)
+                self.workspace = self._private_workspace.name
+                self._workspace_lock = FileLock(
+                    os.path.join(self.workspace, ".cache.lock"), timeout=0, thread_local=False
+                )
+                self._workspace_lock.acquire()
+                logger.warning(
+                    'QAD: teacher cache at "%s" is in use by another run; '
+                    'building an isolated temporary cache at "%s". '
+                    "Use a different qad_workspace to retain a separate reusable cache.",
+                    workspace,
+                    self.workspace,
+                )
             self._reconcile_signature(signature)
         except BaseException:
-            self._workspace_lock.release()
+            self.shutdown()
             raise
 
     # ── signature / invalidation ──────────────────────────────────────────────
@@ -282,12 +302,15 @@ class TeacherTopKCache:
         return input_ids, index, prob
 
     def shutdown(self) -> None:
-        """Stop the prefetch thread pool and drop any pending futures."""
+        """Stop readers, release ownership, and remove any temporary cache."""
         self._pending.clear()
         if self._executor is not None:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
         self._workspace_lock.release()
+        if self._private_workspace is not None:
+            self._private_workspace.cleanup()
+            self._private_workspace = None
 
     def clear(self) -> None:
         """Remove all cached teacher files from the workspace."""

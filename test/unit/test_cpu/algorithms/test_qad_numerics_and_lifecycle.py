@@ -23,7 +23,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 import torch.nn.functional as F
-from filelock import Timeout
+from filelock import FileLock, Timeout
 
 from auto_round.algorithms.quantization.qad.config import QADConfig
 from auto_round.algorithms.quantization.qad.quantizer import QADQuantizer, _QADDistillLoss
@@ -196,21 +196,64 @@ def test_different_cache_signatures_do_not_invalidate_active_readers(tmp_path):
         cache.shutdown()
 
 
-def test_same_cache_signature_has_exclusive_lifecycle_lock(tmp_path):
-    signature = {"teacher": "same"}
+@pytest.mark.parametrize("signature", [None, {"teacher": "same"}])
+def test_same_cache_signature_has_exclusive_lifecycle_lock(tmp_path, signature):
     cache = TeacherTopKCache(str(tmp_path), 2, signature=signature)
+    ids = torch.tensor([1, 2])
+    logits = torch.tensor([[3.0, 2.0, 1.0], [1.0, 2.0, 3.0]])
     try:
         with pytest.raises(Timeout):
-            TeacherTopKCache(str(tmp_path), 2, signature=signature)
-        cache.build_sample(0, torch.tensor([1, 2]), torch.randn(2, 3))
+            FileLock(str(Path(cache.workspace, ".cache.lock")), timeout=0).acquire()
+        cache.build_sample(0, ids, logits)
         cache.prefetch([0])
+        with ThreadPoolExecutor(1) as executor:
+            other = executor.submit(TeacherTopKCache, str(tmp_path), 2, signature=signature).result()
+        temporary_workspace = Path(other.workspace)
+        try:
+            assert other.workspace != cache.workspace
+            assert not other.exists(0)
+            other.build_sample(0, ids, -logits)
+            other.prefetch([0])
+            _, index, probs = other.load(0, "cpu")
+            torch.testing.assert_close(index, (-logits).topk(2).indices)
+            torch.testing.assert_close(probs, (-logits).topk(2).values.softmax(-1))
+            other.clear()
+            _, index, probs = cache.load(0, "cpu")
+            torch.testing.assert_close(index, logits.topk(2).indices)
+            torch.testing.assert_close(probs, logits.topk(2).values.softmax(-1))
+            other.build_sample(0, ids, -logits)
+            other.prefetch([0])
+        finally:
+            other.shutdown()
+            other.shutdown()  # QAD cleanup can run more than once.
+        assert not temporary_workspace.exists()
     finally:
         cache.shutdown()
     reopened = TeacherTopKCache(str(tmp_path), 2, signature=signature)
     try:
+        assert reopened.workspace == cache.workspace
         assert reopened.exists(0)
     finally:
         reopened.shutdown()
+
+
+def test_contended_cache_initialization_failure_cleans_temporary_workspace(tmp_path, monkeypatch):
+    cache = TeacherTopKCache(str(tmp_path), 2, signature={"teacher": "same"})
+
+    def fail(self, signature):
+        raise RuntimeError("manifest setup failed")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(TeacherTopKCache, "_reconcile_signature", fail)
+            with pytest.raises(RuntimeError, match="manifest setup failed"):
+                TeacherTopKCache(str(tmp_path), 2, signature={"teacher": "same"})
+        assert not list(Path(cache.workspace).glob("concurrent_*"))
+        assert cache._workspace_lock.is_locked
+    finally:
+        cache.shutdown()
+    reopened = TeacherTopKCache(str(tmp_path), 2, signature={"teacher": "same"})
+    reopened.shutdown()
 
 
 def test_cache_lock_released_when_qad_setup_fails(tmp_path, monkeypatch):
