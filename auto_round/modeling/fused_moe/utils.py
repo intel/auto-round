@@ -18,6 +18,15 @@ import torch.nn as nn
 from auto_round import envs
 
 
+def _opaque_to_dynamo(fn):
+    """Keep Python control flow driven by tensor values outside Dynamo graphs."""
+    disable = getattr(torch.compiler, "disable", None)
+    if disable is None:  # pragma: no cover - torch < 2.1
+        dynamo = getattr(torch, "_dynamo", None)
+        disable = getattr(dynamo, "disable", None) if dynamo is not None else None
+    return disable(fn) if disable is not None else fn
+
+
 def _update_parameter(
     module: torch.nn.Module,
     name: str,
@@ -67,7 +76,7 @@ def _prepare_moe_route_batches(
     sorted_token_indices = token_indices.index_select(0, permutation)
     sorted_hidden_states = hidden_states.index_select(0, sorted_token_indices)
     sorted_weights = sample_weights.index_select(0, permutation)
-    return sorted_hidden_states, sorted_weights, permutation, [(expert, count) for expert, count in route_plan]
+    return sorted_hidden_states, sorted_weights, permutation, route_plan
 
 
 def _restore_moe_route_order(
@@ -82,6 +91,7 @@ def _restore_moe_route_order(
     return outputs.view(num_tokens, top_k, outputs.size(-1)).sum(dim=1)
 
 
+@_opaque_to_dynamo
 def sequential_moe_forward(
     hidden_states: torch.Tensor,
     top_k_index: torch.Tensor,

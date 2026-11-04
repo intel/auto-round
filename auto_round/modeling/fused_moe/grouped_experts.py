@@ -92,7 +92,11 @@ import torch.nn.functional as F
 from torch import nn
 
 from auto_round import envs
-from auto_round.modeling.fused_moe.utils import build_forced_routing, force_all_experts_routing_enabled
+from auto_round.modeling.fused_moe.utils import (
+    _opaque_to_dynamo,
+    build_forced_routing,
+    force_all_experts_routing_enabled,
+)
 from auto_round.utils import logger
 
 # Expert implementation name registered into transformers' ``ALL_EXPERTS_FUNCTIONS``.
@@ -1128,30 +1132,6 @@ def _run_routes(
     out_per_sample = torch.zeros(num_pairs, hidden_dim, device=device, dtype=out.dtype)
     out_per_sample.index_copy_(0, perm_valid.to(device), out.to(device))
     return out_per_sample.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
-
-
-def _opaque_to_dynamo(fn):
-    """Stop ``torch.compile`` from tracing into this function.
-
-    ``block_runner`` compiles the whole block forward, and the experts forward below is
-    deliberately full of *Python-level* data-dependent control flow: the routed expert ids
-    come back through ``.tolist()``, the number of loop iterations and fused groups follows
-    them, and experts are looked up by name. Dynamo would retrace on every distinct routing
-    -- i.e. on every calibration sample -- which is exactly the "fused MoE with
-    shape-dependent control flow" case that already forces compile off for the DeepSeek and
-    GLM-5 families (see ``special_model_handler``).
-
-    ``linear_loop_experts_forward`` does not need this because its control flow is static
-    (``for expert_idx in range(num_experts)``); only the tensor values inside vary.
-
-    Making just this call opaque keeps the rest of the block compiled, and the quantization
-    functions it calls are compiled in their own right, so nothing of value is lost.
-    """
-    disable = getattr(torch.compiler, "disable", None)
-    if disable is None:  # pragma: no cover - torch < 2.1
-        dynamo = getattr(torch, "_dynamo", None)
-        disable = getattr(dynamo, "disable", None) if dynamo is not None else None
-    return disable(fn) if disable is not None else fn
 
 
 # Config attributes various architectures store the expert count under. transformers' own

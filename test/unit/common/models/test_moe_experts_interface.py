@@ -343,6 +343,63 @@ def _build_linearized_experts(num_experts: int, with_act_fn: bool = True) -> nn.
     return experts
 
 
+def test_linear_loop_forward_matches_reference_outputs_and_grads():
+    from auto_round.modeling.fused_moe.moe_experts_interface import linear_loop_experts_forward
+
+    torch.manual_seed(23)
+    num_experts = 4
+    num_tokens = 7
+    top_k = 2
+    hidden_dim = 4
+    experts = _build_linearized_experts(num_experts)
+    experts.num_experts = num_experts
+    hidden_states = torch.randn(num_tokens, hidden_dim, requires_grad=True)
+    top_k_index = torch.tensor([[0, 3], [3, 1], [1, 0], [3, 2], [0, 1], [2, 3], [1, 0]])
+    top_k_weights = torch.softmax(torch.randn(num_tokens, top_k), dim=-1).requires_grad_()
+
+    token_indices = torch.arange(num_tokens).unsqueeze(1).expand_as(top_k_index).reshape(-1)
+    expected_pairs = hidden_states.new_zeros(num_tokens * top_k, hidden_dim)
+    flat_indices = top_k_index.reshape(-1)
+    flat_weights = top_k_weights.reshape(-1)
+    for expert_idx in range(num_experts):
+        pair_indices = torch.nonzero(flat_indices == expert_idx, as_tuple=False).squeeze(-1)
+        if pair_indices.numel() == 0:
+            continue
+        expert = getattr(experts, str(expert_idx))
+        expert_input = hidden_states.index_select(0, token_indices.index_select(0, pair_indices))
+        gated = experts.act_fn(expert.gate_proj(expert_input)) * expert.up_proj(expert_input)
+        expert_output = expert.down_proj(gated)
+        weighted = expert_output * flat_weights.index_select(0, pair_indices).unsqueeze(-1)
+        expected_pairs.index_copy_(0, pair_indices, weighted)
+    expected = expected_pairs.view(num_tokens, top_k, hidden_dim).sum(dim=1)
+    expected.square().sum().backward()
+    expected_input_grad = hidden_states.grad.clone()
+    expected_weight_grad = top_k_weights.grad.clone()
+    expected_expert_grads = [
+        [param.grad.clone() if param.grad is not None else None for param in getattr(experts, str(i)).parameters()]
+        for i in range(num_experts)
+    ]
+
+    hidden_states.grad = None
+    top_k_weights.grad = None
+    for expert_idx in range(num_experts):
+        for param in getattr(experts, str(expert_idx)).parameters():
+            param.grad = None
+
+    actual = linear_loop_experts_forward(experts, hidden_states, top_k_index, top_k_weights)
+    actual.square().sum().backward()
+
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(hidden_states.grad, expected_input_grad, atol=1e-6, rtol=1e-5)
+    assert torch.allclose(top_k_weights.grad, expected_weight_grad, atol=1e-6, rtol=1e-5)
+    for expert_idx, expected_grads in enumerate(expected_expert_grads):
+        for param, expected_grad in zip(getattr(experts, str(expert_idx)).parameters(), expected_grads):
+            if expected_grad is None:
+                assert param.grad is None
+            else:
+                assert torch.allclose(param.grad, expected_grad, atol=1e-6, rtol=1e-5)
+
+
 def test_utils_get_num_experts_ignores_non_numeric_modules_in_linearized_layout():
     experts = _build_linearized_experts(num_experts=3, with_act_fn=True)
 

@@ -42,6 +42,7 @@ from auto_round.modeling.fused_moe.grouped_experts import (
     grouped_linear_experts_forward,
 )
 from auto_round.modeling.fused_moe.utils import (
+    _opaque_to_dynamo,
     _prepare_moe_route_batches,
     _restore_moe_route_order,
     build_forced_routing,
@@ -212,6 +213,7 @@ def _install_compact_expert_repr(module: nn.Module) -> None:
         cls.__iter__ = _iter
 
 
+@_opaque_to_dynamo
 def linear_loop_experts_forward(
     self: nn.Module,
     hidden_states: torch.Tensor,
@@ -220,10 +222,12 @@ def linear_loop_experts_forward(
 ) -> torch.Tensor:
     """Forward using individual nn.Linear layers per expert.
 
-    This implementation loops over experts and accesses per-expert containers
-    (self._modules["0"], self._modules["1"], ...) each with gate_proj,
+    This implementation loops over active experts and accesses per-expert
+    containers (self._modules["0"], self._modules["1"], ...) each with gate_proj,
     up_proj, and down_proj as nn.Linear layers (or quantized equivalents),
-    enabling proper quantization support.
+    enabling proper quantization support. The route plan drives Python control
+    flow, so this forward is opaque to Dynamo while the surrounding block can
+    still be compiled.
 
     Expected module structure:
         - Numbered children (0, 1, ..., num_experts-1), each an _ExpertContainer with:
