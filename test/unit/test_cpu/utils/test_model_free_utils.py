@@ -42,6 +42,8 @@ from auto_round.utils.model_free_utils import (
     _dequant_inkling_nvfp4_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
+    _fused_nvfp4_global_scale_overrides,
+    _fused_nvfp4_projection_groups,
     _handle_mxfp_source_tensors,
     _handle_nvfp4_source_tensors,
     _hydrate_and_clean_inkling_nvfp4_aux,
@@ -205,6 +207,43 @@ def test_inkling_nvfp4_dequantizes_fused_3d_weight():
 
 def _matcher(ignore=None, layer_config=None, default=None):
     return _PatternMatcher(ignore or [], layer_config or {}, default or {})
+
+
+def test_fused_nvfp4_projection_groups_support_diffusers_self_attention(monkeypatch):
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
+    matcher = _matcher(default={"bits": 4, "group_size": 16, "data_type": "nvfp4_v2_gs"})
+    weight_map = {
+        f"transformer_blocks.0.attn.{projection}.weight": "model.safetensors" for projection in ("to_q", "to_k", "to_v")
+    }
+    weight_map.update(
+        {
+            f"down_blocks.0.attentions.0.transformer_blocks.0.attn2.{projection}.weight": "model.safetensors"
+            for projection in ("to_q", "to_k", "to_v")
+        }
+    )
+
+    groups = _fused_nvfp4_projection_groups(weight_map, matcher)
+
+    assert groups == [
+        ("transformer_blocks.0.attn.to_q", "transformer_blocks.0.attn.to_k", "transformer_blocks.0.attn.to_v")
+    ]
+
+    raw_tensors = {
+        f"transformer_blocks.0.attn.{projection}.weight": torch.full((16, 16), value)
+        for projection, value in zip(("to_q", "to_k", "to_v"), (0.1, 0.2, 0.3))
+    }
+    raw_tensors.update(
+        {
+            f"down_blocks.0.attentions.0.transformer_blocks.0.attn2.{projection}.weight": torch.full((16, 16), value)
+            for projection, value in zip(("to_q", "to_k", "to_v"), (1.0, 2.0, 3.0))
+        }
+    )
+    overrides = _fused_nvfp4_global_scale_overrides(raw_tensors, matcher)
+
+    assert set(overrides) == {
+        f"transformer_blocks.0.attn.{projection}.weight" for projection in ("to_q", "to_k", "to_v")
+    }
+    assert overrides["transformer_blocks.0.attn.to_q.weight"] == overrides["transformer_blocks.0.attn.to_v.weight"]
 
 
 # ---------------------------------------------------------------------------

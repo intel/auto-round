@@ -2277,11 +2277,21 @@ _FUSED_NVFP4_PROJECTION_GROUPS = {
     "q_proj": ("q_proj", "k_proj", "v_proj"),
     "k_proj": ("q_proj", "k_proj", "v_proj"),
     "v_proj": ("q_proj", "k_proj", "v_proj"),
+    "to_q": ("to_q", "to_k", "to_v"),
+    "to_k": ("to_q", "to_k", "to_v"),
+    "to_v": ("to_q", "to_k", "to_v"),
     "gate_proj": ("gate_proj", "up_proj"),
     "up_proj": ("gate_proj", "up_proj"),
     "w1": ("w1", "w3"),
     "w3": ("w1", "w3"),
 }
+
+
+def _is_cross_attention_projection(parent: str, projection_group: tuple[str, ...]) -> bool:
+    if projection_group != ("to_q", "to_k", "to_v"):
+        return False
+    path_parts = parent.lower().split(".")
+    return any(part in {"attn2", "cross_attn", "cross_attention"} for part in path_parts)
 
 
 def _fused_nvfp4_projection_groups(weight_map: dict[str, str], matcher: _PatternMatcher) -> list[tuple[str, ...]]:
@@ -2300,7 +2310,7 @@ def _fused_nvfp4_projection_groups(weight_map: dict[str, str], matcher: _Pattern
 
         parent, projection = layer_name.rsplit(".", 1) if "." in layer_name else ("", layer_name)
         projection_group = _FUSED_NVFP4_PROJECTION_GROUPS.get(projection)
-        if projection_group is not None:
+        if projection_group is not None and not _is_cross_attention_projection(parent, projection_group):
             groups.setdefault((parent, projection_group), {})[projection] = layer_name
 
     return [
@@ -2338,7 +2348,7 @@ def _fused_nvfp4_global_scale_overrides(
         layer_name = tensor_name[: -len(".weight")]
         parent, projection = layer_name.rsplit(".", 1) if "." in layer_name else ("", layer_name)
         projection_group = _FUSED_NVFP4_PROJECTION_GROUPS.get(projection)
-        if projection_group is not None:
+        if projection_group is not None and not _is_cross_attention_projection(parent, projection_group):
             groups.setdefault((parent, projection_group), {})[projection] = (tensor_name, tensor)
 
     overrides: dict[str, torch.Tensor] = {}
