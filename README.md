@@ -7,7 +7,7 @@
 </p>
 
 
-<h3>PTQ-Level Efficiency, QAT-Level Accuracy.</h3>
+<h3>PTQ-Level Efficiency, QAT-Level Accuracy</h3>
 
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.16.1-green)](https://github.com/intel/auto-round/releases)
@@ -31,6 +31,7 @@
 [简体中文](README_CN.md) | English&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
+
 
 ---
 <div align="left">
@@ -269,7 +270,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### Calibration Dataset
 - **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
-- I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AUTO_ROUND_CACHE/datasets/coco2014` when `AUTO_ROUND_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
+- I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AR_CACHE/datasets/coco2014` when `AR_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
 - **`nsamples` (int)**: Number of samples for tuning (default is `128`).
 - **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
 

@@ -14,14 +14,16 @@
 
 """Offline QAD numerical stability and cache/wrapper lifecycle regressions."""
 
+import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import torch
 import torch.nn.functional as F
-from filelock import Timeout
+from filelock import FileLock, Timeout
 
 from auto_round.algorithms.quantization.qad.config import QADConfig
 from auto_round.algorithms.quantization.qad.quantizer import QADQuantizer, _QADDistillLoss
@@ -106,6 +108,72 @@ def test_all_ignored_ce_is_graph_connected_zero(hf_loss, seqlen):
         model.loss_function.assert_not_called()
 
 
+@pytest.mark.parametrize("dtype", [None, torch.float16, torch.bfloat16, torch.float32])
+def test_full_vocabulary_cache_storage_dtype(tmp_path, dtype):
+    kwargs = {} if dtype is None else {"full_dtype": dtype}
+    cache = TeacherTopKCache(str(tmp_path), -1, signature={"teacher": "one"}, **kwargs)
+    expected_dtype = torch.float32 if dtype is None else dtype
+    ids = torch.tensor([1, 2])
+    logits = torch.tensor([[0.0, -20.0, -40.0], [0.0, -10.0, -30.0]])
+    try:
+        cache.build_sample(0, ids, logits)
+        stored = torch.load(cache._path(0), map_location="cpu")
+        assert stored["prob"].dtype == expected_dtype
+        assert cache.is_valid_for(0, ids)
+        cache.prefetch([0])
+        loaded_ids, index, probs = cache.load(0, "cpu")
+        assert index is None
+        assert probs.dtype == torch.float32
+        torch.testing.assert_close(loaded_ids, ids)
+        torch.testing.assert_close(probs, logits.softmax(-1).to(expected_dtype).float())
+        if expected_dtype in (torch.bfloat16, torch.float32):
+            assert (probs[:, -1] > 0).all()
+        # A file with an incompatible storage dtype must not be silently reused.
+        other_dtype = torch.float16 if expected_dtype != torch.float16 else torch.float32
+        stored["prob"] = stored["prob"].to(other_dtype)
+        torch.save(stored, cache._path(0))
+        assert not cache.is_valid_for(0, ids)
+    finally:
+        cache.shutdown()
+
+
+def test_full_vocabulary_cache_dtype_namespaces_are_isolated(tmp_path):
+    caches = []
+    try:
+        for dtype in (torch.float16, torch.bfloat16, torch.float32):
+            cache = TeacherTopKCache(str(tmp_path), -1, signature={"teacher": "one"}, full_dtype=dtype)
+            caches.append(cache)
+            manifest = json.loads(Path(cache.workspace, "manifest.json").read_text())
+            # FP16 retains its legacy manifest; BF16 and FP32 record their dtype explicitly.
+            assert manifest.get("full_dtype", str(torch.float16)) == str(dtype)
+        assert len({cache.workspace for cache in caches}) == 3
+    finally:
+        for cache in caches:
+            cache.shutdown()
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_topk_cache_stays_fp32_regardless_of_full_dtype(tmp_path, dtype):
+    cache = TeacherTopKCache(str(tmp_path), 2, full_dtype=dtype)
+    ids = torch.tensor([1, 2])
+    logits = torch.tensor([[3.0, 2.0, 1.0], [1.0, 2.0, 3.0]])
+    try:
+        cache.build_sample(0, ids, logits)
+        stored = torch.load(cache._path(0), map_location="cpu")
+        assert stored["prob"].dtype == torch.float32
+        _, index, probs = cache.load(0, "cpu")
+        torch.testing.assert_close(index, logits.topk(2).indices)
+        torch.testing.assert_close(probs, logits.topk(2).values.softmax(-1))
+    finally:
+        cache.shutdown()
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.int32, None])
+def test_teacher_cache_rejects_unsupported_storage_dtype(tmp_path, dtype):
+    with pytest.raises(ValueError, match="full_dtype.*bfloat16"):
+        TeacherTopKCache(str(tmp_path), -1, full_dtype=dtype)
+
+
 def test_different_cache_signatures_do_not_invalidate_active_readers(tmp_path):
     cache = TeacherTopKCache(str(tmp_path), 2, signature={"teacher": "one"})
     ids = torch.tensor([1, 2])
@@ -128,21 +196,64 @@ def test_different_cache_signatures_do_not_invalidate_active_readers(tmp_path):
         cache.shutdown()
 
 
-def test_same_cache_signature_has_exclusive_lifecycle_lock(tmp_path):
-    signature = {"teacher": "same"}
+@pytest.mark.parametrize("signature", [None, {"teacher": "same"}])
+def test_same_cache_signature_has_exclusive_lifecycle_lock(tmp_path, signature):
     cache = TeacherTopKCache(str(tmp_path), 2, signature=signature)
+    ids = torch.tensor([1, 2])
+    logits = torch.tensor([[3.0, 2.0, 1.0], [1.0, 2.0, 3.0]])
     try:
         with pytest.raises(Timeout):
-            TeacherTopKCache(str(tmp_path), 2, signature=signature)
-        cache.build_sample(0, torch.tensor([1, 2]), torch.randn(2, 3))
+            FileLock(str(Path(cache.workspace, ".cache.lock")), timeout=0).acquire()
+        cache.build_sample(0, ids, logits)
         cache.prefetch([0])
+        with ThreadPoolExecutor(1) as executor:
+            other = executor.submit(TeacherTopKCache, str(tmp_path), 2, signature=signature).result()
+        temporary_workspace = Path(other.workspace)
+        try:
+            assert other.workspace != cache.workspace
+            assert not other.exists(0)
+            other.build_sample(0, ids, -logits)
+            other.prefetch([0])
+            _, index, probs = other.load(0, "cpu")
+            torch.testing.assert_close(index, (-logits).topk(2).indices)
+            torch.testing.assert_close(probs, (-logits).topk(2).values.softmax(-1))
+            other.clear()
+            _, index, probs = cache.load(0, "cpu")
+            torch.testing.assert_close(index, logits.topk(2).indices)
+            torch.testing.assert_close(probs, logits.topk(2).values.softmax(-1))
+            other.build_sample(0, ids, -logits)
+            other.prefetch([0])
+        finally:
+            other.shutdown()
+            other.shutdown()  # QAD cleanup can run more than once.
+        assert not temporary_workspace.exists()
     finally:
         cache.shutdown()
     reopened = TeacherTopKCache(str(tmp_path), 2, signature=signature)
     try:
+        assert reopened.workspace == cache.workspace
         assert reopened.exists(0)
     finally:
         reopened.shutdown()
+
+
+def test_contended_cache_initialization_failure_cleans_temporary_workspace(tmp_path, monkeypatch):
+    cache = TeacherTopKCache(str(tmp_path), 2, signature={"teacher": "same"})
+
+    def fail(self, signature):
+        raise RuntimeError("manifest setup failed")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(TeacherTopKCache, "_reconcile_signature", fail)
+            with pytest.raises(RuntimeError, match="manifest setup failed"):
+                TeacherTopKCache(str(tmp_path), 2, signature={"teacher": "same"})
+        assert not list(Path(cache.workspace).glob("concurrent_*"))
+        assert cache._workspace_lock.is_locked
+    finally:
+        cache.shutdown()
+    reopened = TeacherTopKCache(str(tmp_path), 2, signature={"teacher": "same"})
+    reopened.shutdown()
 
 
 def test_cache_lock_released_when_qad_setup_fails(tmp_path, monkeypatch):
@@ -178,14 +289,10 @@ def test_warm_start_skips_persistent_activation_wrapper():
     assert "value" in linear._ar_warm_start
 
 
-@pytest.mark.parametrize("algorithm", ["qad", "qat", "rtn_qad"])
-def test_whole_model_and_rtn_qad_without_downloads(tmp_path, monkeypatch, algorithm):
+@pytest.fixture
+def tiny_qad_model_and_tokenizer():
     from tokenizers import Tokenizer, models
     from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
-
-    from auto_round import AutoRound
-    from auto_round.algorithms.quantization.qat.config import QATConfig
-    from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
     torch.manual_seed(42)
     config = LlamaConfig(
@@ -199,7 +306,6 @@ def test_whole_model_and_rtn_qad_without_downloads(tmp_path, monkeypatch, algori
     )
     config._attn_implementation = "eager"
     model = LlamaForCausalLM(config).eval()
-    original = model.model.layers[0].self_attn.q_proj.weight.detach().clone()
     vocab = {"<pad>": 0, "<s>": 1, "</s>": 2, "<unk>": 3, **{str(i): i for i in range(4, 32)}}
     tokenizer = PreTrainedTokenizerFast(
         tokenizer_object=Tokenizer(models.WordLevel(vocab, unk_token="<unk>")),
@@ -208,7 +314,94 @@ def test_whole_model_and_rtn_qad_without_downloads(tmp_path, monkeypatch, algori
         eos_token="</s>",
         unk_token="<unk>",
     )
-    kwargs = dict(iters=2, bits=4, group_size=8, nsamples=2, gradient_checkpointing=False)
+    return model, tokenizer
+
+
+@pytest.mark.parametrize("dataset_kind", ["dataloader", "named"])
+@pytest.mark.parametrize("qad_nsamples,available", [(None, 1024), (1024, 1024), (1024, 256)])
+def test_signround_then_qad_uses_independent_sample_counts(
+    tmp_path, monkeypatch, tiny_qad_model_and_tokenizer, dataset_kind, qad_nsamples, available
+):
+    from auto_round import AutoRound
+    from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+    from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+    from auto_round.calibration.llm import LLMCalibrator
+
+    model, tokenizer = tiny_qad_model_and_tokenizer
+    tokens = torch.randint(3, 32, (available, 4))
+    requested_samples = []
+
+    def get_dataloader(tokenizer, seqlen, dataset, seed, batch_size, nsamples, **kwargs):
+        requested_samples.append(nsamples)
+        return torch.utils.data.DataLoader(tokens[:nsamples], batch_size=batch_size)
+
+    monkeypatch.setattr("auto_round.calib_dataset.get_dataloader", get_dataloader)
+    dataset = "local-regression" if dataset_kind == "named" else torch.utils.data.DataLoader(tokens, batch_size=16)
+    warmup_counts, qad_counts = [], []
+    original_quantize_block = SignRoundQuantizer.quantize_block
+
+    def quantize_block(self, block, fp_inputs, *args, **kwargs):
+        warmup_counts.append(len(fp_inputs))
+        return original_quantize_block(self, block, fp_inputs, *args, **kwargs)
+
+    def quantize_model(self, model, samples, device=None):
+        expected = min(qad_nsamples or 128, available)
+        qad_counts.append(len(samples))
+        assert len(samples) == expected
+        torch.testing.assert_close(torch.cat([sample["input_ids"] for sample in samples]), tokens[:expected])
+        return {}
+
+    monkeypatch.setattr(SignRoundQuantizer, "quantize_block", quantize_block)
+    monkeypatch.setattr(QADQuantizer, "quantize_model", quantize_model)
+    collected_requests = []
+    original_collect = LLMCalibrator.collect_token_ids
+
+    def collect(calibration, nsamples, **kwargs):
+        collected_requests.append((nsamples, kwargs))
+        return original_collect(calibration, nsamples, **kwargs)
+
+    monkeypatch.setattr(LLMCalibrator, "collect_token_ids", collect)
+    compressor = AutoRound(
+        model,
+        tokenizer=tokenizer,
+        scheme="W4A16",
+        alg_configs=[
+            SignRoundConfig(iters=2, group_size=8),
+            QADConfig(qad_nsamples=qad_nsamples, qad_workspace=str(tmp_path), group_size=8),
+        ],
+        dataset=dataset,
+        nsamples=128,
+        seqlen=4,
+        batch_size=16,
+        device_map="cpu",
+        low_cpu_mem_usage=False,
+        enable_torch_compile=False,
+    )
+    compressor.quantize()
+
+    assert warmup_counts == [128]
+    assert qad_counts == [min(qad_nsamples or 128, available)]
+    assert compressor.calibration_context.nsamples == 128
+    if qad_nsamples is None:
+        assert collected_requests == []
+    else:
+        assert collected_requests == [(1024, {"include_model_inputs": True})]
+    if dataset_kind == "named":
+        assert requested_samples == ([128] if qad_nsamples is None else [128, 1024])
+
+
+@pytest.mark.parametrize("algorithm", ["qad", "qat", "rtn_qad"])
+@pytest.mark.parametrize("lora_rank", [0, 2])
+def test_whole_model_and_rtn_qad_without_downloads(
+    tmp_path, monkeypatch, tiny_qad_model_and_tokenizer, algorithm, lora_rank
+):
+    from auto_round import AutoRound
+    from auto_round.algorithms.quantization.qat.config import QATConfig
+    from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+    model, tokenizer = tiny_qad_model_and_tokenizer
+    original = model.model.layers[0].self_attn.q_proj.weight.detach().clone()
+    kwargs = dict(iters=2, bits=4, group_size=8, nsamples=2, gradient_checkpointing=False, qad_lora_rank=lora_rank)
     configs = [QATConfig(**kwargs)] if algorithm == "qat" else [QADConfig(qad_workspace=str(tmp_path), **kwargs)]
     if algorithm == "rtn_qad":
         configs.insert(0, RTNConfig(bits=4, group_size=8, act_bits=8, act_data_type="int", act_dynamic=True))

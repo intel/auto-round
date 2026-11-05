@@ -70,6 +70,25 @@ export AR_QUANTIZE_BAGEL_MOE_GEN=1
 export AR_WORK_SPACE=/path/to/custom/workspace
 ```
 
+### AR_CACHE
+- **描述**：覆盖扩散模型标定数据集和已下载 GGUF 转换器的持久缓存根目录。
+- **默认值**：未设置（`None`）；数据集使用 `~/.cache/auto_round`，GGUF 转换器使用 `~/.cache/auto-round`。
+- **用途**：数据集缓存在 `$AR_CACHE/datasets` 下，GGUF 转换器缓存在 `$AR_CACHE/gguf_conversion` 下。此设置不影响 `AR_WORK_SPACE`。
+
+```bash
+export AR_CACHE=/path/to/cache
+```
+
+### AR_GGUF_AUTO_UPDATE
+- **描述**：当内置转换器不支持某个模型时，允许下载较新的 llama.cpp 转换器。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"` 或 `"on"`（不区分大小写）表示启用；其他值表示禁用。
+- **用途**：启用后允许自动下载转换器；下载文件存放在 GGUF 转换器缓存目录中。
+
+```bash
+export AR_GGUF_AUTO_UPDATE=1
+```
+
 ### AR_DISABLE_OFFLOAD
 - **描述**：强制禁用 `OffloadManager` 中的权重卸载功能。在开发和调试时可跳过所有卸载/重载开销。
 - **默认值**：`False`（等价于 `"0"`）

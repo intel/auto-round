@@ -24,6 +24,7 @@ from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
 from auto_round.algorithms.quantization.qad.config import QADConfig
 from auto_round.algorithms.quantization.qad.quantizer import QADQuantizer
 from auto_round.algorithms.quantization.sign_roundv2.quantizer import SignRoundOptimizedWrapperLinear
+from auto_round.parallel.execution import ParallelExecution
 from auto_round.wrapper import WrapperLinear, store_warm_start_params_and_unwrap, wrapper_block
 
 
@@ -153,7 +154,8 @@ def test_warmup_propagates_best_quantized_output(monkeypatch, wrapper_cls, outpu
     composer = object.__new__(AlgorithmComposer)
     composer._preserve_weights = True
     composer.block_forward = forward
-    composer.block_quantizer = SimpleNamespace(
+    composer.active_quantizer = SimpleNamespace(
+        parallel=ParallelExecution(),
         enable_quanted_input=True,
         quantize_block=tune,
         finalize_block=Mock(),
