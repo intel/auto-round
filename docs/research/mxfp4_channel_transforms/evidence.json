@@ -1,0 +1,659 @@
+{
+  "access_date": "2026-11-05",
+  "scope": "Research/design only; Intel XPU primary; HMT means normalized Hadamard transform.",
+  "repository": {
+    "name": "intel/auto-round",
+    "revision": "5db1082901dfba6e710f46e11bcc00cad30a5af3"
+  },
+  "evidence_policy": {
+    "primary_text_access": "arXiv, ACL Anthology and external documentation hosts failed DNS resolution.",
+    "verified": "Pinned author READMEs/code, author-released paper figure PDFs and CSV, and local AutoRound source.",
+    "not_run": "No model quantization, accuracy evaluation, or XPU performance benchmark.",
+    "not_claimed": "No new-feature speedup/accuracy result, universal native XPU FP4 support, or exhaustive literature coverage."
+  },
+  "sources": [
+    {
+      "id": "R01",
+      "title": "Microscaling Data Formats for Deep Learning",
+      "paper_url": "https://arxiv.org/abs/2310.10537",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "microsoft/microxcaling",
+      "revision": "7bc41952de394f5cc5e782baf132e7c7542eb4e4",
+      "commit_date": "2024-08-19T18:38:44Z",
+      "access_date": "2026-11-05",
+      "license": "MIT",
+      "files": {
+        "README.md": {
+          "blob_sha": "a6d8b726e8f869daf46b3eaf056e4aa38abeffb2",
+          "sha256": "acc6802fdeaa9eba43cde6d0ffba2e0134e19ade0d2ed741461d025441a5f1d2",
+          "size": 15844,
+          "url": "https://github.com/microsoft/microxcaling/blob/7bc41952de394f5cc5e782baf132e7c7542eb4e4/README.md"
+        },
+        "mx/formats.py": {
+          "blob_sha": "0a82b65999f8b55d0d3d96da6038335bb452bdb0",
+          "sha256": "bb3356caefb5a27525c107d7e5c67a7d94947c7311aa8ae97abeff4f59378df9",
+          "size": 3404,
+          "url": "https://github.com/microsoft/microxcaling/blob/7bc41952de394f5cc5e782baf132e7c7542eb4e4/mx/formats.py"
+        },
+        "mx/mx_ops.py": {
+          "blob_sha": "3aa10720ed1d648c84fd7120f0e23fae2282111f",
+          "sha256": "e8ebe1baee065663d4f5cb6df81d96056054964a85711ae2e1db40c4b4b8533a",
+          "size": 10327,
+          "url": "https://github.com/microsoft/microxcaling/blob/7bc41952de394f5cc5e782baf132e7c7542eb4e4/mx/mx_ops.py"
+        }
+      }
+    },
+    {
+      "id": "R02",
+      "title": "RPTQ: Reorder-based Post-training Quantization for Large Language Models",
+      "paper_url": "https://arxiv.org/abs/2304.01089",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "hahnyuan/RPTQ4LLM",
+      "revision": "96190691f02be6b27ba24d5a73574dbf9a8336c6",
+      "commit_date": "2023-05-10T07:23:56Z",
+      "access_date": "2026-11-05",
+      "license": "MIT",
+      "files": {
+        "README.md": {
+          "blob_sha": "bc4190230c6ffd4c4b0cb13f16130c72fa258d45",
+          "sha256": "c802c2a5a814ccca9db851e4883a55c90cc366f6ea210de0c6dc9b0089007841",
+          "size": 7312,
+          "url": "https://github.com/hahnyuan/RPTQ4LLM/blob/96190691f02be6b27ba24d5a73574dbf9a8336c6/README.md"
+        },
+        "LICENSE": {
+          "blob_sha": "1e8201c88795033a67702bd830a7db749d8983d8",
+          "sha256": "4f39e57bcf89130b83e90650d6843c3289f4774e78f26f3ce4772c2cec97c6ba",
+          "size": 1069,
+          "url": "https://github.com/hahnyuan/RPTQ4LLM/blob/96190691f02be6b27ba24d5a73574dbf9a8336c6/LICENSE"
+        },
+        "quantize/reorder_utils.py": {
+          "blob_sha": "2081b954155b97cff718f49f47ed72c1a124aaf0",
+          "sha256": "a351a08379b43b5bacd4ab9e2949f4115a2f1fd71894bd8d7fc2a4ac7ccd8637",
+          "size": 5818,
+          "url": "https://github.com/hahnyuan/RPTQ4LLM/blob/96190691f02be6b27ba24d5a73574dbf9a8336c6/quantize/reorder_utils.py"
+        }
+      }
+    },
+    {
+      "id": "R03",
+      "title": "DuQuant: Distributing Outliers via Dual Transformation Makes Stronger Quantized LLMs",
+      "paper_url": "https://arxiv.org/abs/2406.01721",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "Hsu1023/DuQuant",
+      "revision": "d56cfc6fe97c34c0eb100fec82fe439865905679",
+      "commit_date": "2026-04-24T10:04:47Z",
+      "access_date": "2026-11-05",
+      "license": "MIT",
+      "files": {
+        "README.md": {
+          "blob_sha": "e393cdbdbb54c00557566d5a7bccc942f18cedf8",
+          "sha256": "dadbcfe0eddc6c9eaa3e0a72f6d5a27989ebbe15520febebe48d4c4fcd51cc3d",
+          "size": 5689,
+          "url": "https://github.com/Hsu1023/DuQuant/blob/d56cfc6fe97c34c0eb100fec82fe439865905679/README.md"
+        },
+        "LICENSE": {
+          "blob_sha": "259d16a97ef819bd371c06a052130c0a1c0a43ca",
+          "sha256": "552d67a36f98dfa8fa6c6451a5dbb5b045d9b6de2995ee8a04b1d923a3507e43",
+          "size": 1076,
+          "url": "https://github.com/Hsu1023/DuQuant/blob/d56cfc6fe97c34c0eb100fec82fe439865905679/LICENSE"
+        },
+        "imgs/duquant.png": {
+          "blob_sha": "2dd6effd6dfa11c1c27555c80f9575feacdf98a5",
+          "sha256": "c1198db54f547c429d8dfc3238657657a98532692e2058c35c92ee6ef6669d71",
+          "size": 1152612,
+          "url": "https://github.com/Hsu1023/DuQuant/blob/d56cfc6fe97c34c0eb100fec82fe439865905679/imgs/duquant.png"
+        },
+        "imgs/ppl.png": {
+          "blob_sha": "8c4382df638db59750f24847719ec589d5120f9d",
+          "sha256": "f9f272ae3edeb1d24f1cf4d3b30daab213fbdd44578fa445a0061200a6789a7b",
+          "size": 264555,
+          "url": "https://github.com/Hsu1023/DuQuant/blob/d56cfc6fe97c34c0eb100fec82fe439865905679/imgs/ppl.png"
+        },
+        "quantize/utils.py": {
+          "blob_sha": "9cf5689448c50d0e834f47ece02d9609fda6cee4",
+          "sha256": "d1c1e725c1ddbbefbbb27c5e5ba9387617defaf35a709ec30c236a79c7516fe4",
+          "size": 9734,
+          "url": "https://github.com/Hsu1023/DuQuant/blob/d56cfc6fe97c34c0eb100fec82fe439865905679/quantize/utils.py"
+        },
+        "quantize/duquant.py": {
+          "blob_sha": "f4af2d725e9ca6a64044d15e9435ddccd2d50a3c",
+          "sha256": "3f365a2c4092b08e0d49dcf9733c26ce68cdc55c9b6fc45f0793af918c5abe15",
+          "size": 16889,
+          "url": "https://github.com/Hsu1023/DuQuant/blob/d56cfc6fe97c34c0eb100fec82fe439865905679/quantize/duquant.py"
+        }
+      }
+    },
+    {
+      "id": "R04",
+      "title": "DuQuant++: Fine-grained Rotation Enhances Microscaling FP4 Quantization",
+      "paper_url": "https://arxiv.org/abs/2604.17789",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "Hsu1023/DuQuant-v2",
+      "revision": "6c13ec07a3241f2d4ad6415a06403aef43919db9",
+      "commit_date": "2026-04-24T10:04:00Z",
+      "access_date": "2026-11-05",
+      "license": "MIT",
+      "files": {
+        "README.md": {
+          "blob_sha": "8c91901cbd097c5ae855a38a2e62dcf67273f5b6",
+          "sha256": "9c5aa7a819c60e794c42d138236d49199efbf6c5cc32043d2449fe8d8c732f25",
+          "size": 4452,
+          "url": "https://github.com/Hsu1023/DuQuant-v2/blob/6c13ec07a3241f2d4ad6415a06403aef43919db9/README.md"
+        },
+        "LICENSE": {
+          "blob_sha": "259d16a97ef819bd371c06a052130c0a1c0a43ca",
+          "sha256": "552d67a36f98dfa8fa6c6451a5dbb5b045d9b6de2995ee8a04b1d923a3507e43",
+          "size": 1076,
+          "url": "https://github.com/Hsu1023/DuQuant-v2/blob/6c13ec07a3241f2d4ad6415a06403aef43919db9/LICENSE"
+        },
+        "quantize/int_linear.py": {
+          "blob_sha": "5b9e8bd6d0b0e82042ef6f72ebb6d78e7d343f90",
+          "sha256": "0a8602800a9e8dcb4992dc8bf615209fc87f3b84d68ffbac45fb60829c541238",
+          "size": 2985,
+          "url": "https://github.com/Hsu1023/DuQuant-v2/blob/6c13ec07a3241f2d4ad6415a06403aef43919db9/quantize/int_linear.py"
+        },
+        "quantize/quantizer.py": {
+          "blob_sha": "838f58cd1623c9688bdf9320e10ef59e47e04b61",
+          "sha256": "4829a9eabf82b02bc0494727cdca577ae620bab4c3667643b72ba45f923fad57",
+          "size": 45511,
+          "url": "https://github.com/Hsu1023/DuQuant-v2/blob/6c13ec07a3241f2d4ad6415a06403aef43919db9/quantize/quantizer.py"
+        },
+        "quantize/fp4_ops.py": {
+          "blob_sha": "426c71b65961d525dd0cac3bd1a2e685ad384261",
+          "sha256": "36b0544061715281ff4305df99d08f61752c8df1dc109af26f29722b91cc6649",
+          "size": 3066,
+          "url": "https://github.com/Hsu1023/DuQuant-v2/blob/6c13ec07a3241f2d4ad6415a06403aef43919db9/quantize/fp4_ops.py"
+        }
+      }
+    },
+    {
+      "id": "R05",
+      "title": "QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs",
+      "paper_url": "https://arxiv.org/abs/2404.00456",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "spcl/QuaRot",
+      "revision": "5008669b08c1f11f9b64d52d16fddd47ca754c5a",
+      "commit_date": "2024-11-26T11:08:25Z",
+      "access_date": "2026-11-05",
+      "license": "Apache-2.0",
+      "files": {
+        "README.md": {
+          "blob_sha": "c4d430ae781d860c5b8e2260c60ed4d2427ae8ff",
+          "sha256": "80dcfe302a575a913c4eab8b82533ab55adf3bcbb9b17b61d6186f3f27207dcc",
+          "size": 1902,
+          "url": "https://github.com/spcl/QuaRot/blob/5008669b08c1f11f9b64d52d16fddd47ca754c5a/README.md"
+        },
+        "LICENSE": {
+          "blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "size": 11357,
+          "url": "https://github.com/spcl/QuaRot/blob/5008669b08c1f11f9b64d52d16fddd47ca754c5a/LICENSE"
+        },
+        "img/fig1.png": {
+          "blob_sha": "241547b77353a87c8e9ab1ab0af638493b028d1a",
+          "sha256": "953831916c092eca146843fe15c461e1dfb959eea488c06bb194f640907815d2",
+          "size": 227359,
+          "url": "https://github.com/spcl/QuaRot/blob/5008669b08c1f11f9b64d52d16fddd47ca754c5a/img/fig1.png"
+        }
+      }
+    },
+    {
+      "id": "R06",
+      "title": "SpinQuant: LLM Quantization with Learned Rotations",
+      "paper_url": "https://arxiv.org/abs/2405.16406",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "facebookresearch/SpinQuant",
+      "revision": "8f47aa3f00e8662caf1a484153920a07e5281c3a",
+      "commit_date": "2025-02-14T22:31:19Z",
+      "access_date": "2026-11-05",
+      "license": "NOASSERTION",
+      "files": {
+        "README.md": {
+          "blob_sha": "66c1077892fbb661dc38f59d339f4fa9c875757a",
+          "sha256": "7c7e2029bea5cc4f3d0434c6ce640df3d1e9acb6891c2b6b45c7533aacc6799b",
+          "size": 9055,
+          "url": "https://github.com/facebookresearch/SpinQuant/blob/8f47aa3f00e8662caf1a484153920a07e5281c3a/README.md"
+        },
+        "LICENSE": {
+          "blob_sha": "e395ca3e2cdebf48a6375a3c1022d10caabba7db",
+          "sha256": "1d8ca66080a2701508a70be4ddad4be28c509bcc3397a682fb8edf767fdd7a00",
+          "size": 19332,
+          "url": "https://github.com/facebookresearch/SpinQuant/blob/8f47aa3f00e8662caf1a484153920a07e5281c3a/LICENSE"
+        }
+      }
+    },
+    {
+      "id": "R07",
+      "title": "LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale",
+      "paper_url": "https://arxiv.org/abs/2208.07339",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "bitsandbytes-foundation/bitsandbytes",
+      "revision": "a616886cacf86701514f0cb1d6be760f967481c0",
+      "commit_date": "2026-10-27T21:18:29Z",
+      "access_date": "2026-11-05",
+      "license": "MIT",
+      "files": {
+        "README.md": {
+          "blob_sha": "e2501a99a5c07e0f97a7b4366bdada809da33703",
+          "sha256": "68fc2df60317162ca34ba4a1aa0ff3dbc195634391ddeff326b3b109ff7d5ea3",
+          "size": 8266,
+          "url": "https://github.com/bitsandbytes-foundation/bitsandbytes/blob/a616886cacf86701514f0cb1d6be760f967481c0/README.md"
+        }
+      }
+    },
+    {
+      "id": "R08",
+      "title": "QUIK: Towards End-to-end 4-Bit Inference on Generative Large Language Models",
+      "paper_url": "https://arxiv.org/abs/2310.09259",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "IST-DASLab/QUIK",
+      "revision": "9558d7121c698174fc93940e0b52c38c746c97ea",
+      "commit_date": "2023-11-13T08:26:37Z",
+      "access_date": "2026-11-05",
+      "license": "Apache-2.0",
+      "files": {
+        "README.md": {
+          "blob_sha": "175c122c6818e82c7335a852dc45e4ca280b50dc",
+          "sha256": "9ad51238292f20761e827a4c05117e84e757e7a7770ba479706376bbe63fd692",
+          "size": 1964,
+          "url": "https://github.com/IST-DASLab/QUIK/blob/9558d7121c698174fc93940e0b52c38c746c97ea/README.md"
+        }
+      }
+    },
+    {
+      "id": "R09",
+      "title": "Atom: Low-Bit Quantization for Efficient and Accurate LLM Serving",
+      "paper_url": "https://arxiv.org/abs/2310.19102",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "efeslab/Atom",
+      "revision": "7e3618b1a7a7c86e1c93cc909b1510c046d76ac6",
+      "commit_date": "2024-07-02T05:54:27Z",
+      "access_date": "2026-11-05",
+      "license": null,
+      "files": {
+        "README.md": {
+          "blob_sha": "0dbcff22c07f2a96d790c89e7409c59367c83056",
+          "sha256": "a0e3654d70328d330b3835f0b70c7771283469eeed24f18a9365ee476ad4a074",
+          "size": 7587,
+          "url": "https://github.com/efeslab/Atom/blob/7e3618b1a7a7c86e1c93cc909b1510c046d76ac6/README.md"
+        }
+      }
+    },
+    {
+      "id": "R10",
+      "title": "MicroMix: Efficient Mixed-Precision Quantization with Microscaling Formats for Large Language Models",
+      "paper_url": "https://arxiv.org/abs/2508.02343",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "lwy2020/MicroMix",
+      "revision": "c57370bc38f999e1f75aada9c4b8a85baa44aaae",
+      "commit_date": "2026-02-12T08:11:34Z",
+      "access_date": "2026-11-05",
+      "license": null,
+      "files": {
+        "README.md": {
+          "blob_sha": "8e2c9b55495bbbebca7b2a1f87634cd05d6bce74",
+          "sha256": "7e7113f7d8d9239aa4bc40c0982f3775b949b6c27ac4951df4e6a4e262014e45",
+          "size": 2446,
+          "url": "https://github.com/lwy2020/MicroMix/blob/c57370bc38f999e1f75aada9c4b8a85baa44aaae/README.md"
+        },
+        "utilize.py": {
+          "blob_sha": "274226847ed12dd7534b49c43081b9df9e983eec",
+          "sha256": "89745a03a0a96e444ae1d6923d67464ea0ba446bc268b3ca5abb9f13ac3a5ca4",
+          "size": 9706,
+          "url": "https://github.com/lwy2020/MicroMix/blob/c57370bc38f999e1f75aada9c4b8a85baa44aaae/utilize.py"
+        },
+        "reorder_indices.py": {
+          "blob_sha": "c9d01d11dd5717dc5cf3b5a54814f3a7ae769045",
+          "sha256": "e9248c0406cefbc76fa52ad67540885b52e8213c79348ccf1894c1521f532296",
+          "size": 2430,
+          "url": "https://github.com/lwy2020/MicroMix/blob/c57370bc38f999e1f75aada9c4b8a85baa44aaae/reorder_indices.py"
+        },
+        "mgemm/README.md": {
+          "blob_sha": "abc7f28484be8e38a7c56e9a46123329e4513a9c",
+          "sha256": "402b0e70b10f5654fa81592d309657482d891a1169b0fa53c48b46d057c67ca7",
+          "size": 773,
+          "url": "https://github.com/lwy2020/MicroMix/blob/c57370bc38f999e1f75aada9c4b8a85baa44aaae/mgemm/README.md"
+        },
+        "mgemm/src/w4a8.cu": {
+          "blob_sha": "bbe476c09bbaf8b28e86c1d0a0195f9918589c41",
+          "sha256": "a80c3a615616d3ceae271f6a2de0167b54ad8918ae5eebaaab9edba0888b3dbd",
+          "size": 10577,
+          "url": "https://github.com/lwy2020/MicroMix/blob/c57370bc38f999e1f75aada9c4b8a85baa44aaae/mgemm/src/w4a8.cu"
+        },
+        "mgemm/src/w4a4.cu": {
+          "blob_sha": "da44e299c0727aa9301eb40dc7da0bb8bbc48705",
+          "sha256": "55034196c136f4cb281f1e1e78c46800b2d837b6b144d7218a4b8b43fba0fb4f",
+          "size": 10582,
+          "url": "https://github.com/lwy2020/MicroMix/blob/c57370bc38f999e1f75aada9c4b8a85baa44aaae/mgemm/src/w4a4.cu"
+        }
+      }
+    },
+    {
+      "id": "R11",
+      "title": "Bridging the Gap Between Promise and Performance for Microscaling FP4 Quantization",
+      "paper_url": "https://arxiv.org/abs/2509.23202",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "IST-DASLab/FP-Quant",
+      "revision": "d2e3092f968262c4de5fb050e1aef568a280dadd",
+      "commit_date": "2025-11-16T11:50:34Z",
+      "access_date": "2026-11-05",
+      "license": null,
+      "files": {
+        "README.md": {
+          "blob_sha": "4d794ba4a3abfe55156acb099ba8d30c3433dfd5",
+          "sha256": "1967e33b4122295baf482dd6d2a4d3160b770b1b64edb5656c1d82615eb24f85",
+          "size": 10700,
+          "url": "https://github.com/IST-DASLab/FP-Quant/blob/d2e3092f968262c4de5fb050e1aef568a280dadd/README.md"
+        }
+      }
+    },
+    {
+      "id": "R12",
+      "title": "WUSH: Near-Optimal Adaptive Transforms for LLM Quantization",
+      "paper_url": "https://arxiv.org/abs/2512.00956",
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "IST-DASLab/WUSH",
+      "revision": "0b69f66cb88aae673d63ae8b5fd96ac751c5a957",
+      "commit_date": "2026-06-30T18:07:18Z",
+      "access_date": "2026-11-05",
+      "license": "Apache-2.0",
+      "files": {
+        "README.md": {
+          "blob_sha": "713cbdfb91e545b87dbe0c3c6ee12fc57537ab24",
+          "sha256": "e1a4c08223376615453988d8d4f195b02ba605732537f7f2348164b60829246f",
+          "size": 12621,
+          "url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/README.md"
+        },
+        "LICENSE": {
+          "blob_sha": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "size": 11357,
+          "url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/LICENSE"
+        },
+        "src/block_transform.py": {
+          "blob_sha": "b9ab2ce5d31ada8199a5199ef4a364c3b6b7995c",
+          "sha256": "796afbed9004af04baa0b9f3f2abfe65563f6ddb243f28117f1b001b0ea07464",
+          "size": 15802,
+          "url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/src/block_transform.py"
+        },
+        "plots/1_toy_example.pdf": {
+          "blob_sha": "e1d4e997c167485785bc5ddc6246e5e4835dfc7b",
+          "sha256": "c2aa15084ff63b27dc62e23ee5e10d631fe16311e3e25d3bf9d6768dbfad5bc9",
+          "size": 253334,
+          "url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/plots/1_toy_example.pdf"
+        },
+        "plots/2_speedup.pdf": {
+          "blob_sha": "24011fc6f4d2f6cca32fb85406219f1f3490c98e",
+          "sha256": "5aa4f36ef217dff5240ece8d557327033fae482229b2df92db9be4b4c04d274c",
+          "size": 30312,
+          "url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/plots/2_speedup.pdf"
+        },
+        "plots/2_speedup.py": {
+          "blob_sha": "d0f71240800f3551e9c8d18e678c93093cb1b0ae",
+          "sha256": "3ee3e2fbb9eca7caf99093616c0cb7ef18ef71c3ff61be91e8d54469823a0548",
+          "size": 3252,
+          "url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/plots/2_speedup.py"
+        },
+        "plots/5_visual.pdf": {
+          "blob_sha": "95e25adc274d253004aabc356a2239673b31ab68",
+          "sha256": "bf7c9ad1441dc1c180b025938ef9deda259601944143192683ecd7a19bdf181e",
+          "size": 469416,
+          "url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/plots/5_visual.pdf"
+        },
+        "plots/3_platinum_bench.csv": {
+          "blob_sha": "f443f2ccefb21c5fee08f788e8e2f6bff2342659",
+          "sha256": "80f4934f05aec2db8f5480be3939265fd8ee25b493503ced839dd13370a1096e",
+          "size": 33559,
+          "url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/plots/3_platinum_bench.csv"
+        },
+        "plots/3_platinum_bench.py": {
+          "blob_sha": "665c6c2be02d4a1e600e9713ec4f33647a2920ea",
+          "sha256": "1bc4e0fc9c6f1d684b53ecfcf8c324a4d61b48c776d8cfee74f003a4e9b86dfc",
+          "size": 5700,
+          "url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/plots/3_platinum_bench.py"
+        },
+        "plots/3_platinum_bench/10_llama-3.1-8b_table.pdf": {
+          "blob_sha": "9d65e495098ae63440d7dab0b34e1707409959cd",
+          "sha256": "508a1c9a9a756e083f5cb5a7651f57cf898cd77421430171f489e9fcd03c352c",
+          "size": 17719,
+          "url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/plots/3_platinum_bench/10_llama-3.1-8b_table.pdf"
+        }
+      }
+    },
+    {
+      "id": "R13",
+      "title": "oneDNN datatype hardware limitations and MXFP8 matmul tutorial",
+      "paper_url": null,
+      "verification": "Pinned author implementation/documentation; paper PDFs on arXiv were not reachable.",
+      "repository": "uxlfoundation/oneDNN",
+      "revision": "41494503bcbd60a761c0965ecb8ed6e57922974b",
+      "commit_date": "2026-11-04T22:25:28Z",
+      "access_date": "2026-11-05",
+      "license": "Apache-2.0",
+      "files": {
+        "doc/common_concepts/data_types.md": {
+          "blob_sha": "2803bf3aa23f78aace679da3b2f1f5ab8daeb0f6",
+          "sha256": "74f3ce02e492879c920f99f391fe401986589f1847302f106ed232136aad4c19",
+          "size": 15163,
+          "url": "https://github.com/uxlfoundation/oneDNN/blob/41494503bcbd60a761c0965ecb8ed6e57922974b/doc/common_concepts/data_types.md"
+        },
+        "examples/tutorials/matmul/mxfp_matmul.cpp": {
+          "blob_sha": "ecd53f346777c890fb9a65068e5a15901f566acc",
+          "sha256": "8b38c8dbd7bdd2d96ac825ce03a4b26091d72d30f78cca584ddbbd4aadab942b",
+          "size": 8469,
+          "url": "https://github.com/uxlfoundation/oneDNN/blob/41494503bcbd60a761c0965ecb8ed6e57922974b/examples/tutorials/matmul/mxfp_matmul.cpp"
+        }
+      }
+    }
+  ],
+  "figures": [
+    {
+      "asset": "assets/duquant_method.png",
+      "source_id": "R03",
+      "source_path": "imgs/duquant.png",
+      "source_url": "https://github.com/Hsu1023/DuQuant/blob/d56cfc6fe97c34c0eb100fec82fe439865905679/imgs/duquant.png",
+      "source_sha256": "c1198db54f547c429d8dfc3238657657a98532692e2058c35c92ee6ef6669d71",
+      "asset_sha256": "c1198db54f547c429d8dfc3238657657a98532692e2058c35c92ee6ef6669d71",
+      "license": "MIT",
+      "modification": "Unmodified author-released image."
+    },
+    {
+      "asset": "assets/duquant_ppl.png",
+      "source_id": "R03",
+      "source_path": "imgs/ppl.png",
+      "source_url": "https://github.com/Hsu1023/DuQuant/blob/d56cfc6fe97c34c0eb100fec82fe439865905679/imgs/ppl.png",
+      "source_sha256": "f9f272ae3edeb1d24f1cf4d3b30daab213fbdd44578fa445a0061200a6789a7b",
+      "asset_sha256": "f9f272ae3edeb1d24f1cf4d3b30daab213fbdd44578fa445a0061200a6789a7b",
+      "license": "MIT",
+      "modification": "Unmodified author-released image."
+    },
+    {
+      "asset": "assets/quarot_fig1.png",
+      "source_id": "R05",
+      "source_path": "img/fig1.png",
+      "source_url": "https://github.com/spcl/QuaRot/blob/5008669b08c1f11f9b64d52d16fddd47ca754c5a/img/fig1.png",
+      "source_sha256": "953831916c092eca146843fe15c461e1dfb959eea488c06bb194f640907815d2",
+      "asset_sha256": "953831916c092eca146843fe15c461e1dfb959eea488c06bb194f640907815d2",
+      "license": "Apache-2.0",
+      "modification": "Unmodified author-released image."
+    },
+    {
+      "asset": "assets/wush_toy.png",
+      "source_id": "R12",
+      "source_path": "plots/1_toy_example.pdf",
+      "source_url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/plots/1_toy_example.pdf",
+      "source_sha256": "c2aa15084ff63b27dc62e23ee5e10d631fe16311e3e25d3bf9d6768dbfad5bc9",
+      "asset_sha256": "21e4ed19ea03b682edef5841319491be821626d5ebaea9f07e4039d508f494ca",
+      "license": "Apache-2.0",
+      "modification": "Single-page author figure rasterized at 2.5x; no data or labels changed."
+    },
+    {
+      "asset": "assets/wush_speedup.png",
+      "source_id": "R12",
+      "source_path": "plots/2_speedup.pdf",
+      "source_url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/plots/2_speedup.pdf",
+      "source_sha256": "5aa4f36ef217dff5240ece8d557327033fae482229b2df92db9be4b4c04d274c",
+      "asset_sha256": "6b36ac3632e10cdc10610c3cbe883228e40b2ffe6fcb5981340e23bae4609b08",
+      "license": "Apache-2.0",
+      "modification": "Single-page author figure rasterized at 2.5x; no data or labels changed."
+    },
+    {
+      "asset": "assets/wush_llama_table.png",
+      "source_id": "R12",
+      "source_path": "plots/3_platinum_bench/10_llama-3.1-8b_table.pdf",
+      "source_url": "https://github.com/IST-DASLab/WUSH/blob/0b69f66cb88aae673d63ae8b5fd96ac751c5a957/plots/3_platinum_bench/10_llama-3.1-8b_table.pdf",
+      "source_sha256": "508a1c9a9a756e083f5cb5a7651f57cf898cd77421430171f489e9fcd03c352c",
+      "asset_sha256": "f06bd9b44e0f3508be61b5ab9dc7028880e0d0169d06c471dea64a3010fbcc35",
+      "license": "Apache-2.0",
+      "modification": "Single-page author figure rasterized at 2.5x; no data or labels changed."
+    }
+  ],
+  "data": {
+    "wush_platinum": {
+      "source_id": "R12",
+      "asset": "assets/wush_platinum_bench.csv",
+      "sha256": "80f4934f05aec2db8f5480be3939265fd8ee25b493503ced839dd13370a1096e",
+      "model": "Llama-3.1-8B-Instruct",
+      "task_columns": [
+        "SingleOp",
+        "SingleQ",
+        "MultiArith",
+        "SVAMP",
+        "GSM8K",
+        "MMLU-Math",
+        "BBHDeduction",
+        "BBHCounting",
+        "BBHNavigate",
+        "HotpotQA",
+        "SQuAD",
+        "DROP",
+        "Winograd-WSC"
+      ],
+      "aggregation": "Mean of the 13 task accuracy percentages in each record, then arithmetic mean across records. Matches author plotting script; no confidence intervals inferred.",
+      "results": [
+        {
+          "method": "BF16",
+          "records": 1,
+          "macro_mean_percent": 85.3323547939275,
+          "record_sample_sd": null
+        },
+        {
+          "method": "MXFP4-RTN-H",
+          "records": 5,
+          "macro_mean_percent": 76.41439638802618,
+          "record_sample_sd": 0.5472389411342794
+        },
+        {
+          "method": "MXFP4-RTN-WUSH",
+          "records": 5,
+          "macro_mean_percent": 79.34116376285945,
+          "record_sample_sd": 1.2730395898803684
+        },
+        {
+          "method": "MXFP4-GPTQ-WUSH",
+          "records": 5,
+          "macro_mean_percent": 79.25155228072278,
+          "record_sample_sd": 1.506364038130455
+        }
+      ]
+    },
+    "spinquant_w4a4kv16": {
+      "source_id": "R06",
+      "source_path": "README.md",
+      "context": "Author repository Hugging Face reproduction; integer W4A4, KV16; not MXFP4.",
+      "results": [
+        {
+          "model": "LLaMA-3 8B",
+          "method": "FloatingPoint",
+          "zero_shot": 69.6,
+          "wiki2_ppl": 6.1
+        },
+        {
+          "model": "LLaMA-3 8B",
+          "method": "QuaRot",
+          "zero_shot": 63.8,
+          "wiki2_ppl": 7.9
+        },
+        {
+          "model": "LLaMA-3 8B",
+          "method": "SpinQuant",
+          "zero_shot": 65.8,
+          "wiki2_ppl": 7.1
+        },
+        {
+          "model": "LLaMA-2 7B",
+          "method": "FloatingPoint",
+          "zero_shot": 66.9,
+          "wiki2_ppl": 5.5
+        },
+        {
+          "model": "LLaMA-2 7B",
+          "method": "QuaRot",
+          "zero_shot": 63.5,
+          "wiki2_ppl": 6.1
+        },
+        {
+          "model": "LLaMA-2 7B",
+          "method": "SpinQuant",
+          "zero_shot": 64.1,
+          "wiki2_ppl": 5.9
+        }
+      ]
+    },
+    "rptq_wikitext": {
+      "source_id": "R02",
+      "source_path": "README.md",
+      "context": "Author README updated results, integer quantization; KV suffix rows intentionally excluded.",
+      "results": [
+        {
+          "model": "OPT-13B",
+          "FP16": 10.13,
+          "W4A8": 10.9,
+          "W4A4": 12.74
+        },
+        {
+          "model": "OPT-66B",
+          "FP16": 9.34,
+          "W4A8": 9.46,
+          "W4A4": 12.23
+        }
+      ]
+    },
+    "onednn_hardware": {
+      "source_id": "R13",
+      "source_path": "doc/common_concepts/data_types.md",
+      "lines": [
+        233,
+        250
+      ],
+      "meaning": "oneDNN main-branch native datatype compute vs conversion; not a guarantee of any specific block-scaled/mixed-operand/grouped primitive.",
+      "rows": [
+        {
+          "uarch": "Xe-HPC",
+          "f8": "conversion",
+          "f4_e2m1": "conversion"
+        },
+        {
+          "uarch": "Xe2-HPG",
+          "f8": "conversion",
+          "f4_e2m1": "conversion"
+        },
+        {
+          "uarch": "Xe3-LPG",
+          "f8": "conversion",
+          "f4_e2m1": "conversion"
+        },
+        {
+          "uarch": "Xe3p-LPG",
+          "f8": "native",
+          "f4_e2m1": "conversion"
+        },
+        {
+          "uarch": "Xe3p-XPC",
+          "f8": "native",
+          "f4_e2m1": "native"
+        }
+      ]
+    }
+  }
+}
