@@ -53,6 +53,35 @@ def _parse_group_size(s: str):
     return tuple(int(x.strip()) for x in s.split(","))
 
 
+class _QuantizeArgumentParser(argparse.ArgumentParser):
+    """Retain explicit options even when parsed args are passed directly to tune()."""
+
+    def parse_known_args(self, args=None, namespace=None):
+        import sys
+
+        argv = list(sys.argv[1:] if args is None else args)
+        parsed, extras = super().parse_known_args(argv, namespace)
+        parsed._explicit_fields = self._explicit_dests(argv)
+        return parsed, extras
+
+    def _explicit_dests(self, argv) -> set[str]:
+        """Return destinations set on the command line, including abbreviated options."""
+        defaults = [(action, action.default) for action in self._actions]
+        parser_defaults = dict(self._defaults)
+        try:
+            for action, _ in defaults:
+                action.default = argparse.SUPPRESS
+            self._defaults.clear()
+            seen, _ = super().parse_known_args(argv, argparse.Namespace())
+        except SystemExit:
+            return set()
+        finally:
+            for action, default in defaults:
+                action.default = default
+            self._defaults.update(parser_defaults)
+        return {dest for dest in vars(seen) if dest != "model"}
+
+
 def add_common_quantization_arguments(group) -> None:
     """Add common quantization flags to an argparse group.
 
@@ -123,10 +152,11 @@ def add_common_quantization_arguments(group) -> None:
 
 def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.ArgumentParser:
     """Build the quantize parser with all argument groups."""
-    parser = argparse.ArgumentParser(prog=prog)
+    parser = _QuantizeArgumentParser(prog=prog)
 
     # ---- Model / Runtime ----
     rt = parser.add_argument_group("Runtime Arguments")
+    rt.add_argument("--recipe", default=None, help="Recommended quantization plan (default: auto-round).")
     rt.add_argument("model", default=None, nargs="?", help="Path to the pre-trained model or Hugging Face model id.")
     rt.add_argument(
         "--model_name",
@@ -153,6 +183,28 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     rt.add_argument("--nsamples", "--nsample", default=None, type=int, help="Number of calibration samples to use.")
     rt.add_argument(
         "--device_map", "--device", "--devices", default="0", type=str, help="Device mapping used for quantization."
+    )
+    rt.add_argument(
+        "--data_parallel",
+        default="off",
+        type=str,
+        help="Single-process data-parallel SignRound tuning: 'off' (default), 'auto' (all visible CUDA "
+        "devices at --iters 0, otherwise the largest power of two that fits them), or an explicit "
+        "world size N (at least 2, at most the visible device count; a power of two when "
+        "--iters > 0). Replicas hold full block mirrors on the plan "
+        "devices and draw disjoint calibration shards; free-VRAM estimates are advisory.",
+    )
+    rt.add_argument(
+        "--parallel_batch",
+        default="split",
+        type=str,
+        choices=["split", "per_replica"],
+        help="Batch semantics for --data_parallel tuning. 'split' (default): the requested "
+        "--batch_size is the GLOBAL per-iteration batch and every replica draws its world-split "
+        "share (serial-equivalent updates). 'per_replica': every replica draws the FULL "
+        "--batch_size from its own calibration shard each iteration, so the effective global "
+        "batch is batch_size x world (torchrun-like); the per-replica draw clamps to the pool shard "
+        "when it is smaller.",
     )
     rt.add_argument("--dataset", default=None, type=str, help="Calibration dataset or local dataset path.")
     rt.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
@@ -386,8 +438,8 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
 
 def build_list_parser(*, prog: str = "auto_round list") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=prog)
-    parser.add_argument("item", type=str, help="item to list, e.g., format, alg")
-    parser.add_argument("name", nargs="?", default=None, help="optional specific format/algorithm name")
+    parser.add_argument("item", type=str, help="item to list, e.g., format, alg, recipe")
+    parser.add_argument("name", nargs="?", default=None, help="optional specific format/algorithm/recipe name")
     return parser
 
 
