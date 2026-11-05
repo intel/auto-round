@@ -250,9 +250,6 @@ class GGUFFormat(OutputFormat):
         unsupported_list, reset_list = [], []
         for format in GGUF_CONFIG:
             if format in formats:
-                if format == "q6_k_s":
-                    logger.warning("Please note that q6_k_s is q6_k.")
-
                 if re.search(pattern, format):
                     if pre_dq_format and re.search(pattern, format).group() not in pre_dq_format:
                         raise FormatCompatibilityError(f"Cannot export {pre_dq_format} and {format} at the same time.")
