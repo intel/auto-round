@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -21,6 +22,7 @@ import torch
 from auto_round.algorithms.composer import AlgorithmComposer
 from auto_round.algorithms.quantization.qad.config import QADConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.parallel.execution import ParallelExecution
 from auto_round.wrapper import preserve_original_weights
 
 
@@ -44,7 +46,7 @@ def test_three_stages_preserve_original_bf16_without_algorithm_hooks(monkeypatch
     block_calls, output_values = [], []
 
     def run_blocks(replay):
-        block_calls.append((composer.block_quantizer, replay))
+        block_calls.append((composer.active_quantizer, replay))
         torch.testing.assert_close(model[0].weight, original)
 
         def tune():
@@ -56,6 +58,8 @@ def test_three_stages_preserve_original_bf16_without_algorithm_hooks(monkeypatch
         torch.testing.assert_close(model[0].weight, original)
 
     def tune_model(module, tokens, device=None):
+        assert composer.active_quantizer is composer.quantizers[-1]
+        assert composer.active_quantizer.whole_model_tuning
         torch.testing.assert_close(module[0].weight, original)
         assert tokens == [1, 2]
         with torch.no_grad():
@@ -71,6 +75,7 @@ def test_three_stages_preserve_original_bf16_without_algorithm_hooks(monkeypatch
     assert torch.all(model[0].weight == 7)
     assert model[0].weight.dtype == torch.bfloat16
     assert composer._preserve_weights is False
+    assert composer.active_quantizer is composer.quantizers[-1]
     composer._orchestrator._reload_model_for_tuning.assert_called_once()
     for quantizer in composer.quantizers:
         assert not hasattr(quantizer, "begin_stage")
@@ -101,7 +106,7 @@ def test_block_stages_consume_previous_weights_when_originals_not_required(monke
 
 def test_stage_failure_restores_weights_and_composer(monkeypatch):
     composer, model = _pipeline([SignRoundConfig(), QADConfig()], monkeypatch)
-    terminal = composer.block_quantizer
+    terminal = composer.active_quantizer
     original_layer = model[0]
     original = original_layer.weight.detach().clone()
     for quantizer in composer.quantizers:
@@ -120,10 +125,142 @@ def test_stage_failure_restores_weights_and_composer(monkeypatch):
         composer.compress_model([1], run_blocks)
     assert model[0] is original_layer
     torch.testing.assert_close(model[0].weight, original)
-    assert composer.block_quantizer is terminal
+    assert composer.active_quantizer is terminal
     assert composer._preserve_weights is False
-    for quantizer in composer.quantizers:
-        quantizer.finalize_run.assert_called_once()
+    composer.quantizers[0].finalize_run.assert_called_once()
+    composer.quantizers[1].finalize_run.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [None, "policy", "prepare", "tune"])
+def test_algorithm_parallel_policies_are_scoped_to_each_stage(monkeypatch, failure):
+    composer, model = _pipeline([SignRoundConfig(), SignRoundConfig()], monkeypatch)
+    orchestrator = composer._orchestrator
+    default = ParallelExecution()
+    orchestrator.parallel_execution = default
+    orchestrator.calibration.parallel = default
+    runner = SimpleNamespace(parallel_execution=default, pool_placement=object())
+    events = []
+
+    class StageExecution(ParallelExecution):
+        def __init__(self, index):
+            super().__init__()
+            self.index = index
+
+        @contextmanager
+        def algorithm_stage(self, algorithm, current_model):
+            assert current_model is model
+            assert orchestrator.parallel_execution is self
+            assert orchestrator.calibration.parallel is self
+            assert runner.parallel_execution is self
+            assert runner.pool_placement is None
+            events.append(("enter", self.index))
+            handle = model.register_forward_pre_hook(lambda module, inputs: None)
+            try:
+                if self.index == 0 and failure == "policy":
+                    raise RuntimeError("policy failed")
+                yield
+            finally:
+                handle.remove()
+                events.append(("exit", self.index))
+
+    executions = [StageExecution(index) for index in range(2)]
+    policies = {id(q.config): execution for q, execution in zip(composer.quantizers, executions)}
+    monkeypatch.setattr(
+        type(composer.quantizers[0]),
+        "create_parallel_execution",
+        classmethod(lambda cls, config, default_execution: policies[id(config)]),
+    )
+    for index, quantizer in enumerate(composer.quantizers):
+        quantizer.bind(orchestrator)
+        quantizer.bind_block_forward_runner(runner)
+
+        def prepare(composer=None, index=index):
+            assert orchestrator.parallel_execution is executions[index]
+            events.append(("prepare", index))
+            if index == 0 and failure == "prepare":
+                raise RuntimeError("prepare failed")
+
+        def finalize(index=index):
+            assert orchestrator.parallel_execution is executions[index]
+            events.append(("finalize", index))
+
+        quantizer.prepare_run = prepare
+        quantizer.finalize_run = finalize
+
+    def run_blocks(replay):
+        index = int(replay)
+        assert orchestrator.parallel_execution is executions[index]
+        events.append(("tune", index))
+        runner.pool_placement = object()
+        if failure == "tune":
+            raise RuntimeError("tune failed")
+
+    if failure:
+        with pytest.raises(RuntimeError, match=f"{failure} failed"):
+            composer.compress_model([1], run_blocks)
+    else:
+        assert composer.compress_model([1], run_blocks) is False
+    expected = [("enter", 0)]
+    if failure != "policy":
+        expected.append(("prepare", 0))
+        if failure != "prepare":
+            expected.append(("tune", 0))
+        expected.append(("finalize", 0))
+    expected.append(("exit", 0))
+    if failure is None:
+        expected.extend((name, 1) for name in ("enter", "prepare", "tune", "finalize", "exit"))
+    assert events == expected
+    assert orchestrator.parallel_execution is default
+    assert orchestrator.calibration.parallel is default
+    assert runner.parallel_execution is default
+    assert runner.pool_placement is None
+    assert not model._forward_pre_hooks
+    assert composer.active_quantizer is composer.quantizers[-1]
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_zero_shot_uses_parallel_stage_and_finalizes_once(monkeypatch, fail):
+    from auto_round.algorithms.quantization.rtn.config import RTNConfig
+    from auto_round.compressors.orchestrator import CompressionOrchestrator
+
+    composer, model = _pipeline([RTNConfig(disable_opt_rtn=True)], monkeypatch)
+    orchestrator = composer._orchestrator
+    orchestrator.alg_composer = composer
+    orchestrator.parallel_execution = ParallelExecution()
+    quantizer = composer.active_quantizer
+    quantizer.bind(orchestrator)
+    events = []
+
+    @contextmanager
+    def policy(execution, algorithm, current_model):
+        assert algorithm is quantizer
+        assert current_model is model
+        events.append("enter")
+        try:
+            yield
+        finally:
+            events.append("exit")
+
+    monkeypatch.setattr(ParallelExecution, "algorithm_stage", policy)
+    quantizer.prepare_run = Mock(side_effect=lambda composer=None: events.append("prepare"))
+    quantizer.finalize_run = Mock(side_effect=lambda: events.append("finalize"))
+
+    def run():
+        events.append("run")
+        assert not torch.is_grad_enabled()
+        if fail:
+            raise RuntimeError("zero-shot failed")
+        return model, {}
+
+    orchestrator._run_zero_shot_stage = run
+    if fail:
+        with pytest.raises(RuntimeError, match="zero-shot failed"):
+            CompressionOrchestrator._quantize_zero_shot(orchestrator)
+    else:
+        result, _ = CompressionOrchestrator._quantize_zero_shot(orchestrator)
+        assert result is model
+    assert events == ["enter", "prepare", "run", "finalize", "exit"]
+    quantizer.finalize_run.assert_called_once()
 
 
 def test_weight_preservation_restores_dtype_and_requires_grad():

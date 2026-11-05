@@ -15,7 +15,9 @@
 """Offline regressions for QAD review findings and chained tuning state."""
 
 import copy
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -79,10 +81,87 @@ def _quantizer(tmp_path, **kwargs):
     return quantizer
 
 
+@pytest.mark.parametrize("workspace_source", ["default", "environment", "explicit"])
+def test_teacher_cache_log_identifies_absolute_local_directory(tmp_path, monkeypatch, workspace_source):
+    monkeypatch.chdir(tmp_path)
+    workspace = "configured-workspace" if workspace_source == "environment" else "ar_work_space"
+    monkeypatch.delenv("AR_WORK_SPACE", raising=False)
+    if workspace_source == "environment":
+        monkeypatch.setenv("AR_WORK_SPACE", workspace)
+    quantizer = _quantizer(tmp_path)
+    quantizer.qad_workspace = "teacher files" if workspace_source == "explicit" else None
+    expected_root = tmp_path / ("teacher files" if workspace_source == "explicit" else workspace + "/qad_teacher_cache")
+    info = Mock()
+    monkeypatch.setattr("auto_round.algorithms.quantization.qad.quantizer.logger.info", info)
+    try:
+        quantizer._build_teacher_cache_from_model(_TinyLM(), [torch.tensor([[1, 2, 3]])], "cpu")
+        directory = Path(quantizer._teacher_cache.workspace).resolve()
+        assert directory.parent == expected_root
+        expected = f'QAD: cached teacher Top-3 for 1 samples in local cache directory: "{directory}"'
+        messages = [call.args[0] % call.args[1:] for call in info.call_args_list]
+        assert expected in messages
+    finally:
+        if quantizer._teacher_cache is not None:
+            quantizer._teacher_cache.shutdown()
+
+
 def _calibrator():
     calibrator = object.__new__(LLMCalibrator)
     calibrator.tokenizer = SimpleNamespace(pad_token_id=2, eos_token_id=2)
     return calibrator
+
+
+@pytest.mark.parametrize("native_tp", [False, True])
+@pytest.mark.parametrize("use_teacher", [False, True])
+def test_whole_model_residency_precedes_cached_teacher_and_wrapping(tmp_path, monkeypatch, native_tp, use_teacher):
+    quantizer = _quantizer(
+        tmp_path, qad_kd_weight=1.0 if use_teacher else 0.0, qad_ce_weight=0.0 if use_teacher else 1.0
+    )
+    model = _TinyLM()
+    model.proj.weight_global_scale = torch.tensor(1.0)
+    model.proj.act_max = torch.ones(8)
+    original_forward = model.embedding.forward
+    hook = model.embedding.register_forward_pre_hook(lambda module, inputs: None)
+    events = []
+    monkeypatch.setattr("auto_round.parallel.tp.runtime.is_tp_model", lambda model: native_tp)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
+    monkeypatch.setattr(torch.distributed, "broadcast_object_list", lambda samples, **kwargs: None)
+    monkeypatch.setattr(
+        "auto_round.parallel.prepared.PreparedRun._strip_dispatch_hooks", lambda self, model: events.append("strip")
+    )
+
+    def check_residency(model, *args, **kwargs):
+        # A real device change catches the CPU->CPU no-op that hid this bug in
+        # CPU/Gloo tests. Stop before any meta tensor is used for computation.
+        assert model.embedding.weight.device.type == "meta"
+        assert all(parameter.device.type == "meta" for parameter in model.parameters())
+        assert model.proj.weight_global_scale.device.type == "meta"
+        assert model.proj.act_max.device.type == "meta"
+        assert model.embedding.forward == original_forward
+        assert hook.id in model.embedding._forward_pre_hooks
+
+    def calibrate(model, *args):
+        check_residency(model)
+        events.append("calibrate")  # W*A16: no activation calibration forward.
+
+    def cached_teacher(model, *args):
+        check_residency(model)
+        events.append("cached_teacher")  # All samples hit: no teacher forward.
+
+    def wrap(model, *args, **kwargs):
+        check_residency(model)
+        events.append("wrap")
+        raise RuntimeError("stop before meta computation")
+
+    monkeypatch.setattr(quantizer, "_calibrate_activations", calibrate)
+    monkeypatch.setattr(quantizer, "_build_teacher_cache_from_model", cached_teacher)
+    monkeypatch.setattr(quantizer, "wrapper_block", wrap)
+    with pytest.raises(RuntimeError, match="stop before meta computation"):
+        quantizer.quantize_model(model, [torch.tensor([1, 2, 3])], device="meta")
+    assert events == ([] if native_tp else ["strip"]) + ["calibrate"] + (["cached_teacher"] if use_teacher else []) + [
+        "wrap"
+    ]
+    hook.remove()
 
 
 @pytest.mark.parametrize("last_padded", [False, True])
@@ -250,7 +329,7 @@ def test_whole_model_freezes_base_and_clears_placement(tmp_path, use_teacher, tu
 @pytest.mark.parametrize("config_cls", [SignRoundConfig, SignRoundV2Config, AdamRoundConfig])
 def test_enable_qad_routes_to_whole_model(config_cls):
     composer = AlgorithmComposer([config_cls(enable_qad=True, iters=2, nblocks=1, lfq_top_k=5)])
-    quantizer = composer.block_quantizer
+    quantizer = composer.active_quantizer
     assert isinstance(quantizer, QADQuantizer)
     assert quantizer.whole_model_tuning
     assert quantizer.requires_original_weights

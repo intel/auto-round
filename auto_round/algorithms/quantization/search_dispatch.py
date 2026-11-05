@@ -157,7 +157,9 @@ def run_items_by_device(
 
 def cross_device_search_disabled() -> bool:
     """Kill switch for running batched searches on idle devices."""
-    return bool(envs.AR_DISABLE_CROSS_DEVICE_SEARCH)
+    import torch.distributed as dist
+
+    return bool(envs.AR_DISABLE_CROSS_DEVICE_SEARCH) or (dist.is_initialized() and dist.get_world_size() > 1)
 
 
 def pick_search_worker_devices(
@@ -184,7 +186,7 @@ def pick_search_worker_devices(
     """
     if cross_device_search_disabled():
         return [home_device] if home_device is not None else []
-    from auto_round.algorithms.parallel.spmd import current_rank
+    from auto_round.parallel.dp.spmd import current_rank
 
     if current_rank() is not None:
         # a data-parallel rank owns only its device: the "idle" ones are the

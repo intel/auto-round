@@ -20,6 +20,49 @@ import pytest
 import torch
 
 
+class TestWrapperWALayer:
+    @pytest.mark.parametrize("enable_compile", [False, True])
+    @pytest.mark.parametrize("with_global_scale", [False, True])
+    def test_forward_uses_selected_quantizer(self, enable_compile, with_global_scale):
+        from auto_round.wrapper import WrapperWALayer
+
+        layer = torch.nn.Linear(16, 8, bias=False)
+        x = torch.randn(2, 16)
+        quantized = x * 0.5
+        eager = MagicMock(return_value=(quantized, None, None))
+        compiled = MagicMock(return_value=(quantized, None, None))
+        layer.act_quant_func = eager
+        layer.act_bits = 4
+        layer.act_group_size = 16
+        layer.act_data_type = "nv_fp4_with_static_gs"
+        layer.scale_dtype = torch.float32
+        layer.q_scale_thresh = 1e-5
+        layer.act_max_scale = 1.0
+        layer.act_min_scale = 1.0
+        layer.act_max = torch.tensor(2.0)
+        if with_global_scale:
+            layer.input_global_scale = torch.tensor(1344.0)
+
+        with patch("auto_round.wrapper.compile_func", return_value=compiled) as compile_mock:
+            wrapped = WrapperWALayer(layer, enable_torch_compile=enable_compile)
+            actual = wrapped(x)
+
+        selected, unused = (compiled, eager) if enable_compile else (eager, compiled)
+        selected.assert_called_once()
+        unused.assert_not_called()
+        assert selected.call_args.args[0] is x
+        assert selected.call_args.kwargs["tensor_max"] is layer.act_max
+        if with_global_scale:
+            assert selected.call_args.kwargs["global_scale"] is layer.input_global_scale
+        else:
+            assert "global_scale" not in selected.call_args.kwargs
+        if enable_compile:
+            compile_mock.assert_called_once_with(eager, "cpu")
+        else:
+            compile_mock.assert_not_called()
+        torch.testing.assert_close(actual, layer(quantized))
+
+
 class TestGetScaleShape:
     """Tests for get_scale_shape function."""
 

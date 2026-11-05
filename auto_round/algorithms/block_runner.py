@@ -146,6 +146,7 @@ class BlockForwardRunner:
         shared_cache_keys: tuple = (),
         output_config: list[str] | None = None,
         enable_torch_compile: bool = True,
+        parallel_execution=None,
     ) -> None:
         self.batch_dim = batch_dim
         self.batch_size = batch_size
@@ -157,6 +158,7 @@ class BlockForwardRunner:
         self.shared_cache_keys = shared_cache_keys
         self.output_config = output_config if output_config is not None else ["hidden_states"]
         self.enable_torch_compile = enable_torch_compile
+        self.parallel_execution = parallel_execution
         self.last_output_dict = None
         self.block_forward = block_forward
         # Keep the uncompiled function available for calibration passes that
@@ -190,6 +192,7 @@ class BlockForwardRunner:
             shared_cache_keys=getattr(orchestrator, "shared_cache_keys", ()),
             output_config=output_config,
             enable_torch_compile=enable_torch_compile,
+            parallel_execution=getattr(orchestrator, "parallel_execution", None),
         )
 
     # ── Core forward ─────────────────────────────────────────────────────────
@@ -222,7 +225,7 @@ class BlockForwardRunner:
             Normalized output tensor on ``cache_device`` (or ``self.cache_device``).
         """
         if cache_device is None:
-            from auto_round.algorithms.parallel.spmd import current_rank
+            from auto_round.parallel.dp.spmd import current_rank
 
             rank = current_rank()
             if rank is not None:
@@ -261,7 +264,12 @@ class BlockForwardRunner:
         for i in range(0, len(indices), self.batch_size):
             batch_indices = indices[i : i + self.batch_size]
             batch_inputs, batch_others = self._select_batch(inputs, input_others, batch_indices)
-            raw_output = self._forward_one_batch(block, batch_inputs, batch_others, eager=eager)
+            if eager:
+                raw_output = self._forward_one_batch(block, batch_inputs, batch_others, eager=True)
+            else:
+                raw_output = self._forward_one_batch(block, batch_inputs, batch_others)
+            if self.parallel_execution is not None and self.parallel_execution.is_tp:
+                raw_output = self.parallel_execution.replicated(raw_output)
             batch_output_dict = self._get_output_dict(raw_output, block)
             output = self._normalize_output(raw_output, block)
             if is_returned_list and self.batch_size != 1:  # split  it to 1

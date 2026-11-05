@@ -15,9 +15,10 @@
 
 QAD fuses all text-decoder blocks into a single jointly-optimized group
 (whole-network training) and tunes them against the full-precision teacher's
-next-token distribution. To keep GPU/CPU memory low, the teacher is forwarded to
-the LM head *once*, offline, and only the Top-K ``(index, prob)`` per token is
-cached to disk; the student reads those compact tensors during tuning.
+next-token distribution. The teacher is forwarded to the LM head *once*, offline.
+The default ``tk`` objective stores compact Top-K ``(index, prob)`` targets;
+``kl`` and ``rkl`` instead cache the full vocabulary distribution, increasing
+disk and target-memory usage. All objectives use FP32 teacher probabilities by default.
 """
 
 from __future__ import annotations
@@ -29,7 +30,22 @@ from auto_round.logger import logger
 
 
 class QADConfig(SignRoundConfig):
-    """Configuration for the QAD (quantization-aware distillation) algorithm."""
+    """Configure experimental whole-model quantization-aware distillation (QAD).
+
+    Args:
+        qad_nsamples (int | None): QAD/QAT-specific calibration sample count.
+            None reuses the common calibration samples; an explicit value overrides
+            an inherited ``nsamples`` value without changing other pipeline stages.
+
+    Attributes:
+        qad_iters (int | None): QAD/QAT iteration override. None inherits ``iters``;
+            the effective count drives the automatic learning rate, scheduler,
+            and SignSGD LoRA scaling budget.
+        loss (str): Distillation objective: ``tk`` aligns teacher Top-K conditional
+            distributions, ``kl`` computes KL(teacher || student), and ``rkl``
+            computes KL(student || teacher). The default is ``tk``. Both full KL
+            modes cache the entire teacher vocabulary regardless of ``topk``.
+    """
 
     _warn_enable_qad = False
 
@@ -43,13 +59,24 @@ class QADConfig(SignRoundConfig):
     def _register_qad_teacher_args(cls, registry: AlgorithmParameterRegistry) -> None:
         """Teacher-distillation-only args (not used by the pure-QAT variant)."""
         registry.add_argument(
+            "--qad_loss",
+            field="loss",
+            default="tk",
+            choices=["tk", "kl", "rkl"],
+            help=(
+                "QAD distillation objective: tk (default) aligns teacher Top-K conditional distributions; "
+                "kl uses KL(teacher || student); rkl uses KL(student || teacher). "
+                "kl/rkl cache the full vocabulary. Teacher probabilities are stored in FP32 for all objectives."
+            ),
+        )
+        registry.add_argument(
             "--topk",
             field="topk",
             default=32,
             type=int,
             help=(
-                "Number of top teacher logits cached per token for QAD distillation. "
-                "Use -1 to store the full vocabulary distribution."
+                "Number of top teacher logits cached per token for the QAD tk loss. "
+                "Use -1 to store the full vocabulary distribution. kl/rkl always cache the full vocabulary."
             ),
         )
         registry.add_argument(
@@ -59,7 +86,7 @@ class QADConfig(SignRoundConfig):
             type=float,
             help=(
                 "Weight of the teacher-distribution KD (soft) loss in the QAD objective: "
-                "loss = qad_kd_weight * KL(p_T || p_S) + qad_ce_weight * CE(label, p_S). "
+                "loss = qad_kd_weight * KD(--qad_loss) + qad_ce_weight * CE(label, p_S). "
                 "Set to 0 to drop distillation and train on hard labels only (pure QAT); "
                 "when 0 the offline teacher cache is skipped entirely."
             ),
@@ -82,13 +109,68 @@ class QADConfig(SignRoundConfig):
             default=None,
             help=(
                 "Directory where the offline teacher Top-K cache is written. "
-                "Defaults to <AR_WORK_SPACE>/qad_teacher_cache when unset."
+                "Defaults to <AR_WORK_SPACE>/qad_teacher_cache, where AR_WORK_SPACE is an environment variable "
+                "defaulting to the local directory 'ar_work_space'. Relative paths are resolved against "
+                "the current working directory."
             ),
         )
 
     @classmethod
     def _register_qad_tuning_args(cls, registry: AlgorithmParameterRegistry) -> None:
         """Whole-model tuning knobs shared by QAD and the pure-QAT variant."""
+        registry.add_argument(
+            "--qad_iters",
+            field="qad_iters",
+            default=None,
+            type=int,
+            help=(
+                "Number of QAD/QAT optimization iterations; inherits --iters when unset. "
+                "The effective count determines the automatic learning rate, linear scheduler, "
+                "and automatic SignSGD LoRA scaling independently of block-wise tuning."
+            ),
+        )
+        rounding = registry.add_mutually_exclusive_group()
+        rounding.add_argument(
+            "--qad_enable_round_tuning",
+            field="qad_enable_round_tuning",
+            dest="qad_enable_round_tuning",
+            default=True,
+            action="store_true",
+            help="Tune QAD rounding offsets (default).",
+        )
+        rounding.add_argument(
+            "--qad_disable_round_tuning",
+            "--no-qad_enable_round_tuning",
+            field="qad_enable_round_tuning",
+            dest="qad_enable_round_tuning",
+            action="store_false",
+            help=(
+                "Freeze QAD rounding offsets, preserving any warm-start rounding. "
+                "LoRA rounding is disabled too; min/max and activation tuning keep their own settings."
+            ),
+        )
+        registry.add_argument(
+            "--qad_lora_rank",
+            field="qad_lora_rank",
+            default=None,
+            type=int,
+            help=(
+                "Replace dense rounding parameters with low-rank B @ A tuning. "
+                "0 disables LoRA; when omitted, inherit --lora_rank (default 0). Under TP, rank is per local weight shard; "
+                "only rounding is changed, not the FP weights or inference forward."
+            ),
+        )
+        registry.add_argument(
+            "--qad_lora_alpha",
+            field="qad_lora_alpha",
+            default=None,
+            type=float,
+            help=(
+                "Scale rounding LoRA by alpha/rank. When unset, SignSGD with the default linear scheduler "
+                "automatically bounds the new offset using the QAD iteration and learning-rate budget; "
+                "other optimizers retain unit scaling."
+            ),
+        )
         registry.add_argument(
             "--qad_lr",
             field="qad_lr",
@@ -101,12 +183,12 @@ class QADConfig(SignRoundConfig):
         )
         registry.add_argument(
             "--qad_nsamples",
-            field="nsamples",
+            field="qad_nsamples",
             default=None,
             type=int,
             help=(
                 "Number of calibration samples used by QAD tuning. Lets QAD use a different "
-                "sample count from block-wise SignRound (e.g. '--algs sign_round,qad'); "
+                "sample count from block-wise SignRound (e.g. '--alg_configs sign_round,qad'); "
                 "falls back to --nsamples when unset."
             ),
         )
@@ -115,7 +197,11 @@ class QADConfig(SignRoundConfig):
             field="qad_optimizer",
             default="signround",
             choices=["signround", "adamw"],
-            help="Optimizer used for QAD tuning: 'signround' (SignSGD) or 'adamw' (torch.optim.AdamW).",
+            help=(
+                "Optimizer used for QAD tuning: 'signround' (SignSGD) or 'adamw' (torch.optim.AdamW, weight_decay=0). "
+                "AdamW requires substantially more optimizer-state GPU memory because it stores two moment "
+                "tensors per trainable parameter."
+            ),
         )
         registry.add_argument(
             "--tune_non_quant_params",
@@ -156,13 +242,17 @@ class QADConfig(SignRoundConfig):
         self,
         *,
         iters: int = 200,
+        qad_iters: int | None = None,
         lr: float | None = None,
         qad_lr: float | None = None,
-        nsamples: int | None = None,
         qad_nsamples: int | None = None,
         topk: int = 32,
+        loss: str = "tk",
         qad_optimizer: str | None = None,
         qad_workspace: str | None = None,
+        qad_lora_rank: int | None = None,
+        qad_lora_alpha: float | None = None,
+        qad_enable_round_tuning: bool = True,
         gradient_checkpointing: bool = True,
         qad_kd_weight: float = 1.0,
         qad_ce_weight: float = 0.0,
@@ -172,32 +262,32 @@ class QADConfig(SignRoundConfig):
     ) -> None:  # QAD implies whole-network joint distillation. `enable_qad` forces
         # `enable_lfq` and makes the orchestrator fuse all blocks into one group.
         kwargs.setdefault("enable_qad", True)
-        # NOTE: QAD distills against the FP teacher's logits: the loss is the
-        # forward KL(p_T || p_S) with p_T = softmax(teacher_logits/τ) (Top-K or
-        # full vocab, see `_QADDistillLoss`); hard labels are only used as the
-        # ignore mask. The inherited `lfq_loss` field is therefore NOT consumed on
-        # the QAD path; it is kept in sync with the SignRound default only to
-        # avoid a confusing mismatch.
+        # QAD uses its own loss selector; lfq_loss remains a block-wise LFQ option.
+        if loss not in ("tk", "kl", "rkl"):
+            raise ValueError(f"`loss` must be 'tk', 'kl', or 'rkl', got {loss!r}")
+        self.loss = loss
         kwargs.setdefault("lfq_loss", "tk")
-        # Tuning schedule: QAD defaults to more iterations than block-wise tuning
-        # since the whole network is optimized jointly. `lr=None` keeps the base
-        # heuristic (1/iters); pass an explicit value (e.g. 1e-4 for AdamW).
+        # Resolve the stage-specific count before the base config derives its
+        # learning rate. The quantizer also uses this effective `iters` for the
+        # scheduler and the automatic SignSGD LoRA scaling budget.
+        if qad_iters is not None and (isinstance(qad_iters, bool) or not isinstance(qad_iters, int) or qad_iters < 0):
+            raise ValueError("`qad_iters` must be a non-negative integer or None")
+        self.qad_iters = qad_iters
+        kwargs["iters"] = iters if qad_iters is None else qad_iters
+        # `lr=None` keeps the base heuristic; explicit learning rates are not
+        # rescaled when overriding the iteration count.
         # `qad_lr` (QAD-specific) takes precedence over the shared `lr`, so QAD
         # can use a different lr than SignRound when both run in one pipeline.
-        kwargs.setdefault("iters", iters)
         kwargs.setdefault("lr", lr)
         self.qad_lr = qad_lr
         if qad_lr is not None:
             if qad_lr <= 0:
                 raise ValueError("`qad_lr` must be positive")
             kwargs["lr"] = qad_lr
-        # Keep the old Python keyword as an alias; storage and validation belong
-        # to QuantizationConfig. The CLI maps --qad_nsamples directly to nsamples.
+        # Keep a single source of truth in QuantizationConfig.nsamples. None
+        # inherits common sampling; an explicit QAD count overrides only this stage.
         if qad_nsamples is not None:
-            if nsamples is not None and nsamples != qad_nsamples:
-                raise ValueError("`nsamples` and legacy `qad_nsamples` must agree when both are supplied")
-            nsamples = qad_nsamples
-        kwargs["nsamples"] = nsamples
+            kwargs["nsamples"] = qad_nsamples
         # Normalize the optimizer choice before handing it to the base config
         # (SignRound keeps it on ``self.optimizer`` for the quantizer to resolve).
         # ``qad_optimizer`` is the QAD-specific name; a legacy ``optimizer=`` kwarg
@@ -207,7 +297,11 @@ class QADConfig(SignRoundConfig):
             raise ValueError(f"`qad_optimizer` must be 'signround' or 'adamw', got {optimizer!r}")
         self.qad_optimizer = optimizer
         kwargs["optimizer"] = optimizer
+        self.qad_lora_rank = qad_lora_rank
+        self.qad_lora_alpha = qad_lora_alpha
         super().__init__(**kwargs)
+        self.validate_lora_config()
+        self.qad_enable_round_tuning = bool(qad_enable_round_tuning)
         # Force QAD semantics regardless of CLI arg defaults.
         self.enable_qad = True
         self.enable_lfq = True
@@ -229,7 +323,7 @@ class QADConfig(SignRoundConfig):
                 "`--qad_optimizer adamw` (optionally with a small `--non_quant_params_lr`, e.g. 1e-5)."
             )
         # Loss mixing: total = kd_weight * KD(teacher) + ce_weight * CE(label).
-        # Pure KD (default) keeps the historical behavior; a positive ce_weight
+        # Pure KD (default) uses the selected objective; a positive ce_weight
         # mixes in the hard-label objective (QAT), and kd_weight=0 drops the
         # teacher cache for a pure QAT run.
         self.qad_kd_weight = float(qad_kd_weight)
@@ -246,9 +340,37 @@ class QADConfig(SignRoundConfig):
             )
         else:
             logger.warning_once(
-                "the `QAD` algorithm is experimental: the full-precision teacher Top-K is cached to disk "
+                "the `QAD` algorithm is experimental: the full-precision teacher distribution is cached to disk "
                 "and all text-decoder blocks are tuned jointly against it."
             )
+
+    @property
+    def qad_lora_rank(self) -> int:
+        """int: Stage-specific LoRA rank, inheriting the shared rank only when omitted."""
+        return self.lora_rank if self._qad_lora_rank is None else self._qad_lora_rank
+
+    @qad_lora_rank.setter
+    def qad_lora_rank(self, value: int | None) -> None:
+        """Set the QAD-specific rank override without changing the shared rank.
+
+        Args:
+            value (int | None): Stage-specific rank, or None to inherit the shared setting.
+        """
+        self._qad_lora_rank = value
+
+    @property
+    def qad_lora_alpha(self) -> float | None:
+        """float | None: Stage-specific LoRA alpha, falling back to the shared alpha."""
+        return self.lora_alpha if self._qad_lora_alpha is None else self._qad_lora_alpha
+
+    @qad_lora_alpha.setter
+    def qad_lora_alpha(self, value: float | None) -> None:
+        """Set the QAD-specific alpha override without changing the shared alpha.
+
+        Args:
+            value (float | None): Stage-specific alpha, or None to inherit the shared setting.
+        """
+        self._qad_lora_alpha = value
 
 
 register_algorithm(

@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
 import sys
+from collections.abc import Sequence
+from contextlib import nullcontext
 
 from auto_round.cli.algorithms import AlgorithmHandler
 from auto_round.cli.parser import (
+    ALGORITHM_FLAGS,
     add_common_quantization_arguments,
     build_eval_parser,
     build_list_parser,
@@ -35,7 +39,7 @@ _OVERVIEW_ARGUMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("model", ()),
     ("model_name", ("--model",)),
     ("scheme", ("--scheme",)),
-    ("algorithm", ("--algorithm",)),
+    ("alg_configs", ("--alg_configs",)),
     ("bits", ("--bits",)),
     ("group_size", ("--group_size",)),
     ("iters", ("--iters",)),
@@ -43,6 +47,9 @@ _OVERVIEW_ARGUMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("seqlen", ("--seqlen",)),
     ("batch_size", ("--batch_size",)),
     ("device_map", ("--device_map",)),
+    ("tp_size", ("--tensor_parallel",)),
+    ("pp_size", ("--pipeline_parallel",)),
+    ("data_parallel", ("--data_parallel",)),
     ("format", ("--format",)),
     ("output_dir", ("--output_dir",)),
     ("asym", ("--asym",)),
@@ -62,9 +69,9 @@ commands:
 
 examples:
   auto_round --model facebook/opt-125m --bits 4 --group_size 128
-  auto_round --model Qwen/Qwen3-0.6B --algorithm auto_round_v2 --iters 200
-  auto_round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round_v2
-  auto_round --model <model> --schemes W2A16,W4A16 --bits 3 --ignore_scale_zp_bits
+  auto_round --model Qwen/Qwen3-0.6B --alg_configs auto_round_v2 --iters 200
+  auto_round --model Qwen/Qwen3-0.6B --alg_configs awq,auto_round_v2
+  auto_round --model <model> --scheme W2A16,W4A16 --bits 3 --ignore_scale_zp_bits
   auto_round eval --model <quantized_model> --tasks lambada_openai
   auto_round list alg
 
@@ -74,7 +81,7 @@ This is only the commonly used subset of the quantize arguments.
 _OVERVIEW_EPILOG = """\
 see also:
   auto_round quantize --help            every quantize argument
-  auto_round --algorithm <name> --help  the flags of one algorithm
+  auto_round --alg_configs <name> --help  the flags of one algorithm
   auto_round list alg                   the supported algorithms
   auto_round list format                the supported output formats
 """
@@ -165,15 +172,42 @@ def _extract_common_quantization_kwargs(args) -> dict:
 
 
 def _normalize_scheme_list(raw) -> str | None:
-    """Normalize --schemes/--options into a comma-joined scheme list.
+    """Normalize --scheme and its aliases into a comma-joined scheme list.
 
     Accepts both space-separated (nargs="+" list) and comma-separated forms,
     e.g. 'W4A16 W8A16' or 'W4A16,W8A16' -> 'W4A16,W8A16'.
     """
     if raw is None:
         return None
+    if isinstance(raw, str):
+        raw = [raw]
     flat = ",".join(raw)  # handles list; each element may itself contain commas
     return ",".join(p.strip() for p in flat.split(",") if p.strip())
+
+
+def _build_parallel_config(args: argparse.Namespace) -> dict[str, int | str]:
+    """Resolve launcher topology once for both entry validation and construction.
+
+    Args:
+        args (argparse.Namespace): Parsed CLI options, optionally omitting parallel fields.
+
+    Returns:
+        dict[str, int | str]: Parallel degrees and replica/batch policies for ParallelConfig.
+    """
+    tp_size = getattr(args, "tp_size", None)
+    if tp_size is None:
+        # Infer a single TP axis only; do not silently create hybrid parallelism.
+        tp_size = 1
+        if getattr(args, "pp_size", 1) == 1 and str(getattr(args, "data_parallel", "off")) in ("off", "1"):
+            tp_size = int(os.environ.get("WORLD_SIZE", "1"))
+        if tp_size > 1:
+            logger.info("Inferred tp_size=%s from torchrun WORLD_SIZE.", tp_size)
+    return {
+        "tp_size": tp_size,
+        "pp_size": getattr(args, "pp_size", 1),
+        "data_parallel": getattr(args, "data_parallel", "off"),
+        "parallel_batch": getattr(args, "parallel_batch", "split"),
+    }
 
 
 def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
@@ -188,6 +222,7 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "calibration_data_device": args.calibration_data_device,
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
+        "parallel_config": _build_parallel_config(args),
         "enable_torch_compile": enable_torch_compile,
         "enable_deterministic_algorithms": args.enable_deterministic_algorithms,
         "seed": args.seed,
@@ -262,7 +297,7 @@ def list_item(argv=None):
         else:
             print("AutoRound supported algorithms:")
             print(AlgorithmHandler.format_listing())
-            print("\nUse `auto_round list alg <name>` or `auto_round --algorithm <name> --help` for details.")
+            print("\nUse `auto_round list alg <name>` or `auto_round --alg_configs <name> --help` for details.")
     elif args.item in {"recipe", "recipes"}:
         for name in [args.name] if args.name else list_recipes():
             definition = get_recipe(name)
@@ -281,16 +316,16 @@ def list_item(argv=None):
 
 
 def _print_algorithm_help(argv: list[str]) -> bool:
-    """If --algorithm <name> --help is present, print algorithm-focused help and return True."""
+    """If --alg_configs (or an alias) and --help are present, print algorithm-focused help."""
     if not any(flag in argv for flag in ("-h", "--help")):
         return False
 
-    # Pre-parse just --algorithm
+    # Pre-parse the same algorithm selector and aliases as the quantize parser.
 
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--algorithm", default=None)
+    pre.add_argument(*ALGORITHM_FLAGS, dest="alg_configs", default=None)
     known, _ = pre.parse_known_args(argv)
-    names = [n.strip().lower() for n in (known.algorithm or "").split(",") if n.strip()]
+    names = [n.strip().lower() for n in (known.alg_configs or "").split(",") if n.strip()]
     if not names:
         return False
 
@@ -320,7 +355,7 @@ def _print_algorithm_help(argv: list[str]) -> bool:
         return False
 
     mini = argparse.ArgumentParser(
-        prog=f"auto_round --algorithm {','.join(canonical_names)}",
+        prog=f"auto_round --alg_configs {','.join(canonical_names)}",
         description=f"Flags for algorithm(s): {', '.join(canonical_names)}. "
         "Use `auto_round --help` for the full argument list.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -332,6 +367,17 @@ def _print_algorithm_help(argv: list[str]) -> bool:
         AlgorithmHandler.add_group(name, alg_group)
     mini.print_help()
     return True
+
+
+def _start_worker(recipe: str, argv: Sequence[str]) -> None:
+    """Run the CLI recipe inside a locally launched TP worker.
+
+    Args:
+        recipe (str): Registered recipe name passed to the CLI entry point.
+        argv (Sequence[str]): Command-line arguments replayed in the worker.
+
+    """
+    return start(recipe, argv=argv)
 
 
 def start(recipe="auto-round", argv=None):
@@ -349,6 +395,18 @@ def start(recipe="auto-round", argv=None):
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
     args._api_format = args.format if format_was_explicit or args.model_free else None
+
+    from auto_round.parallel import ParallelConfig
+    from auto_round.parallel.tp.launcher import launch, needs_local_launch
+
+    parallel = ParallelConfig.from_value(_build_parallel_config(args))
+    # Validate before launching workers or loading any model. In particular DP
+    # must not silently run independently on each rank of an external launcher.
+    if parallel.data_parallel != "off" and int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        raise NotImplementedError("--data_parallel is single-process; do not launch it with torchrun.")
+    if needs_local_launch(parallel):
+        return launch(parallel, _start_worker, recipe, argv)
+
     _apply_recipe_defaults(args, recipe)
     tune(args)
 
@@ -373,7 +431,7 @@ def _apply_recipe_defaults(args, recipe="auto-round"):
         if getattr(args, key, None) is None:
             setattr(args, key, value)
     # Keep effective legacy attributes available to integrations inspecting tune(args).
-    if args.algorithm is None:
+    if getattr(args, "alg_configs", None) is None and getattr(args, "algorithm", None) is None:
         configs = args._recipe_plan.build_configs()
         for config in configs:
             for key in ("iters", "lr", "disable_opt_rtn"):
@@ -412,18 +470,6 @@ def tune(args):
 
     from auto_round.utils import logger
 
-    if args.low_cpu_mem_usage:
-        logger.warning(
-            "`low_cpu_mem_usage` is deprecated and is now enabled by default. "
-            "To disable it, use `--disable_low_cpu_mem_usage`."
-        )
-
-    if getattr(args, "enable_alg_ext", False):
-        logger.warning(
-            "`--enable_alg_ext` is deprecated; use `--algorithm auto_round_v2` instead. "
-            "Both select the same algorithm and remain equivalent."
-        )
-
     if args.format is None:
         args.format = "auto_round"
 
@@ -456,45 +502,6 @@ def tune(args):
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
 
-    _parallel = str(getattr(args, "data_parallel", "off") or "off").strip().lower()
-    _parallel_policy = None
-    if _parallel != "off":
-        import torch
-
-        from auto_round import envs as _envs
-        from auto_round.algorithms.parallel.data_parallel import (
-            ParallelPolicy,
-            resolve_parallel_world,
-        )
-
-        _n = torch.cuda.device_count()
-        _iters_cli = int(getattr(args, "iters", 0) or 0)
-        _world = resolve_parallel_world(_parallel, _n, iters=_iters_cli)
-        # early eligibility: a multi-device --device_map cannot host the
-        # data-parallel lane at iters > 0 (blocks shard across GPUs in a
-        # pipeline-style placement) -- stop here, before the model loads,
-        # with the same message the runtime resolver raises at block 0
-        from auto_round.algorithms.parallel.data_parallel import check_parallel_device_map_compat_
-
-        check_parallel_device_map_compat_(_world, args.device_map, _iters_cli)
-        _parallel_policy = ParallelPolicy(
-            world=_world,
-            source="auto" if _parallel == "auto" else "explicit",
-            collect_forward_cap=int(getattr(_envs, "AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES", 0) or 0),
-            batch_mode=str(getattr(args, "parallel_batch", "split") or "split").strip().lower(),
-        )
-        if _parallel == "auto" and _world < _n:
-            # only `auto` adds information here (the reduction from the
-            # visible count); an explicit N either validates silently or
-            # raises, and the engagement line reports the resolved plan
-            logger.info(
-                "[tune-ddp] --data_parallel auto -> world=%d (largest power of two <= %d visible "
-                "devices; %d unused)",
-                _world,
-                _n,
-                _n - _world,
-            )
-
     if args.enable_torch_compile is False:
         logger.info("`torch.compile` is explicitly disabled with `--disable_torch_compile`.")
 
@@ -518,11 +525,12 @@ def tune(args):
                 )
 
     enable_torch_compile = args.enable_torch_compile
-    scheme = args.scheme.upper()
+    scheme = _normalize_scheme_list(args.scheme).upper()
+    scheme_options = scheme if "," in scheme else None
 
     from auto_round.schemes import PRESET_SCHEMES
 
-    if scheme not in PRESET_SCHEMES:
+    if scheme_options is None and scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
 
     from auto_round.utils import parse_layer_config_arg
@@ -538,16 +546,8 @@ def tune(args):
 
     from auto_round.auto_scheme import AutoScheme
 
-    # Supplying multiple schemes enables AutoScheme: the schemes are the
-    # candidate options and --bits is the average target bits.
-    # --options/--avg_bits/--target_bits are deprecated aliases that argparse
-    # merges into --schemes/--bits (see _LegacyAliasAction in parser.py); they
-    # stay functional but are hidden from --help.
-    scheme_options = None
-    if args.schemes is not None:
-        if args.scheme.upper() != "W4A16":
-            raise ValueError("`--scheme` and `--schemes` cannot be used together, please use only `--schemes`")
-        scheme_options = _normalize_scheme_list(args.schemes)
+    # Multiple --scheme candidates enable AutoScheme; --schemes is an alias.
+    # Legacy --options/--avg_bits/--target_bits remain hidden compatibility aliases.
 
     # Normalize --shared_layers: supports three forms per invocation:
     #   - all bare tokens (no commas): treated as one group
@@ -598,7 +598,7 @@ def tune(args):
         # the candidate options carry their own bit widths.
         common_kwargs.pop("bits", None)
     else:
-        # Without --schemes, `--bits` is a plain weight bit width and must be an integer.
+        # With one scheme, `--bits` is a plain weight bit width and must be an integer.
         bits = common_kwargs.get("bits")
         if bits is not None:
             if float(bits).is_integer():
@@ -606,7 +606,7 @@ def tune(args):
             else:
                 raise ValueError(
                     "`--bits` must be an integer for weight quantization; "
-                    "use `--schemes` to set a fractional AutoScheme average target"
+                    "use multiple `--scheme` candidates to set a fractional AutoScheme average target"
                 )
     alg_configs = AlgorithmHandler.build_configs(args, common_kwargs)
 
@@ -625,22 +625,31 @@ def tune(args):
         ),
     )
 
-    if _parallel_policy is not None:
-        # the resolved --data_parallel policy is set on the compress
-        # context; the data-parallel engine reads it from there
-        autoround.compress_context.parallel_policy = _parallel_policy
-
     model, folders = autoround.quantize_and_save(  # pylint: disable=no-member
         args.output_dir,
         format=getattr(args, "_api_format", args.format),
         max_shard_size=args.max_shard_size,
     )
-    tokenizer = autoround.tokenizer  # pylint: disable=no-member
-    clear_memory()
+    evaluation_context = nullcontext(True)
+    parallel_config = getattr(autoround, "parallel_config", None)
+    if parallel_config is not None and parallel_config.tp_size > 1:
+        from auto_round.parallel.execution import ParallelExecution
+        from auto_round.parallel.tp.evaluation import rank_zero_evaluation
 
-    from auto_round.eval.evaluation import run_model_evaluation
+        # Whole-model QAD/QAT leaves native shards resident. The returned model
+        # is a separate CPU export; retain it for fake-model evaluation.
+        ParallelExecution.move_block(autoround.model_context.model, "cpu")
+        clear_memory()
+        evaluation_context = rank_zero_evaluation()
+    with evaluation_context as should_evaluate:
+        if not should_evaluate:
+            return
+        tokenizer = autoround.tokenizer  # pylint: disable=no-member
+        clear_memory()
 
-    run_model_evaluation(model, tokenizer, autoround, folders, formats, args)
+        from auto_round.eval.evaluation import run_model_evaluation
+
+        run_model_evaluation(model, tokenizer, autoround, folders, formats, args)
 
 
 # ============================================================================

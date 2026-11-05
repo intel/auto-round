@@ -70,6 +70,25 @@ export AR_QUANTIZE_BAGEL_MOE_GEN=1
 export AR_WORK_SPACE=/path/to/custom/workspace
 ```
 
+### AR_CACHE
+- **Description**: Overrides the persistent cache root for diffusion calibration datasets and downloaded GGUF converters.
+- **Default**: Unset (`None`); datasets use `~/.cache/auto_round`, while GGUF converters use `~/.cache/auto-round`.
+- **Usage**: Dataset caches are stored under `$AR_CACHE/datasets`, and GGUF converters under `$AR_CACHE/gguf_conversion`. This does not change `AR_WORK_SPACE`.
+
+```bash
+export AR_CACHE=/path/to/cache
+```
+
+### AR_GGUF_AUTO_UPDATE
+- **Description**: Allows downloading a newer llama.cpp converter when the bundled converter does not support a model.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"`, or `"on"` (case-insensitive) enable it; other values disable it.
+- **Usage**: Enable to allow automatic converter downloads; downloaded files use the GGUF converter cache.
+
+```bash
+export AR_GGUF_AUTO_UPDATE=1
+```
+
 ### AR_DISABLE_OFFLOAD
 - **Description**: Forcibly disables the weight offloading feature in `OffloadManager`. Useful during development and debugging to skip all offload/reload overhead.
 - **Default**: `False` (equivalent to `"0"`)

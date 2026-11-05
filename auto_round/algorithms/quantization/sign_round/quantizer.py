@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import math
 import time as _ptime
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -25,7 +26,7 @@ from auto_round.algorithms.quantization.base import BaseQuantizer
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 from auto_round.algorithms.quantization.sign_round.lfq import LFQMixin
 from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_quantizer
 from auto_round.compressors.utils import (
     IndexSampler,
     collect_best_params,
@@ -95,14 +96,14 @@ from auto_round.utils import (
 )
 from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
-from auto_round.utils.distributed import all_reduce_loss, make_index_sampler, setup_ddp_if_needed_
 from auto_round.wrapper import WrapperLinear, unwrapper_layer, wrapper_block
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import BlockContext
+    from auto_round.parallel.execution import ParallelCapabilities
 
 
-@register_pipeline_member(SignRoundConfig)
+@register_quantizer(SignRoundConfig)
 class SignRoundQuantizer(LFQMixin, BaseQuantizer):
 
     def __init__(self, config: SignRoundConfig) -> None:
@@ -129,6 +130,22 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         self.enable_qad = getattr(config, "enable_qad", False)
 
         self.optimizer = self._get_optimizer(optimizer=config.optimizer)
+        lora_rank = getattr(config, "qad_lora_rank", getattr(config, "lora_rank", 0))
+        if (
+            lora_rank > 0
+            and self.iters > 0
+            and getattr(config, "qad_enable_round_tuning", True)
+            and isinstance(self.optimizer, type)
+            and issubclass(self.optimizer, SignSGD)
+        ):
+            alternative = "--qad_optimizer adamw" if self.enable_qad else "--enable_adam"
+            logger.warning_once(
+                "LoRA rounding with SignSGD is not recommended: sign-only updates discard gradient magnitudes "
+                "for the low-rank factors. Prefer Adam/AdamW and a suitable learning rate "
+                f"(e.g. `{alternative}`). Adam/AdamW requires substantially more optimizer-state GPU memory "
+                "than SignSGD because it stores two moment tensors per trainable parameter. "
+                "The selected optimizer is unchanged."
+            )
         self.wrapper_block = wrapper_block
         # Kept for per-layer (mixed-bit) lr resolution during tuning.
         self._config = config
@@ -136,6 +153,51 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         self.minmax_lr_is_auto = getattr(config, "minmax_lr_is_auto", False)
         # Emit the low-bit lr notice at most once across all blocks/layers.
         self._logged_low_bit_lr = False
+
+    def _configure_lora_scaling(self, module: torch.nn.Module, optimizer: torch.optim.Optimizer) -> None:
+        """Bound the new SignSGD rounding offset by +/-4 over the tuning budget.
+
+        This bounds s * B @ A, not any frozen offset from an earlier stage.
+        Explicit alpha and non-SignSGD optimizers retain their existing scaling.
+
+        Args:
+            module (torch.nn.Module): Module containing LoRA-enabled rounding wrappers to update.
+            optimizer (torch.optim.Optimizer): Optimizer whose learning-rate budget bounds the offset.
+        """
+        if not isinstance(optimizer, SignSGD) or self.iters <= 0:
+            return
+        wrappers = [
+            m
+            for m in module.modules()
+            if isinstance(m, WrapperLinear) and hasattr(m, "lora_A") and m.lora_alpha is None
+        ]
+        if not wrappers:
+            return
+        if self.lr_scheduler is not None:
+            logger.warning_once(
+                "Automatic SignSGD LoRA scaling requires the default linear scheduler; "
+                "keeping unit scaling. Set lora_alpha explicitly for a custom scheduler."
+            )
+            return
+        # optimizer.step() precedes scheduler.step(): the T used learning rates
+        # are lr * (1 - t/T), t=0,...,T-1, whose sum is lr * (T+1)/2.
+        budgets = {
+            id(p): float(group["lr"]) * (self.iters + 1) / 2
+            for group in optimizer.param_groups
+            for p in group["params"]
+        }
+        for wrapper in wrappers:
+            budget_a = budgets.get(id(wrapper.lora_A), 0.0)
+            budget_b = budgets.get(id(wrapper.lora_B), 0.0)
+            # Each sign update moves a factor element by at most its lr.
+            # Include initialization, rather than assuming both factors start
+            # at zero (which would prevent either factor from learning).
+            a0 = wrapper.lora_A.detach().abs().amax().item()
+            b0 = wrapper.lora_B.detach().abs().amax().item()
+            bound = wrapper.lora_rank * (a0 + budget_a) * (b0 + budget_b)
+            if bound > 0 and math.isfinite(bound):
+                wrapper.lora_scaling = 4.0 / bound
+                wrapper.qad_lora_scaling = wrapper.lora_scaling
 
     def _maybe_log_low_bit_lr(self, bits) -> None:
         """Log once when low-bit (<=3) layers get the higher 2.0/iters lr."""
@@ -146,47 +208,19 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             self._logged_low_bit_lr = True
 
     def dispatch_block(self, block, input_ids, input_others):
-        """Multi-GPU aware block dispatch for SignRound tuning.
+        """Use the same placement contract for local, PP-placement and TP runs."""
+        return super().dispatch_block(block, input_ids, input_others)
 
-        Stores _card_0_in_high_risk and _loss_device on self for use in quantize_block.
-        Returns the block after device placement.
+    @classmethod
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Declare support for shard-local SignRound tuning.
+
+        Returns:
+            ParallelCapabilities: Capabilities enabling TP and pipeline placement.
         """
-        from auto_round.utils import is_auto_device_mapping
+        from auto_round.parallel.execution import ParallelCapabilities
 
-        if (
-            is_auto_device_mapping(device_manager.device_map)
-            and len(device_manager.device_list) > 1
-            and not self.model_context.is_diffusion
-        ):
-            from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
-
-            card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                block,
-                device_manager.device_list,
-                input_ids,
-                self.compress_context.low_gpu_mem_usage,
-                self.calibration_context.batch_size,
-                device_manager.device,
-            )
-            if len(device_manager.device_list) > 1:
-                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-                for _n, _mod in block.named_modules():
-                    if len(list(_mod.children())) != 0 or not hasattr(_mod, "tuning_device"):
-                        continue
-                    add_hook_to_module(_mod, AlignDevicesHook(_mod.tuning_device, io_same_device=True), True)
-        else:
-            from auto_round.utils.model import move_to_device_preserving_cpu_pinned, place_ngram_embeddings_for_tuning_
-
-            # Honor AR_NGRAM_DEVICE even on a single GPU (default keeps the table on CPU and
-            # logs a hint); this also surfaces the ngram size / placement info to the user.
-            place_ngram_embeddings_for_tuning_(block)
-            block = move_to_device_preserving_cpu_pinned(block, device_manager.device)
-            card_0_in_high_risk, loss_device = False, device_manager.device
-
-        self._card_0_in_high_risk = card_0_in_high_risk
-        self._loss_device = loss_device
-        return block
+        return ParallelCapabilities(tensor_parallel=True)
 
     def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
         current_tensors = [tensor[i] for i in indices]
@@ -359,6 +393,8 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
             enable_neuqi=getattr(self.config, "enable_neuqi", False),
+            lora_rank=getattr(self.config, "lora_rank", 0),
+            lora_alpha=getattr(self.config, "lora_alpha", None),
         )
         _perf.stop("wrap")
         _perf.start("prepare")
@@ -421,6 +457,14 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
 
+        self._configure_lora_scaling(block, optimizer)
+
+        from auto_round.parallel.dp.spmd import current_rank
+
+        rank = current_rank()
+        if rank is not None:
+            rank.synchronize_lora(block)
+
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max
         num_elm = 1
@@ -445,8 +489,8 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             if isinstance(active_inputs, list):  # dict for diffusion, tricky setting, not sure whether it's correct
                 num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
 
-        block, sync_gradients = setup_ddp_if_needed_(self, block, device_manager.device_list)
-        index_sampler = make_index_sampler(nsamples, global_batch_size)
+        block, sync_gradients = self.parallel.prepare_gradients(self, block)
+        index_sampler = self.parallel.index_sampler(nsamples, global_batch_size)
         block_fwd = self.block_forward
 
         # When low_gpu_mem_usage is enabled, active_inputs / fp_outputs are intentionally
@@ -564,7 +608,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                         m.cur_iter = i
                 total_loss = 0
                 _perf.start("sampler")
-                global_indices = index_sampler.next_batch()
+                global_indices = self.parallel.sample_indices(index_sampler)
                 if valid_token_mask:
                     num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
                 _perf.stop("sampler")
@@ -654,7 +698,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                         # clear memory to avoid OOM due to memory fragmentation
                         clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
 
-                total_loss = all_reduce_loss(total_loss, num_elm)
+                total_loss = self.parallel.reduce_loss(total_loss, num_elm)
                 if i == 0:
                     init_loss = total_loss
                 current_lr = optimizer.param_groups[0]["lr"]
@@ -763,6 +807,14 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             )
             return
 
+        from auto_round.parallel.tp.runtime import is_dtensor
+
+        if is_dtensor(layer.weight):
+            raise NotImplementedError(
+                "Calibrated outside-block tuning does not support DTensor weights yet; "
+                "keep this layer unquantized or use RTN without calibration inputs."
+            )
+
         # Derive valid_token_mask from raw token IDs when not supplied by caller.
         # Reuse the cached mask if already computed by a previous block.
         valid_token_mask = None
@@ -785,6 +837,8 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             enable_torch_compile=self.compress_context.enable_torch_compile,
             device=device,
             enable_neuqi=getattr(self.config, "enable_neuqi", False),
+            lora_rank=getattr(self.config, "lora_rank", 0),
+            lora_alpha=getattr(self.config, "lora_alpha", None),
         ).to(device)
         round_params = []
         minmax_params = []
@@ -792,7 +846,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             if "min" in key or "max" in key:
                 minmax_params.append(wrapper_linear.params[key])
             else:
-                round_params.append(wrapper_linear.value)
+                round_params.append(wrapper_linear.params[key])
         if len(round_params) + len(minmax_params) <= 0:
             dump_info = f"quantized {layer_name}"
             logger.info(dump_info)
@@ -825,6 +879,7 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             )
         else:
             lr_schedule = copy.deepcopy(self.lr_scheduler)
+        self._configure_lora_scaling(wrapper_linear, optimizer)
         nsamples = len(fp_inputs)
         last_best_iter = 0
         best_loss = torch.finfo(torch.float).max

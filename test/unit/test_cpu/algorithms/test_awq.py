@@ -974,7 +974,7 @@ class TestAWQUseV2ScaleSearch:
 
         q = self._awq_transform()
         compressor = self._make_compressor(RTNConfig(disable_opt_rtn=True))
-        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
+        assert q._qdq_tool._quantizer_is_signroundv2(compressor) is False
 
     def test_use_v2_false_for_non_v2_block(self):
         """Gate is False when the block is not SignRoundV2, regardless of dtype."""
@@ -984,7 +984,7 @@ class TestAWQUseV2ScaleSearch:
         block = SignRoundConfig(iters=1)
         block.data_type = "mx_fp"
         compressor = self._make_compressor(block)
-        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is False
+        assert q._qdq_tool._quantizer_is_signroundv2(compressor) is False
 
     def test_v2_scale_search_policy(self):
         """AWQ policy changes internal QDQ without disabling the intrinsic terminal V2 extension."""
@@ -1283,7 +1283,7 @@ class TestAWQUseV2ScaleSearch:
 
         compressor = self._make_compressor(self._signroundv2_config(data_type="mx_fp"))
 
-        assert q._qdq_tool._block_quantizer_is_signroundv2(compressor) is True
+        assert q._qdq_tool._quantizer_is_signroundv2(compressor) is True
 
     def test_init_scale_dispatch_by_data_type(self):
         """``search_optimized_init_scale`` injects only for sym int/mx/nv."""

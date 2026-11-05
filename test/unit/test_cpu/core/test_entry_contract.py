@@ -18,6 +18,34 @@ from auto_round import autoround
 from auto_round.autoround import _split_entry_kwargs
 
 
+def test_alg_configs_annotation_covers_supported_inputs():
+    from typing import get_type_hints
+
+    from auto_round.algorithms.quantization.config import QuantizationConfig
+    from auto_round.algorithms.transforms.base import BaseRotationConfig
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+    from auto_round.compressors.base import BaseCompressor
+
+    hints = get_type_hints(
+        autoround.AutoRound.__new__,
+        localns={
+            "QuantizationConfig": QuantizationConfig,
+            "BaseRotationConfig": BaseRotationConfig,
+            "AutoScheme": AutoScheme,
+            "BaseCompressor": BaseCompressor,
+        },
+    )
+    expected = (
+        str
+        | QuantizationConfig
+        | BaseRotationConfig
+        | list[str | QuantizationConfig | BaseRotationConfig]
+        | tuple[str | QuantizationConfig | BaseRotationConfig, ...]
+        | None
+    )
+    assert hints["alg_configs"] == expected
+
+
 @pytest.mark.parametrize("scheme", ["MXFP4", "MXFP6", "MXFP8", "MXFP4_RCEIL", "MXFP8_RCEIL", "MXINT4", "NVFP4"])
 @pytest.mark.parametrize("disable_opt_rtn", [None, False, True])
 def test_mx_nv_opt_rtn_imatrix_routing(scheme, disable_opt_rtn):

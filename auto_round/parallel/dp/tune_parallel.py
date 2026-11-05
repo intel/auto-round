@@ -24,14 +24,14 @@ import time as _ptime
 
 import torch
 
-from auto_round.algorithms.parallel.data_parallel import (
+from auto_round.logger import logger
+from auto_round.parallel.dp.engine import (
     ENGINE_CALIBRATION_STATS,
     _quantizer_policy,
     distribute_pool,
     resolve_tune_ddp_plan_,
     sharded_nograd_forward,
 )
-from auto_round.logger import logger
 
 
 class _null_scope:
@@ -93,7 +93,7 @@ class TuneParallelContext:
             logger.warning("[tune-ddp] collection sharding declined: cannot resolve the block home device (%s)", e)
             return ctx
         try:
-            plan = resolve_tune_ddp_plan_(composer.block_quantizer, block, fp_inputs, None, home, log=False)
+            plan = resolve_tune_ddp_plan_(composer.active_quantizer, block, fp_inputs, None, home, log=False)
         except RuntimeError:
             # the resolver raises when a requested world is ineligible
             # (requirement semantics) -- let it propagate: silently continuing
@@ -103,7 +103,7 @@ class TuneParallelContext:
             logger.warning("[tune-ddp] collection sharding declined: resolver unreachable (%s)", e)
             return ctx
         ctx.devices = plan.devices if plan.world > 1 else None
-        ctx.collect_forward_cap = _quantizer_policy(composer.block_quantizer).collect_forward_cap
+        ctx.collect_forward_cap = _quantizer_policy(composer.active_quantizer).collect_forward_cap
         return ctx
 
     def distribute_pools(self, fp_inputs, q_inputs) -> None:
@@ -180,7 +180,7 @@ class TuneParallelContext:
             # stays serial
             if n >= world:
                 if self.pool is None:
-                    from auto_round.algorithms.parallel.data_parallel import MirrorPool
+                    from auto_round.parallel.dp.engine import MirrorPool
 
                     _t0 = _ptime.perf_counter()
                     self.pool = MirrorPool(block, self.devices)
@@ -213,7 +213,7 @@ class TuneParallelContext:
         any single pass's forward eligibility): the searches and the tune
         consume it even when a collection pass fell back serial."""
         if self.pool is None and self.devices and len(self.devices) >= 2:
-            from auto_round.algorithms.parallel.data_parallel import MirrorPool
+            from auto_round.parallel.dp.engine import MirrorPool
 
             _t0 = _ptime.perf_counter()
             self.pool = MirrorPool(block, self.devices)
