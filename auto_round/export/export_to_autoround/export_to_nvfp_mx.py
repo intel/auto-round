@@ -24,7 +24,7 @@ import torch.nn as nn
 import transformers
 from tqdm import tqdm
 
-from auto_round.compressors.utils import is_mx_fp, is_nv_fp
+from auto_round.compressors.utils import is_mx_fp
 from auto_round.export.export_to_autoround.utils import check_neq_config
 from auto_round.export.utils import (
     filter_quantization_config,
@@ -34,7 +34,7 @@ from auto_round.export.utils import (
     save_pretrained_artifact,
 )
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
+from auto_round.schemes import QuantizationScheme, needs_nvfp_global_scale
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
     check_start_with_block_name,
@@ -77,13 +77,13 @@ def pack_layer(name, model, backend, device=None):
     group_size = layer.group_size
     sym = layer.sym
 
-    if is_nv_fp(act_data_type) and act_bits <= 8:
+    if needs_nvfp_global_scale(act_data_type) and act_bits <= 8:
         input_global_scale = getattr(layer, "input_global_scale", None)
         if input_global_scale is None:
             assert hasattr(layer, "act_max")
-            from auto_round.data_type.nvfp import calculate_gparam
+            from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-            input_global_scale = calculate_gparam(layer.act_max, layer.group_size, "cpu")
+            input_global_scale = calculate_gparam_by_dtype(layer.act_max, act_data_type, layer.group_size, "cpu")
             layer.input_global_scale = input_global_scale
             delattr(layer, "act_max")
 
@@ -189,7 +189,7 @@ def save_quantized_as_fp(
                 orig_layer = m.orig_layer
                 set_module(model, n, orig_layer)
 
-    if is_nv_fp(act_data_type) and "static_gs" in str(act_data_type).lower():
+    if needs_nvfp_global_scale(act_data_type or "") and "static_gs" in str(act_data_type).lower():
         # Ensure all MOE layers have act_max set (needed after deep copy or for uncalibrated layers)
         from auto_round.utils.model import is_moe_model, set_amax_for_all_moe_layers
 
@@ -202,9 +202,12 @@ def save_quantized_as_fp(
                 layer = m
                 if hasattr(layer, "act_bits") and layer.act_bits < 8 and not getattr(layer, "input_global_scale", None):
                     assert hasattr(layer, "act_max")
-                    from auto_round.data_type.nvfp import calculate_gparam
+                    from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-                    input_global_scale = calculate_gparam(layer.act_max, layer.group_size, model.device)
+                    layer_act_data_type = getattr(layer, "act_data_type", None) or act_data_type
+                    input_global_scale = calculate_gparam_by_dtype(
+                        layer.act_max, layer_act_data_type, layer.group_size, model.device
+                    )
                     layer.input_global_scale = input_global_scale
                     delattr(layer, "act_max")
         # update fused input_global_scale

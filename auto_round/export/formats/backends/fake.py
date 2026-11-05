@@ -23,7 +23,7 @@ import torch
 
 from auto_round.export.formats.base import OutputFormat
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme, is_nv_fp
+from auto_round.schemes import QuantizationScheme, needs_nvfp_global_scale
 from auto_round.utils import unsupported_meta_device
 
 
@@ -101,7 +101,10 @@ def _rewrite_saved_weights_without_orig_layer(output_dir: str) -> None:
 def _materialize_fake_input_global_scales(model: torch.nn.Module) -> None:
     """Persist calibrated NVFP activation scales in fake-format checkpoints."""
     for layer in model.modules():
-        if not is_nv_fp(getattr(layer, "act_data_type", "") or "") or "input_global_scale" in layer._buffers:
+        if (
+            not needs_nvfp_global_scale(getattr(layer, "act_data_type", "") or "")
+            or "input_global_scale" in layer._buffers
+        ):
             continue
         input_global_scale = getattr(layer, "input_global_scale", None)
         if not isinstance(input_global_scale, torch.Tensor):

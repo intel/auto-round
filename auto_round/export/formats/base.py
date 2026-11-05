@@ -56,6 +56,7 @@ class BackendDataType(str, Enum):
     MXFP4 = "mxfp4"
     NVFP4 = "nvfp4"
     NVFP4_E5M3 = "nvfp4_v2"
+    NVFP4_E5M3_GS = "nvfp4_v2_gs"
     FP8 = "fp8"
     MX_FP = "mx_fp"
     NV_FP = "nv_fp"

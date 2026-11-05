@@ -189,6 +189,21 @@ def is_mx_int(backend: str) -> bool:
     return BackendDataType.MX_INT in backend.lower()
 
 
+def is_nvfp4_e5m3_gs(backend: str) -> bool:
+    """NVFP4 E5M3 with per-tensor global scale (``nvfp4_v2_gs`` / ``nvfp4_v2_with_static_gs``)."""
+    backend = backend.lower()
+    return "nvfp4_v2" in backend and backend.endswith("_gs")
+
+
+def is_nvfp4_e5m3_family(backend: str) -> bool:
+    return "nvfp4_v2" in backend.lower()
+
+
+def needs_nvfp_global_scale(backend: str) -> bool:
+    """Whether the data type uses NVFP-style per-tensor weight/input global scales."""
+    return is_nv_fp(backend) or is_nvfp4_e5m3_gs(backend)
+
+
 def is_standard_fp(backend: str) -> bool:
     backend = backend.lower()
     return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
@@ -364,12 +379,6 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
 
     if name not in PRESET_SCHEMES:
         raise KeyError(f"Unknown preset scheme name {name}, " f"available names: {list(PRESET_SCHEMES.keys())}")
-
-    if name == "INT8_W8A8":
-        logger.warning_once(
-            "The 'INT8_W8A8' scheme name is deprecated and will be removed in a future release. "
-            "Please use 'INT8' instead."
-        )
 
     scheme_args = deepcopy(PRESET_SCHEMES[name])
     return scheme_args
@@ -785,6 +794,19 @@ NVFP4_E5M3 = QuantizationScheme.from_dict(
     }
 )
 
+NVFP4_E5M3_GS = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 16,
+        "data_type": "nvfp4_v2_gs",
+        "act_bits": 4,
+        "act_data_type": "nvfp4_v2_with_static_gs",
+        "act_group_size": 16,
+        "act_sym": True,
+        "act_dynamic": True,
+    }
+)
+
 FPW8A16 = QuantizationScheme.from_dict(
     {
         "bits": 8,
@@ -895,6 +917,7 @@ PRESET_SCHEMES = {
     "MXFP8_RCEIL": MXFP8_RCEIL,
     "NVFP4": NVFP4,
     "NVFP4_E5M3": NVFP4_E5M3,
+    "NVFP4_E5M3_GS": NVFP4_E5M3_GS,
     "FPW8A16": FPW8A16,
     # Group-size variants for the 2-8 bit int presets: the bare presets default
     # to group_size 128; these finer-group variants allow per-layer group-size

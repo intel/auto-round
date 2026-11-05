@@ -32,6 +32,7 @@
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
+
 ---
 <div align="left">
 
@@ -48,6 +49,10 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 
 ## 🆕 最新进展
+
+* [WIP] 对于 4 bit 及以上的量化，我们目前建议采用 75% UltraChat + 25% OpenCode 的混合数据集，以提升模型的推理能力和 Agentic 任务能力。使用默认配置 nsamples=128 时，请指定 --dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"。详情请参阅校准数据集[文档](./docs/calibration_acc.md)。待评测全部完成后，我们将更新默认校准数据集。
+
+* [2026/10] 我们现在展示：**W2A16** 的精度会随着调优成本的增加而稳步提升。详细精度数据见 [W2A16 精度数据](./docs/alg_202508.md)。
 
 * [2026/09] 我们将 MoE量化速度提升了 3 倍以上，并显著降低了 RAM 使用量。详细结果请参阅[文档](./docs/moe.md)。请注意，该优化可能会引入一些回归问题或其他问题。
 
@@ -73,11 +78,11 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 * [2026/03] 支持**MTP层量化** 
  
-* [2025/12] 发布 **SignRoundV2** 论文。如果要复现论文成果，可启用 `enable_alg_ext`，并使用 **AutoScheme** API 对模型进行混合精度量化。相关链接：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评估说明*](./docs/alg_202508.md)。
+* [2025/12] 发布 **SignRoundV2** 论文。如果要复现论文成果，可启用算法扩展（`--algorithm auto_round_v2`，原 `enable_alg_ext`），并使用 **AutoScheme** API 对模型进行混合精度量化。相关链接：[*论文*](http://arxiv.org/abs/2512.04746)，[*LLaMA 模型评估说明*](./docs/alg_202508.md)。
 
 * [2025/11] **LLM-Compressor** 已支持 AutoRound 算法。相关链接：[*使用方法*](https://github.com/vllm-project/llm-compressor/tree/main/examples/autoround/README.md)，[*vLLM 博客*](https://blog.vllm.ai/2025/12/09/intel-autoround-llmc.html)，[*RedHat 博客*](https://developers.redhat.com/articles/2025/12/09/advancing-low-bit-quantization-llms-autoround-x-llm-compressor)，[*X 推文*](https://x.com/vllm_project/status/1998710451312771532)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Products-and-Solutions/HPC/Advancing-Low-Bit-Quantization-for-LLMs-AutoRound-x-LLM/post/1729336)，[*LinkedIn*](https://www.linkedin.com/posts/vllm-project_advancing-lowbit-quantization-for-llms-activity-7404478053768441856-ru8f/?utm_source=share&utm_medium=member_desktop&rcm=ACoAAAapNW8BLnAdCAr57GOwSCJXjf76ZvOEOAg)，[*微信*](https://mp.weixin.qq.com/s/l5WA-1_4ipffQN6GOH2Iqg)，[*知乎*](https://zhuanlan.zhihu.com/p/1982167638315664412)。
 
-* [2025/11] 推出 **增强版 GGUF** 量化算法，启用 `--enable_alg_ext` 即可。相关链接：[*Accuracy*](./docs/gguf_alg_ext_acc.md)。
+* [2025/11] 推出 **增强版 GGUF** 量化算法，启用算法扩展（`--algorithm auto_round_v2`，原 `--enable_alg_ext`）即可。相关链接：[*Accuracy*](./docs/gguf_alg_ext_acc.md)。
 
 * [2025/10] **SGLang** 已集成 AutoRound。相关链接：[*使用方法*](https://docs.sglang.io/advanced_features/quantization.html#using-auto-round)，[*LMSYS 博客*](https://lmsys.org/blog/2025-11-13-AutoRound/)，[*X 推文*](https://x.com/lmsysorg/status/1991977019220148650?s=20)，[*Intel 博客*](https://community.intel.com/t5/Blogs/Tech-Innovation/Artificial-Intelligence-AI/AutoRound-Meets-SGLang-Enabling-Quantized-Model-Inference-with/post/1727196)，[*LinkedIn*](https://www.linkedin.com/feed/update/urn:li:activity:7397742859354857472)。
 
@@ -85,7 +90,7 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 * [2025/09] 新增对 **MXFP4** 和 **NVFP4** 数据类型的支持。相关链接：[*Accuracy*](./docs/mxnv_acc.md)。
 
-* [2025/08] 提供 **改进版 INT2** 算法，启用 `--enable_alg_ext` 即可。相关链接：[*Accuracy*](./docs/alg_202508.md)。
+* [2025/08] 提供 **改进版 INT2** 算法，启用算法扩展（`--algorithm auto_round_v2`，原 `--enable_alg_ext`）即可。相关链接：[*Accuracy*](./docs/alg_202508.md)。
 
 * [2025/07] 新增 **GGUF** 格式导出。相关链接：[*使用方法*](./docs/step_by_step.md#gguf-format)。
 
@@ -114,6 +119,8 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 ✅ **支持十余种 VLM 模型**  已支持十余种视觉语言模型，让用户有“开盖即食”般的量化体验。详见：[示例模型](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa)，[支持矩阵](https://github.com/intel/auto-round/tree/main/auto_round/compressors/mllm#vlm-support-matrix)
 
 ✅ **多种量化方案可选**  提供 `auto-round-best`​、`auto-round`​、`auto-round-light`​、`auto-round-opt-rtn`（优化版 RTN）以及 `auto-round-rtn`（原始 RTN，最快基线）等多种预设方案，能够满足多样化需求。详见：[量化方案](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+
+Python 可通过 `AutoRound(..., recipe="auto-round-best")` 使用同一方案，CLI 可使用 `--recipe auto-round-best`。不传 recipe 默认选择 `auto-round`，已有命令保留为快捷入口。详见[内置 Recipe 与覆盖规则](./docs/recipes_CN.md)。
 
 ✅ **实用额外特性** 支持[多 GPU 量化](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization)和[多标定数据集](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset)，并兼容[十余种推理后端](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend)。
 
@@ -221,7 +228,10 @@ auto-round-fast \
 
 </details>
 
-小结：对于 ​**W4A16 量化，我们建议使用默认的 auto-round；而 W2A16 量化我们则推荐启用 ​`enable_alg_ext`​ 参数的 auto-round-best​**。当然，您也可以根据自身需求和手头上的算力灵活调整配置。
+小结：对于 ​**W4A16 量化，我们建议使用默认的 auto-round；而 W2A16 量化我们则推荐启用 ​`--algorithm auto_round_v2`​ 的 auto-round-best​**。当然，您也可以根据自身需求和手头上的算力灵活调整配置。
+
+> [!TIP]
+> 对于 **INT2（W2A16）**，精度会随着调优成本的增加而稳步提升。增大 `--iters`（例如 1000 → 2000）、`--nsamples`、`--seqlen` 等参数，或改用带 `--enable_alg_ext` 的 `auto-round-best` 配方，都能以额外的调优时间换取持续更高的精度。随着校准数据量的增大（更大的 `--nsamples`/`--seqlen`），将学习率提高到 `4.0/iters`（例如 `--iters 1000` 时取 `4e-3`）通常会有帮助。详细结果请参阅 [W2A16 精度数据](./docs/alg_202508.md)。
 
 ### API 用法
 
@@ -259,9 +269,9 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### 算法相关设置
 
-- ​**​`enable_alg_ext`​**​（bool）：[实验性功能] 仅在 `iters > 0`​ 时生效。在特定 scheme（如 MXFP4 / W2A16）下启用算法扩展，可显著提升量化效果。默认值为 `False`。
-- **`alg_configs`**（str | Config | list）：选择一个或多个算法，例如 `"awq"`、`"auto_round"` 或 `['auto_round', 'quarot']`。预处理算法按照列表顺序执行，block quantizer 始终最后执行。算法专用参数可以通过对应的 config 对象传入，例如 `SignRoundConfig(iters=50)`。
-- ​**​`disable_opt_rtn`​**​（bool | None）：是否对特定方案（如 GGUF 与权重量化方案）禁用优化的 RTN 模式。优化的 RTN 模式需要标定数据和更多的算力来提升精度。默认值为 `None`：在大多数情况下，为提升精度，算法会自动采用优化的 RTN 模式（即 `False`）；仅在已知存在兼容性问题时，才会自动禁用（即 `True`）
+- ​**​`enable_alg_ext`​**​（bool）：[已弃用] 请改用 `auto_round_v2` 算法。[实验性功能] 仅在 `iters > 0`​ 时生效。在特定 scheme（如 MXFP4 / W2A16）下启用算法扩展，可显著提升量化效果。默认值为 `False`。
+- **`alg_configs`**（str | Config | list）：选择一个或多个算法，例如 `"awq"`、`"auto_round"`、`"auto_round_v2"`、`"rtn"`、`"opt-rtn"` 或 `['auto_round', 'quarot']`。预处理算法按照列表顺序执行，block quantizer 始终最后执行。算法专用参数可以通过对应的 config 对象传入，例如 `SignRoundConfig(iters=50)`。
+- ​**​`disable_opt_rtn`​**​（bool | None）：是否对特定方案（如 GGUF 与权重量化方案）禁用优化的 RTN 模式。优化的 RTN 模式需要标定数据和更多的算力来提升精度。默认值为 `None`：在大多数情况下，为提升精度，算法会自动采用优化的 RTN 模式（即 `False`）；仅在已知存在兼容性问题时，才会自动禁用（即 `True`）。算法名 `rtn` 表示纯 RTN，`opt-rtn` 表示优化 RTN，命令行（`--algorithm rtn`）与 Python API（`alg_configs="rtn"`）一致；算法名优先于该开关。
 
 
 
@@ -275,7 +285,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### 标定数据集
 
 - ​**​`dataset`​**​（str | list | tuple | DataLoader）：量化中用于校准的数据集（默认 `"NeelNanda/pile-10k"`​）。支持本地 JSON 文件和数据集组合使用，如 `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`。
-- I2V 标定默认使用与 COCO2014 caption 配对的真实图片。采样前会关联 COCO 官方元数据，仅保留知识共享署名 2.0（CC BY 2.0，license ID 4）图片；筛选后的清单会保留许可证和 Flickr 来源 URL。清单和选中的图片均缓存在 `~/.cache/auto_round/datasets/coco2014`；设置 `AUTO_ROUND_CACHE` 后则缓存在 `$AUTO_ROUND_CACHE/datasets/coco2014`。T2V 仍只在内存中解析 caption 清单，不使用该缓存。也可使用包含 `id`、`caption` 和 `image` 列的本地 TSV；`image` 支持绝对路径或相对于 TSV 的路径。
+- I2V 标定默认使用与 COCO2014 caption 配对的真实图片。采样前会关联 COCO 官方元数据，仅保留知识共享署名 2.0（CC BY 2.0，license ID 4）图片；筛选后的清单会保留许可证和 Flickr 来源 URL。清单和选中的图片均缓存在 `~/.cache/auto_round/datasets/coco2014`；设置 `AR_CACHE` 后则缓存在 `$AR_CACHE/datasets/coco2014`。T2V 仍只在内存中解析 caption 清单，不使用该缓存。也可使用包含 `id`、`caption` 和 `image` 列的本地 TSV；`image` 支持绝对路径或相对于 TSV 的路径。
 - ​**​`nsamples`​**​（int）：校准时使用的样本数（默认 `128`）。
 - ​**​`seqlen`​**​（int）：每条样本在校准时使用 token 的序列长度（默认 `2048`）。
 

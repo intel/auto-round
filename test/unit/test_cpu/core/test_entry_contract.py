@@ -18,6 +18,34 @@ from auto_round import autoround
 from auto_round.autoround import _split_entry_kwargs
 
 
+def test_alg_configs_annotation_covers_supported_inputs():
+    from typing import get_type_hints
+
+    from auto_round.algorithms.quantization.config import QuantizationConfig
+    from auto_round.algorithms.transforms.base import BaseRotationConfig
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+    from auto_round.compressors.base import BaseCompressor
+
+    hints = get_type_hints(
+        autoround.AutoRound.__new__,
+        localns={
+            "QuantizationConfig": QuantizationConfig,
+            "BaseRotationConfig": BaseRotationConfig,
+            "AutoScheme": AutoScheme,
+            "BaseCompressor": BaseCompressor,
+        },
+    )
+    expected = (
+        str
+        | QuantizationConfig
+        | BaseRotationConfig
+        | list[str | QuantizationConfig | BaseRotationConfig]
+        | tuple[str | QuantizationConfig | BaseRotationConfig, ...]
+        | None
+    )
+    assert hints["alg_configs"] == expected
+
+
 @pytest.mark.parametrize("scheme", ["MXFP4", "MXFP6", "MXFP8", "MXFP4_RCEIL", "MXFP8_RCEIL", "MXINT4", "NVFP4"])
 @pytest.mark.parametrize("disable_opt_rtn", [None, False, True])
 def test_mx_nv_opt_rtn_imatrix_routing(scheme, disable_opt_rtn):
@@ -108,7 +136,12 @@ def test_cli_awq_rtn_opt_policy():
     cases = [
         (Namespace(algorithm="awq", iters=200, disable_opt_rtn=True), ["AWQConfig", "RTNConfig"], [True, True]),
         (Namespace(algorithm="awq", iters=200, disable_opt_rtn=None), ["AWQConfig", "RTNConfig"], [True, True]),
-        (Namespace(algorithm="awq,rtn", iters=200, disable_opt_rtn=False), ["AWQConfig", "RTNConfig"], [False, False]),
+        (
+            Namespace(algorithm="awq", iters=200, disable_opt_rtn=False),
+            ["AWQConfig", "RTNConfig"],
+            [False, False],
+        ),
+        (Namespace(algorithm="awq,rtn", iters=200, disable_opt_rtn=False), ["AWQConfig", "RTNConfig"], [False, True]),
     ]
 
     for args, expected_types, expected_disable_opt_rtn in cases:
@@ -118,7 +151,7 @@ def test_cli_awq_rtn_opt_policy():
         assert [config.disable_opt_rtn for config in configs] == expected_disable_opt_rtn
 
 
-def test_cli_rtn_inherits_built_awq_config_without_mutating_args(monkeypatch):
+def test_cli_named_rtn_selects_plain_path_without_mutating_args(monkeypatch):
     from argparse import Namespace
 
     from auto_round.algorithms.registry import get_algorithm_entry
@@ -131,6 +164,6 @@ def test_cli_rtn_inherits_built_awq_config_without_mutating_args(monkeypatch):
     configs = AlgorithmHandler.build_configs(args, {})
 
     assert [type(config).__name__ for config in configs] == ["RTNConfig", "AWQConfig"]
-    assert configs[0].disable_opt_rtn is False
+    assert configs[0].disable_opt_rtn is True
     assert configs[1].disable_opt_rtn is False
     assert args.disable_opt_rtn is None
