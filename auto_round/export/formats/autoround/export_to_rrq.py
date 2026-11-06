@@ -285,6 +285,7 @@ def save_rrq_base_model(
     serialization_dict: dict | None = None,
     tokenizer=None,
     processor=None,
+    inplace: bool = True,
     safe_serialization: bool = True,
     **kwargs,
 ):
