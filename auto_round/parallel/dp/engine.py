@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Single-process data parallelism for the SignRound tuning loop.
+"""Shared single-process data-parallel calibration and tuning engine.
 
 Runs one block's iteration loop on the home GPU plus W-1 mirror replicas
 (persistent deep copies of the wrapped block). Per iteration the global
@@ -141,12 +141,13 @@ class ParallelTuneState:
     lane consumed that pool.
     """
 
-    __slots__ = ("plan", "pool", "pool_used")
+    __slots__ = ("engagement_logged", "plan", "pool", "pool_used")
 
     def __init__(self) -> None:
         self.plan: DDPPlan | None = None
         self.pool: MirrorPool | None = None
         self.pool_used: bool = False
+        self.engagement_logged: bool = False
 
 
 def parallel_state(quantizer, create: bool = False) -> ParallelTuneState | None:
@@ -355,7 +356,7 @@ def resolve_tune_ddp_plan_(quantizer, block, fp_inputs, fp_outputs, home, world=
 
     Returns the DDPPlan (world=1 => not engaged).
     """
-    from auto_round.utils.distributed import is_distributed
+    from auto_round.parallel.distributed import is_distributed
 
     _st = parallel_state(quantizer)
     cached = _st.plan if _st is not None else None

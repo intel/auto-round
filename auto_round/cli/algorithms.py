@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any, get_args, get_origin, get_type_hints
 
@@ -263,12 +264,18 @@ class AlgorithmHandler:
             _add_registered_arguments(group, registry)
 
     @classmethod
-    def _has_block_quantizer(cls, names) -> bool:
-        """Whether any algorithm in *names* is a terminal block quantizer.
+    def _has_quantizer(cls, names: Iterable[str]) -> bool:
+        """Whether any algorithm in *names* is a quantizer.
 
-        Block-quantization algorithms (rtn, auto_round, qad, …) already provide a
-        block quantizer, so the CLI must not append a default one. Preprocessors
+        Quantization algorithms (rtn, auto_round, qad, …) already provide a
+        quantizer, so the CLI must not append a default one. Preprocessors
         (awq, hadamard, svdquant, …) do not count.
+
+        Args:
+            names (Iterable[str]): Algorithm names or aliases to resolve in the registry.
+
+        Returns:
+            bool: Whether at least one resolved implementation subclasses BaseQuantizer.
         """
         from auto_round.algorithms.quantization.base import BaseQuantizer
         from auto_round.algorithms.registry import pipeline_member_for_config_class
@@ -285,8 +292,43 @@ class AlgorithmHandler:
 
     @classmethod
     def build_configs(cls, args, common_kwargs: dict[str, Any]) -> list:
-        raw = getattr(args, "algorithm", None) or ""
-        names = [name.strip().lower() for name in raw.split(",") if name.strip()]
+        raw = getattr(args, "alg_configs", None)
+        if raw is None:
+            raw = getattr(args, "algorithm", None)
+        plan = getattr(args, "_recipe_plan", None)
+        if plan is not None and raw is None:
+            from auto_round.autoround import _normalize_alg_configs
+
+            configs = []
+            explicit = args._explicit_fields
+            for stage, default_config in zip(plan.pipeline, plan.build_configs()):
+                registry = _parameter_registry(type(default_config))
+                overrides = {
+                    parameter.field: getattr(args, parameter.dest)
+                    for parameter in registry.parameters
+                    if parameter.dest in explicit and hasattr(args, parameter.dest)
+                }
+                if getattr(type(default_config), "cli_include_common_args", True):
+                    overrides.update({key: value for key, value in common_kwargs.items() if value is not None})
+                configs.append(stage.build_config(overrides))
+            direct = {"iters": args.iters} if "iters" in explicit else {}
+            if direct.get("iters") == 0:
+                rtn_cls = cls.get("rtn")
+                direct.update(
+                    {
+                        parameter.field: getattr(args, parameter.dest)
+                        for parameter in _parameter_registry(rtn_cls).parameters
+                        if parameter.dest in explicit and hasattr(args, parameter.dest)
+                    }
+                )
+            if "disable_opt_rtn" in explicit:
+                direct["disable_opt_rtn"] = args.disable_opt_rtn
+            if getattr(args, "rotation_hadamard_type", None):
+                rotation_cls = cls.get("hadamard")
+                configs.append(rotation_cls(**_parameter_registry(rotation_cls).config_kwargs(args)))
+            return _normalize_alg_configs(configs, direct)
+
+        names = [name.strip().lower() for name in (raw or "").split(",") if name.strip()]
 
         if getattr(args, "rotation_hadamard_type", None) and "hadamard" not in names:
             names.append("hadamard")
@@ -298,7 +340,7 @@ class AlgorithmHandler:
         # `opt-rtn` carries the plain-vs-optimized intent.
         explicit_names = set(canonical)
         seen = set(canonical)
-        if not cls._has_block_quantizer(canonical):
+        if not cls._has_quantizer(canonical):
             canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
             canonical = [_ITERS_ZERO_ALGORITHMS.get(name, name) for name in canonical]

@@ -32,6 +32,7 @@
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
+
 ---
 <div align="left">
 
@@ -118,6 +119,8 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 ✅ **支持十余种 VLM 模型**  已支持十余种视觉语言模型，让用户有“开盖即食”般的量化体验。详见：[示例模型](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa)，[支持矩阵](https://github.com/intel/auto-round/tree/main/auto_round/compressors/mllm#vlm-support-matrix)
 
 ✅ **多种量化方案可选**  提供 `auto-round-best`​、`auto-round`​、`auto-round-light`​、`auto-round-opt-rtn`（优化版 RTN）以及 `auto-round-rtn`（原始 RTN，最快基线）等多种预设方案，能够满足多样化需求。详见：[量化方案](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+
+Python 可通过 `AutoRound(..., recipe="auto-round-best")` 使用同一方案，CLI 可使用 `--recipe auto-round-best`。不传 recipe 默认选择 `auto-round`，已有命令保留为快捷入口。详见[内置 Recipe 与覆盖规则](./docs/recipes_CN.md)。
 
 ✅ **实用额外特性** 支持[多 GPU 量化](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization)和[多标定数据集](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset)，并兼容[十余种推理后端](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend)。
 
@@ -282,7 +285,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### 标定数据集
 
 - ​**​`dataset`​**​（str | list | tuple | DataLoader）：量化中用于校准的数据集（默认 `"NeelNanda/pile-10k"`​）。支持本地 JSON 文件和数据集组合使用，如 `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`。
-- I2V 标定默认使用与 COCO2014 caption 配对的真实图片。采样前会关联 COCO 官方元数据，仅保留知识共享署名 2.0（CC BY 2.0，license ID 4）图片；筛选后的清单会保留许可证和 Flickr 来源 URL。清单和选中的图片均缓存在 `~/.cache/auto_round/datasets/coco2014`；设置 `AUTO_ROUND_CACHE` 后则缓存在 `$AUTO_ROUND_CACHE/datasets/coco2014`。T2V 仍只在内存中解析 caption 清单，不使用该缓存。也可使用包含 `id`、`caption` 和 `image` 列的本地 TSV；`image` 支持绝对路径或相对于 TSV 的路径。
+- I2V 标定默认使用与 COCO2014 caption 配对的真实图片。采样前会关联 COCO 官方元数据，仅保留知识共享署名 2.0（CC BY 2.0，license ID 4）图片；筛选后的清单会保留许可证和 Flickr 来源 URL。清单和选中的图片均缓存在 `~/.cache/auto_round/datasets/coco2014`；设置 `AR_CACHE` 后则缓存在 `$AR_CACHE/datasets/coco2014`。T2V 仍只在内存中解析 caption 清单，不使用该缓存。也可使用包含 `id`、`caption` 和 `image` 列的本地 TSV；`image` 支持绝对路径或相对于 TSV 的路径。
 - ​**​`nsamples`​**​（int）：校准时使用的样本数（默认 `128`）。
 - ​**​`seqlen`​**​（int）：每条样本在校准时使用 token 的序列长度（默认 `2048`）。
 

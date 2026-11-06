@@ -58,7 +58,7 @@ class TestAlgExt:
     #     # post_init() runs the full pipeline (resolve_scheme → resolve_formats →
     #     # create_quantizer → ...).  quantizer only exists afterwards.
     #     ar.post_init()
-    #     quantizer = ar.alg_composer.block_quantizer
+    #     quantizer = ar.alg_composer.active_quantizer
     #
     #     assert quantizer.wrapper_block.keywords["wrapper_cls"] is SignRoundDQWrapperLinear, (
     #         f"Expected wrapper_block to use '{SignRoundDQWrapperLinear.__name__}', "
@@ -84,7 +84,7 @@ class TestAlgExt:
             enable_quanted_input=False,
         )
         ar.post_init()
-        quantizer = ar.alg_composer.block_quantizer
+        quantizer = ar.alg_composer.active_quantizer
 
         assert quantizer.scheme.bits == 2
         assert quantizer.scheme.group_size == 64

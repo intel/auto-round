@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Engine-level single-process data-parallel machinery (policy, plans,
-mirroring, collectives, sharded execution). Algorithm code consumes it
-through ``TuneParallelContext``; it owns no algorithm specifics."""
+
+from auto_round.parallel.config import ParallelConfig
+
+__all__ = ["ParallelConfig"]

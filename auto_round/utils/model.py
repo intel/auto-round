@@ -2853,17 +2853,11 @@ def move_to_device_preserving_cpu_pinned(module: torch.nn.Module, device) -> tor
     """
     if module_pinned_execution_device(module) is not None or _module_manages_own_device(module):
         return module
-    # Materialize the iterators before mutating: reassigning ``param.data`` can trigger
-    # changes to the module's internal ``_parameters``/``_buffers`` dicts (e.g. on HPU lazy
-    # mode), which would raise ``RuntimeError: dictionary keys changed during iteration``.
-    for _, param in list(module.named_parameters(recurse=False)):
-        if param.device.type != "meta":
-            param.data = param.data.to(device)
-            if param.grad is not None:
-                param.grad.data = param.grad.data.to(device)
-    for _, buf in list(module.named_buffers(recurse=False)):
-        if buf.device.type != "meta":
-            buf.data = buf.data.to(device)
+    # Use the same conversion machinery as Module.to(): cross-backend transfers
+    # (notably CPU <-> HPU lazy) may require replacing a Parameter rather than
+    # assigning incompatible tensor types to its .data. _apply also moves gradients
+    # and replaces buffers. Recurse manually so pinned children remain untouched.
+    module._apply(lambda tensor: tensor if tensor.device.type == "meta" else tensor.to(device), recurse=False)
     for child in list(module.children()):
         move_to_device_preserving_cpu_pinned(child, device)
     return module

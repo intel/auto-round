@@ -11,17 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Thread ranks (auto_round.algorithms.parallel.spmd): collectives, turnstile,
+"""Thread ranks (auto_round.parallel.dp.spmd): collectives, turnstile,
 samplers, failure handling, and the unchanged SignRound loop run per rank
 on CPU against the serial run."""
 
 import logging
 import threading
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
 
-from auto_round.algorithms.parallel import spmd
+from auto_round.parallel.dp import spmd
 
 CPU2 = [torch.device("cpu"), torch.device("cpu", 1)]
 
@@ -31,7 +33,70 @@ def _run(fns, devices=None):
     return spmd.run_ranks(fns, devices, spmd.RankGroup(devices))
 
 
+def test_engagement_logs_once_per_quantizer_run(monkeypatch):
+    from auto_round.parallel.dp.engine import DDPPlan, parallel_state
+
+    class Pool:
+        def __init__(self, block, devices):
+            self.reps = [block] * len(devices)
+
+        def release(self):
+            pass
+
+    info = Mock()
+    monkeypatch.setattr(spmd.logger, "info", info)
+    monkeypatch.setattr(spmd, "MirrorPool", Pool)
+    monkeypatch.setattr(spmd, "distribute_pool", lambda *a: None)
+    monkeypatch.setattr(spmd, "_sync_pool_devices", lambda *a: None)
+    monkeypatch.setattr(spmd, "resolve_tune_ddp_plan_", lambda *a: DDPPlan(2, CPU2, 2))
+    monkeypatch.setattr(
+        spmd, "rank_quantizer", lambda *a: SimpleNamespace(calibration_context=SimpleNamespace(batch_size=1))
+    )
+    monkeypatch.setattr(spmd, "run_ranks", lambda *a: ["rank zero result", None])
+    monkeypatch.setattr(spmd, "_WARM_SIGNATURES", set())
+    inputs = [torch.zeros(1)] * 4
+    for run in range(2):
+        quantizer = SimpleNamespace(iters=0, calibration_context=SimpleNamespace(batch_size=2))
+        assert spmd.quantize_block_on_ranks(quantizer, None, inputs, {}, inputs, None, None) == (False, None)
+        assert info.call_count == run
+        quantizer.iters = 2
+        for width in (4, 4, 8):
+            result = spmd.quantize_block_on_ranks(quantizer, torch.nn.Linear(4, width), inputs, {}, inputs, None, None)
+            assert result == (True, "rank zero result")
+            assert info.call_count == run + 1
+        assert parallel_state(quantizer).engagement_logged
+    assert all(call.args[0].startswith("[tune-ranks] engaged:") for call in info.call_args_list)
+
+
 class TestCollectives:
+    @pytest.mark.parametrize("serial_first_phase", [True, False])
+    def test_lora_initialization_matches_without_releasing_turn(self, serial_first_phase):
+        group = spmd.RankGroup(CPU2, serial_first_phase=serial_first_phase)
+        replicas = []
+        for rank in range(2):
+            module = torch.nn.Module()
+            generator = torch.Generator().manual_seed(123 + rank)
+            module.lora_A = torch.nn.Parameter(torch.randn(2, 4, generator=generator))
+            module.lora_B = torch.nn.Parameter(torch.randn(4, 2, generator=generator))
+            module.lora_scaling = module.qad_lora_scaling = 1.0 + rank
+            replicas.append(module)
+
+        def tune(rank):
+            ctx = spmd.current_rank()
+            module = replicas[rank]
+            ctx.synchronize_lora(module)
+            assert not group._released[rank]
+            assert module.lora_scaling == module.qad_lora_scaling == 1.0
+            (module.lora_scaling * module.lora_B @ module.lora_A).sum().backward()
+            ctx.sync_gradients(module)
+            with torch.no_grad():
+                for parameter in module.parameters():
+                    parameter.add_(parameter.grad, alpha=-0.1)
+
+        spmd.run_ranks([lambda: tune(0), lambda: tune(1)], CPU2, group)
+        for p0, p1 in zip(replicas[0].parameters(), replicas[1].parameters()):
+            torch.testing.assert_close(p0, p1)
+
     def test_weighted_mean_reproduces_the_union(self):
         # rank 0: 2 tokens with loss 1.0, rank 1: 6 tokens with loss 3.0
         out = _run(
@@ -149,7 +214,7 @@ class TestRankScope:
         assert device_manager.device == outside
 
     def test_index_sampler_draws_from_the_rank_shard(self):
-        from auto_round.utils.distributed import make_index_sampler
+        from auto_round.parallel.distributed import make_index_sampler
 
         def _draws():
             s = make_index_sampler(8, 2)
@@ -209,12 +274,12 @@ def _pinned_sampler(nsamples, batch_size):
 
 
 def _quantize(model_path, monkeypatch, world, **extra):
-    import auto_round.algorithms.parallel.tune_parallel as tp
-    import auto_round.algorithms.quantization.sign_round.quantizer as sr
+    import auto_round.parallel.distributed as distributed
+    import auto_round.parallel.dp.tune_parallel as tp
     from auto_round import AutoRound
-    from auto_round.algorithms.parallel.data_parallel import DDPPlan, ParallelPolicy
+    from auto_round.parallel.dp.engine import DDPPlan, ParallelPolicy
 
-    monkeypatch.setattr(sr, "make_index_sampler", _pinned_sampler)
+    monkeypatch.setattr(distributed, "make_index_sampler", _pinned_sampler)
     engaged = []
     if world > 1:
         # CPU ranks: the resolvers decline non-accelerator homes, so pin the
