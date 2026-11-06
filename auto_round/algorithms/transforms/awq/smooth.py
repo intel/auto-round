@@ -230,7 +230,6 @@ class AWQSmoothStrategy:
                     # input-side T_i(x / s). This is required for rotations
                     # whose matrices do not commute with diagonal scales.
                     handles = []
-                    saved_pre_hooks = {bl: bl._forward_pre_hooks.copy() for bl in mapping.balance_layers}
                     try:
                         for bl in mapping.balance_layers:
                             scales_view = scaled_input(bl)
@@ -246,28 +245,31 @@ class AWQSmoothStrategy:
                             )
                             tensor_ops.copy_weight(bl, w_qdq.to(bl.weight.dtype))
                             layer_scales = scales_view.detach().view(-1)
+                            has_teq_input_hook = any(
+                                is_teq_equivalent_input_hook(hook) for hook in bl._forward_pre_hooks.values()
+                            )
 
-                            def _candidate_input_hook(layer, args, scales=layer_scales):
+                            def _candidate_input_hook(
+                                layer, args, scales=layer_scales, owns_transform=not has_teq_input_hook
+                            ):
                                 if not args:
                                     return None
                                 value = args[0]
                                 scale = scales.to(device=value.device, dtype=value.dtype)
                                 value = value / scale.view((1,) * (value.ndim - 1) + (-1,))
-                                return (apply_teq_equivalent_input_transform(layer, value), *args[1:])
+                                if owns_transform:
+                                    value = apply_teq_equivalent_input_transform(layer, value)
+                                return (value, *args[1:])
 
-                            # A committed layer may already own the input hook;
-                            # the candidate supplies it exactly once with x / s.
-                            for hook_id, hook in tuple(bl._forward_pre_hooks.items()):
-                                if is_teq_equivalent_input_hook(hook):
-                                    del bl._forward_pre_hooks[hook_id]
+                            # A committed layer's TEQ hook runs after this
+                            # prepended scale hook, applying T_i(x / s) exactly
+                            # once without rewriting private hook storage.
                             handles.append(bl.register_forward_pre_hook(_candidate_input_hook, prepend=True))
                         total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
                     finally:
                         for handle in handles:
                             handle.remove()
                         for bl in mapping.balance_layers:
-                            bl._forward_pre_hooks.clear()
-                            bl._forward_pre_hooks.update(saved_pre_hooks[bl])
                             tensor_ops.copy_weight(bl, orig_state[bl])
             else:
                 total_loss = 0.0
