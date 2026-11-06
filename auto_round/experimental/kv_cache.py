@@ -25,6 +25,7 @@ import torch
 from transformers.cache_utils import DynamicCache
 
 from auto_round.experimental.utils import (
+    FP8_GRANULARITY_HEAD,
     FP8_GRANULARITY_TENSOR,
     NVFP4_KV_BLOCK_SIZE,
     NVFP4_KV_DTYPE,
@@ -93,12 +94,9 @@ def _pad_and_append_at_idx_(lst: list, idx: int, val: Any) -> list:
 
 class QuantizedKVParameterCache(DynamicCache):
     """
-    Quantized KV cache used in the forward call based on HF's dynamic cache.
-    Singleton, so that the same cache gets reused in all forward call of self_attn.
-    Each time forward is called, .update() is called, and ._quant_dequant() gets called appropriately.
-    The size of tensor is
-     `[batch_size, num_heads, seq_len - residual_length, head_dim]`.
-
+    KV observer and QDQ simulator based on HF's dynamic cache.
+    The singleton is shared across attention modules; reference forwards update
+    per-layer statistics, while tuning forwards apply QDQ with the fixed values.
     """
 
     _instance = None
@@ -125,10 +123,11 @@ class QuantizedKVParameterCache(DynamicCache):
             super().__init__()
 
             # each index corresponds to layer_idx of the attention layer
-            self.k_scales: list[torch.Tensor] = []
-            self.v_scales: list[torch.Tensor] = []
-            self.k_amax: list[float] = []
-            self.v_amax: list[float] = []
+            self.k_scales: list[torch.Tensor | None] = []
+            self.v_scales: list[torch.Tensor | None] = []
+            self.k_amax: list[torch.Tensor | float | None] = []
+            self.v_amax: list[torch.Tensor | float | None] = []
+            self._qdq_enabled = False
             self._initialized = True
 
     def update(
@@ -141,19 +140,15 @@ class QuantizedKVParameterCache(DynamicCache):
         """
         Get the k_scale and v_scale and output the quant-dequant key_states and value_states
         """
-        if self.is_nvfp4:
-            # Observe-only: track the per-side running amax and let K/V
-            # pass through unmodified (see _nvfp4_track_amax).
-            self._nvfp4_track_amax(key_states, KVCacheScaleType.KEY, layer_idx)
-            self._nvfp4_track_amax(value_states, KVCacheScaleType.VALUE, layer_idx)
+        if not self._qdq_enabled:
+            self._observe(key_states, KVCacheScaleType.KEY, layer_idx)
+            self._observe(value_states, KVCacheScaleType.VALUE, layer_idx)
             return key_states, value_states
 
-        qdq_key_states = self._quant_dequant(key_states.contiguous(), KVCacheScaleType.KEY, layer_idx)
-        qdq_value_states = self._quant_dequant(value_states.contiguous(), KVCacheScaleType.VALUE, layer_idx)
-
-        keys_to_return, values_to_return = qdq_key_states, qdq_value_states
-
-        return keys_to_return, values_to_return
+        return (
+            self._quant_dequant(key_states, KVCacheScaleType.KEY, layer_idx),
+            self._quant_dequant(value_states, KVCacheScaleType.VALUE, layer_idx),
+        )
 
     def get_seq_length(self, layer_idx: int | None = 0) -> int:
         """
@@ -187,47 +182,70 @@ class QuantizedKVParameterCache(DynamicCache):
         QuantizedKVParameterCache._instance = None
         QuantizedKVParameterCache._initialized = False
 
-    def _quant_dequant(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int):
-        """Quantizes a key/value using a defined quantization method."""
-        if kv_type == KVCacheScaleType.KEY:  # key type
-            scales = self.k_scales
+    def _side_statistics(
+        self, kv_type: KVCacheScaleType
+    ) -> tuple[list[torch.Tensor | float | None], list[torch.Tensor | None]]:
+        if kv_type == KVCacheScaleType.KEY:
+            return self.k_amax, self.k_scales
+        return self.v_amax, self.v_scales
+
+    def _observe(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int) -> None:
+        """Accumulate per-layer K/V statistics without changing reference activations."""
+        if self.is_nvfp4:
+            if tensor.shape[-1] % NVFP4_KV_BLOCK_SIZE != 0:
+                raise ValueError(
+                    f"NVFP4 KV cache quantization requires the last dim (head_dim) "
+                    f"to be divisible by {NVFP4_KV_BLOCK_SIZE} (got {tensor.shape[-1]} "
+                    f"at layer_idx={layer_idx}); use static_kv_dtype='fp8' for this model."
+                )
+            amax = tensor.abs().max().item()
+        elif self.granularity == FP8_GRANULARITY_HEAD:
+            if tensor.dim() < 4:
+                raise ValueError(
+                    f"Per-head FP8 calibration expects [batch, heads, seq, head_dim], got {tuple(tensor.shape)}"
+                )
+            amax = tensor.abs().amax(dim=(0, 2, 3)).to(torch.float32).detach()
         else:
-            assert kv_type == KVCacheScaleType.VALUE
-            scales = self.v_scales
+            amax = tensor.abs().amax().reshape(1).to(torch.float32).detach()
 
-        qdq_tensor, scale = fp8_qdq(tensor, granularity=self.granularity)
-        # Detach scale to prevent holding computation graph references
-        scale = scale.reshape(-1).detach()
-        if layer_idx < len(scales) and scales[layer_idx] is not None:
-            scale = torch.maximum(scales[layer_idx], scale)
-        _pad_and_append_at_idx_(scales, layer_idx, scale)
-        return qdq_tensor
+        amaxes, scales = self._side_statistics(kv_type)
+        if layer_idx < len(amaxes) and amaxes[layer_idx] is not None:
+            if isinstance(amax, torch.Tensor):
+                amax = torch.maximum(amaxes[layer_idx], amax)
+            else:
+                amax = max(amaxes[layer_idx], amax)
+        _pad_and_append_at_idx_(amaxes, layer_idx, amax)
 
-    def _nvfp4_track_amax(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int):
-        """Track the running NVFP4 K/V amax during calibration (observe-only).
+        if not self.is_nvfp4:
+            fp8_info = torch.finfo(torch.float8_e4m3fn)
+            scale = (amax / fp8_info.max).clamp(min=float(1.0 / (fp8_info.max * 512.0)))
+            _pad_and_append_at_idx_(scales, layer_idx, scale.reshape(-1).detach())
 
-        Mirrors the observer-based KV calibration in llm-compressor: the
-        per-side running amax is accumulated while the K/V tensors pass
-        through unmodified, so calibration never fake-quantizes with an
-        incomplete scale.  The static global scale is derived from the
-        final (full-calibration-set) amax by the output hook, which
-        writes the vLLM dequant-multiplier convention (``amax / 2688``) --
-        see ``_nvfp4_global_scale``.
-        """
-        if tensor.shape[-1] % NVFP4_KV_BLOCK_SIZE != 0:
-            raise ValueError(
-                f"NVFP4 KV cache quantization requires the last dim (head_dim) "
-                f"to be divisible by {NVFP4_KV_BLOCK_SIZE} (got {tensor.shape[-1]} "
-                f"at layer_idx={layer_idx}); use static_kv_dtype='fp8' for "
-                f"this model."
+    def _quant_dequant(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int) -> torch.Tensor:
+        """Apply the selected KV format using the fixed amax collected by ``_observe``."""
+        amaxes, _ = self._side_statistics(kv_type)
+        if layer_idx >= len(amaxes) or amaxes[layer_idx] is None:
+            raise RuntimeError(
+                f"{('NVFP4' if self.is_nvfp4 else 'FP8')} KV tuning requires a calibrated "
+                f"{kv_type.name} amax for attention layer {layer_idx}. "
+                "Run a calibration forward before supplying a precomputed reference output."
             )
 
-        amax = tensor.abs().max().item()
-        amax_list = self.k_amax if kv_type == KVCacheScaleType.KEY else self.v_amax
-        if layer_idx >= len(amax_list):
-            _pad_and_append_at_idx_(amax_list, layer_idx, amax)
-        else:
-            amax_list[layer_idx] = max(amax_list[layer_idx], amax)
+        if self.is_nvfp4:
+            from auto_round.data_type.nvfp import nv_fp4_with_static_gs
+
+            return nv_fp4_with_static_gs(tensor, tensor_max=amaxes[layer_idx])[0]
+        return fp8_qdq(tensor.contiguous(), tensor_max=amaxes[layer_idx], granularity=self.granularity)[0]
+
+    @contextlib.contextmanager
+    def kv_qdq_context(self):
+        """Enable calibrated KV QDQ for tuning forwards, restoring prior state on exit."""
+        previous = self._qdq_enabled
+        self._qdq_enabled = True
+        try:
+            yield
+        finally:
+            self._qdq_enabled = previous
 
 
 def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4m3fn, granularity: str = "tensor"):
