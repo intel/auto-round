@@ -65,24 +65,6 @@ def freeze_module_quantization_(module: torch.nn.Module):
     # remove quantized kv_cache
     kv_cache = getattr(module, "kv_cache", None)
     if isinstance(kv_cache, QuantizedKVParameterCache):
-        if kv_cache.is_nvfp4:
-            layer_idx = getattr(module, "layer_idx", None)
-            if layer_idx is not None:
-                for amaxes, scale_name in (
-                    (kv_cache.k_amax, "k_global_scale"),
-                    (kv_cache.v_amax, "v_global_scale"),
-                ):
-                    if layer_idx >= len(amaxes) or amaxes[layer_idx] is None:
-                        continue
-                    amax = amaxes[layer_idx]
-                    if isinstance(amax, torch.Tensor):
-                        if amax.item() <= 0:
-                            continue
-                    elif amax <= 0:
-                        continue
-                    update_parameter_data(
-                        module, _nvfp4_global_scale(amax, next(module.parameters()).device), scale_name
-                    )
         delattr(module, "kv_cache")
 
 
@@ -369,6 +351,16 @@ def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output:
     """
     kv_cache = module.kv_cache
     if kv_cache.is_nvfp4:
+        layer_idx = module.layer_idx
+        for amaxes, scale_name in (
+            (kv_cache.k_amax, "k_global_scale"),
+            (kv_cache.v_amax, "v_global_scale"),
+        ):
+            if layer_idx >= len(amaxes) or amaxes[layer_idx] is None:
+                continue
+            amax = amaxes[layer_idx]
+            if amax.item() > 0:
+                update_parameter_data(module, _nvfp4_global_scale(amax, amax.device), scale_name)
         return
     k_scale = kv_cache.k_scales[module.layer_idx]
     v_scale = kv_cache.v_scales[module.layer_idx]
