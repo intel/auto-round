@@ -30,8 +30,20 @@ class TEQConfig(QuantizationConfig):
 
     @classmethod
     def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
-        registry.add_argument("--teq-iters", field="iters", default=20, type=int)
-        registry.add_argument("--teq-lr", field="lr", default=1e-3, type=float)
+        registry.add_argument(
+            "--teq-iters",
+            field="iters",
+            default=20,
+            type=int,
+            help="Optimization steps for each TEQ transform scale.",
+        )
+        registry.add_argument(
+            "--teq-lr",
+            field="lr",
+            default=1e-3,
+            type=float,
+            help="Learning rate for TEQ transform-scale optimization.",
+        )
         registry.add_argument(
             "--teq-optimizer",
             field="optimizer",
@@ -39,27 +51,83 @@ class TEQConfig(QuantizationConfig):
             choices=("adam", "lion"),
             help="Optimizer for the pre-AutoRound TEQ scale optimization.",
         )
-        registry.add_argument("--teq-min-scale", field="min_scale", default=1e-5, type=float)
-        registry.add_argument("--teq-max-scale", field="max_scale", default=10.0, type=float)
-        registry.add_argument("--teq-sqrt-w-init", field="sqrt_w_init", default=False, action="store_true")
-        registry.add_argument("--teq-awq-init", field="awq_init", default=False, action="store_true")
-        registry.add_argument("--teq-awq-init-n-grid", field="awq_init_n_grid", default=20, type=int)
-        registry.add_argument("--teq-nsamples", field="nsamples", default=None, type=int)
-        registry.add_argument("--teq-batch-size", field="batch_size", default=None, type=int)
-        registry.add_argument("--teq-sample-seqlen", field="sample_seqlen", default=512, type=int)
+        registry.add_argument(
+            "--teq-min-scale",
+            field="min_scale",
+            default=1e-5,
+            type=float,
+            help="Lower clamp for TEQ transform scales.",
+        )
+        registry.add_argument(
+            "--teq-max-scale",
+            field="max_scale",
+            default=10.0,
+            type=float,
+            help="Upper clamp for TEQ transform scales.",
+        )
+        registry.add_argument(
+            "--teq-sqrt-w-init",
+            field="sqrt_w_init",
+            default=False,
+            action="store_true",
+            help="Initialize TEQ scales from inverse square-root weight magnitude.",
+        )
+        registry.add_argument(
+            "--teq-awq-init",
+            field="awq_init",
+            default=False,
+            action="store_true",
+            help="Initialize TEQ scales with an AWQ-style activation/weight grid search.",
+        )
+        registry.add_argument(
+            "--teq-awq-init-n-grid",
+            field="awq_init_n_grid",
+            default=20,
+            type=int,
+            help="Grid points for TEQ's AWQ-style scale initialization.",
+        )
+        registry.add_argument(
+            "--teq-nsamples",
+            field="nsamples",
+            default=None,
+            type=int,
+            help="Maximum calibration samples replayed by TEQ per mapping.",
+        )
+        registry.add_argument(
+            "--teq-batch-size",
+            field="batch_size",
+            default=None,
+            type=int,
+            help="Micro-batch size used when TEQ replays calibration samples.",
+        )
+        registry.add_argument(
+            "--teq-sample-seqlen",
+            field="sample_seqlen",
+            default=512,
+            type=int,
+            help="Maximum sequence length retained for TEQ calibration replay.",
+        )
         registry.add_argument(
             "--teq-optimization-mode",
             field="optimization_mode",
             default="staged",
             choices=sorted(cls._OPTIMIZATION_MODES),
+            help="TEQ scheduling mode: pre-quantization, staged refinement, or joint refinement.",
         )
-        registry.add_argument("--teq-refine-iters", field="refine_iters", default=10, type=int)
+        registry.add_argument(
+            "--teq-refine-iters",
+            field="refine_iters",
+            default=10,
+            type=int,
+            help="Number of guarded TEQ refinement iterations in experimental modes.",
+        )
         registry.add_argument(
             "--teq-joint-lr",
             "--teq-refine-lr",
             field="joint_lr",
             default=1e-4,
             type=float,
+            help="Learning rate for TEQ scales during joint or staged refinement.",
         )
         registry.add_argument(
             "--teq-refine-optimizer",
