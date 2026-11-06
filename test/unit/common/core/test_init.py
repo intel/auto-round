@@ -113,6 +113,17 @@ def test_torch_compile_runtime_defaults(tiny_opt_model_path):
     assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
 
 
+def test_static_kv_keeps_block_forward_eager():
+    compressor = object.__new__(BaseOrchestrator)
+    compressor.enable_torch_compile = True
+    compressor.static_kv_dtype = "fp8_e4m3"
+    compressor.static_attention_dtype = None
+    assert not compressor.enable_block_forward_compile
+
+    compressor.static_kv_dtype = None
+    assert compressor.enable_block_forward_compile
+
+
 def test_hf_model_id_sets_resolved_checkpoint_on_compressor_offloader(tiny_opt_model_path, monkeypatch):
     """Zero-shot block reloads use the resolved snapshot rather than the model ID."""
     from transformers import AutoConfig, AutoModelForCausalLM
