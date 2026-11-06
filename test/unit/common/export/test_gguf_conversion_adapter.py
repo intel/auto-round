@@ -67,6 +67,16 @@ def _write_conversion(root, arch="ToyForCausalLM"):
     )
 
 
+def test_ar_cache_controls_conversion_cache_root(tmp_path, monkeypatch):
+    from auto_round import envs
+    from auto_round.export.formats.gguf import llama_cpp_conversion as adapter
+
+    monkeypatch.setenv("AR_CACHE", str(tmp_path))
+    assert envs.AR_CACHE == str(tmp_path)
+    assert envs.is_set("AR_CACHE")
+    assert adapter._cache_root() == tmp_path / "gguf_conversion"
+
+
 def test_llama_cpp_root_conversion_preferred(tmp_path, monkeypatch):
     from auto_round.export.formats.gguf import llama_cpp_conversion as adapter
 
@@ -90,13 +100,13 @@ def test_missing_conversion_reports_auto_update_hint(tmp_path, monkeypatch):
 
     _reset_adapter(adapter)
     monkeypatch.delenv("LLAMA_CPP_ROOT", raising=False)
-    monkeypatch.delenv("AUTO_ROUND_GGUF_AUTO_UPDATE", raising=False)
+    monkeypatch.delenv("AR_GGUF_AUTO_UPDATE", raising=False)
     monkeypatch.setattr(adapter, "_bundled_root", lambda: tmp_path / "missing")
     model_dir = tmp_path / "model"
     model_dir.mkdir()
     (model_dir / "config.json").write_text(json.dumps({"architectures": ["NewForCausalLM"]}), encoding="utf-8")
 
-    with pytest.raises(NotImplementedError, match="AUTO_ROUND_GGUF_AUTO_UPDATE=1"):
+    with pytest.raises(NotImplementedError, match="AR_GGUF_AUTO_UPDATE=1"):
         adapter.get_conversion(model_dir, model_type=ModelType.TEXT)
     _reset_adapter(adapter)
 
@@ -106,7 +116,7 @@ def test_auto_update_downloads_minimal_conversion(tmp_path, monkeypatch):
 
     _reset_adapter(adapter)
     monkeypatch.delenv("LLAMA_CPP_ROOT", raising=False)
-    monkeypatch.setenv("AUTO_ROUND_GGUF_AUTO_UPDATE", "1")
+    monkeypatch.setenv("AR_GGUF_AUTO_UPDATE", "1")
     monkeypatch.setattr(adapter, "_bundled_root", lambda: tmp_path / "missing")
     monkeypatch.setattr(adapter, "_cache_root", lambda: tmp_path / "cache")
     monkeypatch.setattr(adapter, "_latest_commit", lambda: "abc123")

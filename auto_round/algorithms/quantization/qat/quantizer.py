@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from auto_round.algorithms.quantization.qad.quantizer import QADQuantizer
 from auto_round.algorithms.quantization.qat.config import QATConfig
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_quantizer
 
 
-@register_pipeline_member(QATConfig)
+@register_quantizer(QATConfig)
 class QATQuantizer(QADQuantizer):
     """Pure quantization-aware training on ground-truth labels.
 

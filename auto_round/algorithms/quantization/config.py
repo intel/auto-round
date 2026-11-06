@@ -39,7 +39,7 @@ class QuantizationConfig(AlgorithmConfig):
         nsamples: Optional algorithm-local calibration sample count. None reuses
             the common calibration samples. Currently only whole-model tuning
             supports this override; other stages reject it during composition.
-            Algorithm CLI flags should map to this field, not a private name.
+            Algorithm-specific constructor parameters should normalize to this field.
     """
 
     need_calib = True

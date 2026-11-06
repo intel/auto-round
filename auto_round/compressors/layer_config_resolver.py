@@ -354,8 +354,9 @@ def _traverse_and_expand_layer_config(
     # (e.g. MTP layers that transformers does not instantiate).
     safetensor_only_names = _get_safetensor_layer_names_not_in_model(model, all_module_names)
 
-    # 6. expand regex configs
+    # 6. expand regex configs; exact layer names always take precedence over patterns.
     regex_config = {}
+    exact_names = {name for name in layer_config if name in all_supported_layer_names}
     for name in list(layer_config.keys()):
         if name in all_supported_layer_names:
             continue
@@ -387,7 +388,8 @@ def _traverse_and_expand_layer_config(
         val = layer_config.pop(name)
         regex_config[name] = val  # keep regex config
         for match in matched:
-            layer_config[match] = val
+            if match not in exact_names:
+                layer_config[match] = val
 
     return layer_config, regex_config, embedding_layer_names, supported_types
 

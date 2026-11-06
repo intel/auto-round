@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
 from collections.abc import Callable
 
 from auto_round.algorithms.config import AlgorithmParameterRegistry
@@ -41,6 +42,29 @@ class SignRoundConfig(QuantizationConfig):
         )
         registry.add_argument(
             "--minmax_lr", field="minmax_lr", default=None, type=float, help="Learning rate for min-max tuning."
+        )
+        registry.add_argument(
+            "--lora_rank",
+            "--signround_lora_rank",
+            field="lora_rank",
+            default=0,
+            type=int,
+            help=(
+                "Replace dense rounding tuning with low-rank B @ A parameters; 0 disables LoRA. "
+                "Rank is per local weight shard under TP. FP weights and inference stay unchanged."
+            ),
+        )
+        registry.add_argument(
+            "--lora_alpha",
+            "--signround_lora_alpha",
+            field="lora_alpha",
+            default=None,
+            type=float,
+            help=(
+                "Scale rounding LoRA by alpha/rank. When omitted, SignSGD with the default linear scheduler "
+                "uses a rank-, initialization-, and learning-rate-budget-based scale to bound the new "
+                "rounding offset within [-4, 4]; other optimizers/schedulers use unit scaling."
+            ),
         )
         registry.add_argument(
             "--momentum", field="momentum", default=0.0, type=float, help="Momentum factor for the optimizer."
@@ -206,6 +230,8 @@ class SignRoundConfig(QuantizationConfig):
         iters: int = 200,
         lr: float | None = None,
         minmax_lr: float | None = None,
+        lora_rank: int = 0,
+        lora_alpha: float | None = None,
         lr_scheduler: Callable | None = None,
         momentum: float = 0.0,
         nblocks: int = 1,
@@ -237,6 +263,12 @@ class SignRoundConfig(QuantizationConfig):
                 If None, a heuristic based on ``iters`` is used.
             minmax_lr: Learning rate used by min-max tuning. If None, it
                 falls back to ``lr``.
+            lora_rank: Low-rank rounding rank per local weight shard. Zero
+                retains dense rounding tuning.
+            lora_alpha: Optional alpha/rank scaling. When omitted, SignSGD with
+                the default linear scheduler bounds the new rounding offset
+                within [-4, 4] using the initialization and learning-rate budget.
+                Other optimizers or custom schedulers retain unit scaling.
             lr_scheduler: Optional learning-rate scheduler name or
                 scheduler object used by the optimizer.
             momentum: Momentum factor used by the optimizer.
@@ -294,6 +326,9 @@ class SignRoundConfig(QuantizationConfig):
                 data_type, and activation quantization fields.
         """
         super().__init__(**kwargs)
+        self._validate_lora_settings(lora_rank, lora_alpha)
+        self.lora_rank = lora_rank
+        self.lora_alpha = lora_alpha
         self.enable_neuqi = enable_neuqi
         self.gradient_accumulate_steps = gradient_accumulate_steps
         self.iters = iters
@@ -353,6 +388,38 @@ class SignRoundConfig(QuantizationConfig):
                 "the `enable_qad` (quantization-aware distillation) mode is experimental: all "
                 "text-decoder blocks are tuned jointly with a whole-model forward."
             )
+
+    @staticmethod
+    def _validate_lora_settings(rank: int, alpha: float | None, prefix: str = "lora") -> None:
+        """Validate a LoRA rank and optional scaling coefficient.
+
+        Args:
+            rank (int): Non-negative factorization rank; zero disables LoRA.
+            alpha (float | None): Finite positive scaling coefficient, or None for automatic scaling.
+            prefix (str): Option-name prefix included in validation errors.
+
+        Raises:
+            ValueError: The rank is invalid or alpha is not finite and positive.
+        """
+        if isinstance(rank, bool) or not isinstance(rank, int) or rank < 0:
+            raise ValueError(f"`{prefix}_rank` must be a non-negative integer")
+        if alpha is not None:
+            try:
+                valid_alpha = not isinstance(alpha, bool) and math.isfinite(alpha) and alpha > 0
+            except (TypeError, ValueError, OverflowError):
+                valid_alpha = False
+            if not valid_alpha:
+                raise ValueError(f"`{prefix}_alpha` must be finite and positive")
+
+    def validate_lora_config(self) -> None:
+        """Validate effective settings, including overrides applied after construction.
+
+        Raises:
+            ValueError: Shared or QAD-specific LoRA rank or alpha settings are invalid.
+        """
+        self._validate_lora_settings(self.lora_rank, self.lora_alpha)
+        if hasattr(self, "qad_lora_rank"):
+            self._validate_lora_settings(self.qad_lora_rank, self.qad_lora_alpha, "qad_lora")
 
     def _lr_for_bits(self, bits: int | None) -> float | None:
         """Return the auto lr heuristic for a given bit-width.

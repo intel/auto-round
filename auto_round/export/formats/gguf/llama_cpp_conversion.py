@@ -84,7 +84,7 @@ class GGUFConversionError(ImportError):
 
 
 def _cache_root() -> Path:
-    return Path(envs.AUTO_ROUND_CACHE or Path.home() / ".cache" / "auto-round") / "gguf_conversion"
+    return Path(envs.AR_CACHE or Path.home() / ".cache" / "auto-round") / "gguf_conversion"
 
 
 def _bundled_root() -> Path:
@@ -105,7 +105,7 @@ def _local_llama_cpp_root() -> Path | None:
 
 
 def _auto_update_enabled() -> bool:
-    return envs.AUTO_ROUND_GGUF_AUTO_UPDATE
+    return envs.AR_GGUF_AUTO_UPDATE
 
 
 def _clear_loaded_conversion_modules() -> None:
@@ -286,7 +286,7 @@ def _unsupported_message(model_architecture: str) -> str:
     return (
         f"Model {model_architecture} is not supported by AutoRound's bundled llama.cpp conversion. "
         "This may mean the model is newer than the bundled converter, or llama.cpp does not support it yet. "
-        "To try the latest llama.cpp converter automatically, set AUTO_ROUND_GGUF_AUTO_UPDATE=1. "
+        "To try the latest llama.cpp converter automatically, set AR_GGUF_AUTO_UPDATE=1. "
         "Or use a local llama.cpp checkout with LLAMA_CPP_ROOT=/path/to/llama.cpp."
     )
 

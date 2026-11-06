@@ -48,7 +48,8 @@ from typing import Any
 
 import torch
 
-from auto_round.algorithms.parallel.data_parallel import (
+from auto_round.logger import logger
+from auto_round.parallel.dp.engine import (
     MirrorPool,
     _param_grad_buffers,
     _quantizer_policy,
@@ -59,12 +60,11 @@ from auto_round.algorithms.parallel.data_parallel import (
     parallel_state,
     resolve_tune_ddp_plan_,
 )
-from auto_round.algorithms.parallel.mirror_sync import (
+from auto_round.parallel.dp.mirror_sync import (
     _POOL_SEARCH_STATS,
     _distribute_search_stats,
     _sync_pool_devices,
 )
-from auto_round.logger import logger
 
 _tls = threading.local()
 # (block shape, devices) signatures whose rank kernels are compiled already
@@ -97,6 +97,7 @@ class RankGroup:
         self._next_turn = 0 if serial_first_phase else self.world
         self._released = [False] * self.world
         self._broken = False
+        self._lora_state = None
         # one shuffle seed per rank, drawn in rank order from the run's RNG
         self.seeds = [random.getrandbits(63) for _ in range(self.world)]
 
@@ -203,6 +204,33 @@ class RankContext:
 
     def sync_gradients(self, module: torch.nn.Module) -> None:
         self.group.all_reduce_grads(self.rank, module)
+
+    def synchronize_lora(self, module: torch.nn.Module) -> None:
+        """Publish rank-zero factors/scaling without advancing the compile turnstile.
+
+        Rank zero never waits for peers: cold peers cannot start until its first
+        forward/backward finishes. Warm peers wait only for the published state.
+        """
+        wrappers = {name: m for name, m in module.named_modules() if hasattr(m, "lora_A")}
+        if not wrappers:
+            return
+        with self.group._turn:
+            if self.rank == 0:
+                self.group._lora_state = {
+                    name: (m.lora_A.detach().cpu().clone(), m.lora_B.detach().cpu().clone(), m.lora_scaling)
+                    for name, m in wrappers.items()
+                }
+                self.group._turn.notify_all()
+            else:
+                self.group._turn.wait_for(lambda: self.group._broken or self.group._lora_state is not None)
+                if self.group._broken:
+                    raise RankAborted("rank group aborted before LoRA initialization")
+                with torch.no_grad():
+                    for name, m in wrappers.items():
+                        a, b, scaling = self.group._lora_state[name]
+                        m.lora_A.copy_(a)
+                        m.lora_B.copy_(b)
+                        m.lora_scaling = m.qad_lora_scaling = scaling
 
     def all_reduce_mean(self, value: float) -> float:
         return self.group.all_reduce_mean(self.rank, value)
@@ -365,14 +393,16 @@ def quantize_block_on_ranks(
         warm = signature in _WARM_SIGNATURES
     group = RankGroup(devices, serial_first_phase=not warm)
     rank_qs = [rank_quantizer(quantizer, world, split) for _ in range(world)]
-    logger.info(
-        "[tune-ranks] engaged: world=%d, batch per rank=%d (%s), first phase %s, devices=%s",
-        world,
-        rank_qs[0].calibration_context.batch_size,
-        "split" if split else "per_replica",
-        "concurrent" if warm else "serial (compile)",
-        [str(d) for d in devices],
-    )
+    if not getattr(_st, "engagement_logged", False):
+        logger.info(
+            "[tune-ranks] engaged: world=%d, batch per rank=%d (%s), first phase %s, devices=%s",
+            world,
+            rank_qs[0].calibration_context.batch_size,
+            "split" if split else "per_replica",
+            "concurrent" if warm else "serial (compile)",
+            [str(d) for d in devices],
+        )
+        _st.engagement_logged = True
 
     def _rank_fn(r):
         return lambda: rank_qs[r].quantize_block(
@@ -397,7 +427,7 @@ def run_ranks(rank_fns: list[Callable[[], Any]], devices: list[torch.device], gr
     RankAborted at their next collective) and the first real error is
     re-raised here.
     """
-    from auto_round.algorithms.parallel.tune_parallel import _device_scope
+    from auto_round.parallel.dp.tune_parallel import _device_scope
     from auto_round.utils.device_manager import device_manager
 
     world = len(rank_fns)

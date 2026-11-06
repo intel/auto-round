@@ -13,11 +13,11 @@
 # limitations under the License.
 """Offline teacher Top-K cache for QAD (quantization-aware distillation).
 
-The full-precision teacher is forwarded through to the LM head once, and only
-the Top-K ``(index, prob)`` pairs per token are written to disk together with
-the sample's own ``input_ids``. During tuning the student loads these compact
-tensors per batch, so neither the teacher model nor the full-vocab logits need
-to stay resident -- keeping GPU/CPU memory low.
+The full-precision teacher is forwarded through to the LM head once. Top-K
+``(index, prob)`` pairs or full-vocabulary probabilities are written to disk
+together with the sample's own ``input_ids``. Probabilities use FP32 by default
+in both modes. During tuning the student loads these targets per batch, so
+neither the teacher model nor its logits need to stay resident.
 
 Storing the ``input_ids`` alongside the teacher makes each file self-describing:
 the cache is the single source of truth for both the student forward and the
@@ -29,7 +29,7 @@ On-disk layout (one file per calibration sample)::
     <workspace>/teacher_<sample_idx>.pt  -> {
         "input_ids": int32[seq],          # the tokens that produced the teacher
         "index": int32[seq, K] | None,    # teacher Top-K token ids (None = full vocab)
-        "prob":  float32[seq, K] | float16[seq, vocab],
+        "prob":  float32[seq, K] | float16/bfloat16/float32[seq, vocab],
                                           # Top-K: softmax(topk(logits)/τ) re-normalized over K
                                           # full:  softmax(logits/τ)
     }
@@ -40,10 +40,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import torch
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from auto_round.logger import logger
 
@@ -64,6 +65,9 @@ class TeacherTopKCache:
     teacher files are cleared, so a cache written for one model/config is never
     silently reused by another (which would, e.g., feed out-of-range token ids
     from a larger vocabulary into a smaller model's ``gather``).
+
+    If another run owns the same namespace, use a temporary isolated cache
+    rather than failing or waiting for the entire tuning run to finish.
     """
 
     _MANIFEST = "manifest.json"
@@ -75,33 +79,72 @@ class TeacherTopKCache:
         num_workers: int = 4,
         signature: dict | None = None,
         temperature: float = 1.0,
+        full_dtype: torch.dtype = torch.float32,
     ) -> None:
+        """Initialize a cache namespace and acquire exclusive ownership.
+
+        Args:
+            workspace: Root directory for the cache files.
+            top_k: Number of cached teacher logits per token, or -1 for the full vocabulary.
+            num_workers: Maximum number of background cache-reader threads.
+            signature: Optional model and input fingerprint used to isolate cache namespaces.
+            temperature: Positive temperature applied before teacher softmax.
+            full_dtype: Storage dtype for full-vocabulary probabilities. Defaults to
+                float32 to preserve small teacher probabilities, especially for reverse KL.
+                Float16 and bfloat16 are explicit storage-saving opt-ins; bfloat16
+                retains float32's exponent range but reduces precision. Top-K always stays float32.
+
+        Raises:
+            ValueError: Temperature is non-positive or the storage dtype is unsupported.
+        """
         self.top_k = int(top_k)
         # Distillation temperature τ: the cached teacher target is softmax(t/τ),
         # matching the student's softmax(s/τ) in the KD loss.
         self.temperature = float(temperature)
         if self.temperature <= 0:
             raise ValueError("`temperature` must be positive")
+        if full_dtype not in (torch.float16, torch.bfloat16, torch.float32):
+            raise ValueError("`full_dtype` must be torch.float16, torch.bfloat16 or torch.float32")
+        # Reverse KL needs small teacher probabilities that FP16 may round to zero.
+        self.full_dtype = full_dtype
         self.store_full = self.top_k == -1
         # Different teachers never invalidate each other's files. Identical
         # signatures share a namespace for reuse, with one active owner at a
         # time so neither rebuilding nor prefetching can race another process.
         if signature is not None:
-            namespace = json.dumps(
-                {**signature, "top_k": self.top_k, "temperature": self.temperature}, sort_keys=True
-            ).encode()
+            cache_signature: dict[str, object] = {**signature, "top_k": self.top_k, "temperature": self.temperature}
+            # Keep explicitly requested FP16 caches compatible with their legacy namespace.
+            if self.full_dtype != torch.float16:
+                cache_signature["full_dtype"] = str(self.full_dtype)
+            namespace = json.dumps(cache_signature, sort_keys=True).encode()
             workspace = os.path.join(workspace, hashlib.sha256(namespace).hexdigest())
         self.workspace = workspace
         os.makedirs(self.workspace, exist_ok=True)
+        self._private_workspace: tempfile.TemporaryDirectory | None = None
         self._workspace_lock = FileLock(os.path.join(self.workspace, ".cache.lock"), timeout=0, thread_local=False)
-        self._workspace_lock.acquire()
         self._num_workers = max(1, int(num_workers))
         self._executor: ThreadPoolExecutor | None = None
         self._pending: dict[int, Future] = {}
         try:
+            try:
+                self._workspace_lock.acquire()
+            except Timeout:
+                self._private_workspace = tempfile.TemporaryDirectory(prefix="concurrent_", dir=workspace)
+                self.workspace = self._private_workspace.name
+                self._workspace_lock = FileLock(
+                    os.path.join(self.workspace, ".cache.lock"), timeout=0, thread_local=False
+                )
+                self._workspace_lock.acquire()
+                logger.warning(
+                    'QAD: teacher cache at "%s" is in use by another run; '
+                    'building an isolated temporary cache at "%s". '
+                    "Use a different qad_workspace to retain a separate reusable cache.",
+                    workspace,
+                    self.workspace,
+                )
             self._reconcile_signature(signature)
         except BaseException:
-            self._workspace_lock.release()
+            self.shutdown()
             raise
 
     # ── signature / invalidation ──────────────────────────────────────────────
@@ -118,7 +161,14 @@ class TeacherTopKCache:
             return
         # `target` versions the stored semantics (Top-K logits re-softmaxed) so
         # caches written by older code are rebuilt.
-        sig = {**signature, "top_k": self.top_k, "temperature": self.temperature, "target": "topk_logit_softmax"}
+        sig: dict[str, object] = {
+            **signature,
+            "top_k": self.top_k,
+            "temperature": self.temperature,
+            "target": "topk_logit_softmax",
+        }
+        if self.full_dtype != torch.float16:
+            sig["full_dtype"] = str(self.full_dtype)
         existing = None
         path = self._manifest_path()
         if os.path.exists(path):
@@ -167,7 +217,8 @@ class TeacherTopKCache:
             return False
         index = data.get("index")
         if self.store_full:
-            return index is None
+            prob = data.get("prob")
+            return index is None and isinstance(prob, torch.Tensor) and prob.dtype == self.full_dtype
         if index is None:
             return False
         # A rebuilt file with a different top_k width cannot be stacked with
@@ -191,7 +242,7 @@ class TeacherTopKCache:
             # Store the full distribution softmax(t/τ); indices are implicit (0..vocab-1).
             probs = torch.softmax(logits / self.temperature, dim=-1)
             torch.save(
-                {"input_ids": ids, "index": None, "prob": probs.to(torch.float16).cpu()},
+                {"input_ids": ids, "index": None, "prob": probs.to(self.full_dtype).cpu()},
                 self._path(sample_idx),
             )
             return
@@ -251,12 +302,15 @@ class TeacherTopKCache:
         return input_ids, index, prob
 
     def shutdown(self) -> None:
-        """Stop the prefetch thread pool and drop any pending futures."""
+        """Stop readers, release ownership, and remove any temporary cache."""
         self._pending.clear()
         if self._executor is not None:
             self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
         self._workspace_lock.release()
+        if self._private_workspace is not None:
+            self._private_workspace.cleanup()
+            self._private_workspace = None
 
     def clear(self) -> None:
         """Remove all cached teacher files from the workspace."""

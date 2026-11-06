@@ -22,7 +22,7 @@ from typing import Any
 import torch
 
 import auto_round.algorithms.transforms.svdquant.residual as residual_module
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_preprocessor
 from auto_round.algorithms.transforms.base import BasePreprocessor
 from auto_round.algorithms.transforms.smoothing.calibration import (
     SmoothGroupCalibration,
@@ -74,7 +74,7 @@ def _select_svd_driver(device: torch.device) -> str | None:
         return driver
 
 
-@register_pipeline_member(SVDQuantConfig)
+@register_preprocessor(SVDQuantConfig)
 class SVDQuantTransform(BasePreprocessor):
     """Split target linears into a quantized residual and an FP low-rank branch."""
 
