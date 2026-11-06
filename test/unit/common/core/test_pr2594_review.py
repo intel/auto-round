@@ -50,6 +50,13 @@ def test_validate_allows_empty_scheme_before_resolution():
     QuantizationScheme.empty().validate()
 
 
+def test_double_quant_defaults_use_current_gguf_export_package():
+    scheme = QuantizationScheme(bits=4, group_size=32, data_type="int_asym_dq")
+    scheme.validate()
+    assert scheme.super_bits == 6
+    assert scheme.super_group_size == 8
+
+
 @pytest.mark.parametrize("kwargs", [{"act_bits": 0}, {"act_group_size": -2}, {"act_group_size": (16, 16)}])
 def test_validate_still_rejects_invalid_activation_fields(kwargs):
     with pytest.raises(ValueError):

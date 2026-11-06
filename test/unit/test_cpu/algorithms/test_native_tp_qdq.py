@@ -712,7 +712,7 @@ def _check_qad_lifecycle(
         assert saved is model
         assert folders == []
     with patch(
-        "auto_round.export.formats.backends.fake.FakeFormat.save_quantized", side_effect=RuntimeError("writer failure")
+        "auto_round.export.formats.fake.FakeFormat.save_quantized", side_effect=RuntimeError("writer failure")
     ), pytest.raises(RuntimeError, match="writer failure"):
         compressor.save_quantized(output, format="fake")
     assert compressor.model_context.model is model

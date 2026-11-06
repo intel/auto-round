@@ -111,7 +111,7 @@ def test_explicit_pipeline_replaces_recipe_but_inherits_calibration(capture_entr
 def test_entry_selectors_override_recipe(capture_entry):
     assert isinstance(AutoRound("dummy", iters=0).configs[0], RTNConfig)
     awq = AutoRound("dummy", recipe="ar-best", alg_configs="awq")
-    assert [type(config).__name__ for config in awq.configs] == ["AWQConfig", "RTNConfig"]
+    assert [type(config).__name__ for config in awq.configs] == ["AWQConfig", "OptimizedRTNConfig"]
     assert awq.nsamples == 512
 
 

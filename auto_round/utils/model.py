@@ -28,7 +28,7 @@ import transformers
 from packaging import version
 
 from auto_round import envs
-from auto_round.export.export_to_gguf.config import ModelType
+from auto_round.export.formats.gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, monkey_patch_model
 from auto_round.utils.path_safety import UnsafeCheckpointPathError
@@ -1747,7 +1747,7 @@ def get_nested_attr(module, attr_name: str):
 
 
 def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
-    from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
+    from auto_round.export.formats.gguf.llama_cpp_conversion import get_conversion
 
     is_mistral_format = False
     if isinstance(dir_model, str):

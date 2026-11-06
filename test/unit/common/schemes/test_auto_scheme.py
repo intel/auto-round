@@ -16,7 +16,7 @@ from auto_round.auto_scheme.delta_loss import (
     _vram_inventory_text,
 )
 from auto_round.auto_scheme.utils import _build_layer_config_header_rows, _short_summary_name
-from auto_round.export.export_to_gguf.export import _clear_gguf_model_instances
+from auto_round.export.formats.gguf.writer import _clear_gguf_model_instances
 
 
 def _make_local_calibration_dataset(tmp_path):

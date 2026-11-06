@@ -188,7 +188,7 @@ class AWQConfig(QuantizationConfig):
         awq_seqlen: int | None = None,
         smooth_batch_size: int | None = None,
         v2_scale_search: str = "auto",
-        disable_opt_rtn: bool | None = True,
+        disable_opt_rtn: bool | None = False,
         skip_moe: bool = True,
         mappings: list[dict] | None = None,
         **kwargs,
@@ -274,10 +274,13 @@ class AWQConfig(QuantizationConfig):
                 once for each balance layer before the AWQ grid and reuses that
                 scale.
             disable_opt_rtn: Whether AWQ's internal weight QDQ should use the
-                plain RTN path. Defaults to True because AWQ calibration has not
-                shown accuracy or cost benefits from optimized RTN in benchmarks.
-                ``enable_opt_rtn=True`` may also be passed to force the
-                optimized path.
+                plain RTN path. Defaults to False (optimized RTN) because
+                AWQ + plain RTN has shown significant accuracy fluctuations on
+                large/complex models and sensitive eval tasks (e.g. GSM8K
+                under W4A4 MXFP4), where AWQ's smoothing-scale search can
+                shift error onto channels that plain RTN then rounds badly.
+                ``disable_opt_rtn=True`` may still be passed to force the
+                plain RTN path for speed, at the cost of robustness.
             skip_moe: Whether to exclude routed MoE experts from AWQ smoothing.
                 When True, balance layers belonging to routed experts (module
                 names matching ``.experts.<N>.``) are dropped from the resolved

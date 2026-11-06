@@ -274,7 +274,7 @@ class QuantizationScheme:
                 )
         # Reset the default value of super_bits and super_group_size
         if self.data_type is not None and self.bits is not None and self.data_type.endswith("_dq"):
-            from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
+            from auto_round.export.formats.gguf.config import GGUF_INNER_CONFIG
 
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
             self.super_bits = gguf_config.get("super_bits", None) if self.super_bits is None else self.super_bits

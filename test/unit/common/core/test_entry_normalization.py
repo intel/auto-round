@@ -347,7 +347,8 @@ def test_zero_iters_selects_rtn_and_forwards_disable_opt_rtn():
 
 def test_awq_rtn_opt_policy_defaults_and_explicit_overrides():
     cases = [
-        (_normalize_alg_configs("awq"), ["AWQConfig", "RTNConfig"], [True, True]),
+        (_normalize_alg_configs("awq"), ["AWQConfig", "OptimizedRTNConfig"], [False, False]),
+        (_normalize_alg_configs(AWQConfig()), ["AWQConfig", "OptimizedRTNConfig"], [False, False]),
         (
             _normalize_alg_configs("awq,rtn", direct_kwargs={"disable_opt_rtn": True}),
             ["AWQConfig", "RTNConfig"],
@@ -361,7 +362,7 @@ def test_awq_rtn_opt_policy_defaults_and_explicit_overrides():
         (
             _normalize_alg_configs([AWQConfig(), RTNConfig(enable_opt_rtn=True)]),
             ["AWQConfig", "OptimizedRTNConfig"],
-            [True, False],
+            [False, False],
         ),
     ]
 
@@ -388,7 +389,7 @@ def test_explicit_zero_iter_signround_config_selects_rtn():
 def test_combined_awq_zero_iters_keeps_awq_and_selects_rtn():
     configs = _normalize_alg_configs("awq,signround", direct_kwargs={"iters": 0})
 
-    assert _types(configs) == ["AWQConfig", "RTNConfig"]
+    assert _types(configs) == ["AWQConfig", "OptimizedRTNConfig"]
 
 
 @pytest.mark.parametrize(
@@ -396,7 +397,7 @@ def test_combined_awq_zero_iters_keeps_awq_and_selects_rtn():
     [
         ("rtn", ["RTNConfig"]),
         ("opt-rtn", ["OptimizedRTNConfig"]),
-        ("awq", ["AWQConfig", "RTNConfig"]),
+        ("awq", ["AWQConfig", "OptimizedRTNConfig"]),
         ("signround", ["SignRoundConfig"]),
         ("awq,signround", ["AWQConfig", "SignRoundConfig"]),
     ],
@@ -463,7 +464,7 @@ def test_implicit_rtn_fallback_keeps_the_heuristic_variant():
 
 def test_awq_keeps_its_own_policy_next_to_a_named_rtn_variant():
     """Only RTN configs take the name's policy; AWQ keeps its own."""
-    configs = _normalize_alg_configs("awq,opt-rtn")
+    configs = _normalize_alg_configs([AWQConfig(disable_opt_rtn=True), "opt-rtn"])
 
     assert _types(configs) == ["AWQConfig", "OptimizedRTNConfig"]
     assert configs[0].disable_opt_rtn is True
