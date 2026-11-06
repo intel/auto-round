@@ -165,7 +165,6 @@ def patch_quantlinear(w_transform) -> None:
         if transform is None:
             transform = w_transform
         self.register_buffer("hadamard_matrix", transform.weight.to(device))
-        return
 
     QuantLinear.pack = _pack_patched
     QuantLinear._pack_patched = True
