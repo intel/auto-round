@@ -95,9 +95,7 @@ def _get_qwen3_omni_visual_audio_info(model):
         # Reject missing / None placeholders and empty containers.
         if mod is None:
             return False
-        if isinstance(mod, (list, tuple, dict, set)) and len(mod) == 0:
-            return False
-        return True
+        return not (isinstance(mod, (list, tuple, dict, set)) and len(mod) == 0)
 
     if thinker_model is not None:
         candidate = getattr(thinker_model, "visual", None)
