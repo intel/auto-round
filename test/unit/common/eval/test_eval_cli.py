@@ -703,6 +703,29 @@ class TestEvaluateTasksWithRetry:
 class TestLoadGgufModelIfNeeded:
     """CPU-only tests for GGUF detection using temporary files/directories."""
 
+    def test_parent_export_dir_resolves_to_single_nested_artifact_dir(self, tmp_path):
+        export_root = tmp_path / "aware_topk_tune_shared"
+        nested_model_dir = export_root / "Qwen3-30B-A3B-w4g128"
+        nested_model_dir.mkdir(parents=True)
+        (nested_model_dir / "config.json").write_text('{"model_type": "qwen3_moe"}', encoding="utf-8")
+
+        resolved = eval_cli._resolve_exported_model_path(str(export_root))
+
+        assert resolved == str(nested_model_dir)
+
+    def test_parent_export_dir_stays_unchanged_when_multiple_nested_artifacts_exist(self, tmp_path):
+        export_root = tmp_path / "aware_topk_tune_shared"
+        first_nested = export_root / "first-export"
+        second_nested = export_root / "second-export"
+        first_nested.mkdir(parents=True)
+        second_nested.mkdir(parents=True)
+        (first_nested / "config.json").write_text('{"model_type": "llama"}', encoding="utf-8")
+        (second_nested / "config.json").write_text('{"model_type": "llama"}', encoding="utf-8")
+
+        resolved = eval_cli._resolve_exported_model_path(str(export_root))
+
+        assert resolved == str(export_root)
+
     def test_gguf_file_detected_at_file_path(self, monkeypatch, tmp_path):
         gguf_path = tmp_path / "model.gguf"
         # GGUF readers validate the four-byte magic even though the model

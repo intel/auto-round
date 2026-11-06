@@ -22,8 +22,8 @@ if TYPE_CHECKING:
     AR_LOG_LEVEL: str = "INFO"
     AR_USE_MODELSCOPE: bool = "False"
     AR_MODEL_FREE_SHARD_PARALLELISM: int | None = None
-    AUTO_ROUND_CACHE: str | None = None
-    AUTO_ROUND_GGUF_AUTO_UPDATE: bool = False
+    AR_CACHE: str | None = None
+    AR_GGUF_AUTO_UPDATE: bool = False
     AR_DISABLE_GGUF_MTP_EXPORT: bool = False
     LLAMA_CPP_ROOT: str | None = None
     AR_AUTO_SCHEME_NSAMPLES: int | None = None
@@ -44,6 +44,8 @@ if TYPE_CHECKING:
     AR_PERF_COUNTERS: bool = False
     AR_SEARCH_BATCH_GB: float | None = None
     AR_DISABLE_CROSS_DEVICE_SEARCH: bool = False
+    AR_ENABLE_LOG_MINMAX: bool = False
+    AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES: int = 0
 
 
 def _get_optional_positive_int_env(name: str) -> int | None:
@@ -57,6 +59,20 @@ def _get_optional_positive_int_env(name: str) -> int | None:
         raise ValueError(f"{name} must be a positive integer, got {raw!r}") from exc
     if value < 1:
         raise ValueError(f"{name} must be a positive integer, got {value}")
+    return value
+
+
+def _get_non_negative_int_env(name: str, default: int) -> int:
+    """Read an env var that must be a non-negative integer; malformed values fail fast."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer, got {raw!r}") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be a non-negative integer, got {raw!r}")
     return value
 
 
@@ -98,6 +114,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_ACT_SCALE": lambda: float(os.getenv("AR_ACT_SCALE", "1.0")),
     "AR_ENABLE_ACT_MINMAX_TUNING": lambda: os.getenv("AR_ENABLE_ACT_MINMAX_TUNING", "0").lower()
     in ("1", "true", "yes"),
+    # Tune the SignRound optimized-path min/max scale coefficients in log
+    # (geometric) space: the stored parameter is ``theta`` with ``coeff =
+    # exp(theta)``, so each symmetric SignSGD step is a multiplicative move
+    # (``+lr -> x e^lr``, ``-lr -> / e^lr``). This makes shrinking and expanding
+    # the quant range equidistant (e.g. reaching 0.5x and 2x costs the same
+    # number of steps) instead of the linear-coefficient asymmetry. Default off.
+    "AR_ENABLE_LOG_MINMAX": lambda: os.getenv("AR_ENABLE_LOG_MINMAX", "0").lower() in ("1", "true", "yes"),
     "AR_FUSE_ONLINE_ROTATION": lambda: os.getenv("AR_FUSE_ONLINE_ROTATION", "0").lower() in ("1", "true", "yes"),
     # Controls the search range ratio for symmetric int scale search in
     # `auto_round.data_type.int.search_scales`. The search bound is
@@ -113,9 +136,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # not exceed dynamo's default limit (8) and fall back to eager.
     "AR_DYNAMO_CACHE_SIZE_LIMIT": lambda: int(os.getenv("AR_DYNAMO_CACHE_SIZE_LIMIT", "16")),
     "AR_MODEL_FREE_SHARD_PARALLELISM": lambda: _get_optional_positive_int_env("AR_MODEL_FREE_SHARD_PARALLELISM"),
-    "AUTO_ROUND_CACHE": lambda: os.getenv("AUTO_ROUND_CACHE", None),
-    "AUTO_ROUND_GGUF_AUTO_UPDATE": lambda: os.getenv("AUTO_ROUND_GGUF_AUTO_UPDATE", "0").lower()
-    in ("1", "true", "yes", "on"),
+    "AR_CACHE": lambda: os.getenv("AR_CACHE", None),
+    "AR_GGUF_AUTO_UPDATE": lambda: os.getenv("AR_GGUF_AUTO_UPDATE", "0").lower() in ("1", "true", "yes", "on"),
     "AR_DISABLE_GGUF_MTP_EXPORT": lambda: os.getenv("AR_DISABLE_GGUF_MTP_EXPORT", "0").lower()
     in ("1", "true", "yes", "on"),
     "LLAMA_CPP_ROOT": lambda: os.getenv("LLAMA_CPP_ROOT", None),
@@ -164,6 +186,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_RESUME_DIR": lambda: os.getenv("AR_RESUME_DIR", None),
     "AR_DISABLE_BATCHED_SEARCH": lambda: os.getenv("AR_DISABLE_BATCHED_SEARCH", "False").strip().lower()
     in ("1", "true", "yes"),
+    # Emit [perf] phase-breakdown log lines (per-block load/tune/pack/write/clean/offload
+    # in the data-driven loop; the sharded collection breakdown for --data_parallel).
     "AR_PERF_COUNTERS": lambda: os.getenv("AR_PERF_COUNTERS", "False").strip().lower() in ("1", "true", "yes"),
     "AR_SEARCH_BATCH_GB": lambda: _get_optional_positive_float_env("AR_SEARCH_BATCH_GB"),
     "AR_DISABLE_CROSS_DEVICE_SEARCH": lambda: os.getenv("AR_DISABLE_CROSS_DEVICE_SEARCH", "False").strip().lower()
@@ -208,9 +232,8 @@ environment_variables: dict[str, Callable[[], Any]] = {
     #                Benchmarks (A100, W4G128 tuning fwd+bwd) show "auto" matches or beats a
     #                fixed 16 on every Qwen3-MoE preset (e.g. 35B-A3B: 108 ms vs 156 ms).
     #   <int > 0>  - fixed group size. Fusing every active expert at once builds a working set
-    #                that grows with the expert count; past a point that costs peak memory on
-    #                GPU and cache locality on CPU (measured: fusing 64 experts halved CPU
-    #                calibration throughput, and doubled the GPU calibration peak).
+    #                that grows with the expert count; past a point that costs peak
+    #                memory on GPU and cache locality on CPU.
     #   0 or <0    - disable chunking/tiling: "fuse everything" in one group (e.g. set -1 to turn it off).
     # Results are identical for any value -- rows stay independent. A fixed count and "auto"
     # are both torch.compile-friendly (constant fused shape -> no per-count recompile).
@@ -249,6 +272,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_NEUQI_COARSE": lambda: int(v) if (v := os.getenv("AR_NEUQI_COARSE")) is not None else None,
     "AR_NEUQI_FINE": lambda: int(v) if (v := os.getenv("AR_NEUQI_FINE")) is not None else None,
     "AR_NEUQI_BACKEND": lambda: os.getenv("AR_NEUQI_BACKEND", "auto").lower(),
+    # Cap the number of devices a hook-carrying sharded collection forward runs
+    # on concurrently (hook passes keep compiled runners python-bound between
+    # graph sections, which can convoy on the GIL). Only lower this on hosts
+    # where hook-carrying passes convoy. Values above the engaged world are
+    # no-ops. Default 0 = no cap.
+    "AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES": lambda: _get_non_negative_int_env(
+        "AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES", 0
+    ),
 }
 
 

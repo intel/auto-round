@@ -31,9 +31,10 @@ from auto_round.scheme_entry import (
 )
 
 
-def test_schemes_and_bits_build_auto_scheme():
-    """schemes= + bits= select AutoScheme options and the average target bits."""
-    scheme, kwargs = resolve_entry_scheme("W4A16", ("W4A16", "W8A16"), {"bits": 4.2})
+@pytest.mark.parametrize("candidates", [("W4A16", "W8A16"), ["W4A16", "W8A16"]])
+def test_scheme_candidates_and_bits_build_auto_scheme(candidates):
+    """scheme candidates + bits select AutoScheme options and average target bits."""
+    scheme, kwargs = resolve_entry_scheme(candidates, {"bits": 4.2})
     assert isinstance(scheme, AutoScheme)
     assert scheme.options == ["W4A16", "W8A16"]
     assert scheme.avg_bits == 4.2
@@ -43,7 +44,7 @@ def test_schemes_and_bits_build_auto_scheme():
 def test_auto_scheme_threads_aux_kwargs():
     """shared_layers/ignore_scale_zp_bits are consumed by the AutoScheme."""
     scheme, kwargs = resolve_entry_scheme(
-        "W4A16", ("W4A16", "W8A16"), {"bits": 5.0, "shared_layers": [["a", "b"]], "ignore_scale_zp_bits": True}
+        ("W4A16", "W8A16"), {"bits": 5.0, "shared_layers": [["a", "b"]], "ignore_scale_zp_bits": True}
     )
     assert scheme.shared_layers == [["a", "b"]]
     assert scheme.ignore_scale_zp_bits is True
@@ -55,7 +56,7 @@ def test_schemes_mixed_string_and_scheme_object():
     from auto_round.schemes import QuantizationScheme
 
     obj = QuantizationScheme.from_dict({"bits": 4, "group_size": 64, "sym": True, "data_type": "int"})
-    scheme, kwargs = resolve_entry_scheme("W4A16", ("W4A16", obj), {"bits": 4.5})
+    scheme, kwargs = resolve_entry_scheme(("W4A16", obj), {"bits": 4.5})
     assert isinstance(scheme, AutoScheme)
     assert scheme.options == ["W4A16", obj]
     assert scheme.avg_bits == 4.5
@@ -63,10 +64,10 @@ def test_schemes_mixed_string_and_scheme_object():
 
 
 def test_group_size_override_applies_to_all_schemes():
-    """schemes= + group_size=32 overrides every candidate scheme's group_size."""
+    """scheme candidates + group_size=32 overrides every candidate group size."""
     from auto_round.schemes import parse_scheme
 
-    scheme, kwargs = resolve_entry_scheme("W4A16", ("W4A16", "W8A16"), {"bits": 4.5, "group_size": 32})
+    scheme, kwargs = resolve_entry_scheme(("W4A16", "W8A16"), {"bits": 4.5, "group_size": 32})
     # group_size stays a config override (it is not an AutoScheme field); the
     # authoritative parse then applies it across every candidate option.
     assert kwargs == {"group_size": 32}
@@ -78,8 +79,8 @@ def test_group_size_override_applies_to_all_schemes():
 
 
 def test_legacy_options_avg_bits_still_resolve():
-    """options=/avg_bits= remain accepted and map to schemes/bits."""
-    scheme, kwargs = resolve_entry_scheme("W4A16", None, {"options": ("W4A16", "W8A16"), "avg_bits": 4.0})
+    """options=/avg_bits= remain accepted without warning."""
+    scheme, kwargs = resolve_entry_scheme("W4A16", {"options": ("W4A16", "W8A16"), "avg_bits": 4.0})
     assert isinstance(scheme, AutoScheme)
     assert scheme.options == ["W4A16", "W8A16"]
     assert scheme.avg_bits == 4.0
@@ -88,24 +89,50 @@ def test_legacy_options_avg_bits_still_resolve():
 
 def test_bits_without_schemes_coerces_integral_float():
     """bits=8.0 without schemes stays a plain integer weight bit override."""
-    scheme, kwargs = resolve_entry_scheme("W4A16", None, {"bits": 8.0, "group_size": 128})
+    scheme, kwargs = resolve_entry_scheme("W4A16", {"bits": 8.0, "group_size": 128})
     assert scheme == "W4A16"
     assert kwargs == {"bits": 8, "group_size": 128}
 
 
-def test_scheme_and_schemes_are_mutually_exclusive():
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        resolve_entry_scheme("W8A16", ("W4A16", "W8A16"), {})
+def test_old_schemes_parameter_is_rejected():
+    with pytest.raises(TypeError, match="pass candidate schemes through `scheme`"):
+        resolve_entry_scheme("W4A16", {"schemes": ("W4A16", "W8A16")})
 
 
 def test_fractional_bits_requires_schemes():
     with pytest.raises(ValueError, match="must be an integer"):
-        resolve_entry_scheme("W4A16", None, {"bits": 4.2})
+        resolve_entry_scheme("W4A16", {"bits": 4.2})
 
 
-def test_schemes_and_options_conflict():
+def test_scheme_candidates_and_options_conflict():
     with pytest.raises(ValueError, match="cannot be used together"):
-        resolve_entry_scheme("W4A16", ("W4A16", "W8A16"), {"options": ("W4A16", "W8A16")})
+        resolve_entry_scheme(("W4A16", "W8A16"), {"options": ("W4A16", "W8A16")})
+
+
+def test_auto_scheme_instance_passthrough_and_overrides():
+    original = AutoScheme(options=("W4A16", "W8A16"), avg_bits=4.2, nsamples=16)
+    scheme, kwargs = resolve_entry_scheme(original, {})
+    assert scheme is original
+    assert kwargs == {}
+    scheme, kwargs = resolve_entry_scheme(original, {"bits": 5.0, "ignore_scale_zp_bits": True, "group_size": 32})
+    assert scheme is not original
+    assert scheme.avg_bits == 5.0
+    assert scheme.ignore_scale_zp_bits is True
+    assert scheme.nsamples == 16
+    assert original.avg_bits == 4.2
+    assert original.ignore_scale_zp_bits is False
+    assert kwargs == {"group_size": 32}
+
+
+@pytest.mark.parametrize("candidates", [[], ()])
+def test_empty_scheme_candidates_rejected(candidates):
+    with pytest.raises(ValueError, match="must not be empty"):
+        resolve_entry_scheme(candidates, {"bits": 4.2})
+
+
+def test_scheme_candidates_require_average_bits():
+    with pytest.raises(ValueError, match="`bits` is required"):
+        resolve_entry_scheme(["W4A16", "W8A16"], {})
 
 
 def test_collect_config_scheme_overrides_omits_unset_fields():

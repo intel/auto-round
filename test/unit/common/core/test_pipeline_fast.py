@@ -55,7 +55,7 @@ def test_split_awq_plus_rtn():
 def test_pipeline_preprocessor_only_auto_appends_rtn():
     pipeline = AlgorithmComposer([AWQConfig()])
     assert type(pipeline.preprocessors[0]).__name__ == "AWQTransform"
-    assert isinstance(pipeline.block_quantizer, RTNQuantizer)
+    assert isinstance(pipeline.active_quantizer, RTNQuantizer)
 
 
 def test_pipeline_duplicate_preprocessor_rejected():
@@ -63,9 +63,12 @@ def test_pipeline_duplicate_preprocessor_rejected():
         AlgorithmComposer([AWQConfig(), AWQConfig()])
 
 
-def test_pipeline_multiple_block_quantizers_rejected():
-    with pytest.raises(ValueError, match="exactly one block-quantization config"):
-        AlgorithmComposer([RTNConfig(), SignRoundConfig()])
+def test_pipeline_multiple_quantizers_keep_config_order():
+    pipeline = AlgorithmComposer([RTNConfig(), SignRoundConfig()])
+    assert len(pipeline.quantizers) == 2
+    assert isinstance(pipeline.quantizers[0], RTNQuantizer)
+    assert pipeline.active_quantizer is pipeline.quantizers[-1]
+    assert isinstance(pipeline.active_quantizer.config, SignRoundConfig)
 
 
 @pytest.mark.parametrize(
@@ -75,7 +78,7 @@ def test_pipeline_multiple_block_quantizers_rejected():
         [RotationConfig(), RTNConfig(disable_opt_rtn=True)],
     ],
 )
-def test_block_quantizer_is_terminal_regardless_of_config_order(configs):
+def test_active_quantizer_is_terminal_regardless_of_config_order(configs):
     """The config list position must not move the terminal block quantizer."""
     pipeline = AlgorithmComposer(configs)
 
@@ -84,7 +87,7 @@ def test_block_quantizer_is_terminal_regardless_of_config_order(configs):
     # Preprocessors always lead the pipeline; rotation members (added by
     # RotationConfig) may sit between them and the terminal block quantizer.
     assert members[: len(pipeline.preprocessors)] == pipeline.preprocessors
-    assert members[-1] is pipeline.block_quantizer
+    assert members[-1] is pipeline.active_quantizer
     assert isinstance(members[-1], RTNQuantizer)
 
 

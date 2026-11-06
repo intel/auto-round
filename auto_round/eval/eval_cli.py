@@ -31,6 +31,46 @@ from auto_round.utils import (
 )
 
 
+def _has_eval_model_artifacts(model_dir: str) -> bool:
+    if not os.path.isdir(model_dir):
+        return False
+    artifact_names = {"config.json", "model_index.json", "modular_model_index.json"}
+    for name in artifact_names:
+        if os.path.isfile(os.path.join(model_dir, name)):
+            return True
+    return any(name.endswith(".gguf") for name in os.listdir(model_dir))
+
+
+def _resolve_exported_model_path(model_path):
+    """Resolve wrapper output directories to the actual exported model folder.
+
+    Some helper scripts pass a parent output directory (for example
+    ``outputs/aware_topk_tune_shared``) while the export itself lives in a
+    single nested subdirectory derived from model name and quantization scheme.
+    When there is exactly one child directory containing loadable model
+    artifacts, prefer that child automatically.
+    """
+    from auto_round.utils import logger
+
+    if not isinstance(model_path, str) or not os.path.isdir(model_path):
+        return model_path
+
+    if _has_eval_model_artifacts(model_path):
+        return model_path
+
+    candidate_dirs = []
+    for entry in os.listdir(model_path):
+        candidate = os.path.join(model_path, entry)
+        if os.path.isdir(candidate) and _has_eval_model_artifacts(candidate):
+            candidate_dirs.append(candidate)
+
+    if len(candidate_dirs) == 1:
+        resolved = candidate_dirs[0]
+        logger.info("Resolved evaluation model path '%s' to exported artifact '%s'.", model_path, resolved)
+        return resolved
+    return model_path
+
+
 class EvalArgumentParser(argparse.ArgumentParser):
 
     def __init__(self, *args, **kwargs):
@@ -200,6 +240,8 @@ def eval(args):
     require_version(
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
     )
+
+    args.model_name = _resolve_exported_model_path(args.model_name)
 
     if is_diffusion_model(args.model_name):
         from auto_round.eval.evaluation import evaluate_diffusion_model
