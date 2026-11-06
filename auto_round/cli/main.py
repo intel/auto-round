@@ -150,7 +150,7 @@ def _requests_overview_help(argv: list[str]) -> bool:
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
-    """Map parsed CLI args back to QuantizationConfig constructor kwargs.
+    """Collect scheme overrides from parsed CLI arguments.
 
     Handles inverted flags: --asym -> sym, --act_asym -> act_sym,
     --disable_act_dynamic -> act_dynamic.
@@ -617,6 +617,7 @@ def tune(args):
         scheme=scheme,
         recipe=args._recipe_plan,
         alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
+        **{key: value for key, value in common_kwargs.items() if value is not None},
         **_to_autoround_kwargs(
             args,
             low_cpu_mem_usage=low_cpu_mem_usage,

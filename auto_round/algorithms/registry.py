@@ -268,10 +268,7 @@ def coerce_config_class(config: object, target_cls: type) -> object:
     if type(config) is target_cls:
         return config
     new_config = copy.copy(config)
-    if hasattr(config, "scheme") and getattr(config, "scheme", None) is not None:
-        new_config.scheme = config.scheme.copy()
-    if hasattr(config, "_user_set_scheme_fields"):
-        new_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
+
     new_config.__class__ = target_cls
     return new_config
 

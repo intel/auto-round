@@ -15,7 +15,9 @@
 import pytest
 
 from auto_round import autoround
-from auto_round.autoround import _split_entry_kwargs
+from auto_round.algorithms import config_resolver
+from auto_round.algorithms.config_resolver import _split_entry_kwargs
+from auto_round.compressors.builder import _resolve_rtn_config
 
 
 def test_alg_configs_annotation_covers_supported_inputs():
@@ -52,7 +54,7 @@ def test_mx_nv_opt_rtn_imatrix_routing(scheme, disable_opt_rtn):
     from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
 
     config = RTNConfig(disable_opt_rtn=disable_opt_rtn)
-    autoround._select_rtn_compressor_base_cls(config, scheme, None, {})
+    _resolve_rtn_config(config, scheme, None, {})
 
     enabled = disable_opt_rtn is not True
     assert config.enable_imatrix is enabled
@@ -78,7 +80,7 @@ def test_custom_mx_int_opt_rtn_collects_imatrix(bits):
         act_dynamic=True,
     )
     config = RTNConfig()
-    autoround._select_rtn_compressor_base_cls(config, scheme, None, {})
+    _resolve_rtn_config(config, scheme, None, {})
 
     assert config.enable_imatrix is True
     assert isinstance(config, OptimizedRTNConfig)
@@ -89,7 +91,7 @@ def test_other_rtn_datatypes_do_not_enable_imatrix_by_default(scheme):
     from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
     config = RTNConfig()
-    autoround._select_rtn_compressor_base_cls(config, scheme, None, {})
+    _resolve_rtn_config(config, scheme, None, {})
 
     assert config.enable_imatrix is False
 
@@ -109,7 +111,7 @@ def test_split_entry_kwargs_partitions_owned_fields():
 
 def test_split_entry_kwargs_ignores_unknown_fields(monkeypatch):
     warnings = []
-    monkeypatch.setattr(autoround.logger, "warning_once", lambda message, *args: warnings.append(message % args))
+    monkeypatch.setattr(config_resolver.logger, "warning_once", lambda message, *args: warnings.append(message % args))
 
     grouped = _split_entry_kwargs({"unknown_option": 1}, context="test entry")
 

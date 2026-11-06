@@ -290,7 +290,7 @@ class BaseQuantizer(BaseAlgorithm):
                 and self.model_context.is_moe_model
                 and "expert" in layer.global_name
                 and "shared_expert" not in layer.global_name
-                and self.config.super_bits is None
+                and self.scheme.super_bits is None
             ):
                 disable_opt_rtn = True
                 logger.warning_once(
@@ -463,7 +463,7 @@ class BaseQuantizer(BaseAlgorithm):
         from auto_round.schemes import is_nvfp4_e5m3_gs
         from auto_round.utils import set_amax_for_all_moe_layers
 
-        if self.config.is_act_nv_fp or is_nvfp4_e5m3_gs(self.config.act_data_type or ""):
+        if self.scheme.is_act_nv_fp() or is_nvfp4_e5m3_gs(self.scheme.act_data_type or ""):
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 

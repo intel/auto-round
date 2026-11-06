@@ -16,6 +16,7 @@ from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.registry import register_algorithm
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 
 
 def _unique_opt_rtn_value(values) -> bool | None:
@@ -73,11 +74,7 @@ class AWQConfig(QuantizationConfig):
     smoothing, a separate ``active_quantizer`` (RTN, SignRound, …) performs
     the actual weight compression.
 
-    The quantization parameters (``bits``, ``group_size``, ``sym``,
-    ``data_type``, …) on this config are used *only* for the internal grid
-    search loss calculation (quantize-dequantize during scale selection).
-    The definitive quantization parameters for the final weight compression
-    step come from the pipeline's ``active_quantizer`` config.
+    AWQ uses the resolved AutoRound scheme for its internal grid-search loss.
     """
 
     @staticmethod
@@ -292,9 +289,7 @@ class AWQConfig(QuantizationConfig):
                 item should contain ``smooth_layer`` and
                 ``balance_layers`` entries. If None, mappings are inferred
                 automatically from the model structure.
-            **kwargs: Common quantization arguments forwarded to
-                QuantizationConfig, such as bits, group_size, sym,
-                data_type, and activation quantization fields.
+            **kwargs: Algorithm-local calibration arguments forwarded to QuantizationConfig.
         """
         enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         if enable_opt_rtn:
@@ -359,9 +354,9 @@ class AWQConfig(QuantizationConfig):
     def disable_opt_rtn(self, value: bool | None) -> None:
         self._disable_opt_rtn = value
 
-    def finalize_scheme(self) -> None:
+    def finalize_scheme(self, scheme: QuantizationScheme) -> None:
         """Adjust AWQ state that depends on the resolved run scheme."""
-        data_type = self.data_type
+        data_type = scheme.data_type
         is_gguf_double_quant = bool(data_type) and data_type.endswith(("_dq", "float_zp"))
         if self.apply_clip and is_gguf_double_quant:
             logger.warning(
@@ -381,7 +376,6 @@ class AWQConfig(QuantizationConfig):
             f"v2_scale_search={self.v2_scale_search!r}, "
             f"disable_opt_rtn={self.disable_opt_rtn}, "
             f"skip_moe={self.skip_moe}, "
-            f"bits={self.bits}, group_size={self.group_size}, sym={self.sym}, "
             f"mappings={'<explicit>' if self.mappings else 'auto'})"
         )
 
