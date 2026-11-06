@@ -55,7 +55,7 @@ def _compressor(outside_block_layers, rtncfg=True, tail_only=True, outside_names
         ),
     )
     o._adjust_immediate_packing_and_saving = MethodType(base_mod.BaseCompressor._adjust_immediate_packing_and_saving, o)
-    for name in ("_outside_block_quantized_tail_only_", "_tail_fed_lm_head_name", "_has_gguf_format"):
+    for name in ("_outside_block_quantized_tail_only", "_tail_fed_lm_head_name", "_has_gguf_format"):
         setattr(o, name, MethodType(getattr(base_mod.BaseCompressor, name), o))
     names = list(o.layer_config) if outside_names is None else outside_names
     o._quantized_outside_block_layer_names = lambda: list(names)
@@ -98,10 +98,10 @@ class TestImmediatePackingWithOutsideBlockLayers:
     def test_inplace_guard_restored_only_for_non_tail_layers(self):
         """The inplace=False starvation is back, but ONLY for outside-block
         layers the chain-tail lane does not cover (lm_head-class layers are
-        exempt through _outside_block_quantized_tail_only_)."""
+        exempt through _outside_block_quantized_tail_only)."""
         src = Path(base_mod.__file__).read_text(encoding="utf-8")
         assert "self.inplace = False" in src
-        assert "_outside_block_quantized_tail_only_()" in src
+        assert "_outside_block_quantized_tail_only()" in src
 
     def test_lm_head_named_non_head_keeps_the_guards(self):
         # the relaxation follows the same resolved-head predicate as the

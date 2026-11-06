@@ -497,8 +497,8 @@ class CompressionOrchestrator(BaseOrchestrator):
                 # keep the chain tail alive for tail-fed external layers (lm_head):
                 # the last block's fp reference and quantized-chain outputs are
                 # their inputs (through the final norm)
-                if getattr(self, "_tail_fed_layers_", None):
-                    self._lm_head_chain_tail_ = (new_q_input, reference_output)
+                if getattr(self, "_tail_fed_layers", None):
+                    self._lm_head_chain_tail = (new_q_input, reference_output)
 
                 # Belt-and-braces: no module may carry staged batched-search inputs
                 # (weight reshape + imatrix copies) across the block boundary;
@@ -885,13 +885,13 @@ class CompressionOrchestrator(BaseOrchestrator):
         # join the upfront capture call nor the outside-block q-capture pass -
         # no extra whole-model forwards. The init-time smoke gate decides the
         # lane: a failed check keeps lm_head on the ordinary capture walk.
-        self._decide_tail_fed_lane_(layer_names, all_blocks)
+        self._decide_tail_fed_lane(layer_names, all_blocks)
         if not self.has_variable_block_shape:
             to_cache_block_names = [block[0] for block in all_blocks]
         else:
             to_cache_block_names = flatten_list(all_blocks)
         _last_cache_name = to_cache_block_names[-1] if len(to_cache_block_names) > 1 else None
-        to_cache_layer_names = [n for n in layer_names if n not in self._tail_fed_layers_]
+        to_cache_layer_names = [n for n in layer_names if n not in self._tail_fed_layers]
         if self.super_group_size is not None:
             to_cache_layer_names = []
         if len(layer_names) > 0:
@@ -1187,20 +1187,20 @@ class CompressionOrchestrator(BaseOrchestrator):
         # tail-fed layers (lm_head) receive their inputs from the block loop's
         # chain output through the final norm - no input-capture entries
         tail_inputs = {}
-        for tail_name in list(getattr(self, "_tail_fed_layers_", []) or []):
+        for tail_name in list(getattr(self, "_tail_fed_layers", []) or []):
             if tail_name not in layer_names:
                 continue
-            derived = self._lm_head_tail_inputs_(tail_name, token_ids=token_ids)
+            derived = self._lm_head_tail_inputs(tail_name, token_ids=token_ids)
             if derived is not None:
                 tail_inputs[tail_name] = derived
-                self._attach_tail_imatrix_(tail_name, derived[0])
+                self._attach_tail_imatrix(tail_name, derived[0])
         if tail_inputs:
             layer_inputs = dict(layer_inputs)
             for tail_name, (fp_rows, _q_rows) in tail_inputs.items():
                 layer_inputs[tail_name] = fp_rows
             # release the raw tail: its residency would collide with the
             # wrapper's value/grad buffers during the tune below
-            self._lm_head_chain_tail_ = None
+            self._lm_head_chain_tail = None
 
         for layer_name in copy.deepcopy(layer_names):
             if layer_name not in layer_inputs:
@@ -1318,7 +1318,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             clear_memory(q_layer_input)
             memory_monitor.log_summary()
 
-    def _decide_tail_fed_lane_(self, layer_names, all_blocks) -> None:
+    def _decide_tail_fed_lane(self, layer_names, all_blocks) -> None:
         """Select the lm_head input lane at init, before any quantization work.
 
         Runs the two-token mocked-continuation smoke check against the loaded
@@ -1328,10 +1328,10 @@ class CompressionOrchestrator(BaseOrchestrator):
         executes through the head and captures its inputs, and the outside-block
         q-capture pass covers it like any external layer.
         """
-        self._tail_fed_layers_ = []
-        self._lm_head_chain_tail_ = None
-        self._tail_stub_arity_ = None
-        self._tail_lane_blocks_ = []
+        self._tail_fed_layers = []
+        self._lm_head_chain_tail = None
+        self._tail_stub_arity = None
+        self._tail_lane_blocks = []
         # same candidate the post_init relaxations were granted for
         lm_head_name = self._tail_fed_lm_head_name(layer_names)
         if lm_head_name is None:
@@ -1339,9 +1339,9 @@ class CompressionOrchestrator(BaseOrchestrator):
         flat_blocks = [name for block in all_blocks for name in block]
         smoke_ok, tuple_arity = tail_smoke_check(self.model_context.model, lm_head_name, flat_blocks)
         if smoke_ok:
-            self._tail_fed_layers_ = [lm_head_name]
-            self._tail_stub_arity_ = tuple_arity
-            self._tail_lane_blocks_ = flat_blocks
+            self._tail_fed_layers = [lm_head_name]
+            self._tail_stub_arity = tuple_arity
+            self._tail_lane_blocks = flat_blocks
             return
         logger.warning(
             "[lm_head] %s keeps the ordinary capture walk (the mocked-continuation smoke check failed): "
@@ -1373,7 +1373,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             rows = next(iter(rows.values()))
         return rows
 
-    def _quantizer_requests_q_inputs_(self) -> bool:
+    def _quantizer_requests_q_inputs(self) -> bool:
         """Whether the active quantizer(s) maintain the quantized-input chain.
 
         SignRound defaults ``enable_quanted_input`` to True, RTN (iters=0)
@@ -1386,7 +1386,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             quantizers = [quantizers]
         return any(bool(getattr(q, "enable_quanted_input", False)) for q in quantizers)
 
-    def _attach_tail_imatrix_(self, lm_head_name, fp_rows) -> None:
+    def _attach_tail_imatrix(self, lm_head_name, fp_rows) -> None:
         """Attach the fp-input imatrix for lm_head from the captured rows.
 
         In the walk lane this statistic is accumulated by the quantizer's
@@ -1416,7 +1416,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         module.imatrix_cnt = count
         logger.info("[lm_head] attached the fp-input imatrix for %s from %d chain-tail rows", lm_head_name, count)
 
-    def _mocked_tail_capture_(self, lm_head_name, fp_rows, q_rows, token_ids=None):
+    def _mocked_tail_capture(self, lm_head_name, fp_rows, q_rows, token_ids=None):
         """Capture lm_head input rows by running the model's own post-block code.
 
         Installs the smoke-validated pass-through stubs, puts a
@@ -1435,8 +1435,8 @@ class CompressionOrchestrator(BaseOrchestrator):
         from auto_round.compressors.tail_mock import CaptureHead, TailInjector, install_block_stubs_, restore_blocks_
 
         model = self.model_context.model
-        arity = getattr(self, "_tail_stub_arity_", None)
-        block_names = list(getattr(self, "_tail_lane_blocks_", None) or [])
+        arity = getattr(self, "_tail_stub_arity", None)
+        block_names = list(getattr(self, "_tail_lane_blocks", None) or [])
         if arity is None or not block_names:
             logger.warning(
                 "[lm_head] %s falls back to zero-shot RTN (the smoke-gate metadata for the mocked pass is missing)",
@@ -1571,7 +1571,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             for handle in hook_handles:
                 handle.remove()
 
-    def _lm_head_tail_inputs_(self, lm_head_name, token_ids=None):
+    def _lm_head_tail_inputs(self, lm_head_name, token_ids=None):
         """``(fp_rows, q_rows)`` for lm_head, captured through the model's own code.
 
         The block loop's chain output is the RAW last-block output; the mocked
@@ -1581,13 +1581,13 @@ class CompressionOrchestrator(BaseOrchestrator):
         model feeds the head. Returns ``None`` on any failure - the caller then
         falls back to zero-shot RTN for the layer.
         """
-        tail = getattr(self, "_lm_head_chain_tail_", None)
+        tail = getattr(self, "_lm_head_chain_tail", None)
         if tail is None:
             logger.warning(
                 "[lm_head] %s falls back to zero-shot RTN (no input-capture entry; the layer was excluded from capture caching): the block loop kept no chain tail",
                 lm_head_name,
             )
-            self._lm_head_chain_tail_ = None
+            self._lm_head_chain_tail = None
             return None
         new_q_output, reference_output = tail
         fp_rows = self._chain_hidden_rows(reference_output)
@@ -1601,10 +1601,10 @@ class CompressionOrchestrator(BaseOrchestrator):
                 lm_head_name,
                 type(fp_rows).__name__,
             )
-            self._lm_head_chain_tail_ = None
+            self._lm_head_chain_tail = None
             return None
         q_rows = self._chain_hidden_rows(new_q_output) if new_q_output is not None else None
-        q_requested = self._quantizer_requests_q_inputs_()
+        q_requested = self._quantizer_requests_q_inputs()
         if not isinstance(q_rows, (list, tuple)) or len(q_rows) != len(fp_rows):
             if q_requested:
                 logger.warning(
@@ -1621,14 +1621,14 @@ class CompressionOrchestrator(BaseOrchestrator):
                     lm_head_name,
                 )
             q_rows = None
-        captured = self._mocked_tail_capture_(lm_head_name, fp_rows, q_rows, token_ids=token_ids)
+        captured = self._mocked_tail_capture(lm_head_name, fp_rows, q_rows, token_ids=token_ids)
         if captured is None:
             logger.warning(
                 "[lm_head] %s falls back to zero-shot RTN (the captured head-input rows are unavailable)",
                 lm_head_name,
             )
             # the raw tail only fed the capture; release it on the fallback path
-            self._lm_head_chain_tail_ = None
+            self._lm_head_chain_tail = None
             return None
         return captured
 

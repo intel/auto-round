@@ -159,7 +159,7 @@ def restore_blocks_(model: nn.Module, restore_info: dict[str, object] | None) ->
         setattr(parent, attr, original)
 
 
-def _smoke_logits_(output) -> torch.Tensor | None:
+def _smoke_logits(output) -> torch.Tensor | None:
     """Best-effort logits extraction from a model forward output."""
     if isinstance(output, torch.Tensor):
         return output
@@ -216,7 +216,7 @@ def tail_smoke_check(
                 restore_info = install_block_stubs_(model, block_names, arity=arity)
                 with torch.no_grad():
                     output = model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
-                logits = _smoke_logits_(output)
+                logits = _smoke_logits(output)
                 if logits is not None and logits.dim() == 3 and logits.shape[0] == 1 and logits.shape[-1] == vocab:
                     return (True, arity)
             except Exception:  # any family-specific failure: try the next arity

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
-"""_resolve_pack_device_: int64 pack intermediates (~16 B/elem) must fit the
+"""_resolve_pack_device: int64 pack intermediates (~16 B/elem) must fit the
 live free VRAM or the pack drops to the host.
 
 A 248k-vocab lm_head (1.27B params -> ~18.9GiB intermediates) drops to cpu when
@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import torch
 
-from auto_round.compressors.utils import _resolve_pack_device_
+from auto_round.compressors.utils import _resolve_pack_device
 
 
 class _FakeAR:
@@ -39,13 +39,13 @@ class TestResolvePackDevice:
     def test_huge_layer_drops_to_cpu_when_free_vram_low(self):
         w = SimpleNamespace(numel=lambda: 1271398400)  # ~18.9GiB at 16 B/elem
         with patch("auto_round.utils.device_manager.get_ar_device", lambda t: _FakeAR(8 * _GIB, 23 * _GIB)):
-            out = _resolve_pack_device_(w, torch.device("cuda:0"))
+            out = _resolve_pack_device(w, torch.device("cuda:0"))
         assert out.type == "cpu"
 
     def test_body_sized_layer_stays_on_device(self):
         w = SimpleNamespace(numel=lambda: 89_000_000)  # ~1.3GiB at 16 B/elem
         with patch("auto_round.utils.device_manager.get_ar_device", lambda t: _FakeAR(8 * _GIB, 23 * _GIB)):
-            out = _resolve_pack_device_(w, torch.device("cuda:0"))
+            out = _resolve_pack_device(w, torch.device("cuda:0"))
         assert out.type == "cuda"
 
     def test_cpu_default_short_circuits_without_probe(self):
@@ -56,7 +56,7 @@ class TestResolvePackDevice:
             raise AssertionError("cpu default must skip the probe")
 
         with patch("auto_round.utils.device_manager.get_ar_device", _probe):
-            out = _resolve_pack_device_(SimpleNamespace(numel=lambda: 10**9), torch.device("cpu"))
+            out = _resolve_pack_device(SimpleNamespace(numel=lambda: 10**9), torch.device("cpu"))
         assert out.type == "cpu"
         assert probed == []
 
@@ -65,8 +65,8 @@ class TestResolvePackDevice:
             raise RuntimeError("no cuda here")
 
         with patch("auto_round.utils.device_manager.get_ar_device", _boom):
-            out = _resolve_pack_device_(SimpleNamespace(numel=lambda: 10**9), torch.device("cuda:0"))
+            out = _resolve_pack_device(SimpleNamespace(numel=lambda: 10**9), torch.device("cuda:0"))
         assert out.type == "cuda"
 
     def test_none_weight_passes_through(self):
-        assert _resolve_pack_device_(None, torch.device("cuda:0")).type == "cuda"
+        assert _resolve_pack_device(None, torch.device("cuda:0")).type == "cuda"

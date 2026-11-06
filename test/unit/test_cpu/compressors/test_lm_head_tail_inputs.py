@@ -44,18 +44,18 @@ class _TinyModel(nn.Module):
 def _orchestrator_like(model):
     o = SimpleNamespace(
         model_context=SimpleNamespace(model=model),
-        _tail_fed_layers_=[],
-        _lm_head_chain_tail_=None,
-        _tail_stub_arity_=None,
-        _tail_lane_blocks_=[],
+        _tail_fed_layers=[],
+        _lm_head_chain_tail=None,
+        _tail_stub_arity=None,
+        _tail_lane_blocks=[],
         _offloader=None,
     )
     o._chain_hidden_rows = CompressionOrchestrator._chain_hidden_rows  # staticmethod: bind directly
     for name in (
-        "_lm_head_tail_inputs_",
-        "_mocked_tail_capture_",
-        "_attach_tail_imatrix_",
-        "_quantizer_requests_q_inputs_",
+        "_lm_head_tail_inputs",
+        "_mocked_tail_capture",
+        "_attach_tail_imatrix",
+        "_quantizer_requests_q_inputs",
     ):
         setattr(o, name, MethodType(getattr(CompressionOrchestrator, name), o))
     return o
@@ -91,7 +91,7 @@ class TestTailImatrix:
         model = _TinyModel()
         o = _orchestrator_like(model)
         rows = self._rows()
-        o._attach_tail_imatrix_("lm_head", rows)
+        o._attach_tail_imatrix("lm_head", rows)
         expected = None
         n = 0
         for row in rows:
@@ -107,13 +107,13 @@ class TestTailImatrix:
         model = _TinyModel()
         o = _orchestrator_like(model)
         model.lm_head.imatrix = torch.ones(8)
-        o._attach_tail_imatrix_("lm_head", self._rows())
+        o._attach_tail_imatrix("lm_head", self._rows())
         assert torch.equal(model.lm_head.imatrix, torch.ones(8))
 
     def test_imatrix_skipped_without_rows(self):
         model = _TinyModel()
         o = _orchestrator_like(model)
-        o._attach_tail_imatrix_("lm_head", [])
+        o._attach_tail_imatrix("lm_head", [])
         assert not hasattr(model.lm_head, "imatrix")
 
 
@@ -123,12 +123,12 @@ class TestLaneConsumesTailInputs:
     def _run_lane(self, monkeypatch, fail_with=None):
         model = _ForwardModel()
         o = _orchestrator_like(model)
-        o._tail_fed_layers_ = ["lm_head"]
-        o._tail_stub_arity_ = 1
-        o._tail_lane_blocks_ = ["model.layers.0", "model.layers.1"]
+        o._tail_fed_layers = ["lm_head"]
+        o._tail_stub_arity = 1
+        o._tail_lane_blocks = ["model.layers.0", "model.layers.1"]
         o._offloader = None
         fp, q = [torch.randn(1, 5, 8) for _ in range(2)], [torch.randn(1, 5, 8) for _ in range(2)]
-        o._lm_head_chain_tail_ = (q, fp)
+        o._lm_head_chain_tail = (q, fp)
 
         captured_calls = []
 
@@ -145,7 +145,7 @@ class TestLaneConsumesTailInputs:
                     (
                         [r for r in fp_inputs] if fp_inputs is not None else None,
                         [r for r in q_inputs] if q_inputs is not None else None,
-                        o._lm_head_chain_tail_ is None,
+                        o._lm_head_chain_tail is None,
                     )
                 )
 
@@ -192,7 +192,7 @@ class TestLaneConsumesTailInputs:
         for got, exp in zip(q_used, exp_q):
             assert torch.allclose(got, exp, atol=1e-6)
         # the tail rows were consumed and released; no capture pass was issued at all
-        assert o._lm_head_chain_tail_ is None
+        assert o._lm_head_chain_tail is None
         assert cache_calls == []
 
     def test_contained_oom_prints_the_shared_census(self, monkeypatch):
@@ -274,15 +274,15 @@ def _capturing_logger_():
 def _capture_orchestrator(model, arity=1, blocks=None):
     o = SimpleNamespace(
         model_context=SimpleNamespace(model=model),
-        _tail_fed_layers_=[],
-        _lm_head_chain_tail_=None,
-        _tail_stub_arity_=arity,
-        _tail_lane_blocks_=blocks if blocks is not None else ["model.layers.0", "model.layers.1"],
+        _tail_fed_layers=[],
+        _lm_head_chain_tail=None,
+        _tail_stub_arity=arity,
+        _tail_lane_blocks=blocks if blocks is not None else ["model.layers.0", "model.layers.1"],
         _offloader=None,
     )
     o._chain_hidden_rows = CompressionOrchestrator._chain_hidden_rows
-    o._quantizer_requests_q_inputs_ = MethodType(CompressionOrchestrator._quantizer_requests_q_inputs_, o)
-    for name in ("_lm_head_tail_inputs_", "_attach_tail_imatrix_", "_mocked_tail_capture_"):
+    o._quantizer_requests_q_inputs = MethodType(CompressionOrchestrator._quantizer_requests_q_inputs, o)
+    for name in ("_lm_head_tail_inputs", "_attach_tail_imatrix", "_mocked_tail_capture"):
         setattr(o, name, MethodType(getattr(CompressionOrchestrator, name), o))
     return o
 
@@ -303,7 +303,7 @@ class TestMockedTailCapture:
         model = _ForwardModel()
         o = _capture_orchestrator(model)
         fp = _rows()
-        out = o._mocked_tail_capture_("lm_head", fp, None, _ids_like(fp))
+        out = o._mocked_tail_capture("lm_head", fp, None, _ids_like(fp))
         assert out is not None
         with torch.no_grad():
             expected = [model.model.norm(r) for r in fp]
@@ -315,7 +315,7 @@ class TestMockedTailCapture:
         model = _ForwardModel(scale=16.0)
         o = _capture_orchestrator(model)
         fp = _rows()
-        out = o._mocked_tail_capture_("lm_head", fp, None, _ids_like(fp))
+        out = o._mocked_tail_capture("lm_head", fp, None, _ids_like(fp))
         assert out is not None
         with torch.no_grad():
             expected = [model.model.norm(r) / 16.0 for r in fp]
@@ -326,12 +326,12 @@ class TestMockedTailCapture:
         model = _ForwardModel()
         o = _capture_orchestrator(model)
         fp, q = _rows(), _rows()
-        out = o._mocked_tail_capture_("lm_head", fp, q, _ids_like(fp))
+        out = o._mocked_tail_capture("lm_head", fp, q, _ids_like(fp))
         assert out is not None and out[1] is not None and len(out[1]) == len(fp)
 
     def test_missing_smoke_metadata_returns_none(self):
         o = _capture_orchestrator(_ForwardModel(), arity=None)
-        out = o._mocked_tail_capture_("lm_head", _rows(), None, _ids_like(_rows()))
+        out = o._mocked_tail_capture("lm_head", _rows(), None, _ids_like(_rows()))
         assert out is None
 
     def test_raising_model_returns_none_with_warning(self):
@@ -344,7 +344,7 @@ class TestMockedTailCapture:
         o = _capture_orchestrator(model)
         records, restore = _capturing_logger_()
         try:
-            out = o._mocked_tail_capture_("lm_head", _rows(), None, _ids_like(_rows()))
+            out = o._mocked_tail_capture("lm_head", _rows(), None, _ids_like(_rows()))
         finally:
             restore()
         assert out is None
@@ -355,7 +355,7 @@ class TestMockedTailCapture:
         layers_before = list(model.model.layers)
         head_before = model.lm_head
         o = _capture_orchestrator(model)
-        o._mocked_tail_capture_("lm_head", _rows(), None, _ids_like(_rows()))
+        o._mocked_tail_capture("lm_head", _rows(), None, _ids_like(_rows()))
         assert model.lm_head is head_before
         for before, after in zip(layers_before, model.model.layers):
             assert before is after
@@ -363,9 +363,9 @@ class TestMockedTailCapture:
     def test_lm_head_tail_inputs_end_to_end(self):
         model = _ForwardModel()
         o = _capture_orchestrator(model)
-        o._lm_head_chain_tail_ = (None, _rows())
+        o._lm_head_chain_tail = (None, _rows())
         o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=False))
-        out = o._lm_head_tail_inputs_("lm_head", token_ids=_ids_like(_rows()))
+        out = o._lm_head_tail_inputs("lm_head", token_ids=_ids_like(_rows()))
         assert out is not None
         with torch.no_grad():
             expected = [model.model.norm(r) for r in _rows()]
@@ -374,10 +374,10 @@ class TestMockedTailCapture:
 
     def test_missing_tail_falls_back(self):
         o = _capture_orchestrator(_ForwardModel())
-        o._lm_head_chain_tail_ = None
+        o._lm_head_chain_tail = None
         records, restore = _capturing_logger_()
         try:
-            out = o._lm_head_tail_inputs_("lm_head")
+            out = o._lm_head_tail_inputs("lm_head")
         finally:
             restore()
         assert out is None
@@ -385,26 +385,26 @@ class TestMockedTailCapture:
 
     def test_bad_row_format_falls_back(self):
         o = _capture_orchestrator(_ForwardModel())
-        o._lm_head_chain_tail_ = (None, {"hidden_states": "not-a-list"})
-        assert o._lm_head_tail_inputs_("lm_head") is None
+        o._lm_head_chain_tail = (None, {"hidden_states": "not-a-list"})
+        assert o._lm_head_tail_inputs("lm_head") is None
 
     def test_malformed_q_rows_degrade_to_fp_only(self):
         model = _ForwardModel()
         o = _capture_orchestrator(model)
-        o._lm_head_chain_tail_ = (None, _rows())
+        o._lm_head_chain_tail = (None, _rows())
         o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=False))
         # q variant malformed relative to fp rows: capture proceeds fp-only
-        out = o._lm_head_tail_inputs_("lm_head", token_ids=_ids_like(_rows()))
+        out = o._lm_head_tail_inputs("lm_head", token_ids=_ids_like(_rows()))
         assert out is not None and out[1] is None
 
     def test_q_absence_by_config_is_info_not_warning(self):
         model = _ForwardModel()
         o = _capture_orchestrator(model)
-        o._lm_head_chain_tail_ = (None, _rows())
+        o._lm_head_chain_tail = (None, _rows())
         o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=False))
         records, restore = _capturing_logger_()
         try:
-            out = o._lm_head_tail_inputs_("lm_head", token_ids=_ids_like(_rows()))
+            out = o._lm_head_tail_inputs("lm_head", token_ids=_ids_like(_rows()))
         finally:
             restore()
         assert out is not None and out[1] is None
@@ -414,11 +414,11 @@ class TestMockedTailCapture:
     def test_q_absence_when_requested_stays_warning(self):
         model = _ForwardModel()
         o = _capture_orchestrator(model)
-        o._lm_head_chain_tail_ = (None, _rows())
+        o._lm_head_chain_tail = (None, _rows())
         o.alg_composer = SimpleNamespace(block_quantizer=SimpleNamespace(enable_quanted_input=True))
         records, restore = _capturing_logger_()
         try:
-            out = o._lm_head_tail_inputs_("lm_head", token_ids=_ids_like(_rows()))
+            out = o._lm_head_tail_inputs("lm_head", token_ids=_ids_like(_rows()))
         finally:
             restore()
         assert out is not None
@@ -451,7 +451,7 @@ class TestMockedTailCapture:
         o = _capture_orchestrator(model)
         o._offloader = offloader
         fp = _rows()
-        out = o._mocked_tail_capture_("lm_head", fp, None, _ids_like(fp))
+        out = o._mocked_tail_capture("lm_head", fp, None, _ids_like(fp))
         assert out is not None
         assert any("norm" in n for n in offloader.reloaded)
 
@@ -463,7 +463,7 @@ class TestMockedTailCapture:
             model.model.norm.weight = nn.Parameter(torch.empty(8, device="meta"))
         o = _capture_orchestrator(model)
         o._offloader = None
-        out = o._mocked_tail_capture_("lm_head", _rows(), None, _ids_like(_rows()))
+        out = o._mocked_tail_capture("lm_head", _rows(), None, _ids_like(_rows()))
         assert out is None
 
     def test_negative_padding_ids_are_clamped(self):
@@ -471,7 +471,7 @@ class TestMockedTailCapture:
         o = _capture_orchestrator(model)
         fp = _rows(n=2)
         ids = [torch.tensor([[-100, -100, 5, 7]]), torch.tensor([[3, -100, 9, 1]])]
-        out = o._mocked_tail_capture_("lm_head", fp, None, token_ids=ids)
+        out = o._mocked_tail_capture("lm_head", fp, None, token_ids=ids)
         assert out is not None and len(out[0]) == 2
 
     def test_records_mismatch_returns_none(self):
@@ -490,7 +490,7 @@ class TestMockedTailCapture:
         o = _capture_orchestrator(model)
         layers_before = list(model.model.layers)
         head_before = model.lm_head
-        out = o._mocked_tail_capture_("lm_head", _rows(n=2), None, _ids_like(_rows(n=2)))
+        out = o._mocked_tail_capture("lm_head", _rows(n=2), None, _ids_like(_rows(n=2)))
         assert out is None
         # restore still happened on the failure path
         assert model.lm_head is head_before
@@ -508,7 +508,7 @@ class TestTailLaneDecision:
         o.formats = []
         o.compress_context = SimpleNamespace(is_immediate_packing=True, is_immediate_saving=False)
         o.super_group_size = None
-        for name in ("_decide_tail_fed_lane_", "_tail_fed_lm_head_name", "_has_gguf_format"):
+        for name in ("_decide_tail_fed_lane", "_tail_fed_lm_head_name", "_has_gguf_format"):
             setattr(o, name, MethodType(getattr(CompressionOrchestrator, name), o))
         return o
 
@@ -528,10 +528,10 @@ class TestTailLaneDecision:
 
         monkeypatch.setattr(orch_mod, "tail_smoke_check", fake_smoke)
         o = self._decider(self._model_with_blocks())
-        o._decide_tail_fed_lane_(["lm_head"], [["model.layers.0", "model.layers.1"]])
-        assert o._tail_fed_layers_ == ["lm_head"]
-        assert o._tail_stub_arity_ == 1
-        assert o._tail_lane_blocks_ == ["model.layers.0", "model.layers.1"]
+        o._decide_tail_fed_lane(["lm_head"], [["model.layers.0", "model.layers.1"]])
+        assert o._tail_fed_layers == ["lm_head"]
+        assert o._tail_stub_arity == 1
+        assert o._tail_lane_blocks == ["model.layers.0", "model.layers.1"]
         # the tail-only relaxations stay granted on the pass path
         assert o.inplace is True and o.compress_context.is_immediate_packing is True
         assert calls == [("lm_head", ["model.layers.0", "model.layers.1"])]
@@ -543,11 +543,11 @@ class TestTailLaneDecision:
         o = self._decider(self._model_with_blocks())
         records, restore = _capturing_logger_()
         try:
-            o._decide_tail_fed_lane_(["lm_head"], [["model.layers.0", "model.layers.1"]])
+            o._decide_tail_fed_lane(["lm_head"], [["model.layers.0", "model.layers.1"]])
         finally:
             restore()
-        assert o._tail_fed_layers_ == []
-        assert o._tail_stub_arity_ is None
+        assert o._tail_fed_layers == []
+        assert o._tail_stub_arity is None
         # the relaxations granted on the tail-only premise are reverted
         assert o.inplace is False
         assert o.compress_context.is_immediate_packing is False
@@ -559,7 +559,7 @@ class TestTailLaneDecision:
         monkeypatch.setattr(orch_mod, "tail_smoke_check", lambda *a, **k: (False, None))
         o = self._decider(self._model_with_blocks())
         o.compress_context.is_immediate_saving = True  # granted only while packing is on
-        o._decide_tail_fed_lane_(["lm_head"], [["model.layers.0"]])
+        o._decide_tail_fed_lane(["lm_head"], [["model.layers.0"]])
         # the granted pair reverts together: saving is never on while packing is off
         assert o.compress_context.is_immediate_packing is False
         assert o.compress_context.is_immediate_saving is False
@@ -572,8 +572,8 @@ class TestTailLaneDecision:
 
         monkeypatch.setattr(orch_mod, "tail_smoke_check", fail_if_called)
         o = self._decider(self._model_with_blocks())
-        o._decide_tail_fed_lane_(["other.layer"], [["model.layers.0", "model.layers.1"]])
-        assert o._tail_fed_layers_ == []
+        o._decide_tail_fed_lane(["other.layer"], [["model.layers.0", "model.layers.1"]])
+        assert o._tail_fed_layers == []
         # relaxations granted elsewhere are left alone when the lane never engages
         assert o.inplace is True and o.compress_context.is_immediate_packing is True
 
@@ -587,8 +587,8 @@ class TestTailLaneDecision:
 
         monkeypatch.setattr(orch_mod, "tail_smoke_check", fail_if_called)
         o = self._decider(self._model_with_blocks())
-        o._decide_tail_fed_lane_(["model.mtp.lm_head"], [["model.layers.0", "model.layers.1"]])
-        assert o._tail_fed_layers_ == []
+        o._decide_tail_fed_lane(["model.mtp.lm_head"], [["model.layers.0", "model.layers.1"]])
+        assert o._tail_fed_layers == []
 
     def test_gguf_and_super_group_runs_never_use_the_lane(self):
         o = self._decider(self._model_with_blocks())
@@ -617,6 +617,6 @@ class TestStreamShapeGuard:
                 return self.lm_head(hidden[..., :4].reshape(-1, 4))
 
         o = _capture_orchestrator(Model(), arity=1)
-        assert o._tail_lane_blocks_  # lane engaged
-        captured = o._mocked_tail_capture_("lm_head", [torch.randn(2, 8)], None, token_ids=None)
+        assert o._tail_lane_blocks  # lane engaged
+        captured = o._mocked_tail_capture("lm_head", [torch.randn(2, 8)], None, token_ids=None)
         assert captured is None  # shape validation declined the capture

@@ -1741,8 +1741,8 @@ class BaseOrchestrator:
         """The outside-block layer the chain-tail lane may feed, or ``None``.
 
         Single source of truth for both consumers: the post_init relaxations
-        (:meth:`_outside_block_quantized_tail_only_`) and the orchestrator's
-        lane decision (``_decide_tail_fed_lane_``). The candidate is the
+        (:meth:`_outside_block_quantized_tail_only`) and the orchestrator's
+        lane decision (``_decide_tail_fed_lane``). The candidate is the
         model's resolved LM head (``get_lm_head_name``: the
         ``get_output_embeddings()`` declaration first) when it is a quantized
         outside-block layer. GGUF and super-group (k-quant) runs resolve
@@ -1757,7 +1757,7 @@ class BaseOrchestrator:
         head = get_lm_head_name(self.model_context.model)
         return head if head is not None and head in outside_names else None
 
-    def _outside_block_quantized_tail_only_(self) -> bool:
+    def _outside_block_quantized_tail_only(self) -> bool:
         """Whether the only outside-block quantized layer is the tail-fed LM head.
 
         The tail-fed head gets its inputs from the calibration chain (no
@@ -1824,7 +1824,7 @@ class BaseOrchestrator:
         if (
             self.has_qlayer_outside_block
             and self.need_calib
-            and not self._outside_block_quantized_tail_only_()
+            and not self._outside_block_quantized_tail_only()
             and (
                 self.compress_context.formats is None
                 or "gguf" not in self.compress_context.formats[0].__class__.__name__.lower()
@@ -1959,7 +1959,7 @@ class BaseOrchestrator:
         # layers still run the legacy capture walk - for those the old
         # restriction stands. GGUF has always bypassed this concern.
         if self.has_qlayer_outside_block and self.need_calib and not has_single_gguf_format:
-            if not self._outside_block_quantized_tail_only_():
+            if not self._outside_block_quantized_tail_only():
                 self.compress_context.is_immediate_packing = False
         if not ("causallm" in self.model_context.model.__class__.__name__.lower() and not self.model_context.is_mllm):
             # TODO For tied keys, there may some issues, we haven't not verified this

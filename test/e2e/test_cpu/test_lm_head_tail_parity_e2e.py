@@ -106,7 +106,7 @@ class TestLmHeadTailParityE2E:
         spy_tail = _RowSpy()
         spy_tail.install(monkeypatch)
         monkeypatch.setattr(
-            orchestrator_mod.CompressionOrchestrator, "_attach_tail_imatrix_", lambda self, name, rows: None
+            orchestrator_mod.CompressionOrchestrator, "_attach_tail_imatrix", lambda self, name, rows: None
         )
         run_tail = _quantize_lmonly(tiny_gptj_model_path, _Loader(vocab))
         monkeypatch.undo()

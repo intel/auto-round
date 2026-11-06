@@ -309,14 +309,14 @@ class TestLmHeadTailArchMatrix:
         spy_walk = _RowSpy()
         spy_walk.install(monkeypatch)
         monkeypatch.setattr(base_mod, "get_lm_head_name", lambda model: None)
-        monkeypatch.setattr(orchestrator_mod.CompressionOrchestrator, "_attach_tail_imatrix_", lambda self, n, r: None)
+        monkeypatch.setattr(orchestrator_mod.CompressionOrchestrator, "_attach_tail_imatrix", lambda self, n, r: None)
         run_walk = _quantize(path, head_pin, block_prefix)
         monkeypatch.undo()
 
         # tail arm (the mocked-capture lane)
         spy_tail = _RowSpy()
         spy_tail.install(monkeypatch)
-        monkeypatch.setattr(orchestrator_mod.CompressionOrchestrator, "_attach_tail_imatrix_", lambda self, n, r: None)
+        monkeypatch.setattr(orchestrator_mod.CompressionOrchestrator, "_attach_tail_imatrix", lambda self, n, r: None)
         run_tail = _quantize(path, head_pin, block_prefix)
         monkeypatch.undo()
 
@@ -408,14 +408,14 @@ class TestLmHeadTailArchMatrix:
         assert head_pin == "lm_head", head_pin
 
         outcome = {}
-        orig_capture = orchestrator_mod.CompressionOrchestrator._mocked_tail_capture_
+        orig_capture = orchestrator_mod.CompressionOrchestrator._mocked_tail_capture
 
         def spy(self, *a, **k):
             result = orig_capture(self, *a, **k)
             outcome["returned"] = result
             return result
 
-        monkeypatch.setattr(orchestrator_mod.CompressionOrchestrator, "_mocked_tail_capture_", spy)
+        monkeypatch.setattr(orchestrator_mod.CompressionOrchestrator, "_mocked_tail_capture", spy)
         run = _quantize(path, head_pin, block_prefix)
         # the capture declined (shape validation) rather than returning mangled rows
         assert outcome["returned"] is None

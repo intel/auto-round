@@ -871,7 +871,7 @@ def _get_save_folder_name(format, *args, **kwargs) -> str:
     return compress_context.output_dir
 
 
-def _resolve_pack_device_(weight, default_device):
+def _resolve_pack_device(weight, default_device):
     """Pack device for a layer: the host when int64 intermediates can't fit VRAM.
 
     Huge layers (a 248k-vocab lm_head) pack into int64 intermediates of ~8-16
@@ -916,7 +916,7 @@ def immediate_pack(name: str, layer_config: dict, device=None):
         return
     PACK_WRAP["pre"] += _time.perf_counter() - _t0
     _t1 = _time.perf_counter()
-    pack_device = _resolve_pack_device_(
+    pack_device = _resolve_pack_device(
         getattr(get_module(model_context.model, name), "weight", None),
         device if device is not None else device_manager.device,
     )
