@@ -995,6 +995,7 @@ def sharded_nograd_forward(
     merge_stats: Mapping[str, str] | None = None,
     max_devices: int = 0,
     pool: MirrorPool | None = None,
+    eager: bool = False,
 ):
     """Parallelize a no-grad collection forward across ``devices``.
 
@@ -1034,6 +1035,8 @@ def sharded_nograd_forward(
     # the wall is the largest slice; nothing is dropped or run serially
     world = max(1, min(world, n))
     if len(devices) < 2 or world < 2:
+        if eager:
+            return runner(block, inputs, input_others, cache_device=out_device, eager=True)
         return runner(block, inputs, input_others, cache_device=out_device)
     devices = list(devices)[:world]
     bounds = contiguous_shard_bounds(n, world)
@@ -1095,9 +1098,15 @@ def sharded_nograd_forward(
         # returned below is a distributed pool (device r owns shard r's rows)
         if dev_r.type == "cuda":
             with torch.cuda.device(dev_r):
-                parts[r] = runner(rep, inputs, input_others, shards[r], cache_device=dev_r)
+                if eager:
+                    parts[r] = runner(rep, inputs, input_others, shards[r], cache_device=dev_r, eager=True)
+                else:
+                    parts[r] = runner(rep, inputs, input_others, shards[r], cache_device=dev_r)
         else:
-            parts[r] = runner(rep, inputs, input_others, shards[r], cache_device=dev_r)
+            if eager:
+                parts[r] = runner(rep, inputs, input_others, shards[r], cache_device=dev_r, eager=True)
+            else:
+                parts[r] = runner(rep, inputs, input_others, shards[r], cache_device=dev_r)
         if ev is not None:
             ev[1].record()
             evs[r] = ev
