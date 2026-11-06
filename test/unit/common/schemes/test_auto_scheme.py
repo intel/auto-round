@@ -503,10 +503,10 @@ def test_autoscheme_default_shared_layers_field_defaults_true():
 
 
 def test_entry_threads_default_shared_layers_into_auto_scheme():
-    """AutoRound(schemes=..., default_shared_layers=False) reaches the AutoScheme object."""
+    """AutoRound(scheme=(...), default_shared_layers=False) reaches the AutoScheme object."""
     from auto_round.scheme_entry import resolve_entry_scheme
 
-    scheme, kwargs = resolve_entry_scheme("W4A16", ("W4A16", "W8A16"), {"bits": 4.5, "default_shared_layers": False})
+    scheme, kwargs = resolve_entry_scheme(("W4A16", "W8A16"), {"bits": 4.5, "default_shared_layers": False})
     assert scheme.default_shared_layers is False
     assert "default_shared_layers" not in kwargs
 
@@ -516,7 +516,7 @@ def test_entry_warns_and_drops_shared_layers_without_schemes():
     from auto_round.scheme_entry import resolve_entry_scheme
 
     scheme, kwargs = resolve_entry_scheme(
-        "W4A16", None, {"shared_layers": [["q_proj", "k_proj"]], "default_shared_layers": False}
+        "W4A16", {"shared_layers": [["q_proj", "k_proj"]], "default_shared_layers": False}
     )
     assert scheme == "W4A16"
     assert "shared_layers" not in kwargs and "default_shared_layers" not in kwargs

@@ -7,7 +7,7 @@
 </p>
 
 
-<h3>PTQ-Level Efficiency, QAT-Level Accuracy.</h3>
+<h3>PTQ-Level Efficiency, QAT-Level Accuracy</h3>
 
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.16.1-green)](https://github.com/intel/auto-round/releases)
@@ -32,6 +32,7 @@
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
+
 ---
 <div align="left">
 
@@ -49,6 +50,8 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 
 ## 🆕 What's New
+
+* [WIP] For quantization at 4 bits and above, we currently recommend mixing 75% UltraChat with 25% OpenCode to improve reasoning capabilities and agent compatibility. With the default `nsamples=128`, use `--dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"`. See the [doc](./docs/calibration_acc.md) for details. We will update the default calibration dataset after the evaluation is complete.
 
 * [2026/10] We now show that **W2A16** accuracy improves steadily as more tuning cost is invested. See the [W2A16 accuracy results](./docs/alg_202508.md).
 
@@ -105,6 +108,8 @@ Out-of-the-box quantization for 10+ vision-language models [example models](http
 
 ✅ **Multiple Recipes**
 Choose from `auto-round-best`, `auto-round`, `auto-round-light`, `auto-round-opt-rtn` (optimized RTN) and `auto-round-rtn` (pure RTN, fastest baseline) to suit your needs. Details are shown in [quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+
+Use the same plans in Python with `AutoRound(..., recipe="auto-round-best")` or in the CLI with `--recipe auto-round-best`. Omitting the recipe selects `auto-round`; legacy commands remain shortcuts. See [built-in recipes and overrides](./docs/recipes.md).
 
 ✅ Advanced Utilities
 Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
@@ -265,7 +270,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### Calibration Dataset
 - **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
-- I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AUTO_ROUND_CACHE/datasets/coco2014` when `AUTO_ROUND_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
+- I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AR_CACHE/datasets/coco2014` when `AR_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
 - **`nsamples` (int)**: Number of samples for tuning (default is `128`).
 - **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
 

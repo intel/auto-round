@@ -35,6 +35,7 @@ from auto_round.logger import logger
 from auto_round.utils.device_manager import (
     clear_memory,
     detect_device_count,
+    device_manager,
     get_ar_device,
     get_available_device_types,
     get_current_device_manager,
@@ -127,7 +128,12 @@ def _bump_dynamo_cache_limit(min_size: int | None = None):
             min_size = envs.AR_DYNAMO_CACHE_SIZE_LIMIT
         from torch._dynamo import config as _dynamo_config
 
-        for attr in ("cache_size_limit", "accumulated_cache_size_limit", "recompile_limit"):
+        for attr in (
+            "cache_size_limit",
+            "accumulated_cache_size_limit",
+            "recompile_limit",
+            "accumulated_recompile_limit",  # newer torch: process-wide cap (binds on MoE shape zoos)
+        ):
             if hasattr(_dynamo_config, attr) and getattr(_dynamo_config, attr) < min_size:
                 setattr(_dynamo_config, attr, min_size)
     except Exception:  # pragma: no cover - best effort
@@ -620,9 +626,17 @@ def set_non_auto_device_map(
     if not device_map or device_map == "auto" or isinstance(device_map, int):
         return
     if isinstance(device_map, str):
+        device_map = device_map.replace(" ", "")
+        # A rank-local device is not a module-pattern mapping ("cuda" -> "0").
+        # DeviceManager already handles placement for these standard device IDs.
+        try:
+            torch.device(device_map)
+        except (RuntimeError, ValueError):
+            pass
+        else:
+            return
         if "," in device_map:  # auto device map
             return
-        device_map = device_map.replace(" ", "")
         infos = device_map.split(",")
         device_map_dict = {}
         for info in infos:
@@ -651,7 +665,7 @@ def set_non_auto_device_map(
             for name in matching_names:
                 set_tuning_device_for_layer(model, name, device)
             if not matching_names:
-                logger.warning(f"{key} in `device_map` dose not match any modules, please have a check")
+                logger.warning(f"{key} in `device_map` does not match any modules; please check the mapping")
 
 
 def _resolve_moe_chunk() -> int:
@@ -1580,6 +1594,9 @@ class MemoryMonitor:
         self.peak_ram = 0.0  # GB
         self.peak_vram = {}  # {device_id: peak_mb}
         self.enabled = True
+        # devices registered for sampling BEYOND the caller's device_map list
+        # (e.g. DDP replica devices the parallel lane engaged outside the map)
+        self._extra_devices: set[str] = set()
 
     @staticmethod
     def _process_tree_rss() -> float:
@@ -1592,6 +1609,31 @@ class MemoryMonitor:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         return rss / 1024**3
+
+    def register_extra_devices(self, devices) -> None:
+        """Add accelerator devices to the monitored set beyond the device_map.
+
+        The final ``'peak_vram': {...}`` summary only reports devices the
+        ``update`` calls sample; callers pass the device-map list, so devices
+        engaged outside the map (single-process DDP replicas on all visible
+        GPUs while ``--device_map`` is single-device) would stay invisible.
+        Registered devices are merged into every subsequent ``update``/
+        ``update_hpu`` sample; ``reset`` clears the peaks but keeps the
+        registration (engagement re-registers per block).
+        """
+        if not hasattr(self, "_extra_devices"):  # older singleton instance
+            self._extra_devices = set()
+        for d in devices or []:
+            key = str(d)
+            if key.split(":")[0] in ("cuda", "xpu", "hpu"):
+                self._extra_devices.add(key)
+
+    def _merged_device_list(self, device_list):
+        """The caller's device list plus any registered extra devices (deduped)."""
+        if not getattr(self, "_extra_devices", None):
+            return device_list
+        seen = [str(d) for d in device_list]
+        return list(device_list) + [d for d in sorted(self._extra_devices) if d not in seen]
 
     def update(self, device_list=None):
         """Update current memory usage and track peaks."""
@@ -1611,6 +1653,7 @@ class MemoryMonitor:
                 device_list = list(range(dev_mgr.device_count()))
             else:
                 device_list = [0]
+        device_list = self._merged_device_list(device_list)
 
         dev_mgr = get_current_device_manager()
         for device in device_list:
@@ -1658,6 +1701,7 @@ class MemoryMonitor:
             device_list = list(range(count)) if count > 0 else [0]
         elif not isinstance(device_list, (list, tuple)):
             device_list = [device_list]
+        device_list = self._merged_device_list(device_list)
         for device in device_list:
             if str(device) == "cpu":
                 continue
@@ -1680,12 +1724,13 @@ class MemoryMonitor:
         self.peak_ram = 0.0
         self.peak_vram = {}
 
-    def get_summary(self):
+    def get_summary(self, *, peak_vram=None):
         """Get summary of peak memory usage."""
         summary = f"'peak_ram': {round(self.peak_ram, 2)}GB"
-        if len(self.peak_vram) > 0:
-            sorted_items = sorted(self.peak_vram.items())
-            if len(self.peak_vram) == 1:
+        vram = self.peak_vram if peak_vram is None else peak_vram
+        if len(vram) > 0:
+            sorted_items = sorted(vram.items())
+            if len(vram) == 1 and not device_manager.is_tensor_parallel:
                 key, value = sorted_items[0]
                 summary += f", 'peak_vram': {round(value, 2)}GB"
             else:
@@ -1693,9 +1738,14 @@ class MemoryMonitor:
                 summary += f", 'peak_vram': {{{items_str}}}"
         return summary
 
-    def log_summary(self, msg: str = "", level: str = "info"):
+    def log_summary(self, msg: str = "", level: str = "info", *, peak_vram=None):
         """Log memory usage summary."""
-        summary = self.get_summary()
+        summary = self.get_summary(peak_vram=peak_vram)
+        # Ordinary logging sites can be rank-local or writer-only. They must not
+        # communicate or print an incomplete TP report. The device manager
+        # supplies a merged dictionary at explicit, successful all-rank boundaries.
+        if device_manager.is_tensor_parallel and peak_vram is None:
+            return summary
         logger_method = getattr(logger, level.lower(), logger.info)
         if len(msg):
             logger_method(f"{msg} {summary}")

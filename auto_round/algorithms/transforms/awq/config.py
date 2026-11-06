@@ -70,14 +70,14 @@ class AWQConfig(QuantizationConfig):
     AWQ is a **pre-processing** algorithm (``role="preprocess"``).  It
     protects salient weight channels by analyzing activation patterns and
     applying channel-wise scaling to reduce quantization error.  After
-    smoothing, a separate ``block_quantizer`` (RTN, SignRound, …) performs
+    smoothing, a separate ``active_quantizer`` (RTN, SignRound, …) performs
     the actual weight compression.
 
     The quantization parameters (``bits``, ``group_size``, ``sym``,
     ``data_type``, …) on this config are used *only* for the internal grid
     search loss calculation (quantize-dequantize during scale selection).
     The definitive quantization parameters for the final weight compression
-    step come from the pipeline's ``block_quantizer`` config.
+    step come from the pipeline's ``active_quantizer`` config.
     """
 
     @staticmethod

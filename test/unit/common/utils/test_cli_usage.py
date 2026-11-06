@@ -371,7 +371,20 @@ def test_model_free_cli_disable_opt_rtn(monkeypatch):
     assert compressor.disable_opt_rtn is True
 
 
-@pytest.mark.parametrize("flag", ["--algorithm", "--algorithms", "--alg", "--algs", "--alg_config", "--alg_configs"])
+@pytest.mark.parametrize("flag", ["--alg_configs", "--alg_config", "--algorithm", "--algorithms", "--alg", "--algs"])
+def test_algorithm_flags_use_canonical_alg_configs(flag):
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(["--model", "dummy-model", flag, "awq,rtn"])
+
+    assert args.alg_configs == "awq,rtn"
+    assert "alg_configs" in args._explicit_fields
+    assert "algorithm" not in args._explicit_fields
+    assert [type(config).__name__ for config in AlgorithmHandler.build_configs(args, {})] == ["AWQConfig", "RTNConfig"]
+
+
+@pytest.mark.parametrize("flag", ["--alg_configs", "--alg_config", "--algorithm", "--algorithms", "--alg", "--algs"])
 @pytest.mark.parametrize("algorithms", ["haha", "rtn,haha", "haha,auto_round"])
 def test_unknown_algorithm_quantization_raises(flag, algorithms):
     from auto_round.cli.algorithms import AlgorithmHandler
@@ -383,10 +396,11 @@ def test_unknown_algorithm_quantization_raises(flag, algorithms):
         AlgorithmHandler.build_configs(args, {})
 
 
-def test_unknown_algorithm_help_exits_with_suggestion(monkeypatch):
+@pytest.mark.parametrize("flag", ["--alg_configs", "--alg_config", "--algorithm", "--algorithms", "--alg", "--algs"])
+def test_unknown_algorithm_help_exits_with_suggestion(monkeypatch, flag):
     from auto_round.cli import main as cli_main
 
-    monkeypatch.setattr(sys, "argv", ["auto_round", "--algorithm", "hadarmard", "--help"])
+    monkeypatch.setattr(sys, "argv", ["auto_round", flag, "hadarmard", "--help"])
 
     with pytest.raises(SystemExit, match="Unknown algorithm 'hadarmard'. Did you mean 'hadamard'\\?"):
         cli_main.run()
@@ -676,32 +690,80 @@ def _normalize_shared_layers(raw):
     return normalized_groups or None
 
 
-def test_schemes_comma_space_separated():
-    """--schemes accepts comma-separated and space-separated values."""
+@pytest.mark.parametrize("flag", ["--scheme", "--schemes"])
+def test_schemes_comma_space_separated(flag):
+    """Both spellings accept presets and comma/space-separated candidates."""
     from auto_round.cli.main import _normalize_scheme_list
     from auto_round.cli.parser import build_quantize_parser
 
     p = build_quantize_parser()
-    assert _normalize_scheme_list(p.parse_args(["--bits", "4", "--schemes", "W4A16,W8A16"]).schemes) == "W4A16,W8A16"
-    assert _normalize_scheme_list(p.parse_args(["--bits", "4", "--schemes", "W4A16", "W8A16"]).schemes) == "W4A16,W8A16"
-    assert p.parse_args(["--model", "dummy"]).schemes is None
+    assert _normalize_scheme_list(p.parse_args(["--bits", "4", flag, "W4A16,W8A16"]).scheme) == "W4A16,W8A16"
+    assert _normalize_scheme_list(p.parse_args(["--bits", "4", flag, "W4A16", "W8A16"]).scheme) == "W4A16,W8A16"
+    args = p.parse_args([flag, "W8A16"])
+    assert args.scheme == "W8A16"
+    assert "scheme" in args._explicit_fields
+    assert p.parse_args(["--model", "dummy"]).scheme == "W4A16"
+
+
+def test_scheme_aliases_reject_conflicting_values():
+    from auto_round.cli.parser import build_quantize_parser
+
+    p = build_quantize_parser()
+    args = p.parse_args(["--scheme", "W2A16", "W4A16", "--schemes", "W2A16,W4A16"])
+    assert args.scheme == "W2A16,W4A16"
+    with pytest.raises(SystemExit):
+        p.parse_args(["--scheme", "W8A16", "--schemes", "W2A16,W4A16"])
+
+
+@pytest.mark.parametrize("first_flag", ["--scheme", "--schemes", "--options", "--option"])
+@pytest.mark.parametrize("second_flag", ["--scheme", "--schemes", "--options", "--option"])
+@pytest.mark.parametrize("schemes", [("W4A16", "W8A16"), ("W8A16", "W4A16")])
+def test_scheme_alias_conflicts_fail_before_explicit_reparse(first_flag, second_flag, schemes, monkeypatch, capsys):
+    from auto_round.cli.parser import build_quantize_parser
+
+    p = build_quantize_parser()
+
+    def unexpected_reparse(argv):
+        pytest.fail("Conflicting aliases must fail during the initial parse")
+
+    monkeypatch.setattr(p, "_explicit_dests", unexpected_reparse)
+    with pytest.raises(SystemExit) as exc_info:
+        p.parse_args([first_flag, schemes[0], second_flag, schemes[1], "--iters", "0"])
+
+    assert exc_info.value.code == 2
+    assert "conflicting values for --scheme" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("scheme", ["W4A16", "W8A16", "W4A16,W8A16"])
+def test_matching_scheme_aliases_preserve_explicit_overrides(scheme):
+    from auto_round.cli.parser import build_quantize_parser
+
+    p = build_quantize_parser()
+    args = p.parse_args(["--scheme", scheme, "--schemes", scheme, "--iters", "0"])
+
+    assert args.scheme == scheme
+    assert args.iters == 0
+    assert {"scheme", "iters"} <= args._explicit_fields
+    assert "_legacy_alias_values" not in args._explicit_fields
+    assert p.parse_args(["--scheme", "W8A16"]).scheme == "W8A16"
+    assert p.parse_args([]).scheme == "W4A16"
 
 
 def test_legacy_auto_scheme_flags_alias_and_hidden():
-    """--options/--avg_bits/--target_bits alias --schemes/--bits but are hidden from --help."""
+    """--options/--avg_bits/--target_bits alias --scheme/--bits but are hidden from --help."""
     import io
 
     from auto_round.cli.main import _normalize_scheme_list
     from auto_round.cli.parser import build_quantize_parser
 
     p = build_quantize_parser()
-    # legacy flags store into the canonical dests (bits / schemes)
+    # legacy flags store into the canonical dests (bits / scheme)
     args = p.parse_args(["--avg_bits", "4", "--options", "W4A16,W8A16"])
     assert args.bits == 4.0
-    assert _normalize_scheme_list(args.schemes) == "W4A16,W8A16"
+    assert _normalize_scheme_list(args.scheme) == "W4A16,W8A16"
     args = p.parse_args(["--target_bits", "3.5", "--option", "W2A16", "W4A16"])
     assert args.bits == 3.5
-    assert _normalize_scheme_list(args.schemes) == "W2A16,W4A16"
+    assert _normalize_scheme_list(args.scheme) == "W2A16,W4A16"
     # singular aliases
     assert p.parse_args(["--bit", "8"]).bits == 8.0
 
@@ -983,7 +1045,7 @@ def test_bare_help_prints_the_concise_overview(capsys, monkeypatch):
 
     assert "common arguments" in overview
     assert "auto_round quantize --help" in overview
-    assert "--algorithm auto_round_v2" in overview
+    assert "--alg_configs auto_round_v2" in overview
     # A curated subset, not the full quantize argument list.
     assert len(overview.splitlines()) < 100
     for noisy_flag in ("--svdquant-rank", "--kl_top_k", "--static_kv_dtype", "--target_bits"):
@@ -1007,14 +1069,16 @@ def test_explicit_quantize_help_still_prints_every_argument(capsys, monkeypatch,
     assert "auto_round_v2" in help_text
 
 
-def test_algorithm_help_is_still_reported_for_the_new_algorithm(capsys, monkeypatch):
+@pytest.mark.parametrize("flag", ["--alg_configs", "--alg_config", "--algorithm", "--algorithms", "--alg", "--algs"])
+def test_algorithm_help_is_still_reported_for_the_new_algorithm(capsys, monkeypatch, flag):
     from auto_round.cli import main as cli_main
 
-    monkeypatch.setattr(sys, "argv", ["auto_round", "--algorithm", "auto_round_v2", "--help"])
+    monkeypatch.setattr(sys, "argv", ["auto_round", flag, "auto_round_v2", "--help"])
     cli_main.run()
     help_text = capsys.readouterr().out
 
     assert "algorithm(s): auto_round_v2" in help_text
+    assert "auto_round --alg_configs auto_round_v2" in help_text
     assert "--iters" in help_text
 
 

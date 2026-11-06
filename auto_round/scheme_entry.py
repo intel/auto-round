@@ -17,7 +17,7 @@
 This module sits between the public entry points (``auto_round.AutoRound``,
 the CLI) and the core scheme parser (:func:`auto_round.schemes.parse_scheme`).
 It owns everything needed to turn user-facing scheme input — a single
-``scheme``, multiple ``schemes``, or the legacy ``options``/``avg_bits``
+``scheme``, a candidate sequence, or the legacy ``options``/``avg_bits``
 kwargs — into the canonical scheme object the compressor pipeline consumes
 (``str`` / ``dict`` / ``QuantizationScheme`` / ``AutoScheme``), plus the
 routing preview/validation helpers the entry uses before a compressor exists.
@@ -149,54 +149,50 @@ def is_gguf_k_target(value: str | AutoScheme | object) -> bool:
     return False
 
 
-def resolve_entry_scheme(scheme, schemes, direct_kwargs):
-    """Resolve the unified ``schemes``/``bits`` entry into an ``AutoScheme``.
+def resolve_entry_scheme(scheme, direct_kwargs):
+    """Resolve a fixed scheme, candidate list/tuple, or AutoScheme instance.
 
-    ``AutoRound(model, schemes=("W4A16", "W8A16"), bits=4.2)`` is the
-    recommended AutoScheme entry: multiple schemes select the candidate
-    options and ``bits`` is the average target bits. The legacy ``options``
-    and ``avg_bits`` kwargs are still accepted for backward compatibility.
+    With candidates, ``bits`` is the required average target. With an
+    AutoScheme instance, supplied AutoScheme fields override a copy, leaving
+    the caller's instance untouched. Fixed schemes keep integer weight bits.
 
-    Returns ``(scheme, direct_kwargs)``; when ``schemes`` is given, ``scheme``
-    is replaced by an :class:`AutoScheme` and the consumed ``bits``/
+    Returns ``(scheme, direct_kwargs)``; for AutoScheme the consumed ``bits``/
     ``shared_layers``/``default_shared_layers``/``ignore_scale_zp_bits`` are
     removed from ``direct_kwargs`` so they no longer flow into the algorithm
     config.
     """
+    from dataclasses import replace
+
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+    if "schemes" in direct_kwargs:
+        raise TypeError("`schemes` is not supported; pass candidate schemes through `scheme` instead.")
     legacy_options = direct_kwargs.pop("options", None)
     legacy_avg_bits = direct_kwargs.pop("avg_bits", None)
 
     if legacy_options is not None:
-        logger.warning_once("`options` is deprecated, please use `schemes` instead")
-        if schemes is not None:
-            raise ValueError("`schemes` and `options` cannot be used together, please use `schemes`")
-        schemes = legacy_options
+        if scheme is not None and (not isinstance(scheme, str) or scheme.upper() != "W4A16"):
+            raise ValueError("`scheme` and `options` cannot be used together.")
+        scheme = legacy_options.split(",") if isinstance(legacy_options, str) else legacy_options
     if legacy_avg_bits is not None:
-        logger.warning_once("`avg_bits` is deprecated, please use `bits` instead")
         if "bits" in direct_kwargs and direct_kwargs["bits"] is not None and direct_kwargs["bits"] != legacy_avg_bits:
             raise ValueError("`bits` and `avg_bits` disagree, please use only `bits`")
         direct_kwargs["bits"] = legacy_avg_bits
 
-    if schemes is None:
-        # Without schemes, `bits` is a plain weight bit width and must be an integer.
+    if not isinstance(scheme, (list, tuple, AutoScheme)):
         bits = direct_kwargs.get("bits")
         if bits is not None and not float(bits).is_integer():
-            raise ValueError("`bits` must be an integer unless `schemes` is provided (AutoScheme average target bits)")
+            raise ValueError("`bits` must be an integer unless `scheme` is a list, tuple, or AutoScheme")
         if bits is not None:
             direct_kwargs["bits"] = int(bits)
         # shared_layers/default_shared_layers only make sense for AutoScheme.
         for key in ("shared_layers", "default_shared_layers"):
             if direct_kwargs.get(key) is not None:
                 logger.warning_once(
-                    "`%s` only takes effect with `schemes` (AutoScheme); ignoring it for this run.", key
+                    "`%s` only takes effect with candidate schemes (AutoScheme); ignoring it for this run.", key
                 )
                 direct_kwargs.pop(key)
         return scheme, direct_kwargs
-
-    normalized_scheme = scheme.upper() if isinstance(scheme, str) else scheme
-    if normalized_scheme not in (None, "W4A16"):
-        raise ValueError("`scheme` and `schemes` are mutually exclusive, please pass only `schemes` for AutoScheme")
-    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 
     auto_scheme_kwargs = {}
     bits = direct_kwargs.pop("bits", None)
@@ -205,4 +201,12 @@ def resolve_entry_scheme(scheme, schemes, direct_kwargs):
     for key in ("shared_layers", "ignore_scale_zp_bits", "default_shared_layers"):
         if direct_kwargs.get(key) is not None:
             auto_scheme_kwargs[key] = direct_kwargs.pop(key)
-    return AutoScheme(options=schemes, **auto_scheme_kwargs), direct_kwargs
+    if isinstance(scheme, AutoScheme):
+        resolved = replace(scheme, **auto_scheme_kwargs) if auto_scheme_kwargs else scheme
+    else:
+        if not scheme:
+            raise ValueError("`scheme` candidates must not be empty.")
+        if bits is None:
+            raise ValueError("`bits` is required when `scheme` is a list or tuple (AutoScheme average target bits).")
+        resolved = AutoScheme(options=scheme, **auto_scheme_kwargs)
+    return resolved, direct_kwargs

@@ -73,6 +73,12 @@ class LLMCalibrator(Calibrator):
         block_names = flatten_list(block_names)
         self.blocks_requiring_input_ids = [data if isinstance(data, str) else data[0] for data in block_names]
 
+        if self.parallel.is_tp:
+            from auto_round.utils.model import get_block_names
+
+            with self.parallel.streamed_model(self.model, get_block_names(self.model)):
+                return self.cache_inter_data(block_names, nsamples, layer_names, last_cache_name)
+
         calibrate_on_cpu = False
         cannot_calibrate_on_cpu = False
         if self.low_gpu_mem_usage or (
@@ -579,7 +585,7 @@ class LLMCalibrator(Calibrator):
         def forward_capture(m, hidden_states=None, *positional_inputs, **kwargs):
             if name not in self.inputs:
                 self.inputs[name] = {}
-                init_cache(positional_inputs, self.inputs[name])
+                init_cache(self.parallel.replicated(positional_inputs), self.inputs[name])
 
             if self.batch_dim is None:
                 self.batch_dim = 0
@@ -599,6 +605,7 @@ class LLMCalibrator(Calibrator):
                 kwargs["hidden_states"] = hidden_states
 
             for key, value in kwargs.items():
+                value = self.parallel.replicated(value)
                 if isinstance(value, (torch.Tensor, list, tuple)):
                     if (
                         self.has_variable_block_shape

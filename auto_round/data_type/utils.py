@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import math
 from collections.abc import Callable
 from functools import lru_cache
@@ -199,7 +200,6 @@ def _int_search_with_thresh(search_scales: Any, q_scale_thresh: float) -> "Calla
     per-call closure, so resolved callables compare equal across calls and can
     safely key same-shape search batches.
     """
-    import functools
 
     def _clamped(
         weight_reshape: torch.Tensor, bits: int, imatrix: "torch.Tensor | None", *, _thresh: float
@@ -372,10 +372,12 @@ def reshape_imatrix_for_weight(imatrix, weight_reshape: torch.Tensor, group_size
     """
     if imatrix is None or not isinstance(imatrix, torch.Tensor):
         return torch.ones_like(weight_reshape)
-    imatrix = imatrix.reshape(1, -1)
+    # relocate the RAW column first: moving the expanded copy after the fact
+    # would pay a weight-sized cross-device transfer for sharded placements
+    imatrix = imatrix.reshape(1, -1).to(weight_reshape.device)
     imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
     imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)
-    return imatrix.reshape(weight_reshape.shape).to(weight_reshape.device)
+    return imatrix.reshape(weight_reshape.shape)
 
 
 def compute_optimized_init_scale(
@@ -530,11 +532,15 @@ def register_act_max_hooks(block: Module, act_data_type=None) -> list:
     The caller owns the returned handles and must remove them after calibration.
     """
     from auto_round.compressors.utils import check_need_act_calibration
+    from auto_round.parallel.tp.runtime import is_dtensor
     from auto_round.utils import SUPPORTED_LAYER_TYPES
 
     @torch.no_grad()
     def collect_act_max(module, inputs, output):
         inputs = inputs[0] if isinstance(inputs, (tuple, list)) else inputs
+
+        if is_dtensor(inputs):
+            inputs = inputs.to_local()
         if inputs.numel() == 0:
             return
         module_dtype = getattr(module, "act_data_type", None) or getattr(module, "data_type", None) or act_data_type

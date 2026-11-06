@@ -402,18 +402,20 @@ AWQ（Activation-Aware Weight Quantization，激活感知权重量化）是一�
 
 AWQ 的标准部署路径是 **W4A16**，通过 vLLM 的 AWQ/Marlin CUDA 内核提供服务。**INT8** 是 AutoRound 的 W8A8 scheme，可在 RTN 量化前使用 AWQ 平滑化，并通过 vLLM 的 compressed_tensors 后端（cutlass INT8 GEMM）提供服务。
 
-AWQ 也可以与 AutoRound 优化组合使用（`--algorithm awq,auto_round`）。W4A16、MXFP4 和 INT8 的准确率与成本对比请参考 [AWQ 算法结果](./awq_details_CN.md)。
+AWQ 也可以与 AutoRound 优化组合使用（`--alg_configs awq,auto_round`）。W4A16、MXFP4 和 INT8 的准确率与成本对比请参考 [AWQ 算法结果](./awq_details_CN.md)。
 
 #### 命令行用法
 
+算法选择的主参数为 `--alg_configs`，与 Python API 的 `alg_configs` 一致。`--alg_config`、`--algorithm`、`--algorithms`、`--alg` 和 `--algs` 保留为别名。
+
 ```bash
-auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq --format "auto_round"
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --alg_configs awq --format "auto_round"
 ```
 
 AWQ 也可以与 AutoRound 优化组合使用：
 
 ```bash
-auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq,auto_round
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --alg_configs awq,auto_round
 ```
 
 推荐的 INT8/W8A8 配方，使用 AWQ 平滑化：
@@ -422,7 +424,7 @@ auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq,auto_round
 auto-round \
   --model Qwen/Qwen3-0.6B \
   --scheme INT8 \
-  --algorithm awq \
+  --alg_configs awq \
   --nsamples 256 \
   --awq_seqlen 512 \
   --awq_apply_clip \
@@ -481,7 +483,7 @@ RTN（建议先使用此配置）：
 
 ```bash
 auto-round-rtn --model /path/to/FLUX.1-dev --model_dtype bf16 \
-  --scheme MXFP4 --algorithm svdquant --device 0 \
+  --scheme MXFP4 --alg_configs svdquant --device 0 \
   --format svdquant_nunchaku \
   --output_dir ./flux-dev-mxfp4-svdquant-rtn
 ```
@@ -490,7 +492,7 @@ SignRound：
 
 ```bash
 auto-round --model /path/to/FLUX.1-dev --model_dtype bf16 \
-  --scheme MXFP4 --algorithm svdquant,auto_round \
+  --scheme MXFP4 --alg_configs svdquant,auto_round \
   --format svdquant_nunchaku \
   --dataset /path/to/captions.tsv --batch_size 1 --device 0 \
   --output_dir ./flux-dev-mxfp4-svdquant-signround
@@ -524,12 +526,12 @@ AutoScheme 自动生成自适应的混合比特/混合数据类型量化方案�
 - **`--iters 0`**：基于 RTN 的 量化方案，速度快（秒到分钟级）。
 - **`--iters 200`**：调优感知的量化方案，更精确但慢很多。
 
-传入多个 `--schemes` 即启用 AutoScheme；此时 `--bits` 为目标平均 bits。
+通过 `--scheme`（别名：`--schemes`）传入多个候选方案即启用 AutoScheme；此时 `--bits` 为目标平均 bits。传入单个候选方案则使用固定量化预设。
 
 ~~~bash
 auto_round \
   --model_name  $model_name \
-  --schemes "mxfp4,mxfp8" \
+  --scheme "mxfp4,mxfp8" \
   --bits 6 \
   --ignore_scale_zp_bits \
   --iters 0 \
@@ -538,15 +540,15 @@ auto_round \
 
 #### API 用法
 ~~~python
-ar = AutoRound(model=model_name, schemes=("W2A16G64", "W4A16","W8A16"), bits=3.0, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, scheme=("W2A16G64", "W4A16", "W8A16"), bits=3.0, iters=0, nsamples=1)
 ar.quantize_and_save()
 ~~~
 
 
 #### AutoScheme 超参数说明
-`bits(float)`：模型整体的目标平均 bits；计算时仅计入待量化的层。未提供 `schemes` 时，`bits` 为普通权重量化位宽，必须为整数。
+`bits(float)`：模型整体的目标平均 bits；计算时仅计入待量化的层。使用固定方案而非 AutoScheme 候选列表或元组时，`bits` 为普通权重量化位宽，必须为整数。
 
-`schemes(Union[str, list[Union[QuantizationScheme, str]]])`：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。传入 `schemes` 即启用 AutoScheme。
+`scheme(list[Union[QuantizationScheme, str]] | tuple[Union[QuantizationScheme, str], ...])`：候选量化配置集合，例如 `["W4A16", "W8A16"]` 或 `("W4A16", "W8A16")`。Python 中传入由字符串或 QuantizationScheme 对象组成的列表或元组即可启用 AutoScheme；单个字符串则选择固定预设。Python API 不接受 `schemes=`。
 
 `ignore_scale_zp_bits(bool)`：仅支持 API 调用场景。用于决定在计算平均 bit 时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
 
@@ -580,7 +582,7 @@ shared_layers = [
     ("fc1", "fc2"),
 ]
 model_name = "Qwen/Qwen3-0.6B"
-ar = AutoRound(model=model_name, schemes=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, scheme=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
 ```
 
@@ -588,7 +590,7 @@ model, layer_config = ar.quantize()
 ```python
 ar = AutoRound(
     model=model_name,
-    schemes=("W4A16", "MXFP8"),
+    scheme=("W4A16", "MXFP8"),
     bits=5.0,
     default_shared_layers=False,
     iters=0,
@@ -605,7 +607,7 @@ layer_config = {"lm_head": "GGUF:Q6_K"}
 
 ar = AutoRound(
     model=model_name,
-    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    scheme=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
     bits=3.0,
     ignore_scale_zp_bits=True,
     layer_config=layer_config,
@@ -924,6 +926,19 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 
 
 通常有两种情况需要启用多 GPU 训练：一是主要针对 lm-head 量化的标定阶段，二是参数量极大（如显存占用超 100GB）的模型。
+
+#### 跨 GPU 并行 block 调优
+选择 `--data_parallel N` 使用 block 副本，`--tensor_parallel N` 使用原生权重
+分片并自动启动本地 worker，或 `--pipeline_parallel N` 使用朴素流水线并行。
+每次运行只能选择一种模式。
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --data_parallel auto
+```
+
+模式选择、对齐的 CLI/Python 接口、DP batch／适用条件、TP 启动／导出行为和
+支持的组合统一见[并行指南](./parallelism_CN.md)。PP 顺序执行流水线阶段，
+尚无微批次重叠调度。
 
 #### lm_head 量化中开启多 GPU 标定
 量化 lm-head 时，AutoRound 需要缓存其输入数据以进行高效的标定，这要求**整个模型驻留在 GPU 显存中** ；若 GPU 显存不足，部分层会退回至 Pure RTN 模式。

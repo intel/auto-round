@@ -24,6 +24,7 @@ from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
 from auto_round.algorithms.quantization.qad.config import QADConfig
 from auto_round.algorithms.quantization.qad.quantizer import QADQuantizer
 from auto_round.algorithms.quantization.sign_roundv2.quantizer import SignRoundOptimizedWrapperLinear
+from auto_round.parallel.execution import ParallelExecution
 from auto_round.wrapper import WrapperLinear, store_warm_start_params_and_unwrap, wrapper_block
 
 
@@ -128,7 +129,7 @@ def test_warmup_propagates_best_quantized_output(monkeypatch, wrapper_cls, outpu
     expected_outputs = []
     calls = []
 
-    def forward(module, samples, others):
+    def forward(module, samples, others, cache_device=None):
         calls.append(module[0])
         result = [module(sample) for sample in samples]
         forward.last_output_dict = {"hidden_states": result} if output_dict else None
@@ -153,7 +154,8 @@ def test_warmup_propagates_best_quantized_output(monkeypatch, wrapper_cls, outpu
     composer = object.__new__(AlgorithmComposer)
     composer._preserve_weights = True
     composer.block_forward = forward
-    composer.block_quantizer = SimpleNamespace(
+    composer.active_quantizer = SimpleNamespace(
+        parallel=ParallelExecution(),
         enable_quanted_input=True,
         quantize_block=tune,
         finalize_block=Mock(),
@@ -163,8 +165,8 @@ def test_warmup_propagates_best_quantized_output(monkeypatch, wrapper_cls, outpu
     composer.preprocessors = []
     composer._rotation_members = []
     composer.scheme = None
-    composer._get_fp_act_hooks = lambda block: []
-    composer._get_q_act_hooks = lambda block: []
+    composer._get_fp_act_hooks = lambda block: ([], None)
+    composer._get_q_act_hooks = lambda block: ([], None)
     monkeypatch.setattr("auto_round.algorithms.composer.clear_memory", lambda: None)
     ctx = BlockContext(model=block, block_names=["0"], block_name="0", block_index=0)
     quantized, reference = composer.compress_block(block, inputs, {}, ctx)
