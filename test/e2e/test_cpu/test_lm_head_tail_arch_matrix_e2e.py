@@ -346,7 +346,7 @@ class TestLmHeadTailArchMatrix:
         self._run_case("glue_view_gpt_bigcode", tmp_path, monkeypatch)
 
     @pytest.mark.skip_ci(
-        reason="local reproducer of an upstream input-cache gap; running it to failure adds "
+        reason="Architecture: local reproducer of an upstream input-cache gap; running it to failure adds "
         "CI time without guarding a fixable behavior here"
     )
     @pytest.mark.xfail(
@@ -370,7 +370,7 @@ class TestLmHeadTailArchMatrix:
         self._run_case("tuple_a_bart", tmp_path, monkeypatch)
 
     @pytest.mark.skip_ci(
-        reason="local reproducer of upstream block-replay gaps; running it to failure adds "
+        reason="Architecture: local reproducer of upstream block-replay gaps; running it to failure adds "
         "CI time without guarding a fixable behavior here"
     )
     @pytest.mark.xfail(
