@@ -43,8 +43,11 @@ from auto_round.wrapper import WrapperWALayer
 
 _MXFP4_BLOCK_SIZE = 32
 _MXFP4_ELEMENT_MAX = 6.0
-_MXFP4_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
-_MXFP4_ACT_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1", "mx_fp_rceil", "mx_fp4_rceil", "mx_fp4_rceil_v2"})
+# SVDQuant retags residual branches with the rceil E8M0 convention
+# (``SVDQuantTransform._copy_quant_attrs``), so accept both spellings.
+_MXFP4_BASE_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
+_MXFP4_ALIASES = _MXFP4_BASE_ALIASES | frozenset(f"{alias}_rceil" for alias in _MXFP4_BASE_ALIASES)
+_MXFP4_ACT_ALIASES = _MXFP4_ALIASES | {"mx_fp4_rceil_v2"}
 
 
 def _fuse_qkv_records(model, records):
@@ -363,8 +366,16 @@ def save_svdquant_omni(
     if filename.exists():
         raise FileExistsError(filename)
     tensors, quantization = collect_svdquant_omni_tensors(model, device=device, adapter=adapter)
-    config = dict(model.config)
+    config = model.config.to_dict() if hasattr(model.config, "to_dict") else dict(model.config)
     config["quantization_config"] = quantization
+    # safetensors rejects tensors that share storage (e.g. tied embeddings), so
+    # serialize duplicates independently instead of failing the whole export.
+    seen_storages, unique_tensors = set(), {}
+    for name, value in tensors.items():
+        storage = value.untyped_storage().data_ptr()
+        unique_tensors[name] = value.clone() if storage in seen_storages else value
+        seen_storages.add(storage)
+    tensors = unique_tensors
     temporary = output / ".svdquant.tmp.safetensors"
     try:
         save_file(tensors, str(temporary), metadata={"format": "pt"})

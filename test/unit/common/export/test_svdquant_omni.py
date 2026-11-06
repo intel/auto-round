@@ -119,7 +119,7 @@ def _dequantize_mxfp4(qweight: torch.Tensor, wscales: torch.Tensor) -> torch.Ten
 
 
 def test_omni_mxfp4_block_scales_follow_rceil_convention():
-    from auto_round.export.svdquant_omni import _mxfp4_block_scales
+    from auto_round.export.formats.svdquant.omni import _mxfp4_block_scales
 
     weight = torch.zeros(3, 32)
     weight[0, 0] = 6.0
@@ -220,7 +220,8 @@ def test_omni_format_rejects_incompatible_schemes(tmp_path, monkeypatch):
         assert created["format"] == format
 
 
-def test_omni_zero_shot_rtn_fuses_qkv_with_shared_scale(tmp_path, monkeypatch):
+def _compress_zero_shot_block(tmp_path, monkeypatch, scheme):
+    """Run SVDQuant+RTN on one toy block so export sees real residual modules."""
     monkeypatch.setattr(device_manager, "_device_map", "cpu")
     monkeypatch.setattr(device_manager, "_device_list", ["cpu"])
     monkeypatch.setattr(device_manager, "_major_device", "cpu")
@@ -242,7 +243,6 @@ def test_omni_zero_shot_rtn_fuses_qkv_with_shared_scale(tmp_path, monkeypatch):
     model = torch.nn.Module()
     model.blocks = torch.nn.ModuleList([WanBlock()])
     model.config = {"_name_or_path": str(tmp_path)}
-    scheme = PRESET_SCHEMES["NVFP4"].copy()
     for name, module in model.named_modules():
         module.global_name = name
         if isinstance(module, torch.nn.Linear):
@@ -300,6 +300,12 @@ def test_omni_zero_shot_rtn_fuses_qkv_with_shared_scale(tmp_path, monkeypatch):
         block_cnt=1,
     )
     composer.compress_block(block, fp_inputs=None, input_others={}, block_ctx=ctx)
+    return model
+
+
+def test_omni_zero_shot_rtn_fuses_qkv_with_shared_scale(tmp_path, monkeypatch):
+    model = _compress_zero_shot_block(tmp_path, monkeypatch, PRESET_SCHEMES["NVFP4"].copy())
+    block = model.blocks[0]
 
     residual_scales = []
     for name in ("to_q", "to_k", "to_v"):
@@ -314,3 +320,21 @@ def test_omni_zero_shot_rtn_fuses_qkv_with_shared_scale(tmp_path, monkeypatch):
     save_svdquant_omni(model, output_dir)
     tensors = load_file(output_dir / "diffusion_pytorch_model.safetensors")
     assert "blocks.0.attn.to_qkv.wtscale" in tensors
+
+
+def test_omni_mxfp4_zero_shot_rtn_exports_rceil_residuals(tmp_path, monkeypatch):
+    """SVDQuant retags MXFP4 residuals with the rceil dtype; export must accept it."""
+    model = _compress_zero_shot_block(tmp_path, monkeypatch, PRESET_SCHEMES["MXFP4"].copy())
+    residual = model.blocks[0].attn.to_q.residual_linear
+    while isinstance(residual, WrapperWALayer):
+        residual = residual.orig_layer
+    assert residual.data_type == "mx_fp_rceil"
+    assert residual.act_data_type == "mx_fp_rceil"
+
+    output_dir = tmp_path / "svdquant_omni_mxfp4"
+    save_svdquant_omni(model, output_dir)
+    tensors = load_file(output_dir / "diffusion_pytorch_model.safetensors")
+    assert {"blocks.0.attn.to_qkv.qweight", "blocks.0.attn.to_qkv.wscales"} <= set(tensors)
+    assert "blocks.0.attn.to_qkv.wtscale" not in tensors
+    quantization = json.loads((output_dir / "quantization_config.json").read_text())
+    assert quantization["precision"] == "mxfp4"
