@@ -670,18 +670,14 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                 ):
                     loss = self.lfq_loss(pred_output, torch.cat([input_ids[index] for index in indices], dim=0))
                 else:
-                    loss = self._get_loss(
-                        pred_output, ref_output, indices, mse_loss, loss_device, valid_token_mask
-                    )
+                    loss = self._get_loss(pred_output, ref_output, indices, mse_loss, loss_device, valid_token_mask)
                 selection_loss += loss.item() / selection_num_elm
             return selection_loss
 
         try:
             for i in range(run_iters):
                 is_final_refinement_candidate = (
-                    teq_mode in {"joint", "frozen_ar_refine"}
-                    and i == run_iters - 1
-                    and run_iters > baseline_iters
+                    teq_mode in {"joint", "frozen_ar_refine"} and i == run_iters - 1 and run_iters > baseline_iters
                 )
                 if teq_mode is not None and i == baseline_iters:
                     if teq_mode == "staged_refine":
@@ -992,8 +988,6 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         self.compress_context.clear_memory()  # clear cached memory during training
         if len(unquantized_layer_names) != 0:
             logger.info(f"Unquantized layers: {unquantized_layer_names}")
-        with torch.no_grad():
-            unwrapper_block(block, best_params)
         if baseline_loss is not None:
             selected_teq_delta = 0.0
             for layer_params in best_params.values():

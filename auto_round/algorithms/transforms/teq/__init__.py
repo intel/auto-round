@@ -14,7 +14,13 @@
 
 from auto_round.algorithms.transforms.teq.config import TEQConfig
 
-__all__ = ["TEQConfig", "TEQTransform"]
+__all__ = [
+    "TEQConfig",
+    "TEQSmoothCalibration",
+    "TEQSmoothOutcome",
+    "TEQSmoothStrategy",
+    "TEQTransform",
+]
 
 
 def __getattr__(name):
@@ -22,4 +28,8 @@ def __getattr__(name):
         from auto_round.algorithms.transforms.teq.base import TEQTransform
 
         return TEQTransform
+    if name in {"TEQSmoothCalibration", "TEQSmoothOutcome", "TEQSmoothStrategy"}:
+        from auto_round.algorithms.transforms.teq import smooth
+
+        return getattr(smooth, name)
     raise AttributeError(name)

@@ -20,6 +20,12 @@ from typing import TYPE_CHECKING
 import torch
 
 from auto_round.algorithms.transforms.smoothing.groups import SmoothGroup
+from auto_round.algorithms.transforms.teq.protocol import (
+    apply_teq_equivalent_input_transform,
+    apply_teq_equivalent_weight_transform,
+    get_teq_equivalent_transforms,
+    is_teq_equivalent_input_hook,
+)
 from auto_round.data_type.utils import (
     compute_optimized_init_scale,
     reshape_pad_tensor_by_group_size,
@@ -90,6 +96,11 @@ def smooth_group_from_mapping(mapping: ResolvedMapping) -> SmoothGroup:
     )
 
 
+def has_teq_equivalent_transforms(module: torch.nn.Module) -> bool:
+    """Return whether a layer publishes an equivalent transform pair."""
+    return bool(get_teq_equivalent_transforms(module))
+
+
 class AWQSmoothStrategy:
     """AWQ statistics, ratio candidates, QDQ loss and scale folding policy."""
 
@@ -126,6 +137,7 @@ class AWQSmoothStrategy:
         orig_state = {bl: tensor_ops.local(bl.weight).detach().clone() for bl in mapping.balance_layers}
         if not use_parent_forward:
             orig_weights = orig_state  # same reference is fine
+        rotation_aware = any(has_teq_equivalent_transforms(bl) for bl in mapping.balance_layers)
 
         # Resolve each balance layer's quant functions once, then reuse them in
         # the grid-search loop. Normal AWQ flow requires one mapping to have
@@ -192,42 +204,93 @@ class AWQSmoothStrategy:
                 return tensor_ops.channel_scale(layer.weight, scales, 1).view(1, -1)
 
             if use_parent_forward:
-                # Quantize each balance layer's smoothed weight and write the
-                # de-smoothed result back, so the parent forward below sees the
-                # weights the layer would actually compute with.
-                for bl in mapping.balance_layers:
-                    scales_view = scaled_input(bl)
-                    quant_func, opt_quant_func = bl_quant_funcs[bl]
-                    w_qdq = owner._qdq_tool.qdq(
-                        orig_state[bl] * scales_view,
-                        bl_params[bl],
-                        quant_func=quant_func,
-                        opt_quant_func=opt_quant_func,
-                        imatrix=local_imatrix(bl),
-                        init_scale=reused_init_scales.get(bl),
-                    )
-                    tensor_ops.copy_weight(bl, (w_qdq / scales_view).to(bl.weight.dtype))
-
-                try:
-                    total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
-                finally:
+                if not rotation_aware:
+                    # Quantize each balance layer's smoothed weight and write the
+                    # de-smoothed result back, so the parent forward below sees the
+                    # weights the layer would actually compute with.
                     for bl in mapping.balance_layers:
-                        tensor_ops.copy_weight(bl, orig_state[bl])
+                        scales_view = scaled_input(bl)
+                        quant_func, opt_quant_func = bl_quant_funcs[bl]
+                        w_qdq = owner._qdq_tool.qdq(
+                            orig_state[bl] * scales_view,
+                            bl_params[bl],
+                            quant_func=quant_func,
+                            opt_quant_func=opt_quant_func,
+                            imatrix=local_imatrix(bl),
+                            init_scale=reused_init_scales.get(bl),
+                        )
+                        tensor_ops.copy_weight(bl, (w_qdq / scales_view).to(bl.weight.dtype))
+                    try:
+                        total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
+                    finally:
+                        for bl in mapping.balance_layers:
+                            tensor_ops.copy_weight(bl, orig_state[bl])
+                else:
+                    # Score the deployed form QDQ(T_w(W * s)) with an
+                    # input-side T_i(x / s). This is required for rotations
+                    # whose matrices do not commute with diagonal scales.
+                    handles = []
+                    saved_pre_hooks = {bl: bl._forward_pre_hooks.copy() for bl in mapping.balance_layers}
+                    try:
+                        for bl in mapping.balance_layers:
+                            scales_view = scaled_input(bl)
+                            quant_func, opt_quant_func = bl_quant_funcs[bl]
+                            candidate_weight = apply_teq_equivalent_weight_transform(bl, orig_state[bl] * scales_view)
+                            w_qdq = owner._qdq_tool.qdq(
+                                candidate_weight,
+                                bl_params[bl],
+                                quant_func=quant_func,
+                                opt_quant_func=opt_quant_func,
+                                imatrix=local_imatrix(bl),
+                                init_scale=reused_init_scales.get(bl),
+                            )
+                            tensor_ops.copy_weight(bl, w_qdq.to(bl.weight.dtype))
+                            layer_scales = scales_view.detach().view(-1)
+
+                            def _candidate_input_hook(layer, args, scales=layer_scales):
+                                if not args:
+                                    return None
+                                value = args[0]
+                                scale = scales.to(device=value.device, dtype=value.dtype)
+                                value = value / scale.view((1,) * (value.ndim - 1) + (-1,))
+                                return (apply_teq_equivalent_input_transform(layer, value), *args[1:])
+
+                            # A committed layer may already own the input hook;
+                            # the candidate supplies it exactly once with x / s.
+                            for hook_id, hook in tuple(bl._forward_pre_hooks.items()):
+                                if is_teq_equivalent_input_hook(hook):
+                                    del bl._forward_pre_hooks[hook_id]
+                            handles.append(bl.register_forward_pre_hook(_candidate_input_hook, prepend=True))
+                        total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
+                    finally:
+                        for handle in handles:
+                            handle.remove()
+                        for bl in mapping.balance_layers:
+                            bl._forward_pre_hooks.clear()
+                            bl._forward_pre_hooks.update(saved_pre_hooks[bl])
+                            tensor_ops.copy_weight(bl, orig_state[bl])
             else:
                 total_loss = 0.0
                 for bl in mapping.balance_layers:
                     scales_view = scaled_input(bl)
                     quant_func, opt_quant_func = bl_quant_funcs[bl]
                     w_orig = orig_weights[bl].to(device)
+                    candidate_weight = apply_teq_equivalent_weight_transform(bl, w_orig * scales_view)
                     w_qdq = owner._qdq_tool.qdq(
-                        w_orig * scales_view,
+                        candidate_weight,
                         bl_params[bl],
                         quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
                         imatrix=local_imatrix(bl),
                         init_scale=reused_init_scales.get(bl),
                     )
-                    total_loss += tensor_ops.weight_sum(bl.weight, (w_orig - w_qdq / scales_view).pow(2).sum()).item()
+                    if rotation_aware:
+                        # Without replay activations, compare in the deployed
+                        # quantizer basis rather than the incorrect raw basis.
+                        error = (candidate_weight - w_qdq).pow(2).sum()
+                    else:
+                        error = (w_orig - w_qdq / scales_view).pow(2).sum()
+                    total_loss += tensor_ops.weight_sum(bl.weight, error).item()
 
             return total_loss
 

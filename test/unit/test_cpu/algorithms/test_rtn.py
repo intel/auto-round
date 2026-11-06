@@ -53,8 +53,8 @@ def test_optimized_rtn_quantizes_each_block_layer_once(monkeypatch):
     block = torch.nn.Sequential(_make_quantized_linear("block.0"), _make_quantized_linear("block.1"))
     calls = []
 
-    def fake_quantize_layer(self, layer, disable_opt_rtn=None):
-        calls.append((layer.global_name, disable_opt_rtn, self.config.disable_opt_rtn))
+    def fake_quantize_layer(self, layer, disable_opt_rtn=None, defer_search=False):
+        calls.append((layer.global_name, disable_opt_rtn, self.config.disable_opt_rtn, defer_search))
 
     monkeypatch.setattr(BaseQuantizer, "_quantize_layer_via_rtn", fake_quantize_layer)
 
@@ -62,6 +62,6 @@ def test_optimized_rtn_quantizes_each_block_layer_once(monkeypatch):
     quantizer.quantize_block(block, None, None, None, None, None)
 
     assert calls == [
-        ("block.0", None, False),
-        ("block.1", None, False),
+        ("block.0", None, False, True),
+        ("block.1", None, False, True),
     ]

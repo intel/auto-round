@@ -17,34 +17,50 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn.functional as F
 
-from auto_round.algorithms.registry import register_pipeline_member
-from auto_round.algorithms.transforms.awq.base import (
-    AWQTransform,
-    _detect_parent_batch,
-    _iter_block_names_for_mapping,
-    _slice_batch_args_kwargs,
-    _truncate_args_kwargs,
-)
+from auto_round.algorithms.registry import register_preprocessor
 from auto_round.algorithms.transforms.awq.mappings import (
     ResolvedMapping,
-    _extract_block_prefix,
     resolve_mappings,
 )
 from auto_round.algorithms.transforms.awq.qdq import QDQTool
+from auto_round.algorithms.transforms.awq.smooth import fold_scales_into_smooth_layer
 from auto_round.algorithms.transforms.base import BasePreprocessor
 from auto_round.algorithms.transforms.teq.config import TEQConfig
 from auto_round.algorithms.transforms.teq.protocol import get_teq_equivalent_transforms
+from auto_round.algorithms.transforms.teq.smooth import (
+    TEQSmoothCalibration,
+    compute_parent_loss,
+    detach_forward_value,
+    detect_batch_size,
+    iter_batch_calls,
+    run_parent_samples,
+    run_teq_smoothing,
+    select_awq_initial_alpha,
+    truncate_forward_value,
+)
 from auto_round.data_type.utils import compute_optimized_init_scale, get_quant_func
 from auto_round.logger import logger
-from auto_round.utils.model import set_module
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
+
+
+def _extract_block_prefix(name: str) -> str | None:
+    match = re.match(r"(.*\.\d+)\.", name)
+    return match.group(1) if match else None
+
+
+def _iter_block_names_for_mapping(model: torch.nn.Module) -> list[str]:
+    from auto_round.utils.common import flatten_list
+    from auto_round.utils.model import get_block_names
+
+    return sorted((name for name in flatten_list(get_block_names(model)) if name), key=len, reverse=True)
 
 
 class _TEQLinearFakeQuant(torch.nn.Module):
@@ -103,7 +119,8 @@ class _TEQLinearFakeQuant(torch.nn.Module):
             quant_kwargs["super_group_size"] = params["super_group_size"]
 
         if self.qdq_tool is not None:
-            quant_func, opt_quant_func = self.qdq_tool.resolve_quant_funcs(params)
+            _, opt_quant_func = self.qdq_tool.resolve_quant_funcs(params)
+            quant_func = self.quant_func
             if opt_quant_func is not None:
                 imatrix = self.activation_second_moment
                 if imatrix is not None and not self._equivalent_transforms():
@@ -227,7 +244,7 @@ class _TEQLinearFakeQuant(torch.nn.Module):
         return self._apply_forward_hooks(self.orig_layer, x_qdq, output)
 
 
-@register_pipeline_member(TEQConfig)
+@register_preprocessor(TEQConfig)
 class TEQTransform(BasePreprocessor):
     """Trainable equivalent transform pre-processor.
 
@@ -264,6 +281,7 @@ class TEQTransform(BasePreprocessor):
         self._block_mappings: dict[str, list[ResolvedMapping]] = {}
         self._activation_stats: dict[str, list] = {}
         self._parent_args_cache: dict[str, list[tuple[tuple, dict]]] = {}
+        self._modified_block_name: str | None = None
         self._finalized = False
         self._qdq_tool = QDQTool(
             bits=config.bits,
@@ -283,17 +301,23 @@ class TEQTransform(BasePreprocessor):
         # replay samples. torch.compile can bypass those hooks after graph reuse.
         return False
 
-    def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
+    def prepare_run(self, composer: AlgorithmComposer = None) -> None:
         self._composer = composer
         self._qdq_tool.configure(composer)
         if self.optimization_mode != "staged":
             from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 
-            quantizer = getattr(composer, "block_quantizer", None)
+            quantizers = tuple(getattr(composer, "quantizers", ()))
+            if len(quantizers) != 1:
+                raise ValueError(
+                    "TEQ refinement modes require exactly one quantizer stage, "
+                    f"got {[type(quantizer).__name__ for quantizer in quantizers]}."
+                )
+            quantizer = quantizers[0]
             if not isinstance(quantizer, SignRoundQuantizer):
                 raise ValueError(
                     f"TEQ optimization_mode={self.optimization_mode!r} requires AutoRound/SignRound as the "
-                    f"block quantizer, got {type(quantizer).__name__}."
+                    f"active quantizer, got {type(quantizer).__name__}."
                 )
             quantizer.teq_refinement_mode = self.optimization_mode
             quantizer.teq_refine_iters = self.refine_iters
@@ -346,9 +370,10 @@ class TEQTransform(BasePreprocessor):
             return []
         return self._register_parent_arg_hooks(block_name)
 
-    def pre_quantize_block(self, ctx: "BlockContext") -> None:
+    def pre_quantize_block(self, ctx: BlockContext) -> None:
         if len(ctx.block_names) != 1:
             raise ValueError(f"TEQ requires nblocks=1, got {len(ctx.block_names)} blocks: {ctx.block_names}.")
+        self._modified_block_name = None
         block_mappings = self._block_mappings.get(ctx.block_names[0], [])
         self._qdq_tool.layer_config = self.layer_config
         active_mappings = [mapping for mapping in block_mappings if self._mapping_is_smoothable(mapping)]
@@ -366,6 +391,8 @@ class TEQTransform(BasePreprocessor):
         if self.optimization_mode != "staged":
             for mapping in active_mappings:
                 self._prepare_ar_refinement_mapping(mapping)
+        if active_mappings:
+            self._modified_block_name = ctx.block_names[0]
 
         seen_parents: set[str] = set()
         for mapping in active_mappings:
@@ -374,7 +401,11 @@ class TEQTransform(BasePreprocessor):
                 self._parent_args_cache.pop(mapping.parent_name, None)
             self._activation_stats.pop(mapping.smooth_name, None)
 
-    def post_quantize_block(self, ctx: "BlockContext") -> None:
+    def invalidates_reference_output(self, ctx: BlockContext) -> bool:
+        """Recompute the FP reference after TEQ mutates this block's weights."""
+        return self._modified_block_name == ctx.block_name
+
+    def post_quantize_block(self, ctx: BlockContext) -> None:
         block_mappings = self._block_mappings.get(ctx.block_name, [])
         if self.optimization_mode != "staged":
             for mapping in block_mappings:
@@ -382,6 +413,8 @@ class TEQTransform(BasePreprocessor):
                     self._finalize_ar_refinement_mapping(mapping)
         for mapping in block_mappings:
             self._parent_args_cache.pop(mapping.parent_name, None)
+        if self._modified_block_name == ctx.block_name:
+            self._modified_block_name = None
 
     def finalize_run(self) -> None:
         if self._finalized:
@@ -420,7 +453,7 @@ class TEQTransform(BasePreprocessor):
                 return mapping.balance_layers[0]
             return target_layer
 
-        if self.awq_init or self._block_quantizer_is_signroundv2():
+        if self.awq_init or self._quantizer_is_signroundv2():
             for mapping in mappings:
                 target_layer = _resolve_activation_hook_layer(mapping)
                 if target_layer is None:
@@ -472,7 +505,8 @@ class TEQTransform(BasePreprocessor):
                     proc_args = tuple(self._detach_forward_arg(value, w_dtype) for value in args)
                     proc_kwargs = {key: self._detach_forward_arg(value, w_dtype) for key, value in kwargs.items()}
                     if self.teq_sample_seqlen is not None:
-                        proc_args, proc_kwargs = _truncate_args_kwargs(proc_args, proc_kwargs, self.teq_sample_seqlen)
+                        proc_args = truncate_forward_value(proc_args, self.teq_sample_seqlen)
+                        proc_kwargs = truncate_forward_value(proc_kwargs, self.teq_sample_seqlen)
                     self._parent_args_cache[cache_key].append((proc_args, proc_kwargs))
 
                 return hook_fn
@@ -481,20 +515,7 @@ class TEQTransform(BasePreprocessor):
         return handles
 
     def _detach_forward_arg(self, value, w_dtype):
-        if isinstance(value, torch.Tensor):
-            value = value.detach()
-            if w_dtype and value.is_floating_point() and value.dtype != w_dtype:
-                value = value.to(w_dtype)
-            return value.to("cpu", non_blocking=False)
-        if isinstance(value, tuple):
-            return tuple(self._detach_forward_arg(item, w_dtype) for item in value)
-        if isinstance(value, list):
-            return [self._detach_forward_arg(item, w_dtype) for item in value]
-        if isinstance(value, dict):
-            return {key: self._detach_forward_arg(item, w_dtype) for key, item in value.items()}
-        if hasattr(value, "key_cache"):
-            return None
-        return value
+        return detach_forward_value(value, w_dtype)
 
     @staticmethod
     def _normalize_output(output):
@@ -515,13 +536,7 @@ class TEQTransform(BasePreprocessor):
         return value
 
     def _iter_parent_calls(self, stored_args: tuple, stored_kwargs: dict):
-        actual_batch = _detect_parent_batch(stored_args, stored_kwargs)
-        if self.teq_batch_size is None or actual_batch is None or actual_batch <= self.teq_batch_size:
-            yield stored_args, stored_kwargs
-            return
-        for start in range(0, actual_batch, self.teq_batch_size):
-            end = min(start + self.teq_batch_size, actual_batch)
-            yield _slice_batch_args_kwargs(stored_args, stored_kwargs, actual_batch, start, end)
+        yield from iter_batch_calls(stored_args, stored_kwargs, self.teq_batch_size)
 
     def _run_parent_samples(
         self,
@@ -530,21 +545,7 @@ class TEQTransform(BasePreprocessor):
         *,
         offload_to_cpu: bool = False,
     ) -> list[torch.Tensor]:
-        param = next(parent.parameters(), None)
-        device = param.device if param is not None else torch.device("cpu")
-        outputs = []
-        with torch.no_grad():
-            for stored_args, stored_kwargs in samples:
-                for micro_args, micro_kwargs in self._iter_parent_calls(stored_args, stored_kwargs):
-                    call_args = tuple(self._move_parent_value_to_device(arg, device) for arg in micro_args)
-                    call_kwargs = {
-                        key: self._move_parent_value_to_device(value, device) for key, value in micro_kwargs.items()
-                    }
-                    out = self._normalize_output(parent(*call_args, **call_kwargs)).detach()
-                    if offload_to_cpu:
-                        out = out.to("cpu", non_blocking=False)
-                    outputs.append(out)
-        return outputs
+        return run_parent_samples(self, parent, samples, offload_to_cpu=offload_to_cpu)
 
     def _select_teq_samples(self, samples: list[tuple[tuple, dict]]) -> list[tuple[tuple, dict]]:
         max_samples = self.teq_nsamples
@@ -554,7 +555,7 @@ class TEQTransform(BasePreprocessor):
         selected: list[tuple[tuple, dict]] = []
         remaining = max_samples
         for stored_args, stored_kwargs in samples:
-            batch_size = _detect_parent_batch(stored_args, stored_kwargs)
+            batch_size = detect_batch_size(stored_args, stored_kwargs)
             if batch_size is None:
                 selected.append((stored_args, stored_kwargs))
                 remaining -= 1
@@ -563,7 +564,7 @@ class TEQTransform(BasePreprocessor):
                 continue
 
             take = min(batch_size, remaining)
-            selected.append(_slice_batch_args_kwargs(stored_args, stored_kwargs, batch_size, 0, take))
+            selected.append(next(iter_batch_calls(stored_args, stored_kwargs, take)))
             remaining -= take
             if remaining <= 0:
                 break
@@ -576,6 +577,10 @@ class TEQTransform(BasePreprocessor):
         smooth_layer = self.model.get_submodule(mapping.smooth_name)
         balance_layers = [self.model.get_submodule(name) for name in mapping.balance_names]
         return parent, smooth_layer, balance_layers
+
+    @staticmethod
+    def _normalize_group_size(group_size: int | None, fallback: int) -> int:
+        return group_size if group_size is not None and group_size > 0 else fallback
 
     def _initial_alpha(self, balance_layers: list[torch.nn.Linear]) -> torch.Tensor:
         device = balance_layers[0].weight.device
@@ -680,9 +685,7 @@ class TEQTransform(BasePreprocessor):
         """TEQ transform is all-or-nothing for layers sharing one equivalent scale."""
         if self._mapping_has_ignored_layer(mapping):
             return False
-        if self._mapping_has_mixed_quant_params(mapping):
-            return False
-        return True
+        return not self._mapping_has_mixed_quant_params(mapping)
 
     def _make_wrapper(self, layer: torch.nn.Linear, log_alpha: torch.nn.Parameter) -> _TEQLinearFakeQuant:
         params = self._resolve_params(layer)
@@ -696,7 +699,7 @@ class TEQTransform(BasePreprocessor):
         )
         act_quant_func = None
         activation_second_moment = None
-        if self._block_quantizer_is_signroundv2():
+        if self._quantizer_is_signroundv2():
             for mapping in self._resolved_mappings:
                 if layer not in mapping.balance_layers:
                     continue
@@ -733,11 +736,11 @@ class TEQTransform(BasePreprocessor):
             max_scale=self.max_scale,
         )
 
-    def _block_quantizer_is_signroundv2(self) -> bool:
+    def _quantizer_is_signroundv2(self) -> bool:
         from auto_round.algorithms.quantization.sign_round.config import SignRoundV2Config
 
         composer = getattr(self, "_composer", None)
-        quantizer = getattr(composer, "block_quantizer", None)
+        quantizer = getattr(composer, "active_quantizer", None)
         return isinstance(getattr(quantizer, "config", None), SignRoundV2Config)
 
     def _scale_summary(self, scales: torch.Tensor) -> dict[str, float]:
@@ -785,30 +788,7 @@ class TEQTransform(BasePreprocessor):
         samples: list[tuple[tuple, dict]],
         fp_outputs: list[torch.Tensor],
     ) -> float:
-        param = next(parent.parameters(), None)
-        device = param.device if param is not None else torch.device("cpu")
-
-        loss = torch.tensor(0.0, device=device)
-        num_elements = torch.tensor(0, device=device, dtype=torch.long)
-        output_idx = 0
-        for stored_args, stored_kwargs in samples:
-            for micro_args, micro_kwargs in self._iter_parent_calls(stored_args, stored_kwargs):
-                if output_idx >= len(fp_outputs):
-                    return float("inf")
-                call_args = tuple(self._move_parent_value_to_device(arg, device) for arg in micro_args)
-                call_kwargs = {
-                    key: self._move_parent_value_to_device(value, device) for key, value in micro_kwargs.items()
-                }
-                out = self._normalize_output(parent(*call_args, **call_kwargs))
-                ref = fp_outputs[output_idx].to(device, non_blocking=False)
-                loss += F.mse_loss(out.float(), ref.float(), reduction="sum")
-                num_elements += ref.numel()
-                output_idx += 1
-                del out, ref
-
-        if output_idx != len(fp_outputs) or num_elements == 0:
-            return float("inf")
-        return (loss / num_elements).item()
+        return compute_parent_loss(self, parent, samples, fp_outputs)
 
     @torch.no_grad()
     def _awq_initial_alpha(
@@ -826,45 +806,21 @@ class TEQTransform(BasePreprocessor):
             logger.warning("TEQ: zero AWQ-init activation count for '%s'; using default alpha.", mapping.smooth_name)
             return None
 
-        device = mapping.balance_layers[0].weight.device
-        x_mean = (act_sum / act_count).to(device=device, dtype=torch.float32)
-        params = self._resolve_params(mapping.balance_layers[0])
-        group_size = AWQTransform._normalize_group_size(params["group_size"], -1)
-        w_mean = AWQTransform._compute_layer_means(mapping.balance_layers, group_size).to(device)
-
-        orig_layers = dict(zip(mapping.balance_names, mapping.balance_layers))
-        parent = self.model.get_submodule(mapping.parent_name) if mapping.parent_name else self.model
-        best_error = float("inf")
-        best_scales = None
-        n_grid = max(2, int(self.awq_init_n_grid))
-
-        try:
-            for idx in range(n_grid):
-                ratio = idx / (n_grid - 1)
-                scales = (x_mean.pow(ratio) / (w_mean.pow(1 - ratio) + 1e-4)).clamp(min=1e-4)
-                scales = scales / (scales.max() * scales.min()).sqrt()
-                scales[torch.isinf(scales)] = 1
-                scales[torch.isnan(scales)] = 1
-                scales = scales.clamp(self.min_scale, self.max_scale)
-                log_alpha = torch.nn.Parameter(scales.detach().clone().log())
-                for layer_name, layer in orig_layers.items():
-                    set_module(self.model, layer_name, self._make_wrapper(layer, log_alpha))
-                train_parent = self.model.get_submodule(mapping.parent_name) if mapping.parent_name else self.model
-                total_loss = self._compute_parent_loss(train_parent, samples, fp_outputs)
-                for layer_name, layer in orig_layers.items():
-                    set_module(self.model, layer_name, layer)
-                if total_loss < best_error:
-                    best_error = total_loss
-                    best_scales = scales.detach().clone()
-        finally:
-            for layer_name, layer in orig_layers.items():
-                set_module(self.model, layer_name, layer)
-
-        if best_scales is None:
-            logger.warning("TEQ: AWQ-init grid search failed for '%s'; using default alpha.", mapping.smooth_name)
+        activation_mean = (act_sum / act_count).to(
+            device=mapping.balance_layers[0].weight.device,
+            dtype=torch.float32,
+        )
+        calibration = TEQSmoothCalibration(
+            samples,
+            fp_outputs,
+            self._initial_alpha(mapping.balance_layers),
+            activation_mean,
+        )
+        scales, best_error = select_awq_initial_alpha(self, mapping, calibration)
+        if best_error is None:
             return None
-        self._log_scale_summary("awq_init", mapping, best_error, best_scales)
-        return best_scales
+        self._log_scale_summary("awq_init", mapping, best_error, scales)
+        return scales
 
     def _train_and_apply_mapping(self, mapping: ResolvedMapping) -> None:
         parent_kwargs_list = self._select_teq_samples(self._parent_args_cache.get(mapping.parent_name, []))
@@ -876,110 +832,20 @@ class TEQTransform(BasePreprocessor):
         fp_outputs = self._run_parent_samples(
             parent, parent_kwargs_list, offload_to_cpu=self.teq_batch_size is not None
         )
-        initial_alpha = self._initial_alpha(balance_layers)
-        if self.awq_init:
-            awq_alpha = self._awq_initial_alpha(mapping, parent_kwargs_list, fp_outputs)
-            if awq_alpha is not None:
-                initial_alpha = awq_alpha
-        initial_alpha = initial_alpha.clamp(self.min_scale, self.max_scale)
-        log_alpha = torch.nn.Parameter(initial_alpha.log())
-        if self.optimizer_name == "lion":
-            from auto_round.algorithms.transforms.teq.lion import Lion
-
-            optimizer = Lion([log_alpha], lr=self.lr, betas=(0.9, 0.99), weight_decay=0.0)
-        else:
-            optimizer = torch.optim.Adam([log_alpha], lr=self.lr, betas=(0.9, 0.9), weight_decay=0.0)
-        logger.info(
-            "TEQ train '%s': optimizer=%s iters=%d lr=%.3e",
-            mapping.smooth_name,
-            self.optimizer_name,
-            self.iters,
-            self.lr,
+        stats = self._activation_stats.get(mapping.smooth_name)
+        activation_mean = None
+        if stats is not None and stats[2] > 0:
+            activation_mean = (stats[0] / stats[2]).to(
+                device=balance_layers[0].weight.device,
+                dtype=torch.float32,
+            )
+        calibration = TEQSmoothCalibration(
+            parent_kwargs_list,
+            fp_outputs,
+            self._initial_alpha(balance_layers).clamp(self.min_scale, self.max_scale),
+            activation_mean,
         )
-        orig_layers = dict(zip(mapping.balance_names, balance_layers))
-        best_loss = float("inf")
-        best_alpha = initial_alpha.detach().clone()
-
-        try:
-            for layer_name, layer in orig_layers.items():
-                set_module(self.model, layer_name, self._make_wrapper(layer, log_alpha))
-            train_parent = self.model.get_submodule(mapping.parent_name) if mapping.parent_name else self.model
-
-            # Evaluate iteration zero and every post-step candidate. This keeps
-            # the scale that actually produced the measured loss.
-            for step in range(self.iters + 1):
-                optimizer.zero_grad(set_to_none=True)
-                has_grad_loss = False
-                finite_loss = True
-                output_idx = 0
-                param = next(train_parent.parameters(), None)
-                device = param.device if param is not None else torch.device("cpu")
-                # Do not add differentiable micro-batch losses into one tensor.
-                # That retains every parent-forward graph until the end of the
-                # TEQ step and can exceed VRAM for MXFP4 MLP projections.  The
-                # optimizer owns only ``log_alpha``, so accumulating the
-                # unnormalised gradients eagerly and normalising them once at
-                # the end is mathematically equivalent to backpropagating the
-                # mean loss while releasing each graph immediately.
-                loss_sum = 0.0
-                num_elements = 0
-                for stored_args, stored_kwargs in parent_kwargs_list:
-                    for micro_args, micro_kwargs in self._iter_parent_calls(stored_args, stored_kwargs):
-                        if output_idx >= len(fp_outputs):
-                            finite_loss = False
-                            break
-                        call_args = tuple(self._move_parent_value_to_device(arg, device) for arg in micro_args)
-                        call_kwargs = {
-                            key: self._move_parent_value_to_device(value, device) for key, value in micro_kwargs.items()
-                        }
-                        ref_output = fp_outputs[output_idx]
-                        output_idx += 1
-                        with torch.enable_grad():
-                            output = self._normalize_output(train_parent(*call_args, **call_kwargs))
-                            ref = ref_output.to(output.device).float()
-                            loss = F.mse_loss(output.float(), ref, reduction="sum")
-                        if loss.requires_grad and step < self.iters:
-                            has_grad_loss = True
-                        if not torch.isfinite(loss):
-                            logger.warning("TEQ: non-finite loss for '%s'; keeping best scale.", mapping.smooth_name)
-                            finite_loss = False
-                            break
-                        loss_sum += loss.detach().item()
-                        num_elements += ref.numel()
-                        if step < self.iters and loss.requires_grad:
-                            loss.backward()
-                        del output, loss, ref, ref_output
-                    if not finite_loss:
-                        break
-                if output_idx != len(fp_outputs):
-                    finite_loss = False
-                if not finite_loss:
-                    break
-                total_loss_value = loss_sum / max(1, num_elements)
-                if total_loss_value < best_loss:
-                    best_loss = total_loss_value
-                    best_alpha = log_alpha.detach().exp().clamp(self.min_scale, self.max_scale).clone()
-                if step == self.iters:
-                    break
-                if not has_grad_loss:
-                    logger.warning(
-                        "TEQ: loss for '%s' is not differentiable; keeping the current scale.",
-                        mapping.smooth_name,
-                    )
-                    break
-                for param_group in optimizer.param_groups:
-                    for parameter in param_group["params"]:
-                        if parameter.grad is not None:
-                            parameter.grad.div_(max(1, num_elements))
-                optimizer.step()
-                with torch.no_grad():
-                    log_alpha.clamp_(math.log(self.min_scale), math.log(self.max_scale))
-        finally:
-            for layer_name, layer in orig_layers.items():
-                set_module(self.model, layer_name, layer)
-
-        self._log_scale_summary("train", mapping, best_loss, best_alpha)
-        self._apply_scales(mapping, best_alpha)
+        run_teq_smoothing(self, mapping, calibration)
 
     @staticmethod
     def _core_layer(layer: torch.nn.Module) -> torch.nn.Module:
@@ -1046,7 +912,7 @@ class TEQTransform(BasePreprocessor):
             if smooth.bias is not None:
                 smooth.bias.data.div_(scales.to(smooth.bias.device, smooth.bias.dtype))
         else:
-            AWQTransform._fold_scales_into_smooth_layer(smooth, scales)
+            fold_scales_into_smooth_layer(smooth, scales)
         for wrapper in context["wrappers"]:
             if hasattr(wrapper, "commit_teq_scale"):
                 wrapper.commit_teq_scale(context)
@@ -1068,4 +934,4 @@ class TEQTransform(BasePreprocessor):
         scales = scales.clamp(self.min_scale, self.max_scale)
         for layer in balance_layers:
             layer.weight.data.mul_(scales.to(layer.weight.device, layer.weight.dtype).view(1, -1))
-        AWQTransform._fold_scales_into_smooth_layer(smooth_layer, scales)
+        fold_scales_into_smooth_layer(smooth_layer, scales)

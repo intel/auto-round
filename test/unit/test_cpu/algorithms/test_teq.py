@@ -27,6 +27,7 @@ from auto_round.algorithms.transforms.teq.protocol import (
     install_teq_equivalent_input_hook,
     set_teq_equivalent_transforms,
 )
+from auto_round.algorithms.transforms.teq.smooth import iter_batch_calls, truncate_forward_value
 from auto_round.data_type.utils import compute_optimized_init_scale, get_quant_func
 from auto_round.wrapper import WrapperLinear
 
@@ -145,6 +146,19 @@ def test_teq_qdq_matches_common_w4a16_schemes(data_type):
     expected, _, _ = quant_func(transformed, **params)
 
     torch.testing.assert_close(wrapper._qdq_weight(transformed), expected)
+
+
+def test_teq_smooth_replay_microbatches_and_truncates_sequence():
+    hidden = torch.randn(2, 8, 4)
+    attention_mask = torch.ones(2, 8, dtype=torch.long)
+
+    truncated_hidden, truncated_mask = truncate_forward_value((hidden, attention_mask), 5)
+    assert truncated_hidden.shape == (2, 5, 4)
+    assert truncated_mask.shape == (2, 5)
+
+    calls = list(iter_batch_calls((hidden, attention_mask), {}, batch_size=1))
+    assert len(calls) == 2
+    assert all(args[0].shape == (1, 8, 4) and args[1].shape == (1, 8) for args, _ in calls)
 
 
 def test_teq_mxfp_init_scale_handles_group_padding_and_channel_importance():
@@ -353,8 +367,10 @@ def test_awq_grid_search_uses_rotation_aware_candidate_path():
     # The parent reference remains in its original FP basis; each candidate's
     # child pre-hook provides the matching ``rotate(x / s)`` input basis.
     input_transform = parent.balance._autoround_teq_transforms["input"]
-    torch.testing.assert_close(parent.balance.seen_inputs[1], input_transform(inputs))
-    torch.testing.assert_close(parent.balance.seen_inputs[2], input_transform(inputs / scales))
+    # Index 0 is the manual reference call above and index 1 is the grid
+    # search's FP reference replay. Candidate inputs start at index 2.
+    torch.testing.assert_close(parent.balance.seen_inputs[2], input_transform(inputs))
+    torch.testing.assert_close(parent.balance.seen_inputs[3], input_transform(inputs / scales))
     # Identity QDQ leaves each candidate function-preserving; this verifies
     # the parent reference did not need to be changed into the rotated basis.
     torch.testing.assert_close(parent(inputs), original)
@@ -389,7 +405,7 @@ def test_teq_mxfp4_signroundv2_smoke(tiny_opt_model_path):
     model, layer_config = ar.quantize()
 
     assert [type(pre).__name__ for pre in ar.alg_composer.preprocessors] == ["TEQTransform"]
-    assert type(ar.alg_composer.block_quantizer).__name__ == "SignRoundV2Quantizer"
+    assert type(ar.alg_composer.active_quantizer).__name__ == "SignRoundV2Quantizer"
     assert model is not None
     assert layer_config
     assert all(cfg["data_type"] == "mx_fp" for cfg in layer_config.values() if cfg["bits"] == 4)
@@ -415,7 +431,7 @@ def test_teq_experimental_refinement_smoke(tiny_opt_model_path):
     assert model is not None
     assert layer_config
     assert not any(hasattr(module, "_teq_input_context") for module in model.modules())
-    result = ar.alg_composer.block_quantizer.teq_last_refinement
+    result = ar.alg_composer.active_quantizer.teq_last_refinement
     assert result["selected_loss"] <= result["baseline_loss"]
 
 
