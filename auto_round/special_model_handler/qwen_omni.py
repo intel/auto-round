@@ -76,6 +76,10 @@ def _get_qwen3_omni_visual_audio_info(model):
     (``thinker.model.visual`` / ``thinker.model.audio_tower``). Older layouts
     exposed them directly on ``thinker``. Prefer the nested paths, fall back
     to the legacy direct attributes.
+
+    Attribute presence alone is not enough: some configs expose ``visual`` /
+    ``audio_tower`` as ``None`` (or leave an empty placeholder). Only return a
+    prefix when the module object itself is present and non-empty.
     """
     thinker = getattr(model, "thinker", None)
     if thinker is None:
@@ -87,19 +91,35 @@ def _get_qwen3_omni_visual_audio_info(model):
     audio = None
     audio_prefix = None
 
-    if thinker_model is not None and hasattr(thinker_model, "visual"):
-        visual = thinker_model.visual
-        visual_prefix = "thinker.model.visual"
-    elif hasattr(thinker, "visual"):
-        visual = thinker.visual
-        visual_prefix = "thinker.visual"
+    def _usable_module(mod):
+        # Reject missing / None placeholders and empty containers.
+        if mod is None:
+            return False
+        if isinstance(mod, (list, tuple, dict, set)) and len(mod) == 0:
+            return False
+        return True
 
-    if thinker_model is not None and hasattr(thinker_model, "audio_tower"):
-        audio = thinker_model.audio_tower
-        audio_prefix = "thinker.model.audio_tower"
-    elif hasattr(thinker, "audio_tower"):
-        audio = thinker.audio_tower
-        audio_prefix = "thinker.audio_tower"
+    if thinker_model is not None:
+        candidate = getattr(thinker_model, "visual", None)
+        if _usable_module(candidate):
+            visual = candidate
+            visual_prefix = "thinker.model.visual"
+    if visual is None:
+        candidate = getattr(thinker, "visual", None)
+        if _usable_module(candidate):
+            visual = candidate
+            visual_prefix = "thinker.visual"
+
+    if thinker_model is not None:
+        candidate = getattr(thinker_model, "audio_tower", None)
+        if _usable_module(candidate):
+            audio = candidate
+            audio_prefix = "thinker.model.audio_tower"
+    if audio is None:
+        candidate = getattr(thinker, "audio_tower", None)
+        if _usable_module(candidate):
+            audio = candidate
+            audio_prefix = "thinker.audio_tower"
 
     return visual_prefix, visual, audio_prefix, audio
 
