@@ -9,10 +9,15 @@ import importlib.util
 import pkgutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from auto_round.algorithms.base import BaseAlgorithm
+    from auto_round.algorithms.quantization.base import BaseQuantizer
+    from auto_round.algorithms.transforms.base import BasePreprocessor
+
+_QuantizerT = TypeVar("_QuantizerT", bound="BaseQuantizer")
+_PreprocessorT = TypeVar("_PreprocessorT", bound="BasePreprocessor")
 
 
 @dataclass
@@ -212,6 +217,52 @@ def register_pipeline_member(config_cls: type):
     def _decorator(member_cls: type[BaseAlgorithm]) -> type[BaseAlgorithm]:
         _CONFIG_IMPL_REGISTRY[config_cls] = member_cls
         return member_cls
+
+    return _decorator
+
+
+def register_preprocessor(config_cls: type) -> Callable[[type[_PreprocessorT]], type[_PreprocessorT]]:
+    """Register a BasePreprocessor using the shared, legacy-compatible implementation registry.
+
+    This names the runtime role without changing config resolution, ordering,
+    or the registration API used by existing pipeline extensions.
+    """
+
+    def _decorator(preprocessor_cls: type[_PreprocessorT]) -> type[_PreprocessorT]:
+        from auto_round.algorithms.transforms.base import BasePreprocessor
+
+        if not issubclass(preprocessor_cls, BasePreprocessor):
+            raise TypeError("register_preprocessor requires a BasePreprocessor subclass")
+        register_pipeline_member(config_cls)(preprocessor_cls)
+        return preprocessor_cls
+
+    return _decorator
+
+
+def register_quantizer(config_cls: type) -> Callable[[type[_QuantizerT]], type[_QuantizerT]]:
+    """Register a quantizer implementation for a configuration class.
+
+    Unlike ``register_algorithm`` (names, aliases and config factories), this
+    decorator maps a config class to its runtime quantizer. Preprocessors use
+    ``register_preprocessor``; legacy plugins can still use ``register_pipeline_member``.
+
+    Args:
+        config_cls: Configuration class handled by the quantizer.
+
+    Returns:
+        A decorator that registers and returns the original quantizer class.
+
+    Raises:
+        TypeError: The decorated class does not inherit from BaseQuantizer.
+    """
+
+    def _decorator(quantizer_cls: type[_QuantizerT]) -> type[_QuantizerT]:
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+
+        if not issubclass(quantizer_cls, BaseQuantizer):
+            raise TypeError("register_quantizer requires a BaseQuantizer subclass")
+        register_pipeline_member(config_cls)(quantizer_cls)
+        return quantizer_cls
 
     return _decorator
 

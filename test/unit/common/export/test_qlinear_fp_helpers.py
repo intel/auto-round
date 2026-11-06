@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tests for the FP4-packing helpers in
-``auto_round/export/export_to_autoround/qlinear_fp.py``.
+``auto_round/export/formats/autoround/qlinear_fp.py``.
 """
 
 import pytest
@@ -25,7 +25,7 @@ import torch.nn as nn
 # ---------------------------------------------------------------------------
 class TestModuleConstants:
     def test_float_to_e2m1_lookup(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import FLOAT_TO_E2M1
+        from auto_round.export.formats.autoround.qlinear_fp import FLOAT_TO_E2M1
 
         assert len(FLOAT_TO_E2M1) == 8
         # Monotonically non-decreasing
@@ -38,7 +38,7 @@ class TestModuleConstants:
 # ---------------------------------------------------------------------------
 class TestQuantLinearInit:
     def test_construction_4bit_mx(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+        from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
         layer = QuantLinear(bits=4, group_size=32, infeatures=32, outfeatures=4, bias=True)
         assert layer.QUANT_TYPE == "MXFP"
@@ -46,7 +46,7 @@ class TestQuantLinearInit:
         assert layer.bits == 4
 
     def test_construction_8bit_mx(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+        from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
         layer = QuantLinear(bits=8, group_size=32, infeatures=32, outfeatures=4, bias=False)
         # 8-bit path stores `weight` (not weight_packed)
@@ -54,7 +54,7 @@ class TestQuantLinearInit:
         assert layer.weight.dtype == torch.float8_e4m3fn
 
     def test_construction_4bit_nv(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+        from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
         layer = QuantLinear(
             bits=4,
@@ -70,7 +70,7 @@ class TestQuantLinearInit:
         assert not hasattr(layer, "input_global_scale") or layer.input_global_scale is None
 
     def test_construction_4bit_nv_act_global(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+        from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
         layer = QuantLinear(
             bits=4,
@@ -86,25 +86,25 @@ class TestQuantLinearInit:
         assert layer.input_global_scale.shape == (1,)
 
     def test_construction_invalid_bits_raises(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+        from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
         with pytest.raises(NotImplementedError):
             QuantLinear(bits=2, group_size=32, infeatures=32, outfeatures=4, bias=False)
 
     def test_construction_mx_group_size_constraint(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+        from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
         with pytest.raises(NotImplementedError):
             QuantLinear(bits=4, group_size=64, infeatures=64, outfeatures=4, bias=False)
 
     def test_construction_mx_infeatures_not_divisible(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+        from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
         with pytest.raises(NotImplementedError):
             QuantLinear(bits=4, group_size=32, infeatures=33, outfeatures=4, bias=False)
 
     def test_construction_nv_group_size_constraint(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+        from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
         with pytest.raises(NotImplementedError):
             QuantLinear(
@@ -117,7 +117,7 @@ class TestQuantLinearInit:
             )
 
     def test_construction_nv_infeatures_not_divisible(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+        from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
         with pytest.raises(NotImplementedError):
             QuantLinear(
@@ -130,7 +130,7 @@ class TestQuantLinearInit:
             )
 
     def test_construction_no_bias(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear
+        from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 
         layer = QuantLinear(bits=4, group_size=32, infeatures=32, outfeatures=4, bias=False)
         assert layer.bias is None
@@ -141,7 +141,7 @@ class TestQuantLinearInit:
 # ---------------------------------------------------------------------------
 class TestPackFp4ToUint8Cpu:
     def test_shape_halves_columns(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import (
+        from auto_round.export.formats.autoround.qlinear_fp import (
             pack_fp4_to_uint8_cpu,
         )
 
@@ -151,7 +151,7 @@ class TestPackFp4ToUint8Cpu:
         assert packed.dtype == torch.uint8
 
     def test_odd_dimension_padded(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import (
+        from auto_round.export.formats.autoround.qlinear_fp import (
             pack_fp4_to_uint8_cpu,
         )
 
@@ -163,7 +163,7 @@ class TestPackFp4ToUint8Cpu:
 
 class TestPackFp4ToUint8:
     def test_zero_input(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import (
+        from auto_round.export.formats.autoround.qlinear_fp import (
             _pack_fp4_to_uint8,
         )
 
@@ -173,7 +173,7 @@ class TestPackFp4ToUint8:
 
     def test_largest_value(self):
         """6.0 is the largest FP4 entry -> index 7 -> both nibbles 0x77."""
-        from auto_round.export.export_to_autoround.qlinear_fp import (
+        from auto_round.export.formats.autoround.qlinear_fp import (
             _pack_fp4_to_uint8,
         )
 
@@ -184,7 +184,7 @@ class TestPackFp4ToUint8:
 
     def test_larger_than_max_snaps(self):
         """Values > 6.0 should snap to 6.0 (index 7)."""
-        from auto_round.export.export_to_autoround.qlinear_fp import (
+        from auto_round.export.formats.autoround.qlinear_fp import (
             _pack_fp4_to_uint8,
         )
 
@@ -195,7 +195,7 @@ class TestPackFp4ToUint8:
 
     def test_negative_with_sign(self):
         """Negative values get sign bit set (bit 3 of high nibble)."""
-        from auto_round.export.export_to_autoround.qlinear_fp import (
+        from auto_round.export.formats.autoround.qlinear_fp import (
             _pack_fp4_to_uint8,
         )
 
@@ -208,7 +208,7 @@ class TestPackFp4ToUint8:
         assert (packed == 0xFF).all()
 
     def test_pack_pairs(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import (
+        from auto_round.export.formats.autoround.qlinear_fp import (
             FLOAT_TO_E2M1,
             _pack_fp4_to_uint8,
         )
@@ -223,7 +223,7 @@ class TestPackFp4ToUint8:
 
 class TestPackFp4ToUint8Dispatcher:
     def test_cpu_dispatch(self):
-        from auto_round.export.export_to_autoround.qlinear_fp import (
+        from auto_round.export.formats.autoround.qlinear_fp import (
             pack_fp4_to_uint8,
         )
 

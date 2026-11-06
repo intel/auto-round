@@ -186,7 +186,7 @@ def test_whole_model_activation_calibration(tmp_path, scheme, teacher_cache):
             assert torch.isfinite(scale).all() and (scale > 0).all()
 
     if scheme.startswith("NVFP4"):
-        from auto_round.export.export_to_autoround.export_to_nvfp_mx import pack_layer
+        from auto_round.export.formats.autoround.float import pack_layer
 
         for name in ("first", "second"):
             original = getattr(model, name).orig_layer

@@ -7,7 +7,7 @@
 </p>
 
 
-<h3>PTQ-Level Efficiency, QAT-Level Accuracy.</h3>
+<h3>PTQ-Level Efficiency, QAT-Level Accuracy</h3>
 
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://github.com/intel/auto-round)
 [![version](https://img.shields.io/badge/release-0.16.1-green)](https://github.com/intel/auto-round/releases)
@@ -31,6 +31,7 @@
 [简体中文](README_CN.md) | English&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
+
 
 ---
 <div align="left">
@@ -120,6 +121,8 @@ Out-of-the-box quantization for 10+ vision-language models [example models](http
 
 ✅ **Multiple Recipes**
 Choose from `auto-round-best`, `auto-round`, `auto-round-light`, `auto-round-opt-rtn` (optimized RTN) and `auto-round-rtn` (pure RTN, fastest baseline) to suit your needs. Details are shown in [quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+
+Use the same plans in Python with `AutoRound(..., recipe="auto-round-best")` or in the CLI with `--recipe auto-round-best`. Omitting the recipe selects `auto-round`; legacy commands remain shortcuts. See [built-in recipes and overrides](./docs/recipes.md).
 
 ✅ Advanced Utilities
 Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
@@ -280,7 +283,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 
 ##### Calibration Dataset
 - **`dataset` (str|list|tuple|torch.utils.data.DataLoader)**: The dataset for tuning (default is `"NeelNanda/pile-10k"`). Supports local JSON files and dataset combinations, e.g. `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`.
-- I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AUTO_ROUND_CACHE/datasets/coco2014` when `AUTO_ROUND_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
+- I2V calibration uses real images paired with the default COCO2014 captions. Before sampling, it joins the official COCO metadata and retains only Creative Commons Attribution 2.0 images (license ID 4); the filtered manifest preserves the license and Flickr source URL. Its manifests and selected images are cached under `~/.cache/auto_round/datasets/coco2014`, or under `$AR_CACHE/datasets/coco2014` when `AR_CACHE` is set. T2V keeps parsing the caption manifest in memory and does not use this cache. A local TSV may instead provide `id`, `caption`, and `image` columns; `image` accepts absolute paths or paths relative to the TSV.
 - **`nsamples` (int)**: Number of samples for tuning (default is `128`).
 - **`seqlen` (int)**: Data length of the sequence for tuning (default is `2048`).
 
@@ -338,7 +341,8 @@ ar.quantize_and_save()
 - **`bits` (float)**: Target average bit-width for the entire model when `schemes` is provided. Only quantized layers are included in the average bit calculation. Without `schemes`, `bits` is the plain weight bit width and must be an integer.
 - **`schemes` (str | list[str] | list[QuantizationScheme])**: Candidate quantization schemes to choose from. It can be a single comma-separated string (e.g., `"W4A16,W2A16"`), a list of strings (e.g., `["W4A16", "W2A16"]`), or a list of `QuantizationScheme` objects. Providing schemes enables AutoScheme.
 - **`ignore_scale_zp_bits` (bool)**: Only supported in API usage. Determines whether to exclude the bits of scale and zero-point from the average bit-width calculation (default: `False`).  
-- **`shared_layers` (Iterable[Iterable[str]], optional)**: Only supported in API usage. Defines groups of layers that share quantization settings.  
+- **`shared_layers` (Iterable[Iterable[str]], optional)**: Only supported in API usage. Adds extra groups of layers that share quantization settings, on top of the built-in vLLM fusion groups.
+- **`default_shared_layers` (bool)**: Whether to share one quantization scheme across the projections vLLM/SGLang fuse at serving time (`q_proj`/`k_proj`/`v_proj`, `q_a_proj`/`kv_a_proj_with_mqa`, `gate_proj`/`up_proj`). Default is `True`; set to `False` (or export `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`) to let AutoScheme select per projection. CLI: `--disable_default_shared_layers`.  
 - **`batch_size` (int, optional)**: Only supported in API usage. Can be set to `1` to reduce VRAM usage at the expense of longer tuning time.  
 
 </details>

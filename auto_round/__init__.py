@@ -24,6 +24,8 @@ from auto_round.algorithms.transforms.hadamard.config import RotationConfig
 from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme
+from auto_round.parallel import ParallelConfig
+from auto_round.parallel.tp.launcher import quantize_and_save
 from auto_round.utils import LazyImport
 from auto_round.utils import monkey_patch
 
@@ -41,6 +43,7 @@ __all__ = [
     "AutoRoundMLLM",
     "AutoScheme",
     "OptimizedRTNConfig",
+    "ParallelConfig",
     "QuantizationScheme",
     "RRQConfig",
     "RTNConfig",
@@ -51,6 +54,7 @@ __all__ = [
     "__version__",
     "generate_rrq_residual",
     "load_rrq_model",
+    "quantize_and_save",
 ]
 
 
@@ -66,7 +70,7 @@ def __getattr__(name):
 
         return load_rrq_model
     if name == "generate_rrq_residual":
-        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
 
         return generate_rrq_residual
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

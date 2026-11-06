@@ -66,8 +66,8 @@ class CompressContext(BaseContext):
         self.static_attention_dtype = static_attention_dtype
         self.static_kv_granularity = static_kv_granularity
         self.static_attention_granularity = static_attention_granularity
-        # Resolved --data_parallel policy (ParallelPolicy or None = off);
-        # set once at the CLI entry, read by the data-parallel engine
+        # Resolved data_parallel policy (ParallelPolicy or None = off);
+        # built from ParallelConfig for both CLI and API, read by the DP engine.
         self.parallel_policy = kwargs.pop("parallel_policy", None)
 
     def clear_memory(self, tensor=None):

@@ -5,8 +5,8 @@ import torch
 from safetensors import safe_open
 
 from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
-from auto_round.export.svdquant_mxfp4 import unpack_lowrank_weight
-from auto_round.export.svdquant_nunchaku import (
+from auto_round.export.formats.svdquant.mxfp4 import unpack_lowrank_weight
+from auto_round.export.formats.svdquant.nunchaku import (
     MXFP4ResidualTensorProvider,
     SVDQuantExportConfig,
     SVDQuantExportRecord,

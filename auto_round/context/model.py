@@ -73,9 +73,13 @@ class ModelContext(BaseContext):
         need_calib: bool = True,
         is_act_quantize: bool = False,
         quant_nontext_module: bool = False,
+        parallel_config=None,
         **kwargs,
     ) -> None:
         super().__init__()
+        from auto_round.parallel import ParallelConfig
+
+        self.parallel_config = ParallelConfig.from_value(parallel_config)
         self.quantized = False
         self.is_mllm = False
         self.is_diffusion = False
@@ -164,7 +168,9 @@ class ModelContext(BaseContext):
         # loading so every branch below (llm / mllm / diffusion / meta skeleton)
         # loads only the first N decoder layers. No-op otherwise.
         install_debug_layer_config_patch()
-        if is_diffusion_model(self.model):
+        if self.parallel_config.tp_size > 1:
+            self._load_tp_model()
+        elif is_diffusion_model(self.model):
             self.is_diffusion = True
             self.preloaded_diffusion_pipeline = not isinstance(self.model, str)
             default_torch_dtype = "auto"
@@ -292,6 +298,45 @@ class ModelContext(BaseContext):
         for m in self.model.modules():
             if hasattr(m, "tuning_device"):
                 delattr(m, "tuning_device")
+
+    def _load_tp_model(self) -> None:
+        """Load or validate native TP parameters without combining them with device_map.
+
+        Update this context's model and tokenizer, adapt supported MoE experts in place,
+        and disable disk-stream loading for the resulting distributed model.
+
+        Raises:
+            ValueError: The model lacks a TP plan, requires a tokenizer, or has invalid shards.
+            NotImplementedError: The architecture, mesh, or expert layout is unsupported.
+        """
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        from auto_round.parallel.tp.moe import prepare_tp_moe
+        from auto_round.parallel.tp.runtime import validate_tp_model
+
+        config = self.config if isinstance(self.model, str) else getattr(self.model, "config", None)
+        if config is None:
+            config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
+        if not getattr(config, "base_model_tp_plan", None):
+            raise ValueError("The model config must define base_model_tp_plan for native TP.")
+        if getattr(config, "is_encoder_decoder", False):
+            raise NotImplementedError("Native TP currently supports decoder-only language models.")
+        if isinstance(self.model, str):
+            name = self.model
+            self.model = AutoModelForCausalLM.from_pretrained(
+                name,
+                config=config,
+                dtype=self.model_dtype or "auto",
+                trust_remote_code=self.trust_remote_code,
+                distributed_config=self.parallel_config.to_transformers_config(),
+            )
+            if self.tokenizer is None:
+                self.tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=self.trust_remote_code)
+        elif self.tokenizer is None and self.need_calib:
+            raise ValueError("A tokenizer must be set for non-str model input.")
+        validate_tp_model(self.model, self.parallel_config.tp_size)
+        prepare_tp_moe(self.model)
+        self.disk_stream_model_dir = None
 
     def _peek_config(self):
         """Best-effort config lookup before the model object exists."""
@@ -505,11 +550,12 @@ class ModelContext(BaseContext):
         """
         # It is best to modify the model structure in the quantize function and check the format,
         # because it may cause the gguf format to not be exported normally.
-        self._patch_custom_moe_modules()
-        self.model = update_module(
-            self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
-        )
-        self.model = _handle_special_model(self.model)
+        if self.parallel_config.tp_size == 1:
+            self._patch_custom_moe_modules()
+            self.model = update_module(
+                self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
+            )
+            self.model = _handle_special_model(self.model)
 
         # Temporary names must be assigned after handle_moe_model;
         # placing them earlier would cause them to be removed when the module is replaced.

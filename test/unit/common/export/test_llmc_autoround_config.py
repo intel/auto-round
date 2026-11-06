@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from auto_round.export.export_to_llmcompressor.utils import AUTOROUND_CONFIG_KEY, add_autoround_config
+from auto_round.export.formats.compressed_tensors.utils import AUTOROUND_CONFIG_KEY, add_autoround_config
 
 
 class TestAddAutoroundConfig:

@@ -37,7 +37,7 @@ from auto_round import AutoRound
 from auto_round.algorithms.quantization.rrq.config import RRQConfig
 from auto_round.algorithms.quantization.rrq.quantizer import RRQPlaneWrapper, RRQRTNQuantizer, RRQSignRoundQuantizer
 from auto_round.data_type.int import quant_tensor_rtn_sym
-from auto_round.export.export_to_autoround.export_to_rrq import (
+from auto_round.export.formats.autoround.export_to_rrq import (
     RRQ_PACKING_FORMAT,
     RRQ_QUANT_METHOD,
     build_rrq_quantization_config,
@@ -632,7 +632,7 @@ class TestRRQSave:
 
     def test_buffer_rename_and_config(self, tmp_path, monkeypatch):
         """save_quantized_rrq saves only the packed residual planes (ABI names)."""
-        import auto_round.export.export_to_autoround.export_to_rrq as rrq_export
+        import auto_round.export.formats.autoround.export_to_rrq as rrq_export
 
         model, layer = self._make_quantized_model()
 
@@ -676,7 +676,7 @@ class TestRRQSave:
 
     def test_quantization_config_attached(self, tmp_path, monkeypatch):
         """When the model has a .config, quantization_config is attached to it."""
-        import auto_round.export.export_to_autoround.export_to_rrq as rrq_export
+        import auto_round.export.formats.autoround.export_to_rrq as rrq_export
 
         model, layer = self._make_quantized_model()
         model.config = type("Cfg", (), {"quantization_config": None})()
@@ -703,7 +703,7 @@ class TestRRQSave:
         The base model packing (QuantLinear replacement) destroys the in-memory
         RRQ buffers, so the residual artifact must be serialized first.
         """
-        import auto_round.export.export_to_autoround.export_to_rrq as rrq_export
+        import auto_round.export.formats.autoround.export_to_rrq as rrq_export
 
         model, layer = self._make_quantized_model()
 
@@ -886,7 +886,7 @@ class TestGenerateRRQResidual:
 
     def test_output_structure(self, tmp_path):
         """generate_rrq_residual produces 3 packed planes per layer."""
-        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
 
         base_dir, raw_dir = self._make_base_and_raw(tmp_path)
         out_dir = str(tmp_path / "residual_out")
@@ -913,7 +913,7 @@ class TestGenerateRRQResidual:
 
     def test_residual_norm_decreases(self, tmp_path):
         """Successive residual planes should reduce the reconstruction error."""
-        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
 
         base_dir, raw_dir = self._make_base_and_raw(tmp_path, out_features=64, in_features=128, group_size=32, sym=True)
         out_dir = str(tmp_path / "residual_out2")
@@ -970,7 +970,7 @@ class TestGenerateRRQResidual:
 
     def test_config_mismatch_raises(self, tmp_path):
         """Mismatched group_size should raise ValueError."""
-        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
 
         base_dir, raw_dir = self._make_base_and_raw(tmp_path, group_size=32, sym=True)
         out_dir = str(tmp_path / "residual_out3")
@@ -980,7 +980,7 @@ class TestGenerateRRQResidual:
 
     def test_sym_mismatch_raises(self, tmp_path):
         """Mismatched sym flag should raise ValueError."""
-        from auto_round.export.export_to_autoround.export_to_rrq import generate_rrq_residual
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
 
         base_dir, raw_dir = self._make_base_and_raw(tmp_path, group_size=32, sym=True)
         out_dir = str(tmp_path / "residual_out4")

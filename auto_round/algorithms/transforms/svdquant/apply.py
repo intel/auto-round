@@ -22,7 +22,7 @@ from typing import Any
 import torch
 
 import auto_round.algorithms.transforms.svdquant.residual as residual_module
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_preprocessor
 from auto_round.algorithms.transforms.base import BasePreprocessor
 from auto_round.algorithms.transforms.smoothing.calibration import (
     SmoothGroupCalibration,
@@ -74,7 +74,7 @@ def _select_svd_driver(device: torch.device) -> str | None:
         return driver
 
 
-@register_pipeline_member(SVDQuantConfig)
+@register_preprocessor(SVDQuantConfig)
 class SVDQuantTransform(BasePreprocessor):
     """Split target linears into a quantized residual and an FP low-rank branch."""
 
@@ -87,7 +87,7 @@ class SVDQuantTransform(BasePreprocessor):
         self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
         self._target_modules = config.target_modules
         if self._target_modules is None and config.model_adapter in {"flux", "sdxl"}:
-            from auto_round.export.svdquant_adapters import (
+            from auto_round.export.formats.svdquant.adapters import (
                 FLUX_SVDQUANT_TARGET_MODULES,
                 SDXL_SVDQUANT_TARGET_MODULES,
             )
@@ -135,7 +135,7 @@ class SVDQuantTransform(BasePreprocessor):
     def _resolve_model_adapter(self, model: torch.nn.Module | None, block: torch.nn.Module | None = None) -> str:
         model_adapter = self.config.model_adapter or "auto"
         if model_adapter == "auto":
-            from auto_round.export.svdquant_adapters import detect_svdquant_model_adapter
+            from auto_round.export.formats.svdquant.adapters import detect_svdquant_model_adapter
 
             model_adapter = detect_svdquant_model_adapter(model) if model is not None else "identity"
             if (
@@ -157,7 +157,7 @@ class SVDQuantTransform(BasePreprocessor):
                 warn_if_unverified_flux_model(model)
         self._target_modules = self.config.target_modules
         if self._target_modules is None and model_adapter in {"flux", "sdxl"}:
-            from auto_round.export.svdquant_adapters import (
+            from auto_round.export.formats.svdquant.adapters import (
                 FLUX_SVDQUANT_TARGET_MODULES,
                 SDXL_SVDQUANT_TARGET_MODULES,
             )

@@ -14,7 +14,7 @@
 from typing import ClassVar
 
 from auto_round.algorithms.config import AlgorithmConfig
-from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
+from auto_round.export.formats.gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, is_nvfp4_e5m3_family
 
@@ -39,7 +39,7 @@ class QuantizationConfig(AlgorithmConfig):
         nsamples: Optional algorithm-local calibration sample count. None reuses
             the common calibration samples. Currently only whole-model tuning
             supports this override; other stages reject it during composition.
-            Algorithm CLI flags should map to this field, not a private name.
+            Algorithm-specific constructor parameters should normalize to this field.
     """
 
     need_calib = True

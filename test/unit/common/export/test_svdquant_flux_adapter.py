@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from auto_round.export.svdquant_adapters.flux import FluxSVDQuantNunchakuAdapter
-from auto_round.export.svdquant_nunchaku import (
+from auto_round.export.formats.svdquant.adapters.flux import FluxSVDQuantNunchakuAdapter
+from auto_round.export.formats.svdquant.nunchaku import (
     SourceLinearRecord,
     SVDQuantExportConfig,
     SVDQuantLinearScheme,
@@ -139,7 +139,7 @@ def _install_parameter(root, name, tensor):
 
 
 def _small_complete_top_level_tensors():
-    from auto_round.export.svdquant_adapters.flux import FLUX_TOP_LEVEL_TENSOR_KEYS
+    from auto_round.export.formats.svdquant.adapters.flux import FLUX_TOP_LEVEL_TENSOR_KEYS
 
     return {
         key: torch.ones(2, dtype=torch.bfloat16) if key.endswith(".bias") else torch.ones(2, 2, dtype=torch.bfloat16)
