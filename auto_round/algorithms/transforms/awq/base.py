@@ -49,6 +49,7 @@ from auto_round.algorithms.transforms.awq.smooth import (
     compute_layer_means,
     fold_scales_into_smooth_layer,
     get_grid_search_params,
+    has_teq_equivalent_transforms,
     smooth_group_from_mapping,
 )
 from auto_round.algorithms.transforms.base import BasePreprocessor
@@ -893,6 +894,13 @@ class AWQTransform(BasePreprocessor):
                 )
                 continue
             for bl, name in zip(mapping.balance_layers, mapping.balance_names):
+                if has_teq_equivalent_transforms(bl):
+                    logger.warning_once(
+                        "AWQ clipping is skipped for rotation-aware layer '%s': raw-space clip thresholds "
+                        "do not describe QDQ(rotate(weight)).",
+                        name,
+                    )
+                    continue
                 if self._should_skip_clip(name):
                     logger.debug("AWQ: skip clip for '%s' (avoid-clipping layer).", name)
                     continue

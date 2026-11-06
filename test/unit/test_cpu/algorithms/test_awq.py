@@ -29,11 +29,19 @@ import torch
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from auto_round import AutoRound, AWQConfig, SignRoundConfig
+from auto_round.algorithms.transforms.awq.mappings import AWQ_MAPPING_REGISTRY
 from auto_round.utils.device_manager import get_major_device
 
 _AVAILABLE_DEVICES = [get_major_device()]
 _CUDA_AVAILABLE = "cuda" in _AVAILABLE_DEVICES
 requires_cuda = pytest.mark.skipif(not _CUDA_AVAILABLE, reason="requires a CUDA device")
+
+
+def test_gemma4_uses_gemma_specific_awq_mappings():
+    """Gemma 4 MLP smoothing must use pre-feedforward normalization."""
+    mappings = AWQ_MAPPING_REGISTRY["Gemma4UnifiedForConditionalGeneration"]
+    assert any(mapping.smooth_layer == r"pre_feedforward_layernorm$" for mapping in mappings)
+    assert not any(mapping.smooth_layer == r"post_attention_layernorm$" for mapping in mappings)
 
 
 class TestAWQNormalLLM:

@@ -27,6 +27,7 @@ from __future__ import annotations
 import torch
 import transformers
 
+from auto_round.algorithms.transforms.teq.protocol import get_teq_equivalent_transforms
 from auto_round.export.formats.autoround.qlinear_fp import QuantLinear, pack_fp4_to_uint8
 from auto_round.wrapper import WrapperLinear, WrapperWALayer
 
@@ -41,12 +42,13 @@ def patch_wrapperlinear_to_apply_transform(
     w_transform: torch.nn.Module,
     inp_transform: torch.nn.Module,
 ) -> None:
-    """Inject *w_transform* and *inp_transform* into :class:`WrapperLinear`.
+    """Install the compatibility adapter for legacy Hadamard callers.
 
-    After this call, every ``WrapperLinear`` instance will:
-
-    * Apply *w_transform* to the weight before quantisation (``_qdq_weight``).
-    * Apply *inp_transform* to the activation before quantisation (``_qdq_act``).
+    Transform application now lives in :class:`WrapperLinear` and uses the
+    per-layer protocol published by :mod:`auto_round.algorithms.transforms.teq.protocol`.
+    The arguments are retained for compatibility, but shared implementations
+    must not capture them in a class-level closure because each layer can own a
+    different transform.
 
     The patch is written at the **class** level and is therefore global – it
     affects all future instances as well.  A guard flag ``_hadamard_patched``
@@ -58,32 +60,14 @@ def patch_wrapperlinear_to_apply_transform(
     _orig_qdq_weight = WrapperLinear._qdq_weight
 
     def _qdq_weight_patched(self, value, min_scale, max_scale):
-        if self.orig_layer.bits >= 16:
-            # Keep original behaviour for >=16-bit quantisation.
-            return _orig_qdq_weight(self, value, min_scale, max_scale)
-
-        if getattr(self, "applied_weight_hadamard", None) is None:
-            with torch.no_grad():
-                weight = self.orig_layer.weight
-                if weight.device.type == "meta":
-                    weight = self.orig_layer.get_weight().to(self.device)
-
-                is_conv1d = type(self.orig_layer) is transformers.pytorch_utils.Conv1D
-                if is_conv1d:
-                    weight = weight.t().contiguous()
-                new_weight = w_transform(weight).to(self.device)
-                if is_conv1d:
-                    new_weight = new_weight.t().contiguous()
-                self.orig_layer.weight.data.copy_(new_weight)
-                self.applied_weight_hadamard = True
-
+        # WrapperLinear implements the per-layer protocol natively. Keep the
+        # adapter for compatibility, but do not mutate weights in the patch.
         return _orig_qdq_weight(self, value, min_scale, max_scale)
 
     _orig_qdq_act = WrapperLinear._qdq_act
 
     def _qdq_act_patched(self, x, act_min_scale=None, act_max_scale=None, act_max=None):
-        x = inp_transform(x)
-
+        # WrapperLinear applies the rotation after x / alpha in forward().
         return _orig_qdq_act(self, x, act_min_scale=act_min_scale, act_max_scale=act_max_scale, act_max=act_max)
 
     WrapperLinear._qdq_weight = _qdq_weight_patched
@@ -94,10 +78,11 @@ def patch_wrapperlinear_to_apply_transform(
 def patch_wrapperwalayer_forward_to_apply_transform(
     inp_transform: torch.nn.Module,
 ) -> None:
-    """Inject *inp_transform* into :class:`WrapperWALayer`.forward.
+    """Install the compatibility adapter for legacy WrapperWALayer callers.
 
-    After this call every ``WrapperWALayer`` will rotate its input activation
-    before the activation quantisation step.  Idempotent via
+    :class:`WrapperWALayer` reads the per-layer transform protocol directly.
+    The argument is retained for compatibility; capturing it here would apply
+    the first layer's transform to every layer. Idempotent via the
     ``_hadamard_forward_patched`` guard.
     """
     if getattr(WrapperWALayer, "_hadamard_forward_patched", False):
@@ -106,18 +91,7 @@ def patch_wrapperwalayer_forward_to_apply_transform(
     _orig_forward = WrapperWALayer.forward
 
     def _forward_patched(self, x):
-        act_max = self.orig_layer.act_max if hasattr(self.orig_layer, "act_max") else None
-        x = inp_transform(x)
-        x, _, _ = self.orig_layer.act_quant_func(
-            x,
-            bits=self.orig_layer.act_bits,
-            group_size=self.orig_layer.act_group_size,
-            scale_dtype=self.orig_layer.scale_dtype,
-            q_scale_thresh=self.orig_layer.q_scale_thresh,
-            data_type=self.orig_layer.act_data_type,
-            tensor_max=act_max,
-        )
-        return self.orig_layer.forward(x)
+        return _orig_forward(self, x)
 
     WrapperWALayer.forward = _forward_patched
     WrapperWALayer._hadamard_forward_patched = True
@@ -189,8 +163,15 @@ def patch_quantlinear(w_transform) -> None:
         if input_global_scale is not None:
             self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
 
-        # add transform weight
-        self.register_buffer("hadamard_matrix", w_transform.weight.to(device))
+        transform = get_teq_equivalent_transforms(linear).get("weight")
+        transform_matrix = getattr(transform, "weight", None)
+        if transform_matrix is None:
+            transform_matrix = getattr(w_transform, "weight", None)
+        if transform_matrix is None:
+            raise ValueError(
+                "Random Hadamard export requires a matrix-backed weight transform with a `.weight` attribute."
+            )
+        self.register_buffer("hadamard_matrix", transform_matrix.to(device))
 
     QuantLinear.pack = _pack_patched
     QuantLinear._pack_patched = True

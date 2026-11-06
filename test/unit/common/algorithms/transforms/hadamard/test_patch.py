@@ -22,6 +22,7 @@ import torch
 import torch.nn as nn
 import transformers
 
+from auto_round.algorithms.transforms.teq.protocol import set_teq_equivalent_transforms
 from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
 from auto_round.wrapper import WrapperLinear, WrapperWALayer
 
@@ -167,95 +168,140 @@ class TestPatchWrapperLinearIdempotency:
         assert WrapperLinear._qdq_weight is not original_qdq_weight
         assert WrapperLinear._qdq_act is not original_qdq_act
 
-    def test_inp_transform_applied_in_qdq_act(self):
-        """Verify ``inp_transform`` is applied before activation quantisation."""
-        from auto_round.algorithms.transforms.hadamard.patch import (
-            patch_wrapperlinear_to_apply_transform,
+    def test_inp_transform_applied_before_activation_quantization(self):
+        """Verify the protocol transform is applied before activation quantisation."""
+        orig_layer = _FakeOrigLayer()
+        set_teq_equivalent_transforms(
+            orig_layer,
+            weight=_IdentityTransform(),
+            input=_MultiplyTransform(scale=2.0),
         )
-
-        # Multiply-by-2 transform
-        inp_transform = _MultiplyTransform(scale=2.0)
-        patch_wrapperlinear_to_apply_transform(_IdentityTransform(), inp_transform)
-
-        # Call the patched _qdq_act on a wrapper
-        wrapper = _make_wrapper_linear()
-        # Replace the wrapper's act_quant_func with a spy
+        wrapper = _make_wrapper_linear(orig_layer)
         wrapper.act_quant_func = MagicMock(return_value=(torch.zeros(1, 8), None, None))
         x = torch.ones(1, 8)
-        act_min = torch.tensor(1.0)
-        act_max = torch.tensor(1.0)
-        wrapper._qdq_act(x, act_min_scale=act_min, act_max_scale=act_max)
-        # The mock should have been called with x * 2
+
+        transformed = wrapper._apply_equivalent_input_transform(x)
+        wrapper._qdq_act(transformed)
+
         called_args = wrapper.act_quant_func.call_args[0]
         assert torch.equal(called_args[0], x * 2.0)
 
-    def test_qdq_weight_falls_through_for_high_bits(self):
-        """``bits >= 16`` keeps the original ``_qdq_weight`` behaviour (no hadamard)."""
-        from auto_round.algorithms.transforms.hadamard.patch import (
-            patch_wrapperlinear_to_apply_transform,
-        )
-
-        patch_wrapperlinear_to_apply_transform(_IdentityTransform(), _IdentityTransform())
-
-        # bits=16 → fall-through path
+    def test_qdq_weight_applies_protocol_for_high_bits(self):
+        """The per-layer protocol remains equivalent for unquantized layers."""
         orig_layer = _FakeOrigLayer(bits=16)
+        set_teq_equivalent_transforms(
+            orig_layer,
+            weight=_MultiplyTransform(scale=3.0),
+            input=_IdentityTransform(),
+        )
         wrapper = _make_wrapper_linear(orig_layer)
-        # The patched function should still return what the original would have.
-        # For bits >= 16, _qdq_weight returns (weight, None, None) per the
-        # original implementation in wrapper.py.
         weight = wrapper.orig_layer.weight
         result = wrapper._qdq_weight(torch.zeros_like(weight), torch.tensor(1.0), torch.tensor(1.0))
-        # For bits >= 16, the original code returns (orig_layer.weight, None, None).
-        assert result[0] is weight or torch.equal(result[0], weight)
+        assert torch.equal(result[0], weight * 3.0)
         assert result[1] is None
         assert result[2] is None
 
-    def test_qdq_weight_applies_w_transform_on_first_call(self):
-        """First call with bits < 16 applies the w_transform and stores result."""
-        from auto_round.algorithms.transforms.hadamard.patch import (
-            patch_wrapperlinear_to_apply_transform,
+    def test_qdq_weight_applies_teq_and_protocol_for_high_bits_conv1d(self):
+        """Conv1D TEQ scaling must use the transposed quantisation layout."""
+        orig_layer = transformers.pytorch_utils.Conv1D(6, 4)
+        orig_layer.bits = 16
+        orig_layer.group_size = -1
+        orig_layer.data_type = "int"
+        orig_layer.sym = True
+        orig_layer.act_bits = 16
+        orig_layer.act_group_size = -1
+        orig_layer.act_sym = True
+        orig_layer.act_data_type = "int"
+        orig_layer.act_dynamic = False
+        orig_layer.scale_dtype = torch.float16
+        orig_layer.disable_opt_rtn = True
+        orig_layer.iters = 200
+        orig_layer.tuning_device = "cpu"
+        alpha = torch.tensor([1.5, 2.0, 2.5, 3.0])
+        orig_layer._teq_input_context = {
+            "log_alpha": nn.Parameter(alpha.log()),
+            "min_log": -10.0,
+            "max_log": 10.0,
+            "apply_input_transform": True,
+            "wrappers": [],
+        }
+        set_teq_equivalent_transforms(
+            orig_layer,
+            weight=_MultiplyTransform(scale=3.0),
+            input=_IdentityTransform(),
         )
 
-        w_transform = _MultiplyTransform(scale=3.0)
-        patch_wrapperlinear_to_apply_transform(w_transform, _IdentityTransform())
-
-        orig_layer = _FakeOrigLayer(bits=4)
         wrapper = _make_wrapper_linear(orig_layer)
-        original_weight = orig_layer.weight.data.clone()
+        expected = ((orig_layer.weight.detach().t() * alpha.view(1, -1)) * 3.0).t()
+        result = wrapper._qdq_weight(torch.zeros_like(orig_layer.weight), torch.tensor(1.0), torch.tensor(1.0))
 
-        # First call should apply the transform
-        wrapper._qdq_weight(torch.zeros_like(orig_layer.weight), torch.tensor(1.0), torch.tensor(1.0))
+        assert result[0].shape == orig_layer.weight.shape
+        torch.testing.assert_close(result[0], expected)
+        assert result[1] is None
+        assert result[2] is None
 
-        # After first call, weight should be modified (multiplied by 3)
-        assert not torch.equal(orig_layer.weight.data, original_weight)
-        # And applied_weight_hadamard flag should be set
-        assert wrapper.applied_weight_hadamard is True
-
-    def test_qdq_weight_skips_w_transform_on_subsequent_calls(self):
-        """After the first call, subsequent calls do NOT re-apply the transform."""
-        from auto_round.algorithms.transforms.hadamard.patch import (
-            patch_wrapperlinear_to_apply_transform,
+    def test_qdq_weight_applies_protocol_without_mutating_source(self):
+        """The wrapper transforms a temporary weight instead of mutating the layer."""
+        orig_layer = _FakeOrigLayer(bits=4)
+        set_teq_equivalent_transforms(
+            orig_layer,
+            weight=_MultiplyTransform(scale=3.0),
+            input=_IdentityTransform(),
         )
-
-        # Track calls to w_transform
-        w_transform = MagicMock()
-        w_transform.return_value = torch.zeros(8, 8)
-
-        patch_wrapperlinear_to_apply_transform(w_transform, _IdentityTransform())
-
-        orig_layer = _FakeOrigLayer(bits=4)
         wrapper = _make_wrapper_linear(orig_layer)
-
-        # Pre-set the applied flag to simulate an already-transformed wrapper
-        wrapper.applied_weight_hadamard = True
-
-        # The patched _qdq_weight should skip w_transform because the flag is set.
-        # Patch the underlying weight_quant_func to verify it gets called normally.
-        wrapper.weight_quant_func = MagicMock(return_value=(torch.zeros_like(orig_layer.weight), None, None))
+        original_weight = orig_layer.weight.detach().clone()
         wrapper._qdq_weight(torch.zeros_like(orig_layer.weight), torch.tensor(1.0), torch.tensor(1.0))
 
-        # w_transform should NOT have been called (the patch short-circuits)
-        w_transform.assert_not_called()
+        torch.testing.assert_close(wrapper.orig_layer.weight, original_weight)
+
+    def test_qdq_weight_reapplies_protocol_without_cumulative_mutation(self):
+        """Repeated QDQ calls start from the same source weight."""
+        orig_layer = _FakeOrigLayer(bits=4)
+        set_teq_equivalent_transforms(
+            orig_layer,
+            weight=_MultiplyTransform(scale=3.0),
+            input=_IdentityTransform(),
+        )
+        wrapper = _make_wrapper_linear(orig_layer)
+        original_weight = orig_layer.weight.detach().clone()
+        observed = []
+
+        def weight_qdq(weight, **kwargs):
+            observed.append(weight.detach().clone())
+            return weight, None, None
+
+        wrapper.weight_quant_func = weight_qdq
+        wrapper._qdq_weight(torch.zeros_like(orig_layer.weight), torch.tensor(1.0), torch.tensor(1.0))
+        wrapper._qdq_weight(torch.zeros_like(orig_layer.weight), torch.tensor(1.0), torch.tensor(1.0))
+
+        assert len(observed) == 2
+        torch.testing.assert_close(observed[0], original_weight * 3.0)
+        torch.testing.assert_close(observed[1], original_weight * 3.0)
+        torch.testing.assert_close(orig_layer.weight, original_weight)
+
+    def test_tuning_ranges_use_equivalent_weight_transform(self):
+        """Initial ranges must match the quantized TEQ-transformed weight."""
+        orig_layer = _FakeOrigLayer(bits=4, bias=False)
+        alpha = torch.tensor([1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
+        orig_layer._teq_input_context = {
+            "log_alpha": nn.Parameter(alpha.log()),
+            "min_log": -10.0,
+            "max_log": 10.0,
+            "apply_input_transform": True,
+            "wrappers": [],
+        }
+        set_teq_equivalent_transforms(
+            orig_layer,
+            weight=_MultiplyTransform(scale=3.0),
+            input=_IdentityTransform(),
+        )
+        wrapper = _make_wrapper_linear(orig_layer)
+        transformed = orig_layer.weight.detach() * alpha.view(1, -1) * 3.0
+        expected_min = transformed.min(dim=1)[0].clamp(max=0)
+        expected_max = transformed.max(dim=1)[0].clamp(min=0)
+
+        torch.testing.assert_close(wrapper.weight_min, expected_min)
+        torch.testing.assert_close(wrapper.weight_max, expected_max)
 
 
 class TestPatchWrapperWALayerIdempotency:
@@ -285,15 +331,14 @@ class TestPatchWrapperWALayerIdempotency:
         assert WrapperWALayer.forward is not original_forward
 
     def test_inp_transform_applied_in_forward(self):
-        """Verify ``inp_transform`` is applied inside ``forward``."""
-        from auto_round.algorithms.transforms.hadamard.patch import (
-            patch_wrapperwalayer_forward_to_apply_transform,
+        """Verify the per-layer protocol is applied inside ``forward``."""
+        orig_layer = _FakeOrigLayer()
+        set_teq_equivalent_transforms(
+            orig_layer,
+            weight=_IdentityTransform(),
+            input=_MultiplyTransform(scale=4.0),
         )
-
-        inp_transform = _MultiplyTransform(scale=4.0)
-        patch_wrapperwalayer_forward_to_apply_transform(inp_transform)
-
-        wrapper = _make_wrapper_wa_layer()
+        wrapper = _make_wrapper_wa_layer(orig_layer)
         # Patch the orig_layer.forward to be a spy
         orig_forward_spy = MagicMock(return_value=torch.zeros(1, 8))
         wrapper.orig_layer.forward = orig_forward_spy
