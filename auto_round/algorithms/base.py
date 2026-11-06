@@ -109,6 +109,11 @@ class BaseAlgorithm:
         return
 
     @classmethod
+    def validate_parallel_scheme(cls, scheme: "QuantizationScheme", execution: "ParallelExecution") -> None:
+        """Validate run-owned scheme constraints before parallel model loading."""
+        return
+
+    @classmethod
     def create_parallel_execution(
         cls, config: "AlgorithmConfig", default_execution: "ParallelExecution"
     ) -> "ParallelExecution":
@@ -135,6 +140,9 @@ class BaseAlgorithm:
         execution = getattr(orchestrator, "parallel_execution", None)
         if execution is not None:
             execution = execution.for_algorithm(type(self), self.config)
+            scheme = getattr(orchestrator, "scheme_context", None)
+            if scheme is not None:
+                type(self).validate_parallel_scheme(scheme, execution)
         self.__run_ctx = QuantizationRunContext(
             model_context=orchestrator.model_context,
             compress_context=orchestrator.compress_context,

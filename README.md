@@ -310,7 +310,7 @@ layer_config = {"lm_head": "GGUF:Q6_K"}
 # Change iters to 200 for non-GGUF schemes
 ar = AutoRound(
     model=model_name,
-    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    scheme=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
     bits=3.0,
     ignore_scale_zp_bits=True,
     layer_config=layer_config,

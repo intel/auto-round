@@ -141,8 +141,12 @@ def test_omni_format_rejects_incompatible_schemes(tmp_path, monkeypatch):
         def __init__(self, config, **kwargs):
             created.update(kwargs)
 
-    monkeypatch.setattr("auto_round.autoround._build_model_type_ctor_kwargs", lambda *args, **kwargs: ("llm", {}))
-    monkeypatch.setattr("auto_round.autoround._get_compressor_class", lambda model_type, base_cls: FakeCompressor)
+    monkeypatch.setattr(
+        "auto_round.compressors.builder._build_model_type_ctor_kwargs", lambda *args, **kwargs: ("llm", {})
+    )
+    monkeypatch.setattr(
+        "auto_round.compressors.builder._get_compressor_class", lambda model_type, base_cls: FakeCompressor
+    )
     for format in ("svdquant_omni", "svdquant_omni,fake"):
         AutoRound(
             "dummy-model",

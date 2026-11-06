@@ -14,8 +14,7 @@ from auto_round.algorithms.config_resolver import (
 )
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
-from auto_round.autoround import _select_rtn_compressor_base_cls
-from auto_round.compressors.base import collect_user_scheme_overrides
+from auto_round.compressors.builder import _resolve_rtn_config
 from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -134,6 +133,7 @@ def test_needs_calibration_data_when_layer_config_overrides_to_nvfp4():
     compressor = _DummyCompressor()
     compressor._alg_configs = []
     compressor.scheme = "MXFP8"
+    compressor._user_scheme_overrides = {}
     compressor.layer_config = {"mlp.experts": {"scheme": "NVFP4"}}
     compressor.static_kv_dtype = None
     compressor.static_attention_dtype = None
@@ -267,21 +267,14 @@ def test_shared_config_values_reject_conflicts():
 #     assert not hasattr(no_clip_target, "weight_clip_ratio")
 
 
-def test_user_scheme_overrides_merge_across_all_configs():
-    awq = AWQConfig(bits=8)
+def test_shared_algorithm_values_do_not_introduce_scheme_fields():
+    awq = AWQConfig()
     rtn = RTNConfig()
-    assert collect_user_scheme_overrides([awq, rtn])["bits"] == 8
-
     resolve_shared_config_values([awq, rtn])
-
-    assert rtn.bits == 8
-
-
-def test_user_scheme_overrides_reject_explicit_conflicts():
-    with pytest.raises(ValueError, match="Conflicting shared scheme field 'bits'"):
-        collect_user_scheme_overrides([AWQConfig(bits=8), RTNConfig(bits=4)])
-    with pytest.raises(ValueError, match="Conflicting shared scheme field 'bits'"):
-        resolve_shared_config_values([AWQConfig(bits=8), RTNConfig(bits=4)])
+    for config in (awq, rtn):
+        assert not hasattr(config, "bits")
+        assert not hasattr(config, "group_size")
+        assert not hasattr(config, "scheme")
 
 
 # ===========================================================================
@@ -304,14 +297,14 @@ def test_user_scheme_overrides_reject_explicit_conflicts():
 )
 def test_rtn_routing_disable_opt_rtn_from_resolved_scheme(scheme, expect_disable_opt_rtn):
     config = RTNConfig()
-    _select_rtn_compressor_base_cls(config, scheme, "auto_round", {})
+    _resolve_rtn_config(config, scheme, "auto_round", {})
     assert config.disable_opt_rtn is expect_disable_opt_rtn
 
 
 def test_rtn_routing_respects_explicit_enable_opt_rtn():
     """An explicit user choice must not be clobbered by the W8A16/W8A8 heuristic."""
     config = RTNConfig(enable_opt_rtn=True)
-    _select_rtn_compressor_base_cls(config, "W8A16", "auto_round", {})
+    _resolve_rtn_config(config, "W8A16", "auto_round", {})
     assert config.disable_opt_rtn is False
 
 
@@ -321,14 +314,12 @@ def test_sign_round_finalize_scheme_lr_heuristic(bits, expected_lr):
     even though it was unset (None) at construction time (e.g. `scheme=` alone,
     no explicit `bits=`)."""
     config = SignRoundConfig(iters=1000)
-    config.scheme = QuantizationScheme(bits=bits, act_bits=16, data_type="int")
-    config.finalize_scheme()
+    config.finalize_scheme(QuantizationScheme(bits=bits, act_bits=16, data_type="int"))
     assert config.lr == expected_lr
 
 
 def test_sign_round_finalize_scheme_respects_explicit_lr():
     config = SignRoundConfig(iters=1000, lr=0.01, minmax_lr=0.05)
-    config.scheme = QuantizationScheme(bits=2, act_bits=16, data_type="int")
-    config.finalize_scheme()
+    config.finalize_scheme(QuantizationScheme(bits=2, act_bits=16, data_type="int"))
     assert config.lr == 0.01
     assert config.minmax_lr == 0.05

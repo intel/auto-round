@@ -215,6 +215,8 @@ def _compressor(model_and_tokenizer, algorithm):
         model,
         tokenizer=tokenizer,
         alg_configs=algorithm,
+        bits=4,
+        group_size=8,
         dataset=torch.utils.data.DataLoader(tokens, batch_size=1),
         nsamples=2,
         seqlen=4,
@@ -231,8 +233,6 @@ def _compressor(model_and_tokenizer, algorithm):
 def test_qad_rounding_disabled_keeps_other_tuning(tiny_model_and_tokenizer, monkeypatch, minmax):
     config = QADConfig(
         iters=2,
-        bits=4,
-        group_size=8,
         qad_lora_rank=2,
         qad_enable_round_tuning=False,
         enable_minmax_tuning=minmax,
@@ -262,7 +262,7 @@ def test_qad_rounding_disabled_keeps_other_tuning(tiny_model_and_tokenizer, monk
 @pytest.mark.parametrize("config_cls", [SignRoundConfig, SignRoundV2Config])
 @pytest.mark.parametrize("minmax", [False, True])
 def test_signround_block_optimizes_low_rank_factors(tiny_model_and_tokenizer, monkeypatch, config_cls, minmax):
-    config = config_cls(iters=3, bits=4, group_size=8, lora_rank=2, enable_minmax_tuning=minmax, not_use_best_mse=True)
+    config = config_cls(iters=3, lora_rank=2, enable_minmax_tuning=minmax, not_use_best_mse=True)
     compressor, tokens = _compressor(tiny_model_and_tokenizer, config)
     quantizer = compressor.alg_composer.active_quantizer
     wrapper_init = WrapperLinear.__init__
@@ -295,7 +295,7 @@ def test_signround_block_optimizes_low_rank_factors(tiny_model_and_tokenizer, mo
 
 @pytest.mark.parametrize("minmax", [False, True])
 def test_outside_block_optimizer_uses_both_factors(tiny_model_and_tokenizer, monkeypatch, minmax):
-    config = SignRoundConfig(iters=3, bits=4, group_size=8, lora_rank=2, enable_minmax_tuning=minmax)
+    config = SignRoundConfig(iters=3, lora_rank=2, enable_minmax_tuning=minmax)
     compressor, _ = _compressor(tiny_model_and_tokenizer, config)
     quantizer = compressor.alg_composer.active_quantizer
     layer = compressor.model.lm_head
@@ -333,8 +333,6 @@ def test_qad_whole_model_uses_effective_lora_budget(
     config = QADConfig(
         iters=20,
         qad_iters=qad_iters,
-        bits=4,
-        group_size=8,
         qad_lora_rank=2,
         qad_lora_alpha=alpha,
         qad_optimizer=optimizer_name,
