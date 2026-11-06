@@ -302,18 +302,18 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 - 在 W2A16G64 上，`AWQ + AR2` 明显优于 `AWQ + AR` 和 native `AR2`。`awq_arv2_off` 在 Qwen3-8B 上达到 61.19 AVG（`arv2` 为 60.06，`awq_ar` 为 57.80），在 Llama-3.1-8B-I 上达到 52.82（分别为 51.57 和 49.39）。
 - 在 W3A16 上，`off` 与 `reuse` 仍是最强的 AWQ 策略：Qwen3-8B 上 AVG 为 71.00 / 71.11，Llama-3.1-8B-I 上为 67.98 / 67.97。不同 AWQ 配置之间的差距收窄到约 1 分。
 - 在 W4A16 上，AWQ 的增益明显减弱，native `arv2` 已具备竞争力。Qwen3-8B 上 native `arv2` 最高（72.21，`awq_arv2_reuse` 为 72.18），Llama-3.1-8B-I 上 `awq_arv2_off` 最高（70.51，native `arv2` 为 70.42）。
-- 在这些 8B 对比中，`awq_arv2_full` 从未成为最佳策略；增加每个候选的搜索开销并未带来更高的 AVG。
+- 对于WOQ INT scheme, 在这些 8B 对比中，`awq_arv2_full` 从未成为最佳策略；增加每个候选的搜索开销并未带来更高的 AVG。
 
 ## Qwen3.8-27B 案例：W4A16 与 MXFP4 W4A4
 
-本节独立于上方的 `--format fake` 表格，使用导出 checkpoint 和 vLLM 在 B200 上评测，评测环境为 `lm-eval` 0.4.12、vLLM 0.27.1。HellaSwag、MMLU、PIQA、Winogrande 使用 `acc`，GSM8K 使用 `exact_match,strict-match`。这些数值不应与上方可能使用 `acc_norm` 的历史表格直接比较。
+本节独立于上方的 `--format fake` 表格，使用导出 checkpoint 和 vLLM 在 B200 上评测，评测环境为 `lm-eval` 0.4.12、vLLM 0.27.1。HellaSwag、MMLU、PIQA、Winogrande 使用 `acc`，GSM8K 使用 `exact_match,strict-match`。
 
 ### 实验设置
 
 - 模型：Qwen3.8-27B，Qwen3.5 hybrid-attention 架构，共 64 个 block。
 - 校准：128 个样本，序列长度 2048；AWQ 最多使用 128 个样本和 512 token 校准序列。
 - W4A16：INT W4A16，`--format auto_round`，并开启确定性算法。
-- MXFP4：W4A4，`--format llm_compressor`；评测使用 `FlashInferMxFp4LinearKernel`。不包含 Marlin 结果，因为 Marlin 是 weight-only A16，会忽略 MXFP4 的激活量化。
+- MXFP4：W4A4，`--format llm_compressor`；评测使用 `FlashInferMxFp4LinearKernel`。
 - BF16 参考 AVG：**80.09**。
 
 各 recipe 对应的配置如下：
@@ -339,7 +339,7 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 | AWQ + AR2 reuse | 97.19 | 63.11 | 82.46 | 81.01 | 76.72 | 80.10 | 69 |
 | AWQ + opt-RTN | 96.66 | 63.59 | 82.70 | 81.07 | 76.64 | 80.13 | 60 |
 
-量化时间为参考值；这些任务在繁忙的共享 B200 主机上运行，容量规划时应更关注相对关系，而不是绝对时间。本次运行中，`off` 相比 `full` 节省约 27 分钟（full 量化时间的 26.3%），AVG 仅下降 0.09 分。`reuse` 是 AWQ+AR2 中最省时的配置，AWQ+opt-RTN 整体最快，且 AVG 基本持平。
+量化时间为参考值；本次运行中，`off` 相比 `full` 约节省26.3%的量化时间的，AVG 仅下降 0.09 分。`reuse` 是 AWQ+AR2 中最省时的配置，AWQ+opt-RTN 整体最快，且 AVG 基本持平。
 
 ### MXFP4 W4A4
 

@@ -610,7 +610,7 @@ The following `--format fake` results cover W2A16G64, W3A16, and W4A16 on Qwen3-
 - At W2A16G64, `AWQ + AR2` clearly outperforms both `AWQ + AR` and native `AR2`. `awq_arv2_off` reaches 61.19 AVG on Qwen3-8B (versus 60.06 for `arv2` and 57.80 for `awq_ar`) and 52.82 on Llama-3.1-8B-I (versus 51.57 and 49.39).
 - At W3A16, `off` and `reuse` remain the strongest AWQ policies: 71.00 / 71.11 AVG on Qwen3-8B and 67.98 / 67.97 on Llama-3.1-8B-I. The spread across AWQ variants narrows to about one point.
 - At W4A16, the AWQ gain diminishes and native `arv2` is competitive. Qwen3-8B peaks at 72.21 with native `arv2` (`awq_arv2_reuse` reaches 72.18), while Llama-3.1-8B-I peaks at 70.51 with `awq_arv2_off` (native `arv2` reaches 70.42).
-- `awq_arv2_full` is never the best policy in these 8B comparisons; the additional per-candidate search cost does not translate into higher AVG.
+- For the WOQ INT scheme, `awq_arv2_full` is never the best policy in these 8B comparisons; the additional per-candidate search cost does not translate into higher AVG.
 
 ## Qwen3.8-27B W4A16 and MXFP4 W4A4 results
 
@@ -621,7 +621,7 @@ The following case study is separate from the `--format fake` tables above. It u
 - Model: Qwen3.8-27B, a Qwen3.5 hybrid-attention model with 64 blocks.
 - Calibration: 128 samples and sequence length 2048; AWQ uses up to 128 samples and 512-token calibration sequences.
 - W4A16: INT W4A16 with `--format auto_round` and deterministic algorithms enabled.
-- MXFP4: W4A4 with `--format llm_compressor`; evaluation used `FlashInferMxFp4LinearKernel`. Marlin results are excluded because Marlin is weight-only A16 and ignores MXFP4 activation quantization.
+- MXFP4: W4A4 with `--format llm_compressor`; evaluation used `FlashInferMxFp4LinearKernel`.
 
 The recipes map to the following settings:
 
@@ -646,7 +646,7 @@ Replace `POLICY` with one of `full`, `off`, or `reuse`.
 | AWQ + AR2 reuse | 97.19 | 63.11 | 82.46 | 81.01 | 76.72 | 80.10 | 69 |
 | AWQ + opt-RTN | 96.66 | 63.59 | 82.70 | 81.07 | 76.64 | 80.13 | 60 |
 
-Quantization times are indicative; Within this run, `off` saved about 27 minutes versus `full` (26.3% of full quantization time) while losing only 0.09 average points. `reuse` was the cheapest AWQ+AR2 variant.
+Quantization times are indicative; in this run, `off` saved about 26.3% of the quantization time versus `full` while losing only 0.09 average points. `reuse` is the most time-efficient AWQ+AR2 configuration, AWQ+opt-RTN is the fastest overall, and AVG remains essentially unchanged.
 
 ### MXFP4 W4A4
 
