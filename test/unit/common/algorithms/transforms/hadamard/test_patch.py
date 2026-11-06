@@ -240,6 +240,22 @@ class TestPatchWrapperLinearIdempotency:
         torch.testing.assert_close(observed[1], original_weight * 3.0)
         torch.testing.assert_close(orig_layer.weight, original_weight)
 
+    def test_tuning_ranges_use_equivalent_weight_transform(self):
+        """Initial min/max ranges must match the quantized rotated weight."""
+        orig_layer = _FakeOrigLayer(bits=4, bias=False)
+        set_teq_equivalent_transforms(
+            orig_layer,
+            weight=_MultiplyTransform(scale=3.0),
+            input=_IdentityTransform(),
+        )
+        wrapper = _make_wrapper_linear(orig_layer)
+        transformed = orig_layer.weight.detach() * 3.0
+        expected_min = transformed.min(dim=1)[0].clamp(max=0)
+        expected_max = transformed.max(dim=1)[0].clamp(min=0)
+
+        torch.testing.assert_close(wrapper.weight_min, expected_min)
+        torch.testing.assert_close(wrapper.weight_max, expected_max)
+
 
 class TestPatchWrapperWALayerIdempotency:
     """Test idempotency of ``patch_wrapperwalayer_forward_to_apply_transform``."""

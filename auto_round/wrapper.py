@@ -190,6 +190,7 @@ class WrapperLinear(torch.nn.Module):
         if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
             orig_weight = orig_weight.t()
         orig_weight = self._apply_teq_weight(orig_weight)
+        orig_weight = self._apply_equivalent_weight_transform(orig_weight)
         weight_reshape, _, _ = reshape_pad_tensor_by_group_size(orig_weight.data, orig_layer.group_size)
 
         if self.enable_round_tuning:
