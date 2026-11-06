@@ -762,7 +762,14 @@ class WrapperLinear(torch.nn.Module):
         layer hooks keep the whole-layer path.
         """
         layer = self.orig_layer
-        if type(layer) is not torch.nn.Linear or self.orig_forward != self.linear_forward:
+        weight = getattr(layer, "weight", None)
+        # size first: every ordinary layer leaves here, before any attribute a
+        # subclass may not have set yet (QDQ can run inside __init__, e.g. the
+        # AutoScheme score cache, before orig_forward exists; the decision slot
+        # is reset after __init__, so an early False is never sticky)
+        if weight is None or weight.numel() <= _ROW_BLOCKED_WEIGHT_ELEMS:
+            return False
+        if type(layer) is not torch.nn.Linear or getattr(self, "orig_forward", None) != self.linear_forward:
             return False
         cls = type(self)
         if (
@@ -776,7 +783,6 @@ class WrapperLinear(torch.nn.Module):
             return False
         if layer._forward_pre_hooks or layer._forward_hooks:
             return False
-        weight = layer.weight
         if weight.dim() != 2 or weight.device.type == "meta":
             return False
         if layer.bits >= 16:
@@ -786,9 +792,7 @@ class WrapperLinear(torch.nn.Module):
         if getattr(layer, "super_bits", None) is not None:
             return False
         group_size = getattr(layer, "group_size", -1)
-        if not isinstance(group_size, int) or group_size == 0:
-            return False
-        return weight.numel() > _ROW_BLOCKED_WEIGHT_ELEMS
+        return isinstance(group_size, int) and group_size != 0
 
     def row_block_bounds(self):
         """Output-row windows used by the row-blocked paths.

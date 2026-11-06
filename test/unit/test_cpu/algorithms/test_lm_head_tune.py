@@ -324,6 +324,20 @@ class TestRowBlockedWrapperForward:
             results.append(out.detach().clone())
         assert torch.allclose(results[0], results[1], atol=1e-6), "blocked init_scale forward diverged"
 
+    def test_qdq_before_orig_forward_exists(self, monkeypatch):
+        """Subclasses may run QDQ inside __init__ before orig_forward is set
+        (the AutoScheme score cache does); eligibility must not touch it."""
+        import auto_round.wrapper as wmod
+
+        wrapper = self._wrapper(_mk_quant_linear(24, 10, group_size=4))
+        del wrapper.orig_forward
+        wrapper._row_block_decision = None
+        assert wrapper.row_block_active() is False  # small layer: size check exits first
+        wrapper._qdq_weight(wrapper.value, wrapper.min_scale, wrapper.max_scale)  # no AttributeError
+        monkeypatch.setattr(wmod, "_ROW_BLOCKED_WEIGHT_ELEMS", 60, raising=False)
+        wrapper._row_block_decision = None
+        assert wrapper.row_block_active() is False  # huge, but no forward yet: whole-layer path
+
     def test_per_tensor_group_size_never_blocks(self, monkeypatch):
         import auto_round.wrapper as wmod
 
