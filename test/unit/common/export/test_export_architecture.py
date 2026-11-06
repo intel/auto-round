@@ -64,7 +64,12 @@ def test_source_does_not_import_removed_exporters():
     import auto_round
 
     root = Path(auto_round.__file__).parent.parent
-    for package in ("auto_round", "auto_round_extension"):
+    # Build the prefixes so this check does not match its own string constants.
+    removed_prefixes = (
+        ".".join(("auto_round", "export", "export_to_")),  # noqa: FLY002
+        ".".join(("auto_round", "export", "formats", "backends")),  # noqa: FLY002
+    )
+    for package in ("auto_round", "auto_round_extension", "test", "examples"):
         for path in (root / package).rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8-sig"))
             for node in ast.walk(tree):
@@ -72,9 +77,11 @@ def test_source_does_not_import_removed_exporters():
                     modules = [node.module or ""]
                 elif isinstance(node, ast.Import):
                     modules = [alias.name for alias in node.names]
+                elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    modules = [node.value]
                 else:
                     continue
-                assert not any("auto_round.export.export_to_" in module for module in modules), path
+                assert not any(module.startswith(removed_prefixes) for module in modules), path
 
 
 def test_support_matrix_loads_builtins_in_fresh_process():
