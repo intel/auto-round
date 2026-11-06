@@ -185,7 +185,9 @@ def list_registered_algorithms() -> list[str]:
     return sorted(_ALIAS_TO_NAME.keys())
 
 
-def register_pipeline_member(config_cls: type):
+def register_algorithm_impl(config_cls: type):
+    """Register a runtime algorithm implementation for a configuration class."""
+
     def _decorator(member_cls: type[BaseAlgorithm]) -> type[BaseAlgorithm]:
         _CONFIG_IMPL_REGISTRY[config_cls] = member_cls
         return member_cls
@@ -205,7 +207,7 @@ def register_preprocessor(config_cls: type) -> Callable[[type[_PreprocessorT]], 
 
         if not issubclass(preprocessor_cls, BasePreprocessor):
             raise TypeError("register_preprocessor requires a BasePreprocessor subclass")
-        register_pipeline_member(config_cls)(preprocessor_cls)
+        register_algorithm_impl(config_cls)(preprocessor_cls)
         return preprocessor_cls
 
     return _decorator
@@ -216,7 +218,7 @@ def register_quantizer(config_cls: type) -> Callable[[type[_QuantizerT]], type[_
 
     Unlike ``register_algorithm`` (names, aliases and config factories), this
     decorator maps a config class to its runtime quantizer. Preprocessors use
-    ``register_preprocessor``; legacy plugins can still use ``register_pipeline_member``.
+    ``register_preprocessor``; both delegate to ``register_algorithm_impl``.
 
     Args:
         config_cls: Configuration class handled by the quantizer.
@@ -233,7 +235,7 @@ def register_quantizer(config_cls: type) -> Callable[[type[_QuantizerT]], type[_
 
         if not issubclass(quantizer_cls, BaseQuantizer):
             raise TypeError("register_quantizer requires a BaseQuantizer subclass")
-        register_pipeline_member(config_cls)(quantizer_cls)
+        register_algorithm_impl(config_cls)(quantizer_cls)
         return quantizer_cls
 
     return _decorator
