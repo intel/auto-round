@@ -42,12 +42,13 @@ def patch_wrapperlinear_to_apply_transform(
     w_transform: torch.nn.Module,
     inp_transform: torch.nn.Module,
 ) -> None:
-    """Inject *w_transform* and *inp_transform* into :class:`WrapperLinear`.
+    """Install the compatibility adapter for legacy Hadamard callers.
 
-    After this call, every ``WrapperLinear`` instance will:
-
-    * Apply *w_transform* to the weight before quantisation (``_qdq_weight``).
-    * Apply *inp_transform* to the activation before quantisation (``_qdq_act``).
+    Transform application now lives in :class:`WrapperLinear` and uses the
+    per-layer protocol published by :mod:`auto_round.algorithms.transforms.teq.protocol`.
+    The arguments are retained for compatibility, but shared implementations
+    must not capture them in a class-level closure because each layer can own a
+    different transform.
 
     The patch is written at the **class** level and is therefore global – it
     affects all future instances as well.  A guard flag ``_hadamard_patched``
@@ -65,7 +66,7 @@ def patch_wrapperlinear_to_apply_transform(
 
     _orig_qdq_act = WrapperLinear._qdq_act
 
-    def _qdq_act_patched(self, x, act_min_scale=torch.tensor(1.0), act_max_scale=torch.tensor(1.0), act_max=None):
+    def _qdq_act_patched(self, x, act_min_scale=None, act_max_scale=None, act_max=None):
         # WrapperLinear applies the rotation after x / alpha in forward().
         return _orig_qdq_act(self, x, act_min_scale=act_min_scale, act_max_scale=act_max_scale, act_max=act_max)
 
@@ -77,10 +78,11 @@ def patch_wrapperlinear_to_apply_transform(
 def patch_wrapperwalayer_forward_to_apply_transform(
     inp_transform: torch.nn.Module,
 ) -> None:
-    """Inject *inp_transform* into :class:`WrapperWALayer`.forward.
+    """Install the compatibility adapter for legacy WrapperWALayer callers.
 
-    After this call every ``WrapperWALayer`` will rotate its input activation
-    before the activation quantisation step.  Idempotent via
+    :class:`WrapperWALayer` reads the per-layer transform protocol directly.
+    The argument is retained for compatibility; capturing it here would apply
+    the first layer's transform to every layer. Idempotent via the
     ``_hadamard_forward_patched`` guard.
     """
     if getattr(WrapperWALayer, "_hadamard_forward_patched", False):
