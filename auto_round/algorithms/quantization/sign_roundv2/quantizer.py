@@ -438,7 +438,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
             return super()._qdq_weight(value, min_scale, max_scale)
 
         if self.orig_layer.bits >= 16:
-            return self.orig_layer.weight, None, None
+            return super()._qdq_weight(value, min_scale, max_scale)
         min_bound, max_bound = self.minmax_scale_bound
         min_scale.data.clamp_(min_bound, max_bound)
         max_scale.data.clamp_(min_bound, max_bound)
@@ -447,6 +447,8 @@ class SignRoundDQWrapperLinear(WrapperLinear):
             weight = self.orig_layer.get_weight().to(self.device)
         if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             weight = weight.t()
+        weight = self._apply_teq_weight(weight)
+        weight = self._apply_equivalent_weight_transform(weight)
 
         iter_v = getattr(self, "cur_iter", 0)
         need_search = (iter_v == 0) or (iter_v == -1) or (self.prev_scale is None)

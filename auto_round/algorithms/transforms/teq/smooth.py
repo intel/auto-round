@@ -458,9 +458,20 @@ def run_teq_smoothing(
     trained_calibration = replace(calibration, initial_alpha=initial_alpha)
     engine = SmoothEngine()
     strategy = TEQSmoothStrategy(owner, mapping)
-    scales = engine.run(smooth_group_from_mapping(mapping), trained_calibration, strategy)
-    best_loss = strategy.best_loss
+    try:
+        scales = engine.run(smooth_group_from_mapping(mapping), trained_calibration, strategy)
+        best_loss = strategy.best_loss
+        trained = owner.iters > 0
+    except NoFiniteCandidateError:
+        logger.warning(
+            "TEQ: training produced no finite candidate for '%s'; using the initialization.",
+            mapping.smooth_name,
+        )
+        scales = initial_alpha.clamp(owner.min_scale, owner.max_scale).detach().clone()
+        owner._apply_scales(mapping, scales)
+        best_loss = awq_loss if awq_loss is not None else float("nan")
+        trained = False
     if awq_loss is not None:
         owner._log_scale_summary("awq_init", mapping, awq_loss, initial_alpha)
     owner._log_scale_summary("train", mapping, best_loss, scales)
-    return TEQSmoothOutcome(scales, best_loss, awq_loss, owner.iters > 0)
+    return TEQSmoothOutcome(scales, best_loss, awq_loss, trained)

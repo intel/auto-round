@@ -33,14 +33,14 @@ class TEQConfig(QuantizationConfig):
         registry.add_argument(
             "--teq-iters",
             field="iters",
-            default=20,
+            default=5,
             type=int,
             help="Optimization steps for each TEQ transform scale.",
         )
         registry.add_argument(
             "--teq-lr",
             field="lr",
-            default=1e-3,
+            default=1.5e-4,
             type=float,
             help="Learning rate for TEQ transform-scale optimization.",
         )
@@ -61,7 +61,7 @@ class TEQConfig(QuantizationConfig):
         registry.add_argument(
             "--teq-max-scale",
             field="max_scale",
-            default=10.0,
+            default=3.0,
             type=float,
             help="Upper clamp for TEQ transform scales.",
         )
@@ -75,8 +75,8 @@ class TEQConfig(QuantizationConfig):
         registry.add_argument(
             "--teq-awq-init",
             field="awq_init",
-            default=False,
-            action="store_true",
+            default=True,
+            action="boolean_optional",
             help="Initialize TEQ scales with an AWQ-style activation/weight grid search.",
         )
         registry.add_argument(
@@ -89,14 +89,14 @@ class TEQConfig(QuantizationConfig):
         registry.add_argument(
             "--teq-nsamples",
             field="nsamples",
-            default=None,
+            default=32,
             type=int,
             help="Maximum calibration samples replayed by TEQ per mapping.",
         )
         registry.add_argument(
             "--teq-batch-size",
             field="batch_size",
-            default=None,
+            default=1,
             type=int,
             help="Micro-batch size used when TEQ replays calibration samples.",
         )
@@ -154,16 +154,16 @@ class TEQConfig(QuantizationConfig):
     def __init__(
         self,
         *,
-        iters: int = 20,
-        lr: float = 1e-3,
+        iters: int = 5,
+        lr: float = 1.5e-4,
         optimizer: str = "adam",
         min_scale: float = 1e-5,
-        max_scale: float = 10.0,
+        max_scale: float = 3.0,
         sqrt_w_init: bool = False,
-        awq_init: bool = False,
+        awq_init: bool = True,
         awq_init_n_grid: int = 20,
-        nsamples: int | None = None,
-        batch_size: int | None = None,
+        nsamples: int | None = 32,
+        batch_size: int | None = 1,
         sample_seqlen: int | None = 512,
         skip_moe: bool = True,
         optimization_mode: str = "staged",

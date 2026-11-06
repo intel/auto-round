@@ -164,9 +164,14 @@ def patch_quantlinear(w_transform) -> None:
             self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
 
         transform = get_teq_equivalent_transforms(linear).get("weight")
-        if transform is None:
-            transform = w_transform
-        self.register_buffer("hadamard_matrix", transform.weight.to(device))
+        transform_matrix = getattr(transform, "weight", None)
+        if transform_matrix is None:
+            transform_matrix = getattr(w_transform, "weight", None)
+        if transform_matrix is None:
+            raise ValueError(
+                "Random Hadamard export requires a matrix-backed weight transform with a `.weight` attribute."
+            )
+        self.register_buffer("hadamard_matrix", transform_matrix.to(device))
 
     QuantLinear.pack = _pack_patched
     QuantLinear._pack_patched = True

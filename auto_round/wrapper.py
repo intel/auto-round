@@ -666,8 +666,16 @@ class WrapperLinear(torch.nn.Module):
             self._presolved_qdq = None
             return presolved
         if self.orig_layer.bits >= 16:
-            weight = self._apply_teq_weight(self.orig_layer.weight)
-            return self._apply_equivalent_weight_transform(weight), None, None
+            weight = self.orig_layer.weight
+            if weight.device.type == "meta":
+                weight = self.orig_layer.get_weight().to(self.device)
+            if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
+                weight = weight.t()
+            weight = self._apply_teq_weight(weight)
+            weight = self._apply_equivalent_weight_transform(weight)
+            if type(self.orig_layer) == transformers.pytorch_utils.Conv1D:
+                weight = weight.t()
+            return weight, None, None
         min_scale, max_scale = self._prepare_minmax_scale(min_scale, max_scale)
         weight = self.orig_layer.weight
         if weight.device.type == "meta":

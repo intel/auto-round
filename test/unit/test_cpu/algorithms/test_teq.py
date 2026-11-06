@@ -21,13 +21,19 @@ import torch.nn as nn
 from auto_round import AutoRound, AWQConfig, SignRoundConfig, TEQConfig
 from auto_round.algorithms.registry import resolve_alg_config, resolve_algorithm_names
 from auto_round.algorithms.transforms.hadamard.transforms import build_hadamard_transform
+from auto_round.algorithms.transforms.smoothing.errors import NoFiniteCandidateError
 from auto_round.algorithms.transforms.teq.base import TEQTransform, _TEQLinearFakeQuant
 from auto_round.algorithms.transforms.teq.protocol import (
     TEQ_EQUIVALENT_TRANSFORMS_ATTR,
     install_teq_equivalent_input_hook,
     set_teq_equivalent_transforms,
 )
-from auto_round.algorithms.transforms.teq.smooth import iter_batch_calls, truncate_forward_value
+from auto_round.algorithms.transforms.teq.smooth import (
+    TEQSmoothCalibration,
+    iter_batch_calls,
+    run_teq_smoothing,
+    truncate_forward_value,
+)
 from auto_round.data_type.utils import compute_optimized_init_scale, get_quant_func
 from auto_round.wrapper import WrapperLinear
 
@@ -35,6 +41,21 @@ from auto_round.wrapper import WrapperLinear
 def test_teq_algorithm_registry():
     assert resolve_algorithm_names("teq,auto_round") == ["teq", "auto_round"]
     assert isinstance(resolve_alg_config("teq"), TEQConfig)
+
+
+def test_teq_default_recipe_is_cross_size_candidate():
+    config = TEQConfig()
+
+    assert config.teq_iters == 5
+    assert config.teq_lr == pytest.approx(1.5e-4)
+    assert config.teq_optimizer == "adam"
+    assert config.teq_awq_init is True
+    assert config.teq_awq_init_n_grid == 20
+    assert config.teq_min_scale == 1e-5
+    assert config.teq_max_scale == 3.0
+    assert config.teq_nsamples == 32
+    assert config.teq_batch_size == 1
+    assert config.teq_sample_seqlen == 512
 
 
 def test_teq_config_optional_awq_init_and_replay_limits():
@@ -161,6 +182,45 @@ def test_teq_smooth_replay_microbatches_and_truncates_sequence():
     assert all(args[0].shape == (1, 8, 4) and args[1].shape == (1, 8) for args, _ in calls)
 
 
+def test_teq_nonfinite_training_falls_back_without_aborting_autoround(monkeypatch):
+    import auto_round.algorithms.transforms.teq.smooth as teq_smooth
+
+    initial_alpha = torch.tensor([0.5, 1.0, 2.0])
+
+    class Owner:
+        min_scale = 0.1
+        max_scale = 3.0
+        iters = 5
+        awq_init = False
+
+        def __init__(self):
+            self.applied = None
+
+        def _apply_scales(self, mapping, scales):
+            del mapping
+            self.applied = scales.detach().clone()
+
+        def _log_scale_summary(self, *args):
+            del args
+
+    def fail_training(*args, **kwargs):
+        del args, kwargs
+        raise NoFiniteCandidateError
+
+    monkeypatch.setattr(teq_smooth, "smooth_group_from_mapping", lambda mapping: mapping)
+    monkeypatch.setattr(teq_smooth.SmoothEngine, "run", fail_training)
+    owner = Owner()
+    mapping = nn.Module()
+    mapping.smooth_name = "block.smooth"
+    calibration = TEQSmoothCalibration([], [], initial_alpha)
+
+    outcome = run_teq_smoothing(owner, mapping, calibration)
+
+    assert outcome.trained is False
+    torch.testing.assert_close(owner.applied, initial_alpha)
+    torch.testing.assert_close(outcome.alpha, initial_alpha)
+
+
 def test_teq_mxfp_init_scale_handles_group_padding_and_channel_importance():
     weight = torch.randn(7, 35)
     imatrix = torch.linspace(0.5, 1.5, 35)
@@ -279,6 +339,51 @@ def test_ar_wrapper_preserves_rotation_teq_order():
     inputs = torch.randn(2, 32)
 
     torch.testing.assert_close(wrapper(inputs), layer(inputs), rtol=1e-5, atol=1e-6)
+
+
+def test_signround_dq_wrapper_composes_teq_scaling_and_rotation():
+    """The main-branch double-quant path must quantize the TEQ-transformed weight."""
+    from auto_round.algorithms.quantization.sign_roundv2.quantizer import SignRoundDQWrapperLinear
+
+    layer = torch.nn.Linear(4, 3, bias=False)
+    layer.bits = 4
+    layer.group_size = 4
+    layer.super_group_size = 16
+    layer.data_type = "int"
+    layer.sym = True
+    layer.act_bits = 16
+    layer.act_group_size = -1
+    layer.act_sym = True
+    layer.act_data_type = "int"
+    layer.act_dynamic = True
+    layer.scale_dtype = torch.float16
+    layer.disable_opt_rtn = True
+    layer.iters = 1
+    layer.tuning_device = "cpu"
+    alpha = torch.tensor([1.5, 2.0, 2.5, 3.0])
+    layer._teq_input_context = {
+        "log_alpha": torch.nn.Parameter(alpha.log()),
+        "min_log": -10.0,
+        "max_log": 10.0,
+        "apply_input_transform": True,
+        "wrappers": [],
+    }
+    set_teq_equivalent_transforms(layer, weight=lambda weight: weight * 3.0, input=lambda value: value)
+    wrapper = SignRoundDQWrapperLinear(layer, enable_torch_compile=False, device="cpu")
+    expected = layer.weight.detach() * alpha.view(1, -1) * 3.0
+    observed = []
+
+    def fake_search(weight, value):
+        del value
+        observed.append(weight.detach().clone())
+        return {"scale": torch.ones(1), "d_scale": torch.ones(1)}
+
+    wrapper._run_search = fake_search
+    wrapper.weight_quant_func = lambda weight, scale, bits, v=None: weight
+    result = wrapper._qdq_weight(wrapper.value, wrapper.min_scale, wrapper.max_scale)
+
+    torch.testing.assert_close(observed[0], expected)
+    torch.testing.assert_close(result[0], expected)
 
 
 def test_committed_rotation_weight_installs_exactly_one_input_hook():

@@ -201,6 +201,45 @@ class TestPatchWrapperLinearIdempotency:
         assert result[1] is None
         assert result[2] is None
 
+    def test_qdq_weight_applies_teq_and_protocol_for_high_bits_conv1d(self):
+        """Conv1D TEQ scaling must use the transposed quantisation layout."""
+        orig_layer = transformers.pytorch_utils.Conv1D(6, 4)
+        orig_layer.bits = 16
+        orig_layer.group_size = -1
+        orig_layer.data_type = "int"
+        orig_layer.sym = True
+        orig_layer.act_bits = 16
+        orig_layer.act_group_size = -1
+        orig_layer.act_sym = True
+        orig_layer.act_data_type = "int"
+        orig_layer.act_dynamic = False
+        orig_layer.scale_dtype = torch.float16
+        orig_layer.disable_opt_rtn = True
+        orig_layer.iters = 200
+        orig_layer.tuning_device = "cpu"
+        alpha = torch.tensor([1.5, 2.0, 2.5, 3.0])
+        orig_layer._teq_input_context = {
+            "log_alpha": nn.Parameter(alpha.log()),
+            "min_log": -10.0,
+            "max_log": 10.0,
+            "apply_input_transform": True,
+            "wrappers": [],
+        }
+        set_teq_equivalent_transforms(
+            orig_layer,
+            weight=_MultiplyTransform(scale=3.0),
+            input=_IdentityTransform(),
+        )
+
+        wrapper = _make_wrapper_linear(orig_layer)
+        expected = ((orig_layer.weight.detach().t() * alpha.view(1, -1)) * 3.0).t()
+        result = wrapper._qdq_weight(torch.zeros_like(orig_layer.weight), torch.tensor(1.0), torch.tensor(1.0))
+
+        assert result[0].shape == orig_layer.weight.shape
+        torch.testing.assert_close(result[0], expected)
+        assert result[1] is None
+        assert result[2] is None
+
     def test_qdq_weight_applies_protocol_without_mutating_source(self):
         """The wrapper transforms a temporary weight instead of mutating the layer."""
         orig_layer = _FakeOrigLayer(bits=4)
@@ -241,15 +280,23 @@ class TestPatchWrapperLinearIdempotency:
         torch.testing.assert_close(orig_layer.weight, original_weight)
 
     def test_tuning_ranges_use_equivalent_weight_transform(self):
-        """Initial min/max ranges must match the quantized rotated weight."""
+        """Initial ranges must match the quantized TEQ-transformed weight."""
         orig_layer = _FakeOrigLayer(bits=4, bias=False)
+        alpha = torch.tensor([1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
+        orig_layer._teq_input_context = {
+            "log_alpha": nn.Parameter(alpha.log()),
+            "min_log": -10.0,
+            "max_log": 10.0,
+            "apply_input_transform": True,
+            "wrappers": [],
+        }
         set_teq_equivalent_transforms(
             orig_layer,
             weight=_MultiplyTransform(scale=3.0),
             input=_IdentityTransform(),
         )
         wrapper = _make_wrapper_linear(orig_layer)
-        transformed = orig_layer.weight.detach() * 3.0
+        transformed = orig_layer.weight.detach() * alpha.view(1, -1) * 3.0
         expected_min = transformed.min(dim=1)[0].clamp(max=0)
         expected_max = transformed.max(dim=1)[0].clamp(min=0)
 
