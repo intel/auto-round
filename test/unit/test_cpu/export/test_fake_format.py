@@ -21,7 +21,7 @@ from transformers import AutoModelForCausalLM, OPTConfig, OPTForCausalLM
 
 import auto_round.experimental.qmodules.fake as fake_qmodule
 from auto_round.experimental.qmodules.fake import FakeActQuantLinear
-from auto_round.export.formats.backends.fake import (
+from auto_round.export.formats.fake import (
     _normalize_state_dict_keys,
     _rewrite_saved_weights_without_orig_layer,
 )
@@ -358,10 +358,10 @@ def test_fake_format_meta_device_applies_post_save_source_fixes(tmp_path, monkey
     output_dir = str(tmp_path / "meta_device_model")
     fixup_calls = []
 
-    monkeypatch.setattr("auto_round.export.formats.backends.fake.unsupported_meta_device", lambda model: True)
-    monkeypatch.setattr("auto_round.export.utils.save_config_artifact", lambda model, save_dir: None)
+    monkeypatch.setattr("auto_round.export.formats.fake.unsupported_meta_device", lambda model: True)
+    monkeypatch.setattr("auto_round.export.common.serialization.save_config_artifact", lambda model, save_dir: None)
     monkeypatch.setattr(
-        "auto_round.export.utils.apply_post_save_source_fixes",
+        "auto_round.export.common.serialization.apply_post_save_source_fixes",
         lambda saved_model, save_dir: fixup_calls.append((saved_model, save_dir)),
     )
 
