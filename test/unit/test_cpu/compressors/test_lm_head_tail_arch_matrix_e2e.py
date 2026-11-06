@@ -46,6 +46,7 @@ import torch
 import torch.nn as nn
 
 import auto_round.algorithms.composer as composer_mod
+import auto_round.compressors.base as base_mod
 import auto_round.compressors.orchestrator as orchestrator_mod
 from auto_round import AutoRound
 from auto_round.utils import get_module
@@ -307,7 +308,7 @@ class TestLmHeadTailArchMatrix:
         # walk arm (lane bypassed at the name level) - the reference behavior
         spy_walk = _RowSpy()
         spy_walk.install(monkeypatch)
-        monkeypatch.setattr(orchestrator_mod, "get_lm_head_name", lambda model: None)
+        monkeypatch.setattr(base_mod, "get_lm_head_name", lambda model: None)
         monkeypatch.setattr(orchestrator_mod.CompressionOrchestrator, "_attach_tail_imatrix_", lambda self, n, r: None)
         run_walk = _quantize(path, head_pin, block_prefix)
         monkeypatch.undo()

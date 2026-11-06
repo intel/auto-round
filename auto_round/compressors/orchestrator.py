@@ -877,20 +877,11 @@ class CompressionOrchestrator(BaseOrchestrator):
             logger.warning("could not find blocks, exit with original model")
             return self.model_context.model, self.layer_config
 
-        has_gguf = (
-            hasattr(self, "formats")
-            and self.formats is not None
-            and any(fmt.is_gguf() for fmt in (self.formats if isinstance(self.formats, list) else []))
-        )
+        has_gguf = self._has_gguf_format()
         if has_gguf or self.super_group_size is not None:
             layer_names = []
         else:
-            layer_names = _get_quantized_layer_names_outside_blocks(
-                model=self.model_context.model,
-                layer_config=self.layer_config,
-                supported_types=SUPPORTED_LAYER_TYPES,
-                quant_block_list=self.quant_block_list,
-            )
+            layer_names = self._quantized_outside_block_layer_names()
         # lm_head-class external layers are tail-fed: the block loop's chain
         # output (fp reference + quantized rows) is their input, so they neither
         # join the upfront capture call nor the outside-block q-capture pass -
@@ -1348,8 +1339,9 @@ class CompressionOrchestrator(BaseOrchestrator):
         self._lm_head_chain_tail_ = None
         self._tail_stub_arity_ = None
         self._tail_lane_blocks_ = []
-        lm_head_name = get_lm_head_name(self.model_context.model)
-        if lm_head_name is None or lm_head_name not in layer_names:
+        # same candidate the post_init relaxations were granted for
+        lm_head_name = self._tail_fed_lm_head_name(layer_names)
+        if lm_head_name is None:
             return
         flat_blocks = [name for block in all_blocks for name in block]
         smoke_ok, tuple_arity = tail_smoke_check(self.model_context.model, lm_head_name, flat_blocks)

@@ -486,7 +486,9 @@ class TestTailLaneDecision:
         o.inplace = True
         o.formats = []
         o.compress_context = SimpleNamespace(is_immediate_packing=True, is_immediate_saving=False)
-        o._decide_tail_fed_lane_ = MethodType(CompressionOrchestrator._decide_tail_fed_lane_, o)
+        o.super_group_size = None
+        for name in ("_decide_tail_fed_lane_", "_tail_fed_lm_head_name", "_has_gguf_format"):
+            setattr(o, name, MethodType(getattr(CompressionOrchestrator, name), o))
         return o
 
     def _model_with_blocks(self):
@@ -553,6 +555,29 @@ class TestTailLaneDecision:
         assert o._tail_fed_layers_ == []
         # relaxations granted elsewhere are left alone when the lane never engages
         assert o.inplace is True and o.compress_context.is_immediate_packing is True
+
+    def test_lm_head_named_non_head_is_not_tail_fed(self, monkeypatch):
+        """Only the RESOLVED head is tail-fed: an outside layer merely named
+        ``*.lm_head`` (e.g. an auxiliary predictor head) keeps the capture walk."""
+        import auto_round.compressors.orchestrator as orch_mod
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("smoke must not run for a layer that is not the resolved head")
+
+        monkeypatch.setattr(orch_mod, "tail_smoke_check", fail_if_called)
+        o = self._decider(self._model_with_blocks())
+        o._decide_tail_fed_lane_(["model.mtp.lm_head"], [["model.layers.0", "model.layers.1"]])
+        assert o._tail_fed_layers_ == []
+
+    def test_gguf_and_super_group_runs_never_use_the_lane(self):
+        o = self._decider(self._model_with_blocks())
+        o.formats = [SimpleNamespace(is_gguf=lambda: True)]
+        assert o._tail_fed_lm_head_name(["lm_head"]) is None
+        o.formats = []
+        o.super_group_size = 256
+        assert o._tail_fed_lm_head_name(["lm_head"]) is None
+        o.super_group_size = None
+        assert o._tail_fed_lm_head_name(["lm_head"]) == "lm_head"
 
 
 class TestStreamShapeGuard:

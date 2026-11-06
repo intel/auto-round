@@ -12,6 +12,8 @@ and GGUF already bypassed the gate.)
 from pathlib import Path
 from types import MethodType, SimpleNamespace
 
+import pytest
+
 import auto_round.compressors.base as base_mod
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
@@ -25,7 +27,13 @@ def _fmt(gguf=False):
     )
 
 
-def _compressor(outside_block_layers, rtncfg=True, tail_only=True):
+@pytest.fixture(autouse=True)
+def _resolved_head_is_lm_head(monkeypatch):
+    # the fakes carry no real module tree; the resolver's answer is the input
+    monkeypatch.setattr(base_mod, "get_lm_head_name", lambda model: "lm_head")
+
+
+def _compressor(outside_block_layers, rtncfg=True, tail_only=True, outside_names=None):
     model = type("QwenForCausalLM", (), {"_tied_weight_keys": {}})()
     o = SimpleNamespace(
         formats=[_fmt()],
@@ -47,7 +55,10 @@ def _compressor(outside_block_layers, rtncfg=True, tail_only=True):
         ),
     )
     o._adjust_immediate_packing_and_saving = MethodType(base_mod.BaseCompressor._adjust_immediate_packing_and_saving, o)
-    o._outside_block_quantized_tail_only_ = MethodType(base_mod.BaseCompressor._outside_block_quantized_tail_only_, o)
+    for name in ("_outside_block_quantized_tail_only_", "_tail_fed_lm_head_name", "_has_gguf_format"):
+        setattr(o, name, MethodType(getattr(base_mod.BaseCompressor, name), o))
+    names = list(o.layer_config) if outside_names is None else outside_names
+    o._quantized_outside_block_layer_names = lambda: list(names)
     return o
 
 
@@ -91,6 +102,18 @@ class TestImmediatePackingWithOutsideBlockLayers:
         src = Path(base_mod.__file__).read_text(encoding="utf-8")
         assert "self.inplace = False" in src
         assert "_outside_block_quantized_tail_only_()" in src
+
+    def test_lm_head_named_non_head_keeps_the_guards(self):
+        # the relaxation follows the same resolved-head predicate as the
+        # orchestrator's lane decision, not the layer's name suffix
+        c = _compressor(outside_block_layers=True, outside_names=["model.mtp.lm_head"])
+        c._adjust_immediate_packing_and_saving()
+        assert c.compress_context.is_immediate_packing is False
+
+    def test_head_plus_other_outside_layer_keeps_the_guards(self):
+        c = _compressor(outside_block_layers=True, outside_names=["lm_head", "model.embed_tokens"])
+        c._adjust_immediate_packing_and_saving()
+        assert c.compress_context.is_immediate_packing is False
 
     def test_plain_run_unchanged(self):
         c = _compressor(outside_block_layers=False)

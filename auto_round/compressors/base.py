@@ -66,6 +66,7 @@ from auto_round.utils import (
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
+    get_lm_head_name,
     get_reverse_checkpoint_conversion_mapping,
     get_reverse_weight_transforms,
     is_debug_mode,
@@ -1720,35 +1721,61 @@ class BaseOrchestrator:
         # (AutoScheme path) runs delta-loss forward+backward passes.
         self._scheme_post_init()
 
+    def _has_gguf_format(self) -> bool:
+        """Whether any resolved output format is GGUF."""
+        formats = getattr(self, "formats", None)
+        return isinstance(formats, list) and any(fmt.is_gguf() for fmt in formats)
+
+    def _quantized_outside_block_layer_names(self) -> list[str]:
+        """Quantized supported layers outside the quantized blocks (lm_head, embeddings, ...)."""
+        from auto_round.compressors.utils import _get_quantized_layer_names_outside_blocks
+
+        return _get_quantized_layer_names_outside_blocks(
+            model=self.model_context.model,
+            layer_config=self.layer_config,
+            supported_types=SUPPORTED_LAYER_TYPES,
+            quant_block_list=self.quant_block_list,
+        )
+
+    def _tail_fed_lm_head_name(self, outside_names: list[str] | None = None) -> str | None:
+        """The outside-block layer the chain-tail lane may feed, or ``None``.
+
+        Single source of truth for both consumers: the post_init relaxations
+        (:meth:`_outside_block_quantized_tail_only_`) and the orchestrator's
+        lane decision (``_decide_tail_fed_lane_``). The candidate is the
+        model's resolved LM head (``get_lm_head_name``: the
+        ``get_output_embeddings()`` declaration first) when it is a quantized
+        outside-block layer. GGUF and super-group (k-quant) runs resolve
+        outside-block layers differently and never use the lane. The init-time
+        smoke gate can still decline the candidate; the orchestrator then
+        reverts the relaxations.
+        """
+        if self._has_gguf_format() or getattr(self, "super_group_size", None) is not None:
+            return None
+        if outside_names is None:
+            outside_names = self._quantized_outside_block_layer_names()
+        head = get_lm_head_name(self.model_context.model)
+        return head if head is not None and head in outside_names else None
+
     def _outside_block_quantized_tail_only_(self) -> bool:
-        """Whether every outside-block quantized layer is lm_head-class.
+        """Whether the only outside-block quantized layer is the tail-fed LM head.
 
-        lm_head-class layers are fed from the calibration chain tail (no
-        post-block model walk), so they do not force the in-place /
+        The tail-fed head gets its inputs from the calibration chain (no
+        post-block model walk), so it does not force the in-place /
         immediate-packing restrictions; any other outside-block quantized
-        layer still runs the legacy capture path and does."""
-        from auto_round.compressors.layer_config_resolver import check_to_quantized
-
-        layer_config = getattr(self, "layer_config", None) or {}
-        outside = [
-            name
-            for name, cfg in layer_config.items()
-            if not dict(cfg).get("in_blocks", False) and check_to_quantized(dict(cfg))
-        ]
-        if not outside:
+        layer still runs the capture path through the model and does."""
+        outside = self._quantized_outside_block_layer_names()
+        head = self._tail_fed_lm_head_name(outside)
+        if head is None:
             return False
-        heads = [name for name in outside if name.rsplit(".", 1)[-1] == "lm_head"]
-        # the tail lane feeds exactly ONE resolved lm_head; with several
-        # lm_head-named outside layers the extras run the legacy capture walk
-        # and must keep the restrictions (fail loud about the divergence)
-        if len(heads) == len(outside) == 1:
+        if outside == [head]:
             return True
-        if heads:
-            logger.warning(
-                "outside-block layers %s: only a single lm_head is tail-fed; the remaining layers keep "
-                "the in-place/immediate-packing restrictions",
-                outside,
-            )
+        logger.warning_once(
+            "outside-block layers %s: only %s is tail-fed; the remaining layers keep "
+            "the in-place/immediate-packing restrictions",
+            tuple(outside),  # warning_once caches on its (hashable) arguments
+            head,
+        )
         return False
 
     def _hardware_setup(self) -> None:
