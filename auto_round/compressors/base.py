@@ -769,6 +769,14 @@ class BaseOrchestrator:
         )
 
         self.scheme_context = QuantizationScheme.from_dict(final_attrs)
+        # Inference consumes Hadamard metadata as a mapping, after transform
+        # defaults (including block_size) have been finalized. Other rotation
+        # algorithms serialize under their own keys.
+        from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+
+        for rotation_config in self.rotation_configs:
+            if isinstance(rotation_config, RotationConfig):
+                self.scheme_context.rotation_config = rotation_config.model_dump()
         self.scheme_context.validate()
         self.quantize_config.check_config()
         for config in self._alg_configs:

@@ -29,7 +29,7 @@ def register_act_max_hooks(quantizer, model):
             return
         module_act_data_type = getattr(module, "act_data_type", None) or getattr(module, "data_type", None)
         is_module_act_nv_fp = needs_nvfp_global_scale(
-            module_act_data_type or getattr(quantizer.scheme, "act_data_type", None) or ""
+            module_act_data_type or getattr(getattr(quantizer, "scheme", None), "act_data_type", None) or ""
         )
         input, _, _ = reshape_pad_tensor_by_group_size(input, quantizer.act_group_size)
         act_max = torch.max(torch.abs(input), dim=-1).values

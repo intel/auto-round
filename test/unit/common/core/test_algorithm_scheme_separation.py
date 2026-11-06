@@ -162,3 +162,33 @@ def test_data_driven_algorithms_use_bound_scheme(algorithm):
     assert hasattr(model.model.layers[0].self_attn.q_proj, "scale")
     assert not hasattr(config, "scheme")
     assert not hasattr(config, "bits")
+
+
+@pytest.mark.parametrize("rotation,hadamard_type", [("default", "hadamard"), ("random_hadamard", "random_hadamard")])
+@pytest.mark.parametrize("as_algorithm_config", [False, True])
+def test_rotation_metadata_survives_entry_scheme_serialization(rotation, hadamard_type, as_algorithm_config):
+    import json
+
+    from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+    from auto_round.experimental.qmodules.mx import MXFP4QuantLinear
+
+    config = RTNConfig(disable_opt_rtn=True)
+    kwargs = {"rotation_config": rotation}
+    if as_algorithm_config:
+        config = [config, RotationConfig(hadamard_type=hadamard_type)]
+        kwargs = {}
+    compressor = AutoRound(
+        _tiny_model(),
+        tokenizer=Mock(),
+        alg_configs=config,
+        scheme="MXFP4",
+        device_map="cpu",
+        low_cpu_mem_usage=False,
+        **kwargs,
+    )
+    compressor.resolve_scheme()
+    restored = QuantizationScheme.from_dict(json.loads(json.dumps(compressor.scheme_context.to_dict())))
+    assert restored.rotation_config["hadamard_type"] == hadamard_type
+    assert restored.rotation_config["block_size"] == restored.group_size
+    layer = MXFP4QuantLinear(32, 32, config=restored)
+    assert hasattr(layer, "hadamard_matrix") == (hadamard_type == "random_hadamard")

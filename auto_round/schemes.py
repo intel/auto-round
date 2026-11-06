@@ -242,11 +242,11 @@ class QuantizationScheme:
         Raises:
         ValueError, TypeError: If any of the configurations are invalid.
         """
-        if self.bits <= 0:
+        if self.bits is not None and self.bits <= 0:
             raise ValueError("`bits` must be positive")
-        if self.act_bits <= 0:
+        if self.act_bits is not None and self.act_bits <= 0:
             raise ValueError("`act_bits` must be positive")
-        if not self._is_valid_group_size(self.group_size):
+        if self.group_size is not None and not self._is_valid_group_size(self.group_size):
             raise ValueError(
                 "`group_size` must be -1 (per channel), 0 (per-tensor), a positive integer, "
                 "or a tuple thereof (e.g. (128, 128) for block-wise quantization)"
@@ -255,7 +255,7 @@ class QuantizationScheme:
             raise ValueError(
                 "`act_group_size` must be -1 (per channel), 0 (per-tensor), or a positive integer, not a tuple."
             )
-        if not self._is_valid_group_size(self.act_group_size):
+        if self.act_group_size is not None and not self._is_valid_group_size(self.act_group_size):
             raise ValueError(
                 "`act_group_size` must be -1 (per channel), 0 (per-tensor), a positive integer, " "or a tuple thereof"
             )
@@ -273,7 +273,7 @@ class QuantizationScheme:
                     f"act_bits={self.act_bits}."
                 )
         # Reset the default value of super_bits and super_group_size
-        if self.data_type.endswith("_dq"):
+        if self.data_type is not None and self.bits is not None and self.data_type.endswith("_dq"):
             from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
 
             gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
@@ -283,7 +283,9 @@ class QuantizationScheme:
             )
 
         if (
-            self.is_act_quantize()
+            self.data_type is not None
+            and self.act_data_type is not None
+            and self.is_act_quantize()
             and (not self.is_act_nv_fp() or "static_gs" not in self.act_data_type)
             and not is_nvfp4_e5m3_family(self.act_data_type or "")
             and not self.is_act_mx_fp()

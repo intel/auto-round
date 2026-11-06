@@ -195,6 +195,10 @@ def register_algorithm_impl(config_cls: type):
     return _decorator
 
 
+# Keep existing extension imports working; new implementations use the clearer name.
+register_pipeline_member = register_algorithm_impl
+
+
 def register_preprocessor(config_cls: type) -> Callable[[type[_PreprocessorT]], type[_PreprocessorT]]:
     """Register a BasePreprocessor using the shared, legacy-compatible implementation registry.
 

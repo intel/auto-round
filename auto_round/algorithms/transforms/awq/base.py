@@ -267,6 +267,12 @@ class AWQTransform(BasePreprocessor):
         """AWQ installs per-block calibration hooks that trigger Dynamo recompiles."""
         return False
 
+    @classmethod
+    def validate_parallel_scheme(cls, scheme, execution) -> None:
+        """Reject unsupported AWQ tensor-parallel schemes before loading a model."""
+        if execution.is_tp and scheme.data_type != "int":
+            raise NotImplementedError("AWQ TP currently supports INT weight-only smoothing.")
+
     def prepare_run(self, composer: AlgorithmComposer = None) -> None:
         """Resolve model-wide mappings and group them by transformer block."""
         model = self.model
@@ -276,8 +282,7 @@ class AWQTransform(BasePreprocessor):
             sym=self.scheme.sym,
             data_type=self.scheme.data_type,
         )
-        if self.parallel.is_tp and self.scheme.data_type != "int":
-            raise NotImplementedError("AWQ TP currently supports INT weight-only smoothing.")
+        type(self).validate_parallel_scheme(self.scheme, self.parallel)
 
         # ── Resolve all model-level mappings (name-only, no module caching) ──
         self._resolved_mappings = resolve_mappings(model, self._user_mappings, skip_moe=self._skip_moe)

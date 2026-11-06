@@ -382,6 +382,8 @@ class _CompressorBuilder:
             from auto_round.parallel.tp.policy import validate_tp_quantization
 
             validate_tp_quantization(route_scheme)
+            for config in [*preprocessor_configs, *parallel_quantizer_configs]:
+                get_algorithm_class(config).validate_parallel_scheme(route_scheme, execution)
             if base_kwargs.get("static_kv_dtype") is not None or base_kwargs.get("static_attention_dtype") is not None:
                 raise NotImplementedError("Native TP does not support static KV/attention quantization yet.")
         # NOTE: the W8-asym opt-in is the AR_ALLOW_W8_ASYM environment

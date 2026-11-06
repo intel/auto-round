@@ -454,7 +454,9 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
 
 def _prepare_entry_kwargs(alg_configs, direct_kwargs, *, strict=False):
     scheme_overrides = {
-        key: value for key, value in direct_kwargs.items() if key in _SCHEME_FIELDS and value is not None
+        key: value
+        for key, value in direct_kwargs.items()
+        if key in _SCHEME_FIELDS and key != "rotation_config" and value is not None
     }
     algorithm_kwargs = {
         key: value for key, value in direct_kwargs.items() if key not in _SCHEME_FIELDS or key == "rotation_config"

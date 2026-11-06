@@ -110,7 +110,8 @@ def test_torch_compile_runtime_defaults(tiny_opt_model_path):
     assert not ar.enable_torch_compile
 
     ar = AutoRound(model=tiny_opt_model_path, scheme="NVFP4", iters=200, nsamples=1)
-    assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
+    # NVFP4 uses static activation global scales, which disable compilation.
+    assert not ar.enable_torch_compile
 
 
 def test_hf_model_id_sets_resolved_checkpoint_on_compressor_offloader(tiny_opt_model_path, monkeypatch):
@@ -248,3 +249,16 @@ def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path
         enable_torch_compile=False,
     )
     assert not ar.enable_torch_compile
+
+
+@pytest.mark.parametrize("scheme,static", [("W4A16", False), ("NVFP4", True)])
+def test_torch_compile_static_activation_guard_before_scheme_resolution(scheme, static):
+    compressor = BaseOrchestrator.__new__(BaseOrchestrator)
+    compressor.scheme = scheme
+    compressor.scheme_context = None
+    compressor._user_scheme_overrides = {}
+    compressor._torch_compile_user_specified = True
+    compressor._apply_torch_compile_constraints(True)
+    assert compressor.enable_torch_compile is (not static)
+    if static:
+        assert compressor._torch_compile_off_reason == "activation is static"
