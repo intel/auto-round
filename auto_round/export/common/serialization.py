@@ -497,8 +497,9 @@ def save_model(
 
 
 def filter_quantization_config(quantization_config):
-    # Tuning hyper-parameters (iters, nsamples, seqlen, lr, ...) are kept even when they
-    # equal the defaults, so a checkpoint always records how it was produced.
+    # Values are no longer pruned when they equal the defaults: every serialized key (including
+    # tuning hyper-parameters such as iters/nsamples/seqlen/lr) is kept so a checkpoint always
+    # records how it was produced. Only None values and the inert entries below are dropped.
     for k in list(quantization_config.keys()):
         if quantization_config[k] is None:
             quantization_config.pop(k)
