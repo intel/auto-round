@@ -95,7 +95,7 @@ from auto_round.utils import (
     is_hpex_available,
     mv_module_from_gpu,
 )
-from auto_round.utils.device import clear_memory_if_reached_threshold, log_cuda_memory_census
+from auto_round.utils.device import clear_memory_if_reached_threshold
 from auto_round.utils.device_manager import device_manager
 from auto_round.wrapper import WrapperLinear, unwrapper_layer, wrapper_block
 
@@ -889,7 +889,6 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         logger.info(f"quantizing layer {layer_name}")
         # Layer is already on the correct device (placed by the caller / AlgorithmComposer).
         device = layer.weight.device if hasattr(layer, "weight") else device_manager.device
-        log_cuda_memory_census(f"outside-block tune start {layer_name}", device, walk=False)
         for i in range(len(fp_inputs)):
             fp_inputs[i] = fp_inputs[i].to(layer.weight.dtype)
             if q_inputs is not None:
@@ -920,10 +919,6 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
             lora_rank=getattr(self.config, "lora_rank", 0),
             lora_alpha=getattr(self.config, "lora_alpha", None),
         ).to(device)
-        # header only: the tensor-list walk runs in the lane's failure handler
-        log_cuda_memory_census(
-            f"outside-block wrapper ready {layer_name} (compile={compile_wrapper})", device, walk=False
-        )
         round_params = []
         minmax_params = []
         for key in wrapper_linear.params.keys():
@@ -1129,7 +1124,6 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                                 self._scale_loss_and_backward(scaler, loss)
             if i == 0:
                 init_loss = total_loss
-                log_cuda_memory_census(f"outside-block first backward done {layer_name}", device, walk=False)
             current_lr = optimizer.param_groups[0]["lr"]
             logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
 

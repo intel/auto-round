@@ -465,18 +465,12 @@ class TestTuningGradBuffers:
 
     def test_outside_block_loop_releases_cached_blocks(self):
 
-        import auto_round.algorithms.quantization.sign_round.quantizer as _sr_q
-
         src = inspect.getsource(CompressionOrchestrator._run_zero_shot_stage)
         assert "empty_cache()" in src  # device-manager based: works on cuda/xpu/hpu
-        # census contract: header-only baseline at wrapper-ready; the tensor-list
-        # walk only in the lane's OOM catch, with an explicit device (the default
-        # torch.device("cuda") never equals an indexed "cuda:0" and hides tensors)
-        q_src = Path(_sr_q.__file__).read_text(encoding="utf-8")
-        assert "walk=False" in q_src  # wrapper-ready baseline is header-only
+        # an OOM in the contained outside-block tune still prints the shared
+        # tensor census (auto_round.utils.oom) before the containment swallows it
         lane_src = inspect.getsource(CompressionOrchestrator._quantize_layers_outside_blocks)
-        assert "outside-block layer {layer_name} OOM (at failure)" in lane_src
-        assert "device_manager.device" in lane_src
+        assert 'oom_census(f"outside-block layer {layer_name}")' in lane_src
 
 
 class TestGradScatterSlice:

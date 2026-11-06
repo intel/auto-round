@@ -61,6 +61,7 @@ from auto_round.utils.device import (
     _force_trim_malloc,
 )
 from auto_round.utils.device_manager import device_manager
+from auto_round.utils.oom import oom_census
 from auto_round.utils.perf_counters import _PerfCounters
 from auto_round.wrapper import WrapperMultiblock
 
@@ -817,8 +818,6 @@ class CompressionOrchestrator(BaseOrchestrator):
             remain_layer_names.append(n)
         for name in remain_layer_names:
             logger.info(f"Quantizing remaining layer {name} on CPU.")
-            from auto_round.utils.device import log_cuda_memory_census
-
             # phase boundary: the block loop just freed its large tuning
             # buffers; returning them to the driver keeps the allocator pool
             # compact before the (potentially huge) outside-block wrappers
@@ -828,7 +827,6 @@ class CompressionOrchestrator(BaseOrchestrator):
             _ar = get_current_device_manager()
             if _ar.is_available():
                 _ar.empty_cache()
-            log_cuda_memory_census(f"outside-block loop entry {name}", walk=False)
             self.alg_composer.compress_layer_outside_block(get_module(self.model, name))
             # Outside-block layers (embed_tokens/lm_head/etc.) are typically few so just
             # log a summary after each one.
@@ -1284,25 +1282,20 @@ class CompressionOrchestrator(BaseOrchestrator):
                 q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
                 q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
             try:
-                self.alg_composer.compress_layer_outside_block(
-                    get_module(self.model, layer_name),
-                    fp_inputs=layer_input,
-                    q_inputs=q_layer_input,
-                    input_ids=token_ids,
-                )
+                # an OOM prints the shared tensor census (auto_round.utils.oom)
+                # before the containment below swallows it
+                with oom_census(f"outside-block layer {layer_name}"):
+                    self.alg_composer.compress_layer_outside_block(
+                        get_module(self.model, layer_name),
+                        fp_inputs=layer_input,
+                        q_inputs=q_layer_input,
+                        input_ids=token_ids,
+                    )
             except Exception as e:  # pylint: disable=broad-except
                 # containment: a failed tune leaves the layer unquantized and
                 # the export pass (missing-tensors) completes the artifact,
                 # instead of losing a run whose blocks are already tuned and
                 # streamed
-                from auto_round.utils.device import is_oom_exception  # pylint: disable=import-outside-toplevel
-
-                if is_oom_exception(e):
-                    # the only vantage that sees the failed working set; the
-                    # baseline header fired at wrapper-ready time
-                    from auto_round.utils.device import log_cuda_memory_census
-
-                    log_cuda_memory_census(f"outside-block layer {layer_name} OOM (at failure)", device_manager.device)
                 logger.warning(
                     "outside-block layer %s tuning failed (%s: %s); leaving it to the export path",
                     layer_name,

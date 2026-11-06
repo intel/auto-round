@@ -120,7 +120,7 @@ class TestTailImatrix:
 class TestLaneConsumesTailInputs:
     """The outside-block lane feeds lm_head from the tail and skips capture passes."""
 
-    def _run_lane(self, monkeypatch):
+    def _run_lane(self, monkeypatch, fail_with=None):
         model = _ForwardModel()
         o = _orchestrator_like(model)
         o._tail_fed_layers_ = ["lm_head"]
@@ -137,6 +137,8 @@ class TestLaneConsumesTailInputs:
                 return True
 
             def compress_layer_outside_block(self, layer, fp_inputs=None, q_inputs=None, **kw):
+                if fail_with is not None:
+                    raise fail_with
                 # snapshot the lists: the lane frees them in place afterwards
                 # (clear_memory nulls elements), which must not hide what ran
                 captured_calls.append(
@@ -192,6 +194,25 @@ class TestLaneConsumesTailInputs:
         # the tail rows were consumed and released; no capture pass was issued at all
         assert o._lm_head_chain_tail_ is None
         assert cache_calls == []
+
+    def test_contained_oom_prints_the_shared_census(self, monkeypatch):
+        """A failed lm_head tune is contained (the export path completes the
+        layer); an OOM still prints the shared auto_round.utils.oom census."""
+        import auto_round.utils.oom as oom_mod
+
+        contexts = []
+        monkeypatch.setattr(oom_mod, "dump_oom_tensor_census_", lambda context="": contexts.append(context))
+        captured_calls, _, _, _ = self._run_lane(monkeypatch, fail_with=torch.OutOfMemoryError("CUDA out of memory"))
+        assert captured_calls == []  # the tune raised; the lane did not
+        assert contexts == ["outside-block layer lm_head"]
+
+    def test_contained_non_oom_failure_prints_no_census(self, monkeypatch):
+        import auto_round.utils.oom as oom_mod
+
+        contexts = []
+        monkeypatch.setattr(oom_mod, "dump_oom_tensor_census_", lambda context="": contexts.append(context))
+        self._run_lane(monkeypatch, fail_with=ValueError("bad shapes"))
+        assert contexts == []
 
     def test_lane_attaches_tail_imatrix(self, monkeypatch):
         captured_calls, cache_calls, o, _ = self._run_lane(monkeypatch)
