@@ -40,6 +40,8 @@ def test_update_observes_reference_then_qdqs_with_fixed_per_side_amax():
 
     assert cache.k_amax[0] == pytest.approx(k_amax)
     assert cache.v_amax[0] == pytest.approx(v_amax)
+    assert isinstance(cache.k_amax[0], torch.Tensor) and not cache.k_amax[0].requires_grad
+    assert isinstance(cache.v_amax[0], torch.Tensor) and not cache.v_amax[0].requires_grad
     assert torch.equal(ref_keys, key_states)
     assert torch.equal(ref_values, value_states)
 

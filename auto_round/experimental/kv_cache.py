@@ -24,6 +24,7 @@ from typing import Any
 import torch
 from transformers.cache_utils import DynamicCache
 
+from auto_round.data_type.utils import calculate_fp8_e4m3_scale
 from auto_round.experimental.utils import (
     FP8_GRANULARITY_HEAD,
     FP8_GRANULARITY_TENSOR,
@@ -38,6 +39,7 @@ from auto_round.experimental.utils import (
 from auto_round.utils import logger
 
 __all__ = [
+    "active_kv_qdq_context",
     "freeze_module_quantization_",
     "initialize_quantized_kv_cache",
     "kvcache_quant_context",
@@ -63,6 +65,24 @@ def freeze_module_quantization_(module: torch.nn.Module):
     # remove quantized kv_cache
     kv_cache = getattr(module, "kv_cache", None)
     if isinstance(kv_cache, QuantizedKVParameterCache):
+        if kv_cache.is_nvfp4:
+            layer_idx = getattr(module, "layer_idx", None)
+            if layer_idx is not None:
+                for amaxes, scale_name in (
+                    (kv_cache.k_amax, "k_global_scale"),
+                    (kv_cache.v_amax, "v_global_scale"),
+                ):
+                    if layer_idx >= len(amaxes) or amaxes[layer_idx] is None:
+                        continue
+                    amax = amaxes[layer_idx]
+                    if isinstance(amax, torch.Tensor):
+                        if amax.item() <= 0:
+                            continue
+                    elif amax <= 0:
+                        continue
+                    update_parameter_data(
+                        module, _nvfp4_global_scale(amax, next(module.parameters()).device), scale_name
+                    )
         delattr(module, "kv_cache")
 
 
@@ -198,7 +218,7 @@ class QuantizedKVParameterCache(DynamicCache):
                     f"to be divisible by {NVFP4_KV_BLOCK_SIZE} (got {tensor.shape[-1]} "
                     f"at layer_idx={layer_idx}); use static_kv_dtype='fp8' for this model."
                 )
-            amax = tensor.abs().max().item()
+            amax = tensor.abs().amax().to(torch.float32).detach()
         elif self.granularity == FP8_GRANULARITY_HEAD:
             if tensor.dim() < 4:
                 raise ValueError(
@@ -217,8 +237,7 @@ class QuantizedKVParameterCache(DynamicCache):
         _pad_and_append_at_idx_(amaxes, layer_idx, amax)
 
         if not self.is_nvfp4:
-            fp8_info = torch.finfo(torch.float8_e4m3fn)
-            scale = (amax / fp8_info.max).clamp(min=float(1.0 / (fp8_info.max * 512.0)))
+            scale = calculate_fp8_e4m3_scale(amax)
             _pad_and_append_at_idx_(scales, layer_idx, scale.reshape(-1).detach())
 
     def _quant_dequant(self, tensor: torch.Tensor, kv_type: KVCacheScaleType, layer_idx: int) -> torch.Tensor:
@@ -246,6 +265,17 @@ class QuantizedKVParameterCache(DynamicCache):
             yield
         finally:
             self._qdq_enabled = previous
+
+
+@contextlib.contextmanager
+def active_kv_qdq_context():
+    """Enable QDQ on the active KV cache, if one has been initialized."""
+    cache = QuantizedKVParameterCache._instance
+    if cache is None:
+        yield
+        return
+    with cache.kv_qdq_context():
+        yield
 
 
 def initialize_quantized_kv_cache(module: torch.nn.Module, dtype=torch.float8_e4m3fn, granularity: str = "tensor"):
@@ -305,7 +335,7 @@ def calibrate_kv_cache_input_hook(
     return args, kwargs
 
 
-def _nvfp4_global_scale(amax: float, device: torch.device) -> torch.Tensor:
+def _nvfp4_global_scale(amax: float | torch.Tensor, device: torch.device) -> torch.Tensor:
     """Static NVFP4 KV scale for the checkpoint, in the vLLM serving convention.
 
     vLLM's NVFP4 KV cache store kernel (``reshape_and_cache_nvfp4``) treats the
@@ -339,17 +369,6 @@ def calibrate_kv_cache_output_hook(module: torch.nn.Module, _args: Any, _output:
     """
     kv_cache = module.kv_cache
     if kv_cache.is_nvfp4:
-        layer_idx = module.layer_idx
-        k_amax = kv_cache.k_amax[layer_idx] if layer_idx < len(kv_cache.k_amax) else 0.0
-        v_amax = kv_cache.v_amax[layer_idx] if layer_idx < len(kv_cache.v_amax) else 0.0
-        if k_amax > 0:
-            update_parameter_data(
-                module, _nvfp4_global_scale(k_amax, next(module.parameters()).device), "k_global_scale"
-            )
-        if v_amax > 0:
-            update_parameter_data(
-                module, _nvfp4_global_scale(v_amax, next(module.parameters()).device), "v_global_scale"
-            )
         return
     k_scale = kv_cache.k_scales[module.layer_idx]
     v_scale = kv_cache.v_scales[module.layer_idx]

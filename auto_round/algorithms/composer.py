@@ -477,10 +477,9 @@ class AlgorithmComposer:
 
     @staticmethod
     def _kv_qdq_context():
-        from auto_round.experimental.kv_cache import QuantizedKVParameterCache
+        from auto_round.experimental.kv_cache import active_kv_qdq_context
 
-        cache = QuantizedKVParameterCache._instance
-        return cache.kv_qdq_context() if cache is not None else nullcontext()
+        return active_kv_qdq_context()
 
     def _collect_forward_timed(self, *args, **kwargs):
         """_collect_forward with wall accumulation into self.last_collect_wall."""
