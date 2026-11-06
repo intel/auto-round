@@ -27,9 +27,10 @@ from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQua
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer
+    from auto_round.parallel.execution import ParallelCapabilities
 
 from auto_round import envs
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_quantizer
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
     quant_tensor_gguf_asym_dq,
@@ -104,6 +105,7 @@ def _dq_asym_group_size(bits: int) -> int:
 
 
 class SignRoundOptimizedWrapperLinear(WrapperLinear):
+    supports_tensor_parallel = True
     minmax_scale_bound = (0.1, 10.0)  # TODO widened from 2.0 for low-bit QAD; verify correctness
     # Opt-in protocol for wrapper_block: the init-scale search is weight-local
     # and row-independent, so same-shape modules can be searched as one stacked
@@ -188,6 +190,7 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
 
         if hasattr(layer, "imatrix"):
             del layer.imatrix
+        self.weight_quant_func_eager = self.weight_quant_func
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
 
@@ -280,6 +283,7 @@ class SignRoundOptimizedAsymWrapperLinear(SignRoundOptimizedWrapperLinear):
     ``min_scale``/``max_scale`` tunable around that anchor (both shrink and expand).
     """
 
+    supports_tensor_parallel = True
     minmax_scale_bound = (0.5, 1.5)
     # The asymmetric anchor search runs inline and does not stage init-scale inputs.
     supports_batched_search = False
@@ -486,8 +490,17 @@ class SignRoundDQWrapperLinear(WrapperLinear):
         return weight_q, scale_out, zp_out
 
 
-@register_pipeline_member(SignRoundV2Config)
+@register_quantizer(SignRoundV2Config)
 class SignRoundV2Quantizer(SignRoundQuantizer):
+    @classmethod
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Retain SignRound's parallel contract for the V2 quantizer.
+
+        Returns:
+            ParallelCapabilities: The parallel capabilities inherited from SignRound.
+        """
+        return super().parallel_capabilities()
+
     """SignRound variant using the open algorithm-extension path in the new architecture."""
 
     calibration_stats = {"imatrix": "sum"}
@@ -596,6 +609,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
     def _register_imatrix_hooks(self, model):
         def collect_imatrix(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
+            input = self.parallel.replicated(input)
             flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
             squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 

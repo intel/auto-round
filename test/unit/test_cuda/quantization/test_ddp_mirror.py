@@ -20,7 +20,7 @@ span several CUDA devices is declined loudly.
 import pytest
 import torch
 
-from auto_round.algorithms.parallel.data_parallel import resolve_tune_ddp_plan_
+from auto_round.parallel.dp.engine import resolve_tune_ddp_plan_
 
 _requires_multi_cuda = pytest.mark.skipif(
     torch.cuda.device_count() < 2, reason="needs >=2 CUDA devices for a sharded source block"
@@ -72,7 +72,7 @@ def _quantizer():
 def _quantizer_with_policy(world=2):
     from types import SimpleNamespace
 
-    from auto_round.algorithms.parallel.data_parallel import ParallelPolicy
+    from auto_round.parallel.dp.engine import ParallelPolicy
 
     q = _quantizer()
     q.compress_context = SimpleNamespace(parallel_policy=ParallelPolicy(world=world))

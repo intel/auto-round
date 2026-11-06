@@ -532,11 +532,15 @@ def register_act_max_hooks(block: Module, act_data_type=None) -> list:
     The caller owns the returned handles and must remove them after calibration.
     """
     from auto_round.compressors.utils import check_need_act_calibration
+    from auto_round.parallel.tp.runtime import is_dtensor
     from auto_round.utils import SUPPORTED_LAYER_TYPES
 
     @torch.no_grad()
     def collect_act_max(module, inputs, output):
         inputs = inputs[0] if isinstance(inputs, (tuple, list)) else inputs
+
+        if is_dtensor(inputs):
+            inputs = inputs.to_local()
         if inputs.numel() == 0:
             return
         module_dtype = getattr(module, "act_data_type", None) or getattr(module, "data_type", None) or act_data_type

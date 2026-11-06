@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import argparse
+import inspect
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -41,19 +42,36 @@ def test_invalid_nsamples(config_cls, value):
         config_cls(nsamples=value)
 
 
-def test_legacy_qad_nsamples_keyword():
-    config = QADConfig(qad_nsamples=16)
-    assert config.nsamples == 16
+@pytest.mark.parametrize("config_cls", [QADConfig, QATConfig])
+@pytest.mark.parametrize("value", [None, 16])
+def test_qad_nsamples_keyword(config_cls, value):
+    config = config_cls(qad_nsamples=value)
+    assert config.nsamples == value
     assert "qad_nsamples" not in vars(config)
-    assert QADConfig(nsamples=16, qad_nsamples=16).nsamples == 16
-    with pytest.raises(ValueError, match="must agree"):
-        QADConfig(nsamples=8, qad_nsamples=16)
+
+
+def test_qad_signature_exposes_only_stage_specific_sample_parameter():
+    parameters = inspect.signature(QADConfig).parameters
+    assert "qad_nsamples" in parameters
+    assert "nsamples" not in parameters
+
+
+@pytest.mark.parametrize("config_cls", [QADConfig, QATConfig])
+@pytest.mark.parametrize("target", [None, 16])
+def test_qad_nsamples_overrides_inherited_sample_count(config_cls, target):
+    config = config_cls(nsamples=8, qad_nsamples=target)
+    assert config.nsamples == (8 if target is None else target)
+
+
+@pytest.mark.parametrize("config_cls", [QADConfig, QATConfig])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "16"])
+def test_invalid_qad_nsamples(config_cls, value):
     with pytest.raises(ValueError, match="nsamples.*positive integer"):
-        QADConfig(qad_nsamples=0)
+        config_cls(qad_nsamples=value)
 
 
 @pytest.mark.parametrize("algorithm", ["qad", "qat", "sign_round,qad"])
-@pytest.mark.parametrize("target", [None, 32])
+@pytest.mark.parametrize("target", [None, 4, 32])
 def test_qad_cli_maps_to_algorithm_nsamples(algorithm, target):
     parser = argparse.ArgumentParser()
     parser.add_argument("--nsamples", type=int, default=128)
@@ -62,7 +80,7 @@ def test_qad_cli_maps_to_algorithm_nsamples(algorithm, target):
     if target is not None:
         argv.extend(["--qad_nsamples", str(target)])
     args = parser.parse_args(argv)
-    args.algorithm = algorithm
+    args.alg_configs = algorithm
     configs = AlgorithmHandler.build_configs(args, {})
     config = configs[-1]
     assert isinstance(config, QADConfig)
@@ -72,11 +90,22 @@ def test_qad_cli_maps_to_algorithm_nsamples(algorithm, target):
         assert configs[0].nsamples is None
     registry = type(config).get_registered_args()
     parameter = next(p for p in registry.parameters if "--qad_nsamples" in p.option_strings)
-    assert parameter.field == "nsamples"
+    assert parameter.field == "qad_nsamples"
+    cached = list(range(args.nsamples))
+    collected = list(range(target or args.nsamples))
+    collect = Mock(return_value=collected)
+    tokens = BaseQuantizer(config).get_calibration_token_ids(cached, SimpleNamespace(collect_token_ids=collect))
+    assert len(tokens) == (target or args.nsamples)
+    if target is None or target <= args.nsamples:
+        collect.assert_not_called()
+        if target is None:
+            assert tokens is cached
+    else:
+        collect.assert_called_once_with(target)
 
 
 def test_nsamples_is_not_shared_or_synced():
-    first, second = QADConfig(nsamples=8), QADConfig(nsamples=16)
+    first, second = QADConfig(qad_nsamples=8), QADConfig(qad_nsamples=16)
     resolve_shared_config_values([first, second])
     assert (first.nsamples, second.nsamples) == (8, 16)
     unset = QADConfig()
@@ -87,9 +116,9 @@ def test_nsamples_is_not_shared_or_synced():
 
 
 def test_warmup_keeps_common_sampling():
-    composer = AlgorithmComposer([SignRoundConfig(), QADConfig(nsamples=16)])
+    composer = AlgorithmComposer([SignRoundConfig(), QADConfig(qad_nsamples=16)])
     assert composer.quantizers[0].config.nsamples is None
-    assert composer.block_quantizer.config.nsamples == 16
+    assert composer.active_quantizer.config.nsamples == 16
 
 
 def test_unsupported_block_sampling_fails_explicitly():

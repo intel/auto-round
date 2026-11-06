@@ -230,4 +230,3 @@
 | LiveCodeBench (release_v6) | 1,055 |
 | MMLU-Pro | 12,032 |
 | SWE-bench Verified Mini | 50 |
- 

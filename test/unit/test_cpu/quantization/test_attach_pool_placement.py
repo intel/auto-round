@@ -18,7 +18,7 @@ def _fake_orchestrator(cache_device, mode, batch_size=2, iters=0, runner_device=
     runner = SimpleNamespace(device=runner_device, pool_placement="unset")
     composer = SimpleNamespace(
         block_forward=runner,
-        block_quantizer=SimpleNamespace(iters=iters),
+        active_quantizer=SimpleNamespace(iters=iters),
         need_quanted_input=lambda: False,
     )
     self = SimpleNamespace(
@@ -88,7 +88,7 @@ class TestAttachPoolPlacement(unittest.TestCase):
         single-device lanes the consumer stays unset."""
         # loss device set on the quantizer wins over the runner device
         cls, self_, runner = _fake_orchestrator(cache_device="cuda:0", mode="auto", iters=20, runner_device="cuda:0")
-        self_.alg_composer.block_quantizer._loss_device = "cuda:1"
+        self_.alg_composer.active_quantizer._loss_device = "cuda:1"
         with mock.patch(
             "auto_round.utils.pool_placement.resolve_placement_for_pool", return_value=None
         ) as resolve, mock.patch("auto_round.utils.pool_placement.consolidate_pool_onto"):
@@ -107,7 +107,7 @@ class TestAttachPoolPlacement(unittest.TestCase):
 
         # iters=0: no tune loop, outputs follow the cache primary as before
         cls, self_, runner = _fake_orchestrator(cache_device="cuda:0", mode="auto", iters=0, runner_device="cuda:1")
-        self_.alg_composer.block_quantizer._loss_device = "cuda:1"
+        self_.alg_composer.active_quantizer._loss_device = "cuda:1"
         with mock.patch(
             "auto_round.utils.pool_placement.resolve_placement_for_pool", return_value=None
         ) as resolve, mock.patch("auto_round.utils.pool_placement.consolidate_pool_onto"):

@@ -41,7 +41,9 @@ def cast_to_fp4(x):
 
 def get_reciprocal(x):
     if isinstance(x, torch.Tensor):
-        return torch.where(x == 0, torch.zeros_like(x, dtype=x.dtype), 1.0 / x)
+        is_zero = x == 0
+        denominator = torch.where(is_zero, torch.ones_like(x), x)
+        return torch.where(is_zero, torch.zeros_like(x, dtype=x.dtype), 1.0 / denominator)
     elif isinstance(x, (float, int)):
         return 0.0 if x == 0 else 1.0 / x
     else:
