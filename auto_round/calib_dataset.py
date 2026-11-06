@@ -655,9 +655,8 @@ def get_opencode_instruct_dataset(
     attention_mask_list, attention_mask = [], torch.ones([seqlen]).to(torch.int64)
     buffer_input_id = torch.Tensor().to(torch.int64)
     bos_token_id, eos_token_id = tokenizer.bos_token_id, tokenizer.eos_token_id
-    os_cnt, have_bos, have_eos = 0, False, False
-
     for input_id in input_ids:
+        os_cnt, have_bos, have_eos = 0, False, False
         if input_id[0] == bos_token_id:
             input_id = input_id[1:]
             os_cnt, have_bos = os_cnt + 1, True
@@ -1879,9 +1878,8 @@ def _get_dataset_impl(
         attention_mask_list, attention_mask = [], torch.ones([1, seqlen]).to(torch.int64)
         buffer_input_id = torch.Tensor().to(torch.int64)
         bos_token_id, eos_token_id = tokenizer.bos_token_id, tokenizer.eos_token_id
-        os_cnt, have_bos, have_eos = 0, False, False
-
         for input_id in input_ids:
+            os_cnt, have_bos, have_eos = 0, False, False
             if input_id[0] == bos_token_id:
                 input_id = input_id[1:]
                 os_cnt, have_bos = os_cnt + 1, True
