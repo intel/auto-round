@@ -5,7 +5,7 @@
 
 from types import SimpleNamespace
 
-from auto_round.compressors.utils import _snapshot_route_log_
+from auto_round.compressors.utils import _snapshot_route_log
 
 
 class TestSnapshotRouteLog:
@@ -18,12 +18,12 @@ class TestSnapshotRouteLog:
         with caplog.at_level(logging.DEBUG, logger="autoround"):
             ar_logger.addHandler(caplog.handler)
             try:
-                _snapshot_route_log_(block, "local", "[snapshot] %.2fGiB stays beside the weights", 1.41, silent=True)
+                _snapshot_route_log(block, "local", "[snapshot] %.2fGiB stays beside the weights", 1.41, silent=True)
                 assert block._snapshot_route == "local"  # route still recorded for stickiness
-                _snapshot_route_log_(block, "peer:cuda:1", "[snapshot] cloning %.2fGiB to idle peer %s", 1.61, "cuda:1")
-                _snapshot_route_log_(block, "peer:cuda:1", "[snapshot] cloning %.2fGiB to idle peer %s", 1.61, "cuda:1")
-                _snapshot_route_log_(block, "host", "[snapshot] parking on host", warn_first=True)
-                _snapshot_route_log_(block, "host", "[snapshot] parking on host", warn_first=True)
+                _snapshot_route_log(block, "peer:cuda:1", "[snapshot] cloning %.2fGiB to idle peer %s", 1.61, "cuda:1")
+                _snapshot_route_log(block, "peer:cuda:1", "[snapshot] cloning %.2fGiB to idle peer %s", 1.61, "cuda:1")
+                _snapshot_route_log(block, "host", "[snapshot] parking on host", warn_first=True)
+                _snapshot_route_log(block, "host", "[snapshot] parking on host", warn_first=True)
             finally:
                 ar_logger.removeHandler(caplog.handler)
         infos = [r for r in caplog.records if r.levelno == logging.INFO]

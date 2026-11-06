@@ -801,16 +801,14 @@ class WrapperLinear(torch.nn.Module):
         weight = self.orig_layer.weight
         out_features, in_features = weight.shape
         rows = max(1, _ROW_BLOCKED_WEIGHT_ELEMS // max(1, in_features))
-        if weight.is_cuda:
-            try:
-                free_bytes, _ = torch.cuda.mem_get_info(weight.device)
-            except (RuntimeError, ValueError):  # pragma: no cover - exotic devices
-                free_bytes = None
-            if free_bytes is not None:
-                # ~6 fp32 arrays of rows x in_features live per block; use half
-                # the free pool to leave room for transients and fragmentation
-                budget_rows = int(free_bytes * 0.5 // (in_features * 4 * 6))
-                rows = max(1024, min(rows, budget_rows))
+        from auto_round.compressors.utils import accel_mem_get_info
+
+        info = accel_mem_get_info(weight.device)
+        if info is not None:
+            # ~6 fp32 arrays of rows x in_features live per block; use half
+            # the free pool to leave room for transients and fragmentation
+            budget_rows = int(info[0] * 0.5 // (in_features * 4 * 6))
+            rows = max(1024, min(rows, budget_rows))
         return [(start, min(start + rows, out_features)) for start in range(0, out_features, rows)]
 
     def _row_block_params(self, start, end):

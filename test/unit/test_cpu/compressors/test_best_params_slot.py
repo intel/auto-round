@@ -138,6 +138,18 @@ class TestSelectSnapshotDevice:
         cuda_probes.count = 2
         assert cu.select_snapshot_device(w) == torch.device("cuda:1")
 
+    def test_freest_peer_wins(self, cuda_probes):
+        # the slot and the block ladder share one probe: freest peer first
+        w = self._big_wrapper(rows=4096, in_features=65536)
+        need = _need_bytes(w)
+        cuda_probes.free = {
+            torch.device("cuda:0"): need + (512 * 2**20),  # no room for the floor
+            torch.device("cuda:1"): need * 2,
+            torch.device("cuda:2"): need * 4,
+        }
+        cuda_probes.count = 3
+        assert cu.select_snapshot_device(w) == torch.device("cuda:2")
+
     def test_peer_needs_headroom(self, cuda_probes):
         w = self._big_wrapper(rows=65536, in_features=4096)
         need = _need_bytes(w)

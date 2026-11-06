@@ -296,17 +296,25 @@ def collect_best_params(block, cache_device="cpu"):
     return params
 
 
+def _wrapper_param_dicts(block: torch.nn.Module) -> list[tuple[str, dict]]:
+    """``(name, params)`` per tuning wrapper: the block itself when it is a wrapper."""
+    if hasattr(block, "orig_layer"):
+        return [("", block.params)]
+    return [(n, m.params) for n, m in block.named_modules() if hasattr(m, "orig_layer")]
+
+
+def _params_nbytes(params: dict) -> int:
+    """Bytes held by the tensors of one wrapper's ``params`` dict."""
+    return sum(t.numel() * t.element_size() for t in params.values() if isinstance(t, torch.Tensor))
+
+
 def _copy_params_local(block: torch.nn.Module) -> dict[str, Any]:
     """Duplicate every tuning parameter on the device that already hosts it; raises on failure."""
-    params = {}
-    if hasattr(block, "orig_layer"):
-        for key, p_ in block.params.items():
-            params[key] = p_.data.to(p_.data.device, copy=True)
-    else:
-        for n, m in block.named_modules():
-            if hasattr(m, "orig_layer"):
-                params[n] = {key: p_.data.to(p_.data.device, copy=True) for key, p_ in m.params.items()}
-    return params
+    copies = {
+        name: {key: p_.data.to(p_.data.device, copy=True) for key, p_ in params.items()}
+        for name, params in _wrapper_param_dicts(block)
+    }
+    return copies[""] if hasattr(block, "orig_layer") else copies
 
 
 def collect_best_params_local(block: torch.nn.Module) -> dict[str, Any]:
@@ -329,19 +337,16 @@ def collect_best_params_local(block: torch.nn.Module) -> dict[str, Any]:
         return collect_best_params(block, "cpu")
 
 
-def _accel_mem_get_info_(device):
-    """``(free_bytes, total_bytes)`` for any accelerator device, or ``None``.
+def accel_mem_get_info(device: "str | torch.device | None") -> tuple[int, int] | None:
+    """``(free_bytes, total_bytes)`` for an accelerator device, or ``None``.
 
     Routes through the device-manager abstraction (``get_ar_device``), so
-    cuda, xpu and hpu behave identically; ``None`` means "unknown" and every
-    caller keeps its fallback instead of guessing.
+    cuda, xpu and hpu behave identically; ``None`` means "unknown" (cpu,
+    unavailable backend, failed probe) and every caller keeps its fallback.
     """
     if isinstance(device, str):
-        # device_manager.device may be a str ("cuda:0"); strings have no
-        # .type attribute, so the getattr below would misclassify them as
-        # cpu (the same class as the census str-device guard)
         device = torch.device(device)
-    if device is None or getattr(device, "type", "cpu") == "cpu":
+    if device is None or device.type == "cpu":
         return None
     try:
         from auto_round.utils.device_manager import get_ar_device
@@ -351,56 +356,39 @@ def _accel_mem_get_info_(device):
             return None
         free_b, total_b = ar_device.mem_get_info(device.index or 0)
         return int(free_b), int(total_b)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:  # pylint: disable=broad-except - exotic devices
         return None
 
 
-def _snapshot_param_needs(block) -> list[tuple[torch.device, int]]:
-    """Per-device snapshot need (bytes) across the block's wrappers."""
-    needs = {}
+def accel_devices_with_room(dev_type: str, need_bytes: int, exclude=()) -> list[torch.device]:
+    """Visible ``dev_type`` devices that can take ``need_bytes``, most free first.
 
-    def _add(params):
-        for tensor in params.values():
-            if isinstance(tensor, torch.Tensor):
-                home = tensor.device
-                needs[home] = needs.get(home, 0) + tensor.numel() * tensor.element_size()
-
-    if hasattr(block, "orig_layer"):
-        _add(block.params)
-    else:
-        for _, module in block.named_modules():
-            if hasattr(module, "orig_layer"):
-                _add(module.params)
-    return sorted(needs.items(), key=lambda kv: str(kv[0]))
-
-
-def _idle_peer_for_(need_bytes, home) -> torch.device | None:
-    """An idle CUDA peer with headroom for ``need_bytes``, or ``None``.
-
-    Shared by the snapshot ladders (the huge-layer wrapper path and the
-    block path). An idle peer still carries a CUDA context and allocator
-    fragmentation; a tenth of its free memory stays untouched.
+    The single placement probe behind both snapshot ladders (the block
+    ladder in :func:`snapshot_best_params` and the huge-layer slot in
+    :func:`select_snapshot_device`). A candidate still carries a context and
+    allocator fragmentation, so a tenth of its free memory stays untouched.
     """
-    if home is None or getattr(home, "type", "cpu") == "cpu":
-        return None
     try:
         from auto_round.utils.device_manager import get_ar_device
 
-        count = get_ar_device(home.type).device_count
+        count = get_ar_device(dev_type).device_count
         count = count() if callable(count) else count  # property or method
     except Exception:  # pylint: disable=broad-except - exotic devices
-        return None
+        return []
+    excluded = {torch.device(d) for d in exclude}
+    ranked = []
     for index in range(count):
-        candidate = torch.device(home.type, index)
-        if candidate == home:
+        candidate = torch.device(dev_type, index)
+        if candidate in excluded:
             continue
-        info = _accel_mem_get_info_(candidate)
+        info = accel_mem_get_info(candidate)
         if info is not None and info[0] * 0.9 >= need_bytes:
-            return candidate
-    return None
+            ranked.append((info[0], candidate))
+    ranked.sort(key=lambda kv: kv[0], reverse=True)
+    return [d for _free, d in ranked]
 
 
-def _snapshot_route_log_(block, route, msg, *args, warn_first=False, silent=False) -> None:
+def _snapshot_route_log(block, route, msg, *args, warn_first=False, silent=False) -> None:
     """Log a snapshot routing decision once per change; repeats log nothing.
 
     The ladder re-runs on every best-params update because free memory moves
@@ -417,35 +405,7 @@ def _snapshot_route_log_(block, route, msg, *args, warn_first=False, silent=Fals
     block._snapshot_route = route
 
 
-def _snapshot_free_devices_(dev_type: str, need_bytes: int, exclude=()) -> list:
-    """Visible accelerator devices of ``dev_type`` with room, most free first.
-
-    Same introspection as ``_idle_peer_for_`` but returns the full ordering:
-    the attempt ladder tries the freest device first, and every candidate is
-    still guarded by a real attempt-and-catch at clone time. Devices already
-    hosting the block's params are excluded - the local rung covers them, and
-    re-attempting a just-failed same-device clone is pure churn."""
-    devices = []
-    try:
-        from auto_round.utils.device_manager import get_ar_device
-
-        count = get_ar_device(dev_type).device_count
-        count = count() if callable(count) else count  # property or method
-    except Exception:  # pylint: disable=broad-except - exotic devices
-        return devices
-    excluded = {torch.device(d) if not isinstance(d, torch.device) else d for d in exclude}
-    for index in range(count):
-        candidate = torch.device(dev_type, index)
-        if candidate in excluded:
-            continue
-        info = _accel_mem_get_info_(candidate)
-        if info is not None and info[0] * 0.9 >= need_bytes:
-            devices.append((info[0], candidate))
-    devices.sort(key=lambda kv: kv[0], reverse=True)
-    return [d for _b, d in devices]
-
-
-def snapshot_best_params(block, cache_device="cpu"):
+def snapshot_best_params(block: torch.nn.Module, cache_device: "str | torch.device" = "cpu") -> dict[str, Any]:
     """Collect the best-params snapshot by attempt, falling back device by device.
 
     Sticky per block: duplicate beside the weights first (per-parameter local
@@ -469,25 +429,19 @@ def snapshot_best_params(block, cache_device="cpu"):
         # terminal: no mid-tune flip-flopping back onto accelerators
         return collect_best_params(block, "cpu")
 
-    total_need = sum(need for _home, need in _snapshot_param_needs(block)) or 0
+    wrapper_params = _wrapper_param_dicts(block)
+    total_need = sum(_params_nbytes(params) for _name, params in wrapper_params)
+    homes = {t.device for _name, params in wrapper_params for t in params.values() if isinstance(t, torch.Tensor)}
     candidates: list = []
-    if last == "local":
-        candidates.append("local")
-    elif isinstance(last, str) and last.startswith("peer:"):
+    if isinstance(last, str) and last.startswith("peer:"):
         try:
             candidates.append(torch.device(last[5:]))
         except (ValueError, RuntimeError):
             pass
-    if "local" not in candidates:
-        candidates.append("local")
-    _home = {
-        p_.data.device
-        for m in block.named_modules()
-        if hasattr(m, "orig_layer")
-        for p_ in m.params.values()
-        if isinstance(p_, torch.Tensor)
-    }
-    for dev in _snapshot_free_devices_(torch.device(str(cache_device)).type, total_need, exclude=_home):
+    # beside the weights (right after a sticky peer route); devices already
+    # hosting the params are covered by this rung, so the peer probe skips them
+    candidates.append("local")
+    for dev in accel_devices_with_room(torch.device(str(cache_device)).type, total_need, exclude=homes):
         if dev not in candidates:
             candidates.append(dev)
 
@@ -495,19 +449,19 @@ def snapshot_best_params(block, cache_device="cpu"):
         try:
             if cand == "local":
                 out = _copy_params_local(block)
-                _snapshot_route_log_(
+                _snapshot_route_log(
                     block, "local", "[snapshot] %.2fGiB stays beside the weights", total_need / 2**30, silent=True
                 )
                 return out
             out = collect_best_params(block, cand)
-            _snapshot_route_log_(block, f"peer:{cand}", "[snapshot] cloning %.2fGiB to %s", total_need / 2**30, cand)
+            _snapshot_route_log(block, f"peer:{cand}", "[snapshot] cloning %.2fGiB to %s", total_need / 2**30, cand)
             return out
         except Exception as e:  # pylint: disable=broad-except - the attempt IS the test
             logger.debug(
                 "[snapshot] placement on %s failed (%s: %s); trying the next candidate", cand, type(e).__name__, e
             )
             continue
-    _snapshot_route_log_(
+    _snapshot_route_log(
         block,
         "host",
         "[snapshot] no accelerator could hold the %.2fGiB snapshot; parking on host",
@@ -535,16 +489,16 @@ def snapshot_window_floor_bytes(wrapper) -> int:
 
 
 def select_snapshot_device(wrapper) -> torch.device:
-    """Device for a huge layer's best-params snapshot; host fallback.
+    """Device for a huge layer's pre-reserved best-params slot; host fallback.
 
     Ladder: the layer's own device when the snapshot provably fits beside the
     row-window floor (``free - snapshot >= window floor``) -- the row windows
     then size themselves against the reduced free pool, trading window size
-    for keeping the snapshot on-device; otherwise an idle CUDA peer with
-    headroom (peer-to-peer refreshes replace the host round trip); otherwise
-    the host, the previously shipped behavior. Never raises.
+    for keeping the snapshot on-device; otherwise the freest peer accelerator
+    with headroom (:func:`accel_devices_with_room`, the same probe the block
+    ladder uses); otherwise the host. Never raises.
     """
-    need = sum(t.numel() * t.element_size() for t in getattr(wrapper, "params", {}).values())
+    need = _params_nbytes(getattr(wrapper, "params", {}))
     home = getattr(wrapper, "device", None)
     if not isinstance(home, torch.device):
         value = getattr(wrapper, "params", {}).get("value")
@@ -552,18 +506,12 @@ def select_snapshot_device(wrapper) -> torch.device:
     if need <= 0 or home is None or home.type == "cpu":
         return torch.device("cpu")
 
-    info = _accel_mem_get_info_(home)
-    if info is not None:
-        free = info[0]
-        floor = snapshot_window_floor_bytes(wrapper)
-        if free - need >= floor:
-            return home
+    info = accel_mem_get_info(home)
+    if info is not None and info[0] - need >= snapshot_window_floor_bytes(wrapper):
+        return home
 
-    peer = _idle_peer_for_(need, home)
-    if peer is not None:
-        return peer
-
-    return torch.device("cpu")
+    peers = accel_devices_with_room(home.type, need, exclude=(home,))
+    return peers[0] if peers else torch.device("cpu")
 
 
 class BestParamsSlot:
@@ -592,7 +540,7 @@ class BestParamsSlot:
                 self.device = torch.device("cpu")
                 self.buffers = None
         if self.device.type != "cpu":  # any accelerator; the ladder may pick xpu/hpu peers
-            need = sum(t.numel() * t.element_size() for t in self.buffers.values())
+            need = _params_nbytes(self.buffers)
             logger.info(
                 "[snapshot] best-params slot reserved on %s (%.2f GiB); "
                 "row windows size against the reduced free pool",
@@ -933,7 +881,7 @@ def _resolve_pack_device_(weight, default_device):
     output serializes to disk from the host just as well. Body-sized linears
     stay on the device. Caller-specified devices bypass the probe entirely.
     """
-    info = _accel_mem_get_info_(
+    info = accel_mem_get_info(
         torch.device(default_device) if not isinstance(default_device, torch.device) else default_device
     )
     if weight is None or info is None:
