@@ -497,31 +497,8 @@ def save_model(
 
 
 def filter_quantization_config(quantization_config):
-    default_dict = {
-        "amp": True,
-        "batch_size": 8,
-        "data_type": int,
-        "dataset": "NeelNanda/pile-10k",
-        "enable_minmax_tuning": True,
-        "enable_norm_bias_tuning": False,
-        "enable_quanted_input": True,
-        "gradient_accumulate_steps": 1,
-        "iters": 200,
-        "low_gpu_mem_usage": False,
-        "nsamples": 128,
-        "scale_dtype": "torch.float16",
-        "seqlen": 2048,
-    }
-    iters = quantization_config.get("iters")
-    if iters is None:
-        iters = 0
-
-    default_dict["lr"] = 1.0 / iters if iters > 0 else 5e-3
-    default_dict["minmax_lr"] = default_dict["lr"]
-
-    for key, default_value in default_dict.items():
-        if key in quantization_config and default_value == quantization_config[key]:
-            quantization_config.pop(key)
+    # Tuning hyper-parameters (iters, nsamples, seqlen, lr, ...) are kept even when they
+    # equal the defaults, so a checkpoint always records how it was produced.
     for k in list(quantization_config.keys()):
         if quantization_config[k] is None:
             quantization_config.pop(k)
