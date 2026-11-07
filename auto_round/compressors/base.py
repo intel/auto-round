@@ -856,7 +856,11 @@ class BaseOrchestrator:
             all_dtypes.append(dtype)
 
         unique_dtypes = set(all_dtypes)
-        if len(unique_dtypes) > 1 and not all_gguf:
+        # BF16 (data_type="fp") mixed with integer schemes is a supported
+        # mixed-bit AutoScheme case (some layers stay full-precision).
+        # Only warn when there are multiple non-fp quantized data types.
+        non_fp_dtypes = {d for d in unique_dtypes if d != "fp"}
+        if len(non_fp_dtypes) > 1 and not all_gguf:
             logger.warning(
                 "Models with mixed data_types "
                 "cannot yet be exported to real formats except GGUF. "
