@@ -422,6 +422,27 @@ def test_legacy_disable_flags_map_to_enable_bools():
     assert args.enable_quanted_input is False
 
 
+def test_enable_minmax_tuning_cli_flag_removed():
+    """``--enable_minmax_tuning`` was redundant (on by default); only ``--disable_minmax_tuning`` remains."""
+    from auto_round.cli.parser import build_quantize_parser
+
+    parser = build_quantize_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--model", "dummy-model", "--enable_minmax_tuning"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--model", "dummy-model", "--no-enable_minmax_tuning"])
+
+
+def test_minmax_tuning_defaults_enabled_for_auto_round():
+    from auto_round.cli.algorithms import AlgorithmHandler
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(["--model", "dummy-model", "--algorithm", "auto_round"])
+    configs = AlgorithmHandler.build_configs(args, {})
+    assert len(configs) == 1
+    assert configs[0].enable_minmax_tuning is True
+
+
 @pytest.mark.parametrize("model_adapter", ["flux", "sdxl"])
 def test_svdquant_cli_builds_hyphenated_options_before_rtn(model_adapter):
     from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig

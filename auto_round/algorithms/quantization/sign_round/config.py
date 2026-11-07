@@ -72,22 +72,15 @@ class SignRoundConfig(QuantizationConfig):
         registry.add_argument(
             "--nblocks", field="nblocks", default=1, type=int, help="Number of blocks to optimize together."
         )
-        minmax = registry.add_mutually_exclusive_group()
-        minmax.add_argument(
-            "--enable_minmax_tuning",
+        # Minmax tuning is on by default; only expose a disable flag so enable/disable
+        # cannot disagree (see https://github.com/intel/auto-round/issues/2565).
+        registry.add_argument(
+            "--disable_minmax_tuning",
             field="enable_minmax_tuning",
             default=True,
             dest="enable_minmax_tuning",
-            action="store_true",
-            help="Tune weight min/max ranges.",
-        )
-        minmax.add_argument(
-            "--no-enable_minmax_tuning",
-            "--disable_minmax_tuning",
-            field="enable_minmax_tuning",
-            dest="enable_minmax_tuning",
             action="store_false",
-            help="Disable weight min/max tuning.",
+            help="Disable weight min/max tuning (enabled by default).",
         )
         registry.add_argument(
             "--enable_norm_bias_tuning",
