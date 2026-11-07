@@ -3405,9 +3405,19 @@ def _build_quantization_config(
         qconfig["block_name_to_quantize"] = block_name_to_quantize
 
     extra_config = {}
+    quantized_layer_set = set(quantized_layers)
     for layer_name, cfg in layer_config.items():
-        if cfg.get("bits", default_scheme["bits"]) >= 16:
+        requested_bits = cfg.get("bits", default_scheme["bits"])
+        if requested_bits >= 16:
             extra_config[layer_name] = {k: cfg.get(k) for k in scheme_keys if cfg.get(k) is not None}
+            continue
+        # A failed model-free quantization keeps the source weight in the
+        # checkpoint.  Do not advertise the requested low-bit override in
+        # that case: loaders such as vLLM would look for qweight/scales that
+        # are not present.  Record an explicit full-precision override so the
+        # exported metadata matches the tensors that were actually written.
+        if layer_name not in quantized_layer_set:
+            extra_config[layer_name] = {"bits": 16, "data_type": "float"}
             continue
         differs = False
         for key in ("bits", "group_size", "sym"):
@@ -3432,7 +3442,6 @@ def _build_quantization_config(
             if data_type in _NVFP4_E5M3_FAMILY_DATA_TYPES:
                 extra_config[layer_name].update({"act_bits": 16, "act_data_type": "float"})
 
-    quantized_layer_set = set(quantized_layers)
     for lm_head_name in _LM_HEAD_PATTERNS:
         if lm_head_name in quantized_layer_set and lm_head_name not in extra_config:
             lm_head_cfg = layer_config.get(lm_head_name, default_scheme)
