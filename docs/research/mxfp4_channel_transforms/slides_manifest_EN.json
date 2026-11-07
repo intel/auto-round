@@ -1,0 +1,269 @@
+[
+  {
+    "page": 1,
+    "title": "Channel permutations × mixed-MXFP activations × HMT",
+    "section": "Research design",
+    "source_ids": []
+  },
+  {
+    "page": 2,
+    "title": "One shared plan, two features, three execution tiers",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 3,
+    "title": "Evidence boundaries: verified facts vs. open questions",
+    "section": "Evidence and prior art",
+    "source_ids": []
+  },
+  {
+    "page": 4,
+    "title": "Closest prior art: where the contribution should lie",
+    "section": "Evidence and prior art",
+    "source_ids": [
+      "R02",
+      "R03",
+      "R04",
+      "R05",
+      "R08",
+      "R09",
+      "R10",
+      "R11",
+      "R12"
+    ]
+  },
+  {
+    "page": 5,
+    "title": "QuaRot: paired rotations, not one-sided outlier handling",
+    "section": "Author figure",
+    "source_ids": [
+      "R05"
+    ]
+  },
+  {
+    "page": 6,
+    "title": "DuQuant: rotate → permute → rotate",
+    "section": "Author figure",
+    "source_ids": [
+      "R03",
+      "R04"
+    ]
+  },
+  {
+    "page": 7,
+    "title": "DuQuant results: preserve the format and context",
+    "section": "Author data",
+    "source_ids": [
+      "R03"
+    ]
+  },
+  {
+    "page": 8,
+    "title": "MicroMix: the closest implementation precedent for F2",
+    "section": "Existing implementation",
+    "source_ids": [
+      "R10"
+    ]
+  },
+  {
+    "page": 9,
+    "title": "MXFP4 evidence: fixed HMT leaves room to improve",
+    "section": "Author data",
+    "source_ids": [
+      "R12"
+    ]
+  },
+  {
+    "page": 10,
+    "title": "Keep MXFP4, MXFP8, and NVFP4 distinct",
+    "section": "Design",
+    "source_ids": [
+      "R01",
+      "R04",
+      "R11"
+    ]
+  },
+  {
+    "page": 11,
+    "title": "Invariant: transform activations and weight columns together",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 12,
+    "title": "F1: optimize cross-block membership, not shuffling itself",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 13,
+    "title": "F1 search: use reconstruction loss, not amax alone",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 14,
+    "title": "Grouped GEMM: separate M-axis routing and K-axis gathers",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 15,
+    "title": "F2: one gather, two contiguous partitions, sum over K",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 16,
+    "title": "Report the three high-branch semantics separately",
+    "section": "Design",
+    "source_ids": [
+      "R10"
+    ]
+  },
+  {
+    "page": 17,
+    "title": "Who gets A8? Error reduction first, magnitude as a proxy",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 18,
+    "title": "Small ratios are discrete: alignment sets the actual budget",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 19,
+    "title": "HMT combinations: define the mask coordinate basis",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 20,
+    "title": "Unified search: alternate discrete plans and AutoRound",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 21,
+    "title": "Beyond fixed HMT: data-aware transforms",
+    "section": "Author figure / research",
+    "source_ids": [
+      "R12",
+      "R06"
+    ]
+  },
+  {
+    "page": 22,
+    "title": "What a paper speed chart can and cannot establish",
+    "section": "Author figure / evidence limits",
+    "source_ids": [
+      "R12"
+    ]
+  },
+  {
+    "page": 23,
+    "title": "AutoRound integration: extend existing mechanisms",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 24,
+    "title": "Three real gaps: hooks, packed consumers, capabilities",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 25,
+    "title": "Intel XPU: probe native compute, do not assume it",
+    "section": "XPU implementation",
+    "source_ids": [
+      "R13"
+    ]
+  },
+  {
+    "page": 26,
+    "title": "Kernel tiers: reference, decode-fused, verified native",
+    "section": "XPU implementation",
+    "source_ids": []
+  },
+  {
+    "page": 27,
+    "title": "Persist one versioned plan across the entire lifecycle",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 28,
+    "title": "Correctness: algebra first, then encoding, then models",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 29,
+    "title": "Experiments: fair budgets, separate data, real MoE loads",
+    "section": "Design",
+    "source_ids": []
+  },
+  {
+    "page": 30,
+    "title": "Proposed gates: development targets, not achieved results",
+    "section": "Acceptance criteria",
+    "source_ids": []
+  },
+  {
+    "page": 31,
+    "title": "Research priorities: four falsifiable questions first",
+    "section": "Research priorities",
+    "source_ids": []
+  },
+  {
+    "page": 32,
+    "title": "Milestones: numerics, dense, grouped, persistence",
+    "section": "Development plan",
+    "source_ids": []
+  },
+  {
+    "page": 33,
+    "title": "Final decision: Pareto evidence, not isolated claims",
+    "section": "Recommendation",
+    "source_ids": []
+  },
+  {
+    "page": 34,
+    "title": "References 1/2: papers and pinned implementations",
+    "section": "References and licenses",
+    "source_ids": [
+      "R01",
+      "R02",
+      "R03",
+      "R04",
+      "R05",
+      "R06",
+      "R07"
+    ]
+  },
+  {
+    "page": 35,
+    "title": "References 2/2: papers and pinned implementations",
+    "section": "References and licenses",
+    "source_ids": [
+      "R08",
+      "R09",
+      "R10",
+      "R11",
+      "R12",
+      "R13"
+    ]
+  },
+  {
+    "page": 36,
+    "title": "Appendix: the original WUSH task-level result table",
+    "section": "Appendix / original author table",
+    "source_ids": [
+      "R12"
+    ]
+  }
+]
