@@ -565,27 +565,6 @@ void launch_int4(sycl::queue* q, const ScalarT* activations, const uint8_t* weig
 }
 
 // ----------------------------------------------------------------------------
-// Opt-in reuse of the int4 weight repack across calls.
-//
-// The repack output depends only on the weight buffer, which does not change
-// between decode steps of a real inference loop, so in principle it can be
-// built once and reused. The pool tag is a *pointer identity*, though, and a
-// freed-then-reallocated weight tensor can land on the address of the previous
-// one (torch's caching allocator makes this common in test loops that build a
-// fresh packed tensor of the same shape per iteration). Reusing a stale repack
-// would then silently produce wrong results, so this is off by default and must
-// be enabled explicitly by a caller that owns the weight lifetime:
-//
-//   ARK_MOE_DECODE_INT4_REPACK_CACHE=1
-//
-// `ark::moe_decode_release_scratch()` (exposed to Python as
-// `moe_decode_release_scratch`) drops the cached buffers.
-// ----------------------------------------------------------------------------
-inline bool moe_decode_int4_repack_cache_enabled() {
-  return env_flag_enabled("ARK_MOE_DECODE_INT4_REPACK_CACHE", false);  // default OFF -- see comment above
-}
-
-// ----------------------------------------------------------------------------
 // INT4 (S4_CLIP) coalesced-load GEMV.
 //
 // The scalar `launch_int4` above is memory-bandwidth-bound: for a single decode
@@ -616,13 +595,13 @@ inline bool moe_decode_int4_repack_cache_enabled() {
 // prologue/epilogue around the vector stage, which reads the same layout one
 // byte at a time.
 //
-// The repack buffer comes from the persistent per-device scratch pool
+// The repack buffer comes from the extension-wide global scratch pool
 // (see `sycl_tla_moe_decode_scratch.hpp`), so decode steady state performs no
 // USM allocation and
 // -- unlike the previous transient allocation, which had to be freed behind a
 // blocking `queue::wait()` on every call -- introduces no host-side
-// synchronization. The repack kernel itself still runs per call unless the
-// caller opts into `ARK_MOE_DECODE_INT4_REPACK_CACHE`.
+// synchronization. The repack kernel runs per call so changing weights, even
+// in place or at a recycled address, never requires manual cache invalidation.
 //
 // On top of coalescing, this path blocks tokens: each work-item owns one
 // output column but processes up to `TOKEN_BLOCK` consecutive tokens. For each
@@ -662,39 +641,30 @@ void launch_int4_coalesced(sycl::queue* q, const ScalarT* activations, const uin
 
   const size_t repacked_bytes = static_cast<size_t>(num_experts) * static_cast<size_t>(n_tiles) *
                                 static_cast<size_t>(k_chunks) * static_cast<size_t>(chunk_stride);
-  // Reuse the repack across calls only when the caller opted in; the tag key
-  // folds in the full shape so a tensor of different dimensions cannot alias a
-  // cached repack that happens to sit at the same address.
-  const size_t repack_key = (static_cast<size_t>(num_experts) * 1000003u + static_cast<size_t>(N)) * 1000003u +
-                            static_cast<size_t>(k_packed);
-  bool repack_cached = false;
-  uint8_t* repacked = acquire_int4_repack_scratch(q, repacked_bytes, weights, repack_key,
-                                                  moe_decode_int4_repack_cache_enabled(), &repack_cached);
+  uint8_t* repacked = acquire_int4_repack_scratch(q, repacked_bytes);
 
   // Repack kernel: one work-item per (expert, column, packed-byte slot). The
   // write index places the 16 columns of a tile contiguously in chunks of 4
   // bytes, lane-major. Slots past `k_packed` are zero-filled so the padded tail
   // of the last chunk is always initialized.
-  if (!repack_cached) {
-    sycl::range<3> rp_global{static_cast<size_t>(num_experts), static_cast<size_t>(N),
-                             static_cast<size_t>(k_chunks * PACK_VEC)};
-    q->parallel_for<MoEDecodeRepackInt4<ScalarT, Asym>>(rp_global, [=](sycl::id<3> id) {
-      const int e = static_cast<int>(id[0]);
-      const int n = static_cast<int>(id[1]);
-      const int kb = static_cast<int>(id[2]);
-      const int t = n / N_TILE;
-      const int l = n % N_TILE;
-      const int c = kb / PACK_VEC;
-      const int r = kb % PACK_VEC;
-      const size_t dst = ((static_cast<size_t>(e) * n_tiles + t) * k_chunks + c) * chunk_stride +
-                         static_cast<size_t>(l) * PACK_VEC + r;
-      if (kb < k_packed) {
-        repacked[dst] = weights[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed + kb];
-      } else {
-        repacked[dst] = 0;
-      }
-    });
-  }
+  sycl::range<3> rp_global{static_cast<size_t>(num_experts), static_cast<size_t>(N),
+                           static_cast<size_t>(k_chunks * PACK_VEC)};
+  q->parallel_for<MoEDecodeRepackInt4<ScalarT, Asym>>(rp_global, [=](sycl::id<3> id) {
+    const int e = static_cast<int>(id[0]);
+    const int n = static_cast<int>(id[1]);
+    const int kb = static_cast<int>(id[2]);
+    const int t = n / N_TILE;
+    const int l = n % N_TILE;
+    const int c = kb / PACK_VEC;
+    const int r = kb % PACK_VEC;
+    const size_t dst = ((static_cast<size_t>(e) * n_tiles + t) * k_chunks + c) * chunk_stride +
+                       static_cast<size_t>(l) * PACK_VEC + r;
+    if (kb < k_packed) {
+      repacked[dst] = weights[(static_cast<size_t>(e) * N + static_cast<size_t>(n)) * k_packed + kb];
+    } else {
+      repacked[dst] = 0;
+    }
+  });
 
   // Per-(token, K-group) activation sums, hoisted out of the inner loop. Only
   // asym needs them -- sym decodes true signed nibbles and folds a plain scale
@@ -1659,18 +1629,6 @@ void launch_fp8_by_mode(sycl::queue* q, const ScalarT* activations, const uint8_
 }
 
 }  // namespace moe_decode_detail
-
-// ----------------------------------------------------------------------------
-// Release every device scratch buffer the int4 decode fallbacks hold (the
-// N-tiled weight repack and the activation-sum table). Both are served from
-// grow-on-demand per-queue slabs that are normally kept for the lifetime of the
-// process; call this to hand the memory back, or to drop a repack cached under
-// `ARK_MOE_DECODE_INT4_REPACK_CACHE` before the underlying weight buffer is
-// freed. Safe to call at any time -- the next decode simply reallocates.
-//
-// Declared in `sycl_tla_common.hpp` and defined in the generated int4 decode
-// translation unit, which owns both pools.
-// ----------------------------------------------------------------------------
 
 // ----------------------------------------------------------------------------
 // Env-flag helper -- `ARK_MOE_DECODE_DPAS_S4` (default ON). When ON, int4-sym
