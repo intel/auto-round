@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for ``auto_round/export/export_to_autoround/utils.py``."""
+"""Tests for ``auto_round/export/formats/autoround/utils.py``."""
 
 from dataclasses import fields
 
 import pytest
 
-from auto_round.export.export_to_autoround.utils import check_neq_config
+from auto_round.export.formats.autoround.utils import check_neq_config
 from auto_round.schemes import QuantizationScheme
 
 

@@ -133,6 +133,13 @@ class TestGetReciprocal:
         assert r[1].item() == 0.5
         assert r[3].item() == 0.25
 
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+    def test_tensor_with_zero_backward(self, dtype):
+        x = torch.tensor([0.0, 2.0, -2.0], dtype=dtype, requires_grad=True)
+        get_reciprocal(x).sum().backward()
+        torch.testing.assert_close(x.grad, torch.tensor([0.0, -0.25, -0.25], dtype=dtype))
+        assert torch.isfinite(x.grad).all()
+
     def test_float(self):
         assert get_reciprocal(2.0) == 0.5
         assert get_reciprocal(4.0) == 0.25

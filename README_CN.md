@@ -32,6 +32,7 @@
 
 [用户指南](./docs/step_by_step_CN.md) | [User Guide](./docs/step_by_step.md)&nbsp;&nbsp; 
 
+
 ---
 <div align="left">
 
@@ -48,6 +49,8 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 
 
 ## 🆕 最新进展
+
+* [WIP] 对于 4 bit 及以上的量化，我们目前建议采用 75% UltraChat + 25% OpenCode 的混合数据集，以提升模型的推理能力和 Agentic 任务能力。使用默认配置 nsamples=128 时，请指定 --dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"。详情请参阅校准数据集[文档](./docs/calibration_acc.md)。待评测全部完成后，我们将更新默认校准数据集。
 
 * [2026/10] 我们现在展示：**W2A16** 的精度会随着调优成本的增加而稳步提升。详细精度数据见 [W2A16 精度数据](./docs/alg_202508.md)。
 
@@ -116,6 +119,8 @@ AutoRound 旨在以合理的量化成本在低比特场景下实现出色的精�
 ✅ **支持十余种 VLM 模型**  已支持十余种视觉语言模型，让用户有“开盖即食”般的量化体验。详见：[示例模型](https://huggingface.co/collections/OPEA/vlms-autoround-675bc712fdd6a55ebaf11bfa)，[支持矩阵](https://github.com/intel/auto-round/tree/main/auto_round/compressors/mllm#vlm-support-matrix)
 
 ✅ **多种量化方案可选**  提供 `auto-round-best`​、`auto-round`​、`auto-round-light`​、`auto-round-opt-rtn`（优化版 RTN）以及 `auto-round-rtn`（原始 RTN，最快基线）等多种预设方案，能够满足多样化需求。详见：[量化方案](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+
+Python 可通过 `AutoRound(..., recipe="auto-round-best")` 使用同一方案，CLI 可使用 `--recipe auto-round-best`。不传 recipe 默认选择 `auto-round`，已有命令保留为快捷入口。详见[内置 Recipe 与覆盖规则](./docs/recipes_CN.md)。
 
 ✅ **实用额外特性** 支持[多 GPU 量化](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization)和[多标定数据集](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset)，并兼容[十余种推理后端](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend)。
 
@@ -280,7 +285,7 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 ##### 标定数据集
 
 - ​**​`dataset`​**​（str | list | tuple | DataLoader）：量化中用于校准的数据集（默认 `"NeelNanda/pile-10k"`​）。支持本地 JSON 文件和数据集组合使用，如 `"./tmp.json,NeelNanda/pile-10k:train,mbpp:train+validation+test"`。
-- I2V 标定默认使用与 COCO2014 caption 配对的真实图片。采样前会关联 COCO 官方元数据，仅保留知识共享署名 2.0（CC BY 2.0，license ID 4）图片；筛选后的清单会保留许可证和 Flickr 来源 URL。清单和选中的图片均缓存在 `~/.cache/auto_round/datasets/coco2014`；设置 `AUTO_ROUND_CACHE` 后则缓存在 `$AUTO_ROUND_CACHE/datasets/coco2014`。T2V 仍只在内存中解析 caption 清单，不使用该缓存。也可使用包含 `id`、`caption` 和 `image` 列的本地 TSV；`image` 支持绝对路径或相对于 TSV 的路径。
+- I2V 标定默认使用与 COCO2014 caption 配对的真实图片。采样前会关联 COCO 官方元数据，仅保留知识共享署名 2.0（CC BY 2.0，license ID 4）图片；筛选后的清单会保留许可证和 Flickr 来源 URL。清单和选中的图片均缓存在 `~/.cache/auto_round/datasets/coco2014`；设置 `AR_CACHE` 后则缓存在 `$AR_CACHE/datasets/coco2014`。T2V 仍只在内存中解析 caption 清单，不使用该缓存。也可使用包含 `id`、`caption` 和 `image` 列的本地 TSV；`image` 支持绝对路径或相对于 TSV 的路径。
 - ​**​`nsamples`​**​（int）：校准时使用的样本数（默认 `128`）。
 - ​**​`seqlen`​**​（int）：每条样本在校准时使用 token 的序列长度（默认 `2048`）。
 
@@ -340,7 +345,8 @@ ar.quantize_and_save()
 - ​**​`bits`​**​  **(float)** ：传入 `schemes` 时，为整个模型的目标平均 bits（平均 bits 的计算仅包含被量化的层）。未提供 `schemes` 时，`bits` 为普通权重量化位宽，必须为整数。
 - ​**​`schemes`​**​  **(str | list[str] | list[QuantizationScheme])** ​：候选量化配置集合。支持以下表示形式：单个用逗号分隔的字符串（例如 `"W4A16,W2A16"`​）、字符串列表（例如 `["W4A16", "W2A16"]`​）和 `QuantizationScheme` 。传入 `schemes` 即启用 AutoScheme。
 - ​**​`ignore_scale_zp_bits`​**​  **(bool)** ​：仅支持 API 调用场景。用于决定在计算平均 bit 时，是否忽略 scale 与 zero-point 的位数（默认 `False`）。
-- ​**​`shared_layers`​**​  **(Iterable[Iterable[str]], optional)** ：仅支持 API 调用场景，用于定义多个层的分组，这些层将共享相同的量化配置。
+- ​**​`shared_layers`​**​  **(Iterable[Iterable[str]], optional)** ：仅支持 API 调用场景。在内置的 vLLM 融合分组之外，额外指定需要共享量化配置的层分组。
+- ​**​`default_shared_layers`​**​  **(bool)** ：是否为 vLLM/SGLang 在推理时融合的投影层（`q_proj`/`k_proj`/`v_proj`、`q_a_proj`/`kv_a_proj_with_mqa`、`gate_proj`/`up_proj`）共享同一量化配置。默认 `True`；设为 `False`（或设置 `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`）可让 AutoScheme 为各投影层独立选择。命令行参数：`--disable_default_shared_layers`。
 - ​**​`batch_size`​**​  **(int, optional)** ​：仅支持 API 调用场景。设为 `1` 可以降低显存占用，但同时会增加训练时间。
 
 </details>

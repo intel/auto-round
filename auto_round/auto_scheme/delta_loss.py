@@ -40,8 +40,8 @@ from auto_round.auto_scheme.utils import (
     build_expert_groups,
     compute_layer_bits,
     merge_lists_unionfind,
-    parse_shared_layers,
     remove_quant_scheme,
+    resolve_shared_layers,
 )
 from auto_round.calib_dataset import get_dataloader
 from auto_round.data_type.gguf import (
@@ -2786,7 +2786,11 @@ def _gen_layer_config(
             "AutoScheme steps expanded(full_backward): "
             f"total_steps = scheme_num * nsamples = {effective_scheme_num} * {nsamples} = {pbar_cnt}"
         )
-    shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
+    shared_layers = resolve_shared_layers(
+        model,
+        auto_scheme.shared_layers,
+        default_shared_layers=getattr(auto_scheme, "default_shared_layers", True),
+    )
 
     # Auto-group MoE expert layers so DP treats all experts in one block as a unit.
     if is_moe_model:

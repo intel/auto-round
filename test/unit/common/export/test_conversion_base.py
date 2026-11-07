@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tests for the model registry in
-``auto_round/export/export_to_gguf/conversion/base.py``.
+``auto_round/export/formats/gguf/conversion/base.py``.
 """
 
 import gguf
 import pytest
 
-from auto_round.export.export_to_gguf.conversion.base import (
+from auto_round.export.formats.gguf.conversion.base import (
     ModelBase,
     ModelType,
     SentencePieceTokenTypes,
@@ -66,7 +66,7 @@ class TestModelBaseRegistry:
         return _FakeTextModel
 
     def test_register_text_model(self):
-        from auto_round.export.export_to_gguf.conversion.base import ModelBase
+        from auto_round.export.formats.gguf.conversion.base import ModelBase
 
         name = "_test_register_text_model_uniq"
         # Save registry state for restoration
@@ -158,13 +158,13 @@ class TestModelBaseDirectInstantiation:
 class TestMistralFallbackConstants:
     def test_dataset_mean_default(self):
         # When mistral_common isn't installed, fallback defaults are loaded.
-        from auto_round.export.export_to_gguf.conversion.base import _MISTRAL_COMMON_DATASET_MEAN
+        from auto_round.export.formats.gguf.conversion.base import _MISTRAL_COMMON_DATASET_MEAN
 
         assert isinstance(_MISTRAL_COMMON_DATASET_MEAN, tuple)
         assert len(_MISTRAL_COMMON_DATASET_MEAN) == 3
 
     def test_dataset_std_default(self):
-        from auto_round.export.export_to_gguf.conversion.base import _MISTRAL_COMMON_DATASET_STD
+        from auto_round.export.formats.gguf.conversion.base import _MISTRAL_COMMON_DATASET_STD
 
         assert isinstance(_MISTRAL_COMMON_DATASET_STD, tuple)
         assert len(_MISTRAL_COMMON_DATASET_STD) == 3

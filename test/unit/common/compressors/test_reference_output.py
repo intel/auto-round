@@ -32,10 +32,10 @@ def _patch_composer(composer, fp_inputs):
     mock_forward.last_output_dict = None
     mock_forward.enable_torch_compile = False
     composer.block_forward = mock_forward
-    composer.block_quantizer.quantize_block = MagicMock()
-    composer.block_quantizer.enable_quanted_input = False
-    composer._get_fp_act_hooks = MagicMock(return_value=[])
-    composer._get_q_act_hooks = MagicMock(return_value=[])
+    composer.active_quantizer.quantize_block = MagicMock()
+    composer.active_quantizer.enable_quanted_input = False
+    composer._get_fp_act_hooks = MagicMock(return_value=([], {"act_max": "max"}))
+    composer._get_q_act_hooks = MagicMock(return_value=([], {"act_max": "max"}))
     composer.preprocessors = []
     return mock_forward
 
@@ -95,6 +95,28 @@ class TestCompressBlockReferenceOutputSkip:
 
         assert ref_next is pre_computed
 
+    def test_hook_calibration_pass_runs_eager(self):
+        """Hook-bearing forwards must bypass the compiled runner.
+
+        Dynamo does not re-trace a graph cached before the hooks were installed,
+        so a compiled calibration pass can silently miss ``act_max`` and make
+        the NVFP4 packer fail later.
+        """
+        mock_forward = _patch_composer(self.composer, self.fp_inputs)
+        hook = MagicMock()
+        self.composer._get_fp_act_hooks = MagicMock(return_value=([hook], {"act_max": "max"}))
+
+        self.composer.compress_block(
+            self.block,
+            self.fp_inputs,
+            self.input_others,
+            block_ctx=self.ctx,
+            reference_output=None,
+        )
+
+        assert mock_forward.call_args.kwargs["eager"] is True
+        hook.remove.assert_called_once()
+
 
 class _WeightChangingPreprocessor(BasePreprocessor):
     """Minimal transform used to exercise reference invalidation."""
@@ -125,10 +147,10 @@ def test_weight_changing_preprocessor_recomputes_seeded_reference():
         block_index=0,
     )
     composer.block_forward = BlockForwardRunner(batch_size=1, amp=False, enable_torch_compile=False)
-    composer.block_quantizer.quantize_block = MagicMock()
-    composer.block_quantizer.enable_quanted_input = False
-    composer._get_fp_act_hooks = MagicMock(return_value=[])
-    composer._get_q_act_hooks = MagicMock(return_value=[])
+    composer.active_quantizer.quantize_block = MagicMock()
+    composer.active_quantizer.enable_quanted_input = False
+    composer._get_fp_act_hooks = MagicMock(return_value=([], None))
+    composer._get_q_act_hooks = MagicMock(return_value=([], None))
     composer.preprocessors = [_WeightChangingPreprocessor()]
 
     _, reference_next_input = composer.compress_block(
@@ -141,7 +163,7 @@ def test_weight_changing_preprocessor_recomputes_seeded_reference():
 
     expected = torch.tensor([[6.0]])
     assert torch.equal(reference_next_input[0], expected)
-    quantizer_reference = composer.block_quantizer.quantize_block.call_args.args[3]
+    quantizer_reference = composer.active_quantizer.quantize_block.call_args.args[3]
     assert torch.equal(quantizer_reference[0], expected)
 
 

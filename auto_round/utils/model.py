@@ -28,7 +28,7 @@ import transformers
 from packaging import version
 
 from auto_round import envs
-from auto_round.export.export_to_gguf.config import ModelType
+from auto_round.export.formats.gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, monkey_patch_model
 from auto_round.utils.path_safety import UnsafeCheckpointPathError
@@ -1747,7 +1747,7 @@ def get_nested_attr(module, attr_name: str):
 
 
 def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
-    from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
+    from auto_round.export.formats.gguf.llama_cpp_conversion import get_conversion
 
     is_mistral_format = False
     if isinstance(dir_model, str):
@@ -2853,17 +2853,11 @@ def move_to_device_preserving_cpu_pinned(module: torch.nn.Module, device) -> tor
     """
     if module_pinned_execution_device(module) is not None or _module_manages_own_device(module):
         return module
-    # Materialize the iterators before mutating: reassigning ``param.data`` can trigger
-    # changes to the module's internal ``_parameters``/``_buffers`` dicts (e.g. on HPU lazy
-    # mode), which would raise ``RuntimeError: dictionary keys changed during iteration``.
-    for _, param in list(module.named_parameters(recurse=False)):
-        if param.device.type != "meta":
-            param.data = param.data.to(device)
-            if param.grad is not None:
-                param.grad.data = param.grad.data.to(device)
-    for _, buf in list(module.named_buffers(recurse=False)):
-        if buf.device.type != "meta":
-            buf.data = buf.data.to(device)
+    # Use the same conversion machinery as Module.to(): cross-backend transfers
+    # (notably CPU <-> HPU lazy) may require replacing a Parameter rather than
+    # assigning incompatible tensor types to its .data. _apply also moves gradients
+    # and replaces buffers. Recurse manually so pinned children remain untouched.
+    module._apply(lambda tensor: tensor if tensor.device.type == "meta" else tensor.to(device), recurse=False)
     for child in list(module.children()):
         move_to_device_preserving_cpu_pinned(child, device)
     return module
