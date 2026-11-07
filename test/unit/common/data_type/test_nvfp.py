@@ -703,6 +703,15 @@ class TestFp4V2WithGlobalScale:
         q, s, z = nvfp4_v2_with_global_scale(t, group_size=16, max_scale=1.5)
         assert q.shape == t.shape
 
+    @pytest.mark.parametrize("group_size", [16, 32])
+    def test_max_scale_clips_each_group(self, group_size):
+        tensor = torch.ones(2, group_size)
+        max_scale = torch.tensor([[0.5], [0.25]])
+        q, scale, _ = nvfp4_v2_with_global_scale(tensor, group_size=group_size, max_scale=max_scale)
+        torch.testing.assert_close(q[0], torch.full_like(q[0], 0.5))
+        torch.testing.assert_close(q[1], torch.full_like(q[1], 0.25))
+        torch.testing.assert_close(scale.reshape(-1), torch.tensor([57344.0, 28672.0]))
+
     def test_float16_input(self):
         t = torch.randn(4, 32, dtype=torch.float16)
         q, s, z = nvfp4_v2_with_global_scale(t, group_size=16)
