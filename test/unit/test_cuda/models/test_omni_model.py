@@ -114,11 +114,20 @@ class TestQwen2_5OmniQuantization:
         # Reload
         loaded_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(save_folder, device_map="cuda")
 
+        # Ensure the packed weights were actually consumed instead of silently
+        # falling back to fresh full-precision layers.
+        packed_layers = [
+            name
+            for name, module in loaded_model.named_modules()
+            if hasattr(module, "qweight") or hasattr(module, "weight_packed")
+        ]
+        assert packed_layers, "Reloaded model did not load any quantized weights"
+
         # Run inference on thinker
         inp = torch.randint(0, 100, (1, 64)).to("cuda")
         with torch.inference_mode():
             output = loaded_model.thinker(input_ids=inp)
-        assert output is not None, "Inference failed on reloaded model"
+        assert torch.isfinite(output.logits).all(), "Reloaded model produced non-finite logits"
 
 
 # ========================= Qwen3-Omni-MoE Integration Tests ================
