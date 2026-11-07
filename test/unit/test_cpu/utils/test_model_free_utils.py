@@ -691,6 +691,32 @@ class TestBuildQuantizationConfig:
         assert extra["model.layers.0.shared_expert_gate"] == {"bits": 16, "data_type": "float"}
         assert extra["model.layers.0.mlp.gate"] == {"bits": 16, "data_type": "float"}
 
+    def test_unquantized_override_is_marked_full_precision(self):
+        default = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
+
+        cfg = _build_quantization_config(
+            default_scheme=default,
+            layer_config={"lm_head": {"bits": 8, "group_size": 128, "sym": True, "data_type": "int"}},
+            ignore_patterns=[],
+            quantized_layers=[],
+            ignored_layers=[],
+        )
+
+        assert cfg["extra_config"]["lm_head"] == {"bits": 16, "data_type": "float"}
+
+    def test_quantized_override_keeps_requested_scheme(self):
+        default = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
+
+        cfg = _build_quantization_config(
+            default_scheme=default,
+            layer_config={"lm_head": {"bits": 8, "group_size": 128, "sym": True, "data_type": "int"}},
+            ignore_patterns=[],
+            quantized_layers=["lm_head"],
+            ignored_layers=[],
+        )
+
+        assert cfg["extra_config"]["lm_head"]["bits"] == 8
+
 
 # ===========================================================================
 #  _quantize_weight_mxfp
