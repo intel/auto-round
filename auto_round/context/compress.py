@@ -34,6 +34,7 @@ class CompressContext(BaseContext):
         low_cpu_mem_usage: bool = True,
         low_gpu_mem_usage: bool = False,
         enable_torch_compile: bool = True,
+        calibration_data_device: str = "auto",
         is_immediate_packing: bool = False,
         is_immediate_saving: bool = False,
         formats: list | str | None = None,
@@ -47,6 +48,9 @@ class CompressContext(BaseContext):
         super().__init__()
         self.low_cpu_mem_usage = low_cpu_mem_usage
         self.low_gpu_mem_usage = low_gpu_mem_usage
+        # Device placement for block calibration data: auto | off | cpu | csv.
+        # Threaded from the same-name API/CLI parameter (single source of truth).
+        self.calibration_data_device = calibration_data_device
         self.formats = formats
         self.output_dir = output_dir
         # All device / device-list state lives on the process-wide DeviceManager
@@ -62,6 +66,9 @@ class CompressContext(BaseContext):
         self.static_attention_dtype = static_attention_dtype
         self.static_kv_granularity = static_kv_granularity
         self.static_attention_granularity = static_attention_granularity
+        # Resolved data_parallel policy (ParallelPolicy or None = off);
+        # built from ParallelConfig for both CLI and API, read by the DP engine.
+        self.parallel_policy = kwargs.pop("parallel_policy", None)
 
     def clear_memory(self, tensor=None):
         """Clear GPU/CPU memory only when ``low_gpu_mem_usage`` is enabled."""

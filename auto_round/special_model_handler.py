@@ -454,7 +454,8 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
     """Get block names for Qwen3-Omni MoE model.
 
     Qwen3-Omni has the following structure:
-    - thinker: Contains audio_tower, visual, model (text decoder)
+    - thinker.model: Contains visual/audio towers and the text decoder in newer Transformers releases
+    - thinker: Contains visual/audio towers directly in older Transformers releases
     - talker: Contains model (talker decoder), code_predictor
     - code2wav: Audio decoder
 
@@ -466,24 +467,54 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
     degrade audio quality in long-form generation .
     """
     block_names = []
+    thinker = getattr(model, "thinker", None)
+    thinker_model = getattr(thinker, "model", None)
 
     # Quantize visual encoder blocks if quant_vision is enabled
     if quant_vision:
-        # Vision encoder blocks
-        if hasattr(model, "thinker") and hasattr(model.thinker, "visual") and hasattr(model.thinker.visual, "blocks"):
-            block_names.append([f"thinker.visual.blocks.{i}" for i in range(len(model.thinker.visual.blocks))])
-        # Audio encoder layers
-        if hasattr(model, "thinker") and hasattr(model.thinker, "audio_tower"):
-            if hasattr(model.thinker.audio_tower, "layers"):
-                block_names.append(
-                    [f"thinker.audio_tower.layers.{i}" for i in range(len(model.thinker.audio_tower.layers))]
-                )
+        visual = getattr(thinker_model, "visual", None)
+        visual_blocks = getattr(visual, "blocks", None)
+        visual_prefix = "thinker.model.visual"
+        if visual_blocks is None or len(visual_blocks) == 0:
+            visual = getattr(thinker, "visual", None)
+            visual_blocks = getattr(visual, "blocks", None)
+            visual_prefix = "thinker.visual"
+        if visual_blocks is not None:
+            block_names.append([f"{visual_prefix}.blocks.{i}" for i in range(len(visual_blocks))])
 
-    # Thinker text model layers (main LLM decoder)
-    if hasattr(model, "thinker") and hasattr(model.thinker, "model") and hasattr(model.thinker.model, "layers"):
-        block_names.append([f"thinker.model.layers.{i}" for i in range(len(model.thinker.model.layers))])
+        audio_tower = getattr(thinker_model, "audio_tower", None)
+        audio_layers = getattr(audio_tower, "layers", None)
+        audio_prefix = "thinker.model.audio_tower"
+        if audio_layers is None or len(audio_layers) == 0:
+            audio_tower = getattr(thinker, "audio_tower", None)
+            audio_layers = getattr(audio_tower, "layers", None)
+            audio_prefix = "thinker.audio_tower"
+        if audio_layers is not None:
+            block_names.append([f"{audio_prefix}.layers.{i}" for i in range(len(audio_layers))])
+
+    # Thinker text model layers (main LLM decoder). Transformers may wrap the
+    # decoder in `language_model` in newer Qwen3-Omni releases.
+    layer_prefix, layers = _get_qwen3_omni_thinker_layer_info(model)
+    if layers is not None:
+        block_names.append([f"{layer_prefix}.{i}" for i in range(len(layers))])
 
     return block_names
+
+
+def _get_qwen3_omni_thinker_layer_info(model):
+    """Return the module path and layers for either supported thinker layout."""
+    thinker_model = getattr(getattr(model, "thinker", None), "model", None)
+    if thinker_model is None:
+        return None, None
+
+    if hasattr(thinker_model, "layers"):
+        return "thinker.model.layers", thinker_model.layers
+
+    language_model = getattr(thinker_model, "language_model", None)
+    if language_model is not None and hasattr(language_model, "layers"):
+        return "thinker.model.language_model.layers", language_model.layers
+
+    return None, None
 
 
 def _get_glm_image_multimodal_block(model, quant_vision=False):
@@ -1165,6 +1196,20 @@ register_ignore_layers(
         get_bagel_ignore_layers,
     ],
 )
+
+
+# Architecture-specific layer_config defaults, keyed by ``config.model_type``.
+# Nemotron-H Omni wrappers (Super VL, Bolt) keep their Mamba2 ``out_proj`` scales in
+# BF16; every other model, including plain ``nemotron_h``, keeps the caller's scale_dtype.
+_PRE_DEFINED_LAYER_CONFIG = {
+    "nemotron_h_omni": {".*mixer.out_proj$": {"scale_dtype": torch.bfloat16}},
+}
+
+
+def get_predefined_layer_config(model: torch.nn.Module) -> dict:
+    """Return predefined layer_config patterns for the model; user entries take precedence."""
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    return _PRE_DEFINED_LAYER_CONFIG.get(model_type, {})
 
 
 def get_predefined_ignore_layers(model: torch.nn.Module) -> list[str]:

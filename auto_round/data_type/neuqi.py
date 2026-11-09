@@ -1000,6 +1000,7 @@ def _sym_search_eval(data, qw, scales, nmax):
 _sym_chunk_compiled = None
 _sym_compile_failed = False
 _sym_compile_logged: set = set()
+_sym_core_lock = threading.Lock()
 
 
 @torch.compiler.disable  # logging side effect: graph-break instead of tracing
@@ -1023,18 +1024,29 @@ def _sym_loss_chunk_eval(data, qw, scales, nmax):
     if _sym_compile_failed or backend not in ("auto", "compile", "triton"):
         return _sym_loss_chunk(data, qw, scales, nmax)
     if _sym_chunk_compiled is None:
-        try:
-            _sym_chunk_compiled = torch.compile(_sym_loss_chunk)
-        except Exception:  # pragma: no cover - compilation unavailable in this environment
-            _sym_compile_failed = True
-            return _sym_loss_chunk(data, qw, scales, nmax)
-        _log_sym_compile_engaged(backend)
+        # batched searches call this from one worker thread per device; the
+        # lazy compile must happen exactly once or concurrent first calls race
+        # on dynamo's per-code-object state and the loser latches the whole
+        # process down to eager
+        with _sym_core_lock:
+            if _sym_chunk_compiled is None and not _sym_compile_failed:
+                try:
+                    _sym_chunk_compiled = torch.compile(_sym_loss_chunk)
+                except Exception as e:  # pragma: no cover - compilation unavailable in this environment
+                    logger.warning(
+                        "[neuqi] sym-chunk compile unavailable (%s); chunk core stays eager for the rest of the run", e
+                    )
+                    _sym_compile_failed = True
+                else:
+                    _log_sym_compile_engaged(backend)
+    if _sym_chunk_compiled is None:
+        return _sym_loss_chunk(data, qw, scales, nmax)
     try:
         return _sym_chunk_compiled(data, qw, scales, nmax)
-    except Exception:
+    except Exception as exc:
         _sym_chunk_compiled = None
         _sym_compile_failed = True
-        logger.warning("[NeUQI] sym compiled chunk core failed; using eager for the rest of this process.")
+        logger.warning("[NeUQI] sym compiled chunk core failed (%r); using eager for the rest of this process.", exc)
         return _sym_loss_chunk(data, qw, scales, nmax)
 
 

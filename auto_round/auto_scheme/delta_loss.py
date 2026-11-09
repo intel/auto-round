@@ -40,8 +40,8 @@ from auto_round.auto_scheme.utils import (
     build_expert_groups,
     compute_layer_bits,
     merge_lists_unionfind,
-    parse_shared_layers,
     remove_quant_scheme,
+    resolve_shared_layers,
 )
 from auto_round.calib_dataset import get_dataloader
 from auto_round.data_type.gguf import (
@@ -1446,7 +1446,12 @@ def get_score_for_scheme(
                     batch_checkpoint=batch_checkpoint,
                 )
             except Exception as exc:  # noqa: BLE001
-                if not is_vlm:
+                # Memory exhaustion does not indicate incompatible text inputs.
+                if (
+                    not is_vlm
+                    or isinstance(exc, (torch.OutOfMemoryError, MemoryError))
+                    or (isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower())
+                ):
                     raise
                 logger.warning(
                     f"Text-only calibration failed on VLM ({exc}); "
@@ -1546,7 +1551,12 @@ def get_score_for_scheme(
             try:
                 _run_forward_loop(_build_calib_dataloader())
             except Exception as exc:  # noqa: BLE001
-                if not is_vlm:
+                # Memory exhaustion does not indicate incompatible text inputs.
+                if (
+                    not is_vlm
+                    or isinstance(exc, (torch.OutOfMemoryError, MemoryError))
+                    or (isinstance(exc, RuntimeError) and "out of memory" in str(exc).lower())
+                ):
                     raise
                 logger.warning(
                     f"Text-only calibration failed on VLM ({exc}); "
@@ -2779,7 +2789,11 @@ def _gen_layer_config(
             "AutoScheme steps expanded(full_backward): "
             f"total_steps = scheme_num * nsamples = {effective_scheme_num} * {nsamples} = {pbar_cnt}"
         )
-    shared_layers = parse_shared_layers(model, auto_scheme.shared_layers)
+    shared_layers = resolve_shared_layers(
+        model,
+        auto_scheme.shared_layers,
+        default_shared_layers=getattr(auto_scheme, "default_shared_layers", True),
+    )
 
     # Auto-group MoE expert layers so DP treats all experts in one block as a unit.
     if is_moe_model:

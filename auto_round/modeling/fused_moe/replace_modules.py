@@ -41,6 +41,10 @@ BUILTIN_MODULES = {
     "step3p5": LazyImport("auto_round.modeling.fused_moe.step3_5_moe"),
     # Qwen3-Omni MoE: thinker (no shared expert)
     "qwen3_omni_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_omni"),
+    # Kimi remote MoE: routed experts run under @torch.no_grad() in eval mode
+    "kimi_vl": LazyImport("auto_round.modeling.fused_moe.kimi"),
+    "kimi_linear": LazyImport("auto_round.modeling.fused_moe.kimi"),
+    "kimi_k3": LazyImport("auto_round.modeling.fused_moe.kimi"),
 }
 
 _FUSED_MOE_PROJECTION_NAMES = frozenset({"gate_up_proj", "gate_proj", "up_proj", "down_proj", "w1", "w2", "w3"})
@@ -227,6 +231,8 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
     # Registry: module class name -> replacement module class
     _replacement_registry: dict[str, type["ReplacementModuleBase"]] = {}
     supports_gguf_fused_moe: bool = False
+    # Set False for replacements that only patch behavior and also apply to linearized experts.
+    skip_linearized_experts: bool = True
 
     def __init_subclass__(cls, **kwargs):
         """Automatically register subclasses in the replacement registry."""
@@ -400,7 +406,11 @@ def _apply_custom_replacements(model: torch.nn.Module, gguf_export: bool = False
                 skipped_modules.append((name, class_name, "skipped because GGUF fusion spec is unavailable"))
                 continue
             # If llm-compressor already linearized experts, skip custom replacement.
-            if hasattr(module, "experts") and is_linearized_layout(module.experts):
+            if (
+                replacement_cls.skip_linearized_experts
+                and hasattr(module, "experts")
+                and is_linearized_layout(module.experts)
+            ):
                 skipped_modules.append((name, class_name, "skipped because linearize_moe"))
                 continue
             if replacement_cls.is_to_be_replaced(module):

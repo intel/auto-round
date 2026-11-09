@@ -727,6 +727,36 @@ class TestGetQwen25OmniMultimodalBlock:
 class TestGetQwen3OmniMoeMultimodalBlock:
     """Test _get_qwen3_omni_moe_multimodal_block function."""
 
+    def test_with_nested_vision_and_audio_towers(self):
+        from types import SimpleNamespace
+
+        from auto_round.special_model_handler import _get_qwen3_omni_moe_multimodal_block
+
+        model = SimpleNamespace(
+            thinker=SimpleNamespace(
+                model=SimpleNamespace(
+                    visual=SimpleNamespace(blocks=[MagicMock() for _ in range(2)]),
+                    audio_tower=SimpleNamespace(layers=[MagicMock() for _ in range(3)]),
+                    language_model=SimpleNamespace(layers=[MagicMock() for _ in range(4)]),
+                )
+            )
+        )
+        block_names = _get_qwen3_omni_moe_multimodal_block(model, quant_vision=True)
+        assert block_names == [
+            ["thinker.model.visual.blocks.0", "thinker.model.visual.blocks.1"],
+            [
+                "thinker.model.audio_tower.layers.0",
+                "thinker.model.audio_tower.layers.1",
+                "thinker.model.audio_tower.layers.2",
+            ],
+            [
+                "thinker.model.language_model.layers.0",
+                "thinker.model.language_model.layers.1",
+                "thinker.model.language_model.layers.2",
+                "thinker.model.language_model.layers.3",
+            ],
+        ]
+
     def test_returns_thinker_layers(self):
         from auto_round.special_model_handler import _get_qwen3_omni_moe_multimodal_block
 

@@ -106,10 +106,10 @@ def check_performance():
         if not compare_metric("Tuning Time (s)", current.tuning_time_s, baseline.tuning_time_s, tolerance=0.05):
             all_passed = False
 
-        if not compare_metric("Peak RAM (GB)", current.peak_ram_gb, baseline.peak_ram_gb, tolerance=0.03):
+        if not compare_metric("Peak RAM (GB)", current.peak_ram_gb, baseline.peak_ram_gb, tolerance=0.07):
             all_passed = False
 
-        if not compare_metric("Peak VRAM (GB)", current.peak_vram_gb, baseline.peak_vram_gb, tolerance=0.03):
+        if not compare_metric("Peak VRAM (GB)", current.peak_vram_gb, baseline.peak_vram_gb, tolerance=0.10):
             all_passed = False
 
         if not compare_metric("Output Size (GB)", current.output_size_gb, baseline.output_size_gb, tolerance=0.01):

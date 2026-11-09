@@ -62,7 +62,7 @@ is usable during tuning and not only for calibration/inference.
 Fallbacks
 ---------
 The grouped path only kicks in when the layer really is a stack of plain ``nn.Linear`` /
-``WrapperLinear`` projections that all share one quantization scheme. Anything else
+``WrapperLinear`` / fake-eval ``WrapperWALayer`` projections sharing one scheme. Anything else
 transparently falls back to ``linear_loop_experts_forward``:
 
 * **mixed-bit MoE** — experts (or projections) quantized with different
@@ -70,8 +70,8 @@ transparently falls back to ``linear_loop_experts_forward``:
   of wrapper classes;
 * Conv1D / LinearAllreduce experts, which need their own forward;
 * forward hooks on the expert layers (e.g. online Hadamard rotation);
-* activation quantization that is not row-independent (static ranges, per-tensor groups,
-  per-expert tunable min/max, NVFP per-layer global scales);
+* tuning-time activation quantization that is not row-independent (static ranges,
+  per-tensor groups, per-expert tunable min/max, NVFP per-layer global scales);
 * experts spread over different devices.
 
 Step 4 has its own, narrower eligibility check on top of that. It covers plain group-wise
@@ -80,19 +80,30 @@ experts, NVFP ``global_scale`` and per-expert ``imatrix``; it steps aside (keepi
 grouped GEMM) for GGUF super-blocks that would span two experts and for wrappers that
 override ``_qdq_weight`` (GGUF double-quant search, AutoScheme scoring).
 See ``_supports_batched_qdq``.
+
+Fake-eval wrappers use their already quantized weights. Standard NVFP4 activation QDQ
+is fused with a per-group column of each expert's own global scale. Standard dynamic
+MXFP activation QDQ similarly keeps each expert's max-scale coefficient. Other activation
+quantizers keep per-expert QDQ over contiguous slices before the grouped GEMM.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from math import ceil
+from math import ceil, isclose
+from typing import Any
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 from auto_round import envs
-from auto_round.modeling.fused_moe.utils import build_forced_routing, force_all_experts_routing_enabled
+from auto_round.modeling.fused_moe.utils import (
+    build_forced_routing,
+    force_all_experts_routing_enabled,
+    log_moe_execution_once,
+)
 from auto_round.utils import logger
 
 # Expert implementation name registered into transformers' ``ALL_EXPERTS_FUNCTIONS``.
@@ -103,13 +114,30 @@ GROUPED_LINEAR_SLICED_IMPL = "linear_grouped_sliced"
 
 # Set once if the native grouped_mm kernel raises; afterwards we always use the sliced loop.
 _NATIVE_GROUPED_MM_DISABLED = False
-_LOGGED_FALLBACK_REASONS: set[str] = set()
+_LOGGED_FALLBACK_REASONS: set[tuple[str, str]] = set()
+# Bumped whenever the plan-building path changes; logged once per process so a
+# log unambiguously identifies which grouped implementation produced it.
+GROUPED_PLANS_VERSION = "slot-stage-v6-safe-fallback"
+_LOGGED_VERSION = False
 
 
-def _log_fallback_once(reason: str) -> None:
-    if reason not in _LOGGED_FALLBACK_REASONS:
-        _LOGGED_FALLBACK_REASONS.add(reason)
-        logger.debug(f"[MoE grouped] falling back to linear_loop: {reason}")
+def _log_fallback_once(reason: str, detail: str = "", *, qdq_only: bool = False) -> None:
+    global _LOGGED_VERSION
+    if not _LOGGED_VERSION:
+        _LOGGED_VERSION = True
+        logger.debug(f"[MoE grouped] plans version {GROUPED_PLANS_VERSION}")
+    key = (f"weight_qdq:{reason}" if qdq_only else reason, detail)
+    if key in _LOGGED_FALLBACK_REASONS:
+        return
+    _LOGGED_FALLBACK_REASONS.add(key)
+    if qdq_only:
+        log_moe_execution_once("Weight QDQ not fused; grouped MoE remains active", reason, suggest_issue=True)
+    else:
+        log_moe_execution_once("Grouped MoE not used; falling back to linear_loop", reason, suggest_issue=True)
+    msg = f"[MoE grouped] {'weight QDQ fallback' if qdq_only else 'falling back to linear_loop'}: {reason}"
+    if detail:
+        msg = f"{msg} ({detail})"
+    logger.debug(msg)
 
 
 # --------------------------------------------------------------------------------------
@@ -118,6 +146,7 @@ def _log_fallback_once(reason: str) -> None:
 
 
 _WRAPPER_LINEAR_CLS: type | None = None
+_WRAPPER_WA_CLS: type | None = None
 
 
 def _is_wrapper_linear(layer: nn.Module) -> bool:
@@ -136,6 +165,23 @@ def _is_wrapper_linear(layer: nn.Module) -> bool:
     return isinstance(layer, _WRAPPER_LINEAR_CLS)
 
 
+def _is_wrapper_wa(layer: nn.Module) -> bool:
+    """Identify the standard fake-eval wrapper without accepting custom subclasses.
+
+    Args:
+        layer (nn.Module): Expert projection to inspect.
+
+    Returns:
+        bool: Whether the layer's exact type is WrapperWALayer.
+    """
+    global _WRAPPER_WA_CLS
+    if _WRAPPER_WA_CLS is None:
+        from auto_round.wrapper import WrapperWALayer
+
+        _WRAPPER_WA_CLS = WrapperWALayer
+    return type(layer) is _WRAPPER_WA_CLS
+
+
 def _act_signature(layer: nn.Module):
     """Quantization signature of a wrapped layer's *activation* path.
 
@@ -152,6 +198,24 @@ def _act_signature(layer: nn.Module):
     )
 
 
+def _eval_qdq_is_standard(layer: nn.Module) -> bool:
+    """Check whether deterministic QDQ can be reordered into projection-slot stages.
+
+    Args:
+        layer (nn.Module): Standard fake-eval wrapper whose activation method is inspected.
+
+    Returns:
+        bool: Whether both the input-QDQ method and quantization callable are supported.
+    """
+    from auto_round.data_type.mxfp import quant_mx, quant_mx_rceil, quant_mx_rceil_v2
+    from auto_round.data_type.nvfp import nv_fp4_with_static_gs
+
+    if getattr(layer.qdq_input, "__func__", None) is not _WRAPPER_WA_CLS.qdq_input:
+        return False
+    quant_func = getattr(layer.act_quant_func, "_torchdynamo_orig_callable", layer.act_quant_func)
+    return quant_func in (quant_mx, quant_mx_rceil, quant_mx_rceil_v2, nv_fp4_with_static_gs)
+
+
 def _quant_signature(layer: nn.Module):
     """Quantization signature of one projection slot, or ``None`` if it is not quantized.
 
@@ -166,10 +230,11 @@ def _quant_signature(layer: nn.Module):
     the GGUF double-quant wrapper and the AutoScheme scoring wrappers all carry their own
     tuning state and ``minmax_scale_bound``, so they must not be mixed inside one group.
     """
-    if not _is_wrapper_linear(layer):
+    is_eval = _is_wrapper_wa(layer)
+    if not _is_wrapper_linear(layer) and not is_eval:
         return None
     orig = layer.orig_layer
-    enable_act_quant = bool(getattr(layer, "enable_act_quant", False))
+    enable_act_quant = is_eval or bool(getattr(layer, "enable_act_quant", False))
     return (
         type(layer),
         getattr(orig, "bits", 16),
@@ -182,6 +247,7 @@ def _quant_signature(layer: nn.Module):
         bool(getattr(layer, "disable_opt_rtn", True)),
         enable_act_quant,
         _act_signature(layer) if enable_act_quant else None,
+        bool(getattr(layer, "enable_torch_compile", False)) if is_eval else None,
     )
 
 
@@ -214,21 +280,128 @@ def _act_quant_is_row_independent(layer: nn.Module) -> bool:
     return True
 
 
+_ACCELERATE_HOOK_WHITELIST: tuple[type, ...] | None = None
+
+
+def _accelerate_hook_whitelist() -> tuple[type, ...]:
+    """Resolve accelerate's placement-hook classes once per process.
+
+    The installed accelerate version cannot change mid-run, and the grouped gate
+    consults the whitelist for every MoE container -- probing per call repeats
+    the import machinery and spams the missing-class notice for every layer.
+    """
+    global _ACCELERATE_HOOK_WHITELIST
+    if _ACCELERATE_HOOK_WHITELIST is None:
+        classes = []
+        try:
+            from accelerate.hooks import AlignDevicesHook
+
+            classes.append(AlignDevicesHook)
+        except Exception as e:  # pragma: no cover - accelerate always present in our lanes
+            logger.warning("[grouped-experts] AlignDevicesHook unavailable (%s); fast-path gate will decline", e)
+        try:  # newer accelerate only; absence on older versions is expected
+            from accelerate.hooks import AddContiguousHook
+
+            classes.append(AddContiguousHook)
+        except Exception as e:
+            logger.debug("[grouped-experts] AddContiguousHook unavailable (%s); whitelist shrinks accordingly", e)
+        _ACCELERATE_HOOK_WHITELIST = tuple(classes)
+    return _ACCELERATE_HOOK_WHITELIST
+
+
+def _hooks_are_alignment_only(module: nn.Module) -> bool:
+    """Whether every hook on ``module`` is one the grouped path satisfies manually.
+
+    accelerate's ``AlignDevicesHook`` (mapped placement) and ``AddContiguousHook`` only
+    move/contiguify inputs -- the grouped path does both explicitly (``.to(plan.device)``
+    on the way in, contiguous ``index_select`` gathers). A hook that carries an offload
+    (``io_has_offload`` / weights_offload) still must run: it loads the weights, which the
+    grouped path reads directly. Calibration hooks (act_max collectors) are not alignment
+    hooks and remain a hard fallback so they keep firing.
+    """
+    hooks = list(module._forward_pre_hooks.values()) + list(module._forward_hooks.values())
+    # Accelerate can replace forward directly without registering a PyTorch hook.
+    hf_hook = getattr(module, "_hf_hook", None)
+    if hf_hook is not None:
+        hooks.extend(getattr(hf_hook, "hooks", (hf_hook,)))
+    if not hooks:
+        return True
+    hook_classes = _accelerate_hook_whitelist()
+    if not hook_classes:
+        return False
+    for h in hooks:
+        if not isinstance(h, hook_classes):
+            return False
+        # Offload-carrying variants (weights streaming in from host) must still run
+        # their own forward; alignment-only variants are satisfied manually.
+        if getattr(h, "offload", False) or getattr(h, "io_has_offload", False) or getattr(h, "weights_offload", None):
+            return False
+    return True
+
+
+def _forward_is_standard(module: nn.Module, expected: Callable[..., Any]) -> bool:
+    """Check for a standard forward, optionally wrapped by alignment-only hooks.
+
+    Args:
+        module (nn.Module): Projection or wrapper whose forward is inspected.
+        expected (Callable): Expected unbound forward implementation.
+
+    Returns:
+        bool: Whether grouped execution can preserve the module's forward semantics.
+    """
+    if getattr(module.forward, "__func__", None) is expected:
+        return True
+    return (
+        hasattr(module, "_hf_hook")
+        and _hooks_are_alignment_only(module)
+        and getattr(getattr(module, "_old_forward", None), "__func__", None) is expected
+    )
+
+
 def _projection_is_supported(layer: nn.Module) -> bool:
     if type(layer) is nn.Linear:
+        if not _forward_is_standard(layer, nn.Linear.forward):
+            return False  # an instance-level forward override must not be bypassed
         # A plain Linear carrying forward (pre-)hooks must run its own forward so the hooks
         # fire. This is how act_max is collected during calibration: the composer registers a
         # forward hook on each expert Linear, and the grouped path -- which multiplies the
         # weights directly and never calls ``Linear.forward`` -- would silently skip them,
         # leaving every expert without ``act_max`` (breaking static-act export, e.g. NVFP4).
-        return not (layer._forward_pre_hooks or layer._forward_hooks)
-    if not _is_wrapper_linear(layer):
+        # Alignment-only accelerate hooks are exempt: the grouped path performs that exact
+        # move itself (mapped multi-GPU placement attaches them to off-primary experts).
+        hooks = layer._forward_pre_hooks or layer._forward_hooks
+        return (not hooks and not hasattr(layer, "_hf_hook")) or _hooks_are_alignment_only(layer)
+    is_eval = _is_wrapper_wa(layer)
+    if not _is_wrapper_linear(layer) and not is_eval:
+        return False
+    expected_forward = _WRAPPER_WA_CLS.forward if is_eval else _WRAPPER_LINEAR_CLS.forward
+    if not _forward_is_standard(layer, expected_forward):
+        return False
+    if is_eval and layer._stolen_pre_hooks:
+        return False  # transforms must run before QDQ, not be skipped by grouped GEMM
+    # accelerate's stage hooks attach to the tree module -- the wrapper itself.
+    if (layer._forward_pre_hooks or layer._forward_hooks) and not _hooks_are_alignment_only(layer):
         return False
     orig = layer.orig_layer
     if type(orig) is not nn.Linear:
         return False  # Conv1D / LinearAllreduce need their own forward
-    if orig._forward_pre_hooks or orig._forward_hooks:
+    if not _forward_is_standard(orig, nn.Linear.forward):
+        return False
+    if (orig._forward_pre_hooks or orig._forward_hooks) and not _hooks_are_alignment_only(orig):
         return False  # e.g. online Hadamard rotation must run per layer
+    if is_eval:
+        # A forward-replacement hook can own weight loading even when both PyTorch
+        # hook dictionaries are empty. Grouped GEMM must never bypass that offload.
+        return (
+            orig.weight.device.type != "meta"
+            and _eval_qdq_is_standard(layer)
+            and _hooks_are_alignment_only(layer)
+            and _hooks_are_alignment_only(orig)
+        )
+    if getattr(layer, "enable_act_quant", False) and (
+        getattr(layer._qdq_act, "__func__", None) is not _WRAPPER_LINEAR_CLS._qdq_act
+    ):
+        return False
     return not (getattr(layer, "enable_act_quant", False) and not _act_quant_is_row_independent(layer))
 
 
@@ -236,6 +409,46 @@ def _compute_device(layer: nn.Module) -> torch.device:
     if _is_wrapper_linear(layer):
         return torch.device(layer.device)
     return layer.weight.device
+
+
+def _projection_fallback_reason(layer: nn.Module) -> str:
+    """Explain a rejected projection without changing its eligibility decision.
+
+    Args:
+        layer (nn.Module): Expert projection rejected by the grouped-path capability check.
+
+    Returns:
+        str: Human-readable reason to preserve the original per-expert forward.
+    """
+    is_eval = _is_wrapper_wa(layer)
+    is_tuning = _is_wrapper_linear(layer)
+    if type(layer) is not nn.Linear and not is_eval and not is_tuning:
+        return f"unsupported projection type {type(layer).__name__}"
+    expected = _WRAPPER_WA_CLS.forward if is_eval else (_WRAPPER_LINEAR_CLS.forward if is_tuning else nn.Linear.forward)
+    if not _forward_is_standard(layer, expected):
+        return f"custom forward on {type(layer).__name__}"
+    if is_eval and layer._stolen_pre_hooks:
+        return "expert input transforms must run before activation QDQ"
+    if not _hooks_are_alignment_only(layer):
+        return "expert hooks or offload require the original forward"
+    if is_eval or is_tuning:
+        orig = layer.orig_layer
+        if type(orig) is not nn.Linear:
+            return f"unsupported wrapped projection type {type(orig).__name__}"
+        if not _forward_is_standard(orig, nn.Linear.forward):
+            return "custom forward on the wrapped expert projection"
+        if not _hooks_are_alignment_only(orig):
+            return "wrapped expert hooks or offload require the original forward"
+        if is_eval:
+            if orig.weight.device.type == "meta":
+                return "expert weights are meta tensors and must be materialized by their original forward"
+            return "custom or unsupported fake-eval activation QDQ"
+        if not getattr(orig, "act_dynamic", False):
+            return "static tuning-time activation ranges cannot be shared across experts"
+        if getattr(layer, "input_global_scale", None) is not None:
+            return "tuning-time activation QDQ has per-expert global scales"
+        return "tuning-time activation QDQ is custom or not row-independent"
+    return "expert projection configuration is not supported"
 
 
 def _output_device(layer: nn.Module) -> torch.device:
@@ -251,7 +464,7 @@ def _effective_weight_and_bias(layer: nn.Module) -> tuple[torch.Tensor, torch.Te
     tuning parameters, so autograd reaches ``value`` / ``min_scale`` / ``max_scale``.
     """
     if _is_wrapper_linear(layer):
-        weight, _, _ = layer._qdq_weight(layer.value, layer.min_scale, layer.max_scale)
+        weight, _, _ = layer._qdq_weight(layer._rounding_value(), layer.min_scale, layer.max_scale)
         return weight, _effective_bias(layer)
     return layer.weight, layer.bias
 
@@ -350,8 +563,14 @@ def _supports_batched_qdq(layer: nn.Module) -> bool:
     """Whether this projection's fake-quantization may be fused with its siblings'."""
     if not _is_wrapper_linear(layer):
         return False
-    if type(layer)._qdq_weight is not _WRAPPER_LINEAR_CLS._qdq_weight:
+    if hasattr(layer, "lora_A"):
+        # The fused path concatenates raw `value` tensors, not low-rank factors.
+        # Keep LoRA QDQ per expert rather than silently dropping its rounding.
+        return False
+    if getattr(layer._qdq_weight, "__func__", None) is not _WRAPPER_LINEAR_CLS._qdq_weight:
         return False  # custom qdq: GGUF double-quant search, AutoScheme scoring, ...
+    if getattr(layer._rounding_value, "__func__", None) is not _WRAPPER_LINEAR_CLS._rounding_value:
+        return False
     orig = layer.orig_layer
     if getattr(orig, "bits", 16) >= 16:
         return False  # not quantized: the plain weight is used as-is
@@ -405,12 +624,17 @@ def _cat_tuning_tensors(layers: list[nn.Module], name: str) -> torch.Tensor | No
     if not isinstance(first, torch.Tensor):
         return _UNBATCHABLE
     if first.dim() == 0:
-        # Non-tunable constant (e.g. value=0.0 when round tuning is off): identical for
-        # every expert, and broadcast by the quant func.
-        if any(v is None or not isinstance(v, torch.Tensor) or v.dim() != 0 for v in values):
-            return _UNBATCHABLE
-        return first
-    if any(v is None or not isinstance(v, torch.Tensor) or v.dim() == 0 for v in values):
+        # Distinct scalar tensors may have different values or independent gradients.
+        # Only object identity proves that reusing the first scalar preserves both.
+        return first if all(value is first for value in values) else _UNBATCHABLE
+    if any(
+        not isinstance(v, torch.Tensor)
+        or v.ndim != first.ndim
+        or v.shape[1:] != first.shape[1:]
+        or v.dtype != first.dtype
+        or v.device != first.device
+        for v in values
+    ):
         return _UNBATCHABLE
     return torch.cat(values, dim=0)
 
@@ -526,7 +750,7 @@ def _batched_qdq_weights(
         fused["global_scale"] = _fused_global_scale(layers, rows_per_expert, ref.device)
     fused["imatrix"] = _fused_imatrix(layers, out_features, ref.device)
     if any(value is _UNBATCHABLE for value in fused.values()):
-        _log_fallback_once("inconsistent tuning tensors across experts; batched qdq disabled")
+        _log_fallback_once("inconsistent tuning tensors across experts; batched qdq disabled", qdq_only=True)
         return None
 
     quant_kwargs = {}
@@ -571,6 +795,7 @@ def _batched_qdq_weights(
         weights = [row.reshape(out_features, in_features) for row in weight_q]
     else:
         weights = list(torch.split(weight_q, out_features, dim=0))
+    log_moe_execution_once("Weight QDQ fused", "compatible active experts share a batched weight quantization call")
     return stacked, weights
 
 
@@ -711,6 +936,12 @@ def _slot_weights(layers: list[nn.Module], batched: bool) -> _SlotWeights:
             if ok and weights:
                 return _SlotWeights(weights=weights, biases=biases, stacked=stacked)
     weights = [_effective_weight_and_bias(layer)[0] for layer in layers]
+    if any(_is_wrapper_linear(layer) for layer in layers):
+        log_moe_execution_once(
+            "Weight QDQ not fused; grouped MoE remains active",
+            "this slot requires per-expert weight QDQ",
+            suggest_issue=len(layers) > 1,
+        )
     return _SlotWeights(weights=weights, biases=biases)
 
 
@@ -723,160 +954,221 @@ def _quantize_activation(layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-# --------------------------------------------------------------------------------------
-# Plan
-# --------------------------------------------------------------------------------------
+def _eval_activation_batch_is_supported(layers: list[nn.Module], counts: list[int], x: torch.Tensor) -> bool:
+    """Check batch eligibility before bypassing an expert's activation-QDQ method.
 
+    Args:
+        layers (list[nn.Module]): Fake-eval wrappers ordered like the routed activation rows.
+        counts (list[int]): Positive row counts for the corresponding experts.
+        x (torch.Tensor): Concatenated two-dimensional expert activations.
 
-@dataclass
-class _GroupedPlan:
-    """Everything needed to run one grouped forward, resolved for the *active* experts."""
-
-    experts: list[nn.Module]
-    has_gate: bool
-    device: torch.device
-    output_device: torch.device
-    # Per-slot: may the fake-quantization of all active experts be fused into one call?
-    batched_qdq: dict[str, bool]
-
-
-_SLOTS = ("gate_proj", "up_proj", "down_proj")
-
-
-def _build_plan(module: nn.Module, active_ids: list[int]) -> _GroupedPlan | None:
-    """Validate the active experts and gather them, or return ``None`` to fall back."""
-    experts: list[nn.Module] = []
-    has_gate: bool | None = None
-    device: torch.device | None = None
-    output_device: torch.device | None = None
-    # Per-slot reference signatures: every active expert must agree on them.
-    quant_signatures: dict[str, object] = {}
-    layouts: dict[str, object] = {}
-    batched_qdq: dict[str, bool] = {}
-
-    for expert_id in active_ids:
-        expert = getattr(module, str(expert_id), None)
-        if expert is None:
-            _log_fallback_once("expert container missing")
-            return None
-        if not hasattr(expert, "up_proj") or not hasattr(expert, "down_proj"):
-            _log_fallback_once("expert does not expose up_proj/down_proj")
-            return None
-
-        expert_has_gate = hasattr(expert, "gate_proj")
-        if has_gate is None:
-            has_gate = expert_has_gate
-        elif has_gate != expert_has_gate:
-            _log_fallback_once("experts disagree on gate_proj")
-            return None
-
-        slots = _SLOTS if expert_has_gate else ("up_proj", "down_proj")
-        for slot in slots:
-            projection = getattr(expert, slot)
-            if not _projection_is_supported(projection):
-                _log_fallback_once(f"unsupported projection type {type(projection).__name__}")
-                return None
-
-            proj_device = _compute_device(projection)
-            if device is None:
-                device = proj_device
-                output_device = _output_device(projection)
-            elif proj_device != device:
-                _log_fallback_once("experts live on different devices")
-                return None
-
-            # Mixed-bit MoE: bail out instead of batching differently-quantized experts.
-            signature = _quant_signature(projection)
-            if slot in quant_signatures:
-                if quant_signatures[slot] != signature:
-                    _log_fallback_once(f"mixed quantization schemes across experts for '{slot}'")
-                    return None
-            else:
-                quant_signatures[slot] = signature
-
-            layout = _weight_layout(projection)
-            if slot in layouts:
-                if layouts[slot] != layout:
-                    _log_fallback_once(f"experts have different weight shape/dtype for '{slot}'")
-                    return None
-            else:
-                layouts[slot] = layout
-
-            supports_batched = _supports_batched_qdq(projection)
-            batched_qdq[slot] = batched_qdq.get(slot, True) and supports_batched
-
-        # gate_proj and up_proj consume the *same* tensor, which the grouped path
-        # activation-quantizes once, so their activation settings must be identical.
-        if expert_has_gate:
-            gate_act = _act_signature(expert.gate_proj) if _is_wrapper_linear(expert.gate_proj) else None
-            up_act = _act_signature(expert.up_proj) if _is_wrapper_linear(expert.up_proj) else None
-            gate_enabled = bool(getattr(expert.gate_proj, "enable_act_quant", False))
-            up_enabled = bool(getattr(expert.up_proj, "enable_act_quant", False))
-            if gate_enabled != up_enabled or (gate_enabled and gate_act != up_act):
-                _log_fallback_once("gate_proj/up_proj activation quantization differ")
-                return None
-
-        experts.append(expert)
-
-    if not experts or device is None or output_device is None:
-        return None
-    return _GroupedPlan(
-        experts=experts,
-        has_gate=bool(has_gate),
-        device=device,
-        output_device=output_device,
-        batched_qdq=batched_qdq,
+    Returns:
+        bool: Whether storage, dtype, device, row counts, and wrapper methods are supported.
+    """
+    return (
+        bool(layers)
+        and len(layers) == len(counts)
+        and type(x) is torch.Tensor
+        and x.layout == torch.strided
+        and x.ndim == 2
+        and x.shape[-1] > 0
+        and x.dtype in (torch.float32, torch.float16, torch.bfloat16)
+        and x.device.type in ("cpu", "cuda")
+        and all(type(count) is int and count > 0 for count in counts)
+        and sum(counts) == x.shape[0]
+        and all(
+            _is_wrapper_wa(layer) and getattr(layer.qdq_input, "__func__", None) is _WRAPPER_WA_CLS.qdq_input
+            for layer in layers
+        )
     )
 
 
-# --------------------------------------------------------------------------------------
-# Grouped matmul
-# --------------------------------------------------------------------------------------
-#
-# Two ways to run the routed GEMM, plus one we deliberately avoid:
-#
-#   sliced loop  one ``F.linear`` per *active* expert over a contiguous slice.
-#                Same kernels as transformers' ``grouped_mm_fallback``, but without its
-#                extra ``offs.tolist()`` sync -- we already hold the counts on the host.
-#                Enable with ``AR_MOE_EXPERTS_IMPL=linear_grouped_sliced``.
-#   grouped_mm   (default) ``torch.nn.functional.grouped_mm`` / ``torch._grouped_mm``: one
-#                kernel for all experts, driven by ``offsets``. Differentiable, and
-#                bit-identical to the loop (verified on A100). Disable with
-#                ``AR_MOE_EXPERTS_IMPL=linear_grouped_sliced``.
-#   batched_mm   transformers' ``_batched_linear``/``torch.bmm`` path gathers
-#                ``weight[expert_ids]`` into an ``(S, out, in)`` tensor -- one weight copy
-#                per routed token. That is a decode-time trick (S == top_k); at tuning
-#                shapes it is orders of magnitude slower (measured ~87x) and the gather
-#                alone would be hundreds of GB. Never used here.
-#
-# Why grouped_mm is the default: the winner depends on the number of routed (token, expert)
-# pairs, i.e. on the calibration batch. At realistic tuning sizes (batch=8, seqlen=2048 ->
-# ~131k pairs) the sliced loop issues ~num_experts separate grad GEMMs in backward, whose
-# launch pressure dominates; the single fused grouped_mm backward then wins by a wide margin
-# -- up to ~5x on a synthetic full Qwen3.5-MoE decoder layer (A100, sm80, bf16), with the
-# gap almost entirely in backward.
-#
-# The earlier, small-batch microbench below (only 4096 routed pairs, 2048x768 experts) is
-# where the two looked equal and the loop was historically preferred -- it under-represented
-# the backward launch count. Speedup over ``linear_loop`` for 16/32/64/128/256 experts:
-#
-#   forward+backward   grouped_mm 3.89 4.36 5.11 4.84 5.05  |  sliced 4.36 4.70 5.32 5.14 5.24
-#   forward (wrapped)  grouped_mm 2.57 2.99 3.21 3.30 3.28  |  sliced 3.13 3.44 3.69 3.80  -
-#   forward (plain fp) grouped_mm 2.07 2.53 2.76 2.99 2.93  |  sliced 1.90 2.21 2.29 2.42 2.39
-#
-# grouped_mm needs a ``torch.stack`` copy when the qdq was not fused (higher peak memory)
-# and has dtype/alignment/compute-capability constraints, so it transparently falls back to
-# the sliced loop when the native kernel is not usable. torch's CPU ``grouped_mm`` loses, so
-# on CPU the loop still runs.
-#
-# Deciding whether the native kernel is *legal* is fiddly (torch version, device, compute
-# capability, dynamo, 16-byte alignment on CPU), so when it is requested we defer to
-# transformers' own ``_can_use_grouped_mm`` rather than re-deriving it.
+def _fused_eval_nvfp_activation(layers: list[nn.Module], counts: list[int], x: torch.Tensor) -> torch.Tensor | None:
+    """Batch canonical NVFP4 QDQ while preserving per-expert global scales.
 
-try:  # transformers >= 5.0
-    from transformers.integrations.moe import _can_use_grouped_mm as _transformers_can_use_grouped_mm
-except Exception:  # pragma: no cover - older/absent transformers
-    _transformers_can_use_grouped_mm = None
+    Args:
+        layers (list[nn.Module]): NVFP4 fake-eval wrappers in routed-row order.
+        counts (list[int]): Number of activation rows assigned to each wrapper.
+        x (torch.Tensor): Concatenated expert inputs with shape ``(sum(counts), channels)``.
+
+    Returns:
+        torch.Tensor | None: Batched QDQ activations, or None when fusion is unsupported.
+    """
+    from auto_round.data_type.nvfp import FLOAT4_E2M1_MAX, FLOAT8_E4M3_MAX, get_reciprocal, nv_fp4_with_static_gs
+
+    if not _eval_activation_batch_is_supported(layers, counts, x):
+        return None
+    if any(
+        layer.orig_layer.act_data_type != "nv_fp4_with_static_gs"
+        or layer.orig_layer.act_bits != 4
+        or layer.orig_layer.act_group_size != 16
+        or getattr(layer.act_quant_func, "_torchdynamo_orig_callable", layer.act_quant_func)
+        is not nv_fp4_with_static_gs
+        for layer in layers
+    ):
+        return None
+
+    scales = []
+    row_counts = []
+    start = 0
+    for layer, count in zip(layers, counts):
+        orig = layer.orig_layer
+        scale = getattr(orig, "input_global_scale", None)
+        if isinstance(scale, torch.Tensor) and (scale.numel() != 1 or scale.ndim > 1):
+            return None
+        if scale is None:
+            maximum = getattr(orig, "act_max", None)
+            if maximum is None:
+                maximum = x[start : start + count].float().abs().max()
+            else:
+                maximum = torch.as_tensor(maximum, device=x.device, dtype=torch.float32)
+                if maximum.numel() != 1:
+                    maximum = maximum.abs().max()
+            scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(maximum)
+        scale = torch.as_tensor(scale, device=x.device, dtype=torch.float32)
+        if scale.numel() != 1:
+            return None  # nonstandard scale layout: preserve the wrapper's own call
+        scales.append(scale.reshape(()))
+        row_counts.append(_grouped_row_count(count, x.shape[-1], 16))
+        start += count
+    repeats = torch.tensor(row_counts, device=x.device)
+    global_scale = torch.repeat_interleave(torch.stack(scales), repeats, output_size=sum(row_counts)).unsqueeze(-1)
+    return layers[0].act_quant_func(x, bits=4, group_size=16, global_scale=global_scale)[0]
+
+
+def _fused_eval_mx_activation(layers: list[nn.Module], counts: list[int], x: torch.Tensor) -> torch.Tensor | None:
+    """Fuse standard dynamic MXFP QDQ with each expert's scalar maximum scale.
+
+    Args:
+        layers (list[nn.Module]): Compatible MXFP fake-eval wrappers in routed-row order.
+        counts (list[int]): Number of activation rows assigned to each wrapper.
+        x (torch.Tensor): Concatenated expert inputs with shape ``(sum(counts), channels)``.
+
+    Returns:
+        torch.Tensor | None: Batched QDQ activations, or None when fusion is unsupported.
+    """
+    from auto_round.data_type.mxfp import quant_mx, quant_mx_rceil
+
+    if not _eval_activation_batch_is_supported(layers, counts, x):
+        return None
+    ref = layers[0]
+    orig = ref.orig_layer
+    quant_func = getattr(ref.act_quant_func, "_torchdynamo_orig_callable", ref.act_quant_func)
+    # Explicit formats only: new mx_fp* names must not silently inherit this fast path.
+    formats = {
+        "mx_fp": None,
+        "mx_fp4": 4,
+        "mx_fp4e2m1": 4,
+        "mx_fp6": 6,
+        "mx_fp6e2m3": 6,
+        "mx_fp6e3m2": 6,
+        "mx_fp8": 8,
+        "mx_fp8e4m3": 8,
+        "mx_fp8e5m2": 8,
+    }
+    data_type = getattr(orig, "act_data_type", "")
+    if not isinstance(data_type, str):
+        return None
+    is_rceil = data_type.endswith("_rceil")
+    base_type = data_type.removesuffix("_rceil")
+    if base_type not in formats or quant_func is not (quant_mx_rceil if is_rceil else quant_mx):
+        return None
+    if formats[base_type] is not None and orig.act_bits != formats[base_type]:
+        return None
+    group_size = orig.act_group_size
+    if (
+        orig.act_bits not in (4, 6, 8)
+        or not isinstance(group_size, int)
+        or isinstance(group_size, bool)
+        or (group_size <= 0 and group_size != -1)
+        or getattr(orig, "act_dynamic", None) is not True
+    ):
+        return None
+    signature = _act_signature(ref)
+    if any(
+        _act_signature(layer) != signature
+        or getattr(layer.act_quant_func, "_torchdynamo_orig_callable", layer.act_quant_func) is not quant_func
+        for layer in layers
+    ):
+        return None
+
+    # Match WrapperWALayer.qdq_input: a non-default AR_ACT_SCALE overrides the
+    # stored coefficients. Canonical MXFP ignores min_scale and tensor_max.
+    act_scale = envs.AR_ACT_SCALE
+    use_stored = isclose(act_scale, 1.0, rel_tol=1e-6)
+    scales = []
+    row_counts = []
+    for layer, count in zip(layers, counts):
+        scale = getattr(layer.orig_layer, "act_max_scale", None) if use_stored else act_scale
+        if isinstance(scale, torch.Tensor):
+            if scale.numel() != 1 or scale.ndim > 1 or scale.dtype != torch.float32:
+                return None  # preserve nonstandard broadcasting / dtype semantics
+        elif not isinstance(scale, (float, int)):
+            return None
+        scales.append(torch.as_tensor(scale, device=x.device, dtype=torch.float32).reshape(()))
+        row_counts.append(_grouped_row_count(count, x.shape[-1], group_size))
+    repeats = torch.tensor(row_counts, device=x.device)
+    # MXFP itself unsqueezes max_scale; hand it a flat per-group vector, not a column.
+    max_scale = torch.repeat_interleave(torch.stack(scales), repeats, output_size=sum(row_counts))
+    groups_per_row = _grouped_row_count(1, x.shape[-1], group_size)
+    padded_width = x.shape[-1] if group_size == -1 or x.shape[-1] < group_size else groups_per_row * group_size
+    # MXFP element quantization creates several FP32 intermediates. Reuse the QDQ
+    # working-set budget with a conservative estimate, splitting only between input
+    # rows so padding and each expert's group boundaries remain unchanged. This bounds
+    # each call's temporaries, not the output buffers or retained autograd history.
+    chunk_rows = max(1, _QDQ_FUSED_WORKINGSET_BYTES // (padded_width * 64))
+    outputs = []
+    for start in range(0, x.shape[0], chunk_rows):
+        stop = min(start + chunk_rows, x.shape[0])
+        output = ref.act_quant_func(
+            x[start:stop],
+            bits=orig.act_bits,
+            group_size=group_size,
+            data_type=orig.act_data_type,
+            max_scale=max_scale[start * groups_per_row : stop * groups_per_row],
+        )[0]
+        if stop == x.shape[0] and start == 0:
+            return output
+        outputs.append(output)
+    return torch.cat(outputs, dim=0)
+
+
+def _quantize_slot_activation(layers: list[nn.Module], counts: list[int], x: torch.Tensor) -> torch.Tensor:
+    """Quantize a projection slot using safe fusion or per-expert activation calls.
+
+    Args:
+        layers (list[nn.Module]): Nonempty sequence of compatible expert projections.
+        counts (list[int]): Routed activation row count for each projection.
+        x (torch.Tensor): Expert inputs concatenated in projection order.
+
+    Returns:
+        torch.Tensor: QDQ activations retaining routed-row order and expert coefficients.
+    """
+    if not _is_wrapper_wa(layers[0]):
+        return _quantize_activation(layers[0], x)
+    for fuse in (_fused_eval_nvfp_activation, _fused_eval_mx_activation):
+        try:
+            fused = fuse(layers, counts, x)
+        except NotImplementedError:
+            # A backend may support scalar/per-expert QDQ but not the batched layout.
+            # Do not catch RuntimeError: OOM, CUDA faults and invalid configurations
+            # must remain visible instead of being silently reinterpreted as fallback.
+            fused = None
+        if fused is not None:
+            name = "NVFP4" if fuse is _fused_eval_nvfp_activation else "MXFP"
+            log_moe_execution_once("Activation QDQ fused", f"{name} activation QDQ preserves per-expert coefficients")
+            return fused
+    # Generic eval quantizers can depend on per-expert calibrated statistics or min/max
+    # coefficients. Keep those calls intact; grouping the GEMM does not require fusing QDQ.
+    orig = layers[0].orig_layer
+    log_moe_execution_once(
+        "Activation QDQ not fused; grouped MoE remains active",
+        f"per-expert QDQ is required for act_data_type={getattr(orig, 'act_data_type', None)}, "
+        f"act_bits={getattr(orig, 'act_bits', None)}, act_group_size={getattr(orig, 'act_group_size', None)}; "
+        "this format, layout or coefficient configuration is not supported by activation fusion",
+        suggest_issue=len(layers) > 1,
+    )
+    return torch.cat([layer.qdq_input(part) for layer, part in zip(layers, x.split(counts, dim=0))], dim=0)
 
 
 def _sliced_grouped_mm_requested() -> bool:
@@ -900,6 +1192,12 @@ def _native_grouped_mm_preferred(device: torch.device) -> bool:
     return not _sliced_grouped_mm_requested()
 
 
+try:
+    from transformers.integrations.moe import _can_use_grouped_mm as _transformers_can_use_grouped_mm
+except Exception:  # pragma: no cover - transformers-internal API drift; degrade to the sliced loop
+    _transformers_can_use_grouped_mm = None
+
+
 def _native_grouped_mm_usable(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> bool:
     """Whether ``grouped_mm`` can and should run this batch. ``weight`` is ``(E, in, out)``."""
     if not _native_grouped_mm_available():
@@ -912,7 +1210,10 @@ def _native_grouped_mm_usable(x: torch.Tensor, weight: torch.Tensor, offsets: to
             return torch.cuda.get_device_capability(weight.device) >= (8, 0)
         except Exception:  # pragma: no cover - defensive
             return False
-    return True
+    # Non-cuda devices (xpu/hpu/cpu): we cannot verify native grouped_mm support
+    # here, and an unsupported F.grouped_mm would raise mid-forward -- degrade
+    # to the sliced/loop fallback instead of gambling on the native path.
+    return False
 
 
 def _native_grouped_mm(x: torch.Tensor, weight: torch.Tensor, offsets: torch.Tensor) -> torch.Tensor:
@@ -1017,6 +1318,7 @@ def _grouped_linear(
 
     if len(slot.weights) == 1:
         # Single active expert: a plain GEMM beats every grouped path.
+        log_moe_execution_once("Grouped MoE GEMM", "one active expert uses plain F.linear intentionally")
         return F.linear(x, slot.weights[0], slot.biases[0])  # pylint: disable=not-callable
 
     if _native_grouped_mm_available():
@@ -1029,10 +1331,12 @@ def _grouped_linear(
                 weight = _stack_weights(slot).transpose(-2, -1)  # (E, in, out)
                 if _native_grouped_mm_usable(x, weight, offsets):
                     out = _native_grouped_mm(x, weight, offsets)
+                    log_moe_execution_once("Grouped MoE GEMM", "native torch grouped_mm is used")
                     return _add_grouped_bias(out, slot, counts)
             else:
                 out = _grouped_mm_tiled(x, slot, counts, chunk)
                 if out is not None:
+                    log_moe_execution_once("Grouped MoE GEMM", "native torch grouped_mm is used with expert tiling")
                     return _add_grouped_bias(out, slot, counts)
         except Exception as err:  # pragma: no cover - kernel/shape constraints vary
             _NATIVE_GROUPED_MM_DISABLED = True
@@ -1040,7 +1344,18 @@ def _grouped_linear(
                 f"torch grouped_mm failed ({err}); using the sliced per-expert GEMM loop for MoE tuning."
             )
 
-    return _sliced_linear(x, slot, counts)
+    out = _sliced_linear(x, slot, counts)
+    if _sliced_grouped_mm_requested():
+        log_moe_execution_once(
+            "Grouped MoE GEMM", "sliced F.linear was explicitly requested; grouped routing remains active"
+        )
+    else:
+        log_moe_execution_once(
+            "Native grouped_mm not used; grouped MoE routing remains active",
+            "the native kernel is unavailable, previously failed, or rejected this device/dtype/layout; using sliced F.linear",
+            suggest_issue=True,
+        )
+    return out
 
 
 # --------------------------------------------------------------------------------------
@@ -1080,50 +1395,132 @@ def _run_routes(
     if num_valid == 0:
         return torch.zeros_like(hidden_states)
 
-    plan = _build_plan(module, active_ids)
-    if plan is None:
+    # Slot-stage plans: the balancer scatters projections independently, so one
+    # expert's gate/up/down can live on different devices. Each SLOT partitions its
+    # active experts by that slot's home device and runs one grouped GEMM per group;
+    # full pair-indexed buffers carry intermediates between stages. (token, top_k)
+    # pairs are unique, so per-group index_copy_ into shared buffers is exact and
+    # the final sum(dim=1) combine is unchanged.
+    def _slot_groups(slot_name: str) -> list[tuple[torch.device, list[int]]]:
+        groups: dict[torch.device, list[int]] = {}
+        for pos, expert_id in enumerate(active_ids):
+            expert = getattr(module, str(expert_id), None)
+            proj = getattr(expert, slot_name, None) if expert is not None else None
+            if proj is None:
+                _log_fallback_once("expert container missing", detail=f"expert {expert_id} slot {slot_name}")
+                return []
+            if not _projection_is_supported(proj):
+                # check BEFORE _compute_device: packed QuantLinear types
+                # (e.g. MXFP4QuantLinear) have no .weight, and the support
+                # probe must be what rejects them, not an AttributeError
+                _log_fallback_once(_projection_fallback_reason(proj), detail=f"expert {expert_id} slot {slot_name}")
+                return []
+            groups.setdefault(_compute_device(proj), []).append(pos)
+        return list(groups.items())
+
+    has_gate = hasattr(getattr(module, str(active_ids[0]), None), "gate_proj")
+    gate_groups = _slot_groups("gate_proj") if has_gate else []
+    up_groups = _slot_groups("up_proj")
+    down_groups = _slot_groups("down_proj")
+    if not up_groups or not down_groups or (has_gate and not gate_groups):
         return None
+
+    # Per-slot-group validation: projections supported; within a group (batched
+    # together) quant signatures and weight layouts must agree. gate/up activation
+    # settings must match per expert (they quantize the same input tensor).
+    for slot_name, groups in (("up_proj", up_groups), ("gate_proj", gate_groups), ("down_proj", down_groups)):
+        for _, positions in groups:
+            # Seed the references from the FIRST position: None is a valid
+            # quantization signature (plain Linear), so it cannot double as
+            # the unset marker -- a plain expert preceding a quantized wrapper
+            # would otherwise latch the wrapper's signature without comparison
+            # and accept the mixed group.
+            first = getattr(getattr(module, str(active_ids[positions[0]])), slot_name)
+            sig = _quant_signature(first)
+            layout = _weight_layout(first)
+            for p in positions[1:]:
+                proj = getattr(getattr(module, str(active_ids[p])), slot_name)
+                if not _projection_is_supported(proj):
+                    _log_fallback_once(_projection_fallback_reason(proj))
+                    return None
+                if _quant_signature(proj) != sig:
+                    _log_fallback_once("mixed quantization schemes across experts in a device group")
+                    return None
+                if _weight_layout(proj) != layout:
+                    _log_fallback_once("experts have different weight shape/dtype in a device group")
+                    return None
+    if has_gate:
+        for expert_id in active_ids:
+            expert = getattr(module, str(expert_id))
+            gate_wrapped = _is_wrapper_linear(expert.gate_proj) or _is_wrapper_wa(expert.gate_proj)
+            up_wrapped = _is_wrapper_linear(expert.up_proj) or _is_wrapper_wa(expert.up_proj)
+            gate_act = _act_signature(expert.gate_proj) if gate_wrapped else None
+            up_act = _act_signature(expert.up_proj) if up_wrapped else None
+            gate_enabled = _is_wrapper_wa(expert.gate_proj) or bool(
+                getattr(expert.gate_proj, "enable_act_quant", False)
+            )
+            up_enabled = _is_wrapper_wa(expert.up_proj) or bool(getattr(expert.up_proj, "enable_act_quant", False))
+            if gate_enabled != up_enabled or (gate_enabled and gate_act != up_act):
+                _log_fallback_once("gate_proj/up_proj activation quantization differ")
+                return None
 
     perm_valid = perm[:num_valid]
     token_idx = torch.div(perm_valid, num_top_k, rounding_mode="floor")
-    x = hidden_states.index_select(0, token_idx).to(plan.device)
+    x_all = hidden_states.index_select(0, token_idx)  # (num_valid, hidden) on input device
 
-    offsets = torch.tensor(active_counts, device=plan.device, dtype=torch.int32).cumsum(0).to(torch.int32)
+    # Contiguous sorted-order row range for each active position.
+    ranges = []
+    start = 0
+    for c in active_counts:
+        ranges.append((start, start + c))
+        start += c
 
-    # --- input projections (gate / up) -------------------------------------------------
-    x = _quantize_activation(plan.experts[0].up_proj, x)
+    def _run_slot(slot_name: str, groups: list[tuple[torch.device, list[int]]], inp: torch.Tensor) -> torch.Tensor:
+        """Grouped GEMM for one slot; returns a full (num_valid, out) buffer on the input device."""
+        out_buf = None
+        for dev, positions in groups:
+            counts = [active_counts[p] for p in positions]
+            rows = torch.cat(
+                [torch.arange(ranges[p][0], ranges[p][1], device=perm.device, dtype=torch.int64) for p in positions]
+            )
+            x_g = inp.index_select(0, rows).to(dev)
+            offsets = torch.tensor(counts, device=dev, dtype=torch.int32).cumsum(0).to(torch.int32)
+            experts_g = [getattr(module, str(active_ids[p])) for p in positions]
+            layers = [getattr(e, slot_name) for e in experts_g]
+            x_g = _quantize_slot_activation(layers, counts, x_g)
+            batched = all(_supports_batched_qdq(layer) for layer in layers)
+            w = _slot_weights(layers, batched)
+            out_g = _grouped_linear(x_g, w, counts, offsets)
+            if out_buf is None:
+                out_buf = torch.zeros(num_valid, out_g.size(-1), device=inp.device, dtype=out_g.dtype)
+            # device-only .to() would crash on cross-group dtype mixes; the
+            # buffer dtype is the first group's expert-output dtype by design
+            out_buf.index_copy_(0, rows.to(inp.device), out_g.to(device=inp.device, dtype=out_buf.dtype))
+        return out_buf
 
-    up = _slot_weights([e.up_proj for e in plan.experts], plan.batched_qdq.get("up_proj", False))
-    up_out = _grouped_linear(x, up, active_counts, offsets)
-
-    if plan.has_gate:
-        gate = _slot_weights([e.gate_proj for e in plan.experts], plan.batched_qdq.get("gate_proj", False))
-        gate_out = _grouped_linear(x, gate, active_counts, offsets)
+    up_out = _run_slot("up_proj", up_groups, x_all)
+    if has_gate:
+        gate_out = _run_slot("gate_proj", gate_groups, x_all)
         if hasattr(module, "_apply_gate"):
-            # Keep the module's own gating (clamping, alpha, ...) and its [gate; up] layout,
-            # exactly as linear_loop_experts_forward does.
-            hidden = module._apply_gate(torch.cat([gate_out, up_out], dim=-1))
+            hidden_mid = module._apply_gate(torch.cat([gate_out, up_out], dim=-1))
         else:
-            hidden = module.act_fn(gate_out) * up_out
+            hidden_mid = module.act_fn(gate_out) * up_out
     else:
-        hidden = module.act_fn(up_out)
+        hidden_mid = module.act_fn(up_out)
 
-    # --- down projection ---------------------------------------------------------------
-    hidden = _quantize_activation(plan.experts[0].down_proj, hidden)
-    down = _slot_weights([e.down_proj for e in plan.experts], plan.batched_qdq.get("down_proj", False))
-    out = _grouped_linear(hidden, down, active_counts, offsets)
-
-    out = out.to(plan.output_device)
-    # ``sample_weights``/``perm_valid`` live on the input device, which can differ from the
-    # experts' device in multi-GPU tuning (a whole layer's experts co-located on one card
-    # while the block input flows on another). Align to ``out`` before the multiply.
+    out = _run_slot("down_proj", down_groups, hidden_mid)
     sample_weights_out = sample_weights.index_select(0, perm_valid).to(device=out.device, dtype=out.dtype)
     out = out * sample_weights_out.unsqueeze(-1)
 
-    # Scatter back to the original (token, top_k) order and reduce over top_k.
-    out_per_sample = torch.zeros(num_pairs, hidden_dim, device=out.device, dtype=out.dtype)
-    out_per_sample = out_per_sample.index_copy(0, perm_valid.to(out.device), out)
-    return out_per_sample.view(num_tokens, num_top_k, hidden_dim).sum(dim=1).to(device)
+    # Scatter the weighted rows into the shared (token, top_k) buffer. The buffer
+    # carries the EXPERT OUTPUT dtype (bf16 weights produce bf16 rows even when the
+    # input chain is fp32 -- the GDN lanes); the original single-device path used
+    # out.dtype for exactly this reason.
+    out_per_sample = torch.zeros(num_pairs, hidden_dim, device=device, dtype=out.dtype)
+    out_per_sample.index_copy_(0, perm_valid.to(device), out.to(device))
+    result = out_per_sample.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
+    log_moe_execution_once("Grouped MoE used", f"grouped routing completed successfully; plans={GROUPED_PLANS_VERSION}")
+    return result
 
 
 def _opaque_to_dynamo(fn):

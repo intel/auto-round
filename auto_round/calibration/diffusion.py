@@ -114,7 +114,11 @@ class DiffusionCalibrator(LLMCalibrator):
         )
         requires_image = self._requires_calibration_image()
         if isinstance(self.dataset, str):
-            dataset = self.dataset.replace(" ", "")
+            from auto_round.utils.dataset_utils import strip_dataset_spec_whitespace
+
+            # Strip only cosmetic whitespace; spaces inside option values
+            # (e.g. separator / template / system_prompt) are preserved.
+            dataset = strip_dataset_spec_whitespace(self.dataset)
             self.dataloader, self.batch_size = get_diffusion_dataloader(
                 dataset=dataset, bs=bs, seed=self.seed, nsamples=nsamples, image_required=requires_image
             )

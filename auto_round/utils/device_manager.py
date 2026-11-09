@@ -489,7 +489,7 @@ class ARDevice:
             return func
         from auto_round.utils.device import _bump_dynamo_cache_limit
 
-        _bump_dynamo_cache_limit()
+        _bump_dynamo_cache_limit(_engaged_cache_limit())
 
         return torch.compile(func)
 
@@ -788,6 +788,7 @@ class DeviceManager:
             self._device_map = None
             self._device_list: list | None = None
             self._major_device: str | None = None
+            self._tensor_parallel = False
             self._initialized = True
         if device_map is not None:
             self.configure(device_map)
@@ -821,6 +822,9 @@ class DeviceManager:
     @property
     def device_list(self) -> list:
         """All concrete devices selected by the configured ``device_map``."""
+        scoped = self._thread_scope()
+        if scoped is not None:
+            return [scoped]
         if self._device_list is None:
             self.configure(self._device_map)
         return self._device_list
@@ -828,9 +832,34 @@ class DeviceManager:
     @property
     def device(self) -> str:
         """The major (primary, non-CPU when possible) device string."""
+        scoped = self._thread_scope()
+        if scoped is not None:
+            return scoped
         if self._major_device is None:
             self.configure(self._device_map)
         return self._major_device
+
+    def _thread_scope(self) -> str | None:
+        local = self.__dict__.get("_thread_local")
+        return getattr(local, "device", None) if local is not None else None
+
+    @contextlib.contextmanager
+    def thread_device_scope(self, device: str | torch.device):
+        """Pin :attr:`device` / :attr:`device_list` to ``device`` for the calling thread.
+
+        Used by the data-parallel engine: each rank thread runs the unchanged
+        per-block algorithm and must see its own replica device as the major
+        device. Other threads keep the configured devices.
+        """
+        import threading
+
+        local = self.__dict__.setdefault("_thread_local", threading.local())
+        prev = getattr(local, "device", None)
+        local.device = str(device)
+        try:
+            yield
+        finally:
+            local.device = prev
 
     @device.setter
     def device(self, value: str | torch.device) -> None:
@@ -840,6 +869,59 @@ class DeviceManager:
     def is_multi_device(self) -> bool:
         """Whether more than one concrete device is selected."""
         return len(self.device_list) > 1
+
+    @property
+    def is_tensor_parallel(self) -> bool:
+        """bool: Whether the current run uses tensor-parallel device ownership."""
+        return self._tensor_parallel
+
+    def set_tensor_parallel(self, enabled: bool) -> None:
+        """Set reporting topology explicitly; a process group alone need not be TP.
+
+        Args:
+            enabled (bool): Whether memory reporting should coordinate tensor-parallel ranks.
+        """
+        self._tensor_parallel = enabled
+
+    def log_memory_summary(self, msg: str = "", level: str = "info") -> str | None:
+        """Report peaks at a successful boundary reached by every TP rank.
+
+        Unlike ordinary MemoryMonitor logging, this performs a collective in TP
+        mode. Never call it from rank-local cleanup or writer-only export hooks.
+        Merged reports must not overwrite local allocator statistics.
+
+        Args:
+            msg (str): Optional prefix included in the memory summary.
+            level (str): Logging level used to emit the summary.
+        """
+        from auto_round.utils.device import memory_monitor
+
+        if not self.is_tensor_parallel:
+            return memory_monitor.log_summary(msg, level)
+
+        import torch.distributed as dist
+
+        if not dist.is_initialized() or dist.get_world_size() < 2:
+            return memory_monitor.log_summary(msg, level, peak_vram=dict(memory_monitor.peak_vram))
+        report = {}
+        if torch.cuda.is_available():
+            index = torch.cuda.current_device()
+            memory_monitor.update(device_list=[f"cuda:{index}"])
+            report[str(index)] = max(
+                memory_monitor.peak_vram.get(str(index), 0.0),
+                torch.cuda.max_memory_reserved(index) / 1024**3,
+            )
+        else:
+            memory_monitor.update_cpu()
+        reports: list[dict[str, float]] = [{} for _ in range(dist.get_world_size())]
+        dist.all_gather_object(reports, report)
+        if dist.get_rank() != 0:
+            return None
+        merged = {}
+        for peer in reports:
+            for device, peak in peer.items():
+                merged[device] = max(merged.get(device, 0.0), peak)
+        return memory_monitor.log_summary(msg, level, peak_vram=merged)
 
     # -- registration -------------------------------------------------------
     def register(self, device_cls: type[ARDevice]) -> None:
@@ -886,6 +968,21 @@ class DeviceManager:
 
 # Process-wide singleton manager.
 device_manager = DeviceManager()
+
+
+def _engaged_cache_limit() -> int:
+    """Dynamo cache-limit target scaled by the engaged device count.
+
+    Multi-device runs multiply the static shape specializations of the shared
+    compiled quant functions (per-layer shapes x per-device guard pins), so the
+    cache limit must scale with the engaged devices or the lane silently
+    degrades to eager mid-block once the limit is hit.  A single-device run
+    keeps the plain env default.  The bump itself is monotone raise-only, so
+    repeated calls are idempotent.
+    """
+    from auto_round import envs
+
+    return int(envs.AR_DYNAMO_CACHE_SIZE_LIMIT) * max(1, len(device_manager.device_list))
 
 
 def get_ar_device(device_type: None | str | int | torch.device = None) -> ARDevice:

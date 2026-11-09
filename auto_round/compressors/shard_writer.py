@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import math
 import os
 import re
 from collections import OrderedDict
@@ -36,6 +37,11 @@ from auto_round.utils import (
 )
 
 DEFAULT_MAX_SHARD_SIZE = "5GB"
+
+
+# Parameter names that only exist once a module has been packed for export, and
+# that replace its floating-point ``weight``.
+PACKED_WEIGHT_NAMES = frozenset({"qweight", "weight_packed"})
 
 
 class ShardWriter:
@@ -124,47 +130,54 @@ class ShardWriter:
         shard numbering instead of colliding with them, and ``finalize()``'s
         index covers tensors from both processes.
 
-        Only files still in the pre-``finalize()`` temp naming
-        (``model-shard-NNNNN.<ext>``) are considered: once ``finalize()`` runs
-        it renames everything to the final HF layout, so a directory with no
-        such temp files means either nothing has been flushed yet, or a prior
-        run already finished -- neither should be treated as in-progress
-        shards to adopt.
+        Include both temporary and final checkpoint names: the resume manifest
+        remains live until the export steps after ``finalize()`` succeed.
         """
         output_dir = self.output_dir
         if not os.path.isdir(output_dir):
             return
         pattern = re.compile(rf"^model-shard-(\d+)\.{re.escape(self.shard_suffix)}$")
+        final_pattern = re.compile(rf"^model-(\d+)-of-\d+\.{re.escape(self.shard_suffix)}$")
         found = []
         for fname in os.listdir(output_dir):
-            m = pattern.match(fname)
+            m = pattern.match(fname) or final_pattern.match(fname)
             if m:
                 found.append((int(m.group(1)), fname))
+            elif fname == f"model.{self.shard_suffix}":
+                found.append((1, fname))
         if not found:
             return
         found.sort()
         for _, fname in found:
             path = os.path.join(output_dir, fname)
-            params = self._read_shard_tensor_names(path)
+            params, numel, size_bytes = self._read_shard_metadata(path)
             self.shard_meta.append({"tmp_file": fname, "params": params, "dir": output_dir})
             self._all_saved.update(params)
-        self.shard_counter = found[-1][0]
+            self.total_param_elems += numel
+            self.total_param_size_bytes += size_bytes
+        self.shard_counter = max(len(found), found[-1][0])
         logger.info(
             f"ShardWriter: discovered {len(found)} already-flushed shard(s) in {output_dir} "
             f"from a previous run; resuming shard numbering from {self.shard_counter}."
         )
 
-    def _read_shard_tensor_names(self, path: str) -> list[str]:
-        """Read only the tensor-name header of an already-flushed shard file,
-        without materializing any tensor data."""
+    def _read_shard_metadata(self, path: str) -> tuple[list[str], int, int]:
+        """Read tensor names, element count and bytes without materializing data."""
         if self.use_safetensors:
             from safetensors import safe_open
 
             with safe_open(path, framework="pt") as f:
-                return list(f.keys())
+                params = list(f.keys())
+                numel = sum(math.prod(f.get_slice(name).get_shape()) for name in params)
+            # A validated safetensors file stores all tensor bytes after its
+            # eight-byte header length and JSON header, with no gaps or padding.
+            with open(path, "rb") as f:
+                header_size = int.from_bytes(f.read(8), "little")
+            size_bytes = os.path.getsize(path) - 8 - header_size
+            return params, numel, size_bytes
         else:
             sd = torch.load(path, map_location="meta")
-            return list(sd.keys())
+            return list(sd.keys()), sum(t.numel() for t in sd.values()), sum(t.nbytes for t in sd.values())
 
     @property
     def output_dir(self) -> str:
@@ -321,11 +334,9 @@ class ShardWriter:
                 self._add_tensor(sub_name, sub_tensor)
             return
 
-        # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
-        if self.reverse_weight_transforms is not None:
-            name = revert_name_with_weight_transforms(name, self.reverse_weight_transforms)
-        else:
-            name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
+        name = self._checkpoint_name(name)
+        if name in self._all_saved or name in self.current_shard_tensors:
+            return
 
         t_size = tensor.nbytes
         self.total_param_elems += tensor.numel()
@@ -345,6 +356,12 @@ class ShardWriter:
         else:
             self.current_shard_tensors[name] = tensor
             self.current_shard_size += t_size
+
+    def _checkpoint_name(self, name: str) -> str:
+        """Use the serialized namespace for both saving and resume comparisons."""
+        if self.reverse_weight_transforms is not None:
+            return revert_name_with_weight_transforms(name, self.reverse_weight_transforms)
+        return revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
 
     def _handle_tied_weights(self):
         """
@@ -418,24 +435,51 @@ class ShardWriter:
 
     def finalize(self) -> None:
         """Saves remaining weights, renames files, and writes the index JSON."""
+        # Adopt the shards of a run this one resumed from before deciding which
+        # weights are still missing, otherwise their tensors look unsaved here.
+        if envs.AR_RESUME_DIR and not self._existing_shards_discovered:
+            self._discover_existing_shards()
+            self._existing_shards_discovered = True
+
         # 1. Capture remaining weights not yet saved
         full_sd = self.model.state_dict()
         tie_word_embeddings = False
         if hasattr(self.model, "config") and hasattr(self.model.config, "tie_word_embeddings"):
             tie_word_embeddings = self.model.config.tie_word_embeddings
 
+        # Modules whose packed tensors were already written, e.g. by a previous
+        # run this one resumed from. Such a module is skipped by tuning, so the
+        # model tree still holds its original floating-point weight under a name
+        # that never matches the packed one.
+        packed_layers = {
+            pname.rsplit(".", 1)[0] for pname in self._all_saved if pname.rsplit(".", 1)[-1] in PACKED_WEIGHT_NAMES
+        }
+
         finalize_skipped_meta_tensors = []
+        stale_unpacked_tensors = []
         for pname, tensor in full_sd.items():
-            if pname in self._all_saved:
+            checkpoint_name = self._checkpoint_name(pname)
+            if pname in self._all_saved or checkpoint_name in self._all_saved:
                 continue
             if tensor.device.type == "meta":
                 continue
             layer_name = ".".join(pname.split(".")[:-1])
+            if pname.rsplit(".", 1)[-1] == "weight" and checkpoint_name.rsplit(".", 1)[0] in packed_layers:
+                # Writing it would put the module in the checkpoint twice: once
+                # packed and once as the stale floating-point weight.
+                stale_unpacked_tensors.append(pname)
+                continue
             if self.lm_head_name is not None and layer_name == self.lm_head_name and tie_word_embeddings:
                 lm_head_module = get_module(self.model, self.lm_head_name)
                 lm_head_module.to("meta")  # Must to meta, otherwise model's saver will dump it again
                 continue
             self._add_tensor(pname, tensor.detach().to("cpu"))
+
+        if stale_unpacked_tensors:
+            logger.info(
+                f"Skipped {len(stale_unpacked_tensors)} unpacked weight(s) of already-packed modules, "
+                f"e.g. {stale_unpacked_tensors[:3]}."
+            )
 
         self._flush_shard()
 

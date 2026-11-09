@@ -98,6 +98,19 @@ class QuantizedAttentionImpl(torch.nn.Module):
         *args,
         **kwargs,
     ):
+        self.observe(module, query)
+        # original attention
+        return ALL_ATTENTION_FUNCTIONS[self._original_impl](
+            module,
+            query,
+            key,
+            value,
+            *args,
+            **kwargs,
+        )
+
+    def observe(self, module: Module, query: Tensor):
+        """Update q_max/q_scale from a query laid out as [batch, heads, seq, head_dim]."""
         if self.granularity == "head":
             cur_query_max = query.abs().amax(dim=(0, 2, 3))
         else:
@@ -109,15 +122,68 @@ class QuantizedAttentionImpl(torch.nn.Module):
         update_parameter_data(module, query_max, QUERY_MAX_NAME)
         _, query_scale = fp8_qdq(query, tensor_max=query_max, granularity=self.granularity)
         update_parameter_data(module, query_scale.reshape(-1).detach(), QUERY_SCALE_NAME)
-        # original attention
-        return ALL_ATTENTION_FUNCTIONS[self._original_impl](
-            module,
-            query,
-            key,
-            value,
-            *args,
-            **kwargs,
-        )
+
+
+# ----- legacy (remote-code) attention support ----- #
+
+_LEGACY_PATCHED_ATTRS = ("forward", "_flash_attention_forward")
+
+
+def _uses_attention_interface(module: Module) -> bool:
+    forward = type(module).forward
+    if forward is Module.forward:
+        return True
+    try:
+        source = inspect.getsource(forward)
+    except (OSError, TypeError):
+        return True
+    return "ALL_ATTENTION_FUNCTIONS" in source or "attention_interface" in source
+
+
+class _CaptureFirstMatmul(torch.overrides.TorchFunctionMode):
+    """Observe the query of the first 4D matmul (Q @ K^T) inside an eager attention forward."""
+
+    def __init__(self, module: Module):
+        super().__init__()
+        self.module = module
+        self.done = False
+
+    def __torch_function__(self, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        if not self.done and func in (torch.matmul, Tensor.matmul, Tensor.__matmul__):
+            query = args[0]
+            if isinstance(query, Tensor) and query.dim() == 4:
+                self.done = True
+                self.module.impl.observe(self.module, query)
+        return func(*args, **kwargs)
+
+
+def _patch_legacy_attention(module: Module):
+    """Hook attention modules whose forward bypasses transformers' AttentionInterface."""
+    flash_forward = getattr(module, "_flash_attention_forward", None)
+    if callable(flash_forward):
+
+        def _observed_flash_forward(query_states, *args, **kwargs):
+            # flash-attn layout is [batch, seq, heads, head_dim]
+            module.impl.observe(module, query_states.transpose(1, 2))
+            return flash_forward(query_states, *args, **kwargs)
+
+        module._flash_attention_forward = _observed_flash_forward
+        return
+
+    orig_forward = module.forward
+
+    def _observed_forward(*args, **kwargs):
+        with _CaptureFirstMatmul(module):
+            return orig_forward(*args, **kwargs)
+
+    module.forward = _observed_forward
+
+
+def _unpatch_legacy_attention(module: Module):
+    for name in _LEGACY_PATCHED_ATTRS:
+        if name in module.__dict__:
+            delattr(module, name)
 
 
 # ----- initialize ----- #
@@ -150,6 +216,14 @@ def init_hooked_attention(module: Module, config, granularity: str = "tensor"):
     :param module: attention module to initialize with
     """
     config = _get_attention_config(module, config)
+    if not hasattr(module, ATTN_IMPL_ATTR_NAME) and not _uses_attention_interface(module):
+        logger.info_once(
+            f"{module.__class__.__name__} does not dispatch through AttentionInterface, "
+            "observing query at the attention kernel boundary instead."
+        )
+        module.register_module(ATTN_IMPL_ATTR_NAME, QuantizedAttentionImpl(config, module, granularity=granularity))
+        _patch_legacy_attention(module)
+        return
     if not hasattr(module, ATTN_IMPL_ATTR_NAME):
         if config._attn_implementation != HOOKED_ATTENTION_NAME:
             # assumes only one model at a time
@@ -172,6 +246,12 @@ def prep_attention_module_for_calibration(module: torch.nn.Module, config, granu
 
 def clean_up_hooked_attention(module, model):
     if is_attention_module(module):
+        _unpatch_legacy_attention(module)
+        query_max = getattr(module, QUERY_MAX_NAME, None)
+        if isinstance(query_max, Tensor) and torch.isinf(query_max).all():
+            logger.warning_once(
+                f"{module.__class__.__name__} was never observed during calibration; its q_scale stays 0."
+            )
         clean_model_parameters_and_buffers_(module, (QUERY_MAX_NAME,))
         config = _get_attention_config(module, model.config)
         if hasattr(config, "_auto_round_original_attn_impl"):
