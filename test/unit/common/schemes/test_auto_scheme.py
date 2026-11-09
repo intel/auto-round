@@ -1913,6 +1913,7 @@ def test_w8_asym_allowance_derived_at_generation_time():
 def test_autoscheme_no_warning_on_bf16_plus_int(caplog, monkeypatch, tiny_opt_model_path, tmp_path):
     """BF16 + integer schemes should not emit the mixed data_type warning."""
     import logging
+
     from auto_round.logger import logger
 
     calibration_dataset = _make_local_calibration_dataset(tmp_path)
