@@ -1908,3 +1908,46 @@ def test_w8_asym_allowance_derived_at_generation_time():
         __import__("auto_round.auto_scheme.delta_loss", fromlist=["gen_layer_config"]).gen_layer_config
     )
     assert "export_format" in gen_sig.parameters
+
+
+def test_autoscheme_no_warning_on_bf16_plus_int(caplog, monkeypatch, tiny_opt_model_path, tmp_path):
+    """BF16 + integer schemes should not emit the mixed data_type warning."""
+    import logging
+    from auto_round.logger import logger
+
+    calibration_dataset = _make_local_calibration_dataset(tmp_path)
+    scheme = AutoScheme(avg_bits=5, options=("W4A16", "BF16"), nsamples=1)
+    ar = AutoRound(
+        model=tiny_opt_model_path,
+        scheme=scheme,
+        iters=0,
+        nsamples=1,
+        seqlen=8,
+        dataset=calibration_dataset,
+    )
+    with caplog.at_level(logging.WARNING, logger="auto_round"):
+        ar.quantize()
+    assert not any("mixed data_types" in record.message for record in caplog.records)
+
+
+def test_autoscheme_warning_on_mixed_non_fp(caplog, monkeypatch, tiny_opt_model_path, tmp_path):
+    """Multiple non-fp quantized data types should still warn."""
+    import logging
+
+    calibration_dataset = _make_local_calibration_dataset(tmp_path)
+    # Use options that map to different non-fp data types if possible; fallback to known mixed
+    scheme = AutoScheme(avg_bits=4, options=("W4A16", "MXFP4"), nsamples=1)
+    ar = AutoRound(
+        model=tiny_opt_model_path,
+        scheme=scheme,
+        iters=0,
+        nsamples=1,
+        seqlen=8,
+        dataset=calibration_dataset,
+    )
+    with caplog.at_level(logging.WARNING, logger="auto_round"):
+        try:
+            ar.quantize()
+        except Exception:
+            pass  # Some combos may not be fully supported in tiny model; we care about the warning
+    assert any("mixed data_types" in record.message for record in caplog.records)
