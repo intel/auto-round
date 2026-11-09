@@ -686,3 +686,81 @@ class TestOpenCodeInstructPacking:
             assert len(row["input_ids"]) == seqlen
             assert len(row["attention_mask"]) == seqlen
             assert row["input_ids"][0] == bos and row["input_ids"][-1] == eos
+
+
+@pytest.fixture(params=["opencode-instruct", "_test_bos_eos_packing_:concat"])
+def packed_dataset_loader(monkeypatch, request):
+    """Exercise both packers through the normal filtering and sample-limit path."""
+    import auto_round.calib_dataset as cd
+
+    def load(input_ids, seqlen=16, nsamples=8):
+        tokenizer = types.SimpleNamespace(bos_token_id=1, eos_token_id=2)
+
+        class _Stream:
+            def shuffle(self, seed):
+                return self
+
+            def take(self, n):
+                return [{"input": f"q{i}", "output": f"a{i}"} for i in range(min(n, len(input_ids)))]
+
+        def tokenize(examples):
+            ids = input_ids[: len(examples["text"])]
+            return {"input_ids": ids, "attention_mask": [[1] * len(row) for row in ids]}
+
+        def registered_loader(**kwargs):
+            dataset = Dataset.from_dict(
+                {"input_ids": input_ids, "attention_mask": [[1] * len(row) for row in input_ids]}
+            )
+            dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+            return dataset
+
+        monkeypatch.setattr(cd, "load_dataset", lambda *args, **kwargs: _Stream())
+        monkeypatch.setattr(cd, "get_tokenizer_function", lambda *args, **kwargs: tokenize)
+        monkeypatch.setitem(cd.CALIB_DATASETS, "_test_bos_eos_packing_", registered_loader)
+        return cd._get_dataset_impl(tokenizer, seqlen, dataset_name=request.param, nsamples=nsamples)
+
+    return load
+
+
+class TestPackingBookkeeping:
+    def test_every_packed_row_is_seqlen_long(self, packed_dataset_loader):
+        input_ids = [[1] + list(range(10 + 10 * i, 16 + 10 * i)) + [2] for i in range(8)]
+        dataset = packed_dataset_loader(input_ids)
+
+        assert len(dataset) == 3
+        expected_content = [token for row in input_ids for token in row[1:-1]][:42]
+        actual_content = []
+        for row in dataset:
+            ids = row["input_ids"].tolist()
+            assert len(ids) == 16
+            assert row["attention_mask"].shape == row["input_ids"].shape
+            assert row["attention_mask"].tolist() == [1] * 16
+            assert ids[0] == 1 and ids[-1] == 2
+            actual_content.extend(ids[1:-1])
+        assert actual_content == expected_content
+
+    def test_mixed_special_tokens_do_not_leak_between_samples(self, packed_dataset_loader):
+        input_ids = [
+            [1] + list(range(10, 24)) + [2],
+            list(range(30, 46)),
+            [1] + list(range(50, 65)),
+            list(range(70, 85)) + [2],
+            list(range(90, 106)),
+        ]
+        dataset = packed_dataset_loader(input_ids)
+
+        # Each input fills one row; absent BOS/EOS must not be reinserted.
+        assert len(dataset) == len(input_ids)
+        assert [row["input_ids"].tolist() for row in dataset] == input_ids
+        assert all(row["attention_mask"].shape == row["input_ids"].shape for row in dataset)
+
+    @pytest.mark.parametrize("nsamples,expected_rows", [(8, 3), (2, 2)])
+    def test_nsamples_caps_output_but_does_not_fill_missing_rows(self, packed_dataset_loader, nsamples, expected_rows):
+        input_ids = [[1] + list(range(10 + 10 * i, 16 + 10 * i)) + [2] for i in range(8)]
+        dataset = packed_dataset_loader(input_ids, nsamples=nsamples)
+
+        # 48 content tokens fill three 14-token payloads; the six-token tail
+        # is discarded, not padded or duplicated to reach the requested count.
+        assert len(dataset) == expected_rows
+        assert all(len(row["input_ids"]) == 16 for row in dataset)
+        assert all(row["attention_mask"].shape == row["input_ids"].shape for row in dataset)

@@ -1875,7 +1875,7 @@ def _get_dataset_impl(
 
     def concat_dataset_element(dataset):
         input_ids, concat_input_ids = [eg["input_ids"] for eg in dataset], []
-        attention_mask_list, attention_mask = [], torch.ones([1, seqlen]).to(torch.int64)
+        attention_mask_list, attention_mask = [], torch.ones([seqlen]).to(torch.int64)
         buffer_input_id = torch.Tensor().to(torch.int64)
         bos_token_id, eos_token_id = tokenizer.bos_token_id, tokenizer.eos_token_id
         for input_id in input_ids:
