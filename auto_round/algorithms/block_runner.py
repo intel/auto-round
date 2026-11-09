@@ -161,6 +161,12 @@ class BlockForwardRunner:
         self.parallel_execution = parallel_execution
         self.last_output_dict = None
         self.block_forward = block_forward
+        # Keep the uncompiled function available for calibration passes that
+        # install forward hooks.  Dynamo does not re-trace a cached graph when
+        # hooks are added after the graph was built (torch 2.7), so hook
+        # statistics such as ``act_max`` silently stay unset.  Those passes
+        # must therefore call the eager function explicitly.
+        self._eager_block_forward = block_forward
         if self.enable_torch_compile:
             from auto_round.utils import compile_func
 
@@ -201,6 +207,7 @@ class BlockForwardRunner:
         input_others: dict,
         indices: torch.Tensor | None = None,
         cache_device=None,
+        eager: bool = False,
     ) -> list[torch.Tensor] | torch.Tensor:
         """Run block forward with batching, output normalization, and cache transfer.
 
@@ -257,7 +264,10 @@ class BlockForwardRunner:
         for i in range(0, len(indices), self.batch_size):
             batch_indices = indices[i : i + self.batch_size]
             batch_inputs, batch_others = self._select_batch(inputs, input_others, batch_indices)
-            raw_output = self._forward_one_batch(block, batch_inputs, batch_others)
+            if eager:
+                raw_output = self._forward_one_batch(block, batch_inputs, batch_others, eager=True)
+            else:
+                raw_output = self._forward_one_batch(block, batch_inputs, batch_others)
             if self.parallel_execution is not None and self.parallel_execution.is_tp:
                 raw_output = self.parallel_execution.replicated(raw_output)
             batch_output_dict = self._get_output_dict(raw_output, block)
@@ -366,7 +376,7 @@ class BlockForwardRunner:
                 return d
         return self.device
 
-    def _forward_one_batch(self, block, batch_inputs, batch_others) -> Any:
+    def _forward_one_batch(self, block, batch_inputs, batch_others, eager: bool = False) -> Any:
         """Forward one already-selected batch through the block (raw output)."""
         # Stage on the block's actual device (see _forward_device). The shared
         # kwargs follow the hidden states so masks/position ids reach the same
@@ -385,7 +395,8 @@ class BlockForwardRunner:
         if torch.is_tensor(hidden_states) and hidden_states.device != fwd_device:
             hidden_states = hidden_states.to(fwd_device)
         batch_others = to_device(batch_others, fwd_device)
-        return self.block_forward(
+        forward_fn = self._eager_block_forward if eager else self.block_forward
+        return forward_fn(
             block,
             hidden_states,
             batch_others,

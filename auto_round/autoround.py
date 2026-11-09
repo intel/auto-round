@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -145,6 +146,8 @@ class AutoRound:
             | None
         ) = None,
         bits: float | None = None,
+        shared_layers: Iterable[Iterable[str]] | None = None,
+        default_shared_layers: bool | None = None,
         layer_config: dict[str, str | dict | QuantizationScheme] | None = None,
         dataset: str | CalibDataset | list | tuple | torch.utils.data.DataLoader | None = UNSET,
         low_gpu_mem_usage: bool = False,
@@ -289,8 +292,14 @@ class AutoRound:
             diffusion_tuning_cache_size (float | str): Diffusion tuning cache
                 budget in GiB, or ``"auto"``. Default: ``0``; numeric values must
                 be finite and non-negative.
-            shared_layers (Iterable[Iterable[str]] | None): Groups sharing an
-                adaptive scheme selection. AutoScheme only; default: ``None``.
+            shared_layers (Iterable[Iterable[str]] | None): Extra layer groups that
+                must share one quantization scheme, for fused serving kernels.
+                AutoScheme only; combined with the default vLLM fusion groups.
+                Default: ``None``.
+            default_shared_layers (bool | None): Whether to add the built-in vLLM
+                fusion groups (``q/k/v``, MLA ``q_a``/``kv_a``, ``gate/up``) to
+                ``shared_layers``. ``False`` lets AutoScheme pick per layer.
+                AutoScheme only; ``None`` (default) keeps the AutoScheme default.
             ignore_scale_zp_bits (bool): Exclude scale/zero-point overhead from
                 adaptive average-bit accounting. AutoScheme only; default: ``False``.
             rotation_config (object | dict | str | None): Rotation configuration
@@ -350,6 +359,12 @@ class AutoRound:
             device_map = legacy_device
         if bits is not None:
             direct_kwargs["bits"] = bits
+        # AutoScheme-only options: they are consumed by resolve_entry_scheme when
+        # `scheme` holds candidates and must not reach the algorithm config otherwise.
+        if shared_layers is not None:
+            direct_kwargs["shared_layers"] = shared_layers
+        if default_shared_layers is not None:
+            direct_kwargs["default_shared_layers"] = default_shared_layers
         scheme, direct_kwargs = resolve_entry_scheme(scheme, direct_kwargs)
 
         definition = get_recipe(recipe) if isinstance(recipe, str) else recipe

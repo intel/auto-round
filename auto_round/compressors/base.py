@@ -48,6 +48,7 @@ from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
     get_gguf_scheme,
+    needs_nvfp_global_scale,
     parse_scheme,
     preset_name_to_scheme,
     scheme_to_preset_name,
@@ -1226,13 +1227,31 @@ class BaseOrchestrator:
         raw_adt = (cfg.act_data_type or "").lower()
         raw_scheme_upper = raw_scheme.upper()
 
-        is_raw_nv_fp = "nv_fp" in raw_dt or "nv_fp" in raw_adt or "NVFP" in raw_scheme_upper
+        is_raw_nv_fp = needs_nvfp_global_scale(raw_dt) or needs_nvfp_global_scale(raw_adt) or "NVFP" in raw_scheme_upper
         has_static_global_scale = "static_gs" in raw_adt or "NVFP4" in raw_scheme_upper
         is_valid_act_static = (cfg.act_dynamic is False or has_static_global_scale) and (
             getattr(cfg, "act_bits", 16) or 16
         ) <= 8
 
         return is_raw_nv_fp, is_valid_act_static
+
+    @property
+    def enable_block_forward_compile(self) -> bool:
+        """Whether the whole block forward may be compiled.
+
+        This is intentionally separate from :attr:`enable_torch_compile`, which
+        controls the per-layer quantization kernels.  Schemas such as NVFP4
+        need an eager block forward for the calibration pass that collects
+        ``act_max`` through hooks, but their quant kernels can still be
+        compiled.  Static KV/attention calibration installs hooks that run on
+        every attention forward, so those runs keep the block forward eager.
+        """
+        if not getattr(self, "enable_torch_compile", False):
+            return False
+        return not (
+            getattr(self, "static_kv_dtype", None) is not None
+            or getattr(self, "static_attention_dtype", None) is not None
+        )
 
     def _maybe_log_torch_compile_default_hint(self) -> None:
         """Log the default torch.compile hint once final config state is available."""
@@ -1334,10 +1353,14 @@ class BaseOrchestrator:
                 or getattr(self, "_torch_compile_default_off_reason", None)
             )
         )
-        _, is_valid_act_static = self._get_torch_compile_guard_state()
+        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
 
-        # On HPU, we rely on torch.compile to speed up the model execution.
-        if self.enable_torch_compile and is_valid_act_static:
+        # Static-activation FP8 needs eager calibration hooks, so keep the old
+        # all-or-nothing behavior there.  NVFP4 also has a static global scale,
+        # but only its block-forward calibration pass needs to stay eager; the
+        # per-layer quant functions are safe to compile, and disabling them is
+        # what made NVFP4 tuning needlessly slow.
+        if self.enable_torch_compile and is_valid_act_static and not is_raw_nv_fp:
             self.enable_torch_compile = False
             self._torch_compile_off_reason = "activation is static"
             logger.warning_once("reset enable_torch_compile to `False` as activation is static")
