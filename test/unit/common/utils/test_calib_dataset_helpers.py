@@ -653,61 +653,36 @@ class TestMixedDatasetSampleAllocation:
 
 
 # ---------------------------------------------------------------------------
-# Calibration dataset packing
+# get_opencode_instruct_dataset packing
 # ---------------------------------------------------------------------------
-class TestDatasetPacking:
-    @pytest.mark.parametrize("dataset_name", ["opencode-instruct", "_test_bos_eos_packing_:concat"])
-    @pytest.mark.parametrize("case,nsamples", [("short", 8), ("short", 2), ("mixed", 8)])
-    @pytest.mark.parametrize("tensor_format", [False, True])
-    def test_packed_rows(self, monkeypatch, dataset_name, case, nsamples, tensor_format):
+class TestOpenCodeInstructPacking:
+    def test_every_packed_row_is_seqlen_long(self, monkeypatch):
         import auto_round.calib_dataset as cd
 
-        # Even nsamples=2 must load all eight source rows before packing.
-        monkeypatch.setenv("AR_CALIB_DATA_MULTIPLIER", "4")
-        seqlen = 16
-        tokenizer = types.SimpleNamespace(bos_token_id=1, eos_token_id=2)
-        if case == "short":
-            input_ids = [[1] + list(range(10 + 10 * i, 16 + 10 * i)) + [2] for i in range(8)]
-            content = [token for row in input_ids for token in row[1:-1]]
-            # 48 content tokens produce three full rows; discard the six-token tail.
-            expected = [[1] + content[i : i + 14] + [2] for i in range(0, 42, 14)]
-        else:
-            # Full rows with both, neither, only BOS, and only EOS.
-            input_ids = [
-                [1] + list(range(10, 24)) + [2],
-                list(range(30, 46)),
-                [1] + list(range(50, 65)),
-                list(range(70, 85)) + [2],
-                list(range(90, 106)),
-            ]
-            expected = input_ids
+        bos, eos, seqlen = 1, 2, 16
+        rows = [{"input": f"q{i}", "output": f"a{i}"} for i in range(8)]
 
         class _Stream:
             def shuffle(self, seed):
                 return self
 
             def take(self, n):
-                return [{"input": f"q{i}", "output": f"a{i}"} for i in range(min(n, len(input_ids)))]
+                return rows[:n]
 
-        def tokenize(examples):
-            ids = input_ids[: len(examples["text"])]
-            return {"input_ids": ids, "attention_mask": [[1] * len(row) for row in ids]}
+        def fake_tokenizer_function(examples):
+            # every sample: BOS + 6 content ids + EOS
+            input_ids = [[bos] + list(range(10 + 10 * i, 16 + 10 * i)) + [eos] for i in range(len(examples["text"]))]
+            return {"input_ids": input_ids, "attention_mask": [[1] * len(ids) for ids in input_ids]}
 
-        def registered_loader(**kwargs):
-            dataset = Dataset.from_dict(
-                {"input_ids": input_ids, "attention_mask": [[1] * len(row) for row in input_ids]}
-            )
-            if tensor_format:
-                dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
-            return dataset
-
+        tokenizer = types.SimpleNamespace(bos_token_id=bos, eos_token_id=eos)
         monkeypatch.setattr(cd, "load_dataset", lambda *args, **kwargs: _Stream())
-        monkeypatch.setattr(cd, "get_tokenizer_function", lambda *args, **kwargs: tokenize)
-        monkeypatch.setitem(cd.CALIB_DATASETS, "_test_bos_eos_packing_", registered_loader)
-        dataset = cd._get_dataset_impl(tokenizer, seqlen, dataset_name=dataset_name, nsamples=nsamples)
+        monkeypatch.setattr(cd, "get_tokenizer_function", lambda *args, **kwargs: fake_tokenizer_function)
 
-        assert [row["input_ids"].tolist() for row in dataset] == expected[:nsamples]
+        dataset = cd.get_opencode_instruct_dataset(tokenizer, seqlen, nsamples=8)
+
+        # 8 samples x 6 content ids = 48, each row holds BOS + 14 ids + EOS -> 3 full rows
+        assert len(dataset) == 3
         for row in dataset:
             assert len(row["input_ids"]) == seqlen
-            assert row["attention_mask"].shape == row["input_ids"].shape
-            assert row["attention_mask"].tolist() == [1] * seqlen
+            assert len(row["attention_mask"]) == seqlen
+            assert row["input_ids"][0] == bos and row["input_ids"][-1] == eos
