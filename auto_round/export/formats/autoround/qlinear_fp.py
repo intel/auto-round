@@ -38,6 +38,7 @@ from auto_round.compressors.utils import BackendDataType, is_mx_fp, is_nv_fp
 from auto_round.data_type.mxfp import FP32_EXPONENT_BIAS, FP32_MIN_NORMAL
 from auto_round.data_type.nvfp import cast_to_fp4, float_to_e5m3_frexp, get_reciprocal
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.modeling.grouped_linear import grouped_linear_forward, validate_grouped_nvfp4
 from auto_round.schemes import is_nvfp4_e5m3_gs
 from auto_round.utils import get_packing_device, logger
 
@@ -193,6 +194,34 @@ class QuantLinear(nn.Module):
         if input_global_scale is not None:
             # TODO: the shape of `input_global_scale` is [] in some cases — need to investigate why.
             self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
+
+
+class GroupedQuantLinear(QuantLinear):
+    """Packed NVFP4 grouped projection with a portable reference forward.
+
+    Keeps tensor names/layout identical to ordinary NVFP4 exports. This
+    dequantize/BMM fallback is for correctness, not an optimized kernel.
+    """
+
+    def __init__(self, *args, n_groups, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.n_groups = n_groups
+        self.in_features = self.infeatures
+        self.out_features = self.outfeatures
+        self.act_group_size = kwargs.get("act_group_size", 16)
+        self.act_data_type = kwargs.get("act_data_type", "nv_fp")
+        validate_grouped_nvfp4(self, self.bits, self.group_size, self.data_type)
+
+    def forward(self, x):
+        from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
+        from auto_round.experimental.qmodules.nvfp4 import _nv_fp4_with_static_gs
+
+        if self.act_bits <= 8:
+            x, _, _ = _nv_fp4_with_static_gs(x, self.input_global_scale, group_size=self.act_group_size)
+        w = unpack_fp4_from_uint8(self.weight_packed, self.outfeatures, self.infeatures, dtype=torch.float32)
+        w = w * self.weight_scale.float().repeat_interleave(self.group_size, dim=1)
+        w = w / self.weight_global_scale.float()
+        return grouped_linear_forward(x, w.to(x.dtype), self.n_groups)
 
 
 def pack_fp4_to_uint8(scaled_tensor: torch.Tensor):

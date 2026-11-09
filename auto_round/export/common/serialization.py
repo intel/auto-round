@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import inspect
 import json
 import os
 import shutil
@@ -461,6 +462,14 @@ def save_model(
     else:
         export_state_dict = _get_state_dict_for_export_dtype(model, dtype)
         save_kwargs = {} if export_state_dict is None else {"state_dict": export_state_dict}
+        # Packed buffers are already in final format. Do not let Transformers
+        # reverse stale FP8 source-loading conversions and change their bytes.
+        has_packed_weights = any(name.endswith("weight_packed") for name, _ in model.named_parameters()) or any(
+            name.endswith("weight_packed") for name, _ in model.named_buffers()
+        )
+        if has_packed_weights and "save_original_format" in inspect.signature(model.save_pretrained).parameters:
+            save_kwargs["save_original_format"] = False
+            logger.info("Saving packed checkpoint without reversing source weight conversions.")
         try:
             model.save_pretrained(
                 save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization, **save_kwargs
