@@ -269,7 +269,7 @@ class ShardWriter:
 
         model_type = getattr(getattr(self.model, "config", None), "model_type", None)
         skip_prefixes = MOE_SKIP_PREFIXES.get(model_type, []) if model_type is not None else []
-        if not any(
+        if model_type != "deepseek_v4" and not any(
             prefix == skip_prefix.rstrip(".") or prefix.startswith(skip_prefix) for skip_prefix in skip_prefixes
         ):
             return None
@@ -359,6 +359,10 @@ class ShardWriter:
 
     def _checkpoint_name(self, name: str) -> str:
         """Use the serialized namespace for both saving and resume comparisons."""
+        from auto_round.modeling.deepseek_v4 import checkpoint_name, is_deepseek_v4
+
+        if is_deepseek_v4(self.model):
+            return checkpoint_name(name)
         if self.reverse_weight_transforms is not None:
             return revert_name_with_weight_transforms(name, self.reverse_weight_transforms)
         return revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)

@@ -38,6 +38,11 @@ quantizer.quantize_and_save("./DeepSeek-V4-Flash-NVFP4", format="auto_round:llm_
   （层配置中设置 `act_bits=16`）。不支持其他分组激活格式。
 - 两种导出格式均保留 NVFP4 打包字节、分组尺度和全局尺度。兼容的 Transformers
   保存接口会对打包参数和缓冲区设置 `save_original_format=False`，不修改源转换元数据。
+- V4 保存的权重 key 和模块名元数据使用原始 Hub 命名：
+  `layers.N.ffn.experts.E.w1/w2/w3`、`layers.N.attn.wo_a`、`embed`、`head`，
+  而不是 Transformers 加载后的 `model.layers.N.mlp/self_attn` 命名。
+  未量化的融合专家拆回逐专家矩阵；只修改名称或拆分视图，不重新应用原生 FP8 量化。
+  完整保存和即时分片保存遵循相同命名约定，内存中的模型仍使用 Transformers 命名。
 - AutoRound 推理在 backend 为 `auto` 时，为分组层选择 `auto_round:torch_nvfp4`。
   该实现解包权重并以输入 dtype 执行分组 BMM，仅用于正确性参考，不是快速服务内核。
 
@@ -48,5 +53,6 @@ CPU 测试覆盖原生加载器选择和反量化参数、路由 ID、字典 RoP
 权重为全精度；不验证完整检查点加载、专家校准覆盖率或精度。
 
 使用 vLLM 服务该导出模型需要独立且兼容的 DeepSeek V4 NVFP4 适配器，以处理
-检查点名称和分组投影。本改动不提供该适配器，也不证明原生 vLLM 服务支持。
+量化元数据和分组投影。原始 Hub 命名本身不保证服务兼容性。
+本改动不提供该适配器，也不证明原生 vLLM 服务支持。
 本次未测试 GPU 内核、完整模型生成或 thinking 精度。

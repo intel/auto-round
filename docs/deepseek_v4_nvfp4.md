@@ -38,6 +38,13 @@ real `input_ids` for hash routing and caches dictionary RoPE inputs.
   weight-only (`act_bits=16` in the layer configuration). Other grouped activation
   formats are not supported.
 - Both exporters retain NVFP4 packed bytes, group scales, and global scales.
+  Saved V4 tensor keys and module-name metadata use the native Hub namespace:
+  `layers.N.ffn.experts.E.w1/w2/w3`, `layers.N.attn.wo_a`, `embed`, and `head`,
+  not the loaded Transformers `model.layers.N.mlp/self_attn` namespace.
+  Unquantized fused experts are split into native per-expert matrices. Only
+  names/layout views change; no source FP8 quantization is reapplied. Full saves
+  and immediate shard saves follow the same naming contract, while the in-memory
+  model remains in the Transformers namespace.
   Compatible Transformers saves use `save_original_format=False` for packed
   parameters **and buffers**, without changing source conversion metadata.
 - AutoRound inference selects `auto_round:torch_nvfp4` for grouped layers when
@@ -52,6 +59,7 @@ attention RTN/export run. The tiny run leaves MoE weights full precision; it doe
 not validate full-checkpoint loading, expert calibration coverage, or accuracy.
 
 Serving this export in vLLM requires a separate, compatible DeepSeek V4 NVFP4
-adapter for checkpoint names and grouped projections. This change does **not**
+adapter for quantization metadata and grouped projections. Native Hub names do
+not by themselves establish serving compatibility. This change does **not**
 provide that adapter or establish native vLLM serving support. GPU kernels,
 full-model generation, and thinking accuracy have not been tested here.

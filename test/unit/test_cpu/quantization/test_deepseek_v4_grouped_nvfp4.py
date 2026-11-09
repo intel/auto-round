@@ -322,19 +322,23 @@ class TestGroupedNVFP4(unittest.TestCase):
             x = torch.randn(1, 4, 2, 32)
             a, _, _ = _nv_fp4_with_static_gs(x, q.input_global_scale)
             torch.testing.assert_close(q(x), reference(a, decode(q), 2))
+            from auto_round.modeling.deepseek_v4 import checkpoint_name
+
+            saved_name = checkpoint_name(name)
             stored = {}
             for shard in Path(output).glob("*.safetensors"):
                 with safe_open(str(shard), framework="pt", device="cpu") as handle:
                     for key in handle.keys():
-                        if key.startswith(name + "."):
+                        if key.startswith(saved_name + "."):
                             stored[key] = handle.get_tensor(key)
-            self.assertEqual(stored[name + ".weight_packed"].dtype, torch.uint8)
-            self.assertEqual(stored[name + ".weight_scale"].shape, (32, 2))
-            self.assertEqual(stored[name + ".weight_global_scale"].numel(), 1)
-            self.assertEqual(stored[name + ".input_global_scale"].numel(), 1)
-            self.assertNotIn(name + ".weight", stored)
+            self.assertEqual(saved_name, "layers.0.attn.wo_a")
+            self.assertEqual(stored[saved_name + ".weight_packed"].dtype, torch.uint8)
+            self.assertEqual(stored[saved_name + ".weight_scale"].shape, (32, 2))
+            self.assertEqual(stored[saved_name + ".weight_global_scale"].numel(), 1)
+            self.assertEqual(stored[saved_name + ".input_global_scale"].numel(), 1)
+            self.assertNotIn(saved_name + ".weight", stored)
             self.assertFalse(any("weight_scale_inv" in key for key in stored))
-            torch.testing.assert_close(stored[name + ".weight_packed"], q.weight_packed)
+            torch.testing.assert_close(stored[saved_name + ".weight_packed"], q.weight_packed)
 
 
 if __name__ == "__main__":

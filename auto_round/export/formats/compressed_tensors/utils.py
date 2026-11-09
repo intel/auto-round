@@ -92,6 +92,10 @@ def ignore_fused_experts_for_vllm(qconfig: dict, ignored_layers: list[str], quan
 
 def get_checkpoint_name_reverter(model: torch.nn.Module):
     """Return ``fn(module_name) -> name`` mapping a loaded-model module name to the saved checkpoint namespace."""
+    from auto_round.modeling.deepseek_v4 import checkpoint_name, is_deepseek_v4
+
+    if is_deepseek_v4(model):
+        return checkpoint_name
     from auto_round.utils.common import (
         get_reverse_checkpoint_conversion_mapping,
         get_reverse_weight_transforms,
