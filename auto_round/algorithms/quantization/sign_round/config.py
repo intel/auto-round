@@ -27,6 +27,16 @@ class SignRoundConfig(QuantizationConfig):
     # with their own warning, e.g. QADConfig, disable it).
     _warn_enable_qad = True
 
+    serialized_fields = (
+        "iters",
+        "lr",
+        "minmax_lr",
+        "enable_minmax_tuning",
+        "enable_norm_bias_tuning",
+        "enable_quanted_input",
+        "gradient_accumulate_steps",
+    )
+
     @classmethod
     def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
         registry.add_argument(
