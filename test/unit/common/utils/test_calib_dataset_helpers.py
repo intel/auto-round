@@ -658,7 +658,8 @@ class TestMixedDatasetSampleAllocation:
 class TestDatasetPacking:
     @pytest.mark.parametrize("dataset_name", ["opencode-instruct", "_test_bos_eos_packing_:concat"])
     @pytest.mark.parametrize("case,nsamples", [("short", 8), ("short", 2), ("mixed", 8)])
-    def test_packed_rows(self, monkeypatch, dataset_name, case, nsamples):
+    @pytest.mark.parametrize("tensor_format", [False, True])
+    def test_packed_rows(self, monkeypatch, dataset_name, case, nsamples, tensor_format):
         import auto_round.calib_dataset as cd
 
         # Even nsamples=2 must load all eight source rows before packing.
@@ -696,7 +697,8 @@ class TestDatasetPacking:
             dataset = Dataset.from_dict(
                 {"input_ids": input_ids, "attention_mask": [[1] * len(row) for row in input_ids]}
             )
-            dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
+            if tensor_format:
+                dataset.set_format(type="torch", columns=["input_ids", "attention_mask"])
             return dataset
 
         monkeypatch.setattr(cd, "load_dataset", lambda *args, **kwargs: _Stream())
