@@ -18,9 +18,9 @@ import pytest
 import torch
 from torch import nn
 
-from auto_round.export.export_to_gguf import convert
-from auto_round.export.export_to_gguf.hf_checkpoint_restorer import RestoredTensor
-from auto_round.export.export_to_gguf.moe_adapter import (
+from auto_round.export.formats.gguf import convert
+from auto_round.export.formats.gguf.hf_checkpoint_restorer import RestoredTensor
+from auto_round.export.formats.gguf.moe_adapter import (
     GGUFMoEOutput,
     pack_moe_output,
     resolve_moe_output,

@@ -35,8 +35,15 @@ def is_preprocessor_config(config: Any) -> bool:
     return alg_cls is not None and issubclass(alg_cls, BasePreprocessor)
 
 
-def is_block_quantizer_config(config: Any) -> bool:
-    """Whether *config* resolves to a BaseQuantizer implementation."""
+def is_quantizer_config(config: Any) -> bool:
+    """Check whether a configuration resolves to a BaseQuantizer implementation.
+
+    Args:
+        config (Any): Algorithm configuration to resolve through the implementation registry.
+
+    Returns:
+        bool: Whether a registered implementation exists and subclasses BaseQuantizer.
+    """
     from auto_round.algorithms.quantization.base import BaseQuantizer
 
     alg_cls = get_algorithm_class(config)
@@ -44,15 +51,15 @@ def is_block_quantizer_config(config: Any) -> bool:
 
 
 def split_quantization_configs(configs: list[Any]) -> tuple[list[Any], list[Any]]:
-    """Split configs into preprocessor and block-quantizer config lists."""
+    """Split configs into preprocessor and quantizer config lists."""
     preprocessors = []
-    block_quantizers = []
+    quantizers = []
     for config in configs:
         if is_preprocessor_config(config):
             preprocessors.append(config)
-        elif is_block_quantizer_config(config):
-            block_quantizers.append(config)
-    return preprocessors, block_quantizers
+        elif is_quantizer_config(config):
+            quantizers.append(config)
+    return preprocessors, quantizers
 
 
 def _quantization_configs(configs: list[Any]) -> list[Any]:
@@ -67,7 +74,7 @@ def _public_config_attrs(config: Any) -> dict[str, Any]:
     return {
         key: value
         for key, value in vars(config).items()
-        if key != "scheme" and not key.startswith("_") and not callable(value)
+        if key != "scheme" and key not in config.stage_local_fields and not key.startswith("_") and not callable(value)
     }
 
 
@@ -106,16 +113,26 @@ def _resolve_shared_scheme_values(configs: list[Any]) -> None:
                 setattr(config.scheme, attr_name, shared_value)
 
 
-def resolve_shared_config_values(configs: list[Any]) -> list[Any]:
+def resolve_shared_config_values(configs: list[Any], reconcile_non_scheme: bool = True) -> list[Any]:
     """Merge shared public attrs across quantization configs without naming fields.
 
     A field is shared when at least two quantization configs define the same
     public attribute. ``None`` means "not set" and inherits from the single
     non-None value, while conflicting non-None values fail fast. Configs that do
-    not define a field do not participate in that field.
+    not define a field do not participate in that field. Fields declared in
+    ``stage_local_fields`` are never merged or propagated to another stage.
+
+    When *reconcile_non_scheme* is ``False`` only the quantization *scheme*
+    fields (bits / group_size / data_type …) are reconciled; the behavioral
+    public attributes are left untouched. This is used when chaining two
+    independent quantization stages (e.g. a block-wise warm-up feeding a
+    whole-model quantizer) that legitimately differ on fields like
+    ``enable_alg_ext`` while still sharing a single scheme.
     """
     quant_configs = _quantization_configs(configs)
     _resolve_shared_scheme_values(quant_configs)
+    if not reconcile_non_scheme:
+        return configs
     attrs_by_config = [(config, _public_config_attrs(config)) for config in quant_configs]
     field_to_configs: dict[str, list[Any]] = defaultdict(list)
     for config, attrs in attrs_by_config:
