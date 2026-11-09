@@ -190,10 +190,9 @@ class TestAutoRoundXPU:
         )
         print(output_text[0])
 
-    def test_quant_lm_head(self, dataloader):
+    def test_quant_lm_head(self, tiny_untied_qwen_model_path, dataloader):
         bits, sym, group_size = 4, True, 128
-        # Note that, to save UT tuning time, the local model is intentionally kept lightweight, using only 2 hidden layers.
-        model_name = get_model_path("Qwen/Qwen3-8B")
+        model_name = tiny_untied_qwen_model_path
         layer_config = {
             "lm_head": {"bits": 4},  # set lm_head quant
             "layer": {"bits": 16},
@@ -215,15 +214,13 @@ class TestAutoRoundXPU:
             device_map=self.device,
             dataset=dataloader,
         )
-        quantized_model_path = "./saved"
-        _, quantized_model_path = ar.quantize_and_save(
-            output_dir=quantized_model_path, inplace=True, format="auto_round"
-        )
+        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
             quantized_model_path, device_map=self.device, quantization_config=quantization_config
         )
+        assert model.config.quantization_config.extra_config["lm_head"]["bits"] == 4
         tokenizer = AutoTokenizer.from_pretrained(quantized_model_path)
         text = "There is a girl who likes adventure,"
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
