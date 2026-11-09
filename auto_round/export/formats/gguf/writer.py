@@ -60,31 +60,6 @@ def _clear_gguf_model_instances_on_error(func):
     return wrapper
 
 
-def _enforce_tokenizer_trust_remote_code(func):
-    """llama.cpp converters hard-code ``trust_remote_code=True``; override it with the user's choice."""
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        from transformers import AutoTokenizer
-
-        model = kwargs.get("model", args[1] if len(args) > 1 else None)
-        trust_remote_code = bool(getattr(model, "_autoround_trust_remote_code", False))
-        orig = AutoTokenizer.__dict__["from_pretrained"]
-        orig_func = orig.__func__
-
-        def _from_pretrained(cls, *f_args, **f_kwargs):
-            f_kwargs["trust_remote_code"] = trust_remote_code
-            return orig_func(cls, *f_args, **f_kwargs)
-
-        AutoTokenizer.from_pretrained = classmethod(_from_pretrained)
-        try:
-            return func(*args, **kwargs)
-        finally:
-            AutoTokenizer.from_pretrained = orig
-
-    return wrapper
-
-
 FTYPE_MAP: dict[str, gguf.LlamaFileType] = {
     "f32": gguf.LlamaFileType.ALL_F32,
     "f16": gguf.LlamaFileType.MOSTLY_F16,
@@ -174,6 +149,14 @@ def create_model_class(
             small_first_shard=False,
             hparams=hparams,
         )
+        # Converters read this when loading the tokenizer; scoped to this instance only.
+        model_instance.trust_remote_code = bool(getattr(model, "_autoround_trust_remote_code", False))
+        if not model_instance.trust_remote_code and conversion.source.startswith("LLAMA_CPP_ROOT="):
+            logger.warning(
+                "Using llama.cpp converter from %s, which may load the tokenizer with trust_remote_code=True "
+                "regardless of AutoRound's setting. Only use it with trusted models.",
+                conversion.source,
+            )
         if native_nontext_export:
             logger.info("Using native llama.cpp F32 export for non-text GGUF model")
             model_instance = _set_mmproj_output_path(model_instance)
@@ -193,7 +176,6 @@ def create_model_class(
 
 @torch.inference_mode()
 @_clear_gguf_model_instances_on_error
-@_enforce_tokenizer_trust_remote_code
 def pack_layer(
     name,
     model,
@@ -285,7 +267,6 @@ def pack_layer(
 
 
 @torch.inference_mode()
-@_enforce_tokenizer_trust_remote_code
 def save_quantized(
     output_dir,
     model=None,

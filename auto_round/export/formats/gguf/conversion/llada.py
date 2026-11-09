@@ -21,7 +21,7 @@ class LLaDAModel(TextModel):
         toktypes: list[int] = []
 
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=self.trust_remote_code)
 
         vocab_dict = tokenizer.get_vocab()  # ty: ignore[unresolved-attribute]
         vocab_size = self.hparams.get("vocab_size", len(vocab_dict))

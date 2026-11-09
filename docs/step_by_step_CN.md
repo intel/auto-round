@@ -245,7 +245,7 @@ auto-round --model <model_name_or_path> --scheme "W4A16" --trust_remote_code
 ar = AutoRound("<model_name_or_path>", scheme="W4A16", trust_remote_code=True)
 ```
 
-> **警告：** 开启 `trust_remote_code` 会在当前进程中执行模型仓库内的任意代码。请仅对来源可信且代码已审查的模型开启。旧参数 `--disable_trust_remote_code` 已弃用，不再生效。
+> **警告：** 开启 `trust_remote_code` 会在当前进程中执行模型仓库内的任意代码。请仅对来源可信且代码已审查的模型开启。旧参数 `--disable_trust_remote_code` 已弃用，不再生效。GGUF 导出时，内置及自动更新（`AR_GGUF_AUTO_UPDATE=1`）的 llama.cpp 转换器都会遵循该设置；通过 `LLAMA_CPP_ROOT` 指定的自定义转换器会按原样运行，仍可能加载模型仓库中的分词器代码。
 
 ### 命令行用法
 

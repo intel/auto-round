@@ -213,19 +213,24 @@ class TestEval:
     """Tests for the main `eval` entry point."""
 
     def test_diffusion_model_path_skips_lm_eval(self, monkeypatch):
-        args = SimpleNamespace(model_name="diffusion-model", eval_backend="hf")
+        args = SimpleNamespace(model_name="diffusion-model", eval_backend="hf", disable_trust_remote_code=True)
         captured = {}
 
         def fake_diffusion_eval(evaluation_args, pipe):
             captured["args"] = evaluation_args
             captured["pipe"] = pipe
 
-        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: True)
-        monkeypatch.setattr("auto_round.utils.diffusion_load_model", lambda value: (object(), object()))
+        def fake_diffusion_load_model(value, trust_remote_code):
+            captured["trust_remote_code"] = trust_remote_code
+            return object(), object()
+
+        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value, trust_remote_code: True)
+        monkeypatch.setattr("auto_round.utils.diffusion_load_model", fake_diffusion_load_model)
         monkeypatch.setattr("auto_round.eval.evaluation.evaluate_diffusion_model", fake_diffusion_eval)
         eval_cli.eval(args)
         assert captured["args"] is args
         assert captured["pipe"] is not None
+        assert captured["trust_remote_code"] is False
 
     def test_vllm_backend_delegates(self, monkeypatch):
         captured = {}
@@ -233,8 +238,8 @@ class TestEval:
         def fake_eval_with_vllm(args):
             captured["args"] = args
 
-        args = SimpleNamespace(model_name="vllm-model", eval_backend="vllm")
-        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: False)
+        args = SimpleNamespace(model_name="vllm-model", eval_backend="vllm", disable_trust_remote_code=True)
+        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value, trust_remote_code: False)
         monkeypatch.setattr(eval_cli, "eval_with_vllm", fake_eval_with_vllm)
         eval_cli.eval(args)
         assert captured["args"] is args
@@ -255,7 +260,7 @@ class TestEval:
 
         fake_res = {"results": {"mmlu": {}}, "versions": {}, "n-shot": {}, "higher_is_better": {}}
 
-        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: False)
+        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value, trust_remote_code: False)
         monkeypatch.setattr(
             eval_cli,
             "_load_gguf_model_if_needed",
@@ -285,7 +290,7 @@ class TestEval:
             limit=None,
         )
 
-        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: False)
+        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value, trust_remote_code: False)
         monkeypatch.setattr(
             eval_cli,
             "_load_gguf_model_if_needed",
@@ -319,7 +324,7 @@ class TestEval:
             limit=None,
         )
 
-        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value: False)
+        monkeypatch.setattr(eval_cli, "is_diffusion_model", lambda value, trust_remote_code: False)
         monkeypatch.setattr(
             eval_cli,
             "_load_gguf_model_if_needed",

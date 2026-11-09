@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 from auto_round.export.formats.gguf import llama_cpp_conversion as lcc
@@ -247,3 +249,33 @@ class TestUrlConstants:
 class TestGGUFConversionError:
     def test_subclass_of_import_error(self):
         assert issubclass(lcc.GGUFConversionError, ImportError)
+
+
+# ---------------------------------------------------------------------------
+# trust_remote_code handling in converters
+# ---------------------------------------------------------------------------
+class TestRemoteCodeRestriction:
+    def test_downloaded_sources_use_instance_opt_in(self, tmp_path):
+        conv = tmp_path / "conversion"
+        conv.mkdir()
+        src = "class M:\n    def v(self):\n        return dict(trust_remote_code=True)\n"
+        (conv / "m.py").write_text(src, encoding="utf-8")
+
+        lcc._restrict_remote_code(tmp_path)
+
+        spec = importlib.util.spec_from_file_location("_restricted_m", conv / "m.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        model_cls = module.M
+        assert model_cls().v() == {"trust_remote_code": False}
+        opted_in = model_cls()
+        opted_in.trust_remote_code = True
+        assert opted_in.v() == {"trust_remote_code": True}
+
+    def test_bundled_converters_do_not_hardcode_remote_code(self):
+        from auto_round.export.formats.gguf.conversion.base import ModelBase
+
+        conv_dir = lcc._bundled_root() / "conversion"
+        offenders = [p.name for p in conv_dir.rglob("*.py") if "trust_remote_code=True" in p.read_text("utf-8")]
+        assert offenders == []
+        assert ModelBase.trust_remote_code is False

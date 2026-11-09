@@ -21,7 +21,7 @@ class ChatGLMModel(TextModel):
         scores: list[float] = []
 
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(dir_model, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(dir_model, trust_remote_code=self.trust_remote_code)
         vocab_size = hparams.get("padded_vocab_size", len(tokenizer.get_vocab()))  # ty: ignore[unresolved-attribute]
         assert max(tokenizer.get_vocab().values()) < vocab_size  # ty: ignore[unresolved-attribute]
         role_special_tokens = ["<|system|>", "<|user|>", "<|assistant|>", "<|observation|>"]
@@ -114,7 +114,7 @@ class ChatGLMModel(TextModel):
         toktypes: list[int] = []
 
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(dir_model, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(dir_model, trust_remote_code=self.trust_remote_code)
         vocab_size = hparams.get("padded_vocab_size",hparams["vocab_size"])
         assert max(tokenizer.get_vocab().values()) < vocab_size  # ty: ignore[unresolved-attribute]
 
