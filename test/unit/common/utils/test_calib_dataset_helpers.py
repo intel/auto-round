@@ -661,6 +661,8 @@ class TestDatasetPacking:
     def test_packed_rows(self, monkeypatch, dataset_name, case, nsamples):
         import auto_round.calib_dataset as cd
 
+        # Even nsamples=2 must load all eight source rows before packing.
+        monkeypatch.setenv("AR_CALIB_DATA_MULTIPLIER", "4")
         seqlen = 16
         tokenizer = types.SimpleNamespace(bos_token_id=1, eos_token_id=2)
         if case == "short":
