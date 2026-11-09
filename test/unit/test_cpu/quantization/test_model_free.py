@@ -828,34 +828,42 @@ def test_streaming_nvfp4_gs_partners_are_local_before_quantizing(tmp_path, monke
     work_dir = tmp_path / "work"
     source_dir.mkdir()
     work_dir.mkdir()
-    gate = "model.layers.0.mlp.gate_proj"
-    up = "model.layers.0.mlp.up_proj"
-    shard1, shard2 = "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"
-    gate_weight = torch.full((16, 32), 1.0).to(torch.float8_e4m3fn)
-    up_weight = torch.full((16, 32), 5.0).to(torch.float8_e4m3fn)
-    save_file(
-        {
-            f"{gate}.weight": gate_weight,
-            f"{gate}.weight_scale_inv": torch.full((1, 1), 0.5),
-            f"{up}.weight_scale_inv": torch.full((1, 1), 0.5),
-        },
-        source_dir / shard1,
-    )
-    save_file({f"{up}.weight": up_weight}, source_dir / shard2)
-    weight_map = {
-        f"{gate}.weight": shard1,
-        f"{gate}.weight_scale_inv": shard1,
-        f"{up}.weight": shard2,
-        f"{up}.weight_scale_inv": shard1,
-    }
+    pair_count = 10
+    shard_names = [f"model-{index + 1:05d}-of-{pair_count * 2:05d}.safetensors" for index in range(pair_count * 2)]
+    pairs = []
+    weight_map = {}
+    for pair_index in range(pair_count):
+        gate = f"model.layers.{pair_index}.mlp.gate_proj"
+        up = f"model.layers.{pair_index}.mlp.up_proj"
+        donor_shard, recipient_shard = shard_names[pair_index * 2 : pair_index * 2 + 2]
+        gate_weight = torch.full((16, 32), 1.0 + pair_index).to(torch.float8_e4m3fn)
+        up_weight = torch.full((16, 32), 5.0 + pair_index).to(torch.float8_e4m3fn)
+        save_file(
+            {
+                f"{gate}.weight": gate_weight,
+                f"{gate}.weight_scale_inv": torch.full((1, 1), 0.5),
+                f"{up}.weight_scale_inv": torch.full((1, 1), 0.5),
+            },
+            source_dir / donor_shard,
+        )
+        save_file({f"{up}.weight": up_weight}, source_dir / recipient_shard)
+        weight_map.update(
+            {
+                f"{gate}.weight": donor_shard,
+                f"{gate}.weight_scale_inv": donor_shard,
+                f"{up}.weight": recipient_shard,
+                f"{up}.weight_scale_inv": donor_shard,
+            }
+        )
+        pairs.append((gate, up, donor_shard, recipient_shard, gate_weight, up_weight))
     (work_dir / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
 
     core = _ModelFreeCompressorCore(str(source_dir), str(tmp_path / "output"), enable_torch_compile=False)
     core.is_streaming = True
     core.work_dir = str(work_dir)
     core.source_dir = str(source_dir)
-    core.shard_names = [shard1, shard2]
-    core.shard_parallelism = 2
+    core.shard_names = shard_names
+    core.shard_parallelism = 1
     core.device = "cpu"
     core.default_scheme = {"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2_gs"}
     core.layer_config = {}
@@ -869,20 +877,27 @@ def test_streaming_nvfp4_gs_partners_are_local_before_quantizing(tmp_path, monke
     core._prepare_fused_gs_groups()
 
     jobs, requires = core._plan_streaming_jobs()
-    assert jobs == [shard1, shard2]
-    assert requires == {shard1: {shard1, shard2}, shard2: {shard1, shard2}}
+    assert jobs == shard_names
+    assert all(requires[donor] == {donor, recipient} for _, _, donor, recipient, _, _ in pairs)
+    assert all(requires[recipient] == {donor, recipient} for _, _, donor, recipient, _, _ in pairs)
 
     cache_dir = work_dir / ".cache" / "model_free_source_shards"
     downloads = []
     overrides = {}
+    retained_donor_tensors = {}
 
     def prefetch(_model, shard_name, *_args):
         downloads.append(shard_name)
         cache_dir.mkdir(parents=True, exist_ok=True)
         return shutil.copy(source_dir / shard_name, cache_dir / shard_name)
 
-    def process_shard(*, shard_name, fused_global_scale_overrides, **_kwargs):
+    def process_shard(*, shard_name, fused_global_scale_overrides, donor_shard_dir, **_kwargs):
         overrides[shard_name] = fused_global_scale_overrides
+        recipient_pair = next((pair for pair in pairs if pair[3] == shard_name), None)
+        if recipient_pair is not None:
+            donor = recipient_pair[2]
+            with safe_open(os.path.join(donor_shard_dir, donor), framework="pt") as shard:
+                retained_donor_tensors[donor] = set(shard.keys())
         return {}, [], []
 
     monkeypatch.setattr(module, "_prefetch_shard", prefetch)
@@ -893,14 +908,16 @@ def test_streaming_nvfp4_gs_partners_are_local_before_quantizing(tmp_path, monke
 
     core._process_all_shards_streaming_pipeline()
 
-    assert downloads == [shard1, shard2]
-    expected_scale = min(
-        calculate_gparam_e5m3(gate_weight.float() * 0.5, group_size=16).item(),
-        calculate_gparam_e5m3(up_weight.float() * 0.5, group_size=16).item(),
-    )
-    for shard_name in (shard1, shard2):
-        assert overrides[shard_name][gate] == pytest.approx(expected_scale)
-        assert overrides[shard_name][up] == pytest.approx(expected_scale)
+    assert downloads == shard_names
+    for gate, up, donor, recipient, gate_weight, up_weight in pairs:
+        expected_scale = min(
+            calculate_gparam_e5m3(gate_weight.float() * 0.5, group_size=16).item(),
+            calculate_gparam_e5m3(up_weight.float() * 0.5, group_size=16).item(),
+        )
+        for shard_name in (donor, recipient):
+            assert overrides[shard_name][gate] == pytest.approx(expected_scale)
+            assert overrides[shard_name][up] == pytest.approx(expected_scale)
+        assert retained_donor_tensors[donor] == {f"{up}.weight_scale_inv"}
     assert not list(cache_dir.glob("*.safetensors"))
 
 

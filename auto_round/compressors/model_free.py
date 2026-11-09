@@ -459,6 +459,7 @@ def _quantize_local_shard_task(
     donor_shard_dir: str | None = None,
     fused_gs_groups: list[tuple[str, ...]] | None = None,
     fused_gs_weight_map: dict[str, str] | None = None,
+    precomputed_fused_global_scale_overrides: dict[str, float] | None = None,
 ) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
     """Quantize one already-downloaded shard and write the output shard.
 
@@ -469,15 +470,21 @@ def _quantize_local_shard_task(
     if shard_path is None or not os.path.exists(shard_path):
         return shard_idx, shard_name, None, None, None, None, None
 
-    fused_global_scale_overrides = None
+    fused_global_scale_overrides = dict(precomputed_fused_global_scale_overrides or {})
     if fused_gs_groups:
-        fused_global_scale_overrides = _compute_cross_shard_fused_global_scales(
-            fused_gs_groups,
-            fused_gs_weight_map or {},
-            donor_shard_dir or os.path.dirname(shard_path),
-            fp8_block_size=fp8_block_size,
-            device=device,
-        )
+        groups_to_compute = [
+            group for group in fused_gs_groups if not all(layer in fused_global_scale_overrides for layer in group)
+        ]
+        if groups_to_compute:
+            fused_global_scale_overrides.update(
+                _compute_cross_shard_fused_global_scales(
+                    groups_to_compute,
+                    fused_gs_weight_map or {},
+                    donor_shard_dir or os.path.dirname(shard_path),
+                    fp8_block_size=fp8_block_size,
+                    device=device,
+                )
+            )
 
     output_tensors, quantized, ignored = _process_shard(
         shard_path=shard_path,
@@ -1443,6 +1450,35 @@ class _ModelFreeCompressorCore:
         )
         return jobs, requires
 
+    @staticmethod
+    def _retain_donor_scale_tensors(shard_path: str, tensor_names: set[str] | list[str]) -> None:
+        """Atomically compact a completed donor shard to only the tensors recipients still need."""
+        shard_path = os.fspath(shard_path)
+        if not shard_path.endswith(".safetensors"):
+            return
+
+        keep = set(tensor_names)
+        temp_path = None
+        try:
+            with safe_open(shard_path, framework="pt", device="cpu") as shard:
+                available = set(shard.keys())
+                if available == keep:
+                    return
+                retained = {name: shard.get_tensor(name) for name in keep.intersection(available)}
+
+            from safetensors.torch import save_file
+
+            fd, temp_path = tempfile.mkstemp(
+                prefix=".donor-scales-", suffix=".safetensors", dir=os.path.dirname(shard_path)
+            )
+            os.close(fd)
+            save_file(retained, temp_path)
+            os.replace(temp_path, shard_path)
+        except Exception as exc:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+            logger.warning(f"Could not compact donor shard '{shard_path}' to scale tensors: {exc}")
+
     def _process_all_shards_streaming_pipeline(self) -> None:
         """Download and quantize shards concurrently following :meth:`_plan_streaming_jobs`.
 
@@ -1474,6 +1510,9 @@ class _ModelFreeCompressorCore:
         local_paths: dict[str, str] = {}
         downloads: dict = {}
         running: dict = {}
+        completed_shards: set[str] = set()
+        cached_fused_global_scale_overrides: dict[str, float] = {}
+        computed_fused_gs_groups: set[tuple[str, ...]] = set()
         download_pool: ThreadPoolExecutor | None = None
         quant_pool: ProcessPoolExecutor | None = None
         progress = self._create_shard_progress(_tqdm)
@@ -1484,6 +1523,17 @@ class _ModelFreeCompressorCore:
                 ready = [name for name in waiting if requires[name].issubset(local_paths)]
                 for name in ready[: worker_count - len(running)]:
                     waiting.remove(name)
+                    fused_groups = self._fused_gs_groups_by_shard.get(name)
+                    cached_overrides = (
+                        {
+                            layer: cached_fused_global_scale_overrides[layer]
+                            for group in fused_groups
+                            for layer in group
+                            if layer in cached_fused_global_scale_overrides
+                        }
+                        if fused_groups
+                        else None
+                    )
                     future = quant_pool.submit(
                         _quantize_local_shard_task,
                         shard_indices[name],
@@ -1505,6 +1555,7 @@ class _ModelFreeCompressorCore:
                         donor_shard_dir=cache_dir,
                         fused_gs_groups=self._fused_gs_groups_by_shard.get(name),
                         fused_gs_weight_map=self._fused_gs_weight_map,
+                        precomputed_fused_global_scale_overrides=cached_overrides,
                     )
                     running[future] = name
 
@@ -1544,8 +1595,25 @@ class _ModelFreeCompressorCore:
 
                     name = running.pop(future)
                     self._merge_shard_task_result(future.result())
+                    completed_shards.add(name)
                     if progress is not None:
                         progress.update(1)
+
+                    for group in self._fused_gs_groups_by_shard.get(name, ()):
+                        group_key = tuple(group)
+                        if group_key in computed_fused_gs_groups:
+                            continue
+                        cached_fused_global_scale_overrides.update(
+                            _compute_cross_shard_fused_global_scales(
+                                [group],
+                                self._fused_gs_weight_map,
+                                cache_dir,
+                                fp8_block_size=self.fp8_block_size,
+                                device=self.device,
+                            )
+                        )
+                        computed_fused_gs_groups.add(group_key)
+
                     for shard in requires[name]:
                         users[shard] -= 1
                         if not users[shard]:
@@ -1553,6 +1621,19 @@ class _ModelFreeCompressorCore:
                                 os.remove(local_paths.pop(shard))
                             except FileNotFoundError:
                                 pass
+
+                    active_sources = {shard for active_name in running.values() for shard in requires[active_name]}
+                    for shard, remaining_users in users.items():
+                        if (
+                            remaining_users <= 0
+                            or shard not in completed_shards
+                            or shard in active_sources
+                            or shard not in local_paths
+                        ):
+                            continue
+                        donor_tensors = self.donor_shard_tensors.get(shard)
+                        if donor_tensors:
+                            self._retain_donor_scale_tensors(local_paths[shard], donor_tensors)
         except KeyboardInterrupt:
             logger.warning("Interrupted by user; terminating model-free shard workers.")
             raise
