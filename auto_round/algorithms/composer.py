@@ -478,6 +478,12 @@ class AlgorithmComposer:
         """Use the active algorithm's execution policy for calibration transport."""
         return self.active_quantizer.parallel.collection_context(self, block, fp_inputs)
 
+    @staticmethod
+    def _kv_qdq_context():
+        from auto_round.experimental.kv_cache import active_kv_qdq_context
+
+        return active_kv_qdq_context()
+
     def _collect_forward_timed(self, *args, **kwargs):
         """_collect_forward with wall accumulation into self.last_collect_wall."""
         import time as _ctime
@@ -768,7 +774,8 @@ class AlgorithmComposer:
             )
 
         try:
-            self._run_tuning(block, tune_block, collect_warm_start_output)
+            with self._kv_qdq_context():
+                self._run_tuning(block, tune_block, collect_warm_start_output)
 
             # Quantizer-agnostic block finalization (e.g. NVFP MoE act_max), kept
             # out of the per-algorithm tuning loop.
@@ -790,7 +797,8 @@ class AlgorithmComposer:
                 new_q_input = warm_start_outputs[0]
             elif self.active_quantizer.enable_quanted_input:
                 with torch.no_grad():
-                    new_q_input = self._collect_forward_timed(block, effective_input, input_others)
+                    with self._kv_qdq_context():
+                        new_q_input = self._collect_forward_timed(block, effective_input, input_others)
                     new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input
             else:
                 new_q_input = None

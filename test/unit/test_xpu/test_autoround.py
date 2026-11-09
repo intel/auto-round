@@ -1,4 +1,5 @@
 import copy
+import gc
 import shutil
 
 import pytest
@@ -214,7 +215,13 @@ class TestAutoRoundXPU:
             device_map=self.device,
             dataset=dataloader,
         )
-        _, quantized_model_path = ar.quantize_and_save(output_dir=self.save_dir, inplace=True, format="auto_round")
+        quantized_model_path = "./saved"
+        _, quantized_model_path = ar.quantize_and_save(
+            output_dir=quantized_model_path, inplace=True, format="auto_round"
+        )
+        del ar
+        gc.collect()
+        torch.xpu.empty_cache()
 
         quantization_config = AutoRoundConfig(backend="auto")
         model = AutoModelForCausalLM.from_pretrained(
