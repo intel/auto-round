@@ -26,9 +26,9 @@ from hypothesis import given, note
 from hypothesis import strategies as st
 
 from auto_round.data_type.mxfp import quant_mx_rceil
-from auto_round.export.svdquant_mxfp4 import NunchakuMXFP4Packer, pack_lowrank_weight, unpack_lowrank_weight
-from auto_round.export.svdquant_nunchaku import pack_nunchaku_16bit_vector, unpack_nunchaku_16bit_vector
-from auto_round.export.svdquant_w4a16 import (
+from auto_round.export.formats.svdquant.mxfp4 import NunchakuMXFP4Packer, pack_lowrank_weight, unpack_lowrank_weight
+from auto_round.export.formats.svdquant.nunchaku import pack_nunchaku_16bit_vector, unpack_nunchaku_16bit_vector
+from auto_round.export.formats.svdquant.w4a16 import (
     dequantize_adanorm_w4a16,
     pack_adanorm_w4a16,
     quantize_adanorm_w4a16_rtn,

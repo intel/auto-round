@@ -37,8 +37,8 @@ from hypothesis import assume, given, note
 from hypothesis import strategies as st
 
 from auto_round.data_type.utils import get_quant_func
-from auto_round.export.export_to_gguf.convert import _quant_data_with_args
-from auto_round.export.export_to_gguf.packing import ggml_quant
+from auto_round.export.formats.gguf.convert import _quant_data_with_args
+from auto_round.export.formats.gguf.packing import ggml_quant
 from auto_round.schemes import GGUF_SCHEME_FACTS
 
 gguf = pytest.importorskip("gguf")

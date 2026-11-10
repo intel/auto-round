@@ -30,9 +30,9 @@ from hypothesis import strategies as st
 from auto_round.experimental.qmodules.fp4_utils import pack_fp4_to_uint8 as pack_fp4_experimental
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
 from auto_round.experimental.qmodules.mxint4_utils import unpack_int4_from_uint8
-from auto_round.export.export_to_autoround.qlinear_fp import pack_fp4_to_uint8 as pack_fp4_export
-from auto_round.export.export_to_autoround.qlinear_int import pack_int4_to_uint8
-from auto_round.export.svdquant_mxfp4 import (
+from auto_round.export.formats.autoround.qlinear_fp import pack_fp4_to_uint8 as pack_fp4_export
+from auto_round.export.formats.autoround.qlinear_int import pack_int4_to_uint8
+from auto_round.export.formats.svdquant.mxfp4 import (
     decode_e2m1,
     decode_ue8m0,
     encode_e2m1,
