@@ -1694,6 +1694,11 @@ class _ModelFreeCompressorCore:
             format=self.format,
             source_quant_config=source_quant_config,
         )
+        # Record AutoRound hyper-parameters for llm-compressor style configs (no-op otherwise).
+        from auto_round.export.formats.compressed_tensors.utils import add_autoround_config
+        from auto_round.version import __version__
+
+        add_autoround_config(quantization_config, {**self.default_scheme, "iters": 0, "autoround_version": __version__})
 
         self._remove_stale_quantization_config_files()
         _remove_quantization_configs(self.config)

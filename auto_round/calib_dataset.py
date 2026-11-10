@@ -1874,8 +1874,8 @@ def _get_dataset_impl(
         return not (len(input_ids_list) > 1 and seqlen > 2 and input_ids_list.count(input_ids_list[-1]) > seqlen // 2)
 
     def concat_dataset_element(dataset):
-        input_ids, concat_input_ids = [eg["input_ids"] for eg in dataset], []
-        attention_mask_list, attention_mask = [], torch.ones([1, seqlen]).to(torch.int64)
+        input_ids, concat_input_ids = [torch.as_tensor(eg["input_ids"], dtype=torch.int64) for eg in dataset], []
+        attention_mask_list, attention_mask = [], torch.ones([seqlen]).to(torch.int64)
         buffer_input_id = torch.Tensor().to(torch.int64)
         bos_token_id, eos_token_id = tokenizer.bos_token_id, tokenizer.eos_token_id
         for input_id in input_ids:
