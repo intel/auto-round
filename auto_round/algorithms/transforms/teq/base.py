@@ -329,10 +329,13 @@ class TEQTransform(BasePreprocessor):
             if self.optimization_mode == "staged_refine":
                 if self.ar_first_iters is None:
                     raise ValueError("TEQ staged_refine requires `ar_first_iters` to be set.")
-                if self.ar_first_iters > quantizer.iters:
+                # ``SignRoundQuantizer.quantize_block`` splits the AR budget into
+                # ``ar_first_iters`` and ``iters - ar_first_iters``, so both
+                # phases must get at least one iteration.
+                if not 0 < self.ar_first_iters < quantizer.iters:
                     raise ValueError(
-                        "TEQ staged_refine requires `ar_first_iters` to be no greater than the configured "
-                        f"AR iterations ({quantizer.iters}), got {self.ar_first_iters}."
+                        "TEQ staged_refine requires `ar_first_iters` to be in "
+                        f"[1, {quantizer.iters - 1}], got {self.ar_first_iters}."
                     )
         model = self.model
         self._resolved_mappings = resolve_mappings(model, self._user_mappings, skip_moe=self.teq_skip_moe)
@@ -889,7 +892,9 @@ class TEQTransform(BasePreprocessor):
             "max_log": math.log(self.max_scale),
             "smooth_name": mapping.smooth_name,
             "apply_input_transform": not isinstance(self._core_layer(mapping.smooth_layer), torch.nn.Linear),
-            "wrappers": [],
+            # Set by WrapperLinear when the smooth layer is itself quantized and
+            # therefore folds this scale into its weight during QDQ.
+            "output_wrapped": False,
         }
         for layer in mapping.balance_layers:
             core = self._core_layer(layer)
@@ -913,17 +918,16 @@ class TEQTransform(BasePreprocessor):
         scales = context["log_alpha"].detach().exp().clamp(self.min_scale, self.max_scale)
         smooth = self._core_layer(self.model.get_submodule(mapping.smooth_name))
 
-        # Linear weights were transformed before QDQ by WrapperLinear. Only
-        # their unquantized bias remains to be folded here. Norms are not block
-        # quantized, so fold the complete output transform into them now.
-        if isinstance(smooth, torch.nn.Linear):
+        # Linear weights are transformed before QDQ by WrapperLinear, so only
+        # their unquantized bias remains to be folded here. A smooth layer that
+        # never reached a wrapper -- a norm, or a Linear excluded from
+        # quantization via ignore_layers / mixed precision -- still needs the
+        # complete output transform folded in to stay function-preserving.
+        if isinstance(smooth, torch.nn.Linear) and context.get("output_wrapped", False):
             if smooth.bias is not None:
                 smooth.bias.data.div_(scales.to(smooth.bias.device, smooth.bias.dtype))
         else:
             fold_scales_into_smooth_layer(smooth, scales)
-        for wrapper in context["wrappers"]:
-            if hasattr(wrapper, "commit_teq_scale"):
-                wrapper.commit_teq_scale(context)
 
         self._log_scale_summary("ar_refine", mapping, float("nan"), scales)
         for layer in balance_layers:

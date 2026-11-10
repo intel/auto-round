@@ -30,6 +30,7 @@ import torch
 __all__ = [
     "TEQ_EQUIVALENT_TRANSFORMS_ATTR",
     "apply_teq_equivalent_input_transform",
+    "apply_teq_equivalent_input_transform_once",
     "apply_teq_equivalent_weight_transform",
     "get_teq_equivalent_transforms",
     "install_teq_equivalent_input_hook",
@@ -70,6 +71,20 @@ def apply_teq_equivalent_input_transform(module: torch.nn.Module, value: torch.T
     """Apply the published input-side transform, when the layer has one."""
     transform = get_teq_equivalent_transforms(module).get("input")
     return transform(value) if transform is not None else value
+
+
+def apply_teq_equivalent_input_transform_once(module: torch.nn.Module, value: torch.Tensor) -> torch.Tensor:
+    """Apply the input-side transform unless a committed hook already does it.
+
+    :func:`install_teq_equivalent_input_hook` is installed on the original layer
+    once its transformed weight is committed. Wrappers that run the transform
+    explicitly in their own ``forward`` must therefore skip it, otherwise the
+    activation would be transformed twice. This is the single gate shared by
+    every such wrapper.
+    """
+    if getattr(module, "_autoround_teq_equivalent_input_hook_installed", False):
+        return value
+    return apply_teq_equivalent_input_transform(module, value)
 
 
 def is_teq_equivalent_input_hook(hook) -> bool:

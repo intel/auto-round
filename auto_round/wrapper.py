@@ -22,7 +22,7 @@ from torch.functional import F
 
 import auto_round.envs as envs
 from auto_round.algorithms.transforms.teq.protocol import (
-    apply_teq_equivalent_input_transform,
+    apply_teq_equivalent_input_transform_once,
     apply_teq_equivalent_weight_transform,
     install_teq_equivalent_input_hook,
 )
@@ -394,7 +394,11 @@ class WrapperLinear(torch.nn.Module):
         teq_context = getattr(self.orig_layer, "_teq_input_context", None)
         if teq_context is not None:
             self.params["teq_log_alpha"] = teq_context["log_alpha"]
-            teq_context["wrappers"].append(self)
+        for output_context in getattr(self.orig_layer, "_teq_output_contexts", []):
+            # Record that a quantization wrapper will fold this mapping's output
+            # scale into the smooth layer's weight, so TEQ finalization only has
+            # to handle the remaining (unquantized) bias.
+            output_context["output_wrapped"] = True
 
     @staticmethod
     def _teq_scale(context, tensor: torch.Tensor) -> torch.Tensor:
@@ -426,9 +430,7 @@ class WrapperLinear(torch.nn.Module):
 
     def _apply_equivalent_input_transform(self, x: torch.Tensor) -> torch.Tensor:
         """Apply the activation-side counterpart of a per-layer rotation."""
-        if getattr(self.orig_layer, "_autoround_teq_equivalent_input_hook_installed", False):
-            return x
-        return apply_teq_equivalent_input_transform(self.orig_layer, x)
+        return apply_teq_equivalent_input_transform_once(self.orig_layer, x)
 
     def _apply_teq_bias(self, bias: torch.Tensor | None) -> torch.Tensor | None:
         if bias is None:
@@ -438,32 +440,24 @@ class WrapperLinear(torch.nn.Module):
         return bias
 
     @torch.no_grad()
-    def commit_teq_scale(self, context) -> None:
-        """Fold a selected TEQ scale into a quantized layer and metadata.
+    def load_best_teq_scale(self, best_params) -> None:
+        """Publish the selected trainable TEQ scale into its shared context.
 
-        Recomputing QDQ here is deliberate: multiplying an already quantized
-        tensor by a per-channel factor would make its stored group scale stale.
+        A TEQ scale is shared by every layer of a mapping, and one layer can
+        consume a second mapping's scale on its output side. All contexts of a
+        block must therefore hold their selected value *before* any wrapper
+        bakes a weight, otherwise an early layer would quantize against the
+        last-iteration scale instead of the selected one.
         """
-        if getattr(self.orig_layer, "_teq_input_context", None) is not context and context not in getattr(
-            self.orig_layer, "_teq_output_contexts", []
-        ):
+        context = getattr(self.orig_layer, "_teq_input_context", None)
+        if context is None:
             return
-        best = getattr(self, "_teq_best_params", {})
-        value = best.get("value", self.value).to(self.device)
-        min_scale = best.get("min_scale", self.min_scale).to(self.device)
-        max_scale = best.get("max_scale", self.max_scale).to(self.device)
-        qdq_weight, scale, zp = self._qdq_weight(value, min_scale, max_scale)
-        self.orig_layer.weight.data.copy_(qdq_weight)
-        install_teq_equivalent_input_hook(self.orig_layer)
-        shape = qdq_weight.t().shape if type(self.orig_layer) == transformers.pytorch_utils.Conv1D else qdq_weight.shape
-        if isinstance(scale, torch.Tensor):
-            self.orig_layer.scale = (
-                scale.reshape(shape[0], -1).to("cpu") if scale.numel() > 1 else scale.view(-1).to("cpu")
-            )
-        if isinstance(zp, torch.Tensor):
-            self.orig_layer.zp = zp.reshape(shape[0], -1).to("cpu") if zp.numel() > 1 else zp.view(-1).to("cpu")
-        elif zp is None:
-            self.orig_layer.zp = None
+        log_alpha = context["log_alpha"]
+        best = (best_params or {}).get("teq_log_alpha")
+        if best is None:
+            log_alpha.data.zero_()
+        else:
+            log_alpha.data.copy_(best.to(device=log_alpha.device, dtype=log_alpha.dtype))
 
     def _init_params(self, name, dtype, shape, value, tunable):
         """Initializes a parameter for tuning or uses a constant if tuning is disabled.
@@ -776,11 +770,7 @@ class WrapperLinear(torch.nn.Module):
             return layer
 
         best_params = best_params or {}
-        teq_context = getattr(self.orig_layer, "_teq_input_context", None)
-        if teq_context is not None and "teq_log_alpha" in best_params:
-            teq_context["log_alpha"].data.copy_(best_params["teq_log_alpha"].to(teq_context["log_alpha"].device))
-        elif teq_context is not None:
-            teq_context["log_alpha"].data.zero_()
+        self.load_best_teq_scale(best_params)
         v = self._rounding_value(best_params)
         min_scale = best_params.get("min_scale", torch.tensor(1.0)).to(self.device)
         max_scale = best_params.get("max_scale", torch.tensor(1.0)).to(self.device)
@@ -789,11 +779,6 @@ class WrapperLinear(torch.nn.Module):
             self.orig_layer.to(self.device)
         # Unwrapper weight
         qdq_weight, scale, zp = self._qdq_weight(v, min_scale, max_scale)
-        self._teq_best_params = {
-            "value": v.detach().clone(),
-            "min_scale": min_scale.detach().clone(),
-            "max_scale": max_scale.detach().clone(),
-        }
         self._apply_qdq(qdq_weight, scale, zp)
 
         # The committed source weight is now in the rotated basis. Keep
@@ -999,8 +984,7 @@ class WrapperWALayer(torch.nn.Module):
             if result is not None:
                 x = result[0] if isinstance(result, tuple) else result
 
-        if not getattr(self.orig_layer, "_autoround_teq_equivalent_input_hook_installed", False):
-            x = apply_teq_equivalent_input_transform(self.orig_layer, x)
+        x = apply_teq_equivalent_input_transform_once(self.orig_layer, x)
         x = self.qdq_input(x)
         return self.orig_layer.forward(x)
 
@@ -1324,16 +1308,25 @@ def unwrapper_block(block, best_params):
     min_scales: A dictionary of minimum scaling values for the wrapped modules.
     max_scales: A dictionary of maximum scaling values for the wrapped modules.
     """
-    for n, m in block.named_modules():
-        # Keep persistent activation wrappers, which do not implement unwrapper.
-        if hasattr(m, "orig_layer") and callable(getattr(m, "unwrapper", None)):
-            if n in best_params.keys():
-                best_param = best_params[n]
-            else:
-                best_param = None
-            orig_layer = m.unwrapper(best_param)
-            set_module(block, n, orig_layer)
+    # Persistent activation wrappers do not implement unwrapper; keep them.
+    wrapped = [
+        (n, m) for n, m in block.named_modules() if hasattr(m, "orig_layer") and callable(getattr(m, "unwrapper", None))
+    ]
+    # TEQ scales are shared across a mapping and a layer may consume one scale
+    # on its input side and another on its output side. Settle every selected
+    # scale before the first weight is baked so no layer quantizes against a
+    # stale value.
+    for name, module in wrapped:
+        if callable(getattr(module, "load_best_teq_scale", None)):
+            module.load_best_teq_scale(best_params.get(name))
 
+    for n, m in wrapped:
+        if n in best_params.keys():
+            best_param = best_params[n]
+        else:
+            best_param = None
+        orig_layer = m.unwrapper(best_param)
+        set_module(block, n, orig_layer)
 
 @contextmanager
 def preserve_original_weights(block):

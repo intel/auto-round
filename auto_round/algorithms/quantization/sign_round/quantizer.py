@@ -438,6 +438,16 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         lr = torch.tensor(self.lr)
         minmax_lr = torch.tensor(self.minmax_lr)
 
+        if teq_mode is not None and not teq_params:
+            # No TEQ mapping is active in this block (e.g. every mapping was
+            # skipped, or explicit mappings cover only some blocks). Building a
+            # TEQ schedule here would allocate an empty optimizer and run extra
+            # no-op iterations, so fall back to the plain AutoRound path.
+            logger.warning_once(
+                "TEQ: no trainable equivalent scale in this block; falling back to the standard AutoRound schedule."
+            )
+            teq_mode = None
+
         extra_kwargs = {} if self.momentum is None else {"momentum": self.momentum}
 
         if len(round_params) + len(minmax_params) + len(teq_params) <= 0:
@@ -690,13 +700,12 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                         else:
                             optimizer_class = torch.optim.Adam
                             optimizer_kwargs = {"betas": (0.9, 0.9)}
-if teq_params:
-    optimizer = optimizer_class(
-        teq_params,
-        lr=float(self.teq_joint_lr),
-        weight_decay=0.0,
-        **optimizer_kwargs,
-    )
+                        optimizer = optimizer_class(
+                            teq_params,
+                            lr=float(self.teq_joint_lr),
+                            weight_decay=0.0,
+                            **optimizer_kwargs,
+                        )
                         logger.info(
                             "TEQ staged refinement: optimizer=%s iters=%d lr=%.3e",
                             refine_optimizer,

@@ -160,8 +160,23 @@ class AWQSmoothStrategy:
                 imatrix = tensor_ops.channel_scale(layer.weight, imatrix, 1)
             return imatrix
 
+        def candidate_imatrix(layer: torch.nn.Module) -> torch.Tensor | None:
+            """Importance statistics valid in the basis the candidate is quantized in.
+
+            ``imatrix`` is a diagonal per-input-channel vector collected in the
+            original basis. A rotation-aware candidate is quantized after the
+            equivalent weight transform, and a non-diagonal transform does not
+            preserve a diagonal importance vector, so reusing it there would
+            weight the wrong channels. Fall back to unweighted quantization
+            instead of ranking candidates with mismatched statistics.
+            """
+            return None if rotation_aware else local_imatrix(layer)
+
         reused_init_scales = {}
-        if owner._qdq_tool.v2_scale_search == "reuse":
+        # Reusing an init scale searched on the unrotated weight is invalid once
+        # the candidate is quantized in the transformed basis, for the same
+        # reason as ``candidate_imatrix`` above.
+        if owner._qdq_tool.v2_scale_search == "reuse" and not rotation_aware:
             for bl in mapping.balance_layers:
                 _, opt_quant_func = bl_quant_funcs[bl]
                 if opt_quant_func is None:
@@ -216,7 +231,7 @@ class AWQSmoothStrategy:
                             bl_params[bl],
                             quant_func=quant_func,
                             opt_quant_func=opt_quant_func,
-                            imatrix=local_imatrix(bl),
+                            imatrix=candidate_imatrix(bl),
                             init_scale=reused_init_scales.get(bl),
                         )
                         tensor_ops.copy_weight(bl, (w_qdq / scales_view).to(bl.weight.dtype))
@@ -240,7 +255,7 @@ class AWQSmoothStrategy:
                                 bl_params[bl],
                                 quant_func=quant_func,
                                 opt_quant_func=opt_quant_func,
-                                imatrix=local_imatrix(bl),
+                                imatrix=candidate_imatrix(bl),
                                 init_scale=reused_init_scales.get(bl),
                             )
                             tensor_ops.copy_weight(bl, w_qdq.to(bl.weight.dtype))
@@ -283,7 +298,7 @@ class AWQSmoothStrategy:
                         bl_params[bl],
                         quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
-                        imatrix=local_imatrix(bl),
+                        imatrix=candidate_imatrix(bl),
                         init_scale=reused_init_scales.get(bl),
                     )
                     if rotation_aware:
