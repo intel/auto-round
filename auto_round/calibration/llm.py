@@ -27,6 +27,7 @@ import accelerate
 import torch
 from accelerate.big_modeling import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory, get_max_memory
+from torch.utils._pytree import tree_map
 
 from auto_round import envs
 from auto_round.calibration.base import Calibrator
@@ -242,9 +243,12 @@ class LLMCalibrator(Calibrator):
             # Release calibration dataloader to free tokenized sample tensors.
             if hasattr(self, "dataloader"):
                 del self.dataloader
-        res = self.inputs
-
-        return res
+        # Calibration caches are fixed data, not part of the tuning graph.
+        # no_grad does not clear an existing requires_grad flag, and a
+        # same-device to() can preserve the original tensor or its views.
+        # Detach at the handoff without mutating caller-owned tensors.
+        self.inputs = tree_map(lambda value: value.detach() if isinstance(value, torch.Tensor) else value, self.inputs)
+        return self.inputs
 
     def recover_forward(self, restore_positional_wrapper=None):
         """Recovers the forward function.

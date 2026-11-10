@@ -20,6 +20,16 @@ AutoRound 通过 `envs.py` 模块提供统一的环境变量管理系统，支�
 export AR_LOG_LEVEL=DEBUG
 ```
 
+### AR_DISABLE_BLOCK_TUNING_PREFETCH
+- **描述**：可选地关闭 SignRound 和 AutoRound-v2 block 调优中的 CUDA 异步 batch 预取，包括扩散模型调优。改用同步 batch 传输，不改变 `low_gpu_mem_usage` 和所选量化算法。
+- **默认值**：`False`（等价于 `"0"`）；保留正常的预取启用条件。
+- **有效值**：`"1"`、`"true"`、`"yes"` 或 `"on"`（不区分大小写）表示关闭预取；其他值保留正常的预取启用条件。
+- **用途**：排查预取问题时可设为 `1`。默认不会禁用预取。修改后需重启实验。
+
+```bash
+export AR_DISABLE_BLOCK_TUNING_PREFETCH=0
+```
+
 ### AR_ENABLE_COMPILE_PACKING
 - **描述**：启用编译打包优化
 - **默认值**：`False`（等价于 `"0"`）

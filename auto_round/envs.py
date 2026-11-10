@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     AR_DISABLE_DEFAULT_SHARED_LAYERS: bool = False
     AR_CALIB_DATA_MULTIPLIER: int = 100
     AR_DISABLE_BATCHED_SEARCH: bool = False
+    AR_DISABLE_BLOCK_TUNING_PREFETCH: bool = False
     AR_PERF_COUNTERS: bool = False
     AR_SEARCH_BATCH_GB: float | None = None
     AR_DISABLE_CROSS_DEVICE_SEARCH: bool = False
@@ -102,6 +103,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "AR_OMP_NUM_THREADS": lambda: os.getenv("AR_OMP_NUM_THREADS", None),
     "AR_DISABLE_OFFLOAD": lambda: os.getenv("AR_DISABLE_OFFLOAD", "0").lower() in ("1", "true", "yes"),
     "AR_DISABLE_DATASET_SUBPROCESS": lambda: os.getenv("AR_DISABLE_DATASET_SUBPROCESS", "0").lower() in ("1", "true"),
+    # Optional escape hatch; normal prefetch eligibility is preserved by default.
+    "AR_DISABLE_BLOCK_TUNING_PREFETCH": lambda: os.getenv("AR_DISABLE_BLOCK_TUNING_PREFETCH", "0").strip().lower()
+    in ("1", "true", "yes", "on"),
     # Multiplier applied to nsamples to determine the candidate pool size for
     # streaming calibration datasets. The pool is nsamples * AR_CALIB_DATA_MULTIPLIER.
     "AR_CALIB_DATA_MULTIPLIER": lambda: int(os.getenv("AR_CALIB_DATA_MULTIPLIER", "100")),

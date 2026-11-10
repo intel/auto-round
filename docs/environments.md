@@ -20,6 +20,16 @@ AutoRound uses a centralized environment variable management system through the 
 export AR_LOG_LEVEL=DEBUG
 ```
 
+### AR_DISABLE_BLOCK_TUNING_PREFETCH
+- **Description**: Optionally disables asynchronous CUDA batch prefetch during SignRound and AutoRound-v2 block tuning, including diffusion tuning. Uses synchronous batch transfers without changing `low_gpu_mem_usage` or the selected quantization algorithm.
+- **Default**: `False` (equivalent to `"0"`); normal prefetch eligibility is preserved.
+- **Valid Values**: `"1"`, `"true"`, `"yes"`, or `"on"` (case-insensitive) disable prefetch; other values preserve normal prefetch eligibility.
+- **Usage**: Set to `1` when diagnosing prefetch issues. The default does not disable prefetch. Restart the experiment after changing this setting.
+
+```bash
+export AR_DISABLE_BLOCK_TUNING_PREFETCH=0
+```
+
 ### AR_ENABLE_COMPILE_PACKING
 - **Description**: Enables compile packing optimization
 - **Default**: `False` (equivalent to `"0"`)
