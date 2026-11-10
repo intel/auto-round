@@ -819,6 +819,10 @@ class BaseOrchestrator:
             if self.to_quant_block_names is None and self.quant_block_list:
                 self.to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
 
+        resolution = getattr(self, "_format_resolution", None)
+        if resolution is not None:
+            self._format_resolution = replace(resolution, quant_block_list=self.quant_block_list)
+
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
