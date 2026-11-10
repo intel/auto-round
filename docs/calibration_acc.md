@@ -108,10 +108,10 @@
 <td align="center">96.67<br><sub>93.3 / 100 / 96.7 / – / –</sub></td>
 <td align="center">88.40<br><sub>88.4 / 90.4 / 86.4 / – / –</sub></td>
 <td align="center">73.00<br><sub>71.3 / 74.7</sub></td>
-<td align="center">–</td>
-<td align="center">–</td>
-<td align="center">56.90</td>
-<td align="center">–</td>
+<td align="center">85.20</td>
+<td align="center">91.90</td>
+<td align="center">58.00</td>
+<td align="center">43.80</td>
 </tr>
 </tbody>
 </table>
@@ -151,7 +151,7 @@
 <td align="center">58.66<br><sub>53.3 / 53.3 / 66.7 / 56.7 / 63.3</sub></td>
 <td align="center">–</td>
 <td align="center">65.95<br><sub>65.3 / 66.6</sub></td>
-<td align="center"><b>72.00</b></td>
+<td align="center">72.00</td>
 <td align="center">65.40</td>
 </tr>
 <tr>
@@ -159,8 +159,8 @@
 <td align="center">68.00<br><sub>66.7 / 63.3 / 66.7 / 70 / 73.3</sub></td>
 <td align="center">62.60<br><sub>61.6 / 61.1 / 65.1 / – / –</sub></td>
 <td align="center">68.75<br><sub>67.7 / 69.8</sub></td>
-<td align="center">–</td>
-<td align="center"><b>67.96</b></td>
+<td align="center">74.70</td>
+<td align="center">68.00</td>
 </tr>
 <tr>
 <td>UltraFineWeb</td>
@@ -183,8 +183,8 @@
 <td align="center"><b>76.70</b></td>
 <td align="center">58.60</td>
 <td align="center">67.95</td>
-<td align="center">–</td>
-<td align="center">–</td>
+<td align="center">77.30</td>
+<td align="center">67.20</td>
 </tr>
 <tr>
 <td>mix_b (UltraChat 75%, apply_chat_template=true + OpenCode 25%)</td>
@@ -199,8 +199,8 @@
 <td align="center">66.68<br><sub>66.7 / 66.7 / 66.7 / 63.3 / 70</sub></td>
 <td align="center">62.82<br><sub>60.1 / 61.6 / 66.7 / 64.6 / 61.1</sub></td>
 <td align="center">68.75<br><sub>67.7 / 69.8</sub></td>
-<td align="center">–</td>
-<td align="center">–</td>
+<td align="center">77.00</td>
+<td align="center"><b>73.50</b></td>
 </tr>
 </tbody>
 </table>
