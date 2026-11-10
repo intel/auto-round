@@ -78,7 +78,7 @@ def apply_layer_config_special_cases(
         # Re-mark after regex/partial layer_config entries are expanded: the same
         # marking already ran at format-resolution time, but raw user entries can
         # overwrite it during expansion.
-        from auto_round.export.formats.backends.auto_awq import mark_awq_unservable_layers
+        from auto_round.export.formats.awq.format import mark_awq_unservable_layers
 
         layer_config = mark_awq_unservable_layers(model, layer_config, default_dict)
 
@@ -354,8 +354,9 @@ def _traverse_and_expand_layer_config(
     # (e.g. MTP layers that transformers does not instantiate).
     safetensor_only_names = _get_safetensor_layer_names_not_in_model(model, all_module_names)
 
-    # 6. expand regex configs
+    # 6. expand regex configs; exact layer names always take precedence over patterns.
     regex_config = {}
+    exact_names = {name for name in layer_config if name in all_supported_layer_names}
     for name in list(layer_config.keys()):
         if name in all_supported_layer_names:
             continue
@@ -387,7 +388,8 @@ def _traverse_and_expand_layer_config(
         val = layer_config.pop(name)
         regex_config[name] = val  # keep regex config
         for match in matched:
-            layer_config[match] = val
+            if match not in exact_names:
+                layer_config[match] = val
 
     return layer_config, regex_config, embedding_layer_names, supported_types
 
@@ -493,7 +495,7 @@ def resolve_layer_config(
         export_to_awq="awq" in (format or ""),
     )
     if gguf_name:
-        from auto_round.export.formats.backends.gguf import apply_gguf_layer_defaults
+        from auto_round.export.formats.gguf.format import apply_gguf_layer_defaults
 
         resolved, _ = apply_gguf_layer_defaults(
             dict(resolved),

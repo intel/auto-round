@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import os
 import weakref
 from collections import OrderedDict
@@ -139,6 +140,115 @@ def _attention_strides_v(tensor: torch.Tensor, tensor_layout: str) -> tuple[int,
     else:
         batch_stride, seq_stride, head_stride, dim_stride = tensor.stride()
     return dim_stride, seq_stride, head_stride, batch_stride
+
+
+def _query_key_dot_mean_k(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    softmax_scale: float,
+    tensor_layout: str,
+) -> torch.Tensor:
+    """Return ``scale * (q · mean_k) / log(2)`` with shape ``[B, Hq, Sq]``.
+
+    Shared by the LSE restoration helpers.  Computed in float32 so the
+    correction keeps full precision even for bf16 inputs.
+    """
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        q_hnd = query
+        k_hnd = key
+    else:
+        q_hnd = query.permute(0, 2, 1, 3)
+        k_hnd = key.permute(0, 2, 1, 3)
+
+    # Mean over the KV sequence, in float32: [B, Hkv, 1, D].
+    key_mean = k_hnd.mean(dim=2, keepdim=True, dtype=torch.float32)
+
+    num_q_heads = q_hnd.shape[1]
+    num_kv_heads = key_mean.shape[1]
+    if num_q_heads != num_kv_heads:
+        # GQA: expand each KV head to the query heads it serves.
+        key_mean = key_mean.repeat_interleave(num_q_heads // num_kv_heads, dim=1)
+
+    # (q . mean_k) per query row, without materialising a second D-sized temp.
+    dot = torch.matmul(q_hnd.to(torch.float32), key_mean.transpose(-1, -2)).squeeze(-1)
+    return dot * softmax_scale / math.log(2.0)
+
+
+def _restore_lse_after_smooth_k(
+    lse: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    softmax_scale: float,
+    tensor_layout: str,
+) -> torch.Tensor:
+    """Undo the ``smooth_k`` key shift in the returned LSE, in place.
+
+    The SAGE kernels implement ``smooth_k`` by subtracting ``mean(k)`` from every
+    key row before INT8 quantization and folding that offset into the quantized
+    logits.  Attention output is unaffected (the shift is a per-query constant
+    absorbed by the softmax), but the LSE is computed from the *smoothed* logits
+    and therefore misses ``scale * q · mean(k)``.
+
+    Adding that term back yields the LSE of the original, unsmoothed logits::
+
+        LSE_unsmoothed = LSE_smoothed + scale * q · mean_k     (log2 units)
+
+    ``lse`` is in log2 units (the kernels use ``exp2`` throughout), hence the
+    division by ``log(2)``.
+
+    This matters for ring / split-KV attention, where each KV chunk has its own
+    ``mean(k)`` and the partial LSEs would otherwise not share a scale.
+
+    Args:
+        lse: ``[B, Hq, Sq]`` float32 LSE, modified in place.
+        query: ``[B, Hq, Sq, D]`` (HND) or ``[B, Sq, Hq, D]`` (NHD).
+        key: ``[B, Hkv, Skv, D]`` (HND) or ``[B, Skv, Hkv, D]`` (NHD).
+        softmax_scale: Softmax scale used for the attention call.
+        tensor_layout: "HND" or "NHD".
+
+    Returns:
+        The same ``lse`` tensor, for convenience.
+    """
+    lse += _query_key_dot_mean_k(query, key, softmax_scale, tensor_layout).to(lse.dtype)
+    return lse
+
+
+def _restore_lse_after_smooth_k_varlen(
+    lse: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    softmax_scale: float,
+    cu_seqlens_q: torch.Tensor,
+) -> torch.Tensor:
+    """Varlen variant of :func:`_restore_lse_after_smooth_k`, in place.
+
+    ``sagev1_varlen`` computes a *single* key mean over the whole flat
+    ``[total_kv, Hkv, D]`` buffer (the C++ path calls ``compute_seq_mean_bias``
+    with ``batch=1, seq=total_seqlen_kv``), so the same global mean is used here.
+
+    ``lse`` is ``[batch, Hq, max_seqlen_q]``.  Padding slots beyond each
+    sequence hold ``-inf`` and are left untouched, so they stay ``-inf``.
+    """
+    num_q_heads = q.shape[1]
+    num_kv_heads = k.shape[1]
+
+    # Global mean over the flat KV axis, in float32: [Hkv, D] -> [Hq, D] so it
+    # broadcasts against [total_q, Hq, D] with a GQA-safe head mapping.
+    key_mean = k.mean(dim=0, dtype=torch.float32)
+    if num_q_heads != num_kv_heads:
+        key_mean = key_mean.repeat_interleave(num_q_heads // num_kv_heads, dim=0)
+
+    # row_shift[i] belongs to flat query row i: [total_q, Hq].
+    row_shift = (q.to(torch.float32) * key_mean).sum(dim=-1) * softmax_scale / math.log(2.0)
+
+    # Map every flat query row back to its (batch, position-in-sequence) slot.
+    lengths = (cu_seqlens_q[1:] - cu_seqlens_q[:-1]).to(torch.long)
+    batch_idx = torch.repeat_interleave(torch.arange(lengths.numel(), device=q.device, dtype=torch.long), lengths)
+    token_idx = torch.arange(q.shape[0], device=q.device, dtype=torch.long) - cu_seqlens_q[batch_idx].to(torch.long)
+
+    lse[batch_idx, :, token_idx] += row_shift.to(lse.dtype)
+    return lse
 
 
 def _validate_canonical_strides(tensor: torch.Tensor, name: str, tensor_layout: str) -> None:
@@ -811,7 +921,8 @@ def sdpa(
     - is_causal: Apply the standard causal mask.
     - scale: Softmax scale. Uses 1 / sqrt(D) when None.
     - tensor_layout: Layout of Q/K/V/O tensors.
-    - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log(sum_j exp(score_{b,h,q,j})).
+    - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log2(sum_j exp(score_{b,h,q,j})).
+      The kernels use exp2-based softmax, so LSE is in log base 2 (not natural log).
 
     Returns:
     - O: same layout as the input tensors.
@@ -1387,7 +1498,10 @@ def sagev1(
     - scale: Attention scale. Uses 1 / sqrt(D) when None.
     - quant_block_size: Quantization block size used by the kernel.
     - tensor_layout: Layout of Q/K/V/O tensors.
-    - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log(sum_j exp(score_{b,h,q,j})).
+    - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log2(sum_j exp(score_{b,h,q,j})),
+      i.e. in log base 2 (the kernels use exp2-based softmax).  With ``smooth_k=True``
+      the ``scale * q · mean(k)`` term removed by key smoothing is added back, so the
+      returned LSE always refers to the original unsmoothed logits.
     - smooth_k: Whether to smooth the key by subtracting the sequence mean
       before INT8 quantization (handled by the C++ kernel). Default: True.
 
@@ -1468,6 +1582,17 @@ def sagev1(
     )
 
     if return_lse:
+        # smooth_k subtracts mean(k) from K, so the kernel LSE is computed from
+        # the smoothed logits.  Add the removed term back to recover the LSE of
+        # the original logits.
+        if smooth_k:
+            _restore_lse_after_smooth_k(
+                LSE,
+                query,
+                key,
+                float(scale) if scale is not None else 1.0 / (D**0.5),
+                tensor_layout,
+            )
         return O, LSE
     return O
 
@@ -1564,6 +1689,17 @@ def sagev1_pvi8(
     )
 
     if return_lse:
+        # smooth_k subtracts mean(k) from K, so the kernel LSE is computed from
+        # the smoothed logits.  Add the removed term back to recover the LSE of
+        # the original logits.
+        if smooth_k:
+            _restore_lse_after_smooth_k(
+                LSE,
+                query,
+                key,
+                float(scale) if scale is not None else 1.0 / (D**0.5),
+                tensor_layout,
+            )
         return O, LSE
     return O
 
@@ -2333,6 +2469,17 @@ def sageattn_varlen(
     )
 
     if return_lse:
+        # smooth_k subtracts mean(k) from K, so the kernel LSE is computed from
+        # the smoothed logits.  Add the removed term back to recover the LSE of
+        # the original logits.
+        if smooth_k:
+            _restore_lse_after_smooth_k_varlen(
+                LSE,
+                q,
+                k,
+                sm_scale if sm_scale is not None else 1.0 / (D**0.5),
+                cu_seqlens_q_i32,
+            )
         return O, LSE
     return O
 

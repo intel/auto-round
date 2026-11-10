@@ -721,6 +721,206 @@ def test_nvfp4_e5m3_gs_model_free_fake_quantization():
     assert is_model_free_supported_scheme("NVFP4_E5M3_GS")
 
 
+def test_nvfp4_e5m3_gs_fused_alignment_respects_environment(tmp_path, monkeypatch):
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3
+
+    gate = "model.layers.0.mlp.gate_proj"
+    up = "model.layers.0.mlp.up_proj"
+    gate_weight = torch.full((16, 32), 0.1)
+    up_weight = torch.full((16, 32), 4.0)
+    shard_path = str(tmp_path / "model.safetensors")
+    save_file({f"{gate}.weight": gate_weight, f"{up}.weight": up_weight}, shard_path)
+    default_scheme = {"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2_gs"}
+
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
+    aligned, _, _ = _process_shard(
+        shard_path,
+        default_scheme=default_scheme,
+        layer_config={},
+        ignore_patterns=[],
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    expected_scale = min(calculate_gparam_e5m3(weight, group_size=16).item() for weight in (gate_weight, up_weight))
+    torch.testing.assert_close(aligned[f"{gate}.weight_global_scale"], torch.tensor([expected_scale]))
+    torch.testing.assert_close(aligned[f"{up}.weight_global_scale"], torch.tensor([expected_scale]))
+
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "0")
+    unaligned, _, _ = _process_shard(
+        shard_path,
+        default_scheme=default_scheme,
+        layer_config={},
+        ignore_patterns=[],
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    assert not torch.equal(unaligned[f"{gate}.weight_global_scale"], unaligned[f"{up}.weight_global_scale"])
+
+
+def test_nvfp4_e5m3_gs_aligns_cross_shard_fused_weights(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
+    model_dir = tmp_path / "source_model"
+    model_dir.mkdir()
+    with open(model_dir / "config.json", "w") as config_file:
+        json.dump(
+            {
+                **_LLAMA_CFG,
+                "quantization_config": {
+                    "quant_method": "fp8",
+                    "fmt": "e4m3",
+                    "scale_fmt": "ue8m0",
+                    "weight_block_size": [128, 128],
+                },
+            },
+            config_file,
+        )
+
+    gate = "model.layers.0.mlp.gate_proj"
+    up = "model.layers.0.mlp.up_proj"
+    shard1 = "model-00001-of-00002.safetensors"
+    shard2 = "model-00002-of-00002.safetensors"
+    save_file(
+        {
+            f"{gate}.weight": torch.full((16, 32), 1.0).to(torch.float8_e4m3fn),
+            f"{gate}.weight_scale_inv": torch.full((1, 1), 0.5),
+            f"{up}.weight_scale_inv": torch.full((1, 1), 0.5),
+        },
+        str(model_dir / shard1),
+    )
+    save_file({f"{up}.weight": torch.full((16, 32), 5.0).to(torch.float8_e4m3fn)}, str(model_dir / shard2))
+    weight_map = {
+        f"{gate}.weight": shard1,
+        f"{gate}.weight_scale_inv": shard1,
+        f"{up}.weight": shard2,
+        f"{up}.weight_scale_inv": shard1,
+    }
+    with open(model_dir / "model.safetensors.index.json", "w") as index_file:
+        json.dump({"weight_map": weight_map}, index_file)
+
+    output_dir = str(tmp_path / "output")
+    core = _ModelFreeCompressorCore(
+        str(model_dir),
+        output_dir,
+        scheme="NVFP4_E5M3_GS",
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    core.run()
+
+    scales = {}
+    for layer_name in (gate, up):
+        tensor_name = f"{layer_name}.weight_global_scale"
+        shard_file = core.output_weight_map[tensor_name]
+        with safe_open(os.path.join(output_dir, shard_file), framework="pt") as shard:
+            scales[layer_name] = shard.get_tensor(tensor_name)
+    torch.testing.assert_close(scales[gate], scales[up])
+
+
+def test_streaming_nvfp4_gs_partners_are_local_before_quantizing(tmp_path, monkeypatch):
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3
+
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
+    source_dir = tmp_path / "source"
+    work_dir = tmp_path / "work"
+    source_dir.mkdir()
+    work_dir.mkdir()
+    pair_count = 10
+    shard_names = [f"model-{index + 1:05d}-of-{pair_count * 2:05d}.safetensors" for index in range(pair_count * 2)]
+    pairs = []
+    weight_map = {}
+    for pair_index in range(pair_count):
+        gate = f"model.layers.{pair_index}.mlp.gate_proj"
+        up = f"model.layers.{pair_index}.mlp.up_proj"
+        donor_shard, recipient_shard = shard_names[pair_index * 2 : pair_index * 2 + 2]
+        gate_weight = torch.full((16, 32), 1.0 + pair_index).to(torch.float8_e4m3fn)
+        up_weight = torch.full((16, 32), 5.0 + pair_index).to(torch.float8_e4m3fn)
+        save_file(
+            {
+                f"{gate}.weight": gate_weight,
+                f"{gate}.weight_scale_inv": torch.full((1, 1), 0.5),
+                f"{up}.weight_scale_inv": torch.full((1, 1), 0.5),
+            },
+            source_dir / donor_shard,
+        )
+        save_file({f"{up}.weight": up_weight}, source_dir / recipient_shard)
+        weight_map.update(
+            {
+                f"{gate}.weight": donor_shard,
+                f"{gate}.weight_scale_inv": donor_shard,
+                f"{up}.weight": recipient_shard,
+                f"{up}.weight_scale_inv": donor_shard,
+            }
+        )
+        pairs.append((gate, up, donor_shard, recipient_shard, gate_weight, up_weight))
+    (work_dir / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+
+    core = _ModelFreeCompressorCore(str(source_dir), str(tmp_path / "output"), enable_torch_compile=False)
+    core.is_streaming = True
+    core.work_dir = str(work_dir)
+    core.source_dir = str(source_dir)
+    core.shard_names = shard_names
+    core.shard_parallelism = 1
+    core.device = "cpu"
+    core.default_scheme = {"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2_gs"}
+    core.layer_config = {}
+    core.ignore_patterns = []
+    core.fp8_block_size = [128, 128]
+    core.model_type = "llama"
+    core.source_quantization_config = None
+    core.enable_torch_compile = False
+    core.disable_opt_rtn = True
+    core._build_cross_shard_deps()
+    core._prepare_fused_gs_groups()
+
+    jobs, requires = core._plan_streaming_jobs()
+    assert jobs == shard_names
+    assert all(requires[donor] == {donor, recipient} for _, _, donor, recipient, _, _ in pairs)
+    assert all(requires[recipient] == {donor, recipient} for _, _, donor, recipient, _, _ in pairs)
+
+    cache_dir = work_dir / ".cache" / "model_free_source_shards"
+    downloads = []
+    overrides = {}
+    retained_donor_tensors = {}
+
+    def prefetch(_model, shard_name, *_args):
+        downloads.append(shard_name)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return shutil.copy(source_dir / shard_name, cache_dir / shard_name)
+
+    def process_shard(*, shard_name, fused_global_scale_overrides, donor_shard_dir, **_kwargs):
+        overrides[shard_name] = fused_global_scale_overrides
+        recipient_pair = next((pair for pair in pairs if pair[3] == shard_name), None)
+        if recipient_pair is not None:
+            donor = recipient_pair[2]
+            with safe_open(os.path.join(donor_shard_dir, donor), framework="pt") as shard:
+                retained_donor_tensors[donor] = set(shard.keys())
+        return {}, [], []
+
+    monkeypatch.setattr(module, "_prefetch_shard", prefetch)
+    monkeypatch.setattr(module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers))
+    monkeypatch.setattr(module, "_process_shard", process_shard)
+    monkeypatch.setattr(module, "_write_output_shard", lambda *_args: None)
+    monkeypatch.setattr(core, "_merge_shard_task_result", lambda _result: None)
+
+    core._process_all_shards_streaming_pipeline()
+
+    assert downloads == shard_names
+    for gate, up, donor, recipient, gate_weight, up_weight in pairs:
+        expected_scale = min(
+            calculate_gparam_e5m3(gate_weight.float() * 0.5, group_size=16).item(),
+            calculate_gparam_e5m3(up_weight.float() * 0.5, group_size=16).item(),
+        )
+        for shard_name in (donor, recipient):
+            assert overrides[shard_name][gate] == pytest.approx(expected_scale)
+            assert overrides[shard_name][up] == pytest.approx(expected_scale)
+        assert retained_donor_tensors[donor] == {f"{up}.weight_scale_inv"}
+    assert not list(cache_dir.glob("*.safetensors"))
+
+
 @pytest.mark.parametrize("fmt", ["auto_round", "llm_compressor"])
 def test_nvfp4_e5m3_gs_model_free_end_to_end(tmp_path, fmt):
     from safetensors import safe_open
@@ -1059,6 +1259,24 @@ class TestModelFreeQuantize:
         with safe_open(stale_output_shard, framework="pt") as sf:
             out_keys = set(sf.keys())
         assert "layer.qweight" in out_keys
+
+    def test_download_single_shard_replaces_invalid_cached_safetensors(self, tmp_path):
+        from auto_round.utils.model_free_utils import _download_single_shard
+
+        source_dir = tmp_path / "source"
+        cache_dir = tmp_path / "cache"
+        source_dir.mkdir()
+        cache_dir.mkdir()
+        shard_name = "model-00001-of-00001.safetensors"
+        save_file({"layer.weight": torch.ones(8, 8)}, source_dir / shard_name)
+        cached_path = cache_dir / shard_name
+        cached_path.write_bytes(b"truncated safetensors")
+
+        result = _download_single_shard(str(source_dir), shard_name, str(cache_dir))
+
+        assert result == str(cached_path)
+        with safe_open(result, framework="pt") as shard:
+            assert shard.keys() == ["layer.weight"]
 
     @staticmethod
     def _make_resume_core(model_dir, output_dir, *, scheme="W4A16"):
@@ -2738,7 +2956,7 @@ def test_streaming_download_uses_transformer_subfolder(tmp_path, monkeypatch, co
         downloads.append((repo, filename))
         path = tmp_path / "download" / filename
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"weights")
+        save_file({"layer.weight": torch.ones(2, 2)}, path)
         return str(path)
 
     monkeypatch.setattr(module, "_download_single_shard", download)
@@ -2746,6 +2964,30 @@ def test_streaming_download_uses_transformer_subfolder(tmp_path, monkeypatch, co
     assert downloads == [("org/wan", f"{component}/model.safetensors")]
     assert path == str(tmp_path / ".cache" / "model_free_source_shards" / "model.safetensors")
     assert os.path.isfile(path)
+
+
+def test_streaming_subfolder_prefetch_replaces_corrupt_cached_shard(tmp_path, monkeypatch):
+    import auto_round.compressors.model_free as module
+
+    cache_dir = tmp_path / ".cache" / "model_free_source_shards"
+    cache_dir.mkdir(parents=True)
+    cached_path = cache_dir / "model.safetensors"
+    cached_path.write_bytes(b"truncated")
+    downloads = []
+
+    def download(_repo, filename, _local_dir):
+        downloads.append(filename)
+        path = tmp_path / "download" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_file({"layer.weight": torch.ones(2, 2)}, path)
+        return str(path)
+
+    monkeypatch.setattr(module, "_download_single_shard", download)
+    result = module._prefetch_shard("org/wan", "model.safetensors", str(tmp_path), "", True, "transformer")
+
+    assert downloads == ["transformer/model.safetensors"]
+    with safe_open(result, framework="pt") as shard:
+        assert shard.keys() == ["layer.weight"]
 
 
 @pytest.mark.parametrize("component", ["transformer", "transformer_2"])
@@ -2868,6 +3110,172 @@ def test_streaming_worker_receives_disable_opt_rtn(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "_merge_shard_task_result", lambda result: None)
     core._process_all_shards_streaming_pipeline()
     assert received == [True]
+
+
+def test_streaming_pipeline_bounds_downloaded_and_queued_shards(tmp_path, monkeypatch):
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
+
+    import auto_round.compressors.model_free as module
+
+    cache_dir = tmp_path / ".cache" / "model_free_source_shards"
+    cache_dir.mkdir(parents=True)
+    core = _ModelFreeCompressorCore("org/dummy", str(tmp_path), enable_torch_compile=False)
+    core.is_streaming = True
+    core.work_dir = str(tmp_path)
+    core.shard_names = [f"shard-{index:02}.safetensors" for index in range(8)]
+    core.shard_parallelism = 2
+    cached_shard = core.shard_names[-1]
+    (cache_dir / cached_shard).write_bytes(b"cached")
+    max_cached = 0
+    cache_lock = Lock()
+    quantized = []
+    prefetched = []
+
+    def prefetch(_model, shard_name, *_args):
+        nonlocal max_cached
+        prefetched.append(shard_name)
+        path = cache_dir / shard_name
+        path.write_bytes(b"source")
+        with cache_lock:
+            max_cached = max(max_cached, len(list(cache_dir.glob("*.safetensors"))))
+        return str(path)
+
+    def quantize(_shard_idx, shard_name, *, shard_path, **_kwargs):
+        time.sleep(0.03)
+        os.remove(shard_path)
+        quantized.append(shard_name)
+        return 0, shard_name, shard_path, f"out-{shard_name}", [], [], []
+
+    monkeypatch.setattr(module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers))
+    monkeypatch.setattr(module, "_prefetch_shard", prefetch)
+    monkeypatch.setattr(module, "_quantize_local_shard_task", quantize)
+    monkeypatch.setattr(core, "_merge_shard_task_result", lambda _result: None)
+
+    core._process_all_shards_streaming_pipeline()
+
+    assert set(quantized) == set(core.shard_names)
+    assert prefetched[0] == cached_shard
+    assert max_cached <= core.shard_parallelism + module._STREAMING_LOOKAHEAD_JOBS
+
+
+def _make_fp8_donor_recipient_core(tmp_path, monkeypatch, failed_shard):
+    """Streaming core where the recipient's FP8 weight_scale_inv lives in the donor shard."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+
+    donor, recipient = "model-00002-of-00002.safetensors", "model-00001-of-00002.safetensors"
+    weight_name = "model.layers.3.mlp.experts.30.gate_proj.weight"
+    scale_name = weight_name + "_scale_inv"
+    cache_dir = tmp_path / ".cache" / "model_free_source_shards"
+    cache_dir.mkdir(parents=True)
+    save_file({weight_name: torch.full((128, 128), 448.0).to(torch.float8_e4m3fn)}, cache_dir / recipient)
+    save_file({scale_name: torch.full((1, 1), 2**-13)}, cache_dir / donor)
+    with open(tmp_path / "model.safetensors.index.json", "w") as f:
+        json.dump({"weight_map": {weight_name: recipient, scale_name: donor}}, f)
+
+    output_dir = tmp_path / "output"
+    core = _ModelFreeCompressorCore("org/ds", str(output_dir), enable_torch_compile=False, disable_opt_rtn=True)
+    core.is_streaming = True
+    core.work_dir = str(tmp_path)
+    core.shard_names = [recipient, donor]
+    core.cross_shard_deps = {recipient: {donor: [scale_name]}}
+    core.donor_shard_tensors = {donor: {scale_name}}
+    core.shard_parallelism = 2
+    core.fp8_block_size = [128, 128]
+    core.model_type = "deepseek_v32"
+    core.default_scheme = {"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2_gs"}
+    core._prepare_resume_state()
+
+    def prefetch(model, shard_name, *args):
+        return None if shard_name == failed_shard else str(cache_dir / shard_name)
+
+    quantized_shards = []
+    original_task = module._quantize_local_shard_task
+
+    def quantize(shard_idx, shard_name, **kwargs):
+        quantized_shards.append(shard_name)
+        return original_task(shard_idx, shard_name, **kwargs)
+
+    monkeypatch.setattr(
+        module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers=max_workers)
+    )
+    monkeypatch.setattr(module, "_prefetch_shard", prefetch)
+    monkeypatch.setattr(module, "_quantize_local_shard_task", quantize)
+    return core, output_dir, donor, recipient, quantized_shards
+
+
+def test_streaming_donor_prefetch_failure_aborts_before_recipient(tmp_path, monkeypatch):
+    """A failed donor download must not let the recipient quantize raw FP8 bytes (DeepSeek-V3.2 GS=1536 bug)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+
+    shutdown_calls = []
+
+    class TrackingThreadPoolExecutor(ThreadPoolExecutor):
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            shutdown_calls.append((wait, cancel_futures))
+            return super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    monkeypatch.setattr(module, "ThreadPoolExecutor", TrackingThreadPoolExecutor)
+    core, output_dir, donor, _, quantized_shards = _make_fp8_donor_recipient_core(
+        tmp_path, monkeypatch, failed_shard="model-00002-of-00002.safetensors"
+    )
+
+    with pytest.raises(RuntimeError, match=f"Failed to download source shard {donor}"):
+        core._process_all_shards_streaming_pipeline()
+
+    assert quantized_shards == []
+    assert not list(output_dir.glob("*.safetensors"))
+    assert core._resume_processed_shards == {}
+    assert shutdown_calls == [(True, True)]
+
+
+def test_streaming_recipient_hydrates_global_scale_from_donor(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+
+    core, output_dir, donor, recipient, quantized_shards = _make_fp8_donor_recipient_core(
+        tmp_path, monkeypatch, failed_shard=None
+    )
+    independent = "model-00003-of-00003.safetensors"
+    independent_path = tmp_path / ".cache" / "model_free_source_shards" / independent
+    save_file({"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}, independent_path)
+    core.shard_names = [recipient, independent, donor]
+    submitted = []
+
+    class RecordingExecutor(ThreadPoolExecutor):
+        def __init__(self, max_workers, **_kwargs):
+            super().__init__(max_workers=max_workers)
+
+        def submit(self, fn, *args, **kwargs):
+            if fn is module._quantize_local_shard_task:
+                submitted.append(args[1])
+            return super().submit(fn, *args, **kwargs)
+
+    monkeypatch.setattr(module, "ProcessPoolExecutor", RecordingExecutor)
+
+    core._process_all_shards_streaming_pipeline()
+
+    assert submitted[0] == independent
+    assert set(quantized_shards) == {independent, donor, recipient}
+    assert not list((tmp_path / ".cache" / "model_free_source_shards").glob("*.safetensors"))
+    recipient_output = core._resume_processed_shards[recipient]["output_file"]
+    with safe_open(str(output_dir / recipient_output), framework="pt") as f:
+        global_scale = f.get_tensor("model.layers.3.mlp.experts.30.gate_proj.weight_global_scale").item()
+    # Decoded amax is 448 * 2**-13; raw FP8 bytes would give 114688 * 6 / 448 = 1536.
+    assert global_scale == pytest.approx(114688 * 6 / (448 * 2**-13), rel=1e-6)
+
+
+def test_merge_shard_task_result_raises_for_missing_shard():
+    core = _ModelFreeCompressorCore("org/ds", "unused", enable_torch_compile=False)
+
+    with pytest.raises(RuntimeError, match="model-00001.safetensors could not be loaded"):
+        core._merge_shard_task_result((0, "model-00001.safetensors", None, None, None, None, None))
 
 
 @pytest.mark.parametrize("component", ["transformer", "transformer_2"])
