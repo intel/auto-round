@@ -200,6 +200,19 @@ def test_activation_scoring_handles_reused_wrapper():
     assert wrapper.mix_score == pytest.approx(5.0)
 
 
+def test_auto_scheme_weight_score_mode_aliases_and_validation():
+    """Aliases normalize to the canonical scoring modes; unknown values fail fast."""
+    from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+    options = ["W2A16", "W4A16"]
+    assert AutoScheme(avg_bits=3.0, options=options).weight_score_mode == "w*g"
+    assert AutoScheme(avg_bits=3.0, options=options, weight_score_mode="mix").weight_score_mode == "w*g"
+    assert AutoScheme(avg_bits=3.0, options=options, weight_score_mode="w").weight_score_mode == "weight"
+    assert AutoScheme(avg_bits=3.0, options=options, weight_score_mode="g").weight_score_mode == "grad"
+    with pytest.raises(ValueError, match="Unsupported weight_score_mode"):
+        AutoScheme(avg_bits=3.0, options=options, weight_score_mode="bogus")
+
+
 def test_prepare_replay_input_supports_keyword_hidden_states():
     import torch
 
@@ -1010,6 +1023,8 @@ def test_autoscheme_cache_key_changes_only_with_scoring_config():
 
     assert baseline != _autoscheme_cache_key(**{**kwargs, "low_gpu_mem_usage": False})
     assert baseline != _autoscheme_cache_key(**{**kwargs, "need_weight_grad": True})
+    assert baseline != _autoscheme_cache_key(**{**kwargs, "weight_score_mode": "weight"})
+    assert baseline != _autoscheme_cache_key(**{**kwargs, "weight_score_mode": "grad"})
 
 
 def test_get_next_scheme_bits_is_order_independent():
@@ -1734,6 +1749,30 @@ class TestScoreLinearRecompute:
         expected = (grad_w.abs() * (layer.weight - qdq_w).abs()).sum().item()
         assert wrapper.weight_score > 0
         assert abs(wrapper.weight_score - expected) / expected < 1e-5
+
+    def test_weight_only_mode_accumulates_abs_weight_error(self):
+        torch.manual_seed(0)
+        wrapper, layer = self._make_wrapper()
+        wrapper.weight_score_mode = "weight"
+        with torch.no_grad():
+            layer.weight.copy_(torch.randn(6, 8) * 0.5)
+        x = torch.randn(4, 8, requires_grad=True)
+        wrapper.forward(x).sum().backward()
+        expected = (layer.weight - wrapper._score_qdq_cpu).abs().sum().item()
+        assert wrapper.weight_score == pytest.approx(expected)
+
+    def test_grad_only_mode_accumulates_abs_weight_grad(self):
+        torch.manual_seed(0)
+        wrapper, layer = self._make_wrapper()
+        wrapper.weight_score_mode = "grad"
+        with torch.no_grad():
+            layer.weight.copy_(torch.randn(6, 8) * 0.5)
+        x = torch.randn(4, 8, requires_grad=True)
+        out = wrapper.forward(x)
+        grad_out = torch.randn_like(out)
+        out.backward(grad_out)
+        expected = (grad_out.t() @ x.detach()).abs().sum().item()
+        assert wrapper.weight_score == pytest.approx(expected)
 
     def test_weight_refetched_in_backward_and_no_weight_grad(self):
         wrapper, layer = self._make_wrapper()

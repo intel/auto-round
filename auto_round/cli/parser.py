@@ -362,6 +362,14 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         "(q_proj/k_proj/v_proj, MLA q_a_proj/kv_a_proj_with_mqa, gate_proj/up_proj).",
     )
     rt.add_argument(
+        "--weight_score_mode",
+        default="w*g",
+        type=str,
+        choices=["w*g", "weight", "grad"],
+        help="AutoScheme delta-loss weight score: 'w*g' (default) uses |grad*(w-qdq_w)|, "
+        "'weight' uses |w-qdq_w|, and 'grad' uses |grad|. Ignored for fixed schemes.",
+    )
+    rt.add_argument(
         "--static_kv_dtype",
         default=None,
         type=str,
