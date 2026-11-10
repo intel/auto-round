@@ -569,3 +569,200 @@ def test_teq_staged_refine_smoke(tiny_opt_model_path):
     assert model is not None
     assert layer_config
     assert not any(hasattr(module, "_teq_input_context") for module in model.modules())
+
+
+def _make_teq_fp_linear(in_features: int, out_features: int, bias: bool = False) -> nn.Linear:
+    """A 16-bit Linear whose ``_qdq_weight`` is an exact (identity-quant) transform."""
+    layer = nn.Linear(in_features, out_features, bias=bias)
+    layer.bits = 16
+    layer.group_size = -1
+    layer.data_type = "int"
+    layer.sym = True
+    layer.act_bits = 16
+    layer.scale_dtype = torch.float32
+    return layer
+
+
+def _make_teq_context(size: int, stale: torch.Tensor, apply_input_transform: bool = True) -> dict:
+    return {
+        "log_alpha": nn.Parameter(stale.clone()),
+        "min_log": -10.0,
+        "max_log": 10.0,
+        "smooth_name": "smooth",
+        "apply_input_transform": apply_input_transform,
+        "output_wrapped": False,
+    }
+
+
+def test_unwrapper_block_settles_shared_teq_scales_before_baking():
+    """A layer consuming two scales must bake both at their *selected* values.
+
+    ``up_proj`` sits in two mappings: it consumes one scale on its input side
+    and another (``down_proj``'s) on its output side.  ``unwrapper_block``
+    walks modules in order, so without a settle pass ``up_proj`` would bake the
+    last-iteration value of the output scale instead of the selected one.
+    """
+    from auto_round.wrapper import unwrapper_block
+
+    torch.manual_seed(7)
+    up = _make_teq_fp_linear(5, 4)
+    down = _make_teq_fp_linear(4, 3)
+    up_weight = up.weight.detach().clone()
+    down_weight = down.weight.detach().clone()
+
+    # Stale values are what the last tuning iteration left behind.
+    context_in = _make_teq_context(5, torch.full((5,), 0.9))
+    context_out = _make_teq_context(4, torch.full((4,), -0.7))
+    up._teq_input_context = context_in
+    up._teq_output_contexts = [context_out]
+    down._teq_input_context = context_out
+
+    block = nn.Module()
+    block.up = WrapperLinear(up, enable_torch_compile=False, device="cpu")
+    block.down = WrapperLinear(down, enable_torch_compile=False, device="cpu")
+
+    best_in = torch.linspace(-0.2, 0.3, 5)
+    best_out = torch.linspace(0.4, -0.1, 4)
+    unwrapper_block(
+        block,
+        {"up": {"teq_log_alpha": best_in.clone()}, "down": {"teq_log_alpha": best_out.clone()}},
+    )
+
+    expected_up = up_weight * best_in.exp().view(1, -1) / best_out.exp().view(-1, 1)
+    expected_down = down_weight * best_out.exp().view(1, -1)
+    torch.testing.assert_close(up.weight.detach(), expected_up)
+    torch.testing.assert_close(down.weight.detach(), expected_down)
+
+
+def test_unwrapper_block_bakes_teq_weight_exactly_once():
+    """Unwrapping must not quantize (or rotate) an already committed weight."""
+    from auto_round.wrapper import unwrapper_block
+
+    torch.manual_seed(8)
+    layer = _make_teq_fp_linear(32, 4)
+    original = layer.weight.detach().clone()
+    context = _make_teq_context(32, torch.zeros(32))
+    layer._teq_input_context = context
+    set_teq_equivalent_transforms(
+        layer,
+        weight=build_hadamard_transform("hadamard", block_size=32, location="weight"),
+        input=build_hadamard_transform("hadamard", block_size=32, location="input", inverse=True),
+    )
+
+    block = nn.Module()
+    block.proj = WrapperLinear(layer, enable_torch_compile=False, device="cpu")
+
+    best = torch.linspace(-0.25, 0.25, 32)
+    unwrapper_block(block, {"proj": {"teq_log_alpha": best.clone()}})
+
+    rotate = layer._autoround_teq_transforms["weight"]
+    expected = rotate(original * best.exp().view(1, -1))
+    torch.testing.assert_close(layer.weight.detach(), expected, rtol=1e-5, atol=1e-6)
+    # A second rotation would be the signature of a redundant write-back.
+    assert not torch.allclose(layer.weight.detach(), rotate(expected), rtol=1e-4, atol=1e-5)
+
+
+class _StubModelTEQTransform(TEQTransform):
+    """Expose a plain module as ``model`` without a full algorithm run context."""
+
+    @property
+    def model(self):
+        return self._stub_model
+
+
+@pytest.mark.parametrize("smooth_is_quantized", [True, False])
+def test_teq_finalize_folds_scale_into_unquantized_smooth_linear(smooth_is_quantized):
+    """An excluded smooth Linear must still receive the full output transform.
+
+    When the smooth layer is quantized, its ``WrapperLinear`` already folded the
+    scale into the weight and only the bias is left.  When it is excluded (via
+    ignore_layers / mixed precision) no wrapper ever runs, so finalization owns
+    the whole fold -- otherwise the committed model is not function-preserving.
+    """
+    from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+    torch.manual_seed(9)
+    smooth = _make_teq_fp_linear(6, 4, bias=True)
+    balance = _make_teq_fp_linear(4, 3)
+    model = nn.Module()
+    model.smooth = smooth
+    model.balance = balance
+
+    scales = torch.linspace(1.5, 2.5, 4)
+    context = _make_teq_context(4, scales.log(), apply_input_transform=False)
+    context["output_wrapped"] = smooth_is_quantized
+    balance._teq_input_context = context
+    smooth._teq_output_contexts = [context]
+
+    smooth_weight = smooth.weight.detach().clone()
+    smooth_bias = smooth.bias.detach().clone()
+
+    transform = _StubModelTEQTransform(TEQConfig(optimization_mode="joint", experimental=True))
+    transform._stub_model = model
+    mapping = ResolvedMapping(
+        smooth_name="smooth",
+        smooth_layer=smooth,
+        balance_names=["balance"],
+        balance_layers=[balance],
+        parent_name="",
+        parent=model,
+    )
+    transform._finalize_ar_refinement_mapping(mapping)
+
+    # The bias is unquantized in both cases, so it is always folded here.
+    torch.testing.assert_close(smooth.bias.detach(), smooth_bias / scales)
+    if smooth_is_quantized:
+        torch.testing.assert_close(smooth.weight.detach(), smooth_weight)
+    else:
+        torch.testing.assert_close(smooth.weight.detach(), smooth_weight / scales.view(-1, 1))
+    assert not hasattr(balance, "_teq_input_context")
+
+
+@pytest.mark.parametrize("rotation_aware", [True, False])
+def test_awq_grid_search_drops_imatrix_for_rotation_aware_candidates(rotation_aware):
+    """Diagonal importance statistics are invalid in the rotated basis.
+
+    ``imatrix`` is a per-input-channel vector collected in the original basis.
+    A rotation-aware candidate is quantized after the equivalent weight
+    transform, and a non-diagonal Hadamard does not preserve a diagonal
+    importance vector, so reusing it would weight the wrong channels.
+    """
+    from auto_round.algorithms.transforms.awq.base import AWQTransform
+    from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
+
+    torch.manual_seed(11)
+    balance = nn.Linear(32, 3, bias=False)
+    balance.global_name = "balance"
+    balance.imatrix = torch.rand(32) + 0.5
+    parent = nn.Module()
+    parent.balance = balance
+    if rotation_aware:
+        set_teq_equivalent_transforms(
+            balance,
+            weight=build_hadamard_transform("hadamard", block_size=32, location="weight"),
+            input=build_hadamard_transform("hadamard", block_size=32, location="input", inverse=True),
+        )
+
+    transform = AWQTransform(AWQConfig(bits=16, group_size=32, sym=True, data_type="int", n_grid=2, duo_scaling=False))
+    mapping = ResolvedMapping(
+        smooth_name="smooth",
+        smooth_layer=balance,
+        balance_names=["balance"],
+        balance_layers=[balance],
+        parent_name="",
+        parent=parent,
+    )
+    seen_imatrix = []
+
+    def identity_qdq(weight, params, **kwargs):
+        seen_imatrix.append(kwargs.get("imatrix"))
+        return weight
+
+    transform._qdq_tool.qdq = identity_qdq
+    transform._grid_search_scales(mapping, torch.linspace(0.2, 2.0, 32))
+
+    assert seen_imatrix
+    if rotation_aware:
+        assert all(imatrix is None for imatrix in seen_imatrix)
+    else:
+        assert all(imatrix is not None for imatrix in seen_imatrix)
