@@ -8,4 +8,4 @@ def register_alg(alias, factory):
     register_algorithm(alias, aliases=(alias,), config_factory=factory)
 
 
-__all__ = ["register_alg", "resolve_alg_config", "list_registered_algorithms"]
+__all__ = ["list_registered_algorithms", "register_alg", "resolve_alg_config"]

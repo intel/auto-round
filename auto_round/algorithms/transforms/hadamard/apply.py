@@ -82,7 +82,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
         super().__init__(config)
 
     @classmethod
-    def from_config(cls, config: dict | RotationConfig) -> "HadamardRotation":
+    def from_config(cls, config: dict | RotationConfig) -> HadamardRotation:
         """Build a :class:`HadamardRotation` from a raw dict or :class:`RotationConfig`."""
         if isinstance(config, dict):
             config = RotationConfig.model_validate(config)
@@ -143,7 +143,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
                 fuse_online_to_weight=fuse_online_to_weight,
                 compute_device=compute_device,
             )
-            setattr(model, "_rotation_config", cfg)
+            model._rotation_config = cfg
             return model
 
         # backend == "transform": original per-Linear triton-fused path.
@@ -159,7 +159,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
             _apply_to_module(model, module, cfg, location, data_type)
 
         # Store config on model for serialisation / downstream inspection.
-        setattr(model, "_rotation_config", cfg)
+        model._rotation_config = cfg
         return model
 
     # ------------------------------------------------------------------
@@ -188,9 +188,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
         cfg = self.config
         backend = getattr(cfg, "backend", "auto")
         hadamard_type = getattr(cfg, "hadamard_type", "") or ""
-        if backend == "inplace" or "inplace" in hadamard_type:
-            return False
-        return True
+        return not (backend == "inplace" or "inplace" in hadamard_type)
 
     def prepare_layerwise(
         self,
@@ -198,7 +196,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
         data_type: str = "mx_fp",
         location: str = "weight",
         **kwargs: Any,
-    ) -> "HadamardRotation":
+    ) -> HadamardRotation:
         """Prepare for per-block Hadamard rotation without touching weights.
 
         The per-Linear Hadamard needs no global pre-computation — matrices are
@@ -219,7 +217,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
             )
         self._layerwise_location = location
         self._layerwise_data_type = data_type
-        setattr(model, "_rotation_config", self.config)
+        model._rotation_config = self.config
         return self
 
     def rotate_layer(

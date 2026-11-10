@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
 
 import torch
 
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental.qmodules.base import QModuleBase
-from auto_round.schemes import QuantizationScheme, is_nv_fp
+from auto_round.schemes import QuantizationScheme, needs_nvfp_global_scale
 
 __all__ = ["FakeActQuantLinear"]
 
@@ -31,8 +30,8 @@ class FakeActQuantLinear(QModuleBase):
         in_features: int,
         out_features: int,
         config: QuantizationScheme,
-        weight: Optional[torch.Tensor] = None,
-        bias: Optional[torch.Tensor] = None,
+        weight: torch.Tensor | None = None,
+        bias: torch.Tensor | None = None,
         dtype: torch.dtype = torch.bfloat16,
     ):
         super().__init__()
@@ -46,7 +45,7 @@ class FakeActQuantLinear(QModuleBase):
             self.register_parameter("bias", None)
         else:
             self.bias = torch.nn.Parameter(bias, requires_grad=False)
-        if is_nv_fp(config.act_data_type or ""):
+        if needs_nvfp_global_scale(config.act_data_type or ""):
             self.register_buffer("input_global_scale", torch.ones(1, dtype=torch.float32))
 
     @classmethod

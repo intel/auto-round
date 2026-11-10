@@ -26,7 +26,8 @@ Extension points for new calibration strategies:
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -38,8 +39,12 @@ class Calibrator(ABC):
     """Abstract base for all calibration strategies."""
 
     def __init__(self, compressor: "BaseCompressor", **kwargs) -> None:
+        from auto_round.parallel.execution import ParallelExecution
+
+        self.parallel = getattr(compressor, "parallel_execution", None) or ParallelExecution()
         self.model = compressor.model_context.model
         self.tokenizer = compressor.model_context.tokenizer
+        self.trust_remote_code = getattr(compressor.model_context, "trust_remote_code", False)
         self.dataset = compressor.dataset
         self.seed = compressor.seed
         self.low_gpu_mem_usage = compressor.low_gpu_mem_usage

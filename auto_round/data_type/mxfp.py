@@ -125,9 +125,7 @@ def search_mx_scale(tensor, bits, qw=None, data_type=None):
     def compute_loss(qdq_tensor, out):
         torch.sub(qdq_tensor, tensor, out=buf)
         buf.pow_(2)
-        if qw is not None and not isinstance(qw, (int, float)):
-            buf.mul_(qw)
-        elif qw != 1.0:
+        if (qw is not None and not isinstance(qw, (int, float))) or qw != 1.0:
             buf.mul_(qw)
         torch.sum(buf, dim=-1, out=out)
 
@@ -468,7 +466,7 @@ def quant_mx_rceil_v2(
     return tensor.to(orig_dtype), shared_exp.to(orig_dtype), None
 
 
-for key in MXFP_FORMAT_CACHE.keys():
+for key in MXFP_FORMAT_CACHE:
     QUANT_FUNC_WITH_DTYPE[key] = quant_mx
     QUANT_FUNC_WITH_DTYPE[key + "_rceil"] = quant_mx_rceil
     QUANT_FUNC_WITH_DTYPE["opt_rtn_" + key] = quant_mx_opt_rtn

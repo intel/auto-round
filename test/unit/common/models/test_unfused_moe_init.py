@@ -106,19 +106,21 @@ def test_get_checkpoint_conversion_mapping_ar_passthrough():
     transformers mapping function.  We mock that to verify the call.
     """
     sentinel = ["x", "y"]
-    with mock.patch(
-        "transformers.conversion_mapping.orig_get_checkpoint_conversion_mapping",
-        create=True,
-        return_value=sentinel,
-        new_callable=mock.MagicMock,
-    ) as fake:
-        # Some transformers versions don't expose ``orig_*`` yet; guard
-        # against that by also patching the public name.
-        with mock.patch(
+    # Some transformers versions don't expose ``orig_*`` yet; guard
+    # against that by also patching the public name.
+    with (
+        mock.patch(
+            "transformers.conversion_mapping.orig_get_checkpoint_conversion_mapping",
+            create=True,
+            return_value=sentinel,
+            new_callable=mock.MagicMock,
+        ) as fake,
+        mock.patch(
             "transformers.conversion_mapping.get_checkpoint_conversion_mapping",
             side_effect=lambda mt: sentinel,
-        ):
-            result = get_checkpoint_conversion_mapping_ar("not_in_our_list")
+        ),
+    ):
+        result = get_checkpoint_conversion_mapping_ar("not_in_our_list")
     assert result == sentinel
 
 

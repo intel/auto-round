@@ -28,7 +28,7 @@ from auto_round.algorithms.transforms.hadamard.transforms import (
     build_hadamard_transform,
 )
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     # Algorithm class
     "HadamardRotation",
     # Config

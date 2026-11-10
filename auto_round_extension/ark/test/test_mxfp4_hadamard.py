@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 #
 # Copyright (c) 2026 Intel Corporation
 #
@@ -131,7 +130,7 @@ class TestReferenceContract:
         y = hadamard_transform_reference(x.reshape(-1, HADAMARD_DIM), get_hadamard_matrix(HADAMARD_DIM))
         amax = y.abs().amax(dim=-1)
         for group, group_amax in enumerate(amax.tolist()):
-            expected = min(max(int(math.floor(math.log2(group_amax))) - 2 + 127, 0), 254)
+            expected = min(max(math.floor(math.log2(group_amax)) - 2 + 127, 0), 254)
             assert scale.reshape(-1)[group].item() == expected
             # amax / scale must land in [4, 8): the E8M0 exponent is standard.
             ratio = group_amax / (2.0 ** (expected - 127))

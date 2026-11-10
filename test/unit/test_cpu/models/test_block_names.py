@@ -61,7 +61,7 @@ class TestQuantizationBlocks:
         model = Qwen2VLForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
         block_name = get_block_names(model, quant_vision=True)
         assert len(block_name) == 2
-        assert all(["visual.merger.mlp" not in n for n in block_name])
+        assert all("visual.merger.mlp" not in n for n in block_name)
         block_name = get_block_names(model, quant_vision=False)
         assert len(block_name) == 1
         assert block_name == get_block_names(model)

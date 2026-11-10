@@ -15,7 +15,7 @@ import copy
 from copy import deepcopy
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Union
 
 import torch
 
@@ -144,15 +144,15 @@ from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_DTYPES, contain_any_mm_keys, infer_bits_by_data_type
 
 __all__ = [
-    "QuantizationScheme",
-    "BackendDataType",
-    "GGUF_SCHEME_FACTS",
     "GGUF_PRESET_ALIASES",
-    "is_standard_fp",
-    "is_mx_fp",
-    "is_nv_fp",
-    "is_mx_int",
+    "GGUF_SCHEME_FACTS",
+    "BackendDataType",
+    "QuantizationScheme",
     "get_gguf_scheme",
+    "is_mx_fp",
+    "is_mx_int",
+    "is_nv_fp",
+    "is_standard_fp",
     "preset_name_to_scheme",
 ]
 
@@ -189,6 +189,21 @@ def is_mx_int(backend: str) -> bool:
     return BackendDataType.MX_INT in backend.lower()
 
 
+def is_nvfp4_e5m3_gs(backend: str) -> bool:
+    """NVFP4 E5M3 with per-tensor global scale (``nvfp4_v2_gs`` / ``nvfp4_v2_with_static_gs``)."""
+    backend = backend.lower()
+    return "nvfp4_v2" in backend and backend.endswith("_gs")
+
+
+def is_nvfp4_e5m3_family(backend: str) -> bool:
+    return "nvfp4_v2" in backend.lower()
+
+
+def needs_nvfp_global_scale(backend: str) -> bool:
+    """Whether the data type uses NVFP-style per-tensor weight/input global scales."""
+    return is_nv_fp(backend) or is_nvfp4_e5m3_gs(backend)
+
+
 def is_standard_fp(backend: str) -> bool:
     backend = backend.lower()
     return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
@@ -200,14 +215,14 @@ class QuantizationScheme:
     group_size: int = 128
     sym: bool = True
     data_type: str = "int"
-    act_bits: Optional[int] = None
-    act_group_size: Optional[int] = None
-    act_sym: Optional[bool] = None
-    act_data_type: Optional[str] = None
-    act_dynamic: Optional[bool] = None
-    super_bits: Optional[int] = None
-    super_group_size: Optional[int] = None
-    rotation_config: Optional[dict] = None
+    act_bits: int | None = None
+    act_group_size: int | None = None
+    act_sym: bool | None = None
+    act_data_type: str | None = None
+    act_dynamic: bool | None = None
+    super_bits: int | None = None
+    super_group_size: int | None = None
+    rotation_config: dict | None = None
 
     @classmethod
     def empty(cls):
@@ -365,17 +380,11 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
     if name not in PRESET_SCHEMES:
         raise KeyError(f"Unknown preset scheme name {name}, " f"available names: {list(PRESET_SCHEMES.keys())}")
 
-    if name == "INT8_W8A8":
-        logger.warning_once(
-            "The 'INT8_W8A8' scheme name is deprecated and will be removed in a future release. "
-            "Please use 'INT8' instead."
-        )
-
     scheme_args = deepcopy(PRESET_SCHEMES[name])
     return scheme_args
 
 
-def scheme_to_preset_name(scheme: Union[str, QuantizationScheme]) -> str:
+def scheme_to_preset_name(scheme: str | QuantizationScheme) -> str:
     """Get preset scheme name from a QuantizationScheme instance."""
     if isinstance(scheme, str):
         name = scheme.upper()
@@ -423,8 +432,8 @@ def _reconcile_bits_and_dtype(config: dict, prefix: str = ""):
 
 
 def _override_scheme_with_user_specify(
-    scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any], return_str=True
-) -> Union[str, QuantizationScheme]:
+    scheme: str | dict | QuantizationScheme, user_scheme_overrides: dict[str, Any], return_str=True
+) -> str | QuantizationScheme:
     """
     Updates a base quantization scheme with user-provided overrides.
     Handles GGUF formatting and synchronizes weight/activation parameters.
@@ -518,8 +527,8 @@ def format_allows_w8_asym(format: str | None) -> bool:
 def parse_scheme(
     scheme: Union[str, dict, QuantizationScheme, "AutoScheme"],
     user_scheme_overrides: dict[str, Any],
-    format: str = None,
-) -> tuple[Union[str, QuantizationScheme], bool, dict[str, Any]]:
+    format: str | None = None,
+) -> tuple[str | QuantizationScheme, bool, dict[str, Any]]:
     """
     Parses the final scheme.
     """
@@ -785,6 +794,19 @@ NVFP4_E5M3 = QuantizationScheme.from_dict(
     }
 )
 
+NVFP4_E5M3_GS = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 16,
+        "data_type": "nvfp4_v2_gs",
+        "act_bits": 4,
+        "act_data_type": "nvfp4_v2_with_static_gs",
+        "act_group_size": 16,
+        "act_sym": True,
+        "act_dynamic": True,
+    }
+)
+
 FPW8A16 = QuantizationScheme.from_dict(
     {
         "bits": 8,
@@ -895,6 +917,7 @@ PRESET_SCHEMES = {
     "MXFP8_RCEIL": MXFP8_RCEIL,
     "NVFP4": NVFP4,
     "NVFP4_E5M3": NVFP4_E5M3,
+    "NVFP4_E5M3_GS": NVFP4_E5M3_GS,
     "FPW8A16": FPW8A16,
     # Group-size variants for the 2-8 bit int presets: the bare presets default
     # to group_size 128; these finer-group variants allow per-layer group-size
@@ -978,14 +1001,12 @@ def _handle_special_schemes(
                     layer_config[n] = {"bits": 4, "data_type": "int"}
                 elif n != lm_head_name and mllm:
                     layer_config[n] = {"bits": 16}
-                elif n != lm_head_name:
-                    layer_config[n] = {"bits": 8, "data_type": "int"}
-                elif n == lm_head_name and quant_lm_head:
+                elif n != lm_head_name or quant_lm_head:
                     layer_config[n] = {"bits": 8, "data_type": "int"}
     return layer_config
 
 
-def get_gguf_scheme(scheme: Union[str, QuantizationScheme]) -> str:
+def get_gguf_scheme(scheme: str | QuantizationScheme) -> str:
     if scheme is None:
         return ""
     if isinstance(scheme, str) and scheme.upper().startswith("GGUF"):

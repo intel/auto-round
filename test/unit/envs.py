@@ -14,8 +14,9 @@
 
 import importlib.util
 import unittest
+from collections.abc import Callable
 from functools import wraps
-from typing import Callable, Literal
+from typing import Literal
 
 import torch
 from transformers.utils.versions import require_version

@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
+import pytest
+import torch
 import torch.nn as nn
 
 from auto_round.compressors.config_resolution import ResolvedScheme
@@ -164,3 +168,75 @@ def test_extract_regex_config_honors_format_allowance(monkeypatch):
         inner_supported_types=(),
         format="auto_round",
     )
+
+
+@pytest.mark.parametrize(
+    "model_type,expected_dtype",
+    [
+        ("nemotron_h_omni", torch.bfloat16),
+        ("nemotron_h", torch.float16),
+        ("nemotron_h_puzzle", torch.float16),
+        ("qwen3_moe", torch.float16),
+        ("nemotron", torch.float16),
+        ("nemotron_h_other", torch.float16),
+        (None, torch.float16),
+    ],
+)
+def test_mamba_scale_default_is_only_for_nemotron_h_omni(model_type, expected_dtype):
+    from auto_round.special_model_handler import get_predefined_layer_config
+
+    model = nn.Module()
+    model.config = SimpleNamespace(model_type=model_type)
+    model.mixer = nn.Module()
+    model.mixer.out_proj = nn.Linear(32, 32)
+    model.mixer.in_proj = nn.Linear(32, 32)
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={},
+        scale_dtype=torch.float16,
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+        quant_block_list=[["mixer"]],
+    )
+    assert resolved["mixer.out_proj"]["scale_dtype"] is expected_dtype
+    assert resolved["mixer.in_proj"]["scale_dtype"] is torch.float16
+    if expected_dtype is torch.float16:
+        assert get_predefined_layer_config(model) == {}
+
+
+def test_nemotron_h_omni_scale_default_respects_explicit_user_dtype():
+    model = nn.Module()
+    model.config = SimpleNamespace(model_type="nemotron_h_omni")
+    model.mixer = nn.Module()
+    model.mixer.out_proj = nn.Linear(32, 32)
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={".*mixer.out_proj$": {"scale_dtype": torch.float32}},
+        scale_dtype=torch.float16,
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+    assert resolved["mixer.out_proj"]["scale_dtype"] is torch.float32
+    assert resolved["mixer.out_proj"]["fixed_by_user"] is True
+
+
+def test_nemotron_h_omni_scale_default_is_not_marked_user_fixed():
+    model = nn.Module()
+    model.config = SimpleNamespace(model_type="nemotron_h_omni")
+    model.mixer = nn.Module()
+    model.mixer.out_proj = nn.Linear(32, 32)
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={},
+        scale_dtype=torch.float16,
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+    assert resolved["mixer.out_proj"]["scale_dtype"] is torch.bfloat16
+    assert resolved["mixer.out_proj"]["fixed_by_user"] is False

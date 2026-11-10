@@ -9,7 +9,6 @@ provides the hooks and a helper to register them on the model.
 """
 
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -156,11 +155,11 @@ class FullOnlineHadamardHook(nn.Module):
 
     def __init__(
         self,
-        had_K: Optional[torch.Tensor],
-        K: Optional[int],
+        had_K: torch.Tensor | None,
+        K: int | None,
         fp32_had: bool = False,
         use_fast_had: bool = True,
-        had_matrix: Optional[torch.Tensor] = None,
+        had_matrix: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.custom_had = had_matrix is not None
@@ -219,12 +218,12 @@ class CrossHeadOnlineHadamardHook(nn.Module):
 
     def __init__(
         self,
-        had_K: Optional[torch.Tensor],
-        K: Optional[int],
+        had_K: torch.Tensor | None,
+        K: int | None,
         head_dim: int,
         fp32_had: bool = False,
         use_fast_had: bool = True,
-        had_matrix: Optional[torch.Tensor] = None,
+        had_matrix: torch.Tensor | None = None,
     ) -> None:
         """
         Args:
@@ -613,7 +612,7 @@ class GroupOnlineHadamardHook(nn.Module):
         group_size: int,
         fp32_had: bool = False,
         use_fast_had: bool = True,
-        had_matrix: Optional[torch.Tensor] = None,
+        had_matrix: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.group_size = group_size
@@ -788,15 +787,7 @@ def register_online_had_hooks_grouped(model, mapping, group_size, fp32_had=False
 
     handles = []
     for name, module in model.named_modules():
-        if name.endswith(mlp_out_suffix) and isinstance(module, nn.Linear):
-            hook = GroupOnlineHadamardHook(
-                group_size=group_size,
-                fp32_had=fp32_had,
-                use_fast_had=use_fast_had,
-            )
-            h = module.register_forward_pre_hook(hook)
-            handles.append(h)
-        elif name.endswith(attn_o_suffix) and isinstance(module, nn.Linear):
+        if isinstance(module, nn.Linear) and name.endswith((mlp_out_suffix, attn_o_suffix)):
             hook = GroupOnlineHadamardHook(
                 group_size=group_size,
                 fp32_had=fp32_had,

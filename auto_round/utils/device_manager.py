@@ -49,7 +49,6 @@ import functools
 import gc
 import re
 import sys
-from typing import Optional, Union
 
 import torch
 
@@ -57,23 +56,23 @@ from auto_round.logger import logger
 
 __all__ = [
     "ARDevice",
+    "ClearMemory",
     "DeviceManager",
-    "device_manager",
-    "normalize_default_device_map",
-    "get_ar_device",
+    "clear_memory",
     "default_enable_torch_compile",
+    "detect_device_count",
+    "device_manager",
+    "get_ar_device",
+    "get_available_device_types",
     "get_current_device_manager",
     "get_current_device_type",
-    "is_device_available",
-    "get_available_device_types",
-    "get_major_device",
-    "detect_device_count",
     "get_device_and_parallelism",
+    "get_device_memory",
+    "get_major_device",
     "get_packing_device",
     "is_auto_device_mapping",
-    "get_device_memory",
-    "ClearMemory",
-    "clear_memory",
+    "is_device_available",
+    "normalize_default_device_map",
 ]
 
 
@@ -89,7 +88,7 @@ __all__ = [
 _PREFERRED_ORDER = ("cuda", "xpu", "hpu")  # add mps later
 
 
-def normalize_default_device_map(device_map: Union[None, str, int, torch.device, dict]):
+def normalize_default_device_map(device_map: None | str | int | torch.device | dict):
     """Normalize default device selection across entry points.
 
     On Apple Silicon, the default ``0`` / ``"0"`` / ``None`` / ``"auto"``
@@ -106,7 +105,7 @@ def normalize_default_device_map(device_map: Union[None, str, int, torch.device,
     return device_map
 
 
-def _torch_accelerator_type() -> Optional[str]:
+def _torch_accelerator_type() -> str | None:
     """Return the canonical accelerator type reported by ``torch.accelerator``.
 
     A PyTorch build exposes at most one accelerator backend; this returns its
@@ -167,7 +166,7 @@ def _hpu_available() -> bool:
         return False
 
 
-def _normalize_device_type(device: Union[None, str, int, torch.device]) -> Optional[str]:
+def _normalize_device_type(device: None | str | int | torch.device) -> str | None:
     """Reduce any device spec to a bare backend type string (``"cuda"`` ...)."""
     if device is None:
         return get_current_device_type()
@@ -240,7 +239,7 @@ def get_available_device_types() -> list[str]:
 class _DeviceIndexContext:
     """Fallback for ``torch.accelerator.device_index`` on older PyTorch/backends."""
 
-    def __init__(self, device: "ARDevice", index: int):
+    def __init__(self, device: ARDevice, index: int):
         self._device = device
         self._index = index
         self._prev = None
@@ -280,7 +279,7 @@ class ARDevice:
     #: PyTorch backend that lacks a dedicated subclass (e.g. a fresh ``npu``).
     device_type: str = ""
 
-    _registry: dict[str, type["ARDevice"]] = {}
+    _registry: dict[str, type[ARDevice]] = {}
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -289,7 +288,7 @@ class ARDevice:
             ARDevice._registry[dtype] = cls
 
     @classmethod
-    def create(cls, device_type: str) -> "ARDevice":
+    def create(cls, device_type: str) -> ARDevice:
         """Instantiate the most specific :class:`Device` for ``device_type``."""
         subclass = cls._registry.get(device_type)
         if subclass is not None:
@@ -297,7 +296,7 @@ class ARDevice:
         return ARDevice(device_type)
 
     @staticmethod
-    def get_device_module(device: Union[None, str, int, torch.device] = None):
+    def get_device_module(device: None | str | int | torch.device = None):
         """Return the backend runtime module for ``device`` (e.g. ``torch.cuda``).
 
         This is a thin, version-tolerant wrapper around ``torch.get_device_module``
@@ -320,7 +319,7 @@ class ARDevice:
                 pass
         return getattr(torch, device_type, None)
 
-    def __init__(self, device_type: Optional[str] = None):
+    def __init__(self, device_type: str | None = None):
         self.type = device_type or self.device_type
 
         # Prefer the unified ``torch.accelerator`` API for runtime ops when this
@@ -355,14 +354,14 @@ class ARDevice:
                 pass
         return 0
 
-    def set_device(self, index: Union[int, str, torch.device]) -> None:
+    def set_device(self, index: int | str | torch.device) -> None:
         if self._module is None:
             return
         ok, _ = _module_call(self._module, ("set_device_index", "set_device_idx", "set_device"), index)
         if ok:
             return
 
-    def device(self, index: Union[int, str, torch.device, None] = None) -> torch.device:
+    def device(self, index: int | str | torch.device | None = None) -> torch.device:
         """Build a ``torch.device`` for this backend / card ``index``."""
         if index is None:
             return torch.device(self.type)
@@ -377,7 +376,7 @@ class ARDevice:
     #     return [self.device(i) for i in range(self.device_count())]
 
     # -- runtime ------------------------------------------------------------
-    def synchronize(self, index: Union[int, None] = None) -> None:
+    def synchronize(self, index: int | None = None) -> None:
         if self._module is None:
             return
         fn = getattr(self._module, "synchronize", None)
@@ -490,7 +489,7 @@ class ARDevice:
             return func
         from auto_round.utils.device import _bump_dynamo_cache_limit
 
-        _bump_dynamo_cache_limit()
+        _bump_dynamo_cache_limit(_engaged_cache_limit())
 
         return torch.compile(func)
 
@@ -510,7 +509,7 @@ class HpuARDevice(ARDevice):
     device_type = "hpu"
 
     @staticmethod
-    def get_device_module(device: Union[None, str, int, torch.device] = None):
+    def get_device_module(device: None | str | int | torch.device = None):
         """Return the backend runtime module for ``device`` (e.g. ``torch.cuda``).
 
         This is a thin, version-tolerant wrapper around ``torch.get_device_module``
@@ -535,7 +534,7 @@ class HpuARDevice(ARDevice):
         except Exception:  # pragma: no cover
             return None
 
-    def set_device(self, index: Union[int, str, torch.device]) -> None:
+    def set_device(self, index: int | str | torch.device) -> None:
         if self._module is None:
             return
         fn = getattr(self._module, "set_device", None)
@@ -581,13 +580,13 @@ class MpsARDevice(ARDevice):
 
     device_type = "mps"
 
-    def __init__(self, device_type: Optional[str] = None):
+    def __init__(self, device_type: str | None = None):
         # Always use torch.mps directly, never torch.accelerator.
         self.type = "mps"
         self._module = getattr(torch, "mps", None)
 
     @staticmethod
-    def get_device_module(device: Union[None, str, int, torch.device] = None):
+    def get_device_module(device: None | str | int | torch.device = None):
         """Return the backend runtime module for ``device`` (e.g. ``torch.cuda``).
 
         This is a thin, version-tolerant wrapper around ``torch.get_device_module``
@@ -611,10 +610,10 @@ class MpsARDevice(ARDevice):
     def current_device(self) -> int:
         return 0
 
-    def set_device(self, index: Union[int, str, torch.device]) -> None:
+    def set_device(self, index: int | str | torch.device) -> None:
         return None
 
-    def device(self, index: Union[int, str, torch.device, None] = None) -> torch.device:
+    def device(self, index: int | str | torch.device | None = None) -> torch.device:
         """Build a ``torch.device`` for this backend / card ``index``."""
         return torch.device("mps")
 
@@ -678,7 +677,7 @@ class CpuARDevice(ARDevice):
     device_type = "cpu"
 
     @staticmethod
-    def get_device_module(device: Union[None, str, int, torch.device] = None):
+    def get_device_module(device: None | str | int | torch.device = None):
         return None
 
     # -- discovery ----------------------------------------------------------
@@ -691,20 +690,20 @@ class CpuARDevice(ARDevice):
     def current_device(self) -> int:
         return 0
 
-    def set_device(self, index: Union[int, str, torch.device]) -> None:  # no-op
+    def set_device(self, index: int | str | torch.device) -> None:  # no-op
         return None
 
-    def device(self, index: Union[int, str, torch.device, None] = None) -> torch.device:
+    def device(self, index: int | str | torch.device | None = None) -> torch.device:
         return torch.device("cpu")
 
     # -- runtime ------------------------------------------------------------
-    def synchronize(self, index: Union[int, None] = None) -> None:  # no-op
+    def synchronize(self, index: int | None = None) -> None:  # no-op
         return None
 
     def empty_cache(self) -> None:  # no-op: CPU has no caching allocator.
         return gc.collect()
 
-    def get_device_capability(self, index: Union[int, None] = None):
+    def get_device_capability(self, index: int | None = None):
         return None
 
     def device_index(self, index: int):  # nothing to switch on CPU.
@@ -775,26 +774,27 @@ class DeviceManager:
     shared instance, so the active device / device_list is always single-sourced.
     """
 
-    _instance: Optional["DeviceManager"] = None
+    _instance: DeviceManager | None = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, device_map: Union[None, str, torch.device, int, dict] = None):
+    def __init__(self, device_map: None | str | torch.device | int | dict = None):
         # Initialise backing state once; later constructions reuse the singleton.
         if not getattr(self, "_initialized", False):
             self._cache: dict[str, ARDevice] = {}
             self._device_map = None
-            self._device_list: Optional[list] = None
-            self._major_device: Optional[str] = None
+            self._device_list: list | None = None
+            self._major_device: str | None = None
+            self._tensor_parallel = False
             self._initialized = True
         if device_map is not None:
             self.configure(device_map)
 
     # -- device_map configuration ------------------------------------------
-    def configure(self, device_map: Union[None, str, torch.device, int, dict] = 0) -> "DeviceManager":
+    def configure(self, device_map: None | str | torch.device | int | dict = 0) -> DeviceManager:
         """Resolve a ``device_map`` into a concrete device list and major device.
 
         Centralises the device-map parsing the compressors used to perform by
@@ -822,6 +822,9 @@ class DeviceManager:
     @property
     def device_list(self) -> list:
         """All concrete devices selected by the configured ``device_map``."""
+        scoped = self._thread_scope()
+        if scoped is not None:
+            return [scoped]
         if self._device_list is None:
             self.configure(self._device_map)
         return self._device_list
@@ -829,18 +832,96 @@ class DeviceManager:
     @property
     def device(self) -> str:
         """The major (primary, non-CPU when possible) device string."""
+        scoped = self._thread_scope()
+        if scoped is not None:
+            return scoped
         if self._major_device is None:
             self.configure(self._device_map)
         return self._major_device
 
+    def _thread_scope(self) -> str | None:
+        local = self.__dict__.get("_thread_local")
+        return getattr(local, "device", None) if local is not None else None
+
+    @contextlib.contextmanager
+    def thread_device_scope(self, device: str | torch.device):
+        """Pin :attr:`device` / :attr:`device_list` to ``device`` for the calling thread.
+
+        Used by the data-parallel engine: each rank thread runs the unchanged
+        per-block algorithm and must see its own replica device as the major
+        device. Other threads keep the configured devices.
+        """
+        import threading
+
+        local = self.__dict__.setdefault("_thread_local", threading.local())
+        prev = getattr(local, "device", None)
+        local.device = str(device)
+        try:
+            yield
+        finally:
+            local.device = prev
+
     @device.setter
-    def device(self, value: Union[str, torch.device]) -> None:
+    def device(self, value: str | torch.device) -> None:
         """Override the major device (e.g. an OOM fallback to ``"cpu"``)."""
         self._major_device = str(value) if isinstance(value, torch.device) else value
 
     def is_multi_device(self) -> bool:
         """Whether more than one concrete device is selected."""
         return len(self.device_list) > 1
+
+    @property
+    def is_tensor_parallel(self) -> bool:
+        """bool: Whether the current run uses tensor-parallel device ownership."""
+        return self._tensor_parallel
+
+    def set_tensor_parallel(self, enabled: bool) -> None:
+        """Set reporting topology explicitly; a process group alone need not be TP.
+
+        Args:
+            enabled (bool): Whether memory reporting should coordinate tensor-parallel ranks.
+        """
+        self._tensor_parallel = enabled
+
+    def log_memory_summary(self, msg: str = "", level: str = "info") -> str | None:
+        """Report peaks at a successful boundary reached by every TP rank.
+
+        Unlike ordinary MemoryMonitor logging, this performs a collective in TP
+        mode. Never call it from rank-local cleanup or writer-only export hooks.
+        Merged reports must not overwrite local allocator statistics.
+
+        Args:
+            msg (str): Optional prefix included in the memory summary.
+            level (str): Logging level used to emit the summary.
+        """
+        from auto_round.utils.device import memory_monitor
+
+        if not self.is_tensor_parallel:
+            return memory_monitor.log_summary(msg, level)
+
+        import torch.distributed as dist
+
+        if not dist.is_initialized() or dist.get_world_size() < 2:
+            return memory_monitor.log_summary(msg, level, peak_vram=dict(memory_monitor.peak_vram))
+        report = {}
+        if torch.cuda.is_available():
+            index = torch.cuda.current_device()
+            memory_monitor.update(device_list=[f"cuda:{index}"])
+            report[str(index)] = max(
+                memory_monitor.peak_vram.get(str(index), 0.0),
+                torch.cuda.max_memory_reserved(index) / 1024**3,
+            )
+        else:
+            memory_monitor.update_cpu()
+        reports: list[dict[str, float]] = [{} for _ in range(dist.get_world_size())]
+        dist.all_gather_object(reports, report)
+        if dist.get_rank() != 0:
+            return None
+        merged = {}
+        for peer in reports:
+            for device, peak in peer.items():
+                merged[device] = max(merged.get(device, 0.0), peak)
+        return memory_monitor.log_summary(msg, level, peak_vram=merged)
 
     # -- registration -------------------------------------------------------
     def register(self, device_cls: type[ARDevice]) -> None:
@@ -852,7 +933,7 @@ class DeviceManager:
         self._cache.pop(dtype, None)
 
     # -- lookup -------------------------------------------------------------
-    def get_ar_device(self, device_type: Union[None, str, int, torch.device] = None) -> ARDevice:
+    def get_ar_device(self, device_type: None | str | int | torch.device = None) -> ARDevice:
         """Return the cached :class:`Device` for ``device_type`` (default: current)."""
         normalized = _normalize_device_type(device_type) or "cpu"
         device = self._cache.get(normalized)
@@ -889,13 +970,28 @@ class DeviceManager:
 device_manager = DeviceManager()
 
 
-def get_ar_device(device_type: Union[None, str, int, torch.device] = None) -> ARDevice:
+def _engaged_cache_limit() -> int:
+    """Dynamo cache-limit target scaled by the engaged device count.
+
+    Multi-device runs multiply the static shape specializations of the shared
+    compiled quant functions (per-layer shapes x per-device guard pins), so the
+    cache limit must scale with the engaged devices or the lane silently
+    degrades to eager mid-block once the limit is hit.  A single-device run
+    keeps the plain env default.  The bump itself is monotone raise-only, so
+    repeated calls are idempotent.
+    """
+    from auto_round import envs
+
+    return int(envs.AR_DYNAMO_CACHE_SIZE_LIMIT) * max(1, len(device_manager.device_list))
+
+
+def get_ar_device(device_type: None | str | int | torch.device = None) -> ARDevice:
     """Return the cached :class:`Device` handle for a specific backend type."""
     return device_manager.get_ar_device(device_type)
 
 
 def default_enable_torch_compile(
-    device: Union[None, str, int, torch.device] = None, platform_name: str | None = None
+    device: None | str | int | torch.device = None, platform_name: str | None = None
 ) -> bool:
     """Return the safe torch.compile default for a backend."""
     return (platform_name or sys.platform) != "win32"
@@ -914,7 +1010,7 @@ def detect_device_count() -> int:
     return get_current_device_manager().device_count()
 
 
-def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> tuple[str, bool]:
+def get_device_and_parallelism(device: str | torch.device | int | dict) -> tuple[str, bool]:
     """Resolve a device spec into ``(device, parallelism)``.
 
     The multi-card *parallelism* policy itself is kept as a standalone function
@@ -961,7 +1057,7 @@ def get_device_and_parallelism(device: Union[str, torch.device, int, dict]) -> t
     return device, parallelism
 
 
-def get_packing_device(device: Union[str, torch.device, None] = "auto") -> torch.device:
+def get_packing_device(device: str | torch.device | None = "auto") -> torch.device:
     """Selects the packing device.
 
     - ``"auto"``: choose best available (active accelerator > CPU).
@@ -987,12 +1083,10 @@ def get_packing_device(device: Union[str, torch.device, None] = "auto") -> torch
     raise TypeError(f"Unsupported device type: {type(device)} ({device})")
 
 
-def is_auto_device_mapping(device_map: Union[str, int, dict, None]) -> bool:
+def is_auto_device_mapping(device_map: str | int | dict | None) -> bool:
     if device_map is None or isinstance(device_map, int):
         return False
-    elif device_map == "auto":
-        return True
-    elif isinstance(device_map, str) and "," in device_map:
+    elif device_map == "auto" or (isinstance(device_map, str) and "," in device_map):
         return True
     elif isinstance(device_map, dict):
         return False
@@ -1000,7 +1094,7 @@ def is_auto_device_mapping(device_map: Union[str, int, dict, None]) -> bool:
         return False
 
 
-def get_major_device(device_map: Union[None, str, torch.device, int, dict] = None) -> str:
+def get_major_device(device_map: None | str | torch.device | int | dict = None) -> str:
     if device_map is None or isinstance(device_map, (str, torch.device, int)):
         """Detects the appropriate computation device.
 
@@ -1044,8 +1138,6 @@ def get_major_device(device_map: Union[None, str, torch.device, int, dict] = Non
             if device == "tp":  # pragma: no cover
                 # should not specify card, e.g., cuda:0
                 device = get_current_device_type() or "cpu"
-            else:
-                device = device
         return device
 
     if isinstance(device_map, dict) and device_map:
@@ -1091,8 +1183,8 @@ def get_device_memory(i: int = 0) -> int:
 
 
 def _clear_memory_for_cpu_and_cuda(
-    tensor: Union[torch.Tensor, list, None] = None,
-    device_list: Union[tuple, list, str, torch.device, None] = None,
+    tensor: torch.Tensor | list | None = None,
+    device_list: tuple | list | str | torch.device | None = None,
 ):
     # ------------------------
     # Clear CPU-side references
@@ -1152,7 +1244,7 @@ def _clear_memory_for_cpu_and_cuda(
 
 class ClearMemory:
 
-    def __init__(self, device_list: Union[list, tuple, None] = None):
+    def __init__(self, device_list: list | tuple | None = None):
         self._device_list = device_list
 
     @property
@@ -1167,8 +1259,8 @@ class ClearMemory:
 
     def __call__(
         self,
-        tensor: Union[torch.Tensor, None, list] = None,
-        device_list: Union[list, tuple, None] = None,
+        tensor: torch.Tensor | None | list = None,
+        device_list: list | tuple | None = None,
     ):
         # Lazy imports: these symbols live in utils/device.py.
         from auto_round.utils.device import _force_trim_malloc, is_hpex_available, memory_monitor

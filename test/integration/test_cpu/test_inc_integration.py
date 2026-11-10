@@ -31,7 +31,7 @@ target_modules = ["QuantLinear", "QuantLinearGPTQ", "QuantLinearAWQ", "WQLinear_
 @torch.no_grad()
 def run_fn(model, dataloader):
     for data in dataloader:
-        if isinstance(data, tuple) or isinstance(data, list):
+        if isinstance(data, (tuple, list)):
             model(*data)
         elif isinstance(data, dict):
             model(**data)

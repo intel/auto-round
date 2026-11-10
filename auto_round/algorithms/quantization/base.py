@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import traceback
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
+    from auto_round.parallel.prepared import PreparedRun
 
 from auto_round.algorithms.base import BaseAlgorithm
 from auto_round.algorithms.quantization.config import QuantizationConfig
@@ -44,7 +46,17 @@ class BaseQuantizer(BaseAlgorithm):
         - :meth:`quantize_block`               – **must override**: quantize a single block
         - :meth:`quantize_layer_outside_block` – quantize layers outside blocks
         - :meth:`finalize_run`                 – model-level teardown (once after all blocks)
+    A quantizer whose calibration hooks write statistics on modules declares
+    them in :attr:`calibration_stats`.
     """
+
+    #: Statistics this quantizer's calibration hooks write on modules, mapped
+    #: to their shard reduction ("sum" | "max"). Under --data_parallel
+    #: the hook-carrying calibration forwards shard across the block mirrors
+    #: and the engine folds these attributes back into the home block.
+    #: ``None`` = undeclared: if the quantizer registers calibration hooks,
+    #: those passes stay serial. A quantizer without hooks needs no declaration.
+    calibration_stats: dict[str, str] | None = None
 
     def __init__(self, config: QuantizationConfig) -> None:
         super().__init__(config)
@@ -53,6 +65,49 @@ class BaseQuantizer(BaseAlgorithm):
         # override this from their config.  Defaults to False for zero-shot algorithms
         # (RTN) where activations are not used during weight optimization.
         self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
+
+    def prepare_model_run(
+        self,
+        model: torch.nn.Module,
+        samples: Sequence[Any] | None = None,
+        device: str | torch.device | None = None,
+        *,
+        whole_model: bool = False,
+    ) -> "PreparedRun":
+        """Enter this scope to execute a custom algorithm without TP/DP branches.
+
+        Execution contract for block and whole-model algorithms:
+          1. Enter before calibration/teacher construction; use ``run.samples``.
+             Whole-model scopes restore residency and clear old dispatch hints;
+             block scopes keep the composer's placement.
+          2. Install trainable wrappers and configure checkpointing, then call
+             ``run.prepare_training(self)`` once, before student forwards.
+          3. Use ``run.forward(..., output='logits')`` (or no output selector for
+             block tensors) and ``run.next_batch(sampler)``. DTensor outputs are
+             materialized with autograd preserved; ordinary tensors must already
+             be complete activations. Weights remain sharded.
+          4. Keep custom loss/backward logic. After accumulation call
+             ``run.step(update_callback)`` instead of synchronizing gradients.
+             The callback owns optimizer/scaler/scheduler updates and any FP
+             master copies. Do not separately synchronize the same gradients.
+          5. For forward-result caches, use ``run.cache.workspace/signature`` and
+             ``run.cache.ensure(local_valid, build_callback)`` on every model-
+             parallel participant, never a rank-local branch around a forward.
+
+        This does not automatically adapt arbitrary weight math or closure-based
+        optimizers. Use the existing tensor services for shard-sensitive math.
+        Whole-model naive pipeline parallelism and unsupported topologies fail early.
+
+        Args:
+            model (torch.nn.Module): Model or block to execute inside the managed scope.
+            samples (Sequence | None): Optional input samples synchronized across TP participants on entry.
+            device (str | torch.device | None): Execution device, defaulting to the current managed device.
+            whole_model (bool): Whether entering the scope restores the entire model's residency.
+
+        Returns:
+            PreparedRun: Context manager for the algorithm's custom execution loop.
+        """
+        return self.parallel.prepare_run(model, samples, device, whole_model=whole_model)
 
     def can_compile_block_forward(self):
         return True
@@ -125,12 +180,9 @@ class BaseQuantizer(BaseAlgorithm):
                 )
             except torch.OutOfMemoryError:
                 cuda_error_msg = traceback.format_exc()
-                try:
-                    logger.error(cuda_error_msg)
-                    logger.warning("falling back to CPU")
-                    weight, scale, zp = quant_func(module.weight.to("cpu"), **quant_kwargs)
-                except Exception:
-                    raise
+                logger.error(cuda_error_msg)
+                logger.warning("falling back to CPU")
+                weight, scale, zp = quant_func(module.weight.to("cpu"), **quant_kwargs)
             module.weight.data.copy_(weight.cpu())
             for param_name, val in zip(["scale", "zp"], [scale, zp]):
                 if isinstance(val, dict):
@@ -145,6 +197,17 @@ class BaseQuantizer(BaseAlgorithm):
         return is_quantized
 
     # ── Abstract quantization interface ───────────────────────────────────────
+    def parallel_constraints(self) -> dict:
+        """Declare eligibility facts for the single-process data-parallel lane.
+
+        The parallel engine consumes the declaration; algorithm internals stay
+        quantizer internals: ``enable_lfq`` reports LFQ layers whose handling is
+        single-device. A gradient scaler needs no declaration: every rank keeps
+        its own, and the gradients are averaged before ``scaler.step``, so the
+        ranks see the same inf/nan checks and keep the same scale.
+        """
+        return {"enable_lfq": bool(getattr(self, "enable_lfq", False))}
+
     def quantize_block(
         self,
         block: "torch.nn.Module",
@@ -173,6 +236,9 @@ class BaseQuantizer(BaseAlgorithm):
             **kwargs:     Reserved for future parameters.
         Returns:
             dict: Best quantization parameters found, or ``{}`` if not applicable.
+                Leave common tuning wrappers installed: the composer loads these
+                parameters, collects outputs and unwraps/restores FP weights.
+                Algorithms that directly modify weights need no wrapper handling.
         Raises:
             NotImplementedError: Subclasses must override this method.
         """
@@ -200,11 +266,20 @@ class BaseQuantizer(BaseAlgorithm):
         self._quantize_layer_via_rtn(layer, disable_opt_rtn=disable_opt_rtn)
 
     @torch.no_grad()
-    def _quantize_layer_via_rtn(self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None) -> None:
+    def _quantize_layer_via_rtn(
+        self, layer: "torch.nn.Module", disable_opt_rtn: "bool | None" = None, defer_search: bool = False
+    ) -> "torch.nn.Module":
         """Quantize one layer with RTN (with optional optimized scale/zp search)."""
         layer_name = layer.global_name
         layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
         set_module(self.model, layer_name, layer)
+        from auto_round.parallel.tp.runtime import is_dtensor
+
+        wrapper_class = WrapperLinear
+        if is_dtensor(layer.weight):
+            from auto_round.parallel.tp.qdq import tensor_parallel_wrapper
+
+            wrapper_class = tensor_parallel_wrapper(wrapper_class)
         tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device
         try:
             if disable_opt_rtn is None:
@@ -223,7 +298,7 @@ class BaseQuantizer(BaseAlgorithm):
                     "Use `--enable_opt_rtn` to force-enable it for MoE layers."
                 )
             layer = layer.to(tuning_device)
-            layer = WrapperLinear(
+            layer = wrapper_class(
                 layer,
                 device=tuning_device,
                 enable_minmax_tuning=False,
@@ -234,27 +309,35 @@ class BaseQuantizer(BaseAlgorithm):
                 enable_neuqi=getattr(self.config, "enable_neuqi", False),
                 iters=0,
             )
+            if defer_search:
+                # staged for the batched zero-shot search driver: the wrapper
+                # (with its resolved quant func) is returned without running
+                # the search; the caller finishes via unwrapper({}) or the
+                # batched call + _apply_qdq + set_module
+                return layer
             layer = layer.unwrapper({})
         except torch.OutOfMemoryError:
+            if self.parallel.is_tp:
+                raise
+            from auto_round.algorithms.quantization.search_dispatch import dump_oom_tensor_census_
+
+            dump_oom_tensor_census_("rtn layer search")
             cuda_error_msg = traceback.format_exc()
             layer = layer.orig_layer if hasattr(layer, "orig_layer") else layer
-            try:
-                logger.error(cuda_error_msg)
-                logger.warning("falling back to CPU.")
-                layer.to("cpu")
-                layer = WrapperLinear(
-                    layer,
-                    enable_minmax_tuning=False,
-                    enable_norm_bias_tuning=False,
-                    enable_round_tuning=False,
-                    enable_torch_compile=self.compress_context.enable_torch_compile,
-                    disable_opt_rtn=disable_opt_rtn,
-                    enable_neuqi=getattr(self.config, "enable_neuqi", False),
-                    iters=0,
-                )
-                layer = layer.unwrapper({})
-            except Exception:
-                raise
+            logger.error(cuda_error_msg)
+            logger.warning("falling back to CPU.")
+            layer.to("cpu")
+            layer = WrapperLinear(
+                layer,
+                enable_minmax_tuning=False,
+                enable_norm_bias_tuning=False,
+                enable_round_tuning=False,
+                enable_torch_compile=self.compress_context.enable_torch_compile,
+                disable_opt_rtn=disable_opt_rtn,
+                enable_neuqi=getattr(self.config, "enable_neuqi", False),
+                iters=0,
+            )
+            layer = layer.unwrapper({})
         set_module(self.model, layer_name, layer)
 
     def _compute_valid_token_mask(self, input_ids: list) -> "list | None":
@@ -282,16 +365,164 @@ class BaseQuantizer(BaseAlgorithm):
             return None
         return masks
 
+    # ── Tune-loop memory policy hooks (override to customize) ─────────────────
+
+    def maybe_adapt_moe_implementation(self, block: "torch.nn.Module", tensors: Any, batch_size: int) -> None:
+        """Switch the MoE experts implementation to the per-expert loop when the
+        grouped path's working set is not expected to fit next to the tuning
+        state (``AR_MOE_EXPERTS_IMPL=auto``; explicit values are honored as-is).
+
+        Runs once per run; no-op for blocks without grouped expert stacks.
+        The decision reads only the block's wrapper layout, the batch size, and
+        the fleet's free memory, so algorithms rarely need to override this.
+        """
+        from auto_round.algorithms.quantization.tune_memory import _maybe_auto_linear_loop_for_tuning
+
+        _maybe_auto_linear_loop_for_tuning(
+            block,
+            tensors,
+            batch_size,
+            getattr(self, "iters", 0),
+            getattr(getattr(self, "model_context", None), "config", None),
+            self.model,
+        )
+
+    def pull_tuning_pool(
+        self,
+        pool: Any,
+        target_device: str,
+        block: "torch.nn.Module",
+        batch_size: int,
+        label: str,
+        charge_activation: bool = True,
+    ) -> Any:
+        """Bulk-move a calibration pool onto the device that reads it every
+        iteration when its footprint fits next to the working set; a declined
+        pull keeps the per-batch gather.
+
+        Bulk pulls are a capacity optimization only: when the user explicitly
+        parked memory on the host (``low_gpu_mem_usage`` or
+        ``calibration_data_device="cpu"``) the pool stays where that policy
+        put it, however much room the target device has. Under data-parallel
+        thread ranks the engine already placed each rank's shard on its device,
+        so the pool stays as it is.
+        """
+        from auto_round.parallel.dp.spmd import current_rank
+
+        if current_rank() is not None:
+            return pool
+        cc = self.compress_context
+        if (
+            getattr(cc, "low_gpu_mem_usage", False)
+            or str(getattr(cc, "calibration_data_device", "auto") or "auto").lower() == "cpu"
+        ):
+            return pool
+        from auto_round.algorithms.quantization.tune_memory import _pull_pool_if_fits
+
+        config = getattr(getattr(self, "model_context", None), "config", None)
+        return _pull_pool_if_fits(
+            pool,
+            str(target_device),
+            block,
+            batch_size,
+            getattr(self, "iters", 0),
+            label,
+            charge_activation=charge_activation,
+            config=config,
+        )
+
     def dispatch_block(self, block: "torch.nn.Module", input_ids, input_others: dict):
         """Place a block on the correct device(s) for quantization.
         Default: move to primary device.
         Returns the block after device placement.
         Subclasses override for multi-GPU tensor-parallel dispatch.
         """
-        block = block.to(device_manager.device)
-        return block
+        placement = self.parallel.dispatch_block(
+            block,
+            input_ids,
+            input_others,
+            tuning=getattr(self, "iters", 0) > 0,
+            is_diffusion=getattr(self.model_context, "is_diffusion", False),
+            low_gpu_mem_usage=getattr(self.compress_context, "low_gpu_mem_usage", False),
+            batch_size=getattr(self.calibration_context, "batch_size", 1),
+        )
+        self._card_0_in_high_risk = placement.primary_device_at_risk
+        self._loss_device = placement.loss_device
+        return placement.block
+
+    def finalize_block(self, block: "torch.nn.Module", block_ctx: "BlockContext | None" = None) -> None:
+        """Post-tuning, quantizer-agnostic finalization for a compressed block.
+
+        Invoked by the composer right after :meth:`quantize_block` returns, so
+        format-specific post-processing stays out of the per-algorithm tuning
+        loop. The default generates MoE experts' ``act_max`` automatically for
+        NVFP static-activation schemes (``WrapperWALayer``); it is a no-op for
+        schemes/blocks that do not need it. Subclasses may override to add their
+        own finalization.
+        """
+        from auto_round.schemes import is_nvfp4_e5m3_gs
+        from auto_round.utils import set_amax_for_all_moe_layers
+
+        if self.config.is_act_nv_fp or is_nvfp4_e5m3_gs(self.config.act_data_type or ""):
+            # enable moe experts act_max automatic generation for WrapperWALayer
+            set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
     # ── Lifecycle hooks ───────────────────────────────────────────────────────
+    #: Algorithms that tune the whole model jointly (a single forward to the LM
+    #: head) instead of block-by-block set this to ``True``. The composer then
+    #: calls :meth:`quantize_model` once and skips the per-block loop.
+    whole_model_tuning: bool = False
+
+    #: The composer preserves original FP weights across all preceding stages
+    #: when a consumer needs them (e.g. to construct a full-precision teacher).
+    #: Algorithms never manage preservation flags or stage cleanup themselves.
+    requires_original_weights: bool = False
+
+    def get_calibration_token_ids(self, token_ids, calibration):
+        """Resolve this algorithm's sample count; override for custom sampling.
+
+        Reuse the common cached samples when nsamples is unset, take a prefix
+        when fewer are needed, or collect raw tokens without block forwards.
+        """
+        target = self.config.nsamples
+        if token_ids is not None:
+            if target is None or target == len(token_ids):
+                return token_ids
+            if target < len(token_ids):
+                logger.info("Algorithm stage uses the first %d of %d calibration samples.", target, len(token_ids))
+                return list(token_ids)[:target]
+        if target is None:
+            target = calibration.nsamples
+        collect = getattr(calibration, "collect_token_ids", None)
+        if callable(collect):
+            logger.info("Collecting %d calibration samples for the algorithm stage.", target)
+            collected = collect(target)
+            if collected is not None and len(collected) > 0:
+                return collected
+        logger.warning("Cannot collect %d calibration token ids; falling back to the cached samples.", target)
+        return token_ids
+
+    def quantize_model(self, model, token_ids, device=None) -> dict:
+        """Quantize the entire model jointly (whole-network tuning).
+
+        Only invoked when :attr:`whole_model_tuning` is ``True``. The default
+        implementation is intentionally absent; whole-model algorithms (e.g. QAD)
+        override it to run their own full-model forward/optimize loop.
+
+        Args:
+            model: The model to quantize (all quantizable layers tuned jointly).
+            token_ids: Per-sample calibration token-id tensors.
+            device: Target compute device.
+
+        Returns:
+            Best tuning parameters, with common wrappers left installed for
+            composer finalization, just like quantize_block. In-place algorithms
+            may return an empty dict.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} sets whole_model_tuning=True but does not implement quantize_model()."
+        )
+
     def prepare_run(self, composer: "AlgorithmComposer" = None) -> None:
         """Model-level preparation (called once before block iteration starts)."""
         return

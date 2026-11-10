@@ -13,7 +13,7 @@
 # limitations under the License.
 import os
 import random
-from typing import Union
+from typing import Any, Union
 
 import torch
 from torch.amp import autocast
@@ -23,13 +23,14 @@ from auto_round.compressors.config_resolution import LayerConfigResolutionError
 # Explicit compatibility exports for callers that historically imported GGUF and
 # ignore-layer helpers from compressors.utils.
 from auto_round.compressors.layer_config_resolver import get_fp_layer_names
-from auto_round.export.formats.backends.gguf import (
+from auto_round.export.formats.gguf.format import (
     _apply_gguf_shape_fallback,
     _infer_gguf_n_layers_from_model,
     _resolve_gguf_n_layers,
     get_layer_config_by_gguf_format,
     gguf_type_fallback,
 )
+from auto_round.logger import logger
 from auto_round.schemes import BackendDataType  # re-exported: qlinear_fp/qlinear_int import it from here
 from auto_round.schemes import (
     QuantizationScheme,
@@ -123,7 +124,7 @@ def block_forward(
     amp_dtype: torch.dtype = torch.float16,
     device: torch.device = torch.device("cpu"),
     output_return_id: int = 0,
-) -> Union[torch.Tensor, dict]:
+) -> torch.Tensor | dict:
     """Performs a forward pass through a block with the given inputs.
 
     Args:
@@ -153,11 +154,22 @@ def block_forward(
     input_others, input_tuple = prepare_special_model_block_inputs(block, input_ids, input_others, input_tuple)
 
     # Use the block's actual parameter name for the first positional argument.
-    import inspect as _inspect
-
-    # For DDP-wrapped blocks, inspect the underlying module's signature
+    # For DDP-wrapped blocks, inspect the underlying module's signature.
     _actual_block = getattr(block, "module", block)
-    param_names = [p for p in _inspect.signature(_actual_block.forward).parameters.keys() if p != "self"]
+    # ``inspect.signature`` is relatively expensive and the forward signature is
+    # fixed for the lifetime of a block, yet this runs on *every* batch of every
+    # reference/quantized-input/tuning pass (hundreds of thousands of calls for
+    # large nsamples). Resolve the parameter names once and cache them on the
+    # module so subsequent calls are a single attribute read.
+    param_names = getattr(_actual_block, "_ar_forward_param_names", None)
+    if param_names is None:
+        import inspect as _inspect
+
+        param_names = [p for p in _inspect.signature(_actual_block.forward).parameters.keys() if p != "self"]
+        try:
+            _actual_block._ar_forward_param_names = param_names
+        except (AttributeError, RuntimeError):  # pragma: no cover - exotic module types
+            pass
     block_input_kwarg = param_names[0] if param_names else "hidden_states"
     if block_input_kwarg not in input_others:
         input_others[block_input_kwarg] = input_ids
@@ -173,12 +185,70 @@ def block_forward(
                     input_others[param_name] = val
         positional_inputs = ()
 
+    # DDP-mirror device audit (last line of defense): every tensor kwarg must
+    # sit on the same accelerator device as the block's parameters. A stale
+    # kwarg (e.g. an entry recorded on the primary GPU while the replica
+    # lives elsewhere) silently overrides the staged first-arg inside this
+    # function and crashes cross-device inside the block forward -- serial
+    # runs with a single shared device stay unaffected. Move the stragglers
+    # onto the block's device AND name them (fail-visible).
+    try:
+        _block_dev = next(block.parameters()).device
+    except StopIteration:  # pragma: no cover - param-less blocks
+        _block_dev = device
+
+    def _audit(value, prefix, bad):
+        if torch.is_tensor(value):
+            if value.device.type in ("cuda", "xpu", "hpu") and value.device != _block_dev:
+                bad.append(f"{prefix}:{value.device}")
+        elif isinstance(value, (list, tuple)):
+            for _i, _v in enumerate(value):
+                _audit(_v, f"{prefix}[{_i}]", bad)
+        elif isinstance(value, dict):
+            for _k, _v in value.items():
+                _audit(_v, f"{prefix}.{_k}", bad)
+
+    def _relocate(value):
+        # Mirror _audit's condition exactly: only accelerator tensors that
+        # mismatch the block device move. A wholesale to_device() here would
+        # also migrate host tensors nested in lists/dicts onto the accelerator
+        # (semantic change + VRAM), which the audit never flagged.
+        if torch.is_tensor(value):
+            if value.device.type in ("cuda", "xpu", "hpu") and value.device != _block_dev:
+                return value.to(_block_dev)
+            return value
+        if isinstance(value, list):
+            return [_relocate(_v) for _v in value]
+        if isinstance(value, tuple):
+            return tuple(_relocate(_v) for _v in value)
+        if isinstance(value, dict):
+            return {k: _relocate(v) for k, v in value.items()}
+        return value
+
+    _bad = []
+    for _k, _v in input_others.items():
+        _audit(_v, str(_k), _bad)
+    if _bad:
+        logger.warning(
+            "[block-forward] device sweep: moving %d stale kwarg tensor(s) onto %s: %s%s",
+            len(_bad),
+            _block_dev,
+            ", ".join(_bad[:8]),
+            " ..." if len(_bad) > 8 else "",
+        )
+        for _k in list(input_others.keys()):
+            if torch.is_tensor(input_others[_k]) and input_others[_k].device.type in ("cuda", "xpu", "hpu"):
+                if input_others[_k].device != _block_dev:
+                    input_others[_k] = input_others[_k].to(_block_dev)
+            elif isinstance(input_others[_k], (list, tuple, dict)):
+                input_others[_k] = _relocate(input_others[_k])
+
     if amp:
         with autocast(device_type=str(device).split(":")[0], dtype=amp_dtype):  # pragma: no cover
             output = block(**input_others)
     else:
         output = block(**input_others)
-    if isinstance(output_return_id, int) and (isinstance(output, list) or isinstance(output, tuple)):
+    if isinstance(output_return_id, int) and isinstance(output, (list, tuple)):
         output = output[output_return_id]
     return output
 
@@ -195,11 +265,11 @@ def check_skippable_keywords(key):
 
 
 def check_need_act_calibration(
-    is_act_dynamic: Union[bool, None],
-    act_data_type: Union[str, None] = None,
-    act_bits: Union[int, None] = 16,
-    static_kv_dtype: Union[str, None] = None,
-    static_attention_dtype: Union[str, None] = None,
+    is_act_dynamic: bool | None,
+    act_data_type: str | None = None,
+    act_bits: int | None = 16,
+    static_kv_dtype: str | None = None,
+    static_attention_dtype: str | None = None,
 ) -> bool:
     if static_kv_dtype is not None or static_attention_dtype is not None:
         return True
@@ -208,9 +278,7 @@ def check_need_act_calibration(
     # None is dynamic
     if is_act_dynamic is not None and not is_act_dynamic:
         return True
-    if act_data_type is not None and "static" in act_data_type:
-        return True
-    return False
+    return act_data_type is not None and "static" in act_data_type
 
 
 def collect_best_params(block, cache_device="cpu"):
@@ -226,6 +294,53 @@ def collect_best_params(block, cache_device="cpu"):
                 for key in m.params.keys():
                     params[n][key] = m.params[key].data.to(cache_device, copy=True)
     return params
+
+
+def collect_best_params_local(block: torch.nn.Module) -> dict[str, Any]:
+    """Best-params snapshot duplicated on each parameter's own device.
+
+    With a CPU cache device this is not used (host parking is the point of
+    ``low_gpu_mem_usage``). With a non-CPU cache device the historical path
+    copied every parameter to that single device -- concentrating all devices'
+    snapshot bytes on one GPU and paying cross-device copies on every improving
+    iteration. Duplicating each parameter on the device that already hosts it
+    keeps the footprint spread like the weights themselves, removes the
+    cross-device traffic, and makes the unwrap copy-back local. Values and the
+    restore path are unchanged. Falls back to a host snapshot (with a warning)
+    when a local copy fails.
+    """
+    params = {}
+    try:
+        if hasattr(block, "orig_layer"):
+            for key, p_ in block.params.items():
+                params[key] = p_.data.to(p_.data.device, copy=True)
+        else:
+            for n, m in block.named_modules():
+                if hasattr(m, "orig_layer"):
+                    params[n] = {key: p_.data.to(p_.data.device, copy=True) for key, p_ in m.params.items()}
+        return params
+    except RuntimeError as e:
+        logger.warning("[snapshot] local copy failed (%s); parking the snapshot on host", e)
+        return collect_best_params(block, "cpu")
+
+
+def snapshot_best_params(block: torch.nn.Module, cache_device: "str | torch.device" = "cpu") -> dict[str, Any]:
+    """Collect the best-params snapshot, keeping multi-device blocks on-device.
+
+    A CPU ``cache_device`` (``low_gpu_mem_usage``) keeps the historical host
+    snapshot. A non-CPU ``cache_device`` means VRAM was budgeted for caching;
+    each parameter is then duplicated on its own device instead of gathering
+    every device's copies onto one cache device. Single-device blocks are
+    unaffected either way (the cache device already equals each parameter's
+    device).
+    """
+    try:
+        non_cpu = torch.device(str(cache_device)).type != "cpu"
+    except (ValueError, RuntimeError):
+        non_cpu = False  # unrecognized label: keep the historical path (it will raise as before)
+    if non_cpu:
+        return collect_best_params_local(block)
+    return collect_best_params(block, cache_device)
 
 
 def infer_bits_by_data_type(data_type: str):
@@ -395,19 +510,35 @@ class IndexSampler:
         nsamples (int): Total number of samples.
         batch_size (int): Number of indices to return in each batch.
         index (int): Current position in the index list.
-        indices (List[int]): Shuffled list of indices.
+        indices (list[int]): Shuffled list of indices.
     """
 
-    def __init__(self, nsamples: int, batch_size: int) -> None:
+    def __init__(
+        self,
+        nsamples: int,
+        batch_size: int,
+        indices: "list[int] | None" = None,
+        rng: "random.Random | None" = None,
+    ) -> None:
         """Initializes the sampler.
 
         Args:
             nsamples (int): Total number of samples (must be >= batch_size).
             batch_size (int): Number of indices per batch.
+            indices (list[int], optional): Explicit index pool to shuffle
+                (defaults to ``range(nsamples)``). Used by shard-constrained
+                DDP sampling; ``nsamples`` must equal ``len(indices)``.
+            rng (random.Random, optional): Private shuffle generator (defaults
+                to the global ``random`` module). Data-parallel rank threads
+                pass their own so concurrent reshuffles stay reproducible.
 
         Raises:
             ValueError: If batch_size is not in the range (0, nsamples].
         """
+        if indices is None:
+            indices = list(range(nsamples))
+        elif len(indices) != nsamples:
+            raise ValueError(f"indices pool ({len(indices)}) does not match nsamples ({nsamples})")
         if batch_size <= 0 or batch_size > nsamples:
             raise ValueError("batch_size must be > 0 and <= nsamples")
 
@@ -415,8 +546,9 @@ class IndexSampler:
         self.batch_size: int = batch_size
         self.index: int = 0
 
-        self.indices: list[int] = list(range(nsamples))
-        random.shuffle(self.indices)
+        self._rng = rng if rng is not None else random
+        self.indices: list[int] = list(indices)
+        self._rng.shuffle(self.indices)
 
     def next_batch(self) -> list[int]:
         """Returns the next batch of shuffled indices.
@@ -428,7 +560,7 @@ class IndexSampler:
             list[int]: A list of size `batch_size` containing sample indices.
         """
         if self.index + self.batch_size > self.nsamples:
-            random.shuffle(self.indices)
+            self._rng.shuffle(self.indices)
             self.index = 0
 
         batch = self.indices[self.index : self.index + self.batch_size]
@@ -485,11 +617,7 @@ def _get_diffusion_save_folder_name(format) -> str:
     formats = compress_context.formats
     # Use a subfolder only if there are multiple formats
     if len(formats) > 1:
-        return (
-            os.path.join(compress_context.output_dir, sanitized_format, "transformer")
-            if compress_context.is_immediate_saving
-            else os.path.join(compress_context.output_dir, sanitized_format, "transformer")
-        )
+        return os.path.join(compress_context.output_dir, sanitized_format, "transformer")
 
     # if use is_immediate_saving, we need to save model in self.output_dir/transformer folder
     return (
@@ -529,7 +657,13 @@ def _get_save_folder_name(format, *args, **kwargs) -> str:
     return compress_context.output_dir
 
 
+PACK_WRAP = {"pre": 0.0, "fmt": 0.0}
+
+
 def immediate_pack(name: str, layer_config: dict):
+    import time as _time
+
+    _t0 = _time.perf_counter()
     from auto_round.context.compress import CompressContext
     from auto_round.context.model import ModelContext
 
@@ -538,6 +672,8 @@ def immediate_pack(name: str, layer_config: dict):
 
     if not compress_context.is_immediate_packing:
         return
+    PACK_WRAP["pre"] += _time.perf_counter() - _t0
+    _t1 = _time.perf_counter()
     compress_context.formats[0].immediate_pack(
         name=name,
         model=model_context.model,
@@ -550,3 +686,4 @@ def immediate_pack(name: str, layer_config: dict):
         image_processor=getattr(model_context, "image_processor", None),
         quant_nontext_module=getattr(model_context, "quant_nontext_module", False),
     )
+    PACK_WRAP["fmt"] += _time.perf_counter() - _t1

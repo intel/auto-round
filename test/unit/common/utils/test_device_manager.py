@@ -358,18 +358,22 @@ class TestGetCurrentDeviceType:
         )
 
         # Force every discovery path to report "nothing"
-        with patch.object(
-            __import__("auto_round.utils.device_manager", fromlist=["_hpu_available"]),
-            "_hpu_available",
-            return_value=False,
-        ), patch.object(
-            __import__("auto_round.utils.device_manager", fromlist=["_torch_accelerator_type"]),
-            "_torch_accelerator_type",
-            return_value=None,
-        ), patch.object(
-            __import__("auto_round.utils.device_manager", fromlist=["_PREFERRED_ORDER"]),
-            "_PREFERRED_ORDER",
-            (),
+        with (
+            patch.object(
+                __import__("auto_round.utils.device_manager", fromlist=["_hpu_available"]),
+                "_hpu_available",
+                return_value=False,
+            ),
+            patch.object(
+                __import__("auto_round.utils.device_manager", fromlist=["_torch_accelerator_type"]),
+                "_torch_accelerator_type",
+                return_value=None,
+            ),
+            patch.object(
+                __import__("auto_round.utils.device_manager", fromlist=["_PREFERRED_ORDER"]),
+                "_PREFERRED_ORDER",
+                (),
+            ),
         ):
             # Need to clear the lru_cache
             get_current_device_type.cache_clear()
@@ -415,8 +419,9 @@ class TestAvailableHelpers:
     def test_get_available_device_types_cpu_only(self):
         from auto_round.utils.device_manager import get_available_device_types
 
-        with patch("auto_round.utils.device_manager._hpu_available", return_value=False), patch(
-            "auto_round.utils.device_manager._torch_accelerator_type", return_value=None
+        with (
+            patch("auto_round.utils.device_manager._hpu_available", return_value=False),
+            patch("auto_round.utils.device_manager._torch_accelerator_type", return_value=None),
         ):
             assert get_available_device_types() == []
 
@@ -766,12 +771,14 @@ class TestGetDeviceMemory:
     def test_cpu_raises_runtime_error(self):
         from auto_round.utils.device_manager import get_device_memory
 
-        with patch(
-            "auto_round.utils.device_manager.get_current_device_type",
-            return_value="cpu",
+        with (
+            patch(
+                "auto_round.utils.device_manager.get_current_device_type",
+                return_value="cpu",
+            ),
+            pytest.raises(RuntimeError),
         ):
-            with pytest.raises(RuntimeError):
-                get_device_memory()
+            get_device_memory()
 
 
 # ---------------------------------------------------------------------------

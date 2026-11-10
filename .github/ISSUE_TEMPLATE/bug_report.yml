@@ -37,7 +37,7 @@ body:
       description: Please provide information about your environment
       placeholder: |
         - OS: [e.g. Ubuntu 22.04]
-        - Python version: [e.g. 3.10]
+        - Python version: [e.g. 3.11]
         - AutoRound version: [e.g. 0.9.5]
         - Hardware: [e.g. CPU/GPU model]
     validations:

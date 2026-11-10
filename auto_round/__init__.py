@@ -23,6 +23,8 @@ from auto_round.algorithms.transforms.hadamard.config import RotationConfig
 from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme
+from auto_round.parallel import ParallelConfig
+from auto_round.parallel.tp.launcher import quantize_and_save
 from auto_round.utils import LazyImport
 from auto_round.utils import monkey_patch
 
@@ -31,20 +33,22 @@ monkey_patch()
 from .version import __version__
 
 __all__ = [
-    "__version__",
+    "AWQConfig",
+    "AdamRoundConfig",
     "AutoRound",
-    "AutoRoundLLM",
-    "AutoRoundMLLM",
     "AutoRoundAdam",
     "AutoRoundDiffusion",
+    "AutoRoundLLM",
+    "AutoRoundMLLM",
     "AutoScheme",
+    "OptimizedRTNConfig",
+    "ParallelConfig",
     "QuantizationScheme",
     "RTNConfig",
-    "OptimizedRTNConfig",
-    "SignRoundConfig",
-    "AdamRoundConfig",
-    "SignRoundV2Config",
-    "AWQConfig",
     "RotationConfig",
+    "SignRoundConfig",
+    "SignRoundV2Config",
     "SpinQuantConfig",
+    "__version__",
+    "quantize_and_save",
 ]

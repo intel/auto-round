@@ -137,8 +137,8 @@ class TestAutoRound:
         model = MllamaForConditionalGeneration.from_pretrained(model_name, trust_remote_code=True, device_map="auto")
         block_name = get_block_names(model, quant_vision=True)
         assert len(block_name) == 3
-        assert any(["vision_model.global_transformer.layers.0" not in n for n in block_name])
-        assert any(["vision_model.transformer.layers.0" not in n for n in block_name])
+        assert any("vision_model.global_transformer.layers.0" not in n for n in block_name)
+        assert any("vision_model.transformer.layers.0" not in n for n in block_name)
         block_name = get_block_names(model, quant_vision=False)
         assert len(block_name) == 1
         assert get_block_names(model) == block_name

@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 #
 # Copyright (c) 2026 Intel Corporation
 #
@@ -55,7 +54,7 @@ def reference_attention(Q, K, V, scale, is_causal=True):
         scale=scale,
         attn_mask=None,
         is_causal=is_causal,
-        enable_gqa=True if K.shape[1] != Q.shape[1] else False,
+        enable_gqa=K.shape[1] != Q.shape[1],
     )
     return ref
 
