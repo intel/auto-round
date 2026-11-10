@@ -129,6 +129,7 @@ def test_qwen35_gguf_mtp_export_control(monkeypatch, tmp_path, disable_mtp_expor
 
     class FakeConversion:
         ModelBase = ConversionModelBase
+        source = "AutoRound bundled llama.cpp conversion"
 
         @staticmethod
         def model_type(model_type):
