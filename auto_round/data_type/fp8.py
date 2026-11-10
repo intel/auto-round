@@ -16,6 +16,7 @@ import torch
 
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import (
+    calculate_fp8_e4m3_scale,
     float8_e4m3fn_ste,
     float8_e5m2_ste,
     get_gaudi_fp8_ste_func,
@@ -119,9 +120,7 @@ def quant_fp8_sym(tensor, max_scale=1.0, tensor_max=None, group_size=-1, v=0, te
             else torch.maximum(torch.tensor(tensor_max).abs(), torch.tensor(tensor_min).abs()).to(tensor.device)
             * max_scale
         )
-    scale = max_tensor.to(torch.float32) / info.max
-    min_scaling_factor = float(1.0 / (info.max * 512.0))  ##copy from vllm
-    scale = torch.clip(scale, min=min_scaling_factor)
+    scale = calculate_fp8_e4m3_scale(max_tensor)
     if tensor.dtype == torch.float16:  ## Avoid NaN gradients with float16
         tensor = tensor.to(torch.bfloat16)
     scale = scale.unsqueeze(dim=-1)
