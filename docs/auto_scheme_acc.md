@@ -19,7 +19,7 @@
 | Default DeltaLoss | 0.5215 | 0.2816 | 0.3285 | 0.5341 | 0.4941 | 0.5477 | 0.4185 | 0.0780 | 0.3853 | 0.1960 | 0.3400 | 0.6529 | 0.6649 | 0.2962 | 0.5375 | 0 |
 | DeltaLoss Abs Dot | 0.5509 | 0.3294 | 0.3404 | 0.5673 | 0.5278 | 0.6064 | 0.4332 | 0.1613 | 0.4594 | 0.2120 | 0.3340 | 0.6834 | 0.6768 | 0.2938 | 0.5785 | 0.0288 |
 
-### Qwen3-14B —  RTN, W2G128/W4G128 avg 3.0 ingore=false
+### Qwen3-14B —  RTN, W2G128/W4G128 avg 3.0 ignore=false
 
 | Method | ARC-C acc | ARC-C norm | ARC-E acc | ARC-E norm | BoolQ | HellaSwag | HellaSwag norm | LAMBADA | MMLU 5 shots | OpenBookQA acc | OpenBookQA norm | PIQA acc | PIQA norm | TruthfulQA MC1 | WinoGrande | GSM8K |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
