@@ -13,6 +13,7 @@ TARGET_GPUS = [
     "NVIDIA GeForce RTX 5090",
     "NVIDIA RTX PRO 4500 Blackwell Server Edition",
     "NVIDIA RTX PRO 4500 Blackwell",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb",
     "NVIDIA RTX PRO 4000 Blackwell",
     "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 2g.48gb",
     "NVIDIA RTX 6000 Ada Generation",
@@ -24,16 +25,6 @@ TARGET_GPUS = [
     "NVIDIA H100 80GB HBM3",
     "NVIDIA H200",
 ]
-# GPUs deliberately excluded: a MIG 1g.24gb slice only gets ~1/7 of the host
-# RAM/CPU alongside its 24 GB of VRAM, which is not enough for this suite. The
-# CUDA unit tests load models up to ~24B parameters (e.g.
-# mistralai/Mistral-Small-3.2-24B, Llama-3.2-11B-Vision, gemma-3-12b) and run
-# multi-process calibration, so the pod dies with a bare "Out of memory." at the
-# Job level instead of a test assertion. That makes the failure look like a code
-# regression when it is purely a fallback-GPU allocation issue (build 79886:
-# part 0 got an RTX 4090 and passed, parts 1/2 fell back to MIG 1g.24gb and
-# both OOMed).
-#   - "NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb"
 DATA_CENTER_BAN_LIST = ["EUR-IS-1", "EUR-IS-2", "US-IL-1", "EU-CZ-1", "EUR-NO-1"]
 CU130_IMAGES_NAME = "ghcr.io/xuehaosun/azure-agent:13.0"
 MIN_CUDA_VERSION = "13.0"
