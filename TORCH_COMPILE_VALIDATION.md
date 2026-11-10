@@ -32,9 +32,10 @@ Comprehensive validation of `torch.compile` support across all quantization data
   # Before: torch.compile traces into maxq = 1 << (bits - 1) → symbolic computation
   # After: maxq computed as Python int (e.g., 2, 4) before trace phase
   def _derive_maxq_sym(frozen):
-      bits = frozen.get('bits', 4)
-      return {'_precomputed_maxq': 1 << (bits - 1)}
-  
+      bits = frozen.get("bits", 4)
+      return {"_precomputed_maxq": 1 << (bits - 1)}
+
+
   quant_tensor_sym._compile_derive = _derive_maxq_sym
   ```
 
@@ -93,16 +94,10 @@ All wrapper classes (`WrapperLinear`, `WrapperWALayer`, `WrapperLinearV2`, `DQWr
 
 ```python
 # Weight quantization
-self.weight_quant_func = compile_func(
-    self.weight_quant_func, self.device, 
-    frozen_kwargs={"bits": orig_layer.bits}
-)
+self.weight_quant_func = compile_func(self.weight_quant_func, self.device, frozen_kwargs={"bits": orig_layer.bits})
 
 # Activation quantization
-self.act_quant_func = compile_func(
-    self.act_quant_func, self.device, 
-    frozen_kwargs={"bits": orig_layer.act_bits}
-)
+self.act_quant_func = compile_func(self.act_quant_func, self.device, frozen_kwargs={"bits": orig_layer.act_bits})
 ```
 
 No data-type-specific branching required.

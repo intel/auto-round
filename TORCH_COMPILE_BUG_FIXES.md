@@ -41,9 +41,7 @@ Assertion verifies: `assert autoround.enable_torch_compile` ← Pass means torch
 **Solution Applied**: 
 Added explicit assertions to all data type tests:
 ```python
-assert autoround.enable_torch_compile, (
-    "torch.compile was disabled. This data type should support torch.compile."
-)
+assert autoround.enable_torch_compile, "torch.compile was disabled. This data type should support torch.compile."
 ```
 
 **Tests Updated**:
@@ -116,9 +114,7 @@ if self.enable_torch_compile and is_nv_fp(self.act_data_type):
 ### 2. `test/test_cuda/quantization/test_torch_compile.py`
 **Added**: Assertions to all tests to verify `enable_torch_compile` is not disabled
 ```python
-assert autoround.enable_torch_compile, (
-    "torch.compile was disabled. This data type should support torch.compile."
-)
+assert autoround.enable_torch_compile, "torch.compile was disabled. This data type should support torch.compile."
 ```
 
 **Added**: Skip marker for FP8 with explanation
