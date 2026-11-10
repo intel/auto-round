@@ -308,10 +308,7 @@ class AutoSchemeWrapperLinearDeltaAbsDot(AutoSchemeWrapperLinear):
         weight = super()._score_reference_weight_for_device(device)
         return weight.t() if isinstance(self.orig_layer, Conv1D) else weight
 
-    def _accumulate_weight_score(self, grad, delta):
-        previous = getattr(self, "_abs_dot_batch", 0.0)
-        self._abs_dot_batch = previous + (grad * delta).sum().item()
-        self.weight_score += abs(self._abs_dot_batch) - abs(previous)
+        self._abs_dot_batch = previous + (grad.to(torch.float32) * delta.to(torch.float32)).sum().item()
         self.mix_score = self.weight_score + self.act_score
 
     def forward(self, x):
