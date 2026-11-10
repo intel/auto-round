@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""CPU-only tests for ``auto_round/export/export_to_gguf/packing.py``.
+"""CPU-only tests for ``auto_round/export/formats/gguf/packing.py``.
 
 Covers the llama.cpp-style ``original=True`` packing path, the legacy block
 types without precomputed scales, the standalone search helpers and the
@@ -24,8 +24,8 @@ import numpy as np
 import pytest
 import torch
 
-from auto_round.export.export_to_gguf import packing
-from auto_round.export.export_to_gguf.packing import (
+from auto_round.export.formats.gguf import packing
+from auto_round.export.formats.gguf.packing import (
     ggml_quant,
     ggml_quant_core,
     make_qkx2_quants,

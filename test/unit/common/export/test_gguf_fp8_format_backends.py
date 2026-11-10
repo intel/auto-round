@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Fast tests for the GGUF / FP8 ``OutputFormat`` helpers in ``auto_round/export/formats/backends``.
+"""Fast tests for the GGUF / FP8 ``OutputFormat`` helpers in ``auto_round/export/formats``.
 
 Model downloads and llama.cpp conversion lookups are mocked, so no checkpoint is needed.
 """
@@ -24,9 +24,9 @@ import torch
 import torch.nn as nn
 
 from auto_round.compressors.config_resolution.errors import FormatCompatibilityError
-from auto_round.export.formats.backends import gguf as gguf_fmt
-from auto_round.export.formats.backends.fp8 import FP8Format
-from auto_round.export.formats.backends.gguf import GGUFFormat
+from auto_round.export.formats.fp8 import FP8Format
+from auto_round.export.formats.gguf import format as gguf_fmt
+from auto_round.export.formats.gguf.format import GGUFFormat
 from auto_round.schemes import QuantizationScheme
 
 gguf = pytest.importorskip("gguf")
@@ -49,7 +49,7 @@ class TestGgufArgsCheck:
         conv = MagicMock()
         conv.is_supported.return_value = True
         with (
-            patch("auto_round.export.export_to_gguf.llama_cpp_conversion.get_conversion", return_value=conv),
+            patch("auto_round.export.formats.gguf.llama_cpp_conversion.get_conversion", return_value=conv),
             patch("auto_round.utils.model.get_gguf_architecture", return_value="LlamaForCausalLM"),
         ):
             yield conv, str(tmp_path)
@@ -95,7 +95,7 @@ class TestGgufArgsCheck:
 
     def test_outdated_gguf_py(self, tmp_path):
         with patch(
-            "auto_round.export.export_to_gguf.llama_cpp_conversion.get_conversion", side_effect=AttributeError("x")
+            "auto_round.export.formats.gguf.llama_cpp_conversion.get_conversion", side_effect=AttributeError("x")
         ), pytest.raises(ImportError, match="latest gguf-py"):
             GGUFFormat.gguf_args_check(_scheme(), model=str(tmp_path), platform="hf", formats="gguf:q4_0")
 
@@ -235,7 +235,7 @@ class TestGetLayerConfigByGgufFormat:
         conv = MagicMock()
         conv.get_model_class.side_effect = NotImplementedError
         layer_config = {"a": {"bits": 4}}
-        with patch("auto_round.export.export_to_gguf.llama_cpp_conversion.get_conversion", return_value=conv):
+        with patch("auto_round.export.formats.gguf.llama_cpp_conversion.get_conversion", return_value=conv):
             assert gguf_fmt.get_layer_config_by_gguf_format(layer_config, "gguf:q4_k_m", self._model()) == (
                 layer_config,
                 {},
@@ -245,7 +245,7 @@ class TestGetLayerConfigByGgufFormat:
         conv = MagicMock()
         layer_config = {"a": {"bits": 4}}
         cfg = types.SimpleNamespace(to_dict=dict)
-        with patch("auto_round.export.export_to_gguf.llama_cpp_conversion.get_conversion", return_value=conv):
+        with patch("auto_round.export.formats.gguf.llama_cpp_conversion.get_conversion", return_value=conv):
             out = gguf_fmt.get_layer_config_by_gguf_format(layer_config, "gguf:q4_k_m", self._model(cfg))
         assert out == (layer_config, {})
 
@@ -281,7 +281,7 @@ class TestFP8Format:
         fmt.output_format, fmt.backend = output_format, None
         layer_config = {"a": {"bits": 8, "act_bits": 8}, "b": {"bits": 16, "act_bits": 16}}
         set = {"group_size": (128, 128)}
-        target = "auto_round.export.export_to_autoround.export_to_fp8.save_quantized_as_autoround"
+        target = "auto_round.export.formats.autoround.fp8.save_checkpoint"
         with patch(target, return_value="saved") as save:
             assert fmt.save_quantized("out", model=None, layer_config=layer_config, serialization_dict=set) == "saved"
         kwargs = save.call_args.kwargs
@@ -292,13 +292,13 @@ class TestFP8Format:
         fmt = FP8Format.__new__(FP8Format)
         fmt.output_format, fmt.backend = "fp8", None
         set = {"group_size": -1}
-        with patch("auto_round.export.export_to_autoround.export_to_fp8.save_quantized_as_autoround"):
+        with patch("auto_round.export.formats.autoround.fp8.save_checkpoint"):
             fmt.save_quantized("out", layer_config={}, serialization_dict=set)
         assert "weight_block_size" not in set
 
     def test_pack_layer_delegates(self):
         fmt = FP8Format.__new__(FP8Format)
         fmt.output_format = "fp8"
-        with patch("auto_round.export.export_to_autoround.export_to_fp8.pack_layer") as pack:
+        with patch("auto_round.export.formats.autoround.fp8.pack_layer") as pack:
             fmt.pack_layer("x", "model", device="cpu")
         pack.assert_called_once_with("x", "model", "fp8", device="cpu")
