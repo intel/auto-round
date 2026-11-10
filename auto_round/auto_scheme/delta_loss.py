@@ -297,6 +297,7 @@ class AutoSchemeWrapperLinearDeltaAbsDot(AutoSchemeWrapperLinear):
 
     Keep the quantized forward and model-dtype gradients of DeltaLoss. Reused
     layers accumulate signed contributions within a batch before taking abs.
+    Activation-quantized schemes retain the existing activation score.
     """
 
     def _score_weight_for_device(self, device):
@@ -317,6 +318,10 @@ class AutoSchemeWrapperLinearDeltaAbsDot(AutoSchemeWrapperLinear):
         if self.grad_mode and torch.is_grad_enabled() and not x.requires_grad:
             # Frozen embeddings must not suppress the explicit weight score.
             x = x.detach().requires_grad_(True)
+        if self.enable_act_quant:
+            # The custom scoring linear is W-only: use the full QDQ forward so
+            # activation quantization and its score hooks are not bypassed.
+            return WrapperLinear.forward(self, x)
         return super().forward(x)
 
 

@@ -1,3 +1,34 @@
+### Qwen3-8B — RTN, MXFP4, 4/8-bit, avg 4.5, ignore=false
+
+| Method | ARC-C acc | ARC-C norm | ARC-E acc | ARC-E norm | BoolQ | HellaSwag | HellaSwag norm | LAMBADA | MMLU 5 shots | OpenBookQA acc | OpenBookQA norm | PIQA acc | PIQA norm | TruthfulQA MC1 | WinoGrande |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Default DeltaLoss | 0.7067 | 0.5179 | 0.5154 | 0.8005 | 0.7647 | 0.8657 | 0.5274 | 0.6043 | 0.7008 | 0.3100 | 0.3980 | 0.7291 | 0.7437 | 0.3390 | 0.6496 |
+| DeltaLoss Abs Dot | 0.7016 | 0.4974 | 0.5017 | 0.7988 | 0.7500 | 0.8599 | 0.5270 | 0.6080 | 0.7035 | 0.2840 | 0.3780 | 0.7405 | 0.7601 | 0.3390 | 0.6409 |
+
+### Qwen3-14B — MXFP4, 4/8-bit, avg 4.5, ignore=false
+
+| Method | ARC-C acc | ARC-C norm | ARC-E acc | ARC-E norm | BoolQ | HellaSwag | HellaSwag norm | LAMBADA | MMLU 5 shots | OpenBookQA acc | OpenBookQA norm | PIQA acc | PIQA norm | TruthfulQA MC1 | WinoGrande |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Default DeltaLoss | 0.7487 | 0.5529 | 0.5785 | 0.8161 | 0.8056 | 0.8844 | 0.5713 | 0.6439 | 0.7597 | 0.3400 | 0.4320 | 0.7622 | 0.7699 | 0.3819 | 0.6985 |
+| DeltaLoss Abs Dot | 0.7467 | 0.5486 | 0.5751 | 0.8056 | 0.7997 | 0.8829 | 0.5737 | 0.6422 | 0.7515 | 0.3320 | 0.4200 | 0.7590 | 0.7666 | 0.3794 | 0.7040 |
+
+### Qwen3-8B — RTN, W2G128/W4G128 avg 3.0 ignore=false
+
+| Method | ARC-C acc | ARC-C norm | ARC-E acc | ARC-E norm | BoolQ | HellaSwag | HellaSwag norm | LAMBADA | MMLU 5 shots | OpenBookQA acc | OpenBookQA norm | PIQA acc | PIQA norm | TruthfulQA MC1 | WinoGrande | GSM8K |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Default DeltaLoss | 0.5215 | 0.2816 | 0.3285 | 0.5341 | 0.4941 | 0.5477 | 0.4185 | 0.0780 | 0.3853 | 0.1960 | 0.3400 | 0.6529 | 0.6649 | 0.2962 | 0.5375 | 0 |
+| DeltaLoss Abs Dot | 0.5509 | 0.3294 | 0.3404 | 0.5673 | 0.5278 | 0.6064 | 0.4332 | 0.1613 | 0.4594 | 0.2120 | 0.3340 | 0.6834 | 0.6768 | 0.2938 | 0.5785 | 0.0288 |
+
+### Qwen3-14B —  RTN, W2G128/W4G128 avg 3.0 ingore=false
+
+| Method | ARC-C acc | ARC-C norm | ARC-E acc | ARC-E norm | BoolQ | HellaSwag | HellaSwag norm | LAMBADA | MMLU 5 shots | OpenBookQA acc | OpenBookQA norm | PIQA acc | PIQA norm | TruthfulQA MC1 | WinoGrande | GSM8K |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Default | 0.6416 | 0.3874 | 0.4352 | 0.6633 | 0.6418 | 0.7997 | 0.4882 | 0.1912 | 0.7058 | 0.2740 | 0.3840 | 0.7078 | 0.7220 | 0.3488 | 0.5833 | 0.0311 |
+| DeltaLoss Abs Dot | 0.6520 | 0.3959 | 0.4522 | 0.6932 | 0.6519 | 0.7807 | 0.4931 | 0.3775 | 0.6619 | 0.2640 | 0.3520 | 0.7372 | 0.7378 | 0.3525 | 0.6212 | 0.6012 |
+
+
+
+
 ### Fake quantization results
 
 We tested with a fake model because the main branch currently has layer name mismatches between Transformers and GGUF.

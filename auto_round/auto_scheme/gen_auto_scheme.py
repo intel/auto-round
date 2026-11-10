@@ -53,7 +53,7 @@ class AutoScheme:
             options = self.options.upper().replace(" ", "")
             self.options = options.split(",")
         self.options = self._deduplicate_options(self.options)
-        if self.method in ("auto", "delta_abs_dot"):
+        if self.method == "auto":
             from auto_round.schemes import preset_name_to_scheme
 
             schemes = []
@@ -66,10 +66,7 @@ class AutoScheme:
                 if not isinstance(scheme, QuantizationScheme):
                     break
                 schemes.append(scheme)
-            if self.method == "delta_abs_dot":
-                if len(schemes) != len(self.options) or any(s.act_bits != 16 for s in schemes):
-                    raise ValueError("AutoScheme method='delta_abs_dot' supports only W-only/A16 options.")
-            elif (
+            if (
                 schemes
                 and len(schemes) == len(self.options)
                 and any(s.bits < 16 for s in schemes)
