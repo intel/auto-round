@@ -18,8 +18,8 @@ pr:
       - .azure-pipelines/scripts/ut/detect_changed_tests.sh
       - .azure-pipelines/unit-test-hpu.yml
     exclude:
-      - auto_round/export/export_to_autogptq
-      - auto_round/export/export_to_awq
+      - auto_round/export/formats/gptq
+      - auto_round/export/formats/awq
       - auto_round_extension/ark
       - "*.md"
       - "**/*.md"

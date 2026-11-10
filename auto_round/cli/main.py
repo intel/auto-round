@@ -481,7 +481,7 @@ def tune(args):
             raise ValueError(f"{fmt} is not supported, we only support {SUPPORTED_FORMATS}")
 
     if any("llm_compressor" in fmt for fmt in formats):
-        from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+        from auto_round.export.formats.compressed_tensors import check_compressed_tensors_supported
 
         try:
             check_compressed_tensors_supported(raise_error=True)
@@ -588,6 +588,7 @@ def tune(args):
             avg_bits=args.bits,
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
+            default_shared_layers=not getattr(args, "disable_default_shared_layers", False),
             low_gpu_mem_usage=True,
             low_cpu_mem_usage=low_cpu_mem_usage,
         )

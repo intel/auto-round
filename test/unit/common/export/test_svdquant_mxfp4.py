@@ -18,7 +18,7 @@ import pytest
 import torch
 
 from auto_round.data_type.mxfp import quant_mx_rceil
-from auto_round.export.svdquant_mxfp4 import (
+from auto_round.export.formats.svdquant.mxfp4 import (
     NunchakuMXFP4Packer,
     pack_lowrank_weight,
     unpack_lowrank_weight,

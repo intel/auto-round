@@ -350,8 +350,16 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
         nargs="+",
         action="append",
         default=None,
-        help="Ensure listed layers share the same quantization data type."
-        " Accepts space-separated (--shared_layers l1 l2) or comma-separated ('l1,l2') per group.",
+        help="Ensure listed layers share the same quantization scheme (bits, group_size, data type, sym), "
+        "as required by fused serving kernels. Added on top of the default vLLM fusion groups ("
+        "q/k/v, MLA q_a/kv_a, gate/up); disable those with --disable_default_shared_layers. "
+        "Accepts space-separated (--shared_layers l1 l2) or comma-separated ('l1,l2') per group.",
+    )
+    rt.add_argument(
+        "--disable_default_shared_layers",
+        action="store_true",
+        help="Do not automatically share one quantization scheme across vLLM-fused projections "
+        "(q_proj/k_proj/v_proj, MLA q_a_proj/kv_a_proj_with_mqa, gate_proj/up_proj).",
     )
     rt.add_argument(
         "--static_kv_dtype",

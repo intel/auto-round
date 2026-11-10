@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tests for the small helpers in
-``auto_round/export/export_to_gguf/llama_cpp_conversion.py``.
+``auto_round/export/formats/gguf/llama_cpp_conversion.py``.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from auto_round.export.export_to_gguf import llama_cpp_conversion as lcc
-from auto_round.export.export_to_gguf.config import ModelType as AutoRoundModelType
+from auto_round.export.formats.gguf import llama_cpp_conversion as lcc
+from auto_round.export.formats.gguf.config import ModelType as AutoRoundModelType
 
 
 # ---------------------------------------------------------------------------
