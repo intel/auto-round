@@ -58,44 +58,30 @@ dictionary RoPE, both grouped packers, packed-state reloads, and a tiny real V4
 attention RTN/export run. The tiny run leaves MoE weights full precision; it does
 not validate full-checkpoint loading, expert calibration coverage, or accuracy.
 
-Serving this export in vLLM requires a separate, compatible DeepSeek V4 NVFP4
-adapter for quantization metadata and grouped projections. Native Hub names do
+Serving this export in vLLM requires compatible configuration mapping and
+DeepSeek V4 grouped NVFP4 runtime support. Native Hub names do
 not by themselves establish serving compatibility. This change does **not**
 provide that adapter or establish native vLLM serving support. GPU kernels,
 full-model generation, and thinking accuracy have not been tested here.
 
 ## AutoRound / vLLM responsibility boundary
 
-Track AutoRound-side work in PR #2606. Prefer a self-describing standard
-compressed-tensors checkpoint over a runtime checkpoint-repair adapter.
+Keep PR #2606 focused on V4 loading/calibration, grouped NVFP4 packing, and
+restoring **actual weight keys** to the native Hub namespace without corrupting
+packed bytes. The existing config-name reverter only gains a V4 dispatch.
 
-| Responsibility | Owner | Status |
-|---|---|---|
-| Native Hub tensor names, including expert and grouped projection names | AutoRound export | Implemented and name-audited |
-| NVFP4 packing, group layout, scales, and packed-byte preservation | AutoRound quantization/export | CPU regressions present |
-| Compressed-tensors format, group targets and ignore metadata | AutoRound export | Export path present; full serving contract still needs validation |
-| Source FP8/FP4 dequantization and intentional full-precision exclusions | AutoRound load/export | Native loader fallback present; audit residual source-only auxiliary tensors before serving |
-| Independent scales across vLLM-fused partitions | vLLM runtime | Required unless the backend already preserves them |
-| Grouped NVFP4 `wo_a`, TP-local grouping, output RoPE/backend dispatch | vLLM runtime | Requires compatible runtime support |
-| Fused-expert scale compatibility checks | Export validation and runtime loader | Must reject unsupported independent scales, not silently merge them |
+Reuse upstream configuration mapping rather than adding a second generic mapper:
+[compressed-tensors #1009](https://github.com/vllm-project/compressed-tensors/pull/1009)
+resolves matching regex targets to concrete checkpoint names in
+`QuantizationConfig.from_pretrained`;
+[vLLM #66342](https://github.com/vllm-project/vllm/pull/66342) maps config names
+on load, then consolidates ignores and same-scheme targets. Both are open at
+review time. They do not restore tensor keys or implement grouped NVFP4 kernels.
+AutoRound's NVFP4 exporter builds config groups directly, so #1009 is not an
+automatic replacement for its existing config finalization path.
 
-The old evaluation adapter performs runtime name repair, config reconstruction,
-source-FP8 inspection/dequantization, and runtime kernel routing. It is an
-integration prototype, **not** the intended upstream interface. New exports
-should not require scanning the original checkpoint at service startup or a
-private `local_deepseek_v4_nvfp4_adapter` flag. Export-time defects belong in
-AutoRound, not in vLLM's model weight loader.
-
-Runtime operations cannot be removed by renaming checkpoint keys: preserving
-independent gate/up or other fused-partition scales and executing grouped GEMM
-are numerical/compute requirements. Do not round/requantize weights or replace
-different global scales with a shared maximum merely to avoid runtime support.
-Shared expert names in an engine's internal model may differ from native Hub
-names; the engine's normal native checkpoint loader owns that mapping.
-
-Remaining work before claiming minimal-patch serving compatibility: validate a
-fresh export's standard compressed-tensors config and all exclusions, verify no
-source-FP8 repair is required, then exercise the reduced runtime-only adapter
-through TP2 load, grouped numerical checks, semantic generation, and accuracy.
-The current CPU tests and older integration-checkpoint benchmark results do not
-prove that end-to-end migration is complete.
+Keep only necessary runtime work separate: grouped `wo_a` with TP/RoPE handling
+and independent fused-partition scales; reject unsupported expert scales instead
+of silently merging them. Validate a fresh export with upstream mapping and
+runtime support before claiming compatibility. No private adapter flags or
+runtime checkpoint-repair protocol are introduced by this PR.
