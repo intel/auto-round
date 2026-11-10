@@ -107,6 +107,11 @@ def resolve_entry_scheme(scheme, direct_kwargs):
     With candidates, ``bits`` is the required average target. With an
     AutoScheme instance, supplied AutoScheme fields override a copy, leaving
     the caller's instance untouched. Fixed schemes keep integer weight bits.
+
+    Returns ``(scheme, direct_kwargs)``; for AutoScheme the consumed ``bits``/
+    ``shared_layers``/``default_shared_layers``/``ignore_scale_zp_bits`` are
+    removed from ``direct_kwargs`` so they no longer flow into the algorithm
+    config.
     """
     from dataclasses import replace
 
@@ -132,13 +137,20 @@ def resolve_entry_scheme(scheme, direct_kwargs):
             raise ValueError("`bits` must be an integer unless `scheme` is a list, tuple, or AutoScheme")
         if bits is not None:
             direct_kwargs["bits"] = int(bits)
+        # shared_layers/default_shared_layers only make sense for AutoScheme.
+        for key in ("shared_layers", "default_shared_layers"):
+            if direct_kwargs.get(key) is not None:
+                logger.warning_once(
+                    "`%s` only takes effect with candidate schemes (AutoScheme); ignoring it for this run.", key
+                )
+                direct_kwargs.pop(key)
         return scheme, direct_kwargs
 
     auto_scheme_kwargs = {}
     bits = direct_kwargs.pop("bits", None)
     if bits is not None:
         auto_scheme_kwargs["avg_bits"] = bits
-    for key in ("shared_layers", "ignore_scale_zp_bits"):
+    for key in ("shared_layers", "ignore_scale_zp_bits", "default_shared_layers"):
         if direct_kwargs.get(key) is not None:
             auto_scheme_kwargs[key] = direct_kwargs.pop(key)
     if isinstance(scheme, AutoScheme):

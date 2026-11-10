@@ -110,8 +110,19 @@ def test_torch_compile_runtime_defaults(tiny_opt_model_path):
     assert not ar.enable_torch_compile
 
     ar = AutoRound(model=tiny_opt_model_path, scheme="NVFP4", iters=200, nsamples=1)
-    # NVFP4 uses static activation global scales, which disable compilation.
-    assert not ar.enable_torch_compile
+    # NVFP4 keeps per-layer quant kernels compilable; calibration hooks run eagerly.
+    assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
+
+
+def test_static_kv_keeps_block_forward_eager():
+    compressor = object.__new__(BaseOrchestrator)
+    compressor.enable_torch_compile = True
+    compressor.static_kv_dtype = "fp8_e4m3"
+    compressor.static_attention_dtype = None
+    assert not compressor.enable_block_forward_compile
+
+    compressor.static_kv_dtype = None
+    assert compressor.enable_block_forward_compile
 
 
 def test_hf_model_id_sets_resolved_checkpoint_on_compressor_offloader(tiny_opt_model_path, monkeypatch):
@@ -251,7 +262,7 @@ def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path
     assert not ar.enable_torch_compile
 
 
-@pytest.mark.parametrize("scheme,static", [("W4A16", False), ("NVFP4", True)])
+@pytest.mark.parametrize("scheme,static", [("W4A16", False), ("NVFP4", False), ("FP8_STATIC", True)])
 def test_torch_compile_static_activation_guard_before_scheme_resolution(scheme, static):
     compressor = BaseOrchestrator.__new__(BaseOrchestrator)
     compressor.scheme = scheme
