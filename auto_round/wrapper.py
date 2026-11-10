@@ -1328,6 +1328,7 @@ def unwrapper_block(block, best_params):
         orig_layer = m.unwrapper(best_param)
         set_module(block, n, orig_layer)
 
+
 @contextmanager
 def preserve_original_weights(block):
     """Keep a host snapshot for a composer-owned stage that must not bake weights.
