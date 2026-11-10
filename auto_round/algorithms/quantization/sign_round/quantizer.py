@@ -690,12 +690,13 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
                         else:
                             optimizer_class = torch.optim.Adam
                             optimizer_kwargs = {"betas": (0.9, 0.9)}
-                        optimizer = optimizer_class(
-                            teq_params,
-                            lr=float(self.teq_joint_lr),
-                            weight_decay=0.0,
-                            **optimizer_kwargs,
-                        )
+if teq_params:
+    optimizer = optimizer_class(
+        teq_params,
+        lr=float(self.teq_joint_lr),
+        weight_decay=0.0,
+        **optimizer_kwargs,
+    )
                         logger.info(
                             "TEQ staged refinement: optimizer=%s iters=%d lr=%.3e",
                             refine_optimizer,
