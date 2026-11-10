@@ -55,7 +55,7 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 * [2026/10] We now show that **W2A16** accuracy improves steadily as more tuning cost is invested. See the [W2A16 accuracy results](./docs/alg_202508.md).
 
-* [2026/10] We experimentally support **Recurrent Residual Quantization (RRQ)**. A single checkpoint serves 2/4/6/8-bit — and per-layer mixed precision — selectable at load time without re-quantizing: [*Paper*](https://arxiv.org/abs/2608.04048).
+* [2026/11] We experimentally support **Recurrent Residual Quantization (RRQ)**. A single checkpoint serves 2/4/6/8-bit — and per-layer mixed precision — selectable at load time without re-quantizing: [*Paper*](https://arxiv.org/abs/2608.04048).
   ```bash
   # Quantize: produces both base/ and residual/ in the output dir
   python -m auto_round.cli.main \
