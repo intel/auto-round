@@ -13,13 +13,13 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Dict, Type
 
 import torch
 from tqdm import tqdm
-from transformers import PreTrainedModel
 
+from auto_round.modeling.fused_moe.utils import is_linearized_layout
 from auto_round.utils import (
     LazyImport,
     dump_mem_usage,
@@ -34,13 +34,31 @@ BUILTIN_MODULES = {
     "llama4": LazyImport("auto_round.modeling.fused_moe.llama4"),
     # DeepseekV2Attention enables q_scale calibration for deepseek v2 on Gaudi (#1299)
     "deepseek_v2": LazyImport("auto_round.modeling.fused_moe.deepseek_v2"),
-    # supports transformers >= 5.0.0
+    # Qwen3.5 MoE uses block-local materialization to avoid eagerly unfusing the full model.
     "qwen3_5_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     "qwen3_5_moe_text": LazyImport("auto_round.modeling.fused_moe.qwen3_5_moe"),
     # Step 3.5 MoE: splits fused MoELinear into per-expert nn.Linear
     "step3p5": LazyImport("auto_round.modeling.fused_moe.step3_5_moe"),
-    # Qwen3-Omni MoE: thinker (no shared expert) + talker (with shared expert)
+    # Qwen3-Omni MoE: thinker (no shared expert)
     "qwen3_omni_moe": LazyImport("auto_round.modeling.fused_moe.qwen3_omni"),
+    # Kimi remote MoE: routed experts run under @torch.no_grad() in eval mode
+    "kimi_vl": LazyImport("auto_round.modeling.fused_moe.kimi"),
+    "kimi_linear": LazyImport("auto_round.modeling.fused_moe.kimi"),
+    "kimi_k3": LazyImport("auto_round.modeling.fused_moe.kimi"),
+}
+
+_FUSED_MOE_PROJECTION_NAMES = frozenset({"gate_up_proj", "gate_proj", "up_proj", "down_proj", "w1", "w2", "w3"})
+
+
+def _is_fused_moe_parameter(name: str, parameter: torch.Tensor) -> bool:
+    return parameter.ndim == 3 and any(part in _FUSED_MOE_PROJECTION_NAMES for part in name.split("."))
+
+
+# Module name prefixes to exclude from MoE unfusing, keyed by model_type.
+# Modules under these prefixes stay in their original fused 3D format during
+# quantization. ShardWriter expands them to per-expert 2D tensors at save time.
+MOE_SKIP_PREFIXES: dict[str, list[str]] = {
+    "qwen3_omni_moe": ["talker."],
 }
 
 
@@ -54,6 +72,9 @@ if not is_transformers_version_greater_or_equal_5():
 
 def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
     """Handle fused MOE modules using transformers' linear_loop backend.
+
+    Modules under prefixes listed in MOE_SKIP_PREFIXES for the model's
+    model_type are left in their original fused format.
 
     Args:
         model: The model to process
@@ -74,8 +95,11 @@ def _handle_moe_modules(model: torch.nn.Module) -> list[str]:
         )
         return []
 
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    skip_prefixes = MOE_SKIP_PREFIXES.get(model_type, [])
+
     # Use transformers' experts interface
-    unfused = prepare_model_for_moe_quantization(model)
+    unfused = prepare_model_for_moe_quantization(model, skip_prefixes=skip_prefixes)
     if unfused:
         logger.info(f"Prepared {len(unfused)} MOE modules for quantization")
     return unfused
@@ -100,13 +124,46 @@ def is_custom_model(model: torch.nn.Module) -> bool:
     return False
 
 
-def _log_first_moe_block(model: torch.nn.Module, label: str) -> None:
-    """Log the first experts module found in the model for debugging."""
+def _find_first_moe_block(model: torch.nn.Module) -> tuple[str, torch.nn.Module] | tuple[None, None]:
+    """Return ``(name, module)`` of the first experts-like module, or ``(None, None)``."""
     for name, module in model.named_modules():
-        if name.endswith(".experts") or name.endswith(".moe"):
-            logger.info(f"Experts ({label}) [{name}] ({module.__class__.__name__}):\n{module}")
-            return True
-    return False
+        if name.endswith((".experts", ".moe")):
+            return name, module
+    return None, None
+
+
+def _describe_moe_block(model: torch.nn.Module, name: str) -> str | None:
+    """Render the experts module at ``name`` for the before/after comparison."""
+    try:
+        module = model.get_submodule(name)
+    except AttributeError:
+        return None
+    return f"({module.__class__.__name__}):\n{module}"
+
+
+@contextmanager
+def log_moe_block_transition(model: torch.nn.Module, label: str = "replacement"):
+    """Log the first experts module before and after a structural change.
+
+    The structural unfuse happens in one of two places depending on how the model was
+    built: on the meta skeleton (``build_meta_model``) or during ``apply_replacements``.
+    Both wrap themselves in this so the transition is reported wherever it actually
+    occurs, and only when something really changed -- printing an identical before/after
+    pair (which is what the other path sees, since it then has nothing left to do) is
+    just noise.
+    """
+    name, _ = _find_first_moe_block(model)
+    before = _describe_moe_block(model, name) if name is not None else None
+    try:
+        yield
+    finally:
+        if name is not None:
+            after = _describe_moe_block(model, name)
+            if after is not None and after != before:
+                logger.info(f"Experts (before {label}) [{name}] {before}")
+                logger.info(f"Experts (after {label}) [{name}] {after}")
+            else:
+                logger.debug(f"Experts [{name}] left unchanged by {label} {before}")
 
 
 @dump_mem_usage("Materializing model", log_level="debug")
@@ -117,18 +174,27 @@ def materialize_model_(model: torch.nn.Module) -> None:
 
     model.apply(_materialize_module)
 
-    # check if any module on meta device remains
-    found_meta = False
-    for name, param in model.named_parameters():
-        if param.device.type == "meta":
-            logger.warning(f"Parameter {name} is still on meta device after materialization.")
-            found_meta = True
-    for name, buffer in model.named_buffers():
-        if buffer.device.type == "meta":
-            logger.warning(f"Buffer {name} is still on meta device after materialization.")
-            found_meta = True
-    if not found_meta:
-        logger.debug("All parameters and buffers have been materialized from meta device.")
+    # Any tensor still on meta after per-block materialization means the meta-skeleton
+    # loader could not resolve it from the checkpoint (e.g. a checkpoint-conversion
+    # layout AutoRound does not reverse yet). Leaving it on meta only defers the failure
+    # to a cryptic "Cannot copy out of meta tensor" crash on the next `.to(device)`, so
+    # fail fast with an actionable message.
+    still_meta = [name for name, param in model.named_parameters() if param.device.type == "meta"]
+    still_meta += [name for name, buffer in model.named_buffers() if buffer.device.type == "meta"]
+    if still_meta:
+        from auto_round import envs
+
+        preview = ", ".join(still_meta[:8]) + (f" (+{len(still_meta) - 8} more)" if len(still_meta) > 8 else "")
+        # The auto meta-skeleton is only enabled for fused-MoE checkpoints; an explicit
+        # AR_DISK_STREAM_MODEL=1 forces it for anything else. Point at whichever toggle
+        # actually turned it on so the hint stays correct (AR_DISABLE_META_LOAD is
+        # the MoE-only auto path).
+        hint = "unset AR_DISK_STREAM_MODEL" if envs.AR_DISK_STREAM_MODEL else "set AR_DISABLE_META_LOAD=1"
+        raise RuntimeError(
+            f"Failed to materialize {len(still_meta)} checkpoint tensor(s), still on meta: {preview}. "
+            f"To load the whole model on CPU instead, {hint} (uses more RAM)."
+        )
+    logger.debug("All parameters and buffers have been materialized from meta device.")
     release_original_module_(model)
 
 
@@ -141,14 +207,12 @@ def release_original_module_(model: torch.nn.Module) -> None:
 
 
 def safe_to_cpu_(model: torch.nn.Module) -> None:
-    # If no replacement happened, move model to CPU directly
-    if global_state.replaced_module_count == 0:
+    """Move a model to CPU unless it still contains unmaterialized meta tensors."""
+    has_meta_tensor = any(param.device.type == "meta" for param in model.parameters()) or any(
+        buffer.device.type == "meta" for buffer in model.buffers()
+    )
+    if not has_meta_tensor:
         model.to("cpu")
-        return
-    else:
-        # TODO: (yiliu30) there might be some edge cases where some modules are replaced
-        # and we need to move them to CPU safely.
-        pass
 
 
 class ReplacementModuleBase(ABC, torch.nn.Module):
@@ -165,7 +229,10 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
     """
 
     # Registry: module class name -> replacement module class
-    _replacement_registry: Dict[str, Type["ReplacementModuleBase"]] = {}
+    _replacement_registry: dict[str, type["ReplacementModuleBase"]] = {}
+    supports_gguf_fused_moe: bool = False
+    # Set False for replacements that only patch behavior and also apply to linearized experts.
+    skip_linearized_experts: bool = True
 
     def __init_subclass__(cls, **kwargs):
         """Automatically register subclasses in the replacement registry."""
@@ -191,6 +258,8 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 
     def __init__(self, original: torch.nn.Module):
         super().__init__()
+        if any(_is_fused_moe_parameter(name, parameter) for name, parameter in original.named_parameters()):
+            self._auto_round_replaced_fused_moe = True
         _global_tracker.register_replacement(
             name=str(id(self)),
             original=original,
@@ -199,7 +268,7 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
         self._materialized = False
 
     @classmethod
-    def get_replacement_class(cls, module_class_name: str) -> Type["ReplacementModuleBase"]:
+    def get_replacement_class(cls, module_class_name: str) -> type["ReplacementModuleBase"]:
         """Get replacement class for a given module class name."""
         return cls._replacement_registry.get(module_class_name)
 
@@ -228,7 +297,6 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
     @abstractmethod
     def original_module_class(cls) -> str:
         """Return the class name of the module this replaces."""
-        pass
 
     @classmethod
     @abstractmethod
@@ -238,7 +306,6 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
         config,
     ) -> "ReplacementModuleBase":
         """Create replacement module from original module."""
-        pass
 
     def materialize_weights(self):
         """Materialize weights if needed."""
@@ -252,7 +319,6 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
         Subclasses should override this method to implement
         weight materialization logic.
         """
-        pass
 
     def release_original_module(self) -> None:
         """Release reference to the original module to free memory."""
@@ -276,6 +342,7 @@ class ReplacementModuleBase(ABC, torch.nn.Module):
 def apply_replacements(
     model: torch.nn.Module,
     auto_detect_moe: bool = True,
+    gguf_export: bool = False,
 ) -> torch.nn.Module:
     """
     Function to apply module replacements to a model.
@@ -289,36 +356,27 @@ def apply_replacements(
         model: The model to apply module replacement to (modified in-place).
         auto_detect_moe: If True, automatically detect and handle fused MOE modules
             (transformers 5.0+ pattern). Default is True.
+        gguf_export: If True, skip custom fused-MoE replacements without an explicit
+            reversible GGUF fusion specification.
 
     Returns:
         The model with modules replaced.
     """
     _import_required_replacements(model)
-    _raw_expert_is_logged = False
 
-    # Custom replacements first
-    if is_custom_model(model):
+    with log_moe_block_transition(model, "replacement"):
+        # Custom replacements first
+        if is_custom_model(model):
+            _apply_custom_replacements(model, gguf_export=gguf_export)
 
-        if not _raw_expert_is_logged:
-            _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
-
-        _apply_custom_replacements(model)
-
-    if auto_detect_moe and is_transformers_version_greater_or_equal_5():
-
-        if not _raw_expert_is_logged:
-            _raw_expert_is_logged = _log_first_moe_block(model, "before replacement")
-
-        _handle_moe_modules(model)
-
-    if _raw_expert_is_logged:
-        _log_first_moe_block(model, "after replacement")
+        if auto_detect_moe and is_transformers_version_greater_or_equal_5():
+            _handle_moe_modules(model)
 
     return model
 
 
 @dump_mem_usage("applying custom replacements")
-def _apply_custom_replacements(model: torch.nn.Module) -> list:
+def _apply_custom_replacements(model: torch.nn.Module, gguf_export: bool = False) -> list:
     """Scan model and replace registered modules with custom implementations.
 
     Args:
@@ -332,15 +390,37 @@ def _apply_custom_replacements(model: torch.nn.Module) -> list:
     # Step 1: Collect all modules that need replacement
     logger.debug("Scanning for modules to replace")
     modules_to_replace = []
+    skipped_modules = []
     for name, module in model.named_modules():
         # skip replaced modules
         if isinstance(module, ReplacementModuleBase):
             continue
         class_name = module.__class__.__name__
-        if ReplacementModuleBase.is_registered(class_name) and ReplacementModuleBase.get_replacement_class(
-            class_name
-        ).is_to_be_replaced(module):
-            modules_to_replace.append((name, module, class_name))
+        if ReplacementModuleBase.is_registered(class_name):
+            replacement_cls = ReplacementModuleBase.get_replacement_class(class_name)
+            if (
+                gguf_export
+                and any(_is_fused_moe_parameter(name, parameter) for name, parameter in module.named_parameters())
+                and not replacement_cls.supports_gguf_fused_moe
+            ):
+                skipped_modules.append((name, class_name, "skipped because GGUF fusion spec is unavailable"))
+                continue
+            # If llm-compressor already linearized experts, skip custom replacement.
+            if (
+                replacement_cls.skip_linearized_experts
+                and hasattr(module, "experts")
+                and is_linearized_layout(module.experts)
+            ):
+                skipped_modules.append((name, class_name, "skipped because linearize_moe"))
+                continue
+            if replacement_cls.is_to_be_replaced(module):
+                modules_to_replace.append((name, module, class_name))
+            else:
+                skipped_modules.append((name, class_name, "skipped because replacement criteria not met"))
+
+    if skipped_modules:
+        for name, class_name, reason in skipped_modules:
+            logger.info(f"Skipped replacement for {name} ({class_name}): {reason}")
 
     # Step 2: Replace modules
     if modules_to_replace:
@@ -393,7 +473,7 @@ class ModuleReplacementTracker:
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(ModuleReplacementTracker, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -402,9 +482,9 @@ class ModuleReplacementTracker:
             return
 
         # Map from replacement module id to original module
-        self._replacement_to_original: Dict[int, torch.nn.Module] = {}
+        self._replacement_to_original: dict[int, torch.nn.Module] = {}
         # Map from module name to ReplacedModuleInfo
-        self._name_to_info: Dict[str, ReplacedModuleInfo] = {}
+        self._name_to_info: dict[str, ReplacedModuleInfo] = {}
 
         ModuleReplacementTracker._initialized = True
 

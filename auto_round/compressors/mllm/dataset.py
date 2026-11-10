@@ -14,21 +14,22 @@
 
 import json
 import os
+import sys
 from collections import OrderedDict
 from inspect import signature
-from typing import Dict
+from typing import Any
 
 import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import set_seed
 
 from auto_round.logger import logger
-from auto_round.special_model_handler import check_mllm_model_batch
+from auto_round.special_model_handler import check_mllm_only_support_bs1
 
 from .template import Template
 from .utils import _extract_data_dir
 
-MLLM_DATASET: Dict[str, Dataset] = {}
+MLLM_DATASET: dict[str, Dataset] = {}
 
 
 def register_dataset(name_list):
@@ -56,28 +57,37 @@ def register_dataset(name_list):
 class LlavaDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
+    LLAVA_REPO_ID = "liuhaotian/LLaVA-Instruct-150K"
     BASE_LLAVA_URL = "https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/resolve/main/"
+    LLAVA_DATASET_FILES = {
+        "llava_conv_58k": "conversation_58k.json",
+        "llava_instruct_80k": "llava_instruct_80k.json",
+        "llava_instruct_150k": "llava_instruct_150k.json",
+    }
+    # Kept for backward compatibility, `LLAVA_DATASET_FILES` is the source of truth.
     LLAVA_DATASET = {
         "llava_conv_58k": BASE_LLAVA_URL + "conversation_58k.json?download=true",
         "llava_instruct_80k": BASE_LLAVA_URL + "llava_instruct_80k.json?download=true",
         "llava_instruct_150k": BASE_LLAVA_URL + "llava_instruct_150k.json?download=true",
     }
+    DOWNLOAD_TIMEOUT = 60
+    DOWNLOAD_RETRIES = 3
     _COCO_DATA_URL = "http://images.cocodataset.org/train2017/"
     IMAGE_TOKEN = "<image>"
     MAX_SUPPORT_SEQLEN = 512
 
     def __init__(
         self,
-        template,
-        model,
-        tokenizer,
-        dataset_path,
-        extra_data_dir=None,
-        seqlen=512,
-        padding=True,
-        truncation=True,
-        nsamples=512,
-        cache_size=0,
+        template: Template,
+        model: torch.nn.Module,
+        tokenizer: Any,
+        dataset_path: str,
+        extra_data_dir: str | None = None,
+        seqlen: int = 512,
+        padding: bool = True,
+        truncation: bool = True,
+        nsamples: int = 512,
+        cache_size: int = 0,
     ) -> None:
         super().__init__()
         self.model = model
@@ -86,20 +96,21 @@ class LlavaDataset(Dataset):
         self.tokenizer = tokenizer
         if os.path.exists(dataset_path):
             logger.info(f"use dataset {dataset_path}, loading from disk...")
-            self.questions = json.load(open(dataset_path, "r"))
+            with open(dataset_path, "r") as f:
+                self.questions = json.load(f)
         else:
-            import requests
-
             if dataset_path == "liuhaotian/llava":
                 dataset_path = "llava_conv_58k"
             else:
                 dataset_path = dataset_path.split("/")[-1]
             dataset_name = dataset_path.split("/")[-1]
-            if dataset_name in self.LLAVA_DATASET:
+            if dataset_name in self.LLAVA_DATASET_FILES:
                 logger.info(f"use dataset {dataset_name}, downloading...")
-                self.questions = requests.get(self.LLAVA_DATASET[dataset_name], stream=True).json()
+                self.questions = self._download_questions(dataset_name)
             else:
-                raise KeyError(f"{dataset_path} is not support, we support {self.LLAVA_DATASET.keys()}.")
+                raise KeyError(
+                    f"{dataset_path} is not supported; supported datasets: {', '.join(self.LLAVA_DATASET_FILES.keys())}."
+                )
 
         self.seqlen = seqlen
         self.questions = self.check(self.questions, self.seqlen, nsamples)
@@ -117,6 +128,56 @@ class LlavaDataset(Dataset):
                 image_fold = image_fold["image"]
             self.image_fold = image_fold
 
+    @classmethod
+    def _download_questions(cls, dataset_name: str):
+        """Download a LLaVA instruction dataset and return the decoded JSON payload.
+
+        ``huggingface_hub`` is preferred because it honours ``HF_TOKEN``/``HF_ENDPOINT`` mirrors,
+        retries transient failures and caches the file locally. A plain HTTP request is used as a
+        fallback. Both paths validate the payload, so a non-JSON body (an HTML error/rate-limit
+        page, an empty response from a proxy, ...) raises an actionable error instead of a bare
+        ``JSONDecodeError``.
+        """
+        filename = cls.LLAVA_DATASET_FILES[dataset_name]
+        errors = []
+
+        try:
+            from huggingface_hub import hf_hub_download
+
+            local_path = hf_hub_download(repo_id=cls.LLAVA_REPO_ID, filename=filename, repo_type="dataset")
+            with open(local_path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            errors.append(f"huggingface_hub: {type(e).__name__}: {e}")
+            logger.warning(
+                f"failed to fetch dataset '{dataset_name}' via huggingface_hub ({type(e).__name__}: {e}),"
+                " falling back to a direct http download."
+            )
+
+        import requests
+
+        url = cls.LLAVA_DATASET[dataset_name]
+        for attempt in range(1, cls.DOWNLOAD_RETRIES + 1):
+            try:
+                response = requests.get(url, timeout=cls.DOWNLOAD_TIMEOUT)
+                response.raise_for_status()
+                return json.loads(response.content.decode("utf-8"))
+            except Exception as e:
+                errors.append(f"http attempt {attempt}: {type(e).__name__}: {e}")
+                if attempt < cls.DOWNLOAD_RETRIES:
+                    logger.warning(
+                        f"failed to download dataset '{dataset_name}' from {url}"
+                        f" ({type(e).__name__}: {e}), retrying (attempt {attempt + 1}/{cls.DOWNLOAD_RETRIES})..."
+                    )
+
+        details = "\n  ".join(errors)
+        raise RuntimeError(
+            f"could not download the calibration dataset '{dataset_name}' from"
+            f" '{cls.LLAVA_REPO_ID}'. Please check your network connection/proxy, or download"
+            f" '{filename}' manually and pass its local path via the `dataset` argument."
+            f"\nCauses:\n  {details}"
+        )
+
     def check(self, questions, word_len, nsamples):
         def _check(questions, min_word_len, max_word_len, nsamples):
             new_questions = []
@@ -127,8 +188,7 @@ class LlavaDataset(Dataset):
                     if self.IMAGE_TOKEN in text["value"]:
                         text["value"] = self.IMAGE_TOKEN + text["value"].replace(self.IMAGE_TOKEN, "")
                     str_len += len(text["value"].split(" "))
-                if str_len > max_len:
-                    max_len = str_len
+                max_len = max(max_len, str_len)
                 if min_word_len <= str_len < max_word_len:
                     new_questions.append(source)
                 if len(new_questions) >= nsamples:
@@ -152,7 +212,7 @@ class LlavaDataset(Dataset):
     def __len__(self):
         return len(self.questions)
 
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, i) -> dict[str, torch.Tensor]:
         if self.cached_data_dict is not None and i in self.cached_data_dict:
             self.cached_data_dict.move_to_end(i)
             return self.cached_data_dict[i]
@@ -219,7 +279,6 @@ def get_mllm_dataloader(
     truncation=False,
     seed=42,
     nsamples=512,
-    gradient_accumulate_steps=1,
     quant_nontext_module=False,
 ):
     """Generate a DataLoader for calibration using specified parameters.
@@ -246,7 +305,7 @@ def get_mllm_dataloader(
             template, model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor
         )
 
-    if os.path.isfile(dataset) or dataset in MLLM_DATASET.keys():
+    if os.path.isfile(dataset) or dataset in MLLM_DATASET:
         if seqlen > MLLM_DATASET[dataset].MAX_SUPPORT_SEQLEN:
             logger.warning(
                 f"seqlen({seqlen}) is greater than the maximum length supported by the {dataset},"
@@ -262,15 +321,17 @@ def get_mllm_dataloader(
         if "cache_size" in signature(dataset_cls.__init__).parameters:
             dataset_kwargs["cache_size"] = int(os.getenv("AR_MLLM_DATASET_CACHE_SIZE", "0"))
         dataset = dataset_cls(template, model, tokenizer, dataset, extra_data_dir, **dataset_kwargs)
-
-        bs, gradient_accumulate_steps = check_mllm_model_batch(
-            model, batch_size=bs, gradient_accumulate_steps=gradient_accumulate_steps
-        )
-
+        if check_mllm_only_support_bs1(model):
+            bs = 1
         set_seed(seed)
-        dataloader_params = {"batch_size": bs, "shuffle": True, "collate_fn": dataset.template.processor.data_collator}
+        # Calibration should be deterministic: keep a fixed sample order.
+        dataloader_params = {
+            "batch_size": bs,
+            "shuffle": False,
+            "collate_fn": dataset.template.processor.data_collator,
+        }
 
-        return DataLoader(dataset, **dataloader_params), bs, seqlen, gradient_accumulate_steps
+        return DataLoader(dataset, **dataloader_params), bs, seqlen
     else:
         # try to load text calibration dataset
         from auto_round.calib_dataset import get_dataloader
@@ -281,5 +342,5 @@ def get_mllm_dataloader(
                 "Text only dataset cannot be used for calibrating non-text modules,"
                 " switching to liuhaotian/llava_conv_58k"
             )
-            exit(-1)
-        return dataloader, bs, seqlen, gradient_accumulate_steps
+            sys.exit(-1)
+        return dataloader, bs, seqlen

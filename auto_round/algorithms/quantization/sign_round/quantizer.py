@@ -1,0 +1,1056 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+import copy
+import math
+import time as _ptime
+from collections.abc import Callable
+from contextlib import nullcontext
+from typing import TYPE_CHECKING, Any
+
+import torch
+from torch import autocast
+
+from auto_round.algorithms.block_runner import BlockForwardRunner
+from auto_round.algorithms.quantization.base import BaseQuantizer
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
+from auto_round.algorithms.quantization.sign_round.lfq import LFQMixin
+from auto_round.algorithms.quantization.sign_round.sign_sgd import SignSGD
+from auto_round.algorithms.registry import register_quantizer
+from auto_round.compressors.utils import (
+    IndexSampler,
+    collect_best_params,
+    snapshot_best_params,
+)
+from auto_round.logger import logger
+from auto_round.utils.perf_counters import _PerfCounters
+
+
+def resolve_loss_device(loss_device, primary_device):
+    """The tune loop's staging device: a concrete device, coalescing None.
+
+    The placement pass may store ``None`` (and ``tensor.to(None)`` is a silent
+    no-op), which would strand batch outputs on the block's exit device; the
+    loop always stages on a concrete device, defaulting to the primary.
+    """
+    return loss_device or primary_device
+
+
+def _log_tune_phases(perf: _PerfCounters, iters: int) -> None:
+    """Derive the loop split and log the per-block tune phase line."""
+    if not perf.enabled:
+        return
+    serial = perf.get("s_fwd") + perf.get("s_loss") + perf.get("s_bwd")
+    rest = max(perf.get("loop") - perf.get("sampler") - perf.get("snap") - perf.get("step") - serial, 0.0)
+    perf.set("lp_sampler", perf.get("sampler"))
+    perf.set("lp_snap", perf.get("snap"))
+    perf.set("lp_step", perf.get("step"))
+    perf.set("lp_rest", rest)
+    perf.set("lp_serial", serial)
+    logger.info("%s", _tune_phase_line(perf.totals, iters))
+
+
+def _tune_phase_line(phases: dict, iters: int) -> str:
+    """Format the per-block tuning phase breakdown for AR_PERF_COUNTERS.
+
+    ``wrap`` = wrapper_block (params init, quant-func resolve + optional
+    per-wrapper torch.compile, SignRoundV2 init-scale search -- batched
+    same-shape when eligible); ``prepare`` = tuning-param collection +
+    optimizer/scheduler build + sampler setup; ``loop`` = the iteration
+    try/finally; ``tail`` = best-params restore, clear_memory, unwrapping.
+    The optional ``loop`` split appears when counters ran: ``sampler`` =
+    index draw, ``snap`` = best-params snapshots, ``step`` = gradient
+    sync + optimizer step, ``serial: fwd+loss+bwd`` = the inline forward,
+    loss (incl. the .item() drain) and backward of every serial batch.
+    """
+    line = (
+        f"[perf] tune phases (iters={iters}):"
+        f" wrap={phases.get('wrap', 0.0):.2f}s prepare={phases.get('prepare', 0.0):.2f}s"
+        f" loop={phases.get('loop', 0.0):.2f}s tail={phases.get('tail', 0.0):.2f}s"
+    )
+    if "lp_sampler" in phases:
+        line += (
+            f" (loop: sampler={phases['lp_sampler']:.2f}s snap={phases['lp_snap']:.2f}s"
+            f" step={phases['lp_step']:.2f}s rest={phases['lp_rest']:.2f}s"
+        )
+        if phases.get("lp_serial", 0.0):
+            line += f" serial: fwd+loss+bwd={phases['lp_serial']:.2f}s"
+        line += ")"
+    return line
+
+
+from auto_round.utils import (
+    htcore,
+    is_hpex_available,
+    mv_module_from_gpu,
+)
+from auto_round.utils.device import clear_memory_if_reached_threshold
+from auto_round.utils.device_manager import device_manager
+from auto_round.wrapper import WrapperLinear, unwrapper_layer, wrapper_block
+
+if TYPE_CHECKING:
+    from auto_round.algorithms.composer import BlockContext
+    from auto_round.parallel.execution import ParallelCapabilities
+
+
+@register_quantizer(SignRoundConfig)
+class SignRoundQuantizer(LFQMixin, BaseQuantizer):
+
+    def __init__(self, config: SignRoundConfig) -> None:
+        super().__init__(config)
+        self.iters = config.iters
+        self.lr = config.lr
+        self.minmax_lr = config.minmax_lr
+        self.lr_scheduler = config.lr_scheduler
+        self.momentum = config.momentum
+        self.enable_minmax_tuning = config.enable_minmax_tuning
+        self.enable_norm_bias_tuning = config.enable_norm_bias_tuning
+        self.gradient_accumulate_steps = config.gradient_accumulate_steps
+
+        self.enable_alg_ext = config.enable_alg_ext
+        self.not_use_best_mse = config.not_use_best_mse
+        self.enable_quanted_input = config.enable_quanted_input
+        self.dynamic_max_gap = config.dynamic_max_gap
+        self.enable_lfq = config.enable_lfq
+        self.lfq_loss_type = getattr(config, "lfq_loss", "ce")
+        self.lfq_top_k = getattr(config, "lfq_top_k", 32)
+        self.lfq_temperature = getattr(config, "lfq_temperature", 1.0)
+        self.lfq_num_blocks = getattr(config, "lfq_num_blocks", 1)
+        self.lfq_mse_weight = getattr(config, "lfq_mse_weight", 0.0)
+        self.enable_qad = getattr(config, "enable_qad", False)
+
+        self.optimizer = self._get_optimizer(optimizer=config.optimizer)
+        lora_rank = getattr(config, "qad_lora_rank", getattr(config, "lora_rank", 0))
+        if (
+            lora_rank > 0
+            and self.iters > 0
+            and getattr(config, "qad_enable_round_tuning", True)
+            and isinstance(self.optimizer, type)
+            and issubclass(self.optimizer, SignSGD)
+        ):
+            alternative = "--qad_optimizer adamw" if self.enable_qad else "--enable_adam"
+            logger.warning_once(
+                "LoRA rounding with SignSGD is not recommended: sign-only updates discard gradient magnitudes "
+                "for the low-rank factors. Prefer Adam/AdamW and a suitable learning rate "
+                f"(e.g. `{alternative}`). Adam/AdamW requires substantially more optimizer-state GPU memory "
+                "than SignSGD because it stores two moment tensors per trainable parameter. "
+                "The selected optimizer is unchanged."
+            )
+        self.wrapper_block = wrapper_block
+        # Kept for per-layer (mixed-bit) lr resolution during tuning.
+        self._config = config
+        self.lr_is_auto = getattr(config, "lr_is_auto", False)
+        self.minmax_lr_is_auto = getattr(config, "minmax_lr_is_auto", False)
+        # Emit the low-bit lr notice at most once across all blocks/layers.
+        self._logged_low_bit_lr = False
+
+    def _configure_lora_scaling(self, module: torch.nn.Module, optimizer: torch.optim.Optimizer) -> None:
+        """Bound the new SignSGD rounding offset by +/-4 over the tuning budget.
+
+        This bounds s * B @ A, not any frozen offset from an earlier stage.
+        Explicit alpha and non-SignSGD optimizers retain their existing scaling.
+
+        Args:
+            module (torch.nn.Module): Module containing LoRA-enabled rounding wrappers to update.
+            optimizer (torch.optim.Optimizer): Optimizer whose learning-rate budget bounds the offset.
+        """
+        if not isinstance(optimizer, SignSGD) or self.iters <= 0:
+            return
+        wrappers = [
+            m
+            for m in module.modules()
+            if isinstance(m, WrapperLinear) and hasattr(m, "lora_A") and m.lora_alpha is None
+        ]
+        if not wrappers:
+            return
+        if self.lr_scheduler is not None:
+            logger.warning_once(
+                "Automatic SignSGD LoRA scaling requires the default linear scheduler; "
+                "keeping unit scaling. Set lora_alpha explicitly for a custom scheduler."
+            )
+            return
+        # optimizer.step() precedes scheduler.step(): the T used learning rates
+        # are lr * (1 - t/T), t=0,...,T-1, whose sum is lr * (T+1)/2.
+        budgets = {
+            id(p): float(group["lr"]) * (self.iters + 1) / 2
+            for group in optimizer.param_groups
+            for p in group["params"]
+        }
+        for wrapper in wrappers:
+            budget_a = budgets.get(id(wrapper.lora_A), 0.0)
+            budget_b = budgets.get(id(wrapper.lora_B), 0.0)
+            # Each sign update moves a factor element by at most its lr.
+            # Include initialization, rather than assuming both factors start
+            # at zero (which would prevent either factor from learning).
+            a0 = wrapper.lora_A.detach().abs().amax().item()
+            b0 = wrapper.lora_B.detach().abs().amax().item()
+            bound = wrapper.lora_rank * (a0 + budget_a) * (b0 + budget_b)
+            if bound > 0 and math.isfinite(bound):
+                wrapper.lora_scaling = 4.0 / bound
+                wrapper.qad_lora_scaling = wrapper.lora_scaling
+
+    def _maybe_log_low_bit_lr(self, bits) -> None:
+        """Log once when low-bit (<=3) layers get the higher 2.0/iters lr."""
+        if self._logged_low_bit_lr or not self.lr_is_auto:
+            return
+        if self.iters >= 1000 and bits is not None and bits <= 3:
+            logger.info("using higher lr (2.0/iters) for <=3 bit layers to improve accuracy")
+            self._logged_low_bit_lr = True
+
+    def dispatch_block(self, block, input_ids, input_others):
+        """Use the same placement contract for local, PP-placement and TP runs."""
+        return super().dispatch_block(block, input_ids, input_others)
+
+    @classmethod
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Declare support for shard-local SignRound tuning.
+
+        Returns:
+            ParallelCapabilities: Capabilities enabling TP and pipeline placement.
+        """
+        from auto_round.parallel.execution import ParallelCapabilities
+
+        return ParallelCapabilities(tensor_parallel=True)
+
+    def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
+        current_tensors = [tensor[i] for i in indices]
+        non_zero_cnt = 0
+        for t in current_tensors:
+            non_zero_cnt += torch.count_nonzero(t).item()
+        return non_zero_cnt
+
+    def _get_loss(
+        self,
+        pred_output: torch.Tensor,
+        ref_output: torch.Tensor,
+        indices: torch.Tensor,
+        loss_func: Callable,
+        device: str | torch.device = "cpu",
+        valid_token_mask: torch.Tensor | None = None,
+        input_ids=None,
+    ):
+        autocast_ctx = (
+            nullcontext()
+            if not self.model_context.amp
+            else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
+        )
+        if valid_token_mask:
+            tmp_attention_mask = [valid_token_mask[i] for i in indices]
+            tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
+            tmp_attention_mask.unsqueeze_(-1)
+
+            with autocast_ctx:
+                loss = loss_func(  # pylint: disable=not-callable
+                    (pred_output * tmp_attention_mask).to(torch.float32),
+                    (ref_output * tmp_attention_mask).to(torch.float32),
+                )
+        else:
+            with autocast_ctx:
+                loss = loss_func(  # pylint: disable=not-callable
+                    pred_output.to(torch.float32), ref_output.to(torch.float32)
+                )
+
+        return loss
+
+    def _count_samples(self, inputs: Any) -> int:
+        if isinstance(inputs, dict):
+            hs = inputs.get("hidden_states")
+            return len(hs) if isinstance(hs, list) else hs.shape[self.calibration_context.batch_dim]
+        elif isinstance(inputs, list):
+            return len(inputs)
+        else:
+            return inputs.shape[self.calibration_context.batch_dim]
+
+    def _resolve_tuning_cache_plan(
+        self,
+        *,
+        device,
+        loss_device,
+        active_inputs,
+        block_fwd,
+        lfq_last_block,
+    ) -> tuple[type | None, Any]:
+        """Decide the opt-in CUDA batch-prefetch staging for a tuning block.
+
+        Returns ``(cache_cls, cache_budget)`` when the prefetch cache is
+        eligible, or ``(None, 0)`` to keep the legacy synchronous gather. This
+        is the single extension point for prefetch-cache variants: the tuning
+        loop never branches on model type. The diffusion vs LLM/VLM class choice
+        is delegated to
+        :func:`auto_round.algorithms.tuning_cache.resolve_tuning_cache_cls`, and
+        subclasses can override this method wholesale to plug in new variants
+        without editing the algorithm.
+
+        Under ``low_gpu_mem_usage`` the calibration pools are parked on the host,
+        so every iteration copies its batch CPU->CUDA on the critical path. The
+        cache double-buffers the batches onto CUDA on a background copy stream so
+        the next transfer overlaps the current forward/backward.
+        """
+        from auto_round.algorithms.tuning_cache import resolve_tuning_cache_cls
+
+        # Shared hardware eligibility: host-parked pools, a single CUDA device,
+        # and a loss device that matches the compute device.
+        if not (
+            self.compress_context.low_gpu_mem_usage
+            and str(device).startswith("cuda")
+            and len(device_manager.device_list) == 1
+            and (loss_device is None or torch.device(loss_device) == torch.device(device))
+        ):
+            return None, 0
+
+        if getattr(self.model_context, "is_diffusion", False):
+            # Diffusion prefetch is strictly opt-in via diffusion_tuning_cache_size.
+            budget = getattr(self.model_context, "diffusion_tuning_cache_size", 0)
+            if budget != "auto" and budget <= 0:
+                return None, 0
+        else:
+            # LLM/VLM reconstruction needs a list input pool and a block forward.
+            # The LFQ final-block logit loss concatenates token ids and runs a
+            # different forward, so it keeps the legacy gather.
+            if not (isinstance(active_inputs, list) and block_fwd is not None) or lfq_last_block:
+                return None, 0
+            # Auto-size the staging buffers after one warmup iteration.
+            budget = "auto"
+
+        return resolve_tuning_cache_cls(self.model_context), budget
+
+    def quantize_block(
+        self,
+        block,
+        fp_inputs,
+        input_others,
+        fp_outputs,
+        q_inputs,
+        block_ctx,
+        input_ids=None,
+        **kwargs,
+    ) -> dict:
+        """Apply the AutoRound optimization algorithm to a block.
+
+        This is the pure-algorithm entry point.  All infrastructure concerns
+        (device placement, act-max hook collection, DDP setup, memory cleanup,
+        logging) are handled by the Compressor before and after this call.
+
+        Args:
+            block: The transformer block module to quantize.
+            fp_inputs: FP calibration inputs for this block (list[Tensor] or dict
+                for diffusion models).
+            input_others: Auxiliary kwargs passed to the block forward
+                (e.g. attention_mask, position_ids).
+            fp_outputs: FP reference outputs of the block used as the optimization
+                target for the sign-gradient descent loss (list[Tensor]).
+            q_inputs: Quantized inputs from the previous block, or ``None`` when
+                cascaded quantized-input is disabled.
+            block_ctx: Per-block pipeline context (BlockContext).
+            input_ids: Raw token IDs from the tokenizer (``[1, seq_len]`` per
+                sample). Used to derive the valid-token loss mask once (result
+                cached on ``self._cached_valid_token_mask`` for reuse across
+                all blocks). ``None`` disables loss masking.
+            **kwargs: Reserved for forward-compatibility with future parameters.
+
+        Returns:
+            dict: Best quantization parameters found during optimization, or an
+                empty dict if no trainable parameters were found. Wrappers stay
+                installed for the composer to finalize and collect outputs.
+        """
+        device = device_manager.device
+        # None coalesces to the primary: an explicit None from the placement pass
+        # must leave the loop with a concrete staging device; pred/ref and the
+        # loss mask all stage here (card-0-risk relocation may move it off the
+        # primary, and the masked loss multiplies pred by the mask)
+        loss_device = resolve_loss_device(getattr(self, "_loss_device", None), device)
+        card_0_in_high_risk = getattr(self, "_card_0_in_high_risk", False)
+        mid_iter_mem_check = self.compress_context.low_gpu_mem_usage and card_0_in_high_risk
+
+        valid_token_mask = None
+        # Derive valid_token_mask from raw token IDs when not supplied by caller.
+        # Result is cached on self so it is computed only once across all blocks.
+        if input_ids is not None:
+            if not hasattr(self, "_cached_valid_token_mask"):
+                self._cached_valid_token_mask = self._compute_valid_token_mask(input_ids)
+            valid_token_mask = self._cached_valid_token_mask
+
+        # Use quantized inputs if available and enabled
+        active_inputs = q_inputs if (q_inputs is not None and self.enable_quanted_input) else fp_inputs
+        nsamples = len(active_inputs) if isinstance(active_inputs, list) else self._count_samples(active_inputs)
+
+        _perf = _PerfCounters()
+        _perf.start("wrap")
+        quantized_layer_names, unquantized_layer_names = self.wrapper_block(
+            block,
+            self.enable_minmax_tuning,
+            self.enable_norm_bias_tuning,
+            enable_torch_compile=self.compress_context.enable_torch_compile,
+            device=device,
+            enable_neuqi=getattr(self.config, "enable_neuqi", False),
+            lora_rank=getattr(self.config, "lora_rank", 0),
+            lora_alpha=getattr(self.config, "lora_alpha", None),
+        )
+        _perf.stop("wrap")
+        _perf.start("prepare")
+
+        round_params = []
+        minmax_params = []
+        # Group parameters by their effective lr so that mixed-bit configs
+        # (e.g. a 4-bit model with a few 2-bit layers) use a per-layer lr
+        # derived from each layer's own bit-width.
+        round_lr_groups: dict[float, list] = {}
+        minmax_lr_groups: dict[float, list] = {}
+        for n, m in block.named_modules():
+            if hasattr(m, "orig_layer"):
+                layer_bits = getattr(m.orig_layer, "bits", None)
+                layer_lr = self._config.compute_lr(layer_bits)
+                if layer_lr is None:
+                    layer_lr = self.lr
+                self._maybe_log_low_bit_lr(layer_bits)
+                layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
+                if layer_minmax_lr is None:
+                    layer_minmax_lr = self.minmax_lr
+                for key in m.params.keys():
+                    if "min" in key or "max" in key:
+                        minmax_params.append(m.params[key])
+                        minmax_lr_groups.setdefault(float(layer_minmax_lr), []).append(m.params[key])
+                    else:
+                        round_params.append(m.params[key])
+                        round_lr_groups.setdefault(float(layer_lr), []).append(m.params[key])
+
+        lr = torch.tensor(self.lr)
+        minmax_lr = torch.tensor(self.minmax_lr)
+
+        extra_kwargs = {} if self.momentum is None else {"momentum": self.momentum}
+
+        if len(round_params) + len(minmax_params) <= 0:
+            dump_info = (
+                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+                f"layers in the block"
+            )
+            logger.info(dump_info)
+            return {}
+
+        # Build optimizer param groups with a per-layer lr for the rounding
+        # parameters (and min-max parameters when enabled).
+        params = [{"params": ps, "lr": torch.tensor(group_lr)} for group_lr, ps in round_lr_groups.items()]
+        if self.enable_minmax_tuning:
+            params += [{"params": ps, "lr": torch.tensor(group_lr)} for group_lr, ps in minmax_lr_groups.items()]
+
+        optimizer = self.optimizer(
+            params,
+            lr=lr,
+            weight_decay=0,
+            **extra_kwargs,
+        )
+
+        if self.lr_scheduler is None:
+            lr_schedule = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
+            )
+        else:
+            lr_schedule = copy.deepcopy(self.lr_scheduler)
+
+        self._configure_lora_scaling(block, optimizer)
+
+        from auto_round.parallel.dp.spmd import current_rank
+
+        rank = current_rank()
+        if rank is not None:
+            rank.synchronize_lora(block)
+
+        last_best_iter = 0
+        best_loss = torch.finfo(torch.float).max
+        num_elm = 1
+        mse_reduction = "mean"
+        # a masked loss is a SUM over the valid elements, normalized by the
+        # valid-token count below (num_elm) -- also at accumulation == 1, where
+        # a mean over all elements divided again by that count normalizes twice
+        if self.gradient_accumulate_steps != 1 or valid_token_mask:
+            mse_reduction = "sum"
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        scaler = self._get_scaler()  # pylint: disable=assignment-from-none
+        init_loss = None
+        best_params = {}
+        total_loss = 0
+        batch_size = self.calibration_context.batch_size
+        global_batch_size = batch_size * self.gradient_accumulate_steps
+        global_batch_size = min(nsamples, global_batch_size)
+        # Compute num_elm once before the loop (used to normalise the accumulated loss).
+        # We assume the block input and output shape is same
+        if self.gradient_accumulate_steps != 1 and not valid_token_mask:
+            whole_indices = torch.arange(global_batch_size)
+            if isinstance(active_inputs, list):  # dict for diffusion, tricky setting, not sure whether it's correct
+                num_elm = sum(active_inputs[i.item()].numel() for i in whole_indices)
+
+        block, sync_gradients = self.parallel.prepare_gradients(self, block)
+        index_sampler = self.parallel.index_sampler(nsamples, global_batch_size)
+        block_fwd = self.block_forward
+
+        # When low_gpu_mem_usage is enabled, active_inputs / fp_outputs are intentionally
+        # kept on CPU to limit GPU memory.  However block_fwd normally routes pred_output
+        # through CPU (cache_device="cpu") and the very next line moves it back to
+        # loss_device — a wasteful GPU→CPU→GPU roundtrip on every batch × iteration.
+        # pred_output is a transient single-batch tensor consumed immediately for the
+        # loss and then freed, so keeping it on the compute device costs no persistent
+        # extra memory.  Pass it as a per-call override so self.cache_device is unchanged.
+        _fwd_cache_device = (
+            device
+            if getattr(self.compress_context, "low_gpu_mem_usage", False) and not str(device).startswith("cpu")
+            else None
+        )
+
+        tuning_cache = None
+        # The LFQ final-block logit loss concatenates token ids and runs a
+        # different forward, so it is excluded from the prefetch staging path.
+        _lfq_last_block = (
+            getattr(self, "enable_lfq", False)
+            and input_ids is not None
+            and block_ctx.block_index == block_ctx.block_cnt - 1
+            and self._is_text_decoder_block(block_ctx.block_name)
+        )
+        # Single, variant-free extension point: the plan hook owns all model-type
+        # gating (diffusion vs LLM/VLM) and returns the cache class + budget.
+        cache_cls, cache_budget = self._resolve_tuning_cache_plan(
+            device=device,
+            loss_device=loss_device,
+            active_inputs=active_inputs,
+            block_fwd=block_fwd,
+            lfq_last_block=_lfq_last_block,
+        )
+        use_prefetch_cache = cache_cls is not None
+
+        # LFQ with lfq_num_blocks > 1: a non-final KD block's output must pass
+        # through the remaining (FP) blocks before reaching the final norm/lm_head.
+        lfq_downstream_blocks = []
+        lfq_teacher_final = None
+        if (
+            input_ids is not None
+            and isinstance(fp_outputs, list)
+            and isinstance(active_inputs, list)
+            and self._lfq_is_kd_block(block_ctx)
+        ):
+            lfq_downstream_blocks = self._get_lfq_downstream_blocks(block_ctx, device)
+            if lfq_downstream_blocks and self.lfq_loss_type in ("dtk", "rkl", "tk"):
+                # The teacher path is fixed across iterations: precompute it once.
+                lfq_teacher_final = []
+                with torch.no_grad():
+                    for s in range(0, nsamples, batch_size):
+                        idx = list(range(s, min(s + batch_size, nsamples)))
+                        ref = torch.cat([fp_outputs[j] for j in idx], dim=0)
+                        out = self._forward_lfq_downstream(
+                            ref, lfq_downstream_blocks, active_inputs, input_others, idx, device
+                        )
+                        lfq_teacher_final.extend(o.to(fp_outputs[0].device) for o in torch.split(out, 1, dim=0))
+
+        _perf.stop("prepare")
+        _perf.start("loop")
+        # iters>0 hot-pool strategy (loop-amortized; the iters=0 lane streams
+        # its pools once and never reaches these pulls): each pool moves in
+        # bulk onto the device that reads it every iteration -- the input
+        # pool onto the entry device (BlockForwardRunner.device, where the
+        # forward gathers each batch), the fp reference pool onto the loss
+        # device. Both gates charge ACTUAL data: exact tuning state from the
+        # wrapper walker, and (input pull) the routed-buffer budget proven on
+        # the mapped-streaming lane -- tokens x top_k hidden rows as in/out
+        # accumulators plus the backward grad (x6), reproducing the loop
+        # retention from shapes alone. Declined pulls keep the per-batch
+        # gather.
+        self.maybe_adapt_moe_implementation(block, active_inputs, batch_size)
+        _entry_dev = str(getattr(block_fwd, "device", device)) if block_fwd is not None else str(device)
+        if isinstance(active_inputs, list):
+            active_inputs = self.pull_tuning_pool(
+                active_inputs,
+                _entry_dev,
+                block,
+                batch_size,
+                "tune] block input activations",
+                charge_activation=True,
+            )
+        # the diffusion tuning cache requires its pools on the host (it
+        # stages batches to the GPU itself via pinned slots); a bulk pull
+        # onto the loss device would put the cached reference outputs on
+        # cuda and the cache would decline every batch signature
+        if fp_outputs and loss_device is not None and not use_prefetch_cache:
+            fp_outputs = self.pull_tuning_pool(
+                fp_outputs,
+                loss_device,
+                block,
+                batch_size,
+                "tune] fp reference outputs",
+                charge_activation=False,
+            )
+
+        try:
+            for i in range(self.iters):
+                # Auto observes a complete forward/backward/optimizer iteration
+                # on the legacy path before allocating any extra GPU buffers.
+                if use_prefetch_cache and i == (1 if cache_budget == "auto" else 0):
+                    tuning_cache = cache_cls.create(
+                        block,
+                        block_fwd,
+                        active_inputs,
+                        input_others,
+                        fp_outputs,
+                        index_sampler,
+                        self.iters - i,
+                        cache_budget,
+                        device,
+                    )
+                if self.enable_alg_ext and self.scheme.data_type.endswith("dq"):
+                    for n, m in block.named_modules():
+                        m.cur_iter = i
+                total_loss = 0
+                _perf.start("sampler")
+                global_indices = self.parallel.sample_indices(index_sampler)
+                if valid_token_mask:
+                    num_elm = self._get_non_zero_cnt(valid_token_mask, global_indices)
+                _perf.stop("sampler")
+
+                # Per-block loss schedule (constant across batches/iters):
+                #   lfq_kd_block  -> apply the KD logit-lens loss on this block
+                #   lfq_mse_block -> add the MSE reconstruction loss on this block
+                # QAD: every fused group is tuned against the final-output LM loss only
+                # (no MSE); with the whole network fused this is the true final logits.
+                # Non-QAD: KD on the last `lfq_num_blocks`, MSE elsewhere (and on KD
+                # blocks only when `lfq_mse_weight` > 0).
+                lfq_kd_block = input_ids is not None and self._lfq_is_kd_block(block_ctx)
+                if self.enable_qad:
+                    lfq_mse_block = False
+                else:
+                    lfq_mse_block = (not lfq_kd_block) or self.lfq_mse_weight > 0
+
+                for batch_start in range(0, len(global_indices), batch_size):
+                    indices = global_indices[batch_start : batch_start + batch_size]
+                    _perf.start("s_fwd")
+                    staged = tuning_cache.get(indices) if tuning_cache is not None else None
+                    if staged is None:
+                        # fp_outputs may be sharded across park devices
+                        # (--calibration_data_device): gather onto one device
+                        # before cat. Uniform-device selections are returned
+                        # untouched (byte-identical to the single-device path);
+                        # tensors are immutable, so concurrent gather is safe.
+                        _sel = [fp_outputs[i] for i in indices]
+                        _gather = BlockForwardRunner._gather_same_device(
+                            _sel, str(loss_device) if loss_device is not None else str(_sel[0].device)
+                        )
+                        ref_output = torch.cat(_gather, dim=0).to(loss_device)
+                        pred_output = block_fwd.forward(block, active_inputs, input_others, indices, _fwd_cache_device)
+                    else:
+                        ref_output = staged[2]
+                        pred_output = tuning_cache.forward(block, staged, _fwd_cache_device)
+                    if loss_device is not None:
+                        pred_output = pred_output.to(loss_device)
+                    _perf.stop("s_fwd")
+                    _perf.start("s_loss")
+                    if lfq_kd_block:
+                        # For KD losses ("dtk"/"rkl"/"tk"), ref_output (FP block output) is the teacher.
+                        teacher_output = ref_output if self.lfq_loss_type in ("dtk", "rkl", "tk") else None
+                        lfq_student = pred_output
+                        if lfq_downstream_blocks:
+                            lfq_student = self._forward_lfq_downstream(
+                                pred_output, lfq_downstream_blocks, active_inputs, input_others, indices, device
+                            )
+                            if lfq_teacher_final is not None:
+                                teacher_output = torch.cat([lfq_teacher_final[j] for j in indices], dim=0).to(
+                                    lfq_student.device
+                                )
+                        loss = self.lfq_loss(
+                            lfq_student,
+                            torch.cat([input_ids[i] for i in indices], dim=0),
+                            teacher_hidden_state=teacher_output,
+                            sample_indices=indices,
+                        )
+                        # Optionally combine with the MSE block-reconstruction loss so the
+                        # block keeps its reconstruction fidelity while adding logit alignment.
+                        if lfq_mse_block:
+                            mse_term = self._get_loss(
+                                pred_output, ref_output, indices, mse_loss, device, valid_token_mask
+                            )
+                            # In QAD a scheduled MSE checkpoint defaults to weight 1.0; outside
+                            # QAD the explicit `lfq_mse_weight` controls the combination.
+                            mse_w = self.lfq_mse_weight if self.lfq_mse_weight > 0 else 1.0
+                            loss = loss + mse_w * mse_term
+                    else:
+                        # the mask must land on the same device pred/ref were staged
+                        # on (loss_device, which card-0-risk relocation may move off
+                        # the primary), not on the primary unconditionally
+                        loss = self._get_loss(pred_output, ref_output, indices, mse_loss, loss_device, valid_token_mask)
+                    num_elm = 1 if num_elm <= 0 else num_elm
+                    total_loss += loss.item() / num_elm
+                    _perf.stop("s_loss")
+                    _perf.start("s_bwd")
+
+                    if mid_iter_mem_check:
+                        # clear memory to avoid OOM due to memory fragmentation
+                        clear_memory_if_reached_threshold(threshold=0.5, device_list=device_manager.device_list)
+
+                    self._scale_loss_and_backward(scaler, loss)
+                    _perf.stop("s_bwd")
+
+                    if mid_iter_mem_check:
+                        # clear memory to avoid OOM due to memory fragmentation
+                        clear_memory_if_reached_threshold(threshold=0.8, device_list=device_manager.device_list)
+
+                total_loss = self.parallel.reduce_loss(total_loss, num_elm)
+                if i == 0:
+                    init_loss = total_loss
+                current_lr = optimizer.param_groups[0]["lr"]
+                logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
+
+                _perf.start("snap")
+                if total_loss < best_loss:
+                    best_loss = total_loss
+                    if not self.not_use_best_mse:
+                        best_params = (
+                            tuning_cache.collect_best_params()
+                            if tuning_cache is not None and tuning_cache.best is not None
+                            else snapshot_best_params(block, self.compress_context.cache_device)
+                        )
+                        last_best_iter = i
+                if self.not_use_best_mse and i == self.iters - 1:
+                    best_params = (
+                        tuning_cache.collect_best_params()
+                        if tuning_cache is not None and tuning_cache.best is not None
+                        else snapshot_best_params(block, self.compress_context.cache_device)
+                    )
+
+                _perf.stop("snap")
+                _perf.start("step")
+                if not self.not_use_best_mse:
+                    if 0 < self.dynamic_max_gap <= i - last_best_iter:
+                        break
+                sync_gradients()
+                self._step(scaler, optimizer, lr_schedule)
+                _perf.stop("step")
+
+        finally:
+            if tuning_cache is not None:
+                tuning_cache.close()
+            for m in lfq_downstream_blocks:
+                mv_module_from_gpu(m)
+            del lfq_teacher_final
+
+        _perf.stop("loop")
+        _perf.start("tail")
+
+        last_loss = total_loss
+        best_iter = self.iters
+        if not self.not_use_best_mse:
+            last_loss = best_loss
+            best_iter = last_best_iter
+        if self.iters > 0:
+            dump_info = (
+                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+                f"layers in the block, loss iter 0: {init_loss:.3e} -> iter {best_iter}: {last_loss:.3e}"
+            )
+        else:
+            dump_info = (
+                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
+                "layers in the block"
+            )
+
+        self.compress_context.clear_memory()  # clear cached memory during training
+        if len(unquantized_layer_names) != 0:
+            logger.info(f"Unquantized layers: {unquantized_layer_names}")
+
+        _perf.stop("tail")
+        _log_tune_phases(_perf, self.iters)
+
+        logger.infoclean(dump_info)
+        return best_params
+
+    def quantize_layer_outside_block(
+        self,
+        layer: "torch.nn.Module",
+        fp_inputs: list[torch.Tensor] | None = None,
+        q_inputs: list[torch.Tensor] | None = None,
+        disable_opt_rtn: bool | None = None,
+        input_ids: list[torch.Tensor] | None = None,
+    ):
+        """Quantize a single layer that lives outside a transformer block.
+
+        When ``fp_inputs`` is provided the layer is tuned with the sign-gradient
+        descent optimizer (same loss loop as block-level quantization).  When
+        ``fp_inputs`` is ``None`` the method falls back to zero-shot RTN.
+
+        Args:
+            layer: The layer module to quantize.  Must have a ``global_name``
+                attribute for model re-insertion and logging.
+            fp_inputs: Per-sample FP activations fed into this layer, used as
+                calibration inputs during optimization. ``None`` triggers RTN
+                fallback.
+            q_inputs: Per-sample quantized activations from the previous stage,
+                used instead of ``fp_inputs`` during the forward pass when
+                cascaded quantized-input is enabled. ``None`` means use
+                ``fp_inputs`` for both reference and tuning forward.
+            disable_opt_rtn: Override optimized-RTN; ``None`` defers to quantizer config.
+            input_ids: Raw token IDs from the tokenizer (``[1, seq_len]`` per
+                sample); used to derive the valid-token loss mask via
+                ``_compute_valid_token_mask``. ``None`` disables loss masking.
+        """
+
+        layer_name = layer.global_name
+        if fp_inputs is None:
+            logger.info(f"using rtn to quantize {layer_name}")
+            self._quantize_layer_via_rtn(
+                layer,
+                disable_opt_rtn=(
+                    disable_opt_rtn if disable_opt_rtn is not None else getattr(self.config, "disable_opt_rtn", True)
+                ),
+            )
+            return
+
+        from auto_round.parallel.tp.runtime import is_dtensor
+
+        if is_dtensor(layer.weight):
+            raise NotImplementedError(
+                "Calibrated outside-block tuning does not support DTensor weights yet; "
+                "keep this layer unquantized or use RTN without calibration inputs."
+            )
+
+        # Derive valid_token_mask from raw token IDs when not supplied by caller.
+        # Reuse the cached mask if already computed by a previous block.
+        valid_token_mask = None
+        if input_ids is not None:
+            if not hasattr(self, "_cached_valid_token_mask"):
+                self._cached_valid_token_mask = self._compute_valid_token_mask(input_ids)
+            valid_token_mask = self._cached_valid_token_mask
+
+        logger.info(f"quantizing layer {layer_name}")
+        # Layer is already on the correct device (placed by the caller / AlgorithmComposer).
+        device = layer.weight.device if hasattr(layer, "weight") else device_manager.device
+        for i in range(len(fp_inputs)):
+            fp_inputs[i] = fp_inputs[i].to(layer.weight.dtype)
+            if q_inputs is not None:
+                q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
+
+        wrapper_linear = WrapperLinear(
+            layer,
+            enable_minmax_tuning=self.enable_minmax_tuning,
+            enable_torch_compile=self.compress_context.enable_torch_compile,
+            device=device,
+            enable_neuqi=getattr(self.config, "enable_neuqi", False),
+            lora_rank=getattr(self.config, "lora_rank", 0),
+            lora_alpha=getattr(self.config, "lora_alpha", None),
+        ).to(device)
+        round_params = []
+        minmax_params = []
+        for key in wrapper_linear.params.keys():
+            if "min" in key or "max" in key:
+                minmax_params.append(wrapper_linear.params[key])
+            else:
+                round_params.append(wrapper_linear.params[key])
+        if len(round_params) + len(minmax_params) <= 0:
+            dump_info = f"quantized {layer_name}"
+            logger.info(dump_info)
+            with torch.no_grad():
+                unwrapper_layer(self.model, wrapper_linear, layer_name, {})
+            mv_module_from_gpu(layer)
+
+        lr = torch.tensor(self.lr)
+        minmax_lr = torch.tensor(self.minmax_lr)
+        # Use a lr derived from this layer's own bit-width so mixed-bit configs
+        # (e.g. a 4-bit model with a few 2-bit layers) tune each layer correctly.
+        layer_bits = getattr(layer, "bits", None)
+        layer_lr = self._config.compute_lr(layer_bits)
+        if layer_lr is not None:
+            lr = torch.tensor(layer_lr)
+        self._maybe_log_low_bit_lr(layer_bits)
+        layer_minmax_lr = self._config.compute_minmax_lr(layer_bits)
+        if layer_minmax_lr is not None:
+            minmax_lr = torch.tensor(layer_minmax_lr)
+        if self.enable_minmax_tuning:
+            optimizer = self.optimizer(
+                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
+            )
+        else:
+            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
+
+        if self.lr_scheduler is None:
+            lr_schedule = torch.optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
+            )
+        else:
+            lr_schedule = copy.deepcopy(self.lr_scheduler)
+        self._configure_lora_scaling(wrapper_linear, optimizer)
+        nsamples = len(fp_inputs)
+        last_best_iter = 0
+        best_loss = torch.finfo(torch.float).max
+        best_params = None
+        scaler = self._get_scaler()  # pylint: disable=assignment-from-none
+        init_loss = None
+
+        gradient_accumulate_steps = (
+            self.calibration_context.batch_size * self.gradient_accumulate_steps
+        )  # Force to low gpu
+
+        total_loss = 0
+        num_elm = 1
+        mse_reduction = "mean"
+        if gradient_accumulate_steps != 1:
+            mse_reduction = "sum"
+        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
+        batch_size = 1  # Force to low gpu
+        global_batch_size = gradient_accumulate_steps
+        global_batch_size = min(nsamples, global_batch_size)
+        # Compute num_elm once before the loop.
+        if gradient_accumulate_steps != 1:
+            whole_indices = list(range(global_batch_size))
+            if valid_token_mask:
+                num_elm = self._get_non_zero_cnt(valid_token_mask, whole_indices)
+            elif q_inputs is not None:
+                num_elm = self._count_layer_input_elements(q_inputs, whole_indices)
+            else:
+                num_elm = self._count_layer_input_elements(fp_inputs, whole_indices)
+
+        index_sampler = IndexSampler(nsamples, global_batch_size)
+
+        for i in range(self.iters):
+            total_loss = 0
+            global_indices = index_sampler.next_batch()
+
+            for batch_start in range(0, len(global_indices), batch_size):
+                indices = global_indices[batch_start : batch_start + batch_size]
+                if q_inputs is not None:
+                    current_input = [q_inputs[i] for i in indices]
+                    current_input = torch.cat(current_input, dim=0).to(device)
+                    org_input = [fp_inputs[i] for i in indices]
+                    org_input = torch.cat(org_input, dim=0).to(device)
+                else:
+                    current_input = [fp_inputs[i] for i in indices]
+                    current_input = torch.cat(current_input, dim=0).to(device)
+                    org_input = current_input
+                with torch.no_grad():
+                    current_output = layer(org_input)
+                autocast_ctx = (
+                    nullcontext()
+                    if not self.model_context.amp
+                    else autocast(device_type=str(device).split(":")[0], dtype=self.model_context.amp_dtype)
+                )
+                if valid_token_mask:
+                    tmp_valid_mask = [valid_token_mask[i] for i in indices]
+                    tmp_valid_mask = torch.cat(tmp_valid_mask, dim=0).to(device)
+                    tmp_valid_mask.unsqueeze_(-1)
+
+                    with autocast_ctx:
+                        output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                        loss = mse_loss(  # pylint: disable=not-callable
+                            (output_q * tmp_valid_mask).to(torch.float32),
+                            (current_output * tmp_valid_mask).to(torch.float32),
+                        )
+
+                else:
+                    with autocast_ctx:
+                        output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
+                        loss = mse_loss(  # pylint: disable=not-callable
+                            output_q.to(torch.float32),
+                            current_output.to(torch.float32),  # mul 1.0 will copy the output
+                        )
+
+                num_elm = 1 if num_elm <= 0 else num_elm
+                total_loss += loss.item() / num_elm
+
+                self._scale_loss_and_backward(scaler, loss)
+            if i == 0:
+                init_loss = total_loss
+            current_lr = optimizer.param_groups[0]["lr"]
+            logger.debug("iter %d loss: %.3e lr: %s", i, total_loss, current_lr)
+
+            if total_loss < best_loss:
+                best_loss = total_loss
+                if not self.not_use_best_mse:
+                    best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
+                    last_best_iter = i
+            if self.not_use_best_mse and i == self.iters - 1:
+                best_params = collect_best_params(wrapper_linear, self.compress_context.cache_device)
+
+            if not self.not_use_best_mse:
+                if 0 < self.dynamic_max_gap <= i - last_best_iter:
+                    break
+            self._step(scaler, optimizer, lr_schedule)
+
+        last_loss = total_loss
+        best_iter = self.iters
+        if not self.not_use_best_mse:
+            last_loss = best_loss
+            best_iter = last_best_iter
+        with torch.no_grad():
+            unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
+        mv_module_from_gpu(layer)
+        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.3e} -> iter {best_iter}: {last_loss:.3e}"
+        logger.info(dump_info)
+
+    def finalize_run(self) -> None:
+        """Clear per-run caches (``_cached_valid_token_mask``, LFQ components)."""
+        for attr in ("_cached_valid_token_mask", "_lm_head", "_post_block_modules"):
+            if hasattr(self, attr):
+                delattr(self, attr)
+
+    def _get_optimizer(self, optimizer: Any):
+        """Returns the specified optimizer. In SignRound, we fix the optimizer.
+
+        Args:
+        optimizer: The optimizer to be used.
+
+        Returns:
+        The specified optimizer.
+        """
+        if optimizer is not None:
+            logger.warning_once(
+                "The optimizer setting in config will be ignored in AutoRound, using SignSGD as default."
+            )
+        return SignSGD
+
+    def _count_layer_input_elements(self, input_ids, indices: list) -> int:
+        return sum(input_ids[i].numel() for i in indices)
+
+    def _get_scaler(self):
+        """Returns scaler, in SignRound, no need to use scaler."""
+        return
+
+    def _scale_loss_and_backward(self, scaler: Any, loss: torch.Tensor) -> torch.Tensor:
+        """Scales the loss and performs backward pass.
+
+        Args:
+        scaler: The scaler to be used.
+        loss: The loss to be scaled.
+
+        Returns:
+        The scaled loss.
+        """
+        scale_loss = loss * 1000
+        try:
+            scale_loss.backward()
+        except torch.OutOfMemoryError:
+            from auto_round.algorithms.quantization.search_dispatch import dump_oom_tensor_census_
+
+            dump_oom_tensor_census_("tune backward")
+            raise
+        if is_hpex_available():
+            htcore.mark_step()
+        return scale_loss
+
+    def _step(self, scaler: Any, optimizer: Any, lr_schedule: Any):
+        """Performs a step in the optimization process.
+
+        Args:
+        scaler: The scaler to be used.
+        optimizer: The optimizer for the step.
+        lr_schedule: The learning rate schedule.
+
+        Returns:
+        None
+        """
+        optimizer.step()
+        # for hpu
+        if is_hpex_available():
+            htcore.mark_step()
+        optimizer.zero_grad()
+        lr_schedule.step()

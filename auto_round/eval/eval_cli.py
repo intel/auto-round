@@ -15,18 +15,60 @@ import argparse
 import importlib.util
 import os
 import time
+from pathlib import Path
 
-import torch.nn
+import torch
 from transformers.utils.versions import require_version
 
 from auto_round.utils import (
+    DEVICE_ENVIRON_VARIABLE_MAPPING,
     dispatch_model_block_wise,
     get_device_and_parallelism,
-    get_device_str,
+    get_major_device,
     get_model_dtype,
     is_diffusion_model,
     set_cuda_visible_devices,
 )
+
+
+def _has_eval_model_artifacts(model_dir: str) -> bool:
+    if not os.path.isdir(model_dir):
+        return False
+    artifact_names = {"config.json", "model_index.json", "modular_model_index.json"}
+    for name in artifact_names:
+        if os.path.isfile(os.path.join(model_dir, name)):
+            return True
+    return any(name.endswith(".gguf") for name in os.listdir(model_dir))
+
+
+def _resolve_exported_model_path(model_path):
+    """Resolve wrapper output directories to the actual exported model folder.
+
+    Some helper scripts pass a parent output directory (for example
+    ``outputs/aware_topk_tune_shared``) while the export itself lives in a
+    single nested subdirectory derived from model name and quantization scheme.
+    When there is exactly one child directory containing loadable model
+    artifacts, prefer that child automatically.
+    """
+    from auto_round.utils import logger
+
+    if not isinstance(model_path, str) or not os.path.isdir(model_path):
+        return model_path
+
+    if _has_eval_model_artifacts(model_path):
+        return model_path
+
+    candidate_dirs = []
+    for entry in os.listdir(model_path):
+        candidate = os.path.join(model_path, entry)
+        if os.path.isdir(candidate) and _has_eval_model_artifacts(candidate):
+            candidate_dirs.append(candidate)
+
+    if len(candidate_dirs) == 1:
+        resolved = candidate_dirs[0]
+        logger.info("Resolved evaluation model path '%s' to exported artifact '%s'.", model_path, resolved)
+        return resolved
+    return model_path
 
 
 class EvalArgumentParser(argparse.ArgumentParser):
@@ -44,7 +86,8 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "--model_name",
             "--model",
             "--model_name_or_path",
-            default="facebook/opt-125m",
+            dest="model_name",
+            default=None,
             help="Path to the pre-trained model or model identifier from huggingface.co/models. "
             "Examples: 'facebook/opt-125m', 'bert-base-uncased', or local path like '/path/to/model'",
         )
@@ -98,6 +141,16 @@ class EvalArgumentParser(argparse.ArgumentParser):
             help="Limit the number of examples per task. "
             "Integer: exact number of examples (e.g., 1000). "
             "Float between 0-1: fraction of total examples.",
+        )
+        self.add_argument("--num_fewshot", "--num-fewshot", default=None, type=int, help="Number of few-shot examples.")
+        self.add_argument(
+            "--eval_gen_kwargs", "--eval-gen-kwargs", default=None, type=str, help="Generation kwargs for LM-Eval."
+        )
+        self.add_argument(
+            "--fewshot_as_multiturn",
+            "--fewshot-as-multiturn",
+            action="store_true",
+            help="Use multi-turn format for few-shot examples in LM-Eval.",
         )
         self.add_argument(
             "--eval_backend",
@@ -188,19 +241,21 @@ def eval(args):
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
     )
 
-    if is_diffusion_model(args.model):
+    args.model_name = _resolve_exported_model_path(args.model_name)
+
+    if is_diffusion_model(args.model_name):
         from auto_round.eval.evaluation import evaluate_diffusion_model
         from auto_round.utils import diffusion_load_model
 
-        pipe, _ = diffusion_load_model(args.model)
+        pipe, _ = diffusion_load_model(args.model_name)
         evaluate_diffusion_model(args, pipe=pipe)
         return
     if args.eval_backend == "vllm":
-        assert isinstance(args.model, str), "vllm evaluation only supports model name or path."
+        assert isinstance(args.model_name, str), "vllm evaluation only supports model name or path."
         eval_with_vllm(args)
         return
     tasks, model_args, device_str = _eval_init(
-        args.tasks, args.model, args.device_map, args.disable_trust_remote_code, args.eval_model_dtype
+        args.tasks, args.model_name, args.device_map, args.disable_trust_remote_code, args.eval_model_dtype
     )
 
     # load after _eval_int in order to make sure import torch after set CUDA_VISIBLE_DEVICES
@@ -210,7 +265,7 @@ def eval(args):
     if (batch_size := args.eval_bs) is None:
         batch_size = "auto:8"
 
-    model, tokenizer, is_gguf_file, gguf_file = _load_gguf_model_if_needed(args.model, args.eval_model_dtype)
+    model, tokenizer, is_gguf_file, gguf_file = _load_gguf_model_if_needed(args.model_name, args.eval_model_dtype)
 
     if is_gguf_file:
         from lm_eval.utils import make_table  # pylint: disable=E0401
@@ -223,10 +278,13 @@ def eval(args):
             batch_size=batch_size,
             device=device_str,
             limit=args.limit,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
             add_bos_token=args.add_bos_token,
         )
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
     else:
         st = time.time()
         if "auto" in str(batch_size) and args.mllm:
@@ -240,19 +298,24 @@ def eval(args):
             device=device_str,
             batch_size=batch_size,
             limit=args.limit,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         from lm_eval.utils import make_table  # pylint: disable=E0401
 
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def eval_with_vllm(args):
+    # set vllm worker method
+    os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
     import time
 
     from lm_eval import evaluator  # pylint: disable=E0401
     from lm_eval.models.vllm_causallms import VLLM  # pylint: disable=E0401
-    from lm_eval.models.vllm_vlms import VLLM_VLM  # pylint: disable=E0401
     from lm_eval.utils import make_table  # pylint: disable=E0401
 
     st = time.time()
@@ -269,7 +332,7 @@ def eval_with_vllm(args):
 
     # Build vllm kwargs with base parameters
     vllm_kwargs = {
-        "pretrained": args.model,
+        "pretrained": args.model_name,
         "dtype": eval_model_dtype,
         "trust_remote_code": not args.disable_trust_remote_code,
         "add_bos_token": args.add_bos_token,
@@ -285,51 +348,56 @@ def eval_with_vllm(args):
         logger.info(f"Overriding VLLM parameters with custom args: {custom_vllm_kwargs}")
         vllm_kwargs.update(custom_vllm_kwargs)
 
-    device = get_device_str()
-    environ_mapping = {
-        "cuda": "CUDA_VISIBLE_DEVICES",
-        "xpu": "ZE_AFFINITY_MASK",
-        "hpu": "HABANA_VISIBLE_MODULES",
-    }
+    device = get_major_device()
     if "tensor_parallel_size" not in vllm_kwargs:
         # Parse device_map to determine tensor_parallel_size and set the relevant env var
         # Only accept formats like "0" or "0,1,2". If the environment variable is
         # already set externally, do not overwrite it — but still derive
         # `tensor_parallel_size` from the existing value.
-        assert device in environ_mapping, f"Device {device} not supported for vllm tensor parallelism."
-        environ_name = environ_mapping[device]
+        assert device in DEVICE_ENVIRON_VARIABLE_MAPPING, f"Device {device} not supported for vllm tensor parallelism."
+        env_name = DEVICE_ENVIRON_VARIABLE_MAPPING[device]
         device_map = args.device_map
         device_ids = [d.strip() for d in str(device_map).split(",") if d.strip().isdigit()]
 
         from auto_round.logger import logger
 
-        existing_env = os.environ.get(environ_name)
+        existing_env = os.environ.get(env_name)
         if existing_env:
             existing_ids = [d.strip() for d in existing_env.split(",") if d.strip()]
             if existing_ids:
                 tensor_parallel_size = len(existing_ids)
                 vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
                 logger.info(
-                    f"Detected existing {environ_name}={existing_env}, skipping overwrite; "
-                    f"tensor_parallel_size={tensor_parallel_size} derived from {environ_name}"
+                    f"Detected existing {env_name}={existing_env}, skipping overwrite; "
+                    f"tensor_parallel_size={tensor_parallel_size} derived from {env_name}"
                 )
         elif device_ids:
             device_id_str = ",".join(device_ids)
-            os.environ[environ_name] = device_id_str
+            os.environ[env_name] = device_id_str
             tensor_parallel_size = len(device_ids)
             vllm_kwargs["tensor_parallel_size"] = tensor_parallel_size
 
-            logger.info(f"Set {environ_name}={os.environ[environ_name]}, tensor_parallel_size={tensor_parallel_size}")
+            logger.info(f"Set {env_name}={os.environ[env_name]}, tensor_parallel_size={tensor_parallel_size}")
 
-    vllm_lm = VLLM_VLM(**vllm_kwargs) if args.mllm else VLLM(**vllm_kwargs)
+    if args.mllm:
+        from lm_eval.models.vllm_vlms import VLLM_VLM  # pylint: disable=E0401
+
+        vllm_lm = VLLM_VLM(**vllm_kwargs)
+    else:
+        vllm_lm = VLLM(**vllm_kwargs)
+    task_manager = _get_lm_eval_task_manager(tasks)
     res = evaluator.simple_evaluate(
         model=vllm_lm,
         tasks=tasks,
         limit=args.limit,
+        num_fewshot=getattr(args, "num_fewshot", None),
+        gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+        fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
+        task_manager=task_manager,
     )
 
     print(make_table(res))
-    print("evaluation running time=%ds" % (time.time() - st))
+    print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def eval_task_by_task(
@@ -345,6 +413,9 @@ def eval_task_by_task(
     retry_times=3,
     mllm=False,
     add_bos_token=False,
+    num_fewshot=None,
+    gen_kwargs=None,
+    fewshot_as_multiturn=False,
 ):
     require_version(
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
@@ -407,7 +478,17 @@ def eval_task_by_task(
             add_bos_token=add_bos_token,
         )
 
-    _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry_times)
+    _evaluate_tasks_with_retry(
+        tasks,
+        hflm,
+        device_str,
+        batch_size,
+        limit,
+        retry_times,
+        num_fewshot=num_fewshot,
+        gen_kwargs=gen_kwargs,
+        fewshot_as_multiturn=fewshot_as_multiturn,
+    )
 
 
 def _load_gguf_model_if_needed(model_path, eval_model_dtype=None):
@@ -462,7 +543,44 @@ def _load_gguf_model_if_needed(model_path, eval_model_dtype=None):
     return model, tokenizer, is_gguf_file, gguf_file
 
 
-def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry_times):
+def _get_lm_eval_task_manager(tasks: list[str]) -> object | None:
+    """Use exact installed task dirs when possible to avoid scanning all lm-eval tasks."""
+    try:
+        import lm_eval  # pylint: disable=E0401
+        from lm_eval.tasks import TaskManager  # pylint: disable=E0401
+    except ImportError:
+        return None
+
+    tasks_root = Path(lm_eval.__file__).parent / "tasks"
+    task_paths = []
+    for task in tasks:
+        task_path = tasks_root / task
+        if task_path.is_dir():
+            task_paths.append(str(task_path))
+            continue
+
+        task_configs = list(tasks_root.rglob(f"{task}.yaml"))
+        if not task_configs:
+            return None
+        task_paths.extend(str(task_config.parent) for task_config in task_configs)
+
+    try:
+        return TaskManager(include_defaults=False, include_path=list(dict.fromkeys(task_paths)))
+    except TypeError:
+        return None
+
+
+def _evaluate_tasks_with_retry(
+    tasks,
+    hflm,
+    device_str,
+    batch_size,
+    limit,
+    retry_times,
+    num_fewshot=None,
+    gen_kwargs=None,
+    fewshot_as_multiturn=False,
+):
     """Evaluate tasks with automatic retry on OOM errors.
 
     Args:
@@ -490,38 +608,59 @@ def _evaluate_tasks_with_retry(tasks, hflm, device_str, batch_size, limit, retry
     res_all = {}
     res_keys = ["results", "versions", "n-shot", "higher_is_better"]
     st = time.time()
+    task_manager = _get_lm_eval_task_manager(tasks)
 
     for task in tasks:
         current_retry_times = retry_times
+        res = None
+        last_error = None
         while current_retry_times:
             try:
                 res = lm_eval.simple_evaluate(
-                    model=hflm, model_args=None, device=device_str, tasks=task, batch_size=batch_size, limit=limit
+                    model=hflm,
+                    model_args=None,
+                    device=device_str,
+                    tasks=task,
+                    batch_size=batch_size,
+                    limit=limit,
+                    num_fewshot=num_fewshot,
+                    gen_kwargs=gen_kwargs,
+                    task_manager=task_manager,
+                    fewshot_as_multiturn=fewshot_as_multiturn,
                 )
                 break
-            except Exception as e:
+            except torch.OutOfMemoryError as e:
+                last_error = e
                 cuda_error_msg = traceback.format_exc()
+                ori_batch_sizes = getattr(hflm, "batch_sizes", None) or {"0": 64}
+                if not getattr(hflm, "batch_sizes", None):
+                    hflm.batch_sizes = ori_batch_sizes.copy()
                 try:
-                    ori_batch_sizes = hflm.batch_sizes if hflm.batch_sizes else {"0": 64}
-                    if not hflm.batch_sizes:
-                        hflm.batch_sizes = ori_batch_sizes.copy()
-                    try:
-                        for k, v in hflm.batch_sizes.items():
-                            hflm.batch_sizes[k] = max(v // 2, 1)
-                        logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
-                        res = lm_eval.simple_evaluate(
-                            model=hflm, model_args=None, device=device_str, tasks=task, batch_size=1, limit=limit
-                        )
-                        hflm.batch_sizes = ori_batch_sizes
-                    except Exception as e:
-                        traceback.print_exc()
-                        pass
-                except Exception as e:
-                    logger.error(cuda_error_msg)
+                    for k, v in hflm.batch_sizes.items():
+                        hflm.batch_sizes[k] = max(v // 2, 1)
+                    logger.warning(f"Out of memory, reset batch_size to {hflm.batch_sizes} and re-try.")
+                    res = lm_eval.simple_evaluate(
+                        model=hflm,
+                        model_args=None,
+                        device=device_str,
+                        tasks=task,
+                        batch_size=1,
+                        limit=limit,
+                        num_fewshot=num_fewshot,
+                        gen_kwargs=gen_kwargs,
+                        task_manager=task_manager,
+                        fewshot_as_multiturn=fewshot_as_multiturn,
+                    )
+                except torch.OutOfMemoryError as e:
+                    last_error = e
                     traceback.print_exc()
-                    break
+                    res = None
+                finally:
+                    hflm.batch_sizes = ori_batch_sizes
             current_retry_times -= 1
 
+        if res is None:
+            raise RuntimeError(f"Failed to evaluate task '{task}' after {retry_times} attempts") from last_error
         if not res_all:
             res_all = res
         else:

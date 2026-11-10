@@ -12,6 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.experimental.qmodules.mx import MXFP4QuantLinear, MXFP8QuantLinear, HadamardMXFP4QuantLinear
+
+from auto_round.experimental.qmodules.mx import (
+    MXFP4QuantLinear,
+    MXFP8QuantLinear,
+    MXINT4QuantLinear,
+)
+
+from auto_round.experimental.qmodules.fake import FakeActQuantLinear
 from auto_round.experimental.qmodules.nvfp4 import NVFP4QuantLinear
+from auto_round.experimental.qmodules.nvfp4_e5m3 import (
+    CuteNVFP4E5M3GSQuantLinear,
+    CuteNVFP4E5M3QuantLinear,
+    NVFP4E5M3GSQuantLinear,
+    NVFP4E5M3QuantLinear,
+)
 from auto_round.experimental.qmodules.fp8_static import WeightFP8ActFP8StaticQuantLinear

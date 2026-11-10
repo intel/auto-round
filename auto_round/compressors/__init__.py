@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Intel Corporation
+# Copyright (c) 2026 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,16 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.compressors.adam import AdamCompressor
-from auto_round.compressors.base import BaseCompressor
-from auto_round.compressors.base import LLMCompressor
-from auto_round.compressors.mllm.compressor import MLLMCompressor
-from auto_round.compressors.diffusion.compressor import DiffusionCompressor
-from auto_round.compressors.diffusion.hybrid import HybridCompressor
-from auto_round.compressors.config import (
-    DiffusionExtraConfig,
-    ExtraConfig,
-    MLLMExtraConfig,
-    SchemeExtraConfig,
-    TuningExtraConfig,
-)
+# Lazy imports to avoid circular dependencies.
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from auto_round.compressors.base import BaseOrchestrator, BaseCompressor
+    from auto_round.compressors.model_free import ModelFreeCompressor
+    from auto_round.compressors.orchestrator import CompressionOrchestrator
+
+__all__ = [
+    "BaseCompressor",  # backward-compat alias
+    "BaseOrchestrator",
+    "CompressionOrchestrator",
+    "ModelFreeCompressor",
+]
+
+
+def __getattr__(name):
+    """Lazy import to avoid circular dependencies."""
+    if name in ("BaseOrchestrator", "BaseCompressor"):
+        from auto_round.compressors.base import BaseOrchestrator
+
+        return BaseOrchestrator
+    elif name == "CompressionOrchestrator":
+        from auto_round.compressors.orchestrator import CompressionOrchestrator
+
+        return CompressionOrchestrator
+    elif name in ("Compressor", "ZeroShotCompressor", "DataDrivenCompressor", "CalibratedRTNCompressor"):
+        # Backward-compat aliases: these classes were consolidated into
+        # ``CompressionOrchestrator`` (main's #2039 compressor/quantizer refactor).
+        from auto_round.compressors.orchestrator import CompressionOrchestrator
+
+        return CompressionOrchestrator
+    elif name == "ModelFreeCompressor":
+        from auto_round.compressors.model_free import ModelFreeCompressor
+
+        return ModelFreeCompressor
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

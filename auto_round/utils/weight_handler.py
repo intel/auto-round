@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 Extensible Module Weight Type Conversion Framework.
 
@@ -35,6 +34,7 @@ Table of Contents:
        - MXFP8Handler: CompressedLinear with MXFP8PackedCompressor
        - MXFP4Handler: CompressedLinear with MXFP4PackedCompressor
        - NVFP4Handler: CompressedLinear with NVFP4PackedCompressor
+       - WOQHandler: CompressedLinear with weight-only quantization
 
 Quick Start Guide:
     Usage - Detect and Convert:
@@ -59,10 +59,10 @@ Quick Start Guide:
 
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from contextlib import ContextDecorator
 from dataclasses import fields
 from enum import Enum, auto
-from typing import Callable, Dict, Optional, Set, Type
 
 import psutil
 import torch
@@ -158,6 +158,7 @@ class ModuleWeightType(Enum):
     MXFP8 = auto()  # MX FP8 (CompressedLinear with MXFP8PackedCompressor)
     MXFP4 = auto()  # MX FP4 (CompressedLinear with MXFP4PackedCompressor)
     NVFP4 = auto()  # NV FP4 (CompressedLinear with NVFP4PackedCompressor)
+    WOQ = auto()  # Weight-Only Quantization (CompressedLinear with weight-only quantization)
 
 
 class WeightTypeHandler(ABC):
@@ -178,7 +179,15 @@ class WeightTypeHandler(ABC):
         Returns:
             True if the module is of this weight type, False otherwise.
         """
-        pass
+
+    def attach_weight_shape(self, module: torch.nn.Module):
+        """Optional helper to attach weight shape information to the module for detection."""
+        if not hasattr(module, "weight") or module.weight is None:
+            module.weight = torch.empty(
+                module.out_features,
+                module.in_features,
+                device="meta",
+            )
 
     @abstractmethod
     def convert_layer(
@@ -199,12 +208,11 @@ class WeightTypeHandler(ABC):
         Returns:
             A new high-precision layer with dequantized weights.
         """
-        pass
 
 
 # --- Handler Registry ---
 
-_WEIGHT_TYPE_HANDLERS: Dict[ModuleWeightType, WeightTypeHandler] = {}
+_WEIGHT_TYPE_HANDLERS: dict[ModuleWeightType, WeightTypeHandler] = {}
 
 
 def register_weight_type_handler(weight_type: ModuleWeightType):
@@ -222,7 +230,7 @@ def register_weight_type_handler(weight_type: ModuleWeightType):
             ...
     """
 
-    def decorator(handler_cls: Type[WeightTypeHandler]):
+    def decorator(handler_cls: type[WeightTypeHandler]):
         if not issubclass(handler_cls, WeightTypeHandler):
             raise TypeError(f"Handler {handler_cls.__name__} must be a subclass of WeightTypeHandler")
         _WEIGHT_TYPE_HANDLERS[weight_type] = handler_cls()
@@ -231,7 +239,7 @@ def register_weight_type_handler(weight_type: ModuleWeightType):
     return decorator
 
 
-def get_handler(weight_type: ModuleWeightType) -> Optional[WeightTypeHandler]:
+def get_handler(weight_type: ModuleWeightType) -> WeightTypeHandler | None:
     """Get the registered handler for a weight type.
 
     Args:
@@ -243,7 +251,7 @@ def get_handler(weight_type: ModuleWeightType) -> Optional[WeightTypeHandler]:
     return _WEIGHT_TYPE_HANDLERS.get(weight_type)
 
 
-def get_all_handlers() -> Dict[ModuleWeightType, WeightTypeHandler]:
+def get_all_handlers() -> dict[ModuleWeightType, WeightTypeHandler]:
     """Get all registered weight type handlers.
 
     Returns:
@@ -255,7 +263,7 @@ def get_all_handlers() -> Dict[ModuleWeightType, WeightTypeHandler]:
 # ============================================================================
 # Section 2: PUBLIC API - Detection and Conversion Functions
 # ============================================================================
-def detect_weight_type(module: torch.nn.Module) -> Optional[ModuleWeightType]:
+def detect_weight_type(module: torch.nn.Module) -> ModuleWeightType | None:
     """Detect the weight type of a module or model.
 
     First checks if the module itself has a quantized_weight_type attribute.
@@ -280,7 +288,7 @@ def detect_weight_type(module: torch.nn.Module) -> Optional[ModuleWeightType]:
 
 
 # --- Model Marking Functions ---
-def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightType]:
+def check_and_mark_quantized_module(model: torch.nn.Module) -> set[ModuleWeightType]:
     """Check if model contains quantized layers and mark them accordingly.
 
     This function scans the model (including the model itself) for quantized layers using
@@ -293,10 +301,11 @@ def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightT
     Returns:
         A set of detected ModuleWeightType values. Empty set if no quantized layers found.
     """
-    detected_types: Set[ModuleWeightType] = set()
+    detected_types: set[ModuleWeightType] = set()
     for weight_type, handler in _WEIGHT_TYPE_HANDLERS.items():
         # Check model itself first
         if handler.detect_layer(model):
+            handler.attach_weight_shape(model)
             model._is_quantized_input_module = True
             model.quantized_weight_type = weight_type
             detected_types.add(weight_type)
@@ -305,6 +314,7 @@ def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightT
         for n, m in model.named_modules():
             # Use handler to detect based on actual characteristics
             if handler.detect_layer(m):
+                handler.attach_weight_shape(m)
                 # Mark the layer itself
                 m.quantized_weight_type = weight_type
                 # for gguf format, gguf format need to mark the quantized input module
@@ -314,10 +324,13 @@ def check_and_mark_quantized_module(model: torch.nn.Module) -> Set[ModuleWeightT
                 # Record detected types
                 detected_types.add(weight_type)
 
+    # remove decompress_hook for CT models
+    if hasattr(model, "ct_decompress_hook"):
+        model.ct_decompress_hook.remove()
     return detected_types
 
 
-def is_quantized_input_module(model: torch.nn.Module) -> Optional[ModuleWeightType]:
+def is_quantized_input_module(model: torch.nn.Module) -> ModuleWeightType | None:
     """Check if a model has quantized input weights and return the weight type.
 
     This traverses all submodules to check for the `quantized_weight_type` attribute
@@ -341,11 +354,29 @@ def is_quantized_input_module(model: torch.nn.Module) -> Optional[ModuleWeightTy
     return None
 
 
+def remove_existed_quantization_config(model: torch.nn.Module):
+    """Removes the existing quantization configuration from the model's config if it exists.
+
+    This is necessary to prevent conflicts during conversion, especially for models that have a
+    `quantization_config` attribute in their config or sub-configs. It checks the model and its
+    config for any `quantization_config` attributes and deletes them if found.
+    """
+    if hasattr(model, "config") and model.config is not None:
+        if hasattr(model.config, "quantization_config"):
+            delattr(model.config, "quantization_config")
+        for attr in dir(model.config):  # for text_config, vision_config, etc.
+            if "config" not in attr:
+                continue
+            config_attr = getattr(model.config, attr)
+            if hasattr(config_attr, "quantization_config"):
+                delattr(config_attr, "quantization_config")
+
+
 # --- Main Conversion Function ---
 def convert_module_to_hp_if_necessary(
     model_or_layer: torch.nn.Module,
     dtype: torch.dtype = torch.bfloat16,
-    device: str = "cpu",
+    device: str | torch.device = "cpu",
     to_cpu: bool = False,
 ) -> torch.nn.Module:
     """Convert quantized layer(s) to high-precision Linear layer(s) if necessary.
@@ -367,22 +398,46 @@ def convert_module_to_hp_if_necessary(
     from auto_round.utils.device import clear_memory
     from auto_round.utils.model import set_module
 
+    def _sync_serialization_attrs(src_module: torch.nn.Module, dst_module: torch.nn.Module) -> None:
+        """Copy serialization-related attributes from source to destination module."""
+        from auto_round.compressors.base import SERIALIZATION_KEYS
+
+        orig_module_keys = list(SERIALIZATION_KEYS) + ["global_name"]
+        for key in orig_module_keys:
+            if hasattr(src_module, key):
+                setattr(dst_module, key, getattr(src_module, key))
+
+    remove_existed_quantization_config(model_or_layer)
     # Check if it's a single quantized layer (has the attribute directly)
     if hasattr(model_or_layer, "quantized_weight_type") and model_or_layer.quantized_weight_type is not None:
         handler = get_handler(model_or_layer.quantized_weight_type)
-        return handler.convert_layer(model_or_layer, dtype, device, to_cpu)
+        logger.info(
+            f"Converting layer {model_or_layer.__class__.__name__} from "
+            + f"{model_or_layer.quantized_weight_type.name} to {dtype}"
+        )
+        new_module = handler.convert_layer(model_or_layer, dtype, device, to_cpu)
+        _sync_serialization_attrs(model_or_layer, new_module)
+        return new_module
 
     # Otherwise, traverse model and convert all quantized layers
     # Get handler for each layer to support mixed quantization types
     cnt = 0
+    type_counts: dict = {}
     for n, m in model_or_layer.named_modules():
         if hasattr(m, "quantized_weight_type") and m.quantized_weight_type is not None:
             handler = get_handler(m.quantized_weight_type)
+            type_counts[m.quantized_weight_type.name] = type_counts.get(m.quantized_weight_type.name, 0) + 1
             new_module = handler.convert_layer(m, dtype, device, to_cpu)
+            _sync_serialization_attrs(m, new_module)
+            new_module.quantized_weight_type = None  # Clear quantized type after conversion
             set_module(model_or_layer, n, new_module)
             cnt += 1
             if cnt % 10 == 0:
                 clear_memory()
+
+    if type_counts:
+        summary = ", ".join(f"{k}: {v} layers" for k, v in type_counts.items())
+        logger.info(f"Converted quantized layers to {dtype}: {summary}")
 
     return model_or_layer
 
@@ -403,18 +458,41 @@ def _pad_block_fp8_weight_naive(
     weight, orig_M, orig_N = _pad_weight(weight, block_size)
     M, N = weight.shape[-2:]
 
-    assert weight_scale_m == M // block_size_m
-    assert weight_scale_n == N // block_size_n
+    # Check if scale tensor is large enough to cover the weight dimensions
+    # Some models may use over-provisioned scale tensors (e.g., for memory alignment),
+    # but undersized scales are invalid and should be rejected early
+    expected_scale_m = M // block_size_m
+    expected_scale_n = N // block_size_n
+    if weight_scale_m < expected_scale_m or weight_scale_n < expected_scale_n:
+        raise ValueError(
+            "FP8 weight scale shape is smaller than required for the padded weight: "
+            f"weight_shape={tuple(weight.shape)}, scale_shape={tuple(weight_scale.shape)}, block_size={block_size}"
+        )
+
+    # Handle over-provisioned scale tensors: if the scale tensor covers more blocks
+    # than the weight dimensions require, pad the weight to match the scale coverage.
+    target_M = max(M, weight_scale_m * block_size_m)
+    target_N = max(N, weight_scale_n * block_size_n)
+    if target_M != M or target_N != N:
+        pad_M = target_M - M
+        pad_N = target_N - N
+        weight = torch.nn.functional.pad(weight, (0, pad_N, 0, pad_M), mode="constant", value=0)
 
     return weight, orig_M, orig_N
 
 
 @with_thread_limits()
 def _dequant_fp8_linear_weight(
-    weight: torch.Tensor, weight_scale: torch.Tensor, block_size: list = None, data_type: str = None
+    weight: torch.Tensor,
+    weight_scale: torch.Tensor,
+    block_size: list | None = None,
+    data_type: str | None = None,
+    output_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
-    """Core dequantization logic for block-wise FP8 weights."""
-    dtype = torch.bfloat16
+    """Core dequantization logic for block-wise FP8 weights.
+
+    ``data_type`` is the source quantization data type; ``output_dtype`` is the torch dtype of the result.
+    """
     if weight_scale is None:
         return weight
 
@@ -428,7 +506,7 @@ def _dequant_fp8_linear_weight(
                 weight_scale = weight_scale.view(-1, 1)
             elif weight_scale.numel() == weight.shape[-1]:
                 weight_scale = weight_scale.view(1, -1)
-        return weight.to(dtype) * weight_scale.to(dtype)
+        return weight.to(output_dtype) * weight_scale.to(output_dtype)
 
     assert len(block_size) == 2
 
@@ -442,14 +520,14 @@ def _dequant_fp8_linear_weight(
         weight_scale_m, weight_scale_n = weight_scale.shape
         weight_scale = weight_scale.view(weight_scale_m, 1, weight_scale_n, 1)
         weight = weight.view(weight_scale_m, block_size_m, weight_scale_n, block_size_n)
-        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
+        dequant_weight = weight.to(output_dtype) * weight_scale.to(output_dtype)
         dequant_weight = dequant_weight.view(weight_scale_m * block_size_m, weight_scale_n * block_size_n)
         keep_first_dim = False
     elif weight_shape_len == 3:
         fd, weight_scale_m, weight_scale_n = weight_scale.shape
         weight_scale = weight_scale.view(fd, weight_scale_m, 1, weight_scale_n, 1)
         weight = weight.view(fd, weight_scale_m, block_size_m, weight_scale_n, block_size_n)
-        dequant_weight = weight.to(dtype) * weight_scale.to(dtype)
+        dequant_weight = weight.to(output_dtype) * weight_scale.to(output_dtype)
         dequant_weight = dequant_weight.view(fd, weight_scale_m * block_size_m, weight_scale_n * block_size_n)
         keep_first_dim = True
     else:
@@ -627,8 +705,7 @@ class MXFP4Handler(WeightTypeHandler):
 
         layer = layer.to(device)
 
-        # MXFP4 dequantization using to_dtype from mxfp4_qdq_utils
-        from auto_round_extension.vllm_ext.mxfp4_qdq_utils import to_dtype
+        from auto_round.utils.model_free_utils import dequant_mxfp4
 
         # Get packed weight and scale from layer
         # MXFP4 weights are stored as packed uint8 in weight_packed
@@ -642,7 +719,7 @@ class MXFP4Handler(WeightTypeHandler):
             raise ValueError("MXFP4 layer must have weight_packed and weight_scale attributes")
 
         # Dequantize using to_dtype function
-        dq_weight = to_dtype(
+        dq_weight = dequant_mxfp4(
             data_lp=weight_packed,
             scale_e8m0=weight_scale,
             elem_dtype="fp4_e2m1",
@@ -716,8 +793,7 @@ class MXFP8Handler(WeightTypeHandler):
 
         layer = layer.to(device)
 
-        # MXFP8 dequantization using dequant_mx_fp8 from mxfp8_qdq_utils
-        from auto_round_extension.vllm_ext.mxfp8_qdq_utils import dequant_mx_fp8
+        from auto_round.utils.model_free_utils import dequant_mx_fp8
 
         # Get weight and scale from layer
         weight = layer.weight
@@ -806,6 +882,71 @@ class NVFP4Handler(WeightTypeHandler):
             device = "cpu"
 
         layer = layer.to(device)
+
+        # Use compressor.decompress_module for dequantization
+        dq_weight = layer.compressor.decompress_module(layer)
+        new_layer.weight.data.copy_(dq_weight.to(dtype=dtype))
+
+        # Free intermediate CUDA tensors to avoid memory buildup
+        del dq_weight
+        layer.to("meta")
+
+        if to_cpu:
+            new_layer = new_layer.to("cpu")
+
+        return new_layer
+
+
+# ----------------------------------------------------------------------------
+# WOQ Handler - CompressedLinear with weight-only quantization
+# ----------------------------------------------------------------------------
+
+
+@register_weight_type_handler(ModuleWeightType.WOQ)
+class WOQHandler(WeightTypeHandler):
+    """Handler for integer 4-bit weight-only quantized layers (Compressed Tensor only)."""
+
+    def detect_layer(self, module: torch.nn.Module) -> bool:
+        """Check if a module is a CompressedLinear layer."""
+        if module.__class__.__name__ == "CompressedLinear":
+            if hasattr(module, "compressor") and module.compressor is not None:
+                q_scheme = module.quantization_scheme
+                if (
+                    q_scheme.weights.num_bits in [2, 4, 8]
+                    and q_scheme.weights.type == "int"
+                    and q_scheme.input_activations is None
+                ):
+                    return True
+        if hasattr(module, "quantization_scheme"):
+            from compressed_tensors.quantization.utils import is_module_quantized  # pylint: disable=E0401
+
+            if is_module_quantized(module) and module.quantization_status.value == "compressed":
+                q_scheme = module.quantization_scheme
+                if (
+                    q_scheme.weights.num_bits in [2, 4, 8]
+                    and q_scheme.weights.type == "int"
+                    and q_scheme.input_activations is None
+                ):
+                    return True
+        return False
+
+    def convert_layer(
+        self,
+        layer: torch.nn.Module,
+        dtype: torch.dtype = torch.bfloat16,
+        device: str = "cpu",
+        to_cpu: bool = False,
+    ) -> torch.nn.Module:
+        """Convert an integer weight-only quantized layer to a standard Linear layer."""
+        if hasattr(layer, "quantization_scheme") and layer.__class__.__name__ == "Linear":
+            from compressed_tensors.compressors.base import decompress_module  # pylint: disable=E0401
+
+            decompress_module(layer)
+            return layer
+
+        new_layer = torch.nn.Linear(layer.in_features, layer.out_features, bias=layer.bias is not None, dtype=dtype)
+        if layer.bias is not None:
+            new_layer.bias.data.copy_(layer.bias.data.to(dtype=dtype))
 
         # Use compressor.decompress_module for dequantization
         dq_weight = layer.compressor.decompress_module(layer)

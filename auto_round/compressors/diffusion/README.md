@@ -2,17 +2,17 @@
 
 This feature is experimental and may be subject to changes, including potential bug fixes, API modifications, or adjustments to default parameters.
 
+AutoRound uses the new compressor and calibration architecture for diffusion quantization. Diffusion models are routed by `auto_round/compressors/entry.py`, diffusion-specific compressor behavior lives in `auto_round/compressors/diffusion_mixin.py`, and calibration is handled by `auto_round/calibration/diffusion.py`.
+
 ## Quantization
 
 Quantization for diffusion models is limited:
 
-1. Only transformer module of diffusion models will be quantized..
-2. Loading quantized model is not supported yet, so please use `fake` format for quantization.
-3. Calibration dataset only supports `coco2014` and user customized `.tsv` file.
-
+1. Only the transformer module of diffusion models is quantized.
+2. Use `auto_round` (the default) for a packed, reloadable checkpoint; use `fake` only for research or debugging.
+3. Calibration datasets currently support `opens2v`, `coco2014`, and user customized `.tsv` files.
 
 ### API Usage (CPU/GPU) Recommended
-
 
 ```python
 import torch
@@ -23,7 +23,7 @@ autoround = AutoRound(
     "black-forest-labs/FLUX.1-dev",
     scheme="MXFP8",
     dataset="coco2014",
-    num_inference_steps=10,
+    calib_num_inference_steps=8,
     guidance_scale=7.5,
     generator_seed=None,
     batch_size=1,
@@ -31,59 +31,78 @@ autoround = AutoRound(
 
 # Save the quantized model
 output_dir = "./tmp_autoround"
-# Currently loading the quantized diffusion model is not supported, so use fake format
-autoround.quantize_and_save(output_dir, format="fake", inplace=True)
+autoround.quantize_and_save(output_dir, format="auto_round", inplace=True)
 ```
 
-- `dataset`: the dataset for quantization training. Currently only support coco2014 and user customized .tsv file.
+- `dataset`: the dataset for quantization training. Currently supports `opens2v`, `coco2014`, and user customized
+  `.tsv` files.
+- `calib_num_inference_steps`: the number of inference steps requested when the scheduler builds its native
+  short calibration schedule. Higher-order schedulers may expand these into more internal timesteps.
+- `num_inference_steps`: the number of denoising steps used for diffusion generation/evaluation; it does not
+  control the calibration schedule.
+- `guidance_scale`: controls how much the image generation process follows the text prompt.
+- `generator_seed`: a seed that controls the initial noise from which an image is generated.
+- `diffusion_tuning_cache_size`: opt-in extra GPU buffer budget in GiB for diffusion SignRound prefetch.
+  It only takes effect with `low_gpu_mem_usage=True` on single-GPU SignRound flow (`enable_quanted_input=False`
+  and no custom `layer_config`). This value reserves additional temporary buffers and is not a cap on total VRAM.
 
-- `num_inference_steps`: The reference number of denoising steps.
-
-- `guidance_scale`: Control how much the image generation process follows the text prompt. The more it is, the more closely it follows the prompt.
-
-- `generator_seed`: A seed that controls the initial noise from which an image is generated.
-
-for more hyperparameters introduction, please refer [Homepage Detailed Hyperparameters](../../../README.md#quantization-scheme--configuration)
+For more hyperparameters, refer to [Homepage Detailed Hyperparameters](../../../README.md#quantization-scheme--configuration).
 
 ### CLI Usage
 
-A user guide detailing the full list of supported arguments is provided by calling ```auto-round -h``` on the
-terminal.
+A user guide detailing the full list of supported arguments is provided by calling `auto-round -h` on the terminal.
 
 ```bash
 auto-round \
     --model black-forest-labs/FLUX.1-dev \
     --scheme MXFP8 \
-    --format fake \
+    --format auto_round \
     --batch_size 1 \
     --dataset coco2014 \
+    --calib_num_inference_steps 8 \
+    --low_gpu_mem_usage \
+    --diffusion_tuning_cache_size auto \
     --output_dir ./tmp_autoround
 ```
 
+Use `--diffusion_tuning_cache_size` only when `--low_gpu_mem_usage` is enabled on single-GPU SignRound
+(`--enable_quanted_input` disabled and no custom `--layer_config`). The GiB value controls extra prefetch buffers,
+not total GPU memory.
+
 ### Diffusion Support Matrix
 
-For diffusion models, currently we only validate quantizaion on the FLUX.1-dev, which involves quantizing the transformer component of the pipeline.
+For diffusion models, currently we validate quantization on the following models, which involves quantizing the transformer component of the pipeline.
 
-| Model     | calibration dataset |
-|--------------|--------------|
-| black-forest-labs/FLUX.1-dev | COCO2014      |
-
-
+| Model         | calibration dataset |  Model Link  |
+|---------------|---------------------|--------------|
+| black-forest-labs/FLUX.1-dev  | COCO2014      | - |
+| Tongyi-MAI/Z-Image            | COCO2014      | - |
+| Tongyi-MAI/Z-Image-Turb       | COCO2014      | - |
+| stepfun-ai/NextStep-1.1       | COCO2014      | - |
+| AIDC-AI/Ovis-Image-7B         | COCO2014      | - |
+| stabilityai/stable-audio-open-1.0 | audiocaps | - |
+| Wan-AI/Wan2.2-I2V-A14B-Diffusers | OpenS2V    | - |
+| Wan-AI/Wan2.2-TI2V-5B-Diffusers  | OpenS2V    | - |
+| Wan-AI/Wan2.2-T2V-A14B-Diffusers | OpenS2V    | - |
+| nvidia/Cosmos3-Nano              | COCO2014   | - |
+| nvidia/Cosmos3-Super             | COCO2014   | - |
 
 <details>
 <summary style="font-size:17px;">Calibration Dataset</summary>
 
-For diffusion models, we used [**coco2014**](https://github.com/mlcommons/inference/raw/refs/heads/master/text_to_image/coco2014/captions/captions_source.tsv) calibration dataset as our default.
+For diffusion models, we use the compact [**OpenS2V calibration set**](https://huggingface.co/datasets/changwangss/opens2v-calibration) by default. Pass `--dataset coco2014` to use COCO2014 explicitly.
 
-If users want to use their own dataset, please build the dataset file in ".tsv" format following below structure and use it through argument --dataset (tsv file):
-```
-id      caption
-0       YOUR_PROMPT
-1       YOUR_PROMPT
-...     ...
-```
-- `id`: The id used to map generated images and prompts.
-- `caption`: The text prompt used to generate the images.
+To use a custom dataset, build a `.tsv` file with the following structure and pass it through `--dataset`:
 
+```text
+id      caption        image
+0       YOUR_PROMPT    OPTIONAL_IMAGE_PATH
+1       YOUR_PROMPT    OPTIONAL_IMAGE_PATH
+...     ...            ...
+```
+
+- `id`: the id used to map generated images and prompts.
+- `caption`: the text prompt used to generate the images.
+- `image`: an optional local image path required by image-to-video pipelines.
 
 </details>

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-from typing import Optional, Union
+import sys
 
 from auto_round.logger import logger
 from auto_round.utils import dispatch_model_block_wise
@@ -21,12 +21,45 @@ from auto_round.utils import dispatch_model_block_wise
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+def _collect_model_floating_dtypes(model) -> set:
+    floating_dtypes = set()
+    for parameter in model.parameters():
+        if parameter.is_floating_point():
+            floating_dtypes.add(parameter.dtype)
+    for buffer in model.buffers():
+        if buffer.is_floating_point():
+            floating_dtypes.add(buffer.dtype)
+    return floating_dtypes
+
+
+def _normalize_model_eval_dtype(model, eval_model_dtype):
+    import torch
+
+    floating_dtypes = _collect_model_floating_dtypes(model)
+    if not floating_dtypes:
+        return model
+
+    if eval_model_dtype == "auto":
+        if len(floating_dtypes) > 1:
+            target_dtype = torch.bfloat16 if torch.bfloat16 in floating_dtypes else getattr(model, "dtype", None)
+            if target_dtype is None or not getattr(target_dtype, "is_floating_point", False):
+                return model
+            logger.info("Normalizing mixed floating dtypes to %s for evaluation.", target_dtype)
+            return model.to(target_dtype)
+        return model
+
+    target_dtype = getattr(torch, eval_model_dtype)
+    if floating_dtypes != {target_dtype}:
+        return model.to(target_dtype)
+    return model
+
+
 def simple_evaluate_user_model(
     user_model,
     tokenizer,
-    batch_size: Optional[int] = 1,
-    limit: Optional[Union[int, float]] = None,
-    max_batch_size: Optional[int] = 64,
+    batch_size: int | None = 1,
+    limit: float | None = None,
+    max_batch_size: int | None = 64,
     eval_model_dtype="auto",
     add_bos_token: bool = False,
     mllm: bool = False,
@@ -65,11 +98,11 @@ def simple_evaluate_user_model(
 
 def simple_evaluate(
     model,
-    model_args: Optional[Union[str, dict]] = None,
-    batch_size: Optional[int] = None,
-    limit: Optional[Union[int, float]] = None,
-    max_batch_size: Optional[int] = None,
-    device: Optional[str] = None,
+    model_args: str | dict | None = None,
+    batch_size: int | None = None,
+    limit: float | None = None,
+    max_batch_size: int | None = None,
+    device: str | None = None,
     **kwargs,
 ):
     import lm_eval  # pylint: disable=E0401
@@ -100,7 +133,7 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
 
     import torch
 
-    from auto_round.utils import detect_device, get_model_dtype, logger, unsupported_meta_device
+    from auto_round.utils import get_major_device, get_model_dtype, logger, unsupported_meta_device
 
     # Prepare inference pipeline
     if pipe is None:
@@ -108,11 +141,11 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
             logger.error(
                 "Quantized model is meta and diffusers doesn't support loading auto-round quantized model now. Exit."
             )
-            exit(0)
+            sys.exit(0)
         pipe = autoround.pipe
         pipe.to(model.dtype)
         pipe.transformer = model
-    device_str = detect_device(args.device_map if hasattr(args, "device_map") else "0")
+    device_str = get_major_device(args.device_map if hasattr(args, "device_map") else "0")
     pipe = pipe.to(device_str)
 
     # Set evaluation dtype
@@ -151,6 +184,28 @@ def evaluate_diffusion_model(args, autoround=None, model=None, pipe=None):
         diffusion_eval(pipe, args.prompt_file, metrics, args.image_save_dir, 1, gen_kwargs, args.limit)
 
 
+def select_gguf_eval_file(eval_folder, formats):
+    """Select the text GGUF file used for HF-based evaluation."""
+    gguf_format = None
+    for format in formats:
+        if format.startswith("gguf"):
+            gguf_format = format.split(":")[-1].upper()
+            break
+
+    if gguf_format is None:
+        return None, []
+
+    gguf_files = sorted(
+        file for file in os.listdir(eval_folder) if file.endswith(".gguf") and file != "mmproj-model.gguf"
+    )
+    matched_files = [file for file in gguf_files if gguf_format in file]
+    if matched_files:
+        return matched_files[0], gguf_files
+    if len(gguf_files) == 1:
+        return gguf_files[0], gguf_files
+    return None, gguf_files
+
+
 def load_gguf_model_for_eval(eval_folder, formats, args):
     """
     Load GGUF model for evaluation.
@@ -169,26 +224,13 @@ def load_gguf_model_for_eval(eval_folder, formats, args):
 
     from auto_round.utils import get_model_dtype, logger
 
-    # Find corresponding GGUF format
-    gguf_format = None
-    for format in formats:
-        if format.startswith("gguf"):
-            gguf_format = format.split(":")[-1].upper()
-            break
-
-    if gguf_format is None:
+    gguf_file, gguf_files = select_gguf_eval_file(eval_folder, formats)
+    if not any(format.startswith("gguf") for format in formats):
         logger.error("No valid gguf format found in formats. Please check the input.")
         sys.exit(-1)
 
-    # Find matching GGUF file
-    gguf_file = None
-    for file in os.listdir(eval_folder):
-        if gguf_format in file:
-            gguf_file = file
-            break
-
     if gguf_file is None:
-        logger.error("Cannot find correct gguf file for evaluation, please check.")
+        logger.error("Cannot find correct gguf file for evaluation, candidates=%s", gguf_files)
         sys.exit(-1)
 
     # Load model and tokenizer
@@ -222,9 +264,7 @@ def prepare_model_for_eval(model, device_map, eval_model_dtype):
     Returns:
         model: Prepared model
     """
-    import torch
-
-    from auto_round.utils import detect_device
+    model = _normalize_model_eval_dtype(model, eval_model_dtype)
 
     # Handle multi-device model
     if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
@@ -233,10 +273,6 @@ def prepare_model_for_eval(model, device_map, eval_model_dtype):
         dispatch_model(model, model.hf_device_map)
     else:
         dispatch_model_block_wise(model, device_map)
-
-    # Convert dtype
-    if model.dtype != eval_model_dtype and eval_model_dtype != "auto":
-        model.to(getattr(torch, eval_model_dtype))
 
     return model
 
@@ -274,6 +310,9 @@ def evaluate_with_model_instance(model, tokenizer, device_str, args):
             batch_size=args.eval_bs,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             add_bos_token=args.add_bos_token,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
     else:
         # Batch evaluation
@@ -292,9 +331,12 @@ def evaluate_with_model_instance(model, tokenizer, device_str, args):
             device=device_str,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
             add_bos_token=args.add_bos_token,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def evaluate_with_model_path(eval_folder, device_str, autoround, args):
@@ -315,9 +357,9 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
     from auto_round.eval.eval_cli import _eval_init, eval_task_by_task
     from auto_round.utils import get_model_dtype, logger
 
-    tasks = args.tasks
-    if isinstance(tasks, str):
-        tasks = tasks.split(",")
+    # tasks = args.tasks
+    # if isinstance(tasks, str):
+    #     tasks = tasks.split(",")
 
     # Task-by-task evaluation
     if args.eval_task_by_task:
@@ -328,8 +370,11 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             batch_size=args.eval_bs,
             limit=args.limit,
             eval_model_dtype=get_model_dtype(args.eval_model_dtype, "auto"),
-            mllm=autoround.mllm,
+            mllm=getattr(autoround, "mllm", False),
             add_bos_token=args.add_bos_token,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
     else:
         # Batch evaluation
@@ -345,7 +390,7 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
         model_args += f",add_bos_token={args.add_bos_token}"
 
         # Choose evaluation method based on model type
-        if autoround.mllm:
+        if getattr(autoround, "mllm", False):
             model_type = "hf-multimodal"
             eval_bs = args.eval_bs
             if eval_bs is None or eval_bs == "auto":
@@ -362,12 +407,15 @@ def evaluate_with_model_path(eval_folder, device_str, autoround, args):
             device=device_str,
             batch_size=eval_bs,
             limit=args.limit,
+            num_fewshot=getattr(args, "num_fewshot", None),
+            gen_kwargs=getattr(args, "eval_gen_kwargs", None),
+            fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
         )
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
 
 
-def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_str, args):
+def run_model_evaluation(model, tokenizer, autoround, folders, formats, args):
     """
     Run model evaluation.
     Unified evaluation entry point that dispatches to different evaluation logic based on model type.
@@ -378,21 +426,45 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         autoround: AutoRound instance
         folders: List of export folders
         formats: List of export formats
-        device_str: Device string
         args: Command line arguments
     """
     from auto_round.utils import get_library_version, get_model_dtype, logger
 
+    if model is not None:
+        model.eval()
+
+    # Detect model type for compatibility with evaluation code
+    from auto_round.utils.model import detect_model_type
+
+    # Check if evaluation Compressoris needed for language models
+    if isinstance(folders, list):
+        eval_folder = folders[-1] if folders else None
+    else:
+        eval_folder = folders
+
+    # set model_type for ModelFreeCompressor.
+    # Fake format now always saves, so eval_folder is the canonical probe.
+    type_probe = eval_folder
+    model_type = detect_model_type(type_probe)
+    if hasattr(autoround, "model_context") and model_type in ("mllm", "diffusion"):
+        setattr(autoround.model_context, f"is_{model_type}", True)
+    else:
+        setattr(autoround, model_type, True)
+
     # Handle diffusion models separately
     if getattr(autoround, "diffusion", False):
+        prompt = getattr(args, "prompt", None)
+        prompt_file = getattr(args, "prompt_file", None)
+        if prompt is None and prompt_file is None:
+            return
         evaluate_diffusion_model(args, autoround=autoround, model=model)
         return
 
-    # Check if evaluation is needed for language models
-    eval_folder = folders[-1] if folders else None
     if args.tasks is None or args.tasks == "" or eval_folder is None:
         return
+    from auto_round.utils.device_manager import device_manager, get_device_and_parallelism
 
+    device_str, _ = get_device_and_parallelism(device_manager.device_map)
     # Handle vllm backend evaluation
     if hasattr(args, "eval_backend") and args.eval_backend == "vllm":
         from auto_round.eval.eval_cli import eval_with_vllm
@@ -400,7 +472,7 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         # Create a minimal args object with essential parameters
         vllm_args = type("Args", (), {})()
         # Required parameters
-        vllm_args.model = eval_folder
+        vllm_args.model_name = eval_folder
         vllm_args.tasks = args.tasks
         vllm_args.device_map = getattr(args, "device_map", device_str)
         # Optional common parameters
@@ -411,6 +483,9 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         vllm_args.disable_trust_remote_code = getattr(args, "disable_trust_remote_code", False)
         vllm_args.add_bos_token = getattr(args, "add_bos_token", False)
         vllm_args.seed = getattr(args, "seed", 42)
+        vllm_args.num_fewshot = getattr(args, "num_fewshot", None)
+        vllm_args.eval_gen_kwargs = getattr(args, "eval_gen_kwargs", None)
+        vllm_args.fewshot_as_multiturn = getattr(args, "fewshot_as_multiturn", False)
         # VLLM-specific parameters
         vllm_args.vllm_args = getattr(args, "vllm_args", None)
         eval_with_vllm(vllm_args)
@@ -424,19 +499,53 @@ def run_model_evaluation(model, tokenizer, autoround, folders, formats, device_s
         logger.warning("set add_bos_token=True for llama model.")
         args.add_bos_token = True
 
-    # Check if GGUF model
-    eval_gguf_model = any(file.endswith("gguf") for file in os.listdir(eval_folder))
+    # Check if GGUF model in exported eval folder.
+    eval_gguf_model = (
+        eval_folder is not None
+        and os.path.isdir(eval_folder)
+        and any(file.endswith("gguf") for file in os.listdir(eval_folder))
+    )
 
     # Determine if model instance evaluation is needed
-    need_model_instance = (autoround.act_bits <= 8 and formats[-1] == "fake") or eval_gguf_model
+    need_model_instance = formats[-1] == "fake" or eval_gguf_model
 
     if need_model_instance:
         # Load or prepare model instance
         if eval_gguf_model:
             model, tokenizer = load_gguf_model_for_eval(eval_folder, formats, args)
+            if model is None:
+                return
         else:
-            eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
-            model = prepare_model_for_eval(model, args.device_map, eval_model_dtype)
+            if model is None:
+                eval_model_dtype = get_model_dtype(args.eval_model_dtype, "auto")
+                if getattr(autoround, "mllm", False):
+                    from auto_round.utils.model import mllm_load_model
+
+                    model, _, loaded_tokenizer, _ = mllm_load_model(
+                        eval_folder,
+                        device=device_str,
+                        torch_dtype=eval_model_dtype,
+                        trust_remote_code=not args.disable_trust_remote_code,
+                    )
+                    if tokenizer is None:
+                        tokenizer = loaded_tokenizer
+                else:
+                    from auto_round.utils.model import llm_load_model
+
+                    model, loaded_tokenizer = llm_load_model(
+                        eval_folder,
+                        device=device_str,
+                        torch_dtype=eval_model_dtype,
+                        trust_remote_code=not args.disable_trust_remote_code,
+                    )
+                    model.eval()
+                    if tokenizer is None:
+                        tokenizer = loaded_tokenizer
+            elif not args.eval_task_by_task:
+                # eval_task_by_task dispatches by itself; HFLM never moves a passed-in model.
+                model = prepare_model_for_eval(
+                    model, device_manager.device_map, get_model_dtype(args.eval_model_dtype, "auto")
+                )
 
         # Evaluate with model instance
         evaluate_with_model_instance(model, tokenizer, device_str, args)

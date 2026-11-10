@@ -21,27 +21,44 @@ import torch.nn as nn
 import transformers
 
 from auto_round.utils import get_packing_device
-from auto_round_extension.torch.qlinear_torch import get_wf_3bits_tensor
+from auto_round.utils.bit_packing import requires_generic_bit_packing, unpack_bitstream
+from auto_round_extension.torch.qlinear_torch import (
+    SUPPORTED_BITS,
+    GenericBitPackingMixin,
+    get_wf_3bits_tensor,
+)
 
 logger = getLogger(__name__)
 
 
-class QuantLinear(nn.Module):
+class QuantLinear(GenericBitPackingMixin, nn.Module):
     """
     Torch quantized linear layer.
     """
 
     QUANT_TYPE = "torch"
 
-    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, g_idx=False, **kwargs):
+    def __init__(
+        self,
+        bits,
+        group_size,
+        infeatures,
+        outfeatures,
+        bias,
+        trainable=False,
+        g_idx=False,
+        scale_dtype=torch.float16,
+        **kwargs,
+    ):
         super().__init__()
-        if bits not in [2, 3, 4, 8]:
-            raise NotImplementedError("Only 2,3,4,8 bits are supported.")
+        if bits not in SUPPORTED_BITS:
+            raise NotImplementedError(f"Only {','.join(map(str, SUPPORTED_BITS))} bits are supported.")
         self.infeatures = infeatures
         self.outfeatures = outfeatures
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
         self.maxq = 2**self.bits - 1
+        self.scale_dtype = scale_dtype
 
         self.register_buffer(
             "qweight",
@@ -66,7 +83,7 @@ class QuantLinear(nn.Module):
             "scales",
             torch.zeros(
                 (math.ceil(infeatures / self.group_size), outfeatures),
-                dtype=torch.float16,
+                dtype=self.scale_dtype,
             ),
         )
         if bias:
@@ -77,14 +94,18 @@ class QuantLinear(nn.Module):
         self.trainable = trainable
 
         # is performed by unpacking the weights and using torch.matmul
-        if self.bits in [2, 4, 8]:
+        self.use_generic_bit_packing = requires_generic_bit_packing(self.bits)
+        if self.use_generic_bit_packing:
+            # 5/6/7-bit values straddle int32 word boundaries; use the generic helper.
+            self.wf = None
+        elif self.bits in [2, 4, 8]:
             self.wf = torch.tensor(
                 list(range(0, 32, self.bits)), dtype=torch.int32, device=self.qweight.device
             ).unsqueeze(0)
         else:  ## bits == 3
             self.wf = get_wf_3bits_tensor(device=self.qweight.device)
 
-        self.dequant_dtype = torch.int16 if self.bits == 8 else torch.int8
+        self.dequant_dtype = torch.int16 if self.bits > 7 else torch.int8
 
     def post_init(self):
         pass
@@ -95,7 +116,7 @@ class QuantLinear(nn.Module):
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
-        self.scales = scales_t.clone().half()
+        self.scales = scales_t.clone().to(self.scales.dtype)
 
         W = linear.weight.data.to(device).clone()
         if type(linear) == nn.Conv2d:
@@ -106,12 +127,16 @@ class QuantLinear(nn.Module):
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]]).to(
-                torch.int32
-            )
+            # clamp into [0, maxq]: the searched (scale, zp) grid may leave
+            # round(W/s + zp) outside the level range (the search evaluates
+            # the clamped loss); an unclamped value shifts bits into the
+            # neighboring packed nibble and silently corrupts it.
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]])
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
         else:
             repeat_zeros = zeros
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros).to(torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros)
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
 
         del repeat_scales
 
@@ -126,7 +151,11 @@ class QuantLinear(nn.Module):
 
         if isinstance(zeros, torch.Tensor):
             zeros = zeros.t().contiguous().to(device)
-            zeros -= 1
+            # the classic (zp-1) packing cannot represent zp=0: -1 left-shifts
+            # into a negative word and corrupts every nibble sharing it.
+            # Clamp the stored value so only that one zero-point degrades
+            # (decodes as +1) instead of the whole packed word.
+            zeros = (zeros - 1).clamp_(0, self.maxq)
             # zeros = zeros.numpy().astype(np.uint32)
             qzeros = torch.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=device, dtype=torch.int32)
             i = 0
@@ -140,10 +169,15 @@ class QuantLinear(nn.Module):
                 col += 1
             self.qzeros = qzeros.cpu()
         else:
-            zeros -= 1
+            # classic (zp-1) packing cannot represent zp=0 (see the tensor
+            # branch above): clamp the scalar the same way so a zp of 0
+            # degrades to a decodable +1 instead of corrupting the word.
+            # Normalize to int like the 3-bit path: the bit-shift packing
+            # below cannot shift a float scalar.
+            zeros = int(min(max(zeros - 1, 0), self.maxq))
             shape = scales_t.shape
             value = 0
-            for j in range(0, (32 // self.bits)):
+            for j in range(32 // self.bits):
                 value |= zeros << (self.bits * j)
             qzeros = torch.ones((shape[0], shape[1] // 32 * self.bits), dtype=torch.int32) * value
             self.qzeros = qzeros.cpu()
@@ -153,7 +187,7 @@ class QuantLinear(nn.Module):
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
-        self.scales = scales_t.clone().half()
+        self.scales = scales_t.clone().to(self.scales.dtype)
 
         W = linear.weight.data.to(device).clone()
         if type(linear) == nn.Conv2d:
@@ -164,12 +198,14 @@ class QuantLinear(nn.Module):
         repeat_scales = scales.to(device).repeat_interleave(self.group_size, 1)
         if isinstance(zeros, torch.Tensor):
             repeat_zeros = zeros.to(device).repeat_interleave(self.group_size, 1)
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]]).to(
-                torch.int32
-            )
+            # clamp into [0, maxq] -- see pack_248_bits for why unclamped
+            # levels corrupt the neighboring packed nibble
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros[:, : W.shape[1]])
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
         else:
             repeat_zeros = zeros
-            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros).to(torch.int32)
+            intweight = torch.round(W.to(device) / repeat_scales[:, : W.shape[1]] + repeat_zeros)
+            intweight = intweight.clamp_(0, self.maxq).to(torch.int32)
 
         del repeat_scales
 
@@ -210,7 +246,8 @@ class QuantLinear(nn.Module):
 
         if isinstance(zeros, torch.Tensor):
             zeros = zeros.t().contiguous().to(torch.int32).to(device)
-            zeros -= 1
+            # classic (zp-1) packing cannot represent zp=0 (see pack_248_bits)
+            zeros = (zeros - 1).clamp_(0, self.maxq)
             qzeros = torch.zeros((zeros.shape[0], zeros.shape[1] // 32 * self.bits), device=device, dtype=torch.int32)
             i = 0
             col = 0
@@ -241,7 +278,12 @@ class QuantLinear(nn.Module):
                 col += 1
             self.qzeros = qzeros.cpu()
         else:
-            zeros -= 1
+            # classic (zp-1) packing cannot represent zp=0 (see pack_248_bits);
+            # clamp both ends like the tensor branch so zp=0 degrades to a
+            # decodable +1 and an oversized zero point cannot spill into
+            # neighboring packed fields. Normalize to int: the bit-shift
+            # packing below requires an integer scalar.
+            zeros = int(min(max(zeros - 1, 0), self.maxq))
             shape = scales_t.shape[0], scales_t.shape[1] // 32 * self.bits
             qzeros = torch.zeros(shape, dtype=torch.int32)
             zero_val = zeros
@@ -267,15 +309,22 @@ class QuantLinear(nn.Module):
             return self.pack_248_bits(linear, scales, zeros, g_idx, device)
         elif self.bits in [3]:
             return self.pack_3bits(linear, scales, zeros, g_idx, device)
+        elif self.use_generic_bit_packing:
+            # GPTQ stores ``zp - 1``; reuse the shared generic packer with that offset.
+            return self.pack_generic_bits(linear, scales, zeros, g_idx, device, zp_offset=-1)
         else:
-            raise ValueError("Only 2,3,4,8 bits are supported.")
+            raise ValueError(f"Only {','.join(map(str, SUPPORTED_BITS))} bits are supported.")
 
     def forward(self, x):
         out_shape = x.shape[:-1] + (self.outfeatures,)
         x = x.reshape(-1, x.shape[-1])
         x_dtype = x.dtype
 
-        if self.bits in [2, 4, 8]:
+        if self.use_generic_bit_packing:
+            # Generic bit-stream layout: unpack straight into 2-D tensors.
+            zeros = unpack_bitstream(self.qzeros, self.bits, dim=1).reshape(self.scales.shape)
+            weight = unpack_bitstream(self.qweight, self.bits, dim=0)
+        elif self.bits in [2, 4, 8]:
             if self.wf.device != self.qzeros.device:
                 self.wf = torch.tensor(
                     list(range(0, 32, self.bits)), dtype=torch.int32, device=self.qzeros.device
@@ -317,7 +366,8 @@ class QuantLinear(nn.Module):
             weight = weight & 0x7
             weight = torch.cat([weight[:, 0, :11], weight[:, 1, 1:12], weight[:, 2, 1:11]], dim=1)
         zeros += 1
-        weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
+        if weight.dim() == 3:
+            weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
         if hasattr(self, "g_idx"):
             num_itr = self.g_idx.shape[0] // x.shape[-1]
             num_dim = self.g_idx.shape[0] // num_itr

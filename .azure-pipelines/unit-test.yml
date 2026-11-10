@@ -6,6 +6,7 @@ pr:
   branches:
     include:
       - main
+      - "*rc"
   paths:
     include:
       - auto_round
@@ -14,60 +15,80 @@ pr:
       - setup.py
       - requirements.txt
       - requirements-cpu.txt
+      - .azure-pipelines/build-auto-round-lib.yml
       - .azure-pipelines/scripts/ut
       - .azure-pipelines/unit-test.yml
+      - .azure-pipelines/template/lib-build-template.yml
       - .azure-pipelines/template/ut-template.yml
       - .azure-pipelines/template/docker-template.yml
     exclude:
-      - auto_round_extension/ark
-      - test/test_hpu
-      - test/test_ark
-      - test/test_xpu
-      - test/test_cuda
+      - test/unit/test_hpu
+      - test/unit/test_ark
+      - test/unit/test_xpu
+      - test/unit/test_cuda
+      - test/unit/test_mlx
+      - test/integration
+      - test/e2e
       - "*.md"
       - "**/*.md"
-      - .azure-pipelines/scripts/ut/run_ut_hpu.sh
+      - .azure-pipelines/scripts/ut/run_ark_ut.sh
       - .azure-pipelines/scripts/ut/run_ut_cuda.sh
+      - .azure-pipelines/scripts/ut/run_ut_hpu.sh
       - .azure-pipelines/scripts/ut/run_ut_xpu.sh
 
-pool: ICX-16C
+pool: INTEL-CPU
 
 variables:
   IMAGE_NAME: "auto-round"
-  IMAGE_TAG: "py312"
+  IMAGE_TAG: "py314"
   UPLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   DOWNLOAD_PATH: $(Build.SourcesDirectory)/log_dir
   ARTIFACT_NAME: "UT_coverage_report"
   REPO: $(Build.Repository.Uri)
 
+parameters:
+  - name: unitTestParts
+    type: object
+    default:
+      - 0
+      - 1
+      - 2
+
 stages:
+  - template: template/lib-build-template.yml
+    parameters:
+      enableChangeDetection: true
+
   - stage: Unit_test
     displayName: Unit Test
-    dependsOn: []
+    dependsOn: [DetectArkChanges, BuildArkWheel]
+    condition: and(succeeded('DetectArkChanges'), in(dependencies.BuildArkWheel.result, 'Succeeded', 'Skipped'))
+    variables:
+      BUILD_ARK_WHEEL: $[ stageDependencies.DetectArkChanges.Detect.outputs['SetArkWheelFlag.BUILD_ARK_WHEEL'] ]
     jobs:
       - job:
-        timeoutInMinutes: 120
+        timeoutInMinutes: 60
         strategy:
           matrix:
-            part1:
-              PART: 1
-            part2:
-              PART: 2
-            part3:
-              PART: 3
-            part4:
-              PART: 4
-            part5:
-              PART: 5
+            ${{ each part in parameters.unitTestParts }}:
+              part_${{ part }}:
+                PART: ${{ part }}
         steps:
           - template: template/ut-template.yml
             parameters:
-              dockerConfigName: "commonDockerConfig"
               utScriptFileName: "run_ut"
               uploadPath: $(UPLOAD_PATH)
               utArtifact: "ut-$(PART)"
               utTestMode: $(PART)
               utContainerName: "AutoRoundUnitTest$(NODE_LABEL)"
+              buildARKWheel: $(BUILD_ARK_WHEEL)
+              filterChangedTests: true
+
+  - template: template/ai-stage-template.yml
+    parameters:
+      dependsOn: "Unit_test"
+      enableAiAnalysis: true
+      postComment: true
 
   - stage: Coverage
     displayName: "Collect Coverage"
@@ -85,8 +106,8 @@ stages:
           
           - task: UsePythonVersion@0
             inputs:
-              versionSpec: '3.12'
-            displayName: 'Use Python 3.12'
+              versionSpec: '3.14'
+            displayName: 'Use Python 3.14'
 
           - script: |
               cd ${BUILD_SOURCESDIRECTORY}
@@ -95,7 +116,7 @@ stages:
               uv pip install .
               pip list
               cd ${BUILD_SOURCESDIRECTORY}/.azure-pipelines/scripts
-              bash ut/collect_log.sh
+              bash ut/collect_log.sh cpu
             env:
               PYTHONUNBUFFERED: '1'
               UV_NO_PROGRESS: '1'
@@ -112,3 +133,54 @@ stages:
           - task: PublishCodeCoverageResults@2
             inputs:
               summaryFileLocation: $(Build.SourcesDirectory)/log_dir/coverage_PR/coverage.xml
+
+  - stage: Trigger_CUDA_CI
+    displayName: "Trigger CUDA CI"
+    pool:
+      vmImage: "ubuntu-latest"
+    dependsOn: [Coverage]
+    condition: and(succeeded('Coverage'), eq(variables['Build.Reason'], 'PullRequest'))
+    variables:
+      - group: auto-round-bot-secrets
+    jobs:
+      - job: CommentCudaTrigger
+        displayName: "Comment to trigger CUDA CI"
+        steps:
+          - task: Bash@3
+            displayName: "Post /azp run comment to PR"
+            env:
+              GITHUB_TOKEN: $(AUTO_ROUND_BOT_TOKEN)
+            inputs:
+              targetType: "inline"
+              script: |
+                set -euo pipefail
+
+                pr_number="${SYSTEM_PULLREQUEST_PULLREQUESTNUMBER:-}"
+                if [ -z "${pr_number}" ]; then
+                  echo "PR number not found."
+                  exit 0
+                fi
+
+                repo_path="${BUILD_REPOSITORY_URI#https://github.com/}"
+                repo_path="${repo_path%.git}"
+                export REPO_PATH="${repo_path}"
+                export PR_NUMBER="${pr_number}"
+                export CURRENT_SHA="${SYSTEM_PULLREQUEST_SOURCECOMMITID:-${BUILD_SOURCEVERSION:-unknown}}"
+
+                if python "$(Build.SourcesDirectory)/.azure-pipelines/scripts/check_cuda_trigger.py"; then
+                  echo "CUDA CI already triggered after commit ${CURRENT_SHA}. Skipping."
+                  exit 0
+                fi
+
+                echo "Triggering CUDA CI for commit ${CURRENT_SHA}..."
+                if ! curl -fsS -X POST \
+                  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Content-Type: application/json" \
+                  -d '{"body":"/azp run Unit-Test-CUDA-AutoRound"}' \
+                  "https://api.github.com/repos/${repo_path}/issues/${pr_number}/comments"; then
+                  echo "Failed to post CUDA trigger comment (non-blocking)."
+                  exit 0
+                fi
+
+                echo "CUDA trigger comment posted to PR #${pr_number}."

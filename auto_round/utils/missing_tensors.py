@@ -39,13 +39,274 @@
 
 import json
 import os
-from typing import Optional, Tuple
+import tempfile
 
 import torch
 
 from auto_round.logger import logger
 from auto_round.utils.common import compress_layer_names
+from auto_round.utils.model_free_utils import (
+    _normalize_tensor_name_for_warning,
+    quantize_weight_rtn,
+    split_fused_expert_tensors,
+)
+from auto_round.utils.path_safety import resolve_within_directory, validate_weight_map
 from auto_round.utils.weight_handler import _dequant_fp8_linear_weight
+
+
+def _restore_special_fp32_tensors(
+    source_tensor_to_file: dict[str, str],
+    saved_tensor_to_file: dict[str, str],
+) -> None:
+    """Restore source FP32 tensors that were saved as FP16 or BF16."""
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    source_to_saved: dict[str, str] = {}
+    for source_name in source_tensor_to_file:
+        if source_name in saved_tensor_to_file:
+            source_to_saved[source_name] = source_name
+
+    source_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name, source_shard in source_tensor_to_file.items():
+        source_names_by_shard.setdefault(source_shard, []).append(tensor_name)
+
+    candidates: list[str] = []
+    has_low_precision_float = False
+    for source_shard, tensor_names in source_names_by_shard.items():
+        with safe_open(source_shard, framework="pt", device="cpu") as source_file:
+            for tensor_name in tensor_names:
+                dtype = source_file.get_slice(tensor_name).get_dtype()
+                if dtype in {"F16", "BF16"} or dtype.startswith("F8"):
+                    has_low_precision_float = True
+                elif dtype == "F32" and tensor_name in source_to_saved:
+                    candidates.append(tensor_name)
+
+    # An all-FP32 source has no "special" FP32 tensors; the downcast to the export dtype is intended.
+    if not has_low_precision_float:
+        return
+
+    target_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in candidates:
+        target_name = source_to_saved[tensor_name]
+        target_names_by_shard.setdefault(saved_tensor_to_file[target_name], []).append(tensor_name)
+
+    tensors_to_restore: dict[str, torch.Tensor] = {}
+    for target_shard, tensor_names in target_names_by_shard.items():
+        with safe_open(target_shard, framework="pt", device="cpu") as target_file:
+            for tensor_name in tensor_names:
+                target_name = source_to_saved[tensor_name]
+                if target_file.get_slice(target_name).get_dtype() in {"F16", "BF16"}:
+                    source_shard = source_tensor_to_file[tensor_name]
+                    with safe_open(source_shard, framework="pt", device="cpu") as source_file:
+                        source_tensor = source_file.get_tensor(tensor_name)
+                    target_tensor = target_file.get_tensor(target_name)
+                    # Skip tensors changed beyond a plain downcast (e.g. fake-quantized weights).
+                    if source_tensor.shape == target_tensor.shape and torch.equal(
+                        source_tensor.to(target_tensor.dtype), target_tensor
+                    ):
+                        tensors_to_restore[tensor_name] = source_tensor
+
+    restore_names_by_shard: dict[str, list[str]] = {}
+    for tensor_name in tensors_to_restore:
+        restore_names_by_shard.setdefault(saved_tensor_to_file[source_to_saved[tensor_name]], []).append(tensor_name)
+
+    for target_shard, tensor_names in restore_names_by_shard.items():
+        with safe_open(target_shard, framework="pt", device="cpu") as target_file:
+            metadata = target_file.metadata()
+            shard_tensors = {name: target_file.get_tensor(name) for name in target_file.keys()}
+        for tensor_name in tensor_names:
+            shard_tensors[source_to_saved[tensor_name]] = tensors_to_restore[tensor_name]
+
+        # Preserve the original shard permission bits so the temporary file's
+        # 0600 mode is not inherited by the final replacement target.
+        original_mode = os.stat(target_shard).st_mode
+
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=os.path.dirname(target_shard), prefix=".restore_fp32_", suffix=".safetensors", delete=False
+            ) as temporary_file:
+                temporary_path = temporary_file.name
+            save_file({name: tensor.contiguous() for name, tensor in shard_tensors.items()}, temporary_path, metadata)
+            os.replace(temporary_path, target_shard)
+            os.chmod(target_shard, original_mode)
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.remove(temporary_path)
+
+    if tensors_to_restore:
+        tensor_summary = compress_layer_names(list(tensors_to_restore))
+        logger.info(
+            f"Restored {len(tensors_to_restore)} tensor(s) from FP16/BF16 to their original FP32 values: "
+            f"{tensor_summary}."
+        )
+
+
+def keep_special_fp32_params(model: torch.nn.Module, source_dir: str) -> list[str]:
+    """Preserve checkpoint FP32 tensors after loading or building a meta skeleton.
+
+    Only applies to mixed-precision checkpoints (e.g. a BF16 model that stores
+    ``linear_attn.norm.weight`` in FP32); for an all-FP32 checkpoint the load dtype is
+    intentional. Restored names are appended to ``model._keep_in_fp32_modules`` so that
+    later ``cast_model_dtype`` calls and export keep them in FP32.
+
+    Meta tensors are promoted without reading their payload; materialization later
+    loads the original FP32 values. Returns the restored or marked tensor names.
+    """
+    source_tensor_to_file = _resolve_source_tensor_map(source_dir)
+    if not source_tensor_to_file:
+        return []
+    from safetensors import safe_open
+
+    model_tensors = dict(model.named_parameters(remove_duplicate=False))
+    model_tensors.update(model.named_buffers(remove_duplicate=False))
+
+    names_by_shard: dict[str, list[str]] = {}
+    for tensor_name, shard in source_tensor_to_file.items():
+        names_by_shard.setdefault(shard, []).append(tensor_name)
+
+    has_low_precision_float = False
+    candidates_by_shard: dict[str, list[str]] = {}
+    for shard, tensor_names in names_by_shard.items():
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            for tensor_name in tensor_names:
+                dtype = f.get_slice(tensor_name).get_dtype()
+                if dtype in {"F16", "BF16"} or dtype.startswith("F8"):
+                    has_low_precision_float = True
+                elif dtype == "F32":
+                    tensor = model_tensors.get(tensor_name)
+                    if tensor is not None and tensor.dtype in (torch.float16, torch.bfloat16, torch.float32):
+                        candidates_by_shard.setdefault(shard, []).append(tensor_name)
+
+    if not has_low_precision_float or not candidates_by_shard:
+        return []
+
+    restored: list[str] = []
+    for shard, tensor_names in candidates_by_shard.items():
+        with safe_open(shard, framework="pt", device="cpu") as f:
+            for tensor_name in tensor_names:
+                tensor = model_tensors[tensor_name]
+                if tensor.device.type == "meta":
+                    if tuple(f.get_slice(tensor_name).get_shape()) != tuple(tensor.shape):
+                        continue
+                    tensor.data = tensor.to(dtype=torch.float32)
+                    restored.append(tensor_name)
+                    continue
+                value = f.get_tensor(tensor_name)
+                if value.shape != tensor.shape:
+                    continue
+                tensor.data = value.to(tensor.device)
+                restored.append(tensor_name)
+
+    if restored:
+        keep = getattr(model, "_keep_in_fp32_modules", None) or []
+        keep = [keep] if isinstance(keep, str) else list(keep)
+        model._keep_in_fp32_modules = keep + [name for name in restored if name not in keep]
+        logger.info(
+            f"Kept {len(restored)} checkpoint FP32 tensor(s) in FP32 after loading: "
+            f"{compress_layer_names(restored)}."
+        )
+    return restored
+
+
+def _resolve_source_tensor_map(source_dir: str) -> dict[str, str] | None:
+    """Return ``tensor_name -> shard_file`` for the safetensors checkpoint in *source_dir*."""
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        logger.warning("safetensors not available, skipping tensor comparison against source checkpoint")
+        return None
+
+    if not os.path.isdir(source_dir):
+        try:
+            from auto_round.utils.model import download_hf_model
+
+            source_dir = download_hf_model(source_dir)
+        except Exception as e:
+            logger.debug(f"Could not resolve source model path to check for missing tensors: {e}")
+            return None
+
+    if not source_dir or not os.path.isdir(source_dir):
+        return None
+
+    source_index_file = os.path.join(source_dir, "model.safetensors.index.json")
+    source_single_file = os.path.join(source_dir, "model.safetensors")
+
+    source_tensor_to_file: dict = {}
+    if os.path.exists(source_index_file):
+        with open(source_index_file) as f:
+            src_index = json.load(f)
+        # Shard names come from the source checkpoint's own index: validate them
+        # against source_dir, then resolve at the point of use below.
+        for tensor_name, shard_file in validate_weight_map(
+            src_index["weight_map"], source_dir, index_path=source_index_file
+        ).items():
+            source_tensor_to_file[tensor_name] = str(resolve_within_directory(source_dir, shard_file))
+    elif os.path.exists(source_single_file):
+        with safe_open(source_single_file, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                source_tensor_to_file[key] = source_single_file
+    else:
+        return None
+    return source_tensor_to_file
+
+
+def _resolve_tensor_shard_maps(
+    source_dir: str,
+    target_dir: str,
+) -> tuple[dict[str, str], dict[str, str]] | None:
+    """Resolve ``tensor_name -> shard_file`` maps for *source_dir* and *target_dir*.
+
+    Returns ``None`` when either checkpoint cannot be resolved (missing config,
+    unresolvable source repo, or no safetensors present), in which case callers
+    should skip whatever tensor-level processing they were about to do.
+    """
+    config_path = os.path.join(target_dir, "config.json")
+    if not os.path.exists(config_path):
+        return None
+
+    source_tensor_to_file = _resolve_source_tensor_map(source_dir)
+    if source_tensor_to_file is None:
+        return None
+    from safetensors import safe_open
+
+    saved_tensor_to_file: dict[str, str] = {}
+    saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
+    saved_single_file = os.path.join(target_dir, "model.safetensors")
+
+    if os.path.exists(saved_index_file):
+        with open(saved_index_file) as f:
+            saved_idx = json.load(f)
+        saved_tensor_to_file = {
+            tensor_name: os.path.join(target_dir, shard_file)
+            for tensor_name, shard_file in saved_idx["weight_map"].items()
+        }
+    elif os.path.exists(saved_single_file):
+        with safe_open(saved_single_file, framework="pt", device="cpu") as f:
+            saved_tensor_to_file = {tensor_name: saved_single_file for tensor_name in f.keys()}
+    else:
+        return None
+
+    return source_tensor_to_file, saved_tensor_to_file
+
+
+def restore_fp32_tensors_from_source(
+    source_dir: str,
+    target_dir: str,
+) -> None:
+    """Restore FP32 source tensors that were downcast to FP16/BF16 in the saved output.
+
+    This is independent of MTP/missing-tensor handling: it must run by default
+    whenever a source checkpoint can be resolved, regardless of whether
+    ``AR_DISABLE_COPY_MTP_WEIGHTS`` disables the (separate) missing-tensor copy
+    performed by :func:`copy_missing_tensors_from_source`.
+    """
+    maps = _resolve_tensor_shard_maps(source_dir, target_dir)
+    if maps is None:
+        return
+    source_tensor_to_file, saved_tensor_to_file = maps
+    _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file)
 
 
 def copy_missing_tensors_from_source(
@@ -92,60 +353,19 @@ def copy_missing_tensors_from_source(
         logger.warning("safetensors not available, skipping copy of missing tensors from source checkpoint")
         return
 
-    # ------------------------------------------------------------------ #
-    # Resolve source directory                                             #
-    # ------------------------------------------------------------------ #
-    config_path = os.path.join(target_dir, "config.json")
-    if not os.path.exists(config_path):
+    maps = _resolve_tensor_shard_maps(source_dir, target_dir)
+    if maps is None:
         return
+    source_tensor_to_file, saved_tensor_to_file = maps
 
-    if not os.path.isdir(source_dir):
-        try:
-            from auto_round.utils.model import download_hf_model
+    # Also restore FP32 tensors here so direct callers of this function keep
+    # getting the restore; ``restore_fp32_tensors_from_source`` is the
+    # preferred entry point and is safe to call again (no-op once restored).
+    _restore_special_fp32_tensors(source_tensor_to_file, saved_tensor_to_file)
+    saved_tensor_names = set(saved_tensor_to_file)
 
-            source_dir = download_hf_model(source_dir)
-        except Exception as e:
-            logger.debug(f"Could not resolve source model path to check for missing tensors: {e}")
-            return
-
-    if not source_dir or not os.path.isdir(source_dir):
-        return
-
-    # ------------------------------------------------------------------ #
-    # Build a mapping: tensor_name -> source shard file path               #
-    # ------------------------------------------------------------------ #
-    source_index_file = os.path.join(source_dir, "model.safetensors.index.json")
-    source_single_file = os.path.join(source_dir, "model.safetensors")
-
-    source_tensor_to_file: dict = {}
-    if os.path.exists(source_index_file):
-        with open(source_index_file) as f:
-            src_index = json.load(f)
-        for tensor_name, shard_file in src_index["weight_map"].items():
-            source_tensor_to_file[tensor_name] = os.path.join(source_dir, shard_file)
-    elif os.path.exists(source_single_file):
-        with safe_open(source_single_file, framework="pt", device="cpu") as f:
-            for key in f.keys():
-                source_tensor_to_file[key] = source_single_file
-    else:
-        return
-
-    # ------------------------------------------------------------------ #
-    # Collect tensor names already present in the saved output              #
-    # ------------------------------------------------------------------ #
-    saved_tensor_names: set = set()
     saved_index_file = os.path.join(target_dir, "model.safetensors.index.json")
     saved_single_file = os.path.join(target_dir, "model.safetensors")
-
-    if os.path.exists(saved_index_file):
-        with open(saved_index_file) as f:
-            saved_idx = json.load(f)
-        saved_tensor_names = set(saved_idx["weight_map"].keys())
-    elif os.path.exists(saved_single_file):
-        with safe_open(saved_single_file, framework="pt", device="cpu") as f:
-            saved_tensor_names = set(f.keys())
-    else:
-        return
 
     # ------------------------------------------------------------------ #
     # Identify missing tensors via block-prefix statistics                 #
@@ -189,42 +409,39 @@ def copy_missing_tensors_from_source(
     shortcut_block_prefix: set = {name.split(".", 1)[1] for name in saved_block_prefix if "." in name}
     saved_block_prefix.update(shortcut_block_prefix)
 
-    def _name_aliases(name: str) -> set:
-        """Return a set of equivalent tensor-name variants to match against saved tensors.
+    def _is_missing_by_name(name: str) -> bool:
+        if name in saved_tensor_names:
+            return False
+        parent = name.rsplit(".", 1)[0]
+        if parent in saved_parent_layers:
+            return False
+        # For split experts, name is changed but block name is the same.
+        block = _first_numeric_prefix(name)
+        if block is not None:
+            return block not in saved_block_prefix
+        return True
 
-        Handles models where the source and saved prefixes differ, e.g.
-        google/gemma-3-4b-it: ``language_model.model.*`` ↔ ``model.language_model.*``.
-        """
-        aliases = {name}
-        if name.startswith("language_model.model."):
-            aliases.add("model.language_model." + name[len("language_model.model.") :])
-        elif name.startswith("model.language_model."):
-            aliases.add("language_model.model." + name[len("model.language_model.") :])
-        return aliases
+    nested_trunk_source, nested_trunk_saved = "language_model.backbone.", "language_model.model."
 
     def _is_truly_missing(name: str) -> bool:
         # Special case: Qwen/Qwen3-0.6B-FP8
         # lm_head is tied but still in source_dir → not missing
         if name == "lm_head.weight":
             return False
-        aliases = _name_aliases(name)
-        if aliases & saved_tensor_names:
+        if not _is_missing_by_name(name):
             return False
-        parents = {a.rsplit(".", 1)[0] for a in aliases}
-        if parents & saved_parent_layers:
-            return False
-        # For split experts, name is changed but block name is the same.
-        blocks = {_first_numeric_prefix(a) for a in aliases} - {None}
-        if blocks:
-            return not (blocks & saved_block_prefix)
+        # Nemotron-H Omni checkpoints store the language-model trunk as
+        # ``language_model.backbone.*`` while the quantized model saves it as
+        # ``language_model.model.*``; without this alias every quantized LM block
+        # would be re-copied from the source in BF16.
+        if name.startswith(nested_trunk_source):
+            return _is_missing_by_name(nested_trunk_saved + name[len(nested_trunk_source) :])
         return True
 
     missing_tensor_names: list = [name for name in source_tensor_to_file if _is_truly_missing(name)]
 
     if not missing_tensor_names:
         return
-
-    logger.debug(f"Missing tensors detected: {missing_tensor_names}")
 
     try:
         from tqdm import tqdm as _tqdm
@@ -271,6 +488,12 @@ def copy_missing_tensors_from_source(
             )
             for tensor_name in _iter_tensors:
                 missing_tensors_dict[tensor_name] = f.get_tensor(tensor_name)
+
+    # ------------------------------------------------------------------ #
+    # Split fused expert tensors (3-D) into per-expert 2-D tensors          #
+    # ------------------------------------------------------------------ #
+    missing_tensors_dict = split_fused_expert_tensors(missing_tensors_dict)
+
     # ------------------------------------------------------------------ #
     # FP8 dequantization: if a weight is FP8 and its scale_inv is present  #
     # ------------------------------------------------------------------ #
@@ -372,102 +595,6 @@ def copy_missing_tensors_from_source(
     )
 
 
-def quantize_weight_rtn(
-    weight: torch.Tensor,
-    bits: int,
-    group_size: int,
-    sym: bool = True,
-    device: Optional[torch.device] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Quantize a 2-D weight tensor and pack into auto_gptq format.
-
-    Parameters
-    ----------
-    weight : Tensor [out_features, in_features]
-    bits   : target bit-width (e.g. 4, 8)
-    group_size : quantization group size along in_features
-    sym    : use symmetric quantisation
-    device : compute device (cuda / cpu). Results are always returned on CPU.
-
-    Returns
-    -------
-    qweight : [in_features // pack_factor, out_features]  int32
-    qzeros  : [num_groups,  out_features // pack_factor]   int32
-    scales  : [num_groups,  out_features]                   float16
-    """
-    assert weight.dim() == 2, f"Expected 2-D weight, got {weight.dim()}-D"
-    out_features, in_features = weight.shape
-    if device is None:
-        device = weight.device
-    weight = weight.to(device).float()
-
-    # --- pad in_features to multiple of group_size ---
-    if in_features % group_size != 0:
-        pad = group_size - (in_features % group_size)
-        weight = torch.nn.functional.pad(weight, (0, pad))
-        in_features = weight.shape[1]
-
-    num_groups = in_features // group_size
-    pack_factor = 32 // bits  # values per int32
-
-    # --- pad out_features to multiple of pack_factor (needed for qzeros) ---
-    out_pad = 0
-    if out_features % pack_factor != 0:
-        out_pad = pack_factor - (out_features % pack_factor)
-        weight = torch.nn.functional.pad(weight, (0, 0, 0, out_pad))
-    padded_out = weight.shape[0]
-
-    # Reshape for group-wise ops: [padded_out, num_groups, group_size]
-    w_grouped = weight.reshape(padded_out, num_groups, group_size)
-
-    if sym:
-        half_range = (1 << (bits - 1)) - 1  # e.g. 7 for 4-bit
-        zero_point = 1 << (bits - 1)  # e.g. 8 for 4-bit
-
-        w_absmax = w_grouped.abs().amax(dim=-1, keepdim=True).clamp(min=1e-10)
-        scales_full = w_absmax / half_range  # [padded_out, num_groups, 1]
-
-        q = torch.round(w_grouped / scales_full).clamp(-half_range - 1, half_range)
-        q = (q + zero_point).to(torch.int32)  # shift to unsigned [0, 2^bits-1]
-
-        zp = torch.full((num_groups, padded_out), zero_point, dtype=torch.int32, device=device)
-    else:
-        max_int = (1 << bits) - 1
-        w_min = w_grouped.amin(dim=-1, keepdim=True)
-        w_max = w_grouped.amax(dim=-1, keepdim=True)
-
-        scales_full = ((w_max - w_min).clamp(min=1e-10)) / max_int
-        zp_full = torch.round(-w_min / scales_full).clamp(0, max_int).to(torch.int32)
-
-        q = torch.round(w_grouped / scales_full + zp_full.float()).clamp(0, max_int).to(torch.int32)
-
-        zp = zp_full.squeeze(-1).t().contiguous()  # [num_groups, padded_out]
-
-    # scales → [num_groups, padded_out] (float16)
-    scales_out = scales_full.squeeze(-1).t().contiguous().to(torch.float16)
-
-    # q → [in_features, padded_out]
-    q = q.reshape(padded_out, in_features).t().contiguous()
-
-    # ---- Pack qweight: [in_features // pack_factor, padded_out] ----
-    qweight = torch.zeros(in_features // pack_factor, padded_out, dtype=torch.int32, device=device)
-    for k in range(pack_factor):
-        qweight |= q[k::pack_factor, :] << (bits * k)
-
-    # ---- Pack qzeros: [num_groups, padded_out // pack_factor] ----
-    qzeros = torch.zeros(num_groups, padded_out // pack_factor, dtype=torch.int32, device=device)
-    for k in range(pack_factor):
-        qzeros |= zp[:, k::pack_factor] << (bits * k)
-
-    # Remove output padding from qweight / scales (qzeros stays in pack units)
-    if out_pad > 0:
-        qweight = qweight[:, :out_features]
-        scales_out = scales_out[:, :out_features]
-
-    # Always return CPU tensors (safetensors requires CPU)
-    return qweight.cpu(), qzeros.cpu(), scales_out.cpu()
-
-
 def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -> dict:
     """Apply WOQ (Weight-Only Quantization) to missing Linear weight tensors.
 
@@ -497,7 +624,7 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     """
     import re as _re
 
-    BLOCK_NAME_TO_IGNORE = ["shared_expert_gate.", "mlp.gate.", "g_proj."]
+    BLOCK_NAME_TO_IGNORE = [".shared_expert_gate.", ".gate.", ".g_proj.", "mtp.fc."]
     qconfig = _get_woq_config_from_dir(target_dir)
     if qconfig is None:
         return missing_tensors_dict
@@ -505,15 +632,16 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
     global_bits = qconfig["bits"]
     global_group_size = qconfig["group_size"]
     global_sym = qconfig["sym"]
+    declared_packing = qconfig.get("packing_format", "auto_round:auto_gptq")
     block_name_to_quantize = qconfig.get("block_name_to_quantize", None)
     extra_config: dict = qconfig.get("extra_config", {}) or {}
 
     # Pre-compile all valid regex patterns once to avoid repeated re.compile() calls
     # for every tensor lookup (O(N×M) → O(M) compile + O(N×M) match).
     _compiled_patterns: list = []
-    for pattern in extra_config:
+    for pattern, pattern_cfg in extra_config.items():
         try:
-            _compiled_patterns.append((_re.compile(pattern), pattern, extra_config[pattern]))
+            _compiled_patterns.append((_re.compile(pattern), pattern, pattern_cfg))
         except _re.error as exc:
             logger.warning(
                 "Invalid regex key in extra_config ignored during pre-compilation: %r (%s)",
@@ -572,12 +700,41 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                 return True
         return False
 
+    if block_name_to_quantize:
+        existing_blocks = (
+            block_name_to_quantize
+            if isinstance(block_name_to_quantize, list)
+            else [b.strip() for b in block_name_to_quantize.split(",") if b.strip()]
+        )
+        existing_set = set(existing_blocks)
+        new_prefixes = {
+            ".".join(k.split(".")[:i])
+            for k in missing_tensors_dict
+            if k.endswith(".weight") and missing_tensors_dict[k].dim() == 2
+            for i, p in enumerate(k.split("."))
+            if p.isdigit() and ".".join(k.split(".")[:i])
+        }
+        added = sorted(new_prefixes - existing_set)
+        if added:
+            block_name_to_quantize = existing_blocks + added
+
     # Identify weight tensors eligible for quantization (2D Linear weights)
     def _is_eligible(k: str) -> bool:
         if not k.endswith(".weight"):
             return False
         if missing_tensors_dict[k].dim() != 2:
             return False
+        if k.startswith("talker."):
+            return False
+        # Only quantize weights that fall under the quantized blocks.
+        if block_name_to_quantize:
+            blocks = (
+                block_name_to_quantize
+                if isinstance(block_name_to_quantize, list)
+                else [b.strip() for b in block_name_to_quantize.split(",") if b.strip()]
+            )
+            if not any(k.startswith((b + ".", b + "[")) for b in blocks):
+                return False
         layer_name = k[: -len(".weight")]
         layer_cfg = _resolve_layer_cfg(layer_name)
         # If extra_config explicitly covers this layer, trust its decision
@@ -617,6 +774,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
                     )
             if weight_keys:
                 existing = qcfg.get("block_name_to_quantize") or []
+                # In cases where this attribute is lacking
+                if not existing:
+                    return qcfg
                 if isinstance(existing, str):
                     existing = [b.strip() for b in existing.split(",") if b.strip()]
                 existing_set = set(existing)
@@ -682,6 +842,15 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         layer_name = weight_key[: -len(".weight")]
         layer_cfg = _resolve_layer_cfg(layer_name)
         bits = layer_cfg["bits"]
+        if bits not in [4, 8]:
+            if bits < 4:
+                bits = 4
+            elif 4 < bits < 8:
+                bits = 8
+            logger.warning(
+                f"Unsupported bits={layer_cfg['bits']} for layer '{layer_name}' in extra_config, "
+                f"falling back to bits={bits} for quantization."
+            )
         group_size = layer_cfg["group_size"]
         sym = layer_cfg["sym"]
 
@@ -697,7 +866,9 @@ def _woq_quantize_missing_tensors(target_dir: str, missing_tensors_dict: dict) -
         base_name = layer_name
 
         try:
-            qweight, qzeros, scales = quantize_weight_rtn(weight, bits=bits, group_size=effective_gs, sym=sym)
+            qweight, qzeros, scales = quantize_weight_rtn(
+                weight, bits=bits, group_size=effective_gs, sym=sym, packing=declared_packing
+            )
         except Exception as e:
             logger.warning(f"Failed to quantize {weight_key}: {e}, keeping original weight")
             continue

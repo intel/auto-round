@@ -1,0 +1,1493 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+import copy
+import gc
+import os
+import threading
+import time
+from collections.abc import Callable
+from functools import partial
+from typing import TYPE_CHECKING, Any, Optional
+
+import accelerate
+import torch
+from accelerate.big_modeling import dispatch_model
+from tqdm import tqdm
+
+from auto_round import envs
+from auto_round.calibration import CalibrationContext
+from auto_round.calibration.utils import (
+    _update_inputs,
+)
+from auto_round.compressors.base import BaseOrchestrator
+from auto_round.compressors.utils import (
+    _get_quantized_layer_names_outside_blocks,
+    immediate_pack,
+)
+from auto_round.data_type.utils import update_block_global_scale_if_needed
+from auto_round.logger import logger
+from auto_round.modeling.fused_moe.replace_modules import materialize_model_
+from auto_round.schemes import needs_nvfp_global_scale
+from auto_round.utils import (
+    SUPPORTED_LAYER_TYPES,
+    check_to_quantized,
+    clear_memory,
+    compress_layer_names,
+    convert_module_to_hp_if_necessary,
+    flatten_list,
+    get_block_names,
+    get_lm_head_name,
+    get_module,
+    is_auto_device_mapping,
+    memory_monitor,
+    mv_module_from_gpu,
+    set_amax_for_all_moe_layers,
+    set_module,
+    to_device,
+)
+from auto_round.utils.device import (
+    _force_trim_malloc,
+)
+from auto_round.utils.device_manager import device_manager
+from auto_round.utils.perf_counters import _PerfCounters
+from auto_round.wrapper import WrapperMultiblock
+
+if TYPE_CHECKING:
+    from auto_round.utils.resume import ResumeState
+
+
+# TODO wenhuach align all the API args
+
+
+class _OneDeepWriter:
+    """One-deep background task pipeline (used for the shard write/flush).
+
+    ``dispatch`` joins any previous task first (fail-visible: its exception is
+    re-raised on the caller thread), then starts the next on a single daemon
+    worker. ``join`` blocks until the current task completes and re-raises any
+    error it captured. Tasks must touch only their own arguments (host-resident
+    tensors; no VRAM) so they can overlap the main thread's GPU work.
+    """
+
+    def __init__(self) -> None:
+        self._t = None
+        self._exc = None
+
+    def dispatch(self, fn: Callable[[], Any]) -> None:
+        self.join()
+        self._exc = None
+
+        def _run() -> None:
+            try:
+                fn()
+            except BaseException as e:  # noqa: B036 - re-raised in join()
+                self._exc = e
+
+        self._t = threading.Thread(target=_run, name="one-deep-writer", daemon=True)
+        self._t.start()
+
+    def join(self) -> None:
+        if self._t is None:
+            return
+        t, self._t = self._t, None
+        t.join()
+        if self._exc is not None:
+            exc, self._exc = self._exc, None
+            raise exc
+
+
+class CompressionOrchestrator(BaseOrchestrator):
+
+    def __init__(
+        self,
+        config: object | list[object],  # TODO rename this to alg_config wenhuach
+        model: torch.nn.Module | str,
+        tokenizer: Any = None,
+        platform: str = "hf",
+        format: str | list | None = None,
+        dataset: str | list | tuple | torch.utils.data.DataLoader | None = None,
+        low_gpu_mem_usage: bool = False,
+        device_map: str | torch.device | int | dict = 0,
+        enable_torch_compile: bool | None = None,
+        seed: int = 42,
+        low_cpu_mem_usage: bool = True,
+        **kwargs,
+    ) -> None:
+        super().__init__(
+            config=config,
+            model=model,
+            tokenizer=tokenizer,
+            platform=platform,
+            format=format,
+            low_gpu_mem_usage=low_gpu_mem_usage,
+            device_map=device_map,
+            enable_torch_compile=enable_torch_compile,
+            seed=seed,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+            dataset=dataset,
+            **kwargs,
+        )
+
+    def post_init(self) -> None:
+        """Run base post-init then attach the registered calibrator strategy.
+
+        Model-type mixins select the calibrator kind; the calibrator owns
+        ``try_cache_inter_data_gpucpu`` / ``cache_inter_data`` orchestration
+        plus the model-specific ``calib`` body.
+        """
+        if self._post_init_done:
+            return
+        super().post_init()
+        if self.need_calib and self.calibration is None:
+            from auto_round.calibration import get_calibrator
+
+            kind = self._get_calibrator_kind()
+            self.calibration = get_calibrator(kind)(self)
+
+    def _get_calibrator_kind(self) -> str:
+        """Return the registry name of the calibrator to use.
+
+        Default ``"llm"``.  ``MLLMMixin`` / ``DiffusionMixin`` override this
+        to select ``"mllm"`` / ``"diffusion"``.
+        """
+        return "llm"
+
+    @torch.no_grad()
+    def cache_data(
+        self,
+        block_names: list,
+        nsamples: int,
+        layer_names: list | None = None,
+        last_cache_name: str | None = None,
+    ) -> Any:
+        """Thin wrapper around ``self.calibration.collect``.
+
+        Public API kept for backward compatibility (entry.py and
+        LLM-Compressor integration).
+        """
+        if self.calibration is None:
+            self.post_init()
+
+        res = self.calibration(block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name)
+        # Sync batch_size back in case calibration clamped it due to insufficient samples
+        # Tricky setting
+        self.calibration_context.batch_size = self.calibration.batch_size
+        self.alg_composer.block_forward.batch_size = self.calibration_context.batch_size
+        self.calibration_context.seqlen = self.calibration.seqlen
+        self.calibration_context.batch_dim = self.calibration.batch_dim
+        self.calibration_context.dataset = self.calibration.dataset
+        self.calibration_context.is_only_supported_bs1 = self.calibration.is_only_supported_bs1
+        # Reset gradient_accumulate_steps in case batch_size was clamped to 1 for some models
+        if self.calibration_context.is_only_supported_bs1:
+            compressors = self.alg_composer.active_quantizer
+            if not isinstance(compressors, (list, tuple)):
+                compressors = [compressors]
+            else:
+                compressors = list(compressors)
+            compressors.extend(self.alg_composer.preprocessors)
+            for compressor in compressors:
+                if hasattr(compressor, "gradient_accumulate_steps"):
+                    compressor.gradient_accumulate_steps = (
+                        compressor.gradient_accumulate_steps * self.calibration_context.orig_batch_size
+                    )
+
+        return res
+
+    def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
+        # Thin wrapper around auto_round.calibration.inputs.preprocess_block_inputs.
+        from auto_round.calibration.inputs import preprocess_block_inputs
+
+        return preprocess_block_inputs(
+            inputs,
+            model_context=self.model_context,
+            compress_context=self.compress_context,
+            first_input_name=first_input_name,
+        )
+
+    def _attach_pool_placement(
+        self, block: torch.nn.Module, input_ids: Any, q_input: Any = None, input_others: Any = None
+    ) -> None:
+        """Resolve calibration-data placement for the upcoming block and attach it.
+
+        No-op (placement cleared) whenever the policy is off, the lane is
+        CPU-parked (low_gpu_mem_usage), or the pool fits the primary device.
+        """
+        runner = getattr(self.alg_composer, "block_forward", None)
+        if runner is None:  # pragma: no cover - defensive
+            return
+        try:
+            from auto_round.utils.device_manager import device_manager
+            from auto_round.utils.pool_placement import (
+                _pool_chunk_count,
+                _tensor_bytes,
+                calib_data_line,
+                consolidate_pool_onto,
+                resolve_placement_for_pool,
+            )
+
+            chains = 2 if self.alg_composer.need_quanted_input() else 1
+            pool_bytes = _tensor_bytes(input_ids) * chains
+            n_chunks = _pool_chunk_count(input_ids)
+            primary = str(self.compress_context.cache_device)
+            mode = getattr(self.compress_context, "calibration_data_device", "auto")
+            _iters = int(getattr(getattr(self.alg_composer, "active_quantizer", None), "iters", 0) or 0)
+            # iters>0 lane: the tune loop consumes outputs on the block's LOSS
+            # device (card_0_in_high_risk deflects it off the cache primary on
+            # multi-GPU MoE lanes; set per block by dispatch_block) -- prefer
+            # that device for the output pool so the fp-reference bulk pull
+            # becomes a no-op and the primary stops accumulating pool chunks.
+            # The runner's own .device is NOT it: BlockForwardRunner is built
+            # once at orchestrator init with device_manager.device, so it always
+            # equals the primary on this lane and the retarget would never fire.
+            _loss_dev = getattr(getattr(self.alg_composer, "active_quantizer", None), "_loss_device", None)
+            _consumer = str(_loss_dev) if _loss_dev is not None else str(getattr(runner, "device", primary))
+            _consumer = (
+                _consumer
+                if _iters > 0 and _consumer != primary and _consumer.startswith("cuda") and primary.startswith("cuda")
+                else None
+            )
+            placement = resolve_placement_for_pool(
+                input_ids,
+                chains,
+                primary,
+                device_manager.device_list,
+                block=block,
+                batch_size=self.calibration_context.batch_size,
+                mode=mode,
+                iters=_iters,
+                consumer=_consumer,
+                config=getattr(getattr(self, "model_context", None), "config", None),
+            )
+            # Docstring contract: never consolidate when the policy is off, the
+            # lane is CPU-parked (low_gpu_mem_usage keeps pools on the host), or
+            # the resolved placement itself parks pools on the host (mode=cpu).
+            placement_on_host = placement is not None and any(str(_d).startswith("cpu") for _d in placement.devices)
+            if mode == "off" or str(primary).startswith("cpu") or placement_on_host:
+                runner.pool_placement = placement
+                return
+            # Fits-home rung: when the incoming (possibly sharded) pools fit on
+            # the compute device next to the block's working set AND next to the
+            # outputs this block will place there, consolidate them -- the whole
+            # block then reads locally and the per-batch gather is a no-op. The
+            # reserved-bytes gate exists because the inputs-only budget was the
+            # exact cause of the first block-3 OOM.
+            target = str(getattr(runner, "device", primary))
+            if placement is None:
+                reserved = pool_bytes if target == primary else 0
+            elif len(placement.devices) == 1:
+                reserved = pool_bytes if placement.devices[0] == target else 0
+            else:
+                per_chunk = pool_bytes / max(n_chunks, 1)
+                reserved = int(placement.counts().get(target, 0) * per_chunk)
+            consolidate_pool_onto(
+                [input_ids, q_input, input_others],
+                target,
+                block,
+                self.calibration_context.batch_size,
+                reserved_bytes=reserved,
+                iters=_iters,
+            )
+            logger.debug(
+                "[calib-data-device] %s",
+                calib_data_line(
+                    [input_ids, q_input],
+                    input_others,
+                    placement,
+                    pool_bytes,
+                    n_chunks,
+                    primary,
+                ),
+            )
+        except Exception as e:  # pragma: no cover - placement must never break quantization
+            logger.warning("[calib-data-device] attach failed (%s); keeping single-device behavior", e)
+            placement = None
+        runner.pool_placement = placement
+
+    def _quantize_blocks(
+        self,
+        model: torch.nn.Module,
+        inputs: dict,
+        block_names: list,
+        q_input: torch.Tensor | None = None,
+        nblocks: int = 1,
+        pbar: tqdm | None = None,
+        input_others_extra_blocks: dict | None = None,
+        token_ids: list[torch.Tensor] | None = None,
+        resume_state: Optional["ResumeState"] = None,
+        resume_input_ids=None,
+    ):
+        """Quantize and dequantize the weights of the specified blocks in the model.
+
+        Args:
+        model: The PyTorch model to be quantized.
+        inputs: The input data for quantization.
+        block_names: The names of the blocks to be quantized and dequantized.
+        nblocks: The number of blocks to quantize and dequantize.
+        device: The device for quantization and dequantization.
+        resume_state: when set and already partway through this block group
+            (`resume_state.resume_index > 0`), the caller has already
+            substituted `inputs`/`q_input` for the first not-yet-done block;
+            this method just needs to start its loop there instead of at
+            index 0, and record each block as done afterward. See
+            auto_round/utils/resume.py.
+        resume_input_ids: the exact `input_ids` value the interrupted run had
+            live for the first not-yet-done block (cached by
+            `ResumeState.mark_block_done`). `inputs` still supplies
+            `input_others` (legitimately re-sourced from the same pre-cache
+            every iteration regardless of resuming), but the chained
+            hidden-state tensor itself must come from here, not be re-derived
+            from `inputs` -- see auto_round/utils/resume.py's module
+            docstring for why those two aren't interchangeable.
+
+        Returns:
+        None
+        """
+        clear_memory()
+        for n, m in model.named_parameters():
+            m.requires_grad_(False)
+
+        input_ids, input_others = self._preprocess_block_inputs(inputs)
+        _bg_writer = _OneDeepWriter()
+        _bg_resume = _OneDeepWriter()
+        if resume_input_ids is not None:
+            input_ids = resume_input_ids
+
+        if pbar is None:
+            pbar = tqdm(range(0, len(block_names), nblocks))
+
+        start_index = resume_state.resume_index if resume_state is not None and nblocks == 1 else 0
+        try:
+            for i in range(start_index, len(block_names), nblocks):
+                if input_others_extra_blocks and block_names[i] in input_others_extra_blocks:
+                    input_others = input_others_extra_blocks[block_names[i]]
+                    _, input_others = self._preprocess_block_inputs(input_others)
+                    input_others_extra_blocks.pop(block_names[i])
+                if i != 0:
+                    pbar.update(1)
+                if nblocks == 1:
+                    n = block_names[i]
+                    pbar.set_description(f"Quantizing {n}")
+                    m = get_module(model, n)
+                else:
+                    names = block_names[i : min(i + nblocks, len(block_names))]
+                    pbar.set_description(
+                        f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}"
+                    )
+                    modules = [get_module(model, n) for n in names]
+                    m = WrapperMultiblock(modules)
+
+                # Also reload when disk streaming is active even if `low_cpu_mem_usage`
+                # has been forced False (e.g. GGUF export -- see base.py's
+                # `_finalize_compress_context`, which disables `low_cpu_mem_usage` for
+                # gguf formats for reasons unrelated to disk streaming). Disk streaming
+                # can be turned on explicitly via `AR_DISK_STREAM_MODEL=1` *or* chosen
+                # automatically for fused-MoE checkpoints (see ModelContext's
+                # `_should_use_meta_skeleton`); either way the model was built as a meta
+                # skeleton and `_disk_stream_index` is set. Under streaming, a block
+                # starts on the meta device regardless of `low_cpu_mem_usage`, which only
+                # ever controlled whether to *free* it again after use -- without this,
+                # the block below is never materialized at all and `m.to(device)` crashes
+                # with "Cannot copy out of meta tensor". The block intentionally stays
+                # real afterward (no matching post-tune offload runs when
+                # `low_cpu_mem_usage` is False -- see the `is_immediate_saving`-adjacent
+                # offload call further down), matching upstream's own choice not to cycle
+                # blocks for these formats.
+                _perf = _PerfCounters()
+                _t_reload_start = time.perf_counter()
+                disk_streaming = getattr(self.model_context, "_disk_stream_index", None) is not None
+                if self.compress_context.low_cpu_mem_usage or envs.AR_DISK_STREAM_MODEL or disk_streaming:
+                    if nblocks == 1:
+                        self._offloader.reload(model, n)
+                    else:
+                        self._offloader.reload(model, names)
+                _t_reload_mark = time.perf_counter()
+                # reload duration sits BEFORE the marks' reference point; it is
+                # folded into the end-of-block phases line as its first item so
+                # the line's total covers the whole block (true-wall comparable)
+                block_name_or_names = n if nblocks == 1 else names
+                # tick(key) closes the running span and opens `key`, so every
+                # tick sits right BEFORE the region it names. The chain opens
+                # here: "prep" (materialize + dtype convert + dispatch_block
+                # device placement + BlockContext) costs seconds per block on
+                # large MoE models, and the total covers the true per-block wall.
+                _perf.tick("prep")
+
+                # ── Infrastructure: materialize, dtype convert, device placement ──
+                materialize_model_(m)
+                convert_module_to_hp_if_necessary(m, self.model_context.amp_dtype, device_manager.device)
+
+                m = self.alg_composer.dispatch_block(m, input_ids, input_others)
+
+                # ── Pipeline lifecycle: per-block setup ───────────────────────────
+                from auto_round.algorithms.composer import BlockContext
+
+                current_block_names = (
+                    block_name_or_names if isinstance(block_name_or_names, list) else [block_name_or_names]
+                )
+                current_block_name = (
+                    current_block_names[0] if len(current_block_names) == 1 else str(block_name_or_names)
+                )
+                # bs = self.quantizer.batch_size * self.quantizer.infer_bs_coeff #TODO recover infer_bs_coeff
+                bs = self.calibration_context.batch_size
+
+                ctx = BlockContext(
+                    model=model,
+                    block_names=current_block_names,
+                    block_name=current_block_name,
+                    block_index=i,
+                    bs=bs,
+                    is_mllm=self.model_context.is_mllm,
+                    is_diffusion=self.model_context.is_diffusion,
+                    pbar=pbar,
+                    block_cnt=(len(block_names) + nblocks - 1) // nblocks,
+                    all_block_names=list(block_names),
+                )
+
+                # ── Infrastructure: calibration-data placement (--calibration_data_device)
+                # Decide where this block's calibration output pool will live: on the
+                # primary cache device when it fits (today's behavior, zero peer
+                # traffic), or sharded across free GPUs when it does not. Placement is
+                # pure memory behavior -- chunk values are bit-identical.
+                _perf.tick("attach")
+                self._attach_pool_placement(m, input_ids, q_input, input_others)
+                _perf.tick("compress")
+
+                # ── Run block pipeline (calibration → quantization → collection) ──
+                new_q_input, reference_output = self.alg_composer.compress_block(
+                    m,
+                    input_ids,
+                    input_others,
+                    block_ctx=ctx,
+                    q_inputs=q_input,
+                    input_ids=token_ids,
+                )
+                _perf.tick("swap")
+
+                # ── Infrastructure: memory management ─────────────────────────────
+                # Mirrors the original q_input-swap + end-of-loop clear_memory semantics:
+                # clear the FP input when a quantized input was used, then clear the old
+                # q_input (effective_input) before advancing to the next block.
+                if q_input is not None:
+                    if input_ids is not q_input:
+                        clear_memory(input_ids)
+                    else:
+                        clear_memory()
+                    next_input_ids = reference_output
+                    clear_memory(q_input if q_input is not next_input_ids else None)
+                else:
+                    next_input_ids = reference_output
+                    clear_memory(input_ids if input_ids is not next_input_ids else None)
+
+                q_input = new_q_input
+                _perf.tick("sweep")
+
+                # Belt-and-braces: no module may carry staged batched-search inputs
+                # (weight reshape + imatrix copies) across the block boundary;
+                # otherwise the search-stack groups stay retained into the next
+                # block's collection (~GB-class growth per block).
+                for _mn, _mm in m.named_modules():
+                    if getattr(_mm, "_deferred_search_inputs", None) is not None:
+                        _mm._deferred_search_inputs = None
+                _perf.tick("hooks")
+                if len(device_manager.device_list) > 1 and not self.model_context.is_diffusion:
+                    accelerate.hooks.remove_hook_from_submodules(m)
+                _perf.tick("pack")
+
+                # ── Infrastructure: immediate_pack / shard write ──────────────────
+                # Pack BEFORE draining the block off the GPUs: pack_layer resolves
+                # the math device from layer.weight.device (orig_device), so packing
+                # after mv_module_from_gpu drops every module into the CPU packing
+                # regime -- a Python per-column qzeros loop at ~50ms/module, tens of
+                # seconds per large MoE block. With weights still on their tune
+                # devices the math runs on GPU (~2.3ms/module) and the packed
+                # artifacts land on host by construction (qweight/qzeros are .to(
+                # "cpu") in the packers), so VRAM pressure stays one-module-sized.
+                # Hoist the layer-config read out of the module loop: the property
+                # rebuilds a copy of the whole compression plan per access (~50ms on
+                # a 300B-class plan -- the entire invisible pack wall).
+                _layer_cfg = self.layer_config
+                if self.compress_context.is_immediate_packing:
+                    for _n, _mod in m.named_modules():
+                        if hasattr(_mod, "bits") and check_to_quantized(_mod):
+                            from auto_round.compressors.utils import immediate_pack as _immediate_pack
+
+                            module_name = getattr(_mod, "global_name", None)
+                            if module_name is None and nblocks == 1 and _n:
+                                module_name = f"{n}.{_n}"
+                            if module_name is None:
+                                continue
+                            _immediate_pack(module_name, _layer_cfg)
+                _perf.tick("mv")
+
+                self.parallel_execution.offload_block(m)
+                _perf.tick("clear")
+                clear_memory(device_list=device_manager.device_list)
+                _perf.tick("monitor")
+                device_manager.log_memory_summary()
+                _perf.tick("write")
+
+                input_ids = next_input_ids
+
+                if self.compress_context.is_immediate_saving:
+                    # Background one-deep writer: the shard write/flush serializes
+                    # host-resident packed tensors (no VRAM) and can hide under the
+                    # next block's GPU work. One worker, joined before the NEXT
+                    # dispatch (and immediately under AR_RESUME_DIR, where
+                    # mark_block_done below must only fire on durable writes).
+                    _bg_write_m = m
+
+                    def _bg_write(_m: Any = _bg_write_m) -> None:
+                        self.shard_writer.write(_m, is_finalize=False)
+                        if resume_state is not None:
+                            self.shard_writer._flush_shard()
+
+                    _bg_writer.dispatch(_bg_write)
+                    if resume_state is not None:
+                        _bg_writer.join()  # durability before the manifest mark
+
+                if self.compress_context.low_cpu_mem_usage and not self.compress_context.is_immediate_saving:
+                    if nblocks == 1:
+                        self._offloader(model, n, overwrite=True)
+                    else:
+                        for name in names:
+                            self._offloader(model, name, overwrite=True)
+
+                # Record this block as durably done (its quantized weights are
+                # either flushed to a shard on disk via ShardWriter, or saved to
+                # the offloader's temp dir) only now, after that write has
+                # happened -- so a crash before this point correctly re-does the
+                # block on resume instead of skipping it with incomplete/missing
+                # output. See auto_round/utils/resume.py.
+                if resume_state is not None and nblocks == 1:
+                    # `input_ids` was already reassigned to `next_input_ids`
+                    # above -- it now holds the value the *next* block should use
+                    # as its chained hidden-state input, which is exactly what
+                    # needs to be persisted here. The tensor serialization
+                    # (cross-device copies + torch.save, ~GB-class) runs on the
+                    # one-deep writer: the container skeleton is frozen
+                    # synchronously (snapshot_pool_refs) because the next block's
+                    # pool placement mutates the containers, while the tensors
+                    # themselves are immutable-by-convention and copyable
+                    # concurrently. One-deep join keeps mark_block_done's
+                    # order-assert valid (worker N+1 only starts after N appended),
+                    # and the manifest only claims a block after its tensors are
+                    # durable -- identical crash semantics to the inline call.
+                    from auto_round.utils.resume import snapshot_pool_refs
+
+                    _resume_q = snapshot_pool_refs(q_input)
+                    _resume_i = snapshot_pool_refs(input_ids)
+                    _bg_resume.dispatch(
+                        lambda _n=n, _q=_resume_q, _i=_resume_i: resume_state.mark_block_done(_n, _q, _i)
+                    )
+                if _perf.enabled:
+                    _perf.stop("write")
+                    # sweep/hooks fold into the printed pack span, monitor into the
+                    # printed write span; they were bad-perf-investigation probes that
+                    # read 0.00 in every validated run since
+                    _parts = [
+                        f"prep={_perf.get('prep'):.2f}s",
+                        f"attach={_perf.get('attach'):.2f}s",
+                        f"compress={_perf.get('compress'):.2f}s",
+                        f"swap={_perf.get('swap'):.2f}s",
+                        f"pack={_perf.get('sweep') + _perf.get('hooks') + _perf.get('pack'):.2f}s",
+                        f"mv={_perf.get('mv'):.2f}s",
+                        f"clear={_perf.get('clear'):.2f}s",
+                        f"write={_perf.get('monitor') + _perf.get('write'):.2f}s",
+                    ]
+                    try:
+                        from auto_round.export.formats.autoround.integer import PACK_PHASES as _pp
+
+                        # the pack sub-note is no longer printed (pack is stable at
+                        # ~1.2s; the sub-phases were the layer_config-hunt probes);
+                        # reset the accumulators so a future re-enable starts clean
+                        for _k in _pp:
+                            _pp[_k] = 0.0
+                    except Exception as e:  # pragma: no cover - diagnostics only
+                        logger.warning("pack phase accounting unavailable (%s)", e)
+                    logger.info(
+                        "[perf] block %s phases: reload=%.2fs %s total=%.2fs",
+                        block_name_or_names,
+                        _t_reload_mark - _t_reload_start,
+                        " ".join(_parts),
+                        (_t_reload_mark - _t_reload_start) + sum(_perf.totals.values()),
+                    )
+        finally:
+            # join the background writers even when a block raises: a daemon killed
+            # mid torch.save would leave a truncated shard file behind. join()
+            # re-raises the worker's captured exception, so each join is itself
+            # guarded -- a writer failure must not skip the resume writer's join.
+            _join_err = None
+            for _bg in (_bg_writer, _bg_resume):
+                try:
+                    _bg.join()
+                except BaseException as _e:  # noqa: BLE001 - re-raised below
+                    if _join_err is None:
+                        _join_err = _e
+                    else:
+                        logger.error("[bg-writer] %r also failed during join", _e)
+            if _join_err is not None:
+                raise _join_err
+        if pbar is not None:
+            pbar.update(1)
+
+        if not self.compress_context.is_immediate_saving:
+            self.model = mv_module_from_gpu(self.model)
+        for n, m in self.model.named_modules():
+            if hasattr(m, "name"):
+                delattr(m, "name")
+
+        del q_input
+        del input_ids
+        del input_others
+        del inputs
+
+        clear_memory()
+
+    def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+        """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
+        Returns:
+        The quantized model and layer configurations.
+        """
+        self.post_init()
+
+        if not self.need_calib:
+            if len(self.alg_composer.quantizers) > 1:
+                raise NotImplementedError("Multiple zero-shot quantizer stages are not supported yet.")
+            result = self._quantize_zero_shot()
+        else:
+            result = self._quantize_data_driven()
+        if device_manager.is_tensor_parallel:
+            device_manager.log_memory_summary()
+        return result
+
+    @torch.no_grad()
+    def _quantize_zero_shot(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+        """Run zero-shot quantization under the same stage policies as tuning."""
+        with self.alg_composer.active_stage():
+            return self._run_zero_shot_stage()
+
+    def _run_zero_shot_stage(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+        """Zero-shot (RTN) quantization path — no calibration data needed.
+
+        This replaces the standalone ``ZeroShotCompressor.quantize()`` method.
+        Block-wise RTN quantization without any input data.
+
+        Returns:
+            tuple[torch.nn.Module, dict[str, Any]]: Quantized model and its layer configuration.
+        """
+        from auto_round.algorithms.composer import BlockContext
+
+        formats = self.formats if isinstance(self.formats, list) else []
+        if not (any(fmt.is_gguf() for fmt in formats) or self.super_bits is not None):
+            self.alg_composer.compress_embedding_layer()  # leave to gguf itself to handle
+
+        # Release memory
+        clear_memory()
+
+        # In RTN mode (iters == 0), force blockwise quantization to avoid
+        # full-model materialization and linear CPU RAM growth.
+        logger.info("Zero-shot mode (no calibration data needed): using blockwise quantization.")
+
+        # an explicit --data_parallel N cannot engage here (no
+        # calibration forward for the data-parallel lane to shard): one INFO
+        # line, no refusal -- weights-only RTN has nothing to parallelize
+        from auto_round.parallel.dp.engine import log_zero_shot_parallel_noop_
+
+        log_zero_shot_parallel_noop_(getattr(self.compress_context, "parallel_policy", None))
+
+        tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
+        if tied_weights_keys is None:
+            tied_weights_keys = []
+        if isinstance(tied_weights_keys, dict):
+            tied_weights_values = list(tied_weights_keys.values())
+        else:
+            tied_weights_values = list(tied_weights_keys)
+        tied_weights_layers = [".".join(val.split(".")[:-1]) for val in tied_weights_values]  # rm weight/bias
+        # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
+        if getattr(self, "formats", None) and self.formats[0].is_gguf():
+            lm_head_name = get_lm_head_name(self.model)
+            if lm_head_name is not None:
+                tied_weights_layers.append(lm_head_name)
+
+        all_blocks = self.quant_block_list or get_block_names(self.model)
+        pbar = tqdm(range(sum(len(block) for block in all_blocks)))
+        _zs_block_idx = 0
+        for block_names in all_blocks:
+            for block_name in block_names:
+                pbar.set_description(f"Quantizing {block_name}")
+                block = get_module(self.model, block_name)
+
+                # ── Infrastructure: reload from disk when streaming ───────
+                # Fused-MoE checkpoints (and explicit `AR_DISK_STREAM_MODEL=1`)
+                # build an all-meta skeleton to reduce RAM: each decoder block
+                # starts on the meta device and its real weights must be read
+                # back from the checkpoint before quantization. The data-driven
+                # path does this same reload; without it here the zero-shot
+                # (RTN) path leaves the block on meta and `layer.to(device)`
+                # crashes with "Cannot copy out of meta tensor".
+                disk_streaming = getattr(self.model_context, "_disk_stream_index", None) is not None
+                if self.compress_context.low_cpu_mem_usage or envs.AR_DISK_STREAM_MODEL or disk_streaming:
+                    self._offloader.reload(self.model, block_name)
+
+                # ── Infrastructure: materialize ───────────────────────────
+                materialize_model_(block)
+
+                # ── Pure algorithm ────────────────────────────────────────
+                # ``block_index`` carries the global block index so compress_block
+                # can drive layer-wise rotation with the correct layer_idx.
+                ctx = BlockContext(
+                    model=self.model,
+                    block_names=[block_name],
+                    block_name=block_name,
+                    block_index=_zs_block_idx,
+                )
+                _zs_block_idx += 1
+                # ── MoE scale alignment for FP8 dispatch efficiency ────────────────
+                if needs_nvfp_global_scale(self.act_data_type or "") or not self.act_dynamic:
+                    set_amax_for_all_moe_layers(block, attr_name="act_max")
+
+                update_block_global_scale_if_needed(block, self.data_type, self.group_size)
+                self.alg_composer.compress_block(block, fp_inputs=None, input_others={}, block_ctx=ctx)
+                _layer_cfg_free = self.layer_config  # hoisted: property rebuilds per read
+                if self.compress_context.is_immediate_packing:
+                    for _n, _mod in block.named_modules():
+                        if hasattr(_mod, "bits") and check_to_quantized(_mod):
+                            from auto_round.compressors.utils import immediate_pack as _immediate_pack
+
+                            module_name = getattr(_mod, "global_name", None)
+                            if module_name is None and self.nblocks == 1 and _n:
+                                module_name = f"{block.global_name}.{_n}"
+                            if module_name is None:
+                                continue
+                            _immediate_pack(module_name, _layer_cfg_free)
+
+                # ── Infrastructure: shard write / device cleanup ──────────
+                if self.compress_context.is_immediate_saving:
+                    # Save non-quantized leaf modules (e.g. norms, embeddings in block).
+                    for _n, m in block.named_modules():
+                        if (
+                            not any(m.children())
+                            and len(m.state_dict()) > 0
+                            and hasattr(m, "global_name")
+                            and m.global_name not in tied_weights_layers
+                            and not check_to_quantized(m)
+                        ):
+                            set_module(self.model, m.global_name, copy.deepcopy(m))
+                            self.shard_writer.write(name=m.global_name)
+                            get_module(self.model, m.global_name).to("meta")
+                            m.to("meta")
+                    # Write at block scope for any remaining params/buffers.
+                    self.shard_writer.write(name=block_name)
+                    block.to("meta")
+                else:
+                    self.parallel_execution.offload_block(block)
+                    if self.compress_context.low_cpu_mem_usage:
+                        self._offloader(self.model, block_name)
+
+                clear_memory()
+                device_manager.log_memory_summary()
+                pbar.update(1)
+
+        remain_layer_names = []
+        block_name_set = {name for block in all_blocks for name in block}
+        for n, m in self.model.named_modules():
+            if not check_to_quantized(m):
+                continue
+            # Skip if this layer is part of any block (by prefix match)
+            if any(n == block_name or n.startswith(f"{block_name}.") for block_name in block_name_set):
+                continue
+            remain_layer_names.append(n)
+        for name in remain_layer_names:
+            logger.info(f"Quantizing remaining layer {name} on CPU.")
+            self.alg_composer.compress_layer_outside_block(get_module(self.model, name))
+            # Outside-block layers (embed_tokens/lm_head/etc.) are typically few so just
+            # log a summary after each one.
+            clear_memory()
+            memory_monitor.log_summary()
+
+        # Convert remaining fp8
+        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
+        if self.compress_context.low_cpu_mem_usage:
+            self._offloader.reload(self.model)
+        if self.compress_context.is_immediate_saving:
+            self.shard_writer.write(is_finalize=True)
+
+        self.model_context.quantized = True
+        return self.model, self.layer_config
+
+    def _quantize_data_driven(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+        """Data-driven quantization path — uses calibration data for optimization."""
+
+        # Reclaim heap fragmentation from init/post_init before the memory-intensive quantize loop.
+        gc.collect()
+        _force_trim_malloc()
+
+        self._check_compatibility()
+
+        if all(quantizer.whole_model_tuning for quantizer in self.alg_composer.quantizers):
+            # Whole-model algorithms collect their own raw model inputs. Building
+            # first-block activation pools here wastes gigabytes and no block
+            # stage exists to consume/release those pools.
+            self.inputs = {}
+            self.calibration.inputs = {}
+
+            def no_block_stage(replay=False):
+                raise RuntimeError("A whole-model-only pipeline must not schedule block tuning.")
+
+            self.alg_composer.compress_model(None, no_block_stage)
+            self.model_context.quantized = True
+            return self.model_context.model, self.layer_config
+
+        if bool(self.quant_block_list):
+            all_blocks = self.quant_block_list
+        else:
+            all_blocks = get_block_names(self.model_context.model)
+
+        if len(all_blocks) == 0:
+            logger.warning("could not find blocks, exit with original model")
+            return self.model_context.model, self.layer_config
+
+        has_gguf = (
+            hasattr(self, "formats")
+            and self.formats is not None
+            and any(fmt.is_gguf() for fmt in (self.formats if isinstance(self.formats, list) else []))
+        )
+        if has_gguf or self.super_group_size is not None:
+            layer_names = []
+        else:
+            layer_names = _get_quantized_layer_names_outside_blocks(
+                model=self.model_context.model,
+                layer_config=self.layer_config,
+                supported_types=SUPPORTED_LAYER_TYPES,
+                quant_block_list=self.quant_block_list,
+            )
+        if not self.has_variable_block_shape:
+            to_cache_block_names = [block[0] for block in all_blocks]
+        else:
+            to_cache_block_names = flatten_list(all_blocks)
+        _last_cache_name = to_cache_block_names[-1] if len(to_cache_block_names) > 1 else None
+        to_cache_layer_names = layer_names
+        if self.super_group_size is not None:
+            to_cache_layer_names = []
+        if len(layer_names) > 0:
+            logger.info(
+                "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
+            )
+        else:
+            logger.info("start to cache block inputs")
+        all_inputs = self.cache_data(
+            to_cache_block_names,
+            self.calibration_context.nsamples,
+            to_cache_layer_names,
+            last_cache_name=_last_cache_name,
+        )
+        # Raw token IDs from the tokenizer, cached during calibration for use in quantize_block.
+        input_ids_cache = all_inputs.pop("input_ids", None)
+        self.inputs = all_inputs
+
+        all_q_inputs = None
+        # Leave it to gguf itself to handle
+        if has_gguf and self.alg_composer.need_quanted_input():  # pylint: disable=E1101
+            is_quantized_embedding = self.alg_composer.compress_embedding_layer()
+            clear_memory()
+            if is_quantized_embedding:
+                all_inputs = copy.deepcopy(self.inputs)
+                clear_memory(self.inputs)
+                all_q_inputs = self.cache_data(
+                    to_cache_block_names,
+                    self.calibration_context.nsamples,
+                    to_cache_layer_names,
+                    last_cache_name=_last_cache_name,
+                )
+        # Remove accelerate dispatch hooks before moving parameters.
+        # hf_device_map is kept for reference but hooks are no longer needed.
+        if hasattr(self.model_context.model, "hf_device_map") and len(self.model_context.model.hf_device_map) > 1:
+            accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
+        self.model_context.model = mv_module_from_gpu(self.model_context.model)
+        clear_memory(device_list=device_manager.device_list)
+        device_manager.log_memory_summary()
+        logger.info("caching done")
+        if self.compress_context.low_cpu_mem_usage:
+            if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:
+                self._offloader(
+                    self.model_context.model,
+                    all_blocks,
+                    clear_memory=True,
+                    device_list=device_manager.device_list,
+                )
+                if not self._offloader.enabled:
+                    self.compress_context.low_cpu_mem_usage = False
+            elif self.model_context._disk_stream_index is not None:
+                # Dense (non-MoE-patched) models normally get low_cpu_mem_usage
+                # disabled here because the per-block offload/reload dance is
+                # pointless when the whole model is already CPU-resident from
+                # the initial full load -- there's no memory to save. That
+                # assumption doesn't hold when the model started as a meta
+                # skeleton (AR_DISK_STREAM_MODEL=1): blocks are still on meta
+                # and must go through the same reload()-before/offload()-after
+                # cycle to get materialized from disk one at a time and freed
+                # again, so keep it enabled here.
+                pass
+            else:
+                self.compress_context.low_cpu_mem_usage = False
+        if len(all_blocks) > 1:
+            pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
+        else:
+            pbar = tqdm(range(0, len(all_blocks[0]), self.nblocks))  # move the alg warning outside pbar
+
+        start_time = time.time()
+
+        resume_states = None
+
+        def run_blocks(replay=False):
+            nonlocal all_inputs, all_q_inputs, input_ids_cache, resume_states
+            if replay:
+                self._reload_model_for_tuning()
+                all_inputs = self.cache_data(
+                    to_cache_block_names,
+                    self.calibration_context.nsamples,
+                    to_cache_layer_names,
+                    last_cache_name=_last_cache_name,
+                )
+                input_ids_cache = all_inputs.pop("input_ids", None)
+                self.inputs = all_inputs
+                all_q_inputs = None
+                self.model_context.model = mv_module_from_gpu(self.model_context.model)
+                pbar.reset()
+            resume_states = self._run_cached_block_stage(all_blocks, all_inputs, all_q_inputs, input_ids_cache, pbar)
+
+        try:
+            handles_whole_model = self.alg_composer.compress_model(input_ids_cache, run_blocks)
+        finally:
+            pbar.close()
+        if handles_whole_model:
+            self.model_context.quantized = True
+            return self.model_context.model, self.layer_config
+
+        if resume_states is not None:
+            if self.compress_context.is_immediate_saving:
+                # Don't clear resume state yet when exporting to shards --
+                # a crash in the save/export step that follows this method
+                # returning (config writing, tokenizer copy, format-specific
+                # global packing pass) would otherwise force a full
+                # re-tune from block 0 on the next attempt, even though
+                # every block's weights are already correctly flushed to
+                # disk. quantize_and_save() clears these once
+                # save_quantized() actually succeeds.
+                self._resume_states = resume_states
+            else:
+                for rs in resume_states:
+                    rs.clear()
+
+        pbar.set_description("Quantizing done")
+        pbar.close()
+        # Pool placement is per-block: clear it so later forwards (outside-block
+        # layers, lm_head) keep today's cache-device behavior.
+        runner = getattr(self.alg_composer, "block_forward", None)
+        if runner is not None:
+            runner.pool_placement = None
+        if self.compress_context.low_cpu_mem_usage:
+            if envs.AR_RESUME_DIR and not self.compress_context.is_immediate_saving:
+                # `reload(names=None)` only reloads names in
+                # `self._offloader._saved` -- populated by THIS process's own
+                # offload() calls. A resumed process never touches blocks it
+                # skipped via ResumeState (they're left exactly as the meta
+                # skeleton started), so they'd never be in `_saved` and would
+                # stay meta in the returned model. Request every block
+                # explicitly so _reload()'s discovery check (see offload.py)
+                # gets a chance to pull each skipped block's real quantized
+                # weights back from a prior crashed process's offload dir.
+                #
+                # Skipped entirely under is_immediate_saving: ShardWriter has
+                # already flushed every block's packed weights to disk (both
+                # this run's and, via its own discovery, a prior crashed run's),
+                # and the `shard_writer.write(is_finalize=True)` call right
+                # below would treat any block reloaded back to real memory here
+                # as newly-dirty and re-emit its raw, unpacked weight tensor
+                # alongside the already-packed one.
+                self._offloader.reload(self.model_context.model, flatten_list(all_blocks))
+            elif not self.compress_context.is_immediate_saving:
+                self._offloader.reload(self.model_context.model)
+        self._quantize_layers_outside_blocks(layer_names, all_inputs, token_ids=input_ids_cache)
+
+        convert_module_to_hp_if_necessary(
+            self.model_context.model, self.model_context.amp_dtype, device_manager.device, to_cpu=True
+        )
+        if self.compress_context.is_immediate_saving:
+            self.shard_writer.write(is_finalize=True)
+
+        end_time = time.time()
+        cost_time = end_time - start_time
+        logger.info(f"quantization tuning time {cost_time}")
+
+        # Dump a summary
+        quantized_layers = []
+        unquantized_layers = []
+        for n, m in self.model_context.model.named_modules():
+            if isinstance(m, tuple(SUPPORTED_LAYER_TYPES)):
+                if check_to_quantized(m):
+                    quantized_layers.append(n)
+                else:
+                    unquantized_layers.append(n)
+            elif hasattr(m, "scales") or hasattr(m, "scale"):  # packing_immediately
+                quantized_layers.append(n)
+        summary_info = (
+            f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
+        )
+        if len(unquantized_layers) > 0:
+            compressed_unquantized_layers = compress_layer_names(unquantized_layers)
+            summary_info += f", unquantized layers: {compressed_unquantized_layers}"
+        logger.info(summary_info)
+
+        self.model_context.quantized = True
+        return self.model_context.model, self.layer_config
+
+    def _reload_model_for_tuning(self):
+        """Materialize offloaded/streamed blocks for another model-level pass."""
+        if (
+            self.compress_context.low_cpu_mem_usage
+            or getattr(self.model_context, "_disk_stream_index", None) is not None
+        ):
+            blocks = self.quant_block_list or get_block_names(self.model_context.model)
+            self._offloader.reload(self.model_context.model, flatten_list(blocks))
+
+    def _run_cached_block_stage(self, all_blocks, all_inputs, all_q_inputs, token_ids, pbar):
+        """Execute cached block groups with device/offload/resume infrastructure.
+
+        Algorithm selection and stage state belong to the composer. This service
+        always runs its active block pipeline, including for non-terminal stages.
+        """
+        resume_states = None
+        if envs.AR_RESUME_DIR:
+            if not self.compress_context.is_immediate_saving and not self.compress_context.low_cpu_mem_usage:
+                logger.warning(
+                    "AR_RESUME_DIR is set but neither immediate saving nor low_cpu_mem_usage is active. "
+                    "Pass low_cpu_mem_usage=True (or a format= to quantize_and_save) for resumability."
+                )
+            from auto_round.utils.resume import ResumeState, compute_run_signature, layer_config_fingerprint
+
+            model_dir = getattr(self.model_context, "disk_stream_model_dir", None) or getattr(
+                getattr(self.model_context.model, "config", None), "_name_or_path", None
+            )
+            dataset_desc = str(getattr(self, "dataset", None))
+            # Include resolved per-layer bits: str(self.scheme) is bits-blind
+            # for AutoScheme runs with different allocations.
+            scheme_desc = (
+                str(self.scheme)
+                + "|"
+                + layer_config_fingerprint(getattr(getattr(self, "quantizer", None), "layer_config", None))
+            )
+            resume_states = []
+            for group_idx, block_names in enumerate(all_blocks):
+                sig = compute_run_signature(
+                    model_dir,
+                    scheme_desc,
+                    dataset_desc,
+                    self.calibration_context.nsamples,
+                    self.calibration_context.seqlen,
+                    block_names,
+                )
+                resume_states.append(
+                    ResumeState(os.path.join(envs.AR_RESUME_DIR, f"group_{group_idx}"), sig, block_names)
+                )
+
+        for group_idx, block_names in enumerate(all_blocks):
+            inputs = all_inputs.pop(block_names[0])
+            q_inputs = all_q_inputs.pop(block_names[0], None) if all_q_inputs is not None else None
+            inputs, q_inputs = _update_inputs(inputs, q_inputs)
+            clear_memory(self.inputs)
+            resume_state = resume_states[group_idx] if resume_states is not None else None
+            resume_input_ids = None
+            if resume_state is not None and resume_state.resume_index > 0:
+                if self.nblocks != 1:
+                    logger.warning("AR_RESUME_DIR is set but nblocks != 1; restarting this group from block 0.")
+                    resume_state = None
+                else:
+                    resume_name = block_names[resume_state.resume_index]
+                    # Re-source position/mask metadata, but load the exact chained
+                    # hidden states rather than deriving them from this cache.
+                    if resume_name in all_inputs:
+                        inputs = all_inputs.pop(resume_name)
+                    q_inputs = resume_state.load_q_input()
+                    resume_input_ids = resume_state.load_input_ids()
+                    if resume_input_ids is None:
+                        logger.warning(
+                            "AR_RESUME_DIR manifest is missing its cached input_ids tensor; "
+                            "restarting this group from block 0."
+                        )
+                        resume_state = None
+                    else:
+                        pbar.update(resume_state.resume_index)
+            self._quantize_blocks(
+                self.model_context.model,
+                inputs,
+                block_names,
+                q_input=q_inputs,
+                nblocks=self.nblocks,
+                pbar=pbar,
+                input_others_extra_blocks=all_inputs,
+                token_ids=token_ids,
+                resume_state=resume_state,
+                resume_input_ids=resume_input_ids,
+            )
+            if self.compress_context.is_immediate_packing and len(self.formats) != 1:
+                raise ValueError(
+                    f"Expected exactly one packing format when 'immediate_packing' is True, "
+                    f"but got {len(self.formats)} formats."
+                )
+        return resume_states
+
+    def _quantize_layers_outside_blocks(
+        self,
+        layer_names: list,
+        layer_inputs: dict,
+        token_ids: list[torch.Tensor] | None = None,
+    ) -> None:
+        """Quantizes specified layers based on inputs and configuration.
+
+        Args:
+            layer_names (list): list of layer names to quantize.
+            layer_inputs (dict): Dictionary mapping layer names to input data.
+
+        Returns:
+            None
+        """
+        # TODO currently we take all the layers outside blocks as post block layers which is not optimal
+        # if there is no input for layer, we use rtn
+
+        for layer_name in copy.deepcopy(layer_names):
+            if layer_name not in layer_inputs:
+                if self.act_bits < 16 and not self.act_dynamic:
+                    if "lm_head" in layer_name:
+                        logger.warning_once(
+                            "Static activation quantization for lm_head is not fully supported yet. "
+                            "If lm_head calibration inputs are missing, activation scale may fall back to unit scale "
+                            "or quantization may be skipped."
+                        )
+                    # Activation quantization requires collected inputs
+                    msg_prefix = (
+                        f"Activation max hook for layer '{layer_name}' is unavailable due to "
+                        f"insufficient collected inputs. "
+                    )
+                    if "fp8_e5m2" in self.act_data_type:
+                        logger.warning(msg_prefix + "Please notes that unit scale is used for this layer.")
+                    else:
+                        logger.warning(
+                            msg_prefix + "Static activation quantization is not supported or ineffective, "
+                            "Skipping quantization for this layer."
+                        )
+                        layer_names.remove(layer_name)
+                        continue
+                self.alg_composer.compress_layer_outside_block(
+                    get_module(self.model, layer_name),
+                    disable_opt_rtn=getattr(self, "disable_opt_rtn", False),
+                    input_ids=token_ids,
+                )
+                layer_names.remove(layer_name)
+                _layer_cfg_names = self.layer_config  # hoisted: property rebuilds per read
+                if self.compress_context.is_immediate_packing:
+                    immediate_pack(layer_name, _layer_cfg_names)
+
+                if self.compress_context.is_immediate_saving:
+                    m = get_module(self.model, layer_name)
+                    self.shard_writer.write(m, name=layer_name, is_finalize=False)
+        if len(layer_names) == 0:
+            memory_monitor.update()
+            memory_monitor.log_summary()
+            return
+        q_layer_inputs = None
+        enable_quanted_input = self.alg_composer.need_quanted_input()
+        has_gguf = False
+
+        if hasattr(self, "formats") and self.formats is not None:
+            has_gguf = any(format_.is_gguf() for format_ in self.formats)
+        if has_gguf and self.compress_context.is_immediate_packing:
+            enable_quanted_input = False
+
+        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
+            dispatch_model(self.model, self.model.hf_device_map)
+
+        if enable_quanted_input:
+            logger.info("starting to cache layer inputs for %s, this may be quite slow ", layer_names)
+            q_layer_inputs = self.cache_data([], self.calibration_context.nsamples, layer_names=layer_names)
+            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
+                accelerate.hooks.remove_hook_from_submodules(
+                    self.model
+                )  # self.model.hf_device_map has not been changed
+        if not self.compress_context.is_immediate_saving:
+            self.model = mv_module_from_gpu(self.model)
+        clear_memory()
+        for layer_name in layer_names:
+            layer_input = layer_inputs[layer_name]
+            layer_input = to_device(layer_input, self.compress_context.cache_device)
+            q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
+            q_layer_input = to_device(q_layer_input, self.compress_context.cache_device)
+            self.alg_composer.compress_layer_outside_block(
+                get_module(self.model, layer_name),
+                fp_inputs=layer_input,
+                q_inputs=q_layer_input,
+                input_ids=token_ids,
+            )
+            _layer_cfg_names = self.layer_config  # hoisted: property rebuilds per read
+            if self.compress_context.is_immediate_packing:
+                immediate_pack(layer_name, _layer_cfg_names)
+
+            if self.compress_context.is_immediate_saving:
+                m = get_module(self.model, layer_name)
+                self.shard_writer.write(m, name=layer_name, is_finalize=False)
+            del layer_input
+            clear_memory(q_layer_input)
+            memory_monitor.log_summary()
+
+    def _check_compatibility(self) -> None:
+        """Checks compatibility of the configurations and model."""
+        # ``seqlen`` clamping is owned by ``CalibrationState``.
+        self.calibration_context.clamp_seqlen(self.model_context)
+
+        if self.group_size == 0 and "fp8" not in self.data_type:
+            logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
+
+    # This is also for llmc
+    def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]) -> None:
+        """Replay captured decoding-layer calls to populate ``self.inputs``.
+
+        Converts the raw ``(args, kwargs)`` tuples captured by LLM-Compressor's
+        input hook into the ``self.inputs`` dict format expected by
+        :meth:`quantize_block`.  The logic mirrors the old-arch implementation in
+        ``compressors/base.py``.
+
+        Args:
+            decoding_layer_inputs:
+                A list of entries captured by a forward hook on the decoding layer.
+                Each element is a tuple whose first item is ``(args, kwargs)``.
+        """
+        first_block_name = self.quant_block_list[0][0]
+
+        class _FakeDecodingLayer(torch.nn.Module):
+
+            def forward(self, *args, **kwargs):
+                return args, kwargs
+
+        fake_layer = _FakeDecodingLayer()
+        fake_layer.orig_forward = fake_layer.forward
+        fake_layer._true_orig_forward = lambda *a, **kw: (a, kw)
+        fake_layer.forward = partial(self.calibration._get_block_forward_func(first_block_name), fake_layer)
+
+        self.calibration.inputs = {}
+        self.calibration.last_cache_name = None
+        for step_input in decoding_layer_inputs:
+            args, kwargs = step_input[0]
+            fake_layer(*args, **kwargs)
+
+    # This is the API for llm-compressor, not used in AutoRound
+    def quantize_block(
+        self,
+        block: torch.nn.Module,
+        inputs: Any,
+        q_input: torch.Tensor | dict | None = None,
+        device: str | torch.device = "cpu",
+        auto_offload: bool = True,
+        reference_output=None,
+    ) -> Any:
+        """Quantize a single decoded block of the model (public API for LLM-Compressor).
+
+        This method handles both data-driven and zero-shot (RTN) quantization.
+        When calibration data is not needed, ``inputs`` and ``q_input`` are accepted
+        for interface compatibility but not used for algorithm purposes.
+
+        Args:
+            block: The transformer block (decoder layer) to quantize.
+            inputs: Either:
+
+                - the raw decoding-layer inputs captured by
+                  LLM-Compressor's hook (list of ``((args, kwargs),)`` tuples),
+                  in which case they are normalized via
+                  :meth:`normalize_decoding_layer_inputs_`; **or**
+                - a :class:`~auto_round.calibration.state.CalibrationState`
+                  instance produced by a :class:`~auto_round.calibration.base.Calibrator`,
+                  which is bound directly without re-normalization.
+            q_input: Optional quantized input from the previous block.  ``None`` on
+                the first block.
+            device: Target device for quantization (e.g. ``"cuda:0"``).
+            auto_offload: When *True*, use the device-map-aware offloading path;
+                otherwise move ``block`` directly to ``device``.
+            reference_output: Optional pre-computed FP16 reference outputs (list of
+                tensors, one per calibration sample). When provided, the internal
+                collect_reference forward pass is skipped, saving significant peak
+                CPU RAM on large models. Supplied by LLM-Compressor's SequentialPipeline
+                via ``AutoRoundModifier.set_fp_ref_outputs()``. Requires auto-round ≥ 0.14.2.
+
+        Returns:
+            tuple: ``(q_outputs, reference_output)`` where *q_outputs* is the
+            block's output after quantization (or ``None`` when
+            ``enable_quanted_input`` is ``False``), and *reference_output* is the
+            full-precision reference output collected before optimization.
+        """
+
+        if self.diffusion:
+            raise NotImplementedError(
+                f"Currently, {self.__class__.__name__} does not support quantize_block for diffusion models."
+            )
+
+        # Ensure post_init has been called (sets up model_context, compress_context,
+        # quantizer, layer_config, etc.).
+        if not self._post_init_done:
+            self.post_init()
+
+        # Layer-wise rotation is driven by the internal block loop inside
+        # ``AlgorithmComposer.compress_block`` (rotate as step 0, cleanup in
+        # ``finalize_run``). This externally-driven single-block API cannot
+        # guarantee that lifecycle, and rotating here would desync the caller's
+        # own reference/teacher outputs (collected on the un-rotated block).
+        # Fail loudly instead of producing silently wrong results.
+        if self.alg_composer.has_layerwise_rotation:
+            raise NotImplementedError(
+                "Layer-wise rotation (rotation config `layerwise=True`) is not supported "
+                "through the single-block quantize_block() API (e.g. LLM-Compressor). Use "
+                "the full AutoRound quantize() entry point, or set `layerwise=False` on the "
+                "rotation config to apply full-model rotation up-front."
+            )
+
+        # ── Zero-shot (RTN) path: no calibration data needed ──────────────────
+        if not self.need_calib:
+            from auto_round.algorithms.composer import BlockContext
+
+            materialize_model_(block)
+            convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
+            from auto_round.utils.model import move_to_device_preserving_cpu_pinned, pin_ngram_embeddings_on_cpu_
+
+            pin_ngram_embeddings_on_cpu_(block)
+            block = move_to_device_preserving_cpu_pinned(block, device)
+
+            ctx = BlockContext(
+                model=self.model,
+                block_names=[getattr(block, "global_name", "")],
+                block_name=getattr(block, "global_name", ""),
+                block_index=0,
+            )
+            self.alg_composer.compress_block(block, None, {}, block_ctx=ctx, q_inputs=None)
+
+            mv_module_from_gpu(block)
+            return None, None
+
+        if len(self.quant_block_list) != 1 or len(self.quant_block_list[0]) != 1:
+            raise ValueError(
+                f"{self.__class__.__name__}.quantize_block supports exactly one target block, "
+                f"but quant_block_list is {self.quant_block_list!r}. "
+                "Use to_quant_block_names to select a single block."
+            )
+        expected_block_name = self.quant_block_list[0][0]
+        actual_block_name = getattr(block, "global_name", None)
+        if actual_block_name is not None and actual_block_name != expected_block_name:
+            raise ValueError(
+                f"quantize_block received block {actual_block_name!r}, but cached inputs are for "
+                f"{expected_block_name!r}. Pass the matching block or update to_quant_block_names."
+            )
+
+        # When called from LLM-Compressor, `wrapped_model` is a single decoder layer
+        # (not the full VL model), so it must not be treated as an MLLM regardless of
+        # whether the original model had multimodal assets.  Force is_mllm=False for
+        # the duration of this call to stay on the standard LLM quantize_block path.
+        orig_is_mllm = self.model_context.is_mllm
+        self.model_context.is_mllm = False
+
+        if isinstance(inputs, CalibrationContext):
+            # Caller already produced a CalibrationState (typically via
+            # ``Calibrator.collect``).  Bind it as the authoritative store so
+            # the quantizer reads the same ``inputs`` / ``attention_mask`` /
+            # ``batch_dim``.
+            self.calibration_context = inputs
+        else:
+            self.normalize_decoding_layer_inputs_(inputs)
+        block_inputs = self.calibration.inputs[self.quant_block_list[0][0]]
+        input_ids, input_others = self._preprocess_block_inputs(block_inputs, "hidden_states")
+
+        # ── Infrastructure: materialize, dtype convert, device placement ──────
+        materialize_model_(block)
+        convert_module_to_hp_if_necessary(block, self.model_context.amp_dtype, device)
+
+        if auto_offload:
+            if (
+                is_auto_device_mapping(device_manager.device_map)
+                and len(device_manager.device_list) > 1
+                and not self.model_context.is_diffusion
+            ):
+                from auto_round.utils.device import set_auto_device_map_for_block_with_tuning
+
+                card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
+                    block,
+                    device_manager.device_list,
+                    input_ids,
+                    self.compress_context.low_gpu_mem_usage,
+                    self.calibration_context.batch_size,
+                    device,
+                )
+            else:
+                from auto_round.utils.model import (
+                    move_to_device_preserving_cpu_pinned,
+                    place_ngram_embeddings_for_tuning_,
+                )
+
+                place_ngram_embeddings_for_tuning_(block)
+                block = move_to_device_preserving_cpu_pinned(block, device)
+                card_0_in_high_risk, loss_device = False, device
+        else:
+            card_0_in_high_risk, loss_device = False, device
+
+        if len(device_manager.device_list) > 1 and auto_offload:
+            from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+            for n, m in block.named_modules():
+                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
+                    continue
+                add_hook_to_module(m, AlignDevicesHook(m.tuning_device, io_same_device=True), True)
+
+        blk_name = self.quant_block_list[0][0]
+
+        bs = self.calibration_context.batch_size
+
+        from auto_round.algorithms.composer import BlockContext
+
+        ctx = BlockContext(
+            model=self.model,
+            block_names=[blk_name],
+            block_name=blk_name,
+            block_index=0,
+            bs=bs,
+            is_mllm=False,
+            is_diffusion=False,
+        )
+
+        # ── Run block pipeline (calibration → quantization → collection) ──────
+        new_q_input, reference_output = self.alg_composer.compress_block(
+            block,
+            input_ids,
+            input_others,
+            block_ctx=ctx,
+            q_inputs=q_input,
+            reference_output=reference_output,
+        )
+
+        # ── Cleanup ───────────────────────────────────────────────────────────
+        if q_input is not None:
+            if input_ids is not q_input:
+                clear_memory(input_ids)
+            else:
+                clear_memory()
+
+        if len(device_manager.device_list) > 1:
+            accelerate.hooks.remove_hook_from_submodules(block)
+        mv_module_from_gpu(block)
+        self.model_context.is_mllm = orig_is_mllm
+        return new_q_input, reference_output

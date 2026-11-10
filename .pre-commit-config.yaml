@@ -8,12 +8,13 @@ repos:
     hooks:
       - id: check-json
       - id: check-yaml
+      - id: check-case-conflict
       - id: debug-statements
       - id: mixed-line-ending
         args: [--fix=lf]
 
   - repo: https://github.com/Lucas-C/pre-commit-hooks
-    rev: v1.5.5
+    rev: v1.5.6
     hooks:
       - id: insert-license
         files: |
@@ -21,22 +22,24 @@ repos:
             auto_round/.*(py|yaml|yml|sh)|
             auto_round_extension/.*(py|yaml|yml|sh)
           )$
+        exclude: ^auto_round/export/formats/gguf/conversion/.*\.py$
         args:
           [
-            --license-filepath=.azure-pipelines/license_template.txt,
+            --license-filepath=.github/license_template.txt,
             --use-current-year,
             --detect-license-in-X-top-lines=40,
             --skip-license-insertion-comment=Copyright,
           ]
 
   - repo: https://github.com/psf/black-pre-commit-mirror
-    rev: 25.12.0
+    rev: 26.10.0
     hooks:
       - id: black
         files: (.*\.py)$
         exclude: |
           (?x)^(
-              .azure-pipelines/scripts/cuda_unit_test/.+
+              .azure-pipelines/scripts/cuda_unit_test/.+|
+              auto_round/export/formats/gguf/conversion/.+
           )$
 
 
@@ -46,34 +49,50 @@ repos:
       - id: blacken-docs
         args: [--line-length=120, --skip-errors]
         additional_dependencies:
-          - black==25.9.0
+          - black==26.5.1
 
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.1
+    rev: v2.4.3
     hooks:
       - id: codespell
         args: [-w]
+        exclude: ^auto_round/export/formats/gguf/conversion/.*\.py$
         additional_dependencies:
           - tomli
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1
+    rev: typos-dict-v0.14.2
     hooks:
       - id: typos
+        exclude: ^auto_round/export/formats/gguf/conversion/.*\.py$
 
   - repo: https://github.com/pycqa/isort
-    rev: 7.0.0
+    rev: 9.0.2
     hooks:
       - id: isort
+        exclude: ^auto_round/export/formats/gguf/conversion/.*\.py$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.10
+    rev: v0.16.10
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix, --no-cache]
+        exclude: ^auto_round/export/formats/gguf/conversion/.*\.py$
 
   - repo: https://github.com/tcort/markdown-link-check
-    rev: v3.14.2
+    rev: v3.15.0
     hooks:
       - id: markdown-link-check
         args: [-q, -c .azure-pipelines/scripts/codeScan/markdown-link-check/markdown-link-check.json]
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: "1.9.4"
+    hooks:
+      - id: bandit
+        files: |
+          (?x)^(
+            auto_round/.*\.py|
+            auto_round_extension/.*\.py
+          )$
+        exclude: ^auto_round/export/formats/gguf/conversion/.*\.py$
+        args: [-r, -lll, -iii, auto_round/, auto_round_extension/]

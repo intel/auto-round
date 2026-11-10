@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from auto_round.utils.device import *
+from auto_round.utils.device_manager import *
 from auto_round.utils.common import *
 from auto_round.utils.model import *
 from auto_round.utils.weight_handler import (
@@ -20,7 +21,30 @@ from auto_round.utils.weight_handler import (
     detect_weight_type,
     is_quantized_input_module,
 )
-from auto_round.utils.missing_tensors import copy_missing_tensors_from_source
+from auto_round.utils.dataset_utils import (
+    CalibDataset,
+    auto_detect_text_field,
+    auto_detect_text_field_from_sample,
+    build_dataset_spec,
+    extract_text_from_sample,
+    normalize_dataset_spec,
+    parse_dataset_spec,
+)
+
+
+def copy_missing_tensors_from_source(*args, **kwargs):
+    from auto_round.utils.missing_tensors import copy_missing_tensors_from_source as _copy_missing_tensors_from_source
+
+    return _copy_missing_tensors_from_source(*args, **kwargs)
+
+
+def restore_fp32_tensors_from_source(*args, **kwargs):
+    from auto_round.utils.missing_tensors import (
+        restore_fp32_tensors_from_source as _restore_fp32_tensors_from_source,
+    )
+
+    return _restore_fp32_tensors_from_source(*args, **kwargs)
+
 
 import transformers
 from packaging.version import Version

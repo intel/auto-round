@@ -16,9 +16,11 @@ import inspect
 import json
 import os
 import re
+import sys
 from collections import UserDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Union
+from typing import TYPE_CHECKING, Any
 
 import psutil
 import torch
@@ -26,15 +28,55 @@ import transformers
 from packaging import version
 
 from auto_round import envs
-from auto_round.export.export_to_gguf.config import ModelType
+from auto_round.export.formats.gguf.config import ModelType
 from auto_round.logger import logger
-from auto_round.schemes import QuantizationScheme
+from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, monkey_patch_model
+from auto_round.utils.path_safety import UnsafeCheckpointPathError
 from auto_round.utils.weight_handler import (
     _dequant_fp8_linear_weight,
     check_and_mark_quantized_module,
     convert_module_to_hp_if_necessary,
     is_quantized_input_module,
 )
+
+# Maps architecture class names to virtual model_type keys.
+# Used when config.model_type doesn't uniquely identify the model (e.g. MiMo-Audio
+# has model_type="qwen2" but needs audio-specific handling).
+ARCHITECTURE_MODEL_TYPE_MAP = {
+    "MiMoAudioModel": "mimo_audio",
+    "MiMoAudioForCausalLM": "mimo_audio",
+}
+
+
+def resolve_model_type(model):
+    """Resolve the effective model type using architecture class name as primary source.
+
+    This function prioritizes the model's architecture class name (from config.architectures)
+    over config.model_type to handle models where the two diverge (e.g., MiMo-Audio has
+    architecture="MiMoAudioModel" but model_type="qwen2" on HuggingFace).
+
+    Args:
+        model: A model instance with optional config attribute.
+
+    Returns:
+        str or None: The resolved model type identifier, or None if config is missing.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return None
+    # Check architecture-based override first
+    archs = getattr(config, "architectures", None)
+    if archs:
+        for arch in archs:
+            if arch in ARCHITECTURE_MODEL_TYPE_MAP:
+                return ARCHITECTURE_MODEL_TYPE_MAP[arch]
+    return getattr(config, "model_type", None)
+
+
+FIX_MISTRAL_REGEX_MODEL_TYPE_LIST = ["longcat_next"]
+
+if TYPE_CHECKING:
+    from auto_round.schemes import QuantizationScheme
 
 
 def clean_module_parameter(submodule: torch.nn.Module, param_name: str) -> None:
@@ -151,7 +193,7 @@ def check_diffusers_installed():  # pragma: no cover
         return True
     except ImportError:
         logger.error("Please install diffusers via 'pip install diffusers'" " to run diffusion model")
-        exit(-1)
+        sys.exit(-1)
 
 
 def check_start_with_block_name(name: str, block_name_to_quantize: list):
@@ -171,7 +213,7 @@ def check_start_with_block_name(name: str, block_name_to_quantize: list):
     return False
 
 
-def download_or_get_path(repo_id: str, platform: str = None) -> str:
+def download_or_get_path(repo_id: str, platform: str | None = None, revision: str | None = None) -> str:
     from auto_round import envs
 
     if platform is None:
@@ -181,12 +223,14 @@ def download_or_get_path(repo_id: str, platform: str = None) -> str:
             platform = "hf"
 
     if platform == "model_scope":
-        return download_modelscope_model(repo_id)
+        return download_modelscope_model(repo_id, revision=revision)
     else:
-        return download_hf_model(repo_id)
+        return download_hf_model(repo_id, revision=revision)
 
 
-def download_modelscope_model(repo_id: str, local_dir: str = None, cache_dir: str = None):
+def download_modelscope_model(
+    repo_id: str, local_dir: str | None = None, cache_dir: str | None = None, revision: str | None = None
+):
     from modelscope.utils.file_utils import get_modelscope_cache_dir  # pylint: disable=E0401
 
     system_cache = cache_dir if cache_dir is not None else get_modelscope_cache_dir()
@@ -196,12 +240,12 @@ def download_modelscope_model(repo_id: str, local_dir: str = None, cache_dir: st
         directory = os.path.join(system_cache, *repo_id.split("/"))
     else:
         directory = os.path.join(system_cache, "models", *repo_id.split("/"))
-    if os.path.exists(directory):
+    if os.path.exists(directory) and revision is None:
         return directory
     else:
         from modelscope.hub.snapshot_download import snapshot_download  # pylint: disable=E0401
 
-        return snapshot_download(repo_id)
+        return snapshot_download(repo_id, revision=revision)
 
 
 def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
@@ -231,7 +275,7 @@ def download_hf_model(repo_id, cache_dir=None, repo_type=None, revision=None):
     else:  # pragma: no cover
         from huggingface_hub import snapshot_download
 
-        model_path = snapshot_download(repo_id)
+        model_path = snapshot_download(repo_id, revision=revision)
         return model_path
 
 
@@ -250,6 +294,7 @@ def _check_accelerate_version():
 
 
 _MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
+_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32"}
 
 
 def _is_mxfp4_model(model_path, trust_remote_code=True):
@@ -262,7 +307,7 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
 
     try:  # in case of config loading failure for new models
         config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
-    except:
+    except Exception:
         return False
 
     model_type = getattr(config, "model_type", "")
@@ -281,11 +326,129 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
     return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
 
 
+def _is_fp8_model(model_path, trust_remote_code=True):
+    """Check if a model is an FP8 quantized model supported for direct loading.
+
+    Only checks when transformers >= 4.56.0. Returns False immediately for older versions,
+    adding zero overhead to non-FP8 model loading.
+    """
+    if version.parse(transformers.__version__) < version.parse("4.56.0"):
+        return False
+
+    from transformers import AutoConfig
+
+    try:  # in case of config loading failure for new models
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
+    except Exception:
+        return False
+
+    model_type = getattr(config, "model_type", "")
+    if model_type not in _FP8_SUPPORTED_MODEL_TYPES:
+        return False
+
+    quant_config = getattr(config, "quantization_config", None)
+    if quant_config is None:
+        return False
+
+    quant_method = (
+        quant_config.get("quant_method", "")
+        if isinstance(quant_config, dict)
+        else getattr(quant_config, "quant_method", "")
+    )
+    return quant_method == "fp8" and model_type in _FP8_SUPPORTED_MODEL_TYPES
+
+
+def _maybe_truncate_debug_layers(config) -> bool:
+    """Debug helper: truncate the number of decoder layers on a config in place.
+
+    Controlled by the ``AR_DEBUG_LAYER_NUM`` env var (exposed on the CLI as
+    ``--num_hidden_layers``). When set to a positive integer N, only the first N
+    decoder layers are kept so that very large models can be loaded quickly with
+    a fraction of the memory for isolating and debugging issues.
+
+    Handles both flat configs (``num_hidden_layers``) and the nested sub-configs
+    used by multimodal models (e.g. ``text_config`` on a Qwen*-VL config). Every
+    reachable ``PretrainedConfig`` that exposes ``num_hidden_layers`` is truncated.
+
+    Returns ``True`` if the config was modified.
+    """
+    debug_layer_num = envs.AR_DEBUG_LAYER_NUM
+    if debug_layer_num is None or config is None:
+        return False
+
+    # Collect the config itself plus any nested sub-config it carries. Multimodal
+    # models keep the decoder layer count on a sub-config (text_config /
+    # thinker_config / ...), so scan the attribute dict generically instead of
+    # hard-coding one name.
+    targets = [config]
+    seen = {id(config)}
+    for cfg in targets:
+        for value in list(getattr(cfg, "__dict__", {}).values()):
+            if id(value) not in seen and (
+                isinstance(value, transformers.PretrainedConfig) or hasattr(value, "num_hidden_layers")
+            ):
+                targets.append(value)
+                seen.add(id(value))
+
+    changed = False
+    for cfg in targets:
+        current = getattr(cfg, "num_hidden_layers", None)
+        if isinstance(current, int) and debug_layer_num < current:
+            cfg.num_hidden_layers = debug_layer_num
+            changed = True
+
+    if changed:
+        logger.warning_once(
+            f"AR_DEBUG_LAYER_NUM={debug_layer_num} is set: loading only the first {debug_layer_num} "
+            "decoder layer(s) for debugging. The resulting model is partial and must not be used for a "
+            "real quantization run."
+        )
+    return changed
+
+
+def install_debug_layer_config_patch() -> None:
+    """Make ``AR_DEBUG_LAYER_NUM`` apply to *every* model-loading path.
+
+    The various loaders (``llm_load_model`` / ``mllm_load_model`` /
+    ``diffusion_load_model`` / the meta-skeleton builder) each let ``transformers``
+    resolve the config internally, so there is no single AutoRound call site to
+    intercept. They do all funnel through ``PretrainedConfig.from_dict`` (used by
+    ``AutoConfig.from_pretrained``, every concrete config's ``from_pretrained``,
+    and therefore every ``model.from_pretrained``), so patch that one classmethod
+    to truncate the decoder-layer count on the freshly built config.
+
+    No-op unless ``AR_DEBUG_LAYER_NUM`` is set. Idempotent.
+    """
+    if envs.AR_DEBUG_LAYER_NUM is None:
+        return
+
+    from transformers import PretrainedConfig
+
+    original = PretrainedConfig.__dict__.get("from_dict")
+    if original is None or getattr(original.__func__, "_ar_debug_patched", False):
+        return
+    original_func = original.__func__
+
+    def _patched_from_dict(cls, config_dict, **kwargs):
+        result = original_func(cls, config_dict, **kwargs)
+        # from_dict returns either the config or a (config, unused_kwargs) tuple.
+        config = result[0] if isinstance(result, tuple) else result
+        try:
+            _maybe_truncate_debug_layers(config)
+        except Exception as exc:  # pragma: no cover - best-effort debug path
+            logger.debug(f"AR_DEBUG_LAYER_NUM truncation skipped for {cls}: {exc}")
+        return result
+
+    _patched_from_dict._ar_debug_patched = True
+    PretrainedConfig.from_dict = classmethod(_patched_from_dict)
+    logger.debug("Installed AR_DEBUG_LAYER_NUM config patch on PretrainedConfig.from_dict")
+
+
 def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
     trust_remote_code: bool = True,
-    model_dtype: str = None,
+    model_dtype: str | None = None,
     device: str = "cpu",
     **kwargs,
 ):
@@ -307,21 +470,44 @@ def llm_load_model(
         _use_hpu_compile_mode,
         fake_cuda_for_hpu,
         fake_triton_for_hpu,
-        get_device_and_parallelism,
         is_hpex_available,
         override_cuda_device_capability,
     )
+    from auto_round.utils.device_manager import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
     if device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
+    if "dtype" in kwargs:
+        torch_dtype = kwargs.pop("dtype")
+        kwargs.pop("torch_dtype", None)
+    elif "torch_dtype" in kwargs:
+        torch_dtype = kwargs.pop("torch_dtype")
+    dtype_key = (
+        "dtype"
+        if platform == "hf" and version.parse(transformers.__version__) >= version.parse("4.56.0")
+        else "torch_dtype"
+    )
     load_kwargs = {
-        "torch_dtype": torch_dtype,
+        dtype_key: torch_dtype,
         "trust_remote_code": trust_remote_code,
         "device_map": "auto" if use_auto_mapping else None,
     }
+    load_kwargs.update(kwargs)
+
+    # Debug helper: honor AR_DEBUG_LAYER_NUM (load only the first N decoder
+    # layers) on every load path via a transformers config patch.
+    install_debug_layer_config_patch()
+
+    if version.parse(transformers.__version__) >= version.parse("4.56.0"):
+        is_fp8 = _is_fp8_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+        if is_fp8 and "quantization_config" not in load_kwargs:
+            from transformers import FineGrainedFP8Config
+
+            load_kwargs["quantization_config"] = FineGrainedFP8Config(dequantize=True)
+            logger.info("Detected FP8 quantized model, using FineGrainedFP8Config(dequantize=True) for loading.")
 
     if version.parse(transformers.__version__) >= version.parse("5.0.0"):
         is_mxfp4 = _is_mxfp4_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
@@ -330,6 +516,26 @@ def llm_load_model(
 
             load_kwargs["quantization_config"] = Mxfp4Config(dequantized=True)
             logger.info("Detected MXFP4 quantized model, using Mxfp4Config(dequantized=True) for loading.")
+
+    # BAGEL requires a custom loader (Qwen2 + not extensions, not in transformers)
+    _config_path = (
+        os.path.join(pretrained_model_name_or_path, "config.json")
+        if os.path.isdir(pretrained_model_name_or_path)
+        else None
+    )
+    if _config_path and os.path.exists(_config_path):
+        with open(_config_path) as _f:
+            _mt = json.load(_f).get("model_type")
+        if _mt == "bagel":
+            from auto_round.utils.bagel_loader import load_bagel_model
+
+            model, tokenizer = load_bagel_model(
+                pretrained_model_name_or_path,
+                torch_dtype=torch_dtype,
+            )
+            model = _to_model_dtype(model, model_dtype)
+            model._autoround_to_quant_block_names = "language_model.model.layers"
+            return model, tokenizer
 
     is_glm = bool(re.search("chatglm", pretrained_model_name_or_path.lower()))
 
@@ -361,14 +567,32 @@ def llm_load_model(
             )
 
     model = model.eval()
+    monkey_patch_model(model)
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
+    _keep_checkpoint_fp32_params(model, pretrained_model_name_or_path, platform, revision=load_kwargs.get("revision"))
     model = _to_model_dtype(model, model_dtype)
 
     return model, tokenizer
 
 
-def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list = None) -> tuple:
+def _keep_checkpoint_fp32_params(model, pretrained_model_name_or_path, platform, subfolder=None, revision=None):
+    """Keep FP32 tensors of a mixed-precision checkpoint in FP32 after ``from_pretrained``."""
+    from auto_round.utils.missing_tensors import keep_special_fp32_params
+
+    revision = getattr(getattr(model, "config", None), "_commit_hash", None) or revision
+    try:
+        source_dir = pretrained_model_name_or_path
+        if not os.path.isdir(source_dir):
+            source_dir = download_or_get_path(source_dir, platform=platform, revision=revision)
+        if subfolder is not None:
+            source_dir = os.path.join(source_dir, subfolder)
+        keep_special_fp32_params(model, source_dir)
+    except Exception as e:
+        logger.warning(f"Skipping restore of FP32 tensors from the checkpoint due to error: {e}")
+
+
+def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list | None = None) -> tuple:
     """Find model/processor subfolders from a pipeline's model_index.json.
 
     Works for both local directories and remote HF repos.
@@ -406,6 +630,9 @@ def _find_pipeline_model_subfolder(model_dir_or_repo: str, file_list: list = Non
     for name, value in model_index.items():
         if name.startswith("_") or not isinstance(value, list) or len(value) < 2:
             continue
+        # The chosen name becomes a read subfolder and later an output subfolder.
+        if not name.isidentifier():
+            raise UnsafeCheckpointPathError(f"model_index.json: component name {name!r} is not a plain directory name")
         # Load component config.json
         if is_local:
             cfg_path = os.path.join(model_dir_or_repo, name, "config.json")
@@ -444,9 +671,14 @@ def mllm_load_model(
     torch_dtype: str = "auto",
     use_auto_mapping: bool = True,
     trust_remote_code: bool = True,
-    model_dtype: str = None,
+    model_dtype: str | None = None,
     **kwargs,
 ):
+    from auto_round.modeling.nemotron_h_omni import (
+        nemotron_h_omni_load_kwargs,
+        prefer_remote_omni_class,
+        register_nemotron_h_omni_checkpoint_mapping,
+    )
     from auto_round.special_model_handler import MISTRAL_3_2_MODELS
 
     _check_accelerate_version()
@@ -460,16 +692,23 @@ def mllm_load_model(
 
     if platform == "model_scope":
         import modelscope  # pylint: disable=E0401
-        from modelscope import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer  # pylint: disable=E0401
+        from modelscope import (  # pylint: disable=E0401
+            AutoConfig,
+            AutoModel,
+            AutoModelForCausalLM,
+            AutoProcessor,
+            AutoTokenizer,
+        )
 
         base_lib = modelscope
     else:
         import transformers
-        from transformers import AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+        from transformers import AutoConfig, AutoModel, AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
         base_lib = transformers
 
-    from auto_round.utils.device import get_device_and_parallelism, override_cuda_device_capability
+    from auto_round.utils.device import override_cuda_device_capability
+    from auto_round.utils.device_manager import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
     torch_dtype = "auto"
@@ -510,6 +749,7 @@ def mllm_load_model(
         model_type = config["model_type"]
     else:
         model_type = None
+    register_nemotron_h_omni_checkpoint_mapping(config, trust_remote_code)
 
     if model_type == "qwen2_5_omni":
         if version.parse(transformers.__version__) < version.parse("4.52.0"):
@@ -526,7 +766,84 @@ def mllm_load_model(
             )
 
     processor, image_processor = None, None
-    if "deepseek_vl_v2" == model_type:
+    if "qwen3_tts" == model_type:
+        try:
+            from qwen_tts.core.models import Qwen3TTSConfig, Qwen3TTSForConditionalGeneration
+            from qwen_tts.core.models.processing_qwen3_tts import Qwen3TTSProcessor
+
+            AutoConfig.register("qwen3_tts", Qwen3TTSConfig)
+            AutoModel.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
+            AutoModelForCausalLM.register(Qwen3TTSConfig, Qwen3TTSForConditionalGeneration)
+            AutoProcessor.register(Qwen3TTSConfig, Qwen3TTSProcessor)
+        except ImportError:
+            raise ImportError("Qwen3-TTS requires the 'qwen-tts' package. " "Please install it: pip install qwen-tts")
+        except TypeError as e:
+            if "check_model_inputs" in str(e):
+                raise ImportError(
+                    f"Qwen3-TTS 'qwen-tts' package is incompatible with transformers {transformers.__version__}. "
+                    "Please upgrade qwen-tts: pip install -U qwen-tts"
+                ) from e
+            raise
+
+    # MiMo-Audio: architectures=["MiMoAudioModel"] but model_type="qwen2".
+    # Requires MiMo-Audio SDK from https://github.com/XiaomiMiMo/MiMo-Audio
+    # Set MIMO_AUDIO_PATH env var to the cloned repo root (containing src/mimo_audio/).
+    architectures = config.get("architectures", [])
+    _is_mimo_audio = any(a in ("MiMoAudioModel", "MiMoAudioForCausalLM") for a in architectures)
+
+    if _is_mimo_audio:
+        try:
+            from mimo_audio.modeling_mimo_audio import MiMoAudioArguments, MiMoAudioForCausalLM
+        except ImportError:
+            # Try adding MIMO_AUDIO_PATH/src to sys.path
+            mimo_path = os.environ.get("MIMO_AUDIO_PATH")
+            if mimo_path:
+                import sys
+
+                src_path = os.path.join(mimo_path, "src")
+                if src_path not in sys.path:
+                    sys.path.insert(0, src_path)
+                try:
+                    from mimo_audio.modeling_mimo_audio import MiMoAudioArguments, MiMoAudioForCausalLM
+                except ImportError:
+                    raise ImportError(
+                        "MiMo-Audio requires the MiMo-Audio SDK. "
+                        "Please clone it: git clone https://github.com/XiaomiMiMo/MiMo-Audio.git "
+                        "and set MIMO_AUDIO_PATH to the repo root."
+                    )
+            else:
+                raise ImportError(
+                    "MiMo-Audio requires the MiMo-Audio SDK. "
+                    "Please clone https://github.com/XiaomiMiMo/MiMo-Audio and set env var "
+                    "MIMO_AUDIO_PATH to the repo root (e.g. export MIMO_AUDIO_PATH=/path/to/MiMo-Audio)."
+                )
+
+        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+        # Ensure special tokens are registered
+        special_tokens = ["<|sosp|>", "<|eosp|>", "<|empty|>", "<|sostm|>", "<|eostm|>", "<|eot|>"]
+        for token in special_tokens:
+            if token not in tokenizer.get_vocab():
+                tokenizer.add_tokens([token], special_tokens=True)
+
+        model_args = MiMoAudioArguments(
+            model_name_or_path=pretrained_model_name_or_path,
+            sosp_idx=tokenizer.convert_tokens_to_ids("<|sosp|>"),
+            eosp_idx=tokenizer.convert_tokens_to_ids("<|eosp|>"),
+            sostm_idx=tokenizer.convert_tokens_to_ids("<|sostm|>"),
+            eostm_idx=tokenizer.convert_tokens_to_ids("<|eostm|>"),
+            eot_idx=tokenizer.convert_tokens_to_ids("<|eot|>"),
+            empty_idx=tokenizer.convert_tokens_to_ids("<|empty|>"),
+        )
+
+        model = MiMoAudioForCausalLM.from_pretrained(
+            pretrained_model_name_or_path,
+            args=model_args,
+            torch_dtype=torch_dtype,
+            device_map="auto" if use_auto_mapping else None,
+        )
+        processor = None
+
+    elif "deepseek_vl_v2" == model_type:
         from deepseek_vl2.models import DeepseekVLV2ForCausalLM, DeepseekVLV2Processor  # pylint: disable=E0401
 
         processor = DeepseekVLV2Processor.from_pretrained(pretrained_model_name_or_path)
@@ -537,6 +854,15 @@ def mllm_load_model(
             torch_dtype=torch_dtype,
             device_map="auto" if use_auto_mapping else None,
         )
+    elif "bagel" == model_type:
+        from auto_round.utils.bagel_loader import load_bagel_model
+
+        model, tokenizer = load_bagel_model(
+            pretrained_model_name_or_path,
+            torch_dtype=torch_dtype,
+        )
+        processor = None
+        image_processor = None
     else:
         architectures = config["architectures"][0]
         if architectures == "LlavaLlamaForCausalLM":
@@ -549,7 +875,9 @@ def mllm_load_model(
                 torch_dtype=torch_dtype,
             )
         else:
-            if architectures.endswith("Model") and hasattr(
+            if prefer_remote_omni_class(config, trust_remote_code):
+                cls = AutoModelForCausalLM
+            elif architectures.endswith("Model") and hasattr(
                 base_lib, n := architectures.replace("Model", "ForConditionalGeneration")
             ):
                 cls = getattr(base_lib, n)
@@ -558,7 +886,7 @@ def mllm_load_model(
             else:
                 cls = AutoModelForCausalLM
             try:
-                model_load_kwargs = {}
+                model_load_kwargs = nemotron_h_omni_load_kwargs(config)
                 if model_subfolder is not None:
                     model_load_kwargs["subfolder"] = model_subfolder
                 model = cls.from_pretrained(
@@ -585,7 +913,7 @@ def mllm_load_model(
                 else:
                     raise
 
-            if any([name in model.name_or_path for name in MISTRAL_3_2_MODELS]):
+            if any(name in model.name_or_path for name in MISTRAL_3_2_MODELS):
                 from mistral_common.tokens.tokenizers.mistral import MistralTokenizer  # pylint: disable=E0401
 
                 if os.path.isdir(pretrained_model_name_or_path):
@@ -599,6 +927,7 @@ def mllm_load_model(
                 tokenizer = AutoTokenizer.from_pretrained(
                     pretrained_model_name_or_path,
                     trust_remote_code=trust_remote_code,
+                    fix_mistral_regex=model_type in FIX_MISTRAL_REGEX_MODEL_TYPE_LIST,
                     **processor_load_kwargs,
                 )
                 processor = AutoProcessor.from_pretrained(
@@ -631,6 +960,9 @@ def mllm_load_model(
     model = model.eval()
     check_and_mark_quantized_module(model)
     handle_generation_config(model)
+    _keep_checkpoint_fp32_params(
+        model, pretrained_model_name_or_path, platform, model_subfolder, revision=kwargs.get("revision")
+    )
     model = _to_model_dtype(model, model_dtype)
 
     if model_subfolder is not None:
@@ -639,20 +971,41 @@ def mllm_load_model(
     return model, processor, tokenizer, image_processor
 
 
+def _attach_diffusion_pipeline_fn(pipe):
+    """Attach a custom pipeline function for diffusion models that need special API calls."""
+    pipe_class_name = type(pipe).__name__
+    if pipe_class_name == "StableAudioPipeline":
+
+        def _stable_audio_pipeline_fn(
+            pipe, prompts, guidance_scale=7.0, num_inference_steps=100, generator=None, **kwargs
+        ):
+            audio_end_in_s = kwargs.pop("audio_end_in_s", 10.0)
+            return pipe(
+                prompts,
+                guidance_scale=guidance_scale,
+                num_inference_steps=num_inference_steps,
+                audio_end_in_s=audio_end_in_s,
+                generator=generator,
+            )
+
+        pipe._autoround_pipeline_fn = _stable_audio_pipeline_fn
+
+
 def diffusion_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
-    device: Union[str, torch.device] = "cpu",
-    torch_dtype: Union[str, torch.dtype] = "auto",
+    device: str | torch.device = "cpu",
+    torch_dtype: str | torch.dtype = "auto",
     use_auto_mapping: bool = False,
     trust_remote_code: bool = True,
-    model_dtype: str = None,
+    model_dtype: str | None = None,
+    default_torch_dtype: str | torch.dtype = "auto",
     **kwargs,
 ):
     from functools import partial
 
     from auto_round.utils.common import LazyImport
-    from auto_round.utils.device import get_device_and_parallelism
+    from auto_round.utils.device_manager import get_device_and_parallelism
 
     _check_accelerate_version()
 
@@ -662,37 +1015,87 @@ def diffusion_load_model(
         )
 
     device_str, use_auto_mapping = get_device_and_parallelism(device)
-    torch_dtype = "auto"
-    if device_str is not None and "hpu" in device_str:
+    if model_dtype is not None:
+        torch_dtype = convert_dtype_str2torch(model_dtype)
+    elif torch_dtype == "auto" and device_str is not None and "hpu" in device_str:
         torch_dtype = torch.bfloat16
 
-    pipelines = LazyImport("diffusers.pipelines")
+    try:
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+    except Exception:
+        config = None
+
+    model_type = getattr(config, "model_type", "")
+    # A special case for NextStep
+    if model_type == "nextstep":
+        from auto_round.special_model_handler import load_next_step_diffusion
+
+        pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
+        return pipe, pipe.model
+
+    # A special case for Cosmos3: model_index.json _class_name may not match
+    # diffusers, and the safety checker requires cosmos_guardrail which may not be installed.
+    _model_index = None
     if isinstance(pretrained_model_name_or_path, str):
+        _mi_path = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if os.path.isfile(_mi_path):
+            with open(_mi_path, "r", encoding="utf-8") as f:
+                _model_index = json.load(f)
+    _pipe_class = (_model_index or {}).get("_class_name", "")
+    if _pipe_class in ("Cosmos3OmniDiffusersPipeline", "Cosmos3OmniPipeline"):
+        from auto_round.special_model_handler import load_cosmos3_diffusion
+
+        return load_cosmos3_diffusion(pretrained_model_name_or_path, device_str)
+
+    pipelines = LazyImport("diffusers.pipelines")
+    modular_pipeline_cls = _get_modular_pipeline_class()
+    if isinstance(pretrained_model_name_or_path, str):
+        model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
+        if not os.path.exists(model_index) and os.path.exists(
+            os.path.join(pretrained_model_name_or_path, MODULAR_PIPELINE_INDEX_NAME)
+        ):
+            raise NotImplementedError(
+                f"{pretrained_model_name_or_path} is a Modular Diffusers pipeline "
+                f"({MODULAR_PIPELINE_INDEX_NAME}), which auto_round cannot assemble from a path yet. "
+                "Build the ModularPipeline yourself and pass the pipeline object as `model` instead."
+            )
+        with open(model_index, "r", encoding="utf-8") as file:
+            config = json.load(file)
+
         if torch_dtype == "auto":
             torch_dtype = {}
-            model_index = os.path.join(pretrained_model_name_or_path, "model_index.json")
-            with open(model_index, "r", encoding="utf-8") as file:
-                config = json.load(file)
             for k, v in config.items():
                 component_folder = os.path.join(pretrained_model_name_or_path, k)
                 if isinstance(v, list) and os.path.exists(os.path.join(component_folder, "config.json")):
-                    component_folder = os.path.join(pretrained_model_name_or_path, k)
                     with open(os.path.join(component_folder, "config.json"), "r", encoding="utf-8") as file:
                         component_config = json.load(file)
-                    torch_dtype[k] = component_config.get("torch_dtype", "auto")
+                    component_dtype = component_config.get("torch_dtype")
+                    if component_dtype is None or component_dtype == "auto":
+                        component_dtype = default_torch_dtype
+                    elif isinstance(component_dtype, str):
+                        component_dtype = convert_dtype_str2torch(component_dtype.removeprefix("torch."))
+                    torch_dtype[k] = component_dtype
 
-        pipe = pipelines.auto_pipeline.AutoPipelineForText2Image.from_pretrained(
+        pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
             pretrained_model_name_or_path, torch_dtype=torch_dtype
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
-    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline):
+    elif isinstance(pretrained_model_name_or_path, pipelines.pipeline_utils.DiffusionPipeline) or (
+        modular_pipeline_cls is not None and isinstance(pretrained_model_name_or_path, modular_pipeline_cls)
+    ):
         pipe = pretrained_model_name_or_path
-        pipe_config = pipe.load_config(pipe.config["_name_or_path"])
+        # a pipeline assembled in-process, as Modular Diffusers ones typically are,
+        # has no _name_or_path to reload the on-disk index from
+        name_or_path = pipe.config.get("_name_or_path", None)
+        pipe_config = pipe.load_config(name_or_path) if name_or_path is not None else {}
 
     else:
         raise ValueError(
-            f"Only support str or DiffusionPipeline class for model, but get {type(pretrained_model_name_or_path)}"
+            f"Only support str, DiffusionPipeline or ModularPipeline class for model, "
+            f"but get {type(pretrained_model_name_or_path)}"
         )
 
     # add missing key
@@ -700,25 +1103,25 @@ def diffusion_load_model(
         if k not in pipe.config:
             pipe.config[k] = v
 
-    pipe = _to_model_dtype(pipe, model_dtype)
-    model = pipe.transformer
+    if hasattr(pipe, "unet"):
+        # Stable Diffusion pipelines (e.g., SD and SDXL) use a UNet denoiser.
+        model = pipe.unet
+        model_component_name = "unet"
+    else:
+        # DiT-based pipelines (e.g., Flux and SD3) use a Transformer denoiser.
+        model = pipe.transformer
+        model_component_name = "transformer"
 
-    def config_save_pretrained(config, file_name, save_directory):
-        if os.path.isfile(save_directory):
-            raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
-        os.makedirs(save_directory, exist_ok=True)
-        output_config_file = os.path.join(save_directory, file_name)
+    # Diffusers keeps denoiser checkpoints below the pipeline repository root.
+    # Retain the component name so block-wise offloading can find those files.
+    model._autoround_checkpoint_subfolder = model_component_name
 
-        config_dict = dict(config)
-        if file_name == "config.json" and hasattr(model.config, "quantization_config"):
-            config_dict["quantization_config"] = model.config.quantization_config
-
-        with open(output_config_file, "w", encoding="utf-8") as writer:
-            writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
+    # Attach custom pipeline function for models that need special API calls
+    _attach_diffusion_pipeline_fn(pipe)
 
     # meta model uses model.config.save_pretrained for config saving
-    setattr(model.config, "save_pretrained", partial(config_save_pretrained, model.config, "config.json"))
-    setattr(pipe.config, "save_pretrained", partial(config_save_pretrained, pipe.config, "model_index.json"))
+    model.config.save_pretrained = partial(config_save_pretrained, model.config, "config.json", model=model)
+    pipe.config.save_pretrained = partial(config_save_pretrained, pipe.config, "model_index.json")
 
     def model_save_pretrained(model, save_directory, **kwargs):
         super(model.__class__, model).save_pretrained(save_directory, **kwargs)
@@ -728,8 +1131,134 @@ def diffusion_load_model(
             writer.write(json.dumps(dict(model.config), indent=2, sort_keys=True) + "\n")
 
     # non-meta model uses model.save_pretrained for model and config saving
-    setattr(model, "save_pretrained", partial(model_save_pretrained, model))
+    model.save_pretrained = partial(model_save_pretrained, model)
+
+    for comp_name in pipe.components:
+        comp = getattr(pipe, comp_name, None)
+        if (
+            comp_name.startswith("transformer")
+            and comp_name != "transformer"
+            and comp is not None
+            and isinstance(comp, torch.nn.Module)
+        ):
+            comp._autoround_checkpoint_subfolder = comp_name
+            comp.config.save_pretrained = partial(config_save_pretrained, comp.config, "config.json", model=comp)
+            comp.save_pretrained = partial(model_save_pretrained, comp)
+
     return pipe, model.to(device)
+
+
+def load_model(
+    pretrained_model_name_or_path: str | torch.nn.Module,
+    platform: str = "hf",
+    model_dtype: str | None = None,
+    trust_remote_code: bool = True,
+    device: str = "cpu",
+    use_auto_mapping: bool | None = None,
+    use_model_replacements: bool = False,
+    **kwargs,
+) -> tuple:
+    """Unified model loader supporting LLM, MLLM (VLM), and diffusion models.
+
+    Automatically detects model type (text-only LLM / multimodal MLLM / diffusion
+    pipeline) via ``is_mllm_model`` / ``is_diffusion_model`` and dispatches to the
+    corresponding loader.  When a pre-loaded ``torch.nn.Module`` is passed the
+    function skips loading and only performs type detection.
+
+    Args:
+        pretrained_model_name_or_path: HuggingFace model ID, local path, or an
+            already-loaded ``torch.nn.Module``.
+        platform: ``"hf"`` (default) or ``"model_scope"``.
+        model_dtype: Cast the model to this dtype after loading (e.g. ``"bf16"``).
+        trust_remote_code: Passed through to every HF ``from_pretrained`` call.
+        device: Device to load the model onto (default ``"cpu"``).
+        use_auto_mapping: Override ``device_map="auto"`` for MLLM/diffusion loaders.
+            ``None`` means each sub-loader decides its own default.
+        use_model_replacements: Apply AutoRound replacement modules and special-model
+            forward patches after loading. Intended for isolated quantization workers.
+        **kwargs: Extra keyword arguments forwarded verbatim to the active sub-loader.
+
+    Returns:
+        A 7-tuple ``(model, tokenizer, processor, image_processor, pipe, is_mllm,
+        is_diffusion)`` where unused fields are ``None`` / ``False``.
+    """
+
+    def _prepare_model(model):
+        if not use_model_replacements:
+            return model
+        from auto_round.special_model_handler import _handle_special_model, update_module
+
+        model = update_module(model, formats=None, cleanup_original=False)
+        return _handle_special_model(model)
+
+    model = None
+    tokenizer = None
+    processor = None
+    image_processor = None
+    pipe = None
+    _is_mllm = False
+    _is_diffusion = False
+
+    if isinstance(pretrained_model_name_or_path, str):
+        if is_mllm_model(pretrained_model_name_or_path, platform=platform):
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            if use_auto_mapping is not None:
+                _kwargs["use_auto_mapping"] = use_auto_mapping
+            _kwargs.update(kwargs)
+            model, processor, tokenizer, image_processor = mllm_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+            _is_mllm = True
+
+        elif is_diffusion_model(pretrained_model_name_or_path, trust_remote_code=trust_remote_code):
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            if use_auto_mapping is not None:
+                _kwargs["use_auto_mapping"] = use_auto_mapping
+            _kwargs.update(kwargs)
+            pipe, model = diffusion_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+            _is_diffusion = True
+
+        else:
+            # Plain text LLM
+            # Apply class-level block patches (e.g. unfused-MoE replacements) before
+            # ``from_pretrained`` so the model is loaded with the correct architecture.
+            from auto_round.modeling.unfused_moe import apply_model_monkey_patches
+
+            apply_model_monkey_patches(pretrained_model_name_or_path, trust_remote_code=trust_remote_code)
+
+            _kwargs = dict(
+                platform=platform,
+                device=device,
+                model_dtype=model_dtype,
+                trust_remote_code=trust_remote_code,
+            )
+            _kwargs.update(kwargs)
+            model, tokenizer = llm_load_model(pretrained_model_name_or_path, **_kwargs)
+            model = _prepare_model(model)
+    else:
+        # Already a loaded model object – detect type without triggering any file I/O.
+        try:
+            _is_mllm = is_mllm_model(pretrained_model_name_or_path)
+        except Exception:
+            pass
+        if not _is_mllm:
+            try:
+                _is_diffusion = is_diffusion_model(pretrained_model_name_or_path)
+            except Exception:
+                pass
+        model = _prepare_model(pretrained_model_name_or_path)
+
+    return model, tokenizer, processor, image_processor, pipe, _is_mllm, _is_diffusion
 
 
 def is_pure_text_model(model):
@@ -750,35 +1279,157 @@ def is_pure_text_model(model):
     return True
 
 
-def is_mllm_model(model_or_path: Union[str, torch.nn.Module], platform: str = None):
+_is_mllm_model_cache: dict = {}
+# Model types that have multimodal components but should use LLM compressor
+# (text-only calibration, non-text modules excluded from quantization).
+_LLM_ONLY_MODEL_TYPES = {"bagel"}
+
+
+def get_model_name_or_path(model_or_path: str | torch.nn.Module) -> str | None:
+    if isinstance(model_or_path, str):
+        return model_or_path
+    return getattr(model_or_path, "_name_or_path", None) or getattr(model_or_path, "name_or_path", None)
+
+
+_CODE_MODEL_TOKENS = {"code", "coder", "coding", "programming", "swe", "devstral"}
+_CODE_MODEL_FAMILIES = {
+    "codellama",
+    "codegemma",
+    "codestral",
+    "deepseekcoder",
+    "granitecode",
+    "magicoder",
+    "opencoder",
+    "qwencoder",
+    "santacoder",
+    "stablecode",
+    "starcoder",
+    "wizardcoder",
+}
+_CODE_MODEL_TASKS = {"code-generation", "software-engineering", "text-to-code"}
+
+
+def _match_code_model_name(value) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    value = re.split(r"[/\\]", value.rstrip("/\\"))[-1]
+    value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    token_matches = _CODE_MODEL_TOKENS.intersection(re.findall(r"[a-z]+", value.lower()))
+    if token_matches:
+        return min(token_matches)
+    components = re.findall(r"[a-z0-9]+", value.lower())
+    for family in sorted(_CODE_MODEL_FAMILIES):
+        if any(component == family or re.fullmatch(rf"{family}\d+", component) for component in components):
+            return family
+    return None
+
+
+def _config_value(config, name: str):
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return config.get(name)
+    return getattr(config, name, None)
+
+
+def _get_code_model_match(model_or_path, config=None):
+    config = config or getattr(model_or_path, "config", None)
+    candidates = [
+        ("model name_or_path", get_model_name_or_path(model_or_path)),
+        ("config._name_or_path", _config_value(config, "_name_or_path")),
+        ("config.model_type", _config_value(config, "model_type")),
+    ]
+    architectures = _config_value(config, "architectures") or []
+    if isinstance(architectures, str):
+        architectures = [architectures]
+    candidates.extend(("config.architectures", architecture) for architecture in architectures)
+
+    for source, value in candidates:
+        match = _match_code_model_name(value)
+        if match:
+            return source, match
+
+    task_candidates = []
+    for field in ("finetuning_task", "task", "pipeline_tag"):
+        task_candidates.append((f"config.{field}", _config_value(config, field)))
+
+    task_specific_params = _config_value(config, "task_specific_params") or {}
+    if isinstance(task_specific_params, dict):
+        task_candidates.extend(("config.task_specific_params", task) for task in task_specific_params)
+    for source, task in task_candidates:
+        if isinstance(task, str) and task.lower().replace("_", "-") in _CODE_MODEL_TASKS:
+            return source, task
+    return None
+
+
+def is_code_model(model_or_path: str | torch.nn.Module, config=None) -> bool:
+    """Return whether a pure-text model is explicitly specialized for code."""
+    match = _get_code_model_match(model_or_path, config)
+    if match is None:
+        return False
+    logger.info("Detected a code-specialized model from %s (matched %r).", *match)
+    return True
+
+
+def is_mllm_model(model_or_path: str | torch.nn.Module, platform: str | None = None):
     from auto_round.utils.common import MM_KEYS
 
-    model_path = model_or_path if isinstance(model_or_path, str) else model_or_path.name_or_path
+    model_path = get_model_name_or_path(model_or_path)
+
+    # Path-less in-process objects must be inspected independently rather than
+    # sharing a cache entry under None.
+    if model_path and model_path in _is_mllm_model_cache:
+        return _is_mllm_model_cache[model_path]
+
+    # Check model_type exclusion: some models have multimodal components
+    # but should be quantized as LLM (e.g., BAGEL MoT).
+    _model_type = None
+    if isinstance(model_or_path, torch.nn.Module) and hasattr(model_or_path, "config"):
+        _model_type = getattr(model_or_path.config, "model_type", None)
+    elif isinstance(model_path, str) and os.path.isdir(model_path):
+        _cfg_path = os.path.join(model_path, "config.json")
+        if os.path.exists(_cfg_path):
+            with open(_cfg_path) as _f:
+                _model_type = json.load(_f).get("model_type")
+    if _model_type in _LLM_ONLY_MODEL_TYPES:
+        return False
+
     # For dummy model, model_path could be "".
-    if model_path and not os.path.isdir(model_path):
+    # Only try to download if the path looks like a HF repo id (not a local filesystem path).
+    # Skip download for absolute paths or relative paths that contain current/parent dir markers.
+    # model_path is None for a model or pipeline built in-process, which has no name or path
+    _is_local_path = isinstance(model_path, str) and (os.path.isabs(model_path) or model_path.startswith(("./", "../")))
+    if model_path and not os.path.isdir(model_path) and not _is_local_path:
         model_path = download_or_get_path(model_path, platform=platform)
 
+    result = False
     if isinstance(model_path, str):
-        if os.path.exists(os.path.join(model_path, "preprocessor_config.json")):
-            return True
-        if os.path.exists(os.path.join(model_path, "processor_config.json")):
-            return True
-        if os.path.exists(os.path.join(model_path, "config.json")):
+        if os.path.exists(os.path.join(model_path, "preprocessor_config.json")) or os.path.exists(
+            os.path.join(model_path, "processor_config.json")
+        ):
+            result = True
+        elif os.path.exists(os.path.join(model_path, "config.json")):
             with open(os.path.join(model_path, "config.json")) as f:
                 config = json.load(f)
             for key in config.keys():
-                if any([k in key for k in MM_KEYS]):
-                    return True
+                if any(k in key for k in MM_KEYS):
+                    result = True
+                    break
 
-    if isinstance(model_or_path, torch.nn.Module):
+    if not result and isinstance(model_or_path, torch.nn.Module):
         for name, module in model_or_path.named_modules():
-            if any([k in name for k in MM_KEYS]):
-                return True
+            if any(k in name for k in MM_KEYS):
+                result = True
+                break
 
-    return False
+    # Cache by the original path key (model_path may have been resolved above)
+    original_key = get_model_name_or_path(model_or_path)
+    if original_key:
+        _is_mllm_model_cache[original_key] = result
+    return result
 
 
-def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
+def is_gguf_model(model_path: str | torch.nn.Module) -> bool:
     is_gguf_file = False
     if isinstance(model_path, str):
         if os.path.isfile(model_path) and model_path.endswith(".gguf"):
@@ -791,31 +1442,103 @@ def is_gguf_model(model_path: Union[str, torch.nn.Module]) -> bool:
     return is_gguf_file
 
 
-def is_diffusion_model(model_or_path: Union[str, object]) -> bool:
+## ModularPipeline.config_name, spelled out to keep the diffusers import lazy
+MODULAR_PIPELINE_INDEX_NAME = "modular_model_index.json"
+
+
+def _find_pipeline_index_file(model_dir_or_repo: str) -> str | None:
+    """Return the pipeline index file of a diffusers directory or repo, if it has one.
+
+    Standard pipelines ship ``model_index.json``, Modular Diffusers pipelines ship
+    ``modular_model_index.json`` instead.
+    """
+    index_names = ("model_index.json", MODULAR_PIPELINE_INDEX_NAME)
+
+    if os.path.isdir(model_dir_or_repo):
+        for name in index_names:
+            index_file = os.path.join(model_dir_or_repo, name)
+            if os.path.exists(index_file):
+                check_diffusers_installed()
+                return index_file
+        return None
+
+    from huggingface_hub import hf_hub_download
+
+    for name in index_names:
+        try:
+            index_file = hf_hub_download(model_dir_or_repo, name)
+            check_diffusers_installed()
+            return index_file
+        except Exception as e:
+            logger.debug(f"No {name} found in {model_dir_or_repo}: {e}")
+    return None
+
+
+def _get_modular_pipeline_class():
+    """Return ModularPipeline when supported by the installed Diffusers version."""
+    try:
+        from diffusers.modular_pipelines import ModularPipeline
+
+        return ModularPipeline
+    except (ImportError, AttributeError):
+        return None
+
+
+def is_diffusion_model(model_or_path: str | object, trust_remote_code: bool = True) -> bool:
     from auto_round.utils.common import LazyImport
 
+    # Then check if model_index.json exists for diffusion pipeline,
+    # which is a strong signal of being a diffusion pipeline.
     if isinstance(model_or_path, str):
-        index_file = None
-        if not os.path.isdir(model_or_path):
-            try:
-                from huggingface_hub import hf_hub_download
+        # Quick check to avoid config loading attempts and unnecessary warnings
+        if is_gguf_model(model_or_path):
+            return False
 
-                index_file = hf_hub_download(model_or_path, "model_index.json")
-                check_diffusers_installed()
-            except Exception as e:
-                print(e)
-                index_file = None
+        # First check if it's a known diffusion pipeline by config/model_type
+        # to avoid unnecessary imports and file checks for non-diffusion models, which can be time-consuming.
+        try:
+            from transformers import AutoConfig
 
-        elif os.path.exists(os.path.join(model_or_path, "model_index.json")):
-            check_diffusers_installed()
-            index_file = os.path.join(model_or_path, "model_index.json")
-        return index_file is not None
+            config = AutoConfig.from_pretrained(model_or_path, trust_remote_code=trust_remote_code)
+            model_type = getattr(config, "model_type", "")
+            # A special case for NextStep
+            if model_type == "nextstep":
+                return True
+        except Exception:
+            logger.warning(
+                f"Failed to load config for {model_or_path}, trying to check model_index.json for diffusion pipeline."
+            )
+        return _find_pipeline_index_file(model_or_path) is not None
     elif not isinstance(model_or_path, torch.nn.Module):
         check_diffusers_installed()
         pipeline_utils = LazyImport("diffusers.pipelines.pipeline_utils")
-        return isinstance(model_or_path, pipeline_utils.DiffusionPipeline)
+        if isinstance(model_or_path, pipeline_utils.DiffusionPipeline):
+            return True
+        modular_pipeline_cls = _get_modular_pipeline_class()
+        return modular_pipeline_cls is not None and isinstance(model_or_path, modular_pipeline_cls)
     else:
         return False
+
+
+def detect_model_type(model):
+    """Detect the type of model (LLM, MLLM, or Diffusion).
+
+    Args:
+        model: Model instance or model path string
+
+    Returns:
+        str: "mllm", "diffusion", or "llm"
+    """
+    # Check if it's a diffusion model first (more specific)
+    if is_diffusion_model(model):
+        return "diffusion"
+
+    # Check if it's an MLLM
+    if is_mllm_model(model):
+        return "mllm"
+
+    # Default to standard LLM
+    return "llm"
 
 
 def is_moe_layer(module: torch.nn.Module) -> bool:
@@ -874,24 +1597,29 @@ def get_block_names(model, quant_vision=False):
                 block_names[i].append(target_m[0] + "." + n)
         return block_names
 
-    def _get_vlm_block_names(model, quant_vision=False):
-        if (
-            hasattr(model, "config")
-            and hasattr(model.config, "model_type")
-            and model.config.model_type in SPECIAL_MULTIMODAL_BLOCK.keys()
-        ):
-            return SPECIAL_MULTIMODAL_BLOCK.get(model.config.model_type)(model, quant_vision=quant_vision)
+    def _get_vlm_block_names(model, quant_vision=False, ignore_audio=True):
+        # Since calibration dataset doesn't contain audio data, audio-related blocks will be ignored by default.
+        effective_type = resolve_model_type(model)
+        if effective_type and effective_type in SPECIAL_MULTIMODAL_BLOCK:
+            return SPECIAL_MULTIMODAL_BLOCK[effective_type](model, quant_vision=quant_vision)
         block_names = []
         target_modules = []
-        vision_blocks_tuple = ("vision", "visual", "image", "img")
         target_modules = _search_block("", model)
 
         for i, target_m in enumerate(target_modules):
-            if quant_vision or all(key not in target_m[0].lower() for key in (vision_blocks_tuple)):
+            if quant_vision or all(key not in target_m[0].lower() for key in VISION_MM_KEYS):
+                if ignore_audio and any(key in target_m[0].lower() for key in AUDIO_MM_KEYS):
+                    continue
                 block_names.append([])
                 for n, m in target_m[1].named_children():
                     block_names[-1].append(target_m[0] + "." + n)
         return block_names
+
+    # Check architecture-based special handlers first (e.g. MiMo-Audio has model_type="qwen2"
+    # but is_pure_text_model returns True since it has no vision modules — only audio ones).
+    effective_type = resolve_model_type(model)
+    if effective_type and effective_type in SPECIAL_MULTIMODAL_BLOCK:
+        return SPECIAL_MULTIMODAL_BLOCK[effective_type](model, quant_vision=quant_vision)
 
     if quant_vision or not is_pure_text_model(model):
         return _get_vlm_block_names(model, quant_vision=quant_vision)
@@ -1019,16 +1747,14 @@ def get_nested_attr(module, attr_name: str):
 
 
 def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
-    from auto_round.export.export_to_gguf.convert_hf_to_gguf import (
-        ModelBase,
-        get_model_architecture,
-    )
+    from auto_round.export.formats.gguf.llama_cpp_conversion import get_conversion
 
     is_mistral_format = False
     if isinstance(dir_model, str):
         dir_model = Path(dir_model)
 
-    hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+    conversion = get_conversion(dir_model, model_type=model_type)
+    hparams = conversion.ModelBase.load_hparams(dir_model, is_mistral_format)
     if isinstance(hparams, dict):
         tmp_model_type = hparams["model_type"]
     else:
@@ -1036,11 +1762,11 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
     if "mistral" == tmp_model_type:
         is_mistral_format = True
         try:
-            hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
+            hparams = conversion.ModelBase.load_hparams(dir_model, is_mistral_format)
         except Exception:
             is_mistral_format = False
     if not is_mistral_format:
-        model_class = get_model_architecture(hparams, model_type)
+        model_class = conversion.get_model_architecture(hparams, conversion.model_type(model_type))
     elif model_type == ModelType.MMPROJ:
         assert hparams.get("vision_encoder") is not None, "This model does not support multimodal"
         model_class = "PixtralModel"
@@ -1052,8 +1778,8 @@ def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
 def get_layer_names_in_block(
     model: torch.nn.Module,
     supported_types=(torch.nn.Linear, transformers.pytorch_utils.Conv1D),
-    quant_block_list: list = None,
-    class_names: tuple = None,
+    quant_block_list: list | None = None,
+    class_names: tuple | None = None,
 ) -> list[str]:
     """Retrieves the names of layers within each block of the model.
 
@@ -1086,7 +1812,7 @@ def set_nested_attr(module, attr_name: str, value):
     attrs = attr_name.split(".")
     for attr in attrs[:-1]:
         if not hasattr(module, attr):
-            return None  # No need to set act_max for fp layers
+            return  # No need to set act_max for fp layers
         module = getattr(module, attr)
     setattr(module, attrs[-1], value)
 
@@ -1102,6 +1828,7 @@ def check_to_quantized(config):
         bool: True if the configuration is valid for quantization (bits <= 8),
             False otherwise.
     """
+    from auto_round.schemes import QuantizationScheme
 
     if isinstance(config, (dict, QuantizationScheme)):
         bits = config.get("bits", None)
@@ -1148,55 +1875,98 @@ def check_seqlen_compatible(input_seqlen, tokenizer=None, model=None):
         )
 
 
+def cast_model_dtype(model: torch.nn.Module, dtype: torch.dtype) -> torch.nn.Module:
+    """Cast a model without rounding its declared FP32 parameters and buffers."""
+    fp32_modules = set()
+    for attribute in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+        names = getattr(model, attribute, None) or []
+        fp32_modules.update([names] if isinstance(names, str) else names)
+    if not fp32_modules:
+        return model.to(dtype)
+
+    # Inspect all aliases before casting so a shared tensor is protected even
+    # when its first name is outside the FP32 modules.
+    protected = set()
+    tensors = list(model.named_parameters(remove_duplicate=False)) + list(model.named_buffers(remove_duplicate=False))
+    for name, tensor in tensors:
+        if any(module_name in name for module_name in fp32_modules):
+            protected.add(id(tensor))
+            if isinstance(tensor, torch.nn.Parameter) and tensor.grad is not None:
+                protected.add(id(tensor.grad))
+
+    def convert(tensor):
+        if not (tensor.is_floating_point() or tensor.is_complex()):
+            return tensor
+        target_dtype = torch.float32 if id(tensor) in protected else dtype
+        return tensor.to(dtype=target_dtype)
+
+    return model._apply(convert)
+
+
 def _to_model_dtype(model, model_dtype):
-    if model_dtype is not None:
+    if isinstance(model_dtype, str):
         try:
             if (model_dtype == "float16" or model_dtype == "fp16") and model.dtype != torch.float16:
-                model = model.to(torch.float16)
+                model = cast_model_dtype(model, torch.float16)
             elif (
                 model_dtype == "bfloat16" or model_dtype == "bfp16" or model_dtype == "bf16"
             ) and model.dtype != torch.bfloat16:
-                model = model.to(torch.bfloat16)
-            elif model_dtype == "float32" or model_dtype == "fp32" and model.dtype != torch.bfloat32:
-                model = model.to(torch.float32)
-        except:
+                model = cast_model_dtype(model, torch.bfloat16)
+            elif model_dtype == "float32" or model_dtype == "fp32":
+                model = cast_model_dtype(model, torch.float32)
+        except Exception:
             logger.error("please use more device to fit the device or just use one device")
-            exit()
+            sys.exit()
     return model
 
 
-def get_module(module, key):
-    """Get module from model by key name.
+def get_attr(module, key):
+    """Get attribute (including parameters like `...weight`) by dotted key.
 
-    Args:
-        module (torch.nn.Module): original model
-        key (str): module name to be replaced
+    Missing keys return `None` (legacy behavior relied on by tests).
     """
     name_list = key.split(".")
     for name in name_list:
+        if module is None:
+            return None
         module = getattr(module, name, None)
     return module
 
 
-def set_module(model, key, new_module):
-    """Set new module into model by key name.
+def set_attr(model, key, new_attr):
+    """Set attribute (including parameters like `...weight`) by dotted key.
 
-    Args:
-        model (torch.nn.Module): original model
-        key (str): module name to be replaced
-        new_module (torch.nn.Module): new module to be inserted
+    If an intermediate parent doesn't exist, this is a no-op.
     """
     module = model
     name_list = key.split(".")
     for name in name_list[:-1]:
-        if hasattr(module, name):
-            module = getattr(module, name)
-    setattr(module, name_list[-1], new_module)
+        if not hasattr(module, name):
+            return
+        module = getattr(module, name)
+    setattr(module, name_list[-1], new_attr)
 
 
-# For getting and setting attribution, such as 'lm_head.weight'
-get_attr = get_module
-set_attr = set_module
+def get_module(module, key):
+    """Get module from model by key name using PyTorch native API.
+
+    Missing paths return `None` to preserve legacy non-fail-fast behavior.
+    """
+    try:
+        return module.get_submodule(key)
+    except (AttributeError, KeyError):
+        return None
+
+
+def set_module(model, key, new_module):
+    """Set new module into model by key name using PyTorch native API.
+
+    Missing paths are ignored (no-op) to preserve legacy behavior.
+    """
+    try:
+        model.set_submodule(key, new_module)
+    except (AttributeError, KeyError):
+        return
 
 
 def get_layer_features(layer):
@@ -1244,11 +2014,21 @@ def unsupported_meta_device(model):
             if param.device.type == "meta" or target_device.type == "meta":
                 return True
     if target_device.type == "meta":
-        if hasattr(model, "path"):
-            return False
-        else:
-            return True
+        return not hasattr(model, "path")
     return False
+
+
+def map_nested_tensors(value: Any, transform: Callable[[torch.Tensor], torch.Tensor]) -> Any:
+    """Apply ``transform`` to tensors in nested tuples, lists, and mappings."""
+    if torch.is_tensor(value):
+        return transform(value)
+    if isinstance(value, tuple):
+        return tuple(map_nested_tensors(item, transform) for item in value)
+    if isinstance(value, list):
+        return [map_nested_tensors(item, transform) for item in value]
+    if isinstance(value, (dict, UserDict)):
+        return type(value)({key: map_nested_tensors(item, transform) for key, item in value.items()})
+    return value
 
 
 def to_device(input, device=torch.device("cpu")):
@@ -1265,11 +2045,11 @@ def to_device(input, device=torch.device("cpu")):
         return None
     if isinstance(input, torch.Tensor):
         return input.to(device)
-    if isinstance(input, dict) or isinstance(input, UserDict):
+    if isinstance(input, (dict, UserDict)):
         for inp in input.keys():
             input[inp] = to_device(input[inp], device)
 
-    elif isinstance(input, list) or isinstance(input, tuple):
+    elif isinstance(input, (list, tuple)):
         if len(input) == 0:
             return input
         input_res = []
@@ -1279,6 +2059,23 @@ def to_device(input, device=torch.device("cpu")):
             input_res = tuple(input_res)
         input = input_res
 
+    return input
+
+
+def move_to_device(input: Any, device=torch.device("cpu"), non_blocking: bool = False) -> Any:
+    """Return a nested tensor container moved to *device* without mutating it."""
+    if input is None:
+        return None
+    if isinstance(input, torch.Tensor):
+        return input.to(device, non_blocking=non_blocking)
+    if isinstance(input, UserDict):
+        return type(input)({k: move_to_device(v, device, non_blocking) for k, v in input.items()})
+    if isinstance(input, dict):
+        return {k: move_to_device(v, device, non_blocking) for k, v in input.items()}
+    if isinstance(input, tuple):
+        return tuple(move_to_device(v, device, non_blocking) for v in input)
+    if isinstance(input, list):
+        return [move_to_device(v, device, non_blocking) for v in input]
     return input
 
 
@@ -1305,7 +2102,7 @@ def mv_module_from_gpu(module):
         for attr_name in list(module._parameters.keys()):
             p = module._parameters[attr_name]
             if p is not None and p.device.type != "meta" and p.device.type != "cpu":
-                module._parameters[attr_name] = p.to("cpu")
+                module._parameters[attr_name] = torch.nn.Parameter(p.to("cpu"), requires_grad=p.requires_grad)
         for attr_name in list(module._buffers.keys()):
             b = module._buffers[attr_name]
             if b is not None and b.device.type != "meta" and b.device.type != "cpu":
@@ -1360,10 +2157,13 @@ def safe_device_move_with_meta_handling(
 
 
 def is_moe_model(model: torch.nn.Module) -> bool:
+    """Heuristically detect whether ``model`` is a MoE architecture by scanning its config
+    for "moe"/"expert" markers or by checking module names for "expert".
+    """
     if hasattr(model, "config") and hasattr(model.config, "to_dict"):
-        for key in model.config.to_dict().keys():
-            if "moe" in key or "expert" in key:
-                return True
+        config_str = str(model.config.to_dict()).lower()
+        if "moe" in config_str or "expert" in config_str:
+            return True
     for n, m in model.named_modules():
         if "expert" in n:
             return True
@@ -1371,10 +2171,11 @@ def is_moe_model(model: torch.nn.Module) -> bool:
 
 
 def is_moe_model_via_config(config) -> bool:
-    config_str = str(config).lower()
-    if "moe" in config_str or "expert" in config_str:
-        return True
-    return False
+    try:
+        config_str = str(config).lower()
+    except Exception:
+        config_str = str(config.to_dict()).lower() if hasattr(config, "to_dict") else ""
+    return "moe" in config_str or "expert" in config_str
 
 
 def to_dtype(input, dtype=torch.float32):
@@ -1391,11 +2192,11 @@ def to_dtype(input, dtype=torch.float32):
         return None
     if isinstance(input, torch.Tensor):
         return input.to(dtype)
-    if isinstance(input, dict) or isinstance(input, UserDict):
+    if isinstance(input, (dict, UserDict)):
         for inp in input.keys():
             input[inp] = to_dtype(input[inp], dtype)
 
-    elif isinstance(input, list) or isinstance(input, tuple):
+    elif isinstance(input, (list, tuple)):
         if len(input) == 0:
             return input
         input_res = []
@@ -1533,7 +2334,7 @@ def set_amax_for_all_moe_layers(model: torch.nn.Module, layer_name=None, attr_na
                     )
                 except AttributeError as e:
                     # Provide more helpful debugging information
-                    expert_types = list(set(type(expert).__name__ for expert in sub_module.experts))
+                    expert_types = list({type(expert).__name__ for expert in sub_module.experts})
                     raise AttributeError(
                         f"Failed to access attribute '{linear_name}' on experts. "
                         f"MoE module type: {type(sub_module).__name__}, "
@@ -1658,6 +2459,9 @@ def _get_reference_amax_from_experts(moe_module: torch.nn.Module, attr_name: str
 # the quantized output directory so that from_pretrained() works out of the box.
 _EXTRA_MODEL_FILES = {
     "spk_dict.pt",  # Qwen2.5-Omni speaker dictionary for audio output
+    "llm_config.json",  # BAGEL sub-model config
+    "vit_config.json",  # BAGEL vision transformer config
+    "preprocessor_config.json",  # BAGEL image preprocessor config
 }
 
 
@@ -1677,43 +2481,69 @@ def _copy_extra_model_files(src_dir: str, dst_dir: str):
 
 # Adapted from https://github.com/vllm-project/llm-compressor/blob/
 # 5b3ddff74cae9651f24bef15d3255c4ee053fc60/src/llmcompressor/pytorch/model_load/helpers.py#L144
-def copy_python_files_from_model_cache(model, save_path: str):
+def copy_python_files_from_model_cache(model, save_path: str, copy_folders: bool | list[str] | tuple[str, ...] = False):
+    """Copy Python files (and optionally subdirectories) from the model cache to *save_path*.
+
+    Args:
+        model: The model whose ``config._name_or_path`` points to the source cache.
+        save_path (str): Destination directory.
+        copy_folders (bool | list[str] | tuple[str, ...]): Controls which subdirectories
+            are copied from the cache root to *save_path*:
+
+            * ``False`` (default) – no folders are copied.
+            * ``True`` – every subdirectory that does not already exist in *save_path*
+              is copied (e.g. all of ``vae``, ``scheduler``, …).
+            * A list/tuple of folder names (e.g. ``["vae", "scheduler"]``) – only the
+              named subdirectories are copied.
+    """
+    import shutil
+
+    from huggingface_hub import hf_hub_download
+
     config = model.config
-    if hasattr(config, "_name_or_path"):
-        import os
-        import shutil
+    if not hasattr(config, "_name_or_path"):
+        return
 
-        from huggingface_hub import hf_hub_download
+    if version.parse(transformers.__version__) < version.parse("5.0.0"):
+        from transformers.utils import TRANSFORMERS_CACHE
 
-        if version.parse(transformers.__version__) < version.parse("5.0.0"):
-            from transformers.utils import TRANSFORMERS_CACHE
+        cache_dir = os.environ.get("HF_HOME", TRANSFORMERS_CACHE)
+    else:
+        from huggingface_hub.constants import HF_HUB_CACHE
 
-            cache_dir = os.environ.get("HF_HOME", TRANSFORMERS_CACHE)
-        else:
-            from huggingface_hub.constants import HF_HUB_CACHE
+        cache_dir = os.environ.get("HF_HOME", HF_HUB_CACHE)
+    from transformers.utils import http_user_agent
 
-            cache_dir = os.environ.get("HF_HOME", HF_HUB_CACHE)
-        from transformers.utils import http_user_agent
+    cache_path = config._name_or_path
+    if not os.path.exists(cache_path):
+        user_agent = http_user_agent()
+        config_file_path = hf_hub_download(
+            repo_id=cache_path,
+            filename="config.json",
+            cache_dir=cache_dir,
+            force_download=False,
+            user_agent=user_agent,
+        )
+        cache_path = os.path.sep.join(config_file_path.split(os.path.sep)[:-1])
 
-        cache_path = config._name_or_path
-        if not os.path.exists(cache_path):
-            user_agent = http_user_agent()
-            config_file_path = hf_hub_download(
-                repo_id=cache_path,
-                filename="config.json",
-                cache_dir=cache_dir,
-                force_download=False,
-                user_agent=user_agent,
-            )
-            cache_path = os.path.sep.join(config_file_path.split(os.path.sep)[:-1])
+    for file in os.listdir(cache_path):
+        full_file_name = os.path.join(cache_path, file)
+        if file.endswith(".py") and os.path.isfile(full_file_name):
+            logger.debug(f"Transferring {full_file_name} to {save_path}")
+            shutil.copy(full_file_name, save_path)
 
-        for file in os.listdir(cache_path):
-            full_file_name = os.path.join(cache_path, file)
-            if file.endswith(".py") and os.path.isfile(full_file_name):
-                logger.debug(f"Transferring {full_file_name} to {save_path}")
-                shutil.copy(full_file_name, save_path)
+    _copy_extra_model_files(cache_path, save_path)
 
-        _copy_extra_model_files(cache_path, save_path)
+    if copy_folders is not False:
+        for entry in os.listdir(cache_path):
+            src_entry = os.path.join(cache_path, entry)
+            dst_entry = os.path.join(save_path, entry)
+            if not os.path.isdir(src_entry):
+                continue
+            if copy_folders is True or entry in copy_folders:
+                if not os.path.exists(dst_entry):
+                    logger.debug(f"Transferring folder {src_entry} to {save_path}")
+                    shutil.copytree(src_entry, dst_entry)
 
 
 def extract_block_names_to_str(quant_block_list):
@@ -1740,7 +2570,7 @@ def find_matching_blocks(model, all_blocks, to_quant_block_names):
     if not to_quant_block_names:
         return all_blocks
     to_quant_block_list = to_quant_block_names
-    if isinstance(to_quant_block_names, list) or isinstance(to_quant_block_names, tuple):
+    if isinstance(to_quant_block_names, (list, tuple)):
         return to_quant_block_names
     if isinstance(to_quant_block_names, str):
         to_quant_block_list = [name.strip() for name in to_quant_block_names.split(",")]
@@ -1771,18 +2601,12 @@ def is_separate_lm_head(model: torch.nn.Module) -> bool:
     if "model.safetensors.index.json" in os.listdir(dir_path):
         with open(os.path.join(dir_path, "model.safetensors.index.json")) as f:
             index_mapping = json.load(f)
-            if lm_head_name in index_mapping["weight_map"]:
-                return True
-            else:
-                return False
+            return lm_head_name in index_mapping["weight_map"]
     else:
         from safetensors import safe_open
 
         f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
-        if lm_head_name in f.keys():
-            return True
-        else:
-            return False
+        return lm_head_name in f.keys()
 
 
 def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
@@ -1795,18 +2619,12 @@ def is_separate_tensor(model: torch.nn.Module, tensor_name: str) -> bool:
     if "model.safetensors.index.json" in os.listdir(dir_path):
         with open(os.path.join(dir_path, "model.safetensors.index.json")) as f:
             index_mapping = json.load(f)
-            if tensor_name in index_mapping["weight_map"]:
-                return True
-            else:
-                return False
+            return tensor_name in index_mapping["weight_map"]
     else:
         from safetensors import safe_open
 
         f = safe_open(os.path.join(dir_path, "model.safetensors"), framework="pt")
-        if tensor_name in f.keys():
-            return True
-        else:
-            return False
+        return tensor_name in f.keys()
 
 
 def handle_generation_config(model: torch.nn.Module):
@@ -1864,14 +2682,18 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
     positional args to keyword args, all inputs are properly accumulated
     across calibration samples.
     """
-    _param_names = None
+    _param_names_cache: dict = {}
 
     def forward(m, hidden_states=None, *positional_inputs, **kwargs):
-        nonlocal _param_names
         if positional_inputs:
-            if _param_names is None:
-                sig = inspect.signature(m.orig_forward)
-                _param_names = [p for p in sig.parameters.keys() if p != "self"]
+            m_id = id(m)
+            if m_id not in _param_names_cache:
+                # Prefer _true_orig_forward (set by new-arch CalibCompressor._replace_forward)
+                # over orig_forward (which points to the wrapped forward after wrapping).
+                sig_target = getattr(m, "_true_orig_forward", None) or m.orig_forward
+                sig = inspect.signature(sig_target)
+                _param_names_cache[m_id] = [p for p in sig.parameters.keys() if p != "self"]
+            _param_names = _param_names_cache[m_id]
             for i, val in enumerate(positional_inputs):
                 param_idx = i + 1  # hidden_states is params[0]
                 if param_idx < len(_param_names):
@@ -1882,3 +2704,618 @@ def wrap_block_forward_positional_to_kwargs(base_hook):
         return base_hook(m, hidden_states, *positional_inputs, **kwargs)
 
     return forward
+
+
+def config_save_pretrained(config, file_name, save_directory, model=None):
+    if os.path.isfile(save_directory):
+        raise AssertionError(f"Provided path ({save_directory}) should be a directory, not a file")
+    os.makedirs(save_directory, exist_ok=True)
+    output_config_file = os.path.join(save_directory, file_name)
+
+    config_dict = dict(config)
+    if model is not None:
+        if file_name == "config.json" and hasattr(model.config, "quantization_config"):
+            config_dict["quantization_config"] = model.config.quantization_config
+
+    with open(output_config_file, "w", encoding="utf-8") as writer:
+        writer.write(json.dumps(config_dict, indent=2, sort_keys=True) + "\n")
+
+
+def rename_weights_files(path: str, prefix="diffusion_pytorch_model"):
+    """Rename weight files for diffusion models."""
+    import glob
+    import json
+    import os
+
+    # rename safetensors
+    files = sorted(glob.glob(f"{path}/*.safetensors"))
+    total = len(files)
+    if total == 1:
+        new = f"{prefix}.safetensors"
+        os.rename(files[0], os.path.join(path, new))
+        return
+
+    for i, f in enumerate(files, 1):
+        new = f"{prefix}-{i:05d}-of-{total:05d}.safetensors"
+        os.rename(f, os.path.join(path, new))
+
+    # rename index.json
+    idx = os.path.join(path, "model.safetensors.index.json")
+    if os.path.exists(idx):
+        with open(idx) as f:
+            d = json.load(f)
+        d["weight_map"] = {k: v.replace("model-", prefix + "-") for k, v in d["weight_map"].items()}
+        new_idx = os.path.join(path, f"{prefix}.safetensors.index.json")
+        with open(new_idx, "w") as f:
+            json.dump(d, f, indent=2)
+        os.remove(idx)
+
+
+def _pin_module_execution_on_device(module: torch.nn.Module, device) -> None:
+    """Attach an accelerate hook that runs ``module``'s forward on ``device``.
+
+    ``AlignDevicesHook(execution_device=device, io_same_device=True)`` aligns the module's
+    inputs to ``device`` before the forward and moves the output back to the caller's device,
+    so a huge, non-quantizable embedding can stay resident on a chosen device (CPU host RAM,
+    or a specific accelerator) instead of being dragged around by generic block relocation.
+    Params are expected to already live on ``device`` (the caller moves them for GPU targets).
+    """
+    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
+
+    add_hook_to_module(module, AlignDevicesHook(io_same_device=True, execution_device=str(device)))
+
+
+def _pin_module_execution_on_cpu(module: torch.nn.Module) -> None:
+    """Attach an accelerate hook that keeps ``module``'s forward on CPU."""
+    _pin_module_execution_on_device(module, "cpu")
+
+
+def module_pinned_execution_device(module: torch.nn.Module) -> str | None:
+    """Return the execution-device string a module is pinned to, or ``None`` if not pinned.
+
+    Matches modules hooked by :func:`_pin_module_execution_on_device` (CPU or a specific
+    accelerator). Used by block relocation to leave intentionally-pinned modules in place.
+    """
+    hook = getattr(module, "_hf_hook", None)
+    if hook is None:
+        return None
+    hooks = getattr(hook, "hooks", (hook,))  # SequentialHook aggregates several
+    for h in hooks:
+        exec_device = getattr(h, "execution_device", None)
+        if exec_device is not None:
+            return str(exec_device)
+    return None
+
+
+def module_is_pinned_on_cpu(module: torch.nn.Module) -> bool:
+    """Return True if ``module`` carries a CPU-execution accelerate hook."""
+    return module_pinned_execution_device(module) == "cpu"
+
+
+def pin_ngram_embeddings_on_cpu_(module: torch.nn.Module) -> list:
+    """Pin every ngram embedding found under ``module`` on CPU, in place.
+
+    Works on any subtree (a whole model *or* a single decoder block), so it can
+    be applied right after a block is materialized and before it is dispatched
+    onto accelerators. Returns the list of pinned module names.
+    """
+    pinned = []
+    pinned_modules = []
+    for name, sub in module.named_modules():
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf in ("ngram_embedding", "ngram_embeddings"):
+            if not module_is_pinned_on_cpu(sub):
+                _pin_module_execution_on_cpu(sub)
+            pinned.append(name)
+            pinned_modules.append(sub)
+    if pinned_modules:
+        _log_ngram_cpu_hint(pinned_modules)
+    return pinned
+
+
+def _log_ngram_cpu_hint(ngram_modules: list) -> None:
+    """Tell the user ngram embeddings are on CPU and how to move them (once per run).
+
+    Emits the total ngram size and, when ``AR_NGRAM_DEVICE`` is not explicitly set, points at
+    the faster on-GPU options -- noting that ``across`` (multi-GPU sharding) is experimental
+    and may have bugs.
+    """
+    from auto_round import envs
+
+    total_nbytes = sum(_module_storage_nbytes(sub) for sub in ngram_modules)
+    if envs.is_set("AR_NGRAM_DEVICE"):
+        logger.info_once(
+            "Found %d ngram embedding module(s) (total %s); AR_NGRAM_DEVICE=%s keeps them on CPU.",
+            len(ngram_modules),
+            _format_nbytes_gib(total_nbytes),
+            str(getattr(envs, "AR_NGRAM_DEVICE", "auto")),
+        )
+    else:
+        logger.info_once(
+            "Found %d ngram embedding module(s) (total %s). AR_NGRAM_DEVICE is not set, so they stay on "
+            "CPU by default (memory-safe, but adds host<->device copies each block forward). To speed up, "
+            "set AR_NGRAM_DEVICE=<cuda:N|xpu:N> to place the whole table on one card, or AR_NGRAM_DEVICE=across "
+            "to row-shard it across all GPUs (experimental, may have bugs).",
+            len(ngram_modules),
+            _format_nbytes_gib(total_nbytes),
+        )
+
+
+def move_to_device_preserving_cpu_pinned(module: torch.nn.Module, device) -> torch.nn.Module:
+    """Move ``module`` to ``device`` but leave pinned/self-managed subtrees in place.
+
+    ``nn.Module.to()`` recurses unconditionally and would drag a pinned child (e.g. a
+    multi-GiB ngram embedding pinned on CPU or on a specific accelerator) onto ``device``,
+    which is exactly what causes card-0 OOM on large ngram models. This walks the tree
+    manually and stops at any subtree pinned to an execution device
+    (:func:`_pin_module_execution_on_device`) or one that manages its own (possibly
+    multi-device) storage, e.g. a row-sharded :class:`_ShardedEmbedding`.
+    """
+    if module_pinned_execution_device(module) is not None or _module_manages_own_device(module):
+        return module
+    # Use the same conversion machinery as Module.to(): cross-backend transfers
+    # (notably CPU <-> HPU lazy) may require replacing a Parameter rather than
+    # assigning incompatible tensor types to its .data. _apply also moves gradients
+    # and replaces buffers. Recurse manually so pinned children remain untouched.
+    module._apply(lambda tensor: tensor if tensor.device.type == "meta" else tensor.to(device), recurse=False)
+    for child in list(module.children()):
+        move_to_device_preserving_cpu_pinned(child, device)
+    return module
+
+
+class _ShardedEmbedding(torch.nn.Module):
+    """Row-sharded, multi-GPU drop-in replacement for a huge ``nn.Embedding``.
+
+    A single embedding table ``(num_embeddings, dim)`` that is too large to fit on one
+    accelerator (e.g. the ~95 GiB Qwen4-Exp per-layer ngram table) is split along dim 0 into
+    contiguous row ranges, one shard per device. ``forward(ids)`` reproduces
+    ``nn.Embedding(ids)`` bit-exactly by gathering each id from the shard that owns its row,
+    so the lookup runs on-GPU instead of being pinned (slowly) on CPU.
+
+    The module owns its (multi-device) storage: generic block-relocation helpers must skip it
+    (see :func:`_module_manages_own_device`), or the shards would be collapsed onto one device.
+    Shards are registered as non-persistent buffers so ``.to("cpu")`` based offload can still
+    reclaim their device memory after the block is done.
+    """
+
+    def __init__(self, embedding: "torch.nn.Embedding", devices: list) -> None:
+        super().__init__()
+        weight = embedding.weight.data
+        self.num_embeddings, self.embedding_dim = int(weight.shape[0]), int(weight.shape[1])
+        self.weight_dtype = weight.dtype
+        n = max(1, len(devices))
+        rows_per_shard = (self.num_embeddings + n - 1) // n
+        self._bounds: list[tuple[int, int]] = []
+        for i, device in enumerate(devices):
+            lo = i * rows_per_shard
+            hi = min(self.num_embeddings, lo + rows_per_shard)
+            if lo >= hi:
+                break
+            self.register_buffer(f"shard_{i}", weight[lo:hi].to(device), persistent=False)
+            self._bounds.append((lo, hi))
+
+    @property
+    def weight(self):
+        # Exposed so callers that read ``embedding.weight.device`` keep working (the forward
+        # re-routes ids to the correct shard regardless of which device they arrive on).
+        return self.shard_0
+
+    def forward(self, input_ids: "torch.Tensor") -> "torch.Tensor":
+        flat = input_ids.reshape(-1)
+        # Compile-friendly gather: no data-dependent control flow. Avoid ``mask.any()`` (a scalar
+        # sync -> dynamo graph break) and boolean-mask indexing (``flat[mask]`` -> data-dependent
+        # shapes -> recompiles). Instead, for every shard clamp ids into its local range, gather,
+        # and select the owning shard's rows with ``torch.where``. Each id lives in exactly one
+        # shard, so exactly one iteration writes it; the rest keep the running ``out``.
+        out = torch.zeros(flat.shape[0], self.embedding_dim, dtype=self.weight_dtype, device=flat.device)
+        for i, (lo, hi) in enumerate(self._bounds):
+            shard = getattr(self, f"shard_{i}")
+            mask = (flat >= lo) & (flat < hi)
+            local = torch.clamp(flat - lo, 0, hi - lo - 1).to(shard.device)
+            gathered = torch.nn.functional.embedding(local, shard).to(out.device)
+            out = torch.where(mask.unsqueeze(-1), gathered, out)
+        return out.reshape(*input_ids.shape, self.embedding_dim)
+
+
+def _module_manages_own_device(module: torch.nn.Module) -> bool:
+    """True for modules that place their own (possibly multi-device) storage.
+
+    Such modules (e.g. :class:`_ShardedEmbedding`) must be skipped by the generic block
+    relocation helpers so their shards are not collapsed onto a single device.
+    """
+    return isinstance(module, _ShardedEmbedding)
+
+
+def shard_ngram_embeddings_across_gpus_(module: torch.nn.Module, devices: list) -> list:
+    """Row-shard every plain ``nn.Embedding`` ngram table under ``module`` across ``devices``.
+
+    Requires >= 2 devices; only plain, already-materialized ``nn.Embedding`` tables are
+    sharded (anything else is left for the caller to CPU-pin). Returns the sharded names.
+    """
+    if not devices or len(devices) < 2:
+        return []
+    sharded = []
+    for name, sub in list(module.named_modules()):
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf not in ("ngram_embedding", "ngram_embeddings"):
+            continue
+        if not isinstance(sub, torch.nn.Embedding) or isinstance(sub, _ShardedEmbedding):
+            continue
+        if sub.weight.device.type == "meta":
+            continue  # not materialized yet; caller decides
+        parent = get_module(module, name.rsplit(".", 1)[0]) if "." in name else module
+        try:
+            replacement = _ShardedEmbedding(sub, devices)
+        except Exception as err:  # OOM or device error -> leave for the caller to CPU-pin
+            logger.warning(f"Could not shard ngram embedding '{name}' across GPUs ({err}); keeping it on CPU.")
+            continue
+        setattr(parent, leaf, replacement)
+        sharded.append(name)
+    return sharded
+
+
+def _iter_ngram_modules(module: torch.nn.Module):
+    """Yield ``(name, submodule)`` for every ngram embedding leaf under ``module``."""
+    for name, sub in module.named_modules():
+        leaf = name.rsplit(".", 1)[-1]
+        # Keep exact matches first, but also accept common ngram leaf variants.
+        if leaf in ("ngram_embedding", "ngram_embeddings") or ("ngram_embedding" in leaf or leaf.startswith("ngram")):
+            yield name, sub
+
+
+def _module_storage_nbytes(module: torch.nn.Module) -> int:
+    """Return parameter+buffer storage bytes for one module (including its children)."""
+    total = 0
+    for param in module.parameters(recurse=True):
+        total += int(param.numel()) * int(param.element_size())
+    for buf in module.buffers(recurse=True):
+        total += int(buf.numel()) * int(buf.element_size())
+    return total
+
+
+def _format_nbytes_gib(nbytes: int) -> str:
+    """Format byte count in GiB for user-facing logs."""
+    gib = float(nbytes) / (1024.0**3)
+    return f"{gib:.2f} GiB"
+
+
+def _place_ngram_on_single_device_(sub: torch.nn.Module, device: str) -> None:
+    """Keep one ngram embedding resident on ``device`` (CPU or a specific accelerator).
+
+    For a GPU target the params are physically moved onto the card first (so the on-device
+    lookup is real); for CPU they stay in host RAM. An ``AlignDevicesHook`` then keeps the
+    module executing on ``device`` and re-aligns I/O to the caller, and marks it so the
+    generic block relocation leaves it in place.
+    """
+    if module_pinned_execution_device(sub) == str(device):
+        return
+    if not isinstance(sub, _ShardedEmbedding):
+        try:
+            tensors = list(sub.parameters(recurse=False)) + list(sub.buffers(recurse=False))
+            if any(t.device.type != "meta" for t in tensors):
+                sub.to(device)
+        except Exception as err:  # OOM, invalid/unavailable device, ... -> safe CPU fallback
+            logger.warning(f"Could not place ngram embedding on {device} ({err}); keeping it on CPU.")
+            device = "cpu"
+    _pin_module_execution_on_device(sub, device)
+
+
+def _normalize_ngram_target_device(setting: str, devices: list) -> str | None:
+    """Resolve an ``AR_NGRAM_DEVICE`` value naming a single device to a concrete device string.
+
+    Accepts a full string (``cuda:1``/``xpu:0``/``cpu``) or a bare index (``1`` -> the second
+    entry of ``devices`` when present, else ``<accelerator>:1``). Returns ``None`` if the value
+    is not a single-device request.
+    """
+    if setting == "cpu":
+        return "cpu"
+    if ":" in setting:
+        return setting
+    if setting.isdigit():
+        idx = int(setting)
+        if devices and idx < len(devices):
+            return str(devices[idx])
+        try:
+            from auto_round.utils.device_manager import device_manager
+
+            return f"{device_manager.type}:{idx}"
+        except Exception:  # pragma: no cover - device manager optional/unavailable
+            return f"cuda:{idx}"
+    return None
+
+
+def place_ngram_embeddings_for_tuning_(module: torch.nn.Module, gpu_devices: list | None = None) -> list:
+    """Place ngram embeddings for per-block tuning, honoring the ``AR_NGRAM_DEVICE`` env var.
+
+    ``AR_NGRAM_DEVICE`` values:
+
+    * ``auto`` (default): keep the table pinned on CPU (memory-safe; the table does not
+      participate in tuning). A one-time hint points users at the faster on-GPU options.
+    * ``across`` / ``shard`` / ``gpu``: force row-sharding across all available GPUs.
+    * ``cpu``: pin on CPU (same as the default).
+    * a device (``cuda:1``, ``xpu:0``, or a bare index like ``1``): put the whole table on
+      that specific card.
+
+    Multi-GPU sharding is experimental (see the warning below). Returns the handled names.
+    """
+    from auto_round import envs
+
+    setting = str(getattr(envs, "AR_NGRAM_DEVICE", "auto")).strip().lower()
+    ngram_device_explicitly_set = bool(envs.is_set("AR_NGRAM_DEVICE"))
+
+    devices = [str(d) for d in gpu_devices] if gpu_devices else []
+    if not devices:
+        try:
+            from auto_round.utils.device_manager import device_manager
+
+            if device_manager.is_available() and device_manager.type != "cpu":
+                devices = [str(d) for d in device_manager.device_list]
+        except Exception:  # pragma: no cover - device manager optional/unavailable
+            devices = []
+
+    ngram_modules = list(_iter_ngram_modules(module))
+    if not ngram_modules:
+        fallback_ngram_names = [name for name, _ in module.named_modules() if "ngram" in name.lower()]
+        if fallback_ngram_names:
+            logger.info_once(
+                "AR_NGRAM_DEVICE=%s is set, but no ngram embedding leaf matched placement rules in this block. "
+                "Found %d ngram-like module name(s), e.g. %s",
+                setting or "auto",
+                len(fallback_ngram_names),
+                ", ".join(fallback_ngram_names[:3]),
+            )
+        return []
+    total_ngram_nbytes = sum(_module_storage_nbytes(sub) for _, sub in ngram_modules)
+    logger.info_once(
+        "Detected %d ngram embedding module(s), total size %s (AR_NGRAM_DEVICE=%s).",
+        len(ngram_modules),
+        _format_nbytes_gib(total_ngram_nbytes),
+        setting or "auto",
+    )
+
+    # Resolve the requested mode.
+    single_target = _normalize_ngram_target_device(setting, devices)
+    if setting in ("across", "shard", "gpu"):
+        mode = "across"
+    elif setting in ("auto", ""):
+        # Default: keep the (huge, non-tunable) ngram table on CPU. It does not participate in
+        # tuning, so host residency is correct and memory-safe (no per-card OOM, no extra device
+        # RAM churn); the only cost is host<->device copies per forward. Point users at the
+        # faster on-GPU options once, so they can opt in when they have the headroom.
+        mode = "single"
+        single_target = "cpu"
+        if not ngram_device_explicitly_set:
+            logger.info_once(
+                "AR_NGRAM_DEVICE is not set, so ngram embeddings stay on CPU by default (total %s, memory-safe). "
+                "For faster lookup set AR_NGRAM_DEVICE=<cuda:N|xpu:N> (single GPU) or AR_NGRAM_DEVICE=across "
+                "(multi-GPU sharding, experimental and may have bugs).",
+                _format_nbytes_gib(total_ngram_nbytes),
+            )
+        else:
+            logger.info_once(
+                "AR_NGRAM_DEVICE=%s keeps ngram embeddings on CPU (total %s, memory-safe).",
+                setting,
+                _format_nbytes_gib(total_ngram_nbytes),
+            )
+    elif single_target is not None:
+        mode = "single"
+    else:
+        logger.warning(f"Unrecognized AR_NGRAM_DEVICE={setting!r}; falling back to CPU (safe default).")
+        mode = "single"
+        single_target = "cpu"
+
+    handled: list = []
+    if mode == "across":
+        if len(devices) >= 2:
+            logger.warning_once(
+                "Sharding ngram embeddings across multiple GPUs is experimental and may have bugs; "
+                "set AR_NGRAM_DEVICE=cpu (safe) or a specific card (e.g. AR_NGRAM_DEVICE=cuda:0) if you hit issues."
+            )
+            handled = list(shard_ngram_embeddings_across_gpus_(module, devices))
+            if handled:
+                logger.info(
+                    "Placed %d ngram embedding module(s) across %d GPUs (total %s).",
+                    len(handled),
+                    len(devices),
+                    _format_nbytes_gib(total_ngram_nbytes),
+                )
+        # Any ngram not sharded (single/no GPU, custom module, OOM) falls back to CPU pin below.
+        fallback = devices[0] if len(devices) == 1 else "cpu"
+        for name, sub in ngram_modules:
+            if name in handled or isinstance(sub, _ShardedEmbedding):
+                continue
+            _place_ngram_on_single_device_(sub, fallback)
+            handled.append(name)
+        if handled and len(devices) < 2:
+            logger.info(
+                "Placed %d ngram embedding module(s) on %s (total %s).",
+                len(handled),
+                fallback,
+                _format_nbytes_gib(total_ngram_nbytes),
+            )
+        return handled
+
+    # mode == "single": every ngram table on one chosen device (CPU or a specific card).
+    target = single_target if single_target is not None else "cpu"
+    for name, sub in ngram_modules:
+        _place_ngram_on_single_device_(sub, target)
+        handled.append(name)
+    if handled:
+        logger.info(
+            "Placed %d ngram embedding module(s) on %s (total %s).",
+            len(handled),
+            target,
+            _format_nbytes_gib(total_ngram_nbytes),
+        )
+    return handled
+
+
+def hook_ngram_embeddings_on_cpu(model):
+    """Pin ngram embeddings on CPU so they are never moved onto an accelerator.
+
+    Handles two layouts:
+
+    * The top-level ``model.model.ngram_embeddings`` module (original behavior).
+    * Per-layer ngram embeddings nested anywhere in the tree, e.g.
+      ``model.language_model.layers.N.ple.ple_embedding.ngram_embedding`` used by
+      Qwen3-Next-Flash style checkpoints. These are single, very large lookup
+      tables (~tens of GiB) that do not participate in tuning, so keeping them on
+      CPU avoids GPU OOM during per-block dispatch.
+
+    Returns ``(has_top_level_ngram, raw_top_level_ngram_or_None)`` for backward
+    compatibility with the calibration dispatch restore logic.
+    """
+    # Per-layer / nested ngram embeddings (match any module attribute literally
+    # named ``ngram_embedding``, plus the pluralized top-level ``ngram_embeddings``).
+    pin_ngram_embeddings_on_cpu_(model)
+
+    has_ngram_embeddings = hasattr(model, "model") and hasattr(model.model, "ngram_embeddings")
+    raw_ngram_embeddings = model.model.ngram_embeddings if has_ngram_embeddings else None
+    return has_ngram_embeddings, raw_ngram_embeddings
+
+
+def is_model_free_route(
+    model,
+    scheme,
+    iters: int,
+    disable_opt_rtn,
+    kwargs: dict,
+) -> bool:
+    """Return True when the model-free fast-path should be taken.
+
+    Mirrors the ``is_diffusion_model`` / ``is_mllm_model`` helpers used in
+    ``AutoRound.__new__`` to select the right compressor class.
+
+    Model-free mode is activated when **either** of the following holds:
+
+    * ``model_free=True`` is explicitly set in *kwargs*.
+    * All of the following are true:
+
+      - ``disable_model_free`` is not set (or False) in *kwargs*
+      - *model* is a string (HF hub ID or local path)
+      - *iters* == 0
+      - *disable_opt_rtn* is exactly ``True``
+      - *scheme* is a supported model-free preset
+
+    Note: this function only *reads* kwargs; it does **not** pop any keys.
+    """
+    from auto_round.compressors.model_free import (
+        _looks_like_auto_scheme,
+        _validate_auto_scheme_options,
+        is_model_free_supported_scheme,
+    )
+
+    explicit = bool(kwargs.get("model_free", False))
+    disabled = bool(kwargs.get("disable_model_free", False))
+    has_static_attention_quantization = any(
+        kwargs.get(key) is not None for key in ("static_kv_dtype", "static_attention_dtype")
+    )
+    if explicit:
+        if has_static_attention_quantization:
+            raise ValueError("model_free=True does not support static KV or attention quantization.")
+        return True
+    if has_static_attention_quantization:
+        return False
+    # Only auto-route when format is auto_round (or not specified).
+    fmt = kwargs.get("format", "auto_round")
+    if fmt is None:
+        fmt = "auto_round"
+    fmt_first = str(fmt).lower().replace(" ", "").split(",")[0]
+    common_conditions = not disabled and isinstance(model, str) and iters == 0 and disable_opt_rtn is True
+
+    if _looks_like_auto_scheme(scheme):
+        try:
+            family = _validate_auto_scheme_options(scheme)
+        except ValueError:
+            return False
+
+        if fmt_first == "auto_round":
+            return common_conditions and family == "int"
+        if fmt_first == "llm_compressor":
+            return common_conditions and family == "mx_fp"
+        return False
+
+    if fmt_first == "llm_compressor":
+        from auto_round.compressors.model_free import _apply_scheme_overrides
+        from auto_round.schemes import is_mx_fp as _is_mx_fp
+
+        try:
+            scheme_obj = _apply_scheme_overrides(scheme, kwargs)
+            scheme_is_mx_fp = _is_mx_fp(scheme_obj.data_type or "")
+        except Exception:
+            scheme_is_mx_fp = False
+        return common_conditions and scheme_is_mx_fp and is_model_free_supported_scheme(scheme, kwargs)
+    if fmt_first != "auto_round":
+        return False
+    return common_conditions and is_model_free_supported_scheme(scheme, kwargs)
+
+
+def find_layers_from_config(model_dir: str, class_names: list[str] | None = None) -> dict[str, str]:
+    """Detect layers of given class names by loading the model on ``device='meta'``.
+
+    Only ``config.json`` is required — no weights are read.
+
+    For regular models the root directory is checked.  For diffusion-style
+    repos (no root ``config.json`` but a ``transformer/`` subfolder), only the
+    ``transformer/`` subfolder is checked — other sub-components (``vae/``,
+    ``scheduler/``, …) are intentionally skipped because only the transformer
+    is quantized in model-free mode.
+
+    Args:
+        model_dir: Local directory containing ``config.json``, or a diffusion
+            repo root whose ``transformer/`` subfolder contains ``config.json``.
+        class_names: Class names to look for, matched against
+            ``type(module).__name__``.  Defaults to
+            ``["Embedding", "Conv1d", "Conv1D"]`` — the types incompatible
+            with model-free RTN packing.
+
+    Returns:
+        ``{class_name: [layer_name, ...]}`` for every matched module.
+        Returns an empty dict on any failure.
+    """
+    from huggingface_hub import snapshot_download
+    from transformers import AutoConfig, AutoModel
+
+    if class_names is None:
+        class_names = ["Embedding", "Conv1d", "Conv1D"]
+    if isinstance(class_names, str):
+        class_names = [class_names]
+    target = set(class_names)
+
+    # download if not local, but only the config files (fast)
+    if not os.path.exists(model_dir):
+        model_dir = snapshot_download(
+            repo_id=model_dir,
+            allow_patterns=["**/config.json"],
+        )
+
+    # Build the list of (prefix, config_dir) pairs to inspect.
+    # For diffusion repos (no root config.json) only check transformer/.
+    # For regular repos only check the root directory.
+    dirs: list[tuple[str, str]] = []
+    if os.path.exists(os.path.join(model_dir, "config.json")):
+        dirs.append(("", model_dir))
+    else:
+        transformer_dir = os.path.join(model_dir, "transformer")
+        if os.path.isdir(transformer_dir) and os.path.exists(os.path.join(transformer_dir, "config.json")):
+            dirs.append(("", transformer_dir))
+
+    result: dict[str, str] = {}
+    for prefix, config_dir in dirs:
+        try:
+            with torch.device("meta"):
+                config = AutoConfig.from_pretrained(config_dir, trust_remote_code=True)
+                model = AutoModel.from_config(config, trust_remote_code=True)
+        except Exception as e:
+            logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Warning: {e}")
+            continue  # skip silently
+        for name, module in model.named_modules():
+            cls_name = type(module).__name__
+            if any(t.lower() in cls_name.lower() for t in target):
+                full_name = f"{prefix}.{name}" if prefix else name
+                if cls_name not in result:
+                    result[cls_name] = [full_name]
+                else:
+                    result[cls_name].append(full_name)
+        del model
+    return result

@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Intel Corporation
+# Copyright (c) 2026 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,585 +11,844 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import copy
+import gc
 import os
 import sys
-import time
-import traceback
-from collections import defaultdict
-from contextlib import nullcontext
-from dataclasses import asdict, fields
-from functools import partial
-from typing import Any, Callable, Optional, Union
+from dataclasses import asdict, dataclass, fields, replace
+from typing import Any
 
-import accelerate
 import torch
-from accelerate.big_modeling import dispatch_model, infer_auto_device_map
-from accelerate.utils import get_balanced_memory, get_max_memory
-from packaging import version
-from torch import autocast
-from tqdm import tqdm
 from transformers import AutoConfig, set_seed
 
-from auto_round import envs
-from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
-from auto_round.compressors.shard_writer import shard_writer
-from auto_round.compressors.utils import (
-    IndexSampler,
-    block_forward,
-    check_need_act_calibration,
-    check_skippable_keywords,
-    collect_best_params,
-    get_shared_keys,
-    infer_bits_by_data_type,
-    init_cache,
-    is_block_wfp8,
-    is_dynamic_afp8,
-    is_dynamic_wint8aint8,
-    is_mx_fp,
-    is_nv_fp,
-    is_static_wfp8afp8,
-    is_wfp8afp8,
-    reset_params,
-    set_layer_config,
+from auto_round.algorithms.quantization import BaseQuantizer, QuantizationConfig
+from auto_round.algorithms.transforms import (
+    BaseRotationConfig,
 )
-from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, update_block_global_scale_if_needed
-from auto_round.experimental.transform.hadamard_config import HadamardConfig
-from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
-from auto_round.formats import OutputFormat, get_formats
+from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+from auto_round.compressors.config_resolution import (
+    FormatResolution,
+    ResolvedScheme,
+    resolve_quantization_config,
+    thaw_mapping,
+)
+from auto_round.compressors.layer_config_resolver import (
+    apply_plan_to_model,
+    extract_regex_config,
+    has_quantized_layer_outside_blocks,
+    resolve_layer_config,
+)
+from auto_round.compressors.shard_writer import ShardWriter
+from auto_round.compressors.utils import _get_save_folder_name, is_mx_fp, is_nv_fp
+from auto_round.context.compress import CompressContext
+from auto_round.context.model import ModelContext
+from auto_round.export.formats import OutputFormat, resolve_formats
 from auto_round.logger import logger
-from auto_round.modeling.fused_moe.replace_modules import materialize_model_, safe_to_cpu_
-from auto_round.modeling.unfused_moe import apply_model_monkey_patches
 from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
     get_gguf_scheme,
+    needs_nvfp_global_scale,
+    parse_scheme,
     preset_name_to_scheme,
+    scheme_to_preset_name,
 )
-from auto_round.sign_sgd import SignSGD
-from auto_round.special_model_handler import get_predefined_ignore_layers, update_module
+from auto_round.special_model_handler import get_predefined_fixed_attr, get_predefined_ignore_layers, update_module
 from auto_round.utils import (
+    AUDIO_MM_KEYS,
     INNER_SUPPORTED_LAYER_TYPES,
-    SUPPORTED_DTYPES,
     SUPPORTED_LAYER_TYPES,
     TORCH_VERSION_AT_LEAST_2_6,
-    CpuInfo,
-    check_and_mark_quantized_module,
-    check_seqlen_compatible,
-    check_to_quantized,
-    clear_memory,
-    compile_func,
+    VISION_MM_KEYS,
+    cast_model_dtype,
     compress_layer_names,
     convert_dtype_str2torch,
-    convert_module_to_hp_if_necessary,
-    detect_device,
+    extract_block_names_to_str,
     find_matching_blocks,
-    flatten_list,
     get_block_names,
-    get_layer_names_in_block,
-    get_lm_head_name,
-    get_module,
-    global_state,
-    htcore,
-    is_auto_device_mapping,
+    get_reverse_checkpoint_conversion_mapping,
+    get_reverse_weight_transforms,
     is_debug_mode,
     is_hpex_available,
-    is_moe_model,
-    is_moe_model_via_config,
     is_quantized_input_module,
-    llm_load_model,
     memory_monitor,
-    mv_module_from_gpu,
-    normalize_no_split_modules,
-    set_amax_for_all_moe_layers,
-    set_module,
-    to_device,
-    to_dtype,
-    unsupported_meta_device,
+    preserve_original_visual_block_name,
+    revert_checkpoint_conversion_mapping,
+    revert_name_with_weight_transforms,
 )
+from auto_round.utils.dataset_utils import CalibDataset
 from auto_round.utils.device import (
-    clear_memory_if_reached_threshold,
-    get_major_device,
-    parse_available_devices,
-    set_auto_device_map_for_block_with_tuning,
+    _force_trim_malloc,
+    patch_xpu_sdpa_drop_causal_mask,
     set_non_auto_device_map,
 )
-from auto_round.utils.distributed import setup_ddp_if_needed_
-from auto_round.utils.offload import OffloadManager
-from auto_round.wrapper import WrapperLinear, WrapperMultiblock, unwrapper_block, unwrapper_layer, wrapper_block
+from auto_round.utils.device_manager import default_enable_torch_compile, device_manager
+from auto_round.utils.offload import OffloadManager, _resolve_model_dir
 
-SERIALIZATION_KEYS = (
-    "bits",
-    "act_bits",
-    "data_type",
-    "act_data_type",
-    "group_size",
-    "act_group_size",
-    "sym",
-    "act_sym",
-    "act_dynamic",
-    "amp",
-    "batch_size",
-    "enable_minmax_tuning",
-    "enable_norm_bias_tuning",
-    "enable_quanted_input",
-    "gradient_accumulate_steps",
-    "iters",
-    "lr",
-    "low_gpu_mem_usage",
-    "minmax_lr",
-    "nsamples",
-    "quant_block_list",
-    "regex_config",
-    "scale_dtype",
-    "seqlen",
-    "supported_types",
-    "static_attention_dtype",
-    "static_kv_dtype",
-    "super_bits",
-    "super_group_size",
-    "to_quant_block_names",
-    "hadamard_config",
-)
+# ``torch.compile`` only pays for itself when the compiled quant function is
+# replayed many times.  Below this many SignRound iterations the one-off
+# compilation cost dominates, so compiling is pure overhead.
+MIN_ITERS_FOR_TORCH_COMPILE = 10
 
 
-class BaseCompressor(object):
-    """Base compressor for LLM quantization
+@dataclass
+class SerializedCompressorConfig:
+    bits: int | None = None
+    act_bits: int | None = None
+    data_type: str | None = None
+    act_data_type: str | None = None
+    group_size: int | None = None
+    act_group_size: int | None = None
+    sym: bool | None = None
+    act_sym: bool | None = None
+    act_dynamic: bool | None = None
+    amp: bool | None = None
+    batch_size: int | None = None
+    enable_minmax_tuning: bool | None = True
+    enable_norm_bias_tuning: bool | None = False
+    enable_quanted_input: bool | None = True
+    gradient_accumulate_steps: int | None = None
+    iters: int | None = None
+    lr: float | None = None
+    low_gpu_mem_usage: bool | None = None
+    minmax_lr: float | None = None
+    nsamples: int | None = None
+    quant_block_list: list[str] | None = None
+    regex_config: dict[str, Any] | None = None
+    scale_dtype: str | None = None
+    seqlen: int | None = None
+    supported_types: list[str] | None = SUPPORTED_LAYER_TYPES
+    static_attention_dtype: str | None = None
+    static_kv_dtype: str | None = None
+    static_attention_granularity: str | None = "tensor"
+    static_kv_granularity: str | None = "tensor"
+    super_bits: int | None = None
+    super_group_size: int | None = None
+    to_quant_block_names: list[str] | None = None
+    rotation_configs: list[dict[str, Any]] | None = None
 
-    Attributes:
-        model (torch.nn.Module): The loaded PyTorch model in eval mode.
-        tokenizer: Tokenizer used to prepare input text for calibration/tuning.
-        platform (str): The platform to load pretrained moded, options: ["hf", "model_scope"]
-        bits (int): Weight quantization bits.
-        group_size (int): Per-group size for weight quantization.
-        sym (bool): Whether to use symmetric weight quantization.
-        layer_config (dict): Per-layer quantization configuration.
-        nsamples (int): Number of calibration samples.
-        enable_torch_compile (bool): Whether to enable compile_func for quant blocks/layers.
-    """
 
-    bits: int | None
-    group_size: int | None
-    sym: bool | None
-    data_type: str | None
-    act_bits: int | None
-    act_group_size: int | None
-    act_sym: bool | None
-    act_data_type: str | None
-    act_dynamic: bool | None
-    super_bits: int | None
-    super_group_size: int | None
+SERIALIZATION_KEYS = tuple(field.name for field in fields(SerializedCompressorConfig))
+
+
+def collect_user_scheme_overrides(configs: list[Any]) -> dict[str, Any]:
+    scheme_fields = {f.name for f in fields(QuantizationScheme)}
+    user_scheme_overrides = {}
+    user_scheme_sources = {}
+    for config in configs:
+        for key in getattr(config, "_user_set_scheme_fields", set()):
+            if key not in scheme_fields:
+                continue
+            value = getattr(config, key, None)
+            if value is None:
+                continue
+            if key in user_scheme_overrides and value != user_scheme_overrides[key]:
+                prev_config, prev_value = user_scheme_sources[key]
+                raise ValueError(
+                    f"Conflicting shared scheme field {key!r}: "
+                    f"{type(prev_config).__name__}.{key}={prev_value!r}, "
+                    f"{type(config).__name__}.{key}={value!r}. "
+                    "Use the same value for shared fields or pass scheme arguments through Compressor."
+                )
+            user_scheme_overrides[key] = value
+            user_scheme_sources[key] = (config, value)
+    return user_scheme_overrides
+
+
+def _make_compressor_scheme_property(name):
+    def getter(self):
+        scheme_context = getattr(self, "scheme_context", None)
+        if scheme_context is not None:
+            return getattr(scheme_context, name)
+        return self.__dict__.get(name, getattr(type(self), name, None))
+
+    def setter(self, value):
+        scheme_context = getattr(self, "scheme_context", None)
+        if scheme_context is not None:
+            setattr(scheme_context, name, value)
+        else:
+            self.__dict__[name] = value
+
+    return property(getter, setter)
+
+
+def _formats_policy_string_of(formats) -> str:
+    """Comma-joined format names for policy checks (8-bit asym scoping).
+
+    Handles both the raw string form (before resolution) and the resolved
+    OutputFormat object list; backend names keep the composite spelling
+    (e.g. ``auto_round:llm_compressor``)."""
+    if formats is None:
+        return ""
+    if isinstance(formats, str):
+        return formats
+    items = formats if isinstance(formats, (list, tuple)) else [formats]
+    names = []
+    for fmt in items:
+        try:
+            names.append(fmt.get_backend_name())
+        except Exception:  # noqa: BLE001
+            names.append(str(getattr(fmt, "output_format", "")))
+    return ",".join(names)
+
+
+class BaseOrchestrator:
+    need_calib: bool = True
+    compress_context: CompressContext = None
+    model_context: ModelContext = None
+    shard_writer: ShardWriter = None
+    supported_types = SUPPORTED_LAYER_TYPES
+    inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
+
+    # ── Scheme state (populated during resolve_scheme / _scheme_post_init) ──
+    is_auto_scheme: bool = False
+    orig_scheme = None
+    scheme = None
+    to_quant_block_names = None
+    ignore_layers: str = ""
+    quant_lm_head: bool = False
+    _scheme_resolved: bool = False
+    scheme_generator = None
+    _scheme_context_fields = set(QuantizationScheme.get_attributes())
+    for _scheme_field in QuantizationScheme.get_attributes():
+        locals()[_scheme_field] = _make_compressor_scheme_property(_scheme_field)
+
+    @staticmethod
+    def _preload_model_config(model: torch.nn.Module | str, trust_remote_code: bool) -> AutoConfig | None:
+        if not isinstance(model, str):
+            return None
+
+        try:
+            return AutoConfig.from_pretrained(model, trust_remote_code=trust_remote_code)
+        except (OSError, ValueError) as e:
+            logger.debug(
+                "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
+                "Proceeding without config-based checks.",
+                model,
+                e,
+            )
+            return None
 
     def __init__(
         self,
-        model: Union[torch.nn.Module, str],
-        tokenizer=None,
-        platform="hf",
-        scheme: Union[str, dict, QuantizationScheme, AutoScheme] = "W4A16",
-        layer_config: dict[str, Union[str, dict, QuantizationScheme]] = None,
-        dataset: Union[str, list, tuple, torch.utils.data.DataLoader] = "NeelNanda/pile-10k",
-        iters: int = 200,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
-        gradient_accumulate_steps: int = 1,
+        config: object | list[object],
+        model: torch.nn.Module | str,
+        tokenizer: Any = None,
+        platform: str = "hf",
+        format: str | list | None = None,
+        scheme: str | dict | QuantizationScheme | AutoScheme = "W4A16",
         low_gpu_mem_usage: bool = False,
-        device_map: Union[str, torch.device, int, dict] = 0,
-        enable_torch_compile: bool = False,
-        enable_alg_ext: bool = False,
-        disable_opt_rtn: bool | None = None,
+        calibration_data_device: str = "auto",
+        device_map: str | torch.device | int | dict = 0,
+        parallel_config=None,
+        enable_torch_compile: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
-        hadamard_config: str | dict | HadamardConfig | None = None,
+        layer_config: dict | None = None,
+        nsamples: int | None = None,
+        seqlen: int | None = None,
+        scale_dtype: str | torch.dtype | None = None,
+        ignore_layers: str = "",
+        quant_lm_head: bool = False,
+        to_quant_block_names: str | list[str] | None = None,
+        dataset: str | list | tuple | torch.utils.data.DataLoader | CalibDataset | None = None,
         **kwargs,
-    ):
-        """Initialize AutoRound with quantization and tuning configuration.
+    ) -> None:
+        # ``CalibrationContext`` is the single source of truth for calibration
+        # runtime state.  Seed every calibration field here in one block so
+        # the rest of ``__init__`` only ever interacts with the state object
+        # via property forwarders.  ``_resolve_scheme`` later wires this same
+        # instance onto the quantizer so the two share state.
+        from auto_round.calibration.state import CalibrationContext
+        from auto_round.parallel import ParallelConfig
+        from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
 
-        Args:
-            model (torch.nn.Module | str): Model object or model name to load.
-            tokenizer: Tokenizer for text processing. Required if `model` is not a string and `iters > 0`.
-            scheme (str| dict | QuantizationScheme ): A preset scheme that defines the quantization configurations
-            bits (int, optional): Weight quantization bits. Defaults to 4.
-            group_size (int, optional): Weight quantization group size. Defaults to 128.
-            sym (bool, optional): Symmetric weight quantization. Defaults to True.
-            layer_config (dict, optional): Layer-wise quantization config. Defaults to None.
-            batch_size (int, optional): Calibration batch size. Defaults to 8.
-            amp (bool, optional): Use AMP for tuning. Defaults to True.
-            device (str | torch.device | int, optional): Compute device. Defaults to 0.
-            dataset (str | list | tuple | DataLoader, optional): Calibration data. Defaults to "NeelNanda/pile-10k".
-            enable_minmax_tuning (bool, optional): Enable weight min-max tuning. Defaults to True.
-            lr (float, optional): Learning rate; if None, set to 1.0 / iters except when iters==0.
-            minmax_lr (float, optional): Learning rate for min-max tuning; defaults to `lr`.
-            low_gpu_mem_usage (bool, optional): Lower GPU memory mode. Defaults to False.
-            low_cpu_mem_usage (bool, optional): Lower CPU memory mode. Defaults to False.
-            iters (int, optional): Optimization iterations. Defaults to 200.
-            seqlen (int, optional): Calibration sequence length. Defaults to 2048.
-            nsamples (int, optional): Number of calibration samples. Defaults to 128.
-            seed (int, optional): Random seed. Defaults to 42.
-            gradient_accumulate_steps (int, optional): Gradient accumulation steps. Defaults to 1.
-            data_type (str, optional): Weight data type string, e.g., "int". Defaults to "int".
-            act_bits (int, optional): Activation quantization bits. Defaults to 16.
-            act_group_size (int, optional): Activation group size. Defaults to None.
-            act_sym (bool, optional): Symmetric activation quantization. Defaults to None.
-            act_data_type (str, optional): Activation data type; inherits weight dtype if None and act_bits < 16.
-            act_dynamic (bool, optional): Dynamic activation quantization. Defaults to True.
-            enable_torch_compile (bool, optional): Enable torch.compile for quant blocks/layers. Defaults to False.
-            device_map (str | dict, optional): Device placement map. Defaults to None.
-            disable_opt_rtn (bool, optional): Disable RTN-mode optimization (iters=0). Defaults to None.
-            enable_alg_ext (bool, optional): Enable algorithm extension (primarily for INT2). Defaults to False.
-            **kwargs: Backward compatible options:
-                - enable_alg_ext, quant_lm_head, lr, lr_scheduler, not_use_best_mse, dynamic_max_gap,
-                  super_group_size, super_bits, scale_dtype ("fp16" etc.),
-                  nblocks, to_quant_block_names,
-                  enable_norm_bias_tuning, enable_quanted_input, enable_opt_rtn,
-                  disable_deterministic_algorithms, mllm, static_kv_dtype,enable_deterministic_algorithms,momentum
-        Raises:
-            ValueError: If invalid device is provided or tokenizer is missing for non-str model with iters > 0.
-            RuntimeError: If model parameters are on meta device.
-        Example:
-            Layer-wise configuration structure:
+        self.parallel_config = ParallelConfig.from_value(parallel_config)
+        device_manager.set_tensor_parallel(self.parallel_config.tp_size > 1)
+        from auto_round.parallel.execution import ParallelExecution
 
-            >>> layer_config = {
-            ...     "layer1": {
-            ...         "bits": 3,
-            ...         "group_size": 128,
-            ...         "sym": True,
-            ...     },
-            ...     "layer2": {
-            ...         "W8A16"
-            ...      }
-            ...     # ...
-            ... }
-        """
-        scheme_fields = [f.name for f in fields(QuantizationScheme)]
+        self.parallel_execution = ParallelExecution(self.parallel_config)
 
-        # 1. Pre-extract user-specified overrides from kwargs
-        # This ensures we know exactly what the user wants to "force"
-        self.user_scheme_overrides = {}
-        for k in scheme_fields:
-            if k in kwargs:
-                value = kwargs.pop(k)
-                if value is not None:
-                    self.user_scheme_overrides[k] = value
+        # Normalize CalibDataset objects to spec strings
+        if isinstance(dataset, CalibDataset):
+            dataset = dataset.to_spec_string()
+        elif isinstance(dataset, (list, tuple)):
+            dataset = normalize_dataset_spec(dataset)
 
-        # Model related
-        model_dtype = kwargs.pop("model_dtype", None)
-        self.mllm = kwargs.pop("mllm") if "mllm" in kwargs else False
-        self.trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
-        self.diffusion = kwargs.pop("diffusion") if "diffusion" in kwargs else False
-        self.quantized = False
-        self.is_model_patched = False
-        if isinstance(model, str):
-            config: Optional[AutoConfig] = None
-            try:
-                config = AutoConfig.from_pretrained(model, trust_remote_code=self.trust_remote_code)
-            except (OSError, EnvironmentError) as e:
-                logger.debug(
-                    "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
-                    "Proceeding without config-based checks.",
-                    model,
-                    e,
-                )
+        dataset_was_explicitly_set = dataset is not None
+        self.dataset = dataset if dataset_was_explicitly_set else "NeelNanda/pile-10k"
+        batch_size = min(kwargs.pop("batch_size", 8), nsamples)
+        self.calibration_context = CalibrationContext(
+            nsamples=nsamples if nsamples is not None else 128,
+            seqlen=seqlen if seqlen is not None else 2048,
+            batch_size=batch_size,
+            orig_batch_size=batch_size,
+            dataset=self.dataset,
+        )
 
-            self.is_model_patched = apply_model_monkey_patches(
-                model_name=model, trust_remote_code=self.trust_remote_code
-            )
-            import transformers
+        self.quantize_config = None
+        self.rotation_configs: list[BaseRotationConfig] = []
+        _config_list = config if isinstance(config, list) else [config]
+        # Keep full list for pipeline construction (includes preprocessor configs).
+        self._alg_configs: list = list(_config_list)
+        from auto_round.algorithms.config_resolver import split_quantization_configs
 
-            if (
-                not self.is_model_patched
-                and config is not None
-                and is_moe_model_via_config(config)
-                and version.parse(transformers.__version__) >= version.parse("5.0.0")
-            ):
-                from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+        _preprocessor_configs, _quantizer_configs = split_quantization_configs(self._alg_configs)
+        if _quantizer_configs:
+            # The terminal stage drives public scheme/format resolution. Stage
+            # ordering and compatibility are exclusively the composer's job.
+            self.quantize_config = _quantizer_configs[-1]
+        elif _preprocessor_configs:
+            from auto_round.algorithms.quantization.rtn.config import RTNConfig as _RTNConfig
 
-                model_type = getattr(config, "model_type", None)
-                if model_type is not None and model_type not in BUILTIN_MODULES:
-                    logger.warning(
-                        "This MoE model has not been optimized by AutoRound yet, which may result in high RAM usage, "
-                        "Please consider submitting an issue to https://github.com/intel/auto-round/issues"
-                    )
+            self.quantize_config = _RTNConfig()
+            self._alg_configs.append(self.quantize_config)
+        for _cfg in self._alg_configs:
+            if isinstance(_cfg, BaseRotationConfig):
+                if hasattr(_cfg, "block_size") and _cfg.block_size is None:
+                    if "group_size" in kwargs:
+                        block_size = kwargs["group_size"]
+                    else:
+                        block_size = parse_scheme(
+                            scheme, {}, format=_formats_policy_string_of(getattr(self, "formats", None))
+                        )[2]["group_size"]
+                    _cfg.block_size = block_size  # TODO not robust
+                self.rotation_configs.append(_cfg)
+        assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
+        parallel_policy = self.parallel_config.resolve_data_parallel_policy(
+            device_map, iters=max(int(getattr(cfg, "iters", 0) or 0) for cfg in self._alg_configs)
+        )
 
-            model, tokenizer = llm_load_model(
-                model,
-                platform=platform,
-                device="cpu",  # always load cpu first
-                model_dtype=model_dtype,
-                trust_remote_code=self.trust_remote_code,
-            )
-        elif tokenizer is None and not self.diffusion and iters > 0:
-            raise ValueError("A tokenizer must be set for non-str model input")
-        if unsupported_meta_device(model):
-            raise RuntimeError(
-                "AutoRound does not support parameters on meta device. "
-                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
-            )
-        check_and_mark_quantized_module(model)
-        self.model = model.eval()
-        self.tokenizer = tokenizer
-        self.shared_cache_keys = get_shared_keys(self.model)
-
+        # Compressor-level layer params (do not live in QuantizationConfig).
+        # Calibration params (nsamples/seqlen/batch_size) are owned by
+        # ``self.calibration_context`` (seeded above) and exposed via
+        # ``@property`` forwarders.
         self.layer_config = layer_config
+        self.scale_dtype = scale_dtype
+        self.ignore_layers = ignore_layers
+        self.quant_lm_head = quant_lm_head
+        self.to_quant_block_names = to_quant_block_names
+        # ``post_init()`` may run before ``quantize_and_save()`` in tests and
+        # compatibility paths, so seed the same default used by
+        # ``quantize_and_save(..., inplace=True)`` here.
+        self.inplace = True
 
-        self.supported_types = SUPPORTED_LAYER_TYPES
-        self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
-        self.quant_lm_head = kwargs.pop("quant_lm_head", False)
+        # Scheme is passed directly to the compressor, not stored in QuantizationConfig.
+        self.scheme = scheme
+        self.scheme_context = None
 
-        # should be set after loading model and set layer_config, cause some special scheme need these.
-        # Preserve the original, unparsed scheme for later use in auto scheme generation
-        # within `configure_layer_config` (which may need the raw value instead of `self.scheme`).
-        default_scheme, self.is_auto_scheme = self._parse_and_set_scheme(scheme, self.user_scheme_overrides)
-        self.orig_scheme = copy.deepcopy(scheme)
-        self.scheme = default_scheme
+        # Calibrator strategy (auto_round.calibration.base.Calibrator).  Constructed
+        # lazily by ``Compressor.post_init`` based on ``_get_calibrator_kind()``;
+        # remains ``None`` when calibration data is not needed (RTN zero-shot path).
+        self.calibration = None
 
-        gguf_scheme_name = get_gguf_scheme(self.scheme)
-        # GGUF uses fp32 scale dtype as default
-        scale_dtype = kwargs.pop("scale_dtype", None)
-        if scale_dtype is None:
-            scale_dtype = "fp32" if gguf_scheme_name else "fp16"
+        self.formats = format
 
         # Extra/legacy kwargs for backward compatibility
         # Major version releases may pack them with extra configuration options
+        kwargs.pop("iters", None)
+        kwargs.pop("enable_alg_ext", None)
+        kwargs.pop("vlm", None)
         amp = kwargs.pop("amp", True)
-        lr = kwargs.pop("lr", None)
-        enable_minmax_tuning = kwargs.pop("enable_minmax_tuning", True)
-        minmax_lr = kwargs.pop("minmax_lr", None)
-        lr_scheduler = kwargs.pop("lr_scheduler", None)
-        not_use_best_mse = kwargs.pop("not_use_best_mse", False)
-        dynamic_max_gap = kwargs.pop("dynamic_max_gap", -1)
         nblocks = kwargs.pop("nblocks", 1)
-        to_quant_block_names: Union[str, list, None] = kwargs.pop("to_quant_block_names", None)
-        enable_norm_bias_tuning: bool = kwargs.pop("enable_norm_bias_tuning", False)
-        enable_quanted_input: bool = kwargs.pop("enable_quanted_input", True)
-        disable_deterministic_algorithms = kwargs.pop("disable_deterministic_algorithms", True)
         enable_deterministic_algorithms = kwargs.pop("enable_deterministic_algorithms", False)
-        self.momentum = kwargs.pop("momentum", 0.0)
-        static_kv_dtype = kwargs.pop("static_kv_dtype", None)
-        static_attention_dtype = kwargs.pop("static_attention_dtype", None)
-        enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
-        device = kwargs.pop("device", None)
-        if envs.AR_USE_MODELSCOPE:
-            platform = "model_scope"
-        self.platform = platform
 
-        self.ignore_layers = kwargs.pop("ignore_layers", "")
-        self.supported_types = SUPPORTED_LAYER_TYPES
-        self.inner_supported_types = INNER_SUPPORTED_LAYER_TYPES
-        self.scale_dtype = convert_dtype_str2torch(scale_dtype)
-        self.low_cpu_mem_usage = low_cpu_mem_usage
         self._offloader = OffloadManager(enabled=low_cpu_mem_usage, mode="offload", offload_dir_prefix="compressor")
 
+        # Model related
+        model_dtype = kwargs.pop("model_dtype", None)
+        trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
+        quant_nontext_module = kwargs.pop("quant_nontext_module", False)
+        device = kwargs.pop("device", None)
+
+        from auto_round.experimental.utils import normalize_fp8_granularity
+
+        self.static_attention_dtype = kwargs.pop("static_attention_dtype", None)
+        self.static_attention_granularity = normalize_fp8_granularity(
+            kwargs.pop("static_attention_granularity", "tensor")
+        )
+        # Attention static dtype
+        if self.static_attention_dtype is not None:
+            logger.warning("The static attention dtype is experimental and currently has limited support.")
+        # KV cache, this one does not affect tuning but will collect some infos during tuning
+        self.static_kv_dtype = kwargs.pop("static_kv_dtype", None)
+        self.static_kv_granularity = normalize_fp8_granularity(kwargs.pop("static_kv_granularity", "tensor"))
+        if self.static_kv_dtype is not None:
+            logger.warning("The static kv is experimental and currently has limited support.")
+
         if kwargs:
-            logger.warning(f"unrecognized keys {list(kwargs.keys())} were passed. Please check them.")
+            logger.warning_once(
+                f"unrecognized keys {list(kwargs.keys())} were passed. "
+                "Please check them. If you use old api, just ignore this warning."
+            )
         if "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
             os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-        # Deprecated, default not to use torch.use_deterministic_algorithms
-        if not disable_deterministic_algorithms or enable_deterministic_algorithms:
-            if not disable_deterministic_algorithms:
-                logger.warning(
-                    "default not use deterministic_algorithms. disable_deterministic_algorithms is deprecated,"
-                    " please use enable_deterministic_algorithms instead. "
-                )
-
+        if enable_deterministic_algorithms:
+            logger.info("Deterministic algorithms are enabled.")
             torch.use_deterministic_algorithms(True, warn_only=False)
-        else:
-            torch.use_deterministic_algorithms(True, warn_only=True)
 
-        self.to_quant_block_names = to_quant_block_names
-        if not hasattr(self, "quant_block_list"):
-            all_blocks = get_block_names(model)
-            self.quant_block_list = find_matching_blocks(model, all_blocks, self.to_quant_block_names)
-
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
-
-        if device_map is None:
-            device_map = 0
-
-        self.device_map = device_map
-        if isinstance(self.device_map, str):
-            self.device_map = self.device_map.replace(" ", "")
-
-        self.device_list = parse_available_devices(device_map)
-
-        # Set device, must place after model loading
-        self.device = get_major_device(device_map)
-        set_non_auto_device_map(self.model, self.device_map)
+        # XPU SDPA workaround: drop pure causal masks so FLASH backend is used,
+        # and set torch.use_deterministic_algorithms(False)
+        # instead of MATH (avoids ~10x peak-VRAM blow-up during block tuning).
+        patch_xpu_sdpa_drop_causal_mask()
 
         # Tuning hyperparameters
         self.seed = seed
         set_seed(self.seed)
-        self.amp = amp
-        self.enable_quanted_input = enable_quanted_input
-        self.enable_minmax_tuning = enable_minmax_tuning
-        self.nsamples = nsamples
-        self.enable_norm_bias_tuning = enable_norm_bias_tuning
-        self.low_gpu_mem_usage = low_gpu_mem_usage
-        self.seqlen = seqlen
-        self.batch_size, self.gradient_accumulate_steps = batch_size, gradient_accumulate_steps
+
         self.nblocks = nblocks
-        self.dataset = dataset
-        self.iters = iters
-        if self.iters < 0:
-            logger.warning("`iters` must be non-negative, reset it to 200")
-            self.iters = 200
-        if self.iters == 0:
-            self.lr = 5e-3
-        else:
-            if not lr:
-                # TODO need to check 4 bits lr setting for auto-round-best, 3bits only validate on small models
-                if self.iters >= 1000 and self.bits <= 3:
-                    self.lr = 2.0 / self.iters
-                    logger.info("set the lr to 2.0/iters for better accuracy")
-                else:
-                    self.lr = 1.0 / self.iters
-            else:
-                self.lr = lr
 
-        # Automatically adjust the disable_opt_rtn option if the user does not explicitly set it.
-        # To avoid None issue, we keep a copy though it's a little ugly
-        if enable_opt_rtn and disable_opt_rtn:
-            raise ValueError("`enable_opt_rtn` and `disable_opt_rtn` are mutually exclusive; " "only one can be set.")
-        if enable_opt_rtn:
-            disable_opt_rtn = False
-        self.orig_disable_opt_rtn = disable_opt_rtn
-
-        if self.iters != 0 and self.orig_disable_opt_rtn is not None:
-            logger.warning("`disable_opt_rtn` only works when `iters` is set to 0, ignore it now.")
-            disable_opt_rtn = True
-        if (
-            self.bits >= 8
-            and self.act_bits >= 8
-            and self.iters == 0
-            and self.data_type in ["int", "fp"]
-            and disable_opt_rtn is None
-        ):
-            logger.warning("`disable_opt_rtn` is turned on for W8A16/W8A8 quantization to improve efficiency.")
-            disable_opt_rtn = True
-        if disable_opt_rtn is None and self.iters == 0:
-            logger.info(
-                "`enable_opt_rtn` is turned on, set `--disable_opt_rtn` for higher speed at the cost of accuracy."
+        # ``None`` means "not set by the user", which is the only case where the
+        # algorithm-driven auto-disabling below may override the value.
+        self._torch_compile_user_specified = enable_torch_compile is not None
+        # Fallback explanation used by ``_log_torch_compile_state``.
+        self._torch_compile_default_off_reason = None if enable_torch_compile is None else "the user disabled it"
+        if enable_torch_compile is None:
+            enable_torch_compile = default_enable_torch_compile(self.device, platform_name=sys.platform)
+            if not enable_torch_compile:
+                self._torch_compile_default_off_reason = "it is off by default on Windows"
+                logger.warning_once(
+                    "`torch.compile` is disabled by default on Windows because TorchInductor requires the MSVC "
+                    "`cl.exe` compiler, which may not be available. Pass `enable_torch_compile=True` or use "
+                    "`--enable_torch_compile` to force enable it."
+                )
+        elif enable_torch_compile and sys.platform == "win32":
+            logger.warning_once(
+                "Forcing `torch.compile` on Windows. TorchInductor may fail if the MSVC `cl.exe` compiler "
+                "is not installed or not available on PATH."
             )
-            disable_opt_rtn = False
-
-        if self.iters > 0 and is_block_wfp8(self):
-            logger.warning(
-                "RTN is recommended as it achieves accuracy comparable to tuning for block-wise FP8 quantization "
-                "while being significantly faster. You can set `--iters 0 --disable_opt_rtn` to enable RTN mode."
-            )
-
-        # Important Note! This is not very robust, do NOT rely on it to do high risky thing
-        self.is_moe_model = is_moe_model(self.model)
-
-        self.minmax_lr = minmax_lr or self.lr
-        self.enable_alg_ext = enable_alg_ext
-        self.not_use_best_mse = not_use_best_mse
-        self.dynamic_max_gap = dynamic_max_gap
-        self.lr_scheduler = lr_scheduler
-        self.optimizer = self._get_optimizer(None)
-        self.disable_opt_rtn = disable_opt_rtn
+        self.enable_torch_compile = enable_torch_compile
 
         # Whether to pack the layer immediately after tuning
-        self.is_immediate_packing = False
-        self.is_immediate_saving = False
+        # Managed via self.compress_context.is_immediate_packing / is_immediate_saving
 
-        # KV cache, this one does not affect tuning but will collect some infos during tuning
-        self.static_kv_dtype = static_kv_dtype
-        if self.static_kv_dtype is not None:
-            logger.warning("The static kv is experimental and currently has limited support.")
-
-        # Attention static dtype
-        self.static_attention_dtype = static_attention_dtype
-        if self.static_attention_dtype is not None:
-            logger.warning("The static attention dtype is experimental and currently has limited support.")
-
-        self._set_amp_dtype()
-        self.cache_device = torch.device("cpu") if self.low_gpu_mem_usage else self.device
-        if self.act_bits <= 8 and self.amp_dtype == torch.float16:
-            logger.warning("force to use bf16 to for quantization tuning when enabling activation quantization")
-            self.amp_dtype = torch.bfloat16
-            if self.model.dtype != torch.bfloat16:  # keep the model's buffer dtype unchanged
-                self.model = self.model.to(torch.bfloat16)
-        else:
-            logger.info(f"using {self.model.dtype} for quantization tuning")
-
-        # Some helpers
-        self.batch_dim = None
-        self.infer_bs_coeff = 1
-
-        # after setting iters
-        self.enable_torch_compile = enable_torch_compile
-        self._adjust_torch_compile(enable_torch_compile)
-
-        if (
-            (self.act_bits < 16 and (not self.act_dynamic or self.data_type == "nvfp"))  # have hooks
-            or self.enable_alg_ext  # Use imatrix
-            or not self.disable_opt_rtn  # Use imatrix
-        ):
-            self.block_forward = block_forward
-        else:
-            # TODO FIXME
-            # This function could not be compiled, causing a large accuracy drop when `enable_alg_ext` is used.
-            # To avoid issues, remove it in all scenarios except WOQ.
-            self.block_forward = (
-                compile_func(block_forward, self.device) if self.enable_torch_compile else block_forward
-            )
-
-        self._check_configs()
         torch.set_printoptions(precision=3, sci_mode=True)
 
         if is_hpex_available():
             logger.info("habana_frameworks is available, import htcore explicitly.")
             import habana_frameworks.torch.core as htcore  # pylint: disable=E0401
 
-        self.attention_mask = []
+        # Reset both context singletons before creating fresh instances so that
+        # consecutive AutoRound creations don't inherit stale config from earlier ones.
+        CompressContext.reset_context()
+        ModelContext.reset_context()
 
-        self.wrapper_block = wrapper_block
-        if self.enable_alg_ext:
-            try:
-                logger.info("using algorithm extension for quantization.")
-                from auto_round.alg_ext import wrapper_autoround
+        # Resolve the device eagerly so ModelContext can be created before
+        # CompressContext.  Creating ModelContext first places the large model
+        # allocation early in the heap, matching the OLD arch allocation order
+        # and reducing C-heap fragmentation (which is amplified on HPU).
+        #
+        # The process-wide DeviceManager singleton is the single source of truth
+        # for the active device / device_list: configure it from ``device_map``
+        # up front so both ModelContext and CompressContext (and any OOM fallback)
+        # read the same value instead of keeping private copies.
+        device_manager.configure(device_map if device_map is not None else 0)
+        model_config = self._preload_model_config(model, trust_remote_code)
 
-                wrapper_autoround(self)
-            except (ImportError, ModuleNotFoundError):
-                logger.error("algorithm extension import error, fallback to default mode")
+        self.model_context = ModelContext(
+            model,
+            tokenizer=tokenizer,
+            platform=platform,
+            model_dtype=model_dtype,
+            trust_remote_code=trust_remote_code,
+            config=model_config,
+            amp=amp,
+            need_calib=self.need_calib,
+            formats=self.formats,
+            is_act_quantize=self.quantize_config.is_act_quantize,
+            quant_nontext_module=quant_nontext_module,
+            parallel_config=self.parallel_config,
+        )
+        # Reset the singleton so each new orchestrator gets a fresh CompressContext.
+        # CompressContext uses AutoSkipInitMeta (singleton), so without a reset the
+        # second AutoRound(...) call reuses the previous instance and silently keeps
+        # stale values (e.g. low_cpu_mem_usage=True from a prior run).
+        CompressContext.reset_context()
+        # When the model was built as a meta skeleton (AR_DISK_STREAM_MODEL=1),
+        # give the offloader the original checkpoint path so it can materialize
+        # each block on first touch directly from disk instead of assuming
+        # blocks already hold real weights (see OffloadManager._reload).
+        if self.model_context.disk_stream_model_dir is not None:
+            model_dir = self.model_context.disk_stream_model_dir
+            model_revision = getattr(getattr(self.model_context.model, "config", None), "_commit_hash", None)
+            if self.model_context.platform == "hf" and model_revision is not None:
+                model_dir = _resolve_model_dir(model_dir, revision=model_revision)
+            self.model_context.disk_stream_model_dir = model_dir
+            self._offloader.model_dir = model_dir
+        # A meta skeleton (explicit AR_DISK_STREAM_MODEL=1, or auto-selected for
+        # fused-MoE checkpoints -- signalled by `_disk_stream_index`) leaves every
+        # block on the meta device, so per-block reload from disk is mandatory: the
+        # tuning loop must materialize each block before moving it to the compute
+        # device. The offloader was created with `enabled=low_cpu_mem_usage`, which
+        # can be False (e.g. user-supplied, or GGUF forcing it off later); in that
+        # case reload() would no-op and `block.to(device)` would crash with
+        # "Cannot copy out of meta tensor". Force it enabled here whenever streaming
+        # is active so the reload path stays available regardless of low_cpu_mem_usage.
+        if getattr(self.model_context, "_disk_stream_index", None) is not None:
+            self._offloader.enabled = True
+        # Alternatively, you can use CompressContext.create_context
+        self.compress_context = CompressContext(
+            low_cpu_mem_usage,
+            low_gpu_mem_usage,
+            enable_torch_compile,
+            calibration_data_device=calibration_data_device,
+            formats=self.formats,
+            static_kv_dtype=self.static_kv_dtype,
+            static_attention_dtype=self.static_attention_dtype,
+            static_kv_granularity=self.static_kv_granularity,
+            static_attention_granularity=self.static_attention_granularity,
+            parallel_policy=parallel_policy,
+        )
+        self.shard_writer = None
+        # Resumability state deferred from Orchestrator._quantize_data_driven() until
+        # quantize_and_save()'s save_quantized() call actually succeeds; see the
+        # comment in quantize() near "is_immediate_saving" for why clearing is
+        # deferred.
+        self._resume_states = None
 
-        # apply hadamard transform
-        if hadamard_config:
-            from auto_round.experimental.transform.apply import apply_hadamard_transform
-            from auto_round.experimental.utils import check_supported_schemes, normalize_hadamard_config
+        # Flag for post_init idempotency.  Set to False here so post_init() can be called
+        # either via quantize_and_save() (preferred, outside inference_mode) or directly
+        # from quantize() as a fallback for non-AutoScheme cases.
+        self._post_init_done = False
 
-            check_supported_schemes(self.scheme)
+        # Apply torch compile adjustments eagerly so that ar.enable_torch_compile
+        # reflects the correct value immediately after construction (not only after post_init).
+        self._precheck_torch_compile(enable_torch_compile)
+        self.compress_context.enable_torch_compile = self.enable_torch_compile
 
-            self.model = apply_hadamard_transform(
-                self.model, hadamard_config, need_calibration=True if self.iters > 0 else False
+        # ``self.calibration_context`` was created at the top of __init__ so
+        # all calibration-related property writes above (nsamples / seqlen /
+        # batch_size from kwargs) have already routed through it.
+
+        self.has_variable_block_shape = False
+        fixed_attr = get_predefined_fixed_attr(self.model) or {}
+        for key, value in fixed_attr.items():
+            setattr(self, key, value)
+
+        self.need_calib = self._check_need_calib()
+        calibrator_kind = self._get_calibrator_kind()
+        # The default pile dataset is model-adaptive for pure-text LLMs. Any
+        # non-default dataset remains untouched.
+        if self.need_calib and not dataset_was_explicitly_set and calibrator_kind == "llm":
+            from auto_round.calib_dataset import get_code_calibration_dataset
+            from auto_round.utils.model import is_code_model
+
+            detection_config = model_config or getattr(self.model_context.model, "config", None)
+            if is_code_model(model, detection_config):
+                self.dataset = get_code_calibration_dataset(self.calibration_context.nsamples)
+                logger.info("Automatically selected code calibration dataset: %s", self.dataset)
+            else:
+                logger.info("Using default calibration dataset %s.", self.dataset)
+            self.calibration_context.dataset = self.dataset
+
+    def _check_need_calib(self) -> bool:
+        """Whether this compressor instance actually needs calibration data.
+
+        Returns True when imatrix/opt-rtn is enabled, activation calibration is
+        needed (e.g. act_dynamic=False with NV FP types), or an AutoScheme is in
+        use.  Returns False for pure zero-shot RTN cases.
+        """
+
+        # During early __init__ quantize_config may not exist yet — default to True.
+        if not hasattr(self, "quantize_config") or self.quantize_config is None:
+            return True
+        return self._needs_calibration_data()
+
+    def _needs_calibration_data(self) -> bool:
+        """Determine whether calibration data is truly required.
+
+        Calibration data IS required when:
+        - Static activation quantization is needed (act_dynamic=False with NV FP)
+        - AutoScheme is being used (needs delta-loss evaluation)
+        - The quantizer uses iterative optimization (iters > 0, i.e., SignRound)
+
+        Otherwise, zero-shot (RTN/opt-RTN) quantization can proceed without data.
+        """
+        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+        if any(getattr(config, "need_calib", True) for config in self._alg_configs):
+            return True
+
+        # AutoScheme needs data for delta-loss scheme selection
+        if isinstance(self.scheme, AutoScheme):
+            return True
+
+        # Static KV-cache / attention quantization observes KV magnitudes
+        # during the calibration forwards, so it always needs data — even for
+        # weight-only schemes (e.g. NVFP4 with iters=0).
+        if self.static_kv_dtype is not None or self.static_attention_dtype is not None:
+            return True
+
+        # Check if activation calibration is needed
+        from auto_round.compressors.utils import check_need_act_calibration
+
+        _, _, final_attrs = parse_scheme(
+            self.scheme,
+            {},
+            format=_formats_policy_string_of(getattr(self, "formats", None)),
+        )
+        act_bits = final_attrs["act_bits"]
+        act_data_type = final_attrs["act_data_type"]
+        act_dynamic = final_attrs["act_dynamic"]
+        is_act_quantize = act_bits is not None and act_bits <= 8
+        if is_act_quantize and check_need_act_calibration(
+            act_dynamic,
+            act_data_type,
+            act_bits if act_bits is not None else 16,
+            static_kv_dtype=self.static_kv_dtype,
+            static_attention_dtype=self.static_attention_dtype,
+        ):
+            return True
+
+        # Layer-level scheme overrides can request static-activation paths
+        # (e.g., global MXFP8 + local NVFP4 experts). Those still need
+        # calibration data even when top-level scheme looks dynamic.
+        return self._layer_config_needs_calibration(check_need_act_calibration)
+
+    def _layer_config_needs_calibration(self, check_need_act_calibration) -> bool:
+        """Return True if any raw layer_config entry implies activation calibration."""
+        layer_cfg = self.layer_config
+        if not isinstance(layer_cfg, dict) or not layer_cfg:
+            return False
+
+        def _entry_needs_calibration(entry) -> bool:
+            if entry is None:
+                return False
+
+            candidates = []
+            if isinstance(entry, (str, QuantizationScheme)):
+                candidates.append(entry)
+            elif isinstance(entry, dict):
+                if "scheme" in entry:
+                    candidates.append(entry.get("scheme"))
+                candidates.append(entry)
+            else:
+                return False
+
+            for candidate in candidates:
+                if candidate is None:
+                    continue
+                try:
+                    _, _, attrs = parse_scheme(candidate, {})
+                except Exception:  # noqa: BLE001
+                    continue
+
+                cand_act_bits = attrs.get("act_bits")
+                cand_act_data_type = attrs.get("act_data_type")
+                cand_act_dynamic = attrs.get("act_dynamic")
+                is_cand_act_quant = cand_act_bits is not None and cand_act_bits <= 8
+                if is_cand_act_quant and check_need_act_calibration(
+                    cand_act_dynamic,
+                    cand_act_data_type,
+                    cand_act_bits if cand_act_bits is not None else 16,
+                    static_kv_dtype=self.static_kv_dtype,
+                    static_attention_dtype=self.static_attention_dtype,
+                ):
+                    return True
+            return False
+
+        return any(_entry_needs_calibration(v) for v in layer_cfg.values())
+
+    # ── Convenience properties ────────────────────────────────────────────────
+
+    @property
+    def tokenizer(self) -> Any:
+        """Convenience accessor for the tokenizer stored in ``model_context``."""
+        return self.model_context.tokenizer
+
+    def _replace_compression_plan(self, **changes) -> None:
+        """Atomically update compatibility state once the immutable plan exists."""
+        plan = self.__dict__.get("compression_plan")
+        if plan is not None:
+            self.__dict__["compression_plan"] = replace(plan, **changes)
+
+    @property
+    def scheme_context(self) -> QuantizationScheme | None:
+        plan = self.__dict__.get("compression_plan")
+        return plan.scheme.value if plan is not None else self.__dict__.get("_scheme_context")
+
+    @scheme_context.setter
+    def scheme_context(self, value: QuantizationScheme | None) -> None:
+        self.__dict__["_scheme_context"] = value
+        plan = self.__dict__.get("compression_plan")
+        if plan is not None and value is not None:
+            self._replace_compression_plan(
+                scheme=ResolvedScheme.from_scheme(value, preset_name=plan.scheme.preset_name)
             )
 
-            self.hadamard_config = normalize_hadamard_config(hadamard_config)
+    @property
+    def formats(self):
+        raw_value = self.__dict__.get("_formats")
+        plan = self.__dict__.get("compression_plan")
+        if plan is None or isinstance(raw_value, str) or (not plan.formats and raw_value is None):
+            return raw_value
+        return list(plan.formats)
+
+    @formats.setter
+    def formats(self, value) -> None:
+        self.__dict__["_formats"] = value
+        if value is not None and not isinstance(value, str):
+            self._replace_compression_plan(formats=tuple(value))
+
+    @property
+    def layer_config(self) -> dict | None:
+        plan = self.__dict__.get("compression_plan")
+        if plan is None:
+            return self.__dict__.get("_layer_config")
+        return {name: dict(config) for name, config in plan.layer_config.items()}
+
+    @layer_config.setter
+    def layer_config(self, value) -> None:
+        self.__dict__["_layer_config"] = value
+        if value is not None:
+            self._replace_compression_plan(layer_config=value)
+
+    @property
+    def regex_config(self) -> dict | None:
+        plan = self.__dict__.get("compression_plan")
+        if plan is None:
+            return self.__dict__.get("_regex_config")
+        return {name: dict(config) for name, config in plan.regex_config.items()}
+
+    @regex_config.setter
+    def regex_config(self, value) -> None:
+        self.__dict__["_regex_config"] = value
+        if value is not None:
+            self._replace_compression_plan(regex_config=value)
+
+    @property
+    def has_qlayer_outside_block(self) -> bool:
+        plan = self.__dict__.get("compression_plan")
+        if plan is None:
+            return self.__dict__.get("_has_qlayer_outside_block", False)
+        return plan.has_qlayer_outside_block
+
+    @has_qlayer_outside_block.setter
+    def has_qlayer_outside_block(self, value: bool) -> None:
+        self.__dict__["_has_qlayer_outside_block"] = value
+        self._replace_compression_plan(has_qlayer_outside_block=value)
+
+    @property
+    def scale_dtype(self):
+        plan = self.__dict__.get("compression_plan")
+        return plan.scale_dtype if plan is not None else self.__dict__.get("_scale_dtype")
+
+    @scale_dtype.setter
+    def scale_dtype(self, value) -> None:
+        self.__dict__["_scale_dtype"] = value
+        self._replace_compression_plan(scale_dtype=value)
+
+    @property
+    def quant_block_list(self):
+        plan = self.__dict__.get("compression_plan")
+        if plan is None:
+            return self.__dict__.get("_quant_block_list")
+        return [list(group) for group in plan.quant_block_list] if plan.quant_block_list is not None else None
+
+    @quant_block_list.setter
+    def quant_block_list(self, value) -> None:
+        self.__dict__["_quant_block_list"] = value
+        self._replace_compression_plan(quant_block_list=value)
+
+    # ── Scheme resolution ─────────────────────────────────────────────────────
+
+    def resolve_scheme(
+        self,
+        model_context: ModelContext | None = None,
+        compress_context: CompressContext | None = None,
+    ) -> None:
+        """Phase-1 init: resolve scheme and bind config attrs (no model structure needed).
+
+        Must be called BEFORE ``_resolve_formats()`` and BEFORE ``_scheme_post_init()``.
+        Idempotent: safe to call multiple times.
+        """
+        if self._scheme_resolved:
+            return
+
+        if model_context is not None:
+            self.model_context = model_context
+        if compress_context is not None:
+            self.compress_context = compress_context
+
+        user_scheme_overrides = collect_user_scheme_overrides(self._alg_configs)
+        default_scheme, self.is_auto_scheme, final_attrs = parse_scheme(
+            self.scheme,
+            user_scheme_overrides,
+            format=_formats_policy_string_of(getattr(self, "formats", None)),
+        )
+
+        self.scheme_context = QuantizationScheme.from_dict(final_attrs)
+        for config in self._alg_configs:
+            if hasattr(config, "scheme"):
+                config.scheme = self.scheme_context
+        self.quantize_config.check_config()
+        for config in self._alg_configs:
+            finalize_scheme = getattr(config, "finalize_scheme", None)
+            if callable(finalize_scheme):
+                finalize_scheme()
+
+        self.orig_scheme = copy.deepcopy(self.scheme)
+        self.scheme = default_scheme
+
+        gguf_scheme_name = get_gguf_scheme(self.scheme)
+        if self.scale_dtype is None:
+            self.scale_dtype = "fp32" if gguf_scheme_name else "fp16"
+        self.scale_dtype = convert_dtype_str2torch(self.scale_dtype)
+
+        self._scheme_resolved = True
+
+    def _scheme_post_init(self) -> None:
+        """Phase-4 init: build layer config on the patched model.
+
+        Requires ``resolve_scheme()`` to have been called first.
+        Must be called AFTER ``model_context.apply_patches()``.
+        """
+        assert self._scheme_resolved, (
+            "resolve_scheme() must be called before _scheme_post_init(). "
+            "BaseCompressor.post_init() does this automatically."
+        )
+
+        enable_gguf_official_mixed = not self.is_auto_scheme
+
+        if self.quant_block_list is None:
+            quant_nontext_module = getattr(self.model_context, "quant_nontext_module", False)
+            all_blocks = get_block_names(self.model_context.model, quant_vision=quant_nontext_module)
+            self.quant_block_list = find_matching_blocks(
+                self.model_context.model, all_blocks, self.to_quant_block_names
+            )
+            if self.to_quant_block_names is None and self.quant_block_list:
+                self.to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
+
+        resolution = getattr(self, "_format_resolution", None)
+        if resolution is not None:
+            self._format_resolution = replace(resolution, quant_block_list=self.quant_block_list)
+
+        self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
 
     def _gen_auto_scheme(self) -> dict[str, dict]:
-        if self.mllm:
-            logger.info("AutoScheme is not yet supported for multimodal LLMs.")
-            sys.exit(-1)
+        """Generate per-layer config via AutoScheme delta-loss selection."""
+        if self.model_context.is_mllm:
+            # AutoScheme on a VLM only scores the language tower (the block
+            # walker in delta_loss already skips vision/audio sub-trees) and
+            # uses a pure-text calibration dataset by default, falling back to
+            # the multimodal dataloader if the VLM rejects text-only forward.
+            logger.info(
+                "AutoScheme on multimodal LLM: scoring the language tower only "
+                "with text-only calibration (multimodal dataloader will be used "
+                "as a fallback if needed)."
+            )
 
-        if is_quantized_input_module(self.model):
-            logger.info("AutoScheme does not currently support quantized input models (e.g., FP8).")
-            sys.exit(-1)
+        if is_quantized_input_module(self.model_context.model):
+            raise NotImplementedError("AutoScheme does not currently support quantized input models (e.g., FP8).")
 
         all_dtypes = []
         all_gguf = True
         for option in self.orig_scheme.options:
-            # Resolve the quantization scheme or data type
             dtype = "int"
             if isinstance(option, str):
                 if not option.lower().startswith("gguf"):
                     all_gguf = False
-
                 option = preset_name_to_scheme(option)
-
             else:
                 all_gguf = False
 
@@ -600,7 +859,6 @@ class BaseCompressor(object):
 
             all_dtypes.append(dtype)
 
-        # Check for mixed data types
         unique_dtypes = set(all_dtypes)
         if len(unique_dtypes) > 1 and not all_gguf:
             logger.warning(
@@ -609,20 +867,99 @@ class BaseCompressor(object):
                 "Please save the model using the `fake` format for now."
             )
 
-        layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
-            self.model,
-            self.layer_config,
-            self.scheme,
-            self.scale_dtype,
-            self.supported_types,
-            self.inner_supported_types,
-            self.quant_block_list,
-            self.ignore_layers,
-            self.quant_lm_head,
-            enable_gguf_official_mixed=False,
-            is_mllm=self.mllm,
+        preset_name = self.scheme if isinstance(self.scheme, str) else None
+        format_resolution = getattr(
+            self,
+            "_format_resolution",
+            FormatResolution(
+                formats=tuple(self.formats or ()),
+                scheme=ResolvedScheme.from_scheme(self.scheme_context, preset_name=preset_name),
+                scale_dtype=self.scale_dtype,
+                quant_block_list=self.quant_block_list,
+            ),
         )
+        resolved_layer_config = resolve_layer_config(
+            model=self.model_context.model,
+            scheme=format_resolution.scheme,
+            layer_config=self.layer_config,
+            scale_dtype=self.scale_dtype,
+            supported_types=self.supported_types,
+            inner_supported_types=self.inner_supported_types,
+            quant_block_list=self.quant_block_list,
+            ignore_layers=self.ignore_layers,
+            quant_lm_head=self.quant_lm_head,
+            enable_gguf_official_mixed=False,
+            is_mllm=self.model_context.is_mllm,
+            format=self._formats_policy_string(),
+        )
+        regex_config = extract_regex_config(
+            model=self.model_context.model,
+            scheme=format_resolution.scheme,
+            layer_config=self.layer_config,
+            scale_dtype=self.scale_dtype,
+            supported_types=self.supported_types,
+            inner_supported_types=self.inner_supported_types,
+            ignore_layers=self.ignore_layers,
+            format=self._formats_policy_string(),
+        )
+        discovery_plan = resolve_quantization_config(
+            (
+                replace(format_resolution, layer_config_patch={})
+                if format_resolution.layer_config_patch
+                else format_resolution
+            ),
+            resolved_layer_config,
+            regex_config=regex_config,
+            has_qlayer_outside_block=has_quantized_layer_outside_blocks(resolved_layer_config),
+        )
+        apply_plan_to_model(self.model_context.model, discovery_plan)
+        layer_config = {name: dict(config) for name, config in discovery_plan.layer_config.items()}
+        self.has_qlayer_outside_block = discovery_plan.has_qlayer_outside_block
+        self.regex_config = {name: dict(config) for name, config in discovery_plan.regex_config.items()}
         quant_layer_names = layer_config.keys()
+
+        # ---- VLM: peel non-text sub-trees AutoScheme should not score ---- #
+        nontext_skipped_layers: dict[str, dict] = {}
+        if self.model_context.is_mllm:
+            from auto_round.utils import get_block_names
+
+            quant_nontext = getattr(self, "quant_nontext_module", False)
+            scoreable_blocks = get_block_names(self.model_context.model, quant_vision=quant_nontext)
+            scoreable_block_prefixes = tuple(blk for group in scoreable_blocks for blk in group)
+            if quant_nontext:
+                peel_markers = AUDIO_MM_KEYS
+                tower_label = "language+vision"
+                peel_label = "audio/speech"
+            else:
+                peel_markers = VISION_MM_KEYS + AUDIO_MM_KEYS
+                tower_label = "language"
+                peel_label = "vision/audio"
+
+            def _is_scoreable_layer(name: str) -> bool:
+                if any(name == p or name.startswith(p + ".") for p in scoreable_block_prefixes):
+                    return True
+                lname = name.lower()
+                return not any(marker in lname for marker in peel_markers)
+
+            scoreable_layer_config = {}
+            for name, cfg in layer_config.items():
+                if _is_scoreable_layer(name):
+                    scoreable_layer_config[name] = cfg
+                else:
+                    nontext_skipped_layers[name] = cfg
+
+            if nontext_skipped_layers:
+                logger.info(
+                    "AutoScheme (VLM): scoring %d %s-tower layers; "
+                    "%d %s-tower layers kept at their original 16-bit configuration.",
+                    len(scoreable_layer_config),
+                    tower_label,
+                    len(nontext_skipped_layers),
+                    peel_label,
+                )
+                layer_config = scoreable_layer_config
+                quant_layer_names = layer_config.keys()
+
         scheme_keys = {f.name for f in fields(QuantizationScheme)}
         fixed_layer_scheme_new = {
             k: {key: v[key] for key in scheme_keys & v.keys()}
@@ -630,341 +967,1235 @@ class BaseCompressor(object):
             if v.get("fixed_by_user", False)
         }
 
-        # mainly using quant_layers and fixed by users
         from auto_round.auto_scheme.gen_auto_scheme import GenScheme
 
-        if not self.enable_torch_compile and self.super_bits is None and not self.orig_scheme.low_gpu_mem_usage:
+        if (
+            not self.compress_context.enable_torch_compile
+            and self.quantize_config.super_bits is None
+            and not self.orig_scheme.low_gpu_mem_usage
+        ):
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
         self.scheme_generator = GenScheme(
             self.orig_scheme,
-            self.model,
+            self.model_context.model,
             quant_layer_names,
             fixed_layer_scheme_new,
             self.dataset,
-            device_map=self.device_map,
-            tokenizer=self.tokenizer,
-            enable_torch_compile=self.enable_torch_compile,
+            device_map=device_manager.device_map,
+            tokenizer=self.model_context.tokenizer,
+            enable_torch_compile=self.compress_context.enable_torch_compile,
+            processor=self.model_context.processor,
+            export_format=_formats_policy_string_of(self.formats),
         )
         layer_config = self.scheme_generator.get_layer_config()
+        # Re-attach vision/audio-tower layers we peeled off earlier so the
+        # downstream quantization pipeline sees the complete layer map.
+        if nontext_skipped_layers:
+            allowed_keys = {f.name for f in fields(QuantizationScheme)} | {
+                "fixed_by_user",
+                "scale_dtype",
+                "scheme",
+            }
+            for name, cfg in nontext_skipped_layers.items():
+                clean_cfg = {k: v for k, v in cfg.items() if k in allowed_keys} if isinstance(cfg, dict) else cfg
+                layer_config.setdefault(name, clean_cfg)
         return layer_config
 
-    def _set_device(self, device_map: Union[str, torch.device, int, dict]) -> None:
-        if hasattr(self, "device") and self.device is not None:
-            return
-        if isinstance(device_map, (str, torch.device, int)):
-            self.device = detect_device(device_map)
-
-        elif isinstance(device_map, dict) and device_map:
-            tmp_devices = []
-            for val in device_map.values():
-                if isinstance(val, (str, torch.device, int)):  # could optimize
-                    tmp_device = detect_device(val)
-                    tmp_device = tmp_device.split(":")[0]
-                    tmp_devices.append(tmp_device)
-            tmp_devices = list(set(tmp_devices))
-            if len(tmp_devices) > 1:
-                logger.warning(
-                    f"there are multiple device types in the device_map, "
-                    f"please make sure they are correct,use the first device {tmp_devices[0]} as the core device."
-                )
-
-            self.device = tmp_devices[0]
-        else:
-            raise TypeError(f"device_map should be [str, torch.device, int, dict], but got {type(device_map)}")
-
-    def _reconcile_bits_and_dtype(self, config: dict, prefix: str = ""):
-        """
-        Harmonizes 'bits' and 'data_type' for weights or activations.
-        Ensures internal consistency by prioritizing data_type inference.
-        """
-        dt_key = f"{prefix}data_type"
-        bits_key = f"{prefix}bits"
-
-        if config.get(dt_key) is None:
-            return
-
-        # Infer the correct bit-width based on the data_type string
-        inferred_bits = infer_bits_by_data_type(config[dt_key])
-
-        if inferred_bits is not None and inferred_bits < 16:
-            # Check for conflict between user-specified bits and inferred bits
-            if inferred_bits != config.get(bits_key):
-                logger.warning(
-                    f"'{dt_key}' does not match '{bits_key}'. " f"Resetting '{bits_key}' to {inferred_bits}."
-                )
-                config[bits_key] = inferred_bits
-
-            # Normalize data_type (e.g., 'mx_fp4' -> 'mx')
-            for supported in SUPPORTED_DTYPES:
-                if config[dt_key] == f"{supported}{inferred_bits}":
-                    config[dt_key] = supported
-                    break
-
-    def _override_scheme_with_user_specify(
-        self, scheme: Union[str, dict, QuantizationScheme], user_scheme_overrides: dict[str, Any], return_str=True
-    ) -> Union[str, QuantizationScheme]:
-        """
-        Updates a base quantization scheme with user-provided overrides.
-        Handles GGUF formatting and synchronizes weight/activation parameters.
-        """
-        # 1. GGUF special handling: map data_type suffix to GGUF scheme names
-        dt_override = user_scheme_overrides.get("data_type", "")
-        if (
-            isinstance(scheme, QuantizationScheme) or (isinstance(scheme, str) and not scheme.startswith("gguf"))
-        ) and dt_override.endswith("_dq"):
-            if "bits" not in user_scheme_overrides:
-                raise KeyError(f"Must specify 'bits' when using data_type={dt_override}")
-
-            bits = user_scheme_overrides["bits"]
-            suffix = "k" if bits == 6 else "k_s"
-            scheme = f"gguf:q{bits}_{suffix}"
-
-        # 2. Convert input scheme to a dictionary for processing
-        if isinstance(scheme, QuantizationScheme):
-            scheme_dict = asdict(scheme)
-        elif isinstance(scheme, str):
-            normalized_name = scheme.strip("'\" ").upper()
-            if normalized_name.startswith("GGUF") and len(user_scheme_overrides) > 0:
-                logger.warning_once(
-                    "When using GGUF scheme, user-specified overrides will be ignored to ensure format compatibility."
-                )
-                user_scheme_overrides = {}
-            # If no overrides exist, return the normalized string immediately
-            if not user_scheme_overrides and return_str:
-                return normalized_name
-            scheme_dict = asdict(preset_name_to_scheme(normalized_name))
-        else:
-            scheme_dict = scheme.copy()
-
-        # 3. Apply overrides and define default behaviors
-        scheme_dict.update(user_scheme_overrides)
-
-        if scheme_dict.get("act_dynamic") is None:
-            scheme_dict["act_dynamic"] = True
-
-        # 4. Reconcile weight settings (bits vs data_type)
-        self._reconcile_bits_and_dtype(scheme_dict)
-
-        # 5. Fallback logic: Inherit activation settings from weight settings
-        scheme_dict["act_group_size"] = (
-            scheme_dict.get("act_group_size")
-            if scheme_dict.get("act_group_size") is not None
-            else scheme_dict.get("group_size")
+    def configure_layer_config(self, enable_gguf_official_mixed: bool | None = True) -> None:
+        """Build ``self.layer_config`` from the resolved scheme on the patched model."""
+        self.ignore_layers = self.ignore_layers or ""
+        # External callers (e.g. llm-compressor's AutoRoundModifier) may invoke this
+        # method directly without going through the normal post_init()/_scheme_post_init()
+        # sequence. Make sure the scheme is resolved first so `self.scheme_context` (and
+        # everything derived from it below) is never None -- resolve_scheme() is a no-op
+        # if it already ran.
+        if not self._scheme_resolved and hasattr(self, "_alg_configs"):
+            self.resolve_scheme()
+        _formats = getattr(self.compress_context, "formats", None)
+        is_gguf_format = _formats is not None and any(
+            "gguf" in str(getattr(fmt, "output_format", "")) for fmt in _formats
         )
-        scheme_dict["act_bits"] = scheme_dict.get("act_bits") or 16
-        scheme_dict["act_sym"] = (
-            scheme_dict.get("act_sym") if scheme_dict.get("act_sym") is not None else scheme_dict.get("sym")
-        )
+        predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model) if not is_gguf_format else []
+        compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
 
-        # 6. Activation data_type logic
-        if scheme_dict.get("act_data_type") is None:
-            is_supported = scheme_dict["data_type"] in SUPPORTED_DTYPES
-            if is_supported and scheme_dict["act_bits"] < 16:
-                scheme_dict["act_data_type"] = scheme_dict["data_type"]
-                logger.info(f"Activation adopting weight data_type: {scheme_dict['data_type']}")
-            else:
-                scheme_dict["act_data_type"] = "float"
+        if not is_gguf_format:
+            predefined_ignore_layers = get_predefined_ignore_layers(self.model_context.model)
+            if predefined_ignore_layers and self.quant_block_list:
+                block_prefixes = [block for group in self.quant_block_list for block in group]
+                # Only filter layers that are full paths clearly inside a block.
+                predefined_ignore_layers = [
+                    name
+                    for name in predefined_ignore_layers
+                    if any(name.startswith(prefix) for prefix in block_prefixes)
+                    or not any(prefix.startswith(name.split(".")[0]) for prefix in block_prefixes)
+                ]
+            if predefined_ignore_layers:
+                logger.info(f"Using predefined ignore_layers: {compress_layer_names(predefined_ignore_layers)}")
+                # Join the raw (uncompressed) names so that get_fp_layer_names can do exact
+                # substring matching. Compressed forms like "layers.[0-61].gate" are
+                # misinterpreted as regex character classes ([0-6] matches only digits 0-6)
+                # and fail to cover layers with two-digit indices (7, 8, …).
+                tmp_str = ",".join(predefined_ignore_layers)
+                if self.ignore_layers == "":
+                    self.ignore_layers = tmp_str
+                else:
+                    self.ignore_layers += "," + tmp_str
 
-        # 7. Reconcile activation settings
-        self._reconcile_bits_and_dtype(scheme_dict, prefix="act_")
-
-        return QuantizationScheme.from_dict(scheme_dict)
-
-    def _parse_and_set_scheme(
-        self, scheme: Union[str, dict, QuantizationScheme, AutoScheme], user_scheme_overrides: dict[str, Any]
-    ) -> tuple[Union[str, QuantizationScheme], bool]:
-        """
-        Parses the final scheme and binds all resulting attributes to 'self'.
-        """
-
-        is_auto_scheme = isinstance(scheme, AutoScheme)
-
-        if is_auto_scheme:
-            if not scheme.options:
-                raise ValueError("AutoScheme options cannot be empty")
-            else:
-                for option in scheme.options:
-                    if isinstance(option, str):
-                        if "mixed" in option:
-                            raise ValueError(f"Mixed option {option} is not supported")
-
-            # Map user overrides across all auto-scheme options
-            scheme.options = [
-                self._override_scheme_with_user_specify(opt, user_scheme_overrides) for opt in scheme.options
-            ]
-
-            # Select the primary scheme for attribute binding (skipping BF16)
-            default_scheme = scheme.options[0]
-            for opt in scheme.options:
-                if opt == "BF16":
-                    continue
-                if isinstance(opt, QuantizationScheme):
-                    if opt.bits < 16 or (opt.act_bits and opt.act_bits < 16):
-                        default_scheme = opt
-                        break
+        if self.is_auto_scheme:
+            self.layer_config = self._gen_auto_scheme()
         else:
-            default_scheme = self._override_scheme_with_user_specify(scheme, user_scheme_overrides)
-
-        # Extract attributes from the chosen default_scheme
-        if isinstance(default_scheme, str):
-            final_attrs = self._override_scheme_with_user_specify(
-                default_scheme, user_scheme_overrides, return_str=False
+            self.layer_config = _handle_special_schemes(
+                self.orig_scheme,
+                self.layer_config,
+                self.model_context.model,
+                supported_types=SUPPORTED_LAYER_TYPES,
+                inner_supported_types=INNER_SUPPORTED_LAYER_TYPES,
+                quant_lm_head=self.quant_lm_head,
+                mllm=self.model_context.is_mllm,
             )
-        else:
-            final_attrs = asdict(default_scheme)
 
-        # Bind attributes to self for easy instance-level access
-        for key, value in final_attrs.items():
-            setattr(self, key, value)
+        fill_default_value = not self.is_auto_scheme
+        source_layer_config = self.layer_config
+        format_resolution = getattr(
+            self,
+            "_format_resolution",
+            FormatResolution(
+                formats=tuple(self.formats or ()),
+                scheme=ResolvedScheme.from_scheme(
+                    self.scheme_context,
+                    preset_name=self._resolve_gguf_preset_string(self.formats or []),
+                ),
+                scale_dtype=self.scale_dtype,
+                quant_block_list=self.quant_block_list,
+            ),
+        )
+        resolved_layer_config = resolve_layer_config(
+            model=self.model_context.model,
+            scheme=format_resolution.scheme,
+            layer_config=source_layer_config,
+            scale_dtype=self.scale_dtype,
+            supported_types=SUPPORTED_LAYER_TYPES,
+            inner_supported_types=INNER_SUPPORTED_LAYER_TYPES,
+            quant_block_list=self.quant_block_list,
+            ignore_layers=self.ignore_layers,
+            quant_lm_head=self.quant_lm_head,
+            enable_gguf_official_mixed=enable_gguf_official_mixed,
+            is_mllm=self.model_context.is_mllm,
+            fill_default_value=fill_default_value,
+            format=self._formats_policy_string(),
+        )
+        regex_config = extract_regex_config(
+            model=self.model_context.model,
+            scheme=format_resolution.scheme,
+            layer_config=source_layer_config,
+            scale_dtype=self.scale_dtype,
+            supported_types=SUPPORTED_LAYER_TYPES,
+            inner_supported_types=INNER_SUPPORTED_LAYER_TYPES,
+            ignore_layers=self.ignore_layers,
+            fill_default_value=fill_default_value,
+            format=self._formats_policy_string(),
+        )
+        # ``resolved_layer_config`` already descends from (and fully subsumes)
+        # ``format_resolution.layer_config_patch`` -- ``source_layer_config`` above was
+        # seeded from that same patch before ``resolve_layer_config()`` expanded any
+        # regex/partial keys (e.g. "self_attn") into concrete layer names. Re-merging the
+        # patch here would reintroduce those now-stale, unexpanded keys into the final
+        # plan, so drop it and rely solely on the fully-resolved layer configuration.
+        if format_resolution.layer_config_patch:
+            format_resolution = replace(format_resolution, layer_config_patch={})
+        self.compression_plan = resolve_quantization_config(
+            format_resolution,
+            resolved_layer_config,
+            regex_config=regex_config,
+            has_qlayer_outside_block=has_quantized_layer_outside_blocks(resolved_layer_config),
+        )
+        self.layer_config = {name: dict(config) for name, config in self.compression_plan.layer_config.items()}
+        self.regex_config = {name: dict(config) for name, config in self.compression_plan.regex_config.items()}
+        self.has_qlayer_outside_block = self.compression_plan.has_qlayer_outside_block
+        apply_plan_to_model(self.model_context.model, self.compression_plan)
+        if self.is_auto_scheme:
+            self._log_auto_scheme_avg_bits()
 
-        return default_scheme, is_auto_scheme
+    def _log_auto_scheme_avg_bits(self) -> None:
+        """Report AutoScheme bit usage under two denominators.
 
-    def _adjust_torch_compile(self, enable_torch_compile: bool) -> None:
-        """Sets the torch compile configuration for the tuning."""
-        self.enable_torch_compile = enable_torch_compile
+        ``avg_bits`` targets **only** the layers AutoScheme quantizes -- the set it was
+        given as ``quant_layer_names``, which is exactly what the bit-allocation DP
+        budgets. Layers outside that set (most notably a VLM's vision/audio tower, which
+        is peeled off and kept at 16 bit, or layers pinned via ``layer_config`` /
+        ``ignore_layers``) are not part of the target and are never compensated by the DP.
+
+        Two numbers are therefore reported:
+
+        * ``quant layers``: average over the quantized (budgeted) layers. This is the
+          metric the target constrains and it must be <= target.
+        * ``whole model``: average over every layer carrying quantization metadata, i.e.
+          the end-to-end footprint. Informational only -- it can legitimately sit above
+          the target when non-quantized towers are kept at high precision.
+        """
+        from auto_round.auto_scheme.utils import compute_layer_bits
+
+        model = self.model_context.model
+        ignore_scale_zp_bits = getattr(self.orig_scheme, "ignore_scale_zp_bits", False)
+        target_avg_bits = getattr(self.orig_scheme, "avg_bits", None)
+
+        scheme_generator = getattr(self, "scheme_generator", None)
+        quant_layer_names = set(getattr(scheme_generator, "quant_layer_names", None) or [])
+
+        quant_params = quant_bits = quant_count = 0
+        model_params = model_bits = model_count = 0
+        outside = []
+        for name, module in model.named_modules():
+            if not hasattr(module, "bits") or not hasattr(module, "weight"):
+                continue
+            n_param = module.weight.numel()
+            if n_param == 0 and hasattr(module, "_cached_weight_numel"):
+                n_param = module._cached_weight_numel
+            if n_param == 0:
+                continue
+            layer_bits, _ = compute_layer_bits(module, ignore_scale_zp_bits)
+
+            model_params += n_param
+            model_bits += layer_bits
+            model_count += 1
+
+            # Without a scheme generator (e.g. a reloaded plan) fall back to
+            # "actually quantized" as the definition of the quantized set.
+            in_quant_set = name in quant_layer_names if quant_layer_names else getattr(module, "bits", 16) < 16
+            if in_quant_set:
+                quant_params += n_param
+                quant_bits += layer_bits
+                quant_count += 1
+            else:
+                outside.append((name, getattr(module, "bits", 16), n_param, layer_bits))
+
+        quant_avg = quant_bits / quant_params if quant_params else float("nan")
+        model_avg = model_bits / model_params if model_params else float("nan")
+        has_target = isinstance(target_avg_bits, (int, float))
+
+        logger.info(
+            "AutoScheme final avg_bits: quant layers=%.4f (target=%.4f, %d layers, %d params, total_bits=%d); "
+            "whole model=%.4f (%d layers, %d params, total_bits=%d, informational only)",
+            quant_avg,
+            float(target_avg_bits) if has_target else float("nan"),
+            quant_count,
+            quant_params,
+            quant_bits,
+            model_avg,
+            model_count,
+            model_params,
+            model_bits,
+        )
+
+        # Only the quantized-layer average is bound by the target.
+        if has_target and quant_avg > float(target_avg_bits) + 1e-3:
+            logger.warning(
+                "AutoScheme quantized-layer avg_bits=%.4f exceeds target avg_bits=%.4f. "
+                "The bit-allocation budget was not met; please report this together with the "
+                "AutoScheme option/range logs above.",
+                quant_avg,
+                float(target_avg_bits),
+            )
+
+        if outside:
+            outside_params = sum(item[2] for item in outside)
+            outside_bits = sum(item[3] for item in outside)
+            logger.info(
+                "AutoScheme: %d layer(s) (%d params, %d bits, avg=%.4f) are not AutoScheme quantization targets, "
+                "so they are excluded from the avg_bits target and only affect the whole-model number "
+                "(typically a VLM vision/audio tower kept at 16 bit, or layers pinned via "
+                "`layer_config`/`ignore_layers`): %s",
+                len(outside),
+                outside_params,
+                outside_bits,
+                outside_bits / outside_params if outside_params else float("nan"),
+                ", ".join(f"{n}(bits={b})" for n, b, _, _ in outside[:8]) + (" ..." if len(outside) > 8 else ""),
+            )
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @property
+    def mllm(self) -> bool:
+        return self.model_context.is_mllm
+
+    @property
+    def diffusion(self) -> bool:
+        return self.model_context.is_diffusion
+
+    def _get_torch_compile_guard_state(self) -> tuple[bool, bool]:
+        """Return raw dtype state used by torch.compile guard rules."""
+        # Determine fp8 / nvfp4 intent from raw config before scheme resolution.
+        cfg = self.quantize_config
+        raw_scheme = self.scheme if isinstance(self.scheme, str) else ""
+        raw_dt = (cfg.data_type or "").lower()
+        raw_adt = (cfg.act_data_type or "").lower()
+        raw_scheme_upper = raw_scheme.upper()
+
+        is_raw_nv_fp = needs_nvfp_global_scale(raw_dt) or needs_nvfp_global_scale(raw_adt) or "NVFP" in raw_scheme_upper
+        has_static_global_scale = "static_gs" in raw_adt or "NVFP4" in raw_scheme_upper
+        is_valid_act_static = (cfg.act_dynamic is False or has_static_global_scale) and (
+            getattr(cfg, "act_bits", 16) or 16
+        ) <= 8
+
+        return is_raw_nv_fp, is_valid_act_static
+
+    @property
+    def enable_block_forward_compile(self) -> bool:
+        """Whether the whole block forward may be compiled.
+
+        This is intentionally separate from :attr:`enable_torch_compile`, which
+        controls the per-layer quantization kernels.  Schemas such as NVFP4
+        need an eager block forward for the calibration pass that collects
+        ``act_max`` through hooks, but their quant kernels can still be
+        compiled.  Static KV/attention calibration installs hooks that run on
+        every attention forward, so those runs keep the block forward eager.
+        """
+        if not getattr(self, "enable_torch_compile", False):
+            return False
+        return not (
+            getattr(self, "static_kv_dtype", None) is not None
+            or getattr(self, "static_attention_dtype", None) is not None
+        )
+
+    def _maybe_log_torch_compile_default_hint(self) -> None:
+        """Log the default torch.compile hint once final config state is available."""
+        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
+
         if (
             not self.enable_torch_compile
+            and getattr(getattr(self, "parallel_config", None), "tp_size", 1) == 1
             and TORCH_VERSION_AT_LEAST_2_6
-            and self.act_bits > 8
             and not is_debug_mode()
-            and "fp8" not in self.data_type
-            and "fp8" not in self.act_data_type
-            and self.iters > 0
+            and not is_raw_nv_fp
+            and not is_valid_act_static
+            and self._torch_compile_disabled_reason(ignore_user_override=True) is None
+            and self._torch_compile_unsupported_arch_reason() is None
+            and self.need_calib
         ):
             logger.info(
                 "%s",
-                "'enable_torch_compile' is set to `False` by default. "
-                "Enabling it can reduce tuning cost by 20%, but it might throw an exception.",
-            )
-        # On HPU, we rely on torch.compile to speed up the model execution.
-        if self.enable_torch_compile and is_wfp8afp8(self) and not is_hpex_available():
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as fp8 is enabled")
-        # NVFP4 now supported with torch.compile via _compile_derive pre-computation pattern
-        # Previously disabled due to issue #1109, but fix applied in frozen_kwargs mechanism
-        if self.enable_torch_compile and self.super_group_size is not None and self.enable_alg_ext:
-            self.enable_torch_compile = False
-            logger.warning("reset enable_torch_compile to `False` as super_group_size is set for algorithm extension")
-
-    def _dq_check(self) -> None:
-        """Reset the default value of super_bits and super_group_size"""
-        if self.data_type.endswith("_dq"):
-            gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
-            self.super_bits = gguf_config.get("super_bits", None) if self.super_bits is None else self.super_bits
-            self.super_group_size = (
-                gguf_config.get("super_group_size", None) if self.super_group_size is None else self.super_group_size
+                "'enable_torch_compile' is disabled. Enabling it can reduce tuning cost by about 20%.",
             )
 
-    def _check_configs(self) -> None:
-        """Checks if the configurations are valid.
+    def _torch_compile_disabled_reason(self, ignore_user_override: bool = False) -> str | None:
+        """Return why torch.compile must stay off for the current algorithm, else None.
 
-        Raises:
-        ValueError, TypeError: If any of the configurations are invalid.
+        RTN and optimized RTN quantize each layer in a single pass, and very short
+        SignRound runs (``iters < MIN_ITERS_FOR_TORCH_COMPILE``) finish before the
+        compilation cost is amortized, so ``torch.compile`` only adds overhead there.
+        The short-iters rule is skipped for MoE models, whose many expert linears reuse
+        the same compiled quant function, amortizing compilation even at small iters.
+
+        This only adjusts the *default*: when the user explicitly passed
+        ``enable_torch_compile``, their choice is always honored.  Pass
+        ``ignore_user_override=True`` to query the algorithm rules alone (used to
+        suppress the "you should enable torch.compile" hint).
         """
-        if not isinstance(self.model, torch.nn.Module):
-            raise TypeError("model must be an instance of torch.nn.Module")
-        if self.bits <= 0:
-            raise ValueError("`bits` must be positive")
-        if self.act_bits <= 0:
-            raise ValueError("`act_bits` must be positive")
-        if not isinstance(self.group_size, tuple) and not (self.group_size == -1 or self.group_size >= 0):
-            raise ValueError(
-                "`group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer or a tuple of length 2"
-            )
-        if isinstance(self.act_group_size, tuple) or not (self.act_group_size == -1 or self.act_group_size >= 0):
-            raise ValueError("`act_group_size` must be -1 (per channel) or 0 (per-tensor) or a positive integer")
-        if isinstance(self.group_size, tuple) and len(self.group_size) != 2:
-            raise ValueError("`group_size` must be a tuple of length 2")
-        if self.batch_size <= 0:
-            raise ValueError("`batch_size` must be positive")
-        if self.iters < 0:
-            raise ValueError("`iters` must be non-negative")
-        if self.seqlen <= 0:
-            raise ValueError("`seqlen` must be positive")
-        if self.nblocks <= 0:
-            raise ValueError("`nblocks` must be positive")
-        if self.gradient_accumulate_steps <= 0:
-            raise ValueError("`gradient_accumulate_steps` must be positive")
+        if not ignore_user_override and getattr(self, "_torch_compile_user_specified", False):
+            return None
 
+        quantize_config = getattr(self, "quantize_config", None)
+        if quantize_config is None:
+            return None
+
+        # AutoScheme runs its own delta-loss pass on top of the block quantizer and
+        # relies on torch.compile to keep VRAM down, so the rules below don't apply.
+        from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
+
+        if getattr(self, "is_auto_scheme", False) or isinstance(getattr(self, "scheme", None), AutoScheme):
+            return None
+
+        # OptimizedRTNConfig subclasses RTNConfig, so this covers rtn and opt-rtn.
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+        if isinstance(quantize_config, RTNConfig):
+            return "RTN/OPT-RTN quantizes each layer in a single pass"
+
+        iters = getattr(quantize_config, "iters", None)
+        if iters is not None and iters < MIN_ITERS_FOR_TORCH_COMPILE:
+            # MoE models reuse the same compiled quant function across a large number
+            # of expert linears, so the one-time compilation cost is amortized even for
+            # very short SignRound runs. Skip the low-iters block only for MoE.
+            model = getattr(getattr(self, "model_context", None), "model", None)
+            if model is None:
+                model = getattr(self, "model", None)
+            from auto_round.utils.model import is_moe_model
+
+            if model is None or not is_moe_model(model):
+                return f"`iters`={iters} is below {MIN_ITERS_FOR_TORCH_COMPILE}"
+
+        return None
+
+    def _torch_compile_unsupported_arch_reason(self) -> str | None:
+        """Return why the model *architecture* forbids ``torch.compile``, else ``None``.
+
+        Rules live in :mod:`auto_round.special_model_handler` so a new architecture can
+        be registered in one place.
+        """
+        from auto_round.special_model_handler import get_torch_compile_off_reason
+
+        model = getattr(getattr(self, "model_context", None), "model", None)
+        if model is None:
+            model = getattr(self, "model", None)
+        return get_torch_compile_off_reason(model)
+
+    def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
+        """Apply torch.compile disabling rules for the current compressor state."""
+        if getattr(getattr(self, "parallel_config", None), "tp_size", 1) > 1:
+            self.enable_torch_compile = False
+            self._torch_compile_off_reason = "native TP QDQ does not support torch.compile yet"
+            return
+        self.enable_torch_compile = enable_torch_compile
+        # Why compilation ended up off, used by ``_log_torch_compile_state``.  When the
+        # incoming value is already False, keep the reason recorded by the earlier
+        # precheck pass instead of dropping it.
+        self._torch_compile_off_reason = (
+            None
+            if enable_torch_compile
+            else (
+                getattr(self, "_torch_compile_off_reason", None)
+                or getattr(self, "_torch_compile_default_off_reason", None)
+            )
+        )
+        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
+
+        # Static-activation FP8 needs eager calibration hooks, so keep the old
+        # all-or-nothing behavior there.  NVFP4 also has a static global scale,
+        # but only its block-forward calibration pass needs to stay eager; the
+        # per-layer quant functions are safe to compile, and disabling them is
+        # what made NVFP4 tuning needlessly slow.
+        if self.enable_torch_compile and is_valid_act_static and not is_raw_nv_fp:
+            self.enable_torch_compile = False
+            self._torch_compile_off_reason = "activation is static"
+            logger.warning_once("reset enable_torch_compile to `False` as activation is static")
+
+        # Architecture-level hard block (DeepSeek / GLM-5.3-Flash DSA families). These
+        # hit dynamo's recompile_limit and cannot be overridden by an explicit
+        # ``enable_torch_compile=True``.
+        if self.enable_torch_compile:
+            arch_reason = self._torch_compile_unsupported_arch_reason()
+            if arch_reason is not None:
+                self.enable_torch_compile = False
+                self._torch_compile_off_reason = arch_reason
+                logger.warning_once("reset enable_torch_compile to `False` as %s", arch_reason)
+
+        if self.enable_torch_compile:
+            disabled_reason = self._torch_compile_disabled_reason()
+            if disabled_reason is not None:
+                self.enable_torch_compile = False
+                self._torch_compile_off_reason = disabled_reason
+                logger.warning_once(
+                    "reset enable_torch_compile to `False` as %s, " "so compilation cost would outweigh its benefit",
+                    disabled_reason,
+                )
+
+    def _precheck_torch_compile(self, enable_torch_compile: bool) -> None:
+        """Apply early torch.compile adjustments before scheme resolution.
+
+        This runs during ``__init__`` so the compressor exposes a sensible
+        ``enable_torch_compile`` value immediately after construction, even
+        though scheme resolution has not completed yet.
+        """
+        self._apply_torch_compile_constraints(enable_torch_compile)
+
+    def _finalize_torch_compile(self) -> None:
+        """Re-evaluate torch.compile after scheme resolution with final attrs."""
+        requested_enable_torch_compile = self.enable_torch_compile
+        self._apply_torch_compile_constraints(requested_enable_torch_compile)
+        if not requested_enable_torch_compile:
+            self._maybe_log_torch_compile_default_hint()
+        self._log_torch_compile_state()
+
+    def _log_torch_compile_state(self) -> None:
+        """Always report the final torch.compile decision so a run is self-documenting."""
+        if self.enable_torch_compile:
+            logger.info("`torch.compile` is enabled")
+            return
+
+        reason = getattr(self, "_torch_compile_off_reason", None)
+        if reason is None:
+            logger.info("`torch.compile` is disabled")
+        else:
+            logger.info("`torch.compile` is disabled, as %s", reason)
+
+    def post_init(self) -> None:
+        """One-time initialization that requires a loaded model.
+
+        Call this OUTSIDE any ``@torch.inference_mode()`` context when using
+        AutoScheme – delta-loss selection needs autograd (backward pass).
+        ``quantize_and_save()`` does this automatically before entering the
+        inference-mode quantize loop.
+
+        Delegates to ordered pipeline phases; see each ``_resolve_scheme``,
+        ``_resolve_formats``, ``_build_quantizer``, ``_patch_model``,
+        ``_build_layer_config``, and ``_hardware_setup`` for the precise
+        preconditions and postconditions.
+        """
+        if self._post_init_done:
+            return
+
+        self._resolve_scheme()
+
+        # After scheme resolution, is_act_quantize is known.  When activation
+        # quantization is enabled and the model is in float16, convert to
+        # bfloat16 to match the old arch.  This also detaches any parameter
+        # tensors that are still backed by safetensors' mmap, preventing
+        # per-block RSS growth (~14 MB/block) when .to(device) page-faults
+        # the underlying file pages into physical memory.
+        if self.quantize_config.is_act_quantize and self.model_context.amp_dtype == torch.float16:
+            logger.warning("force to use bf16 for quantization tuning when enabling activation quantization")
+            self.model_context.amp_dtype = torch.bfloat16
+            if self.model_context.model.dtype != torch.bfloat16:
+                self.model_context.model = cast_model_dtype(self.model_context.model, torch.bfloat16)
+
+        self._resolve_formats()
+        self._patch_model()
+        self._build_layer_config()
+
+        # Reclaim temporaries from Phases 1-4 (scheme resolution, format
+        # parsing, model patching, layer-config walk) before Phase 5
+        # allocates hardware/compile objects.  This compacts the heap so that
+        # the fragmentation gap between live and freed blocks is minimised.
+        gc.collect()
+        _force_trim_malloc()
+
+        self._hardware_setup()
+
+        # BlockForwardRunner is now created inside AlgorithmComposer.__init__,
+        # so _build_composer must run first.
+        self._build_composer()
+
+        # Phase 4.5 – Model-level pre-quantisation transforms (rotation).
+        # Applies full-model rotation up-front (or prepares layer-wise rotation
+        # matrices). Runs here so every entry point — the full quantize() loop,
+        # the zero-shot loop, and the external single-block quantize_block() API —
+        # sees a consistently transformed model before any calibration data is
+        # collected. Rotation is now owned by the composer's rotation members.
+        self.model_context.model = self.alg_composer.apply_model_transforms(self.model_context.model)
+
+        # Set block_forward torch compile for block forward
+        # Final trim after all init phases.
+        gc.collect()
+        _force_trim_malloc()
+
+        self._post_init_done = True
+
+    # ── Pipeline phase methods ────────────────────────────────────────────────
+
+    def _resolve_scheme(self) -> None:
+        """Phase 1 – Scheme resolution.
+
+        Preconditions:
+          - ``self.quantize_config`` is a valid :class:`QuantizationConfig`.
+
+        Work performed:
+          - Calls :meth:`resolve_scheme` to derive ``data_type``, ``bits``,
+            ``sym``, ``scale_dtype`` etc. and write them back to both ``self``
+            and ``self.quantize_config``.
+
+        Postconditions:
+          - ``self.scheme`` and ``self.quantize_config`` carry resolved scheme attrs.
+        """
+        if self.to_quant_block_names is None:
+            self.to_quant_block_names = getattr(self.model_context.model, "_autoround_to_quant_block_names", None)
+
+        # Resolve the scheme (pure config work: sets data_type / bits / sym /
+        # scale_dtype etc. on both self and self.quantize_config).
+        self.resolve_scheme(
+            model_context=self.model_context,
+            compress_context=self.compress_context,
+        )
+
+    def _build_composer(self) -> None:
+        """Phase 1b – Quantizer construction and wiring.
+
+        Preconditions:
+                    - :meth:`_resolve_scheme` complete: ``self.quantize_config`` carries
+                        resolved scheme attrs.
+                    - :meth:`_resolve_formats` complete: format-driven overrides have
+                        been synced back to ``self.quantize_config``.
+
+        Work performed:
+          - Constructs the quantizers from the resolved configs.
+          - Wraps it in a :class:`~auto_round.algorithms.pipeline.AlgorithmComposer`
+            so that the entire compressor operates through the bundle abstraction.
+          - Calls ``quantizer.bind(self)`` so the quantizer pulls
+            ``model_context`` / ``compress_context`` / ``scale_dtype`` /
+            ``CalibrationContext`` from this compressor.  ``quantizer.model``
+            is a property that reads ``model_context.model``.
+          - Exposes ``self.alg_composer.active_quantizer`` so all quantization
+            call-sites can reach the current quantizer directly.
+
+        Postconditions:
+          - ``self.alg_composer`` is an ``AlgorithmComposer`` wrapping the block quantizer.
+          - ``self.alg_composer.active_quantizer`` is ready and shares ``CalibrationContext``
+            with the compressor.
+        """
+        from auto_round.algorithms.composer import AlgorithmComposer
+
+        self._alg_composer = AlgorithmComposer(self._alg_configs, orchestrator=self)
+
+        # Sync the fully-resolved scheme state (built by _build_layer_config(), which
+        # always runs before _build_composer() in post_init()) onto the block quantizer
+        # so quantization methods (quantize_block, quantize_layer, etc.) have access to
+        # layer_config, quant_block_list, etc. ``scale_dtype``/``scheme`` are NOT set here:
+        # they are read-only properties backed by ``BaseAlgorithm.bind()``, which already
+        # picked up the final ``self.scale_dtype``/``self.scheme_context`` above.
+        plan = getattr(self, "compression_plan", None)
+        if plan is not None:
+            active_quantizer = self._alg_composer.active_quantizer
+            for quantizer in self._alg_composer.quantizers:
+                quantizer.layer_config = {name: dict(config) for name, config in plan.layer_config.items()}
+                quantizer.has_qlayer_outside_block = plan.has_qlayer_outside_block
+                quantizer.regex_config = {name: dict(config) for name, config in plan.regex_config.items()}
+                quantizer.quant_block_list = (
+                    [list(group) for group in plan.quant_block_list] if plan.quant_block_list is not None else None
+                )
+                quantizer.to_quant_block_names = self.to_quant_block_names
+                quantizer.ignore_layers = self.ignore_layers
+
+            from auto_round.algorithms.config_resolver import sync_shared_config_from
+
+            sync_shared_config_from(active_quantizer.config, [pre.config for pre in self._alg_composer.preprocessors])
+
+            # Also sync runtime-only state to all preprocessors so they have access to
+            # per-layer quant config during pre-processing (e.g. AWQ grid search uses
+            # layer_config to look up bits/group_size for each layer).
+            for pre in self._alg_composer.preprocessors:
+                pre.layer_config = active_quantizer.layer_config
+
+    @property
+    def alg_composer(self) -> Any:
+        """The active :class:`~auto_round.algorithms.pipeline.AlgorithmComposer`."""
+        return self._alg_composer
+
+    @staticmethod
+    def _resolve_gguf_preset_string(formats: list["OutputFormat"]) -> str | None:
+        """Return the precise GGUF preset string (e.g. ``"gguf:q4_k_m"``) for the
+        single resolved GGUF format, or ``None`` if no GGUF format is present.
+
+        Used by :meth:`_resolve_format_string` so ``self.scheme`` stays a string
+        that :func:`auto_round.schemes.get_gguf_scheme` can short-circuit on,
+        preserving alias disambiguation (Q4_K_S vs Q4_K_M, Q*_0/Q*_1, ...).
+        ``_check_compatibility`` guarantees at most one GGUF format.
+        """
+        for fmt in formats or []:
+            if not fmt.is_gguf():
+                continue
+            # The outer GGUFFormat reports output_format == "gguf"; the precise,
+            # alias-correct, post-rewrite preset lives on backend.output_format
+            # (e.g. "gguf:q4_k_m"). A standalone/inner GGUFFormat already carries
+            # the precise string on output_format itself.
+            backend = getattr(fmt, "backend", None)
+            backend_fmt = getattr(backend, "output_format", None) if backend is not None else None
+            precise = backend_fmt if backend_fmt and backend_fmt != "gguf" else fmt.output_format
+            if precise and precise != "gguf":
+                return precise
+        return None
+
+    def _resolve_format_string(self, format_str: str) -> list["OutputFormat"]:
+        """Resolve one format string via resolve_formats(), then propagate any
+        scheme/layer_config/scale_dtype/quant_block_list correction it makes
+        (e.g. GGUF's gguf_args_check) back onto self.
+
+        `scheme` may or may not be the object passed in — GGUF's "_mixed -> _s"
+        rewrite can rebuild it wholesale — so this always re-pins self.scheme_context
+        explicitly rather than relying on in-place mutation.
+        """
+        preset_name = self.scheme if isinstance(self.scheme, str) else None
+        self._format_resolution = resolve_formats(
+            ResolvedScheme.from_scheme(self.scheme_context, preset_name=preset_name),
+            format=format_str,
+            layer_config=self.layer_config or {},
+            scale_dtype=self.scale_dtype,
+            mllm=self.model_context.is_mllm,
+            iters=getattr(self, "iters", 0),
+            enable_alg_ext=getattr(self, "enable_alg_ext", False),
+            quant_nontext_module=self.quant_nontext_module,
+            quant_block_list=self.quant_block_list,
+            platform=self.platform,
+            is_auto_scheme=self.is_auto_scheme,
+            model=self.model_context.model,
+        )
+        formats = list(self._format_resolution.formats)
+        scheme = self._format_resolution.scheme.value
+        self.layer_config = thaw_mapping(self._format_resolution.layer_config_patch)
+        self.scale_dtype = self._format_resolution.scale_dtype
+        self.quant_block_list = (
+            [list(group) for group in self._format_resolution.quant_block_list]
+            if self._format_resolution.quant_block_list is not None
+            else None
+        )
+        self.scheme_context = scheme
+        for config in self._alg_configs:
+            if hasattr(config, "scheme"):
+                config.scheme = self.scheme_context
+        # self.scheme must stay an independent object from self.scheme_context
+        # (the existing invariant from resolve_scheme(), Phase 1) — never assign
+        # the same reference here even though it would often "work".
+        #
+        # Special-case GGUF: get_gguf_scheme() can only disambiguate presets that
+        # share identical QuantizationScheme fields (e.g. GGUF:Q4_K_S vs GGUF:Q4_K_M,
+        # or any GGUF:Q*_0 / GGUF:Q*_1 that its field-matching loop deliberately
+        # skips) via its string short-circuit. If we hand it the resolved object
+        # form, downstream resolve_layer_config() derives the WRONG (or empty) gguf
+        # preset name, corrupting per-tensor qtype/embedding selection. So when the
+        # resolved format is GGUF, pin self.scheme to the precise resolved preset
+        # string (the outer GGUFFormat keeps it on .backend.output_format, already
+        # past any "_mixed"->"_s" rewrite); _validate_format_combination guarantees at most
+        # one GGUF format here.
+        gguf_preset = self._format_resolution.scheme.preset_name
+        if gguf_preset is not None and not gguf_preset.startswith("gguf:"):
+            gguf_preset = None
+        if gguf_preset is not None:
+            self.scheme = gguf_preset
+        else:
+            self.scheme = copy.deepcopy(scheme)
+        return formats
+
+    def _resolve_formats(self) -> None:
+        """Phase 2 - Format resolution and scheme/config sync.
+
+        Preconditions:
+            - Phase 1 complete: ``self.scheme`` / ``self.scheme_context`` are resolved.
+
+        Work performed:
+          - Converts a string ``self.formats`` to a list of
+            :class:`~auto_round.export.formats.OutputFormat` objects via
+            :meth:`_resolve_format_string`, which also propagates any scheme
+            correction (e.g. GGUF's ``gguf_args_check``) onto ``self.scheme``,
+            ``self.scheme_context``, the algorithm configs that share it, and
+            ``self.quantize_config``.
+          - Initialises :class:`~auto_round.compressors.shard_writer.ShardWriter`
+            when formats are present.
+
+        Postconditions:
+          - ``self.formats`` is a list (or ``None``).
+          - ``self.compress_context.formats`` mirrors ``self.formats``.
+          - ``self.scheme``, ``self.scheme_context`` and ``self.quantize_config``
+            all reflect any format-driven corrections (e.g. GGUF).
+        """
+        if isinstance(self.formats, str):
+            self.formats = self._resolve_format_string(self.formats)
+        if self.formats is not None:
+            self.compress_context.formats = self.formats
+            ShardWriter.reset()
+            # Defer ShardWriter construction to _ensure_shard_writer() to avoid
+            # heap fragmentation during post_init (parameter iteration).
+
+    def _patch_model(self) -> None:
+        """Phase 3 – Model structure patching.
+
+        Preconditions:
+          - Phase 2 complete: ``self.formats`` is resolved so that
+            ``apply_patches`` can inspect format-specific requirements.
+
+        Work performed:
+          - Delegates to :meth:`~auto_round.context.model.ModelContext.apply_patches`
+            which may replace or merge layers (e.g. MoE expert merging, adding
+            static-kv wrappers) to produce the final model topology.
+
+        Postconditions:
+          - ``self.model_context.model`` reflects the definitive topology that
+            :meth:`_build_layer_config` will walk.
+        """
+        # apply_patches() may replace layers (e.g. MoE expert merging); must
+        # happen before configure_layer_config() so it sees the final topology.
+        self.model_context.apply_patches(self.formats)
+
+    def _build_layer_config(self) -> None:
+        """Phase 4 – Layer-config construction.
+
+        Preconditions:
+          - Phase 3 complete: model topology is final.
+          - ``self.scheme`` and all scheme-resolved attrs are consistent with
+            the (possibly GGUF-adjusted) values set in Phase 2.
+
+        Work performed:
+          - Calls :meth:`_scheme_post_init` which walks the patched model to
+            build ``self.layer_config``, ``self.quant_block_list``,
+            ``self.compression_plan``, etc. On the AutoScheme path this also
+            runs delta-loss forward/backward passes to select per-layer schemes.
+
+        Postconditions:
+          - ``self.layer_config`` and ``self.compression_plan`` are fully populated.
+        """
+        # configure_layer_config() walks the patched model; _gen_auto_scheme()
+        # (AutoScheme path) runs delta-loss forward+backward passes.
+        self._scheme_post_init()
+
+    def _hardware_setup(self) -> None:
+        """Phase 5 – Hardware and compile configuration.
+
+        Preconditions:
+          - Phase 4 complete: ``layer_config`` is built and
+            ``has_qlayer_outside_block`` is known.
+          - ``self.quantize_config.data_type`` is the final resolved value
+            (needed by :meth:`_finalize_torch_compile`).
+
+        Work performed:
+          - Applies the device map via :func:`~auto_round.utils.device.set_non_auto_device_map`.
+          - Re-evaluates ``torch.compile`` eligibility now that ``data_type`` is
+            resolved and writes the result back to ``compress_context``.
+          - Resets the offload manager when ``low_cpu_mem_usage`` is active.
+          - Disables ``self.inplace`` when quantized layers live outside
+            transformer blocks (incompatible with in-place rewriting).
+          - Calls :meth:`_adjust_immediate_packing_and_saving` to decide whether
+            layers should be packed / written immediately after each block.
+
+        Postconditions:
+          - ``compress_context.enable_torch_compile`` is final.
+          - ``self.inplace`` and ``compress_context.is_immediate_packing`` /
+            ``compress_context.is_immediate_saving`` are set to their definitive values.
+        """
+        set_non_auto_device_map(self.model_context.model, device_manager.device_map)
+        # Re-evaluate torch.compile eligibility now that data_type is resolved.
+        self._finalize_torch_compile()
+        self.compress_context.enable_torch_compile = self.enable_torch_compile
+        if self.parallel_execution.is_tp:
+            self.compress_context.low_cpu_mem_usage = False
+        if self.compress_context.low_cpu_mem_usage:
+            self._offloader.reset()
+
+        # Disable inplace when quantized layers live outside transformer blocks.
+        # gguf lm-head used rtn in version>=0.13
         if (
-            self.act_bits <= 8
-            and (not is_nv_fp(self.act_data_type) or "static_gs" not in self.act_data_type)
-            and not is_mx_fp(self.act_data_type)
-            and not is_dynamic_wint8aint8(self)
-            and not is_static_wfp8afp8(self.act_data_type)
-            and not is_dynamic_afp8(self)
-        ):
-            logger.warning(
-                "activation quantization is an experimental feature with limited support and a complex API. "
-                "And please save the quantized model to fake format as real deployment is not supported currently"
+            self.has_qlayer_outside_block
+            and self.need_calib
+            and (
+                self.compress_context.formats is None
+                or "gguf" not in self.compress_context.formats[0].__class__.__name__.lower()
             )
+        ):
+            self.inplace = False
 
-        if is_mx_fp(self.data_type) and self.group_size != 32:
-            logger.warning("dtype mx_fp should only support group_size of 32 in real deployment")
+        if hasattr(self, "formats"):
+            self._adjust_immediate_packing_and_saving()
 
-        if is_nv_fp(self.data_type) and (self.group_size != 16):
-            logger.warning("dtype nv_fp should only support group_size of 16 in real deployment")
+    # backward compatible with the legacy API
+    def __getattr__(self, name: str) -> Any:
+        if name in self.__dict__:
+            return self.__dict__[name]
 
-        if isinstance(self.group_size, tuple):
-            if not is_block_wfp8(self):
-                raise NotImplementedError("only support block-wise quantization for fp8 weight quantization.")
-            if not is_dynamic_afp8(self):
-                raise NotImplementedError("only support dynamic fp8 activation for fp8 weight quantization.")
+        # Never proxy private/dunder attributes — they should be set explicitly
+        # in __init__.  Proxying them hides bugs (e.g. missing _post_init_done)
+        # and can cause infinite recursion.
+        if name.startswith("_"):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
-        if self.nsamples < self.gradient_accumulate_steps * self.batch_size:
-            if self.batch_size > self.nsamples:
-                if self.iters > 0:  # GGUF should log this warning, but we don't know the format here
-                    logger.warning(
-                        f"reset `batch_size` to {self.nsamples} as `nsamples`({self.nsamples})"
-                        f" is smaller than batch_size({self.batch_size})"
+        # Delegate to active_quantizer: access _alg_composer directly from __dict__
+        # to avoid recursion (quantizer attribute access forwards through
+        # _alg_composer.active_quantizer; going through a property inside
+        # __getattr__ would re-trigger __getattr__ if _alg_composer isn't ready yet).
+        _alg_composer = self.__dict__.get("_alg_composer")
+        if _alg_composer is not None:
+            try:
+                return object.__getattribute__(_alg_composer.active_quantizer, name)
+            except AttributeError:
+                pass
+
+        for attr in ["quantize_config", "model_context", "compress_context"]:
+            # These are regular instance attributes; use object.__getattribute__
+            # so Python's normal descriptor protocol is used without re-entering
+            # __getattr__ on self.
+            try:
+                obj = object.__getattribute__(self, attr)
+            except AttributeError:
+                continue
+            try:
+                return object.__getattribute__(obj, name)
+            except AttributeError:
+                continue
+
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+    # ── Device state forwarded to the process-wide DeviceManager singleton ────
+    @property
+    def device(self) -> str:
+        return device_manager.device
+
+    @device.setter
+    def device(self, value: str | torch.device) -> None:
+        device_manager.device = value
+
+    @property
+    def device_list(self) -> list:
+        return device_manager.device_list
+
+    @property
+    def device_map(self) -> Any:
+        return device_manager.device_map
+
+    @property
+    def optimizer(self) -> Any:  # TODO wenhuach delete
+        """Return the actual optimizer class, converting string to class for backward compat.
+
+        Old API stored ``self.optimizer = torch.optim.AdamW`` (the class itself).
+        New arch stores the optimizer name as a string in ``quantize_config.optimizer``.
+        This property converts it so that ``ar.optimizer == torch.optim.AdamW`` works.
+        """
+        if self.quantize_config is None:
+            return None
+        opt = getattr(self.quantize_config, "optimizer", None)
+        if opt is None:
+            # Default to AdamW when enable_adam=True and no explicit optimizer was set
+            if getattr(self.quantize_config, "enable_adam", False):
+                return torch.optim.AdamW
+            return None
+        if isinstance(opt, str):
+            return getattr(torch.optim, opt, None)
+        return opt
+
+    def _adjust_immediate_packing_and_saving(self):
+        from auto_round.algorithms.quantization.rtn.config import RTNConfig
+
+        if getattr(getattr(self, "parallel_execution", None), "is_tp", False):
+            self.compress_context.is_immediate_packing = False
+            self.compress_context.is_immediate_saving = False
+            return
+        if self.formats is None:
+            return
+
+        # Whole-model quantizers (e.g. QAD) tune the entire network in one pass and
+        # never run the per-block loop that packs/writes shards incrementally, so
+        # immediate packing/saving would leave the output dir without model files.
+        # Fall back to packing and saving the whole model after quantization.
+        from auto_round.algorithms.config_resolver import get_algorithm_class, split_quantization_configs
+
+        _qcls = get_algorithm_class(self.quantize_config) if self.quantize_config is not None else None
+        _, quantizer_configs = split_quantization_configs(self._alg_configs)
+        if len(quantizer_configs) > 1 or (_qcls is not None and getattr(_qcls, "whole_model_tuning", False)):
+            if self.compress_context.is_immediate_packing or self.compress_context.is_immediate_saving:
+                logger.info("Staged/whole-model tuning: disabling immediate packing/saving; saving at the end.")
+            self.compress_context.is_immediate_packing = False
+            self.compress_context.is_immediate_saving = False
+            return
+
+        formats = getattr(self, "formats", [])
+        if any(not format.is_supported_immediate_packing() for format in formats):
+            self.compress_context.is_immediate_packing = False
+        if any(not format.is_supported_immediate_saving() for format in formats):
+            self.compress_context.is_immediate_saving = False
+
+        has_single_gguf_format = len(formats) == 1 and formats[0].is_gguf()
+        # GGUF supports per-block / per-layer immediate packing even when
+        # full-model in-place rewriting is disabled by outside-block layers.
+        if (
+            len(formats) == 1
+            and not formats[0].is_fake()
+            and formats[0].is_supported_immediate_packing()
+            and (self.inplace or has_single_gguf_format)
+        ):
+            self.compress_context.is_immediate_packing = True
+
+        if self.has_qlayer_outside_block and self.need_calib and not has_single_gguf_format:
+            self.compress_context.is_immediate_packing = False
+        if not ("causallm" in self.model_context.model.__class__.__name__.lower() and not self.model_context.is_mllm):
+            # TODO For tied keys, there may some issues, we haven't not verified this
+            tied_weight_keys = getattr(self.model_context.model, "_tied_weight_keys", {})
+            if len(tied_weight_keys) > 1:
+                self.compress_context.is_immediate_saving = False
+                if self.compress_context.low_cpu_mem_usage:
+                    logger.warning("reset low_cpu_mem_usage to False due to tied weights")
+                return
+            if len(tied_weight_keys) == 1:
+                key = next(iter(tied_weight_keys))
+                if "lm_head" not in key:
+                    self.compress_context.is_immediate_saving = False
+                    if self.compress_context.low_cpu_mem_usage:
+                        logger.warning("reset low_cpu_mem_usage to False due to tied weights")
+                    return
+
+        if self.compress_context.low_cpu_mem_usage and self.compress_context.is_immediate_packing:
+            self.compress_context.is_immediate_saving = True
+
+        if self.compress_context.low_cpu_mem_usage and self.compress_context.is_immediate_packing:
+            if formats[0].is_gguf():
+                logger.warning(
+                    "`low_cpu_mem_usage` is not fully supported for gguf format. "
+                    "Setting `low_cpu_mem_usage` to False."
+                )
+                self.compress_context.low_cpu_mem_usage = False
+                self.compress_context.is_immediate_saving = False
+            elif (
+                self.has_qlayer_outside_block
+                and getattr(self, "disable_opt_rtn", None)
+                and isinstance(self.quantize_config, RTNConfig)
+            ):
+                logger.info(
+                    "Keeping `low_cpu_mem_usage` enabled in RTN mode (iters=0): "
+                    "RTN path uses blockwise quantization and supports per-block offloading."
+                )
+            elif self.has_qlayer_outside_block and not isinstance(self.quantize_config, RTNConfig):
+                logger.warning(
+                    "`low_cpu_mem_usage` is not fully supported "
+                    "when there are quantized layers outside blocks and optimized RTN is disabled. "
+                    "Setting low_cpu_mem_usage to False."
+                )
+                self.compress_context.low_cpu_mem_usage = False
+                self.compress_context.is_immediate_saving = False
+
+        if self.compress_context.is_immediate_saving and not (
+            "int" in self.quantize_config.data_type
+            or is_nv_fp(self.quantize_config.data_type)
+            or is_mx_fp(self.quantize_config.data_type)
+        ):
+            logger.warning("immediate_saving is only supported for int/nv_fp/mx_fp quantization, set to False")
+            self.compress_context.is_immediate_saving = False
+
+        if self.output_dir is None:
+            self.compress_context.is_immediate_saving = False
+
+        # Create ShardWriter eagerly only when immediate saving is active
+        # (it interleaves with the quantize loop).  Otherwise keep it deferred
+        # until save_quantized() to avoid heap fragmentation during init.
+        if self.compress_context.is_immediate_saving:
+            self._ensure_shard_writer()
+
+    def _ensure_shard_writer(self):
+        """Lazily create ShardWriter if it hasn't been created yet."""
+        if self.shard_writer is None and self.formats is not None:
+            self.shard_writer = ShardWriter(self.model, bits=8, max_shard_size=getattr(self, "max_shard_size", None))
+
+    def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+        """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
+        Returns:
+        The quantized model and layer configurations.
+        """
+        raise NotImplementedError("quantize method must be implemented in subclass")
+
+    def save_quantized(
+        self,
+        output_dir: str | None = None,
+        format: str | list[OutputFormat] | None = None,
+        inplace: bool = True,
+        return_folders: bool = False,
+        max_shard_size: int | str | None = None,
+        **kwargs,
+    ) -> torch.nn.Module:
+        """Save the quantized model to the specified output directory in the specified format.
+
+        Args:
+            output_dir (str, optional): The directory to save the quantized model. Defaults to None.
+            format (str, optional): The format in which to save the model. Defaults to "auto_round".
+            inplace (bool, optional): Whether to modify the model in place. Defaults to True.
+            max_shard_size (int or str, optional): Maximum size of each safetensors shard. Defaults to 5GB.
+            **kwargs: Additional keyword arguments specific to the export format.
+
+        Returns:
+            object: The compressed model object.
+        """
+        from auto_round.parallel.tp.runtime import gather_for_export, is_tp_model, synchronized_export
+
+        if is_tp_model(self.model_context.model):
+            if not self.model_context.quantized:
+                raise RuntimeError("Quantize the TP model before exporting it.")
+            original = self.model_context.model
+            exported = gather_for_export(original)
+            with synchronized_export():
+                if exported is None:
+                    return (original, []) if return_folders else original
+                self.model_context.model = exported
+                try:
+                    return self.save_quantized(
+                        output_dir=output_dir,
+                        format=format,
+                        inplace=inplace,
+                        return_folders=return_folders,
+                        max_shard_size=max_shard_size,
+                        **kwargs,
                     )
-                self.batch_size = self.nsamples
-            if self.gradient_accumulate_steps > self.nsamples // self.batch_size:
-                self.gradient_accumulate_steps = self.nsamples // self.batch_size
+                finally:
+                    self.model_context.model = original
+        if max_shard_size is not None:
+            self.max_shard_size = max_shard_size
+        self.output_dir = output_dir
+        if output_dir is not None:
+            self.compress_context.output_dir = output_dir
+        if format is not None:
+            if isinstance(format, str) and getattr(self, "formats", None) is None:
+                self.formats = self._resolve_format_string(format)
+                self.compress_context.formats = self.formats
+
+        if not self.model_context.quantized:
+            logger.warning("please run autoround.quantize first")
+            return
+        folders = []
+        if self.formats is None:
+            logger.info("format is not set, using default auto_round format.")
+            self.formats = "auto_round"
+        if isinstance(self.formats, str):
+            self.formats = self._resolve_format_string(self.formats)
+            self.compress_context.formats = self.formats
+        for output_format in self.formats:
+            save_folder = _get_save_folder_name(output_format)
+            if self.act_bits <= 8 and output_format.is_fake():
                 logger.warning(
-                    f"reset `gradient_accumulate_steps` to {self.gradient_accumulate_steps}"
-                    f" as nsamples must equal or greater"
-                    f" than gradient_accumulate_steps * batch_size"
+                    "Support for exporting activation quantization is limited. "
+                    "Please ensure that your configuration is supported."
                 )
 
-        if self.enable_norm_bias_tuning:
-            logger.warning("the `enable_norm_bias_tuning` feature is experimental and currently has limited support.")
+            serialization_dict = asdict(SerializedCompressorConfig())
+            calibration_context = getattr(self, "calibration_context", None)
+            for key in serialization_dict:
+                value = getattr(self, key, serialization_dict[key])
+                # Calibration params (nsamples/seqlen/batch_size) live on the calibration context.
+                if value is None and calibration_context is not None:
+                    value = getattr(calibration_context, key, None)
+                serialization_dict[key] = value
+            from auto_round.version import __version__
 
-        self._dq_check()
+            serialization_dict["autoround_version"] = __version__
+            if serialization_dict.get("to_quant_block_names") is None and self.quant_block_list:
+                serialization_dict["to_quant_block_names"] = extract_block_names_to_str(self.quant_block_list)
+            if "scale_dtype" in serialization_dict.keys():
+                serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
 
-    def _check_compatibility(self) -> None:
-        """Checks compatibility of the configurations and model."""
-        if (
-            self.seqlen is not None
-            and hasattr(self.model, "config")
-            and hasattr(self.model.config, "max_position_embeddings")
-        ):
-            if self.model.config.max_position_embeddings < self.seqlen:
-                logger.warning(
-                    f"Change sequence length to {self.model.config.max_position_embeddings} "
-                    "due to the limitation of max_position_embeddings"
+            original_to_quant_block_names = serialization_dict.get("to_quant_block_names")
+            if isinstance(original_to_quant_block_names, list):
+                original_to_quant_block_names = original_to_quant_block_names[:]
+
+            # to match the original name. Prefer transformers' scope-aware reverse
+            # transforms (they honour each transform's scope / anchors) so a text
+            # sub-model prefix rule cannot double ``language_model`` or nest the
+            # sibling vision tower; fall back to the flattened regex mapping.
+            reverse_weight_transforms = get_reverse_weight_transforms(self.model)
+            reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
+
+            def _revert_block_name(block_name):
+                if reverse_weight_transforms is not None:
+                    return revert_name_with_weight_transforms(block_name, reverse_weight_transforms)
+                return revert_checkpoint_conversion_mapping(block_name, reverse_checkpoint_conversion_mapping)
+
+            if isinstance(serialization_dict["to_quant_block_names"], str):
+                reverted_block_name = _revert_block_name(serialization_dict["to_quant_block_names"])
+                serialization_dict["to_quant_block_names"] = preserve_original_visual_block_name(
+                    original_to_quant_block_names, reverted_block_name
                 )
-                self.seqlen = min(self.seqlen, self.model.config.max_position_embeddings)
 
-        if self.seqlen is not None and hasattr(self.tokenizer, "model_max_length"):
-            if self.tokenizer.model_max_length < self.seqlen:
-                logger.warning(
-                    f"Change sequence length to {self.tokenizer.model_max_length} "
-                    "due to the limitation of model_max_length. "
-                    "You can also try to increase the model_max_length to avoid this issue."
-                )
-                self.seqlen = min(self.seqlen, self.tokenizer.model_max_length)
+            elif isinstance(serialization_dict["to_quant_block_names"], list):
+                for idx in range(len(serialization_dict["to_quant_block_names"])):
+                    reverted_block_name = _revert_block_name(serialization_dict["to_quant_block_names"][idx])
+                    original_block_name = None
+                    if isinstance(original_to_quant_block_names, list) and idx < len(original_to_quant_block_names):
+                        original_block_name = original_to_quant_block_names[idx]
+                    serialization_dict["to_quant_block_names"][idx] = preserve_original_visual_block_name(
+                        original_block_name, reverted_block_name
+                    )
 
-        if self.group_size == 0 and "fp8" not in self.data_type:
-            logger.warning("`group_size==0` is not supported for data_type other than fp8 ")
-
-        if self.bits <= 2 and (self.iters < 1000 or not self.enable_alg_ext) and self.super_group_size is None:
-            logger.warning(
-                "for bits <= 2, it is recommended to enable `auto-round-best` " "and turn on `--enable_alg_ext` "
+            compressed_model = output_format.save_quantized(
+                save_folder,
+                model=self.model_context.model,
+                layer_config=self.layer_config,
+                inplace=inplace,
+                tokenizer=self.model_context.tokenizer,
+                # TP export reconstructs full tensors in host RAM. Packing
+                # must not copy those tensors back onto a single accelerator.
+                device=(
+                    "cpu"
+                    if getattr(getattr(self, "parallel_config", None), "tp_size", 1) > 1
+                    else device_manager.device
+                ),
+                serialization_dict=serialization_dict,
+                **kwargs,
             )
+            folders.append(save_folder)
+
+        if return_folders:
+            if len(folders) == 1:
+                folders = folders[0]
+            return compressed_model, folders
+        else:
+            return compressed_model
+
+    def _get_export_dir(self, output_dir: str, format_str: str) -> str:
+        """Derive a descriptive export directory from model name and quantization config.
+
+        Must be called after ``post_init()`` so that scheme-resolved attrs
+        (bits, group_size, data_type, etc.) are available on ``self.quantize_config``.
+
+        Mirrors the logic previously in ``__main__.py`` so callers only need to
+        pass the base ``output_dir`` and the format string.
+        """
+        # Diffusion models use save_quantized from DiffusionMixin which manages its own
+        # directory layout (model_index.json + per-component subdirs).  Appending a
+        # scheme-derived suffix here would place files one level too deep.
+        if getattr(self, "diffusion", False):
+            return output_dir
+
+        model_name = (getattr(self.model_context.model, "name_or_path", "") or "").rstrip("/")
+        cfg = self.quantize_config
+        group_size = cfg.group_size
+        bits = cfg.bits
+        data_type = cfg.data_type or "int"
+        act_bits = cfg.act_bits or 16
+        act_data_type = cfg.act_data_type or "float"
+
+        is_gguf = "gguf" in (format_str or "")
+        last = model_name.split("/")[-1].strip(".")
+
+        if last == "" and not is_gguf:
+            # model path is just '.' or './' – put inside output_dir with suffix
+            if group_size <= 0:
+                suffix = f"afp{act_bits}" if "fp" in act_data_type else f"a{act_bits}"
+            else:
+                suffix = f"g{group_size}"
+            return os.path.join(output_dir, f"w{bits}{suffix}")
+
+        if last == "" and is_gguf:
+            return output_dir
+
+        if is_gguf:
+            return os.path.join(output_dir, model_name.split("/")[-1] + "-gguf")
+
+        # Normal case: derive suffix from group_size / act config
+        if isinstance(group_size, tuple):
+            assert len(group_size) == 2, f"Only support 2D group_size, but got {group_size}"
+            suffix = f"g{group_size[0]}x{group_size[1]}"
+        elif group_size <= 0:
+            suffix = f"afp{act_bits}" if "fp" in act_data_type else f"a{act_bits}"
+        else:
+            suffix = f"g{group_size}"
+
+        prefix = data_type.lower().replace("_", "") if "int" not in data_type or "mx" in data_type else ""
+        return os.path.join(
+            output_dir,
+            model_name.split("/")[-1] + (f"-{prefix}" if prefix else "") + f"-w{bits}{suffix}",
+        )
+
+    def _formats_policy_string(self) -> str:
+        """Comma-joined format names for policy checks (8-bit asym scoping)."""
+        return _formats_policy_string_of(self.formats)
+
+    def _assert_w8_asym_exportable(self) -> None:
+        """Re-check the 8-bit asym policy once the export format is final.
+
+        Construction-time validation runs before ``quantize_and_save(format=...)``
+        may supply the format, so it is conservative (native semantics). Re-check
+        here with the actual format: llm_compressor exports keep W8 asym."""
+        from auto_round import envs
+        from auto_round.schemes import format_allows_w8_asym
+
+        if envs.AR_ALLOW_W8_ASYM or format_allows_w8_asym(self._formats_policy_string()):
+            return
+        if getattr(self, "data_type", None) == "int" and getattr(self, "bits", None) == 8:
+            if getattr(self, "sym", None) is False:
+                raise ValueError(
+                    "8-bit asymmetric weight quantization is not supported for format "
+                    f"'{self._formats_policy_string()}': vLLM serves W8 GPTQ-format weights "
+                    "symmetric-only and Marlin supports zero points at 4 bits only. Use a "
+                    "symmetric 8-bit scheme (drop --asym), an asymmetric width of 7 bits or "
+                    "fewer, format 'auto_round:llm_compressor' (compressed-tensors serves W8 "
+                    "asym), or set AR_ALLOW_W8_ASYM=1 to skip this check."
+                )
 
     def quantize_and_save(
-        self, output_dir: str = "tmp_autoround", format: str = "auto_round", inplace: bool = True, **kwargs
+        self,
+        output_dir: str = "tmp_autoround",
+        format: str | None = None,
+        inplace: bool = True,
+        max_shard_size: int | str | None = None,
+        **kwargs,
     ) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Quantizes the model and saves it in the specified format(s).
 
@@ -979,6 +2210,7 @@ class BaseCompressor(object):
                 by commas if multiple. Defaults to "auto_round".
             inplace (bool, optional): Whether to modify the model in place if only
                 one format is used. Defaults to True.
+            max_shard_size (int or str, optional): Maximum size of each safetensors shard. Defaults to 5GB.
             **kwargs: Additional arguments for the quantization and saving process.
 
         Returns:
@@ -988,2570 +2220,86 @@ class BaseCompressor(object):
         Raises:
             ValueError: If an unsupported format is specified.
         """
+        if max_shard_size is not None:
+            self.max_shard_size = max_shard_size
         # Validate and process the specified formats
-        self.orig_output_dir = output_dir
+        self.output_dir = output_dir
+        self.compress_context.output_dir = output_dir
 
         # check and update the format based on the current configuration
-        format_list = get_formats(format, self)
-        self.formats = format_list
+        used_default_format = format is None and self.formats is None
+        if format and self.formats is None:
+            self.formats = format
+        if self.formats is None:
+            logger.info("format is not set, using default auto_round format.")
+            self.formats = "auto_round"
 
         # If multiple formats are specified, enforce inplace=False
-        if len(format_list) > 1:
+        if len(self.formats.split(",")) > 1:
             inplace = False
         self.inplace = kwargs.get("inplace", inplace)
         kwargs.pop("inplace", None)
 
         # Perform model quantization
+        # IMPORTANT: post_init() must run outside any @torch.inference_mode() context
+        # because AutoScheme's delta-loss selection requires gradient tracking.
+        self.post_init()
+        if used_default_format and scheme_to_preset_name(self.scheme_context) == "FP8_BLOCK":
+            logger.warning("--format fp8 is recommended for better compatibility with serving frameworks for now.")
+        # If post_init() was called manually before quantize_and_save() (e.g. ar.post_init()
+        # in tests), _resolve_formats saw formats=None and was a no-op.  Now that we have set
+        # self.formats to a default string above, resolve it into OutputFormat objects so that
+        # quantize() and save_quantized() receive proper objects, not a raw string.
+        if isinstance(self.formats, str):
+            self.formats = self._resolve_format_string(self.formats)
+            self.compress_context.formats = self.formats
+        self._assert_w8_asym_exportable()
+        # Derive descriptive export dir after post_init so scheme-resolved attrs are available.
+        _fmt_str = format or (self.formats if isinstance(self.formats, str) else "")
+        output_dir = self._get_export_dir(output_dir, _fmt_str)
+        self.output_dir = output_dir
+        self.compress_context.output_dir = output_dir
         if self.static_attention_dtype is not None:
             from auto_round.experimental.attention import attention_quant_ctx
 
-            with attention_quant_ctx(self.model, static_attention_dtype=self.static_attention_dtype):
-                model, _ = self.quantize()
+            with attention_quant_ctx(
+                self.model_context.model,
+                static_attention_dtype=self.static_attention_dtype,
+                static_attention_granularity=self.static_attention_granularity,
+            ):
+                self.quantize()
+                self.model_context.quantized = True
         elif self.static_kv_dtype is not None:
             from auto_round.experimental.kv_cache import kvcache_quant_context
 
-            with kvcache_quant_context(self.model, static_kv_dtype=self.static_kv_dtype):
-                model, _ = self.quantize()
+            with kvcache_quant_context(
+                self.model_context.model,
+                static_kv_dtype=self.static_kv_dtype,
+                static_kv_granularity=self.static_kv_granularity,
+            ):
+                self.quantize()
+                self.model_context.quantized = True
         else:
-            model, _ = self.quantize()
+            self.quantize()
+            self.model_context.quantized = True
+
+        # Ensure ShardWriter is ready before saving (deferred from post_init).
+        self._ensure_shard_writer()
+
         # Save the quantized model in the specified format_list
-        model, folders = self.save_quantized(
-            output_dir, format=self.formats, inplace=inplace, return_folders=True, **kwargs
-        )
-        memory_monitor.log_summary()
+        model, folders = self.save_quantized(output_dir, inplace=inplace, return_folders=True, **kwargs)
+        device_manager.log_memory_summary()
+
+        # Only now -- after the full export (packing pass, config/tokenizer
+        # writes) has actually succeeded -- is it safe to drop the resume
+        # manifest. See the deferral comment in Orchestrator._quantize_data_driven().
+        if self._resume_states:
+            for rs in self._resume_states:
+                rs.clear()
+            self._resume_states = None
 
         return model, folders
 
-    def _get_save_folder_name(self, format: OutputFormat) -> str:
-        """Generates the save folder name based on the provided format string.
 
-        If there are multiple formats to handle, the function creates a subfolder
-        named after the format string with special characters replaced. If there's
-        only one format, it returns the original output directory directly.
-
-        Args:
-            format_str (str): The format identifier (e.g., 'gguf:q2_k_s').
-
-        Returns:
-            str: The path to the folder where results should be saved.
-        """
-        # Replace special characters to make the folder name filesystem-safe
-        sanitized_format = format.get_backend_name().replace(":", "-").replace("_", "-")
-
-        # Use a subfolder only if there are multiple formats
-        if len(self.formats) > 1:
-            return os.path.join(self.orig_output_dir, sanitized_format)
-
-        return self.orig_output_dir
-
-    @torch.inference_mode()
-    def _quantize_embedding_layer(self):
-        """Quantizes embedding layers in the model according to the configuration.
-
-        This method iterates through all modules in the model, identifies embedding
-        layers specified in `self.layer_config`, and applies the appropriate quantization
-        function based on bit precision, grouping strategy, and dtype.
-
-        Returns:
-            bool: True if the quantization process completes without critical errors.
-        """
-        is_quantized = False
-        for name, module in self.model.named_modules():
-            # Skip non-Embedding modules or layers not in config
-            if not isinstance(module, torch.nn.Embedding) or name not in self.layer_config:
-                continue
-
-            config = self.layer_config[name]
-
-            # Skip layers that are not marked for quantization
-            if not check_to_quantized(config):
-                continue
-            is_quantized = True
-            config["scale_dtype"] = self.scale_dtype
-            dtype = config["data_type"]
-
-            # Determine quantization function key with symmetry/asymmetry
-            if dtype not in QUANT_FUNC_WITH_DTYPE:
-                dtype = f"{dtype}_{'sym' if config['sym'] else 'asym'}"
-
-            # Optionally use optimized rounding (RTN) variant
-            if not self.disable_opt_rtn and f"rtn_{dtype}" in QUANT_FUNC_WITH_DTYPE:
-                dtype = f"rtn_{dtype}"
-
-            quant_func = QUANT_FUNC_WITH_DTYPE[dtype]
-            dtype = module.weight.dtype
-            # As typically float32 are used in RTN to search scale zp,
-            # to avoid cache a bf16 copy we'd better use float32
-            if config.get("super_group_size", None) is not None:
-                dtype = torch.float32
-
-            # Attempt quantization on GPU, fall back to CPU if OOM
-            try:
-                weight, scale, zp = quant_func(
-                    module.weight.to(dtype=dtype, device=self.device),
-                    **{
-                        k: config.get(k, None)
-                        for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
-                    },
-                )
-            except torch.OutOfMemoryError:
-                cuda_error_msg = traceback.format_exc()
-                try:
-                    logger.error(cuda_error_msg)
-                    logger.warning("falling back to CPU")
-                    weight, scale, zp = quant_func(
-                        module.weight.to("cpu"),
-                        **{
-                            k: config.get(k, None)
-                            for k in ["bits", "group_size", "super_bits", "super_group_size", "scale_dtype"]
-                        },
-                    )
-                except Exception as e:
-                    raise
-
-            # Overwrite the module's weights with the quantized version
-            module.weight.data.copy_(weight.cpu())
-
-            # Attach scale and zero point (zp) to the module
-            for param_name, value in zip(["scale", "zp"], [scale, zp]):
-                if isinstance(value, dict):
-                    for k, v in value.items():
-                        setattr(module, k if k == "scale" else f"w_{k}", v.cpu())
-                elif isinstance(value, torch.Tensor):
-                    setattr(module, param_name, value.cpu())
-                else:
-                    setattr(module, param_name, value)
-
-            # Update config
-            self.layer_config.setdefault(name, {}).update(config)
-            del weight
-            del scale
-            del zp
-            clear_memory(device_list=self.device_list)
-
-        return is_quantized
-
-    def _quant_rtn_with_imatrix(self, all_to_quantized_module_names: list[str]) -> None:
-        """Performs RTN quantization using input activation statistics (imatrix).
-
-        This method accumulates per-channel second-moment activation statistics (imatrix)
-        via forward hooks and uses them to perform RTN quantization. If CUDA memory runs out,
-        it falls back to CPU-based blockwise quantization.
-
-        Args:
-            all_to_quantized_module_names (list[str]):
-                A list of module names (e.g., 'model.layers.0.self_attn.q_proj') to be quantized.
-
-        Returns:
-            None
-        """
-        logger.info("start to compute imatrix")
-
-        # Load dataset
-        from auto_round.calib_dataset import get_dataloader
-
-        if isinstance(self.dataset, str):
-            if self.tokenizer is None:
-                raise ValueError("A tokenizer must be set for the model when using a dataset string.")
-            dataset_name = self.dataset.replace(" ", "")
-            self.dataloader = get_dataloader(
-                self.tokenizer, self.seqlen, dataset_name, self.seed, self.batch_size, self.nsamples
-            )
-        else:
-            self.dataloader = self.dataset
-
-        model = self.model
-
-        # Dispatch multi-GPU model if necessary
-        if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-            dispatch_model(model, model.hf_device_map)
-
-        def register_act_hook(model):
-            """Registers hooks to accumulate activation squared norms into `imatrix`."""
-
-            def get_imatrix_hook(module, input, output):
-                input = input[0] if isinstance(input, (tuple, list)) else input
-                flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
-                squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
-
-                if not hasattr(module, "imatrix"):
-                    module.imatrix = squared
-                    module.imatrix_cnt = input.shape[0]
-                else:
-                    module.imatrix += squared.to(module.imatrix.device)
-                    module.imatrix_cnt += input.shape[0]
-
-            hook_handles = []
-            for name, module in model.named_modules():
-                if type(module) in self.supported_types and check_to_quantized(module):
-                    hook = module.register_forward_hook(get_imatrix_hook)
-                    hook_handles.append(hook)
-            return hook_handles
-
-        hooks = register_act_hook(model)
-
-        try:
-            if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                import accelerate
-
-                accelerate.hooks.remove_hook_from_submodules(model)
-            safe_to_cpu_(model)
-            clear_memory(device_list=self.device_list)
-            self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
-        except torch.OutOfMemoryError:
-            cuda_error_msg = traceback.format_exc()
-            try:
-                logger.error(cuda_error_msg)
-                # Final fallback: warn and use CPU-only quantization
-                logger.warning(
-                    "Fallback to CPU. "
-                    "Consider enabling `low_gpu_mem_usage` or using more GPUs via `--device 0,1,2,3`."
-                )
-                safe_to_cpu_(model)
-                clear_memory(device_list=self.device_list)
-                if hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1:
-                    import accelerate
-
-                    accelerate.hooks.remove_hook_from_submodules(model)
-
-                orig_device = self.device
-                self.device = "cpu"
-                self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                self.device = orig_device
-            except Exception as e:
-                raise
-        finally:
-            # Always remove hooks
-            for hook in hooks:
-                hook.remove()
-
-    def _quantize_layer_via_rtn(self, name: str, dtype: torch.dtype = None, to_cpu=True) -> None:
-        """Quantizes a layer using RTN (Round-To-Nearest) if available.
-
-        This function attempts to quantize a layer by switching its data type to a
-        `rtn_*` version if supported, then wraps and unwraps the module to apply
-        quantization. If GPU memory is insufficient, it falls back to CPU.
-
-        If packing is enabled (`immediate_packing`), the function will also export
-        the quantized layer to the appropriate backend format.
-
-        Args:
-            name (str): Name of the layer to quantize.
-
-        Raises:
-            RuntimeError: If quantization fails for reasons unrelated to memory.
-        """
-        m = get_module(self.model, name)
-        if dtype is not None:
-            m = m.to(dtype)
-
-        m = convert_module_to_hp_if_necessary(m, self.amp_dtype, self.device)
-        set_module(self.model, name, m)
-        tuning_device = m.tuning_device if hasattr(m, "tuning_device") else self.device
-        # Step 1: let gguf merge layers or rename module first and we will handle the RTN is gguf specific logic
-        if self.is_immediate_packing and self.iters == 0 and self.formats[0].is_gguf() and not self.disable_opt_rtn:
-            m = m.to(tuning_device)
-            m.scale = None
-            m.zp = None
-        else:
-            try:
-                disable_opt_rtn = self.disable_opt_rtn
-                if (
-                    not disable_opt_rtn
-                    and self.orig_disable_opt_rtn is None
-                    and self.is_moe_model
-                    and "expert" in m.global_name
-                    and "shared_expert" not in m.global_name
-                    and self.super_bits is None  # GGUF still uses the optimized RTN for MoE layers
-                ):
-                    disable_opt_rtn = True
-                    logger.warning_once(
-                        "MoE layer detected: optimized RTN is disabled for efficiency. "
-                        "Use `--enable_opt_rtn` to force-enable it for MoE layers."
-                    )
-                m = m.to(tuning_device)
-                m = WrapperLinear(
-                    m,
-                    device=tuning_device,
-                    enable_minmax_tuning=False,
-                    enable_norm_bias_tuning=False,
-                    enable_round_tuning=False,
-                    enable_torch_compile=self.enable_torch_compile,
-                    disable_opt_rtn=disable_opt_rtn,
-                )
-                m = m.unwrapper({})
-            except torch.OutOfMemoryError:
-                cuda_error_msg = traceback.format_exc()
-                m = m.orig_layer if hasattr(m, "orig_layer") else m
-                try:
-                    logger.error(cuda_error_msg)
-                    logger.warning("falling back to CPU.")
-                    m.to("cpu")
-                    m = WrapperLinear(
-                        m,
-                        enable_minmax_tuning=False,
-                        enable_norm_bias_tuning=False,
-                        enable_round_tuning=False,
-                        enable_torch_compile=self.enable_torch_compile,
-                    )
-                    m = m.unwrapper({})
-                except Exception as e:
-                    raise
-
-        # Step 2: Optional immediate packing/export
-        if self.is_immediate_packing:  # For gguf, packing conducts on block level
-            self._immediate_pack(name)
-            if to_cpu:
-                m = m.to("cpu")
-                packed_m = get_module(self.model, name)
-                set_module(self.model, name, packed_m.to("cpu"))
-        else:
-            if to_cpu:
-                m = m.to("cpu")
-            set_module(self.model, name, m)
-        if self.is_immediate_saving:
-            m = get_module(self.model, name)
-            m.to("cpu")
-            shard_writer(self, m, name, False)
-            # Free RAM immediately: the data is now in the shard-writer buffer
-            # (and will be flushed to disk).  Keeping it also in the model tree
-            # causes linear RAM growth for large models.
-            m.to("meta")
-
-    def _immediate_pack(self, name: str):
-        if not self.is_immediate_packing:
-            return
-        self.formats[0].immediate_pack(
-            name=name,
-            model=self.model,
-            device=self.device,
-            output_dir=self._get_save_folder_name(self.formats[0]),
-            layer_config=self.layer_config,
-            tokenizer=self.tokenizer,
-        )
-
-    # Use no_grad instead of inference mode
-    # https://github.com/intel/auto-round/issues/1620
-    @torch.no_grad()
-    def _quantize_rtn(self) -> tuple[torch.nn.Module, dict[str, Any]]:
-        """Quantize all modules in the model using RTN (Round-To-Nearest) strategy.
-
-        If the target format includes GGUF with `k`, and optimized RTN is enabled,
-        blockwise quantization with input caching and imatrix is used.
-
-        Returns:
-            tuple[nn.Module, Dict[str, Any]]: The quantized model and the layer configuration.
-        """
-        if self.amp and self.model.dtype != self.amp_dtype:
-            self.model.to(self.amp_dtype)
-
-        all_to_quantized_module_names: list[str] = [n for n, m in self.model.named_modules() if check_to_quantized(m)]
-        self.all_to_quantized_module_names = all_to_quantized_module_names
-
-        if not (any(fmt.is_gguf() for fmt in getattr(self, "formats", [])) or self.super_bits is not None):
-            self._quantize_embedding_layer()  # leave to gguf itself to handle
-
-        # Release memory
-        clear_memory(device_list=self.device_list)
-
-        enable_imatrix = False
-        if not self.disable_opt_rtn:
-            has_gguf_k = (
-                any(fmt.is_gguf() and "k" in fmt.output_format for fmt in getattr(self, "formats", []))
-                or self.super_bits is not None
-            )
-            if has_gguf_k:
-                enable_imatrix = True
-            elif self.data_type == "int" and self.sym:
-                enable_imatrix = True
-        if enable_imatrix:
-            self._quant_rtn_with_imatrix(all_to_quantized_module_names)
-        elif self.act_bits <= 8 and check_need_act_calibration(
-            self.act_dynamic,
-            self.act_data_type,
-            self.act_bits,
-            self.static_kv_dtype,
-            self.static_attention_dtype,
-        ):  # TODO, mixed datatype has bug
-            hook_handles = self._register_act_max_hook(self.model)
-            try:
-                self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
-            except torch.OutOfMemoryError:
-                logger.warning("Fallback to CPU. Consider using more GPUs via `--device 0,1,2,3`.")
-                self.model = self.model.to("cpu")
-                clear_memory(device_list=self.device_list)
-                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                    import accelerate
-
-                    accelerate.hooks.remove_hook_from_submodules(self.model)
-                orig_device = self.device
-                self.device = "cpu"
-                self._quantize_via_rtn_blockwise(all_to_quantized_module_names)
-                self.device = orig_device
-            for handle in hook_handles:
-                handle.remove()
-        else:
-            # By default, we go with layer-wise way if no replacement happened.
-            # In RTN mode (iters == 0), force blockwise quantization to avoid
-            # full-model materialization and linear CPU RAM growth.
-            use_blockwise_quantization = global_state.replaced_module_count > 0
-            if self.iters == 0 and not use_blockwise_quantization:
-                logger.info(
-                    "RTN mode detected (iters=0): force blockwise quantization to avoid "
-                    "layer-wise full-model materialization."
-                )
-                use_blockwise_quantization = True
-            tied_weights_keys = getattr(self.model, "_tied_weights_keys", [])
-            if tied_weights_keys is None:
-                tied_weights_keys = []
-            if isinstance(tied_weights_keys, dict):
-                tied_weights_values = list(tied_weights_keys.values())
-            else:
-                tied_weights_values = list(tied_weights_keys)
-            tied_weights_layers = [".".join(val.split(".")[:-1]) for val in tied_weights_values]  # rm weight/bias
-            # In fact, we should detect whether it is is_separate_lm_head, to simplify, we don't do it
-            if hasattr(self, "formats") and self.formats[0].is_gguf():
-                lm_head_name = get_lm_head_name(self.model)
-                if lm_head_name is not None:
-                    tied_weights_layers.append(lm_head_name)
-
-            if use_blockwise_quantization:  # The ram usage is a little higher
-                all_to_quantized_module_names = list(dict.fromkeys(all_to_quantized_module_names))
-
-                all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
-                pbar = tqdm(range(sum(len(block) for block in all_blocks)))
-                for block_names in all_blocks:
-                    for block_name in block_names:
-                        pbar.set_description(f"Quantizing {block_name}")
-                        block = get_module(self.model, block_name)
-
-                        materialize_model_(block)
-
-                        for name, m in block.named_modules():
-                            if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
-                                self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
-                                all_to_quantized_module_names.remove(m.global_name)
-                            elif (
-                                not any(m.children())
-                                and len(m.state_dict()) > 0
-                                and m.global_name not in tied_weights_layers
-                                and self.is_immediate_saving
-                            ):
-                                set_module(self.model, m.global_name, copy.deepcopy(m))
-                                if self.is_immediate_saving:
-                                    shard_writer(self, name=m.global_name)
-                                    copied_m = get_module(self.model, m.global_name)
-                                    copied_m.to("meta")
-                                m.to("meta")
-                        # Move remaining GPU tensors to CPU; offload to disk if low_cpu_mem_usage.
-                        # This mirrors _quantize_via_rtn_blockwise's post-block cleanup.
-                        if not self.is_immediate_saving:
-                            mv_module_from_gpu(block)
-                        else:
-                            # Save once at block scope to capture tensors that are not saved
-                            # in per-layer branch (e.g., custom module-level params/buffers).
-                            shard_writer(self, name=block_name)
-                            block.to("meta")
-                        if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                            self._offloader(self.model, block_name)
-                        clear_memory(device_list=self.device_list)
-                        memory_monitor.log_summary()
-                        pbar.update(1)
-                cnt = 1
-                for name in all_to_quantized_module_names:
-                    logger.info(f"Quantizing remaining layer {name} on CPU.")
-                    self._quantize_layer_via_rtn(name, to_cpu=True)
-                    cnt += 1
-                    if cnt % 10 == 0:
-                        clear_memory(device_list=self.device_list)
-                        memory_monitor.log_summary()
-            else:
-                materialize_model_(self.model)
-                self.model.to("cpu")
-                block_names_cnt = len(flatten_list(get_block_names(self.model, True)))
-                clear_mem_freq = len(all_to_quantized_module_names) // block_names_cnt
-                cnt = 0
-                pbar = tqdm(all_to_quantized_module_names)
-
-                for n, m in self.model.named_modules():
-                    if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
-                        pbar.set_description(f"Quantizing {m.global_name}")
-                        self._quantize_layer_via_rtn(m.global_name)
-                        cnt += 1
-                        pbar.update()
-                        if cnt % clear_mem_freq == 0:
-                            clear_memory(device_list=self.device_list)
-                            memory_monitor.log_summary()
-
-                    elif (
-                        not any(m.children())
-                        and len(m.state_dict()) > 0
-                        and n not in tied_weights_layers
-                        and self.is_immediate_saving
-                    ):
-                        set_module(self.model, n, copy.deepcopy(m))
-                        shard_writer(self, name=n)
-                        m.to("meta")
-
-        # Convert remaining fp8
-        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device)
-        if self.low_cpu_mem_usage:
-            self._offloader.reload(self.model)
-        if self.is_immediate_saving:
-            shard_writer(self, is_finalize=True)
-
-        self.quantized = True
-        return self.model, self.layer_config
-
-    def _quantize_via_rtn_blockwise(self, all_to_quantized_module_names: list[str]) -> None:
-        """Quantize model layers block by block using cached inputs and imatrix.
-
-        Args:
-            all_to_quantized_module_names (list[str]): Names of layers to be quantized.
-        """
-        all_to_quantized_module_names = list(set(all_to_quantized_module_names))
-
-        all_blocks = self.quant_block_list if self.quant_block_list else get_block_names(self.model)
-        if not all_blocks:
-            raise ValueError("Could not find any blocks. Check the model or quant_block_list.")
-
-        all_first_block_names = [block[0] for block in all_blocks]
-        layer_names = self._get_quantized_layer_names_outside_blocks()
-        if self.act_bits < 16 and (not self.act_dynamic or len(layer_names) > 0):
-            if len(layer_names) > 0:
-                logger.warning(
-                    "quantize layers outside blocks for static activation quantizaiton"
-                    " will significantly increase calibration time"
-                )
-            all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names)
-        else:
-            all_inputs = self.cache_inter_data(all_first_block_names, self.nsamples)
-
-        # Clear hooks for multi-GPU setups
-        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-            accelerate.hooks.remove_hook_from_submodules(self.model)
-
-        pbar = tqdm(range(sum(len(block) for block in all_blocks)))
-
-        for block_names in all_blocks:
-            first_block = block_names[0]
-            inputs = all_inputs.pop(first_block)
-            input_keys = [k for k in inputs if k.startswith("hidden_state")]
-            if len(input_keys) != 1:
-                raise RuntimeError(
-                    "hidden_states arg mismatch. Please file an issue at https://github.com/intel/auto-round/issues"
-                )
-            inputs["input_ids"] = inputs.pop(input_keys[0])
-
-            clear_memory(self.inputs, device_list=self.device_list)
-
-            total_samples = len(inputs["input_ids"])
-            if total_samples < self.batch_size:
-                self.batch_size = total_samples
-                logger.warning(f"Forcing batch size to {total_samples}")
-
-            input_ids = to_device(inputs.pop("input_ids"), self.cache_device)
-            input_others = to_device(inputs, self.cache_device)
-
-            tmp_dtype = self.amp_dtype if self.amp else torch.float32
-            input_ids = [id_.to(tmp_dtype) for id_ in input_ids]
-
-            for key, val in input_others.items():
-                if isinstance(val, torch.Tensor) and val.dtype in (torch.float16, torch.bfloat16):
-                    input_others[key] = val.to(tmp_dtype)
-                elif isinstance(val, list):
-                    input_others[key] = [to_dtype(v, tmp_dtype) for v in val]
-
-            for block_name in block_names:
-                pbar.set_description(f"Quantizing {block_name}")
-                block = get_module(self.model, block_name)
-                materialize_model_(block)
-                block.to("cpu")
-
-                block = convert_module_to_hp_if_necessary(block, dtype=self.amp_dtype, device=self.device)
-                update_block_global_scale_if_needed(block, self.data_type, self.group_size)
-                self._register_act_max_hook(block)
-                if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
-                    set_auto_device_map_for_block_with_tuning(
-                        block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, self.device
-                    )
-                # Dispatch model if needed
-                if len(self.device_list) > 1:
-                    from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-                    for _, m in block.named_modules():
-                        if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
-                            continue
-                        hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
-                        add_hook_to_module(m, hook, True)
-                else:
-                    block = block.to(self.device)
-                input_ids = self._get_block_outputs(
-                    block,
-                    input_ids,
-                    input_others,
-                    self.batch_size * self.infer_bs_coeff,
-                    self.device,
-                    self.cache_device,
-                )
-
-                if len(self.device_list) > 1:
-                    accelerate.hooks.remove_hook_from_submodules(block)
-
-                if is_nv_fp(self.act_data_type) or is_static_wfp8afp8(self):
-                    # enable moe experts act_max automatic generation for Linear
-                    set_amax_for_all_moe_layers(block, attr_name="act_max")
-                # Normalize imatrix and quantize layers
-                if self.low_gpu_mem_usage:
-                    block.to("cpu")
-                    clear_memory(device_list=self.device_list)
-
-                for name, m in block.named_modules():
-                    # fix issue: Ling-flash-2.0-q2_k_s fail infer on cuda but well on cpu
-                    # https://huggingface.co/Intel/Ling-flash-2.0-gguf-q2ks-mixed-AutoRound/discussions/1
-                    if hasattr(m, "imatrix"):
-                        m.imatrix /= m.imatrix_cnt
-                    if hasattr(m, "global_name") and m.global_name in all_to_quantized_module_names:
-                        self._quantize_layer_via_rtn(m.global_name, to_cpu=self.low_gpu_mem_usage)
-                        all_to_quantized_module_names.remove(m.global_name)
-
-                mv_module_from_gpu(block)
-                if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                    self._offloader(self.model, block_name)
-                if block_name == block_names[-1]:
-                    clear_memory(input_ids, device_list=self.device_list)
-                else:
-                    clear_memory(device_list=self.device_list)
-
-                memory_monitor.log_summary()
-                pbar.update(1)
-        pbar.close()
-        # Process remaining layers not in blocks
-        for name in all_to_quantized_module_names:
-            dtype = None
-            if self.super_group_size is not None:
-                dtype = torch.float32
-            self._quantize_layer_via_rtn(name, dtype=dtype)
-            # clear_memory(device_list=self.device_list)
-        # if self.is_immediate_saving:
-        #     shard_writer(self, is_finalize=True)
-
-    def _update_inputs(self, inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
-        keys = inputs.keys()
-        input_id_str = [key for key in keys if key.startswith("hidden_state")]
-        if len(input_id_str) != 1:
-            raise RuntimeError(
-                "hidden_states arg mismatch error,"
-                "please raise an issue in https://github.com/intel/auto-round/issues"
-            )
-        inputs["input_ids"] = inputs.pop(input_id_str[0], None)
-        if q_inputs is not None:
-            q_inputs = q_inputs.pop(input_id_str[0], None)
-        return inputs, q_inputs
-
-    def configure_layer_config(self, enable_gguf_official_mixed: None | bool = True):
-        is_gguf_format = (f := getattr(self, "formats", None)) is not None and len(f) > 0 and f[0].is_gguf()
-        if not is_gguf_format:
-            predefined_ignore_layers = get_predefined_ignore_layers(self.model)
-            compressed_predefined_ignore_layers = compress_layer_names(predefined_ignore_layers)
-            if predefined_ignore_layers:
-                logger.info(f"Using predefined ignore_layers: {compressed_predefined_ignore_layers}")
-                tmp_str = ",".join(predefined_ignore_layers)
-                if self.ignore_layers == "":
-                    self.ignore_layers = tmp_str
-                else:
-                    self.ignore_layers += "," + tmp_str
-
-        if self.is_auto_scheme:
-            self.layer_config = self._gen_auto_scheme()
-        else:
-            self.layer_config = _handle_special_schemes(
-                self.orig_scheme,
-                self.layer_config,
-                self.model,
-                supported_types=self.supported_types,
-                inner_supported_types=self.inner_supported_types,
-                quant_lm_head=self.quant_lm_head,
-                mllm=getattr(self, "mllm", False),
-            )
-
-        fill_default_value = True
-        if self.is_auto_scheme:
-            fill_default_value = False
-        self.layer_config, self.has_qlayer_outside_block, self.regex_config = set_layer_config(
-            self.model,
-            self.layer_config,
-            self.scheme,
-            self.scale_dtype,
-            self.supported_types,
-            self.inner_supported_types,
-            self.quant_block_list,
-            self.ignore_layers,
-            self.quant_lm_head,
-            enable_gguf_official_mixed=enable_gguf_official_mixed,
-            is_mllm=self.mllm,
-            fill_default_value=fill_default_value,
-        )
-
-    def _adjust_immediate_packing_and_saving(self):
-        formats = getattr(self, "formats", [])
-        if len(formats) == 1 and not formats[0].is_fake() and self.inplace:
-            self.is_immediate_packing = True
-
-        if self.has_qlayer_outside_block and self.iters != 0:
-            self.is_immediate_packing = False
-
-        if not ("causallm" in self.model.__class__.__name__.lower() and not self.mllm):
-            # TODO For tied keys, there may some issues, we haven't not verified this
-            tied_weight_keys = getattr(self.model, "_tied_weight_keys", {})
-            if len(tied_weight_keys) > 1:
-                self.is_immediate_saving = False
-                if self.low_cpu_mem_usage:
-                    logger.warning("reset low_cpu_mem_usage to False due to tied weights")
-                return
-            if len(tied_weight_keys) == 1:
-                key = tied_weight_keys.keys[0]
-                if "lm_head" not in key:
-                    self.is_immediate_saving = False
-                    if self.low_cpu_mem_usage:
-                        logger.warning("reset low_cpu_mem_usage to False due to tied weights")
-                    return
-
-        if self.low_cpu_mem_usage and self.is_immediate_packing:
-            self.is_immediate_saving = True
-
-        if self.low_cpu_mem_usage and self.is_immediate_packing:
-            if formats[0].is_gguf():
-                logger.warning(
-                    "`low_cpu_mem_usage` is not fully supported for gguf format. "
-                    "Setting `low_cpu_mem_usage` to False."
-                )
-                self.low_cpu_mem_usage = False
-                self.is_immediate_saving = False
-            elif self.has_qlayer_outside_block and self.disable_opt_rtn and self.iters == 0:
-                logger.info(
-                    "Keeping `low_cpu_mem_usage` enabled in RTN mode (iters=0): "
-                    "RTN path uses blockwise quantization and supports per-block offloading."
-                )
-            elif self.has_qlayer_outside_block and self.iters > 0:
-                logger.warning(
-                    "`low_cpu_mem_usage` is not fully supported "
-                    "when there are quantized layers outside blocks and optimized RTN is disabled. "
-                    "Setting low_cpu_mem_usage to False."
-                )
-                self.low_cpu_mem_usage = False
-                self.is_immediate_saving = False
-
-        if self.is_immediate_saving and "int" not in self.data_type:
-            logger.warning("immediate_saving is only supported for int quantization, set to False")
-            self.is_immediate_saving = False
-
-        if self.orig_output_dir is None:
-            self.is_immediate_saving = False
-
-    def quantize(self) -> tuple[torch.nn.Module, dict[str, Any]]:
-        """Quantize the model and return the quantized model along with layer configurations.The entry of AutoRound.
-        Returns:
-        The quantized model and layer configurations.
-        """
-
-        self._check_compatibility()
-        formats = self.formats if hasattr(self, "formats") else None
-        # It is best to modify the model structure in the quantize function and check the format,
-        # because it may cause the gguf format to not be exported normally.
-        self.model = update_module(
-            self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
-        )
-
-        # Temporary names must be assigned after handle_moe_model;
-        # placing them earlier would cause them to be removed when the module is replaced.
-        for n, m in self.model.named_modules():
-            m.global_name = n
-
-        if not self.is_auto_scheme:
-            enable_gguf_official_mixed = True
-        else:
-            enable_gguf_official_mixed = False
-
-        self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
-
-        if self.low_cpu_mem_usage:
-            self._offloader.reset()
-
-        def _should_disable_inplace_due_to_layers_outside_block() -> bool:
-            return self.has_qlayer_outside_block and (self.iters != 0 or (self.iters == 0 and not self.disable_opt_rtn))
-
-        # Disable inplace mode when there are quantized layers outside blocks
-        # under specific iteration/optimization settings.
-        if _should_disable_inplace_due_to_layers_outside_block():
-            self.inplace = False
-        if not hasattr(self, "formats"):
-            logger.warning("this API is deprecated, please use `quantize_and_save` instead")
-        else:
-            # Determine if immediate packing is required
-            self._adjust_immediate_packing_and_saving()
-
-        if self.iters == 0:
-            return self._quantize_rtn()
-
-        if bool(self.quant_block_list):
-            all_blocks = self.quant_block_list
-        else:
-            all_blocks = get_block_names(self.model)
-
-        if len(all_blocks) == 0:
-            logger.warning("could not find blocks, exit with original model")
-            return self.model, self.layer_config
-
-        if self.amp and self.model.dtype != self.amp_dtype:
-            self.model = self.model.to(self.amp_dtype)
-
-        layer_names = self._get_quantized_layer_names_outside_blocks()
-        all_first_block_names = [block[0] for block in all_blocks]
-        if len(layer_names) > 0:
-            logger.info(
-                "Starting to cache block inputs. This may be slow due to external block layers: %s", layer_names
-            )
-        else:
-            logger.info("start to cache block inputs")
-        all_inputs = self.try_cache_inter_data_gpucpu(all_first_block_names, self.nsamples, layer_names=layer_names)
-        is_quantized_embedding = self._quantize_embedding_layer()
-        clear_memory(device_list=self.device_list)
-        all_q_inputs = None
-        if is_quantized_embedding:
-            all_inputs = copy.deepcopy(self.inputs)
-            clear_memory(self.inputs, device_list=self.device_list)
-            all_q_inputs = self.try_cache_inter_data_gpucpu(
-                all_first_block_names, self.nsamples, layer_names=layer_names
-            )
-        # Remove accelerate dispatch hooks before moving parameters.
-        # hf_device_map is kept for reference but hooks are no longer needed.
-        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-            accelerate.hooks.remove_hook_from_submodules(self.model)
-        self.model = mv_module_from_gpu(self.model)
-        clear_memory(device_list=self.device_list)
-        logger.info("caching done")
-        if self.low_cpu_mem_usage:
-            if self.is_model_patched and not self.is_immediate_saving:
-                self._offloader(self.model, all_blocks, clear_memory=True, device_list=self.device_list)
-                if not self._offloader.enabled:
-                    self.low_cpu_mem_usage = False
-            else:
-                self.low_cpu_mem_usage = False
-        if len(all_blocks) > 1:
-            pbar = tqdm(range(0, sum([len(i) for i in all_blocks]), self.nblocks))
-        else:
-            pbar = tqdm(range(0, len(all_blocks[0]), self.nblocks))  # move the alg warning outside pbar
-
-        start_time = time.time()
-        for block_names in all_blocks:
-            inputs = all_inputs[block_names[0]]
-            all_inputs.pop(block_names[0])
-            q_inputs = None
-            if all_q_inputs is not None:
-                q_inputs = all_q_inputs[block_names[0]]
-                all_q_inputs.pop(block_names[0])
-
-            inputs, q_inputs = self._update_inputs(inputs, q_inputs)
-
-            clear_memory(self.inputs, device_list=self.device_list)
-
-            if "input_ids" in inputs.keys():
-                total_samples = len(inputs["input_ids"])
-                if total_samples < self.batch_size:
-                    self.batch_size = total_samples
-                    logger.warning(f"force the train batch size to {total_samples}")
-
-            self._quantize_blocks(
-                self.model,
-                inputs,
-                block_names,
-                q_input=q_inputs if q_inputs is not None else None,
-                nblocks=self.nblocks,
-                device=self.device,
-                pbar=pbar,
-            )
-            if self.is_immediate_packing and len(self.formats) != 1:
-                raise ValueError(
-                    f"Expected exactly one packing format when 'immediate_packing' is True, "
-                    f"but got {len(self.formats)} formats."
-                )
-        pbar.set_description("Quantizing done")
-        pbar.close()
-        if self.low_cpu_mem_usage:
-            self._offloader.reload(self.model)
-        self._quantize_layers(layer_names, all_inputs)
-
-        convert_module_to_hp_if_necessary(self.model, self.amp_dtype, self.device, to_cpu=True)
-        if self.is_immediate_saving:
-            shard_writer(self, is_finalize=True)
-
-        end_time = time.time()
-        cost_time = end_time - start_time
-        logger.info(f"quantization tuning time {cost_time}")
-
-        # Dump a summary
-        quantized_layers = []
-        unquantized_layers = []
-        for n, m in self.model.named_modules():
-            if isinstance(m, tuple(self.supported_types)):
-                if check_to_quantized(m):
-                    quantized_layers.append(n)
-                else:
-                    unquantized_layers.append(n)
-            elif hasattr(m, "scales") or hasattr(m, "scale"):  # packing_immediately
-                quantized_layers.append(n)
-        summary_info = (
-            f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
-        )
-        if len(unquantized_layers) > 0:
-            compressed_unquantized_layers = compress_layer_names(unquantized_layers)
-            summary_info += f", unquantized layers: {compressed_unquantized_layers}"
-        logger.info(summary_info)
-
-        self.quantized = True
-        return self.model, self.layer_config
-
-    def _quantize_layers(self, layer_names: list, layer_inputs: dict) -> None:
-        """Quantizes specified layers based on inputs and configuration.
-
-        Args:
-            layer_names (list): list of layer names to quantize.
-            layer_inputs (dict): Dictionary mapping layer names to input data.
-
-        Returns:
-            None
-        """
-        # TODO currently we take all the layers outside blocks as post block layers which is not optimal
-        # if there is no input for layer, we use rtn
-
-        for layer_name in copy.deepcopy(layer_names):
-            if layer_name not in layer_inputs:
-                if self.act_bits < 16 and not self.act_dynamic:
-                    # Activation quantization requires collected inputs
-                    msg_prefix = (
-                        f"Activation max hook for layer '{layer_name}' is unavailable due to "
-                        f"insufficient collected inputs. "
-                    )
-                    if "fp8_e5m2" in self.act_data_type:
-                        logger.warning(msg_prefix + "Please notes that unit scale is used for this layer.")
-                    else:
-                        logger.warning(
-                            msg_prefix + "Static activation quantization is not supported or ineffective, "
-                            "Skipping quantization for this layer."
-                        )
-                        layer_names.remove(layer_name)
-                        continue
-                logger.info(f"using rtn to quantize {layer_name}")
-                from auto_round.data_type import QUANT_FUNC_WITH_DTYPE
-
-                layer = get_module(self.model, layer_name)
-                layer = layer.to(self.device)
-                layer = convert_module_to_hp_if_necessary(layer, self.amp_dtype, self.device)
-                set_module(self.model, layer_name, layer)
-
-                wrapper_layer = WrapperLinear(
-                    layer,
-                    enable_round_tuning=False,
-                    enable_minmax_tuning=False,
-                    enable_norm_bias_tuning=False,
-                    enable_torch_compile=self.enable_torch_compile,
-                    device=self.device,
-                    disable_opt_rtn=self.disable_opt_rtn,
-                )
-                new_layer = wrapper_layer.unwrapper({})
-                set_module(self.model, layer_name, new_layer)
-                layer.cpu()
-                layer_names.remove(layer_name)
-        if len(layer_names) == 0:
-            memory_monitor.update()
-            memory_monitor.log_summary()
-            return
-        q_layer_inputs = None
-        enable_quanted_input = self.enable_quanted_input
-        has_gguf = False
-
-        if hasattr(self, "formats"):
-            has_gguf = any(format_.is_gguf() for format_ in self.formats)
-        if has_gguf and self.is_immediate_packing:
-            enable_quanted_input = False
-
-        if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1 and enable_quanted_input:
-            dispatch_model(self.model, self.model.hf_device_map)
-
-        if enable_quanted_input:
-            logger.info("starting to cache layer inputs for %s, this may be quite slow ", layer_names)
-            q_layer_inputs = self.try_cache_inter_data_gpucpu([], self.nsamples, layer_names=layer_names)
-            if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                accelerate.hooks.remove_hook_from_submodules(
-                    self.model
-                )  # self.model.hf_device_map has not been changed
-        if not self.is_immediate_saving:
-            self.model = mv_module_from_gpu(self.model)
-        clear_memory(device_list=self.device_list)
-        quant_layer = self._quantize_layer
-        for layer_name in layer_names:
-            layer_input = layer_inputs[layer_name]
-            layer_input = to_device(layer_input, self.cache_device)
-            q_layer_input = q_layer_inputs.get(layer_name, None) if q_layer_inputs is not None else None
-            q_layer_input = to_device(q_layer_input, self.cache_device)
-            quant_layer(layer_name, layer_input, q_layer_input, device=self.device)
-            if self.is_immediate_packing:
-                self._immediate_pack(layer_name)
-
-            if self.is_immediate_saving:
-                m = get_module(self.model, layer_name)
-                shard_writer(self, m, name=layer_name, is_finalize=False)
-            del layer_input
-            clear_memory(q_layer_input, device_list=self.device_list)
-            memory_monitor.log_summary()
-
-    @torch.no_grad()
-    def _get_block_outputs(
-        self,
-        block: torch.nn.Module,
-        input_ids: torch.Tensor | list[torch.Tensor],
-        input_others: torch.Tensor | dict,
-        bs: int,
-        device: Union[str, torch.device],
-        cache_device: Union[str, torch.device],
-        save_output: bool = True,
-    ):
-        """Compute the output of a given block of the model for a given input.
-
-        Args:
-        block: The block of the model.
-        input_ids: The input tensor containing tokenized input ids.
-        input_others: A dictionary containing additional input data.
-        bs: The batch size for computing the output.
-        device: The device for computation.
-        cache_device: The device for storing the output.
-        batch_dim: The batch dimension of the output tensor.
-
-        Returns:
-        The output tensor of the block.
-        """
-        output = []
-        nsamples = len(input_ids)
-        for i in range(0, nsamples, bs):
-            end_index = min(nsamples, i + bs)
-            indices = torch.arange(i, end_index).to(torch.long)
-            tmp_input_ids, tmp_input_others = self._sampling_inputs(
-                input_ids, input_others, indices, self.seqlen, self.batch_dim, share_cache_keys=self.shared_cache_keys
-            )
-            tmp_output = self.block_forward(
-                block, tmp_input_ids, tmp_input_others, self.amp, self.amp_dtype, device
-            ).to(cache_device)
-            if save_output:
-                if self.batch_size == 1:
-                    output.append(tmp_output)
-                else:
-                    output.extend(list(torch.split(tmp_output, 1, dim=self.batch_dim)))
-        if self.low_gpu_mem_usage:
-            clear_memory(device_list=self.device_list)
-
-        return output
-
-    def normalize_decoding_layer_inputs_(self, decoding_layer_inputs: list[tuple[tuple[Any, dict[str, Any]]]]):
-        """
-        Processes and stores decoding layer inputs for block quantization.
-
-        This function iterates through a list of captured decoding layer calls,
-        replaying them through a fake decoding layer to extract and store the
-        inputs required for the decoding block in `self.inputs`. This effectively
-        "normalizes" the inputs by making them accessible in a consistent format
-        for subsequent quantization steps.
-
-        Args:
-            decoding_layer_inputs:
-                A list of entries captured by a forward hook on the decoding layer.
-                Each element is expected to be a tuple whose first item is
-                `(args, kwargs)`, where `args` are the positional arguments and
-                `kwargs` are the keyword arguments seen during the original
-                forward pass.
-
-                The capture hook look like:
-
-                    def input_capture_hook(module, *args, **kwargs):
-                        _all_module_input[module._global_name].append((args, kwargs))
-        """
-        first_block_name = self.quant_block_list[0][0]
-
-        class _FakeDecodingLayer(torch.nn.Module):
-            def forward(self, *args, **kwargs):
-                return args, kwargs
-
-        fake_layer = _FakeDecodingLayer()
-        fake_layer.orig_forward = fake_layer.forward
-        fake_layer.forward = partial(self._get_block_forward_func(first_block_name), fake_layer)
-
-        self.inputs = {}
-        self.last_cache_name = None
-        for step_input in decoding_layer_inputs:
-            args, kwargs = step_input[0]
-            fake_layer(*args, **kwargs)
-
-    @torch.no_grad()
-    def calib(self, nsamples, bs):
-        """Perform calibration for quantization.
-
-        This method calibrates the model for quantization by processing a specified
-        number of samples from the calibration dataset. It ensures that the data is
-        properly formatted and feeds it to the model. If the number of samples processed
-        is less than the specified number, it logs a warning. If no samples are processed,
-        it logs an error and exits.
-        Args:
-            nsamples (int): The number of samples to use for calibration.
-            bs (int): The number of samples to use for calibration
-        """
-        from auto_round.calib_dataset import get_dataloader
-
-        need_attention_mask = True
-        if isinstance(self.dataset, str):
-            need_attention_mask = False  # all supported datasets does not use pad
-            dataset = self.dataset.replace(" ", "")  ##remove all whitespaces
-
-            # slow here
-            self.dataloader = get_dataloader(
-                self.tokenizer,
-                self.seqlen,
-                dataset,
-                self.seed,
-                bs,
-                self.nsamples,
-            )
-        else:
-            self.dataloader = self.dataset
-        total_cnt = 0
-        if self.dataloader.__class__.__name__ == "BatchEncoding":
-            self.dataloader = [self.dataloader.data]
-
-        for data in self.dataloader:
-            if data.__class__.__name__ == "BatchEncoding":
-                data = data.data
-            if data is None:
-                continue
-            if isinstance(data, torch.Tensor):
-                input_ids = data.to(self.model.device)
-                data_new = input_ids
-            elif isinstance(data, str):
-                if self.tokenizer is None:
-                    logger.error("please provide tokenizer for string input")
-                    exit(-1)
-                data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = data[key].to(self.model.device)
-                input_ids = data_new["input_ids"]
-            elif isinstance(data, tuple) or isinstance(data, list):
-                data_new = to_device(data, self.model.device)
-                input_ids = data_new[0]
-            else:
-                data_new = {}
-                for key in data.keys():
-                    data_new[key] = to_device(data[key], self.model.device)
-                    if key == "images":
-                        data_new[key] = to_dtype(data_new[key], self.model.dtype)
-                input_ids = data_new["input_ids"]
-            if input_ids.shape[-1] < self.seqlen:
-                continue
-            if need_attention_mask:
-                if (
-                    isinstance(data_new, dict)
-                    and "attention_mask" in data_new
-                    and data_new["attention_mask"] is not None
-                ):
-                    new_attention_mask = data_new["attention_mask"]
-                elif (
-                    self.tokenizer is not None
-                    and hasattr(self.tokenizer, "pad_token")
-                    and self.tokenizer.pad_token is not None
-                ):
-                    new_attention_mask = (input_ids != self.tokenizer.pad_token_id).to(torch.long)
-                else:
-                    # Default all ones
-                    new_attention_mask = torch.ones_like(input_ids, dtype=torch.long)
-
-                    # For each sample, check if there are trailing repeated tokens
-                    # If so, set the mask of the last token to 0
-                    batch_size, seq_len = input_ids.shape
-                    for i in range(batch_size):
-                        last_token = input_ids[i, -1]
-                        # Check for trailing repeats
-                        j = seq_len - 2
-                        repeated = False
-                        while j >= 0 and input_ids[i, j] == last_token:
-                            repeated = True
-                            new_attention_mask[i, j] = 0
-                            j -= 1
-                        # If there was at least one repeat, set last token mask to 0
-                        if repeated:
-                            new_attention_mask[i, -1] = 0
-
-                # Workaround: some models treat an all-1 attention mask as equivalent to None and
-                # will internally replace it with None for block inputs, which can cause tensor
-                # concatenation / shape-mismatch issues in downstream code. To avoid providing an
-                # all-1 mask, we force the last token in each sequence to be masked out (set to 0)
-                # so that the mask is never "all ones". This means the model will not attend to the
-                # last position, so the impact on accuracy is minimal as basically equivalent to dropping a single token
-                new_attention_mask[:, -1] = 0
-
-                self.attention_mask.extend(list(torch.split(new_attention_mask, 1, dim=0)))
-            else:
-                new_attention_mask = None
-            try:
-                kwargs = {"use_cache": False}
-                if new_attention_mask is not None and not (isinstance(data_new, dict) and "attention_mask" in data_new):
-                    kwargs["attention_mask"] = new_attention_mask
-
-                if isinstance(data_new, torch.Tensor):
-                    self.model(data_new, **kwargs)
-                elif isinstance(data_new, tuple) or isinstance(data_new, list):
-                    self.model(*data_new, **kwargs)
-                else:
-                    self.model(**data_new, **kwargs)
-            except NotImplementedError:
-                pass
-            except RuntimeError as error:
-                error_msg = str(error)
-                if "The expanded size of the tensor" in str(error_msg) and "must match the existing size" in error_msg:
-                    check_seqlen_compatible(self.seqlen, self.tokenizer, self.model)
-                logger.warning(
-                    "When quantization encounters tensor shape mismatch error, "
-                    "you can try to avoid it with batch_size=1"
-                )
-                raise error
-            except Exception as error:
-                raise error
-
-            total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
-            if total_cnt >= nsamples:
-                break
-        if total_cnt == 0:
-            logger.error(
-                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
-                f"dataset or decease the sequence length"
-            )
-            exit(-1)
-        elif total_cnt < nsamples:
-            logger.warning_once(
-                f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
-                f"Target samples count is {nsamples}, while valid samples count is {total_cnt}"
-            )
-
-    @torch.no_grad()
-    def try_cache_inter_data_gpucpu(self, block_names, nsamples, layer_names=None, last_cache_name=None):
-        """Attempts to cache intermediate data on GPU, if failed, then using CPU.
-
-        Args:
-            block_names (list): List of block names to cache data for.
-            nsamples (int): Number of samples to use for caching.
-            layer_names (list, optional): List of layer names to cache data for. Defaults to [].
-            last_cache_name (str, optional): Name of the last cache. Defaults to None.
-
-        Returns:
-            all_inputs: Cached intermediate data.
-
-        Raises:
-            Exception: If caching on GPU fails, switches to CPU and caches there.
-        """
-        if is_quantized_input_module(self.model):
-            layer_names = []
-        if layer_names is None:
-            layer_names = []
-        if self.low_gpu_mem_usage or (
-            len(block_names) == 1
-            and len(layer_names) == 0
-            and not self.has_qlayer_outside_block
-            and (last_cache_name is None or last_cache_name in block_names)
-        ):
-            # low_gpu_mem_usage or calibrate only the embedding layer, which is also very fast on CPU
-            all_inputs = self.cache_inter_data(block_names, nsamples, layer_names=[], last_cache_name=last_cache_name)
-        else:
-            try:
-                if any(p.device.type == "meta" for p in self.model.parameters()):
-                    materialize_model_(self.model)
-
-                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                    self.model = dispatch_model(self.model, device_map=self.model.hf_device_map)
-                else:
-                    # Change this if new device is supported
-                    if str(self.model.device) == "cpu" and (not self.device.startswith("hpu")):
-                        # type(self.model._no_split_modules) changes from list to set when transformers > 5.0
-                        no_split_modules = list(getattr(self.model, "_no_split_modules", []))
-                        devices = parse_available_devices(self.device_map)
-
-                        max_memory = get_max_memory()
-                        new_max_memory = {}
-                        if "cpu" not in devices:
-                            devices.append("cpu")
-                        for device in devices:
-                            if ":" in device:
-                                device = int(device.split(":")[-1])
-                            elif device == "cpu":
-                                device = "cpu"
-                            elif isinstance(device, str):
-                                device = 0
-                            else:
-                                raise ValueError(f"Unsupported device {device} in device_map: {self.device_map}")
-                            if device not in max_memory:
-                                # Skip devices that are not reported by accelerate's max_memory.
-                                # This is expected when a device is unavailable or cannot provide memory info.
-                                continue
-                            # Use 90% of the reported max memory to leave headroom for activations,
-                            # temporary tensors, other processes, and allocator fragmentation, reducing
-                            # the chance of runtime OOM while still utilizing most available memory.
-                            new_max_memory[device] = max_memory[device] * 0.9
-
-                        # If non-CPU devices were requested but none survived, fall back to CPU caching
-                        # via the OOM handler below, avoiding unnecessary dispatch overhead.
-                        requested_non_cpu = any((d != "cpu") for d in devices)
-                        has_non_cpu_memory = any((k != "cpu") for k in new_max_memory)
-                        if requested_non_cpu and not has_non_cpu_memory:
-                            raise torch.OutOfMemoryError(
-                                "No non-CPU device available in accelerate's reported memory. "
-                                "Falling back to CPU caching."
-                            )
-
-                        new_max_memory = get_balanced_memory(
-                            self.model,
-                            max_memory=new_max_memory,
-                            no_split_module_classes=no_split_modules,
-                        )
-                        self.model.tie_weights()
-                        device_map = infer_auto_device_map(
-                            self.model, max_memory=new_max_memory, no_split_module_classes=no_split_modules
-                        )
-                        if len(devices) > 1 and "cpu" in device_map.values():
-                            logger.warning(
-                                "Some layers are offloaded to cpu, which may severely impact calibration speed."
-                                " Please consider using more cards."
-                            )
-
-                        try:
-
-                            self.model = dispatch_model(self.model, device_map=device_map)
-                        except ValueError as e:
-                            if "offload_dir" in e.__str__():
-                                logger.warning(
-                                    f"Due to insufficient resources, disk is used to store the model."
-                                    f" `offload_dir={envs.AR_WORK_SPACE}`"
-                                )
-                                self.model = dispatch_model(
-                                    self.model, device_map=device_map, offload_dir=envs.AR_WORK_SPACE
-                                )
-                            else:
-                                raise
-                    else:
-
-                        self.model = self.model.to(self.device)
-
-                all_inputs = self.cache_inter_data(
-                    block_names, nsamples, layer_names=layer_names, last_cache_name=last_cache_name
-                )
-                if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
-                    accelerate.hooks.remove_hook_from_submodules(self.model)
-
-            except torch.OutOfMemoryError:
-                cuda_error_msg = traceback.format_exc()
-                try:
-                    logger.info("switch to cpu to cache block inputs")
-                    self.cache_device = torch.device("cpu")
-                    if self.has_qlayer_outside_block or self.__class__.__name__ == "AutoRoundMLLM":
-                        logger.warning(
-                            "we recommend using more GPUs in calibration."
-                            " Otherwise, some layers may fall back to `rtn` mode, which can affect accuracy."
-                        )
-                    accelerate.hooks.remove_hook_from_submodules(self.model)
-                    self.model = mv_module_from_gpu(self.model)
-                    clear_memory(device_list=self.device_list)
-                    # Important change after v0.51, on cpu, we use rtn mode for layers in layer_names
-                    all_inputs = self.cache_inter_data(
-                        block_names, nsamples, layer_names=[], last_cache_name=last_cache_name
-                    )
-                except Exception as e:
-                    logger.error(cuda_error_msg)
-                    raise
-        return all_inputs
-
-    @torch.no_grad()
-    def cache_inter_data(self, block_names, nsamples, layer_names=None, last_cache_name=None):
-        """Save the inputs of block_name for calibration.
-
-        This method temporarily replaces the forward method of the model to capture
-        the inputs passing through the specified block. It then calibrates the model
-        using a specified number of samples. Finally, it restores the original forward
-        method and returns the inputs for the specified block.
-        Args:
-            block_names (list): The names of the blocks for which inputs are to be saved.
-            layer_names (list):The names of the layers for which inputs are to be saved.
-            nsamples (int): The number of samples to use for calibration.
-            last_cache_name (str, optional): The name of the last layer to be cached,
-                                       we could break the forward in this layer to save time
-
-        Returns:
-            dict: A dictionary containing the inputs for the specified block.
-        """
-        if layer_names is None:
-            layer_names = []
-        self.inputs = {}
-        self.to_cached_layers = block_names + layer_names
-
-        tmp_dtype = None  # TODO delete this as most model is not fp32 now
-        ## have bug if block name is not the first block
-        if (len(block_names) > 1 or len(layer_names) > 0) and self.low_gpu_mem_usage:
-            tmp_dtype = self.model.dtype
-            if self.amp:
-                if self.model.dtype != self.model.dtype:
-                    self.model = self.model.to(torch.bfloat16)
-            else:
-                self.model = self.model.to(torch.float32)  ##model on cpu
-
-        self.last_cache_name = self._infer_last_cache_name(block_names, layer_names, last_cache_name)
-        self._cache_target_set = set(self.to_cached_layers)
-        self._cache_seen_targets = set()
-        calib_bs = self.batch_size
-        self.hook_handles = []
-        self._replace_forward()
-        self.calib(nsamples, calib_bs)
-        self._recover_forward()
-        res = self.inputs
-        del self.last_cache_name
-        del self._cache_target_set
-        del self._cache_seen_targets
-        del self.to_cached_layers
-        if tmp_dtype is not None:
-            self.model = self.model.to(tmp_dtype)
-
-        return res
-
-    def _infer_last_cache_name(self, block_names, layer_names=None, requested_last_cache_name=None):
-        """The latest required cache layer for early-stop forward.
-
-        If there are multiple cache targets, return ``None`` and let runtime
-        hooks stop only after all targets are observed in real forward execution.
-        """
-        if layer_names is None:
-            layer_names = []
-
-        if requested_last_cache_name is not None:
-            return requested_last_cache_name
-
-        cache_targets = list(block_names) + list(layer_names)
-        if len(cache_targets) == 1:
-            return cache_targets[0]
-
-        # return None here to enable the logic in _should_stop_cache_forward
-        return None
-
-    def _should_stop_cache_forward(self, name: str) -> bool:
-        """Determine whether current forward pass can stop after caching `name`."""
-        if name == self.last_cache_name:
-            return True
-
-        if self.last_cache_name is not None:
-            return False
-
-        if not hasattr(self, "_cache_target_set") or not hasattr(self, "_cache_seen_targets"):
-            return False
-
-        if name in self._cache_target_set:
-            self._cache_seen_targets.add(name)
-
-        if not self._cache_target_set.issubset(self._cache_seen_targets):
-            return False
-
-        # Lock the last cache name after the first full forward pass.
-        self.last_cache_name = name
-        return True
-
-    @torch.no_grad()
-    def _get_block_forward_func(self, name: str) -> Callable:
-        """Gets the forward function.
-
-        Args:
-            name (str): The name of the function.
-        Returns:
-            function: The forward function.
-        """
-
-        def post_process_cache_data(batch_size, data, data_name):
-            """
-            Processes store data for batch handling, reshaping if necessary.
-
-            Args:
-                batch_size (int): The size of the batch.
-                data: The data value to store, potentially for caching.
-                data_name (str): Name of the data.
-
-            Returns:
-                Processed data or None
-            """
-            new_data = data
-            if batch_size <= 1:
-                return new_data
-            if data_name in self.shared_cache_keys:
-                return None
-            if "alibi" in data_name:
-                if isinstance(data, torch.Tensor):
-                    alibi = data
-                    alibi = alibi.reshape(batch_size, -1, alibi.shape[1], alibi.shape[2])
-                    new_data = alibi
-            return new_data
-
-        def forward(m, hidden_states=None, *positional_inputs, **kwargs):
-            """Rewrite forward function, process and collect input data.
-
-            Args:
-                hidden_states (torch.Tensor): The hidden states tensor.
-                *positional_inputs: Variable number of positional arguments.
-                **kwargs: Variable number of keyword arguments.
-
-            Returns:
-                NotImplementedError: Getting the first layer inputs and then raise the error to save runtime.
-            """
-            if name not in self.inputs:
-                self.inputs[name] = {}
-                init_cache(positional_inputs, self.inputs[name])
-
-            if self.batch_dim is None:
-                self.batch_dim = 0
-                if hidden_states is not None and self.batch_size > 1:
-                    if hidden_states.shape[0] > self.batch_size:
-                        self.batch_dim = 1
-                        if len(hidden_states.shape) > 1 and hidden_states.shape[1] > self.batch_size:
-                            logger.error(
-                                "this model has not been supported, "
-                                "please raise an issue in https://github.com/intel/auto-round/issues"
-                                " or try to set the `batch_size` to 1 and "
-                                "`gradient_accumulate_steps` to your current batch size."
-                            )
-                            exit(-1)
-
-            if hidden_states is not None:
-                kwargs["hidden_states"] = hidden_states
-
-            for key in kwargs.keys():
-                if (
-                    isinstance(kwargs[key], torch.Tensor)
-                    or isinstance(kwargs[key], list)
-                    or isinstance(kwargs[key], tuple)
-                ):
-                    if key not in self.inputs[name].keys():  # initialization
-                        data = to_device(kwargs[key], device=torch.device("cpu"))
-                        if data is None or (self.batch_size > 1 and key in self.shared_cache_keys):
-                            self.inputs[name][key] = data
-                            continue
-                        if self.batch_size <= 1:
-                            self.inputs[name][key] = [data]
-                        else:
-                            data = post_process_cache_data(self.batch_size, data, key)
-                            self.inputs[name][key] = list(torch.split(data, 1, dim=self.batch_dim))
-                    else:  # append cache inputs
-                        new_data = post_process_cache_data(self.batch_size, kwargs[key], key)
-                        if new_data is None:  # shareable args or NoneType
-                            continue
-                        new_data = to_device(new_data, device=torch.device("cpu"))
-                        if self.batch_size <= 1:
-                            self.inputs[name][key].append(new_data)
-                        else:
-                            self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=self.batch_dim)))
-                elif isinstance(kwargs[key], (str, bool, type(None))):
-                    if key not in self.inputs[name].keys():
-                        self.inputs[name][key] = kwargs[key]
-                else:
-                    # Parameters not to be cached
-                    if check_skippable_keywords(key):
-                        logger.warning_once(
-                            f"Please note that '{key}' key" " is not currently used in quantization fine-tuning."
-                        )
-            reset_params(self.inputs[name])
-
-            if self._should_stop_cache_forward(name):
-                raise NotImplementedError
-            else:
-                if hidden_states is not None:
-                    kwargs.pop("hidden_states")
-                    return m.orig_forward(hidden_states, *positional_inputs, **kwargs)
-                else:
-                    # Currently only for Llama-3.2-Vision-Instruct Series
-                    return m.orig_forward(*positional_inputs, **kwargs)
-
-        return forward
-
-    @torch.no_grad()
-    def _get_cache_data_hook_for_layer(self, name):
-        """A forward hook to save input max of a module
-        :param name: the module name
-        :return: A hook function."""
-
-        def cache_input_hook(module, inputs, outputs):
-            input = inputs
-            if isinstance(inputs, tuple) or isinstance(input, list):
-                input = inputs[0]
-            if name in self.inputs:
-                self.inputs[name].extend(list(torch.split(input.to("cpu"), 1, dim=0)))
-            else:
-                self.inputs[name] = list(torch.split(input.to("cpu"), 1, dim=0))
-
-            if self._should_stop_cache_forward(name):
-                raise NotImplementedError
-
-        return cache_input_hook
-
-    def _recover_forward(self):
-        """Recovers the forward function."""
-        for n, m in self.model.named_modules():
-            if hasattr(m, "orig_forward"):
-                m.forward = m.orig_forward
-                delattr(m, "orig_forward")
-        for hook_handle in self.hook_handles:
-            hook_handle.remove()
-        self.hook_handles = []
-
-    def _replace_forward(self):
-        """Replaces the forward function."""
-
-        for n, m in self.model.named_modules():
-            if n in self.to_cached_layers and type(m) not in self.supported_types:  ##block
-                m.orig_forward = m.forward
-                m.forward = partial(self._get_block_forward_func(n), m)
-            elif n in self.to_cached_layers:  ##linear layer or conv1d layer
-                hook_func = self._get_cache_data_hook_for_layer(n)
-                hook_handle = m.register_forward_hook(hook_func)
-                self.hook_handles.append(hook_handle)
-
-    def _register_act_max_hook(self, model):
-        def get_act_max_hook(module, input, output):
-            if isinstance(input, (tuple, list)):
-                input = input[0]
-            if input.numel() == 0:
-                return  # as no needs for act_max update
-            input, _, _ = reshape_pad_tensor_by_group_size(input, self.act_group_size)
-            act_max = torch.max(torch.abs(input), dim=-1).values
-            if not hasattr(module, "act_max") or module.act_max.numel() == 0:
-                module.act_max = act_max
-                if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
-                    max_val = act_max.max()
-                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-            else:
-                act_max = act_max.to(module.act_max.device)
-                if is_nv_fp(self.act_data_type):  ## for nvfp per-tensor input_global_scale calculation usage
-                    max_val = torch.max(act_max.max(), module.act_max.max())
-                    module.act_max = max_val.unsqueeze(0) if max_val.dim() == 0 else max_val
-                else:
-                    module.act_max = torch.max(act_max, module.act_max)
-
-        hook_handles = []
-        # for single layers out of blocks, like lm_head
-        if isinstance(model, SUPPORTED_LAYER_TYPES):
-            m = model
-            if (
-                hasattr(m, "act_dynamic")
-                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
-                and check_to_quantized(m)
-            ):
-                hook = m.register_forward_hook(get_act_max_hook)
-                hook_handles.append(hook)
-            return hook_handles
-
-        for n, m in model.named_modules():
-            if (
-                hasattr(m, "act_dynamic")
-                and check_need_act_calibration(m.act_dynamic, m.act_data_type, m.act_bits)
-                and check_to_quantized(m)
-            ):
-                hook = m.register_forward_hook(get_act_max_hook)
-                hook_handles.append(hook)
-                continue
-
-            # for whole model, RTN
-            if n in self.layer_config:
-                config = self.layer_config[n]
-                act_dynamic = config.get("act_dynamic", True)
-                act_data_type = config.get("act_data_type", None)
-                act_bits = config.get("act_bits", 16)
-                if (
-                    config["bits"] <= 8
-                    and check_need_act_calibration(act_dynamic, act_data_type, act_bits)
-                    and check_to_quantized(config)
-                ):
-                    hook = m.register_forward_hook(get_act_max_hook)
-                    hook_handles.append(hook)
-                    continue
-        return hook_handles
-
-    def _quantize_layer(
-        self, layer_name: str, inputs: torch.Tensor, q_inputs: torch.Tensor = None, device: str = "cpu"
-    ):
-        """Quantize a specific layer of the model using the provided inputs.
-
-        Args:
-            layer_name (str): The name of the layer to quantize.
-            inputs (torch.Tensor): Input data for quantization.
-            q_inputs (torch.Tensor, optional): Quantized input data. Defaults to None.
-            device (torch.device, optional): The device to use for quantization. Defaults to torch.device("cpu").
-
-        Returns:
-            None
-        """
-        logger.info(f"quantizing layer {layer_name}")
-        layer = get_module(self.model, layer_name)
-        if hasattr(layer, "tuning_device"):
-            device = layer.tuning_device
-
-        layer = layer.to(device)
-        for i in range(len(inputs)):
-            inputs[i] = inputs[i].to(layer.weight.dtype)
-            if q_inputs is not None:
-                q_inputs[i] = q_inputs[i].to(layer.weight.dtype)
-
-        if self.act_bits <= 8 and check_need_act_calibration(
-            self.act_dynamic,
-            self.act_data_type,
-            self.act_bits,
-            self.static_kv_dtype,
-            self.static_attention_dtype,
-        ):
-            tmp_inputs = q_inputs if q_inputs is not None else inputs
-            hook_handles = self._register_act_max_hook(layer)
-            with torch.no_grad():
-                for input in tmp_inputs:
-                    layer(input)
-            for handle in hook_handles:
-                handle.remove()
-
-        wrapper_linear = WrapperLinear(
-            layer,
-            enable_minmax_tuning=self.enable_minmax_tuning,
-            enable_torch_compile=self.enable_torch_compile,
-            device=device,
-        ).to(device)
-        round_params = []
-        minmax_params = []
-        for key in wrapper_linear.params.keys():
-            if "min" in key or "max" in key:
-                minmax_params.append(wrapper_linear.params[key])
-            else:
-                round_params.append(wrapper_linear.value)
-        if len(round_params) + len(minmax_params) <= 0:
-            dump_info = f"quantized {layer_name}"
-            logger.info(dump_info)
-            with torch.no_grad():
-                unwrapper_layer(self.model, wrapper_linear, layer_name, {})
-            mv_module_from_gpu(layer)
-
-        lr = torch.tensor(self.lr)
-        minmax_lr = torch.tensor(self.minmax_lr)
-        if self.enable_minmax_tuning:
-            optimizer = self.optimizer(
-                [{"params": round_params}, {"params": minmax_params, "lr": minmax_lr}], lr=lr, weight_decay=0
-            )
-        else:
-            optimizer = self.optimizer(round_params, lr=lr, weight_decay=0)
-
-        if self.lr_scheduler is None:
-            lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
-            )
-        else:
-            lr_schedule = copy.deepcopy(self.lr_scheduler)
-        nsamples = len(inputs)
-        last_best_iter = 0
-        best_loss = torch.finfo(torch.float).max
-        scaler = self._get_scaler()  # pylint: disable=assignment-from-none
-        init_loss = None
-        gradient_accumulate_steps = self.batch_size  # Force to low gpu
-
-        total_loss = 0
-        num_elm = 1
-        mse_reduction = "mean"
-        if gradient_accumulate_steps != 1:
-            mse_reduction = "sum"
-        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
-        batch_size = 1  # Force to low gpu
-        global_batch_size = self.batch_size * gradient_accumulate_steps
-        global_batch_size = min(nsamples, global_batch_size)
-        if gradient_accumulate_steps != 1 and not self.attention_mask:
-            whole_indices = torch.arange(global_batch_size)
-            if q_inputs is not None:
-                num_elm = self._get_current_num_elm(q_inputs, whole_indices)
-            else:
-                num_elm = self._get_current_num_elm(inputs, whole_indices)
-
-        index_sampler = IndexSampler(nsamples, global_batch_size)
-
-        for i in range(self.iters):
-            total_loss = 0
-            global_indices = index_sampler.next_batch()
-            if self.attention_mask:
-                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
-
-            for tmp_step in range(gradient_accumulate_steps):
-                indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
-                if q_inputs is not None:
-                    current_input = [q_inputs[i] for i in indices]
-                    current_input = torch.cat(current_input, dim=0).to(device)
-                    org_input = [inputs[i] for i in indices]
-                    org_input = torch.cat(org_input, dim=0).to(device)
-                else:
-                    current_input = [inputs[i] for i in indices]
-                    current_input = torch.cat(current_input, dim=0).to(device)
-                    org_input = current_input
-                with torch.no_grad():
-                    current_output = layer(org_input)
-                autocast_ctx = (
-                    nullcontext()
-                    if not self.amp
-                    else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
-                )
-                if self.attention_mask:
-                    tmp_attention_mask = [self.attention_mask[i] for i in indices]
-                    tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
-                    tmp_attention_mask.unsqueeze_(-1)
-
-                    with autocast_ctx:
-                        output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                        loss = mse_loss(  # pylint: disable=not-callable
-                            (output_q * tmp_attention_mask).to(torch.float32),
-                            (current_output * tmp_attention_mask).to(torch.float32),
-                        )
-
-                else:
-                    with autocast_ctx:
-                        output_q = wrapper_linear(current_input)  # pylint: disable=not-callable
-                        loss = mse_loss(  # pylint: disable=not-callable
-                            output_q.to(torch.float32),
-                            current_output.to(torch.float32),  # mul 1.0 will copy the output
-                        )
-
-                num_elm = 1 if num_elm <= 0 else num_elm
-                total_loss += loss.item() / num_elm
-
-                self._scale_loss_and_backward(scaler, loss)
-            if i == 0:
-                init_loss = total_loss
-
-            if total_loss < best_loss:
-                best_loss = total_loss
-                if not self.not_use_best_mse:
-                    best_params = collect_best_params(wrapper_linear, self.cache_device)
-                    last_best_iter = i
-            if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(wrapper_linear, self.cache_device)
-
-            if not self.not_use_best_mse:
-                if 0 < self.dynamic_max_gap <= i - last_best_iter:
-                    break
-            self._step(scaler, optimizer, lr_schedule)
-
-        last_loss = total_loss
-        best_iter = self.iters
-        if not self.not_use_best_mse:
-            last_loss = best_loss
-            best_iter = last_best_iter
-        with torch.no_grad():
-            unwrapper_layer(self.model, wrapper_linear, layer_name, best_params)
-        mv_module_from_gpu(layer)
-        dump_info = f"quantized {layer_name},  loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-        logger.info(dump_info)
-
-    def _get_current_output(self, output: list[torch.Tensor], indices: list[int]) -> torch.Tensor:
-        current_output = [output[x] for x in indices]
-        current_output = torch.cat(current_output, dim=self.batch_dim)
-        return current_output
-
-    def _get_current_q_output(
-        self,
-        block: torch.nn.Module,
-        input_ids: list[torch.Tensor],
-        input_others: dict,
-        indices: list[int],
-        device: str,
-        cache_device: str = "cpu",
-    ) -> torch.Tensor:
-        current_input_ids, current_input_others = self._sampling_inputs(
-            input_ids,
-            input_others,
-            indices,
-            seqlen=self.seqlen,
-            batch_dim=self.batch_dim,
-            share_cache_keys=self.shared_cache_keys,
-        )
-        output_q = self.block_forward(block, current_input_ids, current_input_others, self.amp, self.amp_dtype, device)
-        return output_q.to(cache_device)
-
-    def _get_current_num_elm(
-        self,
-        input_ids: list[torch.Tensor],
-        indices: list[int],
-    ) -> int:
-        current_input_ids = [input_ids[i] for i in indices]
-        return sum(id.numel() for id in current_input_ids)
-
-    def _get_non_zero_cnt(self, tensor: list[torch.Tensor], indices: list[int]) -> int:
-        current_tensors = [tensor[i] for i in indices]
-        non_zero_cnt = 0
-        for t in current_tensors:
-            non_zero_cnt += torch.count_nonzero(t).item()
-        return non_zero_cnt
-
-    def quantize_block(
-        self,
-        block: torch.nn.Module,
-        inputs: tuple[Union[list[torch.Tensor], dict, Any], Optional[dict]],
-        q_input: Union[torch.Tensor, dict, None] = None,
-        device: Union[str, torch.device] = "cpu",
-        auto_offload=True,
-    ):
-        """
-        This function quantizes a specific decoded block of a model.
-        It is primarily used by LLM-Compressor. For more details, please refer to the following PR:
-        https://github.com/vllm-project/llm-compressor/pull/1994
-        """
-
-        # TODO: release below assertion after supporting MLLM and diffusion model quantization with quantize_block
-        assert self.__class__.__name__ not in [
-            "DiffusionCompressor",
-            "MLLMCompressor",
-        ], f"Currently, {self.__class__.__name__} does not support support quantize block with this function."
-        self.normalize_decoding_layer_inputs_(inputs)
-        block_inputs = self.inputs[self.quant_block_list[0][0]]
-        decoding_layer_first_input_name = "hidden_states"
-        input_ids, input_others = self._preprocess_block_inputs(block_inputs, decoding_layer_first_input_name)
-        return self._quantize_block(block, input_ids, input_others, q_input, device, auto_offload)
-
-    def _get_loss(
-        self,
-        output_q: torch.Tensor,
-        current_output: torch.Tensor,
-        indices: torch.Tensor,
-        mse_loss: Callable,
-        device: Union[str, torch.device] = "cpu",
-    ):
-        autocast_ctx = (
-            nullcontext() if self.amp else autocast(device_type=str(device).split(":")[0], dtype=self.amp_dtype)
-        )
-        if self.attention_mask:
-            tmp_attention_mask = [self.attention_mask[i] for i in indices]
-            tmp_attention_mask = torch.cat(tmp_attention_mask, dim=0).to(device)
-            tmp_attention_mask.unsqueeze_(-1)
-
-            with autocast_ctx:
-                loss = mse_loss(  # pylint: disable=not-callable
-                    (output_q * tmp_attention_mask).to(torch.float32),
-                    (current_output * tmp_attention_mask).to(torch.float32),
-                )
-        else:
-            with autocast_ctx:
-                loss = mse_loss(  # pylint: disable=not-callable
-                    output_q.to(torch.float32), current_output.to(torch.float32)
-                )
-
-        return loss
-
-    def _quantize_block(
-        self,
-        block: torch.nn.Module,
-        input_ids: Union[list[torch.Tensor], dict],
-        input_others: dict,
-        q_input: Union[torch.Tensor, dict, None] = None,
-        device: Union[str, torch.device] = "cpu",
-        auto_offload=True,
-    ):
-        """Quantize the weights of a given block of the model.
-
-        Args:
-        block: The block of the model to be quantized.
-        input_ids: The input tensor containing tokenized input ids.
-        input_others: A dictionary containing additional input data.
-        q_input: The quantized input tensor.
-        device: The device for quantization.
-
-        Returns:
-        Tuple: (q_outputs, output) if self.enable_quanted_input is True, else (None, output)
-        """
-        materialize_model_(block)
-        convert_module_to_hp_if_necessary(block, self.amp_dtype, device)
-
-        if auto_offload:
-            # card_0_in_high_risk indicates that card_0 memory is already in high usage (90%) w/o any weights
-            # loss_device is used to calculate loss on the second device if available and card_0_in_high_risk
-            if is_auto_device_mapping(self.device_map) and len(self.device_list) > 1:
-                card_0_in_high_risk, loss_device = set_auto_device_map_for_block_with_tuning(
-                    block, self.device_map, input_ids, self.low_gpu_mem_usage, self.batch_size, device
-                )
-            else:
-                block = block.to(device)
-                card_0_in_high_risk, loss_device = False, device
-        else:
-            card_0_in_high_risk, loss_device = False, device
-
-        if len(self.device_list) > 1 and auto_offload:
-            for n, m in block.named_modules():
-                if len(list(m.children())) != 0 or not hasattr(m, "tuning_device"):
-                    continue
-                from accelerate.hooks import AlignDevicesHook, add_hook_to_module
-
-                hook = AlignDevicesHook(m.tuning_device, io_same_device=True)
-                add_hook_to_module(m, hook, True)
-
-        if q_input is None:
-            hook_handles = self._register_act_max_hook(block)
-
-            output = self._get_block_outputs(
-                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
-            )
-
-            for handle in hook_handles:
-                handle.remove()
-        else:
-            output = self._get_block_outputs(
-                block, input_ids, input_others, self.batch_size * self.infer_bs_coeff, device, self.cache_device
-            )
-            hook_handles = self._register_act_max_hook(block)
-            if hook_handles:
-                self._get_block_outputs(
-                    block,
-                    q_input if q_input is not None else input_ids,
-                    input_others,
-                    self.batch_size * self.infer_bs_coeff,
-                    device,
-                    self.cache_device,
-                    save_output=False,
-                )
-
-            for handle in hook_handles:
-                handle.remove()
-
-        if q_input is not None:
-            if input_ids is not q_input:
-                clear_memory(input_ids, device_list=self.device_list)
-            else:
-                clear_memory(device_list=self.device_list)
-            input_ids = q_input
-
-        quantized_layer_names, unquantized_layer_names = self.wrapper_block(
-            block,
-            self.enable_minmax_tuning,
-            self.enable_norm_bias_tuning,
-            enable_torch_compile=self.enable_torch_compile,
-            device=device,
-        )
-        # Call this before quantization and after applying the block wrapper.
-        if is_nv_fp(self.data_type):  # enable qkv and moe structure global_scale fuse.
-            from auto_round.data_type.utils import update_fused_layer_global_scales
-
-            modules = block.modules()
-            for module in modules:
-                update_fused_layer_global_scales(module)
-        round_params = []
-        minmax_params = []
-        for n, m in block.named_modules():
-            if hasattr(m, "orig_layer"):
-                for key in m.params.keys():
-                    if "min" in key or "max" in key:
-                        minmax_params.append(m.params[key])
-                    else:
-                        round_params.append(m.params[key])
-
-        lr = torch.tensor(self.lr)
-        minmax_lr = torch.tensor(self.minmax_lr)
-        is_adam = "adam" in self.__class__.__name__.lower()
-
-        extra_kwargs = {} if is_adam else {"momentum": self.momentum}
-
-        if self.enable_minmax_tuning:
-            params = [
-                {"params": round_params},
-                {"params": minmax_params, "lr": minmax_lr},
-            ]
-        else:
-            params = round_params
-
-        optimizer = self.optimizer(
-            params,
-            lr=lr,
-            weight_decay=0,
-            **extra_kwargs,
-        )
-
-        if len(round_params) + len(minmax_params) <= 0:
-            dump_info = (
-                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
-                f"layers in the block"
-            )
-            logger.info(dump_info)
-            unwrapper_block(block, {})
-            mv_module_from_gpu(block)
-            return output, output
-
-        if self.lr_scheduler is None:
-            lr_schedule = torch.optim.lr_scheduler.LinearLR(
-                optimizer, start_factor=1.0, end_factor=0.0, total_iters=self.iters
-            )
-        else:
-            lr_schedule = copy.deepcopy(self.lr_scheduler)
-
-        if isinstance(input_ids, dict):  # input_ids of Flux is dict
-            nsamples = len(input_ids["hidden_states"])
-        else:
-            nsamples = len(input_ids)
-        last_best_iter = 0
-        best_loss = torch.finfo(torch.float).max
-        num_elm = 1
-        mse_reduction = "mean"
-        if self.gradient_accumulate_steps != 1:
-            mse_reduction = "sum"
-        mse_loss = torch.nn.MSELoss(reduction=mse_reduction).to(device)
-        scaler = self._get_scaler()  # pylint: disable=assignment-from-none
-        init_loss = None
-        best_params = {}
-        total_loss = 0
-        global_batch_size = self.batch_size * self.gradient_accumulate_steps
-        global_batch_size = min(nsamples, global_batch_size)
-        # We assume the block input and output shape is same
-        if self.gradient_accumulate_steps != 1 and not self.attention_mask:
-            whole_indices = torch.arange(global_batch_size)
-            num_elm = self._get_current_num_elm(input_ids, whole_indices)
-        setup_ddp_if_needed_(self, block, self.device_list)
-        index_sampler = IndexSampler(nsamples, global_batch_size)
-        batch_size = self.batch_size
-        for i in range(self.iters):
-            if self.enable_alg_ext and self.data_type.endswith("dq"):
-                for n, m in block.named_modules():
-                    m.cur_iter = i
-            total_loss = 0
-            global_indices = index_sampler.next_batch()
-            if self.attention_mask:
-                num_elm = self._get_non_zero_cnt(self.attention_mask, global_indices)
-
-            for tmp_step in range(self.gradient_accumulate_steps):
-                indices = global_indices[tmp_step * batch_size : (tmp_step + 1) * batch_size]
-                current_output = self._get_current_output(output, indices)
-                current_output = to_device(current_output, loss_device)
-                output_q = self._get_current_q_output(block, input_ids, input_others, indices, device, loss_device)
-                loss = self._get_loss(output_q, current_output, indices, mse_loss, device)
-                num_elm = 1 if num_elm <= 0 else num_elm
-                total_loss += loss.item() / num_elm
-
-                if self.low_gpu_mem_usage and card_0_in_high_risk:
-                    # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.5, device_list=self.device_list)
-
-                self._scale_loss_and_backward(scaler, loss)
-
-                if self.low_gpu_mem_usage and card_0_in_high_risk:
-                    # clear memory to avoid OOM due to memory fragmentation
-                    clear_memory_if_reached_threshold(threshold=0.8, device_list=self.device_list)
-
-            if i == 0:
-                init_loss = total_loss
-
-            if total_loss < best_loss:
-                best_loss = total_loss
-                if not self.not_use_best_mse:
-                    best_params = collect_best_params(block, self.cache_device)
-                    # print(f"get better result at iter {i}, the loss is {total_loss}", flush=True)
-
-                    last_best_iter = i
-            if self.not_use_best_mse and i == self.iters - 1:
-                best_params = collect_best_params(block, self.cache_device)
-
-            if not self.not_use_best_mse:
-                if 0 < self.dynamic_max_gap <= i - last_best_iter:
-                    break
-            self._step(scaler, optimizer, lr_schedule)
-
-        last_loss = total_loss
-        best_iter = self.iters
-        if not self.not_use_best_mse:
-            last_loss = best_loss
-            best_iter = last_best_iter
-        if self.iters > 0:
-            dump_info = (
-                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
-                f"layers in the block, loss iter 0: {init_loss:.6f} -> iter {best_iter}: {last_loss:.6f}"
-            )
-        else:
-            dump_info = (
-                f"quantized {len(quantized_layer_names)}/{(len(quantized_layer_names) + len(unquantized_layer_names))} "
-                "layers in the block"
-            )
-
-        if self.low_gpu_mem_usage:
-            clear_memory(device_list=self.device_list)  # clear cached memory during training
-        if len(unquantized_layer_names) != 0:
-            logger.info(f"Unquantized layers: {unquantized_layer_names}")
-        with torch.no_grad():
-            unwrapper_block(block, best_params)
-
-        if is_nv_fp(self.act_data_type):
-            # enable moe experts act_max automatic generation for WrapperWALayer
-            set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
-
-        if self.enable_quanted_input:
-            q_outputs = self._get_block_outputs(
-                block,
-                input_ids,
-                input_others,
-                self.batch_size * self.infer_bs_coeff,
-                device,
-                cache_device=self.cache_device,
-            )
-
-            if len(self.device_list) > 1 and auto_offload:
-                accelerate.hooks.remove_hook_from_submodules(block)
-            if auto_offload:
-                mv_module_from_gpu(block)
-
-            clear_memory(input_ids, device_list=self.device_list)
-            memory_info_summary = memory_monitor.get_summary()
-            logger.infoclean(dump_info + "," + memory_info_summary)
-
-            return q_outputs, output
-        else:
-            if len(self.device_list) > 1 and auto_offload:
-                accelerate.hooks.remove_hook_from_submodules(block)
-            if auto_offload:
-                mv_module_from_gpu(block)
-            clear_memory(input_ids, device_list=self.device_list)
-            memory_info_summary = memory_monitor.get_summary()
-            logger.infoclean(dump_info + "," + memory_info_summary)
-
-            return None, output
-
-    def _split_inputs(self, inputs: dict, first_input_name: str) -> tuple[torch.Tensor, dict]:
-        input_ids = inputs[first_input_name]
-        inputs.pop(first_input_name, None)
-        input_others = inputs
-        return input_ids, input_others
-
-    def _preprocess_block_inputs(self, inputs, first_input_name="input_ids"):
-        input_ids, input_others = self._split_inputs(inputs, first_input_name)
-        clear_memory(device_list=self.device_list)
-        input_ids = to_device(input_ids, self.cache_device)
-        input_others = to_device(input_others, self.cache_device)
-        # As in calibration phase, we may use bf16 for calibration due to low_gpu_memory usage
-
-        tmp_dtype = self.amp_dtype if self.amp else torch.float32
-        input_ids = to_dtype(input_ids, tmp_dtype)
-
-        for key in input_others.keys():
-            if isinstance(input_others[key], torch.Tensor) and (
-                input_others[key].dtype == torch.float16 or input_others[key].dtype == torch.bfloat16
-            ):
-                input_others[key] = input_others[key].to(tmp_dtype)
-            elif isinstance(input_others[key], list):
-                for i in range(len(input_others[key])):
-                    to_dtype(input_others[key][i], tmp_dtype)
-        return input_ids, input_others
-
-    def _quantize_blocks(
-        self,
-        model: torch.nn.Module,
-        inputs: dict,
-        block_names: list,
-        q_input: torch.Tensor = None,
-        nblocks: int = 1,
-        device: str = "cpu",
-        pbar: tqdm = None,
-    ):
-        """Quantize and dequantize the weights of the specified blocks in the model.
-
-        Args:
-        model: The PyTorch model to be quantized.
-        inputs: The input data for quantization.
-        block_names: The names of the blocks to be quantized and dequantized.
-        nblocks: The number of blocks to quantize and dequantize.
-        device: The device for quantization and dequantization.
-
-        Returns:
-        None
-        """
-        clear_memory(device_list=self.device_list)
-        for n, m in model.named_parameters():
-            m.requires_grad_(False)
-
-        input_ids, input_others = self._preprocess_block_inputs(inputs)
-
-        if pbar is None:
-            pbar = tqdm(range(0, len(block_names), nblocks))
-
-        for i in range(0, len(block_names), nblocks):
-            if i != 0:
-                pbar.update(1)
-            if nblocks == 1:
-                n = block_names[i]
-                pbar.set_description(f"Quantizing {n}")
-                m = get_module(model, n)
-            else:
-                names = block_names[i : min(i + nblocks, len(block_names))]
-                pbar.set_description(f"Quantizing [{i + 1}-{min(i + nblocks, len(block_names))}]/{len(block_names)}")
-                modules = [get_module(model, n) for n in names]
-                m = WrapperMultiblock(modules)
-
-            if self.low_cpu_mem_usage:
-                if nblocks == 1:
-                    self._offloader.reload(model, n)
-                else:
-                    self._offloader.reload(model, names)
-
-            m.config = model.config if hasattr(model, "config") else None
-            q_input, input_ids = self._quantize_block(
-                m,
-                input_ids,
-                input_others,
-                q_input=q_input,
-                device=device,
-            )
-            if hasattr(model, "config"):
-                del m.config
-            if self.enable_torch_compile:
-                torch._dynamo.reset()
-            if self.is_immediate_packing:
-                for n, tmp_m in m.named_modules():
-                    if not (hasattr(tmp_m, "bits") and check_to_quantized(tmp_m)):
-                        continue
-                    self._immediate_pack(tmp_m.global_name)
-
-            if self.is_immediate_saving:
-                shard_writer(self, m, is_finalize=False)
-
-            if self.low_cpu_mem_usage and not self.is_immediate_saving:
-                if nblocks == 1:
-                    self._offloader(model, n, overwrite=True)
-                else:
-                    for name in names:
-                        self._offloader(model, name, overwrite=True)
-        if pbar is not None:
-            pbar.update(1)
-
-        if not self.is_immediate_saving:
-            self.model = mv_module_from_gpu(self.model)
-        for n, m in self.model.named_modules():
-            if hasattr(m, "name"):
-                delattr(m, "name")
-
-        del q_input
-        del input_ids
-        del input_others
-        del inputs
-
-        clear_memory(device_list=self.device_list)
-
-    def save_quantized(
-        self,
-        output_dir: str = None,
-        format: Union[str, list[OutputFormat]] = "auto_round",
-        inplace: bool = True,
-        return_folders=False,
-        **kwargs,
-    ) -> torch.nn.Module:
-        """Save the quantized model to the specified output directory in the specified format.
-
-        Args:
-            output_dir (str, optional): The directory to save the quantized model. Defaults to None.
-            format (str, optional): The format in which to save the model. Defaults to "auto_round".
-            inplace (bool, optional): Whether to modify the model in place. Defaults to True.
-            **kwargs: Additional keyword arguments specific to the export format.
-
-        Returns:
-            object: The compressed model object.
-        """
-        self.orig_output_dir = output_dir
-        if isinstance(format, str) and getattr(self, "formats", None) is None:
-            formats = get_formats(format, self)
-            if not hasattr(self, "formats"):
-                self.formats = formats
-
-        if not self.quantized:
-            logger.warning("please run autoround.quantize first")
-            return
-        folders = []
-        for format in self.formats:
-            save_folder = self._get_save_folder_name(format)
-            if self.act_bits <= 8 and format.is_fake():
-                logger.warning(
-                    "Support for exporting activation quantization is limited. "
-                    "Please ensure that your configuration is supported."
-                )
-
-            serialization_dict = {}
-            for key in SERIALIZATION_KEYS:
-                serialization_dict[key] = getattr(self, key)
-
-            from auto_round.version import __version__
-
-            serialization_dict["autoround_version"] = __version__
-            if "scale_dtype" in serialization_dict.keys():
-                serialization_dict["scale_dtype"] = str(serialization_dict["scale_dtype"])
-            compressed_model = format.save_quantized(
-                save_folder,
-                model=self.model,
-                layer_config=self.layer_config,
-                inplace=inplace,
-                tokenizer=self.tokenizer,
-                device=self.device,
-                serialization_dict=serialization_dict,
-                **kwargs,
-            )
-            folders.append(save_folder)
-
-        if return_folders:
-            return compressed_model, folders
-        else:
-            return compressed_model
-
-    def _get_quantized_layer_names_outside_blocks(self) -> list:
-        """Gets the names of quantized layers outside blocks in the model.
-
-        Returns:
-            list: List of layer names outside blocks.
-        """
-        if self.layer_config is None or len(self.layer_config) == 0:
-            return []
-
-        layer_names = []
-        all_layers_in_block = get_layer_names_in_block(self.model, self.supported_types, self.quant_block_list)
-
-        for key in self.layer_config.keys():
-            if key in all_layers_in_block:
-                continue
-            layer = get_module(self.model, key)
-            if layer is None:
-                logger.error(f"could not find layer {key} in the model, exit...")
-                exit(-1)
-            if type(layer) in self.supported_types and check_to_quantized(self.layer_config[key]):
-                layer_names.append(key)
-
-        return layer_names
-
-    def _set_amp_dtype(self) -> None:
-        """Sets the automatic mixed precision (AMP) data type for the model based on the device and configuration."""
-        self.amp_dtype = torch.bfloat16
-        if self.model.dtype != torch.float32:
-            self.amp_dtype = self.model.dtype
-        if self.device == "cpu" or "hpu" in self.device:
-            self.amp_dtype = torch.bfloat16
-        if self.amp:
-            if self.device == "cpu" and not CpuInfo().bf16:
-                self.amp = False
-                self.amp_dtype = torch.float32
-                self.model = self.model.to(torch.float32)
-                logger.warning(
-                    f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type."
-                )
-            else:
-                if self.model.dtype != self.amp_dtype:
-                    self.model = self.model.to(self.amp_dtype)
-        else:
-            self.amp_dtype = torch.float32
-            self.model = self.model.to(torch.float32)
-
-    def _get_optimizer(self, optimizer: Any):
-        """Returns the specified optimizer. In SignRound, we fix the optimizer.
-
-        Args:
-        optimizer: The optimizer to be used.
-
-        Returns:
-        The specified optimizer.
-        """
-        return SignSGD
-
-    def _get_scaler(self):
-        """Returns scaler, in SignRound, no need to use scaler."""
-        return None
-
-    def _scale_loss_and_backward(self, scaler: Any, loss: torch.Tensor) -> torch.Tensor:
-        """Scales the loss and performs backward pass.
-
-        Args:
-        scaler: The scaler to be used.
-        loss: The loss to be scaled.
-
-        Returns:
-        The scaled loss.
-        """
-        scale_loss = loss * 1000
-        scale_loss.backward()
-        if is_hpex_available():
-            htcore.mark_step()
-        return scale_loss
-
-    def _step(self, scaler: Any, optimizer: Any, lr_schedule: Any):
-        """Performs a step in the optimization process.
-
-        Args:
-        scaler: The scaler to be used.
-        optimizer: The optimizer for the step.
-        lr_schedule: The learning rate schedule.
-
-        Returns:
-        None
-        """
-        optimizer.step()
-        # for hpu
-        if is_hpex_available():
-            htcore.mark_step()
-        optimizer.zero_grad()
-        lr_schedule.step()
-
-    @classmethod
-    @torch.no_grad()
-    def _sampling_inputs(
-        cls,
-        input_ids: Union[list[torch.Tensor], dict],
-        input_others: dict,
-        indices: list[int] | torch.Tensor,
-        seqlen: int,
-        batch_dim: int = 0,
-        share_cache_keys: tuple = (),
-    ):
-        """Samples inputs based on the given indices and sequence length.
-
-        Args:
-        input_ids: The list of input tensor containing  input_ids.
-        input_others: A dictionary containing other input data.
-        indices: The indices to sample from the input.
-        seqlen: The sequence length.
-
-        Returns:
-        current_input_ids: The sampled input IDs.
-        current_input_others: The sampled other input data.
-        """
-        if isinstance(input_ids, list):
-            current_input_ids = [input_ids[i] for i in indices]
-            current_input_ids = torch.cat(current_input_ids, dim=batch_dim)
-        elif isinstance(input_ids, dict):
-            current_input_ids = defaultdict(list)
-            for k in input_ids.keys():
-                current_input_ids[k].extend([input_ids[k][i] for i in indices])
-                current_input_ids[k] = torch.cat(current_input_ids[k], dim=batch_dim)
-
-        current_input_others = {"positional_inputs": input_others["positional_inputs"]}
-        for key in input_others.keys():
-            if "positional_inputs" in key:
-                continue
-            if (key not in share_cache_keys or len(indices) == 1) and not isinstance(
-                input_others[key], (str, bool, type(None))
-            ):
-                current_input_others[key] = None
-                if input_others[key] is not None:
-                    current_input_others[key] = [input_others[key][i] for i in indices]
-                    if len(indices) == 1:
-                        current_input_others[key] = current_input_others[key][0]
-                    else:
-                        try:
-                            current_input_others[key] = torch.cat(current_input_others[key], dim=0)
-                        except TypeError as err:
-                            logger.warning_once("Please check the model cache inputs or try setting batch_size to 1.")
-            else:
-                current_input_others[key] = input_others[key]
-
-        return current_input_ids, current_input_others
-
-
-class LLMCompressor(BaseCompressor):
-    pass
+#: Backward-compatible alias — prefer ``BaseOrchestrator`` in new code.
+BaseCompressor = BaseOrchestrator

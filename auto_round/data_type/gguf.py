@@ -11,14 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Any, Callable, Union
+from collections.abc import Callable
 
 import torch
 
 from auto_round.data_type.register import register_dtype
 from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad, round_ste
-from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES
-from auto_round.export.export_to_gguf.packing import make_q3_quants, make_qx_quants, make_qx_quants_chunk
+from auto_round.export.formats.gguf.config import GGML_QUANT_SIZES, QK_K
+from auto_round.export.formats.gguf.packing import (
+    _LARGE_TENSOR_BYTES_THRESHOLD,
+    make_q3_quants,
+    make_qx_quants,
+    make_qx_quants_chunk,
+)
 from auto_round.logger import logger
 from auto_round.utils import get_reciprocal
 from auto_round.utils.device import clear_memory
@@ -40,7 +45,7 @@ def quant_tensor_sym_dq(
     super_bits=6,
     **kwargs,
 ):
-    """Quantize and de-quantize tensor symmetrically. full range, credict goes to llamacpp community
+    """Quantize and de-quantize tensor symmetrically. full range, credit goes to llamacpp community
 
     Args:
         tensor: Tensor containing the tensor to be quantized
@@ -59,13 +64,16 @@ def quant_tensor_sym_dq(
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
-    maxq = 2 ** (bits - 1)
+    maxq = int(2.0 ** (bits - 1))
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
 
     wmin_abs = -(wmin_tmp * min_scale)  # pylint: disable=E1130
     wmax_abs = wmax_tmp * max_scale
@@ -78,7 +86,7 @@ def quant_tensor_sym_dq(
     scale = scale.view(-1, 1)
     zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
     int_w = round_ste(tensor * get_reciprocal(scale) + v)
-    q = torch.clamp(int_w + zp, 0, 2**bits - 1)
+    q = torch.clamp(int_w + zp, 0, int(2.0**bits) - 1)
     qdq_result = (scale * (q - zp)).to(tensor.dtype)
     qdq_result = revert_tensor_by_pad(qdq_result, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_result, {"scale": scale, "d_scale": d_scale}, zp
@@ -116,13 +124,16 @@ def quant_tensor_asym_float_zp(
         Quantized and de-quantized tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2**bits - 1
+    maxq = int(2.0**bits) - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
     if isinstance(min_scale, torch.Tensor):
         wmin = wmin_tmp * min_scale
         wmax = wmax_tmp * max_scale
@@ -141,10 +152,69 @@ def quant_tensor_asym_float_zp(
     return qdq_result, scale, zp
 
 
+@register_dtype("opt_rtn_int_asym_float_zp")
+def quant_tensor_asym_float_zp_rtn(
+    tensor,
+    bits=4,
+    group_size=-1,
+    scale_dtype=torch.float16,
+    tensor_min=None,
+    tensor_max=None,
+    q_scale_thresh=1e-5,
+    **kwargs,
+):
+    """RTN (round-to-nearest) version of asymmetric float-zp quantization.
+
+    Optimized with in-place operations to minimize temporary allocations.
+    Does not support per-element perturbation ``v`` or ``min_scale``/``max_scale``
+    tensor scaling (pure RTN).
+
+    Args:
+        tensor: Tensor to quantize.
+        bits: Number of bits for quantization.
+        group_size: Number of elements sharing one scale.
+        scale_dtype: dtype of the quantized scale.
+        tensor_min/tensor_max: Optional pre-computed per-group min/max.
+        q_scale_thresh: Lower clip for scale magnitude.
+
+    Returns:
+        Tuple of (qdq tensor, scale, zero-point).
+    """
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    orig_dtype = tensor.dtype
+    maxq = int(2.0**bits) - 1
+
+    if tensor_min is None or tensor_max is None:
+        wmin = torch.clamp_max(tensor.min(-1)[0], 0)
+        wmax = torch.clamp_min(tensor.max(-1)[0], 0)
+    else:
+        wmin = tensor_min
+        wmax = tensor_max
+
+    # scale = (wmax - wmin) / maxq
+    scale = (wmax - wmin).div_(maxq).to(scale_dtype)
+    scale.clamp_(min=q_scale_thresh)
+
+    # zp = -wmin / scale
+    zp = (-wmin).div_(scale)
+
+    scale = scale.unsqueeze(-1)
+    zp = zp.unsqueeze(-1)
+
+    # Cast to float32 for stable inplace math, then back to original dtype
+    if tensor.dtype != torch.float32:
+        tensor = tensor.float()
+    inverse_scale = get_reciprocal(scale)
+    tensor.mul_(inverse_scale).round_().add_(zp).clamp_(0, maxq).sub_(zp).mul_(scale)
+    tensor = tensor.to(orig_dtype)
+    tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
+    return tensor, scale, zp
+
+
 ## the values should be positive
 def double_quant_tensor(tensor, bits):
     tensor = tensor.to(torch.float32)  # Ensure tensor is in float32 for precision
-    maxq = 2**bits - 1
+    maxq = int(2.0**bits) - 1
     wmax = torch.clamp(tensor.max(-1)[0], min=0)
     scale = wmax / maxq
     scale = scale.view(-1, 1)
@@ -156,7 +226,7 @@ def double_quant_tensor(tensor, bits):
 
 def double_quant_tensor_sym(tensor, bits):
     tensor = tensor.to(torch.float32)  # Ensure tensor is in float32 for precision
-    maxq = 2 ** (bits - 1)
+    maxq = int(2.0 ** (bits - 1))
     imax = abs(tensor).argmax(axis=-1, keepdims=True)
     wmax = torch.take_along_dim(tensor, imax, dim=-1)
     scale = wmax / -maxq
@@ -175,7 +245,7 @@ def double_quant_tensor_sym_rtn(tensor, bits):
     if tensor.dtype != torch.float32:
         tensor = tensor.float()  # .float() creates a copy if needed
 
-    maxq = 2 ** (bits - 1)
+    maxq = int(2.0 ** (bits - 1))
 
     # Compute absolute max along last dim
     # abs_() is inplace
@@ -196,14 +266,14 @@ def double_quant_tensor_sym_rtn(tensor, bits):
     return tensor, scale
 
 
-def make_qp_quants(nmax, data, quant_weights):
+def make_qp_quants(nmax, data, quant_weights, v=0):
     data = data.to(torch.float32)
     quant_weights = quant_weights.to(torch.float32)
     group_max = torch.max(data, dim=-1, keepdim=True)[0]
     scale = group_max / nmax
     iscale = get_reciprocal(scale)
 
-    L = torch.round(iscale * data)
+    L = torch.round(iscale * data + v)
     diffs = data - scale * L
     best_mse = torch.sum(quant_weights * diffs * diffs, dim=-1)
 
@@ -213,7 +283,7 @@ def make_qp_quants(nmax, data, quant_weights):
         scale_is = group_max / (0.1 * _is + nmax)
         iscale_is = get_reciprocal(scale_is)
 
-        tmp_L = torch.round(iscale_is * data).clip(max=nmax)
+        tmp_L = torch.round(iscale_is * data + v).clip(max=nmax)
         diffs = data - scale_is * tmp_L
         mse = torch.sum(quant_weights * diffs * diffs, dim=-1)
 
@@ -221,7 +291,7 @@ def make_qp_quants(nmax, data, quant_weights):
         best_mse[replace_idx] = mse[replace_idx]
         iscale[replace_idx] = iscale_is[replace_idx]
 
-    L = torch.round(iscale * data).clip(max=nmax)
+    L = torch.round(iscale * data + v).clip(max=nmax)
     sumlx = torch.sum(quant_weights * data * L, dim=-1)
     suml2 = torch.sum(quant_weights * L * L, dim=-1)
     #
@@ -285,13 +355,16 @@ def quant_tensor_asym_dq(
         Quantized and de-quantized tensor, scale, zero-point
     """
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
-    maxq = 2**bits - 1
+    maxq = int(2.0**bits) - 1
     if tensor_min is None or tensor_max is None:
         wmin_tmp = torch.clamp(tensor.min(-1)[0], max=0)
         wmax_tmp = torch.clamp(tensor.max(-1)[0], min=0)
     else:
         wmin_tmp = tensor_min
         wmax_tmp = tensor_max
+        if isinstance(wmin_tmp, torch.Tensor):
+            wmin_tmp = wmin_tmp.to(tensor.device)
+            wmax_tmp = wmax_tmp.to(tensor.device)
     if isinstance(min_scale, torch.Tensor):
         wmin = wmin_tmp * min_scale
         wmax = wmax_tmp * max_scale
@@ -304,7 +377,7 @@ def quant_tensor_asym_dq(
     wmin = -wmin  # pylint: disable=E1130
     wmin = wmin.view(-1, super_group_size)
 
-    ##conduct double quant
+    # Conduct double quant
     scale, d_scale = double_quant_tensor(scale, super_bits)
     wmin, d_wmin = double_quant_tensor(wmin, super_bits)
 
@@ -322,12 +395,69 @@ def quant_tensor_asym_dq(
     return qdq_result, {"scale": scale, "d_scale": d_scale}, {"wmin": wmin, "d_wmin": d_wmin}
 
 
-def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tensor, bits: int):
+def _imatrix_row_pattern(imatrix: torch.Tensor, group_shape) -> torch.Tensor:
+    """Reshape a per-input-channel imatrix into the small, non-materialized "one row of
+    groups" repeat unit, instead of broadcasting+reshaping it to the full weight tensor's
+    shape.
+
+    An imatrix is computed per input channel (column) and is identical across every output
+    row, so once it's grouped the same way the weight tensor is (into blocks/groups of
+    ``group_shape`` elements each), the resulting pattern of length ``blocks_per_row =
+    imatrix.numel() // prod(group_shape)`` simply repeats for every output row. Any global
+    block/group index ``i`` (0-based, row-major over the weight tensor) maps to
+    ``pattern[i % blocks_per_row]`` — this holds for ANY quant type/group size, since GGUF
+    requires ``in_features % prod(group_shape) == 0`` (blocks never straddle two rows).
+
+    Building only this small ``(blocks_per_row, *group_shape)`` tensor - instead of
+    ``imatrix.expand(...).reshape(weight.shape)``, which PyTorch cannot represent as a view
+    once the broadcast dimension has to be reshaped/merged and so silently materializes a
+    full copy as large as the weight tensor - keeps the up-front cost independent of
+    out_features, no matter how large a single tensor (e.g. an oversized vocab embedding) is.
+    """
+    if isinstance(group_shape, int):
+        group_shape = (group_shape,)
+    group_numel = 1
+    for d in group_shape:
+        group_numel *= d
+    blocks_per_row = imatrix.numel() // group_numel
+    return imatrix.reshape(blocks_per_row, *group_shape)
+
+
+def _gather_row_pattern(row_pattern: torch.Tensor, start: int, end: int) -> torch.Tensor:
+    """Materialize only the ``[start:end)`` slice of a full, row-repeating broadcast, by
+    gathering from the small ``row_pattern`` (see ``_imatrix_row_pattern``) with the block
+    index taken modulo ``blocks_per_row``. Cheap regardless of how large ``end - start`` is
+    relative to the full (un-chunked) tensor, since ``row_pattern`` itself never grows.
+    """
+    bpr = row_pattern.shape[0]
+    idx = torch.arange(start, end, device=row_pattern.device) % bpr
+    return row_pattern.index_select(0, idx)
+
+
+def _imatrix_handle_zero(
+    imatrix: torch.Tensor | float,
+    weight: torch.Tensor,
+    bits: int,
+    group_size: int | None = None,
+    raw_imatrix: torch.Tensor = None,
+):
     if not isinstance(imatrix, torch.Tensor):
         return imatrix
 
-    group_size = 16 if bits == 2 else 32
-    imatrix = imatrix.reshape(-1, imatrix.shape[-1])
+    # `imatrix` here is normally a broadcast-expanded VIEW of the much smaller per-block
+    # `raw_imatrix` (no extra memory), built via `.expand(...).reshape(weight.shape)`. But the
+    # `.reshape(-1, imatrix.shape[-1])` a few lines below merges the broadcast dimension into a
+    # real one, which forces PyTorch to fully materialize a tensor as large as `weight` itself
+    # (e.g. an extra ~11GB for an ~11GB embedding tensor). The common case - calibration data
+    # with no zero-valued activations - never needs any of that; check for zeros on the small,
+    # pre-broadcast `raw_imatrix` first and skip the expensive materialization entirely then.
+    probe = raw_imatrix if raw_imatrix is not None else imatrix
+    if torch.min(probe) != 0:
+        return imatrix
+
+    if group_size is None:
+        group_size = 16 if bits == 2 else 32
+    imatrix = imatrix.reshape(-1, imatrix.shape[-1]).clone()
     if torch.min(imatrix) == 0:
         logger.warning_once(
             "please use more data via setting `nsamples` to improve accuracy as calibration activations contain 0"
@@ -337,9 +467,9 @@ def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tens
         replace_index = zero_cnt > group_size // 2
         if torch.sum(replace_index) > 0:
             ## fallback to no imatrix
-            if bits == 2:
+            if bits <= 3:
                 tmp_quant_weights = torch.abs(weight)
-            elif bits == 4 or bits == 5:
+            else:
                 sigma2 = torch.sum(torch.pow(weight, 2), dim=-1, keepdim=True) / 32  ## Note 32 is different from QK_K
                 av_x = torch.sqrt(sigma2)
                 tmp_quant_weights = torch.abs(weight) + av_x
@@ -356,7 +486,7 @@ def _imatrix_handle_zero(imatrix: Union[torch.Tensor, float], weight: torch.Tens
 
 
 @torch.inference_mode()
-def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None, split_num=1):
+def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatrix=None, split_num=1, v=0):
     super_bits = 4 if bits == 2 else 6
     super_group_size = 16 if bits == 2 else 8
 
@@ -383,6 +513,7 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
             use_mad=params["use_mad"],
             weights=quant_weights,
             split_num=split_num,
+            v=v,
         )
         scale = scale.to(scale_dtype)
         scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
@@ -401,12 +532,24 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
             5: {"rmin": -0.9, "rdelta": 0.05, "nstep": 36, "use_mad": False},
         }
 
-        weights = imatrix.reshape(1, -1)
-
-        weights = weights.expand(tensor.numel() // weights.numel(), -1)
-        quant_weights = weights.reshape(tensor.shape)
-
-        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
+        # An imatrix is per input channel and identical across every output row, so
+        # broadcasting it to `tensor.shape` (`.expand(...).reshape(...)`) forces PyTorch to
+        # materialize a full copy as large as `tensor` itself - regardless of `split_num` -
+        # since that materialization happens here, before any chunked search even starts.
+        # For a single very large tensor (e.g. an oversized vocab embedding), that alone can
+        # cost tens of extra GB. Zero-valued calibration activations are rare (and already
+        # warned about elsewhere), so only fall back to the full materialization + explicit
+        # zero-handling in that rare case; otherwise keep imatrix as the small, row-repeating
+        # pattern and let the chunked search gather from it per chunk on demand.
+        row_pattern = _imatrix_row_pattern(imatrix, tensor.shape[-1])
+        quant_weights = None
+        weights_row_pattern = row_pattern
+        if torch.min(imatrix) == 0:
+            weights = imatrix.reshape(1, -1)
+            weights = weights.expand(tensor.numel() // weights.numel(), -1)
+            quant_weights = weights.reshape(tensor.shape)
+            quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits, raw_imatrix=imatrix)
+            weights_row_pattern = None
 
         # sigma2 = torch.sum(torch.pow(tensor, 2), dim=-1, keepdim=True) / QK_K
         # if imatrix is None:
@@ -426,13 +569,24 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
             nstep=params["nstep"],
             use_mad=params["use_mad"],
             weights=quant_weights,
+            weights_row_pattern=weights_row_pattern,
+            split_num=split_num,
+            v=v,
         )
         scale = scale.to(scale_dtype)
         scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
-        nmax = 2**super_bits - 1
+        nmax = int(2.0**super_bits) - 1
         scale = scale.reshape(-1, super_group_size)
         wmin = wmin_0.reshape(-1, super_group_size)
-        sum_quant_weights = quant_weights.sum(-1, keepdim=True).reshape(-1, super_group_size)
+        if quant_weights is not None:
+            sum_quant_weights = quant_weights.sum(-1, keepdim=True).reshape(-1, super_group_size)
+        else:
+            # Same row-repeating trick for the (much smaller, one-value-per-block) sum: the
+            # per-block sum of an imatrix broadcast repeats with the same `blocks_per_row`
+            # period, so gather it from a tiny precomputed pattern instead of reducing a
+            # full-size `quant_weights`.
+            sum_pattern = row_pattern.sum(-1, keepdim=True)
+            sum_quant_weights = _gather_row_pattern(sum_pattern, 0, tensor.shape[0]).reshape(-1, super_group_size)
 
         d_scale, q_scale = make_qp_quants(nmax, scale, sum_quant_weights)
         d_wmin, q_wmin = make_qp_quants(nmax, wmin, sum_quant_weights)
@@ -450,12 +604,18 @@ def search_gguf_scale_min_asym(tensor, bits=4, scale_dtype=torch.float16, imatri
 def quant_tensor_gguf_asym_dq(
     tensor: torch.Tensor,
     bits: int = 4,
+    v=0,
     scale_dtype=torch.float16,
     imatrix=None,
     scale=None,
     wmin=None,
     d_scale=None,
     d_wmin=None,
+    prev_scale=None,
+    prev_wmin=None,
+    prev_d_scale=None,
+    prev_d_wmin=None,
+    iter=None,
     **kwargs,
 ):
     """Quantizes and dequantizes a tensor using asymmetric integer quantization for formats like Q2_K, Q4_K, and Q5_K.
@@ -464,7 +624,6 @@ def quant_tensor_gguf_asym_dq(
     Args:
         tensor (torch.Tensor): Input tensor to quantize.
         bits (int): Number of bits for quantization.
-        v (float): Perturbation added before rounding.
         scale_dtype (torch.dtype): Data type for quantized scale.
         imatrix (torch.Tensor, optional): Importance matrix for weighted quantization.
 
@@ -474,21 +633,47 @@ def quant_tensor_gguf_asym_dq(
     if bits not in [2, 4, 5]:
         raise ValueError(f"bits={bits} not supported by rtn_int_asym_dq")
     orig_dtype = tensor.dtype
-    maxq = 2**bits - 1
+    maxq = int(2.0**bits) - 1
     group_size = 16 if bits == 2 else 32
-    split_num = 1
+    # The RTN-tuning path previously always ran the scale search unchunked (`split_num=1`),
+    # unlike the export/packing path (`ggml_quant` in packing.py) which already chunks large
+    # tensors. For very large single tensors (e.g. huge vocab embed/output projections),
+    # `search_gguf_scale_min_asym`'s unchunked candidate search allocates several full-size
+    # float32 buffers at once and can need tens of GB, causing OOM even though the model
+    # itself is small. Chunk it here too once the tensor is large enough to matter - but only
+    # then: chunking has real per-chunk Python-loop/kernel-launch overhead, so applying it to
+    # every ordinary attention/FFN weight (which never risked OOM in the first place) would
+    # just slow those down for no benefit. See `_LARGE_TENSOR_BYTES_THRESHOLD`.
+    split_num = 16 if tensor.nelement() * 4 > _LARGE_TENSOR_BYTES_THRESHOLD else 1
 
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
 
     tensor = tensor.to(torch.float32)
+    if iter is None:
+        iter = 0
+    use_cached_params = prev_scale is not None and iter % 10 != 0 and iter != -1
+    if use_cached_params and scale is None:
+        scale = prev_scale.detach()
+        wmin = prev_wmin.detach()
+        d_scale = prev_d_scale.detach()
+        d_wmin = prev_d_wmin.detach()
     if scale is None:
         scale, wmin, d_scale, d_wmin = search_gguf_scale_min_asym(
-            tensor, bits, scale_dtype, imatrix, split_num=split_num
+            tensor,
+            bits,
+            scale_dtype,
+            imatrix,
+            split_num=split_num,
+            v=v,
         )
+        scale = scale.clone()
+        wmin = wmin.clone()
+        d_scale = d_scale.clone()
+        d_wmin = d_wmin.clone()
 
     inverse_scale = get_reciprocal(scale)
     tensor = tensor + wmin
-    tensor = (tensor.mul_(inverse_scale)).round_().clamp_(0, maxq)
+    tensor = round_ste(tensor.mul_(inverse_scale) + v).clamp_(0, maxq)
     tensor = tensor.mul_(scale)
     tensor = tensor.sub_(wmin).to(orig_dtype)
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
@@ -497,13 +682,24 @@ def quant_tensor_gguf_asym_dq(
 
 # TODO consolidate iterative_wls_quant_search_chunk and non-chunk
 def iterative_wls_quant_search_chunk(
-    data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=1
+    data,
+    bits=4,
+    rrmin=-1.0,
+    rdelta=0.1,
+    nstep=20,
+    use_mad=False,
+    weights=None,
+    split_num=1,
+    v=0,
+    weights_row_pattern=None,
 ):
     dtype = torch.float32
     data = data.to(dtype)
-    maxq = 2**bits - 1
+    maxq = int(2.0**bits) - 1
     minq = 0
     weights = 1.0 if weights is None else weights.to(dtype)
+    # A 0-dim tensor (scalar tensor) cannot be sliced; treat it like a Python scalar.
+    v_is_tensor = isinstance(v, torch.Tensor) and v.dim() > 0
 
     results_scale = []
     results_rmin = []
@@ -513,14 +709,22 @@ def iterative_wls_quant_search_chunk(
     for start in range(0, data.shape[0], chunk_size):
         end = min(start + chunk_size, data.shape[0])
         chunk = data[start:end]
-        chunk_weights = weights if isinstance(weights, float) else weights[start:end]
+        if weights_row_pattern is not None:
+            # See `_imatrix_row_pattern`/`_gather_row_pattern`: gather this chunk's weights
+            # from the small repeating pattern instead of slicing a full-size `weights`.
+            chunk_weights = _gather_row_pattern(weights_row_pattern, start, end).to(dtype)
+        else:
+            chunk_weights = weights if isinstance(weights, float) else weights[start:end]
+        v_chunk = v[start:end] if v_is_tensor else v
 
         # Pre-allocate reusable buffers to avoid new allocations
         tmp = torch.empty_like(chunk)
         quant_data = torch.empty_like(chunk)
         diff = torch.empty_like(chunk)
 
-        rmin = torch.min(chunk, dim=1, keepdim=True)[0]
+        # Like llama.cpp's make_qkx2_quants, keep 0 in the range so the min is never
+        # positive: the packed K-quant formats can only store non-negative mins (-rmin).
+        rmin = torch.min(chunk, dim=1, keepdim=True)[0].clamp_(max=0)
         rmax = torch.max(chunk, dim=1, keepdim=True)[0]
         sum_w = torch.sum(chunk_weights, dim=1, keepdim=True)
         sum_x = torch.sum(chunk_weights * chunk, dim=1, keepdim=True)
@@ -528,8 +732,10 @@ def iterative_wls_quant_search_chunk(
         scale = (rmax - rmin) / (maxq - minq)
         iscale = get_reciprocal(scale)
 
-        # tmp = (chunk - rmin) * iscale
+        # tmp = (chunk - rmin) * iscale + v
         tmp.copy_(chunk).sub_(rmin).mul_(iscale)
+        if v_is_tensor or v != 0:
+            tmp.add_(v_chunk)
 
         # quant_data = round(tmp).clamp_()
         torch.round(tmp, out=quant_data)
@@ -550,8 +756,10 @@ def iterative_wls_quant_search_chunk(
             scale_new = (rmax - rmin) / factor
             iscale_new = get_reciprocal(scale_new)
 
-            # tmp = (chunk - rmin) * iscale_new
+            # tmp = (chunk - rmin) * iscale_new + v
             tmp.copy_(chunk).sub_(rmin).mul_(iscale_new)
+            if v_is_tensor or v != 0:
+                tmp.add_(v_chunk)
 
             torch.round(tmp, out=quant_data)
             quant_data.clamp_(minq, maxq)
@@ -575,8 +783,10 @@ def iterative_wls_quant_search_chunk(
 
             reverse_this_scale = get_reciprocal(this_scale)
 
-            # tmp = (chunk - this_min) * reverse_this_scale
+            # tmp = (chunk - this_min) * reverse_this_scale + v
             tmp.copy_(chunk).sub_(this_min).mul_(reverse_this_scale)
+            if v_is_tensor or v != 0:
+                tmp.add_(v_chunk)
 
             torch.round(tmp, out=quant_data)
             quant_data.clamp_(minq, maxq)
@@ -608,7 +818,16 @@ def iterative_wls_quant_search_chunk(
 
 
 def iterative_wls_quant_search(
-    data, bits=4, rrmin=-1.0, rdelta=0.1, nstep=20, use_mad=False, weights=None, split_num=1
+    data,
+    bits=4,
+    rrmin=-1.0,
+    rdelta=0.1,
+    nstep=20,
+    use_mad=False,
+    weights=None,
+    split_num=1,
+    v=0,
+    weights_row_pattern=None,
 ):
     """Adapted from Llamacpp. Performs iterative weighted least squares quantization search.
 
@@ -620,6 +839,10 @@ def iterative_wls_quant_search(
         nstep (int): Number of search steps.
         use_mad (bool): Whether to use mean absolute deviation instead of squared error.
         weights (torch.Tensor): Weight matrix for each element.
+        v: Optional rounding perturbation (scalar or tensor with the same
+            shape as ``data``) for AutoRound-style tuning.
+        weights_row_pattern: Optional small, row-repeating weight pattern (see
+            ``_imatrix_row_pattern``) used instead of a full-size ``weights`` tensor.
 
     Returns:
         Tuple: (Optimal scale tensor, optimal minimum value tensor)
@@ -636,28 +859,43 @@ def iterative_wls_quant_search(
         use_mad=use_mad,
         weights=weights,
         split_num=split_num,
+        v=v,
+        weights_row_pattern=weights_row_pattern,
     )
 
 
 @torch.inference_mode()
-def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num):
+def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num, v=0):
     if imatrix is None or (imatrix is not None and torch.sum(imatrix) == 0):
         if bits == 3:
             # Note: make_q3_quants does not support split_num/chunking;
             # 3-bit quantization is performed in a single chunk.
-            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True)
+            scale, int_w = make_q3_quants(tensor, bits=bits, do_rmse=True, v=v)
             # scale, int_w = make_qx_quants(tensor, bits=bits, rmse_type=1, qw=None)
         elif bits == 6:
-            scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=None, split_num=split_num)
+            scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=None, split_num=split_num, v=v)
     else:
         imatrix = imatrix.to(tensor.device)
-        weights = imatrix.reshape(1, -1)
-        weights = weights.expand(tensor.numel() // weights.numel(), -1)
-        quant_weights = weights.reshape(tensor.shape)
+        # See the analogous comment in `search_gguf_scale_min_asym`: broadcasting+reshaping
+        # imatrix to `tensor.shape` forces a full materialization proportional to the whole
+        # tensor, independent of `split_num`, since it happens before any chunking starts.
+        # Only fall back to that full materialization (needed for `_imatrix_handle_zero`'s
+        # explicit zero-row replacement) in the rare case calibration actually produced
+        # zero-valued entries; otherwise pass the small row-repeating pattern straight into
+        # the already-chunked `make_qx_quants_chunk`.
+        row_pattern = _imatrix_row_pattern(imatrix, tuple(tensor.shape[1:]))
+        quant_weights = None
+        qw_row_pattern = row_pattern
+        if torch.min(imatrix) == 0:
+            weights = imatrix.reshape(1, -1)
+            weights = weights.expand(tensor.numel() // weights.numel(), -1)
+            quant_weights = weights.reshape(tensor.shape)
+            quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits, raw_imatrix=imatrix)
+            qw_row_pattern = None
 
-        quant_weights = _imatrix_handle_zero(quant_weights, tensor, bits)
-
-        scale, int_w = make_qx_quants_chunk(tensor, bits=bits, rmse_type=1, qw=quant_weights, split_num=split_num)
+        scale, int_w = make_qx_quants_chunk(
+            tensor, bits=bits, rmse_type=1, qw=quant_weights, qw_row_pattern=qw_row_pattern, split_num=split_num, v=v
+        )
     if split_num > 1:
         clear_memory(device_list=[tensor.device])
     return scale
@@ -667,9 +905,13 @@ def search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num):
 def quant_tensor_gguf_sym_dq(
     tensor,
     bits=3,
+    v=0,
     imatrix=None,
     scale=None,
     d_scale=None,
+    prev_scale=None,
+    prev_d_scale=None,
+    iter=None,
     scale_dtype=torch.float16,
     split_num=1,
     **kwargs,
@@ -679,7 +921,6 @@ def quant_tensor_gguf_sym_dq(
     Args:
         tensor: Tensor containing the tensor to be quantized
         bits: Number of bits for quantization (e.g., 2, 3, 4, 8)
-        v: Rounding value perturbation
         min_scale: Minimum scale coefficient for tensor
         max_scale: Maximum scale coefficient for tensor
         tensor_min (Tensor, optional): Minimum tensor value for quantization. Defaults to None.
@@ -691,12 +932,12 @@ def quant_tensor_gguf_sym_dq(
         Quantized and de-quantized tensor, scale, zero-point
     """
 
-    from auto_round.export.export_to_gguf.config import K_SCALE_SIZE, QK_K
+    from auto_round.export.formats.gguf.config import K_SCALE_SIZE
 
     if bits not in [3, 6]:
         raise KeyError(f"bits={bits} is not supported by gguf_int_sym_dq, please check.")
 
-    maxq = 2 ** (bits - 1)
+    maxq = int(2.0 ** (bits - 1))
     group_size = 16
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     orig_dtype = tensor.dtype
@@ -706,22 +947,37 @@ def quant_tensor_gguf_sym_dq(
     block_size, type_size = GGML_QUANT_SIZES[ggml_type]
     tensor = tensor.to(torch.float32)
     n_blocks = tensor.nelement() // block_size
+    # Chunk the candidate-scale search for very large single tensors (e.g. huge vocab
+    # embed/output projections). This search allocates several full-size float32 buffers
+    # at once; unchunked, that can need tens of GB for a single tensor and OOM even though
+    # the overall model is small. Callers pass split_num=1 by default; bump it here once the
+    # tensor is large enough to matter (see `_LARGE_TENSOR_BYTES_THRESHOLD`), mirroring the
+    # heuristic already used in the export/packing path (`ggml_quant` in packing.py). Chunking
+    # has real per-chunk overhead, so it's deliberately NOT applied below that threshold -
+    # ordinary attention/FFN weights never needed it and would just get slower for no benefit.
+    if split_num == 1 and tensor.nelement() * 4 > _LARGE_TENSOR_BYTES_THRESHOLD:
+        split_num = 16
     # (nb, 16, 16)
     tensor = tensor.reshape(n_blocks, super_group_size, QK_K // super_group_size)
-    if scale is None and d_scale is None:
-        scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num=split_num)
-
-    scale = scale.to(scale_dtype)
-    scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
-    # conduct double quant
-    scale, d_scale = double_quant_tensor_sym_rtn(scale, super_bits)
-
-    scale = scale.unsqueeze(-1)
+    if iter is None:
+        iter = 0
+    use_cached_params = prev_scale is not None and iter % 10 != 0 and iter != -1
+    if use_cached_params and scale is None:
+        scale = prev_scale.detach()
+        d_scale = prev_d_scale.detach()
+    if scale is None or d_scale is None:
+        scale = search_gguf_scale_min_sym(tensor, bits, imatrix, scale_dtype, split_num=split_num, v=v)
+        scale = scale.to(scale_dtype)
+        scale = torch.where(torch.abs(scale) < 1e-30, torch.zeros_like(scale), scale)
+        scale, d_scale = double_quant_tensor_sym_rtn(scale, super_bits)
+        scale = scale.clone()
+        d_scale = d_scale.clone()
+        scale = scale.unsqueeze(-1)
     # zp = torch.full_like(scale, maxq)  # pylint: disable=E1130
     inverse_scale = get_reciprocal(scale)
     # int_w = round_ste(tensor * inverse_scale).clip(-maxq, maxq - 1) + maxq
     # qdq_result = (scale * (int_w - zp)).to(orig_dtype)
-    tensor = tensor.mul_(inverse_scale).round_().clamp_(-maxq, maxq - 1)
+    tensor = round_ste(tensor.mul_(inverse_scale) + v).clamp_(-maxq, maxq - 1)
     tensor = tensor.mul_(scale).to(orig_dtype)
     tensor = revert_tensor_by_pad(tensor, orig_shape=orig_shape, pad_len=pad_len)
 

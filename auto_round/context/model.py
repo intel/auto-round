@@ -1,0 +1,623 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import gc
+import importlib
+import os
+from collections.abc import Callable
+from typing import Any
+
+import torch
+import transformers
+from packaging import version
+from transformers import AutoConfig
+
+from auto_round import envs
+from auto_round.compressors.utils import get_shared_keys
+from auto_round.context.base import BaseContext
+from auto_round.logger import logger
+from auto_round.modeling.nemotron_h_omni import apply_nemotron_h_omni_post_load
+from auto_round.modeling.unfused_moe import apply_model_monkey_patches
+from auto_round.special_model_handler import _handle_special_model, update_module
+from auto_round.utils import (
+    cast_model_dtype,
+    check_and_mark_quantized_module,
+    diffusion_load_model,
+    install_debug_layer_config_patch,
+    is_diffusion_model,
+    is_mllm_model,
+    is_moe_model,
+    is_moe_model_via_config,
+    llm_load_model,
+    mllm_load_model,
+    unsupported_meta_device,
+)
+from auto_round.utils.device import _force_trim_malloc
+from auto_round.utils.device_manager import device_manager, get_ar_device
+
+__all__ = ["ModelContext"]
+
+_CUSTOM_MOE_REPLACEMENT_MODULES = {
+    "gpt_oss": "auto_round.modeling.fused_moe.gpt_oss",
+}
+
+
+class ModelContext(BaseContext):
+    _is_initialized = False
+
+    # model_related
+    _model_loaded = False
+    _init_model = False
+    hook_handles = []
+
+    def __init__(
+        self,
+        model: torch.nn.Module | str | None = None,
+        tokenizer: Any = None,
+        platform: str = "hf",
+        model_dtype: str | torch.dtype | None = None,
+        trust_remote_code: bool = True,
+        config: AutoConfig | None = None,
+        amp: bool = True,
+        need_calib: bool = True,
+        is_act_quantize: bool = False,
+        quant_nontext_module: bool = False,
+        parallel_config=None,
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        from auto_round.parallel import ParallelConfig
+
+        self.parallel_config = ParallelConfig.from_value(parallel_config)
+        self.quantized = False
+        self.is_mllm = False
+        self.is_diffusion = False
+        self.is_model_patched = False
+        self.is_moe_model = False
+        # Set by CalibCompressor._replace_forward; used by recover_forward to detect
+        # new-arch diffusion mode where positional wrapper must be stripped after caching.
+        self._has_true_orig_forward_set = False
+
+        assert model is not None, "model must be provided for ModelContext"
+        self.model = model
+        self.tokenizer = tokenizer
+
+        # MLLM / diffusion artifacts – always present so callers need no getattr guards.
+        # _load_model() will populate the ones that are relevant to the model type.
+        self.processor = None
+        self.image_processor = None
+        self.pipe = None
+        self.preloaded_diffusion_pipeline = False
+
+        # AWQ weight-clip thresholds kept for downstream block quantizers.
+        # Populated by AWQTransform when ``apply_clip`` is enabled; keyed by
+        # layer ``global_name`` -> per-group clip magnitude tensor. SignRound /
+        # SignRoundV2 use these to initialize their tunable weight range.
+        self.awq_clip_values: dict = {}
+
+        if envs.AR_USE_MODELSCOPE:
+            platform = "model_scope"
+        self.platform = platform
+        self.model_dtype = model_dtype
+        self.trust_remote_code = trust_remote_code
+        self.config = config
+        self.amp = amp
+        self.need_calib = need_calib
+        self.quant_nontext_module = quant_nontext_module
+
+        # Remember the original string model name
+        # so OffloadManager can later materialize blocks directly from this
+        # checkpoint.
+        self.disk_stream_model_dir = model if isinstance(model, str) else None
+        self._disk_stream_index = None
+
+        # Load model and run basic initialization eagerly so the model is ready
+        # by the time BaseCompressor.post_init() runs.
+        self._load_model()
+
+        if self._disk_stream_index is None and unsupported_meta_device(self.model):
+            raise RuntimeError(
+                "AutoRound does not support parameters on meta device. "
+                "Please use more GPUs by setting `--device 0,1,2,3` or just place the model on CPU."
+            )
+        if self._disk_stream_index is not None:
+            self._materialize_disk_stream_non_block_params()
+        check_and_mark_quantized_module(self.model)
+        self.model = self.model.eval()
+        self.shared_cache_keys = get_shared_keys(self.model)
+
+        self.is_moe_model = is_moe_model(self.model)
+        self._import_custom_moe_replacements(getattr(self.model, "config", None))
+
+        self._set_amp_dtype()
+        if is_act_quantize and self.amp_dtype == torch.float16:
+            logger.warning("force to use bf16 for quantization tuning when enabling activation quantization")
+            self.amp_dtype = torch.bfloat16
+            if self.model.dtype != torch.bfloat16:
+                self.model = cast_model_dtype(self.model, torch.bfloat16)
+        else:
+            logger.debug(f"using {self.model.dtype} for quantization tuning")
+
+        # Reclaim C heap fragmentation left by model/tokenizer loading so
+        # that the quantize loop starts from a tighter RSS baseline.
+        gc.collect()
+        _force_trim_malloc()
+
+    @property
+    def device(self) -> str:
+        """The active (major) device, single-sourced from the DeviceManager."""
+        return device_manager.device
+
+    @device.setter
+    def device(self, value) -> None:
+        device_manager.device = value
+
+    def _load_model(self):
+        # Debug helper: when AR_DEBUG_LAYER_NUM is set, patch transformers config
+        # loading so every branch below (llm / mllm / diffusion / meta skeleton)
+        # loads only the first N decoder layers. No-op otherwise.
+        install_debug_layer_config_patch()
+        if self.parallel_config.tp_size > 1:
+            self._load_tp_model()
+        elif is_diffusion_model(self.model):
+            self.is_diffusion = True
+            self.preloaded_diffusion_pipeline = not isinstance(self.model, str)
+            default_torch_dtype = "auto"
+            if self.amp and get_ar_device(self.device).supports_bf16():
+                default_torch_dtype = torch.bfloat16
+            self.pipe, self.model = diffusion_load_model(
+                self.model,
+                platform=self.platform,
+                device="cpu",
+                model_dtype=self.model_dtype,
+                default_torch_dtype=default_torch_dtype,
+            )
+        elif is_mllm_model(self.model, platform=self.platform):
+            self.is_mllm = True
+            if isinstance(self.model, str):
+                # Multimodal checkpoints used to
+                # bypass disk streaming entirely -- mllm_load_model fully
+                # materializes the checkpoint on CPU, infeasible for a 100B+
+                # VLM (e.g. Ornith). Build the same meta skeleton the text
+                # path uses (build_meta_model resolves the multimodal class
+                # from config.architectures) and load the processor stack
+                # cheaply; non-block params INCLUDING the whole vision tower
+                # (small, and needed real for calibration forwards and RTN)
+                # are materialized right after the meta-device guard in
+                # __init__, exactly like the text path. Falls back to the
+                # full mllm_load_model on any failure.
+                loaded_via_meta = False
+                if self._should_use_meta_skeleton(self._peek_config()):
+                    try:
+                        self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
+                            self.disk_stream_model_dir
+                        )
+                        loaded_via_meta = True
+                        from transformers import AutoProcessor
+
+                        try:
+                            self.processor = AutoProcessor.from_pretrained(
+                                self.disk_stream_model_dir, trust_remote_code=self.trust_remote_code
+                            )
+                            self.image_processor = getattr(self.processor, "image_processor", None)
+                        except Exception:
+                            logger.warning(
+                                "AutoProcessor failed for %s; keeping the meta skeleton (text-only calibration).",
+                                self.disk_stream_model_dir,
+                                exc_info=True,
+                            )
+                            self.processor = None
+                            self.image_processor = None
+                    except Exception:
+                        logger.warning(
+                            "Building a multimodal meta skeleton for %s failed; " "falling back to a full CPU load.",
+                            self.disk_stream_model_dir,
+                            exc_info=True,
+                        )
+                        self._disk_stream_index = None
+                if not loaded_via_meta:
+                    self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
+                        self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+                    )
+        elif isinstance(self.model, str):
+            config = self.config
+            try:
+                if config is None:
+                    config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
+                self._import_custom_moe_replacements(config)
+            except (OSError, ValueError) as e:
+                logger.debug(
+                    "Failed to load config via AutoConfig.from_pretrained for %s: %s. "
+                    "Proceeding without config-based checks.",
+                    self.model,
+                    e,
+                )
+
+            self.is_model_patched = apply_model_monkey_patches(
+                model_name=self.model, trust_remote_code=self.trust_remote_code
+            )
+
+            # Reclaim temporary HTTP/config objects from model type detection
+            # and AutoConfig loading before the large model allocation.  This
+            # reduces heap fragmentation especially on HPU where habana internal
+            # allocations amplify fragmentation into persistent RSS growth.
+            gc.collect()
+            _force_trim_malloc()
+
+            if self._should_use_meta_skeleton(config):
+                try:
+                    self.model, self.tokenizer, self._disk_stream_index = self._build_disk_stream_model(
+                        self.disk_stream_model_dir
+                    )
+                except Exception:
+                    logger.warning(
+                        "Building a meta skeleton for %s failed; falling back to a normal full CPU load.",
+                        self.disk_stream_model_dir,
+                        exc_info=True,
+                    )
+                    self._disk_stream_index = None
+                    self.model, self.tokenizer = llm_load_model(
+                        self.model,
+                        platform=self.platform,
+                        device="cpu",
+                        model_dtype=self.model_dtype,
+                        trust_remote_code=self.trust_remote_code,
+                    )
+            else:
+                self.model, self.tokenizer = llm_load_model(
+                    self.model,
+                    platform=self.platform,
+                    device="cpu",  # always load cpu first
+                    model_dtype=self.model_dtype,
+                    trust_remote_code=self.trust_remote_code,
+                )
+        elif self.tokenizer is None and not self.is_diffusion and self.need_calib:
+            raise ValueError("A tokenizer must be set for non-str model input")
+
+        # Nemotron-H Omni wrappers: restore FP32 SSM/router tensors and the gated-norm
+        # group_size after loading. No-op for every other model.
+        apply_nemotron_h_omni_post_load(self.model)
+        self._model_loaded = True
+
+        # Clear tuning_device from any previous quantization passes.
+        # Previous AutoRound runs may have set tuning_device on modules to match
+        # their device_map (e.g., cpu). When re-quantizing with a different
+        # device_map, stale tuning_device causes device mismatches (WrapperLinear
+        # uses orig_layer.tuning_device instead of the current device_manager.device).
+        for m in self.model.modules():
+            if hasattr(m, "tuning_device"):
+                delattr(m, "tuning_device")
+
+    def _load_tp_model(self) -> None:
+        """Load or validate native TP parameters without combining them with device_map.
+
+        Update this context's model and tokenizer, adapt supported MoE experts in place,
+        and disable disk-stream loading for the resulting distributed model.
+
+        Raises:
+            ValueError: The model lacks a TP plan, requires a tokenizer, or has invalid shards.
+            NotImplementedError: The architecture, mesh, or expert layout is unsupported.
+        """
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        from auto_round.parallel.tp.moe import prepare_tp_moe
+        from auto_round.parallel.tp.runtime import validate_tp_model
+
+        config = self.config if isinstance(self.model, str) else getattr(self.model, "config", None)
+        if config is None:
+            config = AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
+        if not getattr(config, "base_model_tp_plan", None):
+            raise ValueError("The model config must define base_model_tp_plan for native TP.")
+        if getattr(config, "is_encoder_decoder", False):
+            raise NotImplementedError("Native TP currently supports decoder-only language models.")
+        if isinstance(self.model, str):
+            name = self.model
+            self.model = AutoModelForCausalLM.from_pretrained(
+                name,
+                config=config,
+                dtype=self.model_dtype or "auto",
+                trust_remote_code=self.trust_remote_code,
+                distributed_config=self.parallel_config.to_transformers_config(),
+            )
+            if self.tokenizer is None:
+                self.tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=self.trust_remote_code)
+        elif self.tokenizer is None and self.need_calib:
+            raise ValueError("A tokenizer must be set for non-str model input.")
+        validate_tp_model(self.model, self.parallel_config.tp_size)
+        prepare_tp_moe(self.model)
+        self.disk_stream_model_dir = None
+
+    def _peek_config(self):
+        """Best-effort config lookup before the model object exists."""
+        if self.config is not None:
+            return self.config
+        if not isinstance(self.model, str):
+            return getattr(self.model, "config", None)
+        try:
+            return AutoConfig.from_pretrained(self.model, trust_remote_code=self.trust_remote_code)
+        except Exception as exc:
+            logger.debug("could not peek the config of %s: %s", self.model, exc)
+            return None
+
+    def _should_use_meta_skeleton(self, config) -> bool:
+        """Whether to build a meta skeleton instead of a full CPU load.
+
+        Deliberately narrow: this only targets ``transformers>=5`` models whose experts are
+        stored as a *fused* 3D ``nn.Parameter``. The fused parameter may be produced by a
+        Transformers checkpoint converter from per-expert 2D tensors, or already be stored
+        as 3D ``gate_up_proj``/``down_proj`` tensors in the checkpoint. AutoRound has to
+        split either layout back into per-expert ``nn.Linear`` modules to quantize it, and
+        splitting real tensors needs the fused tensor and its per-expert copies alive at
+        once, i.e. ~2x one experts module on top of an already fully resident model.
+
+        Building on meta makes that unfuse allocation-free and lets the tuning loop
+        materialize one block at a time from the checkpoint. Every other model (dense, or
+        a MoE that already ships as ``ModuleList`` of ``Linear``) has nothing to gain and
+        keeps the ordinary load path. ``AR_DISK_STREAM_MODEL=1`` forces this on for any
+        model; ``AR_DISABLE_META_LOAD=1`` turns the automatic choice off.
+        """
+        if envs.AR_DISK_STREAM_MODEL:
+            return True
+        if envs.AR_DISABLE_META_LOAD:
+            return False
+        # The debug "load only N layers" path (AR_DEBUG_LAYER_NUM) relies on the
+        # normal from_pretrained load so the truncated config is honored; the meta
+        # skeleton streams the full checkpoint block-by-block and would ignore it.
+        if envs.AR_DEBUG_LAYER_NUM is not None:
+            return False
+        if not isinstance(self.model, str):
+            return False
+        if version.parse(transformers.__version__) < version.parse("5.0.0"):
+            return False
+        if config is None:
+            return False
+
+        from auto_round.modeling.fused_moe.moe_experts_interface import (
+            _config_model_types,
+            config_has_fused_moe_experts,
+        )
+        from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+        from auto_round.utils.disk_stream_util import checkpoint_has_native_fused_moe_experts
+
+        # Families with a dedicated replacement drive their own (already memory-aware)
+        # materialization; do not reroute them through the meta skeleton.
+        dedicated_model_type = next(
+            (model_type for model_type in _config_model_types(config) if model_type in BUILTIN_MODULES), None
+        )
+        if dedicated_model_type is not None:
+            logger.debug("meta-skeleton load skipped: %s has a dedicated MoE replacement", dedicated_model_type)
+            return False
+
+        checkpoint_dir = self._resolve_local_checkpoint_dir()
+        if checkpoint_dir is None:
+            logger.debug("meta-skeleton load skipped: %s is not addressable as a local directory", self.model)
+            return False
+        if not config_has_fused_moe_experts(config) and not checkpoint_has_native_fused_moe_experts(checkpoint_dir):
+            return False
+        self.disk_stream_model_dir = checkpoint_dir
+        logger.info(
+            "Fused-MoE checkpoint detected: building a meta skeleton and materializing weights per block "
+            "(set `AR_DISABLE_META_LOAD=1` to load the whole model on CPU instead)."
+        )
+        return True
+
+    def _resolve_local_checkpoint_dir(self) -> str | None:
+        """Return a local directory holding the checkpoint shards, or ``None``.
+
+        ``SafetensorsIndex`` reads shards by path, so a hub repo id has to be resolved to
+        a local snapshot first. Only the metadata + weights are fetched, and nothing is
+        read into memory here -- ``from_pretrained`` would have downloaded the same files.
+        """
+        if os.path.isdir(self.model):
+            return self.model
+        if envs.AR_USE_MODELSCOPE:
+            return None
+        try:
+            from huggingface_hub import snapshot_download
+
+            return snapshot_download(
+                self.model,
+                allow_patterns=["*.safetensors", "*.safetensors.index.json", "*.json", "*.txt", "*.model"],
+            )
+        except Exception as exc:
+            logger.debug("could not resolve %s to a local snapshot: %s", self.model, exc)
+            return None
+
+    def _build_disk_stream_model(self, model_name: str):
+        """Build an all-meta skeleton instead of
+        fully materializing the checkpoint on CPU RAM. Left fully meta here
+        (not even embeddings/lm_head materialized yet) so it passes the
+        existing ``unsupported_meta_device`` guard, which only allows models
+        that are either fully real or fully meta (with ``model.path`` set).
+        Non-block params are materialized for real right after that guard
+        runs, in ``__init__``, via ``_materialize_disk_stream_non_block_params``.
+        """
+        from auto_round.utils.disk_stream_util import build_meta_model
+        from auto_round.utils.missing_tensors import keep_special_fp32_params
+
+        model, tokenizer, index = build_meta_model(model_name, trust_remote_code=self.trust_remote_code)
+        keep_special_fp32_params(model, model_name)
+        model.path = model_name
+        # Stash the index on the model object
+        # itself so downstream code that only has a reference to the model
+        # (not this ModelContext) -- e.g. AutoScheme's gen_layer_config, which
+        # runs after ModelContext has already turned the string into an object
+        # -- can still find it instead of re-scanning the checkpoint.
+        model._disk_stream_index = index
+        return model, tokenizer, index
+
+    def _materialize_disk_stream_non_block_params(self) -> None:
+        """Materialize embeddings/lm_head/norm (everything outside the
+        quantizable decoder blocks) for real, leaving the (typically 100+GB
+        combined) decoder blocks on meta for later per-block materialize/free
+        by OffloadManager. No-op unless the model was built via
+        ``_build_disk_stream_model``."""
+        if self._disk_stream_index is None:
+            return
+        from auto_round.utils import flatten_list, get_block_names
+        from auto_round.utils.disk_stream_util import materialize_non_block_params
+
+        block_prefixes = flatten_list(get_block_names(self.model, quant_vision=self.quant_nontext_module))
+        materialize_non_block_params(self.model, block_prefixes, self._disk_stream_index, device="cpu")
+
+        # Tied output embeddings (e.g. lm_head.weight
+        # tied to embed_tokens.weight) have no entry of their own in the checkpoint's
+        # safetensors index -- the on-disk format only stores the input embedding and
+        # relies on the model re-establishing the tie at load time. A normal
+        # from_pretrained() handles this automatically; our meta-skeleton +
+        # per-tensor materialize path does not, so without this the tied output
+        # module is silently left on meta (materialize_non_block_params only logs a
+        # warning and moves on). Re-tying now, after the real input embedding has
+        # been materialized above, makes the tied module real too by sharing the
+        # same (now real) Parameter object.
+        if hasattr(self.model, "tie_weights"):
+            self.model.tie_weights()
+
+    def _import_custom_moe_replacements(self, model_or_config) -> None:
+        model_type = getattr(model_or_config, "model_type", None)
+        module_name = _CUSTOM_MOE_REPLACEMENT_MODULES.get(model_type)
+        if module_name is None:
+            return
+
+        module = importlib.import_module(module_name)
+        from auto_round.modeling.fused_moe.replace_modules import BUILTIN_MODULES
+
+        BUILTIN_MODULES.setdefault(model_type, module)
+        logger.debug(f"Loaded custom MoE replacement module for {model_type}")
+
+    def _patch_custom_moe_modules(self) -> None:
+        model_type = getattr(getattr(self.model, "config", None), "model_type", None)
+        if model_type != "qwen3_vl_moe":
+            return
+
+        for module in self.model.modules():
+            if module.__class__.__name__ != "Qwen3VLMoeTextSparseMoeBlock":
+                continue
+            if hasattr(module, "top_k"):
+                continue
+
+            gate = getattr(module, "gate", None)
+            top_k = getattr(gate, "top_k", None)
+            if top_k is not None:
+                module.top_k = top_k
+
+    def _set_amp_dtype(self) -> None:
+        """Sets the automatic mixed precision (AMP) data type for the model based on the device and configuration.
+
+        The device only exposes capability/preference primitives
+        (``supports_bf16`` / ``prefers_bf16``); this method composes them into
+        the final ``amp`` / ``amp_dtype`` decision.
+        """
+        device = get_ar_device(self.device)
+        if not self.amp:
+            self.amp_dtype = torch.float32
+        else:
+            amp_dtype = torch.bfloat16
+            if self.model.dtype != torch.float32:
+                amp_dtype = self.model.dtype
+            # bf16-preferring backends (CPU/HPU/...) override the model dtype.
+            if device.prefers_bf16():
+                amp_dtype = torch.bfloat16
+            # Fall back to fp32 (and disable amp) when bf16 is unsupported.
+            if amp_dtype == torch.bfloat16 and not device.supports_bf16():
+                self.amp = False
+                amp_dtype = torch.float32
+                logger.warning(
+                    f"amp is set to FALSE as the current {self.device} device does not support the 'bf16' data type."
+                )
+            self.amp_dtype = amp_dtype
+        if self.model.dtype != self.amp_dtype:
+            self.model = cast_model_dtype(self.model, self.amp_dtype)
+
+    def apply_patches(self, formats):
+        """Apply format-specific model structure patches.
+
+        Must be called after formats are resolved (list[OutputFormat]) and before
+        BaseQuantizer.post_init() so that configure_layer_config() operates on the
+        final model structure (post update_module).  Eliminates the need for a
+        subsequent refresh_quantizer_for_initialized_model() call.
+        """
+        # It is best to modify the model structure in the quantize function and check the format,
+        # because it may cause the gguf format to not be exported normally.
+        if self.parallel_config.tp_size == 1:
+            self._patch_custom_moe_modules()
+            self.model = update_module(
+                self.model, formats=formats, trust_remote_code=self.trust_remote_code, cleanup_original=False
+            )
+            self.model = _handle_special_model(self.model)
+
+        # Temporary names must be assigned after handle_moe_model;
+        # placing them earlier would cause them to be removed when the module is replaced.
+        for n, m in self.model.named_modules():
+            m.global_name = n
+
+        if self.amp and self.model.dtype != self.amp_dtype:
+            self.model = cast_model_dtype(self.model, self.amp_dtype)
+
+        self._init_model = True
+        self._is_initialized = True
+
+    def replace_forward(self, register_hook):
+        """Replaces the forward function.
+        register_hook(layer_name, module, hook_handles)
+        """
+        assert self._init_model, "should load and initialize model first"
+        hook_handles = []
+
+        for n, m in self.model.named_modules():
+            register_hook(n, m, hook_handles)
+
+        self.hook_handles = hook_handles
+
+    def recover_forward(self, restore_positional_wrapper=None):
+        """Recovers the forward function.
+
+        Args:
+            restore_positional_wrapper: If True, restores forward to the wrapped version
+                (needed for LLM calibration where positional wrapper is used during quantization).
+                If False, restores to the true original forward (needed for diffusion).
+                If None (default), auto-detects: uses False for diffusion models.
+        """
+        assert self._init_model, "should load and initialize model first"
+
+        # Auto-detect for diffusion: when _true_orig_forward is present (set by
+        # CalibCompressor._replace_forward), we are in new-arch diffusion mode where
+        # the positional wrapper must be fully removed after caching.
+        if restore_positional_wrapper is None:
+            restore_positional_wrapper = not getattr(self, "_has_true_orig_forward_set", False)
+            if not restore_positional_wrapper:
+                logger.debug("recover_forward: auto-detected diffusion mode, stripping positional wrapper")
+
+        for n, m in self.model.named_modules():
+            if hasattr(m, "orig_forward"):
+                true_orig = getattr(m, "_true_orig_forward", m.orig_forward)
+                if restore_positional_wrapper:
+                    # Restore orig_forward so that any wrapper (e.g. from
+                    # wrap_block_forward_positional_to_kwargs) can still access it.
+                    # The wrapper holds a closure reference to orig_forward.
+                    m.forward = getattr(m, "_wrapped_forward_before_replace", m.orig_forward)
+                    m.orig_forward = true_orig
+                else:
+                    # Full recovery: restore the true original forward.  Used for diffusion
+                    # where the positional wrapper must be fully removed after caching.
+                    m.forward = true_orig
+                    # Keep _true_orig_forward so the wrapped forward's base_hook can
+                    # still call it during quantization tuning.
+                    m._true_orig_forward = true_orig
+                    delattr(m, "orig_forward")
+                    if hasattr(m, "_wrapped_forward_before_replace"):
+                        delattr(m, "_wrapped_forward_before_replace")
+        for hook_handle in self.hook_handles:
+            hook_handle.remove()
+        self.hook_handles = []

@@ -11,16 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import itertools
 import os
 import re
-from typing import Union
+from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
+from packaging.version import Version
 from tqdm import tqdm
 from transformers.pytorch_utils import Conv1D
 
-from auto_round.formats import AutoRoundExportFormat
+from auto_round.export.formats import BackendDataType
 from auto_round.inference.backend import (
     BackendInfos,
     dynamic_import_inference_linear,
@@ -35,17 +37,19 @@ from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import update_module
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
+    apply_checkpoint_conversion_mapping,
     check_start_with_block_name,
     check_to_quantized,
     find_matching_blocks,
     get_block_names,
+    get_checkpoint_conversion_mapping,
     get_module,
     is_hpex_available,
     is_transformers_version_greater_or_equal_5,
     set_module,
 )
 
-supported_devices = ("cpu", "hpu", "xpu", "cuda")
+supported_devices = ("cpu", "hpu", "xpu", "cuda", "mps")
 
 
 def flatten_list(nested_list):
@@ -62,12 +66,12 @@ def skip_not_convert_modules(model, quantization_config, layer_names, layer_conf
     modules_to_not_convert = getattr(quantization_config, "modules_to_not_convert", [])
     try:  # transformers new api
         modules_to_not_convert = get_modules_to_not_convert(model, modules_to_not_convert, add_default_skips=True)
-    except:
+    except Exception:
         modules_to_not_convert = _get_modules_to_not_convert(model, modules_to_not_convert)
     if modules_to_not_convert:
         for layer_name in layer_names:
-            if any([re.search(re.compile(n), layer_name) for n in modules_to_not_convert]):
-                layer_configs[layer_name] = {"bits": 16}
+            if any(re.search(re.compile(n), layer_name) for n in modules_to_not_convert):
+                layer_configs[layer_name] = {"bits": 16, "act_bits": 16}
     return layer_configs
 
 
@@ -89,14 +93,17 @@ def get_keys_to_not_convert(model):
     # Create a copy of the model and tie the weights, then
     # check if it contains tied weights
     tied_model = deepcopy(model)  # this has 0 cost since it is done inside `init_empty_weights` context manager`
+    if not hasattr(tied_model, "tie_weights") and not hasattr(model, "get_output_embeddings"):
+        return []  # not a LLM model, could be a diffusers model
+
     tied_model.tie_weights()
 
     tied_params = find_tied_parameters(tied_model)
     # For compatibility with Accelerate < 0.18
     if isinstance(tied_params, dict):
-        tied_keys = sum(list(tied_params.values()), []) + list(tied_params.keys())
+        tied_keys = list(itertools.chain.from_iterable(tied_params.values())) + list(tied_params.keys())
     else:
-        tied_keys = sum(tied_params, [])
+        tied_keys = list(itertools.chain.from_iterable(tied_params))
     has_tied_params = len(tied_keys) > 0
 
     # If there is not tied weights, we want to keep the lm_head（output_embedding) in full precision
@@ -149,7 +156,7 @@ try:
     from transformers.quantizers.base import HfQuantizer
 
     get_modules_to_not_convert = HfQuantizer.get_modules_to_not_convert
-except:
+except Exception:
     get_modules_to_not_convert = _get_modules_to_not_convert
 
 
@@ -171,9 +178,62 @@ def get_available_devices():
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         devices.append("xpu")
 
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        devices.append("mps")
+
     devices.append("cpu")  # Always available
 
     return devices
+
+
+def _remap_paths_for_text_model(model, quant_block_list, extra_config):
+    """Remap quantization paths when a composite model checkpoint is loaded as its text sub-model.
+
+    Uses Transformers' conversion_mapping rules (WeightRenaming, PrefixChange, etc.)
+    to fix path mismatches. Returns (remapped_block_list, remapped_extra_config).
+    """
+    try:
+        from transformers.conversion_mapping import get_checkpoint_conversion_mapping
+    except ImportError:
+        return quant_block_list, extra_config
+
+    model_type = getattr(getattr(model, "config", None), "model_type", None)
+    if model_type is None:
+        return quant_block_list, extra_config
+
+    mapping = get_checkpoint_conversion_mapping(model_type)
+
+    # For composite models (e.g. VLMs), the composite model_type may not have a mapping,
+    # but the text sub-model type does.
+    if not mapping:
+        text_config = getattr(getattr(model, "config", None), "text_config", None)
+        text_model_type = getattr(text_config, "model_type", None)
+        if text_model_type:
+            mapping = get_checkpoint_conversion_mapping(text_model_type)
+
+    if not mapping:
+        return quant_block_list, extra_config
+
+    # Accept any mapping type that has source_patterns and target_patterns
+    renamings = [r for r in mapping if hasattr(r, "source_patterns") and hasattr(r, "target_patterns")]
+    if not renamings:
+        return quant_block_list, extra_config
+
+    def remap(path):
+        for r in renamings:
+            for src, tgt in zip(r.source_patterns, r.target_patterns):
+                new_path = re.sub(src, tgt, path)
+                if new_path != path:
+                    return new_path
+        return path
+
+    new_block_list = [remap(b) for b in quant_block_list]
+    new_extra_config = {remap(k): v for k, v in extra_config.items()} if extra_config else extra_config
+
+    if new_block_list != quant_block_list:
+        logger.info(f"Remapped block_name_to_quantize: {quant_block_list} -> {new_block_list}")
+
+    return new_block_list, new_extra_config
 
 
 def get_layer_config(model, quantization_config):
@@ -211,7 +271,7 @@ def get_layer_config(model, quantization_config):
     act_data_type = getattr(quantization_config, "act_data_type", None)
     act_dynamic = getattr(quantization_config, "act_dynamic", False)
 
-    hadamard_config = getattr(quantization_config, "hadamard_config", None)
+    rotation_config = getattr(quantization_config, "rotation_config", None)
 
     default_quant_scheme = QuantizationScheme(
         bits=bits,
@@ -223,12 +283,35 @@ def get_layer_config(model, quantization_config):
         act_sym=act_sym,
         act_data_type=act_data_type,
         act_dynamic=act_dynamic,
-        hadamard_config=hadamard_config,
+        rotation_config=rotation_config,
     )
 
     # Determine the quantization block list
+    checkpoint_conversion_mapping = get_checkpoint_conversion_mapping(model)
+
+    # Determine whether to apply the conversion mapping.
+    # If the model's module paths match the source patterns of the mapping, the model is
+    # a composite model (e.g., VLM loaded via AutoModelForImageTextToText) whose paths are
+    # already in checkpoint namespace — remapping would incorrectly alter them.
+    # Only when the model is loaded as a text sub-model (e.g., via AutoModelForCausalLM)
+    # do its paths differ from checkpoint namespace and require remapping.
+    _should_remap = bool(checkpoint_conversion_mapping) and not any(
+        re.match(src, name) for name, _ in model.named_modules() for src in checkpoint_conversion_mapping
+    )
+
     quant_block_list = getattr(quantization_config, "quant_block_list", None)
-    if quant_block_list is None:
+    if quant_block_list is not None:
+        # Handle nested list format: [[block1, block2, ...], ...] -> [prefix1, ...]
+        if quant_block_list and isinstance(quant_block_list[0], (list, tuple)):
+            for i in range(len(quant_block_list)):
+                quant_block_list[i] = (
+                    apply_checkpoint_conversion_mapping(
+                        os.path.commonprefix(quant_block_list[i]).rstrip("."), checkpoint_conversion_mapping
+                    )
+                    if _should_remap
+                    else os.path.commonprefix(quant_block_list[i]).rstrip(".")
+                )
+    elif quant_block_list is None:
         to_quant_block_names = getattr(quantization_config, "block_name_to_quantize", None)  # Prioritize this parameter
         if to_quant_block_names is None:
             to_quant_block_names = getattr(quantization_config, "to_quant_block_names", None)
@@ -244,6 +327,11 @@ def get_layer_config(model, quantization_config):
             # Speed up the matching
             for i in range(len(quant_block_list)):
                 quant_block_list[i] = os.path.commonprefix(quant_block_list[i]).rstrip(".")
+        if _should_remap:
+            for i in range(len(quant_block_list)):
+                quant_block_list[i] = apply_checkpoint_conversion_mapping(
+                    quant_block_list[i], checkpoint_conversion_mapping
+                )
 
     # Get layer names that will be quantized
     layer_names = []
@@ -256,18 +344,37 @@ def get_layer_config(model, quantization_config):
     # Load extra configuration if available
     extra_config = getattr(quantization_config, "extra_config", {})
 
+    # Remap extra_config keys using conversion mapping (e.g. composite VLM paths to text sub-model paths)
+    if _should_remap and extra_config:
+        remapped_extra_config = {}
+        for key, value in extra_config.items():
+            new_key = apply_checkpoint_conversion_mapping(key, checkpoint_conversion_mapping)
+            remapped_extra_config[new_key] = value
+        extra_config = remapped_extra_config
+
+    # When a composite model (e.g. VLM) is loaded as its text sub-model via AutoModelForCausalLM,
+    # block_name_to_quantize may still reference composite-level paths (e.g. "model.language_model.layers")
+    # while the actual module paths are "model.layers". Use conversion_mapping to remap if no layers matched.
+    if not layer_names and quant_block_list:
+        quant_block_list, extra_config = _remap_paths_for_text_model(model, quant_block_list, extra_config)
+        for n, m in model.named_modules():
+            if type(m) not in SUPPORTED_LAYER_TYPES:
+                continue
+            if check_start_with_block_name(n, quant_block_list):
+                layer_names.append(n)
+
     # Process GPTQ format: identify modules that should be quantized
     if getattr(quantization_config, "modules_in_block_to_quantize", None):
         modules_in_block_to_quantize = flatten_list(
             quantization_config.modules_in_block_to_quantize
         )  # Flatten the list
         for layer_name in layer_names:
-            if not any([re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize]):
+            if not any(re.search(re.compile(n), layer_name) is not None for n in modules_in_block_to_quantize):
                 extra_config[layer_name] = {"bits": 16}  # Default to 16-bit for unquantized layers
 
     # Expand GPTQ 'dynamic' config (regex-based)
     dynamic_config = getattr(quantization_config, "dynamic", None)
-    from auto_round.export.export_to_autogptq.export import convert_from_autogptq_dynamic
+    from auto_round.export.formats.gptq.config import convert_from_autogptq_dynamic
 
     if dynamic_config and isinstance(dynamic_config, dict):
         extra_config = _expand_regex_config(
@@ -301,7 +408,7 @@ def get_layer_config(model, quantization_config):
     return layer_configs
 
 
-def get_device(obj: Union[torch.Tensor, nn.Module]) -> torch.device:
+def get_device(obj: torch.Tensor | nn.Module) -> torch.device:
     if isinstance(obj, torch.Tensor):
         return obj.device
     return next(obj.parameters()).device
@@ -367,9 +474,16 @@ def _replace_by_quant_layers(
         logger.debug(f"{layer_name}: {layer_backend} backend is used")
 
         # Create and replace layer
-        new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features)
+        new_layer = _create_quant_layer(layer, layer_backend, config, in_features, out_features, packing_format)
         set_module(module, layer_name, new_layer)
 
+        # Transformers may run model-specific initialization after loading. Mark both the
+        # replacement and its direct parent so parent initializers do not access attributes
+        # such as ``c_proj.weight`` that packed quantized layers intentionally do not expose.
+        new_layer._is_hf_initialized = True
+        parent_name, _, _ = layer_name.rpartition(".")
+        parent_module = get_module(module, parent_name) if parent_name else module
+        parent_module._is_hf_initialized = True
     return used_backends
 
 
@@ -386,7 +500,7 @@ def _import_exllamav2_kernels():
     """Attempts to import ExLlamaV2 kernels for performance optimization."""
     try:
         from exllamav2_kernels import gemm_half_q_half, make_q_matrix  # pylint: disable=E0611, E0401
-    except:
+    except Exception:
         logger.warning_once(
             "AutoGPTQ ExLlamaV2 has not been installed, Please install it using the following command: "
             "`pip install git+https://github.com/AutoGPTQ/AutoGPTQ.git@b8b4127`"
@@ -394,15 +508,34 @@ def _import_exllamav2_kernels():
         logger.warning_once("try to fallback to other autogptq backends for now")
 
 
-def _create_quant_layer(layer, layer_backend, config, in_features, out_features):
+def _create_quant_layer(layer, layer_backend, config, in_features, out_features, packing_format=None):
     """Creates a quantized layer using the appropriate class."""
-    QuantLinear = dynamic_import_inference_linear(layer_backend, config)
+    QuantLinear = dynamic_import_inference_linear(layer_backend, config, packing_format=packing_format)
     bias = layer.bias is not None
 
-    # Special handling for auto-round-lib AWQ layers
-    from auto_round_extension.ark.qlinear import QuantLinearAWQ
+    # MLX backend with MLX packing format (native MLX checkpoint)
+    if "mlx" in layer_backend and (packing_format is None or "mlx" in packing_format):
+        return QuantLinear(
+            bits=config["bits"],
+            group_size=config["group_size"],
+            infeatures=in_features,
+            outfeatures=out_features,
+            bias=bias,
+        )
+
+    if "humming" in layer_backend:
+        return QuantLinear(
+            bits=config["bits"],
+            group_size=config["group_size"],
+            infeatures=in_features,
+            outfeatures=out_features,
+            bias=bias,
+            sym=config["sym"],
+            weight_dtype=layer.weight.dtype,
+        )
 
     if "auto_round_kernel" in layer_backend:
+
         return QuantLinear(
             bits=config["bits"],
             group_size=config["group_size"],
@@ -412,7 +545,10 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             bias=bias,
             weight_dtype=layer.weight.dtype,
         )
-    if "awq" in layer_backend and isinstance(QuantLinear, QuantLinearAWQ):
+    if (
+        "awq" in layer_backend
+        and f"{QuantLinear.__module__}.{QuantLinear.__class__.__name__}" == "auto_round_kernel.qlinear.QuantLinearAWQ"
+    ):
         return QuantLinear.from_linear(
             layer, config["bits"], config["group_size"], init_only=True, has_zero_points=not config["sym"]
         )
@@ -443,10 +579,16 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
             bias=bias,
         )
     elif (
-        AutoRoundExportFormat.FP8_STATIC.value in layer_backend
-        or AutoRoundExportFormat.MXFP8.value in layer_backend
-        or AutoRoundExportFormat.MXFP4.value in layer_backend
-        or AutoRoundExportFormat.NVFP4.value in layer_backend
+        BackendDataType.FP8_STATIC.value in layer_backend
+        or BackendDataType.MXFP8.value in layer_backend
+        or BackendDataType.MXFP4.value in layer_backend
+        or BackendDataType.NVFP4.value in layer_backend
+        or BackendDataType.MXINT4.value in layer_backend
+        or layer_backend == "auto_round:torch_nvfp4_e5m3"
+        or layer_backend == "auto_round:cute_nvfp4_e5m3"
+        or layer_backend == "auto_round:torch_nvfp4_e5m3_gs"
+        or layer_backend == "auto_round:cute_nvfp4_e5m3_gs"
+        or layer_backend == "auto_round:fake"
     ):
         return QuantLinear.from_original(config, layer)
 
@@ -461,7 +603,7 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features)
     )
 
 
-def infer_target_device(device_map: Union[dict, int, str, None] = None) -> str:
+def infer_target_device(device_map: dict | int | str | None = None) -> str:
     """Infers the target device from a device_map.
 
     Args:
@@ -489,7 +631,14 @@ def infer_target_device(device_map: Union[dict, int, str, None] = None) -> str:
 
 def convert_gptq_v1_to_v2_format(model: nn.Module):
     """Convert gptq v1 to v2 format to ensure compatible with gptqmodel:exllamav2 backend."""
-    from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear  # pylint: disable=E0401
+    import gptqmodel  # pylint: disable=E0401
+
+    if Version(gptqmodel.__version__) >= Version("7.0.0"):
+        from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2Linear  # pylint: disable=E0401
+
+        ExllamaV2QuantLinear = ExllamaV2Linear  # pylint: disable=E0401
+    else:
+        from gptqmodel.nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear  # pylint: disable=E0401
 
     for n, m in model.named_modules():
         if isinstance(m, ExllamaV2QuantLinear):
@@ -498,11 +647,76 @@ def convert_gptq_v1_to_v2_format(model: nn.Module):
                 logger.warning_once("Converting gptq v1 to v2 format")
 
 
+def _maybe_convert_gptq_to_mlx(model: nn.Module, used_backends: list[str]) -> None:
+    """On macOS with MLX available, convert GPTQ-format QuantLinear layers to MLX QuantLinearMLX.
+
+    This is the MLX equivalent of the ARK post_init step: when an MLX backend was
+    selected but the checkpoint layers were materialized in GPTQ packing format, we
+    re-pack them into the MLX format so that ``mx.quantized_matmul`` can be used for
+    hardware-accelerated inference on Apple Silicon. All conversion logic lives in
+    :meth:`QuantLinearMLX.from_gptq`.
+    """
+    import platform
+
+    if platform.system() != "Darwin":
+        return
+
+    # Only run if an MLX-related backend was selected for some layer.
+    if not any("mlx" in b for b in used_backends):
+        return
+
+    try:
+        import mlx.core as mx  # noqa: F401
+    except ImportError:
+        logger.debug("MLX not installed, skipping GPTQ-to-MLX conversion")
+        return
+
+    from auto_round_extension.mlx.qlinear_mlx import QuantLinearMLX
+
+    # Collect GPTQ-style layers that need re-packing into MLX format.
+    layers = []
+    for name, module in model.named_modules():
+        if not hasattr(module, "QUANT_TYPE"):
+            continue
+        if getattr(module, "QUANT_TYPE", None) == "mlx":
+            continue
+        if not hasattr(module, "qweight"):
+            continue
+        layers.append((name, module))
+
+    if not layers:
+        return
+
+    # Get sym flag from model config (once, outside loop)
+    quant_config = getattr(model.config, "quantization_config", {})
+    if hasattr(quant_config, "to_dict"):
+        quant_config = quant_config.to_dict()
+    sym = quant_config.get("sym", False)
+
+    converted = 0
+    skipped = 0
+    for name, module in tqdm(layers, desc="repacking to MLX format", total=len(layers), leave=True):
+        try:
+            mlx_layer = QuantLinearMLX.from_gptq(module, sym=sym)
+            set_module(model, name, mlx_layer)
+            converted += 1
+
+        except Exception as e:
+            logger.warning(f"Failed to convert layer '{name}' to MLX format: {e}")
+            skipped += 1
+            continue
+
+    if converted > 0:
+        logger.info(f"Auto-converted {converted} GPTQ layers to MLX format for Apple Silicon acceleration")
+    if skipped > 0:
+        logger.warning(f"Skipped {skipped} layers during GPTQ-to-MLX conversion")
+
+
 def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
     """Performs post-initialization for different quantization backends.
 
     This function handles backend-specific post-init steps, including AutoGPTQ,
-    GPTQModel, IPEX layers, and ExLLaMAv2 kernels. It also ensures the
+    GPTQModel, and ExLLaMAv2 kernels. It also ensures the
     model's data type is compatible with all used backends.
 
     Args:
@@ -516,7 +730,8 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
 
     need_autogptq_init = False
     need_gptqmodel_init = False
-    need_ipex_init = False
+    need_ark_init = False
+    need_humming_init = False
     used_gptq_exllamav2 = False
     # Determine which backends require post-init
     for backend in used_backends:
@@ -526,13 +741,10 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                 used_gptq_exllamav2 = True
         elif backend.startswith("gptqmodel"):
             need_gptqmodel_init = True
-        elif backend.startswith(("ipex", "auto_round_kernel")):
-            need_ipex_init = True
-            if backend.startswith("ipex"):
-                logger.warning_once(
-                    f"Backend '{backend}' is deprecated and will be removed in a future release. "
-                    "Please use the 'ark' backend instead (requires auto-round-lib and torch>=2.8.0)."
-                )
+        elif backend.startswith("auto_round_kernel"):
+            need_ark_init = True
+        elif "humming" in backend:
+            need_humming_init = True
 
     # AutoGPTQ post-init
     if need_autogptq_init:
@@ -564,20 +776,30 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
                     m.validate_once()
             model = gptq_post_init(model, use_act_order=False)
 
-    # IPEX post-init
-    if need_ipex_init:
+    # ARK post-init
+    if need_ark_init:
         message = "repacking to CPU/XPU format"
-        layers = []  ## ipex post_init  will add one more layer
+        layers = []  ## ark post_init  will add one more layer
         for n, m in model.named_modules():
-            if hasattr(m, "QUANT_TYPE") and ("ark" in m.QUANT_TYPE or "ipex" in m.QUANT_TYPE):
+            if hasattr(m, "QUANT_TYPE") and "ark" in m.QUANT_TYPE:
                 layers.append(m)
 
         for layer in tqdm(layers, desc=message, total=len(layers), leave=True):
             layer.post_init()
 
+    # humming post-init: repack the checkpoint layout into the kernel-native one
+    # and JIT-compile the selected GEMM.
+    if need_humming_init:
+        layers = [m for _, m in model.named_modules() if getattr(m, "QUANT_TYPE", "").startswith("humming")]
+        for layer in tqdm(layers, desc="repacking to humming format", total=len(layers), leave=True):
+            layer.post_init()
+
     # ExLLaMAv2 kernels
     if used_gptq_exllamav2:
         _import_exllamav2_kernels()
+
+    # On macOS (Apple Silicon), auto-convert GPTQ layers to MLX for faster inference
+    _maybe_convert_gptq_to_mlx(model, used_backends)
 
     # Determine common data type across backends
     data_types = [set(BackendInfos[b].compute_dtype) for b in used_backends]
@@ -595,6 +817,14 @@ def post_init(model: torch.nn.Module, used_backends: list[str]) -> None:
         if target_dtype:
             model = model.to(target_dtype)
             logger.warning(f"Forced model to {target_dtype}")
+
+    # Rebuild SpinQuant online rotations after weights are loaded.
+    # Buffers were pre-registered in convert_hf_model() and populated by
+    # HuggingFace's state_dict loader. Now rebuild online rotations
+    # (forward patching + R3 monkeypatch) via the generic dispatch.
+    from auto_round.algorithms.transforms import rebuild_rotation_if_needed
+
+    rebuild_rotation_if_needed(model)
 
 
 def disable_moe_conversion_mapping(model):
@@ -637,6 +867,35 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     if is_transformers_version_greater_or_equal_5():
         disable_moe_conversion_mapping(model)
     quantization_config = model.config.quantization_config
+    config_format = (
+        quantization_config.get("format")
+        if isinstance(quantization_config, dict)
+        else getattr(quantization_config, "format", None)
+    )
+    if config_format in ("nvfp4-e5m3-pack-quantized", "nvfp4-e5m3-gs-pack-quantized"):
+        with_global_scale = config_format == "nvfp4-e5m3-gs-pack-quantized"
+        config_dict = quantization_config if isinstance(quantization_config, dict) else quantization_config.to_dict()
+        ignored = config_dict.get("ignore") or []
+        # TODO: For experimental purpose, will delete when it's not necessary.
+        quantization_config = SimpleNamespace(
+            quant_method="auto-round",
+            packing_format=(
+                "auto_round:llm_compressor_nvfp4_e5m3_gs"
+                if with_global_scale
+                else "auto_round:llm_compressor_nvfp4_e5m3"
+            ),
+            bits=4,
+            group_size=16,
+            sym=True,
+            data_type="nvfp4_v2_gs" if with_global_scale else "nvfp4_v2",
+            act_bits=4,
+            act_group_size=16,
+            act_sym=True,
+            act_data_type="nvfp4_v2_with_static_gs" if with_global_scale else "nvfp4_v2",
+            act_dynamic=True,
+            extra_config={name: {"bits": 16, "act_bits": 16} for name in ignored},
+        )
+        model.config.quantization_config = quantization_config
 
     # Check desc_act + static_groups
     if getattr(quantization_config, "desc_act", False):
@@ -667,6 +926,8 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         packing_format = "auto_round:auto_awq"
     elif packing_format == "auto_round:gptq":
         packing_format = "auto_round:auto_gptq"
+    elif packing_format in ("mlx", "auto_round:mlx"):
+        pass  # keep as-is for MLX backend selection
     is_applied = apply_modeling_patch(model)
     if not is_applied:
         # Preprocess model before replace layers
@@ -675,20 +936,21 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
     # Replace layers with quantized versions
     layer_configs = get_layer_config(model, quantization_config)
     used_backends = _replace_by_quant_layers(model, layer_configs, backend, target_device, packing_format)
+    logger.info(
+        "Inference backend selection: requested=%s, packing_format=%s, selected=%s",
+        backend,
+        packing_format,
+        ", ".join(used_backends),
+    )
 
-    hadamard_config = getattr(quantization_config, "hadamard_config", None)
-    if hadamard_config is not None and hadamard_config:
-        from auto_round.experimental.transform.apply import apply_hadamard_transform
-        from auto_round.experimental.transform.hadamard_config import HadamardConfig
+    # Apply rotation hooks (hadamard, spinquant, quarot, etc.) via unified dispatch.
+    _has_rotation = getattr(quantization_config, "rotation_config", None) or getattr(
+        quantization_config, "spinquant_config", None
+    )
+    if _has_rotation:
+        from auto_round.algorithms.transforms import apply_rotation_hooks_from_config
 
-        # apply forward hook
-        act_hadamard_config = HadamardConfig(
-            block_size=hadamard_config["block_size"],
-            hadamard_type=hadamard_config["hadamard_type"],
-        )  # apply to activation
-        model = apply_hadamard_transform(
-            model, act_hadamard_config, location="input", desc="Register pre forward hook for hadamard transform"
-        )
+        model = apply_rotation_hooks_from_config(model, quantization_config)
 
     # Suggest a better backend if available
     if backend == "auto":

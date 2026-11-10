@@ -1,0 +1,212 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Diffusion calibration strategy.
+
+Inherits :class:`LLMCalibrator` for ``collect`` / ``cache_inter_data``,
+and customises:
+
+- :meth:`calib` — drive the diffusion ``pipe`` with prompts / inference steps.
+- :meth:`should_stop` — always ``False`` so all denoising steps execute.
+- :meth:`wrap_block_forward` — convert positional → kwargs for diffusion blocks.
+"""
+
+import inspect
+import os
+import sys
+
+import torch
+from tqdm import tqdm
+
+from auto_round.calibration.llm import LLMCalibrator
+from auto_round.calibration.register import register_calibrator
+from auto_round.compressors import BaseOrchestrator as BaseCompressor
+from auto_round.logger import logger
+from auto_round.utils.device_manager import device_manager
+from auto_round.utils.model import wrap_block_forward_positional_to_kwargs
+
+
+def _prepare_pipeline_for_calibration(pipe, target_device, *, low_gpu_mem_usage: bool) -> str | None:
+    """Place a diffusion pipeline for calibration without exceeding one GPU."""
+    resolved_device = torch.device(target_device)
+    if low_gpu_mem_usage:
+        enable_model_cpu_offload = getattr(pipe, "enable_model_cpu_offload", None)
+        if not callable(enable_model_cpu_offload):
+            raise ValueError("The diffusion pipeline does not support component-level model CPU offload.")
+        enable_model_cpu_offload(device=resolved_device)
+        return "model"
+    pipe.to(resolved_device)
+    return None
+
+
+@register_calibrator("diffusion")
+class DiffusionCalibrator(LLMCalibrator):
+    """Calibrator for diffusion models (Stable Diffusion / FLUX / ...)."""
+
+    # ── Overrides for diffusion-specific behaviour ─────────────────────────
+    def __init__(self, compressor: BaseCompressor):
+        super().__init__(compressor)
+        self.pipe = compressor.pipe
+        self.guidance_scale = compressor.guidance_scale
+        self.calib_num_inference_steps = compressor.calib_num_inference_steps
+        self.generator_seed = compressor.generator_seed  # make sure pass
+        self.pipeline_call_kwargs = dict(getattr(compressor, "pipeline_call_kwargs", {}) or {})
+
+    def _wrap_block_forward(self, forward_fn):
+        """Wrap positional-arg block forward into kwargs form for diffusion blocks."""
+        return wrap_block_forward_positional_to_kwargs(forward_fn)
+
+    def _should_stop_cache_forward(self, name: str) -> bool:
+        """Diffusion calibration never early-stops: all denoising steps execute."""
+        return False
+
+    def _requires_calibration_image(self) -> bool:
+        """Return whether the pipeline requires an image input."""
+        image_param = inspect.signature(self.pipe.__call__).parameters.get("image")
+        return image_param is not None and image_param.default is inspect.Parameter.empty
+
+    @staticmethod
+    def _load_calibration_images(image_inputs):
+        """Load image paths while preserving already decoded image inputs."""
+        from PIL import Image  # pylint: disable=E0401
+
+        inputs = list(image_inputs) if isinstance(image_inputs, (list, tuple)) else [image_inputs]
+        images = []
+        for image_input in inputs:
+            if isinstance(image_input, (str, os.PathLike)):
+                image_path = os.fspath(image_input)
+                if not os.path.isfile(image_path):
+                    raise ValueError(f"Calibration image does not exist: {image_path}")
+                with Image.open(image_path) as image:
+                    images.append(image.convert("RGB"))
+            else:
+                images.append(image_input)
+        return images[0] if len(images) == 1 else images
+
+    @torch.no_grad()
+    def calib(self, nsamples: int, bs: int) -> None:
+        """Drive the diffusion pipeline so block-forward hooks fire.
+
+        The pipeline asks its scheduler to build a native schedule with
+        ``calib_num_inference_steps`` denoising steps.
+        """
+        from auto_round.compressors.diffusion.dataset import get_diffusion_dataloader
+
+        pipe = self.pipe
+        if pipe is None:
+            raise ValueError(
+                "Diffusion pipeline not found in model_context. " "Ensure the model was loaded as a diffusion model."
+            )
+
+        logger.warning(
+            "Diffusion model will catch nsamples * calib_num_inference_steps inputs, "
+            "you can reduce nsamples or calib_num_inference_steps if OOM or take too much time."
+        )
+        requires_image = self._requires_calibration_image()
+        if isinstance(self.dataset, str):
+            from auto_round.utils.dataset_utils import strip_dataset_spec_whitespace
+
+            # Strip only cosmetic whitespace; spaces inside option values
+            # (e.g. separator / template / system_prompt) are preserved.
+            dataset = strip_dataset_spec_whitespace(self.dataset)
+            self.dataloader, self.batch_size = get_diffusion_dataloader(
+                dataset=dataset, bs=bs, seed=self.seed, nsamples=nsamples, image_required=requires_image
+            )
+        else:
+            self.dataloader = self.dataset
+        total_cnt = 0
+
+        total = nsamples if not hasattr(self.dataloader, "len") else min(nsamples, len(self.dataloader))
+
+        if (
+            hasattr(self.model, "hf_device_map")
+            and len(self.model.hf_device_map) > 1
+            and pipe.device != self.model.device
+            and torch.device(self.model.device).type in ["cuda", "xpu"]
+        ):
+            logger.error(
+                "Diffusion model is activated sequential model offloading, it will crash during moving to GPU/XPU. "
+                "Please use model path for quantization or "
+                "move the pipeline object to GPU/XPU before passing them into API."
+            )
+            sys.exit(-1)
+
+        target_device = device_manager.device
+        self._cpu_offload_mode = _prepare_pipeline_for_calibration(
+            pipe,
+            target_device,
+            low_gpu_mem_usage=self.low_gpu_mem_usage,
+        )
+        pipeline_fn = getattr(pipe, "_autoround_pipeline_fn", None)
+        with tqdm(range(1, total + 1), desc="cache block inputs") as pbar:
+            for batch in self.dataloader:
+                if len(batch) == 2:
+                    ids, prompts = batch
+                    image_inputs = None
+                elif len(batch) == 3:
+                    ids, prompts, image_inputs = batch
+                else:
+                    raise ValueError(
+                        "Diffusion calibration batches must contain (ids, prompts) or (ids, prompts, images)."
+                    )
+                if isinstance(prompts, tuple):
+                    prompts = list(prompts)
+                generator = (
+                    None
+                    if self.generator_seed is None
+                    else torch.Generator(device=pipe.device).manual_seed(self.generator_seed)
+                )
+                call_kwargs = dict(self.pipeline_call_kwargs)
+                call_kwargs.update(
+                    guidance_scale=self.guidance_scale,
+                    num_inference_steps=self.calib_num_inference_steps,
+                    generator=generator,
+                )
+                if requires_image:
+                    if image_inputs is None:
+                        raise ValueError(
+                            "I2V calibration requires images. Use the default coco2014 dataset or provide an "
+                            "'image' column in a local TSV."
+                        )
+                    image = self._load_calibration_images(image_inputs)
+                    pipe(image, prompt=prompts, **call_kwargs)
+                elif pipeline_fn is not None:
+                    pipeline_fn(pipe, prompts, **call_kwargs)
+                else:
+                    pipe(prompts, **call_kwargs)
+                step = len(prompts)
+                total_cnt += step
+                pbar.update(step)
+                if total_cnt >= nsamples:
+                    break
+        if total_cnt == 0:
+            logger.error(
+                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
+                f"dataset or decease the sequence length"
+            )
+            sys.exit(-1)
+        elif total_cnt < nsamples:
+            logger.warning(
+                f"Insufficient number of samples collected may affect the quantization. "
+                f"target samples count is {nsamples}, while valid samples count is {total_cnt}"
+            )
+            if total_cnt < self.batch_size:
+                raise ValueError(
+                    f"valid sample count is less than batch_size ({self.batch_size}); "
+                    "please reduce batch_size or provide more calibration samples."
+                )
+            max_len = (total_cnt // self.batch_size) * self.batch_size
+            for k, v in self.inputs.items():
+                for key in v:
+                    if isinstance(v[key], list) and len(v[key]) == total_cnt:
+                        self.inputs[k][key] = v[key][:max_len]

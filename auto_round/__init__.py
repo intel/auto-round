@@ -11,15 +11,44 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from auto_round.autoround import AutoRound
-
-# support for old api
-from auto_round.autoround import AutoRoundLLM, AutoRoundMLLM, AutoRoundAdam, AutoRoundDiffusion
+from auto_round.autoround import AutoRound, AutoRoundAdam, AutoRoundDiffusion, AutoRoundLLM, AutoRoundMLLM
+from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
+from auto_round.algorithms.quantization.sign_round.config import (
+    AdamRoundConfig,
+    SignRoundConfig,
+    SignRoundV2Config,
+)
+from auto_round.algorithms.transforms.awq.config import AWQConfig
+from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
 from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme
+from auto_round.parallel import ParallelConfig
+from auto_round.parallel.tp.launcher import quantize_and_save
 from auto_round.utils import LazyImport
 from auto_round.utils import monkey_patch
 
 monkey_patch()
 
 from .version import __version__
+
+__all__ = [
+    "AWQConfig",
+    "AdamRoundConfig",
+    "AutoRound",
+    "AutoRoundAdam",
+    "AutoRoundDiffusion",
+    "AutoRoundLLM",
+    "AutoRoundMLLM",
+    "AutoScheme",
+    "OptimizedRTNConfig",
+    "ParallelConfig",
+    "QuantizationScheme",
+    "RTNConfig",
+    "RotationConfig",
+    "SignRoundConfig",
+    "SignRoundV2Config",
+    "SpinQuantConfig",
+    "__version__",
+    "quantize_and_save",
+]

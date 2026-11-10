@@ -1,0 +1,4659 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import math
+import os
+import weakref
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Optional
+import torch
+
+# Intel GPU compiler (IGC) environment variable: ensure implicit local IDs are
+# not removed by the compiler even when unused. This guarantees consistent
+# behavior across driver upgrades and prevents performance regressions.
+# Reference: https://github.com/intel/intel-graphics-compiler/issues/412
+os.environ.setdefault("IGC_RemoveUnusedIdImplicitLocalIDs", "0")
+
+# Tensor layout constants passed to native C++ backends.
+# 0 = HND ([B, H, S, D]), 1 = NHD ([B, S, H, D]).
+LAYOUT_HND = 0
+LAYOUT_NHD = 1
+
+
+class ARK_DT:
+    float64 = 64
+    float32 = 32
+    float16 = 16
+    bfloat16 = 65552
+    int2 = 258
+    int3 = 259
+    int4 = 260
+    int5 = 261
+    int6 = 262
+    int7 = 263
+    int8 = 264
+    int32 = 288
+    float8_e4m3 = 8
+    float8_e5m2 = 65544
+    float8_e8m0 = 196616
+    undef = 0
+
+
+def cvt_dtype(dtype):
+    if dtype == torch.float32:
+        return ARK_DT.float32
+    if dtype == torch.float16:
+        return ARK_DT.float16
+    if dtype == torch.bfloat16:
+        return ARK_DT.bfloat16
+    if dtype == torch.float8_e4m3fn:
+        return ARK_DT.float8_e4m3
+    if dtype == torch.float8_e5m2:
+        return ARK_DT.float8_e5m2
+    if dtype == torch.int8:
+        return ARK_DT.int8
+    if dtype == torch.int32:
+        return ARK_DT.int32
+    return ARK_DT.undef
+
+
+def cvtstr_dtype(dtype):
+    if dtype == "fp32":
+        return ARK_DT.float32
+    if dtype == "fp16":
+        return ARK_DT.float16
+    if dtype == "bf16":
+        return ARK_DT.bfloat16
+    if dtype == "fp8_e4m3":
+        return ARK_DT.float8_e4m3
+    if dtype == "fp8_e5m2":
+        return ARK_DT.float8_e5m2
+    if dtype == "fp8_e8m0":
+        return ARK_DT.float8_e8m0
+    if dtype == "int8":
+        return ARK_DT.int8
+    if dtype == "int4":
+        return ARK_DT.int4
+    if dtype == "int2":
+        return ARK_DT.int2
+    if dtype == "int3":
+        return ARK_DT.int3
+    if dtype == "int5":
+        return ARK_DT.int5
+    if dtype == "int6":
+        return ARK_DT.int6
+    if dtype == "int7":
+        return ARK_DT.int7
+    if dtype == "int32":
+        return ARK_DT.int32
+    return ARK_DT.undef
+
+
+def get_stream(A: torch.Tensor) -> int:
+    if A.device.type == "cpu":
+        return 0
+    if A.device.type == "xpu":
+        return torch.xpu.current_stream().sycl_queue
+
+
+def _normalize_tensor_layout(tensor_layout: str) -> str:
+    layout = tensor_layout.upper()
+    if layout not in ("HND", "NHD"):
+        raise ValueError(f"tensor_layout must be either 'HND' or 'NHD', got {tensor_layout!r}")
+    return layout
+
+
+def _attention_shape(tensor: torch.Tensor, tensor_layout: str) -> tuple[int, int, int, int]:
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        batch, num_heads, seq_len, head_dim = tensor.shape
+    else:
+        batch, seq_len, num_heads, head_dim = tensor.shape
+    return batch, num_heads, seq_len, head_dim
+
+
+def _attention_strides_qko(tensor: torch.Tensor, tensor_layout: str) -> tuple[int, int, int, int]:
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        batch_stride, head_stride, seq_stride, dim_stride = tensor.stride()
+    else:
+        batch_stride, seq_stride, head_stride, dim_stride = tensor.stride()
+    return seq_stride, dim_stride, head_stride, batch_stride
+
+
+def _attention_strides_v(tensor: torch.Tensor, tensor_layout: str) -> tuple[int, int, int, int]:
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        batch_stride, head_stride, seq_stride, dim_stride = tensor.stride()
+    else:
+        batch_stride, seq_stride, head_stride, dim_stride = tensor.stride()
+    return dim_stride, seq_stride, head_stride, batch_stride
+
+
+def _query_key_dot_mean_k(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    softmax_scale: float,
+    tensor_layout: str,
+) -> torch.Tensor:
+    """Return ``scale * (q · mean_k) / log(2)`` with shape ``[B, Hq, Sq]``.
+
+    Shared by the LSE restoration helpers.  Computed in float32 so the
+    correction keeps full precision even for bf16 inputs.
+    """
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        q_hnd = query
+        k_hnd = key
+    else:
+        q_hnd = query.permute(0, 2, 1, 3)
+        k_hnd = key.permute(0, 2, 1, 3)
+
+    # Mean over the KV sequence, in float32: [B, Hkv, 1, D].
+    key_mean = k_hnd.mean(dim=2, keepdim=True, dtype=torch.float32)
+
+    num_q_heads = q_hnd.shape[1]
+    num_kv_heads = key_mean.shape[1]
+    if num_q_heads != num_kv_heads:
+        # GQA: expand each KV head to the query heads it serves.
+        key_mean = key_mean.repeat_interleave(num_q_heads // num_kv_heads, dim=1)
+
+    # (q . mean_k) per query row, without materialising a second D-sized temp.
+    dot = torch.matmul(q_hnd.to(torch.float32), key_mean.transpose(-1, -2)).squeeze(-1)
+    return dot * softmax_scale / math.log(2.0)
+
+
+def _restore_lse_after_smooth_k(
+    lse: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    softmax_scale: float,
+    tensor_layout: str,
+) -> torch.Tensor:
+    """Undo the ``smooth_k`` key shift in the returned LSE, in place.
+
+    The SAGE kernels implement ``smooth_k`` by subtracting ``mean(k)`` from every
+    key row before INT8 quantization and folding that offset into the quantized
+    logits.  Attention output is unaffected (the shift is a per-query constant
+    absorbed by the softmax), but the LSE is computed from the *smoothed* logits
+    and therefore misses ``scale * q · mean(k)``.
+
+    Adding that term back yields the LSE of the original, unsmoothed logits::
+
+        LSE_unsmoothed = LSE_smoothed + scale * q · mean_k     (log2 units)
+
+    ``lse`` is in log2 units (the kernels use ``exp2`` throughout), hence the
+    division by ``log(2)``.
+
+    This matters for ring / split-KV attention, where each KV chunk has its own
+    ``mean(k)`` and the partial LSEs would otherwise not share a scale.
+
+    Args:
+        lse: ``[B, Hq, Sq]`` float32 LSE, modified in place.
+        query: ``[B, Hq, Sq, D]`` (HND) or ``[B, Sq, Hq, D]`` (NHD).
+        key: ``[B, Hkv, Skv, D]`` (HND) or ``[B, Skv, Hkv, D]`` (NHD).
+        softmax_scale: Softmax scale used for the attention call.
+        tensor_layout: "HND" or "NHD".
+
+    Returns:
+        The same ``lse`` tensor, for convenience.
+    """
+    lse += _query_key_dot_mean_k(query, key, softmax_scale, tensor_layout).to(lse.dtype)
+    return lse
+
+
+def _restore_lse_after_smooth_k_varlen(
+    lse: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    softmax_scale: float,
+    cu_seqlens_q: torch.Tensor,
+) -> torch.Tensor:
+    """Varlen variant of :func:`_restore_lse_after_smooth_k`, in place.
+
+    ``sagev1_varlen`` computes a *single* key mean over the whole flat
+    ``[total_kv, Hkv, D]`` buffer (the C++ path calls ``compute_seq_mean_bias``
+    with ``batch=1, seq=total_seqlen_kv``), so the same global mean is used here.
+
+    ``lse`` is ``[batch, Hq, max_seqlen_q]``.  Padding slots beyond each
+    sequence hold ``-inf`` and are left untouched, so they stay ``-inf``.
+    """
+    num_q_heads = q.shape[1]
+    num_kv_heads = k.shape[1]
+
+    # Global mean over the flat KV axis, in float32: [Hkv, D] -> [Hq, D] so it
+    # broadcasts against [total_q, Hq, D] with a GQA-safe head mapping.
+    key_mean = k.mean(dim=0, dtype=torch.float32)
+    if num_q_heads != num_kv_heads:
+        key_mean = key_mean.repeat_interleave(num_q_heads // num_kv_heads, dim=0)
+
+    # row_shift[i] belongs to flat query row i: [total_q, Hq].
+    row_shift = (q.to(torch.float32) * key_mean).sum(dim=-1) * softmax_scale / math.log(2.0)
+
+    # Map every flat query row back to its (batch, position-in-sequence) slot.
+    lengths = (cu_seqlens_q[1:] - cu_seqlens_q[:-1]).to(torch.long)
+    batch_idx = torch.repeat_interleave(torch.arange(lengths.numel(), device=q.device, dtype=torch.long), lengths)
+    token_idx = torch.arange(q.shape[0], device=q.device, dtype=torch.long) - cu_seqlens_q[batch_idx].to(torch.long)
+
+    lse[batch_idx, :, token_idx] += row_shift.to(lse.dtype)
+    return lse
+
+
+def _validate_canonical_strides(tensor: torch.Tensor, name: str, tensor_layout: str) -> None:
+    """Verify that *batched* 4-D tensor strides match the canonical packed layout.
+
+    C++ backends compute strides from layout + shape alone (no stride params),
+    so the input tensors must have the exact canonical strides.
+
+    ``tensor.stride()`` returns strides in dimension order:
+
+        HND [B, H, S, D]:  stride=(H*S*D, S*D, D, 1)
+        NHD [B, S, H, D]:  stride=(S*H*D, H*D, D, 1)
+    """
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        B, H, S, D = tensor.shape
+        expected = (H * S * D, S * D, D, 1)
+    else:
+        B, S, H, D = tensor.shape
+        expected = (S * H * D, H * D, D, 1)
+    actual = tensor.stride()
+    if actual != expected:
+        raise ValueError(
+            f"{name} strides {actual} do not match canonical {layout} layout {expected}. "
+            f"Non-contiguous inputs are not supported; call .contiguous() first."
+        )
+
+
+def _validate_attention_tensor(
+    tensor: torch.Tensor,
+    name: str,
+    tensor_layout: str,
+    *,
+    expected_dtype: torch.dtype | None = None,
+) -> tuple[int, int, int, int]:
+    if tensor.ndim != 4:
+        raise ValueError(f"{name} must be a 4D tensor")
+    if expected_dtype is not None and tensor.dtype != expected_dtype:
+        raise ValueError(f"{name} must have dtype {expected_dtype}, got {tensor.dtype}")
+
+    qko_strides = _attention_strides_qko(tensor, tensor_layout)
+    if qko_strides[1] != 1:
+        raise ValueError(f"{name} must be contiguous along the head-dim axis; got stride {qko_strides[1]}")
+    if any(stride <= 0 for stride in qko_strides):
+        raise ValueError(f"{name} must have positive non-zero strides, got {tensor.stride()}")
+
+    return _attention_shape(tensor, tensor_layout)
+
+
+def _empty_attention_output(
+    batch: int,
+    num_heads: int,
+    seq_len: int,
+    head_dim: int,
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+    tensor_layout: str,
+) -> torch.Tensor:
+    layout = _normalize_tensor_layout(tensor_layout)
+    shape = (batch, num_heads, seq_len, head_dim) if layout == "HND" else (batch, seq_len, num_heads, head_dim)
+    return torch.empty(shape, device=device, dtype=dtype)
+
+
+@dataclass
+class _CpuPackedKVCacheEntry:
+    descriptor: object
+    cache_k: torch.Tensor
+    cache_v: torch.Tensor
+    key_ref: weakref.ReferenceType[torch.Tensor]
+    value_ref: weakref.ReferenceType[torch.Tensor]
+    seq_len: int
+    key_version: int
+    value_version: int
+
+
+_CPU_PUBLIC_PACKED_KV_CACHE_MAX = 8
+_CPU_PUBLIC_PACKED_KV_CACHE: "OrderedDict[tuple, _CpuPackedKVCacheEntry]" = OrderedDict()
+
+
+def _cpu_public_packed_kv_available() -> bool:
+    return (
+        cpu_lib is not None
+        and hasattr(cpu_lib, "ark_cpu_bestla_sdpa_packed_desc")
+        and hasattr(cpu_lib, "ark_cpu_update_packed_k_desc")
+        and hasattr(cpu_lib, "ark_cpu_update_packed_v_desc")
+    )
+
+
+def _cpu_public_packed_kv_cache_key(key: torch.Tensor, value: torch.Tensor, tensor_layout: str) -> tuple:
+    batch, num_heads_kv, _, head_dim = _attention_shape(key, tensor_layout)
+    return (
+        key.device.type,
+        key.device.index,
+        key.dtype,
+        value.dtype,
+        key.data_ptr(),
+        value.data_ptr(),
+        key.stride(),
+        value.stride(),
+        batch,
+        num_heads_kv,
+        head_dim,
+        _normalize_tensor_layout(tensor_layout),
+    )
+
+
+def _attention_seq_slice(tensor: torch.Tensor, tensor_layout: str, start: int, end: int) -> torch.Tensor:
+    layout = _normalize_tensor_layout(tensor_layout)
+    if layout == "HND":
+        return tensor[:, :, start:end, :]
+    return tensor[:, start:end, :, :]
+
+
+def _cpu_public_get_packed_kv_entry(
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    tensor_layout: str,
+) -> tuple[_CpuPackedKVCacheEntry, int]:
+    layout = _normalize_tensor_layout(tensor_layout)
+    batch, num_heads_kv, seq_len_kv, head_dim = _attention_shape(key, layout)
+    cache_key = _cpu_public_packed_kv_cache_key(key, value, layout)
+    try:
+        key_version = int(key._version)
+        value_version = int(value._version)
+        use_version = True
+    except RuntimeError:
+        # Inference tensors do not track version counter; always repack.
+        key_version = -1
+        value_version = -1
+        use_version = False
+    entry = _CPU_PUBLIC_PACKED_KV_CACHE.get(cache_key)
+
+    if entry is not None and (entry.key_ref() is not key or entry.value_ref() is not value):
+        entry = None
+
+    if entry is None or seq_len_kv > int(entry.descriptor.logical_capacity):
+        descriptor = ark_cpu_packed_kv_descriptor(batch, num_heads_kv, seq_len_kv, head_dim, dtype=key.dtype)
+        cache_k, cache_v = ark_cpu_packed_kv_alloc_from_descriptor(descriptor, dtype=key.dtype, device=key.device)
+        entry = _CpuPackedKVCacheEntry(
+            descriptor,
+            cache_k,
+            cache_v,
+            weakref.ref(key),
+            weakref.ref(value),
+            0,
+            -1,
+            -1,
+        )
+        _CPU_PUBLIC_PACKED_KV_CACHE[cache_key] = entry
+        weakref.finalize(key, lambda ck=cache_key: _CPU_PUBLIC_PACKED_KV_CACHE.pop(ck, None))
+    else:
+        _CPU_PUBLIC_PACKED_KV_CACHE.move_to_end(cache_key)
+
+    if len(_CPU_PUBLIC_PACKED_KV_CACHE) > _CPU_PUBLIC_PACKED_KV_CACHE_MAX:
+        _CPU_PUBLIC_PACKED_KV_CACHE.popitem(last=False)
+
+    if use_version and entry.key_version == key_version and entry.value_version == value_version:
+        if seq_len_kv > entry.seq_len:
+            ark_cpu_update_packed_kv_from_descriptor(
+                entry.descriptor,
+                entry.cache_k,
+                entry.cache_v,
+                _attention_seq_slice(key, layout, entry.seq_len, seq_len_kv),
+                _attention_seq_slice(value, layout, entry.seq_len, seq_len_kv),
+                entry.seq_len,
+                tensor_layout=layout,
+                no_zeroing=False,
+            )
+            entry.seq_len = seq_len_kv
+        return entry, seq_len_kv
+
+    ark_cpu_update_packed_kv_from_descriptor(
+        entry.descriptor,
+        entry.cache_k,
+        entry.cache_v,
+        key,
+        value,
+        0,
+        tensor_layout=layout,
+        no_zeroing=False,
+    )
+    entry.seq_len = seq_len_kv
+    entry.key_version = key_version
+    entry.value_version = value_version
+    return entry, seq_len_kv
+
+
+def _cpu_public_mixed_sdpa_packed(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    is_causal: bool,
+    scale: float | None,
+    tensor_layout: str,
+) -> torch.Tensor:
+    # Defect-2 mitigation: for fp16 K/V on prefill (sl_q > 1, where the GEMM
+    # dominates), convert to bf16 so the packed-KV cache stores NTILE48 ROWPACK2
+    # data.  The AMX-BF16 stable wrapper then runs with MTILE=16 / NTILE=48 vs
+    # the AVX2 path's MTILE=4 / NTILE=24.  PyTorch's dtype conversion is SIMD.
+    # For decode (sl_q == 1) the conversion overhead dominates; keep fp16 packed.
+    # Only active when the BF16 route is compiled in (requires AVX512F).
+    if key.dtype == torch.float16 and _attention_shape(query, tensor_layout)[2] > 1:
+        if getattr(cpu_lib, "ARK_CPU_SDPA_BUILD_HAS_BF16_ROUTE", False):
+            key = key.to(dtype=torch.bfloat16)
+            value = value.to(dtype=torch.bfloat16)
+
+    entry, seq_len_kv = _cpu_public_get_packed_kv_entry(key, value, tensor_layout=tensor_layout)
+    return ark_cpu_bestla_sdpa_packed_from_descriptor(
+        entry.descriptor,
+        query,
+        entry.cache_k,
+        entry.cache_v,
+        seq_len_kv,
+        is_causal=is_causal,
+        scale=scale,
+        tensor_layout=tensor_layout,
+    )
+
+
+def _validate_attention_mask(
+    attn_mask: torch.Tensor | None,
+    *,
+    batch: int,
+    seq_len_q: int,
+    seq_len_kv: int,
+    device: torch.device,
+) -> None:
+    if attn_mask is None:
+        return
+    if attn_mask.device != device:
+        raise ValueError("attn_mask must be on the same device as Q")
+    if not attn_mask.is_contiguous():
+        raise ValueError("attn_mask must be contiguous")
+    if attn_mask.dtype != torch.float32:
+        raise ValueError(f"attn_mask must be float32 (additive bias), got {attn_mask.dtype}")
+    expected_mask_shape = (batch, 1, seq_len_q, seq_len_kv)
+    if attn_mask.shape != expected_mask_shape:
+        raise ValueError(f"attn_mask shape must be {expected_mask_shape}, got {tuple(attn_mask.shape)}")
+
+
+def _validate_no_dropout(dropout_p: float, api_name: str) -> None:
+    if dropout_p != 0.0:
+        raise NotImplementedError(f"{api_name}: dropout_p must be 0.0 (got {dropout_p}); dropout is not supported")
+
+
+def _validate_head_ratio(num_heads_q: int, num_heads_kv: int) -> None:
+    if num_heads_kv <= 0:
+        raise ValueError("num_heads_kv must be greater than 0")
+    if num_heads_q % num_heads_kv != 0:
+        raise ValueError(
+            f"num_heads_q ({num_heads_q}) must be divisible by num_heads_kv ({num_heads_kv}) for MQA/GQA attention"
+        )
+
+
+def _validate_attention_geometry(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    tensor_layout: str,
+    *,
+    key_dtype: torch.dtype | None = None,
+    value_dtype: torch.dtype | None = None,
+) -> tuple[int, int, int, int, int, int]:
+    if key.device != query.device or value.device != query.device:
+        raise ValueError(f"Q/K/V must be on the same device, got Q={query.device}, K={key.device}, V={value.device}")
+    B, Hq, Sq, D = _validate_attention_tensor(query, "Q", tensor_layout)
+    Bk, Hkv, Skv, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key_dtype)
+    Bv, Hkv2, Skv2, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=value_dtype)
+
+    if Bk != B or Bv != B:
+        raise ValueError("Batch size mismatch between Q/K/V")
+    if Hkv2 != Hkv or Skv2 != Skv or Dv != Dk:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    _validate_head_ratio(Hq, Hkv)
+    return B, Hq, Hkv, Sq, Skv, D
+
+
+def _contiguous_hnd_qko_strides(num_heads: int, seq_len: int, head_dim: int) -> tuple[int, int, int, int]:
+    return head_dim, 1, seq_len * head_dim, num_heads * seq_len * head_dim
+
+
+def _contiguous_hnd_v_strides(num_heads: int, seq_len: int, head_dim: int) -> tuple[int, int, int, int]:
+    return 1, head_dim, seq_len * head_dim, num_heads * seq_len * head_dim
+
+
+def _torch_dtype_from_ark_dtype(dtype: int) -> torch.dtype:
+    if dtype == ARK_DT.float16:
+        return torch.float16
+    if dtype == ARK_DT.bfloat16:
+        return torch.bfloat16
+    if dtype == ARK_DT.float32:
+        return torch.float32
+    raise ValueError(f"Unsupported ARK dtype code: {dtype}")
+
+
+cpu_lib = None
+xpu_lib = None
+
+
+def get_lib(A: torch.Tensor):
+    lib = None
+    if A.device.type == "xpu":
+        lib = xpu_lib
+    if A.device.type == "cpu":
+        lib = cpu_lib
+    if lib is None:
+        raise NotImplementedError(f"Current device {A.device} is not supported")
+    return lib
+
+
+# A: mxk,  B: nxk, bias: n or [1, n]
+def matmul_sycl_tla(A: torch.Tensor, B: torch.Tensor, bias: torch.Tensor | None = None):
+    if A.device.type != "xpu" or B.device.type != "xpu":
+        raise NotImplementedError("matmul_sycl_tla is only supported on XPU")
+    if A.ndim != 2 or B.ndim != 2:
+        raise ValueError("A and B must be 2D tensors")
+    if A.device != B.device:
+        raise ValueError("A and B must be on the same device")
+    if A.dtype not in (torch.float32, torch.float16, torch.bfloat16):
+        raise ValueError("matmul_sycl_tla only supports torch.float32, torch.float16 and torch.bfloat16")
+    if B.dtype != A.dtype:
+        raise ValueError("A and B must have the same dtype")
+
+    m, k = A.shape
+    n, kb = B.shape
+    if k != kb:
+        raise ValueError(f"Shape mismatch: A.shape={tuple(A.shape)}, B.shape={tuple(B.shape)}")
+
+    lib = get_lib(A)
+    if lib is None or not hasattr(lib, "matmul_sycl_tla"):
+        raise NotImplementedError("Current XPU build does not expose matmul_sycl_tla")
+
+    A_arg = A.contiguous()
+    B_arg = B.contiguous()
+    C = torch.empty(m, n, dtype=A.dtype, device=A.device)
+
+    bias_ptr = 0
+    bias_arg = None
+    if bias is not None and bias.numel() > 0:
+        bias_arg = bias.to(dtype=C.dtype, device=A.device).contiguous().view(-1)
+        if bias_arg.numel() != n:
+            raise ValueError(f"bias must have {n} elements, got {bias_arg.numel()}")
+        bias_ptr = bias_arg.data_ptr()
+
+    stream = get_stream(A_arg)
+    lib.matmul_sycl_tla(
+        stream,
+        m,
+        n,
+        k,
+        A_arg.data_ptr(),
+        cvt_dtype(A_arg.dtype),
+        B_arg.data_ptr(),
+        cvt_dtype(B_arg.dtype),
+        C.data_ptr(),
+        cvt_dtype(C.dtype),
+        bias_ptr,
+        True,
+    )
+    return C
+
+
+# A: mxk,  B: nxk, bias: n
+def matmul(A: torch.Tensor, B: torch.Tensor, bias: torch.Tensor):
+    m = A.shape[0]
+    n = B.shape[0]
+    k = B.shape[1]
+    lib = get_lib(A)
+    ctype = A.dtype
+    if A.device.type == "cpu":
+        ctype = torch.float32
+    C = torch.zeros(m, n, dtype=ctype, device=A.device)
+    stream = get_stream(A)
+    lib.matmul(
+        stream,
+        m,
+        n,
+        k,
+        A.contiguous().data_ptr(),
+        cvt_dtype(A.dtype),
+        B.contiguous().data_ptr(),
+        cvt_dtype(B.dtype),
+        C.contiguous().data_ptr(),
+        cvt_dtype(C.dtype),
+        bias.to(C.dtype).contiguous().data_ptr(),
+        True,
+    )
+    return C
+
+
+# A: mxk:s8,  B: nxk:s8, return: mxn:s32
+def igemm_s8s8s32(A: torch.Tensor, B: torch.Tensor):
+    m = A.shape[0]
+    n = B.shape[0]
+    k = B.shape[1]
+    lib = get_lib(A)
+    if lib is None:
+        raise NotImplementedError(f"Current device {A.device} is not supported")
+    C = torch.zeros(m, n, dtype=torch.int32, device=A.device)
+    stream = get_stream(A)
+    lib.matmul(
+        stream,
+        m,
+        n,
+        k,
+        A.contiguous().data_ptr(),
+        cvt_dtype(A.dtype),
+        B.contiguous().data_ptr(),
+        cvt_dtype(B.dtype),
+        C.contiguous().data_ptr(),
+        cvt_dtype(C.dtype),
+        0,
+        True,
+    )
+    return C
+
+
+# A: mxk:DT,  B: nxk:s8, scaleB: n:DT
+# return: mxn:DT
+def woqgemm_s8(A: torch.Tensor, B: torch.Tensor, scaleB: torch.Tensor, bias: torch.Tensor | None = None):
+    m = A.shape[0]
+    n = B.shape[0]
+    k = B.shape[1]
+    lib = get_lib(A)
+
+    C = torch.zeros(m, n, dtype=A.dtype, device=A.device)
+    stream = get_stream(A)
+    lib.woqgemm_s8(
+        stream,
+        m,
+        n,
+        k,
+        A.contiguous().data_ptr(),
+        cvt_dtype(A.dtype),
+        B.contiguous().data_ptr(),
+        C.contiguous().data_ptr(),
+        0 if bias is None or bias.numel() == 0 else bias.contiguous().data_ptr(),
+        True,
+        scaleB.contiguous().data_ptr(),
+    )
+    return C
+
+
+# A: mxk:DT,  B: BS:s8, bias: n:DT
+# return: C: mxn:DT
+def woqgemm(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    bias: torch.Tensor,
+    n,
+    k,
+    groupsize,
+    compute_type,
+    weight_type,
+    scale_type,
+    asym,
+    out: torch.Tensor | None = None,
+):
+    _validate_packed_blob(B, n, k, groupsize, compute_type, weight_type, scale_type, asym)
+    m = A.shape[0]
+    lib = get_lib(A)
+    ct = cvtstr_dtype(compute_type)
+    wt = cvtstr_dtype(weight_type)
+    st = cvtstr_dtype(scale_type)
+    if out is None:
+        C = torch.zeros(m, n, dtype=A.dtype, device=A.device)
+    else:
+        if out.shape != (m, n):
+            raise ValueError(f"out must have shape {(m, n)}, got {tuple(out.shape)}")
+        if out.dtype != A.dtype:
+            raise ValueError(f"out dtype must be {A.dtype}, got {out.dtype}")
+        if out.device != A.device:
+            raise ValueError(f"out device must be {A.device}, got {out.device}")
+        if not out.is_contiguous():
+            raise ValueError("out must be contiguous")
+        C = out
+    stream = get_stream(A)
+    lib.woqgemm(
+        stream,
+        m,
+        n,
+        k,
+        A.contiguous().data_ptr(),
+        cvt_dtype(A.dtype),
+        B.contiguous().data_ptr(),
+        C.data_ptr(),
+        bias.contiguous().data_ptr(),
+        groupsize,
+        ct,
+        wt,
+        st,
+        asym,
+        B.numel(),
+    )
+    return C
+
+
+def _validate_packed_blob(
+    blob: torch.Tensor,
+    n: int,
+    k: int,
+    groupsize: int,
+    compute_type: str,
+    weight_type: str,
+    scale_type: str,
+    asym: bool,
+) -> None:
+    """Validate a packed-weight blob before passing it to native code.
+
+    Raises ``TypeError`` or ``ValueError`` if any check fails, preventing
+    out-of-bounds memory access in the native ``unpack_weight`` /
+    ``woqgemm`` path when the blob is malformed or the parameters are
+    inconsistent with the blob contents.
+    """
+    if not isinstance(blob, torch.Tensor):
+        raise TypeError(f"blob must be a torch.Tensor, got {type(blob).__name__}")
+
+    if blob.device.type not in ("cpu", "xpu"):
+        raise ValueError(f"blob must reside on cpu or xpu, got {blob.device.type}")
+
+    if blob.dtype != torch.int8:
+        raise ValueError(f"blob must have dtype torch.int8, got {blob.dtype}")
+
+    if blob.dim() != 1:
+        raise ValueError(f"blob must be a 1-D tensor, got {blob.dim()}-D")
+
+    if not isinstance(n, (int,)) or n <= 0:
+        raise ValueError(f"n must be a positive integer, got {n!r}")
+    if not isinstance(k, (int,)) or k <= 0:
+        raise ValueError(f"k must be a positive integer, got {k!r}")
+    if not isinstance(groupsize, (int,)) or groupsize <= 0:
+        raise ValueError(f"groupsize must be a positive integer, got {groupsize!r}")
+    if not isinstance(asym, bool):
+        raise TypeError(f"asym must be a bool, got {type(asym).__name__}")
+
+    valid_types = {
+        "fp32",
+        "fp16",
+        "bf16",
+        "int8",
+        "int4",
+        "int2",
+        "int3",
+        "int5",
+        "int6",
+        "int7",
+        "fp8_e4m3",
+        "fp8_e5m2",
+        "fp8_e8m0",
+    }
+    valid_compute_types = valid_types | {"auto"}
+    if compute_type not in valid_compute_types:
+        raise ValueError(f"compute_type must be one of {valid_compute_types}, got {compute_type!r}")
+    if weight_type not in valid_types:
+        raise ValueError(f"weight_type must be one of {valid_types}, got {weight_type!r}")
+    if scale_type not in valid_types:
+        raise ValueError(f"scale_type must be one of {valid_types}, got {scale_type!r}")
+
+
+# QB: k*n:int8,  scaleB: k/blocksize*n:DT
+# return: blob:BS:int8
+def _repack_quantized_weight_core(
+    QB: torch.Tensor,
+    scaleB: torch.Tensor,
+    zp: torch.Tensor,
+    groupsize,
+    compute_type,
+    weight_type,
+    scale_type,
+    asym,
+):
+    if not isinstance(QB, torch.Tensor) or QB.dim() != 2:
+        raise ValueError(f"QB must be a 2-D tensor, got shape {QB.shape!r}")
+    if not isinstance(scaleB, torch.Tensor) or scaleB.dim() != 2:
+        raise ValueError(f"scaleB must be a 2-D tensor, got shape {scaleB.shape!r}")
+    if not isinstance(zp, torch.Tensor):
+        raise TypeError(f"zp must be a torch.Tensor, got {type(zp).__name__}")
+    k = QB.shape[0]
+    n = QB.shape[1]
+    lib = get_lib(QB)
+    stream = get_stream(QB)
+    ct = cvtstr_dtype(compute_type)
+    wt = cvtstr_dtype(weight_type)
+    st = cvtstr_dtype(scale_type)
+    BS = lib.packed_weight_size(stream, n, k, groupsize, ct, wt, st, asym)
+    blob = torch.zeros(BS, dtype=torch.int8, device=QB.device)
+    lib.repack_quantized_weight(
+        stream,
+        QB.contiguous().data_ptr(),
+        zp.contiguous().data_ptr(),
+        scaleB.contiguous().data_ptr(),
+        blob.data_ptr(),
+        n,
+        k,
+        groupsize,
+        ct,
+        wt,
+        st,
+        asym,
+    )
+    return blob
+
+
+# QB: blob:BS:int8
+# return: out:nxk:out_dtype
+def _unpack_weight_core(
+    blob: torch.Tensor,
+    out_dtype: torch.dtype,
+    n,
+    k,
+    groupsize,
+    compute_type,
+    weight_type,
+    scale_type,
+    asym,
+):
+    _validate_packed_blob(blob, n, k, groupsize, compute_type, weight_type, scale_type, asym)
+    lib = get_lib(blob)
+    stream = get_stream(blob)
+    ct = cvtstr_dtype(compute_type)
+    wt = cvtstr_dtype(weight_type)
+
+    st = cvtstr_dtype(scale_type)
+    oshape = (n, k) if blob.device.type == "xpu" else (k, n)
+    out = torch.zeros(oshape, dtype=out_dtype, device=blob.device)
+    lib.unpack_weight(
+        stream,
+        blob.data_ptr(),
+        out.data_ptr(),
+        cvt_dtype(out_dtype),
+        n,
+        k,
+        groupsize,
+        ct,
+        wt,
+        st,
+        asym,
+        blob.numel(),
+    )
+    if blob.device.type == "cpu":
+        return out.T
+    return out
+
+
+def sdpa(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    tensor_layout: str = "HND",
+    return_lse: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """Scaled dot-product attention (SDPA) prefill+decode.
+
+    Supported tensor layouts:
+    - HND: [B, H, N, D]
+    - NHD: [B, N, H, D]
+
+    Args:
+    - attn_mask: Additive float32 attention bias with shape [B, 1, Sq, Skv].
+    - dropout_p: Must be 0.0; dropout is not supported.
+    - is_causal: Apply the standard causal mask.
+    - scale: Softmax scale. Uses 1 / sqrt(D) when None.
+    - tensor_layout: Layout of Q/K/V/O tensors.
+    - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log2(sum_j exp(score_{b,h,q,j})).
+      The kernels use exp2-based softmax, so LSE is in log base 2 (not natural log).
+
+    Returns:
+    - O: same layout as the input tensors.
+    - (O, LSE): if return_lse is True.
+    """
+    if query.device.type not in ("cpu", "xpu"):
+        raise NotImplementedError(f"sdpa is not supported on {query.device.type}")
+    supported_dtypes = (
+        (torch.float32, torch.float16, torch.bfloat16)
+        if query.device.type == "cpu"
+        else (
+            torch.float16,
+            torch.bfloat16,
+        )
+    )
+    if query.dtype not in supported_dtypes:
+        raise ValueError(f"Q dtype {query.dtype} is unsupported on {query.device.type}")
+
+    # CPU BestLA mixed precision: F32 query with F16/BF16 K/V produces an F32
+    # output. These are the only two cross-dtype combinations wired today; every
+    # other combination still requires K/V to match Q. Homogeneous fp16/bf16 is
+    # NOT a mixed combination and is unaffected by this branch.
+    mixed_kv = (
+        query.device.type == "cpu"
+        and query.dtype == torch.float32
+        and key.dtype == value.dtype
+        and key.dtype in (torch.float16, torch.bfloat16)
+    )
+    if not mixed_kv and (key.dtype != query.dtype or value.dtype != query.dtype):
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=key.dtype, value_dtype=value.dtype
+    )
+    # The SYCL-TLA (XPU) flash-attention kernels are only compiled for a fixed
+    # set of head dimensions. The CPU kernel supports arbitrary head_dim.
+    if query.device.type == "xpu" and D not in (64, 128, 96, 192):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128, 96, 192")
+
+    _validate_no_dropout(dropout_p, "sdpa")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
+    # Mixed precision (F32 Q + F16/BF16 K/V) accumulates in and emits F32; the
+    # homogeneous path keeps the operand dtype.
+    out_dtype = torch.float32 if mixed_kv else value.dtype
+    O = _empty_attention_output(
+        B,
+        Hq,
+        Sq,
+        D,
+        dtype=out_dtype,
+        device=query.device,
+        tensor_layout=tensor_layout,
+    )
+    LSE = torch.empty(B, Hq, Sq, dtype=torch.float32, device=query.device) if return_lse else None
+
+    if query.device.type == "cpu" and return_lse:
+        raise NotImplementedError("return_lse is not supported on CPU")
+
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    o_strides = _attention_strides_qko(O, tensor_layout)
+
+    if query.device.type == "cpu":
+        if mixed_kv and attn_mask is None and _cpu_public_packed_kv_available():
+            try:
+                return _cpu_public_mixed_sdpa_packed(
+                    query,
+                    key,
+                    value,
+                    is_causal=bool(is_causal),
+                    scale=scale,
+                    tensor_layout=tensor_layout,
+                )
+            except RuntimeError:
+                pass  # packed path unavailable at runtime; fall through to lib.sdpa()
+        lib.sdpa(
+            stream,
+            query.data_ptr(),
+            key.data_ptr(),
+            value.data_ptr(),
+            O.data_ptr(),
+            attn_mask.data_ptr() if attn_mask is not None else 0,
+            *q_strides,
+            *k_strides,
+            *v_strides,
+            *o_strides,
+            cvt_dtype(query.dtype),
+            cvt_dtype(key.dtype),
+            cvt_dtype(O.dtype),
+            B,
+            Hq,
+            Hkv,
+            Sq,
+            Skv,
+            D,
+            float(scale) if scale is not None else 1.0 / (D**0.5),
+            bool(is_causal),
+        )
+        return O
+
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
+    lib.sdpa(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        layout_code,
+        LSE.data_ptr() if LSE is not None else 0,
+    )
+
+    if return_lse:
+        return O, LSE
+    return O
+
+
+def _xpu_capturing() -> bool:
+    """True if the current XPU stream is inside a torch.xpu graph capture.
+
+    Used to skip host-side device->host syncs (.item() / .cpu()) that are
+    illegal while a SyclTensor command graph is being recorded.
+    """
+    try:
+        return bool(torch.xpu.is_current_stream_capturing())
+    except Exception:
+        return False
+
+
+def sdpa_varlen(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    return_lse: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """Scaled dot-product attention (SDPA) prefill+decode with variable-length sequences.
+
+    Q, K, V use a flat 3-D layout where tokens from all sequences in the batch
+    are concatenated along dim-0 (the *total* dimension).  Per-sequence
+    boundaries are given by ``cu_seqlens_q`` / ``cu_seqlens_k``.
+
+    Shapes:
+        Q:   [total_q, num_heads_q, head_dim]
+        K:   [total_kv, num_heads_kv, head_dim]
+        V:   [total_kv, num_heads_kv, head_dim]
+        O:   [total_q, num_heads_q, head_dim]
+
+    where ``total_q = cu_seqlens_q[-1]`` and ``total_kv = cu_seqlens_k[-1]``.
+
+    Args:
+        cu_seqlens_q: Cumulative sequence lengths for Q  [batch_size + 1] int32.
+        cu_seqlens_k: Cumulative sequence lengths for K/V  [batch_size + 1] int32.
+        max_seqlen_q: Maximum Q sequence length in the batch.
+        max_seqlen_k: Maximum K/V sequence length in the batch.
+        scale: Softmax scale.  Uses ``1 / sqrt(head_dim)`` when ``None``.
+
+    Returns:
+        O: Flat output with shape [total_q, num_heads_q, head_dim].
+    """
+    if query.device.type != "xpu":
+        raise NotImplementedError("sdpa_varlen is only supported on XPU")
+
+    if query.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+
+    if query.ndim != 3 or key.ndim != 3 or value.ndim != 3:
+        raise ValueError(f"Q/K/V must be 3-D for varlen; got Q={query.ndim}D, K={key.ndim}D, V={value.ndim}D")
+
+    if cu_seqlens_q.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"cu_seqlens_q must be int32 or int64, got {cu_seqlens_q.dtype}")
+    if cu_seqlens_k.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"cu_seqlens_k must be int32 or int64, got {cu_seqlens_k.dtype}")
+    if cu_seqlens_q.dim() != 1 or cu_seqlens_k.dim() != 1:
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must be 1-D")
+    if cu_seqlens_q.device.type != "xpu" or cu_seqlens_k.device.type != "xpu":
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must be on XPU")
+
+    batch = cu_seqlens_q.shape[0] - 1
+    if cu_seqlens_k.shape[0] - 1 != batch:
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must describe the same batch size")
+
+    total_q, Hq, D = query.shape
+    total_kv, Hkv, Dk = key.shape
+    total_kv_v, Hkv2, Dv = value.shape
+
+    if not _xpu_capturing():
+        # Cross-check flat layout against the cumulative sequence-length
+        # boundaries.  These .item() calls force a device->host sync, which is
+        # illegal while a command graph is being captured, so the check is
+        # skipped during capture (the caller must keep buffer geometry stable).
+        if total_q != int(cu_seqlens_q[-1].item()):
+            raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1]")
+        if total_kv != int(cu_seqlens_k[-1].item()):
+            raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1]")
+        if total_kv_v != int(cu_seqlens_k[-1].item()):
+            raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1]")
+    if Hkv != Hkv2 or Dk != Dv:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    if D not in (64, 128, 96, 192):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128, 96, 192")
+
+    if dropout_p != 0.0:
+        raise NotImplementedError(f"dropout_p must be 0.0 (got {dropout_p}); dropout is not supported")
+
+    if attn_mask is not None:
+        raise NotImplementedError("attn_mask is not yet supported in sdpa_varlen")
+
+    if Hq % Hkv != 0:
+        raise ValueError(f"num_heads_q ({Hq}) must be divisible by num_heads_kv ({Hkv})")
+
+    # Validate strides: the dim axis must be contiguous.
+    # Flat layout [total, H, D]: dim-stride (stride(2)) must be 1.
+    if query.stride(2) != 1:
+        raise ValueError(f"Q must be contiguous along head-dim axis; got stride {query.stride()}")
+    if key.stride(2) != 1:
+        raise ValueError(f"K must be contiguous along head-dim axis; got stride {key.stride()}")
+    if value.stride(2) != 1:
+        raise ValueError(f"V must be contiguous along head-dim axis; got stride {value.stride()}")
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    cu_seqlens_q_i32 = cu_seqlens_q.contiguous().to(torch.int32)
+    cu_seqlens_k_i32 = cu_seqlens_k.contiguous().to(torch.int32)
+
+    O = torch.empty(total_q, Hq, D, dtype=value.dtype, device=query.device)
+
+    if return_lse:
+        # .item() is a device->host sync; illegal during graph capture.
+        max_q = max_seqlen_q if _xpu_capturing() else int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        if max_seqlen_q < max_q:
+            raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
+        LSE = torch.full(
+            (batch, Hq, max_seqlen_q),
+            float("-inf"),
+            dtype=torch.float32,
+            device=query.device,
+        )
+    else:
+        LSE = None
+    lib.sdpa_varlen(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        batch,
+        Hq,
+        Hkv,
+        total_q,
+        total_kv,
+        max_seqlen_q,
+        max_seqlen_k,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        cu_seqlens_q_i32.data_ptr(),
+        cu_seqlens_k_i32.data_ptr(),
+        LAYOUT_HND,  # unused by the native varlen path (always flat 3-D)
+        LSE.data_ptr() if LSE is not None else 0,
+    )
+
+    if return_lse:
+        return O, LSE
+    return O
+
+
+def debug_cpu_sdpa_route(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    attn_mask: torch.Tensor | None = None,
+    is_causal: bool = False,
+    scale: float | None = None,
+    tensor_layout: str = "HND",
+) -> int:
+    """Return the resolved internal CPU SDPA route for tests/debugging."""
+    if query.device.type != "cpu":
+        raise NotImplementedError("debug_cpu_sdpa_route is only supported on CPU")
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_debug_resolve_sdpa_route"):
+        raise NotImplementedError("ARK CPU debug route resolver is not available")
+
+    mixed_kv = (
+        query.dtype == torch.float32 and key.dtype == value.dtype and key.dtype in (torch.float16, torch.bfloat16)
+    )
+    if not mixed_kv and (key.dtype != query.dtype or value.dtype != query.dtype):
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=key.dtype, value_dtype=value.dtype
+    )
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    out_dtype = torch.float32 if mixed_kv else value.dtype
+    O = _empty_attention_output(B, Hq, Sq, D, dtype=out_dtype, device=query.device, tensor_layout=tensor_layout)
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    o_strides = _attention_strides_qko(O, tensor_layout)
+    return cpu_lib.ark_cpu_debug_resolve_sdpa_route(
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        *q_strides,
+        *k_strides,
+        *v_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+    )
+
+
+def sage(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    qscale: torch.Tensor = None,
+    kscale: torch.Tensor = None,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """SAGE attention prefill+decode.
+
+    Supported tensor layouts:
+    - HND: [B, H, N, D]
+    - NHD: [B, N, H, D]
+
+    Args:
+    - scale: Attention scale. Uses 1 / sqrt(D) when None.
+    - quant_block_size: Block size for qscale and kscale.
+    - tensor_layout: Layout of Q/K/V/O tensors.
+
+    Returns:
+    - O: same layout as the input tensors.
+    """
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage is only supported on XPU")
+    if query.dtype != torch.int8 or key.dtype != torch.int8:
+        raise ValueError(f"sage expects int8 Q/K tensors, got Q={query.dtype}, K={key.dtype}")
+    if value.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"sage expects fp16/bf16 V tensors, got V={value.dtype}")
+    if qscale is None or kscale is None:
+        raise ValueError("qscale and kscale must be provided for sage")
+
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=torch.int8, value_dtype=value.dtype
+    )
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sage")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
+    O = _empty_attention_output(
+        B,
+        Hq,
+        Sq,
+        D,
+        dtype=value.dtype,
+        device=query.device,
+        tensor_layout=tensor_layout,
+    )
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
+    lib.sage(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        qscale.data_ptr() if qscale is not None else 0,
+        kscale.data_ptr() if kscale is not None else 0,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        layout_code,
+    )
+    return O
+
+
+def sage_pvi8(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    qscale: torch.Tensor = None,
+    kscale: torch.Tensor = None,
+    vscale: torch.Tensor = None,
+    out_dtype: torch.dtype = torch.float16,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Low-level SAGE attention with pre-quantized INT8 Q/K/V and PV int8.
+
+    Expects contiguous layouts:
+    - query: [B, Hq, Sq, D] int8
+    - key: [B, Hkv, Skv, D] int8
+    - value: [B, Hkv, Skv, D] int8
+    - qscale: [B, Hq, ceil(Sq / quant_block_size), 1] float32
+    - kscale: [B, Hkv, ceil(Skv / quant_block_size), 1] float32
+    - vscale: [B, Hkv, ceil(Skv / quant_block_size), D] float32
+
+    Returns:
+    - O: [B, Hq, Sq, D] float16
+    """
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage_pvi8 is only supported on XPU")
+    if query.dtype != torch.int8 or key.dtype != torch.int8 or value.dtype != torch.int8:
+        raise ValueError(f"Q/K/V must be int8, got Q={query.dtype}, K={key.dtype}, V={value.dtype}")
+    if out_dtype != torch.float16:
+        raise ValueError(f"sage_pvi8 output must be float16, got {out_dtype}")
+    if qscale is None or kscale is None or vscale is None:
+        raise ValueError("qscale, kscale and vscale must be provided for sage_pvi8")
+
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=torch.int8, value_dtype=torch.int8
+    )
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sage_pvi8")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    q_blocks = (Sq + quant_block_size - 1) // quant_block_size
+    kv_blocks = (Skv + quant_block_size - 1) // quant_block_size
+    if qscale.numel() != B * Hq * q_blocks:
+        raise ValueError(
+            f"qscale must have {B * Hq * q_blocks} elements for shape [B, Hq, ceil(Sq/block), 1], got {qscale.numel()}"
+        )
+    if kscale.numel() != B * Hkv * kv_blocks:
+        raise ValueError(
+            f"kscale must have {B * Hkv * kv_blocks} elements for shape [B, Hkv, ceil(Skv/block), 1], got {kscale.numel()}"
+        )
+    if vscale.numel() != B * Hkv * kv_blocks * D:
+        raise ValueError(
+            f"vscale must have {B * Hkv * kv_blocks * D} elements for shape [B, Hkv, ceil(Skv/block), D], got {vscale.numel()}"
+        )
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
+    O = _empty_attention_output(
+        B,
+        Hq,
+        Sq,
+        D,
+        dtype=out_dtype,
+        device=query.device,
+        tensor_layout=tensor_layout,
+    )
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
+    lib.sage_pvi8(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        qscale.data_ptr(),
+        kscale.data_ptr(),
+        vscale.data_ptr(),
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        layout_code,
+    )
+    return O
+
+
+def sagev1(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    tensor_layout: str = "HND",
+    return_lse: bool = False,
+    smooth_k: bool = True,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """SAGE v1 attention prefill+decode.
+
+    Supported tensor layouts:
+    - HND: [B, H, N, D]
+    - NHD: [B, N, H, D]
+
+    Args:
+    - scale: Attention scale. Uses 1 / sqrt(D) when None.
+    - quant_block_size: Quantization block size used by the kernel.
+    - tensor_layout: Layout of Q/K/V/O tensors.
+    - return_lse: If True, returns (O, LSE) where LSE[b, h, q] = log2(sum_j exp(score_{b,h,q,j})),
+      i.e. in log base 2 (the kernels use exp2-based softmax).  With ``smooth_k=True``
+      the ``scale * q · mean(k)`` term removed by key smoothing is added back, so the
+      returned LSE always refers to the original unsmoothed logits.
+    - smooth_k: Whether to smooth the key by subtracting the sequence mean
+      before INT8 quantization (handled by the C++ kernel). Default: True.
+
+    Returns:
+    - O: same layout as the input tensors.
+    - (O, LSE): if return_lse is True.
+    """
+    if quant_block_size <= 0:
+        return sdpa(
+            query=query,
+            key=key,
+            value=value,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+            tensor_layout=tensor_layout,
+            return_lse=return_lse,
+        )
+    if query.device.type != "xpu":
+        raise NotImplementedError("sagev1 is only supported on XPU")
+    if query.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=query.dtype, value_dtype=query.dtype
+    )
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sagev1")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
+    O = _empty_attention_output(
+        B,
+        Hq,
+        Sq,
+        D,
+        dtype=value.dtype,
+        device=query.device,
+        tensor_layout=tensor_layout,
+    )
+
+    LSE = torch.empty(B, Hq, Sq, dtype=torch.float32, device=query.device) if return_lse else None
+
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
+    lib.sagev1(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(value.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        layout_code,
+        bool(smooth_k),
+        LSE.data_ptr() if LSE is not None else 0,
+    )
+
+    if return_lse:
+        # smooth_k subtracts mean(k) from K, so the kernel LSE is computed from
+        # the smoothed logits.  Add the removed term back to recover the LSE of
+        # the original logits.
+        if smooth_k:
+            _restore_lse_after_smooth_k(
+                LSE,
+                query,
+                key,
+                float(scale) if scale is not None else 1.0 / (D**0.5),
+                tensor_layout,
+            )
+        return O, LSE
+    return O
+
+
+def sagev1_pvi8(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    tensor_layout: str = "HND",
+    return_lse: bool = False,
+    smooth_k: bool = True,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """SAGE v1 attention with PV int8 path.
+
+    Expects FP16 Q/K/V input and quantizes Q/K/V internally before calling
+    the PV int8 kernel.
+    """
+    if quant_block_size <= 0:
+        return sdpa(
+            query=query,
+            key=key,
+            value=value,
+            attn_mask=attn_mask,
+            dropout_p=dropout_p,
+            is_causal=is_causal,
+            scale=scale,
+            tensor_layout=tensor_layout,
+            return_lse=return_lse,
+        )
+    if query.device.type != "xpu":
+        raise NotImplementedError("sagev1_pvi8 is only supported on XPU")
+    if query.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Q must be float16 or bfloat16, got {query.dtype}")
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=query.dtype, value_dtype=query.dtype
+    )
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sagev1_pvi8")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+
+    _validate_canonical_strides(query, "Q", tensor_layout)
+    _validate_canonical_strides(key, "K", tensor_layout)
+    _validate_canonical_strides(value, "V", tensor_layout)
+
+    O = _empty_attention_output(
+        B,
+        Hq,
+        Sq,
+        D,
+        dtype=value.dtype,
+        device=query.device,
+        tensor_layout=tensor_layout,
+    )
+
+    LSE = torch.empty(B, Hq, Sq, dtype=torch.float32, device=query.device) if return_lse else None
+
+    layout_code = LAYOUT_HND if _normalize_tensor_layout(tensor_layout) == "HND" else LAYOUT_NHD
+    lib.sagev1_pvi8(
+        stream,
+        query.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        O.data_ptr(),
+        attn_mask.data_ptr() if attn_mask is not None else 0,
+        quant_block_size,
+        cvt_dtype(query.dtype),
+        cvt_dtype(key.dtype),
+        cvt_dtype(value.dtype),
+        cvt_dtype(O.dtype),
+        B,
+        Hq,
+        Hkv,
+        Sq,
+        Skv,
+        D,
+        float(scale) if scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        layout_code,
+        bool(smooth_k),
+        LSE.data_ptr() if LSE is not None else 0,
+    )
+
+    if return_lse:
+        # smooth_k subtracts mean(k) from K, so the kernel LSE is computed from
+        # the smoothed logits.  Add the removed term back to recover the LSE of
+        # the original logits.
+        if smooth_k:
+            _restore_lse_after_smooth_k(
+                LSE,
+                query,
+                key,
+                float(scale) if scale is not None else 1.0 / (D**0.5),
+                tensor_layout,
+            )
+        return O, LSE
+    return O
+
+
+def ark_cpu_kv_cache_alloc(
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    *,
+    dtype: torch.dtype = torch.float32,
+    device: torch.device | str = "cpu",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Allocate an ARK CPU KV cache in internal HND layout: [B, Hkv, capacity, D]."""
+    device = torch.device(device)
+    if device.type != "cpu":
+        raise ValueError("ark_cpu_kv_cache_alloc only supports CPU tensors")
+    if dtype not in (torch.float32, torch.float16, torch.bfloat16):
+        raise ValueError(f"Unsupported KV cache dtype: {dtype}")
+    shape = (batch, num_heads_kv, capacity, head_dim)
+    return torch.empty(shape, device=device, dtype=dtype), torch.empty(shape, device=device, dtype=dtype)
+
+
+def ark_cpu_kv_update(
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    start_pos: int,
+    *,
+    tensor_layout: str = "HND",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Append K/V tensors to an ARK CPU KV cache allocated by ``ark_cpu_kv_cache_alloc``."""
+    if (
+        key_cache.device.type != "cpu"
+        or value_cache.device.type != "cpu"
+        or key.device.type != "cpu"
+        or value.device.type != "cpu"
+    ):
+        raise ValueError("ark_cpu_kv_update only supports CPU tensors")
+    if key_cache.dtype != value_cache.dtype or key.dtype != key_cache.dtype or value.dtype != key_cache.dtype:
+        raise ValueError("K/V cache and source tensors must have the same dtype")
+    if key_cache.ndim != 4 or value_cache.shape != key_cache.shape:
+        raise ValueError("K/V caches must be 4D tensors with identical shape")
+    if not key_cache.is_contiguous() or not value_cache.is_contiguous():
+        raise ValueError("K/V caches must be contiguous")
+
+    batch, num_heads_kv, capacity, head_dim = key_cache.shape
+    Bk, Hkv, append_len, Dk = _validate_attention_tensor(key, "K", tensor_layout, expected_dtype=key_cache.dtype)
+    Bv, Hkv2, append_len_v, Dv = _validate_attention_tensor(value, "V", tensor_layout, expected_dtype=key_cache.dtype)
+    if (Bk, Bv) != (batch, batch) or Hkv != num_heads_kv or Hkv2 != num_heads_kv:
+        raise ValueError("K/V source batch or head count does not match cache")
+    if append_len_v != append_len or Dk != head_dim or Dv != head_dim:
+        raise ValueError("K/V source shape does not match cache")
+    if start_pos < 0 or start_pos + append_len > capacity:
+        raise ValueError("KV append range exceeds cache capacity")
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_kv_update"):
+        raise NotImplementedError("ARK CPU KV cache update kernel is not available")
+
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    cpu_lib.ark_cpu_kv_update(
+        key_cache.data_ptr(),
+        value_cache.data_ptr(),
+        key.data_ptr(),
+        value.data_ptr(),
+        *k_strides,
+        *v_strides,
+        cvt_dtype(key_cache.dtype),
+        batch,
+        num_heads_kv,
+        append_len,
+        head_dim,
+        capacity,
+        int(start_pos),
+    )
+    return key_cache, value_cache
+
+
+# -----------------------------------------------------------------------------
+# Internal/experimental CPU mixed-route lifecycle helpers.
+#
+# These APIs exist to manage backend state (packed descriptors/caches/rope/packed
+# forwards). They are intentionally outside the public sdpa() contract, which
+# remains the standard SDPA surface.
+# -----------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ArkCpuPackedKVHandle:
+    """Internal/experimental handle for the packed BestLA CPU KV-cache path."""
+
+    descriptor: object
+    dtype: torch.dtype
+
+    @classmethod
+    def create(
+        cls,
+        batch: int,
+        num_heads_kv: int,
+        capacity: int,
+        head_dim: int,
+        *,
+        dtype: torch.dtype = torch.float16,
+    ) -> "ArkCpuPackedKVHandle":
+        return cls(ark_cpu_packed_kv_descriptor(batch, num_heads_kv, capacity, head_dim, dtype=dtype), dtype)
+
+    def info(self) -> dict:
+        return ark_cpu_packed_kv_info(descriptor=self.descriptor)
+
+    def alloc(self, *, device: str = "cpu") -> tuple[torch.Tensor, torch.Tensor]:
+        return ark_cpu_packed_kv_alloc_from_descriptor(self.descriptor, dtype=self.dtype, device=device)
+
+    def update(
+        self,
+        cache_k: torch.Tensor,
+        cache_v: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        start_pos: int,
+        *,
+        tensor_layout: str = "HND",
+        no_zeroing: bool = False,
+    ) -> None:
+        return ark_cpu_update_packed_kv_from_descriptor(
+            self.descriptor, cache_k, cache_v, key, value, start_pos, tensor_layout=tensor_layout, no_zeroing=no_zeroing
+        )
+
+    def copy(
+        self,
+        dst_cache_k: torch.Tensor,
+        dst_cache_v: torch.Tensor,
+        src_cache_k: torch.Tensor,
+        src_cache_v: torch.Tensor,
+        seq_off: int,
+        seq_size: int,
+        *,
+        no_zeroing: bool = False,
+    ) -> None:
+        return ark_cpu_copy_packed_kv_from_descriptor(
+            self.descriptor,
+            dst_cache_k,
+            dst_cache_v,
+            src_cache_k,
+            src_cache_v,
+            seq_off,
+            seq_size,
+            no_zeroing=no_zeroing,
+        )
+
+    def shift_k(self, cache_k: torch.Tensor, cossin: torch.Tensor, *, seq_keep: int) -> None:
+        return ark_cpu_shift_packed_k_from_descriptor(self.descriptor, cache_k, cossin, seq_keep=seq_keep)
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        cache_k: torch.Tensor,
+        cache_v: torch.Tensor,
+        seq_len_kv: int,
+        num_heads_kv: int | None = None,
+        *,
+        is_causal: bool = False,
+        scale: float | None = None,
+        tensor_layout: str = "HND",
+    ) -> torch.Tensor:
+        del num_heads_kv
+        return ark_cpu_bestla_sdpa_packed_from_descriptor(
+            self.descriptor,
+            query,
+            cache_k,
+            cache_v,
+            seq_len_kv,
+            is_causal=is_causal,
+            scale=scale,
+            tensor_layout=tensor_layout,
+        )
+
+
+def ark_cpu_packed_kv_descriptor(
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    *,
+    dtype: torch.dtype = torch.float16,
+):
+    """Create an internal/experimental packed-KV descriptor for repeated CPU BestLA cache operations."""
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_descriptor"):
+        raise NotImplementedError("ARK CPU packed KV descriptor is not available (requires BestLA CPU extension build)")
+    return cpu_lib.ark_cpu_packed_kv_descriptor(batch, num_heads_kv, capacity, head_dim, cvt_dtype(dtype))
+
+
+def ark_cpu_packed_kv_alloc_from_descriptor(
+    descriptor,
+    *,
+    dtype: torch.dtype | None = None,
+    device: str = "cpu",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_elems_desc"):
+        raise NotImplementedError(
+            "ARK CPU packed KV descriptor allocation is not available (requires BestLA CPU extension build)"
+        )
+    desc_info = ark_cpu_packed_kv_info(descriptor=descriptor)
+    desc_dtype = _torch_dtype_from_ark_dtype(int(desc_info["dtype"]))
+    alloc_dtype = dtype if dtype is not None else desc_dtype
+    if alloc_dtype != desc_dtype:
+        raise ValueError(f"Descriptor dtype {desc_dtype} does not match requested allocation dtype {alloc_dtype}")
+    k_elems, v_elems = cpu_lib.ark_cpu_packed_kv_elems_desc(descriptor)
+    return (
+        torch.zeros(k_elems, dtype=alloc_dtype, device=device),
+        torch.zeros(v_elems, dtype=alloc_dtype, device=device),
+    )
+
+
+def ark_cpu_packed_kv_alloc(
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    *,
+    dtype: torch.dtype = torch.float16,
+    device: str = "cpu",
+) -> tuple:
+    """Allocate internal/experimental 1-D packed K/V tensors for the BestLA decode path.
+
+    Returns (cache_k, cache_v) as 1-D tensors of the requested dtype.  The packed
+    geometry is NTILE24_ROWPACK1 for fp16, NTILE48_ROWPACK2 for bf16, matching the
+    layout expected by ark_cpu_update_packed_k/v and ark_cpu_bestla_sdpa_packed.
+
+    Both tensors are zero-initialized (unwritten packed slots read as zero).
+    """
+    descriptor = ark_cpu_packed_kv_descriptor(batch, num_heads_kv, capacity, head_dim, dtype=dtype)
+    return ark_cpu_packed_kv_alloc_from_descriptor(descriptor, dtype=dtype, device=device)
+
+
+def ark_cpu_packed_kv_info(
+    batch: int | None = None,
+    num_heads_kv: int | None = None,
+    capacity: int | None = None,
+    head_dim: int | None = None,
+    *,
+    dtype: torch.dtype = torch.float16,
+    descriptor=None,
+) -> dict:
+    """Return the internal/experimental packed-KV descriptor used by the CPU BestLA path."""
+    if descriptor is not None:
+        if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_info_desc"):
+            raise NotImplementedError(
+                "ARK CPU packed KV descriptor query is not available (requires BestLA CPU extension build)"
+            )
+        return dict(cpu_lib.ark_cpu_packed_kv_info_desc(descriptor))
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_packed_kv_info"):
+        raise NotImplementedError("ARK CPU packed KV info query is not available (requires BestLA CPU extension build)")
+    if batch is None or num_heads_kv is None or capacity is None or head_dim is None:
+        raise ValueError("batch, num_heads_kv, capacity, and head_dim are required when descriptor is not provided")
+    return dict(cpu_lib.ark_cpu_packed_kv_info(batch, num_heads_kv, capacity, head_dim, cvt_dtype(dtype)))
+
+
+def ark_cpu_update_packed_kv_from_descriptor(
+    descriptor,
+    cache_k: torch.Tensor,
+    cache_v: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    start_pos: int,
+    *,
+    tensor_layout: str = "HND",
+    no_zeroing: bool = False,
+) -> None:
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_update_packed_k_desc"):
+        raise NotImplementedError(
+            "ARK CPU packed KV descriptor update is not available (requires BestLA CPU extension build)"
+        )
+    batch, num_heads_kv, append_len, head_dim = _attention_shape(key, tensor_layout)
+    if (
+        batch != int(descriptor.batch_size)
+        or num_heads_kv != int(descriptor.heads_kv)
+        or head_dim != int(descriptor.head_dim)
+    ):
+        raise ValueError("K descriptor shape does not match the key/value tensors")
+    if start_pos < 0 or start_pos + append_len > int(descriptor.logical_capacity):
+        raise ValueError("KV append range exceeds packed descriptor capacity")
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    cpu_lib.ark_cpu_update_packed_k_desc(
+        cache_k.data_ptr(), key.data_ptr(), *k_strides, descriptor, append_len, int(start_pos), bool(no_zeroing)
+    )
+    cpu_lib.ark_cpu_update_packed_v_desc(
+        cache_v.data_ptr(), value.data_ptr(), *v_strides, descriptor, append_len, int(start_pos), bool(no_zeroing)
+    )
+
+
+def ark_cpu_update_packed_kv(
+    cache_k: torch.Tensor,
+    cache_v: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    start_pos: int,
+    capacity: int,
+    *,
+    tensor_layout: str = "HND",
+    no_zeroing: bool = False,
+) -> None:
+    """Append raw K/V tokens at [start_pos, start_pos+append_len) into packed caches.
+
+    cache_k and cache_v must have been allocated by ark_cpu_packed_kv_alloc with
+    the same (batch, num_heads_kv, capacity, head_dim, dtype).  key and value are
+    raw HND/NHD tensors; tensor_layout selects the stride convention.  capacity
+    must match the value passed to ark_cpu_packed_kv_alloc.  The update is in-place.
+    """
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_update_packed_k"):
+        raise NotImplementedError("ARK CPU packed KV update is not available (requires BestLA CPU extension build)")
+    kv_dtype = cvt_dtype(key.dtype)
+    batch, num_heads_kv, append_len, head_dim = _attention_shape(key, tensor_layout)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    v_strides = _attention_strides_v(value, tensor_layout)
+    cpu_lib.ark_cpu_update_packed_k(
+        cache_k.data_ptr(),
+        key.data_ptr(),
+        *k_strides,
+        kv_dtype,
+        batch,
+        num_heads_kv,
+        append_len,
+        head_dim,
+        capacity,
+        int(start_pos),
+        bool(no_zeroing),
+    )
+    cpu_lib.ark_cpu_update_packed_v(
+        cache_v.data_ptr(),
+        value.data_ptr(),
+        *v_strides,
+        kv_dtype,
+        batch,
+        num_heads_kv,
+        append_len,
+        head_dim,
+        capacity,
+        int(start_pos),
+        bool(no_zeroing),
+    )
+
+
+def ark_cpu_copy_packed_kv(
+    dst_cache_k: torch.Tensor,
+    dst_cache_v: torch.Tensor,
+    src_cache_k: torch.Tensor,
+    src_cache_v: torch.Tensor,
+    seq_off: int,
+    seq_size: int,
+    *,
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    dtype: torch.dtype,
+    no_zeroing: bool = False,
+) -> None:
+    """Copy a logical window from one packed KV cache to another."""
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_copy_packed_k"):
+        raise NotImplementedError("ARK CPU packed KV copy is not available (requires BestLA CPU extension build)")
+    kv_dtype = cvt_dtype(dtype)
+    cpu_lib.ark_cpu_copy_packed_k(
+        dst_cache_k.data_ptr(),
+        src_cache_k.data_ptr(),
+        kv_dtype,
+        batch,
+        num_heads_kv,
+        capacity,
+        head_dim,
+        int(seq_off),
+        int(seq_size),
+        bool(no_zeroing),
+    )
+    cpu_lib.ark_cpu_copy_packed_v(
+        dst_cache_v.data_ptr(),
+        src_cache_v.data_ptr(),
+        kv_dtype,
+        batch,
+        num_heads_kv,
+        capacity,
+        head_dim,
+        int(seq_off),
+        int(seq_size),
+        bool(no_zeroing),
+    )
+
+
+def ark_cpu_copy_packed_kv_from_descriptor(
+    descriptor,
+    dst_cache_k: torch.Tensor,
+    dst_cache_v: torch.Tensor,
+    src_cache_k: torch.Tensor,
+    src_cache_v: torch.Tensor,
+    seq_off: int,
+    seq_size: int,
+    *,
+    no_zeroing: bool = False,
+) -> None:
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_copy_packed_k_desc"):
+        raise NotImplementedError(
+            "ARK CPU packed KV descriptor copy is not available (requires BestLA CPU extension build)"
+        )
+    cpu_lib.ark_cpu_copy_packed_k_desc(
+        dst_cache_k.data_ptr(), src_cache_k.data_ptr(), descriptor, int(seq_off), int(seq_size), bool(no_zeroing)
+    )
+    cpu_lib.ark_cpu_copy_packed_v_desc(
+        dst_cache_v.data_ptr(), src_cache_v.data_ptr(), descriptor, int(seq_off), int(seq_size), bool(no_zeroing)
+    )
+
+
+def ark_cpu_shift_packed_k(
+    cache_k: torch.Tensor,
+    cossin: torch.Tensor,
+    *,
+    batch: int,
+    num_heads_kv: int,
+    capacity: int,
+    head_dim: int,
+    dtype: torch.dtype,
+    seq_keep: int,
+) -> None:
+    """Apply packed-K shift-RoPE in-place on the BF16 packed cache path."""
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_shift_packed_k"):
+        raise NotImplementedError("ARK CPU packed K shift-RoPE is not available (requires BestLA CPU extension build)")
+    if cossin.dtype != torch.float16:
+        raise ValueError(f"cossin must be float16, got {cossin.dtype}")
+    cpu_lib.ark_cpu_shift_packed_k(
+        cache_k.data_ptr(),
+        cossin.data_ptr(),
+        cvt_dtype(dtype),
+        batch,
+        num_heads_kv,
+        capacity,
+        head_dim,
+        int(seq_keep),
+    )
+
+
+def ark_cpu_shift_packed_k_from_descriptor(
+    descriptor,
+    cache_k: torch.Tensor,
+    cossin: torch.Tensor,
+    *,
+    seq_keep: int,
+) -> None:
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_shift_packed_k_desc"):
+        raise NotImplementedError(
+            "ARK CPU packed K descriptor shift-RoPE is not available (requires BestLA CPU extension build)"
+        )
+    if cossin.dtype != torch.float16:
+        raise ValueError(f"cossin must be float16, got {cossin.dtype}")
+    cpu_lib.ark_cpu_shift_packed_k_desc(cache_k.data_ptr(), cossin.data_ptr(), descriptor, int(seq_keep))
+
+
+def ark_cpu_bestla_sdpa_packed(
+    query: torch.Tensor,
+    cache_k: torch.Tensor,
+    cache_v: torch.Tensor,
+    seq_len_kv: int,
+    capacity: int,
+    num_heads_kv: int,
+    *,
+    is_causal: bool = False,
+    scale: float | None = None,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Internal/experimental BestLA mixed-precision SDPA over a packed K/V cache.
+
+    query must be float32; cache_k/cache_v must be float16 or bfloat16 (produced
+    by ark_cpu_packed_kv_alloc + ark_cpu_update_packed_kv).  seq_len_kv is the
+    current valid sequence length in the cache (<= capacity).  capacity and
+    num_heads_kv must match the values used at allocation time.
+
+    This helper is outside the standard public sdpa() contract and exists for the
+    internal mixed-route / packed-cache feature surface.
+    """
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_bestla_sdpa_packed"):
+        raise NotImplementedError("ARK CPU packed BestLA SDPA is not available (requires BestLA CPU extension build)")
+
+    kv_dtype = cvt_dtype(cache_k.dtype)
+    batch, num_heads_q, seq_len_q, head_dim = _attention_shape(query, tensor_layout)
+    sm_scale = scale if scale is not None else (head_dim**-0.5)
+    output = _empty_attention_output(
+        batch, num_heads_q, seq_len_q, head_dim, dtype=query.dtype, device=query.device, tensor_layout=tensor_layout
+    )
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    o_strides = _attention_strides_qko(output, tensor_layout)
+    cpu_lib.ark_cpu_bestla_sdpa_packed(
+        query.data_ptr(),
+        cache_k.data_ptr(),
+        cache_v.data_ptr(),
+        output.data_ptr(),
+        *q_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        kv_dtype,
+        batch,
+        num_heads_q,
+        num_heads_kv,
+        seq_len_q,
+        seq_len_kv,
+        capacity,
+        head_dim,
+        float(sm_scale),
+        is_causal,
+    )
+    return output
+
+
+def ark_cpu_bestla_sdpa_packed_from_descriptor(
+    descriptor,
+    query: torch.Tensor,
+    cache_k: torch.Tensor,
+    cache_v: torch.Tensor,
+    seq_len_kv: int,
+    *,
+    is_causal: bool = False,
+    scale: float | None = None,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """Descriptor-based internal/experimental packed BestLA SDPA forward."""
+    if cpu_lib is None or not hasattr(cpu_lib, "ark_cpu_bestla_sdpa_packed_desc"):
+        raise NotImplementedError(
+            "ARK CPU packed BestLA SDPA descriptor path is not available (requires BestLA CPU extension build)"
+        )
+    batch, num_heads_q, seq_len_q, head_dim = _attention_shape(query, tensor_layout)
+    if batch != int(descriptor.batch_size) or head_dim != int(descriptor.head_dim):
+        raise ValueError("Query shape does not match the packed KV descriptor")
+    sm_scale = scale if scale is not None else (head_dim**-0.5)
+    output = _empty_attention_output(
+        batch, num_heads_q, seq_len_q, head_dim, dtype=query.dtype, device=query.device, tensor_layout=tensor_layout
+    )
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    o_strides = _attention_strides_qko(output, tensor_layout)
+    cpu_lib.ark_cpu_bestla_sdpa_packed_desc(
+        query.data_ptr(),
+        cache_k.data_ptr(),
+        cache_v.data_ptr(),
+        output.data_ptr(),
+        *q_strides,
+        *o_strides,
+        cvt_dtype(query.dtype),
+        descriptor,
+        num_heads_q,
+        seq_len_q,
+        seq_len_kv,
+        float(sm_scale),
+        bool(is_causal),
+    )
+    return output
+
+
+def sageattn(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    tensor_layout: str = "HND",
+    is_causal: bool = False,
+    sm_scale: float | None = None,
+    return_lse: bool = False,
+    kernel: str = "v1_pvhalf",
+    **kwargs,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """SAGE attention dispatcher.
+
+    Signature mirrors ``sageattention.sageattn``.
+
+    Args:
+    - q, k, v: Query/Key/Value tensors. Layout selected by ``tensor_layout``.
+    - tensor_layout: "HND" or "NHD".
+    - is_causal: Whether to apply causal mask.
+    - sm_scale: Softmax scale. Uses ``1 / sqrt(head_dim)`` when None.
+    - return_lse: If True, returns (O, LSE) tuple.
+    - kernel: Which SAGE variant to dispatch to.
+        - "v1_pvhalf" (default): PV in half precision (calls ``sagev1``).
+        - "v1_pvi8": PV in INT8 precision (calls ``sagev1_pvi8``).
+    - kwargs: Forwarded to the underlying kernel (e.g. ``attn_mask``,
+      ``dropout_p``, ``enable_gqa``, ``quant_block_size``).
+
+    Returns:
+    - O: same layout as the input tensors.
+    - (O, LSE): if return_lse is True.
+    """
+    if kernel == "v1_pvhalf":
+        impl = sagev1
+    elif kernel == "v1_pvi8":
+        impl = sagev1_pvi8
+    else:
+        raise ValueError(f"Unsupported sageattn kernel={kernel!r}; supported: 'v1_pvhalf', 'v1_pvi8'")
+
+    return impl(
+        query=q,
+        key=k,
+        value=v,
+        is_causal=is_causal,
+        scale=sm_scale,
+        tensor_layout=tensor_layout,
+        return_lse=return_lse,
+        **kwargs,
+    )
+
+
+from .sparse_attention import (
+    _block_map_lut_torch,
+    _build_block_causal_mask,
+    _build_sparge_preprocess_context,
+    _finalize_sparge_preprocess_outputs,
+    _from_hnd,
+    _sparge_preprocess_topk_torch,
+    _sequence_mean_native_layout,
+    _slice_sequence_native_layout,
+    _to_hnd,
+    block_sparse_sdpa,
+    sage_sparse,
+    sparge_block_map_to_mask,
+    sparge_preprocess_topk,
+    sparge_sage2_attn_meansim_topk_xpu,
+    sparge_sage2_attn_meansim_topk_xpu_sdpa,
+)
+
+
+def sageattn_varlen(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    is_causal: bool = False,
+    sm_scale: float | None = None,
+    kernel: str = "v1_pvhalf",
+    quant_block_size: int = 64,
+    return_lse: bool = False,
+    smooth_k: bool = True,
+    **kwargs,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    """SAGE attention with variable-length sequences (no padding).
+
+    Q/K/V are flat 3-D tensors: [total_tokens, num_heads, head_dim].
+    Per-sequence boundaries given by ``cu_seqlens_q`` / ``cu_seqlens_k``.
+
+    Internally quantizes Q/K (and V for pvi8) to INT8, then dispatches to
+    the SAGE varlen kernel.
+
+    Args:
+        q:   [total_q, num_heads_q, head_dim] float16/bfloat16
+        k:   [total_kv, num_heads_kv, head_dim] float16/bfloat16
+        v:   [total_kv, num_heads_kv, head_dim] float16/bfloat16
+        cu_seqlens_q: Cumulative sequence lengths for Q [batch+1] int32.
+        cu_seqlens_k: Cumulative sequence lengths for K/V [batch+1] int32.
+        max_seqlen_q: Maximum Q sequence length.
+        max_seqlen_k: Maximum K/V sequence length.
+        is_causal: Apply causal mask.
+        sm_scale: Softmax scale. Uses 1/sqrt(D) when None.
+        kernel: "v1_pvhalf" (PV half) or "v1_pvi8" (PV int8).
+        quant_block_size: Block size for INT8 quantization (default 64).
+        smooth_k: Whether to smooth the key by subtracting the sequence mean
+            before INT8 quantization (handled by the C++ kernel). Default: True.
+        **kwargs: Forwarded (attn_mask, dropout_p etc. not yet supported).
+
+    Returns:
+        O: [total_q, num_heads_q, head_dim] float16/bfloat16
+    """
+    if q.device.type != "xpu":
+        raise NotImplementedError("sageattn_varlen is only supported on XPU")
+
+    if q.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Q must be float16 or bfloat16, got {q.dtype}")
+
+    if q.ndim != 3 or k.ndim != 3 or v.ndim != 3:
+        raise ValueError(f"Q/K/V must be 3-D for varlen; got Q={q.ndim}D, K={k.ndim}D, V={v.ndim}D")
+
+    if cu_seqlens_q.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"cu_seqlens_q must be int32 or int64, got {cu_seqlens_q.dtype}")
+    if cu_seqlens_k.dtype not in (torch.int32, torch.int64):
+        raise ValueError(f"cu_seqlens_k must be int32 or int64, got {cu_seqlens_k.dtype}")
+    if cu_seqlens_q.dim() != 1 or cu_seqlens_k.dim() != 1:
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must be 1-D")
+    if cu_seqlens_q.device.type != "xpu" or cu_seqlens_k.device.type != "xpu":
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must be on XPU")
+
+    batch = cu_seqlens_q.shape[0] - 1
+    if cu_seqlens_k.shape[0] - 1 != batch:
+        raise ValueError("cu_seqlens_q and cu_seqlens_k must describe the same batch size")
+
+    total_q, Hq, D = q.shape
+    total_kv, Hkv, Dk = k.shape
+    total_kv_v, Hkv2, Dv = v.shape
+
+    if total_q != cu_seqlens_q[-1].item():
+        raise ValueError(f"Q dim-0 ({total_q}) != cu_seqlens_q[-1] ({cu_seqlens_q[-1].item()})")
+    if total_kv != cu_seqlens_k[-1].item():
+        raise ValueError(f"K dim-0 ({total_kv}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
+    if total_kv_v != cu_seqlens_k[-1].item():
+        raise ValueError(f"V dim-0 ({total_kv_v}) != cu_seqlens_k[-1] ({cu_seqlens_k[-1].item()})")
+    if Hkv != Hkv2 or Dk != Dv:
+        raise ValueError("K/V shape mismatch")
+    if Dk != D:
+        raise ValueError("Head dim mismatch between Q and K/V")
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; only 64, 128 supported for SAGE")
+
+    if kernel not in ("v1_pvhalf", "v1_pvi8"):
+        raise ValueError(f"Unsupported kernel={kernel!r}; supported: 'v1_pvhalf', 'v1_pvi8'")
+
+    if quant_block_size <= 0:
+        quant_block_size = 1
+
+    use_int8_pv = 1 if kernel == "v1_pvi8" else 0
+
+    # Validate contiguous along head-dim
+    if q.stride(2) != 1:
+        raise ValueError(f"Q must be contiguous along head-dim axis; got stride {q.stride()}")
+    if k.stride(2) != 1:
+        raise ValueError(f"K must be contiguous along head-dim axis; got stride {k.stride()}")
+    if v.stride(2) != 1:
+        raise ValueError(f"V must be contiguous along head-dim axis; got stride {v.stride()}")
+
+    lib = get_lib(q)
+    stream = get_stream(q)
+    cu_seqlens_q_i32 = cu_seqlens_q.contiguous().to(torch.int32)
+    cu_seqlens_k_i32 = cu_seqlens_k.contiguous().to(torch.int32)
+
+    O = torch.empty(total_q, Hq, D, dtype=v.dtype, device=q.device)
+
+    if return_lse:
+        # .item() is a device->host sync; illegal during graph capture.
+        max_q = max_seqlen_q if _xpu_capturing() else int((cu_seqlens_q_i32[1:] - cu_seqlens_q_i32[:-1]).max().item())
+        if max_seqlen_q < max_q:
+            raise ValueError(f"max_seqlen_q ({max_seqlen_q}) < max sequence length in cu_seqlens_q ({max_q})")
+        LSE = torch.full(
+            (batch, Hq, max_seqlen_q),
+            float("-inf"),
+            dtype=torch.float32,
+            device=q.device,
+        )
+    else:
+        LSE = None
+    lib.sagev1_varlen(
+        stream,
+        q.data_ptr(),
+        k.data_ptr(),
+        v.data_ptr(),
+        O.data_ptr(),
+        0,  # mask
+        quant_block_size,
+        cvt_dtype(q.dtype),
+        cvt_dtype(k.dtype),
+        cvt_dtype(v.dtype),
+        cvt_dtype(O.dtype),
+        batch,
+        Hq,
+        Hkv,
+        total_q,
+        total_kv,
+        max_seqlen_q,
+        max_seqlen_k,
+        D,
+        sm_scale if sm_scale is not None else 1.0 / (D**0.5),
+        bool(is_causal),
+        cu_seqlens_q_i32.data_ptr(),
+        cu_seqlens_k_i32.data_ptr(),
+        use_int8_pv,
+        bool(smooth_k),
+        LSE.data_ptr() if LSE is not None else 0,
+    )
+
+    if return_lse:
+        # smooth_k subtracts mean(k) from K, so the kernel LSE is computed from
+        # the smoothed logits.  Add the removed term back to recover the LSE of
+        # the original logits.
+        if smooth_k:
+            _restore_lse_after_smooth_k_varlen(
+                LSE,
+                q,
+                k,
+                sm_scale if sm_scale is not None else 1.0 / (D**0.5),
+                cu_seqlens_q_i32,
+            )
+        return O, LSE
+    return O
+
+
+def sage_dynquant(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: float | None = None,
+    enable_gqa: bool = False,
+    quant_block_size: int = 64,
+    tensor_layout: str = "HND",
+) -> torch.Tensor:
+    """SAGE Attention with dynamic INT8 block-wise quantization of Q/K.
+
+    Takes FP16 Q, K, V inputs. Quantizes Q and K to INT8 per-block
+    using a fused SYCL kernel, then calls SAGE V1 with INT8 data.
+    API is like SDPA but with an extra quant_block_size parameter.
+
+    Args:
+        query: [B, Hq, Sq, D] float16
+        key:   [B, Hkv, Skv, D] float16
+        value: [B, Hkv, Skv, D] float16
+        quant_block_size: Number of tokens sharing one INT8 scale.
+            E.g. 64 means 64 consecutive tokens share one absmax.
+            0 means per-token (block_size=1).
+
+    Returns:
+        O: [B, Hq, Sq, D] float16
+    """
+    if query.device.type != "xpu":
+        raise NotImplementedError("sage_dynquant is only supported on XPU")
+
+    if query.dtype != torch.float16:
+        raise ValueError(f"sage_dynquant currently supports only float16 Q/K/V tensors, got {query.dtype}")
+    if key.dtype != query.dtype or value.dtype != query.dtype:
+        raise ValueError(f"K/V dtype must match Q dtype, got K={key.dtype}, V={value.dtype}, Q={query.dtype}")
+
+    B, Hq, Hkv, Sq, Skv, D = _validate_attention_geometry(
+        query, key, value, tensor_layout, key_dtype=query.dtype, value_dtype=query.dtype
+    )
+    if D not in (64, 128):
+        raise ValueError(f"Unsupported head_dim={D}; supported: 64, 128")
+    _validate_no_dropout(dropout_p, "sage_dynquant")
+    _validate_attention_mask(attn_mask, batch=B, seq_len_q=Sq, seq_len_kv=Skv, device=query.device)
+
+    # block_size=0 means per-token
+    block_size = quant_block_size if quant_block_size > 0 else 1
+
+    # SAGE V1 kernel uses K-tile size=32; quant_block_size must be 1 or >=32
+    if block_size != 1 and block_size < 32:
+        raise ValueError(
+            f"quant_block_size={block_size} is not supported. "
+            f"Must be 1 (per-token) or >= 32 (e.g. 32, 64, 128, 256)."
+        )
+
+    lib = get_lib(query)
+    stream = get_stream(query)
+    q_blocks = (Sq + block_size - 1) // block_size
+    kv_blocks = (Skv + block_size - 1) // block_size
+    q_i8 = torch.empty_like(query, dtype=torch.int8)
+    q_scale = torch.empty((B, Hq, q_blocks, 1), dtype=torch.float32, device=query.device)
+    q_strides = _attention_strides_qko(query, tensor_layout)
+    lib.sage_dynamic_quant_layout(
+        stream,
+        query.data_ptr(),
+        0,
+        q_i8.data_ptr(),
+        q_scale.data_ptr(),
+        B,
+        Hq,
+        Sq,
+        D,
+        block_size,
+        *q_strides,
+    )
+
+    k_i8 = torch.empty_like(key, dtype=torch.int8)
+    k_scale = torch.empty((B, Hkv, kv_blocks, 1), dtype=torch.float32, device=key.device)
+    k_strides = _attention_strides_qko(key, tensor_layout)
+    lib.sage_dynamic_quant_layout(
+        stream,
+        key.data_ptr(),
+        0,
+        k_i8.data_ptr(),
+        k_scale.data_ptr(),
+        B,
+        Hkv,
+        Skv,
+        D,
+        block_size,
+        *k_strides,
+    )
+
+    # Call SAGE v1 with matching quant_block_size
+    return sage(
+        q_i8,
+        k_i8,
+        value,
+        attn_mask=attn_mask,
+        dropout_p=dropout_p,
+        is_causal=is_causal,
+        scale=scale,
+        enable_gqa=enable_gqa,
+        quant_block_size=block_size,
+        qscale=q_scale,
+        kscale=k_scale,
+        tensor_layout=tensor_layout,
+    )
+
+
+def moe_gemm_decode(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: torch.Tensor | None = None,
+    zeros: torch.Tensor | None = None,
+    weight_bits: int = 4,
+    group_size: int = 128,
+    asym: bool = False,
+) -> torch.Tensor:
+    """MoE GEMV optimized for the decode phase.
+
+    Each expert typically processes only 1-2 tokens (top-k routing with
+    small batch). Activations must already be gathered/sorted by expert
+    (same convention as ``moe_gemm``).
+
+    Args:
+        activations: ``[total_tokens, K]`` in fp16 or bf16.
+        weights: 3-D tensor ``[E, N, K_packed]``. The accepted layouts are:
+
+            * Unquantized (``weight_bits=16``): ``torch.float16`` / ``torch.bfloat16``
+              matching the activations dtype, ``K_packed == K``.
+            * Int8 (``weight_bits=8``): ``torch.uint8``, ``K_packed == K``.
+              Sym (``asym=False``) reinterprets each byte as signed int8;
+              asym (``asym=True``) treats each byte as ``uint8`` with a
+              per-group zero-point.
+            * Int4 (``weight_bits=4``): ``torch.uint8`` packed,
+              ``K_packed == K // 2`` (two 4-bit values per byte; low nibble
+              at the lower K index).
+            * Int2 (``weight_bits=2``): ``torch.uint8`` packed,
+              ``K_packed == K // 4`` (four 2-bit values per byte; field j at
+              K index ``4*i + j`` occupies bits 2j and 2j+1 of byte i).
+            * FP8 (``torch.float8_e4m3fn`` / ``torch.float8_e5m2``):
+              ``K_packed == K``. ``weight_bits`` is ignored; ``asym`` must
+              be ``False`` (no zero-points for FP8).
+        num_tokens_per_expert: ``[E]`` int32. Sum must equal
+            ``activations.shape[0]``; this is a caller contract. It is checked
+            eagerly only when the tensor lives on the host, or when
+            ``ARK_MOE_VALIDATE_ROUTING`` is set -- summing a device tensor
+            costs a blocking device-to-host sync on the decode hot path.
+        scales: ``[E, N, K // group_size]`` in activations dtype. Required
+            for all quantized paths (int8/int4/int2/fp8); must be ``None``
+            for unquantized weights.
+        zeros: ``[E, N, K // group_size]`` in activations dtype. Required
+            when ``asym=True`` (int8/int4/int2 only); otherwise ``None``.
+        weight_bits: 2, 4, 8, or 16. Ignored when ``weights`` is an FP8
+            tensor (the FP8 sub-format is taken from ``weights.dtype``).
+        group_size: group along K for quantized weights (default 128).
+        asym: if ``True``, weights use unsigned encoding and ``zeros`` must
+            be provided. Not supported for FP8.
+
+    Returns:
+        outputs: ``[total_tokens, N]`` in the same dtype as activations.
+    """
+    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
+        _validate_moe_quant_args(
+            activations,
+            weights,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
+            api_name="moe_gemm_decode",
+        )
+    )
+
+    lib = get_lib(activations)
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+    # Scratch buffer mapping each token to its expert id; filled on-device
+    # inside the kernel wrapper so we avoid host-device sync.
+    expert_id_per_token = torch.empty((total_tokens,), device=activations.device, dtype=torch.int32)
+
+    scales_ptr = scales.data_ptr() if scales is not None else 0
+    zeros_ptr = zeros.data_ptr() if zeros is not None else 0
+
+    lib.moe_gemm_decode(
+        stream,
+        activations.data_ptr(),
+        weights.data_ptr(),
+        scales_ptr,
+        zeros_ptr,
+        outputs.data_ptr(),
+        expert_id_per_token.data_ptr(),
+        cvt_dtype(activations.dtype),
+        weight_dtype,
+        N,
+        K,
+        group_size,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+        bool(asym),
+    )
+    return outputs
+
+
+def moe_decode_release_scratch() -> None:
+    """Release the device scratch buffers held by the int4 decode fallbacks.
+
+    :func:`moe_gemm_decode` serves its int4 weight-repack and activation-sum
+    buffers from grow-on-demand per-queue slabs that are kept for the lifetime
+    of the process so the decode hot path never allocates. Call this to hand
+    that memory back, or to drop a repack cached via
+    ``ARK_MOE_DECODE_INT4_REPACK_CACHE=1`` before the underlying weight tensor
+    is freed. A no-op when the XPU extension is not loaded.
+    """
+    lib = xpu_lib
+    if lib is None or not hasattr(lib, "moe_decode_release_scratch"):
+        return
+    lib.moe_decode_release_scratch()
+
+
+def moe_routing_validation_enabled() -> bool:
+    """Whether ``num_tokens_per_expert`` is checked against ``total_tokens``.
+
+    The check needs the *sum* of the routing table, which for a table that
+    already lives on the device costs a reduction kernel plus a blocking
+    device-to-host copy -- a full pipeline flush on every call. Decode issues
+    one call per generated token, so that sync lands directly in the
+    token-latency path (and inside the timed region of the decode benchmarks),
+    where it is worth tens of microseconds against kernels that take ~150us.
+
+    So the check runs unconditionally for host-side (CPU) routing tables, where
+    it is free, and is skipped for device tables unless
+    ``ARK_MOE_VALIDATE_ROUTING`` is set to a truthy value. The C++ side does not
+    need the host value: it consumes the device pointer directly and derives
+    ``expert_id_per_token`` on-device, clamped to ``num_experts - 1``.
+
+    Truthy values (case-insensitive): anything other than "0", "false", "off",
+    "no". Unset means disabled (no sync).
+    """
+    env = os.environ.get("ARK_MOE_VALIDATE_ROUTING")
+    if env is None:
+        return False
+    return env.strip().lower() not in ("0", "false", "off", "no")
+
+
+def _check_routing_total(num_tokens_per_expert: torch.Tensor, total_tokens: int) -> None:
+    """Check ``sum(num_tokens_per_expert) == total_tokens`` without a device sync.
+
+    See :func:`moe_routing_validation_enabled` for when the check is skipped.
+    """
+    if num_tokens_per_expert.device.type != "cpu" and not moe_routing_validation_enabled():
+        return
+    expected_total = int(num_tokens_per_expert.sum().item())
+    if expected_total != total_tokens:
+        raise ValueError(f"Sum of num_tokens_per_expert ({expected_total}) != total_tokens ({total_tokens})")
+
+
+def _validate_moe_quant_args(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: torch.Tensor | None,
+    zeros: torch.Tensor | None,
+    weight_bits: int,
+    group_size: int,
+    asym: bool,
+    api_name: str,
+):
+    """Shared validation/normalisation for quantized MoE entry points.
+
+    Returns a tuple of normalised tensors and dtype/shape metadata used by the
+    kernel-call site:
+        ``(activations, weights, scales, zeros, num_tokens_per_expert,
+           weight_dtype, total_tokens, N, K, num_experts)``.
+
+    The caller owns the contract that ``num_tokens_per_expert`` sums to
+    ``activations.shape[0]``; see :func:`moe_routing_validation_enabled` for how
+    that is (or is not) enforced.
+    """
+    if activations.device.type != "xpu":
+        raise NotImplementedError(f"{api_name} is only supported on XPU")
+
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"activations must be fp16/bf16, got {activations.dtype}")
+
+    if activations.ndim != 2:
+        raise ValueError("activations must be 2D [total_tokens, K]")
+    if weights.ndim != 3:
+        raise ValueError("weights must be 3D [E, N, K_packed]")
+
+    if not activations.is_contiguous():
+        activations = activations.contiguous()
+    if not weights.is_contiguous():
+        weights = weights.contiguous()
+
+    if num_tokens_per_expert.dtype != torch.int32:
+        num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
+    if not num_tokens_per_expert.is_contiguous():
+        num_tokens_per_expert = num_tokens_per_expert.contiguous()
+
+    total_tokens, K = activations.shape
+    num_experts = weights.shape[0]
+    N = weights.shape[1]
+
+    if num_tokens_per_expert.shape[0] != num_experts:
+        raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
+
+    # Detect FP8 weight dtype first (overrides weight_bits).
+    is_fp8 = weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2)
+
+    if is_fp8:
+        if asym:
+            raise ValueError("FP8 weights do not support asym=True")
+        if weights.shape[2] != K:
+            raise ValueError(f"FP8 weights K dim {weights.shape[2]} != activations K {K}")
+        if scales is None:
+            raise ValueError("scales is required for FP8 weights")
+        if scales.dtype != activations.dtype:
+            raise ValueError("scales dtype must match activations dtype")
+        if K % group_size != 0:
+            raise ValueError("K must be a multiple of group_size")
+        expected_scale_shape = (num_experts, N, K // group_size)
+        if tuple(scales.shape) != expected_scale_shape:
+            raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+        if zeros is not None:
+            raise ValueError("zeros must be None for FP8 weights")
+        weight_dtype = ARK_DT.float8_e4m3 if weights.dtype == torch.float8_e4m3fn else ARK_DT.float8_e5m2
+        if not scales.is_contiguous():
+            scales = scales.contiguous()
+    elif weight_bits == 16:
+        if weights.dtype != activations.dtype:
+            raise ValueError("Unquantized weights must match activations dtype")
+        if weights.shape[2] != K:
+            raise ValueError(f"Unquantized weights K dim {weights.shape[2]} != activations K {K}")
+        weight_dtype = cvt_dtype(activations.dtype)
+        if scales is not None or zeros is not None:
+            raise ValueError("scales/zeros must be None when weight_bits=16")
+    elif weight_bits in (8, 4, 2):
+        if weights.dtype != torch.uint8:
+            raise ValueError(f"Int{weight_bits} packed weights must be torch.uint8")
+        if weight_bits == 8:
+            k_packed_expected = K
+            k_div = 1
+        elif weight_bits == 4:
+            k_packed_expected = K // 2
+            k_div = 2
+        else:  # weight_bits == 2
+            k_packed_expected = K // 4
+            k_div = 4
+        if K % k_div != 0:
+            raise ValueError(f"K must be a multiple of {k_div} for weight_bits={weight_bits}")
+        if weights.shape[2] != k_packed_expected:
+            raise ValueError(
+                f"Int{weight_bits} packed weights last dim {weights.shape[2]} must equal K/{k_div} "
+                f"({k_packed_expected})"
+            )
+        if scales is None:
+            raise ValueError(f"scales is required for int{weight_bits} weights")
+        if scales.dtype != activations.dtype:
+            raise ValueError("scales dtype must match activations dtype")
+        if K % group_size != 0:
+            raise ValueError("K must be a multiple of group_size")
+        # Group_size constraints per dtype.
+        if weight_bits == 4 and (group_size & 1) != 0:
+            raise ValueError("group_size must be even for int4 weights")
+        if weight_bits == 2 and (group_size & 3) != 0:
+            raise ValueError("group_size must be a multiple of 4 for int2 weights")
+        expected_scale_shape = (num_experts, N, K // group_size)
+        if tuple(scales.shape) != expected_scale_shape:
+            raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+        if asym:
+            if zeros is None:
+                raise ValueError("zeros is required when asym=True")
+            if zeros.dtype != activations.dtype:
+                raise ValueError("zeros dtype must match activations dtype")
+            if tuple(zeros.shape) != expected_scale_shape:
+                raise ValueError(f"zeros shape {tuple(zeros.shape)} != expected {expected_scale_shape}")
+        else:
+            if zeros is not None:
+                raise ValueError("zeros must be None when asym=False")
+        weight_dtype = {8: ARK_DT.int8, 4: ARK_DT.int4, 2: ARK_DT.int2}[weight_bits]
+        if not scales.is_contiguous():
+            scales = scales.contiguous()
+        if asym and not zeros.is_contiguous():
+            zeros = zeros.contiguous()
+    else:
+        raise ValueError(f"Unsupported weight_bits={weight_bits} (supported: 2, 4, 8, 16)")
+
+    if N % 16 != 0:
+        raise ValueError(f"N must be a multiple of 16 (got {N})")
+
+    _check_routing_total(num_tokens_per_expert, total_tokens)
+
+    return (activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts)
+
+
+@dataclass(eq=False)
+class MoeSymmetricGemm:
+    """Prepared symmetric quantized MoE GEMM runtime state.
+
+    This is an internal fast-path contract for callers that already validated
+    fixed layer state during model load. Dynamic per-call tensors must still
+    match the prepared shape/dtype contract.
+    """
+
+    lib: object
+    weights: torch.Tensor
+    scales: torch.Tensor
+    prefill_workspace: torch.Tensor
+    weight_bits: int
+    group_size: int
+    act_dtype: int
+    weight_dtype: int
+    N: int
+    K: int
+    num_experts: int
+    weights_ptr: int
+    scales_ptr: int
+    zeros_ptr: int = 0
+    decode_expert_id_per_token: torch.Tensor | None = None
+
+    @classmethod
+    def prepare(
+        cls,
+        weights: torch.Tensor,
+        scales: torch.Tensor | None,
+        *,
+        weight_bits: int = 4,
+        group_size: int = 128,
+        activation_dtype: torch.dtype | None = None,
+        max_decode_tokens: int = 0,
+    ) -> "MoeSymmetricGemm":
+        """Prepare the symmetric quantized MoE GEMM fast path.
+
+        Call this once after weights/scales are finalized, e.g. from
+        ``process_weights_after_loading``. It performs the fixed validation
+        from ``moe_gemm_decode``/``moe_gemm_prefill`` and caches metadata and
+        pointers that do not depend on the current token count.
+
+        The returned object is for symmetric quantized weights only:
+        ``zeros=None`` and ``asym=False``. Dynamic inputs passed to the
+        prepared call sites must be contiguous ``[total_tokens, K]`` fp16/bf16
+        tensors and an int32 routing table of length ``num_experts``.
+        """
+        if weights.device.type != "xpu":
+            raise NotImplementedError("MoeSymmetricGemm.prepare is only supported on XPU")
+        if weights.ndim != 3:
+            raise ValueError("weights must be 3D [E, N, K_packed]")
+        if weight_bits not in (2, 4, 8):
+            raise ValueError(f"MoeSymmetricGemm.prepare supports weight_bits 2, 4, or 8, got {weight_bits}")
+        if weights.dtype != torch.uint8:
+            raise ValueError(f"Int{weight_bits} packed weights must be torch.uint8")
+        if group_size <= 0:
+            raise ValueError(f"group_size must be positive, got {group_size}")
+        if max_decode_tokens < 0:
+            raise ValueError(f"max_decode_tokens must be non-negative, got {max_decode_tokens}")
+
+        if not weights.is_contiguous():
+            weights = weights.contiguous()
+
+        num_experts, N, K_packed = weights.shape
+        pack_factor = 8 // weight_bits
+        K = K_packed * pack_factor
+
+        if N % 16 != 0:
+            raise ValueError(f"N must be a multiple of 16 (got {N})")
+        if K % group_size != 0:
+            raise ValueError("K must be a multiple of group_size")
+        if weight_bits == 4 and (group_size & 1) != 0:
+            raise ValueError("group_size must be even for int4 weights")
+        if weight_bits == 2 and (group_size & 3) != 0:
+            raise ValueError("group_size must be a multiple of 4 for int2 weights")
+
+        if scales is None:
+            raise ValueError(f"scales is required for int{weight_bits} weights")
+        if scales.device != weights.device:
+            raise ValueError(f"scales must be on the same device as weights, got {scales.device} vs {weights.device}")
+
+        if activation_dtype is None:
+            activation_dtype = scales.dtype
+        if activation_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"activation_dtype must be fp16/bf16, got {activation_dtype}")
+        if scales.dtype != activation_dtype:
+            raise ValueError("scales dtype must match activation_dtype")
+
+        expected_scale_shape = (num_experts, N, K // group_size)
+        if tuple(scales.shape) != expected_scale_shape:
+            raise ValueError(f"scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+        if not scales.is_contiguous():
+            scales = scales.contiguous()
+
+        prefill_workspace = _get_moe_prefill_workspace(weights.device, activation_dtype, num_experts, K, N)
+        decode_scratch = (
+            torch.empty((max_decode_tokens,), device=weights.device, dtype=torch.int32)
+            if max_decode_tokens > 0
+            else None
+        )
+
+        return cls(
+            lib=get_lib(weights),
+            weights=weights,
+            scales=scales,
+            prefill_workspace=prefill_workspace,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            act_dtype=cvt_dtype(activation_dtype),
+            weight_dtype={8: ARK_DT.int8, 4: ARK_DT.int4, 2: ARK_DT.int2}[weight_bits],
+            N=N,
+            K=K,
+            num_experts=num_experts,
+            weights_ptr=weights.data_ptr(),
+            scales_ptr=scales.data_ptr(),
+            zeros_ptr=0,
+            decode_expert_id_per_token=decode_scratch,
+        )
+
+    def get_decode_scratch(
+        self,
+        total_tokens: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        scratch = self.decode_expert_id_per_token
+        if scratch is None or scratch.device != device or scratch.shape[0] < total_tokens:
+            scratch = torch.empty((total_tokens,), device=device, dtype=torch.int32)
+            self.decode_expert_id_per_token = scratch
+        return scratch[:total_tokens]
+
+    def decode(
+        self,
+        activations: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        *,
+        outputs: torch.Tensor | None = None,
+        expert_id_per_token: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        total_tokens = int(activations.shape[0])
+        if outputs is None:
+            outputs = torch.empty((total_tokens, self.N), device=activations.device, dtype=activations.dtype)
+        else:
+            outputs = outputs[:total_tokens]
+        if expert_id_per_token is None:
+            expert_id_per_token = self.get_decode_scratch(total_tokens, activations.device)
+        else:
+            expert_id_per_token = expert_id_per_token[:total_tokens]
+
+        stream = get_stream(activations)
+        self.lib.moe_gemm_decode(
+            stream,
+            activations.data_ptr(),
+            self.weights_ptr,
+            self.scales_ptr,
+            self.zeros_ptr,
+            outputs.data_ptr(),
+            expert_id_per_token.data_ptr(),
+            self.act_dtype,
+            self.weight_dtype,
+            self.N,
+            self.K,
+            self.group_size,
+            num_tokens_per_expert.data_ptr(),
+            self.num_experts,
+            total_tokens,
+            False,
+        )
+        return outputs
+
+    def prefill(
+        self,
+        activations: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        *,
+        outputs: torch.Tensor | None = None,
+        workspace: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        total_tokens = int(activations.shape[0])
+        if outputs is None:
+            outputs = torch.empty((total_tokens, self.N), device=activations.device, dtype=activations.dtype)
+        else:
+            outputs = outputs[:total_tokens]
+        if workspace is None:
+            workspace = self.prefill_workspace
+
+        stream = get_stream(activations)
+        self.lib.moe_gemm_prefill(
+            stream,
+            activations.data_ptr(),
+            self.weights_ptr,
+            self.scales_ptr,
+            self.zeros_ptr,
+            outputs.data_ptr(),
+            workspace.data_ptr(),
+            self.act_dtype,
+            self.weight_dtype,
+            self.N,
+            self.K,
+            self.group_size,
+            num_tokens_per_expert.data_ptr(),
+            self.num_experts,
+            total_tokens,
+            False,
+        )
+        return outputs
+
+    def moe(
+        self,
+        activations: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        *,
+        phase: str = "auto",
+        decode_threshold: int | None = None,
+        outputs: torch.Tensor | None = None,
+        expert_id_per_token: torch.Tensor | None = None,
+        workspace: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if phase not in _MOE_VALID_PHASES:
+            raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
+
+        if phase == "auto":
+            threshold = _moe_auto_decode_max_total_tokens() if decode_threshold is None else int(decode_threshold)
+            phase = "decode" if int(activations.shape[0]) <= threshold else "prefill"
+
+        if phase == "decode":
+            return self.decode(
+                activations,
+                num_tokens_per_expert,
+                outputs=outputs,
+                expert_id_per_token=expert_id_per_token,
+            )
+        return self.prefill(
+            activations,
+            num_tokens_per_expert,
+            outputs=outputs,
+            workspace=workspace,
+        )
+
+    def apply(
+        self,
+        activations: torch.Tensor,
+        num_tokens_per_expert: torch.Tensor,
+        *,
+        phase: str = "auto",
+        decode_threshold: int | None = None,
+        outputs: torch.Tensor | None = None,
+        expert_id_per_token: torch.Tensor | None = None,
+        workspace: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.moe(
+            activations,
+            num_tokens_per_expert,
+            phase=phase,
+            decode_threshold=decode_threshold,
+            outputs=outputs,
+            expert_id_per_token=expert_id_per_token,
+            workspace=workspace,
+        )
+
+
+def moe_gemm(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """MOE GEMM (Mixture of Experts Grouped GEMM).
+
+    Computes grouped GEMM for MOE layers where different experts process
+    different numbers of tokens.
+
+    Expects contiguous layouts:
+    - activations: [total_tokens, K] (BF16/FP16)
+    - weights: [num_experts, K, N] (BF16/FP16, Row major)
+    - num_tokens_per_expert: [num_experts] (int32)
+    - scales (optional): [num_experts, N] or None
+
+    Returns:
+    - outputs: [total_tokens, N] (same dtype as activations)
+    """
+    if activations.device.type != "xpu":
+        raise NotImplementedError("moe_gemm is only supported on XPU")
+
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"activations must be fp16/bf16, got {activations.dtype}")
+    if weights.dtype != activations.dtype:
+        raise ValueError("weights dtype must match activations dtype")
+
+    if activations.ndim != 2 or weights.ndim != 3:
+        raise ValueError("activations must be 2D [total_tokens, K], weights must be 3D [num_experts, K, N]")
+
+    if not activations.is_contiguous() or not weights.is_contiguous():
+        raise ValueError("activations and weights must be contiguous")
+
+    if num_tokens_per_expert.dtype != torch.int32:
+        num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
+
+    if not num_tokens_per_expert.is_contiguous():
+        num_tokens_per_expert = num_tokens_per_expert.contiguous()
+
+    total_tokens, K = activations.shape
+    num_experts, K_w, N = weights.shape  # weights are [num_experts, K, N]
+
+    if K != K_w:
+        raise ValueError(f"K dimension mismatch: activations K={K}, weights K={K_w}")
+
+    if num_tokens_per_expert.shape[0] != num_experts:
+        raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
+
+    # Validate total tokens
+    _check_routing_total(num_tokens_per_expert, total_tokens)
+
+    lib = get_lib(activations)
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+
+    scales_ptr = scales.data_ptr() if scales is not None else 0
+
+    lib.moe_gemm(
+        stream,
+        activations.data_ptr(),
+        weights.data_ptr(),
+        scales_ptr,
+        outputs.data_ptr(),
+        cvt_dtype(activations.dtype),
+        N,
+        K,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+    )
+    return outputs
+
+
+def _dpas_fp8_prefill_enabled() -> bool:
+    """Return True unless ``ARK_MOE_PREFILL_DPAS_FP8`` is explicitly falsy.
+
+    Mirrors the C++-side default used by the Variant B dispatcher in
+    `sycl_tla_moe_mixed.hpp` (default ON). This helper is exposed so
+    Python callers/tests can query the effective state.
+
+    Falsy values (case-insensitive): "0", "false", "off", "no".
+    Any other value (including unset) is treated as enabled.
+    """
+    env = os.environ.get("ARK_MOE_PREFILL_DPAS_FP8")
+    if env is None:
+        return True
+    return env.strip().lower() not in ("0", "false", "off", "no")
+
+
+def _moe_gemm_prefill_fp8_pertensor(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: torch.Tensor,
+) -> torch.Tensor:
+    """Variant A per-tensor FP8 DPAS grouped GEMM.
+
+    Weights: ``[E, K, N]`` row-major FP8 (``float8_e4m3fn`` / ``float8_e5m2``).
+    Scales:  ``[E]`` FP32, one per-tensor scale per expert.
+    Activations / outputs: ``[total_tokens, K]`` / ``[total_tokens, N]`` in
+    F16 or BF16.
+
+    STATUS: NEEDS-HARDWARE-VALIDATION.
+    """
+    if scales is None:
+        raise ValueError("moe_gemm_prefill(scale_scheme='per_tensor'): scales is required")
+    if weights.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2):
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be FP8 "
+            f"(float8_e4m3fn or float8_e5m2), got {weights.dtype}"
+        )
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be F16 or BF16, " f"got {activations.dtype}"
+        )
+    if weights.ndim != 3:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be 3-D [E, K, N], "
+            f"got shape {tuple(weights.shape)}"
+        )
+    num_experts, K, N = weights.shape
+    if activations.ndim != 2 or activations.shape[1] != K:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be [total_tokens, K] "
+            f"with K={K}, got shape {tuple(activations.shape)}"
+        )
+    if num_tokens_per_expert.ndim != 1 or int(num_tokens_per_expert.shape[0]) != num_experts:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): num_tokens_per_expert must be [E] "
+            f"with E={num_experts}, got shape {tuple(num_tokens_per_expert.shape)}"
+        )
+    if scales.dtype != torch.float32 or scales.shape != (num_experts,):
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): scales must be FP32 with shape [E] "
+            f"(E={num_experts}), got dtype={scales.dtype} shape={tuple(scales.shape)}"
+        )
+
+    total_tokens = int(activations.shape[0])
+    lib = get_lib(activations)
+    if not hasattr(lib, "moe_gemm_prefill_fp8_dpas"):
+        raise RuntimeError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): the C++ backend was built without the "
+            "`moe_gemm_prefill_fp8_dpas` symbol. Rebuild auto_round_extension with sycl-tla "
+            "support (needs Intel BMG/PVC + cutlass-sycl)."
+        )
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+
+    lib.moe_gemm_prefill_fp8_dpas(
+        stream,
+        activations.data_ptr(),
+        weights.data_ptr(),
+        scales.data_ptr(),
+        outputs.data_ptr(),
+        cvt_dtype(activations.dtype),
+        cvt_dtype(weights.dtype),
+        N,
+        K,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+    )
+    return outputs
+
+
+def _moe_gemm_prefill_int_pertensor(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: torch.Tensor,
+) -> torch.Tensor:
+    """Variant A per-tensor INT8 DPAS grouped GEMM.
+
+    Storage-only INT8 sibling of :func:`_moe_gemm_prefill_fp8_pertensor`:
+    weights are held as one signed byte per element and the DPAS atom
+    still runs on the activation dtype after an in-register
+    ``int8 -> ElementA`` upcast in the kernel mainloop. Numerically this
+    is equivalent to dequantizing to bf16/fp16 and calling the W16A16
+    grouped GEMM, but the mainloop avoids materialising the
+    ``[E, K, N]`` bf16/fp16 workspace.
+
+    Weights: ``[E, K, N]`` row-major ``torch.int8`` (sym per-tensor,
+    matches the vllm-xpu-kernels FP8 layout modulo dtype).
+    Scales:  ``[E]`` FP32, one per-tensor scale per expert.
+    Activations / outputs: ``[total_tokens, K]`` / ``[total_tokens, N]`` in
+    F16 or BF16.
+
+    STATUS: NEEDS-HARDWARE-VALIDATION.
+    """
+    if scales is None:
+        raise ValueError("moe_gemm_prefill(scale_scheme='per_tensor'): scales is required")
+    if weights.dtype != torch.int8:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be torch.int8, " f"got {weights.dtype}"
+        )
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be F16 or BF16, " f"got {activations.dtype}"
+        )
+    if weights.ndim != 3:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be 3-D [E, K, N], "
+            f"got shape {tuple(weights.shape)}"
+        )
+    num_experts, K, N = weights.shape
+    if activations.ndim != 2 or activations.shape[1] != K:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): activations must be [total_tokens, K] "
+            f"with K={K}, got shape {tuple(activations.shape)}"
+        )
+    if num_tokens_per_expert.ndim != 1 or int(num_tokens_per_expert.shape[0]) != num_experts:
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): num_tokens_per_expert must be [E] "
+            f"with E={num_experts}, got shape {tuple(num_tokens_per_expert.shape)}"
+        )
+    if scales.dtype != torch.float32 or scales.shape != (num_experts,):
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): scales must be FP32 with shape [E] "
+            f"(E={num_experts}), got dtype={scales.dtype} shape={tuple(scales.shape)}"
+        )
+
+    total_tokens = int(activations.shape[0])
+    lib = get_lib(activations)
+    if not hasattr(lib, "moe_gemm_prefill_int_dpas"):
+        raise RuntimeError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): the C++ backend was built without the "
+            "`moe_gemm_prefill_int_dpas` symbol. Rebuild auto_round_extension with sycl-tla "
+            "support (needs Intel BMG/PVC + cutlass-sycl)."
+        )
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+
+    lib.moe_gemm_prefill_int_dpas(
+        stream,
+        activations.data_ptr(),
+        weights.data_ptr(),
+        scales.data_ptr(),
+        outputs.data_ptr(),
+        cvt_dtype(activations.dtype),
+        cvt_dtype(weights.dtype),
+        N,
+        K,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+    )
+    return outputs
+
+
+def moe_gemm_prefill(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: torch.Tensor | None = None,
+    zeros: torch.Tensor | None = None,
+    weight_bits: int = 4,
+    group_size: int = 128,
+    asym: bool = False,
+    scale_scheme: str | None = None,
+) -> torch.Tensor:
+    """MoE Grouped GEMM optimized for the prefill phase, supporting all weight
+    encodings of ``moe_gemm_decode`` (FP16/BF16, INT8 sym/asym, INT4 sym/asym,
+    INT2 sym/asym, FP8 E4M3/E5M2).
+
+    The argument shapes/dtypes match :func:`moe_gemm_decode` exactly so the same
+    quantized weights/scales/zeros tensors can be re-used between prefill and
+    decode without reshaping. Internally, for the quantized paths the kernel
+    materialises a ``[E, K, N]`` ``act_dtype`` temporary via an on-device
+    dequantization kernel and then dispatches to the existing CUTLASS-SYCL
+    Grouped GEMM (``moe_gemm``). Numerical results are bit-identical to
+    ``moe_gemm`` applied to the same dequantized weights.
+
+    Args:
+        activations: ``[total_tokens, K]`` in fp16 or bf16.
+        weights: 3-D tensor; same layout/dtype contract as
+            :func:`moe_gemm_decode`. Quantized layouts are ``[E, N, K_packed]``;
+            the unquantized fast path (``weight_bits=16``) accepts
+            ``[E, N, K]`` -- callers providing already-``[E, K, N]`` weights
+            (as ``moe_gemm`` requires) should call ``moe_gemm`` directly.
+        num_tokens_per_expert: ``[E]`` int32. Sum must equal
+            ``activations.shape[0]`` (see :func:`moe_gemm_decode`).
+        scales: ``[E, N, K // group_size]`` in activations dtype. Required for
+            quantized paths; ignored (must be ``None``) for unquantized.
+        zeros: ``[E, N, K // group_size]`` in activations dtype, required when
+            ``asym=True`` (int8/int4/int2 only).
+        weight_bits: 2, 4, 8, or 16. Ignored for FP8 weights.
+        group_size: group along K for quantized weights (default 128).
+        asym: if ``True``, weights use unsigned encoding; ``zeros`` required.
+        scale_scheme: optional string selecting the per-tensor scale layout.
+            Default (``None``) uses the standard ``[E, N, K // group_size]``
+            per-K-group act-dtype scales -- the drop-in scheme that
+            auto-round's calibration pipeline produces. When set to
+            ``"per_tensor"``, routes to the Variant A per-tensor DPAS
+            entry point. In this mode ``weights`` must be ``[E, K, N]``
+            row-major (either FP8 -- ``float8_e4m3fn`` / ``float8_e5m2`` --
+            or ``torch.int8`` sym) and ``scales`` must be ``[E]`` FP32
+            (one per-expert scalar). No dequant workspace is allocated
+            on this path.
+
+    Returns:
+        outputs: ``[total_tokens, N]`` in the same dtype as activations.
+    """
+    # ------------------------------------------------------------------
+    # Variant A: FP8 / INT8 per-tensor DPAS grouped GEMM.
+    #
+    # Distinct entry point (not multiplexed through the C++ dispatcher).
+    # Weights are `[E, K, N]` row-major (vllm-xpu-kernels convention);
+    # scales are `[E]` FP32 (one per-tensor scale per expert). No workspace
+    # is allocated -- the fused kernel writes only the final output row.
+    #
+    # Weight dtype selects the backend:
+    #   * FP8  (float8_e4m3fn / float8_e5m2)  -> `moe_gemm_prefill_fp8_dpas`
+    #   * INT8 (torch.int8, sym per-tensor)   -> `moe_gemm_prefill_int_dpas`
+    #
+    # STATUS: NEEDS-HARDWARE-VALIDATION. See
+    # `sycl_tla_moe_prefill_{fp8,int}_dpas.hpp` for the ports' provenance
+    # & the on-hardware TODOs.
+    # ------------------------------------------------------------------
+    if scale_scheme is not None:
+        if scale_scheme != "per_tensor":
+            raise ValueError(f"moe_gemm_prefill: unknown scale_scheme={scale_scheme!r}; expected 'per_tensor' or None")
+        if weights.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+            return _moe_gemm_prefill_fp8_pertensor(activations, weights, num_tokens_per_expert, scales=scales)
+        if weights.dtype == torch.int8:
+            return _moe_gemm_prefill_int_pertensor(activations, weights, num_tokens_per_expert, scales=scales)
+        raise ValueError(
+            "moe_gemm_prefill(scale_scheme='per_tensor'): weights must be FP8 "
+            "(float8_e4m3fn / float8_e5m2) or INT8 (torch.int8), "
+            f"got {weights.dtype}"
+        )
+
+    activations, weights, scales, zeros, num_tokens_per_expert, weight_dtype, total_tokens, N, K, num_experts = (
+        _validate_moe_quant_args(
+            activations,
+            weights,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
+            api_name="moe_gemm_prefill",
+        )
+    )
+
+    lib = get_lib(activations)
+    stream = get_stream(activations)
+    outputs = torch.empty((total_tokens, N), device=activations.device, dtype=activations.dtype)
+
+    # Native FP8 fused GEMM (Variant A): fp8 weight is upcast to bf16/fp16
+    # in registers inside the GEMM kernel and the per-K-group scale is
+    # folded into the accumulator. Opt-in via `ARK_MOE_PREFILL_NATIVE_FP8=1`;
+    # dispatch is decided entirely inside the C++ `moe_gemm_prefill`
+    # dispatcher (which additionally enforces shape preconditions:
+    # N % 16 == 0, K % 32 == 0, K % group_size == 0, group_size % 32 == 0).
+    # If any precondition fails, or the C++-side env cache disagrees with
+    # the Python-side view, the dispatcher silently falls through to the
+    # generic dequant path -- which requires the `[E, K, N]` workspace we
+    # allocate below. See the `else` branch for details.
+
+    # Quantized paths need an [E, K, N] act-dtype scratch buffer that the
+    # on-device dequant kernel fills before the inner Grouped GEMM consumes
+    # it. The unquantized fast path forwards directly through `moe_gemm` and
+    # doesn't need scratch (passing 0 is safe -- the C++ wrapper short-circuits
+    # before touching the workspace pointer in that case). We allocate the
+    # workspace from PyTorch's caching allocator so repeated calls reuse the
+    # same memory.
+    is_unquantized = (weight_bits == 16) and (weights.dtype == activations.dtype)
+    if is_unquantized:
+        # `moe_gemm` requires `[E, K, N]` row-major weights; the decode-style
+        # `[E, N, K]` weight shape coming through this validator can be
+        # transposed into a temporary contiguous `[E, K, N]` view. The
+        # workspace serves the same role as the dequant scratch so the
+        # on-device path stays uniform.
+        dequant_workspace = weights.transpose(1, 2).contiguous()
+        weights_ptr = dequant_workspace.data_ptr()
+        workspace_ptr = dequant_workspace.data_ptr()
+    else:
+        # Reuse a persistent `[E, K, N]` workspace across calls with the same
+        # (device, dtype, E, K, N). For real MoE prefill workloads the same
+        # shape is dispatched on every iteration; allocating a fresh
+        # `E*K*N*sizeof(act)` tensor each call adds non-trivial caching-
+        # allocator overhead (and, on the small shapes, dominates the
+        # quantized GEMM cost). The workspace is kept alive by the cache so
+        # we hand the data_ptr() to the kernel without taking a new ref.
+        #
+        # We allocate the workspace unconditionally for all quantized paths,
+        # including native FP8. The native FP8 launcher fuses GEMM+scale and
+        # never reads the workspace, so the allocation is pure insurance: the
+        # C++ dispatcher may silently fall through to the generic dequant
+        # path if any of its own preconditions disagree with the caller's
+        # opt-in -- e.g. `moe_prefill_native_fp8_enabled()` on
+        # the C++ side caches its env value on first call (so runtime env
+        # toggling won't propagate), the shape preconditions
+        # (`N % 16`, `K % 32`, `K % group_size`, `group_size % 32`) may not
+        # hold, or the act dtype may not be F16/BF16. Without a workspace the
+        # fall-through would hit the generic null-pointer check in
+        # `sycl_tla_moe_mixed.hpp` and raise. Since the workspace lives in
+        # the module-level cache, allocation happens once per shape and adds
+        # no per-call overhead when the native path is taken.
+        dequant_workspace = _get_moe_prefill_workspace(activations.device, activations.dtype, num_experts, K, N)
+        weights_ptr = weights.data_ptr()
+        workspace_ptr = dequant_workspace.data_ptr()
+
+    scales_ptr = scales.data_ptr() if scales is not None else 0
+    zeros_ptr = zeros.data_ptr() if zeros is not None else 0
+
+    lib.moe_gemm_prefill(
+        stream,
+        activations.data_ptr(),
+        weights_ptr,
+        scales_ptr,
+        zeros_ptr,
+        outputs.data_ptr(),
+        workspace_ptr,
+        cvt_dtype(activations.dtype),
+        weight_dtype,
+        N,
+        K,
+        group_size,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+        bool(asym),
+    )
+    # The inner CUTLASS-SYCL `moe_gemm` calls `event.wait()` before returning
+    # (see `moe_detail::moe_gemm_launcher` in `sycl_tla_moe.hpp`), so by the
+    # time `lib.moe_gemm_prefill` returns the device has already consumed the
+    # workspace. For the unquantized fast path the workspace is a per-call
+    # transposed copy of `weights` -- drop it now. For the quantized paths
+    # the workspace lives in the module-level cache (`_get_moe_prefill_workspace`)
+    # and is intentionally retained for reuse on the next call. The native
+    # fp8 path allocates no workspace at all, so there is nothing to drop.
+    if is_unquantized:
+        del dequant_workspace
+    return outputs
+
+
+# ---------------------------------------------------------------------------
+# `moe_gemm_prefill` dequant-workspace cache.
+#
+# The Stage-1 quantized prefill kernel dequantises weights into an
+# `[E, K, N]` act-dtype scratch buffer before dispatching to the existing
+# CUTLASS-SYCL grouped GEMM. In real model usage the same `(E, K, N, dtype)`
+# tuple is hit on every prefill step, so allocating a fresh
+# `E * K * N * sizeof(act_dtype)` tensor per call adds caching-allocator
+# overhead that is significant on the small/medium shapes.
+#
+# We cache one tensor per `(device, dtype, E, K, N)` key. The cache holds
+# references that keep the tensors alive across calls; callers can clear it
+# explicitly via `clear_moe_prefill_workspace_cache()` if they need to
+# release the memory (e.g., before allocating large buffers for a different
+# subsystem).
+# ---------------------------------------------------------------------------
+
+_MOE_PREFILL_WORKSPACE_CACHE: "dict[tuple, torch.Tensor]" = {}
+
+
+def _get_moe_prefill_workspace(device: torch.device, dtype: torch.dtype, E: int, K: int, N: int) -> torch.Tensor:
+    """Return a persistent `[E, K, N]` workspace tensor for the prefill kernel.
+
+    The tensor is allocated lazily on first use and retained in a module-level
+    cache so subsequent calls with the same `(device, dtype, E, K, N)` reuse
+    the same memory. Returned tensors are contiguous and uninitialised; the
+    kernel writes every element before reading.
+    """
+    # `device` may be a `torch.device` or a string; normalise so the cache key
+    # is hashable and identifies the exact device (including ordinal).
+    if not isinstance(device, torch.device):
+        device = torch.device(device)
+    key = (device.type, device.index, dtype, int(E), int(K), int(N))
+    ws = _MOE_PREFILL_WORKSPACE_CACHE.get(key)
+    if ws is None:
+        ws = torch.empty((E, K, N), device=device, dtype=dtype)
+        _MOE_PREFILL_WORKSPACE_CACHE[key] = ws
+    return ws
+
+
+def clear_moe_prefill_workspace_cache() -> None:
+    """Release all cached `moe_gemm_prefill` dequant-workspace tensors."""
+    _MOE_PREFILL_WORKSPACE_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# W4A8 MoE: int4 weights, int8 DPAS compute, dynamically quantized int8
+# activations.
+#
+# The int4 weights are converted ONCE into int8 using ARK's `AUTO_S8` re-scale
+# rule (see `sycl_tla_moe_w4a8.hpp`):
+#
+#     sxt[e][n][j] = max_{g in block j} |s[e][n][g]| * 8 / 127
+#     w8[e][n][k]  = round(w4[e][n][k] * s[e][n][k // group_size] / sxt[...])
+#
+# With the default block (`rescale_group_size=-1`, one scale per output
+# channel) the GEMM runs a single full-K `s8 x s8 -> s32` accumulation with one
+# scalar multiply in the epilogue -- the shape the DPAS pipeline is happiest
+# with. Coarser-than-group blocks are what makes this profitable: an int4
+# group=32 checkpoint would otherwise force an accumulator fold every 32 K
+# elements.
+#
+# `moe_w4a8` keeps the conversion result in a module-level cache keyed on the
+# source tensor identity plus the layout / mutation state and the resolved
+# AUTO_S8 block, so repeated forward passes over the same expert weights pay
+# for it only once. Callers that manage their own storage should use
+# `moe_w4a8_prepack` + `moe_gemm_w4a8` directly.
+#
+# Cache entries are `(weights_s8, wscales, block, weights, scales)`: the source
+# tensors are pinned in the entry because the address half of the key is
+# pointer identity, and a freed-then-reallocated buffer can otherwise land on
+# the same address. Every MoE layer's expert weights share shape / dtype /
+# group_size, so no other key component would catch such a collision.
+# ---------------------------------------------------------------------------
+
+_MOE_W4A8_PREPACK_CACHE: "dict[tuple, tuple]" = {}
+_MOE_W4A8_MAX_ACCUM_K = (2**31 - 1) // (127 * 127)
+
+
+def moe_w4a8_rescale_block_size(K: int, group_size: int, rescale_group_size: int = -1) -> int:
+    """Return the effective AUTO_S8 re-scale block size used by the W4A8 path.
+
+    ``rescale_group_size <= 0`` (the ``group=-1`` spelling) selects one scale
+    per output channel, i.e. a block spanning the whole K axis. Any value that
+    is not a multiple of both ``group_size`` and 64, or that does not divide
+    ``K``, also falls back to ``K``. ``ARK_MOE_W4A8_AUTO_S8`` overrides the
+    argument.
+
+    The result is the divisor of the ``wscales`` last dimension
+    (``K // block``), so callers must use it to size that tensor.
+    """
+    lib = xpu_lib
+    if lib is not None and hasattr(lib, "moe_w4a8_rescale_block_size"):
+        return int(lib.moe_w4a8_rescale_block_size(int(K), int(group_size), int(rescale_group_size)))
+    # Pure-Python mirror of `ark::moe_w4a8::moe_w4a8_rescale_block_size` so the
+    # shape math is available without a loaded extension (tests, docs, CPU).
+    env = os.environ.get("ARK_MOE_W4A8_AUTO_S8")
+    value = int(rescale_group_size)
+    if env is not None:
+        try:
+            value = int(env.strip())
+        except ValueError:
+            pass
+    if K <= 0:
+        return K
+    if value <= 0 or value >= K:
+        return K
+    if group_size > 0 and (value < group_size or value % group_size != 0):
+        return K
+    if K % value != 0 or value % 64 != 0:
+        return K
+    return value
+
+
+def _synchronize_xpu_device(device: torch.device) -> None:
+    if device.type != "xpu":
+        return
+    if device.index is None:
+        torch.xpu.synchronize()
+    else:
+        torch.xpu.synchronize(device.index)
+
+
+def _validate_moe_w4a8_k(K: int, api_name: str) -> None:
+    if K > _MOE_W4A8_MAX_ACCUM_K:
+        raise ValueError(
+            f"{api_name}: K must be <= {_MOE_W4A8_MAX_ACCUM_K} to avoid int32 accumulator overflow (got {K})"
+        )
+
+
+def _require_same_device(tensor: torch.Tensor, reference: torch.Tensor, tensor_name: str, api_name: str) -> None:
+    if tensor.device != reference.device:
+        raise ValueError(f"{api_name}: {tensor_name} must be on {reference.device}, got {tensor.device}")
+
+
+def clear_moe_w4a8_prepack_cache() -> None:
+    """Release every int8 weight/scale pair cached by :func:`moe_w4a8`.
+
+    Synchronizes the cached XPU devices first so queued kernels cannot outlive
+    the cached tensors they still read.
+    """
+    synced = set()
+    for entry in _MOE_W4A8_PREPACK_CACHE.values():
+        device = entry[0].device
+        if device.type != "xpu":
+            continue
+        key = (device.type, device.index)
+        if key in synced:
+            continue
+        _synchronize_xpu_device(device)
+        synced.add(key)
+    _MOE_W4A8_PREPACK_CACHE.clear()
+
+
+def _validate_moe_w4a8_shape(N: int, K: int, group_size: int, api_name: str) -> None:
+    if N % 16 != 0:
+        raise ValueError(f"{api_name}: N must be a multiple of 16 (got {N})")
+    if K % 64 != 0:
+        raise ValueError(f"{api_name}: K must be a multiple of 64 (got {K})")
+    _validate_moe_w4a8_k(K, api_name)
+    if group_size <= 0 or group_size % 8 != 0:
+        raise ValueError(f"{api_name}: group_size must be a positive multiple of 8 (got {group_size})")
+    if K % group_size != 0:
+        raise ValueError(f"{api_name}: K must be a multiple of group_size")
+
+
+def moe_w4a8_prepack(
+    weights: torch.Tensor,
+    scales: torch.Tensor,
+    *,
+    group_size: int = 128,
+    rescale_group_size: int = -1,
+) -> "tuple[torch.Tensor, torch.Tensor, int]":
+    """Convert packed int4-sym MoE weights into the W4A8 int8 representation.
+
+    Applies ARK's ``AUTO_S8`` re-scale on device, producing weights the int8
+    DPAS grouped GEMM / GEMV can consume without any per-K-group fold.
+
+    Args:
+        weights: ``[E, N, K // 2]`` ``torch.uint8``, two signed nibbles per
+            byte (auto-round's int4-sym packing: K index ``2i`` in the low
+            nibble, ``2i + 1`` in the high nibble).
+        scales: ``[E, N, K // group_size]`` in fp16 or bf16.
+        group_size: quantization group along K of the int4 weights.
+        rescale_group_size: AUTO_S8 block size; ``-1`` (default) means one
+            scale per output channel -- the fastest configuration.
+
+    Returns:
+        ``(weights_s8, wscales, rescale_block_size)`` where ``weights_s8`` is
+        ``[E, N, K]`` ``torch.int8``, ``wscales`` is
+        ``[E, N, K // rescale_block_size]`` ``torch.float32``, and
+        ``rescale_block_size`` is the resolved block size (pass it to
+        :func:`moe_gemm_w4a8`).
+    """
+    if weights.device.type != "xpu":
+        raise NotImplementedError("moe_w4a8_prepack is only supported on XPU")
+    if weights.dtype != torch.uint8:
+        raise ValueError(f"moe_w4a8_prepack: weights must be torch.uint8, got {weights.dtype}")
+    if weights.ndim != 3:
+        raise ValueError("moe_w4a8_prepack: weights must be 3D [E, N, K // 2]")
+    if scales.ndim != 3:
+        raise ValueError("moe_w4a8_prepack: scales must be 3D [E, N, K // group_size]")
+    if scales.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"moe_w4a8_prepack: scales must be fp16/bf16, got {scales.dtype}")
+    if scales.device != weights.device:
+        raise ValueError("moe_w4a8_prepack: weights and scales must be on the same device")
+
+    E, N, k_packed = weights.shape
+    K = k_packed * 2
+    _validate_moe_w4a8_shape(N, K, group_size, "moe_w4a8_prepack")
+    expected_scale_shape = (E, N, K // group_size)
+    if tuple(scales.shape) != expected_scale_shape:
+        raise ValueError(f"moe_w4a8_prepack: scales shape {tuple(scales.shape)} != expected {expected_scale_shape}")
+
+    weights = weights.contiguous()
+    scales = scales.contiguous()
+
+    block = moe_w4a8_rescale_block_size(K, group_size, rescale_group_size)
+    nblk = K // block
+
+    weights_s8 = torch.empty((E, N, K), device=weights.device, dtype=torch.int8)
+    wscales = torch.empty((E, N, nblk), device=weights.device, dtype=torch.float32)
+
+    lib = get_lib(weights)
+    stream = get_stream(weights)
+    lib.moe_w4a8_prepack(
+        stream,
+        weights.data_ptr(),
+        scales.data_ptr(),
+        weights_s8.data_ptr(),
+        wscales.data_ptr(),
+        cvt_dtype(scales.dtype),
+        E,
+        N,
+        K,
+        group_size,
+        rescale_group_size,
+    )
+    return weights_s8, wscales, block
+
+
+def moe_gemm_w4a8(
+    activations: torch.Tensor,
+    weights_s8: torch.Tensor,
+    wscales: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    rescale_block_size: int | None = None,
+    phase: str = "auto",
+    activation_scale: torch.Tensor | None = None,
+    out_dtype: torch.dtype | None = None,
+    row_to_token: torch.Tensor | None = None,
+    routing_weights: torch.Tensor | None = None,
+    output_rows: int | None = None,
+) -> torch.Tensor:
+    """W4A8 MoE GEMM: int4 weights (pre-converted to int8), int8 compute.
+
+    Activations are dynamically quantized to int8 per token inside the kernel
+    (per-row absmax), then multiplied against the ``AUTO_S8`` int8 weights with
+    the ``s8 x s8 -> s32`` DPAS atom. The output is
+    ``acc * act_scale[token] * weight_scale[n, block]``.
+
+    Two optional contracts cut DRAM traffic by moving work across the call
+    boundary; both default off and change nothing when unused.
+
+    *Pre-quantized activations.* Pass an ``int8`` ``activations`` together with
+    ``activation_scale`` and the in-call quantization pass is skipped: the
+    kernel then never reads the 16-bit activations, never writes the int8 copy
+    and never reads it back (``4 * T * K`` bytes, 27% of the qwen3
+    down-projection's traffic). The producer of the activations -- typically
+    the SiLU/gate elementwise kernel, which already writes ``[T, K]`` once --
+    can emit that int8 and its per-row scale directly.
+
+    *Fused top-k reduction.* Pass ``row_to_token``, ``routing_weights`` and
+    ``output_rows`` and the epilogue scales each routed row by its routing
+    weight and accumulates it into ``out[row_to_token[row]]`` of a
+    ``[output_rows, N]`` fp32 tensor, instead of writing the ``[T, N]``
+    unreduced result for the caller to reduce afterwards. That replaces
+    ``T * N`` written + ``T * N`` read + ``batch * N`` written with a
+    ``batch * N`` read-modify-write, and removes the caller's reduction kernel.
+    The combiner is a device-scope fp32 atomic add, so the summation order is
+    not deterministic and the result is *not* bit-identical to reducing the
+    unfused output. Prefill only.
+
+    Args:
+        activations: ``[total_tokens, K]`` fp16/bf16, rows sorted by expert, or
+            ``[total_tokens, K]`` int8 when ``activation_scale`` is given.
+        weights_s8: ``[E, N, K]`` ``torch.int8`` from :func:`moe_w4a8_prepack`.
+        wscales: ``[E, N, K // rescale_block_size]`` fp32 from
+            :func:`moe_w4a8_prepack`.
+        num_tokens_per_expert: ``[E]`` int32; sum must equal ``total_tokens``.
+        rescale_block_size: block size the scales were built with. Defaults to
+            ``K // wscales.shape[2]``.
+        phase: ``"auto"`` (GEMV for small batches, grouped GEMM otherwise),
+            ``"decode"`` (force GEMV) or ``"prefill"`` (force grouped GEMM).
+        activation_scale: ``[total_tokens]`` fp32 per-row scales
+            (``absmax / 127``) for pre-quantized int8 activations.
+        out_dtype: output dtype for pre-quantized activations, which carry no
+            floating dtype of their own. Defaults to ``torch.bfloat16``.
+        row_to_token: ``[total_tokens]`` int32, routed row -> model token.
+        routing_weights: ``[total_tokens]`` fp32, the top-k weight of each row.
+        output_rows: number of model tokens, i.e. rows of the fused output.
+
+    Returns:
+        ``[total_tokens, N]`` in the activations dtype, or ``[output_rows, N]``
+        fp32 when the fused reduction is used.
+    """
+    if phase not in _MOE_VALID_PHASES:
+        raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
+    if activations.device.type != "xpu":
+        raise NotImplementedError("moe_gemm_w4a8 is only supported on XPU")
+
+    prequantized = activation_scale is not None or activations.dtype == torch.int8
+    if prequantized:
+        if activations.dtype != torch.int8:
+            raise ValueError(f"pre-quantized activations must be int8, got {activations.dtype}")
+        if activation_scale is None:
+            raise ValueError("int8 activations require activation_scale")
+        if activation_scale.dtype != torch.float32:
+            raise ValueError(f"activation_scale must be fp32, got {activation_scale.dtype}")
+        if activation_scale.numel() != activations.shape[0]:
+            raise ValueError(
+                f"activation_scale has {activation_scale.numel()} entries, expected {activations.shape[0]}"
+            )
+        act_dtype = torch.bfloat16 if out_dtype is None else out_dtype
+        if act_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError(f"out_dtype must be fp16/bf16, got {act_dtype}")
+    elif activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"activations must be fp16/bf16, got {activations.dtype}")
+    else:
+        act_dtype = activations.dtype
+    if activations.ndim != 2:
+        raise ValueError("activations must be 2D [total_tokens, K]")
+    if weights_s8.ndim != 3 or weights_s8.dtype != torch.int8:
+        raise ValueError("weights_s8 must be a 3D torch.int8 tensor [E, N, K]")
+    if wscales.ndim != 3 or wscales.dtype != torch.float32:
+        raise ValueError("wscales must be a 3D torch.float32 tensor [E, N, K // block]")
+    _require_same_device(weights_s8, activations, "weights_s8", "moe_gemm_w4a8")
+    _require_same_device(wscales, activations, "wscales", "moe_gemm_w4a8")
+    _require_same_device(num_tokens_per_expert, activations, "num_tokens_per_expert", "moe_gemm_w4a8")
+    if prequantized:
+        _require_same_device(activation_scale, activations, "activation_scale", "moe_gemm_w4a8")
+
+    activations = activations.contiguous()
+    weights_s8 = weights_s8.contiguous()
+    wscales = wscales.contiguous()
+    if prequantized:
+        activation_scale = activation_scale.contiguous()
+
+    total_tokens, K = activations.shape
+    num_experts, N, weight_K = weights_s8.shape
+    if weight_K != K:
+        raise ValueError(f"weights_s8 K dim {weight_K} != activations K {K}")
+    if wscales.shape[0] != num_experts or wscales.shape[1] != N:
+        raise ValueError(f"wscales shape {tuple(wscales.shape)} incompatible with weights {tuple(weights_s8.shape)}")
+    if N % 16 != 0:
+        raise ValueError(f"N must be a multiple of 16 (got {N})")
+    if K % 64 != 0:
+        raise ValueError(f"K must be a multiple of 64 (got {K})")
+    _validate_moe_w4a8_k(K, "moe_gemm_w4a8")
+
+    nblk = wscales.shape[2]
+    if nblk <= 0 or K % nblk != 0:
+        raise ValueError(f"wscales last dim {nblk} must divide K ({K})")
+    block = K // nblk if rescale_block_size is None else int(rescale_block_size)
+    if block * nblk != K:
+        raise ValueError(f"rescale_block_size {block} is inconsistent with wscales last dim {nblk} and K {K}")
+
+    if num_tokens_per_expert.dtype != torch.int32:
+        num_tokens_per_expert = num_tokens_per_expert.to(torch.int32)
+    if not num_tokens_per_expert.is_contiguous():
+        num_tokens_per_expert = num_tokens_per_expert.contiguous()
+    if num_tokens_per_expert.shape[0] != num_experts:
+        raise ValueError(f"num_tokens_per_expert length {num_tokens_per_expert.shape[0]} != num_experts {num_experts}")
+    _check_routing_total(num_tokens_per_expert, total_tokens)
+
+    fused = row_to_token is not None or routing_weights is not None or output_rows is not None
+    if fused:
+        if row_to_token is None or routing_weights is None or output_rows is None:
+            raise ValueError("the fused top-k reduction needs row_to_token, routing_weights and output_rows")
+        if phase != "prefill":
+            raise ValueError("the fused top-k reduction is prefill-only; pass phase='prefill'")
+        if int(output_rows) <= 0:
+            raise ValueError(f"output_rows must be positive (got {output_rows})")
+        _require_same_device(row_to_token, activations, "row_to_token", "moe_gemm_w4a8")
+        _require_same_device(routing_weights, activations, "routing_weights", "moe_gemm_w4a8")
+        if row_to_token.dtype != torch.int32:
+            row_to_token = row_to_token.to(torch.int32)
+        if routing_weights.dtype != torch.float32:
+            routing_weights = routing_weights.to(torch.float32)
+        row_to_token = row_to_token.contiguous()
+        routing_weights = routing_weights.contiguous()
+        if row_to_token.numel() != total_tokens or routing_weights.numel() != total_tokens:
+            raise ValueError(
+                f"row_to_token / routing_weights must have {total_tokens} entries, got "
+                f"{row_to_token.numel()} / {routing_weights.numel()}"
+            )
+        # The epilogue accumulates into this buffer with atomics, so it starts
+        # at zero and is fp32 regardless of the activation dtype.
+        outputs = torch.zeros((int(output_rows), N), device=activations.device, dtype=torch.float32)
+    else:
+        outputs = torch.empty((total_tokens, N), device=activations.device, dtype=act_dtype)
+    if total_tokens == 0:
+        return outputs
+
+    lib = get_lib(activations)
+    stream = get_stream(activations)
+    lib.moe_gemm_w4a8(
+        stream,
+        0 if prequantized else activations.data_ptr(),
+        weights_s8.data_ptr(),
+        wscales.data_ptr(),
+        0 if fused else outputs.data_ptr(),
+        cvt_dtype(act_dtype),
+        N,
+        K,
+        block,
+        num_tokens_per_expert.data_ptr(),
+        num_experts,
+        total_tokens,
+        _MOE_VALID_PHASES.index(phase),
+        activations.data_ptr() if prequantized else 0,
+        activation_scale.data_ptr() if prequantized else 0,
+        row_to_token.data_ptr() if fused else 0,
+        routing_weights.data_ptr() if fused else 0,
+        outputs.data_ptr() if fused else 0,
+        int(output_rows) if fused else 0,
+    )
+    return outputs
+
+
+def moe_w4a8_quant_act(activations: torch.Tensor) -> "tuple[torch.Tensor, torch.Tensor]":
+    """Quantize activations per token the way :func:`moe_gemm_w4a8` does.
+
+    This is the call's own quantization pass, on its own. Two uses:
+
+    * **Pre-quantization.** The returned pair is exactly what
+      ``moe_gemm_w4a8(..., activation_scale=...)`` accepts, so a caller that
+      routes the same rows through several experts, or that can produce int8
+      upstream, can pay for the pass once instead of once per call.
+    * **Measurement.** The pass had no standalone entry point, so its cost
+      could only be priced by differencing a 16-bit-input call against a
+      pre-quantized one -- two GEMM timings subtracted, with the noise of both
+      landing on a number a fraction of their size.
+
+    Args:
+        activations: ``[T, K]`` fp16 or bf16 on XPU, ``K % 64 == 0``.
+
+    Returns:
+        ``(qact, ascale)``: ``[T, K]`` ``torch.int8`` and ``[T]``
+        ``torch.float32`` row scales, ``absmax / 127`` (a row that is entirely
+        zero gets scale 0 and quantizes to zeros).
+    """
+    if activations.device.type != "xpu":
+        raise NotImplementedError("moe_w4a8_quant_act is only supported on XPU")
+    if activations.dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"moe_w4a8_quant_act: activations must be fp16/bf16, got {activations.dtype}")
+    if activations.ndim != 2:
+        raise ValueError("moe_w4a8_quant_act: activations must be 2D [T, K]")
+
+    total_tokens, K = activations.shape
+    if K % 64 != 0:
+        raise ValueError(f"moe_w4a8_quant_act: K must be a multiple of 64 (got {K})")
+
+    activations = activations.contiguous()
+    qact = torch.empty((total_tokens, K), device=activations.device, dtype=torch.int8)
+    ascale = torch.empty((total_tokens,), device=activations.device, dtype=torch.float32)
+    if total_tokens == 0:
+        return qact, ascale
+
+    lib = get_lib(activations)
+    lib.moe_w4a8_quant_act(
+        get_stream(activations),
+        activations.data_ptr(),
+        qact.data_ptr(),
+        ascale.data_ptr(),
+        cvt_dtype(activations.dtype),
+        total_tokens,
+        K,
+    )
+    return qact, ascale
+
+
+def moe_w4a8(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: torch.Tensor | None = None,
+    group_size: int = 128,
+    rescale_group_size: int = -1,
+    phase: str = "auto",
+    cache_prepack: bool = True,
+) -> torch.Tensor:
+    """W4A8 MoE from auto-round's packed int4-sym weights (prefill + decode).
+
+    Convenience wrapper that runs :func:`moe_w4a8_prepack` (cached on the
+    source tensor identity plus layout / mutation state and the resolved
+    AUTO_S8 block) and then :func:`moe_gemm_w4a8`. It is a drop-in replacement
+    for :func:`moe` on int4-sym weights, trading a small amount of extra
+    quantization error on the activations for the int8 DPAS throughput.
+
+    Args:
+        activations: ``[total_tokens, K]`` fp16/bf16, rows sorted by expert.
+        weights: ``[E, N, K // 2]`` ``torch.uint8`` packed int4-sym weights.
+        num_tokens_per_expert: ``[E]`` int32.
+        scales: ``[E, N, K // group_size]`` in the activations dtype.
+        group_size: quantization group along K (default 128).
+        rescale_group_size: AUTO_S8 block size, ``-1`` = per output channel.
+        phase: ``"auto"``, ``"decode"`` or ``"prefill"``.
+        cache_prepack: keep the converted int8 weights in a module-level cache
+            keyed on source identity, layout, mutation version and the resolved
+            block size. The cache entry holds strong references to ``weights`` /
+            ``scales`` so their addresses cannot be recycled by another tensor
+            while the entry lives (see :data:`_MOE_W4A8_PREPACK_CACHE`). Set to
+            ``False`` for one-shot use so the (large) int8 copy is released as
+            soon as the queued work completes.
+
+    Returns:
+        ``[total_tokens, N]`` in the activations dtype.
+    """
+    if scales is None:
+        raise ValueError("moe_w4a8: scales is required for int4 weights")
+    if scales.dtype != activations.dtype:
+        raise ValueError("moe_w4a8: scales dtype must match activations dtype")
+
+    key = None
+    entry = None
+    block = None
+    if cache_prepack:
+        if weights.ndim == 3:
+            block = moe_w4a8_rescale_block_size(weights.shape[2] * 2, group_size, rescale_group_size)
+        device = weights.device
+        key = (
+            device.type,
+            device.index,
+            weights.data_ptr(),
+            scales.data_ptr(),
+            tuple(weights.shape),
+            tuple(scales.shape),
+            tuple(weights.stride()),
+            tuple(scales.stride()),
+            int(weights._version),
+            int(scales._version),
+            int(group_size),
+            int(block) if block is not None else None,
+            str(scales.dtype),
+        )
+        entry = _MOE_W4A8_PREPACK_CACHE.get(key)
+    if entry is None:
+        weights_s8, wscales, block = moe_w4a8_prepack(
+            weights,
+            scales,
+            group_size=group_size,
+            rescale_group_size=rescale_group_size,
+        )
+        # Pin the source tensors in the entry: the address half of the key is
+        # pointer identity, and a freed-then-reallocated buffer can land on the
+        # same address (every MoE layer's expert weights share shape/dtype/
+        # group_size, so nothing else in the key would discriminate). Holding a
+        # reference keeps the allocator from handing the address to a different
+        # tensor for as long as the entry is cached.
+        entry = (weights_s8, wscales, block, weights, scales)
+        if cache_prepack:
+            _MOE_W4A8_PREPACK_CACHE[key] = entry
+
+    weights_s8, wscales, block = entry[0], entry[1], entry[2]
+    outputs = moe_gemm_w4a8(
+        activations,
+        weights_s8,
+        wscales,
+        num_tokens_per_expert,
+        rescale_block_size=block,
+        phase=phase,
+    )
+    if not cache_prepack:
+        _synchronize_xpu_device(activations.device)
+    return outputs
+
+
+# ---------------------------------------------------------------------------
+# Native FP8 prefill opt-in.
+#
+# When `ARK_MOE_PREFILL_NATIVE_FP8` is truthy, `moe_gemm_prefill` skips the
+# `[E, K, N]` bf16/fp16 workspace and dispatches to the fused native-fp8
+# kernel in `sycl_tla_moe_prefill_fp8_native.hpp`. The kernel loads fp8
+# weight bytes and the per-K-group scale directly, upcasts to
+# ``act_dtype`` in registers, folds the scale into the accumulator, and
+# writes only the final output row -- no `[E, K, N]` global-memory round-
+# trip.
+#
+# The C++ dispatcher performs an additional shape check
+# (``N % 16 == 0`` and ``K % 32 == 0`` and ``K % group_size == 0`` and
+# ``group_size % 32 == 0``) and silently falls back to the dequant path
+# for shapes the native tile can't cover, so it is safe to leave this
+# flag enabled globally.
+#
+# Truthy values (case-insensitive): "1", "true", "on", "yes".
+# ---------------------------------------------------------------------------
+
+
+def _native_fp8_prefill_enabled() -> bool:
+    """Return True iff ``ARK_MOE_PREFILL_NATIVE_FP8`` is truthy."""
+    env = os.environ.get("ARK_MOE_PREFILL_NATIVE_FP8")
+    if env is None:
+        return False
+    return env.strip().lower() in ("1", "true", "on", "yes")
+
+
+# ---------------------------------------------------------------------------
+# Unified MoE entry point
+#
+# `moe_gemm_decode` and `moe_gemm_prefill` accept identical argument shapes
+# and dtypes -- the only difference is which underlying SYCL kernel is
+# launched (a GEMV variant tuned for smaller total-token workloads vs. a
+# Grouped GEMM variant tuned for larger total-token workloads). Model code
+# that runs through both
+# regimes (prefill of a prompt, then autoregressive decode) traditionally
+# has to keep two call sites and branch on phase. `moe(...)` collapses that
+# into a single API and auto-selects the right kernel from the token
+# distribution.
+#
+# Callers that already know the phase (e.g., a model's generation loop knows
+# whether it's in prefill or decode) should pass it via the `phase` argument
+# to bypass the auto-dispatch heuristic entirely.
+# ---------------------------------------------------------------------------
+
+# Default total-token threshold used by `phase="auto"`: dispatch to decode
+# when `activations.shape[0] <= threshold`, otherwise prefill. This threshold
+# is hardware-dependent and can be overridden via
+# `ARK_MOE_AUTO_DECODE_MAX_TOKENS`.
+#
+# The cutoff used to be 32, a deliberately conservative value picked while the
+# decode GEMV was still the bottleneck: back then only the tiny single-/few-
+# stream case (every expert well under one DPAS tile row) was worth keeping off
+# the prefill grouped-GEMM. The decode GEMV has since reached its bandwidth
+# target for FP8 as well as int4-sym (K-split lane mapping + N-blocking inside
+# the K-split kernel, and no per-call routing sync), so it now stays ahead of
+# the grouped-GEMM over the whole small-batch range rather than only at the
+# bs1 extreme, and the cutoff moves up to 128 total tokens accordingly.
+# Batches above that still hand enough rows to each expert to fill the DPAS M
+# tile, which is where the prefill path wins. Mirrors vLLM-xpu-kernels' `w4a16`
+# dispatch, which likewise keeps the GEMV for the low tokens-per-expert regime.
+_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS = 128
+
+_MOE_VALID_PHASES = ("auto", "decode", "prefill")
+
+
+def _moe_auto_decode_max_total_tokens() -> int:
+    """Return auto decode threshold from env or the module default.
+
+    ``ARK_MOE_AUTO_DECODE_MAX_TOKENS`` is accepted when it is a positive
+    integer. Unset/empty/invalid values fall back to
+    ``_MOE_AUTO_DECODE_MAX_TOTAL_TOKENS``.
+    """
+    env = os.environ.get("ARK_MOE_AUTO_DECODE_MAX_TOKENS")
+    if env is None:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    env = env.strip()
+    if not env:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    try:
+        value = int(env)
+    except ValueError:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    if value <= 0:
+        return _MOE_AUTO_DECODE_MAX_TOTAL_TOKENS
+    return value
+
+
+def moe(
+    activations: torch.Tensor,
+    weights: torch.Tensor,
+    num_tokens_per_expert: torch.Tensor,
+    *,
+    scales: torch.Tensor | None = None,
+    zeros: torch.Tensor | None = None,
+    weight_bits: int = 4,
+    group_size: int = 128,
+    asym: bool = False,
+    phase: str = "auto",
+    decode_threshold: int | None = None,
+) -> torch.Tensor:
+    """Unified MoE GEMM entry point that dispatches to decode or prefill.
+
+    This is a thin Python-side dispatcher over :func:`moe_gemm_decode` and
+    :func:`moe_gemm_prefill`. The two underlying kernels accept the same
+    argument shapes/dtypes (see :func:`moe_gemm_decode` for the full layout
+    contract); ``moe`` simply picks the one that is faster for the current
+    token distribution so model code can have a single call site for both
+    prefill and decode phases.
+
+    Args:
+        activations: ``[total_tokens, K]`` in fp16 or bf16.
+        weights: ``[E, N, K_packed]`` -- see :func:`moe_gemm_decode` for the
+            quant-specific layout/dtype contract.
+        num_tokens_per_expert: ``[E]`` int32. Sum must equal
+            ``activations.shape[0]`` (see :func:`moe_gemm_decode`).
+        scales, zeros, weight_bits, group_size, asym: forwarded to the
+            underlying kernel; see :func:`moe_gemm_decode`.
+        phase: dispatch mode.
+
+            * ``"auto"`` (default): dispatch to decode when
+              ``activations.shape[0] <= decode_threshold`` (total tokens),
+              otherwise prefill.
+            * ``"decode"``: always dispatch to :func:`moe_gemm_decode`. Use
+              when the model's generation loop already knows it is in the
+              decode phase.
+            * ``"prefill"``: always dispatch to :func:`moe_gemm_prefill`.
+              Use when the model knows it is in the prefill phase.
+        decode_threshold: Total-token threshold for ``"auto"`` mode. If not
+            provided, uses ``ARK_MOE_AUTO_DECODE_MAX_TOKENS`` when set to a
+            valid positive integer, otherwise defaults to 128. Explicit
+            argument values take precedence over the environment variable.
+
+    Returns:
+        ``[total_tokens, N]`` in the activations dtype. Bit-identical to the
+        underlying kernel that was dispatched.
+    """
+    if phase not in _MOE_VALID_PHASES:
+        raise ValueError(f"phase must be one of {_MOE_VALID_PHASES}, got {phase!r}")
+
+    if phase == "auto":
+        threshold = _moe_auto_decode_max_total_tokens() if decode_threshold is None else int(decode_threshold)
+        if num_tokens_per_expert.numel() == 0:
+            raise ValueError("num_tokens_per_expert must be non-empty")
+        total_tokens = int(activations.shape[0])
+        phase = "decode" if total_tokens <= threshold else "prefill"
+
+    if phase == "decode":
+        return moe_gemm_decode(
+            activations,
+            weights,
+            num_tokens_per_expert,
+            scales=scales,
+            zeros=zeros,
+            weight_bits=weight_bits,
+            group_size=group_size,
+            asym=asym,
+        )
+    # phase == "prefill"
+    return moe_gemm_prefill(
+        activations,
+        weights,
+        num_tokens_per_expert,
+        scales=scales,
+        zeros=zeros,
+        weight_bits=weight_bits,
+        group_size=group_size,
+        asym=asym,
+    )
+
+
+def patch_torch_sdpa(*args, **kwargs):
+    from .torch_sdpa_patch import patch_torch_sdpa_with_ark
+
+    return patch_torch_sdpa_with_ark(*args, **kwargs)
+
+
+def unpatch_torch_sdpa():
+    from .torch_sdpa_patch import unpatch_torch_sdpa_with_ark
+
+    return unpatch_torch_sdpa_with_ark()
+
+
+class _ArkInternalCpuNamespace:
+    """Internal/experimental CPU helpers and backend lifecycle tools."""
+
+    debug_resolve_sdpa_route = staticmethod(debug_cpu_sdpa_route)
+    kv_cache_alloc = staticmethod(ark_cpu_kv_cache_alloc)
+    kv_update = staticmethod(ark_cpu_kv_update)
+    packed_kv_descriptor = staticmethod(ark_cpu_packed_kv_descriptor)
+    packed_kv_alloc_from_descriptor = staticmethod(ark_cpu_packed_kv_alloc_from_descriptor)
+    packed_kv_alloc = staticmethod(ark_cpu_packed_kv_alloc)
+    packed_kv_info = staticmethod(ark_cpu_packed_kv_info)
+    update_packed_kv_from_descriptor = staticmethod(ark_cpu_update_packed_kv_from_descriptor)
+    update_packed_kv = staticmethod(ark_cpu_update_packed_kv)
+    copy_packed_kv = staticmethod(ark_cpu_copy_packed_kv)
+    copy_packed_kv_from_descriptor = staticmethod(ark_cpu_copy_packed_kv_from_descriptor)
+    shift_packed_k = staticmethod(ark_cpu_shift_packed_k)
+    shift_packed_k_from_descriptor = staticmethod(ark_cpu_shift_packed_k_from_descriptor)
+    bestla_sdpa_packed = staticmethod(ark_cpu_bestla_sdpa_packed)
+    bestla_sdpa_packed_from_descriptor = staticmethod(ark_cpu_bestla_sdpa_packed_from_descriptor)
+    PackedKVHandle = ArkCpuPackedKVHandle
+
+
+class _ArkInternalNamespace:
+    """Internal/experimental helper surface."""
+
+    cpu = _ArkInternalCpuNamespace()
+
+
+internal = _ArkInternalNamespace()
+
+
+__all__ = ["patch_torch_sdpa", "unpatch_torch_sdpa"]
+
+
+# -----------------------------------------------------------------------------
+# Compatibility layer
+#
+# Some callers (e.g. auto_round_extension/ark/qlinear.py) historically imported
+# this package as a module and expected certain functions to exist at the module
+# level (e.g. ark.repack_quantized_weight, ark.woq_linear).
+#
+# The wrappers below keep backward compatibility for legacy positional call
+# styles without changing the compiled extension.
+# -----------------------------------------------------------------------------
+
+
+def check_isa_supported(_isa: str) -> bool:
+    # Best-effort: some builds expose ISA checks via native libs; keep safe.
+    # Returning False is conservative and avoids misconfiguration.
+    return False
+
+
+def repack_quantized_weight(*args, **kwargs):
+    """Repack quantized weights into ARK/BestLA packed format.
+
+    Supports two call styles:
+
+    1) New style (recommended):
+       repack_quantized_weight(QB, scaleB, zp, groupsize, compute_type, weight_type, scale_type, asym)
+
+    2) Legacy style used by qlinear.py:
+       repack_quantized_weight(QB, scaleB, zp, g_idx, compute_type, weight_type, scale_type, asym, groupsize)
+       repack_quantized_weight(QB, scaleB, zp, g_idx, weight_type, compute_type, scale_type, asym, groupsize)
+       (g_idx is ignored)
+    """
+
+    if kwargs:
+        return _repack_quantized_weight_core(**kwargs)
+
+    if len(args) == 8:
+        QB, scaleB, zp, groupsize, compute_type, weight_type, scale_type, asym = args
+    elif len(args) == 9:
+        QB, scaleB, zp, _g_idx, a4, a5, scale_type, asym, groupsize = args
+        # Legacy call sites sometimes swap compute_type/weight_type.
+        compute_types = {"fp16", "bf16", "fp32", "fp8_e4m3", "fp8_e5m2", "fp8_e8m0"}
+        if isinstance(a4, str) and a4 in compute_types:
+            compute_type, weight_type = a4, a5
+        else:
+            weight_type, compute_type = a4, a5
+    else:
+        raise TypeError("repack_quantized_weight() expects 8 or 9 positional arguments; " f"got {len(args)}")
+
+    # Some native paths may still expect a valid zp pointer even when asym=False.
+    if (zp is None) or (isinstance(zp, torch.Tensor) and zp.numel() == 0):
+        if not bool(asym):
+            k = QB.shape[0]
+            n = QB.shape[1]
+            zp = torch.zeros((k // int(groupsize), n), dtype=torch.int8, device=QB.device)
+        else:
+            zp = torch.empty(0, dtype=torch.int8, device=QB.device)
+
+    return _repack_quantized_weight_core(
+        QB,
+        scaleB,
+        zp,
+        groupsize,
+        compute_type,
+        weight_type,
+        scale_type,
+        asym,
+    )
+
+
+def unpack_weight(
+    blob: torch.Tensor,
+    out_dtype: torch.dtype,
+    n,
+    k,
+    groupsize,
+    compute_type,
+    weight_type,
+    scale_type,
+    asym,
+):
+    return _unpack_weight_core(blob, out_dtype, n, k, groupsize, compute_type, weight_type, scale_type, asym)
+
+
+def packed_weight_size(A: torch.Tensor, n, k, groupsize, compute_type, weight_type, scale_type, asym):
+    # Keep signature convenient for Python callers; native library needs a stream.
+    lib = get_lib(A)
+    stream = get_stream(A)
+    ct = cvtstr_dtype(compute_type)
+    wt = cvtstr_dtype(weight_type)
+    st = cvtstr_dtype(scale_type)
+    return lib.packed_weight_size(stream, n, k, groupsize, ct, wt, st, asym)
+
+
+def woqgemm_linear(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    bias: torch.Tensor | None,
+    n,
+    k,
+    groupsize,
+    compute_type,
+    weight_type,
+    scale_type,
+    asym,
+):
+    n = int(n)
+    k = int(k)
+    groupsize = int(groupsize)
+    asym = bool(asym)
+
+    if A.shape[-1] != k:
+        raise ValueError(f"k must match A.shape[-1] ({A.shape[-1]}), got {k}")
+
+    raw_input_dtype = A.dtype
+    target_dtype = torch.float16 if A.device.type == "xpu" else torch.float32
+    out_shape = A.shape[:-1] + (n,)
+    A_2d = A.to(target_dtype).reshape(-1, A.shape[-1])
+    if bias is None or bias.numel() == 0:
+        bias = torch.empty(0, dtype=target_dtype, device=A.device)
+    else:
+        bias = bias.to(device=A.device, dtype=target_dtype)
+
+    out = woqgemm(
+        A_2d,
+        B,
+        bias,
+        n,
+        k,
+        groupsize,
+        compute_type,
+        weight_type,
+        scale_type,
+        asym,
+    )
+
+    return out.to(raw_input_dtype).reshape(out_shape)
+
+
+def woq_linear(
+    A: torch.Tensor,
+    packed_B: torch.Tensor,
+    bias: torch.Tensor,
+    out: torch.Tensor,
+    compute_type,
+    weight_type,
+    scale_type,
+    asym,
+    groupsize=None,
+):
+    """Linear helper that writes into a preallocated output tensor."""
+
+    if groupsize is None:
+        groupsize = A.shape[-1]
+
+    result = woqgemm(
+        A,
+        packed_B,
+        bias,
+        out.shape[-1],
+        A.shape[-1],
+        int(groupsize),
+        compute_type,
+        weight_type,
+        scale_type,
+        bool(asym),
+    )
+    out.copy_(result)
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Module-level lib loading (replaces the previous singleton ``ARK`` class).
+#
+# NOTE: placed at the end of the module to avoid circular imports during
+# package initialization.  pybind11-compiled .so modules may trigger a
+# PyImport_AddModule lookup of the parent ``auto_round_kernel`` package;
+# deferring the import until all definitions are complete ensures that the
+# parent is fully registered in sys.modules.
+# -----------------------------------------------------------------------------
+
+try:
+    from . import auto_round_kernel_cpu as _cpu_lib_mod
+
+    cpu_lib = _cpu_lib_mod
+except ImportError as _e:
+    print(f"ARK is unable to load CPU lib: {_e}")
+
+if torch.xpu.is_available():
+    try:
+        from . import auto_round_kernel_xpu as _xpu_lib_mod
+
+        xpu_lib = _xpu_lib_mod
+    except ImportError as _e:
+        print(f"ARK is unable to load XPU lib: {_e}")
+
+# Activation fused HMT + MXFP4 quantization (XPU). Imported last so the lib
+# handles above are already bound when the submodule looks them up.
+from .mxfp4_hadamard import (  # noqa: E402
+    HADAMARD_DIM,
+    HADAMARD_DIM_128,
+    MAX_LANES_PER_ROW,
+    SUPPORTED_HADAMARD_DIMS,
+    get_hadamard_matrix,
+    mxfp4_hadamard_quant,
+    mxfp4_hadamard_quant_reference,
+    mxfp4_quant_reference,
+    mxfp4_stream_reference,
+)
+
+if __name__ == "__main__":
+    print(cpu_lib is None, xpu_lib is None)
+
+    def matmul_test():
+        m = n = k = 128
+        dt = torch.int8
+        device = "cpu"
+        has_bias = False
+        if dt == torch.int8:
+            A = torch.randint(-128, 127, (m, k), dtype=dt, device=device)
+            B = torch.randint(-128, 127, (n, k), dtype=dt, device=device)
+            C = igemm_s8s8s32(A, B)
+            print(C)
+        else:
+            A = torch.rand(m, k, dtype=dt, device=device) - 0.5
+            B = torch.rand(k, n, dtype=dt, device=device) - 0.5
+            bias = torch.rand(1, n, dtype=dt, device=device) if has_bias else torch.empty(0)
+            C = matmul(A, B, bias)
+        ref = torch.matmul(A, B.T)
+        if has_bias:
+            ref = ref + bias
+        dff = abs(C - ref)
+        if dt != torch.int8:
+            print(dff.max(), dff.mean())
+            print(torch.allclose(ref, C, 0.01, 0.1))
+
+    def woq():
+        m = n = k = 128
+        dt = torch.float32
+        device = "cpu"
+        A = torch.rand(m, k, dtype=dt, device=device) - 0.5
+        bias = torch.rand(1, n, dtype=dt, device=device) + 1000
+        B = torch.randint(-128, 127, (n, k), dtype=torch.int8, device=device)
+        scaleB = torch.rand(n, 1, dtype=dt, device=device)
+        C = woqgemm_s8(A, B, scaleB, bias)
+        print(C)
+        DB = B.to(dt) * scaleB
+        ref = torch.matmul(A, DB.T) + bias
+        print(ref)
+        dff = abs(C - ref)
+        print(dff.max(), dff.mean())
+
+    def pack_unpack():
+        m = n = k = 128
+        groupsize = 32
+        dt = torch.float32
+        device = "xpu"
+        B = torch.randint(-8, 7, (k, n), dtype=torch.int8, device=device)
+        zp = torch.randint(-8, 7, (k // groupsize, n), dtype=torch.int8, device=device)
+        scaleB = torch.rand(k // groupsize, n, dtype=dt, device=device) / 100
+        blob = repack_quantized_weight(B, scaleB, zp, groupsize, "fp32", "int4", "fp32", False)
+        dq = unpack_weight(blob, dt, n, k, groupsize, "fp32", "int4", "fp32", False)
+        print(blob, dq)
+        scale_re = scaleB.repeat_interleave(repeats=groupsize, dim=0).to(dt)
+
+        DB = B.to(dt) * scale_re
+        dff = abs(DB.T - dq)
+        print(dff.max(), dff.mean())
+
+    pack_unpack()

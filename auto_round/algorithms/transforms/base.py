@@ -1,0 +1,435 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Base classes and utilities for weight/activation rotation algorithms.
+
+All rotation algorithms (Hadamard, SpinQuant, QuaRot, …) must subclass
+``BaseRotation`` and declare a corresponding ``BaseRotationConfig``.
+
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Any
+
+import torch
+import torch.nn as nn
+
+from auto_round.algorithms.base import BaseAlgorithm
+
+
+class BasePreprocessor(BaseAlgorithm):
+    """Base class for pre-quantization transform algorithms in a QuantizationPipeline.
+
+    Pre-processors run *before* the terminal block quantizer (e.g. AWQ smooth,
+    SmoothQuant, SpinQuant rotation).  Implement at least one of the lifecycle
+    hooks below.
+    """
+
+    def pre_quantize_block(self, ctx) -> None:
+        """Apply this transform before reference collection and block quantization."""
+        return
+
+    def invalidates_reference_output(self, ctx) -> bool:
+        """Whether this block's pre-computed reference must be collected again.
+
+        Preprocessors that mutate the floating-point block during
+        :meth:`pre_quantize_block` must override this method. This prevents a
+        caller-provided reference, collected before the transform, from being
+        used as the quantizer target or propagated to the next block.
+        """
+        return False
+
+    def select_calibration_samples(self, fp_inputs, input_others):
+        """Return the calibration inputs this preprocessor should observe.
+
+        The default keeps the full shared cache. Algorithms with an independent
+        calibration budget, such as AWQ, may return a sample subset without
+        changing the terminal quantizer's inputs.
+        """
+        return fp_inputs, input_others
+
+    def post_quantize_block(self, ctx) -> None:
+        """Called after the block quantizer completes."""
+        return
+
+
+# Backward-compat alias — remove after all call sites are updated.
+BaseWeightTransformer = BasePreprocessor
+
+
+# ---------------------------------------------------------------------------
+# Config base
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BaseRotationConfig:
+    """Minimal base for all rotation algorithm configs.
+
+    Every concrete config subclass should be a ``dataclass`` so it is
+    trivially serialisable / comparable.
+    """
+
+    #: Human-readable algorithm name, must be unique across all subclasses.
+    algorithm: str = "base"
+
+    #: Apply rotation per decoder block (layer-wise), in lock-step with
+    #: AutoRound's block-wise quantization, instead of rotating the whole model
+    #: up-front. Only honoured by rotation algorithms whose
+    #: :attr:`BaseRotation.supports_layerwise` is ``True`` (SpinQuant/QuaRot);
+    #: unsupported algorithms transparently fall back to full-model rotation.
+    layerwise: bool = False
+
+    def can_compile_block_forward(self) -> bool:
+        """Whether block replay can be compiled after applying this rotation."""
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Algorithm base
+# ---------------------------------------------------------------------------
+
+
+class BaseRotation(ABC):
+    """Unified interface for all weight/activation rotation transforms.
+
+    Concrete subclasses implement :meth:`apply_to_model` for their specific
+    mathematical transform (Hadamard rotation, random rotation, …).
+
+    Example
+    -------
+    >>> from auto_round.algorithms.transforms import apply_rotation
+    >>> model = apply_rotation(model, config={"algorithm": "hadamard", ...})
+    """
+
+    # Registry populated by subclasses via ``BaseRotation.register``.
+    _REGISTRY: dict[str, type[BaseRotation]] = {}
+
+    def __init__(self, config: BaseRotationConfig) -> None:
+        self.config = config
+
+    # ------------------------------------------------------------------
+    # Abstract interface
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def apply_to_model(
+        self,
+        model: torch.nn.Module,
+        data_type: str = "mx_fp",
+        **kwargs: Any,
+    ) -> torch.nn.Module:
+        """Apply this rotation to *model* and return the (possibly mutated) model.
+
+        Args:
+            model: The model to transform.
+            data_type: Quantization data type (e.g. ``"mx_fp"``).
+            **kwargs: Algorithm-specific extra arguments.
+
+        Returns:
+            The transformed model.
+        """
+
+    # ------------------------------------------------------------------
+    # Layer-wise rotation interface (optional)
+    # ------------------------------------------------------------------
+
+    @property
+    def supports_layerwise(self) -> bool:
+        """Whether this rotation algorithm supports layer-wise execution.
+
+        When ``True``, the composer can call :meth:`prepare_layerwise`
+        during ``apply_model_transforms`` and then :meth:`rotate_layer`
+        per-block inside the block-quantization loop — avoiding the need to
+        load the entire model onto GPU at once.
+        """
+        return False
+
+    def prepare_layerwise(
+        self,
+        model: torch.nn.Module,
+        data_type: str = "mx_fp",
+        **kwargs: Any,
+    ) -> BaseRotation:
+        """Prepare for layer-wise rotation without modifying model weights.
+
+        Called once when the rotation config has ``layerwise=True``.
+        Implementations should initialise rotation matrices (as model
+        buffers) and any other lightweight state, but must **not** modify
+        model weights or register hooks yet.
+
+        Args:
+            model: The model to prepare (not modified).
+            data_type: Quantization data type.
+            **kwargs: Algorithm-specific arguments (e.g. ``dataloader``).
+
+        Returns:
+            ``self``, so the composer can later call :meth:`rotate_layer`.
+
+        Raises:
+            NotImplementedError: If the algorithm does not support
+                layer-wise rotation.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support layer-wise rotation. " f"Use full-model rotation instead."
+        )
+
+    def rotate_layer(
+        self,
+        layer: torch.nn.Module,
+        layer_idx: int,
+        **kwargs: Any,
+    ) -> None:
+        """Apply rotation to a single decoder layer.
+
+        Called per-block in the block-quantization loop, after the block
+        is materialised and placed on the target device, **before**
+        reference-output collection.
+
+        Implementations should:
+        - Rotate weights of target modules inside *layer*.
+        - Register any online hooks (R1/R3/R4) needed at inference time.
+        - Be idempotent — calling twice on the same layer should be safe.
+
+        Args:
+            layer: A single decoder layer, already on the target device.
+            layer_idx: Zero-based index of this layer in the model.
+            **kwargs: Algorithm-specific arguments.
+
+        Raises:
+            NotImplementedError: If the algorithm does not support
+                layer-wise rotation.
+        """
+        raise NotImplementedError(f"{self.__class__.__name__} does not support layer-wise rotation.")
+
+    def finalize_layerwise(self, model: torch.nn.Module) -> None:
+        """Post-loop cleanup after all layers have been rotated.
+
+        Called once after the block-quantization loop completes.
+        Default implementation is a no-op.
+
+        Args:
+            model: The fully-rotated model.
+        """
+
+    # ------------------------------------------------------------------
+    # Factory
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def register(cls, algorithm_name: str):
+        """Class decorator to register a ``BaseRotation`` subclass.
+
+        Usage::
+
+            @BaseRotation.register("hadamard")
+            class HadamardRotation(BaseRotation):
+                ...
+        """
+
+        def _decorator(subclass: type[BaseRotation]) -> type[BaseRotation]:
+            cls._REGISTRY[algorithm_name] = subclass
+            return subclass
+
+        return _decorator
+
+    @classmethod
+    def from_config(cls, config: BaseRotationConfig) -> BaseRotation:
+        """Instantiate the correct ``BaseRotation`` subclass for *config*.
+
+        The algorithm is looked up by ``config.algorithm`` in the registry.
+        Sub-packages are imported lazily on first access so that optional
+        dependencies (e.g. ``pydantic``) are not required unless actually used.
+        """
+        # Lazy-load all sub-packages to populate the registry.
+        _ensure_registry_populated()
+
+        name = getattr(config, "algorithm", None)
+        if name not in cls._REGISTRY:
+            raise ValueError(f"No rotation algorithm registered under {name!r}. " f"Available: {sorted(cls._REGISTRY)}")
+        return cls._REGISTRY[name](config)
+
+
+# ---------------------------------------------------------------------------
+# Scheme compatibility check
+# ---------------------------------------------------------------------------
+
+#: Quantization schemes that support (and require) rotation transforms.
+ROTATION_SUPPORTED_SCHEMES: list[str] = ["MXFP8", "MXFP4", "NVFP4"]
+
+
+def check_supported_schemes(scheme: str) -> None:
+    """Raise ``ValueError`` if *scheme* does not support rotation transforms."""
+    if scheme not in ROTATION_SUPPORTED_SCHEMES:
+        raise ValueError(
+            f"Rotation transforms are not supported for scheme {scheme!r}. "
+            f"Currently supported schemes: {ROTATION_SUPPORTED_SCHEMES}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Lazy registry population
+# ---------------------------------------------------------------------------
+
+_registry_populated = False
+
+
+def _ensure_registry_populated() -> None:
+    """Import all known sub-packages so their ``@BaseRotation.register`` calls run."""
+    global _registry_populated
+    if _registry_populated:
+        return
+    # Import each sub-package here.  Add new entries as more algorithms land.
+    import importlib
+
+    for sub in ("hadamard", "spinquant"):
+        try:
+            importlib.import_module(f"auto_round.algorithms.transforms.{sub}")
+        except ImportError:
+            pass
+    _registry_populated = True
+
+
+# ---------------------------------------------------------------------------
+# Rotation serialization mixin
+# ---------------------------------------------------------------------------
+
+
+class SerializerMixin(ABC):
+    """Mixin interface for rotation method serialization.
+
+    Any :class:`BaseRotation` subclass that needs save/load support should
+    also inherit from this mixin and implement all abstract methods.
+
+    Separating from ``BaseRotation`` keeps preprocessing and serialization
+    concerns decoupled — a rotation method CAN exist without save/load
+    (e.g. in-memory-only evaluation).
+
+    Usage::
+
+        @BaseRotation.register("my_rotation")
+        class MyRotation(BaseRotation, SerializerMixin):
+            def apply_to_model(self, ...): ...
+            def inject_buffers_on_layer(self, ...): ...
+            ...
+    """
+
+    # ── Save side ──────────────────────────────────────────────────────
+
+    @abstractmethod
+    def inject_buffers_on_layer(
+        self,
+        layer_name: str,
+        qlayer: nn.Module,
+        model: nn.Module,
+    ) -> None:
+        """Inject rotation buffers onto a single QuantLinear after packing.
+
+        Called inside ``pack_layer()`` for the ShardWriter path — buffers
+        must be on the module BEFORE ``shard_writer.write()`` and
+        ``offload_to_meta()``.
+
+        Args:
+            layer_name: Full qualified name (e.g.
+                ``"model.layers.0.self_attn.q_proj"``).
+            qlayer: The packed QuantLinear module.
+            model: The full model (for reading rotation matrices / config).
+        """
+
+    @abstractmethod
+    def inject_buffers_bulk(
+        self,
+        model: nn.Module,
+        quantization_config: dict,
+    ) -> None:
+        """Inject rotation buffers on ALL QuantLinear modules and embed config.
+
+        Called in ``save_quantized_as_*()`` for the non-ShardWriter path.
+        Implementations should write the rotation config into
+        *quantization_config* under their own :meth:`config_key`
+        (e.g. ``"spinquant_config"``).
+
+        Note: do NOT use ``"rotation_config"`` as the key — it is reserved
+        for the existing Hadamard rotation system.
+
+        Args:
+            model: Full quantized model with QuantLinear modules.
+            quantization_config: Mutable dict persisted to JSON.
+        """
+
+    @abstractmethod
+    def save_config(self, model: nn.Module, save_dir: str) -> None:
+        """Persist rotation config to ``config.json``.
+
+        Called after ``model.save_pretrained()``.
+
+        Args:
+            model: Full model (for architecture info).
+            save_dir: Directory where ``config.json`` lives.
+        """
+
+    # ── Load side ──────────────────────────────────────────────────────
+
+    @abstractmethod
+    def preregister_buffers(
+        self,
+        model: nn.Module,
+        config_dict: dict,
+    ) -> int:
+        """Pre-register empty rotation buffers on QuantLinear modules.
+
+        Called AFTER ``convert_hf_model()`` replaces ``Linear`` →
+        ``QuantLinear``, BEFORE HuggingFace loads the state_dict from
+        safetensors.
+
+        Args:
+            model: Model with QuantLinear modules.
+            config_dict: Rotation config dict from quantization_config JSON.
+
+        Returns:
+            Number of modules that received pre-registered buffers.
+        """
+
+    @abstractmethod
+    def rebuild_online(self, model: nn.Module) -> nn.Module:
+        """Rebuild online rotation hooks after state_dict is loaded.
+
+        Handles forward patching (R1/R4 buffers), hook re-registration
+        (R3), etc.
+
+        Args:
+            model: Loaded quantized model with populated rotation buffers.
+
+        Returns:
+            The model with online rotations active.
+        """
+
+    @abstractmethod
+    def has_rotation_buffers(self, module: nn.Module) -> bool:
+        """Check if a single module has this rotation method's buffers.
+
+        Used for quick detection on load side.
+        """
+
+    @classmethod
+    @abstractmethod
+    def config_key(cls) -> str:
+        """Legacy JSON key used in ``quantization_config`` for this method.
+
+        e.g. ``"spinquant_config"``.  The unified key is always
+        ``"rotation_config"``; this is used for backward-compatible
+        fallback detection.
+        """

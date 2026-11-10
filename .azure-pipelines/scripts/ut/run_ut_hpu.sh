@@ -1,44 +1,100 @@
 #!/bin/bash
-set -xe
+set -e
+source /auto-round/.azure-pipelines/scripts/change_color.sh
+source /auto-round/.azure-pipelines/scripts/ut/detect_changed_tests.sh
 
-# install requirements
-echo "set up UT env..."
-export TQDM_MININTERVAL=60
-export HF_HUB_DISABLE_PROGRESS_BARS=1
-pip install pytest-cov pytest-html
-pip list
+function setup_environment() {
+    # install requirements
+    echo "##[group]set up UT env..."
+    export TZ='Asia/Shanghai'
+    export TQDM_MININTERVAL=60
+    export HF_HUB_DISABLE_PROGRESS_BARS=1
+    pip install pytest-cov pytest-timeout
+    pip list
+    echo "##[endgroup]"
 
-rm -rf /auto-round/auto_round
-cd /auto-round/test || exit 1
+    cd /auto-round/test || exit 1
 
-export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
-export FORCE_BF16=1
-export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/.coverage
-auto_round_path=$(python -c 'import auto_round; print(auto_round.__path__[0])')
+    export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
+    export FORCE_BF16=1
+    export COVERAGE_RCFILE=/auto-round/.azure-pipelines/scripts/ut/coveragerc/hpu.coveragerc
 
-LOG_DIR=/auto-round/log_dir
-mkdir -p ${LOG_DIR}
-ut_log_name=${LOG_DIR}/ut.log
+    LOG_DIR=/auto-round/log_dir
+    mkdir -p ${LOG_DIR}
+    ut_log_name=${LOG_DIR}/ut.log
+    SUMMARY_LOG="${LOG_DIR}/results_summary.log"
+}
 
-find ./test_hpu -name "test*.py" | sed "s,\.\/, PT_HPU_LAZY_MODE=1 python -m pytest --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html  --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run_lazy.sh
-find ./test_hpu -name "test*.py" | sed "s,\.\/, PT_HPU_LAZY_MODE=0 python -m pytest --mode compile --cov=\"${auto_round_path}\" --cov-report term --html=report.html --self-contained-html  --cov-report xml:coverage.xml --cov-append -vs --disable-warnings ,g" > run_compile.sh
+function run_unit_test() {
+    local hpu_tests
+    hpu_tests=$(filter_changed_tests "test" "$(find ./unit/test_hpu -name "test*.py" | sort)")
+    if [ -z "${hpu_tests}" ]; then
+        echo "No changed HPU test file, skip."
+        return 0
+    fi
 
-cat run_lazy.sh
-bash run_lazy.sh 2>&1 | tee ${ut_log_name}
+    for test_file in ${hpu_tests}; do
+        local test_basename=$(basename ${test_file} .py)
 
-cat run_compile.sh
-bash run_compile.sh 2>&1 | tee -a ${ut_log_name}
+        echo "##[group]Running ${test_file} in HPU lazy mode..."
+        local ut_log_name="${LOG_DIR}/unittest_lazy_${test_basename}.log"
+        PT_HPU_LAZY_MODE=1 pytest --timeout=600 --cov=auto_round \
+            --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
 
-cp report.html ${LOG_DIR}/
-cp coverage.xml ${LOG_DIR}/
+        echo "##[group]Running ${test_file} in HPU compile mode..."
+        local ut_log_name="${LOG_DIR}/unittest_compile_${test_basename}.log"
+        PT_HPU_LAZY_MODE=0 pytest --mode compile --timeout=600 --cov=auto_round \
+            --cov-report= --cov-append -vs \
+            --junitxml="${ut_log_name%.log}.xml" ${test_file} 2>&1 | tee ${ut_log_name}
+        echo "##[endgroup]"
+    done
+}
 
-if [ $(grep -c '== FAILURES ==' ${ut_log_name}) != 0 ] || [ $(grep -c '== ERRORS ==' ${ut_log_name}) != 0 ] || \
-[ $(grep -c 'Killed' ${ut_log_name}) != 0 ] || [ $(grep -c 'core dumped' ${ut_log_name}) != 0 ] || [ $(grep -c ' passed' ${ut_log_name}) == 0 ]; then
-    echo "##[error]Find errors in pytest case, please check the output..."
-    exit 1
-fi
+function print_summary() {
+    python /auto-round/.azure-pipelines/scripts/ut/print_summary.py --summary-log "${SUMMARY_LOG}"
+    exit $?
+}
 
-# if ut pass, collect the coverage file into artifacts
-cp .coverage ${LOG_DIR}/.coverage
+function collect_log() {
+    touch "${SUMMARY_LOG}"
+    python /auto-round/.azure-pipelines/scripts/ut/collect_result.py \
+        --test-type "Unit Tests" --log-pattern "unittest_*.log" --log-dir ${LOG_DIR} --summary-log ${SUMMARY_LOG}
+    if [ -f .coverage ]; then
+        cp .coverage "${LOG_DIR}/.coverage"
+        # "[paths] source" normalises the recorded install/checkout paths, but
+        # coverage.py applies it during "combine" only -- reporting on its own
+        # emits container-local absolute paths that no agent can resolve, and
+        # PublishCodeCoverageResults then reports "file does not exist".
+        # Combine from the repo root so the relative "auto_round" entry matches.
+        (
+            cd /auto-round || exit 1
+            rm -f .coverage
+            python -m coverage combine --keep "${LOG_DIR}/.coverage"
+            python -m coverage xml -o "${LOG_DIR}/coverage.xml"
+            python -m coverage html -d "${LOG_DIR}/htmlcov"
+        )
+    else
+        echo "No coverage data (no test selected), skip coverage report."
+        echo "##vso[task.setvariable variable=HAS_COVERAGE]false"
+    fi
+}
 
-echo "UT finished successfully! "
+function print_coverage() {
+    echo "##[group]overall code coverage..."
+    [ -f .coverage ] && python -m coverage report || echo "No coverage data."
+    echo "##[endgroup]"
+}
+
+function main() {
+    setup_environment
+    init_changed_tests
+    scope_changed_tests "$(cd /auto-round && find test/unit/test_hpu -name "test_*.py" 2>/dev/null)"
+    run_unit_test
+    collect_log
+    print_coverage
+    print_summary
+}
+
+main

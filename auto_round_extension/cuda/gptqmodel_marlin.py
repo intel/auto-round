@@ -17,19 +17,33 @@
 # Adapted from vllm
 # at https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/gptq_marlin.py
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import torch
 
 
 def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
-    import gptqmodel
+
+    # When loaded via the "meta" device, `gptqmodel==6.0.3` raises an error (since the internal
+    # loading process within the `transformers` library defaults to the "meta" device mode).
+    # Therefore, it is necessary to first switch to the CPU to bypass this error, and then
+    # switch back to the original data type once the loading process is complete.
+    with torch.device("cpu"):
+        import gptqmodel
+
     from packaging.version import Version
 
     NEW_VERSION = False
     if Version(gptqmodel.__version__) >= Version("5.0.0"):
         NEW_VERSION = True
+    NEW_VERSION_6_0 = False
+    if Version(gptqmodel.__version__) >= Version("6.0.0"):
+        NEW_VERSION_6_0 = True
+    NEW_VERSION_7_0 = False
+    if Version(gptqmodel.__version__) >= Version("7.0.0"):
+        NEW_VERSION_7_0 = True
+
     from gptqmodel.models._const import DEVICE, PLATFORM  # pylint: disable=E0401
     from gptqmodel.nn_modules.qlinear import BaseQuantLinear  # pylint: disable=E0401
     from gptqmodel.utils.backend import BACKEND  # pylint: disable=E0401
@@ -41,10 +55,13 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
             NEW_VERSION = False
 
     marlin_import_exception = None
-    try:
-        import gptqmodel_marlin_kernels  # pylint: disable=E0401
-    except ImportError as e:
-        marlin_import_exception = e
+    if NEW_VERSION_7_0:
+        import gptqmodel.utils.marlin as gptqmodel_marlin_kernels  # pylint: disable=E0401
+    else:
+        try:
+            import gptqmodel_marlin_kernels  # pylint: disable=E0401
+        except ImportError as e:
+            marlin_import_exception = e
 
     from auto_round.utils import logger
 
@@ -55,7 +72,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
 
     def set_weight_attrs(
         weight: torch.Tensor,
-        weight_attrs: Optional[Dict[str, Any]],
+        weight_attrs: dict[str, Any] | None,
     ):
         """Set attributes on a weight tensor.
 
@@ -92,7 +109,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         sms = torch.cuda.get_device_properties(device).multi_processor_count
         return torch.zeros(sms * max_blocks_per_sm, dtype=torch.int, device=device, requires_grad=False)
 
-    def marlin_sort_g_idx(g_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def marlin_sort_g_idx(g_idx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         g_idx_sort_indices = torch.argsort(g_idx).to(torch.int)
         return g_idx[g_idx_sort_indices], g_idx_sort_indices
 
@@ -120,10 +137,10 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         return s
 
     def get_scale_perms():
-        scale_perm: List[int] = []
+        scale_perm: list[int] = []
         for i in range(8):
             scale_perm.extend([i + 8 * j for j in range(8)])
-        scale_perm_single: List[int] = []
+        scale_perm_single: list[int] = []
         for i in range(4):
             scale_perm_single.extend([2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
         return scale_perm, scale_perm_single
@@ -177,7 +194,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
                 g_idx,
                 g_idx_sort_indices,
                 workspace,
-                wtype.id,
+                wtype if NEW_VERSION_7_0 else wtype.id,
                 reshaped_x.shape[0],
                 output_size_per_partition,
                 input_size_per_partition,
@@ -244,23 +261,62 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
                 # (since we have only one group per output channel)
                 desc_act = False
 
-            super().__init__(
-                bits=bits,
-                group_size=group_size,
-                sym=sym,
-                desc_act=desc_act,
-                in_features=in_features,
-                out_features=out_features,
-                bias=bias,
-                pack_dtype=pack_dtype,
-                backend=kwargs.pop("backend", BACKEND.MARLIN),
-                adapter=None,
-                register_buffers=False,
-                **kwargs,
-            )
+            backend = kwargs.pop("backend", BACKEND.MARLIN)
+            if NEW_VERSION_6_0:
+                # gptqmodel >= 6.0.0: BaseQuantLinear no longer accepts group_size/sym/desc_act/pack_dtype
+                # directly; they must be passed via validate_kwargs. Attributes are also set manually.
+                super().__init__(
+                    bits=bits,
+                    in_features=in_features,
+                    out_features=out_features,
+                    bias=bias,
+                    backend=backend,
+                    adapter=None,
+                    register_buffers=False,
+                    validate_kwargs={
+                        "group_size": group_size,
+                        "desc_act": desc_act,
+                        "sym": sym,
+                        "pack_dtype": pack_dtype,
+                    },
+                    **kwargs,
+                )
+                # Set attributes that intermediate classes (PackedQuantLinear /
+                # GPTQQuantLinear) would have set in the old API.
+                self.pack_dtype = pack_dtype
+                if pack_dtype == torch.int8:
+                    self.pack_dtype_bits = 8
+                elif pack_dtype == torch.int16:
+                    self.pack_dtype_bits = 16
+                elif pack_dtype == torch.int32:
+                    self.pack_dtype_bits = 32
+                elif pack_dtype == torch.int64:
+                    self.pack_dtype_bits = 64
+                else:
+                    raise ValueError(f"Unsupported pack_dtype: {pack_dtype}")
+                self.pack_factor = self.pack_dtype_bits // bits
+                self.group_size = group_size if group_size != -1 else in_features
+                self.requested_group_size = group_size
+                self.desc_act = desc_act
+                self.sym = sym
+            else:
+                super().__init__(
+                    bits=bits,
+                    group_size=group_size,
+                    sym=sym,
+                    desc_act=desc_act,
+                    in_features=in_features,
+                    out_features=out_features,
+                    bias=bias,
+                    pack_dtype=pack_dtype,
+                    backend=backend,
+                    adapter=None,
+                    register_buffers=False,
+                    **kwargs,
+                )
 
             # toggle fp32 mode depending on MARLIN or MARLIN_FP16 backend
-            self.fp32 = True if self.backend in [BACKEND.MARLIN, BACKEND.AUTO] else False
+            self.fp32 = self.backend in [BACKEND.MARLIN, BACKEND.AUTO]
 
             if not self.fp32:
                 logger.warning_once(
@@ -445,7 +501,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
 
             super().post_init()
 
-        def list_buffers(self) -> List:
+        def list_buffers(self) -> list:
             buf = super().list_buffers()
             if hasattr(self, "workspace") and self.workspace is not None:
                 buf.append(self.workspace)

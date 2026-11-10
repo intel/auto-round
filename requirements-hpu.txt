@@ -1,5 +1,6 @@
 accelerate>=1.10.0
 datasets
+filelock
 py-cpuinfo
 sentencepiece
 numpy
@@ -7,4 +8,3 @@ tqdm
 packaging
 pillow
 transformers
-threadpoolctl

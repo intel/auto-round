@@ -1,0 +1,697 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+import math
+from contextlib import ExitStack
+from functools import partial
+from typing import Any
+
+import torch
+
+import auto_round.algorithms.transforms.svdquant.residual as residual_module
+from auto_round.algorithms.registry import register_preprocessor
+from auto_round.algorithms.transforms.base import BasePreprocessor
+from auto_round.algorithms.transforms.smoothing.calibration import (
+    SmoothGroupCalibration,
+    clear_caches,
+)
+from auto_round.algorithms.transforms.smoothing.calibration import move_to_device as _move_to_device
+from auto_round.algorithms.transforms.smoothing.engine import SmoothEngine
+from auto_round.algorithms.transforms.smoothing.replay import output_squared_error, temporary_modules
+from auto_round.algorithms.transforms.svdquant.config import SVDQuantConfig
+from auto_round.algorithms.transforms.svdquant.residual import (
+    ActivationQuantScheme,
+    ResidualQuantScheme,
+    compute_svd_factors,
+    iterate_residual_decomposition,
+)
+from auto_round.algorithms.transforms.svdquant.smooth import (
+    SmoothCandidate,
+    SVDQuantSmoothStrategy,
+    summarize_smooth_scale,
+)
+from auto_round.algorithms.transforms.svdquant.smooth_adapters import SmoothSearchGroup, discover_svdquant_groups
+from auto_round.algorithms.transforms.svdquant.wrapper import SVDQuantLinear
+from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
+from auto_round.utils.device_manager import device_manager
+
+_SCHEME_ATTRS = set(QuantizationScheme.get_attributes())
+_RUNTIME_QUANT_ATTRS = {"scale_dtype", "weight_global_scale", "tuning_device"}
+_MXFP4_ALIASES = frozenset({"mx_fp", "mx_fp4", "mx_fp4e2m1"})
+
+
+def _select_svd_driver(device: torch.device) -> str | None:
+    """Select a CUDA driver once using a small matrix on the execution device."""
+    if device.type != "cuda" or torch.version.cuda is None:
+        return None
+    probe = torch.tensor([[1.0, 2.0], [3.0, 5.0]], device=device, dtype=torch.float32)
+    for driver in ("gesvda", "gesvdj", "gesvd"):
+        try:
+            torch.linalg.svd(probe, full_matrices=False, driver=driver)
+            torch.cuda.synchronize(device)
+        except torch.OutOfMemoryError:
+            raise
+        except RuntimeError as exc:
+            if driver == "gesvd":
+                raise
+            logger.debug("SVDQuant driver %s probe failed: %s", driver, exc)
+            continue
+        logger.info("SVDQuant selected SVD driver %s on %s.", driver, device)
+        return driver
+
+
+@register_preprocessor(SVDQuantConfig)
+class SVDQuantTransform(BasePreprocessor):
+    """Split target linears into a quantized residual and an FP low-rank branch."""
+
+    def __init__(self, config: SVDQuantConfig) -> None:
+        super().__init__(config)
+        self._svd_driver = None
+        self._grouping_backend = None
+        self._configured_block_names: tuple[str, ...] = ()
+        self._block_groups: dict[str, list[SmoothSearchGroup]] = {}
+        self._smooth_calibration: dict[str, SmoothGroupCalibration] = {}
+        self._target_modules = config.target_modules
+        if self._target_modules is None and config.model_adapter in {"flux", "sdxl"}:
+            from auto_round.export.formats.svdquant.adapters import (
+                FLUX_SVDQUANT_TARGET_MODULES,
+                SDXL_SVDQUANT_TARGET_MODULES,
+            )
+
+            self._target_modules = (
+                FLUX_SVDQUANT_TARGET_MODULES if config.model_adapter == "flux" else SDXL_SVDQUANT_TARGET_MODULES
+            )
+
+    def bind(self, orchestrator) -> None:
+        super().bind(orchestrator)
+        nblocks = getattr(orchestrator, "nblocks", 1)
+        if nblocks != 1:
+            raise ValueError(f"SVDQuant requires nblocks=1, got nblocks={nblocks}.")
+        # One CLI command owns one compressor, including dual-transformer pipelines.
+        # Rebinding algorithms for another transformer must reuse its SVD driver.
+        if not hasattr(orchestrator, "_svdquant_svd_driver"):
+            orchestrator._svdquant_svd_driver = _select_svd_driver(torch.device(device_manager.device))
+        self._svd_driver = orchestrator._svdquant_svd_driver
+        quant_block_list = getattr(orchestrator, "quant_block_list", None) or ()
+        self._configured_block_names = tuple(
+            block_name for block_group in quant_block_list for block_name in block_group
+        )
+
+    def prepare_run(self, composer=None) -> None:
+        self._block_groups.clear()
+        formats = getattr(self.compress_context, "formats", None) or ()
+        self._grouping_backend = "omni" if any(fmt.format_name == "svdquant_omni" for fmt in formats) else None
+        if self.model is None:
+            return
+        if self._grouping_backend == "omni":
+            self._target_modules = self.config.target_modules
+        else:
+            self._resolve_model_adapter(self.model)
+        for block_name in self._configured_block_names:
+            block = self.model.get_submodule(block_name)
+            self._block_groups[block_name] = discover_svdquant_groups(
+                block, self._is_target, grouping_backend=self._grouping_backend
+            )
+        logger.info(
+            "SVDQuant: resolved %d projection groups across %d blocks.",
+            sum(len(groups) for groups in self._block_groups.values()),
+            len(self._block_groups),
+        )
+
+    def _resolve_model_adapter(self, model: torch.nn.Module | None, block: torch.nn.Module | None = None) -> str:
+        model_adapter = self.config.model_adapter or "auto"
+        if model_adapter == "auto":
+            from auto_round.export.formats.svdquant.adapters import detect_svdquant_model_adapter
+
+            model_adapter = detect_svdquant_model_adapter(model) if model is not None else "identity"
+            if (
+                model_adapter == "identity"
+                and block is not None
+                and block.__class__.__name__
+                in {
+                    "FluxTransformerBlock",
+                    "FluxSingleTransformerBlock",
+                }
+            ):
+                model_adapter = "flux"
+        if model is not None:
+            model._autoround_svdquant_model_adapter = model_adapter
+        if model_adapter == "flux":
+            from auto_round.algorithms.transforms.svdquant.smooth_adapters.flux import warn_if_unverified_flux_model
+
+            if model is not None:
+                warn_if_unverified_flux_model(model)
+        self._target_modules = self.config.target_modules
+        if self._target_modules is None and model_adapter in {"flux", "sdxl"}:
+            from auto_round.export.formats.svdquant.adapters import (
+                FLUX_SVDQUANT_TARGET_MODULES,
+                SDXL_SVDQUANT_TARGET_MODULES,
+            )
+
+            self._target_modules = (
+                FLUX_SVDQUANT_TARGET_MODULES if model_adapter == "flux" else SDXL_SVDQUANT_TARGET_MODULES
+            )
+        return model_adapter
+
+    def register_fp_input_forward_hooks(self, block) -> list:
+        if not self.config.smooth_enabled:
+            return []
+        if self._grouping_backend != "omni":
+            self._resolve_model_adapter(self.model, block)
+        self._clear_smooth_calibration()
+        block_name = str(getattr(block, "global_name", ""))
+        groups = self._block_groups.get(block_name)
+        if groups is None:
+            groups = discover_svdquant_groups(block, self._is_target, grouping_backend=self._grouping_backend)
+            self._block_groups[block_name] = groups
+        self._smooth_calibration = {
+            group.key: SmoothGroupCalibration(group, self.config.smooth_max_calibration_calls) for group in groups
+        }
+
+        projection_owners = {}
+        evaluation_owners = {}
+        modules = {}
+        for calibration in self._smooth_calibration.values():
+            projection_module = calibration.group.projection_input_module
+            evaluation_module = calibration.group.evaluation_module
+            projection_owners.setdefault(id(projection_module), []).append(calibration)
+            evaluation_owners.setdefault(id(evaluation_module), []).append(calibration)
+            modules[id(projection_module)] = projection_module
+            modules[id(evaluation_module)] = evaluation_module
+
+        def collect_calibration(module, inputs, kwargs, output):
+            for calibration in projection_owners.get(id(module), ()):
+                if inputs and torch.is_tensor(inputs[0]):
+                    value = inputs[0]
+                    if value.shape[-1] == calibration.group.projections[0].in_features:
+                        calibration.begin_call(value)
+            for calibration in evaluation_owners.get(id(module), ()):
+                calibration.finish_call(inputs, kwargs, output)
+
+        return [module.register_forward_hook(collect_calibration, with_kwargs=True) for module in modules.values()]
+
+    @torch.no_grad()
+    def pre_quantize_block(self, ctx) -> None:
+        if len(ctx.block_names) != 1:
+            raise ValueError(f"SVDQuant requires one block at a time, got {ctx.block_names!r}.")
+        block_name = ctx.block_name
+        block = ctx.model.get_submodule(block_name)
+        if self._grouping_backend != "omni":
+            self._resolve_model_adapter(ctx.model, block)
+        groups = self._block_groups.get(block_name)
+        if groups is None:
+            groups = discover_svdquant_groups(block, self._is_target, grouping_backend=self._grouping_backend)
+            self._block_groups[block_name] = groups
+
+        if self.config.smooth_enabled:
+            self._pre_quantize_smoothed_block(block, groups)
+            return
+
+        local_names = {id(module): name for name, module in block.named_modules() if name}
+        replacements = []
+        for group in groups:
+            wrappers = self._decompose_group(group)
+            for projection, wrapper in zip(group.projections, wrappers):
+                local_name = local_names.get(id(projection))
+                if local_name is None:
+                    raise ValueError(f"SVDQuant could not locate projection {self._module_name(projection)!r}.")
+                replacements.append((local_name, wrapper))
+
+        for local_name, wrapper in replacements:
+            _set_child_module(block, local_name, wrapper)
+
+    def post_quantize_block(self, ctx) -> None:
+        self._clear_smooth_calibration()
+        self._block_groups.pop(ctx.block_name, None)
+
+    def finalize_run(self) -> None:
+        self._clear_smooth_calibration()
+        self._block_groups.clear()
+
+    def _clear_smooth_calibration(self) -> None:
+        for calibration in self._smooth_calibration.values():
+            calibration.clear()
+        clear_caches(self._smooth_calibration, scope="SVDQuant calibration")
+
+    def _pre_quantize_smoothed_block(self, block: torch.nn.Module, groups: list[SmoothSearchGroup]) -> None:
+        if not self._smooth_calibration:
+            raise ValueError("SVDQuant smooth calibration inputs are missing for the current block.")
+        local_names = {id(module): name for name, module in block.named_modules() if name}
+        engine = SmoothEngine()
+        try:
+            with ExitStack() as sessions:
+                self._search_and_apply_smooth_groups(engine, sessions, block, groups, local_names)
+        finally:
+            self._clear_smooth_calibration()
+
+    def _search_and_apply_smooth_groups(self, engine, sessions, block, groups, local_names) -> None:
+        selected = {}
+        for group in groups:
+            calibration = self._smooth_calibration.get(group.key)
+            if calibration is None or not calibration.projection_inputs or not calibration.evaluation_calls:
+                raise ValueError(f"SVDQuant smooth calibration inputs are missing for group {group.key!r}.")
+            strategy = SVDQuantSmoothStrategy(self, block, local_names)
+            sessions.enter_context(engine.session(strategy))
+            result = engine.search(group, calibration, strategy)
+            self._log_selected_smooth_candidate(group.key, result.candidate, result.error)
+            selected[group.key] = (strategy, result)
+
+        replacements = []
+        for group in groups:
+            strategy, result = selected[group.key]
+            wrappers = engine.apply(group, strategy, result)
+            for projection, wrapper in zip(group.projections, wrappers):
+                local_name = local_names.get(id(projection))
+                if local_name is None:
+                    raise ValueError(f"SVDQuant could not locate projection {self._module_name(projection)!r}.")
+                replacements.append((local_name, wrapper))
+        for local_name, wrapper in replacements:
+            _set_child_module(block, local_name, wrapper)
+
+    def _search_group_scale(
+        self,
+        calibration: SmoothGroupCalibration,
+        block: torch.nn.Module,
+        local_names: dict[int, str],
+    ) -> torch.Tensor:
+        engine = SmoothEngine()
+        strategy = SVDQuantSmoothStrategy(self, block, local_names)
+        with engine.session(strategy):
+            result = engine.search(calibration.group, calibration, strategy)
+            self._log_selected_smooth_candidate(calibration.group.key, result.candidate, result.error)
+            return result.candidate.scale
+
+    @staticmethod
+    def _log_selected_smooth_candidate(module_name: str, candidate: SmoothCandidate, error: float) -> None:
+        stats = summarize_smooth_scale(candidate.scale)
+        logger.info(
+            "SVDQuant smooth selected for %s: alpha=%.6g beta=%.6g error=%.6g "
+            "scale_min=%.6g scale_max=%.6g scale_ratio=%.6g below_1e-3=%d above_20=%d",
+            module_name,
+            candidate.alpha,
+            candidate.beta,
+            error,
+            stats.minimum,
+            stats.maximum,
+            stats.ratio,
+            stats.below_min_count,
+            stats.above_max_count,
+        )
+        if stats.below_min_count or stats.above_max_count:
+            logger.warning(
+                "SVDQuant smooth scale for %s contains extreme values: below_1e-3=%d above_20=%d",
+                module_name,
+                stats.below_min_count,
+                stats.above_max_count,
+            )
+
+    def _score_group_wrappers(
+        self,
+        calibration: SmoothGroupCalibration,
+        wrappers: list[SVDQuantLinear],
+        block: torch.nn.Module,
+        local_names: dict[int, str],
+    ) -> float:
+        group = calibration.group
+        replacements = []
+        for projection, wrapper in zip(group.projections, wrappers):
+            local_name = local_names.get(id(projection))
+            if local_name is None:
+                raise ValueError(f"SVDQuant could not locate projection {self._module_name(projection)!r}.")
+            replacements.append((local_name, wrapper))
+        with temporary_modules(block, replacements):
+            error = torch.zeros((), dtype=torch.float64)
+            for call in calibration.evaluation_calls:
+                evaluation_module = group.evaluation_module
+                if len(group.projections) == 1 and evaluation_module is group.projections[0]:
+                    evaluation_module = wrappers[0]
+                device = group.projections[0].weight.device
+                dtype = group.projections[0].weight.dtype
+                args = _move_to_device(call.args, device, dtype)
+                kwargs = group.filter_evaluation_kwargs(_move_to_device(call.kwargs, device, dtype))
+                actual = group.normalize_output(evaluation_module(*args, **kwargs))
+                reference = tuple(tensor.to(device) for tensor in group.normalize_output(call.output))
+                output_squared_error(actual, reference, accumulator=error)
+            return error.item()
+
+    def _candidate_group_wrappers(self, group: SmoothSearchGroup, scale: torch.Tensor) -> list[SVDQuantLinear]:
+        weights = [
+            projection.weight.detach().to(torch.float32) * scale.to(projection.weight.device)
+            for projection in group.projections
+        ]
+        stacked = torch.cat(weights, dim=0)
+        output_sizes = [projection.out_features for projection in group.projections]
+        rank = min(self.config.rank, *stacked.shape)
+        down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver)
+        low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
+        deployed_down = down.to(low_rank_dtype)
+        deployed_up = up.to(low_rank_dtype)
+        low_rank_parts = (deployed_up.float() @ deployed_down.float()).split(output_sizes, dim=0)
+        residuals = []
+        for projection, weight, low_rank in zip(group.projections, weights, low_rank_parts):
+            residual = (weight - low_rank).to(projection.weight.dtype)
+            residuals.append(residual_module.rtn_qdq_residual(residual, self._residual_quant_scheme(projection)))
+        return self._build_group_wrappers(
+            group,
+            residuals,
+            deployed_down,
+            deployed_up.split(output_sizes, dim=0),
+            scale,
+            activation_scheme=self._group_activation_quant_scheme(group),
+        )
+
+    def _decompose_smoothed_group(
+        self,
+        calibration: SmoothGroupCalibration,
+        scale: torch.Tensor,
+        block: torch.nn.Module,
+        local_names: dict[int, str],
+    ) -> list[SVDQuantLinear]:
+        group = calibration.group
+        weights = [
+            projection.weight.detach().to(torch.float32) * scale.to(projection.weight.device)
+            for projection in group.projections
+        ]
+        stacked = torch.cat(weights, dim=0)
+        output_sizes = [projection.out_features for projection in group.projections]
+        rank = min(self.config.rank, *stacked.shape)
+        low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
+        if self.config.residual_iters == 1:
+            down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver)
+            deployed_down = down.to(low_rank_dtype)
+            deployed_up = up.to(low_rank_dtype)
+            low_rank = deployed_up.float() @ deployed_down.float()
+            residuals = [
+                residual.to(projection.weight.dtype)
+                for residual, projection in zip(stacked.sub(low_rank).split(output_sizes, dim=0), group.projections)
+            ]
+        else:
+            residuals, deployed_down, deployed_up = self._iterate_smoothed_group_residual(
+                calibration, block, local_names, stacked, rank, low_rank_dtype, scale
+            )
+        return self._build_group_wrappers(
+            group, residuals, deployed_down, deployed_up.split(output_sizes, dim=0), scale
+        )
+
+    def _iterate_smoothed_group_residual(
+        self,
+        calibration: SmoothGroupCalibration,
+        block: torch.nn.Module,
+        local_names: dict[int, str],
+        stacked: torch.Tensor,
+        rank: int,
+        low_rank_dtype: torch.dtype,
+        scale: torch.Tensor,
+    ) -> tuple[list[torch.Tensor], torch.Tensor, torch.Tensor]:
+        group = calibration.group
+        output_sizes = [projection.out_features for projection in group.projections]
+        quantized_residual = torch.zeros_like(stacked)
+        best = None
+        best_error = float("inf")
+        activation_scheme = self._group_activation_quant_scheme(group)
+        for iteration in range(1, self.config.residual_iters + 1):
+            down, up = compute_svd_factors(stacked - quantized_residual, rank, driver=self._svd_driver)
+            deployed_down = down.to(low_rank_dtype)
+            deployed_up = up.to(low_rank_dtype)
+            low_rank = deployed_up.float() @ deployed_down.float()
+            residual_parts = (stacked - low_rank).split(output_sizes, dim=0)
+            qdq_residuals = [
+                residual_module.rtn_qdq_residual(
+                    residual.to(projection.weight.dtype), self._residual_quant_scheme(projection)
+                )
+                for residual, projection in zip(residual_parts, group.projections)
+            ]
+            quantized_residual = torch.cat([residual.float() for residual in qdq_residuals], dim=0)
+            wrappers = self._build_group_wrappers(
+                group,
+                qdq_residuals,
+                deployed_down,
+                deployed_up.split(output_sizes, dim=0),
+                scale,
+                activation_scheme=activation_scheme,
+            )
+            error = self._score_group_wrappers(calibration, wrappers, block, local_names)
+            accepted = math.isfinite(error) and error < best_error
+            if accepted:
+                best = (deployed_down.clone(), deployed_up.clone(), iteration)
+                best_error = error
+            elif (
+                self.config.residual_early_stop
+                and best is not None
+                and (not math.isfinite(error) or error > best_error)
+            ):
+                logger.info(
+                    "SVDQuant residual early stop for %s at iteration %d: output error %.6g > best %.6g",
+                    group.key,
+                    iteration,
+                    error,
+                    best_error,
+                )
+                break
+        if best is None:
+            raise ValueError(f"SVDQuant residual iteration failed for group {group.key!r}.")
+        deployed_down, deployed_up, selected_iteration = best
+        logger.info(
+            "SVDQuant residual selected iteration %d/%d for %s: output error %.6g",
+            selected_iteration,
+            self.config.residual_iters,
+            group.key,
+            best_error,
+        )
+        low_rank = deployed_up.float() @ deployed_down.float()
+        residuals = [
+            residual.to(projection.weight.dtype)
+            for residual, projection in zip((stacked - low_rank).split(output_sizes, dim=0), group.projections)
+        ]
+        return residuals, deployed_down, deployed_up
+
+    def _decompose_group(self, group: SmoothSearchGroup) -> list[SVDQuantLinear]:
+        weights = [projection.weight.detach().to(torch.float32) for projection in group.projections]
+        stacked = torch.cat(weights, dim=0)
+        output_sizes = [projection.out_features for projection in group.projections]
+        rank = min(self.config.rank, *stacked.shape)
+        low_rank_dtype = self._resolve_low_rank_dtype(group.projections[0].weight.dtype)
+
+        if self.config.residual_iters == 1:
+            down, up = compute_svd_factors(stacked, rank, driver=self._svd_driver)
+            deployed_down = down.to(low_rank_dtype)
+            deployed_up = up.to(low_rank_dtype)
+            deployed_low_rank = deployed_up.float() @ deployed_down.float()
+            residuals = [
+                residual.to(projection.weight.dtype)
+                for residual, projection in zip(
+                    (stacked - deployed_low_rank).split(output_sizes, dim=0), group.projections
+                )
+            ]
+        else:
+            scheme = self._shared_residual_scheme(group)
+            result = iterate_residual_decomposition(
+                stacked,
+                rank=rank,
+                scheme=scheme,
+                iterations=self.config.residual_iters,
+                early_stop=self.config.residual_early_stop,
+                residual_dtype=group.projections[0].weight.dtype,
+                low_rank_dtype=low_rank_dtype,
+                driver=self._svd_driver,
+            )
+            deployed_down = result.down
+            deployed_up = result.up
+            residuals = [
+                residual.to(projection.weight.dtype)
+                for residual, projection in zip(result.residual.split(output_sizes, dim=0), group.projections)
+            ]
+            logger.info(
+                "SVDQuant residual selected iteration %d/%d for %s: weight error %.6g",
+                result.selected_iteration,
+                self.config.residual_iters,
+                group.key,
+                result.error,
+            )
+
+        up_parts = deployed_up.split(output_sizes, dim=0)
+        smooth = torch.ones(stacked.shape[1], device=stacked.device, dtype=torch.float32)
+        return self._build_group_wrappers(group, residuals, deployed_down, up_parts, smooth)
+
+    def _build_group_wrappers(
+        self,
+        group: SmoothSearchGroup,
+        residuals: list[torch.Tensor],
+        down: torch.Tensor,
+        up_parts: tuple[torch.Tensor, ...],
+        smooth: torch.Tensor,
+        activation_scheme: ActivationQuantScheme | None = None,
+    ) -> list[SVDQuantLinear]:
+        wrappers = []
+        rank = down.shape[0]
+        input_smooth = smooth.reciprocal()
+        for projection, residual_weight, up in zip(group.projections, residuals, up_parts):
+            residual = self._new_linear_like(projection, residual_weight, projection.bias)
+            lora_down = torch.nn.Linear(
+                projection.in_features,
+                rank,
+                bias=False,
+                dtype=down.dtype,
+                device=projection.weight.device,
+            )
+            lora_up = torch.nn.Linear(
+                rank,
+                projection.out_features,
+                bias=False,
+                dtype=up.dtype,
+                device=projection.weight.device,
+            )
+            lora_down.weight.copy_(down)
+            lora_up.weight.copy_(up)
+            lora_down.requires_grad_(projection.weight.requires_grad)
+            lora_up.requires_grad_(projection.weight.requires_grad)
+            self._mark_unquantized(lora_down)
+            self._mark_unquantized(lora_up)
+            self._copy_quant_attrs(projection, residual, suffix=".residual_linear")
+            activation_qdq = (
+                None
+                if activation_scheme is None
+                else partial(residual_module.rtn_qdq_activation, scheme=activation_scheme)
+            )
+            wrappers.append(
+                SVDQuantLinear(
+                    residual,
+                    lora_down,
+                    lora_up,
+                    input_smooth.to(projection.weight.dtype),
+                    activation_qdq=activation_qdq,
+                )
+            )
+        return wrappers
+
+    def _shared_residual_scheme(self, group: SmoothSearchGroup) -> ResidualQuantScheme:
+        schemes = tuple(self._residual_quant_scheme(projection) for projection in group.projections)
+        if any(scheme != schemes[0] for scheme in schemes[1:]):
+            raise ValueError(f"SVDQuant group {group.key!r} has inconsistent residual quantization schemes.")
+        return schemes[0]
+
+    def _group_activation_quant_scheme(self, group: SmoothSearchGroup) -> ActivationQuantScheme:
+        schemes = tuple(self._activation_quant_scheme(projection) for projection in group.projections)
+        if any(scheme != schemes[0] for scheme in schemes[1:]):
+            raise ValueError(f"SVDQuant group {group.key!r} has inconsistent activation quantization schemes.")
+        return schemes[0]
+
+    def _activation_quant_scheme(self, module: torch.nn.Linear) -> ActivationQuantScheme:
+        attributes = {
+            "data_type": "act_data_type",
+            "bits": "act_bits",
+            "group_size": "act_group_size",
+            "sym": "act_sym",
+        }
+        missing = [
+            source for source in attributes.values() if not hasattr(module, source) or getattr(module, source) is None
+        ]
+        if missing:
+            raise ValueError(
+                f"SVDQuant smooth calibration requires a complete activation scheme for "
+                f"{self._module_name(module)!r}; missing: {', '.join(missing)}."
+            )
+        return ActivationQuantScheme(**{target: getattr(module, source) for target, source in attributes.items()})
+
+    def _residual_quant_scheme(self, module: torch.nn.Linear) -> ResidualQuantScheme:
+        required = ("data_type", "bits", "group_size", "sym")
+        missing = [attr for attr in required if not hasattr(module, attr) or getattr(module, attr) is None]
+        if missing:
+            raise ValueError(
+                f"SVDQuant residual iteration requires a complete quantization scheme for "
+                f"{self._module_name(module)!r}; missing: {', '.join(missing)}."
+            )
+        return ResidualQuantScheme(**{attr: getattr(module, attr) for attr in required})
+
+    def _is_target(self, name: str, module: torch.nn.Module) -> bool:
+        if not isinstance(module, torch.nn.Linear):
+            return False
+        full_name = str(getattr(module, "global_name", name))
+        if self._target_modules and not any(
+            pattern in name or pattern in full_name for pattern in self._target_modules
+        ):
+            return False
+        return not (
+            self.config.exclude_modules
+            and any(pattern in name or pattern in full_name for pattern in self.config.exclude_modules)
+        )
+
+    @staticmethod
+    def _new_linear_like(module: torch.nn.Linear, weight: torch.Tensor, bias: torch.Tensor | None):
+        residual = torch.nn.Linear(
+            module.in_features,
+            module.out_features,
+            bias=bias is not None,
+            dtype=module.weight.dtype,
+            device=module.weight.device,
+        )
+        residual.weight.copy_(weight.to(module.weight.dtype))
+        # Preserve freezing: cached NVFP4 scales must not acquire an autograd graph.
+        residual.weight.requires_grad_(module.weight.requires_grad)
+        if bias is not None:
+            residual.bias.copy_(bias.detach().to(module.weight.dtype))
+            residual.bias.requires_grad_(module.bias.requires_grad)
+        return residual
+
+    @staticmethod
+    def _mark_unquantized(module: torch.nn.Module) -> None:
+        module.bits = 16
+        module.act_bits = 16
+
+    @staticmethod
+    def _copy_quant_attrs(src: torch.nn.Module, dst: torch.nn.Module, suffix: str) -> None:
+        # The residual has different weights (and may be smoothed), so its
+        # NVFP4 global scale must be calculated again before quantization.
+        for attr in (_SCHEME_ATTRS | _RUNTIME_QUANT_ATTRS) - {"weight_global_scale"}:
+            if hasattr(src, attr):
+                setattr(dst, attr, getattr(src, attr))
+        if getattr(dst, "bits", None) == 4 and getattr(dst, "data_type", None) in _MXFP4_ALIASES:
+            dst.data_type = f"{dst.data_type}_rceil"
+        if getattr(dst, "act_bits", None) == 4 and getattr(dst, "act_data_type", None) in _MXFP4_ALIASES:
+            dst.act_data_type = f"{dst.act_data_type}_rceil"
+        if hasattr(src, "global_name"):
+            dst.global_name = f"{src.global_name}{suffix}"
+
+    def _resolve_low_rank_dtype(self, fallback: torch.dtype) -> torch.dtype:
+        dtype = str(self.config.low_rank_dtype).lower()
+        if dtype in {"bf16", "bfloat16"}:
+            return torch.bfloat16
+        if dtype in {"fp16", "float16"}:
+            return torch.float16
+        if dtype in {"fp32", "float32"}:
+            return torch.float32
+        return fallback
+
+    @staticmethod
+    def _module_name(module: torch.nn.Module) -> str:
+        return str(getattr(module, "global_name", module.__class__.__name__))
+
+
+def _set_child_module(root: torch.nn.Module, name: str, module: torch.nn.Module) -> None:
+    parts = name.split(".")
+    parent = root
+    for part in parts[:-1]:
+        parent = (
+            parent[int(part)]
+            if part.isdigit() and isinstance(parent, (torch.nn.ModuleList, torch.nn.Sequential))
+            else getattr(parent, part)
+        )
+    leaf = parts[-1]
+    if leaf.isdigit() and isinstance(parent, (torch.nn.ModuleList, torch.nn.Sequential)):
+        parent[int(leaf)] = module
+    else:
+        setattr(parent, leaf, module)

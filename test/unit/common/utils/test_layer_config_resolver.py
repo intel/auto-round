@@ -1,0 +1,242 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from types import SimpleNamespace
+
+import pytest
+import torch
+import torch.nn as nn
+
+from auto_round.compressors.config_resolution import ResolvedScheme
+from auto_round.compressors.layer_config_resolver import (
+    extract_regex_config,
+    has_quantized_layer_outside_blocks,
+    resolve_layer_config,
+)
+from auto_round.schemes import QuantizationScheme
+
+
+def test_resolver_does_not_write_quantization_attributes_to_modules():
+    model = nn.Sequential(nn.Linear(32, 32))
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={"0": {}},
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+
+    assert "0" in resolved
+    assert not hasattr(model[0], "bits")
+
+
+def test_resolver_expands_checkpoint_layer_name_to_loaded_model_name(monkeypatch):
+    model = nn.Module()
+    model.model_side = nn.Linear(32, 32)
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+    monkeypatch.setattr(
+        "auto_round.utils.common.get_reverse_checkpoint_conversion_mapping",
+        lambda loaded_model: {r"model_side$": "checkpoint_side"},
+    )
+
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={"checkpoint_side": {"bits": 8}},
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+
+    assert resolved["model_side"]["bits"] == 8
+
+
+def test_extract_regex_config_keeps_pattern_separate_from_expanded_layers():
+    model = nn.Sequential(nn.Linear(32, 32))
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+
+    regex_config = extract_regex_config(
+        model=model,
+        scheme=scheme,
+        layer_config={"0": {"bits": 4}, "missing.*": {"bits": 16}},
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+
+    assert set(regex_config) == {"missing.*"}
+    assert regex_config["missing.*"]["bits"] == 16
+
+
+def test_has_quantized_layer_outside_blocks_is_derived_from_final_mapping():
+    assert has_quantized_layer_outside_blocks({"layer": {"bits": 4, "in_blocks": False}})
+    assert not has_quantized_layer_outside_blocks({"layer": {"bits": 16, "in_blocks": False}})
+
+
+def test_explicit_w8_asym_layer_config_entry_raises():
+    """An explicit 8-bit asymmetric entry can never be exported or served;
+    refuse it during layer-config resolution, before any quantization work."""
+    import pytest
+
+    model = nn.Sequential(nn.Linear(32, 32))
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(bits=4, sym=False, act_bits=16, act_data_type="float"))
+
+    with pytest.raises(ValueError, match="8-bit asymmetric"):
+        resolve_layer_config(
+            model=model,
+            scheme=scheme,
+            layer_config={"0": {"bits": 8, "sym": False, "data_type": "int"}},
+            supported_types=(nn.Linear,),
+            inner_supported_types=(),
+        )
+
+
+def test_inherited_w8_asym_layer_config_entry_pinned_symmetric():
+    """An 8-bit entry without an explicit sym only inherits the global asym;
+    pin it symmetric instead of failing the whole run (conservative default;
+    the llm_compressor format and AR_ALLOW_W8_ASYM are the escape hatches)."""
+    model = nn.Sequential(nn.Linear(32, 32))
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(bits=4, sym=False, act_bits=16, act_data_type="float"))
+
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={"0": {"bits": 8, "data_type": "int"}},
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+
+    assert resolved["0"]["sym"] is True
+
+
+def test_extract_regex_config_honors_format_allowance(monkeypatch):
+    """AutoScheme output can carry DP-selected W8-asym entries; extract_regex_config
+    (the post-scoring export-metadata pass) must keep them under llm_compressor and
+    still refuse them for native formats."""
+    import torch.nn as nn
+
+    from auto_round.compressors.config_resolution import ResolvedScheme
+    from auto_round.compressors.layer_config_resolver import extract_regex_config
+    from auto_round.schemes import QuantizationScheme
+
+    model = nn.Sequential(nn.Linear(32, 32))
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(bits=4, sym=False, act_bits=16, act_data_type="float"))
+    layer_config = {"0": {"bits": 8, "sym": False, "data_type": "int", "group_size": 32}}
+
+    # Regression: the post-scoring export-metadata pass must not refuse a
+    # DP-selected W8-asym entry when the export format serves it (this exact
+    # shape crashed AutoScheme + llm_compressor + --asym after scoring).
+    extract_regex_config(
+        model=model,
+        scheme=scheme,
+        layer_config=dict(layer_config),
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+        format="auto_round:llm_compressor",
+    )
+
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="8-bit asymmetric"):
+        extract_regex_config(
+            model=model,
+            scheme=scheme,
+            layer_config=dict(layer_config),
+            supported_types=(nn.Linear,),
+            inner_supported_types=(),
+            format="auto_round",
+        )
+
+    # the opt-in env exempts native formats too
+    monkeypatch.setenv("AR_ALLOW_W8_ASYM", "1")
+    extract_regex_config(
+        model=model,
+        scheme=scheme,
+        layer_config=dict(layer_config),
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+        format="auto_round",
+    )
+
+
+@pytest.mark.parametrize(
+    "model_type,expected_dtype",
+    [
+        ("nemotron_h_omni", torch.bfloat16),
+        ("nemotron_h", torch.float16),
+        ("nemotron_h_puzzle", torch.float16),
+        ("qwen3_moe", torch.float16),
+        ("nemotron", torch.float16),
+        ("nemotron_h_other", torch.float16),
+        (None, torch.float16),
+    ],
+)
+def test_mamba_scale_default_is_only_for_nemotron_h_omni(model_type, expected_dtype):
+    from auto_round.special_model_handler import get_predefined_layer_config
+
+    model = nn.Module()
+    model.config = SimpleNamespace(model_type=model_type)
+    model.mixer = nn.Module()
+    model.mixer.out_proj = nn.Linear(32, 32)
+    model.mixer.in_proj = nn.Linear(32, 32)
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={},
+        scale_dtype=torch.float16,
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+        quant_block_list=[["mixer"]],
+    )
+    assert resolved["mixer.out_proj"]["scale_dtype"] is expected_dtype
+    assert resolved["mixer.in_proj"]["scale_dtype"] is torch.float16
+    if expected_dtype is torch.float16:
+        assert get_predefined_layer_config(model) == {}
+
+
+def test_nemotron_h_omni_scale_default_respects_explicit_user_dtype():
+    model = nn.Module()
+    model.config = SimpleNamespace(model_type="nemotron_h_omni")
+    model.mixer = nn.Module()
+    model.mixer.out_proj = nn.Linear(32, 32)
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={".*mixer.out_proj$": {"scale_dtype": torch.float32}},
+        scale_dtype=torch.float16,
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+    assert resolved["mixer.out_proj"]["scale_dtype"] is torch.float32
+    assert resolved["mixer.out_proj"]["fixed_by_user"] is True
+
+
+def test_nemotron_h_omni_scale_default_is_not_marked_user_fixed():
+    model = nn.Module()
+    model.config = SimpleNamespace(model_type="nemotron_h_omni")
+    model.mixer = nn.Module()
+    model.mixer.out_proj = nn.Linear(32, 32)
+    scheme = ResolvedScheme.from_scheme(QuantizationScheme(act_bits=16, act_data_type="float"))
+    resolved = resolve_layer_config(
+        model=model,
+        scheme=scheme,
+        layer_config={},
+        scale_dtype=torch.float16,
+        supported_types=(nn.Linear,),
+        inner_supported_types=(),
+    )
+    assert resolved["mixer.out_proj"]["scale_dtype"] is torch.bfloat16
+    assert resolved["mixer.out_proj"]["fixed_by_user"] is False

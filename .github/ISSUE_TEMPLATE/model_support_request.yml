@@ -1,0 +1,105 @@
+name: Model Support Request
+description: Request support for a new model (similar to a feature request)
+title: "[Model]: "
+labels: ["Model Support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the model support request! Please provide the details below so we can evaluate and prioritize support in AutoRound.
+
+  - type: input
+    id: model-name
+    attributes:
+      label: Model name
+      description: Model family/name (e.g., Qwen2.5, Llama-3.x, Mistral, Gemma).
+      placeholder: "e.g., Qwen2.5"
+    validations:
+      required: true
+
+  - type: input
+    id: model-variant
+    attributes:
+      label: Model variant / size
+      description: Parameter size and variant (base/instruct), and any specific checkpoint tag.
+      placeholder: "e.g., 7B-Instruct / 14B-Base / 70B-Instruct"
+    validations:
+      required: true
+
+  - type: input
+    id: model-link
+    attributes:
+      label: Model link
+      description: Link to the model page (Hugging Face / GitHub / official download).
+      placeholder: "https://huggingface.co/..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: request-type
+    attributes:
+      label: What do you want AutoRound to support?
+      multiple: true
+      options:
+        - Quantization / rounding workflow support for this model
+        - Example scripts / notebooks for this model
+        - Accuracy evaluation / benchmark recipe
+        - Export / integration with an inference backend (please specify below)
+        - Other (please specify below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation & use case
+      description: Why is this model important for you? What are you trying to do?
+      placeholder: "Describe your use case, constraints, and expected outcomes."
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment (optional but helpful)
+      description: Provide relevant environment details if you already tried something.
+      placeholder: |
+        - OS:
+        - Python:
+        - PyTorch:
+        - Transformers:
+        - AutoRound version/commit:
+        - Hardware (CPU/GPU):
+    validations:
+      required: false
+
+  - type: textarea
+    id: blockers
+    attributes:
+      label: Current blockers / errors (if any)
+      description: Paste logs, error messages, or describe what failed.
+      placeholder: "What doesn't work today? Any stack traces or minimal repro?"
+    validations:
+      required: false
+
+  - type: textarea
+    id: definition-of-done
+    attributes:
+      label: Definition of Done (acceptance criteria)
+      description: What would “done” look like for this model request?
+      placeholder: |
+        - [ ] Quantization pipeline runs end-to-end on the model
+        - [ ] Documented usage in README/docs
+        - [ ] Example command/script provided
+        - [ ] Basic accuracy/perf validation recorded
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add any extra context, references, or related issues/PRs.
+      placeholder: "Links, screenshots, related repos/issues, etc."
+    validations:
+      required: false

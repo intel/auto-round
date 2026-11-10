@@ -1,0 +1,2352 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Model-free RTN quantization (class-based).
+
+This module performs weight-only quantization (WOQ) using RTN (Round-To-Nearest)
+**without** loading the full model into memory.  It reads safetensors files
+(from a Hugging Face repo or a local directory), quantizes eligible
+``nn.Linear`` weight tensors shard-by-shard, and writes the packed result to
+the output directory.
+
+The main entry point is the :class:`ModelFreeCompressor` class.
+
+Supported schemes
+-----------------
+Model-free mode supports the following quantization families:
+
+**Integer weight-only** (packed in ``auto_round:auto_gptq`` format, or QDQ
+weights with ``fake`` format):
+
+* Preset names: ``W2A16``, ``W2A16G32``, ``W2A16G64``, ``W4A16``,
+  ``W4A16_MIXED``, ``W8A16``.
+* Custom :class:`~auto_round.schemes.QuantizationScheme` instances with
+  ``data_type="int"``, ``bits in {2, 4, 8}``, ``act_bits >= 16``, and any
+  symmetric / asymmetric configuration.
+
+**MXFP (Microscaling Floating Point)** (packed in ``mxfp4-pack-quantized`` or
+``mxfp8-quantized`` format, compatible with llm-compressor / compressed-tensors):
+
+* Preset names: ``MXFP4``, ``MXFP8``.
+* ``data_type="mx_fp"``, ``group_size=32``, ``bits in {4, 8}``.
+* NVFP4 source checkpoints (detected from the model name or the source quantization config) with
+  scheme ``MXFP4``: only the NVFP4 layers are converted to MXFP4 (plus any layer matched by
+  ``layer_config``); every other layer is kept as-is.
+
+**NVFP4 E5M3** (``auto_round`` or ``fake`` format):
+
+* Preset name: ``NVFP4_E5M3``.
+* ``data_type="nvfp4_v2"``, ``group_size=16``, with high-precision QDQ weights.
+* Preset name: ``NVFP4_E5M3_GS`` (``data_type="nvfp4_v2_gs"``) adds a per-tensor weight global
+  scale; model-free mode writes ``input_global_scale=1``.
+
+Schemes that require special packing (FP8, standard NVFP4, GGUF, INT8_W8A8,
+BF16, FPW8A16, ...) are **not** supported in model-free mode and will raise
+``ValueError``.  Use the standard AutoRound flow for those.
+
+Output formats
+--------------
+* **INT schemes** → ``auto_round:auto_gptq`` packing format, ``quant_method="auto-round"``;
+    use ``fake`` for high-precision QDQ weights without quantization metadata.
+* **MXFP schemes** → ``mxfp4-pack-quantized`` or ``mxfp8-quantized`` format,
+  ``quant_method="compressed-tensors"``, compatible with vLLM / llm-compressor.
+* **NVFP4_E5M3** → AutoRound format with packed ``.weight_packed`` and
+    ``.weight_scale`` tensors; use ``format="fake"`` explicitly for high-precision
+    QDQ ``.weight`` tensors with metadata that restores runtime activation QDQ.
+
+Usage (CLI)
+-----------
+::
+
+    # Integer WOQ
+    auto_round facebook/opt-125m \\
+        --model_free \\
+        --scheme W4A16 \\
+        --output_dir int4-125m
+
+    # MXFP4
+    auto_round facebook/opt-125m \\
+        --model_free \\
+        --scheme MXFP4 \\
+        --output_dir mxfp4-125m
+
+Usage (API)
+-----------
+::
+
+    from auto_round import AutoRound
+
+    # Integer WOQ
+    AutoRound(
+        model="facebook/opt-125m",
+        scheme="W4A16",
+        model_free=True,
+    ).quantize_and_save("./int4-125m")
+
+    # MXFP4
+    AutoRound(
+        model="facebook/opt-125m",
+        scheme="MXFP4",
+        model_free=True,
+    ).quantize_and_save("./mxfp4-125m")
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import multiprocessing as mp
+import os
+import re
+import shutil
+import tempfile
+import time
+from collections import Counter
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
+from dataclasses import asdict, fields
+from typing import Any
+
+import torch
+from safetensors import safe_open
+
+from auto_round import envs
+from auto_round.compressors.config_resolution import thaw_mapping
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
+from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
+from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, compress_layer_names
+from auto_round.utils.device import clear_memory, memory_monitor
+from auto_round.utils.device_manager import default_enable_torch_compile
+from auto_round.utils.model_free_utils import (
+    _LM_HEAD_PATTERNS,
+    _NVFP_SOURCE_ONLY_KEY,
+    _apply_scheme_overrides,
+    _build_cross_shard_pairs_from_weight_map,
+    _build_quantization_config,
+    _compute_cross_shard_fused_global_scales,
+    _convert_auto_scheme_layer_config,
+    _download_metadata_files,
+    _download_single_shard,
+    _fused_nvfp4_projection_groups,
+    _get_model_cache_status,
+    _is_full_precision_default,
+    _is_weight_shard,
+    _layer_config_has_mxfp,
+    _layer_config_has_nvfp4,
+    _list_weight_shards,
+    _load_config,
+    _load_source_quant_config,
+    _load_weight_map_from_index,
+    _looks_like_auto_scheme,
+    _normalize_scheme,
+    _PatternMatcher,
+    _process_shard,
+    _resolve_source_dir,
+    _validate_auto_scheme_options,
+    _validate_safetensors_file,
+    _validate_supported_scheme,
+    _write_index_file,
+    _write_output_shard,
+    detect_model_dtypes,
+    handle_model_type_low_precision_source_tensors,
+    is_model_free_supported_scheme,
+    preprocess_model_type_source_tensors,
+)
+from auto_round.utils.path_safety import resolve_within_directory
+
+# Backward-compat aliases for internal/private helper names used in tests and
+# downstream imports.
+_preprocess_model_type_source_tensors = preprocess_model_type_source_tensors
+_handle_model_type_low_precision_source_tensors = handle_model_type_low_precision_source_tensors
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Preset schemes that model-free mode can produce.
+# INT presets use ``auto_round:auto_gptq`` packing; MXFP presets use
+# ``mxfp4-pack-quantized`` or ``mxfp8-quantized`` (compressed-tensors) packing.
+# BF16 acts as a full-precision default — all layers stay in BF16 unless
+# overridden by layer_config.
+#
+# Note: ``W3A16`` (3-bit) is intentionally excluded.  3-bit packing requires
+# in_features to be padded to a multiple of pack_factor=10, which the current
+# ``quantize_weight_rtn`` implementation does not handle correctly.
+SUPPORTED_PRESET_SCHEMES: tuple[str, ...] = (
+    "W2A16",
+    "W2A16G32",
+    "W2A16G64",
+    "W4A16",
+    "W4A16_MIXED",
+    "W8A16",
+    "MXFP4",
+    "MXFP8",
+    "NVFP4_E5M3",
+    "NVFP4_E5M3_GS",
+    "BF16",
+)
+
+# Allowed ``bits`` values for integer WOQ.
+# 3-bit is excluded — see note above.
+_SUPPORTED_INT_BITS: tuple[int, ...] = (2, 4, 8)
+
+# Allowed ``bits`` values for MXFP weight quantization.
+_SUPPORTED_MXFP_BITS: tuple[int, ...] = (4, 8)
+
+_NVFP4_E5M3_DATA_TYPE = "nvfp4_v2"
+_NVFP4_E5M3_GS_DATA_TYPE = "nvfp4_v2_gs"
+_NVFP4_E5M3_FAMILY_DATA_TYPES = (_NVFP4_E5M3_DATA_TYPE, _NVFP4_E5M3_GS_DATA_TYPE)
+
+# Standalone quantization metadata used by different source formats. Only the
+# newly generated quantization_config.json may remain in model-free output.
+_QUANTIZATION_CONFIG_FILENAMES: tuple[str, ...] = (
+    "quantization_config.json",
+    "quantize_config.json",
+    "quant_config.json",
+    "hf_quant_config.json",
+)
+
+_RESUME_MANIFEST_NAME = "model_free_resume.json"
+
+# Streaming downloads may run at most this many jobs ahead of the free quantizer slots.
+_STREAMING_LOOKAHEAD_JOBS = 3
+
+# Source tensors needed to compute the shared GS of a fused NVFP4 layer.
+_FUSED_GS_SOURCE_SUFFIXES = ("weight", "weight_scale_inv", "weight_scale")
+
+
+def _atomic_write_json(path: str, data: dict) -> None:
+    """Write JSON without leaving a partially-written resume manifest."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp_model_free_resume_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _find_quantization_config(config: Any) -> dict:
+    """Return the first quantization_config found in a nested model config."""
+    if isinstance(config, dict):
+        quantization_config = config.get("quantization_config")
+        if isinstance(quantization_config, dict):
+            return quantization_config
+        for value in config.values():
+            nested = _find_quantization_config(value)
+            if nested:
+                return nested
+    elif isinstance(config, list):
+        for value in config:
+            nested = _find_quantization_config(value)
+            if nested:
+                return nested
+    return {}
+
+
+def _remove_quantization_configs(config: Any) -> None:
+    """Remove every quantization_config entry from a nested model config."""
+    if isinstance(config, dict):
+        config.pop("quantization_config", None)
+        for value in config.values():
+            _remove_quantization_configs(value)
+    elif isinstance(config, list):
+        for value in config:
+            _remove_quantization_configs(value)
+
+
+def _is_stale_quantization_metadata(filename: str) -> bool:
+    return filename in _QUANTIZATION_CONFIG_FILENAMES or filename.lower() == "readme.md"
+
+
+# Multimodal keywords kept in full precision by default.
+_NONTEXT_KEYWORDS: tuple[str, ...] = VISION_MM_KEYS + AUDIO_MM_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Predefined ignore-layer rules
+# ---------------------------------------------------------------------------
+
+
+def get_predefined_ignore_layers_from_config(config: dict) -> list[str]:
+    """Return layers to ignore based on the model's config.json.
+
+    Delegates to the same rules registered via
+    :func:`~auto_round.special_model_handler.register_ignore_layers` by
+    wrapping the config dict in a lightweight pseudo-model object, so there
+    is no need to duplicate ignore-layer rule registrations here.
+    """
+    import types
+
+    from auto_round.special_model_handler import _PRE_DEFINED_IGNORE_LAYERS
+
+    # Build a pseudo-model whose .config attribute exposes the config fields.
+    cfg_ns = types.SimpleNamespace(**config)
+    wrapper = types.SimpleNamespace(config=cfg_ns)
+
+    layers: list[str] = []
+    for rule in _PRE_DEFINED_IGNORE_LAYERS:
+        if all(m(wrapper) for m in rule.matchers):
+            for ignore_layer in rule.ignore_layers:
+                if isinstance(ignore_layer, str):
+                    layers.append(ignore_layer)
+                else:
+                    # callable (e.g. get_glm_flash_ignore_layers)
+                    res = ignore_layer(wrapper)
+                    if isinstance(res, str):
+                        layers.append(res)
+                    elif isinstance(res, list):
+                        layers.extend(res)
+            # The first matching rule owns the model family.  Continuing to
+            # walk this global registry would leak rules registered by other
+            # integrations or tests into unrelated configs.
+            break
+
+    return list(dict.fromkeys(layers))
+
+
+# ---------------------------------------------------------------------------
+# I/O helpers (model resolution, shard discovery, downloads)
+# ---------------------------------------------------------------------------
+
+
+# Per-tensor / per-shard helpers
+# ---------------------------------------------------------------------------
+
+
+# Output writers
+# ---------------------------------------------------------------------------
+
+
+def _prefetch_shard(
+    model_name_or_path: str,
+    shard_name: str,
+    work_dir: str,
+    source_dir: str,
+    streaming: bool,
+    subfolder: str | None = None,
+) -> str | None:
+    """Return the local path of the next shard (download if needed)."""
+    try:
+        if streaming:
+            # Keep source shards in a dedicated cache directory to avoid
+            # colliding with quantized output shard names in output_dir.
+            shard_cache_dir = os.path.join(work_dir, ".cache", "model_free_source_shards")
+            if subfolder:
+                if os.path.isdir(model_name_or_path):
+                    model_name_or_path = os.path.join(model_name_or_path, subfolder)
+                else:
+                    local_path = str(resolve_within_directory(shard_cache_dir, shard_name, origin="shard list"))
+                    if os.path.isfile(local_path):
+                        try:
+                            _validate_safetensors_file(local_path)
+                        except Exception as exc:
+                            logger.warning(
+                                f"Cached shard '{shard_name}' at '{local_path}' is invalid ({exc}); fetching it again."
+                            )
+                            os.remove(local_path)
+                        else:
+                            return local_path
+                    remote_name = subfolder + "/" + shard_name
+                    path = _download_single_shard(model_name_or_path, remote_name, shard_cache_dir)
+                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                    shutil.move(path, local_path)
+                    return local_path
+            return _download_single_shard(model_name_or_path, shard_name, shard_cache_dir)
+        path = str(resolve_within_directory(source_dir, shard_name, origin="shard list"))
+        return path if os.path.exists(path) else None
+    except Exception as e:  # pragma: no cover
+        logger.warning(f"Prefetch failed for {shard_name}: {e}")
+        return None
+
+
+def _process_single_shard_task(
+    shard_idx: int,
+    shard_name: str,
+    *,
+    model_name_or_path: str,
+    work_dir: str,
+    source_dir: str,
+    is_streaming: bool,
+    device: str,
+    default_scheme: dict,
+    layer_config: dict,
+    ignore_patterns: list[str],
+    fp8_block_size: list | None,
+    model_type: str | None,
+    source_quantization_config: dict | None = None,
+    quant_output_dir: str,
+    total_shards: int,
+    enable_torch_compile: bool = False,
+    disable_opt_rtn: bool = False,
+    donor_tensors_to_exclude: list[str] | None = None,
+    fused_gs_groups: list[tuple[str, ...]] | None = None,
+    fused_gs_weight_map: dict[str, str] | None = None,
+) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
+    """Process one shard in an isolated subprocess task.
+
+    Each worker builds its own matcher/cache via ``_process_shard`` to avoid
+    cross-shard shared state.
+    """
+    shard_path = _prefetch_shard(
+        model_name_or_path,
+        shard_name,
+        work_dir,
+        source_dir,
+        is_streaming,
+    )
+    if shard_path is None or not os.path.exists(shard_path):
+        return shard_idx, shard_name, None, None, None, None, None
+
+    return _quantize_local_shard_task(
+        shard_idx,
+        shard_name,
+        shard_path=shard_path,
+        device=device,
+        default_scheme=default_scheme,
+        layer_config=layer_config,
+        ignore_patterns=ignore_patterns,
+        fp8_block_size=fp8_block_size,
+        model_type=model_type,
+        source_quantization_config=source_quantization_config,
+        quant_output_dir=quant_output_dir,
+        total_shards=total_shards,
+        enable_torch_compile=enable_torch_compile,
+        disable_opt_rtn=disable_opt_rtn,
+        cleanup_source_shard=is_streaming,
+        donor_tensors_to_exclude=donor_tensors_to_exclude,
+        fused_gs_groups=fused_gs_groups,
+        fused_gs_weight_map=fused_gs_weight_map,
+    )
+
+
+def _quantize_local_shard_task(
+    shard_idx: int,
+    shard_name: str,
+    *,
+    shard_path: str,
+    device: str,
+    default_scheme: dict,
+    layer_config: dict,
+    ignore_patterns: list[str],
+    fp8_block_size: list | None,
+    model_type: str | None,
+    source_quantization_config: dict | None,
+    quant_output_dir: str,
+    total_shards: int,
+    enable_torch_compile: bool = False,
+    disable_opt_rtn: bool = False,
+    cleanup_source_shard: bool = False,
+    donor_tensors_to_exclude: list[str] | None = None,
+    index_dir: str | None = None,
+    donor_shard_dir: str | None = None,
+    fused_gs_groups: list[tuple[str, ...]] | None = None,
+    fused_gs_weight_map: dict[str, str] | None = None,
+    precomputed_fused_global_scale_overrides: dict[str, float] | None = None,
+) -> tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None]:
+    """Quantize one already-downloaded shard and write the output shard.
+
+    ``fused_gs_groups`` are fused layers split across shards; all of their shards must be in
+    ``donor_shard_dir`` (or next to ``shard_path``) so the shared GS can be computed here.
+    Returns lightweight metadata only so IPC does not transfer tensor storages.
+    """
+    if shard_path is None or not os.path.exists(shard_path):
+        return shard_idx, shard_name, None, None, None, None, None
+
+    fused_global_scale_overrides = dict(precomputed_fused_global_scale_overrides or {})
+    if fused_gs_groups:
+        groups_to_compute = [
+            group for group in fused_gs_groups if not all(layer in fused_global_scale_overrides for layer in group)
+        ]
+        if groups_to_compute:
+            fused_global_scale_overrides.update(
+                _compute_cross_shard_fused_global_scales(
+                    groups_to_compute,
+                    fused_gs_weight_map or {},
+                    donor_shard_dir or os.path.dirname(shard_path),
+                    fp8_block_size=fp8_block_size,
+                    device=device,
+                )
+            )
+
+    output_tensors, quantized, ignored = _process_shard(
+        shard_path=shard_path,
+        shard_name=shard_name,
+        default_scheme=default_scheme,
+        layer_config=layer_config,
+        ignore_patterns=ignore_patterns,
+        device=device,
+        fp8_block_size=fp8_block_size,
+        model_type=model_type,
+        source_quantization_config=source_quantization_config,
+        enable_torch_compile=enable_torch_compile,
+        disable_opt_rtn=disable_opt_rtn,
+        index_dir=index_dir,
+        donor_shard_dir=donor_shard_dir,
+        donor_tensors_to_exclude=set(donor_tensors_to_exclude) if donor_tensors_to_exclude else None,
+        fused_global_scale_overrides=fused_global_scale_overrides,
+    )
+
+    out_shard_name = f"model-{shard_idx + 1:05d}-of-{total_shards:05d}.safetensors"
+    local_weight_map: dict[str, str] = {}
+    _write_output_shard(
+        quant_output_dir,
+        out_shard_name,
+        output_tensors,
+        local_weight_map,
+    )
+    tensor_names = list(local_weight_map.keys())
+    # Drop the packed tensors *before* reclaiming memory; otherwise the whole
+    # quantized shard (hundreds of MB) is still reachable and clear_memory()
+    # cannot return it to the allocator/OS.
+    output_tensors.clear()
+    del output_tensors
+    clear_memory()
+
+    if cleanup_source_shard:
+        try:
+            os.remove(shard_path)
+        except OSError:
+            pass
+
+    return shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored
+
+
+def _force_cleanup_process_pool(pool: ProcessPoolExecutor | None) -> None:
+    """Best-effort cleanup for process-pool workers.
+
+    On interruption (Ctrl+C / SIGTERM) or executor failures, worker processes
+    may survive briefly. This helper force-terminates workers before shutting
+    the executor down.
+    """
+    if pool is None:
+        return
+
+    # Accessing _processes is intentionally best-effort for robust cleanup.
+    # pylint: disable=protected-access
+    processes = getattr(pool, "_processes", None)
+    if isinstance(processes, dict):
+        for proc in processes.values():
+            if proc is not None and proc.is_alive():
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Scheme validation
+# ---------------------------------------------------------------------------
+
+
+# Main class
+# ---------------------------------------------------------------------------
+
+
+class _ModelFreeCompressorCore:
+    """Class-based driver for model-free RTN quantization.
+
+    The lifecycle is:
+
+    1. ``__init__`` — store user inputs.
+    2. :meth:`run` — perform validation, IO, quantization and writing.
+
+    Internal helpers are split into focused methods so that the flow is
+    readable end-to-end.
+
+    Args:
+        model_name_or_path: HuggingFace model ID or local directory path.
+        output_dir: Directory to save the quantized model.
+        scheme: Quantization scheme name (e.g. ``"W4A16"``, ``"MXFP4"``,
+            ``"MXFP8"``) or a :class:`QuantizationScheme` instance.
+        layer_config: Per-layer quantization overrides.  Keys are layer
+            names or regex patterns; values are dicts with ``bits``,
+            ``group_size``, ``sym`` etc.
+        ignore_layers: Comma-separated list of layer name patterns to keep
+            in full precision.  Ignored layers that are already quantized
+            (e.g. FP8) are preserved in their original format.
+        format: Output format.  Supported: ``"auto_round"``,
+            ``"auto_round:auto_gptq"``, ``"llm_compressor"``,
+            ``"auto_round:llm_compressor"``.  The packing format is
+            auto-selected based on the scheme (INT→auto_gptq,
+            MXFP→compressed-tensors).
+        device: Device for quantization computation (``"cpu"`` or
+            ``"cuda"``).
+        quant_lm_head: If True, quantize ``lm_head`` as well.  By default
+            ``lm_head`` and any layer containing ``embed`` are kept in
+            full precision.
+        quant_nontext_module: If True, quantize non-text modules
+            (vision/audio/image) as well.  By default these multimodal
+            modules are kept in full precision.
+    """
+
+    SUPPORTED_FORMATS: tuple[str, ...] = (
+        "fake",
+        "auto_round",
+        "auto_round:auto_gptq",
+        "llm_compressor",
+        "auto_round:llm_compressor",
+    )
+
+    def __init__(
+        self,
+        model_name_or_path: str,
+        output_dir: str,
+        scheme: str | QuantizationScheme = "W4A16",
+        layer_config: dict | None = None,
+        ignore_layers: str = "",
+        format: str | None = None,
+        device: str = "cpu",
+        quant_lm_head: bool = False,
+        quant_nontext_module: bool = False,
+        enable_torch_compile: bool | None = None,
+        disable_opt_rtn: bool = False,
+    ) -> None:
+        # --- raw inputs ---
+        self.model_name_or_path = model_name_or_path
+        self.output_dir = output_dir
+        self.scheme_input = scheme
+        # Set by _detect_nvfp4_source_model(): convert only the NVFP4 source layers to MXFP4.
+        self.nvfp_source_only = False
+        self.layer_config_input = layer_config
+        self.ignore_layers_input = ignore_layers
+        self.format = format or "auto_round"
+        # Whether the caller explicitly requested an output format at construction.
+        # Only an explicit request may be forwarded to the fallback compressor: the
+        # fallback consumes the quantize_and_save(format=...) argument only while
+        # its formats are still unset, so forwarding the implicit "auto_round"
+        # default would silently pin every fallback export to the native format
+        # (overriding e.g. save-time "gguf:q*_1" or "llm_compressor").
+        self._format_explicit = format is not None
+        self.device = device
+        self.quant_lm_head = quant_lm_head
+        self.quant_nontext_module = quant_nontext_module
+        # Keep default torch.compile policy consistent with standard compressor
+        # behavior, while still honoring explicit user overrides.
+        if enable_torch_compile is None:
+            self.enable_torch_compile = default_enable_torch_compile(self.device)
+            logger.info(
+                "`torch.compile` is %s (default policy)",
+                "enabled" if self.enable_torch_compile else "disabled",
+            )
+        else:
+            self.enable_torch_compile = enable_torch_compile
+            logger.info("`torch.compile` is %s", "enabled" if enable_torch_compile else "disabled")
+        self.disable_opt_rtn = disable_opt_rtn
+
+        # --- derived state populated during run() ---
+        self.scheme_obj: QuantizationScheme | None = None
+        self.default_scheme: dict = {}
+        self.layer_config: dict = {}
+        self.ignore_patterns: list[str] = []
+        self.config: dict = {}
+        self.source_quantization_config: dict = {}
+        self.fp8_block_size: list | None = None
+        self.model_type: str = ""
+        self.is_streaming: bool = False
+        self.is_diffusion_model: bool = False
+        self.diffusion_root_dir: str = ""
+        self.diffusion_component = "transformer"
+        self._resolved_diffusion_source = None
+        self.work_dir: str = ""
+        self.source_dir: str = ""
+        self.shard_names: list[str] = []
+        self.all_quantized_layers: list[str] = []
+        self.all_ignored_layers: list[str] = []
+        self.output_weight_map: dict[str, str] = {}
+        self.shard_parallelism: int = 1
+        # Cross-shard FP8 scale_inv dependency maps built from index.json.
+        # cross_shard_deps: {recipient_shard: {donor_shard: [scale_inv_names]}}
+        # donor_shard_tensors: {donor_shard: set(scale_inv names it donates)}
+        self.cross_shard_deps: dict[str, dict[str, list[str]]] = {}
+        self.donor_shard_tensors: dict[str, set[str]] = {}
+        self.source_weight_map: dict[str, str] = {}
+        # Fused NVFP4 GS groups split across shards, keyed by every shard holding one of their weights.
+        self._fused_gs_groups_by_shard: dict[str, list[tuple[str, ...]]] = {}
+        self._fused_gs_weight_map: dict[str, str] = {}
+        self._resume_parameters: dict = {}
+        self._resume_processed_shards: dict[str, dict] = {}
+
+    # -------------------------------------------------------------------
+    # Validation / parsing
+    # -------------------------------------------------------------------
+
+    def _validate_format(self) -> None:
+        format_lower = self.format.lower().replace(" ", "").split(",")[0]
+        if format_lower not in self.SUPPORTED_FORMATS:
+            raise ValueError(
+                f"Model-free mode only supports {self.SUPPORTED_FORMATS} format, "
+                f"got '{self.format}'. Please use --format auto_round."
+            )
+
+    def _parse_scheme(self) -> None:
+        scheme_in = self.scheme_input
+        scheme_overrides = getattr(self, "user_scheme_overrides", None)
+        if scheme_overrides:
+            scheme_in = _apply_scheme_overrides(scheme_in, scheme_overrides)
+        if isinstance(scheme_in, str) and scheme_in.upper() == "W4A16_MIXED":
+            # Match regular-flow mixed recipe behavior in model-free mode:
+            # default non-expert linear layers use 8-bit; expert overrides are
+            # injected in _parse_layer_config.
+            self.scheme_obj = _normalize_scheme("W8A16")
+        else:
+            self.scheme_obj = _normalize_scheme(scheme_in)
+        _validate_supported_scheme(self.scheme_obj, self.scheme_input)
+        ds = asdict(self.scheme_obj)
+        self.default_scheme = {k: v for k, v in ds.items() if v is not None}
+        self.default_scheme["_output_format"] = self.format
+
+    def _detect_nvfp4_source_model(self) -> None:
+        """With an MXFP4 scheme on an NVFP4 source, convert only the NVFP4 layers (plus layer_config matches)."""
+        data_type = (self.scheme_obj.data_type or "").lower()
+        if not (is_mx_fp(data_type) and self.scheme_obj.bits == 4):
+            return
+        reason = detect_model_dtypes(
+            self.model_name_or_path,
+            _load_source_quant_config(
+                self.work_dir if self.is_streaming else self.source_dir, self.source_quantization_config
+            ),
+        ).get("nvfp4")
+        if reason is None:
+            return
+        format_lower = self.format.lower().replace(" ", "").split(",")[0]
+        if format_lower not in ("llm_compressor", "auto_round:llm_compressor"):
+            raise ValueError(
+                f"Detected an NVFP4 source model ({reason}); converting its NVFP4 layers to MXFP4 "
+                f"currently only supports format 'llm_compressor', got '{self.format}'."
+            )
+        logger.warning(
+            f"Detected NVFP4 layers in the source model ({reason}). Only the NVFP4 layers will be quantized "
+            "to MXFP4; all other layers (BF16, FP8, ...) are kept as-is. To quantize additional layers, "
+            "set them explicitly via layer_config."
+        )
+        self.nvfp_source_only = True
+        self.default_scheme[_NVFP_SOURCE_ONLY_KEY] = True
+
+    def _parse_layer_config(self) -> None:
+        lc = copy.deepcopy(self.layer_config_input) if self.layer_config_input else {}
+
+        if isinstance(self.scheme_input, str) and self.scheme_input.upper() == "W4A16_MIXED":
+            # Keep shared experts at 8-bit while routing experts to 4-bit.
+            # User-provided layer_config entries (if any) still take priority.
+            if "shared_expert" not in lc:
+                lc[".shared_expert."] = {"bits": 8, "data_type": "int"}
+            if "expert" not in lc:
+                lc[".experts."] = {"bits": 4, "data_type": "int"}
+                lc[".moe."] = {"bits": 4, "data_type": "int"}
+
+        # Append '.' only for keys ending with ".<digits>" to avoid partial
+        # numeric matches (e.g. layer.1 should not match layer.10).
+        # Keep plain names like "fc2" untouched.
+        for key in list(lc.keys()):
+            if re.search(r"\.\d+$", key):
+                lc[key + "."] = lc.pop(key)
+
+        # Normalize values to dicts.
+        for key, val in list(lc.items()):
+            if isinstance(val, str):
+                parsed = asdict(preset_name_to_scheme(val.upper()))
+                lc[key] = {k: v for k, v in parsed.items() if v is not None}
+            elif isinstance(val, QuantizationScheme):
+                lc[key] = {k: v for k, v in asdict(val).items() if v is not None}
+            elif isinstance(val, dict):
+                # Resolve 'scheme' key inside dict values, e.g. {'scheme': 'W2A16'}
+                if "scheme" in val:
+                    scheme_val = val.pop("scheme")
+                    if isinstance(scheme_val, str):
+                        parsed = asdict(preset_name_to_scheme(scheme_val.upper()))
+                        resolved = {k: v for k, v in parsed.items() if v is not None}
+                    elif isinstance(scheme_val, QuantizationScheme):
+                        resolved = {k: v for k, v in asdict(scheme_val).items() if v is not None}
+                    else:
+                        resolved = {}
+                    # Explicit keys in val override the resolved scheme values
+                    resolved.update(val)
+                    lc[key] = resolved
+            else:
+                raise TypeError(f"Unsupported layer_config value type for '{key}': {type(val)}")
+
+        self.layer_config = lc
+
+    def _build_ignore_patterns(self) -> None:
+        ignore_patterns: list[str] = []
+        if self.ignore_layers_input:
+            ignore_patterns = [p.strip() for p in self.ignore_layers_input.replace(" ", "").split(",") if p.strip()]
+            ignore_patterns = [p + "." if re.search(r"\.\d+$", p) else p for p in ignore_patterns]
+
+        if not self.quant_lm_head:
+            layer_config_keys = set(self.layer_config or {})
+            # Skip each known lm_head name variant unless the user has explicitly listed it in layer_config.
+            # Each pattern is checked independently so a user-specified key takes priority over the default.
+            for lm_head_pattern in _LM_HEAD_PATTERNS:
+                pattern_in_config = any(
+                    key == lm_head_pattern or key.startswith(lm_head_pattern + ".") for key in layer_config_keys
+                )
+                if not pattern_in_config and lm_head_pattern not in ignore_patterns:
+                    ignore_patterns.append(lm_head_pattern)
+
+        if not self.quant_nontext_module:
+            for kw in _NONTEXT_KEYWORDS:
+                if kw not in ignore_patterns:
+                    ignore_patterns.append(kw)
+
+        self.ignore_patterns = ignore_patterns
+
+    # -------------------------------------------------------------------
+    # Source resolution and discovery
+    # -------------------------------------------------------------------
+
+    def _resolve_source(self) -> None:
+        if self._resolved_diffusion_source is not None:
+            self.diffusion_root_dir, self.is_streaming = self._resolved_diffusion_source
+            self.is_diffusion_model = True
+            component_dir = os.path.join(self.diffusion_root_dir, self.diffusion_component)
+            if self.is_streaming:
+                self.work_dir = component_dir
+            else:
+                self.source_dir = component_dir
+            self.config = _load_config(component_dir)
+            self.source_quantization_config = copy.deepcopy(_find_quantization_config(self.config))
+            return
+        os.makedirs(self.output_dir, exist_ok=True)
+        cached, cache_reason = _get_model_cache_status(self.model_name_or_path)
+        self.is_streaming = not cached
+        logger.info(
+            "Model-free source decision: %s (%s)",
+            "streaming" if self.is_streaming else "local/snapshot",
+            cache_reason,
+        )
+        if self.is_streaming:
+            logger.info(
+                "Path selected: streaming mode. Will download metadata first "
+                "(snapshot_download with weight ignore patterns), then fetch "
+                "weight shards on demand (hf_hub_download)."
+            )
+            self.work_dir = os.path.join(self.output_dir, ".cache", "model_free_metadata")
+            _download_metadata_files(self.model_name_or_path, self.work_dir)
+            transformer_work_dir = os.path.join(self.work_dir, "transformer")
+            if (
+                not os.path.exists(os.path.join(self.work_dir, "config.json"))
+                and os.path.isdir(transformer_work_dir)
+                and os.path.exists(os.path.join(transformer_work_dir, "config.json"))
+            ):
+                self.is_diffusion_model = True
+                self.diffusion_root_dir = self.work_dir
+                self.work_dir = transformer_work_dir
+                logger.info(
+                    "Detected diffusion model (no root config.json, found transformer/ subfolder). "
+                    "All transformer components will be quantized; other sub-components are copied."
+                )
+            self.config = _load_config(self.work_dir)
+        else:
+            if os.path.isdir(self.model_name_or_path):
+                logger.info("Path selected: local directory mode. Reading shards from local path.")
+            else:
+                logger.info("Path selected: snapshot/local-cache mode. Resolving source dir via snapshot_download.")
+            self.source_dir = _resolve_source_dir(self.model_name_or_path)
+            transformer_source_dir = os.path.join(self.source_dir, "transformer")
+            if (
+                not os.path.exists(os.path.join(self.source_dir, "config.json"))
+                and os.path.isdir(transformer_source_dir)
+                and os.path.exists(os.path.join(transformer_source_dir, "config.json"))
+            ):
+                self.is_diffusion_model = True
+                self.diffusion_root_dir = self.source_dir
+                self.source_dir = transformer_source_dir
+                logger.info(
+                    "Detected diffusion model (no root config.json, found transformer/ subfolder). "
+                    "All transformer components will be quantized; other sub-components are copied."
+                )
+            self.config = _load_config(self.source_dir)
+
+        self.source_quantization_config = copy.deepcopy(_find_quantization_config(self.config))
+
+    def _check_conv1d_and_embedding(self) -> None:
+        """Detect Conv1d and embedding layers and automatically add them to the ignore list."""
+        local_dir = self.work_dir if self.is_streaming else self.source_dir
+        if not local_dir or not os.path.isdir(local_dir):
+            return
+
+        try:
+            from auto_round.utils.model import find_layers_from_config
+
+            incompatible = find_layers_from_config(local_dir, class_names=["Embedding", "Conv1d", "Conv1D"])
+
+            if incompatible:
+                # Group by class for a cleaner warning message
+                incompatible_layers = []
+                for layers in incompatible.values():
+                    incompatible_layers.extend(layers)
+                summary = ", ".join(f"{cls}({len(layers)})" for cls, layers in sorted(incompatible.items()))
+                self.ignore_patterns.extend(incompatible_layers)
+                logger.warning(
+                    f"Detected {len(incompatible)} layer(s) incompatible with model-free RTN"
+                    f": {compress_layer_names(incompatible_layers)}.\n"
+                    f"These layers have been automatically added to ignore_layers "
+                    f"and will be kept in full precision.\n"
+                    f"To override, pass --ignore_layers explicitly or disable "
+                    f"model-free mode (--disable_model_free)."
+                )
+
+        except Exception as exc:
+            logger.warning(
+                f"Could not check model architecture for incompatible layers: {exc}.\n"
+                f"Models with Embedding or Conv1d layers may be incorrectly quantized "
+                f"in model-free mode (non-2D weights cannot be packed by the RTN kernel).\n"
+                f"If affected, either disable model-free mode (remove --model_free) or "
+                f"add those layers to --ignore_layers."
+            )
+
+    def _apply_predefined_ignore_layers(self) -> None:
+        predefined = get_predefined_ignore_layers_from_config(self.config)
+        if predefined:
+            logger.info(f"Using predefined ignore_layers from config: " f"{compress_layer_names(predefined)}")
+            self.ignore_patterns.extend(predefined)
+
+    def _detect_fp8_source(self) -> None:
+        quant_config = self.source_quantization_config
+        if "fp8" in detect_model_dtypes(self.model_name_or_path, quant_config):
+            self.fp8_block_size = quant_config.get("weight_block_size")
+            logger.info(
+                f"Detected FP8 source model (block_size={self.fp8_block_size}, "
+                f"scale_fmt={quant_config.get('scale_fmt', 'N/A')}). "
+                f"FP8 weights will be dequantized before quantization."
+            )
+
+    def _resolve_model_type(self) -> None:
+        """Resolve and log model_type for model-specific preprocessing hooks."""
+        self.model_type = str(self.config.get("model_type", "")).lower()
+        if self.model_type:
+            logger.info(f"Detected source model_type='{self.model_type}'.")
+
+        from auto_round.utils import expand_layer_config_for_weight_renames
+
+        self.layer_config = expand_layer_config_for_weight_renames(
+            self.layer_config,
+            model_type=self.model_type,
+            to_model_names=False,
+        )
+
+    def _discover_shards(self) -> None:
+        search_dir = self.work_dir if self.is_streaming else self.source_dir
+        # Source indices live in the isolated metadata cache; never infer streamed
+        # source names from output shards, or include remote files outside the index.
+        has_source_index = any(
+            name.endswith((".safetensors.index.json", ".bin.index.json")) for name in os.listdir(search_dir)
+        )
+        self.shard_names = _list_weight_shards(search_dir) if not self.is_streaming or has_source_index else []
+        if self.is_streaming and not has_source_index:
+            from auto_round.utils.model_free_utils import _list_remote_weight_shards
+
+            subfolder = self.diffusion_component if self.is_diffusion_model else None
+            self.shard_names = _list_remote_weight_shards(self.model_name_or_path, subfolder=subfolder)
+            if subfolder:
+                prefix = subfolder + "/"
+                self.shard_names = [name.removeprefix(prefix) for name in self.shard_names]
+        if not self.shard_names:
+            raise FileNotFoundError(f"No safetensors or PyTorch weight files found for {self.model_name_or_path}")
+
+    def _build_cross_shard_deps(self) -> None:
+        """Build cross-shard FP8 scale_inv dependency map from index.json.
+
+        Identifies triples (recipient_shard, donor_shard, scale_inv_tensor) by
+        comparing ``.weight`` and ``.weight_scale_inv`` entries in weight_map.
+        Stored in ``self.cross_shard_deps`` and ``self.donor_shard_tensors`` for
+        use by the shard scheduler and quantization workers.
+        """
+        search_dir = self.work_dir if self.is_streaming else self.source_dir
+        # Find the first *.safetensors.index.json in search_dir.
+        index_path: str | None = None
+        st_std = os.path.join(search_dir, "model.safetensors.index.json")
+        if os.path.exists(st_std):
+            index_path = st_std
+        else:
+            candidates = sorted(
+                os.path.join(search_dir, f) for f in os.listdir(search_dir) if f.endswith(".safetensors.index.json")
+            )
+            if candidates:
+                index_path = candidates[0]
+
+        if not index_path:
+            self.cross_shard_deps = {}
+            self.donor_shard_tensors = {}
+            return
+
+        try:
+            weight_map = _load_weight_map_from_index(index_path)
+        except Exception as e:
+            logger.warning(f"Could not load weight_map for cross-shard dep analysis: {e}")
+            self.source_weight_map = {}
+            self.cross_shard_deps = {}
+            self.donor_shard_tensors = {}
+            return
+
+        self.source_weight_map = weight_map
+        self.cross_shard_deps, self.donor_shard_tensors = _build_cross_shard_pairs_from_weight_map(weight_map)
+        if self.cross_shard_deps:
+            n_pairs = sum(len(t) for donors in self.cross_shard_deps.values() for t in donors.values())
+            logger.info(
+                f"Cross-shard scale dependencies: {n_pairs} scale tensor(s), "
+                f"{len(self.cross_shard_deps)} recipient shard(s), "
+                f"{len(self.donor_shard_tensors)} donor shard(s)."
+            )
+
+    def _prepare_fused_gs_groups(self) -> None:
+        """Find fused NVFP4 GS groups split across shards; workers compute their shared GS."""
+        self._fused_gs_groups_by_shard = {}
+        self._fused_gs_weight_map = {}
+        if not envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE or not self.source_weight_map:
+            return
+
+        matcher = _PatternMatcher(self.ignore_patterns, self.layer_config, self.default_scheme)
+        for group in _fused_nvfp4_projection_groups(self.source_weight_map, matcher):
+            weight_shards = {self.source_weight_map[f"{layer}.weight"] for layer in group}
+            if len(weight_shards) < 2:
+                continue
+            for shard in weight_shards:
+                self._fused_gs_groups_by_shard.setdefault(shard, []).append(group)
+            for layer in group:
+                for suffix in _FUSED_GS_SOURCE_SUFFIXES:
+                    tensor_name = f"{layer}.{suffix}"
+                    if tensor_name in self.source_weight_map:
+                        self._fused_gs_weight_map[tensor_name] = self.source_weight_map[tensor_name]
+
+    def _reorder_shards_by_dependency(self) -> None:
+        """Reorder shard_names via topological sort so donors precede recipients.
+
+        A single-pass "donors first, recipients last" partition is not enough:
+        a shard can simultaneously be a *recipient* (it needs a scale_inv from
+        another shard) and a *donor* (it donates a scale_inv to a third shard).
+        Such transitive chains (X donates to Y, Y donates to Z) must be
+        resolved with a proper topological sort, otherwise Y could still be
+        scheduled after Z, i.e. after one of its own dependents.
+
+        Ties are broken by original shard order (stable) so scheduling stays
+        as close as possible to the natural shard sequence. This ensures:
+        - Non-streaming: workers start on shards that need no cross-shard data.
+        - Streaming: donor shards are downloaded before recipient shards, so the
+          donor cache files are available when recipient workers run hydration.
+        """
+        if not self.cross_shard_deps:
+            return
+
+        original_index = {name: i for i, name in enumerate(self.shard_names)}
+        # recipient -> set(donors it depends on)
+        depends_on: dict[str, set[str]] = {
+            recipient: set(donors) for recipient, donors in self.cross_shard_deps.items()
+        }
+        # in-degree = number of unresolved donor dependencies for each shard.
+        in_degree: dict[str, int] = {name: len(depends_on.get(name, ())) for name in self.shard_names}
+        # donor -> shards that depend on it (only counting donors that are
+        # themselves known shards; unknown donors can't be waited on anyway).
+        dependents: dict[str, list[str]] = {}
+        for recipient, donors in depends_on.items():
+            for donor in donors:
+                if donor in original_index:
+                    dependents.setdefault(donor, []).append(recipient)
+                elif recipient in in_degree:
+                    # Donor shard is unknown/missing from discovery; it can
+                    # never be satisfied here, so don't block scheduling on it.
+                    in_degree[recipient] -= 1
+
+        import heapq
+
+        ready = [original_index[name] for name, deg in in_degree.items() if deg == 0]
+        heapq.heapify(ready)
+        ordered: list[str] = []
+        visited: set[str] = set()
+        index_to_name = {i: name for name, i in original_index.items()}
+
+        while ready:
+            idx = heapq.heappop(ready)
+            name = index_to_name[idx]
+            if name in visited:
+                continue
+            visited.add(name)
+            ordered.append(name)
+            for dependent in dependents.get(name, ()):
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    heapq.heappush(ready, original_index[dependent])
+
+        if len(ordered) != len(self.shard_names):
+            # Cycle detected (shouldn't happen with well-formed indices) —
+            # fall back to appending any unresolved shards in original order.
+            remaining = [name for name in self.shard_names if name not in visited]
+            logger.warning(
+                f"Shard dependency graph has a cycle or unresolved node(s) "
+                f"({len(remaining)} shard(s)); appending them in original order."
+            )
+            ordered.extend(remaining)
+
+        n_recipients = len(self.cross_shard_deps)
+        if n_recipients:
+            logger.info(
+                f"Shard scheduling: topologically sorted {len(self.shard_names)} shard(s) "
+                f"({n_recipients} recipient shard(s) with cross-shard dependencies)."
+            )
+        self.shard_names = ordered
+
+    def _resolve_shard_parallelism(self) -> tuple[int, str]:
+        shard_count = len(self.shard_names)
+        # Auto policy: shard_count // 4, capped at 10, minimum 1.
+        default_parallelism = max(1, min(shard_count // 4, 10))
+        env_name = "AR_MODEL_FREE_SHARD_PARALLELISM"
+        if not envs.is_set(env_name):
+            return min(default_parallelism, shard_count or 1), f"auto(default={default_parallelism})"
+
+        try:
+            configured = envs.AR_MODEL_FREE_SHARD_PARALLELISM
+        except ValueError as e:
+            logger.warning(f"{e}; using auto default {default_parallelism}.")
+            raw_value = os.environ.get(env_name, "")
+            return min(default_parallelism, shard_count or 1), f"invalid({raw_value!r})"
+
+        if configured is None:
+            return min(default_parallelism, shard_count or 1), f"auto(default={default_parallelism})"
+
+        effective = min(configured, shard_count or 1)
+        return effective, f"env={configured}"
+
+    @property
+    def _quant_output_dir(self) -> str:
+        """Effective output directory for quantized weight shards and config.
+
+        For diffusion models each quantized transformer component is written
+        to its own subdirectory; for all other models the top-level
+        ``output_dir`` is used directly.
+        """
+        if self.is_diffusion_model:
+            return os.path.join(self.output_dir, self.diffusion_component)
+        return self.output_dir
+
+    # -------------------------------------------------------------------
+    # Shard processing pipeline
+    # -------------------------------------------------------------------
+
+    @property
+    def _resume_manifest_path(self) -> str:
+        return os.path.join(self._quant_output_dir, ".cache", _RESUME_MANIFEST_NAME)
+
+    def _build_resume_parameters(self) -> dict:
+        """Return the effective command inputs that determine shard output."""
+        source_dir = self.work_dir if self.is_streaming else self.source_dir
+        index_files = sorted(
+            filename
+            for filename in os.listdir(source_dir)
+            if filename.endswith((".safetensors.index.json", ".bin.index.json"))
+        )
+        source_index = []
+        for filename in index_files:
+            with open(os.path.join(source_dir, filename), "rb") as index_file:
+                source_index.append({"name": filename, "sha256": hashlib.file_digest(index_file, "sha256").hexdigest()})
+        source_revision = None
+        if not os.path.isdir(self.model_name_or_path):
+            try:
+                from huggingface_hub import HfApi
+
+                source_revision = HfApi().model_info(self.model_name_or_path).sha
+            except Exception as exc:
+                logger.warning(f"Could not verify Hugging Face source revision; resume will not reuse output: {exc}")
+
+        parameters = {
+            "model_name_or_path": (
+                os.path.realpath(self.model_name_or_path)
+                if os.path.isdir(self.model_name_or_path)
+                else self.model_name_or_path
+            ),
+            # Shard names and index content remain stable when a streaming
+            # Hugging Face source becomes fully cached between retries.
+            "source_shards": self.shard_names,
+            "source_index": source_index,
+            "source_revision": source_revision,
+            "default_scheme": self.default_scheme,
+            "layer_config": self.layer_config,
+            "ignore_patterns": self.ignore_patterns,
+            "format": self.format,
+            "device": self.device,
+            "quant_lm_head": self.quant_lm_head,
+            "quant_nontext_module": self.quant_nontext_module,
+            "enable_torch_compile": self.enable_torch_compile,
+            "disable_opt_rtn": self.disable_opt_rtn,
+            "model_type": self.model_type,
+            "source_quantization_config": self.source_quantization_config,
+            "fused_global_scale_enabled": envs.AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE,
+            "fused_global_scale_policy": 1,
+        }
+        return json.loads(json.dumps(parameters, sort_keys=True, default=str))
+
+    def _resume_record_is_valid(self, record: Any) -> bool:
+        """Check that a completed shard is present, readable, and unchanged."""
+        if not isinstance(record, dict):
+            return False
+        out_shard_name = record.get("output_file")
+        tensor_names = record.get("tensor_names")
+        if not isinstance(out_shard_name, str) or not isinstance(tensor_names, list):
+            return False
+        shard_path = os.path.join(self._quant_output_dir, out_shard_name)
+        if not os.path.exists(shard_path) and len(self.shard_names) == 1:
+            shard_path = os.path.join(self._quant_output_dir, "model.safetensors")
+        try:
+            with safe_open(shard_path, framework="pt") as shard:
+                return set(shard.keys()) == set(tensor_names)
+        except Exception:
+            return False
+
+    def _write_resume_manifest(self) -> None:
+        processed = self._resume_processed_shards
+        pending = [name for name in self.shard_names if name not in processed]
+        _atomic_write_json(
+            self._resume_manifest_path,
+            {
+                "version": 1,
+                "parameters": self._resume_parameters,
+                "pending_files": pending,
+                "processed_files": processed,
+            },
+        )
+
+    def _prepare_resume_state(self) -> None:
+        """Load only output shards proven to belong to this exact command."""
+        self._resume_parameters = self._build_resume_parameters()
+        manifest = None
+        try:
+            with open(self._resume_manifest_path) as f:
+                manifest = json.load(f)
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            logger.warning(f"Could not read model-free resume state: {exc}; starting from the first shard.")
+
+        source_is_verifiable = (
+            os.path.isdir(self.model_name_or_path) or self._resume_parameters["source_revision"] is not None
+        )
+        if (
+            manifest
+            and source_is_verifiable
+            and manifest.get("version") == 1
+            and manifest.get("parameters") == self._resume_parameters
+        ):
+            cached_processed = manifest.get("processed_files", {})
+            if isinstance(cached_processed, dict):
+                for shard_name in self.shard_names:
+                    record = cached_processed.get(shard_name)
+                    if record is None:
+                        continue
+                    if not self._resume_record_is_valid(record):
+                        logger.warning(f"Cached output for {shard_name} is missing or invalid; processing it again.")
+                        continue
+                    self._resume_processed_shards[shard_name] = record
+                    self.all_quantized_layers.extend(record.get("quantized_layers", []))
+                    self.all_ignored_layers.extend(record.get("ignored_layers", []))
+                    for tensor_name in record["tensor_names"]:
+                        self.output_weight_map[tensor_name] = record["output_file"]
+        elif manifest:
+            logger.info(
+                "Model-free resume state cannot be verified against current command parameters; starting fresh."
+            )
+            if self.is_streaming:
+                cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+                shutil.rmtree(cache_dir, ignore_errors=True)
+
+        pending = [name for name in self.shard_names if name not in self._resume_processed_shards]
+        if self._resume_processed_shards:
+            logger.info(
+                f"Model-free resume: skipping {len(self._resume_processed_shards)}/{len(self.shard_names)} "
+                "validated output shard(s)."
+            )
+        self._write_resume_manifest()
+
+    def _mark_shard_completed(
+        self,
+        shard_name: str,
+        out_shard_name: str,
+        tensor_names: list[str],
+        quantized: list[str],
+        ignored: list[str],
+    ) -> None:
+        self._resume_processed_shards[shard_name] = {
+            "output_file": out_shard_name,
+            "tensor_names": tensor_names,
+            "quantized_layers": quantized,
+            "ignored_layers": ignored,
+        }
+        self._write_resume_manifest()
+
+    def _clear_resume_state(self) -> None:
+        try:
+            os.remove(self._resume_manifest_path)
+        except FileNotFoundError:
+            pass
+
+    def _create_shard_progress(self, tqdm_factory: Any) -> Any:
+        """Create a progress bar that retains the full shard count on resume."""
+        if tqdm_factory is None:
+            return None
+        return tqdm_factory(
+            total=len(self.shard_names),
+            initial=len(self._resume_processed_shards),
+            desc="Processing shards",
+            unit="shard",
+        )
+
+    def _process_all_shards(self) -> None:
+        if self.is_streaming:
+            self._process_all_shards_streaming_pipeline()
+            return
+
+        try:
+            from tqdm import tqdm as _tqdm
+        except ImportError:
+            _tqdm = None
+
+        pending_shards = [
+            (shard_idx, shard_name)
+            for shard_idx, shard_name in enumerate(self.shard_names)
+            if shard_name not in self._resume_processed_shards
+        ]
+        if not pending_shards:
+            return
+
+        os.makedirs(self._quant_output_dir, exist_ok=True)
+
+        worker_count = max(1, min(self.shard_parallelism, len(pending_shards)))
+        futures = []
+        pool: ProcessPoolExecutor | None = None
+        progress = self._create_shard_progress(_tqdm)
+        try:
+            pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
+            for shard_idx, shard_name in pending_shards:
+                donor_tensors = list(self.donor_shard_tensors.get(shard_name, ())) or None
+                futures.append(
+                    pool.submit(
+                        _process_single_shard_task,
+                        shard_idx,
+                        shard_name,
+                        model_name_or_path=self.model_name_or_path,
+                        work_dir=self.work_dir,
+                        source_dir=self.source_dir,
+                        is_streaming=self.is_streaming,
+                        device=self.device,
+                        default_scheme=self.default_scheme,
+                        layer_config=self.layer_config,
+                        ignore_patterns=self.ignore_patterns,
+                        fp8_block_size=self.fp8_block_size,
+                        model_type=self.model_type,
+                        source_quantization_config=self.source_quantization_config,
+                        enable_torch_compile=self.enable_torch_compile,
+                        disable_opt_rtn=self.disable_opt_rtn,
+                        quant_output_dir=self._quant_output_dir,
+                        total_shards=len(self.shard_names),
+                        donor_tensors_to_exclude=donor_tensors,
+                        fused_gs_groups=self._fused_gs_groups_by_shard.get(shard_name),
+                        fused_gs_weight_map=self._fused_gs_weight_map,
+                    )
+                )
+
+            for future in as_completed(futures):
+                result = future.result()
+                self._merge_shard_task_result(result)
+                if progress is not None:
+                    progress.update(1)
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user; terminating model-free shard worker processes.")
+            _force_cleanup_process_pool(pool)
+            raise
+        except Exception:
+            _force_cleanup_process_pool(pool)
+            raise
+        finally:
+            _force_cleanup_process_pool(pool)
+            if progress is not None:
+                progress.close()
+
+    def _merge_shard_task_result(
+        self,
+        result: tuple[int, str, str | None, str | None, list[str] | None, list[str] | None, list[str] | None],
+    ) -> None:
+        """Merge one shard-task result into global stats and weight map."""
+        shard_idx, shard_name, shard_path, out_shard_name, tensor_names, quantized, ignored = result
+        if shard_path is None or out_shard_name is None or tensor_names is None or quantized is None or ignored is None:
+            raise RuntimeError(
+                f"Source shard {shard_name} could not be loaded; aborting model-free quantization. "
+                "Rerun the same command to resume from the completed shards."
+            )
+
+        memory_monitor.update()
+        clear_memory()
+        if len(self.shard_names) > 1:
+            logger.info(f"Memory usage: {memory_monitor.get_summary()}")
+
+        compressed_quantized = compress_layer_names(quantized)
+        compressed_ignored = compress_layer_names(ignored)
+        logger.info(
+            f"Shard {shard_idx + 1}/{len(self.shard_names)} ({shard_name}):\n"
+            f"  Quantized layers ({len(quantized)}): {compressed_quantized}\n"
+            f"  Ignored layers ({len(ignored)}): {compressed_ignored}"
+        )
+
+        self.all_quantized_layers.extend(quantized)
+        self.all_ignored_layers.extend(ignored)
+        for tensor_name in tensor_names:
+            self.output_weight_map[tensor_name] = out_shard_name
+
+        self._mark_shard_completed(shard_name, out_shard_name, tensor_names, quantized, ignored)
+
+    def _plan_streaming_jobs(self) -> tuple[list[str], dict[str, set[str]]]:
+        """Plan pending shard jobs from the index alone.
+
+        Returns the job priority order and, per job, the shards that must be local before it starts:
+        the shard itself, its scale donors, and every shard holding a weight or scale of its
+        cross-shard fused GS groups. Self-contained jobs go first, then related jobs in shard order so
+        partners are fetched together; within each tier, jobs whose shards are all cached lead.
+        """
+        shard_indices = {name: idx for idx, name in enumerate(self.shard_names)}
+        requires: dict[str, set[str]] = {}
+        for name in self.shard_names:
+            if name in self._resume_processed_shards:
+                continue
+            needed = {name, *self.cross_shard_deps.get(name, {})}
+            for group in self._fused_gs_groups_by_shard.get(name, ()):
+                needed.update(
+                    self._fused_gs_weight_map[tensor_name]
+                    for layer in group
+                    for suffix in _FUSED_GS_SOURCE_SUFFIXES
+                    if (tensor_name := f"{layer}.{suffix}") in self._fused_gs_weight_map
+                )
+            requires[name] = {shard for shard in needed if shard in shard_indices}
+
+        related = {shard for needed in requires.values() if len(needed) > 1 for shard in needed}
+        cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+        jobs = sorted(
+            requires,
+            key=lambda name: (
+                name in related,
+                not all(os.path.isfile(os.path.join(cache_dir, shard)) for shard in requires[name]),
+                shard_indices[name],
+            ),
+        )
+        return jobs, requires
+
+    @staticmethod
+    def _retain_donor_scale_tensors(shard_path: str, tensor_names: set[str] | list[str]) -> None:
+        """Atomically compact a completed donor shard to only the tensors recipients still need."""
+        shard_path = os.fspath(shard_path)
+        if not shard_path.endswith(".safetensors"):
+            return
+
+        keep = set(tensor_names)
+        temp_path = None
+        try:
+            with safe_open(shard_path, framework="pt", device="cpu") as shard:
+                available = set(shard.keys())
+                if available == keep:
+                    return
+                retained = {name: shard.get_tensor(name) for name in keep.intersection(available)}
+
+            from safetensors.torch import save_file
+
+            fd, temp_path = tempfile.mkstemp(
+                prefix=".donor-scales-", suffix=".safetensors", dir=os.path.dirname(shard_path)
+            )
+            os.close(fd)
+            save_file(retained, temp_path)
+            os.replace(temp_path, shard_path)
+        except Exception as exc:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+            logger.warning(f"Could not compact donor shard '{shard_path}' to scale tensors: {exc}")
+
+    def _process_all_shards_streaming_pipeline(self) -> None:
+        """Download and quantize shards concurrently following :meth:`_plan_streaming_jobs`.
+
+        One downloader fetches the missing shards of the highest-priority waiting jobs, staying at most
+        ``_STREAMING_LOOKAHEAD_JOBS`` jobs ahead of the free quantizer slots. A job is submitted as soon
+        as all of its shards are local, and a shard is deleted once every job that needs it is done.
+        """
+        try:
+            from tqdm import tqdm as _tqdm
+        except ImportError:
+            _tqdm = None
+
+        jobs, requires = self._plan_streaming_jobs()
+        if not jobs:
+            return
+        os.makedirs(self._quant_output_dir, exist_ok=True)
+
+        cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+        users = Counter(shard for name in jobs for shard in requires[name])
+        if os.path.isdir(cache_dir):
+            for entry in os.scandir(cache_dir):
+                if entry.is_file() and entry.name in self.shard_names and entry.name not in users:
+                    os.remove(entry.path)
+
+        shard_indices = {name: idx for idx, name in enumerate(self.shard_names)}
+        worker_count = max(1, min(self.shard_parallelism, len(jobs)))
+        subfolder = self.diffusion_component if self.is_diffusion_model else None
+        waiting = list(jobs)
+        local_paths: dict[str, str] = {}
+        downloads: dict = {}
+        running: dict = {}
+        completed_shards: set[str] = set()
+        cached_fused_global_scale_overrides: dict[str, float] = {}
+        computed_fused_gs_groups: set[tuple[str, ...]] = set()
+        download_pool: ThreadPoolExecutor | None = None
+        quant_pool: ProcessPoolExecutor | None = None
+        progress = self._create_shard_progress(_tqdm)
+        try:
+            download_pool = ThreadPoolExecutor(max_workers=1)
+            quant_pool = ProcessPoolExecutor(max_workers=worker_count, mp_context=mp.get_context("spawn"))
+            while waiting or running:
+                ready = [name for name in waiting if requires[name].issubset(local_paths)]
+                for name in ready[: worker_count - len(running)]:
+                    waiting.remove(name)
+                    fused_groups = self._fused_gs_groups_by_shard.get(name)
+                    cached_overrides = (
+                        {
+                            layer: cached_fused_global_scale_overrides[layer]
+                            for group in fused_groups
+                            for layer in group
+                            if layer in cached_fused_global_scale_overrides
+                        }
+                        if fused_groups
+                        else None
+                    )
+                    future = quant_pool.submit(
+                        _quantize_local_shard_task,
+                        shard_indices[name],
+                        name,
+                        shard_path=local_paths[name],
+                        device=self.device,
+                        default_scheme=self.default_scheme,
+                        layer_config=self.layer_config,
+                        ignore_patterns=self.ignore_patterns,
+                        fp8_block_size=self.fp8_block_size,
+                        model_type=self.model_type,
+                        source_quantization_config=self.source_quantization_config,
+                        quant_output_dir=self._quant_output_dir,
+                        total_shards=len(self.shard_names),
+                        enable_torch_compile=self.enable_torch_compile,
+                        disable_opt_rtn=self.disable_opt_rtn,
+                        donor_tensors_to_exclude=list(self.donor_shard_tensors.get(name, ())) or None,
+                        index_dir=self.work_dir,
+                        donor_shard_dir=cache_dir,
+                        fused_gs_groups=self._fused_gs_groups_by_shard.get(name),
+                        fused_gs_weight_map=self._fused_gs_weight_map,
+                        precomputed_fused_global_scale_overrides=cached_overrides,
+                    )
+                    running[future] = name
+
+                if not downloads:
+                    window = waiting[: worker_count - len(running) + _STREAMING_LOOKAHEAD_JOBS]
+                    missing = (
+                        shard
+                        for name in window
+                        for shard in sorted(requires[name].difference(local_paths), key=shard_indices.get)
+                    )
+                    shard = next(missing, None)
+                    if shard is not None:
+                        future = download_pool.submit(
+                            _prefetch_shard,
+                            self.model_name_or_path,
+                            shard,
+                            self.work_dir,
+                            self.source_dir,
+                            self.is_streaming,
+                            subfolder,
+                        )
+                        downloads[future] = shard
+
+                done, _ = wait({*downloads, *running}, return_when=FIRST_COMPLETED)
+                for future in done:
+                    if future in downloads:
+                        shard = downloads.pop(future)
+                        path = future.result()
+                        if path is None or not os.path.exists(path):
+                            # Skipping would leave an incomplete model and recipients without donor scales.
+                            raise RuntimeError(
+                                f"Failed to download source shard {shard}; aborting model-free quantization. "
+                                "Rerun the same command to resume from the completed shards."
+                            )
+                        local_paths[shard] = path
+                        continue
+
+                    name = running.pop(future)
+                    self._merge_shard_task_result(future.result())
+                    completed_shards.add(name)
+                    if progress is not None:
+                        progress.update(1)
+
+                    for group in self._fused_gs_groups_by_shard.get(name, ()):
+                        group_key = tuple(group)
+                        if group_key in computed_fused_gs_groups:
+                            continue
+                        cached_fused_global_scale_overrides.update(
+                            _compute_cross_shard_fused_global_scales(
+                                [group],
+                                self._fused_gs_weight_map,
+                                cache_dir,
+                                fp8_block_size=self.fp8_block_size,
+                                device=self.device,
+                            )
+                        )
+                        computed_fused_gs_groups.add(group_key)
+
+                    for shard in requires[name]:
+                        users[shard] -= 1
+                        if not users[shard]:
+                            try:
+                                os.remove(local_paths.pop(shard))
+                            except FileNotFoundError:
+                                pass
+
+                    active_sources = {shard for active_name in running.values() for shard in requires[active_name]}
+                    for shard, remaining_users in users.items():
+                        if (
+                            remaining_users <= 0
+                            or shard not in completed_shards
+                            or shard in active_sources
+                            or shard not in local_paths
+                        ):
+                            continue
+                        donor_tensors = self.donor_shard_tensors.get(shard)
+                        if donor_tensors:
+                            self._retain_donor_scale_tensors(local_paths[shard], donor_tensors)
+        except KeyboardInterrupt:
+            logger.warning("Interrupted by user; terminating model-free shard workers.")
+            raise
+        finally:
+            _force_cleanup_process_pool(quant_pool)
+            if download_pool is not None:
+                download_pool.shutdown(wait=True, cancel_futures=True)
+            if progress is not None:
+                progress.close()
+
+    # -------------------------------------------------------------------
+    # Output
+    # -------------------------------------------------------------------
+
+    def _write_index(self) -> None:
+        _write_index_file(self._quant_output_dir, self.output_weight_map)
+        if len(self.shard_names) == 1 and self._resume_processed_shards:
+            for record in self._resume_processed_shards.values():
+                record["output_file"] = "model.safetensors"
+            self.output_weight_map = {name: "model.safetensors" for name in self.output_weight_map}
+            self._write_resume_manifest()
+
+    def _remove_stale_quantization_config_files(self) -> None:
+        """Remove source/output quantization metadata before writing the new config."""
+        for directory in {self.output_dir, self._quant_output_dir}:
+            if not os.path.isdir(directory):
+                continue
+            for filename in os.listdir(directory):
+                if _is_stale_quantization_metadata(filename):
+                    path = os.path.join(directory, filename)
+                    if os.path.isfile(path):
+                        os.remove(path)
+
+    def _write_config_files(self) -> None:
+        block_prefixes = []
+        for layer_name in self.all_quantized_layers:
+            parts = layer_name.split(".")
+            for index, part in enumerate(parts):
+                if part.isdigit() and index > 0:
+                    block_prefixes.append(".".join(parts[:index]))
+                    break
+        block_name_to_quantize = ",".join(dict.fromkeys(block_prefixes)) or None
+
+        os.makedirs(self._quant_output_dir, exist_ok=True)
+        source_quant_config = None
+        if self.nvfp_source_only:
+            # Read before the stale source metadata files are removed below.
+            source_quant_config = _load_source_quant_config(
+                self.work_dir if self.is_streaming else self.source_dir, self.source_quantization_config
+            )
+        quantization_config = _build_quantization_config(
+            default_scheme=self.default_scheme,
+            layer_config=self.layer_config,
+            ignore_patterns=self.ignore_patterns,
+            quantized_layers=self.all_quantized_layers,
+            ignored_layers=self.all_ignored_layers,
+            block_name_to_quantize=block_name_to_quantize,
+            format=self.format,
+            source_quant_config=source_quant_config,
+        )
+
+        self._remove_stale_quantization_config_files()
+        _remove_quantization_configs(self.config)
+        if self.format == "fake" and quantization_config.get("packing_format") != "auto_round:fake":
+            with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
+                json.dump(self.config, f, indent=2)
+            return
+
+        self.config["quantization_config"] = quantization_config
+        with open(os.path.join(self._quant_output_dir, "config.json"), "w") as f:
+            json.dump(self.config, f, indent=2)
+
+        with open(os.path.join(self._quant_output_dir, "quantization_config.json"), "w") as f:
+            json.dump(quantization_config, f, indent=2)
+
+    def _quantize_additional_transformers(self) -> None:
+        """Run a separate shard pipeline for each additional transformer."""
+        if not self.is_diffusion_model or self.diffusion_component != "transformer":
+            return
+        for name in sorted(os.listdir(self.diffusion_root_dir)):
+            if name == "transformer" or not name.startswith("transformer"):
+                continue
+            if not os.path.isfile(os.path.join(self.diffusion_root_dir, name, "config.json")):
+                continue
+            logger.info(f"Model-free quantization of {name}")
+            component = _ModelFreeCompressorCore(
+                model_name_or_path=self.model_name_or_path,
+                output_dir=self.output_dir,
+                scheme=copy.deepcopy(self.scheme_input),
+                layer_config=copy.deepcopy(self.layer_config_input),
+                ignore_layers=self.ignore_layers_input,
+                format=self.format,
+                device=self.device,
+                quant_lm_head=self.quant_lm_head,
+                quant_nontext_module=self.quant_nontext_module,
+                enable_torch_compile=self.enable_torch_compile,
+                disable_opt_rtn=self.disable_opt_rtn,
+            )
+            component.user_scheme_overrides = copy.deepcopy(getattr(self, "user_scheme_overrides", {}))
+            component.diffusion_component = name
+            component._resolved_diffusion_source = (self.diffusion_root_dir, self.is_streaming)
+            component.run()
+
+    def _copy_metadata_files(self) -> None:
+        if self.diffusion_component != "transformer":
+            return
+        if self.is_diffusion_model:
+            # For diffusion models, copy root-level metadata files and
+            # sub-component directories (vae, scheduler, tokenizer, …) to
+            # output_dir.  The quantized transformer component is already
+            # written to output_dir/transformer/ by the pipeline, so
+            # copytree's ``not os.path.exists(dst)`` guard prevents
+            # overwriting it.
+            for fname in os.listdir(self.diffusion_root_dir):
+                if _is_stale_quantization_metadata(fname):
+                    continue
+                src = os.path.join(self.diffusion_root_dir, fname)
+                dst = os.path.join(self.output_dir, fname)
+                if os.path.isdir(src):
+                    if not os.path.exists(dst):
+                        shutil.copytree(src, dst)
+                elif os.path.isfile(src) and not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+            return
+
+        metadata_dir = self.work_dir if self.is_streaming else self.source_dir
+        for fname in os.listdir(metadata_dir):
+            if _is_weight_shard(fname) or _is_stale_quantization_metadata(fname):
+                continue
+            src = os.path.join(metadata_dir, fname)
+            dst = os.path.join(self.output_dir, fname)
+            if os.path.isdir(src):
+                if not os.path.exists(dst):
+                    shutil.copytree(src, dst)
+            elif os.path.isfile(src) and not os.path.exists(dst):
+                shutil.copy2(src, dst)
+
+    def _cleanup_streaming_shard_cache(self) -> None:
+        """Remove temporary streaming shard cache under output_dir/.cache."""
+        if not self.is_streaming:
+            return
+
+        cache_dir = os.path.join(self.work_dir, ".cache", "model_free_source_shards")
+        if os.path.isdir(cache_dir):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+        # Best-effort prune for empty .cache directory created by this flow.
+        try:
+            os.rmdir(os.path.join(self.work_dir, ".cache"))
+        except OSError:
+            pass
+
+    def _log_summary(self, total_time: float) -> None:
+        compressed_quantized = compress_layer_names(self.all_quantized_layers)
+        compressed_ignored = compress_layer_names(list(dict.fromkeys(self.all_ignored_layers)))
+        logger.info(
+            f"\nModel-free quantization complete.\n"
+            f"  Output directory: {self.output_dir}\n"
+            f"  Total time: {total_time:.2f} seconds\n"
+            f"  Memory usage: {memory_monitor.get_summary()}\n"
+            f"  Quantized layers ({len(self.all_quantized_layers)}): "
+            f"{compressed_quantized}\n"
+            f"  Ignored layers ({len(set(self.all_ignored_layers))}): "
+            f"{compressed_ignored}\n"
+        )
+
+    # -------------------------------------------------------------------
+    # Public entry point
+    # -------------------------------------------------------------------
+
+    def run(self) -> str:
+        """Execute the full model-free quantization pipeline.
+
+        Returns:
+            Absolute path to the output directory.
+        """
+        # ---- AutoScheme: resolve per-layer schemes before anything else ----
+        if _looks_like_auto_scheme(self.scheme_input):
+            resolver = getattr(self, "_resolve_auto_scheme", None)
+            if not callable(resolver):
+                raise ValueError(
+                    "AutoScheme schemes are only supported through the "
+                    "AutoRound(model_free=True) API, not the low-level "
+                    "_ModelFreeCompressorCore driver."
+                )
+            resolver()  # pylint: disable=E1102
+
+        # ---- preflight ----
+        self._validate_format()
+        self._parse_scheme()
+        self._parse_layer_config()
+        self._build_ignore_patterns()
+
+        # ---- source resolution ----
+        self._resolve_source()
+        self._detect_nvfp4_source_model()
+        self._check_conv1d_and_embedding()
+        self._apply_predefined_ignore_layers()
+        self._detect_fp8_source()
+        self._resolve_model_type()
+        self._discover_shards()
+        self._build_cross_shard_deps()
+        self._reorder_shards_by_dependency()
+        self.shard_parallelism, shard_parallelism_source = self._resolve_shard_parallelism()
+        self._prepare_resume_state()
+        self._prepare_fused_gs_groups()
+
+        # Determine the output packing format based on scheme data type
+        data_type = (self.default_scheme.get("data_type") or "int").lower()
+        if is_mx_fp(data_type):
+            bits = self.default_scheme.get("bits", 4)
+            packing_format = "mxfp4-pack-quantized" if bits == 4 else "mxfp8-quantized"
+        elif data_type == _NVFP4_E5M3_DATA_TYPE:
+            packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3"
+        elif data_type == _NVFP4_E5M3_GS_DATA_TYPE:
+            packing_format = "fake" if self.format == "fake" else "auto_round:llm_compressor_nvfp4_e5m3_gs"
+        else:
+            packing_format = "fake" if self.format == "fake" else "auto_round:auto_gptq"
+        supports_opt_rtn = (
+            is_mx_fp(data_type)
+            or data_type in _NVFP4_E5M3_FAMILY_DATA_TYPES
+            or _layer_config_has_mxfp(self.layer_config)
+            or _layer_config_has_nvfp4(self.layer_config)
+        )
+        opt_rtn_enabled = supports_opt_rtn and not self.disable_opt_rtn
+        if is_mx_fp(data_type) or _layer_config_has_mxfp(self.layer_config):
+            if not self.disable_opt_rtn:
+                logger.info(
+                    "MXFP optimized RTN is enabled: evaluating the baseline E8M0 scale, "
+                    "2x scale, and 0.5x scale independently for each group. "
+                    "Pass --disable_opt_rtn to use plain RTN."
+                )
+        elif not supports_opt_rtn:
+            logger.info(
+                "Integer WOQ model-free quantization uses plain RTN "
+                "(opt_rtn is disabled for INT WOQ to preserve accuracy)."
+            )
+
+        logger.info(
+            f"Model-free quantization: {self.model_name_or_path}\n"
+            f"  Scheme: {self.scheme_obj}\n"
+            f"  NVFP4 source layers only: {self.nvfp_source_only}\n"
+            f"  Packing format: {packing_format}\n"
+            f"  Optimized RTN: {'enabled' if opt_rtn_enabled else 'disabled'}\n"
+            f"  Output: {self.output_dir}\n"
+            f"  Shards: {len(self.shard_names)}\n"
+            f"  Shard parallelism: {self.shard_parallelism} ({shard_parallelism_source}, "
+            f"env AR_MODEL_FREE_SHARD_PARALLELISM)\n"
+            f"  Streaming download: {self.is_streaming}\n"
+            f"  Diffusion model: {self.is_diffusion_model}\n"
+            f"  Quant lm_head: {self.quant_lm_head}\n"
+            f"  Quant nontext module: {self.quant_nontext_module}\n"
+            f"  Torch compile: {self.enable_torch_compile}\n"
+            f"  Device: {self.device}"
+        )
+
+        start_time = time.time()
+        memory_monitor.reset()
+
+        # ---- main loop ----
+        self._process_all_shards()
+
+        if len(self._resume_processed_shards) != len(self.shard_names):
+            missing_shards = [name for name in self.shard_names if name not in self._resume_processed_shards]
+            raise RuntimeError(
+                "Model-free quantization did not complete all weight shards; resume state was retained for: "
+                f"{', '.join(missing_shards)}"
+            )
+
+        if self.nvfp_source_only and not self.all_quantized_layers:
+            logger.warning(
+                f"No NVFP4 layers were found in the shards of '{self.model_name_or_path}'; "
+                "all layers were kept as-is."
+            )
+
+        # ---- write outputs ----
+        self._write_index()
+        self._write_config_files()
+        self._quantize_additional_transformers()
+        self._copy_metadata_files()
+        self._clear_resume_state()
+        self._cleanup_streaming_shard_cache()
+
+        self._log_summary(time.time() - start_time)
+        return self.output_dir
+
+
+# ---------------------------------------------------------------------------
+# AutoRound-compatible compressor: ModelFreeCompressor doubles as the
+# compressor object returned by AutoRound.__new__ when model-free mode is
+# selected.  It owns both the quantization pipeline (run()) AND the
+# AutoRound-facing interface (quantize_and_save()).
+# ---------------------------------------------------------------------------
+
+
+class ModelFreeCompressor(_ModelFreeCompressorCore):
+    """Model-free RTN quantizer that also acts as an AutoRound compressor.
+
+    When constructed via ``AutoRound(model_free=True, ...)`` the instance is
+    returned directly from ``AutoRound.__new__``.  The caller then invokes
+    :meth:`quantize_and_save` exactly as they would on any other compressor.
+
+    When used as a pure-quantization driver (CLI / functional API) call
+    :meth:`run` instead.
+
+    Args:
+        model_name_or_path: HuggingFace model ID or local directory path.
+            In the AutoRound compressor role this is the ``model`` argument.
+        output_dir: Where to write the quantized model.  May be ``None``
+            when used as a compressor (output_dir is passed to
+            :meth:`quantize_and_save` later).
+        scheme: Quantization scheme name or :class:`QuantizationScheme`.
+        layer_config: Per-layer overrides.
+        ignore_layers: Comma-separated layer name patterns to skip.
+        format: Output format (only ``"auto_round"`` is supported).
+        device: Compute device.
+        quant_lm_head: Whether to quantize ``lm_head``.
+        quant_nontext_module: Whether to quantize non-text modules.
+        **kwargs: When called from ``AutoRound.__new__`` the full AutoRound
+            kwargs are forwarded here.  Unknown kwargs are silently ignored
+            so that calibration-only parameters (``nsamples``, ``iters``,
+            ``dataset``, …) do not cause errors.
+    """
+
+    def __init__(
+        self,
+        model_name_or_path: str,
+        output_dir: str | None = None,
+        scheme: str | QuantizationScheme = "W4A16",
+        layer_config: dict | None = None,
+        ignore_layers: str = "",
+        format: str | None = None,
+        device: str = "cpu",
+        quant_lm_head: bool = False,
+        quant_nontext_module: bool = False,
+        # --- AutoRound compressor-role aliases ---
+        tokenizer: Any = None,
+        device_map: Any = None,
+        low_cpu_mem_usage: bool = True,
+        enable_torch_compile: bool | None = None,
+        disable_opt_rtn: bool = False,
+        **kwargs,
+    ) -> None:
+        import copy
+        from dataclasses import fields as dc_fields
+
+        fallback_kwargs = dict(kwargs)
+        self._force_model_free = bool(kwargs.get("model_free", False))
+
+        # Collect per-field scheme overrides forwarded from AutoRound
+        # (e.g. bits=4, sym=False passed as individual kwargs).
+        self.user_scheme_overrides: dict = {}
+        for field in dc_fields(QuantizationScheme):
+            if field.name in kwargs:
+                val = kwargs.pop(field.name)
+                if val is not None:
+                    self.user_scheme_overrides[field.name] = val
+
+        # Resolve device: AutoRound passes device_map; the core API uses device.
+        if device_map is not None:
+            from auto_round.utils import get_major_device
+
+            device = get_major_device(device_map)
+
+        # Initialise the core quantizer
+        super().__init__(
+            model_name_or_path=model_name_or_path,
+            output_dir=output_dir or "tmp_autoround",
+            scheme=scheme,
+            layer_config=layer_config,
+            ignore_layers=ignore_layers,
+            format=format,
+            device=device,
+            quant_lm_head=quant_lm_head,
+            quant_nontext_module=quant_nontext_module,
+            enable_torch_compile=enable_torch_compile,
+            disable_opt_rtn=disable_opt_rtn,
+        )
+
+        # Compressor-role state (mirrors BaseCompressor attributes used by
+        # AutoRound's post-processing code)
+        self._output_dir_override: str | None = None  # set by quantize_and_save
+        self.model = None
+        self.tokenizer = tokenizer
+        self.model_free = True
+        self.model_free_path = model_name_or_path
+        self.iters = 0
+        self.formats = None
+        self.quantized = False
+        self._fallback_compressor = None
+        # Start from the remaining user kwargs and explicitly set/override
+        # known compressor init parameters for clarity.
+        fallback_init = dict(fallback_kwargs)
+        # Route-control kwargs are only meaningful for the initial entry
+        # selection. Strip them so fallback always re-enters the regular flow
+        # with a single explicit disable_model_free=True override.
+        fallback_init.pop("model_free", None)
+        fallback_init.pop("disable_model_free", None)
+        fallback_init.update(
+            model=model_name_or_path,
+            iters=0,
+            disable_opt_rtn=disable_opt_rtn,
+            # Forward the user's torch.compile choice so the fallback compressor
+            # honors an explicit --enable_torch_compile request. ``None`` keeps the
+            # fallback's default situational policy (auto-disable for RTN/OPT-RTN).
+            enable_torch_compile=enable_torch_compile,
+            tokenizer=tokenizer,
+            scheme=copy.deepcopy(scheme),
+            layer_config=copy.deepcopy(layer_config),
+            ignore_layers=ignore_layers,
+            device_map=device_map,
+            quant_lm_head=quant_lm_head,
+            low_cpu_mem_usage=low_cpu_mem_usage,
+        )
+        # Scheme fields are consumed above from ``kwargs``. Preserve them when
+        # a later format check falls back to the regular AutoRound flow.
+        fallback_init.update(self.user_scheme_overrides)
+        # Forward the construction format only when explicitly requested; the
+        # fallback honors a format passed later to quantize_and_save() (the
+        # 8-bit-asym opt-in is the AR_ALLOW_W8_ASYM env, read by parse_scheme
+        # on every route).
+        if getattr(self, "_format_explicit", False) and self.format:
+            fallback_init["format"] = self.format
+
+        self._fallback_init_kwargs = fallback_init
+        if quant_nontext_module:
+            self._fallback_init_kwargs["quant_nontext_module"] = quant_nontext_module
+        # remaining kwargs intentionally consumed/ignored
+
+        # AutoScheme (two-phase delta-loss selection) state.
+        self._auto_scheme_resolved = False
+        self._auto_scheme_family: str | None = None
+
+    def _fallback_to_base_compressor(self, save_format: str | None = None):
+        from auto_round.autoround import AutoRound
+
+        if self._force_model_free:
+            requested_format = save_format or self.format
+            raise ValueError(
+                "model_free=True does not support the requested operation "
+                f"(format: '{requested_format}'); refusing to fall back to regular AutoRound."
+            )
+        logger.info(
+            "Model-free mode cannot export this request directly; "
+            "constructing the regular AutoRound compressor (requested format: '%s').",
+            self.format,
+        )
+        # The fallback exists to serve a quantize_and_save(format=...) call: when
+        # no explicit construction format was forwarded, the save-time format
+        # must reach the fallback construction so eager validation (format-scoped
+        # policies such as the 8-bit asym rule) judges the format actually being
+        # saved. An explicitly requested construction format always wins.
+        init_kwargs = dict(self._fallback_init_kwargs)
+        if save_format is not None:
+            init_kwargs.setdefault("format", save_format)
+        logger.info(
+            "fallbacked_init_kwargs: %s",
+            init_kwargs,
+        )
+        compressor = AutoRound(**init_kwargs, disable_model_free=True)
+        self._fallback_compressor = compressor
+
+    def _fallback_to_quantize_and_save(
+        self,
+        output_dir: str,
+        format: str,
+        inplace: bool,
+        **kwargs,
+    ):
+        self._fallback_to_base_compressor(save_format=format)
+        return self._fallback_compressor.quantize_and_save(  # pylint: disable=E1101
+            output_dir=output_dir, format=format, inplace=inplace, **kwargs
+        )
+
+    def quantize(
+        self,
+    ) -> Any:
+        """fallback to base compressor's quantize."""
+        self._fallback_to_base_compressor()
+        return self._fallback_compressor.quantize()  # pylint: disable=E1101
+
+    def __getattribute__(self, name: str):
+        """Prefer attributes from the fallback compressor when available.
+
+        Once model-free flow falls back to the regular AutoRound compressor,
+        external attribute reads on this wrapper should observe the fallback
+        compressor's state first.
+        """
+        local_only_names = {
+            "_fallback_compressor",
+            "_fallback_init_kwargs",
+            "_fallback_to_base_compressor",
+            "__dict__",
+            "__class__",
+            "__getattribute__",
+            "__setattr__",
+            "__delattr__",
+        }
+
+        if name in local_only_names or name.startswith("__"):
+            return super().__getattribute__(name)
+
+        fallback = super().__getattribute__("__dict__").get("_fallback_compressor")
+        if fallback is not None:
+            if name == "compressor":
+                return fallback
+            try:
+                return getattr(fallback, name)
+            except AttributeError:
+                pass
+
+        return super().__getattribute__(name)
+
+    # ------------------------------------------------------------------
+    # AutoScheme (two-phase: delta-loss selection + model-free packing)
+    # ------------------------------------------------------------------
+
+    def _run_auto_scheme_selection(self, auto_scheme: Any) -> dict[str, dict]:
+        """Run AutoScheme delta-loss selection to obtain a per-layer config.
+
+        The model is loaded temporarily (via the regular AutoRound flow) so
+        that delta-loss scoring can run its forward/backward passes, then it is
+        released before the model-free shard-by-shard packing begins.
+        """
+        from auto_round.autoround import AutoRound
+
+        init_kwargs = dict(self._fallback_init_kwargs)
+        init_kwargs["scheme"] = auto_scheme
+
+        compressor = AutoRound(**init_kwargs, disable_model_free=True)
+        try:
+            # post_init() (outside inference_mode) runs the delta-loss scheme
+            # selection and populates ``compressor.layer_config``.
+            post_init = getattr(compressor, "post_init", None)
+            if not callable(post_init):
+                raise RuntimeError("AutoScheme fallback compressor has no callable post_init().")
+            post_init()  # pylint: disable=E1102
+            layer_config = thaw_mapping(getattr(compressor, "layer_config", {}) or {})
+        finally:
+            # Release the model that was loaded only for scoring so the
+            # packing phase keeps model-free's low memory footprint.
+            try:
+                model_context = getattr(compressor, "model_context", None)
+                if model_context is not None and hasattr(model_context, "model"):
+                    model_context.model = None
+            except Exception:  # pragma: no cover - best-effort cleanup
+                pass
+            del compressor
+            clear_memory()
+
+        if not layer_config:
+            raise RuntimeError("AutoScheme did not produce a layer_config for model-free mode.")
+        return layer_config
+
+    def _resolve_auto_scheme(self) -> None:
+        """Resolve an ``AutoScheme`` scheme into concrete model-free inputs.
+
+        Idempotent.  Validates the options, runs delta-loss selection, then
+        rewrites ``scheme_input`` / ``layer_config_input`` / ``ignore_layers_input``
+        so the standard model-free pipeline can proceed unchanged.
+        """
+        if self._auto_scheme_resolved:
+            return
+
+        auto_scheme = self.scheme_input
+        family = _validate_auto_scheme_options(auto_scheme)
+        logger.info(
+            "Model-free + AutoScheme: generating a per-layer scheme via delta-loss. "
+            "The model is loaded temporarily for scoring, then released before "
+            "shard-by-shard packing."
+        )
+
+        generated = self._run_auto_scheme_selection(auto_scheme)
+        preferred_base_scheme = None
+        for option in auto_scheme.options:
+            option_scheme = _normalize_scheme(option)
+            act_bits = option_scheme.act_bits if option_scheme.act_bits is not None else 16
+            if (option_scheme.bits or 0) < 16 or act_bits < 16:
+                preferred_base_scheme = option_scheme
+                break
+        base_scheme, per_layer, fp16_layers = _convert_auto_scheme_layer_config(
+            generated,
+            preferred_base_scheme=preferred_base_scheme,
+        )
+
+        # Merge the generated per-layer overrides; any user-provided
+        # layer_config entries take priority.
+        merged_lc: dict = dict(per_layer)
+        if self.layer_config_input:
+            merged_lc.update(copy.deepcopy(self.layer_config_input))
+        self.layer_config_input = merged_lc
+
+        # Keep AutoScheme's 16-bit layers in full precision.
+        if fp16_layers:
+            extra = ",".join(fp16_layers)
+            self.ignore_layers_input = f"{self.ignore_layers_input},{extra}" if self.ignore_layers_input else extra
+
+        self.scheme_input = base_scheme
+        self._auto_scheme_family = family
+        self._auto_scheme_resolved = True
+
+        logger.info(
+            "Model-free + AutoScheme resolved: base scheme %s, %d per-layer override(s), "
+            "%d layer(s) kept at 16-bit.",
+            base_scheme,
+            len(per_layer),
+            len(fp16_layers),
+        )
+
+    def _precheck_auto_scheme_fallback(self, format: str) -> bool:
+        """Early fallback check for model-free + AutoScheme.
+
+        This avoids spending time on delta-loss AutoScheme selection when the
+        requested export format is known to be incompatible with the resolved
+        AutoScheme option family.
+        """
+        if not _looks_like_auto_scheme(self.scheme_input):
+            return False
+
+        family = _validate_auto_scheme_options(self.scheme_input)
+        accepted_formats = {"auto_round", "auto_round:auto_gptq"}
+        if family == "mx_fp":
+            accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+
+        if format not in accepted_formats:
+            if self._force_model_free:
+                raise ValueError(
+                    f"model_free=True does not support format '{format}' " f"for AutoScheme family '{family}'."
+                )
+            logger.warning(
+                "Format '%s' is incompatible with model-free + AutoScheme (family=%s); "
+                "fallback before running AutoScheme scoring.",
+                format,
+                family,
+            )
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # AutoRound compressor interface
+    # ------------------------------------------------------------------
+
+    def quantize_and_save(
+        self,
+        output_dir: str = "tmp_autoround",
+        format: str = "auto_round",
+        inplace: bool = True,
+        **kwargs,
+    ) -> Any:
+        """Quantize and save — AutoRound compressor entry point."""
+        from auto_round.schemes import parse_scheme
+
+        # Re-check the 8-bit asym policy with the final format (construction is
+        # conservative when the format is not yet known). parse_scheme owns the
+        # policy and the message; the scheme is still unresolved here, so pass
+        # the raw inputs instead of self.default_scheme.
+        parse_scheme(self.scheme_input, dict(self.user_scheme_overrides or {}), format=format)
+        # Early fallback gate for model-free + AutoScheme: avoid running
+        # costly delta-loss selection when format is known incompatible.
+        if self._precheck_auto_scheme_fallback(format):
+            return self._fallback_to_quantize_and_save(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
+
+        # AutoScheme: run delta-loss selection first so the effective scheme /
+        # data-type family (which drives the accepted export formats) is known.
+        if _looks_like_auto_scheme(self.scheme_input):
+            self._resolve_auto_scheme()
+
+        # Accept the standard auto_round formats.
+        _accepted_formats = {"fake", "auto_round", "auto_round:auto_gptq"}
+        # MXFP supports both llm_compressor (compressed-tensors) and auto_round formats.
+        # The only difference is the quantization_config metadata; on-disk weights are identical.
+        normalized_scheme = (
+            _normalize_scheme(self.scheme_input) if not _looks_like_auto_scheme(self.scheme_input) else None
+        )
+        if (
+            normalized_scheme is not None and is_mx_fp((normalized_scheme.data_type or "").lower())
+        ) or self._auto_scheme_family == "mx_fp":
+            _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+        elif (
+            normalized_scheme is not None
+            and (normalized_scheme.data_type or "").lower() in _NVFP4_E5M3_FAMILY_DATA_TYPES
+        ):
+            _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
+        elif _is_full_precision_default(self.scheme_input) and _layer_config_has_mxfp(self.layer_config_input):
+            # BF16 default with MXFP layer_config overrides.
+            _accepted_formats = {"llm_compressor", "auto_round", "auto_round:auto_gptq"}
+        elif _is_full_precision_default(self.scheme_input) and _layer_config_has_nvfp4(self.layer_config_input):
+            # BF16 default with NVFP4_E5M3 layer_config overrides.
+            _accepted_formats = {"fake", "llm_compressor", "auto_round", "auto_round:auto_gptq"}
+        if format not in _accepted_formats:
+            if self._force_model_free:
+                raise ValueError(
+                    f"model_free=True does not support format '{format}' " f"for scheme '{self.scheme_input}'."
+                )
+            logger.warning(
+                f"Format '{format}' is not supported by model-free mode for scheme '{self.scheme_input}'; "
+                f"falling back to the regular AutoRound flow."
+            )
+            return self._fallback_to_quantize_and_save(output_dir=output_dir, format=format, inplace=inplace, **kwargs)
+
+        # Apply user scheme overrides before running
+        if self.user_scheme_overrides:
+            self.scheme_input = _apply_scheme_overrides(self.scheme_input, self.user_scheme_overrides)
+
+        # Temporarily point output_dir and format at what the caller requested
+        orig_dir = self.output_dir
+        orig_fmt = self.format
+        self.output_dir = output_dir
+        self.format = format
+        try:
+            out_path = self.run()
+        finally:
+            self.output_dir = orig_dir
+            self.format = orig_fmt
+        self.quantized = True
+        return None, out_path

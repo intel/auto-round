@@ -1,0 +1,575 @@
+//
+// MIT license
+// Copyright (C) 2024 Intel Corporation
+// SPDX-License-Identifier: MIT
+//
+
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+
+#pragma once
+
+#include <array>
+#include <cstdlib>
+#include <cstdint>
+#include <cstdio>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <vector>
+
+#if ARK_DNNL
+#include <dnnl.hpp>
+#endif
+
+#include "bestla/bestla_wrapper.h"
+
+#if ARK_XPU
+#include "bestla/sycl/sycl_wrapper.h"
+#else
+namespace sycl {
+typedef void queue;
+}
+#endif
+
+#if ARK_XPU && ARK_DNNL
+#include <dnnl_sycl.hpp>
+#endif
+
+#define LOG_LINE() printf("%s:L%d\n", __FUNCTION__, __LINE__);
+
+namespace ark {
+
+struct env_params {
+  int verbose = 2;  // trace 0/ debug 1/ info 2/ warn 3/ error 4/ critical 5/ off 6
+  int auto_s8 = -1;
+  int sage_use_mean_bias = 1;
+  int sage_print_kbias = 0;
+  int sage_disable_packed_hnd_fast = 0;
+
+  static env_params* Instance() {
+    static env_params instance;
+    return &instance;
+  }
+
+  env_params() {
+    env_i("ARK_VERBOSE", verbose);
+    env_i("ARK_AUTO_S8", auto_s8);
+    env_i("ARK_SAGE_USE_MEAN_BIAS", sage_use_mean_bias);
+    env_i("ARK_SAGE_PRINT_KBIAS", sage_print_kbias);
+    env_i("ARK_SAGE_DISABLE_PACKED_HND_FAST", sage_disable_packed_hnd_fast);
+  }
+
+  static inline void env_i(const char* envstr, int& default_) {
+    const char* env_value = std::getenv(envstr);
+    if (env_value != nullptr) default_ = std::stoi(env_value);
+  }
+};
+
+using UUIDArray = std::array<unsigned char, 16>;
+
+struct UUIDHasher {
+  size_t operator()(const UUIDArray& uuid) const {
+    const uint64_t* p = reinterpret_cast<const uint64_t*>(uuid.data());
+    uint64_t h1 = p[0];
+    uint64_t h2 = p[1];
+
+    h1 ^= h1 >> 33;
+    h1 *= 0xff51afd7ed558ccdLLU;
+    h2 ^= h2 >> 33;
+    h2 *= 0xc4ceb9fe1a85ec53LLU;
+
+    return static_cast<size_t>(h1 ^ h2);
+  }
+};
+
+class DeviceMemoryPool {
+ public:
+  static DeviceMemoryPool* Instance() {
+    static DeviceMemoryPool instance;
+    return &instance;
+  }
+
+  size_t get_device_key(sycl::queue* q) {
+#if ARK_XPU
+    if (q != nullptr) {
+      std::lock_guard<std::mutex> lock(key_mutex_);
+      auto key = get_device_queue_key_locked(q);
+      auto it = device_queue_ids_.find(key);
+      if (it != device_queue_ids_.end()) {
+        return it->second;
+      }
+      const size_t new_id = next_device_queue_id_++;
+      device_queue_ids_.emplace(key, new_id);
+      return new_id;
+    }
+#endif
+    return 0;
+  }
+
+  size_t get_device_context_key(sycl::queue* q) {
+#if ARK_XPU
+    if (q != nullptr) {
+      std::lock_guard<std::mutex> lock(key_mutex_);
+      auto key = get_device_context_key_locked(q);
+      auto it = device_context_ids_.find(key);
+      if (it != device_context_ids_.end()) {
+        return it->second;
+      }
+      const size_t new_id = next_device_context_id_++;
+      device_context_ids_.emplace(key, new_id);
+      return new_id;
+    }
+#endif
+    return 0;
+  }
+
+  void* get_scratch_mem(size_t size, size_t buf_loc, sycl::queue* q) {
+    auto key = get_device_key(q);
+    return get_scratch_ptr(size, buf_loc, q, key);
+  }
+
+  // Current size of the slab held for ``buf_loc`` on ``q``'s device+context+queue, or 0 when
+  // no slab is held.
+  size_t get_scratch_size(size_t buf_loc, sycl::queue* q) {
+    if (buf_loc >= MaxLocNum) return 0;
+    auto key = get_device_key(q);
+    std::lock_guard<std::mutex> lock(scratch_mutex_);
+    auto it = dev_mem_size_map[buf_loc].find(key);
+    return it == dev_mem_size_map[buf_loc].end() ? 0 : it->second;
+  }
+
+  // Detach the slab held for ``buf_loc`` on ``q``'s device+context+queue and hand ownership to
+  // the caller, which becomes responsible for synchronizing and freeing it.
+  // Returns nullptr when no slab is held.
+  //
+  // Detaching rather than freeing in place lets a caller drop the entry while
+  // holding its own lock and then perform the (unbounded) `wait()` and
+  // `sycl::free()` outside that lock: a concurrent acquire that races in after
+  // the detach simply allocates a fresh slab instead of racing on this one.
+  void* detach_scratch_mem(size_t buf_loc, sycl::queue* q) {
+    if (buf_loc >= MaxLocNum) return nullptr;
+    auto key = get_device_key(q);
+    std::lock_guard<std::mutex> lock(scratch_mutex_);
+    auto it = dev_mem_ptr_map[buf_loc].find(key);
+    if (it == dev_mem_ptr_map[buf_loc].end()) return nullptr;
+    int8_t* ptr = it->second;
+    dev_mem_ptr_map[buf_loc].erase(it);
+    dev_mem_size_map[buf_loc].erase(key);
+    return ptr;
+  }
+
+  void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
+    if (size == 0 || buf_loc >= MaxLocNum) return nullptr;
+    std::lock_guard<std::mutex> lock(scratch_mutex_);
+
+    auto it = dev_mem_ptr_map[buf_loc].find(key);
+    if (it == dev_mem_ptr_map[buf_loc].end()) {
+      auto newptr = allocate(size, q);
+      dev_mem_size_map[buf_loc][key] = size;
+      dev_mem_ptr_map[buf_loc][key] = newptr;
+      return newptr;
+    }
+
+    auto old_size = dev_mem_size_map[buf_loc][key];
+    if (old_size < size) {
+#if ARK_XPU
+      if (q == nullptr) {
+        throw std::invalid_argument("DeviceMemoryPool: XPU grow requires a non-null SYCL queue");
+      }
+      // Do NOT block the host here with q->wait(). Two reasons:
+      //   1) It is redundant for correctness. The scratch slab is keyed
+      //      per-queue (see get_device_key), so only work enqueued on this
+      //      same queue `q` ever references this slab. Both the sycl::free
+      //      in release() below and the sycl::aligned_alloc_device in
+      //      allocate() are associated with `q`, and `q` is an in-order
+      //      queue (ARK device queues are built in_order; torch.xpu
+      //      streams are in-order by default). USM bookkeeping plus the
+      //      in-order ordering guarantee the old slab is not handed back
+      //      while any in-flight kernel still references it -- the same
+      //      guarantee the rest of the codebase relies on (e.g. the async
+      //      sycl::free in sycl_tla_moe_prefill_fp8_native).
+      //   2) A blocking wait() is illegal while `q` is recording to a
+      //      torch.xpu command graph, so a wait here would throw whenever a
+      //      scratch slab grows during graph capture (see issue #2206).
+#endif
+      release(it->second, q);
+      auto newptr = allocate(size, q);
+      dev_mem_size_map[buf_loc][key] = size;
+      dev_mem_ptr_map[buf_loc][key] = newptr;
+      return newptr;
+    }
+
+    return it->second;
+  }
+
+ private:
+  // Slots 0-7 are claimed by the dnnl / xpu / sycl-s8 / cpu wrappers and the
+  // SDPA kernels; slot 8 is the MoE DPAS grouped-GEMM work-group counter
+  // (`moe_dpas_fp8::kAtomicScratchLoc`); slots 9 and 10 are the int4 decode
+  // weight-repack and activation-sum buffers
+  // (`moe_decode_detail::kInt4RepackScratchLoc` / `kActGroupSumScratchLoc`);
+  // slot 11 is the XMX Hadamard staging buffer
+  // (`kHadamardStagingScratchLoc` in `ark.cpp`); slot 12 is the SYCL-TLA
+  // prefill workspace (`kPrefillScratchLoc` in `sycl_tla_wrapper.hpp`).
+  // slots 13 and 14 are the W4A8
+  // activation-quantization and expert-map buffers
+  // (`moe_w4a8::kW4A8QactScratchLoc` / `kW4A8ExpertMapScratchLoc`).
+  static constexpr int MaxLocNum = 15;
+
+  using SizeMap = std::unordered_map<size_t, size_t>;
+  using PtrMap = std::unordered_map<size_t, int8_t*>;
+
+#if ARK_XPU
+  struct DeviceContextKey {
+    UUIDArray device_uuid;
+    size_t context_id;
+
+    bool operator==(const DeviceContextKey& other) const {
+      return context_id == other.context_id && device_uuid == other.device_uuid;
+    }
+  };
+
+  struct DeviceContextKeyHasher {
+    size_t operator()(const DeviceContextKey& key) const {
+      size_t h = UUIDHasher{}(key.device_uuid);
+      h ^= std::hash<size_t>{}(key.context_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  struct DeviceQueueKey {
+    UUIDArray device_uuid;
+    size_t context_id;
+    size_t queue_id;
+
+    bool operator==(const DeviceQueueKey& other) const {
+      return queue_id == other.queue_id && context_id == other.context_id && device_uuid == other.device_uuid;
+    }
+  };
+
+  struct DeviceQueueKeyHasher {
+    size_t operator()(const DeviceQueueKey& key) const {
+      size_t h = UUIDHasher{}(key.device_uuid);
+      h ^= std::hash<size_t>{}(key.context_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      h ^= std::hash<size_t>{}(key.queue_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  UUIDArray get_device_uuid_locked(sycl::queue* q) {
+    return q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
+  }
+
+  DeviceContextKey get_device_context_key_locked(sycl::queue* q) {
+    auto context_id = get_context_id_locked(q->get_context());
+    return {get_device_uuid_locked(q), context_id};
+  }
+
+  size_t get_context_id_locked(const sycl::context& ctx) {
+    for (const auto& entry : context_ids_) {
+      if (entry.context == ctx) {
+        return entry.context_id;
+      }
+    }
+    const size_t new_id = next_context_id_++;
+    context_ids_.push_back({ctx, new_id});
+    return new_id;
+  }
+
+  struct ContextEntry {
+    sycl::context context;
+    size_t context_id;
+  };
+
+  size_t get_queue_id_locked(const sycl::queue& q) {
+    for (const auto& entry : queue_ids_) {
+      if (entry.queue == q) {
+        return entry.queue_id;
+      }
+    }
+    const size_t new_id = next_queue_id_++;
+    queue_ids_.push_back({q, new_id});
+    return new_id;
+  }
+
+  DeviceQueueKey get_device_queue_key_locked(sycl::queue* q) {
+    auto context_id = get_context_id_locked(q->get_context());
+    auto queue_id = get_queue_id_locked(*q);
+    return {get_device_uuid_locked(q), context_id, queue_id};
+  }
+
+  struct QueueEntry {
+    sycl::queue queue;
+    size_t queue_id;
+  };
+#endif
+
+  int8_t* allocate(size_t size, sycl::queue* q) {
+#if ARK_XPU
+    if (q == nullptr) {
+      throw std::invalid_argument("DeviceMemoryPool: XPU allocation requires a non-null SYCL queue");
+    }
+    return sycl::aligned_alloc_device<int8_t>(128, size, *q);
+#else
+    return static_cast<int8_t*>(std::malloc(size));
+#endif
+  }
+
+  void release(void* ptr, sycl::queue* q) {
+    if (ptr == nullptr) return;
+#if ARK_XPU
+    if (q == nullptr) {
+      throw std::invalid_argument("DeviceMemoryPool: XPU free requires a non-null SYCL queue");
+    }
+    sycl::free(ptr, *q);
+#else
+    std::free(ptr);
+#endif
+  }
+
+  std::array<SizeMap, MaxLocNum> dev_mem_size_map;
+  std::array<PtrMap, MaxLocNum> dev_mem_ptr_map;
+  std::mutex scratch_mutex_;
+#if ARK_XPU
+  std::mutex key_mutex_;
+  std::vector<ContextEntry> context_ids_;
+  std::vector<QueueEntry> queue_ids_;
+  std::unordered_map<DeviceContextKey, size_t, DeviceContextKeyHasher> device_context_ids_;
+  std::unordered_map<DeviceQueueKey, size_t, DeviceQueueKeyHasher> device_queue_ids_;
+  size_t next_context_id_ = 1;
+  size_t next_queue_id_ = 1;
+  size_t next_device_context_id_ = 1;
+  size_t next_device_queue_id_ = 1;
+#endif
+};
+
+#if ARK_DNNL
+
+template <typename>
+struct always_false : std::false_type {};
+
+template <typename T>
+static inline constexpr dnnl::memory::data_type to_dt() {
+  if constexpr (std::is_same_v<T, float>) {
+    return dnnl::memory::data_type::f32;
+  } else if constexpr (std::is_same_v<T, bestla::utils::fp16>) {
+    return dnnl::memory::data_type::f16;
+  } else if constexpr (std::is_same_v<T, int8_t>) {
+    return dnnl::memory::data_type::s8;
+  } else if constexpr (std::is_same_v<T, uint8_t>) {
+    return dnnl::memory::data_type::u8;
+  } else if constexpr (std::is_same_v<T, bestla::utils::bf16>) {
+    return dnnl::memory::data_type::bf16;
+  } else {
+    static_assert(sizeof(T) == 0, "unsupported data type for to_dt<T>()");
+  }
+}
+
+static inline constexpr dnnl::memory::data_type to_dt(BTLA_DTYPE bt) {
+  switch (bt) {
+    case BTLA_DTYPE::F32:
+      return dnnl::memory::data_type::f32;
+    case BTLA_DTYPE::F16:
+      return dnnl::memory::data_type::f16;
+    case BTLA_DTYPE::S8:
+      return dnnl::memory::data_type::s8;
+    case BTLA_DTYPE::U8:
+      return dnnl::memory::data_type::u8;
+    case BTLA_DTYPE::BF16:
+      return dnnl::memory::data_type::bf16;
+    default:
+      return dnnl::memory::data_type::f32;
+  }
+}
+
+class DnnlContext {
+ public:
+  static DnnlContext* Instance() {
+    static DnnlContext instance;
+    return &instance;
+  }
+
+  dnnl::engine* get_eng(sycl::queue* q) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (q == nullptr) {
+      if (!cpu_engine_) {
+        cpu_engine_ = std::make_unique<dnnl::engine>(dnnl::engine::kind::cpu, 0);
+      }
+      return cpu_engine_.get();
+    }
+
+#if ARK_XPU
+    auto key = get_device_context_key_locked(q);
+    auto engine_it = xpu_engines_.find(key);
+    if (engine_it != xpu_engines_.end()) {
+      return engine_it->second.get();
+    }
+    auto dev = q->get_device();
+    auto ctx = q->get_context();
+    auto insert_result =
+        xpu_engines_.emplace(key, std::make_unique<dnnl::engine>(dnnl::sycl_interop::make_engine(dev, ctx)));
+    return insert_result.first->second.get();
+#else
+    if (!cpu_engine_) {
+      cpu_engine_ = std::make_unique<dnnl::engine>(dnnl::engine::kind::cpu, 0);
+    }
+    return cpu_engine_.get();
+#endif
+  }
+
+  dnnl::stream get_stream(sycl::queue* q) {
+    auto* eng = get_eng(q);
+    if (q == nullptr) {
+      return dnnl::stream(*eng);
+    }
+#if ARK_XPU
+    return dnnl::sycl_interop::make_stream(*eng, *q);
+#else
+    return dnnl::stream(*eng);
+#endif
+  }
+
+  dnnl::memory get_scratch_mem(dnnl::memory::desc md, sycl::queue* q) {
+    auto key = get_dnnl_key(q);
+    auto ptr = DeviceMemoryPool::Instance()->get_scratch_ptr(md.get_size(), 0, q, key);
+    return dnnl::memory(md, *get_eng(q), ptr);
+  }
+
+  void* get_scratch_mem(size_t size, size_t buf_loc, sycl::queue* q) {
+    auto key = get_dnnl_key(q);
+    return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, key);
+  }
+
+  void* get_scratch_ptr(size_t size, size_t buf_loc, sycl::queue* q, size_t key) {
+    if (q == nullptr) {
+      return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, key);
+    }
+#if ARK_XPU
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto queue_key = DeviceMemoryPool::Instance()->get_device_key(q);
+    auto scratch_key = QueueScratchKey{queue_key, key};
+    auto it = dnnl_queue_scratch_ids_.find(scratch_key);
+    if (it != dnnl_queue_scratch_ids_.end()) {
+      return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, it->second);
+    }
+    const size_t new_id = next_dnnl_queue_scratch_id_++;
+    dnnl_queue_scratch_ids_.emplace(scratch_key, new_id);
+    return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, new_id);
+#else
+    return DeviceMemoryPool::Instance()->get_scratch_ptr(size, buf_loc, q, key);
+#endif
+  }
+
+ private:
+  struct DeviceContextKey {
+    UUIDArray device_uuid;
+    size_t context_id;
+
+    bool operator==(const DeviceContextKey& other) const {
+      return context_id == other.context_id && device_uuid == other.device_uuid;
+    }
+  };
+
+  struct DeviceContextKeyHasher {
+    size_t operator()(const DeviceContextKey& key) const {
+      size_t h = UUIDHasher{}(key.device_uuid);
+      h ^= std::hash<size_t>{}(key.context_id) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  size_t get_dnnl_key(sycl::queue* q) {
+    if (q == nullptr) return 0;
+#if ARK_XPU
+    return DeviceMemoryPool::Instance()->get_device_key(q);
+#else
+    return 0;
+#endif
+  }
+
+#if ARK_XPU
+  UUIDArray get_device_uuid_locked(sycl::queue* q) {
+    return q->get_device().get_info<sycl::ext::intel::info::device::uuid>();
+  }
+
+  DeviceContextKey get_device_context_key_locked(sycl::queue* q) {
+    auto context_id = get_context_id_locked(q->get_context());
+    return {get_device_uuid_locked(q), context_id};
+  }
+
+  size_t get_context_id_locked(const sycl::context& ctx) {
+    for (const auto& entry : context_ids_) {
+      if (entry.context == ctx) {
+        return entry.context_id;
+      }
+    }
+    const size_t new_id = next_context_id_++;
+    context_ids_.push_back({ctx, new_id});
+    return new_id;
+  }
+
+  struct ContextEntry {
+    sycl::context context;
+    size_t context_id;
+  };
+
+  struct QueueScratchKey {
+    size_t queue_key;
+    size_t user_key;
+
+    bool operator==(const QueueScratchKey& other) const {
+      return queue_key == other.queue_key && user_key == other.user_key;
+    }
+  };
+
+  struct QueueScratchKeyHasher {
+    size_t operator()(const QueueScratchKey& key) const {
+      size_t h = std::hash<size_t>{}(key.queue_key);
+      h ^= std::hash<size_t>{}(key.user_key) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+      return h;
+    }
+  };
+
+  std::vector<ContextEntry> context_ids_;
+  std::unordered_map<QueueScratchKey, size_t, QueueScratchKeyHasher> dnnl_queue_scratch_ids_;
+  std::unordered_map<DeviceContextKey, std::unique_ptr<dnnl::engine>, DeviceContextKeyHasher> xpu_engines_;
+  size_t next_dnnl_queue_scratch_id_ = 1;
+  size_t next_context_id_ = 1;
+#endif
+
+  std::unique_ptr<dnnl::engine> cpu_engine_;
+  std::mutex mutex_;
+};
+
+#endif  // ARK_DNNL
+
+struct QuantParam {
+  int n;
+  int k;
+  int blocksize;
+  BTLA_DTYPE compute_type;
+  BTLA_DTYPE weight_type;
+  BTLA_DTYPE scale_type;
+  bool asym;
+
+  QuantParam(int _n, int _k, int _blocksize, int _ct, int _wt, int _st, bool _asym)
+      : n(_n),
+        k(_k),
+        blocksize(_blocksize),
+        compute_type((BTLA_DTYPE)_ct),
+        weight_type((BTLA_DTYPE)_wt),
+        scale_type((BTLA_DTYPE)_st),
+        asym(_asym) {}
+
+  inline int blks() { return k / blocksize; }
+};
+
+}  // namespace ark

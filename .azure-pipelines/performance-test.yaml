@@ -6,6 +6,7 @@ pr:
   branches:
     include:
       - main
+      - "*rc"
   paths:
     include:
       - auto_round
@@ -15,11 +16,10 @@ pr:
     exclude:
       - "*.md"
       - "**/*.md"
+      - auto_round_extension/ark
 
 variables:
   CONTAINER_NAME: "AutoRoundPerfTest"
-
-pool: GAUDI
 
 stages:
   - stage: PerformanceTest
@@ -28,18 +28,54 @@ stages:
     jobs:
       - job: PerformanceTestJob
         displayName: Performance Test Job
+        pool: GAUDI
+
+        strategy:
+          matrix:
+            Qwen3_W4A16:
+              model_name: 'Qwen/Qwen3-0.6B'
+              scheme: 'W4A16'
+            Qwen3_FP8_STATIC:
+              model_name: 'Qwen/Qwen3-0.6B'
+              scheme: 'FP8_STATIC'
+
         steps:
-          - template: template/docker-template.yml
-            parameters:
-              containerName: $(CONTAINER_NAME)
-              imageSource: pull
+          - script: |
+              rm -fr ${BUILD_SOURCESDIRECTORY} || sudo rm -fr ${BUILD_SOURCESDIRECTORY} || true
+            displayName: "Clean workspace"
+
+          - checkout: self
+            clean: true
+            fetchTags: true
+            displayName: "Checkout out Repo"
+
+          - script: |
+              docker pull vault.habana.ai/gaudi-docker/1.24.0/ubuntu24.04/habanalabs/pytorch-installer-2.10.0:latest
+            displayName: "Pull habana docker image"
+
+          - script: |
+              docker stop $(CONTAINER_NAME)
+              docker rm -vf $(CONTAINER_NAME) || true
+              env | sort
+            displayName: "Clean docker container"
+
+          - task: Bash@3
+            inputs:
+              targetType: "inline"
+              script: |
+                docker run -dit --disable-content-trust --privileged --name=$(CONTAINER_NAME) --shm-size="2g" \
+                  --runtime=habana -e HABANA_VISIBLE_DEVICES=all -e OMPI_MCA_btl_vader_single_copy_mechanism=none --cap-add=sys_nice --net=host --ipc=host \
+                  -v ${BUILD_SOURCESDIRECTORY}:/auto-round vault.habana.ai/gaudi-docker/1.24.0/ubuntu24.04/habanalabs/pytorch-installer-2.10.0:latest
+                docker exec $(CONTAINER_NAME) bash -c "ln -sf \$(which python3) /usr/bin/python"
+                echo "Show the container list after docker run ... "
+                docker ps -a
+            displayName: "Docker run - $(CONTAINER_NAME) Container"
 
           - script: |
               docker exec $(CONTAINER_NAME) bash -c "cd /auto-round \
                 && export UV_NO_PROGRESS=1 \
                 && export UV_SYSTEM_PYTHON=1 \
                 && pip install uv \
-                && uv pip install -r test/test_hpu/requirements.txt \
                 && uv pip install huggingface_hub \
                 && uv pip list"
             displayName: "HPU Env Setup"
@@ -47,15 +83,8 @@ stages:
           - script: |
               docker exec $(CONTAINER_NAME) \
               bash -c "cd /auto-round/.azure-pipelines/scripts/performance \
-                && bash perf_test.sh"
+                && bash perf_test.sh --model_name=$(model_name) --scheme=$(scheme)"
             displayName: "Run performance test"
-
-          - task: PublishPipelineArtifact@1
-            condition: succeededOrFailed()
-            inputs:
-              targetPath: $(Build.SourcesDirectory)/log_dir
-              artifact: "Performance_Test_Logs"
-              publishLocation: "pipeline"
 
           - task: Bash@3
             condition: always()

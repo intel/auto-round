@@ -1,0 +1,459 @@
+# AutoRound 环境变量配置
+
+[English](./environments.md) | 简体中文
+
+本文档介绍 AutoRound 使用的环境变量及其配置说明。
+
+## 概述
+
+AutoRound 通过 `envs.py` 模块提供统一的环境变量管理系统，支持懒加载求值与程序化配置。
+
+## 可用环境变量
+
+### AR_LOG_LEVEL
+- **描述**：控制 AutoRound 默认日志级别
+- **默认值**：`"INFO"`
+- **有效值**：`"TRACE"`、`"DEBUG"`、`"INFO"`、`"WARNING"`、`"ERROR"`、`"CRITICAL"`
+- **用途**：通过设置该变量控制 AutoRound 的日志详细程度
+
+```bash
+export AR_LOG_LEVEL=DEBUG
+```
+
+### AR_ENABLE_COMPILE_PACKING
+- **描述**：启用编译打包优化
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示启用；其他值表示禁用
+- **用途**：启用后可在将 FP4 张量打包为 `uint8` 时获得性能优化
+
+```bash
+export AR_ENABLE_COMPILE_PACKING=1
+```
+
+### AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE
+- **描述**：让 fused NVFP4 权重投影共用一个 weight global scale。该设置作用于 `q_proj`/`k_proj`/`v_proj` 与 `gate_proj`/`up_proj`，以满足 vLLM fused kernel 的要求。
+- **默认值**：`True`（等价于 `"1"`）
+- **有效值**：`"0"`、`"false"`、`"no"` 或 `"off"`（不区分大小写）表示关闭共享；其他值表示启用。
+- **用途**：仅当导出的运行时不要求 fused 投影使用统一 global scale 时关闭。
+
+```bash
+export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
+```
+
+### AR_DISABLE_DEFAULT_SHARED_LAYERS
+- **描述**：关闭 AutoScheme 的默认行为：为 vLLM/SGLang 在推理时融合的投影层（`q_proj`/`k_proj`/`v_proj`、MLA 的 `q_a_proj`/`kv_a_proj_with_mqa`、`gate_proj`/`up_proj`）共享同一量化配置。由于单个融合 kernel 只能使用一种量化方案，该共享默认开启。等价于 `AutoScheme(default_shared_layers=False)` 以及命令行参数 `--disable_default_shared_layers`。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示关闭默认共享；其他任何值均保持开启。
+- **用途**：仅当目标运行时不对这些投影层做融合，或确实希望各投影层使用不同方案时才需要关闭。
+
+```bash
+export AR_DISABLE_DEFAULT_SHARED_LAYERS=1
+```
+
+### AR_USE_MODELSCOPE
+- **描述**：控制是否使用 ModelScope 下载模型
+- **默认值**：`False`
+- **有效值**：`"1"`、`"true"`（不区分大小写）表示启用；其他值表示禁用
+- **用途**：启用后将使用 ModelScope 替代 Hugging Face Hub 下载模型
+
+```bash
+export AR_USE_MODELSCOPE=true
+```
+
+### AR_QUANTIZE_BAGEL_MOE_GEN
+
+- **描述**：启用 BAGEL `*_moe_gen` 图像生成专家层的量化。AutoRound 默认将这些模块保留为 BF16，因为实际测试发现量化它们可能降低图像生成质量。BAGEL 的普通 transformer attention 和 MLP 层默认仍会量化。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"` 或 `"yes"`（不区分大小写）表示启用；其他值会让 `*_moe_gen` 保持 BF16
+- **用途**：仅在研究 checkpoint 大小与图像质量之间的取舍时启用
+
+```bash
+export AR_QUANTIZE_BAGEL_MOE_GEN=1
+```
+
+### AR_WORK_SPACE
+- **描述**：设置 AutoRound 操作的工作目录
+- **默认值**：`"ar_work_space"`
+- **用途**：指定 AutoRound 存储临时文件和输出结果的自定义目录
+
+```bash
+export AR_WORK_SPACE=/path/to/custom/workspace
+```
+
+### AR_CACHE
+- **描述**：覆盖扩散模型标定数据集和已下载 GGUF 转换器的持久缓存根目录。
+- **默认值**：未设置（`None`）；数据集使用 `~/.cache/auto_round`，GGUF 转换器使用 `~/.cache/auto-round`。
+- **用途**：数据集缓存在 `$AR_CACHE/datasets` 下，GGUF 转换器缓存在 `$AR_CACHE/gguf_conversion` 下。此设置不影响 `AR_WORK_SPACE`。
+
+```bash
+export AR_CACHE=/path/to/cache
+```
+
+### AR_GGUF_AUTO_UPDATE
+- **描述**：当内置转换器不支持某个模型时，允许下载较新的 llama.cpp 转换器。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"` 或 `"on"`（不区分大小写）表示启用；其他值表示禁用。
+- **用途**：启用后允许自动下载转换器；下载文件存放在 GGUF 转换器缓存目录中。
+
+```bash
+export AR_GGUF_AUTO_UPDATE=1
+```
+
+### AR_DISABLE_OFFLOAD
+- **描述**：强制禁用 `OffloadManager` 中的权重卸载功能。在开发和调试时可跳过所有卸载/重载开销。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示禁用卸载；其他值保持默认行为
+- **用途**：设置后将完全绕过权重卸载
+
+```bash
+export AR_DISABLE_OFFLOAD=1
+```
+
+### AR_DISABLE_DATASET_SUBPROCESS
+- **描述**：禁用子进程方式进行数据集预处理。默认情况下，AutoRound 使用子进程确保所有临时内存在进程退出后被操作系统回收。
+- **默认值**：`False`
+- **有效值**：`"1"`、`"true"`（不区分大小写）表示禁用子进程；其他值表示启用子进程
+- **用途**：设置后数据集预处理将在主进程中运行
+
+```bash
+export AR_DISABLE_DATASET_SUBPROCESS=true
+```
+
+### AR_DISABLE_GGUF_MTP_EXPORT
+- **描述**：导出 GGUF 模型时禁用多 token 预测（MTP）层。默认情况下，AutoRound 遵循 llama.cpp 转换器的行为，在模型提供 MTP 层时将其一并导出。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"` 或 `"on"`（不区分大小写）表示禁用 MTP 导出；其他值保持启用 MTP 导出
+- **用途**：当 checkpoint 使用支持 MTP 的模型架构，但实际不包含 MTP tensor 时启用
+
+```bash
+export AR_DISABLE_GGUF_MTP_EXPORT=1
+```
+
+### AR_ACT_SCALE
+- **描述**：只用于研究性质，控制激活量化时对激活值最小/最大值的缩放系数。小于 1.0 的值会缩小裁剪范围，有助于减小离群值的影响。
+- **默认值**：`1.0`
+- **有效值**：任意浮点数，如 `0.8`、`0.9`、`1.0`
+- **用途**：调整激活裁剪范围
+
+```bash
+export AR_ACT_SCALE=0.9
+```
+
+### AR_ENABLE_ACT_MINMAX_TUNING 
+- **描述**：只用于研究性质，使用激活量化中最小/最大缩放参数（`act_min_scale`、`act_max_scale`）的调优。启用后，这些缩放参数将固定为 1.0。
+- **默认值**：`False`（等同于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示禁用调优；其他值表示保持调优
+- **用途**：禁用激活最小-最大缩放参数的调优
+
+```bash
+export AR_ENABLE_ACT_MINMAX_TUNING=1
+```
+
+### AR_SEARCH_SCALE_RATIO
+- **描述**：控制 `auto_round.data_type.int.search_scales` 中对称 INT 量化 scale 搜索的范围比例。搜索上界为 `nmax * AR_SEARCH_SCALE_RATIO`，其中 `nmax = 2^(bits-1)`。值越小搜索范围越窄（更快，但可能漏掉较优解）；值越大搜索范围越广（更慢，对离群权重可能更准）。
+- **默认值**：未设置 → 走内置默认值（`0.5`，即 `nmax/2`）。
+- **有效值**：正浮点数，如 `0.25`、`0.5`、`0.75`、`1.0`
+- **用途**：覆盖默认的 scale 搜索范围
+
+```bash
+export AR_SEARCH_SCALE_RATIO=0.75
+```
+
+### AR_NEUQI_COARSE
+- **描述**：NeUQI 网格搜索（`--enable_neuqi`，arXiv 2505.17595）粗阶段的候选数量。粗阶段扫描较宽的对数网格，细阶段在胜者附近细化（`AR_NEUQI_FINE`）。同时作用于非对称联合 (scale, zero-point) 搜索与对称两阶段 scale 搜索。
+- **默认值**：加速后端（Triton/torch.compile）为 `256`，eager 扫描为 `64` —— eager 路径每 group 需评估约 coarse x fine 个候选，因此未显式指定时使用更窄的默认网格（两种网格的实测质量持平）
+- **取值**：正整数
+- **用法**：调低可加快搜索，代价是网格覆盖范围变小。
+
+```bash
+export AR_NEUQI_COARSE=128
+```
+
+### AR_NEUQI_FINE
+- **描述**：NeUQI 网格搜索细阶段的候选数量，在粗阶段胜者附近细化。参见 `AR_NEUQI_COARSE`。
+- **默认值**：加速后端（Triton/torch.compile）为 `64`，eager 扫描为 `32`
+- **取值**：正整数
+- **用法**：调低可加快搜索，代价是最终分辨率下降。
+
+```bash
+export AR_NEUQI_FINE=32
+```
+
+### AR_NEUQI_BACKEND
+- **描述**：NeUQI 候选扫描的后端覆盖。`auto` 选择最快的可用后端（扩展 Triton 内核 → torch.compile 融合 → eager），并在内核首次失败时永久回退。`eager`/`compile`/`triton` 强制指定后端，用于调试或基准测试。
+- **默认值**：`auto`
+- **取值**：`auto`、`eager`、`compile`、`triton`
+- **用法**：驱动/硬件兼容性逃生口；推荐使用 `auto`。
+
+```bash
+export AR_NEUQI_BACKEND=eager
+```
+
+### AR_DYNAMO_CACHE_SIZE_LIMIT
+- **描述**：在开启 `torch.compile`（除 Windows 外默认开启）时，将 `torch._dynamo` 的 `cache_size_limit`、`accumulated_cache_size_limit` 与 `recompile_limit` 提升到的最小值。同一个被编译的量化函数会被 transformer block 内的所有 linear 层（q/k/v/o_proj、gate/up/down_proj 等）复用，但每层权重 shape 不同，按层的静态重编译会很快超过 dynamo 默认上限（8），导致打印告警并退回 eager。提高该上限可保留静态 shape 编译（性能最佳），仅增加缓存条目数。多设备运行时目标值会乘以参与设备数（逐层 shape 与逐设备 guard 钉住相乘地增加特化条目）；单设备运行直接使用该值。
+- **默认值**：`16`（多设备运行时按参与设备数相乘）
+- **有效值**：正整数
+- **用途**：当模型单个 block 内、每个参与设备的 linear 权重 shape 种类超过 16 时（较少见）可调大。
+
+```bash
+export AR_DYNAMO_CACHE_SIZE_LIMIT=32
+```
+
+### AR_MODEL_FREE_SHARD_PARALLELISM
+- **描述**：控制 model-free 量化时同时处理的权重 shard 数量。增大该值可提高资源利用率，但会占用更多内存。
+  - 自动策略（变量**未设置**时）：`shard_count // 4`，最大 **10**，最小 **1**。例如：8 个 shard → 2 个 worker；40 个 shard → 10 个 worker。
+  - 实际并行数始终不超过 shard 总数。
+- **默认值**：未设置 → 走自动策略（`shard_count // 4`，最大 10，最小 1）
+- **有效值**：任意正整数，不限于特定值，如 `2`、`4`、`6`、`8`；不能整除 shard 数时会自动均匀分配，末批处理剩余 shard，结果正确
+- **用途**：覆盖自动并行策略，手动指定并行数
+
+```bash
+export AR_MODEL_FREE_SHARD_PARALLELISM=4
+```
+
+### AR_AUTO_SCHEME_NSAMPLES
+- **描述**：控制 AutoScheme 评分时使用的校准样本数默认值，仅在 `AutoScheme.nsamples` 未显式设置时生效。
+- **默认值**：未设置 → 16
+- **有效值**：任意正整数，如 `8`、`16`、`32`
+- **用途**：覆盖 AutoScheme 的自动样本数选择
+
+```bash
+export AR_AUTO_SCHEME_NSAMPLES=1
+```
+
+### AR_AUTO_SCHEME_BATCH_SIZE
+- **描述**：控制 AutoScheme 评分时使用的批大小默认值，仅在 `AutoScheme.batch_size` 未显式设置时生效。
+- **默认值**：未设置 → 走内置启发式规则（低GPU内存模式为 8，普通模式为 1）
+- **有效值**：任意正整数，如 `1`、`2`、`4`
+- **用途**：覆盖 AutoScheme 的默认批大小
+
+```bash
+export AR_AUTO_SCHEME_BATCH_SIZE=1
+```
+
+### AR_AUTO_SCHEME_SEQLEN
+- **描述**：控制 AutoScheme 评分时使用的校准序列长度默认值，仅在 `AutoScheme.seqlen` 未显式设置时生效。
+- **默认值**：未设置 → 走内置启发式规则（MoE 模型为 128，其他为 256）
+- **有效值**：任意正整数，如 `256`、`512`、`1024`
+- **用途**：覆盖 AutoScheme 的默认序列长度（2-bit 方案通常在 `1024` 时效果更好）
+
+```bash
+export AR_AUTO_SCHEME_SEQLEN=1024
+```
+
+### AR_AUTO_SCHEME_NO_SERIAL_FALLBACK
+- **描述**：将并行评分失败变为硬错误，而不是回退到串行评分。当串行路径已知无法运行（或耗时会是 worker 数量的倍数）时非常有用：已完成的方案和批次会持久化在单方案缓存中，重新运行时只补打失败的部分。
+- **默认值**：未设置时，并行评分失败会回退到串行评分
+- **有效值**：`1`、`true`、`yes`（不区分大小写）
+- **用法**：设置该变量以在并行评分出错时快速失败
+
+```bash
+export AR_AUTO_SCHEME_NO_SERIAL_FALLBACK=1
+```
+
+### AR_AUTO_SCHEME_CACHE
+- **描述**：存放可持久复用的 AutoScheme 单方案评分 JSON 文件。该目录独立于用于临时工作数据的 `AR_WORK_SPACE`。
+- **默认值**：`~/.cache/auto_round`
+- **有效值**：任意可写目录路径
+- **用途**：将可复用的 AutoScheme 评分结果保存到其他缓存目录
+
+```bash
+export AR_AUTO_SCHEME_CACHE=/path/to/auto_scheme_cache
+```
+
+### AR_ENABLE_AUTO_SCHEME_PARALLEL
+- **描述**：启用 AutoScheme 候选方案之间的多进程并行。可与 `AR_DISK_STREAM_MODEL=1` 同时使用；此时每个 worker 会构建独立的 meta 模型骨架并分别流式加载 block。当并发 worker 可能耗尽主机内存或显存时，请将其关闭。
+- **默认值**：`"1"`（满足多进程要求时并行评分各方案）
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示启用并行评分；其他值表示关闭
+- **用途**：运行 AutoScheme 前将其设为 `0`，以强制串行评分候选方案
+
+```bash
+export AR_ENABLE_AUTO_SCHEME_PARALLEL=0
+```
+
+### AR_SCHEME_MEM_INVENTORY
+- **描述**：启用后，AutoScheme 流式评分会在 block 边界打印当前 CUDA tensor 清单（`[mem-inv]` 行）——按 (shape, dtype) 分组、按大小降序——便于发现未释放的模块权重或被保留的计算图。与该变量无关，打分 worker 的 CUDA OOM 错误始终会附带更详细的清单（活动 tensor、持有它们的容器以及出错算子的 traceback）。
+- **默认值**：`False`
+- **有效值**：`"1"`、`"true"`、`"yes"`（不区分大小写）表示启用；其他值表示禁用
+- **用法**：排查 AutoScheme 打分期间显存增长问题时启用
+
+```bash
+export AR_SCHEME_MEM_INVENTORY=1
+```
+
+### AR_NVFP4_E5M3_CACHE_HP_WEIGHT
+- **描述**：控制 `NVFP4E5M3QuantLinear` 是否在首次前向后缓存解量化得到的高精度权重，而不是每次调用都从打包的 FP4 权重重新解量化。
+- **默认值**：`False`（等价于 `"0"`）
+- **有效值**：`"1"`、`"true"`、`"yes"`、`"on"`（不区分大小写）表示启用缓存；其他值表示禁用缓存
+- **用途**：当重复推理吞吐比内存占用更重要时可启用。当前实现会在缓存高精度权重后释放 `weight_packed` 和 `weight_scale`，因此稳态内存占用会增大，且之后无法再切回打包存储。
+
+```bash
+export AR_NVFP4_E5M3_CACHE_HP_WEIGHT=1
+```
+
+### AR_DISK_STREAM_MODEL
+- **描述**：启用后，`AutoRound(model=<path>, ...)` 会将模型构建为 meta 设备骨架，而不是先把整个 checkpoint 完全加载到 CPU 内存；随后按需从 checkpoint 的 safetensors 分片中流式加载每个解码器块的真实权重——在该块被使用前（校准、调优或 `AutoScheme` 敏感度评分）才实体化，用完后立即释放回 meta。这样峰值 CPU 内存基本保持平稳，而不会随 checkpoint 大小成比例增长。非块参数（embedding、`lm_head`、最终归一化层）体积通常较小，仍会一次性加载。文本模型的 AutoScheme 评分也支持与默认启用的并行评分组合使用；每个 worker 会流式加载自己的 block 副本。
+- **默认值**：`False`
+- **有效值**：`"1"`、`"true"`、`"yes"`(不区分大小写)表示启用；其他任何值表示禁用
+- **用途**：用于量化体积超过可用 CPU 内存 + GPU 显存总和的 checkpoint。仅在 `model` 为字符串(本地目录)路径时生效，对已加载的模型对象无效。
+
+```bash
+export AR_DISK_STREAM_MODEL=1
+```
+
+### AR_ALLOW_W8_ASYM
+- **描述**：允许在所有导出格式下使用 8 位非对称权重量化，跳过对无法提供服务的格式（原生 `auto_round` / `auto_gptq` / `auto_awq` / marlin）的默认拒绝。未设置时，8 位非对称仅对 `llm_compressor` 格式（compressed-tensors，vLLM 可服务）开放，其他格式会被拒绝或回退为对称。使用该变量产出的模型可能无法在原生 vLLM GPTQ 格式服务中加载。
+- **默认值**：`0`（关闭）
+- **有效值**：`0` / `1`
+- **用法**：面向 vLLM 之外推理框架的显式逃生开关。
+
+```bash
+AR_ALLOW_W8_ASYM=1 python -m auto_round --model ... --scheme W8A16 --asym --format auto_round
+```
+
+### AR_DISABLE_BATCHED_SEARCH
+- **描述**：禁用批量量化搜索机制：SignRoundV2 的封装期 init-scale 搜索（iters>0）与 iters=0 的 optimized-RTN 搜索都将完全串行（GGUF DQ scale 搜索始终逐模块内联执行）、逐模块地在权重所在设备上执行。批量化将设备/形状/配置相同的模块堆叠为一次调用，逐模块结果比特级一致；设置该变量可回退到串行循环（例如用于调试，或二分定位疑似与批量化相关的差异）。堆叠也会改变瞬态显存占用（见 `AR_SEARCH_BATCH_GB`）。
+- **默认值**：`0`（启用批量化）
+- **有效取值**：`0` / `1`
+- **用法**：批量/并行搜索机制的总开关。
+
+```bash
+AR_DISABLE_BATCHED_SEARCH=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_PERF_COUNTERS
+- **描述**：为每个 block 输出一行 `[perf] tune phases` INFO 日志，包含各调优阶段（wrap / prepare / loop / tail）的耗时，以及循环内部的采样器抽取、最优参数快照、梯度同步 + 优化器步进、剩余时间和串行 forward+loss+backward 时间。用于大型多设备量化运行的性能归因；开销可忽略。
+- **默认值**：`0`（关闭）
+- **有效取值**：`0` / `1`
+- **用法**：在基准测试运行中设置，用于将 block 时间归因到封装搜索或调优循环。
+
+```bash
+AR_PERF_COUNTERS=1 python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_SEARCH_BATCH_GB
+- **描述**：显式覆盖批量量化搜索的堆叠批次大小，单位为每次调用堆叠 fp32 权重的 GiB 数。适用于所有批量 lane：iters=0 的 optimized-RTN 搜索、iters>0 的封装期搜索以及 NeUQI 网格锚定。未设置时批次大小按容量驱动：每个批次的大小使搜索的瞬态占用（批次的 fp32 拷贝链，NeUQI 场景另加封顶的内部临时量）不超过探测到的空闲显存的一半，且每个执行设备在调用时复查余量（过大的批次会减半而不是出错）。仅当需要把批次压到容量规划以下时才设置。
+- **默认值**：未设置（容量驱动）
+- **有效取值**：正浮点数（GiB）
+- **用法**：在显存紧张的多设备运行中缩小批次。
+
+```bash
+AR_SEARCH_BATCH_GB=0.5 python -m auto_round --model ... --device_map 0,1
+```
+
+### AR_MOE_EXPERTS_IMPL
+- **描述**：MoE 调优阶段（模型已按专家拆分）使用的前向实现。`auto`（默认）会在第一个 MoE 块之前预测 grouped-GEMM 调优路径的每卡显存占用，当 grouped 调优放不下时（qdq 堆叠保留 + 调优状态与各卡剩余显存比较）整个运行改用 `linear_loop`；决策与各卡数值都会记录到日志。显式取值不会被 `auto` 覆盖。
+- **默认值**：`auto`
+- **可选值**：`auto`、`linear_grouped`、`linear_grouped_sliced`、`linear_loop`
+- **用法**：强制指定调优时的专家前向实现，或保持 `auto` 由显存模型自动选择。
+
+```bash
+AR_MOE_EXPERTS_IMPL=linear_loop python -m auto_round --model ... --device_map 0,1,2,3
+```
+
+### AR_DISABLE_CROSS_DEVICE_SEARCH
+- **描述**：将批量搜索批次限制在权重所在设备上。默认情况下，两条搜索 lane 会集中规划批次：每个批次先落在权重所在设备，再从过载设备向空闲的可用设备再平衡，使搜索尽量铺满所有有余量的可见设备（此类搜索只读取自身模块的权重与逐模块统计量，从不读取校准激活；每个执行设备由单个工作线程独占）。非 CUDA 设备族的批次始终留在权重所在设备。以下情况设为 `1`：机架 GPU 与其他任务共享（空闲显存探针无法看到其他任务的占用）、调试跨设备行为、或 PCIe 传输开销超过搜索收益的主机。当没有设备放得下时，批次留在权重所在设备并依赖逐批次的 OOM 回退。
+- **默认值**：`0`（启用多 GPU 搜索，探针门控）
+- **有效取值**：`0` / `1`
+- **用法**：将搜索流量固定在权重所在设备。
+
+```bash
+AR_DISABLE_CROSS_DEVICE_SEARCH=1 python -m auto_round --model ... --iters 0
+```
+
+### AR_RESUME_DIR
+- **描述**：设置为目录路径后，逐块调优循环会在每完成一个块后将进度写入该目录，并在针对同一目录的新一次运行中从第一个未完成的块继续——而不是在崩溃或被杀死后从第 0 块重新开始整个调优过程。
+- **默认值**：未设置(不支持断点续跑)
+- **有效值**：任意可写目录路径
+- **用途**：用于大 checkpoint 的长时间量化任务，避免运行中途崩溃导致从头重跑的高昂代价。
+
+```bash
+export AR_RESUME_DIR=/path/to/resume/state
+```
+
+## 使用示例
+
+### 设置环境变量
+
+#### 通过 Shell 命令
+```bash
+# 将日志级别设置为 DEBUG
+export AR_LOG_LEVEL=DEBUG
+
+# 启用编译打包
+export AR_ENABLE_COMPILE_PACKING=1
+
+# 使用 ModelScope 下载模型
+export AR_USE_MODELSCOPE=true
+
+# 设置自定义工作目录
+export AR_WORK_SPACE=/tmp/autoround_workspace
+```
+
+#### 通过 Python 代码
+```python
+from auto_round.envs import set_config
+
+# 同时配置多个环境变量
+set_config(
+    AR_LOG_LEVEL="DEBUG",
+    AR_USE_MODELSCOPE=True,
+    AR_ENABLE_COMPILE_PACKING=True,
+    AR_WORK_SPACE="/tmp/autoround_workspace",
+)
+```
+
+### 查看环境变量
+
+#### 通过 Python 代码
+```python
+from auto_round import envs
+
+# 访问环境变量（懒加载求值）
+log_level = envs.AR_LOG_LEVEL
+use_modelscope = envs.AR_USE_MODELSCOPE
+enable_packing = envs.AR_ENABLE_COMPILE_PACKING
+workspace = envs.AR_WORK_SPACE
+
+print(f"日志级别: {log_level}")
+print(f"使用 ModelScope: {use_modelscope}")
+print(f"启用编译打包: {enable_packing}")
+print(f"工作目录: {workspace}")
+```
+
+#### 检查变量是否显式设置
+```python
+from auto_round.envs import is_set
+
+# 检查环境变量是否被显式设置
+if is_set("AR_LOG_LEVEL"):
+    print("AR_LOG_LEVEL 已被显式设置")
+else:
+    print("AR_LOG_LEVEL 正在使用默认值")
+```
+
+## 配置最佳实践
+
+1. **开发环境**：设置 `AR_LOG_LEVEL=TRACE` 或 `AR_LOG_LEVEL=DEBUG` 以获取详细日志
+2. **生产环境**：使用 `AR_LOG_LEVEL=WARNING` 或 `AR_LOG_LEVEL=ERROR` 减少日志噪声
+3. **中国用户**：建议设置 `AR_USE_MODELSCOPE=true` 以获得更好的模型下载速度
+4. **性能优化**：如有足够算力，可启用 `AR_ENABLE_COMPILE_PACKING=1`
+5. **自定义工作目录**：将 `AR_WORK_SPACE` 设置为磁盘空间充足的目录
+
+### AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES
+- **描述**：限制携带 hook 的分片采集前向并发使用的设备数（hook 前向会使编译后的执行器在图分段之间退回 Python 绑定，可能在 GIL 上形成串行瓶颈）。仅在 hook 前向出现串行瓶颈的主机上才需要调低；在验证机台上至 world=8 未复现。大于已启用 world 的值等效于不限制。
+- **默认值**：`0`（不限制）
+- **取值**：非负整数
+- **用法**：在弱 CPU 主机上限制并发分片前向线程数。
+
+```bash
+AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES=2 python -m auto_round --model ... --data_parallel 8
+```
+
+## 注意事项
+
+- 环境变量采用懒加载方式，仅在首次访问时读取
+- `set_config()` 函数提供了便捷的程序化多变量配置方式
+- `AR_USE_MODELSCOPE` 的布尔值会自动转换为适当的字符串表示
+- 所有环境变量名称区分大小写
+- 通过 `set_config()` 所做的修改将影响当前进程及其子进程

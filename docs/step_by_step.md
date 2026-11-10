@@ -27,12 +27,15 @@ This document presents step-by-step instructions for auto-round llm quantization
     - [API Usage](#api-usage-1)
     - [Hyperparameters in AutoScheme](#hyperparameters-in-autoscheme)
   + [OPT RTN mode](#opt-rtn-mode)
+  + [AWQ Algorithm-Experimental](#awq-algorithm)
+  + [SVDQuant Algorithm-Experimental](#svdquant-algorithm)
+  + [Model-Free Mode](#model-free-mode)
   + [GGUF format](#gguf-format)
   + [Quantization Costs](#quantization-costs)
   + [Device/Multi-GPU setting in Quantization](#devicemulti-gpu-setting-in-quantization)
     - [Enable multiple gpus calibration in lm_head quantization](#enable-multiple-gpus-calibration-in-lm_head-quantization)
   + [Adjust Hyperparameters](#adjust-hyperparameters)
-  + [Hadamard Transform](#hadamard-transform)
+  + [Rotation (Research)](#rotation-research)
 * [4 Inference](#4-inference)
   + [CPU](#cpu)
   + [Intel GPU](#intel-gpu)
@@ -60,13 +63,22 @@ pip install auto-round
 
 The [NeelNanda/pile-10k](https://huggingface.co/datasets/NeelNanda/pile-10k) in huggingface is adopted as the default
 calibration data and will be downloaded automatically from the datasets Hub. Other available datasets include:
-- `swift/pile-val-backup` from modelscope for addressing HF network issue
+- [`fineweb-edu`](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu) from Hugging Face. If Hugging Face is
+  inaccessible, install `modelscope`, set `AR_USE_MODELSCOPE=1`, and use the same alias to load the
+  [ModelScope mirror](https://modelscope.cn/datasets/AI-ModelScope/fineweb-edu)
 - `BAAI/CCI3-HQ` for Chinese
 - `codeparrot/github-code-clean` for code
 - `HuggingFaceH4/ultrachat_200k` for chat data
 - `madao33/new-title-chinese` for Chinese
 - `mbpp` for code
+- `nvidia/OpenCodeInstruct` for code instruction data
 - `openbmb/Ultra-FineWeb`
+- `openbmb/UltraData-SFT-Agent-2609` (experimental) for agent/tool-calling data. Each sample carries a `messages` conversation
+  (with `tool_calls`/tool turns) and a `tools` schema that is rendered through the chat template (`apply_chat_template`
+  is always enabled), so the quantized model sees full tool-calling traces. All configs (`Code-Agent`, `Search-Agent`,
+  `General-Agent`, `Tool-Use`) are loaded and interleaved
+- `qwedsacf/competition_math` (experimental) for math (the `problem` and `solution` fields are concatenated, and short
+  samples are packed into full `seqlen` sequences by default)
 
 ### Customized Dataset
 
@@ -101,11 +113,58 @@ and huggingface dataset are supported. You could specify splits of a dataset by 
 **Samples concatenation**: An optional setting allows users to concatenate calibration samples
 using `--dataset NeelNanda/pile-10k:concat=True`.
 All samples will be concatenated first, then split into chunks of seqlen length.
+For the generic loader (any HuggingFace dataset, or one specified with `fields`/`template`),
+`concat=True` performs sample-level packing instead: whole samples are accumulated until the buffer
+reaches `seqlen`, a full-length sequence is emitted, and the buffer is reset so the next sample starts
+a fresh concatenation. This prevents datasets whose individual samples are shorter than `seqlen`
+(e.g. `qwedsacf/competition_math`) from being dropped by the length filter.
 
 **Apply chat template**: Using `--dataset NeelNanda/pile-10k:apply_chat_template` enables application of a chat template
 to the calibration data before tokenization. This is commonly used for instruct-style models during generation. To
 customize the system prompt,
 use:`--dataset 'NeelNanda/pile-10k:apply_chat_template:system_prompt="You are a helpful assistant."'`
+
+**Generic dataset loading** (experimental): Any HuggingFace dataset can be used directly without prior registration. The text field
+is auto-detected by inspecting column names and sampling values. For example:
+`--dataset my-org/my-dataset:split=train:num=512`
+
+> **Note**: Generic dataset loading (including `fields`, `template`, `separator`, `timeout`, auto field detection, and the
+> `CalibDataset` API below) is **experimental** and its behavior/interface may change in future releases.
+
+**Field selection**: Use `fields` to explicitly specify the text column(s). A single field:
+`--dataset my-org/my-dataset:fields=text`. Multiple fields are concatenated with a separator:
+`--dataset my-org/my-dataset:fields=question+answer`
+
+**Template**: Use `template` with `{field}` placeholders to build custom text from multiple columns.
+Takes precedence over `fields` when both are set.
+`--dataset 'my-org/my-dataset:template={question} {answer}'`
+
+**Separator**: When concatenating multiple fields, customize the separator (default `"\n\n"`):
+`--dataset 'my-org/my-dataset:fields=q+a:separator=\n'`
+
+**Timeout**: For streaming datasets, set `timeout` (seconds) to bound data collection. If the dataset
+cannot provide enough samples within the timeout, a warning is logged and the collected samples are used.
+`--dataset my-org/my-dataset:timeout=600`
+
+**CalibDataset (API)**: For programmatic usage, the `CalibDataset` dataclass provides a typed interface:
+
+    ~~~python
+    from auto_round.utils.dataset_utils import CalibDataset
+    from auto_round import AutoRound
+
+    # Single field
+    spec = CalibDataset("my-org/my-dataset", split="train", num=1000, fields="text")
+
+    # Multiple fields concatenated
+    spec = CalibDataset("my-org/my-dataset", fields=["question", "answer"], separator="\n")
+
+    # Template
+    spec = CalibDataset("my-org/my-dataset", template="{question} {answer}")
+
+    # Pass directly to AutoRound
+    ar = AutoRound(model="Qwen/Qwen3-8B", dataset=spec, scheme="W4A16")
+    ar.quantize_and_save()
+    ~~~
 
 Note: If the concatenation option is not enabled, samples shorter than args.seqlen will be dropped.
 
@@ -119,12 +178,18 @@ AutoRound supports several Schemes:
 
 - **W4A16**(bits:4,group_size:128,sym:True,act_bits:16)
 - **W8A16**(bits:8,group_size:128,sym:True,act_bits:16)
+- **W7A16**(bits:7,group_size:128,sym:True,act_bits:16)
+- **W6A16**(bits:6,group_size:128,sym:True,act_bits:16)
+- **W5A16**(bits:5,group_size:128,sym:True,act_bits:16)
 - **W3A16**(bits:3,group_size:128,sym:True,act_bits:16)
 - **W2A16**(bits:2,group_size:128,sym:True,act_bits:16)
+- **Group-size variants** `W{2..8}A16G64` / `W{2..8}A16G32` - `llm_compressor` (W2-W8); `auto_round` / `auto_gptq` (W2 only)
+- Asymmetric quantization (`--asym`) supports weight bits <= 7 for `auto_round` / `auto_gptq` / `auto_awq` exports: vLLM serves W8 GPTQ-format weights symmetric-only and Marlin supports zero points at 4 bits only. The `llm_compressor` format supports 8-bit asym - vLLM serves it via Machete (SM90+, group sizes 64/128/-1) or Conch (SM80+, group size 128 or channelwise). The rule applies uniformly to AutoScheme options and fixed layer pins (e.g. lm_head): a run exporting to `llm_compressor` keeps its 8-bit entries asymmetric, other formats pin them back to symmetric. Setting the environment variable `AR_ALLOW_W8_ASYM=1` lifts the restriction for every format (for serving stacks beyond stock vLLM); artifacts produced with it may not load in vLLM.
 - **GGUF:Q4_K_M**(all Q*_K,Q*_0,Q*_1 provided by llamacpp are supported)
 - **Mixed Bits Weight only**
 - **NVFP4**(Experimental feature, recommend exporting to `llm_compressor` format.data_type nvfp4,act_data_type nvfp4,static_global_scale,group_size 16)
 - **MXFP4**(**Research feature, no real kernel**, Standard MXFP4, data_type mxfp,act_data_type mxfp,bits 4, act_bits 4, group_size 32)
+- **MXINT4**(**Research feature, no real kernel**, Standard MXINT4, data_type mxint,act_data_type mxint,bits 4, act_bits 4, group_size 32)
 - **MXFP4_RCEIL**(**Research feature,no real kernel**, NVIDIA's variant, data_type mxfp,act_data_type mxfp_rceil,bits 4, act_bits 4, group_size 32)
 - **MXFP8**(**Research feature, no real kernel**, data_type mxfp,act_data_type mxfp_rceil,group_size 32)
 - **FPW8A16**(**Research feature, no real kernel**, data_type fp8,group_size 0->per tensor )
@@ -136,7 +201,17 @@ Besides, you could modify the `group_size`, `bits`, `sym` and many other configs
 You can use command `auto_round list format` to show all supported formats with support scheme.
 
 **AutoRound Format**: This format is well-suited for CPU, Intel GPU, CUDA and HPU devices, 2 bits, as well as mixed-precision
-inference. **[2,3,4,8] bits are supported**. Please set `--format auto_round`
+inference. **[2,3,4,5,6,7,8] bits are supported**. Please set `--format auto_round`
+
+> **About 5/6/7 bits**: these widths do not divide 32 evenly, so each value is stored in a contiguous
+> little-endian bit-stream laid over blocks of 32 values (`in_features * bits / 32` int32 words).
+> This is a strict generalization of the existing layouts — 2/4/8-bit and 3-bit checkpoints keep
+> byte-identical `qweight`/`qzeros`. 5/6/7 bits work with `auto_round`, `auto_round:auto_gptq` and
+> `auto_round:auto_awq`, and can be freely combined in mixed-bit recipes. Upstream AutoGPTQ/AutoAWQ
+> kernels cannot read them, so the plain `auto_gptq` / `auto_awq` formats still reject 5/6/7 bits.
+> Both `in_features` and `out_features` must be multiples of 32. For inference, install the
+> [humming](https://github.com/inclusionAI/humming) kernels (`pip install git+https://github.com/inclusionAI/humming.git`);
+> otherwise AutoRound falls back to the slow `torch` dequantize-and-matmul backend.
 
 **GGUF** Format: Experimental feature. This format is well-suited for CPU devices and is widely adopted by the
 community. `q*_k`,`q*_0`,`q*_1` are supported. Please set `--format gguf:q4_k_m`,  `--format gguf:q2_k_s`, etc
@@ -148,26 +223,34 @@ models. Besides, recently 3 bits may have some accuracy issues in Transformers. 
 
 **AutoAWQ Format**: This format is well-suited for asymmetric 4-bit quantization on CUDA devices and is widely
 adopted within the community, **only 4-bits quantization is supported**. Please set `--format auto_awq`
+(the AutoRound-flavoured `auto_round:auto_awq` additionally supports 5/6/7 bits).
 
 **LLM-Compressor Format**: **NVFP4, MXFP4(kernel in WIP), MXFP8 are supported**. Please set `--format llm_compressor`
 
+**MLX Format**[Experimental Feature]: This format targets Apple Silicon (M1/M2/M3/...) and is loaded directly by [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (text-only LLM) or [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) (vision/audio + language).
+- Supports **2, 3, 4, 5, 6, 8 bits** (5/6 bits are MLX-exclusive — GPTQ/AWQ have no standard packing for them).
+- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--schemes "..." --bits 3.5`);
+- Use `--format mlx` for a native MLX checkpoint; use `--format auto_round:mlx` if you want HuggingFace `transformers` + AutoRound to load it (post-init repacks each layer into MLX `QuantLinear` on Darwin).
+- Limitation: embedding layer quantization has not supported
 #### Format and scheme support matrix
 > Gray indicates the absence of a kernel or the presence of only an inefficient/reference kernel. BF16 is mainly for AutoScheme
 
-
-| Format | Supported Schemes                                                                                                                                                       |
-|:---|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **auto_round** | W4A16, W2A16, W3A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `BF16`           |
-| **auto_awq** | W4A16, BF16                                                                                                                                                             |
-| **auto_gptq** | W4A16, W2A16, W3A16, W8A16,W2A16G64, W2A16G32, BF16                                                                                                                     |
-| **llm_compressor** | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK                                                                                                   |
-| **gguf** | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
-| **fp8**  | FP8_BLOCK                                                                                                                                                               |
-| **fake** | `all schemes (only for research)`                                                                                                                                       |
+| Format                       | Supported Schemes                                                                                                                                                       |
+|:-----------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **auto_round**               | W4A16, W2A16, W3A16, W5A16, W6A16, W7A16, W8A16, W2A16G64, W2A16G32, `MXFP4`, `MXFP8`, `MXFP4_RCEIL`, `MXFP8_RCEIL`, `NVFP4`, `FPW8A16`, `FP8_STATIC`, `FP8_BLOCK`, `BF16`, `MXINT4`         |
+| **llm_compressor**           | NVFP4, `MXFP4`, `MXFP8`, `FPW8A16`, `FP8_STATIC`, FP8_BLOCK, W2A16, W3A16, W4A16, W5A16, W6A16, W7A16, W8A16 and G64/G32 variants of W2-W8                                                            |
+| **gguf**                     | GGUF:Q4_K_M, GGUF:Q2_K_S, GGUF:Q3_K_S, GGUF:Q3_K_M, GGUF:Q3_K_L, GGUF:Q4_K_S, GGUF:Q5_K_S, GGUF:Q5_K_M, GGUF:Q6_K, GGUF:Q4_0, GGUF:Q4_1, GGUF:Q5_0, GGUF:Q5_1,GGUF:Q8_0 |
+| **mlx** / **auto_round:mlx** | W2A16, W3A16, W4A16, W5A16, W6A16, W8A16, BF16, mixed-bit / mixed-group_size (Apple Silicon only)                                                                       |
+| **auto_round:auto_awq**      | W4A16, W5A16, W6A16, W7A16, BF16                                                                                                                                        |
+| **auto_round:auto_gptq**     | W4A16, W2A16, W3A16, W5A16, W6A16, W7A16, W8A16, W2A16G64, W2A16G32, BF16                                                                                               |
+| **auto_awq**                 | W4A16, BF16                                                                                                                                                             |
+| **auto_gptq**                | W4A16, W2A16, W3A16, W8A16,W2A16G64, W2A16G32, BF16                                                                                                                     |
+| **fp8**                      | FP8_BLOCK                                                                                                                                                               |
+| **fake**                     | `all schemes (only for research)`                                                                                                                                       |
 
 ### Hardware Compatibility
 
-CPU, Intel GPU, HPU and CUDA for both quantization and inference.
+CPU, Intel GPU, HPU and CUDA for both quantization and inference. The **MLX format** is exclusive to **Apple Silicon (macOS / Darwin)** at inference time; quantization (export) itself can be done on any platform.
 
 ### Environment Configuration
 
@@ -200,6 +283,22 @@ Before starting quantization, you may want to configure AutoRound's environment 
     auto-round-light --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_gptq,auto_awq,auto_round"
     ```
 
+- **AutoRoundOptRTN recipe  (optimized RTN, without gradient computation):**
+
+    This setting runs the optimized RTN (Round-To-Nearest) path (`iters=0` with `disable_opt_rtn=False`). It is calibration-free and several times faster than the default AutoRound recipe, while still applying AutoRound's RTN-side optimizations (e.g. improved scale/zero-point search and llamacpp-style refinements for GGUF). Recommended as a fast baseline when calibration data or tuning time is limited. See the [OPT RTN Mode](#opt-rtn-mode) section for details.
+
+    ```bash
+    auto-round-opt-rtn --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_round"
+    ```
+
+- **AutoRoundRTN recipe (pure RTN, calibration-free, no optimization):**
+
+    This setting runs pure RTN (`iters=0` with `disable_opt_rtn=True`), without any AutoRound optimization. It is the fastest path and uses the least memory, but typically yields lower accuracy than `auto-round-opt-rtn`. When combined with a supported INT WOQ scheme, it is automatically routed through [Model-Free Mode](#model-free-mode) for minimal memory usage. Use this as a quick sanity-check or when you want a calibration-free baseline equivalent to traditional RTN.
+
+    ```bash
+    auto-round-rtn --model Qwen/Qwen3-0.6B  --scheme "W4A16"  --format "auto_round"
+    ```
+
 ### API usage
 #### AutoRound API Usage
 This setting offers a better trade-off between accuracy and tuning cost, and is recommended in all scenarios.
@@ -211,7 +310,7 @@ model_name_or_path = "Qwen/Qwen3-0.6B"
 ar = AutoRound(
     model_name_or_path,
     scheme="W4A16",
-    # enable_torch_compile=True,
+    # torch.compile is enabled by default except on Windows. On Windows, set True to force enable it.
 )
 
 output_dir = "./tmp_autoround"
@@ -281,11 +380,13 @@ configuration to suit your specific requirements and available resources.
 <details>
   <summary>Recipe Configuration Details</summary>
 
-| Recipe  | batch_size | iters | seqlen | nsamples | lr    |
-|---------|------------|-------|--------|----------|-------|
-| default | 8          | 200   | 2048   | 128      | None  |
-| best    | 8          | 1000  | 2048   | 512      | None  |
-| light   | 8          | 50    | 2048   | 128      | 5e-3  |
+| Recipe  | batch_size | iters | seqlen | nsamples | lr    | disable_opt_rtn |
+|---------|------------|-------|--------|----------|-------|-----------------|
+| default | 8          | 200   | 2048   | 128      | None  | False           |
+| best    | 8          | 1000  | 2048   | 512      | None  | False           |
+| light   | 8          | 50    | 2048   | 128      | 5e-3  | False           |
+| opt_rtn | 8          | 0     | 2048   | 128      | None  | False           |
+| rtn     | 8          | 0     | 2048   | 0        | None  | True            |
 
 </details>
 
@@ -312,19 +413,146 @@ W2G64 Average Accuracy of 13 tasks and Time Cost Results(Testing was conducted o
 
 </details>
 
-### AutoScheme
+### AWQ Algorithm
 
-AutoScheme provides an automatic algorithm to generate adaptive mixed bits/data-type quantization recipes.  For some accuracy result, please refer this doc [here](./auto_scheme_acc.md)
+**Experimental feature:** AWQ weight clipping is optional. Enable it with `--awq_apply_clip` when you want to match the original AWQ flow more closely.
 
-**Please note that mixed data types are supported during tuning, but cannot be exported to real models at this time..**
+AWQ (Activation-Aware Weight Quantization) is available as an alternative quantization algorithm. AWQ protects salient weight channels by analyzing activation patterns and applying channel-wise scaling before standard RTN quantization.
+
+The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **INT8** is AutoRound's W8A8 scheme and can use AWQ smoothing before RTN quantization for vLLM's compressed_tensors backend (cutlass INT8 GEMM).
+
+AWQ can also be composed with AutoRound optimization (`--alg_configs awq,auto_round`). See [AWQ algorithm results](./awq_details.md) for accuracy and cost comparisons across W4A16, MXFP4, and INT8.
 
 #### CLI Usage
-use `iters=200`for tuning.
+
+The canonical algorithm selector is `--alg_configs`, matching the Python API's `alg_configs`. `--alg_config`, `--algorithm`, `--algorithms`, `--alg`, and `--algs` remain aliases.
+
+```bash
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --alg_configs awq --format "auto_round"
+```
+
+AWQ can also be paired with AutoRound optimization:
+
+```bash
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --alg_configs awq,auto_round
+```
+
+Recommended INT8/W8A8 recipe using AWQ smoothing:
+
+```bash
+auto-round \
+  --model Qwen/Qwen3-0.6B \
+  --scheme INT8 \
+  --alg_configs awq \
+  --nsamples 256 \
+  --awq_seqlen 512 \
+  --awq_apply_clip \
+  --format auto_round:llm_compressor
+```
+
+The explicit `--nsamples 256` and `--awq_seqlen 512` settings are recommended for W8A8 AWQ calibration. The default
+AutoRound values are tuned for AutoRound optimization, not plain AWQ smoothing.
+
+AWQ-specific options:
+- `--awq_duo_scaling`: Use both activations and weights for scaling. Options: `true`, `false`, or `both` (searches both modes and picks the best). (default: True).
+- `--awq_n_grid`: Number of grid points for scaling ratio search (default: 20).
+- `--awq_apply_clip`: Search and apply AWQ weight clipping after smoothing.
+- `--awq_seqlen`: Maximum sequence length used by AWQ calibration, including activation statistics, smoothing
+  scale search, and clip-search input features. This is separate from the global `--seqlen`, which controls
+  calibration sample construction. Set a value `<= 0` to use the full calibration sequence.
+
+API-only AWQ options:
+- `AWQConfig(skip_moe=True)`: Skips routed MoE experts during AWQ smoothing while keeping attention and dense/shared paths. Explicit `mappings` are used as provided.
+
+#### API Usage
+
+For default AWQ settings, the string alias is sufficient:
+
+```python
+from auto_round import AutoRound
+
+ar = AutoRound(model, tokenizer, alg_configs="awq", scheme="W4A16")
+```
+
+Use `AWQConfig` when you need AWQ-specific options such as `apply_clip=True`:
+
+```python
+from auto_round import AWQConfig, AutoRound
+
+ar = AutoRound(
+    "Qwen/Qwen3-0.6B",
+    scheme="W4A16",
+    alg_configs=AWQConfig(apply_clip=True),
+)
+
+output_dir = "./tmp_awq"
+ar.quantize_and_save(output_dir, format="auto_round:llm_compressor")
+```
+
+`alg_configs="awq"` or `alg_configs=AWQConfig()` selects the AWQ algorithm. This is independent from export
+format selection such as `format="auto_awq"`. For example:
+- `alg_configs="awq"` + `format="auto_round"`: AWQ smoothing with AutoRound packing.
+- `alg_configs="signround"` + `format="auto_awq"`: AutoAWQ packing without AWQ smoothing.
+
+### SVDQuant Algorithm
+
+**Experimental feature: the end-to-end workflow has currently been validated with FLUX.1-dev only.**
+
+SVDQuant decomposes each Linear weight into a quantized residual branch and a small floating-point low-rank branch. It can be combined with RTN or SignRound to produce an MXFP4 model for Nunchaku inference.
+
+RTN (recommended starting point):
+
+```bash
+auto-round-rtn --model /path/to/FLUX.1-dev --model_dtype bf16 \
+  --scheme MXFP4 --alg_configs svdquant --device 0 \
+  --format svdquant_nunchaku \
+  --output_dir ./flux-dev-mxfp4-svdquant-rtn
+```
+
+SignRound:
+
+```bash
+auto-round --model /path/to/FLUX.1-dev --model_dtype bf16 \
+  --scheme MXFP4 --alg_configs svdquant,auto_round \
+  --format svdquant_nunchaku \
+  --dataset /path/to/captions.tsv --batch_size 1 --device 0 \
+  --output_dir ./flux-dev-mxfp4-svdquant-signround
+```
+
+FLUX.1-dev quality results using Nunchaku commit [`4de4986`](https://github.com/changwangss/nunchaku/commit/4de49869eaa8565d8c29da344323e82298bdf198):
+
+| Configuration | CLIP | CLIP-IQA | ImageReward |
+|---|---:|---:|---:|
+| BF16 | 26.0189 | 0.954360 | 1.018340 |
+| MXFP4, smooth + SVDQuant + SignRound | **26.1039** | **0.962655** | **1.021020** |
+| MXFP4, no smooth + SVDQuant + SignRound | 26.0727 | 0.959363 | 1.002380 |
+| MXFP4, smooth + SVDQuant + RTN | 25.9719 | 0.947763 | 0.939392 |
+| MXFP4, no smooth + SVDQuant + RTN | 25.9624 | 0.946939 | 0.934579 |
+
+SignRound used 128 calibration samples, 50 inference steps, 200 tuning iterations, rank 32, and 20 residual iterations.
+
+See [SVDQuant Details](./svdquant_details.md) for smooth search, residual iterations, export, and inference.
+
+### AutoScheme
+
+AutoScheme automatically generates adaptive mixed-bit and mixed-data-type quantization recipes. For accuracy results, see [AutoScheme Accuracy Report](./auto_scheme_acc.md).
+
+We recommend exporting to the llm_compressor format for now, as it can be easily deployed with vLLM.
+
+**Note:** Mixed-data-types are supported during tuning, but cannot be exported to real models at this time.
+
+#### CLI Usage
+
+- **`--iters 0`**: RTN. Fast (seconds to minutes).
+- **`--iters 200`**: Tuning-aware scheme selection. More accurate but much slower.
+
+Providing multiple candidates through `--scheme` (alias: `--schemes`) enables AutoScheme; `--bits` is then the average target bits. A single candidate selects a fixed quantization preset.
+
 ~~~bash
 auto_round \
   --model_name  $model_name \
-  --avg_bits 6 \
-  --options "mxfp4,mxfp8" \
+  --scheme "mxfp4,mxfp8" \
+  --bits 6 \
   --ignore_scale_zp_bits \
   --iters 0 \
   --format fake 
@@ -332,55 +560,78 @@ auto_round \
 
 #### API Usage
 ~~~
-avg_bits= 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("W2A16G64“, "W4A16","W8A16"))
-ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, scheme=("W2A16G64", "W4A16", "W8A16"), bits=3.0, iters=0, nsamples=1)
 ar.quantize_and_save()
 ~~~
 
 #### Hyperparameters in AutoScheme
-`avg_bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation.
+`bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation. With a fixed scheme rather than an AutoScheme candidate list or tuple, `bits` is the plain weight bit width and must be an integer.
 
-`options(Union[str, list[Union[QuantizationScheme, str]])` the options of quantization schemes to choose from. It could be a string like "W4A16", or a list of strings or QuantizationScheme objects.
+`scheme(list[Union[QuantizationScheme, str]] | tuple[Union[QuantizationScheme, str], ...])` the candidate quantization schemes to choose from, e.g. `["W4A16", "W8A16"]` or `("W4A16", "W8A16")`. Pass a list or tuple of strings or QuantizationScheme objects to enable AutoScheme in Python; a single string selects a fixed preset. The Python API does not accept `schemes=`.
 
 `ignore_scale_zp_bits(bool)` Whether to ignore the bits of scale and zero point in average bits calculation. Default is False.
 
 `device_map (Optional[str,dict,torch.device])`  only supported in API now, as auto-scheme used more VRAM than auto-round tuning, so you could set a different device_map for it.
 
-`shared_layers (Optional[Iterable[Iterable[str]]])`  only supported in API now
+`shared_layers (Optional[Iterable[Iterable[str]]])`  extra groups of layers that must share one quantization scheme, on top of the built-in vLLM fusion groups (see below). Only supported in API now.
+
+`default_shared_layers (bool)` Whether to automatically share one quantization scheme across the projections vLLM/SGLang fuse at serving time: `q_proj`/`k_proj`/`v_proj` (fused into `qkv_proj`), `q_a_proj`/`kv_a_proj_with_mqa` (DeepSeek-style MLA, fused into `fused_qkv_a_proj`), and `gate_proj`/`up_proj` (fused into `gate_up_proj`). Default is `True`; set it to `False`, or export `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`, to let AutoScheme pick a scheme per projection independently. CLI: `--disable_default_shared_layers`.
 
 `batch_size (Optional[int])` could be set to 1 to reduce VRAM but increase time cost
 
 `low_gpu_mem_usage(bool=True)` whether to reduce gpu memory usage at the cost of more time cost
 
-In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
+`calibration_data_device (str)` placement of the block calibration data in multi-GPU runs: `auto` (default) | `cpu` | `off` | `1,2` | `cuda:1,cuda:2`. CLI: `--calibration_data_device`.
+
+In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. `shared_layers` lets you declare such groups explicitly, supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
+
+**Fused projections are shared by default.** Because vLLM and SGLang fuse `q/k/v` into `qkv_proj` and `gate/up` into `gate_up_proj` (and DeepSeek-style MLA fuses `q_a_proj`/`kv_a_proj_with_mqa` into `fused_qkv_a_proj`), a single fused kernel can only apply one quantization scheme. AutoScheme therefore assigns one scheme per fused group out of the box, matching leaf names exactly so look-alike layers such as `q_proj_moe_gen` or `down_proj` are never pulled in. Any `shared_layers` you pass is unioned with these built-in groups. To opt out and let AutoScheme choose per projection, pass `default_shared_layers=False` or export `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`.
+
+**MoE expert layers are automatically grouped per block** — all expert projections (gate/up/down across all experts) within the same transformer block are treated as a single entity during DP optimization. This means they share the same quantization scheme and their losses/numel are summed together. No manual `shared_layers` configuration is needed for expert layers.
 
 
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
+# The vLLM fusion groups (q/k/v, MLA q_a/kv_a, gate/up) are applied automatically;
+# shared_layers only adds extra groups on top of them.
 shared_layers = [
     ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
     ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
     ("fc1", "fc2"),
 ]
-target_bits = 5.0
 model_name = "Qwen/Qwen3-0.6B"
-scheme = AutoScheme(avg_bits=target_bits, options=("W4A16", "MXFP8"), shared_layers=shared_layers)
-ar = AutoRound(model=model_name, scheme=scheme, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, scheme=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
+```
+
+To keep the pre-existing behavior (independent scheme per projection), disable the defaults:
+```python
+ar = AutoRound(
+    model=model_name,
+    scheme=("W4A16", "MXFP8"),
+    bits=5.0,
+    default_shared_layers=False,
+    iters=0,
+    nsamples=1,
+)
 ```
 
 Besides, if you want to fix the scheme for some layers, you could set it via `layer_config` in AutoRound API.
 ```python
-from auto_round import AutoRound, AutoScheme
+from auto_round import AutoRound
 
 model_name = "Qwen/Qwen3-8B"
-avg_bits = 3.0
-scheme = AutoScheme(avg_bits=avg_bits, options=("GGUF:Q2_K_S", "GGUF:Q4_K_S"), ignore_scale_zp_bits=True)
 layer_config = {"lm_head": "GGUF:Q6_K"}
 
-ar = AutoRound(model=model_name, scheme=scheme, layer_config=layer_config, iters=0)
+ar = AutoRound(
+    model=model_name,
+    scheme=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    bits=3.0,
+    ignore_scale_zp_bits=True,
+    layer_config=layer_config,
+    iters=0,
+)
 ar.quantize_and_save()
 ```
 
@@ -388,7 +639,7 @@ ar.quantize_and_save()
 
 We tested it on Nvidia A100 80G using torch v2.8.
 
-We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-1.5x of the model's BF16 size
+RAM usage has been optimized since v0.14.2.
 
 | Models        | Scheme                | VRAM Cost | Time Cost             |
 | ------------- | --------------------- | --------- | --------------------- |
@@ -417,11 +668,32 @@ We will try to optimize the RAM usage in the future. The RAM usage is about 1.1-
 #### Limitations
 Embedding layer is not supported in AutoScheme, it will use the best scheme in options.
 
+When using AutoScheme with `model_free=True`, only INT (`W2A16`/`W4A16`/`W8A16`) and MXFP (`MXFP4`/`MXFP8`) option families are supported. Options like `W3A16`, `GGUF:*`, and `NVFP4` will raise a `ValueError`. INT and MXFP families cannot be mixed in the same `AutoScheme`.
 
 ### OPT RTN Mode
 AutoRound also supports Optimized RTN (Round-To-Nearest) mode for fast, calibration-free baseline quantization. Setting `iters=0` tp enable it and we recommend using `group_size=32` for better results. Check [accuracy comparison](./opt_rtn.md) between RTN and OPT RTN mode
 
 For the GGUF format, we have optimized the RTN algorithm inspired by llamacpp. To use the original (pure) RTN algorithm instead, enable the `--disable_opt_rtn` option.
+
+Passing `--enable_neuqi` opts the optimized path into the **NeUQI** grid search ([arXiv 2505.17595](https://arxiv.org/abs/2505.17595)): asymmetric layers run a joint (scale, integer zero-point) search and symmetric layers a two-stage signed scale search, both weighted by the activation imatrix on the zero-shot path, which is collected automatically (with `iters > 0` the anchor uses the imatrix when the tuning path collects one, running unweighted otherwise). With `iters > 0`, the search result anchors the SignRound tuning grid (frozen init). Grid sizes are tunable via `AR_NEUQI_COARSE`/`AR_NEUQI_FINE` (see [environments](./environments.md)); the unpinned default is backend-aware (wide only on the Triton/torch.compile lanes). Accuracy and wall-time results are shown in [NeUQI accuracy validation](./neuqi_acc.md).
+
+#### CLI Usage
+
+Two dedicated CLI entry points are provided as shortcuts:
+
+- `auto-round-opt-rtn` — equivalent to `auto-round --iters 0 --enable_opt_rtn` (optimized RTN, recommended).
+- `auto-round-rtn` — equivalent to `auto-round --iters 0 --disable_opt_rtn` (pure RTN, no optimization; auto-routes to [Model-Free Mode](#model-free-mode) for supported INT WOQ schemes).
+
+```bash
+# Optimized RTN (recommended fast baseline)
+auto-round-opt-rtn --model Qwen/Qwen3-0.6B --scheme "W4A16" --format "auto_round"
+
+# Pure RTN (fastest, lowest memory; baseline quality)
+auto-round-rtn --model Qwen/Qwen3-0.6B --scheme "W4A16" --format "auto_round"
+```
+
+#### API Usage
+
 ```python
 from auto_round import AutoRound
 
@@ -435,6 +707,177 @@ ar = AutoRound(
 output_dir = "./tmp_autoround"
 ar.quantize_and_save(output_dir, format="auto_round")
 ```
+
+### Model-Free Mode
+
+Model-free mode performs calibration-free WOQ quantization **without loading the full model into memory**. It downloads safetensors files directly, quantizes each Linear weight tensor shard-by-shard, and saves the packed result. This is useful when you want fast, no-calibration quantization with minimal resource requirements.
+
+> **Auto-enabled by default.** As of v0.13, when you pass `--iters 0 --disable_opt_rtn` together with a supported INT WOQ or MXFP scheme, the CLI automatically takes the model-free path.  This is **bit-exactly equivalent** to the regular `--iters 0 --disable_opt_rtn` flow but uses far less memory.  Use `--disable_model_free` to opt out and force the original flow.  
+> When using `--model_free` explicitly, INT WOQ always uses **plain RTN** (opt_rtn is disabled for INT WOQ to preserve accuracy); MXFP schemes use **optimized RTN (opt_rtn) by default** — pass `--disable_opt_rtn` to use plain RTN for MXFP.
+
+**Key features:**
+- **No model object required** – only `config.json` and safetensors files are needed
+- **Low disk memory required** (If no local model files) – downloads and quantizes one shard at a time, deleting the source shard after processing
+- **Per-layer configuration** – supports `--layer_config` for per-layer bit-width overrides and `--ignore_layers` to keep specific layers in full precision
+- **Predefined ignore layers** – automatically skips model-specific layers (e.g., MoE gates, MTP layers) based on config detection
+- **Optimized RTN (opt_rtn) for MXFP** — MXFP schemes use opt_rtn by default; pass `--disable_opt_rtn` for plain RTN. INT WOQ always uses plain RTN (opt_rtn disabled for INT to preserve accuracy).
+- **AutoScheme integration** – pass an `AutoScheme` object as `scheme` to get automatic mixed-bit selection followed by shard-by-shard packing (two-phase: score with model briefly loaded, then free and pack)
+
+<details>
+  <summary>Model-free Parallelism Benchmarks (Rounded Minutes)</summary>
+
+Model-free mode quantizes multiple weight shards in parallel worker processes. Set the parallelism with the `AR_MODEL_FREE_SHARD_PARALLELISM` environment variable (see the [Environment Variables Guide](./environments.md#ar_model_free_shard_parallelism)):
+- **Default (unset)**: `shard_count // 4`, min 1, max 10. For example, 8 shards use 2 workers and 40+ shards use 10 workers.
+- **Manual**: e.g. `export AR_MODEL_FREE_SHARD_PARALLELISM=20`. The effective value never exceeds the shard count.
+- Higher parallelism is usually faster but increases peak GPU (and host) memory; lower it when resources are tight.
+
+Runtimes are rounded up to the next full minute.
+
+| Model | Device | Scheme | Parallelism | Runtime (min) | Speedup | Peak Memory (G) |
+|---|---|---|---|---|---:|---|
+| Qwen3-Next-80B-A3B-Instruct | A100 | W4A16 | 1 -> 10 | N/A -> 7 | N/A | 2 -> 8 |
+| Qwen3-235B-A22B-Instruct-2507 | A100 | W4A16 | 1 -> 10 | 17 -> 5 | 3.40x | 2 -> 8 |
+| GLM-5.2 | B200 | MXFP4-Mixed | 1 -> 10 | 60 -> 16 | 3.75x | 2 -> 27 |
+| GLM-5.2 | B200 | W4A16 | 1 -> 10 / 20 | 30 -> 10 / 8 | 3.00x / 3.75x | 3 -> 16 / 32 |
+| MiniMax-M2.7 (FP8) | B200 | W4A16 | 1 -> 10 | 18 -> 5 | 3.60x | 2 -> 10 |
+| DeepSeek-V4-Pro (MXFP) | B200 | W4A16 | 1 -> 10 | 80 -> 13 | 6.15x | 6 -> 50 |
+
+Key takeaway: model-free quantization usually gets about `3x-6x` runtime speedup with higher parallelism, while peak memory usage increases significantly.
+
+</details>
+
+<details>
+  <summary>Click to expand supported schemes and examples</summary>
+
+**Supported schemes**
+
+Model-free mode supports the following preset schemes:
+
+**Integer weight-only** (packed in `auto_round:auto_gptq` format):
+
+| Preset | Bits | Group size | Sym |
+| --- | --- | --- | --- |
+| `W2A16` | 2 | 128 | true |
+| `W2A16G32` | 2 | 32 | true |
+| `W2A16G64` | 2 | 64 | true |
+| `W4A16` (default) | 4 | 128 | true |
+| `W4A16_MIXED` | 4 | 128 | true |
+| `W8A16` | 8 | 128 | true |
+
+All of the above presets also support **asymmetric quantization** (`sym=False`) for 2-bit and 8-bit variants (`W2A16`, `W2A16G32`, `W2A16G64`, `W8A16`), producing `auto_round:auto_gptq`-packed output with bit-exact parity to the regular flow.  For 4-bit asymmetric quantization the regular flow uses `auto_round:auto_awq` packing as suggested; use the standard AutoRound flow for that case.
+
+You can also pass a custom `QuantizationScheme(bits=N, group_size=G, sym=True/False, data_type="int", act_bits=16)` with `bits ∈ {2, 4, 8}` and any group_size / sym configuration.
+
+**MXFP (Microscaling Floating Point)** (packed in `mxfp4-pack-quantized` / `mxfp8-quantized` format, compatible with compressed-tensors / vLLM):
+
+| Preset | Bits | Group size | Format |
+| --- | --- | --- | --- |
+| `MXFP4` | 4 | 32 | mxfp4-pack-quantized |
+| `MXFP8` | 8 | 32 | mxfp8-quantized |
+
+Schemes that require special packing kernels (`W3A16`, `FPW8A16`, `BF16`, `MXINT4`, `NVFP4`, `FP8_BLOCK`, `FP8_STATIC`, `INT8_W8A8`, `GGUF:*`, ...) are **not** supported in model-free mode and will raise `ValueError`.  Use the regular AutoRound flow for those.
+
+**NVFP4 source checkpoints → MXFP4**
+
+Goal: convert published NVFP4 checkpoints to MXFP4 to serve 4-bit LLMs with high throughput on Intel GPUs, which support MXFP4 but have no native NVFP4 acceleration path.
+
+Supported source tensor layouts:
+
+| Source layout | Tensors | Status |
+| --- | --- | --- |
+| compressed-tensors (NVFP4) | `.weight_packed` + `.weight_scale` + `.weight_global_scale` + `.input_global_scale` | Supported |
+| ModelOpt / Quark (NVFP4) | `.weight` (uint8) + `.weight_scale` (FP8) + `.weight_scale_2` + `.input_scale` | Supported |
+| `inkling_mm_model` type | `X` (uint8) + `X.scale` + `X.scale2` (may live in different shards) | Supported |
+
+Status of commonly requested checkpoints:
+
+| Model | Source format | Status | gsm8k strict-match (MXFP4) | gsm8k flexible-extract (MXFP4) |
+| --- | --- | --- | --- | --- |
+| `RedHatAI/Qwen3.8-27B-NVFP4` | compressed-tensors, NVFP4 + FP8 | Verified | 0.9636 ± 0.0052 | 0.9636 |
+| `nvidia/Qwen3.8-27B-NVFP4` | ModelOpt, NVFP4 + FP8 | Verified | 0.9644 ± 0.0051 | 0.9659 |
+| `RedHatAI/Qwen3.6-35B-A3B-NVFP4` | compressed-tensors, NVFP4 | Verified | 0.9575 ± 0.0056 | 0.9575 |
+| `amd/MiniMax-M2.7-NVFP4` | Quark, NVFP4 | Verified | 0.9568 ± 0.0056 | 0.9591 |
+| `nvidia/MiniMax-M2.7-NVFP4` | ModelOpt, NVFP4 | Verified | 0.9477 ± 0.0061 | 0.9522 |
+| `thinkingmachines/Inkling-Small-NVFP4` | Special format (`inkling_mm_model`), NVFP4 | Verified | 0.9477 ± 0.0061 | 0.9545 |
+
+gsm8k is evaluated with 5-shot on the converted MXFP4 models, with thinking disabled. These results only demonstrate that the converted models work correctly; the numbers are not guaranteed to be accurate.
+
+Running `--scheme MXFP4 --model_free` on an NVFP4 checkpoint converts **only** the NVFP4 layers to MXFP4. The source is detected as NVFP4 from the model name (containing `nvfp4`) or its quantization config (`config.json` / `hf_quant_config.json`), and a warning is printed:
+
+- **NVFP4 layers**: detected automatically in each shard and converted to MXFP4.
+- **Unquantized layers** (BF16, `lm_head`, router, ...): kept as-is and recorded as unquantized in `quantization_config`. To quantize some of them as well, list them in `--layer_config`, e.g. `--layer_config "{lm_head:mxfp4}"`.
+- **FP8 layers** (mixed-precision sources, e.g. FP8 attention + NVFP4 MLP): kept as-is. The source quantization config (compressed-tensors; ModelOpt and Quark configs are first converted to compressed-tensors) is reused with only its NVFP4 groups rewritten to MXFP4, so the output is a `mixed-precision` `quantization_config`.
+- Unrecognized source configs trigger a warning and are skipped.
+- Currently only `--format llm_compressor` is supported.
+
+```bash
+auto_round nvidia/MiniMax-M2.7-NVFP4 --model_free --scheme MXFP4 --format llm_compressor --output_dir ./mxfp4-model
+```
+
+#### CLI Usage
+
+```bash
+# Easiest: --iters 0 --disable_opt_rtn auto-routes to model-free (plain RTN)
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --scheme W4A16 \
+  --iters 0 --disable_opt_rtn \
+  --output_dir ./int4-llama
+
+# Explicit model_free (INT WOQ always uses plain RTN; bit-exact with the auto-route above)
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme W4A16 \
+  --output_dir ./int4-llama
+
+# Opt out of auto-routing and use the regular flow instead
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --scheme W4A16 \
+  --iters 0 --disable_opt_rtn --disable_model_free \
+  --output_dir ./int4-llama
+
+# With per-layer configuration and ignored layers
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme W4A16 \
+  --group_size 32 \
+  --asym \
+  --layer_config "{k_proj:{bits:8},v_proj:{bits:8}}" \
+  --ignore_layers "mlp" \
+  --output_dir ./int4-llama
+
+# MXFP4 quantization
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme MXFP4 \
+  --output_dir ./mxfp4-llama
+
+# MXFP8 quantization
+auto_round meta-llama/Llama-3.2-1B-Instruct \
+  --model_free \
+  --scheme MXFP8 \
+  --output_dir ./mxfp8-llama
+```
+
+#### API Usage
+
+```python
+from auto_round import AutoRound
+
+AutoRound(
+    model="meta-llama/Llama-3.2-1B-Instruct",
+    scheme="W4A16",  # Or a QuantizationScheme instance for custom group_size / sym.
+    layer_config={
+        ".*k_proj": {"bits": 8, "group_size": 32},
+        ".*v_proj": {"bits": 8, "group_size": 32},
+    },
+    ignore_layers="mlp",
+    model_free=True,
+).quantize_and_save("./int4-llama")
+```
+
+> **Note:** Model-free mode always uses **plain RTN for INT WOQ** (opt_rtn is disabled to preserve accuracy). For MXFP schemes, **optimized RTN (opt_rtn) is enabled by default**; pass `disable_opt_rtn=True` for plain RTN.  INT schemes output in `auto_round:auto_gptq` format; MXFP schemes output in compressed-tensors format (`mxfp4-pack-quantized` / `mxfp8-quantized`).  For higher-quality quantization or schemes outside the supported list, use the standard AutoRound flow.
+
+</details>
 
 ### GGUF format
 Experimental feature. This format is well-suited for CPU devices and is widely adopted by the community. 
@@ -475,17 +918,14 @@ The 3B and 14B models were evaluated on Qwen 2.5, the 8X7B model is Mixtral, whi
 | 2.5  w/o torch compile                                                                      | 8min<br/>10GB | 16min<br/>20GB | 30min<br/>25GB | 140min<br/>49GB | 50min<br/>49GB |
 
 W4G128 Quantization Time and Memory Usage (Intel GPU B60 24G)
-Testing was conducted on the Intel GPU B60 24G using the release version of PyTorch 2.11.0+xpu. Please note that data loading and packing costs have been excluded from the evaluation. Time and memory usage were measured using Qwen3-series models.
+Testing was conducted on the Intel GPU B60 24G using the release version of PyTorch 2.11.0+xpu. Please note that data loading and packing costs have been excluded from the evaluation. Time and memory usage were measured using Qwen2.5-series models.
 
-| Torch version/Config W4G128                                                                                            | 0.6B              | 1.7B              | 4B                  | 8B                  | 30B-A3B             |
-|------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|---------------------|
-| 2.11.0+xpu with torch compile                                                                                          | 20min<br/>10.7GB  | 26min<br/>13.2GB  | 58min<br/>22.8GB    | OOM                 | OOM                 |
-| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True                                                               | 29min<br/>9.5GB   | 38min<br/>9.8GB   | 1h 23min<br/>19.4GB | 1h 32min<br/>20.1GB | 5h 33min<br/>22.8GB |
-| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 41min<br/>1.3GB   | 42min<br/>1.8GB   | 1h 29min<br/>3.6GB  | 2h 4min<br/>4.6GB   | 21h 41min<br/>10.2GB  |
-| 2.11.0+xpu w/o torch compile                                                                                           | 20min<br/>10.9GB  | 28min<br/>13.2GB  | OOM                 | OOM                 | OOM                 |
-
-
-
+| Torch version/Config W4G128                                                                                            | 0.5B              | 1.5B              | 3B                  | 7B                  |
+|------------------------------------------------------------------------------------------------------------------------|-------------------|-------------------|---------------------|---------------------|
+| 2.11.0+xpu with torch compile                                                                                          | 6min<br/>2.9GB    | 13min<br/>5.4GB   | 22min<br/>7.1GB     | 40min<br/>14.9GB    |
+| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True                                                               | 10min<br/>1.7GB   | 17min<br/>3.3GB   | 30min<br/>4.3GB     | 50min<br/>8.5GB     |
+| 2.11.0+xpu with torch compile<br/>low_gpu_mem_usage=True<br/>gradient_accumulate_steps=8,bs=1                          | 14min<br/>0.4GB   | 22min<br/>1.1GB   | 38min<br/>1.5GB     | 1h 4min<br/>4.1GB   |
+| 2.11.0+xpu w/o torch compile                                                                                           | 6min<br/>2.9GB    | 14min<br/>5.7GB   | 26min<br/>7.6GB     | 51min<br/>15.5GB    |
 
 ### Device/Multi-GPU setting in Quantization
 **The tuning device is specified using the `device_map` argument in AutoRound API, _not_ through the `device_map` 
@@ -515,6 +955,20 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 
 
 There are typically two scenarios that require multi-GPU tuning: one is the calibration phase mainly for lm-head quantization, and the other is quantizing extremely large models (e.g., models larger than 100 GB).
+
+#### Parallel block tuning across GPUs
+Choose `--data_parallel N` for block replicas, `--tensor_parallel N` for native
+weight sharding with automatic local worker launch, or `--pipeline_parallel N`
+for naive pipeline parallelism. Select only one mode per run.
+
+~~~bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --data_parallel auto
+~~~
+
+See the [unified parallelism guide](./parallelism.md) for mode selection, matching
+CLI/Python interfaces, DP batch/eligibility constraints, TP launch/export behavior
+and supported combinations. PP executes pipeline stages sequentially without
+overlapping microbatch scheduling.
 
 #### Enable multiple gpus calibration in lm_head quantization
 For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which requires the entire model to reside on 
@@ -587,7 +1041,7 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 - **Reduced GPU Memory Usage:**
     
-    - set `enable_torch_compile` to True
+  - keep `torch.compile` enabled by default on non-Windows platforms; on Windows, pass `enable_torch_compile=True` to opt in
 
     - enable `low_gpu_mem_usage`(more tuning cost)
 
@@ -601,13 +1055,13 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
 
 
 - **Reduced CPU Memory Usage :**
-    - Enable `low_cpu_mem_usage` (experimental): Only one export format is supported. The quantized model is saved immediately after each block is packed, reducing peak CPU memory usage.
+    - `low_cpu_mem_usage` (experimental) is enabled by default. In CLI, use `--disable_low_cpu_mem_usage` to turn it off (`--low_cpu_mem_usage` is retained only for compatibility). Only one export format is supported. The quantized model is saved immediately after each block is packed, reducing peak CPU memory usage.
 
     - Trigger immediate packing: Packing will be triggered immediately when using the command-line interface or the
       quantize_and_save API, as long as only one export format is specified.
 
 - **Speedup the tuning:**
-    - set `enable_torch_compile` to True
+  - keep `torch.compile` enabled by default on non-Windows platforms; on Windows, pass `enable_torch_compile=True` to opt in
 
     - use `auto-round-light` configuration
 
@@ -616,6 +1070,17 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
     - reduce the train bs to 4(little accuracy drop. )
 
     - or combine them
+
+  `torch.compile` is disabled by default on Windows because TorchInductor needs a compatible compiler toolchain. Windows
+  users can pass `enable_torch_compile=True` to the Python API or use `--enable_torch_compile` to force enable it. On
+  other platforms, pass `enable_torch_compile=False` or use `--disable_torch_compile` to opt out.
+
+  For NVIDIA GPUs on Windows, install a CUDA-enabled PyTorch build and a compatible `triton-windows` version in the
+  same Python environment as AutoRound before enabling compilation. Follow the
+  [Triton for Windows installation guide](https://github.com/triton-lang/triton-windows) for the PyTorch/Triton version
+  matrix, supported GPUs, and compiler requirements. Do not simply install the newest Triton version with an older
+  PyTorch build. Enabling `--enable_torch_compile` alone does not install these dependencies; a `TritonMissing` error
+  means the compilation environment still needs attention. Keep compilation disabled until the prerequisites are met.
 
 
 - **Enable quantized lm-head:**
@@ -632,51 +1097,29 @@ autoround.save_quantized(format="auto_awq", output_dir="tmp_autoround")
   Include the flag `--adam`. Note that AdamW is less effective than sign gradient descent in many scenarios we tested.
 
 
-### Hadamard Transform
+### Rotation (Research)
 
-AutoRound supports Hadamard transform as an optional weight/activation transformation technique, which can improve quantization accuracy by rotating the weight/activation matrix. This is particularly useful for certain quantization scenarios.
+> ⚠️ **Research feature**: Rotation transform is still a research feature. Inference relies on forward hooks, which are currently only supported by the Hugging Face Transformers backend, so rotated models may run slower than native (non-rotated) models.
 
-#### Overview
+Rotation redistributes outliers in weights and activations before quantization, making the distribution more uniform and quantization-friendly. It is most useful for aggressive low-bit schemes such as MXFP4, NVFP4 and W4A4.
 
-The Hadamard transform is particularly useful in scenarios where activation outliers hurt quantization accuracy. In practice, it helps suppress such outliers, making it especially effective when `act_bits < 8`. Users can enable this feature when they need more stable activation distributions and better accuracy in low‑bit quantization settings.
+AutoRound applies rotation through `alg_configs`, alongside a quantization algorithm. The `"quarot"` preset — deterministic Hadamard rotation (QuaRot / SpinQuant), no training and no calibration data — is recommended for most use cases.
 
-#### Implementation
-
-AutoRound provides two types of Hadamard transforms:
-
-1. **Deterministic Hadamard Transform** (`hadamard`): Uses Sylvester's construction to create a deterministic Hadamard matrix. The size must be a power of 2.
-
-2. **Random Hadamard Transform** (`random_hadamard`): Uses known Hadamard matrices from N. J. A. Sloane's Library of Hadamard Matrices. Supports non-power-of-2 sizes and deterministic seeding.
-
-
-#### Quantization with Hadamard Transform
+#### API Usage
 
 ```python
 from auto_round import AutoRound
 
-# Load a model (supports FP8/BF16/FP16/FP32)
-model_name_or_path = "meta-llama/Llama-3.1-8B-Instruct"
-output_dir = "./Llama-3.1-8B-Instruct-mxfp4-ht"
+model_name = "Qwen/Qwen3-0.6B"
 
-# hadamard_config="default": block_size=32, hadamard_type="hadamard"
-ar = AutoRound(model_name_or_path, scheme="MXFP4", hadamard_config="default")
-
-ar.quantize_and_save(output_dir=output_dir, format="auto_round")
+# QuaRot preset: deterministic Hadamard, no training
+ar = AutoRound(model_name, scheme="MXFP4", alg_configs=["auto_round", "quarot"])
+ar.quantize_and_save(output_dir="./Qwen3-0.6B-mxfp4-quarot", format="auto_round")
 ```
 
-#### Transform Classes
+Quantized models with rotation are saved and loaded transparently — rotation matrices and hooks are restored automatically on load, so inference needs no extra steps.
 
-| Class | Description |
-|-------|-------------|
-| `HadamardTransform` | Applies deterministic Hadamard transform |
-| `RandomHadamardTransform` | Applies random Hadamard transform with optional seeding |
-
-#### Parameters
-
-| Parameter | Description |
-|-----------|-------------|
-| `block_size` | Size of the transformation block (default: 32) |
-| `seed` | Random seed (for RandomHadamardTransform) |
+For rotation positions (R1–R4), full configuration options, deterministic vs random Hadamard, trainable SpinQuant, the per-linear block rotation variant, and save/load internals, see [Rotation Details](./rotation_details.md).
 
 
 ## 4 Inference
@@ -718,7 +1161,12 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 
 ### CUDA
 
-Supports 2, 3, 4, and 8 bits. We recommend using GPTQModel for 4 and 8 bits inference.
+Supports 2, 3, 4, 5, 6, 7 and 8 bits. We recommend using GPTQModel for 4 and 8 bits inference, and
+[humming](https://github.com/inclusionAI/humming) for 5/6/7 bits (it is also faster than Triton for the other widths).
+
+```bash
+pip install git+https://github.com/inclusionAI/humming.git
+```
 
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -777,7 +1225,6 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | ark                                          | cpu          | 4       | FP32/FP16/BF16 | 6   | awq             | auto-round-lib<br/>torch>=2.8.0  |
 | ark                                          | xpu          | 4,8     | FP32/FP16/BF16 | 6   | gptq/gptq_zp+-1 | auto-round-lib<br/>torch>=2.8.0  |
 | ark                                          | xpu          | 4       | FP32/FP16/BF16 | 6   | awq             | auto-round-lib<br/>torch>=2.8.0  |
-| ipex(To be deprecated)                       | cpu/xpu      | 4       | BF16/FP16 | 5        | gptq_zp+-1/awq  | intel-extension-for-pytorch       |
 | marlin                                       | cuda         | 4,8     | BF16/FP16 | 6        | gptq/gptq_zp+-1 | gptqmodel                         |
 | exllamav2 or<br/>gptqmodel:exllamav2         | cuda         | 4       | BF16/FP16 | 5        | gptq/gptq_zp+-1 | gptqmodel                         |
 | exllamav2 or<br/>gptq:exllamav2              | cuda         | 4       | FP16      | 3        | gptq_zp+-1      | auto-gptq<br/>transformers<5.0.0  |
@@ -788,8 +1235,10 @@ print(tokenizer.decode(model.generate(**inputs, max_new_tokens=50, do_sample=Fal
 | gptqmodel:awq_marlin                         | cuda         | 4,8     | FP16      | 5        | awq             | gptqmodel                         |
 | gptqmodel:awq_gemm                           | cuda         | 4       | FP16      | 3        | awq             | gptqmodel                         |
 | gptqmodel:awq_torch                          | cuda/cpu     | 4       | FP16      | 2        | awq             | gptqmodel                         |
+| humming                                      | cuda         | 2,3,4,5,6,7,8 | BF16/FP16 | 4  | gptq/gptq_zp+-1 | humming-kernels                   |
+| humming                                      | cuda         | 2,3,4,5,6,7,8 | BF16/FP16 | 4  | awq             | humming-kernels                   |
 | hpu                                          | hpu          | 4       | BF16      | 0        | gptq/gptq_zp+-1 | auto-round                        |
-| torch                                        | xpu/cpu/cuda | 2,3,4,8 | BF16/FP16 | 0        | gptq/gptq_zp+-1 | auto-round                        |
+| torch                                        | xpu/cpu/cuda | 2,3,4,5,6,7,8 | BF16/FP16 | 0  | gptq/gptq_zp+-1 | auto-round                        |
 
 
 ### Convert GPTQ/AWQ to AutoRound
@@ -848,6 +1297,7 @@ CUDA_VISIBLE_DEVICES=0,1 auto-round "your_model_path" --eval --tasks lambada_ope
 
 - Use the `--eval` flag to evaluate models directly. This supports both original and quantized models.
 - The `--eval_task_by_task` option helps handle task failures by evaluating tasks sequentially. This only applies to the HF backend.
+- Use `--num_fewshot`, `--eval_gen_kwargs`, and `--fewshot_as_multiturn` to pass few-shot and generation options through to lm-eval.
 - When multiple formats are exported, the last format in the list will be used for evaluation.
 - For vLLM backend, you can use `--device 0,1,2` to specify GPU devices. This will automatically set `CUDA_VISIBLE_DEVICES` and configure `tensor_parallel_size` based on the number of devices. Alternatively, you can manually set these via environment variables and `--vllm_args`.
 
@@ -861,5 +1311,3 @@ Some VLMs require manual support.
 
 
 Mamba is not supported.
-
-

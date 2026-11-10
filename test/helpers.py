@@ -1,3 +1,4 @@
+import concurrent.futures
 import copy
 import os
 import re
@@ -9,12 +10,31 @@ import transformers
 from packaging import version
 
 from auto_round.eval.evaluation import simple_evaluate, simple_evaluate_user_model
-from auto_round.utils import detect_device, diffusion_load_model, get_attr, llm_load_model, mllm_load_model, set_attr
+from auto_round.utils import diffusion_load_model, get_attr, get_major_device, llm_load_model, mllm_load_model, set_attr
 
 transformers_version = version.parse(transformers.__version__)
 
 
-def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of France is,", max_new_tokens=10, device=None):
+def _raise_threaded_packing(*args, **kwargs):
+    raise AssertionError("Packing should not create a thread pool or call threadpoolctl.")
+
+
+def forbid_threaded_packing(monkeypatch, module):
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", _raise_threaded_packing)
+    monkeypatch.setattr(module, "ThreadPoolExecutor", _raise_threaded_packing, raising=False)
+    tctl = getattr(module, "tctl", None)
+    if tctl is not None:
+        monkeypatch.setattr(tctl, "threadpool_limits", _raise_threaded_packing)
+
+
+def generate_prompt(
+    model_obj_or_str,
+    tokenizer=None,
+    text="The capital of France is,",
+    max_new_tokens=10,
+    device=None,
+    include_prompt=True,
+):
     """Generate text using a model and tokenizer.
 
     Args:
@@ -24,10 +44,11 @@ def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of Franc
         max_new_tokens: Maximum number of new tokens to generate.
 
     Returns:
-        str: The generated text.
+        str: The generated text. If include_prompt is False, returns only
+            newly generated continuation tokens.
     """
     if device is None:
-        device = detect_device()
+        device = get_major_device()
     if isinstance(model_obj_or_str, str):
         model, tokenizer = llm_load_model(model_obj_or_str, trust_remote_code=True)
     else:
@@ -36,23 +57,48 @@ def generate_prompt(model_obj_or_str, tokenizer=None, text="The capital of Franc
     if not (hasattr(model, "hf_device_map") and len(model.hf_device_map) > 1):
         model = model.to(device)
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)[0]
-    output = tokenizer.decode(generated_ids)
+    generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)[0]
+    if include_prompt:
+        output_ids = generated_ids
+    else:
+        prompt_len = inputs["input_ids"].shape[-1]
+        output_ids = generated_ids[prompt_len:]
+    output = tokenizer.decode(output_ids)
     print(output)
     return output
 
 
 def eval_generated_prompt(
-    model, tokenizer=None, prompt_text="The United States of", target_text="America", max_new_tokens=10, device=None
+    model,
+    tokenizer=None,
+    prompt_text="United States of",
+    target_text="America",
+    max_new_tokens=10,
+    device=None,
 ):
-    """Evaluate the generated text using a model and tokenizer."""
-    out = generate_prompt(model, tokenizer, text=prompt_text, max_new_tokens=max_new_tokens, device=device)
-    assert target_text.lower() in out.lower(), f"Expected '{target_text}' in output, but got: {out}"
-    return out
+    # Use a completion-style prompt: base models (e.g. OPT-125M) cannot follow
+    # instructions, so an instruction prompt makes the check flaky after quantization.
+    generated_text = generate_prompt(
+        model,
+        tokenizer,
+        prompt_text,
+        max_new_tokens=max_new_tokens,
+        device=device,
+        include_prompt=False,
+    )
+    # accept lowercase target text as well, since some models may not follow the prompt exactly
+    assert target_text.lower() in generated_text.lower(), f"Expected {target_text} in generated text: {generated_text}"
 
 
 def evaluate_accuracy(
-    model_or_save_dir, tokenizer=None, task="lambada_openai", threshold=0.25, batch_size="auto", limit=None
+    model_or_save_dir,
+    tokenizer=None,
+    task="lambada_openai",
+    threshold=0.25,
+    batch_size="auto",
+    limit=None,
+    device=None,
+    model_type="hf",
 ):
     """Helper function to evaluate model accuracy on a given task.
 
@@ -75,13 +121,17 @@ def evaluate_accuracy(
     if isinstance(model_or_save_dir, str):
         # save_dir mode
         model_args = f"pretrained={model_or_save_dir}"
-        result = simple_evaluate(model="hf", model_args=model_args, tasks=task, batch_size=batch_size)
+        result = simple_evaluate(
+            model=model_type, model_args=model_args, tasks=task, batch_size=batch_size, limit=limit, device=device
+        )
     else:
         # model object mode
         if tokenizer is None:
             raise ValueError("tokenizer is required when model_or_save_dir is a model object")
+        if device and device != "cpu":
+            model_or_save_dir = model_or_save_dir.to(device)
         result = simple_evaluate_user_model(
-            model_or_save_dir, tokenizer, batch_size=batch_size, tasks=task, limit=limit
+            model_or_save_dir, tokenizer, batch_size=batch_size, tasks=task, limit=limit, device=device
         )
 
     acc = result["results"][task]["acc,none"]
@@ -97,9 +147,6 @@ def get_model_path(model_name: str) -> str:
     local_path = f"/models/{model_name.split('/')[-1]}"
     local_path_1 = f"/dataset/{model_name.split('/')[-1]}"
 
-    if "DeepSeek-V2-Lite" in model_name and os.path.exists("/data0/deepseek-ai/DeepSeek-V2-Lite"):
-        return "/data0/deepseek-ai/DeepSeek-V2-Lite"
-
     if os.path.exists(ut_path):
         return ut_path
     elif os.path.exists(local_path):
@@ -108,41 +155,6 @@ def get_model_path(model_name: str) -> str:
         return local_path_1
     else:
         return model_name
-
-
-def get_captions_dataset_path() -> str:
-    """Find captions_source.tsv locally or download it to tmp.
-
-    Checks /dataset/, /tf_dataset/, and test/tmp/ for the file.
-    If not found, downloads from the mlcommons URL to test/tmp/.
-
-    Returns:
-        str: The path to captions_source.tsv.
-    """
-    import urllib.request
-
-    filename = "captions_source.tsv"
-    url = (
-        "https://raw.githubusercontent.com/mlcommons/inference/refs/heads/master/"
-        "text_to_image/coco2014/captions/captions_source.tsv"
-    )
-
-    local_candidates = [
-        f"/dataset/{filename}",
-        f"/tf_dataset/{filename}",
-        os.path.join(os.path.dirname(__file__), "tmp", filename),
-    ]
-    for path in local_candidates:
-        if os.path.exists(path):
-            return path
-
-    # Download to tmp
-    tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
-    os.makedirs(tmp_dir, exist_ok=True)
-    tmp_path = os.path.join(tmp_dir, filename)
-    print(f"[Helper] Downloading {filename} from {url} to {tmp_path}")
-    urllib.request.urlretrieve(url, tmp_path)
-    return tmp_path
 
 
 opt_name_or_path = get_model_path("facebook/opt-125m")
@@ -154,10 +166,89 @@ deepseek_v2_name_or_path = get_model_path("deepseek-ai/DeepSeek-V2-Lite")
 qwen_moe_name_or_path = get_model_path("Qwen/Qwen1.5-MoE-A2.7B")
 qwen_vl_name_or_path = get_model_path("Qwen/Qwen2-VL-2B-Instruct")
 qwen_2_5_vl_name_or_path = get_model_path("Qwen/Qwen2.5-VL-3B-Instruct")
+qwen_3_vl_9b_name_or_path = get_model_path("Qwen/Qwen3.5-9B")
 gemma_name_or_path = get_model_path("benzart/gemma-2b-it-fine-tuning-for-code-test")
 qwen2_5_omni_name_or_path = get_model_path("Qwen/Qwen2.5-Omni-3B")
 qwen3_omni_name_or_path = get_model_path("Qwen/Qwen3-Omni-30B-A3B-Instruct")
 flux_name_or_path = get_model_path("black-forest-labs/FLUX.1-dev")
+
+
+def make_tiny_qwen3_omni_moe_config():
+    """Build a self-contained Qwen3-Omni-MoE config for unit-test smoke coverage."""
+    config = transformers.Qwen3OmniMoeConfig()
+
+    thinker = config.thinker_config
+    thinker_text = thinker.text_config
+    thinker_text.num_hidden_layers = 1
+    thinker_text.hidden_size = 64
+    thinker_text.intermediate_size = 128
+    thinker_text.moe_intermediate_size = 32
+    thinker_text.num_attention_heads = 4
+    thinker_text.num_key_value_heads = 2
+    thinker_text.num_experts = 4
+    thinker_text.num_experts_per_tok = 2
+    # The text-only forward still reads these multimodal sentinel ids when building positions.
+    thinker.audio_token_id = 151646
+    thinker.image_token_id = 151655
+    thinker.video_token_id = 151656
+    thinker.vision_start_token_id = 151652
+    thinker.audio_start_token_id = 151647
+
+    vision = thinker.vision_config
+    vision.depth = 1
+    vision.hidden_size = 64
+    vision.num_heads = 4
+
+    audio = thinker.audio_config
+    audio.num_hidden_layers = 1
+    audio.d_model = 64
+    audio.encoder_attention_heads = 4
+    audio.encoder_ffn_dim = 128
+    audio.output_dim = 64
+    audio.downsample_hidden_size = 32
+    audio.num_mel_bins = 16
+
+    talker = config.talker_config
+    talker_text = talker.text_config
+    talker_text.num_hidden_layers = 1
+    talker_text.hidden_size = 64
+    talker_text.intermediate_size = 128
+    talker_text.moe_intermediate_size = 32
+    talker_text.num_attention_heads = 4
+    talker_text.num_key_value_heads = 2
+    talker_text.num_experts = 4
+    talker_text.num_local_experts = 4
+    talker_text.num_experts_per_tok = 2
+    talker_text.shared_expert_intermediate_size = 64
+
+    predictor = talker.code_predictor_config
+    predictor.vocab_size = 64
+    predictor.hidden_size = 64
+    predictor.intermediate_size = 128
+    predictor.num_hidden_layers = 1
+    predictor.num_attention_heads = 4
+    predictor.num_key_value_heads = 2
+    predictor.head_dim = 16
+    predictor.num_code_groups = 2
+    predictor.layer_types = ["full_attention"]
+    talker.num_code_groups = 2
+    talker.thinker_hidden_size = 64
+    talker.spatial_merge_size = 2
+
+    code2wav = config.code2wav_config
+    code2wav.codebook_size = 64
+    code2wav.hidden_size = 64
+    code2wav.num_hidden_layers = 1
+    code2wav.num_attention_heads = 4
+    code2wav.num_key_value_heads = 4
+    code2wav.intermediate_size = 128
+    code2wav.num_quantizers = 2
+    code2wav.decoder_dim = 64
+    code2wav.upsample_rates = [2]
+    code2wav.upsampling_ratios = [2]
+
+    config.initializer_range = 0.02
+    return config
 
 
 # Slice model into tiny model for speedup
@@ -177,6 +268,8 @@ def _reduce_config_layers(config, num_layers, num_experts=None):
         "encoder_layers",
         "num_single_layers",
         "num_decoder_layers",
+        "input_local_layers",
+        "local_layers",
     ]
     n_expert_keys = ["num_experts", "num_local_experts"]
 
@@ -209,6 +302,7 @@ def _reduce_config_layers(config, num_layers, num_experts=None):
         "audio_config",
         "thinker_config",
         "talker_config",
+        "code_predictor_config",
     ]:
         sub_cfg = getattr(config, sub_name, None)
         if sub_cfg is not None:
@@ -220,8 +314,27 @@ def _reduce_config_layers(config, num_layers, num_experts=None):
                     _apply(inner_cfg)
 
 
+def _apply_config_overrides(config, overrides):
+    """Apply arbitrary key-value overrides to a config (dict or object)."""
+    if not overrides:
+        return
+    for key, value in overrides.items():
+        if isinstance(config, dict):
+            if key in config:
+                config[key] = value
+        elif hasattr(config, key):
+            setattr(config, key, value)
+
+
 def get_tiny_model(
-    model_name_or_path, num_layers=2, num_experts=None, is_mllm=False, from_config=False, is_diffusion=False, **kwargs
+    model_name_or_path,
+    num_layers=2,
+    num_experts=None,
+    is_mllm=False,
+    from_config=False,
+    is_diffusion=False,
+    config_overrides=None,
+    **kwargs,
 ):
     """Generate a tiny model by slicing layers from the original model.
 
@@ -236,6 +349,9 @@ def get_tiny_model(
         **kwargs: Extra keyword arguments forwarded to the model loader or
             ``AutoConfig.from_pretrained``.
     """
+    if "use_config" in kwargs:
+        from_config = kwargs.pop("use_config")
+
     model_name_or_path = get_model_path(model_name_or_path)
 
     if from_config:
@@ -264,13 +380,15 @@ def get_tiny_model(
                     with open(os.path.join(local_dir, folder_name, "config.json"), "r", encoding="utf-8") as f:
                         config = json.load(f)
                     _reduce_config_layers(config, num_layers, num_experts)
-                    return getattr(getattr(diffusers_module, mod_name), "from_config")(config)
+                    _apply_config_overrides(config, config_overrides)
+                    return getattr(diffusers_module, mod_name).from_config(config)
                 else:
                     config = transformers.AutoConfig.from_pretrained(
                         os.path.join(local_dir, folder_name, "config.json")
                     )
                     _reduce_config_layers(config, num_layers, num_experts)
-                    return getattr(getattr(transformers_module, mod_name), "_from_config")(config)
+                    _apply_config_overrides(config, config_overrides)
+                    return getattr(transformers_module, mod_name)._from_config(config)
 
             with open(os.path.join(local_dir, "model_index.json"), "r", encoding="utf-8") as f:
                 model_index = json.load(f)
@@ -291,14 +409,17 @@ def get_tiny_model(
                         and isinstance(v, list)
                         and v[0] in ["diffusers", "transformers"]
                     ):
-                        _reduce_config_layers(getattr(model, k).config, num_layers, num_experts)
+                        tiny_module = _get_module(v[0], v[1], k)
+                        setattr(model, k, tiny_module)
+            return model
         else:
-            trust_remote_code = kwargs.pop("trust_remote_code", True)
+            trust_remote_code = kwargs.get("trust_remote_code", True)
             config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=trust_remote_code)
             # Special cases, for transformers == 5.4.0
             if config.model_type == "qwen3_omni_moe":
                 config.initializer_range = 0.02  # Default initializer range for weight initialization
             _reduce_config_layers(config, num_layers, num_experts)
+            _apply_config_overrides(config, config_overrides)
 
             # Pick the right model class
             base_lib = transformers
@@ -315,7 +436,7 @@ def get_tiny_model(
                 model_cls = transformers.AutoModelForCausalLM  # default to causal LM if we can't find a better match
             model = model_cls._from_config(config)
             model = model.eval()
-        return model
+            return model
 
     # ---- original path: load pretrained weights then slice ----
     def slice_layers(module):
@@ -331,7 +452,7 @@ def get_tiny_model(
         return sliced
 
     kwargs["dtype"] = "auto" if "auto" not in kwargs else kwargs["dtype"]
-    kwargs["trust_remote_code"] = True if "trust_remote_code" not in kwargs else kwargs["trust_remote_code"]
+    kwargs["trust_remote_code"] = kwargs.get("trust_remote_code", True)
     if is_mllm:
         model, processor, tokenizer, image_processor = mllm_load_model(model_name_or_path, **kwargs)
         if hasattr(model.config, "vision_config"):
@@ -368,6 +489,7 @@ def save_tiny_model(
     force_untie=False,
     from_config=False,
     is_diffusion=False,
+    config_overrides=None,
     **kwargs,
 ):
     """Generate  a tiny model and save to the specified path.
@@ -383,6 +505,9 @@ def save_tiny_model(
             weights instead of downloading the full checkpoint.
         **kwargs: Extra keyword arguments forwarded to the model loader.
     """
+    if "use_config" in kwargs:
+        from_config = kwargs.pop("use_config")
+
     model = get_tiny_model(
         model_name_or_path,
         num_layers=num_layers,
@@ -390,6 +515,7 @@ def save_tiny_model(
         is_mllm=is_mllm,
         from_config=from_config,
         is_diffusion=is_diffusion,
+        config_overrides=config_overrides,
         **kwargs,
     )
     if force_untie:
@@ -400,25 +526,48 @@ def save_tiny_model(
                 set_attr(model, key, copy.deepcopy(weight))
     test_path = os.path.dirname(__file__)
     tiny_model_path = os.path.join(test_path, tiny_model_path.removeprefix("./"))
+    shutil.rmtree(tiny_model_path, ignore_errors=True)
+
+    if not kwargs.get("trust_remote_code", True) and getattr(getattr(model, "config", None), "auto_map", None):
+        del model.config.auto_map
 
     model.save_pretrained(tiny_model_path)
     if not is_diffusion:
         tokenizer = transformers.AutoTokenizer.from_pretrained(model_name_or_path, **kwargs)
         tokenizer.save_pretrained(tiny_model_path)
     # copy tokenizer.model
+    model_path = model_name_or_path
     if not os.path.isdir(model_name_or_path):
+        from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, HFValidationError
+
         from auto_round.utils import download_hf_model
 
-        model_path = download_hf_model(model_name_or_path)
-    else:
-        model_path = model_name_or_path
+        try:
+            model_path = download_hf_model(model_name_or_path)
+        except (GatedRepoError, HfHubHTTPError, HFValidationError):
+            model_path = model_name_or_path
     if os.path.isfile(os.path.join(model_path, "tokenizer.model")):
         shutil.copy(os.path.join(model_path, "tokenizer.model"), os.path.join(tiny_model_path, "tokenizer.model"))
     if is_mllm:
-        processor = transformers.AutoProcessor.from_pretrained(model_name_or_path, **kwargs)
-        image_processor = transformers.AutoImageProcessor.from_pretrained(model_name_or_path, **kwargs)
-        processor.save_pretrained(tiny_model_path)
-        image_processor.save_pretrained(tiny_model_path)
+        sources = [model_path]
+        if model_name_or_path not in sources:
+            sources.insert(0, model_name_or_path)
+
+        for source in sources:
+            try:
+                processor = transformers.AutoProcessor.from_pretrained(source, **kwargs)
+                processor.save_pretrained(tiny_model_path)
+                break
+            except (OSError, ValueError):
+                continue
+
+        for source in sources:
+            try:
+                image_processor = transformers.AutoImageProcessor.from_pretrained(source, **kwargs)
+                image_processor.save_pretrained(tiny_model_path)
+                break
+            except (OSError, ValueError):
+                continue
     print(f"[Fixture]: built tiny model path:{tiny_model_path} for testing in session")
     return tiny_model_path
 
@@ -480,6 +629,7 @@ def model_infer(model, tokenizer, apply_chat_template=False):
 
 # Dummy dataloader for testing
 class DataLoader:
+
     def __init__(self):
         self.batch_size = 1
 
@@ -499,76 +649,6 @@ def get_output(model_name_or_path):
         model, processor, tokenizer, image_processor = mllm_load_model(model_name_or_path)
     outputs = model(fixed_input)[0]
     return outputs.detach().cpu()
-
-
-@torch.inference_mode()
-def is_model_outputs_similar(model_path_1, model_path_2, metric="cosine_similarity", threshold=0.98, k=5, verbose=True):
-    """
-    Compare outputs from two models using specified metric and return pass/fail.
-
-    Args:
-        model_path_1: Path to first model
-        model_path_2: Path to second model
-        metric: Metric to use - "mse", "cosine_similarity"/"cos_sim", or "topk"
-        threshold: Threshold value for pass/fail
-        k: K value for top-k metric (only used when metric="topk")
-        verbose: Whether to print detailed results
-
-    Returns:
-        bool: True if metric passes threshold, False otherwise
-    """
-    if verbose:
-        print(f"\n{'='*70}")
-        print("Comparing Model Outputs")
-        print(f"{'='*70}")
-        print(f"Model 1: {model_path_1}")
-        print(f"Model 2: {model_path_2}")
-        print(f"Metric:  {metric} | Threshold: {threshold}" + (f" | K: {k}" if "top" in metric.lower() else ""))
-        print(f"{'='*70}\n")
-
-    output_1 = get_output(model_path_1)
-    output_2 = get_output(model_path_2)
-    metric = metric.lower().replace("-", "_")
-
-    # Calculate metric and check threshold
-    if metric == "mse":
-        value = torch.mean((output_1.float() - output_2.float()) ** 2).item()
-        passed = value <= threshold
-        if verbose:
-            print(f"MSE: {value:.6f} | Threshold: <= {threshold} | {'✓ PASS' if passed else '✗ FAIL'}\n")
-
-    elif metric in ["cosine_similarity", "cos_sim", "cosine"]:
-        out1 = output_1.float().flatten()
-        out2 = output_2.float().flatten()
-        value = torch.nn.functional.cosine_similarity(out1.unsqueeze(0), out2.unsqueeze(0)).item()
-        passed = value >= threshold
-        if verbose:
-            print(f"Cosine Similarity: {value:.6f} | Threshold: >= {threshold} | {'✓ PASS' if passed else '✗ FAIL'}\n")
-
-    elif metric in ["topk", "top_k"]:
-        _, topk_1 = torch.topk(output_1, k=min(k, output_1.size(-1)), dim=-1)
-        _, topk_2 = torch.topk(output_2, k=min(k, output_2.size(-1)), dim=-1)
-
-        total_agreement = 0
-        total_positions = topk_1.numel() // topk_1.size(-1)
-
-        for i in range(topk_1.size(0)):
-            for j in range(topk_1.size(1)):
-                set1 = set(topk_1[i, j].tolist())
-                set2 = set(topk_2[i, j].tolist())
-                total_agreement += len(set1 & set2) / k
-
-        value = total_agreement / total_positions
-        passed = value >= threshold
-        if verbose:
-            print(
-                f"Top-{k} Agreement: {value:.4%} | Threshold: >= {threshold:.4%} | {'✓ PASS' if passed else '✗ FAIL'}\n"
-            )
-
-    else:
-        raise ValueError(f"Unknown metric: {metric}. Choose from: 'mse', 'cosine_similarity', 'topk'")
-
-    return passed
 
 
 def is_cuda_support_fp8(major=9, minor=0):

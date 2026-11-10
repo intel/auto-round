@@ -16,11 +16,28 @@ from typing import Any
 
 import torch
 
-from auto_round.experimental.transform.hadamard_config import HadamardConfig
-from auto_round.experimental.transform.hadamards import HADAMARDS
+from auto_round.algorithms.transforms.hadamard import HADAMARDS, RotationConfig
+from auto_round.compressors.utils import is_mx_fp, is_nv_fp
+from auto_round.data_type.utils import calculate_fp8_e4m3_scale
 from auto_round.utils import logger
 
-SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP4"]
+SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP8", "MXFP4", "NVFP4"]
+
+
+FP8_GRANULARITY_TENSOR = "tensor"
+FP8_GRANULARITY_HEAD = "head"
+
+
+def normalize_fp8_granularity(granularity: str | None) -> str:
+    if granularity is None:
+        return FP8_GRANULARITY_TENSOR
+    granularity = granularity.lower()
+    if granularity in (FP8_GRANULARITY_TENSOR, FP8_GRANULARITY_HEAD):
+        return granularity
+    raise ValueError(
+        f"Invalid FP8 calibration granularity: {granularity}. "
+        f"Supported granularities are: {FP8_GRANULARITY_TENSOR}, {FP8_GRANULARITY_HEAD}."
+    )
 
 
 def per_tensor_fp8_qdq(
@@ -32,6 +49,41 @@ def per_tensor_fp8_qdq(
     return qdq_tensor, scale
 
 
+def per_head_fp8_qdq(tensor: torch.Tensor, tensor_max: None | torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize/dequantize an attention tensor with one FP8 scale per attention head."""
+    if tensor.dim() < 4:
+        raise ValueError(f"Per-head FP8 calibration expects [batch, heads, seq, head_dim], got {tuple(tensor.shape)}")
+    if tensor_max is not None and tensor_max.shape != (tensor.shape[1],):
+        raise ValueError(
+            f"Per-head FP8 calibration expects tensor_max shape ({tensor.shape[1]},), " f"got {tuple(tensor_max.shape)}"
+        )
+
+    info = torch.finfo(torch.float8_e4m3fn)
+    orig_dtype = tensor.dtype
+    if tensor.dtype == torch.float16:
+        tensor = tensor.to(torch.bfloat16)
+
+    if tensor_max is None:
+        max_tensor = tensor.abs().amax(dim=(0, 2, 3)).to(torch.float32)
+    else:
+        max_tensor = tensor_max.to(tensor.device, dtype=torch.float32)
+
+    scale = calculate_fp8_e4m3_scale(max_tensor)
+    qdq_scale = scale.view(1, -1, 1, 1)
+    fp8_res = torch.clip(tensor / qdq_scale, info.min, info.max)
+    fp8_res = fp8_res.to(torch.float8_e4m3fn)
+    return (fp8_res.to(tensor.dtype) * qdq_scale).to(orig_dtype), scale
+
+
+def fp8_qdq(
+    tensor: torch.Tensor, tensor_max: None | torch.Tensor = None, granularity: str | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    granularity = normalize_fp8_granularity(granularity)
+    if granularity == FP8_GRANULARITY_HEAD:
+        return per_head_fp8_qdq(tensor, tensor_max=tensor_max)
+    return per_tensor_fp8_qdq(tensor, tensor_max=tensor_max)
+
+
 @torch.compiler.disable
 def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: str):
     """
@@ -41,19 +93,39 @@ def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: 
     if hasattr(module, name):
         param = getattr(module, name)
         if isinstance(param, torch.nn.Parameter):
-            param.data.copy_(new_val)
+            if param.shape == new_val.shape:
+                param.data.copy_(new_val)
+            else:
+                logger.warning(
+                    "Replacing parameter %s in module %s with a new shape: %s -> %s",
+                    name,
+                    module.__class__.__name__,
+                    tuple(param.shape),
+                    tuple(new_val.shape),
+                )
+                setattr(module, name, torch.nn.Parameter(new_val))
         else:
             module.register_parameter(name, torch.nn.Parameter(new_val))
     else:
         logger.warning_once(
-            "Parameter %s not found in module %s, creating new parameter."
-            % (name, module.__class__.__name__ + str(getattr(module, "layer_idx", "")))
+            f"Parameter {name} not found in module {module.__class__.__name__}, creating new parameter."
         )
         module.register_parameter(name, torch.nn.Parameter(new_val))
 
 
-def normalize_static_kv_dtype(static_kv_dtype: str | torch.dtype) -> torch.dtype:
-    valid_dtype_name_lst = ["float16", "bfloat16", "fp8", "float32", "float"]
+NVFP4_KV_DTYPE = "nvfp4"
+NVFP4_KV_BLOCK_SIZE = 16
+
+
+def normalize_static_kv_dtype(static_kv_dtype: str | torch.dtype) -> torch.dtype | str:
+    """Normalize the static KV-cache quantization dtype.
+
+    Returns a ``torch.dtype`` for float dtypes, or the ``"nvfp4"`` sentinel
+    (see :data:`NVFP4_KV_DTYPE`) for NVFP4 KV cache quantization.
+    """
+    if isinstance(static_kv_dtype, torch.dtype):
+        return static_kv_dtype
+    valid_dtype_name_lst = ["float16", "bfloat16", "fp8", "float32", "float", NVFP4_KV_DTYPE, "fp4", "float4_e2m1"]
     valid_torch_dtype = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
@@ -62,6 +134,8 @@ def normalize_static_kv_dtype(static_kv_dtype: str | torch.dtype) -> torch.dtype
         "float32": torch.float32,
         "float": torch.float32,  # Alias for float32
     }
+    if static_kv_dtype in (NVFP4_KV_DTYPE, "fp4", "float4_e2m1"):
+        return NVFP4_KV_DTYPE
     if static_kv_dtype in valid_dtype_name_lst:
         new_dtype = valid_torch_dtype[static_kv_dtype]
     elif static_kv_dtype in valid_torch_dtype.values():
@@ -114,10 +188,12 @@ def clean_model_parameters_and_buffers_(model: torch.nn.Module, name_tuple: tupl
         _clean_param_or_buff_if_exists(module, name_tuple)
 
 
-def is_triton_kernel_available() -> bool:
+def is_triton_kernel_available(data_type: str) -> bool:
     """
     Best-effort check for whether Triton kernel path can be used.
     """
+    if is_nv_fp(data_type):
+        return False
     try:
         import triton  # pylint: disable=E0401
     except Exception:
@@ -127,70 +203,31 @@ def is_triton_kernel_available() -> bool:
         return False
 
     try:
-        from auto_round.experimental.transform.triton.mxfp4 import mxfp4_forward_kernel_wrapper  # pylint: disable=E0401
+        from auto_round.algorithms.transforms.hadamard.utils.triton.mxfp4 import (  # pylint: disable=E0401
+            mxfp4_forward_kernel_wrapper,
+        )
     except Exception:
         return False
 
     return True
 
 
-def normalize_hadamard_config(hadamard_config: str | dict | HadamardConfig | None) -> dict[str, Any]:
-    """
-    Normalize and validate `hadamard_config`.
+def dump_group_size_to_rotation_config(rotation_config: str | dict | RotationConfig, group_size: int):
+    from auto_round.algorithms.transforms.hadamard.config import dump_group_size_to_rotation_config as _impl
 
-    Supported input types:
-        - None          -> {}
-        - dict          -> validated via HadamardConfig
-        - HadamardConfig -> validated & converted to dict
-        - str           -> shorthand for `transform_type` in TRANSFORMS keys
+    return _impl(rotation_config, group_size)
 
-    On any validation failure, raises ValueError/TypeError.
-    """
-    # 1) None -> {}
-    if hadamard_config is None:
-        return {}
 
-    # 2) Already a HadamardConfig instance
-    if isinstance(hadamard_config, HadamardConfig):
-        # Ensure it passes its own validation and convert to dict
-        cfg = HadamardConfig.model_validate(hadamard_config).model_dump()
-        return cfg
+def to_dict_rotation_config(rotation_config: str | dict | RotationConfig):
+    from auto_round.algorithms.transforms.hadamard.config import to_dict_rotation_config as _impl
 
-    # 3) dict -> validate via HadamardConfig
-    if isinstance(hadamard_config, dict):
-        try:
-            cfg = HadamardConfig.model_validate(hadamard_config).model_dump()
-        except Exception as e:
-            raise ValueError(f"Invalid hadamard_config dict: {e}") from e
-        return cfg
+    return _impl(rotation_config)
 
-    # 4) str -> shorthand for transform_type
-    if isinstance(hadamard_config, str):
-        key = hadamard_config.strip()
-        if not key:
-            return {}
 
-        if key == "default":
-            cfg = HadamardConfig()
-            return cfg.model_dump()
+def normalize_rotation_config(rotation_config: str | dict | RotationConfig | None, data_type: str) -> dict[str, Any]:
+    from auto_round.algorithms.transforms.hadamard.config import normalize_rotation_config as _impl
 
-        if key not in HADAMARDS:
-            raise ValueError(
-                f"Invalid hadamard_config string: {key!r}. " f"Expected one of {sorted(HADAMARDS.keys())}."
-            )
-
-        cfg_dict = {"hadamard_type": key}
-
-        try:
-            cfg = HadamardConfig.model_validate(cfg_dict).model_dump()
-        except Exception as e:
-            raise ValueError(f"hadamard_config built from string {key!r} is invalid for HadamardConfig: {e}") from e
-
-        return cfg
-
-    raise TypeError(
-        "hadamard_config must be one of: None, dict, HadamardConfig, or str " f"(got {type(hadamard_config).__name__})"
-    )
+    return _impl(rotation_config, data_type)
 
 
 def check_supported_schemes(scheme: str):

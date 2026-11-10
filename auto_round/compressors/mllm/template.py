@@ -16,13 +16,12 @@ import json
 import os
 from dataclasses import dataclass
 from enum import Enum, unique
-from typing import Dict, List, Optional
 
 from auto_round.logger import logger
 
 from .processor import PROCESSORS, BasicProcessor
 
-TEMPLATES: Dict[str, "Template"] = {}
+TEMPLATES: dict[str, "Template"] = {}
 
 
 def fill_content(target, **kwargs):
@@ -50,7 +49,7 @@ class Template:
     format_observation: str
     format_separator: str
     default_system: str
-    replace_tokens: List[tuple]
+    replace_tokens: list[tuple]
     extra_encode: bool
     default_dataset: str
     processor: "BasicProcessor"
@@ -80,16 +79,16 @@ class Template:
 
 def _register_template(
     model_type: str,
-    format_user: Optional[str] = None,
-    format_assistant: Optional[str] = None,
-    format_system: Optional[str] = None,
-    format_function: Optional[str] = None,
-    format_observation: Optional[str] = None,
-    format_separator: Optional[str] = None,
+    format_user: str | None = None,
+    format_assistant: str | None = None,
+    format_system: str | None = None,
+    format_function: str | None = None,
+    format_observation: str | None = None,
+    format_separator: str | None = None,
     default_system: str = "",
-    replace_tokens: List[tuple] = None,
-    extra_encode: Optional[bool] = False,
-    default_dataset: Optional[bool] = "NeelNanda/pile-10k",
+    replace_tokens: list[tuple] | None = None,
+    extra_encode: bool | None = False,
+    default_dataset: bool | None = "NeelNanda/pile-10k",
     processor: "BasicProcessor" = PROCESSORS["basic"],
 ):
     """Registers a chat template."""
@@ -127,6 +126,9 @@ _register_template("deepseek_vl_v2", default_dataset="NeelNanda/pile-10k", proce
 _register_template("mistral3", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
 _register_template("mistral3_2", default_dataset="liuhaotian/llava", processor=PROCESSORS["mistral3_2"])
 _register_template("gemma3", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
+_register_template("longcat_next", default_dataset="liuhaotian/llava", processor=PROCESSORS["longcat_next"])
+_register_template("mimo_audio", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["mimo_audio"])
+_register_template("qwen3_tts", default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["qwen3_tts"])
 
 
 def load_template(path: str):
@@ -163,9 +165,7 @@ def _load_preset_template():
 _load_preset_template()
 
 
-def get_template(
-    template_or_path: str, model=None, tokenizer=None, processor=None, image_processor=None, use_rtn=False, quiet=False
-):
+def get_template(template_or_path: str, model=None, tokenizer=None, processor=None, image_processor=None, quiet=False):
     """Get template by template name or from a json file.
 
     Args:
@@ -182,12 +182,10 @@ def get_template(
             template = TEMPLATES[template_or_path]
         else:
             if not quiet:
-                logger.warning(f"Unable to recognize {template_or_path}, using default template instead.")
+                logger.warning_once(f"Unable to recognize {template_or_path}, using default template instead.")
             template = TEMPLATES["default"]
             template.model_type = template_or_path
 
-    template.processor.post_init(
-        model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor, use_rtn=use_rtn
-    )
+    template.processor.post_init(model=model, tokenizer=tokenizer, processor=processor, image_processor=image_processor)
 
     return template

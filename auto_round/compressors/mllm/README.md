@@ -44,12 +44,13 @@ auto-round \
     --output_dir ./tmp_autoround
 ```
 
-### VLM Support Matrix
+### VLM & Omni Support Matrix
 
 For most VLMs, we typically support the default quantization configuration, which involves quantizing only the language
 component while excluding the visual component. Besides, we also support quantizing non-text modules of models that
 follow the Hugging Face standard, i.e., those with a typical processor, though inference may have some issues due to
-model architecture or kernel limitations.
+model architecture or kernel limitations. Audio models (MiMo-Audio, Qwen3-TTS, etc.) use text-only calibration
+by default.
 
 | Model                                         | calibration dataset | quant nontext module | Quantized Model Link                                                                                                                                                                                                                                                                                                                                                                                                                                             | 
 |-----------------------------------------------|---------------------|----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -67,6 +68,8 @@ model architecture or kernel limitations.
 | Qwen/Qwen2-VL                                 | pile/llava          | -                    | [Qwen2-VL-7B-Instruct-int4-sym](https://huggingface.co/OPEA/Qwen2-VL-7B-Instruct-int4-sym-inc), [Qwen2-VL-72B-Instruct-int4-sym](https://huggingface.co/OPEA/Qwen2-VL-72B-Instruct-int4-sym-inc), [Qwen2-VL-72B-Instruct-int2-sym](https://huggingface.co/OPEA/Qwen2-VL-72B-Instruct-int2-sym-inc)                                                                                                                                                               |
 | Qwen/Qwen2.5-Omni                             | pile                | √                    | [Qwen2.5-Omni-7B](https://huggingface.co/Intel/Qwen2.5-Omni-7B-int4-AutoRound)                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Qwen/Qwen3-Omni                               | pile                | √                    | [Qwen3-Omni-30B-A3B-Instruct](https://huggingface.co/Intel/Qwen3-Omni-30B-A3B-Instruct-int4-AutoRound)                                                                                                                                                                                                                                                                                                                                                                          |
+| Qwen/Qwen3-TTS                                 | pile/audiocaps                | X                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| XiaomiMiMo/MiMo-Audio                          | pile/audiocaps                | X                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | rhymes-ai/Aria                                | pile/llava          | √                    |                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | THUDM/CogVLM2                                 | pile/llava          | √                    | [cogvlm2-llama3-chat-19B-int4-sym](https://huggingface.co/OPEA/cogvlm2-llama3-chat-19B-int4-sym-inc), [cogvlm2-llama3-chat-19B-qvision-int4-sym](https://huggingface.co/OPEA/cogvlm2-llama3-chat-19B-qvision-int4-sym-inc)                                                                                                                                                                                                                                       |
 | THUDM/glm-4v                                  | pile                | X                    | [glm-4v-9b-int4-sym](https://huggingface.co/OPEA/glm-4v-9b-int4-sym-inc)                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -96,7 +99,8 @@ liuhaotian/llava_instruct_80k", "liuhaotian/llava_instruct_150k" or a file path 
 
 For autoround MLLMs, using Template to customize different operations for different models. User can use template to support new model which not in support list.
 ```python
-from auto_round.mllm.template import _register_template
+from auto_round.compressors.mllm.processor import PROCESSORS
+from auto_round.compressors.mllm.template import _register_template
 
 model_type = model.config.model_type
 _register_template(model_type=model_type, default_dataset="NeelNanda/pile-10k", processor=PROCESSORS["hf"])
@@ -106,7 +110,7 @@ _register_template(model_type=model_type, default_dataset="NeelNanda/pile-10k", 
 
 Processor is callback interface for calling different processors, such as texts or images processors, for MLLMs. User
 can define own processor and use registration function to declare. For more information, please refer to the relevant
-code in ```auto_round/mllm/processor.py```.
+code in ```auto_round/compressors/mllm/processor.py```.
 
 </details>
 

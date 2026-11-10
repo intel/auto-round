@@ -1,0 +1,574 @@
+import inspect
+from types import SimpleNamespace
+
+import pytest
+
+from auto_round import autoround
+from auto_round.algorithms.quantization.rtn.config import RTNConfig
+from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
+from auto_round.algorithms.transforms.awq.config import AWQConfig
+from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+from auto_round.autoround import _normalize_alg_configs, _split_entry_kwargs
+
+
+def _types(configs):
+    return [type(config).__name__ for config in configs]
+
+
+@pytest.mark.parametrize("value,expected", [("auto", "auto"), ("2", 2.0), ("0", 0.0)])
+def test_diffusion_cache_cli_and_entry_routing(value, expected):
+    from auto_round.cli.main import _build_entry_model_type_kwargs
+    from auto_round.cli.parser import build_quantize_parser
+
+    args = build_quantize_parser().parse_args(["--diffusion_tuning_cache_size", value])
+    grouped = _split_entry_kwargs(_build_entry_model_type_kwargs(args))
+    assert grouped["diffusion"]["diffusion_tuning_cache_size"] == expected
+
+
+def test_split_entry_kwargs_partitions_owned_fields():
+    processor = object()
+    pipeline_call_kwargs = {
+        "height": 256,
+        "width": 256,
+        "num_frames": 9,
+        "output_type": "latent",
+    }
+
+    grouped = _split_entry_kwargs(
+        {
+            "dataset": ["sample"],
+            "scale_dtype": "fp32",
+            "processor": processor,
+            "model_free": False,
+            "num_inference_steps": 20,
+            "calib_num_inference_steps": 8,
+            "diffusion_tuning_cache_size": 2,
+            "pipeline_call_kwargs": pipeline_call_kwargs,
+        }
+    )
+
+    assert grouped["base"]["dataset"] == ["sample"]
+    assert grouped["compressor"]["scale_dtype"] == "fp32"
+    assert grouped["mllm"]["processor"] is processor
+    assert grouped["route"]["model_free"] is False
+    assert grouped["diffusion"]["num_inference_steps"] == 20
+    assert grouped["diffusion"]["calib_num_inference_steps"] == 8
+    assert grouped["diffusion"]["diffusion_tuning_cache_size"] == 2
+    assert grouped["diffusion"]["pipeline_call_kwargs"] == pipeline_call_kwargs
+
+
+def test_split_entry_kwargs_ignores_unknown_fields(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(autoround.logger, "warning_once", lambda message, *args: warnings.append(message % args))
+
+    grouped = _split_entry_kwargs({"unknown_option": 1}, context="test entry")
+
+    assert all(not values for values in grouped.values())
+    assert "unknown_option" in warnings[0]
+
+
+def test_cli_explicit_auto_round_with_zero_iters_selects_rtn():
+    """The CLI's own algorithm-handling path (not _normalize_alg_configs) also
+    selects RTN when iters=0 -- a separate code path from the alg_configs
+    normalization below, so it's kept as a distinct case rather than folded in.
+    """
+    from argparse import Namespace
+
+    from auto_round.cli.algorithms import AlgorithmHandler
+
+    args = Namespace(algorithm="auto_round", iters=0)
+    configs = AlgorithmHandler.build_configs(args, {})
+
+    assert type(configs[0]).__name__ == "RTNConfig"
+
+
+def test_default_alg_configs_is_signround():
+    configs = _normalize_alg_configs(None)
+
+    assert _types(configs) == ["SignRoundConfig"]
+
+
+def test_public_entry_uses_only_canonical_parameters():
+    from auto_round import AutoRound
+
+    parameters = inspect.signature(AutoRound.__new__).parameters
+    assert "alg_configs" in parameters
+    assert "scheme" in parameters
+    assert (
+        not {
+            "algorithm",
+            "schemes",
+            "calibration_data_device",
+            "seqlen",
+            "nsamples",
+            "batch_size",
+            "gradient_accumulate_steps",
+            "iters",
+        }
+        & parameters.keys()
+    )
+    assert "CalibDataset" in str(parameters["dataset"].annotation)
+    assert inspect.getsourcelines(AutoRound)[1] <= 50
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        ({}, (2048, 128, 8, 7)),
+        ({"seqlen": 64, "nsamples": 16, "batch_size": 2, "gradient_accumulate_steps": 3}, (64, 16, 2, 3)),
+        ({"gradient_accumulate_steps": None}, (2048, 128, 8, 7)),
+    ],
+)
+def test_hidden_calibration_kwargs_keep_defaults_and_overrides(monkeypatch, strict, overrides, expected):
+    captured = {}
+    config = SignRoundConfig(iters=5, gradient_accumulate_steps=7)
+
+    def build(model, scheme, configs, **kwargs):
+        captured.update(kwargs)
+        captured["configs"] = configs
+        return SimpleNamespace(**captured)
+
+    monkeypatch.setattr(autoround, "_CompressorBuilder", build)
+    result = autoround.AutoRound("unused-model", alg_configs=config, model_free=strict, **overrides)
+    assert (result.seqlen, result.nsamples, result.batch_size) == expected[:3]
+    assert result.configs[0].gradient_accumulate_steps == expected[3]
+
+
+def test_public_entry_documents_options_and_experimental_features():
+    class_doc = inspect.getdoc(autoround.AutoRound)
+    doc = inspect.getdoc(autoround.AutoRound.__new__)
+    assert '"hf"' in doc and '"model_scope"' in doc
+    assert '"split"' in doc and '"per_replica"' in doc
+    assert all(feature in class_doc for feature in ("(DP)", "(TP)", "(QAT)", "(QAD)", "**experimental**"))
+    assert "Args:" not in class_doc
+    assert "Examples:" in class_doc
+    assert "Args:" in doc
+    assert "Keyword Args:" in doc
+    assert "Algorithm Keyword Arguments:" in doc
+
+
+def test_constructor_documents_all_runtime_kwargs():
+    import re
+
+    doc = inspect.getdoc(autoround.AutoRound.__new__)
+    documented = set(re.findall(r"^\s+(\w+)(?:\s+\([^\n]*\))?:", doc, flags=re.MULTILINE))
+    runtime_keys = set(autoround._ENTRY_KWARG_OWNERS)
+    consumed_keys = {
+        "iters",
+        "seqlen",
+        "nsamples",
+        "batch_size",
+        "gradient_accumulate_steps",
+        "calibration_data_device",
+        "device",
+        "rotation_config",
+        "options",
+        "avg_bits",
+        "shared_layers",
+        "ignore_scale_zp_bits",
+    }
+    assert not (runtime_keys | consumed_keys) - documented
+    assert all(f"``{key}``" in doc for key in autoround._SCHEME_FIELDS)
+
+
+@pytest.mark.parametrize("overrides,expected", [({}, 5), ({"iters": None}, 5), ({"iters": 11}, 11)])
+def test_hidden_iters_keeps_config_default_or_applies_override(monkeypatch, overrides, expected):
+    captured = {}
+
+    def build(model, scheme, configs, **kwargs):
+        captured["configs"] = configs
+        captured.update(kwargs)
+        return SimpleNamespace(**captured)
+
+    monkeypatch.setattr(autoround, "_CompressorBuilder", build)
+    result = autoround.AutoRound("unused-model", alg_configs=SignRoundConfig(iters=5), **overrides)
+    assert isinstance(result.configs[0], SignRoundConfig)
+    assert result.configs[0].iters == expected
+    assert result.iters is None  # The resolved config, not the builder, owns the schedule.
+
+
+@pytest.mark.parametrize("alg_configs", [None, "signround", SignRoundConfig(iters=5)])
+def test_hidden_zero_iters_preserves_public_rtn_routing(monkeypatch, alg_configs):
+    monkeypatch.setattr(
+        autoround, "_CompressorBuilder", lambda model, scheme, configs, **kwargs: SimpleNamespace(configs=configs)
+    )
+    configs = autoround.AutoRound("unused-model", alg_configs=alg_configs, iters=0, disable_opt_rtn=True).configs
+    assert len(configs) == 1
+    assert isinstance(configs[0], RTNConfig)
+    assert configs[0].disable_opt_rtn is True
+
+
+def test_public_entry_examples_are_valid_python():
+    examples = inspect.getdoc(autoround.AutoRound).split("Examples:\n", 1)[1]
+    block = []
+    count = 0
+    for line in examples.splitlines() + [""]:
+        if line.startswith("        "):
+            block.append(line[8:])
+        elif not line.strip() and block:
+            block.append("")
+        elif block:
+            compile("\n".join(block), "<AutoRound example>", "exec")
+            count += 1
+            block = []
+    if block:
+        compile("\n".join(block), "<AutoRound example>", "exec")
+        count += 1
+    assert count >= 8
+
+
+@pytest.mark.parametrize("name,value", [("algorithm", "rtn"), ("schemes", ["W4A16", "W8A16"])])
+def test_public_entry_rejects_removed_parameters(name, value):
+    with pytest.raises(TypeError, match=name):
+        autoround.AutoRound("unused-model", **{name: value})
+
+
+@pytest.mark.parametrize("placement", ["auto", "cpu", "off", "cuda:1,cuda:2"])
+def test_public_entry_forwards_dataset_and_hidden_placement(monkeypatch, placement):
+    from auto_round.utils.dataset_utils import CalibDataset
+
+    captured = {}
+    dataset = CalibDataset("pile-10k")
+
+    def build(model, scheme, configs, **kwargs):
+        captured.update(kwargs)
+        captured["scheme"] = scheme
+        return SimpleNamespace(**captured)
+
+    monkeypatch.setattr(autoround, "_CompressorBuilder", build)
+    result = autoround.AutoRound(
+        "unused-model",
+        scheme=["W4A16", "W8A16"],
+        bits=4.2,
+        alg_configs="signround",
+        dataset=dataset,
+        calibration_data_device=placement,
+    )
+    assert result.dataset is dataset
+    assert result.calibration_data_device == placement
+    assert result.scheme.avg_bits == 4.2
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "signround",
+        SignRoundConfig(iters=3),
+        [SignRoundConfig(iters=3)],
+        ("signround",),
+    ],
+)
+def test_alg_configs_accepts_alias_config_and_sequence(value):
+    configs = _normalize_alg_configs(value)
+
+    assert len(configs) == 1
+    assert isinstance(configs[0], SignRoundConfig)
+
+
+def test_awq_only_appends_rtn():
+    configs = _normalize_alg_configs(AWQConfig())
+
+    assert isinstance(configs[0], AWQConfig)
+    assert isinstance(configs[1], RTNConfig)
+
+
+def test_awq_and_signround_does_not_append_rtn():
+    configs = _normalize_alg_configs([AWQConfig(), SignRoundConfig(iters=3)])
+
+    assert _types(configs) == ["AWQConfig", "SignRoundConfig"]
+
+
+def test_awq_rtn_uses_regular_model_loaded_route(monkeypatch):
+    from auto_round import AutoRound
+
+    created = {}
+
+    class FakeCompressor:
+        def __init__(self, config, **kwargs):
+            created["config"] = config
+            created["kwargs"] = kwargs
+
+    def fail_model_free(*args, **kwargs):
+        raise AssertionError("AWQ pipelines must not auto-route to model-free quantization.")
+
+    monkeypatch.setattr("auto_round.autoround._build_model_free_compressor", fail_model_free)
+    monkeypatch.setattr("auto_round.autoround._build_model_type_ctor_kwargs", lambda *args, **kwargs: ("llm", {}))
+    monkeypatch.setattr("auto_round.autoround._get_compressor_class", lambda model_type, base_cls: FakeCompressor)
+
+    ar = AutoRound(
+        "dummy-model",
+        scheme="W4A16",
+        alg_configs=[AWQConfig(n_grid=1), RTNConfig(disable_opt_rtn=True)],
+    )
+
+    assert isinstance(ar, FakeCompressor)
+    assert _types(created["config"]) == ["AWQConfig", "RTNConfig"]
+
+    with pytest.raises(ValueError, match="model_free=True.*AWQConfig"):
+        AutoRound(
+            "dummy-model",
+            scheme="W4A16",
+            alg_configs=[AWQConfig(n_grid=1), RTNConfig(disable_opt_rtn=True)],
+            model_free=True,
+        )
+
+
+def test_direct_signround_kwargs_apply_without_warning(monkeypatch):
+    warnings = []
+    monkeypatch.setattr("auto_round.autoround.logger.warning", lambda message, *args: warnings.append(message % args))
+    monkeypatch.setattr(
+        "auto_round.autoround.logger.warning_once", lambda message, *args: warnings.append(message % args)
+    )
+
+    configs = _normalize_alg_configs(None, direct_kwargs={"iters": 7, "lr": 0.2})
+
+    assert isinstance(configs[0], SignRoundConfig)
+    assert configs[0].iters == 7
+    assert configs[0].lr == 0.2
+    assert not warnings
+
+
+def test_zero_iters_selects_rtn_and_forwards_disable_opt_rtn():
+    configs = _normalize_alg_configs(None, direct_kwargs={"iters": 0, "disable_opt_rtn": True})
+
+    assert len(configs) == 1
+    assert isinstance(configs[0], RTNConfig)
+    assert configs[0].disable_opt_rtn is True
+
+
+def test_awq_rtn_opt_policy_defaults_and_explicit_overrides():
+    cases = [
+        (_normalize_alg_configs("awq"), ["AWQConfig", "OptimizedRTNConfig"], [False, False]),
+        (_normalize_alg_configs(AWQConfig()), ["AWQConfig", "OptimizedRTNConfig"], [False, False]),
+        (
+            _normalize_alg_configs("awq,rtn", direct_kwargs={"disable_opt_rtn": True}),
+            ["AWQConfig", "RTNConfig"],
+            [True, True],
+        ),
+        (
+            _normalize_alg_configs([AWQConfig(enable_opt_rtn=True), RTNConfig()]),
+            ["AWQConfig", "OptimizedRTNConfig"],
+            [False, False],
+        ),
+        (
+            _normalize_alg_configs([AWQConfig(), RTNConfig(enable_opt_rtn=True)]),
+            ["AWQConfig", "OptimizedRTNConfig"],
+            [False, False],
+        ),
+    ]
+
+    for configs, expected_types, expected_disable_opt_rtn in cases:
+        assert _types(configs) == expected_types
+        assert [config.disable_opt_rtn for config in configs] == expected_disable_opt_rtn
+
+
+@pytest.mark.parametrize("algorithm", ["signround", "auto_round", "autoround"])
+def test_signround_alias_with_zero_iters_selects_rtn(algorithm):
+    unified_configs = _normalize_alg_configs(algorithm, direct_kwargs={"iters": 0})
+
+    assert len(unified_configs) == 1
+    assert isinstance(unified_configs[0], RTNConfig)
+
+
+def test_explicit_zero_iter_signround_config_selects_rtn():
+    configs = _normalize_alg_configs(SignRoundConfig(iters=0))
+
+    assert len(configs) == 1
+    assert isinstance(configs[0], RTNConfig)
+
+
+def test_combined_awq_zero_iters_keeps_awq_and_selects_rtn():
+    configs = _normalize_alg_configs("awq,signround", direct_kwargs={"iters": 0})
+
+    assert _types(configs) == ["AWQConfig", "OptimizedRTNConfig"]
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "expected_types"),
+    [
+        ("rtn", ["RTNConfig"]),
+        ("opt-rtn", ["OptimizedRTNConfig"]),
+        ("awq", ["AWQConfig", "OptimizedRTNConfig"]),
+        ("signround", ["SignRoundConfig"]),
+        ("awq,signround", ["AWQConfig", "SignRoundConfig"]),
+    ],
+)
+def test_alg_configs_aliases(algorithm, expected_types):
+    unified_configs = _normalize_alg_configs(algorithm)
+
+    assert _types(unified_configs) == expected_types
+
+
+@pytest.mark.parametrize(
+    ("alias", "expected_disable_opt_rtn"),
+    [
+        ("rtn", True),
+        ("opt-rtn", False),
+        ("opt_rtn", False),
+        ("optimized_rtn", False),
+        ("optimized-rtn", False),
+    ],
+)
+def test_named_rtn_variant_forces_the_disable_opt_rtn_policy(alias, expected_disable_opt_rtn):
+    """`rtn` selects plain RTN and `opt-rtn` the optimized path, as on the CLI."""
+    configs = _normalize_alg_configs(alias)
+
+    assert len(configs) == 1
+    assert configs[0].disable_opt_rtn is expected_disable_opt_rtn
+    # Marked as user policy, so the W8A16/W8A8 heuristic and the AWQ-inherited
+    # policy cannot switch the variant back.
+    assert configs[0].orig_disable_opt_rtn is expected_disable_opt_rtn
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "direct_kwargs", "expected_disable_opt_rtn"),
+    [
+        ("rtn", {"disable_opt_rtn": False}, True),
+        ("opt-rtn", {"disable_opt_rtn": True}, False),
+        ("rtn", {"enable_opt_rtn": True}, True),
+    ],
+)
+def test_named_rtn_variant_wins_over_a_contradicting_argument(algorithm, direct_kwargs, expected_disable_opt_rtn):
+    configs = _normalize_alg_configs(algorithm, direct_kwargs=dict(direct_kwargs))
+
+    assert len(configs) == 1
+    assert configs[0].disable_opt_rtn is expected_disable_opt_rtn
+    assert configs[0].orig_disable_opt_rtn is expected_disable_opt_rtn
+
+
+def test_implicit_rtn_fallback_keeps_the_heuristic_variant():
+    """`alg_configs=None` must not be treated as naming the `rtn` variant."""
+    heuristic = _normalize_alg_configs(None, direct_kwargs={"iters": 0})
+    forced = _normalize_alg_configs(None, direct_kwargs={"iters": 0, "disable_opt_rtn": True})
+
+    # No name was given, so the value stays unmarked (orig is None) and the
+    # engine picks the variant: W4A16 int is optimized by default.
+    assert heuristic[0].orig_disable_opt_rtn is None
+    assert heuristic[0].disable_opt_rtn is False
+    assert _types(heuristic) == ["OptimizedRTNConfig"]
+
+    # The explicit flag is still honoured, exactly as before.
+    assert forced[0].orig_disable_opt_rtn is True
+    assert forced[0].disable_opt_rtn is True
+    assert _types(forced) == ["RTNConfig"]
+
+
+def test_awq_keeps_its_own_policy_next_to_a_named_rtn_variant():
+    """Only RTN configs take the name's policy; AWQ keeps its own."""
+    configs = _normalize_alg_configs([AWQConfig(disable_opt_rtn=True), "opt-rtn"])
+
+    assert _types(configs) == ["AWQConfig", "OptimizedRTNConfig"]
+    assert configs[0].disable_opt_rtn is True
+    assert configs[1].disable_opt_rtn is False
+    assert configs[1].orig_disable_opt_rtn is False
+
+
+def test_old_algorithm_parameter_is_rejected():
+    with pytest.raises(TypeError, match="`alg_configs`"):
+        _normalize_alg_configs("signround", direct_kwargs={"algorithm": "rtn"})
+
+
+def test_string_and_string_sequence_use_same_alias_deduplication():
+    comma_configs = _normalize_alg_configs("awq,awq,signround")
+    sequence_configs = _normalize_alg_configs(["awq", "awq", "signround"])
+
+    assert _types(comma_configs) == ["AWQConfig", "SignRoundConfig"]
+    assert _types(sequence_configs) == _types(comma_configs)
+
+
+def test_combined_alg_configs_forwards_each_algorithm_option():
+    configs = _normalize_alg_configs(
+        "awq,signround",
+        direct_kwargs={"n_grid": 7, "iters": 3, "enable_alg_ext": False},
+    )
+
+    assert _types(configs) == ["AWQConfig", "SignRoundConfig"]
+    assert configs[0].n_grid == 7
+    assert configs[1].iters == 3
+    assert configs[1].enable_alg_ext is False
+
+
+@pytest.mark.parametrize(
+    "configs",
+    [
+        lambda: _normalize_alg_configs("awq,signround", direct_kwargs={"iters": 3}),
+        lambda: _normalize_alg_configs([AWQConfig(), SignRoundConfig(iters=3)]),
+    ],
+)
+def test_alias_and_config_composition_select_same_v1_quantizer(configs):
+    from auto_round.algorithms.composer import AlgorithmComposer
+
+    composer = AlgorithmComposer(configs())
+
+    assert [type(pre).__name__ for pre in composer.preprocessors] == ["AWQTransform"]
+    assert type(composer.active_quantizer).__name__ == "SignRoundQuantizer"
+
+
+def test_direct_enable_opt_rtn_forces_optimized_rtn():
+    configs = _normalize_alg_configs(None, direct_kwargs={"iters": 0, "enable_opt_rtn": True})
+
+    assert len(configs) == 1
+    assert isinstance(configs[0], RTNConfig)
+    assert configs[0].disable_opt_rtn is False
+    assert configs[0].orig_disable_opt_rtn is False
+
+
+def test_rtn_switches_only_when_iters_is_zero():
+    configs = _normalize_alg_configs(None, direct_kwargs={"disable_opt_rtn": True})
+
+    assert isinstance(configs[0], SignRoundConfig)
+
+
+def test_direct_enable_alg_ext_normalizes_signround_variant():
+    configs = _normalize_alg_configs(None, direct_kwargs={"iters": 1, "enable_alg_ext": True})
+
+    assert len(configs) == 1
+    assert isinstance(configs[0], SignRoundV2Config)
+
+
+def test_direct_rotation_config_is_added_to_pipeline():
+    configs = _normalize_alg_configs(None, direct_kwargs={"rotation_config": "default"})
+
+    assert any(isinstance(config, RotationConfig) for config in configs)
+
+
+def test_direct_enable_lfq_is_forwarded():
+    configs = _normalize_alg_configs(None, direct_kwargs={"enable_lfq": True})
+
+    assert isinstance(configs[0], SignRoundConfig)
+    assert configs[0].enable_lfq is True
+
+
+def test_rotation_config_accepts_spinquant_shorthand():
+    configs = _normalize_alg_configs(None, direct_kwargs={"rotation_config": "quarot"})
+
+    assert any(type(config).__name__ == "SpinQuantConfig" for config in configs)
+
+
+def test_rotation_backend_must_be_nested_in_rotation_config():
+    with pytest.raises(ValueError, match="rotation_config"):
+        _normalize_alg_configs(None, direct_kwargs={"backend": "transform"})
+
+
+def test_awq_kwargs_without_awq_error_and_are_ignored(monkeypatch):
+    errors = []
+    monkeypatch.setattr("auto_round.autoround.logger.error", lambda message, *args: errors.append(message % args))
+
+    configs = _normalize_alg_configs(None, direct_kwargs={"n_grid": 7, "apply_clip": True})
+
+    assert isinstance(configs[0], SignRoundConfig)
+    assert not hasattr(configs[0], "n_grid")
+    assert any("AWQ" in message for message in errors)
+
+
+@pytest.mark.parametrize("algorithms", ["rtn,opt-rtn", "opt_rtn,rtn", ["rtn", "optimized-rtn"]])
+def test_conflicting_rtn_variants_are_rejected(algorithms):
+    with pytest.raises(ValueError, match="Cannot select both.*rtn.*opt-rtn"):
+        _normalize_alg_configs(algorithms)
+
+
+def test_duplicate_optimized_rtn_aliases_are_deduplicated():
+    configs = _normalize_alg_configs(["opt_rtn", "optimized-rtn"])
+    assert len(configs) == 1
+    assert configs[0].disable_opt_rtn is False

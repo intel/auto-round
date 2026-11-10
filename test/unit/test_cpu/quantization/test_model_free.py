@@ -1,0 +1,3310 @@
+# Copyright (c) 2025 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for auto_round.compressors.model_free module.
+
+These generic model-free configuration and export tests are deliberately CPU-only.
+Backend-specific model-free behavior is covered by test_model_free_parity.py.
+"""
+
+import json
+import os
+import re
+from unittest.mock import Mock
+
+import pytest
+
+
+def test_quantize_and_save_restores_temporary_state_on_failure(monkeypatch):
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    compressor = ModelFreeCompressor.__new__(ModelFreeCompressor)
+    compressor.scheme_input = "W4A16"
+    compressor.layer_config_input = None
+    compressor.user_scheme_overrides = None
+    compressor._auto_scheme_family = None
+    compressor.output_dir = "original-output"
+    compressor.format = "auto_round"
+    compressor.quantized = False
+    compressor.nvfp_source_only = False
+
+    def fail_run():
+        raise RuntimeError("save failed")
+
+    monkeypatch.setattr(compressor, "run", fail_run)
+
+    with pytest.raises(RuntimeError, match="save failed"):
+        compressor.quantize_and_save("temporary-output", format="auto_round:auto_gptq")
+
+    assert compressor.output_dir == "original-output"
+    assert compressor.format == "auto_round"
+    assert compressor.quantized is False
+
+
+import torch
+from safetensors import safe_open
+from safetensors.torch import save_file
+
+from auto_round import AutoRound
+from auto_round.compressors.model_free import (
+    _ModelFreeCompressorCore,
+    _process_single_shard_task,
+)
+from auto_round.schemes import QuantizationScheme
+from auto_round.utils.model_free_utils import (
+    _build_mxfp_autoround_quantization_config,
+    _build_mxfp_quantization_config,
+    _build_quantization_config,
+    _convert_auto_scheme_layer_config,
+    _dequant_mxfp_tensors,
+    _expand_e8m0_block_scale,
+    _handle_mxfp_source_tensors,
+    _list_remote_weight_shards,
+    _list_weight_shards,
+    _looks_like_auto_scheme,
+    _PatternMatcher,
+    _process_shard,
+    _quantize_weight_mxfp,
+    _quantize_weight_nvfp4_e5m3,
+    _quantize_weight_nvfp4_e5m3_gs,
+    _validate_auto_scheme_options,
+    is_model_free_supported_scheme,
+)
+from auto_round.utils.model_free_utils import (
+    preprocess_model_type_source_tensors as _preprocess_model_type_source_tensors,
+)
+
+
+def test_model_free_preserves_explicit_scheme_overrides():
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    compressor = ModelFreeCompressor("unused-model-path", scheme="W8A16", sym=False)
+    compressor._parse_scheme()
+
+    assert compressor.default_scheme["sym"] is False
+
+
+def test_model_free_expands_layer_config_after_resolving_model_type(monkeypatch):
+    from auto_round.compressors.model_free import _ModelFreeCompressorCore
+
+    compressor = _ModelFreeCompressorCore("unused-model-path", "/tmp/unused-output")
+    compressor.config = {"model_type": "glm5_next"}
+    compressor.layer_config = {"model.layers.0.attn_hc.base": {"bits": 4}}
+    captured = {}
+
+    def _expand(layer_config, *, model_type, to_model_names):
+        captured.update(model_type=model_type, to_model_names=to_model_names)
+        return {**layer_config, "model.layers.0.hc_attn_base": {"bits": 4}}
+
+    monkeypatch.setattr("auto_round.utils.expand_layer_config_for_weight_renames", _expand)
+
+    compressor._resolve_model_type()
+
+    assert captured == {"model_type": "glm5_next", "to_model_names": False}
+    assert "model.layers.0.hc_attn_base" in compressor.layer_config
+
+
+def test_list_weight_shards_returns_empty_list_for_metadata_only_directory(tmp_path):
+    (tmp_path / "config.json").write_text("{}")
+
+    assert _list_weight_shards(str(tmp_path)) == []
+
+
+def test_list_remote_weight_shards_prefers_safetensors(monkeypatch):
+    monkeypatch.setattr(
+        "huggingface_hub.list_repo_files",
+        lambda model_name_or_path: ["pytorch_model.bin", "model.safetensors", "config.json"],
+    )
+
+    assert _list_remote_weight_shards("org/model") == ["model.safetensors"]
+
+
+def test_list_remote_weight_shards_filters_diffusion_components(monkeypatch):
+    monkeypatch.setattr(
+        "huggingface_hub.list_repo_files",
+        lambda model_name_or_path: [
+            "transformer/model.safetensors",
+            "vae/diffusion_pytorch_model.safetensors",
+            "text_encoder/model.safetensors",
+        ],
+    )
+
+    assert _list_remote_weight_shards("org/model", subfolder="transformer") == ["transformer/model.safetensors"]
+
+
+def test_streaming_discovers_remote_single_weight_file(tmp_path, monkeypatch):
+    compressor = _ModelFreeCompressorCore("org/single-file-model", str(tmp_path / "output"))
+    compressor.is_streaming = True
+    compressor.work_dir = str(tmp_path)
+    monkeypatch.setattr(
+        "auto_round.utils.model_free_utils._list_remote_weight_shards",
+        lambda model_name_or_path, subfolder=None: ["model.safetensors"],
+    )
+
+    compressor._discover_shards()
+
+    assert compressor.shard_names == ["model.safetensors"]
+
+
+def test_fallback_forwards_only_explicit_format():
+    """Only an explicitly requested construction format reaches the fallback.
+
+    The fallback compressor consumes quantize_and_save(format=...) only while
+    its formats are still unset, so forwarding the implicit "auto_round"
+    default would silently pin every fallback export to the native format
+    (regression: gguf, llm_compressor, auto_gptq and auto_awq save-time
+    formats were exported as native auto_round instead)."""
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    implicit = ModelFreeCompressor("unused-model-path", scheme="W4A16")
+    assert implicit.format == "auto_round"
+    assert "format" not in implicit._fallback_init_kwargs
+
+    explicit = ModelFreeCompressor("unused-model-path", scheme="W4A16", format="auto_round:llm_compressor")
+    assert explicit._fallback_init_kwargs.get("format") == "auto_round:llm_compressor"
+
+
+def test_model_free_entry_forwards_explicit_format(monkeypatch):
+    """An explicit construction format must reach the model-free compressor.
+
+    The compressor builder consumes ``format`` as its own parameter, so the
+    model-free branch must pass it explicitly. Without it a W8A16 asym request
+    with an llm_compressor format built a model-free compressor with the
+    implicit default, forwarded nothing to the fallback, and the fallback
+    AutoRound was constructed without any format - its eager validation then
+    refused the scheme it was built to export."""
+    monkeypatch.delenv("AR_ALLOW_W8_ASYM", raising=False)
+    from auto_round import AutoRound
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    ar = AutoRound(
+        "unused-model-path",
+        scheme="W8A16",
+        sym=False,
+        iters=0,
+        model_free=True,
+        format="auto_round:llm_compressor",
+    )
+    assert isinstance(ar, ModelFreeCompressor)
+    assert ar.format == "auto_round:llm_compressor"
+    assert ar._fallback_init_kwargs.get("format") == "auto_round:llm_compressor"
+
+
+def test_explicit_model_free_rejects_unknown_runtime_kwargs():
+    with pytest.raises(TypeError, match="Unsupported parameter 'unsupported_option'.*model_free=True"):
+        AutoRound("unused-model-path", model_free=True, unsupported_option=True)
+
+
+@pytest.mark.parametrize("dtype_key", ["static_kv_dtype", "static_attention_dtype"])
+def test_explicit_model_free_rejects_static_attention_quantization(dtype_key):
+    with pytest.raises(ValueError, match="model_free=True.*static"):
+        AutoRound("unused-model-path", scheme="W4A16", model_free=True, **{dtype_key: "fp8"})
+
+
+def test_explicit_model_free_rejects_unsupported_export_without_fallback():
+    compressor = AutoRound("unused-model-path", model_free=True, scheme="W4A16")
+
+    with pytest.raises(ValueError, match="model_free=True does not support format 'gguf:q4_k_m'"):
+        compressor.quantize_and_save("unused-output", format="gguf:q4_k_m")
+
+
+def test_fallback_construction_sees_save_format_when_no_construction_format(monkeypatch):
+    """The fallback exists to serve a quantize_and_save(format=...) call.
+
+    When no explicit construction format was forwarded, the save-time format
+    must reach the fallback construction so eager validation judges the format
+    actually being saved (an explicitly requested construction format still
+    wins)."""
+    monkeypatch.delenv("AR_ALLOW_W8_ASYM", raising=False)
+    from auto_round.compressors.model_free import ModelFreeCompressor
+
+    captured = {}
+
+    class _FakeAutoRound:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkeypatch.setattr("auto_round.autoround.AutoRound", _FakeAutoRound)
+
+    mf = ModelFreeCompressor("unused-model-path", scheme="W4A16")  # no explicit format
+    mf._fallback_to_base_compressor(save_format="gguf:q8_0")
+    assert captured.get("format") == "gguf:q8_0"
+    assert captured.get("disable_model_free") is True
+
+    explicit = ModelFreeCompressor("unused-model-path", scheme="W4A16", format="auto_round:llm_compressor")
+    explicit._fallback_to_base_compressor(save_format="gguf:q8_0")
+    assert captured.get("format") == "auto_round:llm_compressor"
+
+
+def test_model_free_entry_passes_resolved_scheme_overrides(tiny_opt_model_path):
+    from auto_round import AutoRound
+
+    compressor = AutoRound(
+        tiny_opt_model_path,
+        scheme="W4A16",
+        sym=False,
+        iters=0,
+        disable_opt_rtn=True,
+        device_map="cpu",
+        enable_torch_compile=False,
+    )
+
+    assert type(compressor).__name__ == "ModelFreeCompressor"
+    assert compressor.scheme_input.sym is False
+    assert compressor.disable_opt_rtn is True
+
+
+def test_model_free_entry_preserves_enabled_opt_rtn(tiny_opt_model_path):
+    compressor = AutoRound(
+        tiny_opt_model_path,
+        scheme="MXFP4",
+        iters=0,
+        disable_opt_rtn=False,
+        model_free=True,
+        device_map="cpu",
+        enable_torch_compile=False,
+    )
+
+    assert type(compressor).__name__ == "ModelFreeCompressor"
+    assert compressor.disable_opt_rtn is False
+
+
+@pytest.mark.parametrize("default_enabled", [True, False])
+def test_model_free_core_uses_default_torch_compile_policy_when_unset(tmp_path, monkeypatch, default_enabled):
+    model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir, exist_ok=True)
+
+    monkeypatch.setattr(
+        "auto_round.compressors.model_free.default_enable_torch_compile", lambda _device: default_enabled
+    )
+
+    core = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="W4A16",
+        enable_torch_compile=None,
+    )
+
+    assert core.enable_torch_compile is default_enabled
+
+
+from ...envs import require_compressed_tensors
+
+# ---------------------------------------------------------------------------
+#  Helpers
+# ---------------------------------------------------------------------------
+
+
+_LLAMA_CFG = {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
+_DEFAULT_SCHEME = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int"}
+
+_SIMPLE_CONFIG = {
+    "architectures": ["OPTForCausalLM"],
+    "model_type": "opt",
+    "hidden_size": 128,
+    "num_hidden_layers": 2,
+}
+
+_SIMPLE_TENSORS = {
+    "model.decoder.layers.0.self_attn.q_proj.weight": torch.randn(128, 128),
+    "model.decoder.layers.0.self_attn.k_proj.weight": torch.randn(128, 128),
+    "model.decoder.layers.0.fc1.weight": torch.randn(512, 128),
+    "model.decoder.layers.0.fc2.weight": torch.randn(128, 512),
+    "model.decoder.layers.0.fc1.bias": torch.randn(512),
+    "model.decoder.embed_tokens.weight": torch.randn(1000, 128),
+    "lm_head.weight": torch.randn(1000, 128),
+}
+
+
+def _make_model_dir(tmp_path, config, tensors, *, multi_shard=False):
+    """Create a minimal local model directory with config.json and safetensors."""
+    model_dir = str(tmp_path / "source_model")
+    os.makedirs(model_dir, exist_ok=True)
+    with open(os.path.join(model_dir, "config.json"), "w") as f:
+        json.dump(config, f)
+
+    if not multi_shard:
+        save_file(tensors, os.path.join(model_dir, "model.safetensors"))
+    else:
+        keys = list(tensors.keys())
+        mid = max(1, len(keys) // 2)
+        shard1 = {k: tensors[k] for k in keys[:mid]}
+        shard2 = {k: tensors[k] for k in keys[mid:]}
+        save_file(shard1, os.path.join(model_dir, "model-00001-of-00002.safetensors"))
+        save_file(shard2, os.path.join(model_dir, "model-00002-of-00002.safetensors"))
+        weight_map = {}
+        for k in keys[:mid]:
+            weight_map[k] = "model-00001-of-00002.safetensors"
+        for k in keys[mid:]:
+            weight_map[k] = "model-00002-of-00002.safetensors"
+        with open(os.path.join(model_dir, "model.safetensors.index.json"), "w") as f:
+            json.dump({"metadata": {"total_size": 0}, "weight_map": weight_map}, f)
+
+    return model_dir
+
+
+def _read_output_keys(output_dir):
+    keys = set()
+    for f in os.listdir(output_dir):
+        if f.endswith(".safetensors"):
+            with safe_open(os.path.join(output_dir, f), framework="pt") as sf:
+                keys.update(sf.keys())
+    return keys
+
+
+def _read_qconfig(output_dir):
+    with open(os.path.join(output_dir, "config.json")) as f:
+        return json.load(f).get("quantization_config", {})
+
+
+def _make_local_calibration_dataset(tmp_path):
+    """Create a deterministic local dataset for tests that need tokenized samples."""
+    dataset_path = tmp_path / "calibration.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                "auto round calibration sample with enough text for model-free autoscheme scoring",
+                "another local calibration sample keeps this test independent of network datasets",
+            ]
+        )
+    )
+    return str(dataset_path)
+
+
+# ===========================================================================
+#  _parse_layer_config — scheme key resolution
+# ===========================================================================
+
+
+class TestParseLayerConfig:
+    @staticmethod
+    def _make_core(layer_config_input, scheme="W4A16"):
+        core = _ModelFreeCompressorCore(
+            model_name_or_path="dummy",
+            output_dir="dummy_out",
+            scheme=scheme,
+        )
+        core.layer_config_input = layer_config_input
+        core._parse_scheme()
+        core._parse_layer_config()
+        return core
+
+    def test_scheme_key_resolves(self):
+        core = self._make_core({".ffn.experts.": {"scheme": "W2A16"}})
+        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
+        assert cfg["bits"] == 2 and "scheme" not in cfg
+
+        m = _PatternMatcher(
+            ignore_patterns=[],
+            layer_config=core.layer_config,
+            default_scheme=core.default_scheme,
+        )
+        assert m.resolve_scheme("model.layers.0.ffn.experts.3.gate_proj.weight")["bits"] == 2
+
+    def test_scheme_key_with_overrides(self):
+        core = self._make_core({".ffn.experts.": {"scheme": "W2A16", "group_size": 32}})
+        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
+        assert cfg["bits"] == 2 and cfg["group_size"] == 32
+
+    def test_string_value(self):
+        core = self._make_core({".ffn.experts.": "W2A16"})
+        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
+        assert cfg["bits"] == 2
+
+    def test_quantization_scheme_value(self):
+        core = self._make_core({".ffn.experts.": QuantizationScheme(bits=2, group_size=64)})
+        cfg = next(v for k, v in core.layer_config.items() if "ffn.experts" in k)
+        assert cfg["bits"] == 2 and cfg["group_size"] == 64
+
+    def test_w4a16_mixed_recipe_in_model_free(self):
+        core = self._make_core({}, scheme="W4A16_MIXED")
+        assert core.default_scheme["bits"] == 8
+        assert core.layer_config[".experts."]["bits"] == 4
+        assert core.layer_config[".moe."]["bits"] == 4
+        assert core.layer_config[".shared_expert."]["bits"] == 8
+
+
+# ===========================================================================
+#  _build_ignore_patterns
+# ===========================================================================
+
+
+class TestBuildIgnorePatterns:
+    @staticmethod
+    def _make_core(layer_config=None, quant_lm_head=False, scheme="W4A16"):
+        core = _ModelFreeCompressorCore(
+            model_name_or_path="dummy",
+            output_dir="dummy_out",
+            scheme=scheme,
+            quant_lm_head=quant_lm_head,
+        )
+        core._parse_scheme()
+        core._parse_layer_config()
+        if layer_config:
+            # Merge any explicit layer_config entries on top of the parsed defaults.
+            for k, v in layer_config.items():
+                core.layer_config[k] = v
+        return core
+
+    def test_lm_head_ignored_by_default(self):
+        """Without quant_lm_head or an explicit layer_config entry, lm_head is skipped."""
+        core = self._make_core()
+        core._build_ignore_patterns()
+        assert "lm_head" in core.ignore_patterns
+
+    def test_lm_head_not_ignored_when_quant_lm_head_true(self):
+        """quant_lm_head=True removes lm_head from ignore list."""
+        core = self._make_core(quant_lm_head=True)
+        core._build_ignore_patterns()
+        assert "lm_head" not in core.ignore_patterns
+
+    def test_lm_head_not_ignored_when_in_layer_config(self):
+        """Explicit lm_head entry in layer_config removes it from the ignore list."""
+        core = self._make_core(layer_config={"lm_head": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "lm_head" not in core.ignore_patterns
+
+    def test_head_not_ignored_when_in_layer_config(self):
+        """DeepSeek v4 uses 'head' as the lm_head layer name; explicit entry in layer_config removes it from ignore."""
+        core = self._make_core(layer_config={"head": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "head" not in core.ignore_patterns
+
+    def test_head_still_ignored_when_lm_head_in_layer_config_but_not_head(self):
+        """Specifying 'lm_head' in layer_config should not unblock the separate 'head' pattern."""
+        core = self._make_core(layer_config={"lm_head": {"bits": 4}})
+        core._build_ignore_patterns()
+        # 'lm_head' itself is unblocked, but 'head' (deepseek v4) remains ignored
+        assert "lm_head" not in core.ignore_patterns
+        assert "head" in core.ignore_patterns
+
+    def test_embed_out_not_ignored_when_in_layer_config(self):
+        """Pythia/Dolly models use 'embed_out' as the lm_head layer name."""
+        core = self._make_core(layer_config={"embed_out": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "embed_out" not in core.ignore_patterns
+
+    def test_output_not_ignored_when_in_layer_config(self):
+        """Some InternLM variants use 'output' as the lm_head layer name."""
+        core = self._make_core(layer_config={"output": {"bits": 4}})
+        core._build_ignore_patterns()
+        assert "output" not in core.ignore_patterns
+
+
+# ===========================================================================
+#  _process_shard
+# ===========================================================================
+
+
+class TestProcessShard:
+    @pytest.mark.parametrize("enabled, expected_calls", [(True, 1), (False, 0)])
+    def test_torch_compile_setting(self, tmp_path, monkeypatch, enabled, expected_calls):
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({"layer.fc1.weight": torch.randn(64, 128)}, shard_path)
+        compile_mock = Mock(side_effect=lambda func, _device: func)
+        monkeypatch.setattr("auto_round.utils.model_free_utils.compile_func", compile_mock)
+
+        _process_shard(shard_path, _DEFAULT_SCHEME, {}, [], enable_torch_compile=enabled)
+
+        assert compile_mock.call_count == expected_calls
+
+    def test_quantizes_eligible_weights(self, tmp_path):
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({"layer.fc1.weight": torch.randn(64, 128), "layer.fc1.bias": torch.randn(64)}, shard_path)
+        output, quantized, _ = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [])
+        assert "layer.fc1" in quantized
+        assert "layer.fc1.qweight" in output and "layer.fc1.bias" in output
+
+
+def test_nvfp4_e5m3_model_free_fake_quantization():
+    weight = torch.randn(8, 32)
+    output = _quantize_weight_nvfp4_e5m3(weight, "layer.fc", group_size=16)
+
+    assert set(output) == {"layer.fc.weight"}
+    assert output["layer.fc.weight"].shape == weight.shape
+    assert output["layer.fc.weight"].dtype == weight.dtype
+    assert not torch.equal(output["layer.fc.weight"], weight)
+    assert is_model_free_supported_scheme("NVFP4_E5M3")
+    assert not is_model_free_supported_scheme("UNVFP4")
+    assert not is_model_free_supported_scheme("NVFP4+")
+
+
+def test_int_model_free_fake_quantization():
+    shard_path = "int-fake-shard.safetensors"
+    weight = torch.randn(8, 32)
+    try:
+        save_file({"layer.fc.weight": weight}, shard_path)
+        output, quantized, _ = _process_shard(
+            shard_path,
+            {**_DEFAULT_SCHEME, "_output_format": "fake"},
+            {},
+            [],
+        )
+    finally:
+        if os.path.exists(shard_path):
+            os.remove(shard_path)
+
+    assert quantized == ["layer.fc"]
+    assert set(output) == {"layer.fc.weight"}
+    assert output["layer.fc.weight"].shape == weight.shape
+    assert output["layer.fc.weight"].dtype == weight.dtype
+    assert not torch.equal(output["layer.fc.weight"], weight)
+
+
+def test_int_model_free_fake_export_has_no_quantization_config(tmp_path):
+    tensors = {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir)
+    with open(os.path.join(output_dir, "quantization_config.json"), "w") as f:
+        json.dump({"stale": True}, f)
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir, output_dir=output_dir, scheme="W4A16", format="fake"
+    )
+    compressor.run()
+
+    output_keys = _read_output_keys(output_dir)
+    assert "model.layers.0.self_attn.q_proj.weight" in output_keys
+    assert "model.layers.0.self_attn.q_proj.qweight" not in output_keys
+    assert not os.path.exists(os.path.join(output_dir, "quantization_config.json"))
+    with open(os.path.join(output_dir, "config.json")) as f:
+        assert "quantization_config" not in json.load(f)
+
+
+def test_nvfp4_e5m3_model_free_fake_export_preserves_activation_config(tmp_path):
+    tensors = {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir, output_dir=output_dir, scheme="NVFP4_E5M3", format="fake"
+    )
+    compressor.run()
+
+    assert "model.layers.0.self_attn.q_proj.weight" in _read_output_keys(output_dir)
+    quantization_config = _read_qconfig(output_dir)
+    assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["act_data_type"] == "nvfp4_v2"
+    with open(os.path.join(output_dir, "config.json")) as config_file:
+        assert json.load(config_file)["quantization_config"] == quantization_config
+
+    from types import SimpleNamespace
+
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    from auto_round.experimental.qmodules.fake import FakeActQuantLinear
+    from auto_round.inference.convert_model import convert_hf_model
+
+    config = LlamaConfig(
+        hidden_size=32, intermediate_size=64, num_hidden_layers=1, num_attention_heads=2, vocab_size=64
+    )
+    model = LlamaForCausalLM(config)
+    model.config.quantization_config = SimpleNamespace(**quantization_config)
+    model, used_backends = convert_hf_model(model, target_device="cpu")
+    layer = model.model.layers[0].self_attn.q_proj
+    assert used_backends == ["auto_round:fake"]
+    assert isinstance(layer, FakeActQuantLinear)
+    activation = torch.randn(2, 32)
+    assert not torch.equal(layer.qdq_input(activation), activation)
+
+
+def test_mixed_nvfp4_e5m3_fake_export_preserves_activation_config(tmp_path):
+    tensors = {"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="BF16",
+        layer_config={"model.layers.0.self_attn.q_proj": {"scheme": "NVFP4_E5M3"}},
+        format="fake",
+    )
+    compressor.run()
+
+    quantization_config = _read_qconfig(output_dir)
+    assert quantization_config["packing_format"] == "auto_round:fake"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["act_data_type"] == "nvfp4_v2"
+
+
+def test_nvfp4_e5m3_model_free_end_to_end(tmp_path):
+    tensors = {
+        "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),
+        "lm_head.weight": torch.randn(64, 32),
+    }
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+    os.makedirs(output_dir)
+    with open(os.path.join(output_dir, "quantization_config.json"), "w") as f:
+        json.dump({"stale": True}, f)
+
+    compressor = _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="NVFP4_E5M3")
+    compressor.run()
+
+    output_keys = _read_output_keys(output_dir)
+    assert "model.layers.0.self_attn.q_proj.weight" not in output_keys
+    assert "model.layers.0.self_attn.q_proj.weight_packed" in output_keys
+    assert "model.layers.0.self_attn.q_proj.weight_scale" in output_keys
+    assert "lm_head.weight" in output_keys
+    assert compressor.format == "auto_round"
+    quantization_config = _read_qconfig(output_dir)
+    assert quantization_config["packing_format"] == "auto_round:llm_compressor_nvfp4_e5m3"
+    assert quantization_config["data_type"] == "nvfp4_v2"
+    assert quantization_config["act_bits"] == 4
+    assert quantization_config["act_data_type"] == "nvfp4_v2"
+    assert quantization_config["act_group_size"] == 16
+    assert quantization_config["act_sym"] is True
+    assert quantization_config["extra_config"]["lm_head"] == {
+        "bits": 16,
+        "data_type": "float",
+        "act_bits": 16,
+        "act_data_type": "float",
+    }
+    assert os.path.exists(os.path.join(output_dir, "quantization_config.json"))
+
+
+def test_nvfp4_e5m3_model_free_llm_compressor(tmp_path):
+    tensors = {
+        "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),
+        "lm_head.weight": torch.randn(64, 32),
+    }
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir,
+        output_dir=output_dir,
+        scheme="NVFP4_E5M3",
+        format="llm_compressor",
+    )
+    compressor.run()
+
+    output_keys = _read_output_keys(output_dir)
+    prefix = "model.layers.0.self_attn.q_proj"
+    assert f"{prefix}.weight_packed" in output_keys
+    assert f"{prefix}.weight_scale" in output_keys
+    assert f"{prefix}.weight" not in output_keys
+    assert f"{prefix}.weight_global_scale" not in output_keys
+    assert f"{prefix}.input_global_scale" not in output_keys
+    quantization_config = _read_qconfig(output_dir)
+    group = quantization_config["config_groups"]["group_0"]
+    assert quantization_config["format"] == "nvfp4-e5m3-pack-quantized"
+    assert quantization_config["quant_method"] == "compressed-tensors"
+    assert quantization_config["provider"] == "auto-round"
+    assert group["weights"]["group_size"] == 16
+    assert group["input_activations"]["dynamic"] == "local"
+
+
+def test_nvfp4_e5m3_gs_model_free_fake_quantization():
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3, nvfp4_v2_gs
+
+    weight = torch.randn(8, 32)
+    output = _quantize_weight_nvfp4_e5m3_gs(weight, "layer.fc", group_size=16, disable_opt_rtn=True)
+
+    expected, _, _ = nvfp4_v2_gs(weight, group_size=16, global_scale=calculate_gparam_e5m3(weight))
+    assert set(output) == {"layer.fc.weight", "layer.fc.input_global_scale"}
+    torch.testing.assert_close(output["layer.fc.weight"], expected)
+    assert torch.equal(output["layer.fc.input_global_scale"], torch.ones(1))
+    assert is_model_free_supported_scheme("NVFP4_E5M3_GS")
+
+
+def test_nvfp4_e5m3_gs_fused_alignment_respects_environment(tmp_path, monkeypatch):
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3
+
+    gate = "model.layers.0.mlp.gate_proj"
+    up = "model.layers.0.mlp.up_proj"
+    gate_weight = torch.full((16, 32), 0.1)
+    up_weight = torch.full((16, 32), 4.0)
+    shard_path = str(tmp_path / "model.safetensors")
+    save_file({f"{gate}.weight": gate_weight, f"{up}.weight": up_weight}, shard_path)
+    default_scheme = {"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2_gs"}
+
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
+    aligned, _, _ = _process_shard(
+        shard_path,
+        default_scheme=default_scheme,
+        layer_config={},
+        ignore_patterns=[],
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    expected_scale = min(calculate_gparam_e5m3(weight, group_size=16).item() for weight in (gate_weight, up_weight))
+    torch.testing.assert_close(aligned[f"{gate}.weight_global_scale"], torch.tensor([expected_scale]))
+    torch.testing.assert_close(aligned[f"{up}.weight_global_scale"], torch.tensor([expected_scale]))
+
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "0")
+    unaligned, _, _ = _process_shard(
+        shard_path,
+        default_scheme=default_scheme,
+        layer_config={},
+        ignore_patterns=[],
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    assert not torch.equal(unaligned[f"{gate}.weight_global_scale"], unaligned[f"{up}.weight_global_scale"])
+
+
+def test_nvfp4_e5m3_gs_aligns_cross_shard_fused_weights(tmp_path, monkeypatch):
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
+    model_dir = tmp_path / "source_model"
+    model_dir.mkdir()
+    with open(model_dir / "config.json", "w") as config_file:
+        json.dump(
+            {
+                **_LLAMA_CFG,
+                "quantization_config": {
+                    "quant_method": "fp8",
+                    "fmt": "e4m3",
+                    "scale_fmt": "ue8m0",
+                    "weight_block_size": [128, 128],
+                },
+            },
+            config_file,
+        )
+
+    gate = "model.layers.0.mlp.gate_proj"
+    up = "model.layers.0.mlp.up_proj"
+    shard1 = "model-00001-of-00002.safetensors"
+    shard2 = "model-00002-of-00002.safetensors"
+    save_file(
+        {
+            f"{gate}.weight": torch.full((16, 32), 1.0).to(torch.float8_e4m3fn),
+            f"{gate}.weight_scale_inv": torch.full((1, 1), 0.5),
+            f"{up}.weight_scale_inv": torch.full((1, 1), 0.5),
+        },
+        str(model_dir / shard1),
+    )
+    save_file({f"{up}.weight": torch.full((16, 32), 5.0).to(torch.float8_e4m3fn)}, str(model_dir / shard2))
+    weight_map = {
+        f"{gate}.weight": shard1,
+        f"{gate}.weight_scale_inv": shard1,
+        f"{up}.weight": shard2,
+        f"{up}.weight_scale_inv": shard1,
+    }
+    with open(model_dir / "model.safetensors.index.json", "w") as index_file:
+        json.dump({"weight_map": weight_map}, index_file)
+
+    output_dir = str(tmp_path / "output")
+    core = _ModelFreeCompressorCore(
+        str(model_dir),
+        output_dir,
+        scheme="NVFP4_E5M3_GS",
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    core.run()
+
+    scales = {}
+    for layer_name in (gate, up):
+        tensor_name = f"{layer_name}.weight_global_scale"
+        shard_file = core.output_weight_map[tensor_name]
+        with safe_open(os.path.join(output_dir, shard_file), framework="pt") as shard:
+            scales[layer_name] = shard.get_tensor(tensor_name)
+    torch.testing.assert_close(scales[gate], scales[up])
+
+
+def test_streaming_nvfp4_gs_partners_are_local_before_quantizing(tmp_path, monkeypatch):
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3
+
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
+    source_dir = tmp_path / "source"
+    work_dir = tmp_path / "work"
+    source_dir.mkdir()
+    work_dir.mkdir()
+    pair_count = 10
+    shard_names = [f"model-{index + 1:05d}-of-{pair_count * 2:05d}.safetensors" for index in range(pair_count * 2)]
+    pairs = []
+    weight_map = {}
+    for pair_index in range(pair_count):
+        gate = f"model.layers.{pair_index}.mlp.gate_proj"
+        up = f"model.layers.{pair_index}.mlp.up_proj"
+        donor_shard, recipient_shard = shard_names[pair_index * 2 : pair_index * 2 + 2]
+        gate_weight = torch.full((16, 32), 1.0 + pair_index).to(torch.float8_e4m3fn)
+        up_weight = torch.full((16, 32), 5.0 + pair_index).to(torch.float8_e4m3fn)
+        save_file(
+            {
+                f"{gate}.weight": gate_weight,
+                f"{gate}.weight_scale_inv": torch.full((1, 1), 0.5),
+                f"{up}.weight_scale_inv": torch.full((1, 1), 0.5),
+            },
+            source_dir / donor_shard,
+        )
+        save_file({f"{up}.weight": up_weight}, source_dir / recipient_shard)
+        weight_map.update(
+            {
+                f"{gate}.weight": donor_shard,
+                f"{gate}.weight_scale_inv": donor_shard,
+                f"{up}.weight": recipient_shard,
+                f"{up}.weight_scale_inv": donor_shard,
+            }
+        )
+        pairs.append((gate, up, donor_shard, recipient_shard, gate_weight, up_weight))
+    (work_dir / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+
+    core = _ModelFreeCompressorCore(str(source_dir), str(tmp_path / "output"), enable_torch_compile=False)
+    core.is_streaming = True
+    core.work_dir = str(work_dir)
+    core.source_dir = str(source_dir)
+    core.shard_names = shard_names
+    core.shard_parallelism = 1
+    core.device = "cpu"
+    core.default_scheme = {"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2_gs"}
+    core.layer_config = {}
+    core.ignore_patterns = []
+    core.fp8_block_size = [128, 128]
+    core.model_type = "llama"
+    core.source_quantization_config = None
+    core.enable_torch_compile = False
+    core.disable_opt_rtn = True
+    core._build_cross_shard_deps()
+    core._prepare_fused_gs_groups()
+
+    jobs, requires = core._plan_streaming_jobs()
+    assert jobs == shard_names
+    assert all(requires[donor] == {donor, recipient} for _, _, donor, recipient, _, _ in pairs)
+    assert all(requires[recipient] == {donor, recipient} for _, _, donor, recipient, _, _ in pairs)
+
+    cache_dir = work_dir / ".cache" / "model_free_source_shards"
+    downloads = []
+    overrides = {}
+    retained_donor_tensors = {}
+
+    def prefetch(_model, shard_name, *_args):
+        downloads.append(shard_name)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return shutil.copy(source_dir / shard_name, cache_dir / shard_name)
+
+    def process_shard(*, shard_name, fused_global_scale_overrides, donor_shard_dir, **_kwargs):
+        overrides[shard_name] = fused_global_scale_overrides
+        recipient_pair = next((pair for pair in pairs if pair[3] == shard_name), None)
+        if recipient_pair is not None:
+            donor = recipient_pair[2]
+            with safe_open(os.path.join(donor_shard_dir, donor), framework="pt") as shard:
+                retained_donor_tensors[donor] = set(shard.keys())
+        return {}, [], []
+
+    monkeypatch.setattr(module, "_prefetch_shard", prefetch)
+    monkeypatch.setattr(module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers))
+    monkeypatch.setattr(module, "_process_shard", process_shard)
+    monkeypatch.setattr(module, "_write_output_shard", lambda *_args: None)
+    monkeypatch.setattr(core, "_merge_shard_task_result", lambda _result: None)
+
+    core._process_all_shards_streaming_pipeline()
+
+    assert downloads == shard_names
+    for gate, up, donor, recipient, gate_weight, up_weight in pairs:
+        expected_scale = min(
+            calculate_gparam_e5m3(gate_weight.float() * 0.5, group_size=16).item(),
+            calculate_gparam_e5m3(up_weight.float() * 0.5, group_size=16).item(),
+        )
+        for shard_name in (donor, recipient):
+            assert overrides[shard_name][gate] == pytest.approx(expected_scale)
+            assert overrides[shard_name][up] == pytest.approx(expected_scale)
+        assert retained_donor_tensors[donor] == {f"{up}.weight_scale_inv"}
+    assert not list(cache_dir.glob("*.safetensors"))
+
+
+@pytest.mark.parametrize("fmt", ["auto_round", "llm_compressor"])
+def test_nvfp4_e5m3_gs_model_free_end_to_end(tmp_path, fmt):
+    from safetensors import safe_open
+
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3
+
+    prefix = "model.layers.0.self_attn.q_proj"
+    weight = torch.randn(32, 32)
+    tensors = {f"{prefix}.weight": weight, "lm_head.weight": torch.randn(64, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir, output_dir=output_dir, scheme="NVFP4_E5M3_GS", format=fmt
+    )
+    compressor.run()
+
+    output_keys = _read_output_keys(output_dir)
+    for suffix in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
+        assert f"{prefix}.{suffix}" in output_keys
+    assert f"{prefix}.weight" not in output_keys
+    saved = {}
+    for file_name in os.listdir(output_dir):
+        if file_name.endswith(".safetensors"):
+            with safe_open(os.path.join(output_dir, file_name), framework="pt") as f:
+                saved.update({k: f.get_tensor(k) for k in f.keys() if k.startswith(prefix)})
+    assert torch.equal(saved[f"{prefix}.input_global_scale"], torch.ones(1))
+    torch.testing.assert_close(saved[f"{prefix}.weight_global_scale"], calculate_gparam_e5m3(weight).reshape(1))
+    assert saved[f"{prefix}.weight_scale"].dtype == torch.uint8
+
+    quantization_config = _read_qconfig(output_dir)
+    if fmt == "auto_round":
+        assert quantization_config["packing_format"] == "auto_round:llm_compressor_nvfp4_e5m3_gs"
+        assert quantization_config["data_type"] == "nvfp4_v2_gs"
+        assert quantization_config["act_data_type"] == "nvfp4_v2_with_static_gs"
+    else:
+        assert quantization_config["format"] == "nvfp4-e5m3-gs-pack-quantized"
+        assert quantization_config["quant_method"] == "compressed-tensors"
+
+
+def test_model_free_legacy_nvfp4_is_normalized_and_passthrough(tmp_path):
+    prefix = "model.layers.0.mlp.down_proj"
+    tensors = {
+        f"{prefix}.weight": torch.randint(0, 256, (32, 64), dtype=torch.uint8),
+        f"{prefix}.weight_scale": torch.randint(0, 256, (32, 4), dtype=torch.uint8),
+        f"{prefix}.weight_scale_2": torch.tensor([2.0], dtype=torch.float32),
+        f"{prefix}.input_scale": torch.tensor([4.0], dtype=torch.float32),
+        "model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32),
+    }
+    shard_path = str(tmp_path / "shard.safetensors")
+    save_file(tensors, shard_path)
+
+    layer_config = {
+        prefix: {
+            "bits": 4,
+            "group_size": 16,
+            "sym": True,
+            "data_type": "nv_fp",
+        }
+    }
+    output, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, layer_config, [])
+
+    # Legacy naming should be normalized to llm-compressor-style global-scale keys.
+    assert f"{prefix}.weight_packed" in output
+    assert f"{prefix}.weight_scale" in output
+    assert f"{prefix}.weight_global_scale" in output
+    assert f"{prefix}.input_global_scale" in output
+    assert f"{prefix}.weight" not in output
+    assert f"{prefix}.weight_scale_2" not in output
+    assert f"{prefix}.input_scale" not in output
+    assert torch.allclose(output[f"{prefix}.weight_global_scale"], torch.tensor([0.5], dtype=torch.float32))
+    assert torch.allclose(output[f"{prefix}.input_global_scale"], torch.tensor([0.25], dtype=torch.float32))
+
+    # The NVFP4 layer is treated as already quantized (passthrough) while
+    # other Linear layers in the shard are still quantized by model-free RTN.
+    assert prefix in quantized
+    assert "model.layers.0.self_attn.q_proj" in quantized
+    assert prefix not in ignored
+
+
+def test_model_free_llmc_nvfp4_is_not_renormalized(tmp_path):
+    prefix = "model.layers.0.mlp.down_proj"
+    tensors = _nvfp4_source_tensors(prefix)
+    tensors[f"{prefix}.weight_global_scale"] = torch.tensor([4.0], dtype=torch.float32)
+    shard_path = str(tmp_path / "shard.safetensors")
+    save_file(tensors, shard_path)
+
+    layer_config = {prefix: {"bits": 4, "group_size": 16, "sym": True, "data_type": "nv_fp"}}
+    output, _, _ = _process_shard(shard_path, _DEFAULT_SCHEME, layer_config, [])
+
+    # llm-compressor global scales are already in the expected convention.
+    assert torch.allclose(output[f"{prefix}.weight_global_scale"], torch.tensor([4.0], dtype=torch.float32))
+
+    def test_ignores_and_skips(self, tmp_path):
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file(
+            {"lm_head.weight": torch.randn(100, 128), "model.layers.0.mlp.gate.weight": torch.randn(8, 128)},
+            shard_path,
+        )
+        _, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, {}, ["lm_head"])
+        assert len(quantized) == 0
+        assert "lm_head" in ignored and "model.layers.0.mlp.gate" in ignored
+
+    def test_fused_expert_split(self, tmp_path):
+        N, I, H = 2, 64, 32
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file(
+            {
+                "model.layers.0.mlp.experts.gate_up_proj": torch.randn(N, 2 * I, H),
+                "model.layers.0.mlp.experts.down_proj": torch.randn(N, H, I),
+            },
+            shard_path,
+        )
+        output, quantized, _ = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [])
+        for i in range(N):
+            for proj in ["gate_proj", "up_proj", "down_proj"]:
+                base = f"model.layers.0.mlp.experts.{i}.{proj}"
+                assert base in quantized and f"{base}.qweight" in output
+
+    def test_moe_stacked_weights_are_split_and_quantized(self, tmp_path):
+        shard_path = str(tmp_path / "shard.safetensors")
+        n_experts, hidden, intermediate = 3, 64, 32
+        save_file(
+            {
+                "model.layers.3.moe.down_proj.weight": torch.randn(n_experts, hidden, intermediate),
+                "model.layers.3.moe.gate_proj.weight": torch.randn(n_experts, intermediate, hidden),
+                "model.layers.3.moe.up_proj.weight": torch.randn(n_experts, intermediate, hidden),
+                "model.layers.3.moe.gate.weight": torch.randn(n_experts, hidden),
+                "model.layers.3.moe.router_bias": torch.randn(n_experts),
+            },
+            shard_path,
+        )
+
+        output, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [])
+
+        for i in range(n_experts):
+            for proj in ["down_proj", "gate_proj", "up_proj"]:
+                base = f"model.layers.3.moe.experts.{i}.{proj}"
+                assert base in quantized
+                assert f"{base}.qweight" in output
+
+        # Router gate stays in full precision by predefined skip rules.
+        assert "model.layers.3.moe.gate" in ignored
+        assert "model.layers.3.moe.gate.weight" in output
+        # router_bias is not a 2D linear weight and remains unchanged.
+        assert "model.layers.3.moe.router_bias" in output
+
+    def test_3d_weight_in_ignored_layers(self, tmp_path):
+        """A non-eligible 3D .weight tensor must appear in ignored_layers."""
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({"model.layers.0.mlp.branch.weight": torch.randn(4, 8, 16)}, shard_path)
+
+        output, quantized, ignored = _process_shard(shard_path, _DEFAULT_SCHEME, {}, [])
+
+        assert "model.layers.0.mlp.branch.weight" in output
+        assert quantized == []
+        assert "model.layers.0.mlp.branch" in ignored
+
+
+# ===========================================================================
+#  FP8 source model — moved to test/unit/test_cpu/utils/test_model_free_utils.py
+# ===========================================================================
+
+
+# ===========================================================================
+#  Quantization config builder
+# ===========================================================================
+
+# (TestBuildQuantizationConfig moved to test/unit/test_cpu/utils/test_model_free_utils.py)
+
+
+# ===========================================================================
+#  End-to-end ModelFreeQuantize
+# ===========================================================================
+
+
+class TestModelFreeQuantize:
+    @pytest.mark.parametrize(
+        "disable_opt_rtn,expected_status",
+        [(False, "enabled"), (True, "disabled")],
+    )
+    def test_nvfp4_e5m3_startup_summary_reports_opt_rtn_status(
+        self, tmp_path, monkeypatch, disable_opt_rtn, expected_status
+    ):
+        tensors = {"model.decoder.layers.0.self_attn.q_proj.weight": torch.randn(4, 16)}
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, tensors)
+        output_dir = str(tmp_path / "output")
+        info_mock = Mock()
+        monkeypatch.setattr("auto_round.compressors.model_free.logger.info", info_mock)
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="NVFP4_E5M3",
+            format="fake",
+            disable_opt_rtn=disable_opt_rtn,
+            device="cpu",
+            enable_torch_compile=False,
+        )
+        monkeypatch.setattr(core, "_process_all_shards", Mock(side_effect=RuntimeError("stop after summary")))
+
+        with pytest.raises(RuntimeError, match="stop after summary"):
+            core.run()
+
+        startup_summary = next(
+            call.args[0]
+            for call in info_mock.call_args_list
+            if call.args and isinstance(call.args[0], str) and call.args[0].startswith("Model-free quantization:")
+        )
+        assert f"Optimized RTN: {expected_status}" in startup_summary
+
+    def test_basic(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True, device_map="cpu").quantize_and_save(output_dir)
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "auto-round" and qc["bits"] == 4 and qc["model_free"] is True
+        keys = _read_output_keys(output_dir)
+        assert "lm_head.weight" in keys and "lm_head.qweight" not in keys
+
+    def test_ignore_layers(self, tmp_path):
+        tensors = {
+            "model.layers.0.mlp.fc1.weight": torch.randn(512, 128),
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(128, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(
+            model=model_dir, scheme="W4A16", model_free=True, ignore_layers="mlp", device_map="cpu"
+        ).quantize_and_save(output_dir)
+        keys = _read_output_keys(output_dir)
+        assert "model.layers.0.mlp.fc1.weight" in keys and "model.layers.0.mlp.fc1.qweight" not in keys
+        assert "model.layers.0.self_attn.q_proj.qweight" in keys
+
+    def test_multi_shard(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS, multi_shard=True)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True, device_map="cpu").quantize_and_save(output_dir)
+        assert os.path.exists(os.path.join(output_dir, "model.safetensors.index.json"))
+
+    def test_quant_lm_head(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        AutoRound(
+            model=model_dir, scheme="W4A16", model_free=True, quant_lm_head=True, device_map="cpu"
+        ).quantize_and_save(output_dir)
+        assert "lm_head.qweight" in _read_output_keys(output_dir)
+
+    def test_layer_config_lm_head_bits_takes_effect(self, tmp_path):
+        """layer_config for lm_head should quantize lm_head even without quant_lm_head=True."""
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        AutoRound(
+            model=model_dir,
+            scheme="W2A16G64",
+            model_free=True,
+            layer_config={"lm_head": {"bits": 4}},
+            device_map="cpu",
+        ).quantize_and_save(output_dir)
+        assert "lm_head.qweight" in _read_output_keys(output_dir)
+
+    def test_layer_config_lm_head_scheme_takes_effect(self, tmp_path):
+        """layer_config with scheme override for lm_head should quantize lm_head even without quant_lm_head=True."""
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        AutoRound(
+            model=model_dir,
+            scheme="W2A16G64",
+            model_free=True,
+            layer_config={"lm_head": {"scheme": "W4A16"}},
+            device_map="cpu",
+        ).quantize_and_save(output_dir)
+        assert "lm_head.qweight" in _read_output_keys(output_dir)
+
+    def test_asym(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"layer.weight": torch.randn(64, 128)})
+        output_dir = str(tmp_path / "output")
+        AutoRound(
+            model=model_dir,
+            scheme=QuantizationScheme(bits=4, group_size=64, sym=False),
+            model_free=True,
+            device_map="cpu",
+        ).quantize_and_save(output_dir)
+        qc = _read_qconfig(output_dir)
+        assert qc["sym"] is False and qc["group_size"] == 64
+
+    def test_streaming_uses_dedicated_source_shard_cache(self, tmp_path, monkeypatch):
+        """Streaming source shards must not reuse same-named output shard files."""
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        shard_name = "model-00001-of-00001.safetensors"
+        stale_output_shard = os.path.join(output_dir, shard_name)
+
+        # Simulate stale quantized output shard from a previous run.
+        save_file({"lm_head.weight": torch.randn(8, 8)}, stale_output_shard)
+
+        called_local_dirs = []
+
+        def _fake_download_single_shard(model_name_or_path, shard_filename, local_dir):
+            called_local_dirs.append(local_dir)
+            os.makedirs(local_dir, exist_ok=True)
+            source_path = os.path.join(local_dir, shard_filename)
+            # Source shard contains quantizable linear weight.
+            save_file({"layer.weight": torch.randn(8, 8)}, source_path)
+            return source_path
+
+        monkeypatch.setattr(
+            "auto_round.compressors.model_free._download_single_shard",
+            _fake_download_single_shard,
+        )
+
+        result = _process_single_shard_task(
+            shard_idx=0,
+            shard_name=shard_name,
+            model_name_or_path="org/dummy-model",
+            work_dir=output_dir,
+            source_dir="",
+            is_streaming=True,
+            device="cpu",
+            default_scheme=_DEFAULT_SCHEME,
+            layer_config={},
+            ignore_patterns=["lm_head"],
+            fp8_block_size=None,
+            model_type=None,
+            quant_output_dir=output_dir,
+            total_shards=1,
+        )
+
+        _, _, _, out_shard_name, _, quantized, _ = result
+        assert out_shard_name == shard_name
+        assert "layer" in quantized
+        assert called_local_dirs
+        assert called_local_dirs[0] != output_dir
+        assert called_local_dirs[0].startswith(os.path.join(output_dir, ".cache"))
+
+        with safe_open(stale_output_shard, framework="pt") as sf:
+            out_keys = set(sf.keys())
+        assert "layer.qweight" in out_keys
+
+    def test_download_single_shard_replaces_invalid_cached_safetensors(self, tmp_path):
+        from auto_round.utils.model_free_utils import _download_single_shard
+
+        source_dir = tmp_path / "source"
+        cache_dir = tmp_path / "cache"
+        source_dir.mkdir()
+        cache_dir.mkdir()
+        shard_name = "model-00001-of-00001.safetensors"
+        save_file({"layer.weight": torch.ones(8, 8)}, source_dir / shard_name)
+        cached_path = cache_dir / shard_name
+        cached_path.write_bytes(b"truncated safetensors")
+
+        result = _download_single_shard(str(source_dir), shard_name, str(cache_dir))
+
+        assert result == str(cached_path)
+        with safe_open(result, framework="pt") as shard:
+            assert shard.keys() == ["layer.weight"]
+
+    @staticmethod
+    def _make_resume_core(model_dir, output_dir, *, scheme="W4A16"):
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme=scheme,
+            enable_torch_compile=False,
+        )
+        core._parse_scheme()
+        core._parse_layer_config()
+        core._build_ignore_patterns()
+        core.source_dir = model_dir
+        core.config = dict(_SIMPLE_CONFIG)
+        core.model_type = "opt"
+        core.shard_names = ["model.safetensors"]
+        return core
+
+    def test_resume_skips_only_valid_output_from_same_command(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_shard = "model-00001-of-00001.safetensors"
+        tensor_names = ["model.layers.0.qweight"]
+        save_file({tensor_names[0]: torch.ones(2, 2)}, os.path.join(output_dir, output_shard))
+
+        first = self._make_resume_core(model_dir, output_dir)
+        first._prepare_resume_state()
+        first._mark_shard_completed(
+            "model.safetensors",
+            output_shard,
+            tensor_names,
+            ["model.layers.0"],
+            [],
+        )
+
+        resumed = self._make_resume_core(model_dir, output_dir)
+        resumed._prepare_resume_state()
+
+        assert set(resumed._resume_processed_shards) == {"model.safetensors"}
+        assert resumed.output_weight_map == {tensor_names[0]: output_shard}
+        with open(resumed._resume_manifest_path) as f:
+            manifest = json.load(f)
+        assert manifest["pending_files"] == []
+        assert set(manifest["processed_files"]) == {"model.safetensors"}
+        assert manifest["parameters"]["default_scheme"]["bits"] == 4
+
+    def test_resume_progress_retains_all_shards(self):
+        core = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+        core.shard_names = [f"model-{index:05d}.safetensors" for index in range(1, 5)]
+        core._resume_processed_shards = {
+            core.shard_names[0]: {},
+            core.shard_names[1]: {},
+        }
+        progress = Mock()
+        tqdm_factory = Mock(return_value=progress)
+
+        assert core._create_shard_progress(tqdm_factory) is progress
+        tqdm_factory.assert_called_once_with(
+            total=4,
+            initial=2,
+            desc="Processing shards",
+            unit="shard",
+        )
+
+    def test_resume_rejects_changed_command_parameters(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_shard = "model-00001-of-00001.safetensors"
+        save_file({"layer.qweight": torch.ones(2, 2)}, os.path.join(output_dir, output_shard))
+
+        first = self._make_resume_core(model_dir, output_dir)
+        first._prepare_resume_state()
+        first._mark_shard_completed("model.safetensors", output_shard, ["layer.qweight"], ["layer"], [])
+
+        changed = self._make_resume_core(model_dir, output_dir, scheme="W2A16")
+        changed._prepare_resume_state()
+
+        assert changed._resume_processed_shards == {}
+        with open(changed._resume_manifest_path) as f:
+            manifest = json.load(f)
+        assert manifest["pending_files"] == ["model.safetensors"]
+
+    def test_resume_rejects_corrupt_completed_output(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_shard = "model-00001-of-00001.safetensors"
+        output_path = os.path.join(output_dir, output_shard)
+        save_file({"layer.qweight": torch.ones(2, 2)}, output_path)
+
+        first = self._make_resume_core(model_dir, output_dir)
+        first._prepare_resume_state()
+        first._mark_shard_completed("model.safetensors", output_shard, ["layer.qweight"], ["layer"], [])
+        with open(output_path, "wb") as f:
+            f.write(b"incomplete")
+
+        resumed = self._make_resume_core(model_dir, output_dir)
+        resumed._prepare_resume_state()
+
+        assert resumed._resume_processed_shards == {}
+        with open(resumed._resume_manifest_path) as f:
+            manifest = json.load(f)
+        assert manifest["pending_files"] == ["model.safetensors"]
+
+    def test_resume_rejects_changed_index(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_shard = "model-00001-of-00001.safetensors"
+        save_file({"layer.qweight": torch.ones(2, 2)}, os.path.join(output_dir, output_shard))
+        index_path = os.path.join(model_dir, "model.safetensors.index.json")
+        with open(index_path, "w") as index_file:
+            json.dump({"metadata": {"total_size": 1}, "weight_map": {"layer.weight": "model.safetensors"}}, index_file)
+
+        first = self._make_resume_core(model_dir, output_dir)
+        first._prepare_resume_state()
+        first._mark_shard_completed("model.safetensors", output_shard, ["layer.qweight"], ["layer"], [])
+
+        with open(index_path, "w") as index_file:
+            json.dump({"metadata": {"total_size": 2}, "weight_map": {"layer.weight": "model.safetensors"}}, index_file)
+        resumed = self._make_resume_core(model_dir, output_dir)
+        resumed._prepare_resume_state()
+
+        assert resumed._resume_processed_shards == {}
+
+    def test_resume_accepts_single_shard_after_final_rename(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_shard = "model-00001-of-00001.safetensors"
+        save_file({"layer.qweight": torch.ones(2, 2)}, os.path.join(output_dir, output_shard))
+
+        first = self._make_resume_core(model_dir, output_dir)
+        first._prepare_resume_state()
+        first._mark_shard_completed("model.safetensors", output_shard, ["layer.qweight"], ["layer"], [])
+        first.output_weight_map = {"layer.qweight": output_shard}
+        first._write_index()
+
+        resumed = self._make_resume_core(model_dir, output_dir)
+        resumed._prepare_resume_state()
+
+        assert set(resumed._resume_processed_shards) == {"model.safetensors"}
+        assert resumed.output_weight_map == {"layer.qweight": "model.safetensors"}
+
+    def test_run_resumes_after_interrupted_shard_processing(self, tmp_path, monkeypatch):
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        output_dir = str(tmp_path / "output")
+
+        def stub_preflight(core):
+            for method_name in (
+                "_validate_format",
+                "_parse_scheme",
+                "_parse_layer_config",
+                "_build_ignore_patterns",
+                "_resolve_source",
+                "_check_conv1d_and_embedding",
+                "_apply_predefined_ignore_layers",
+                "_detect_fp8_source",
+                "_resolve_model_type",
+                "_discover_shards",
+                "_build_cross_shard_deps",
+                "_reorder_shards_by_dependency",
+            ):
+                monkeypatch.setattr(core, method_name, lambda: None)
+            monkeypatch.setattr(core, "_resolve_shard_parallelism", lambda: (1, "test"))
+
+        interrupted = self._make_resume_core(model_dir, output_dir)
+        stub_preflight(interrupted)
+
+        def process_then_interrupt():
+            shard_name = "model-00001-of-00001.safetensors"
+            os.makedirs(output_dir, exist_ok=True)
+            save_file({"layer.qweight": torch.ones(2, 2)}, os.path.join(output_dir, shard_name))
+            interrupted._mark_shard_completed("model.safetensors", shard_name, ["layer.qweight"], ["layer"], [])
+            raise RuntimeError("interrupted")
+
+        monkeypatch.setattr(interrupted, "_process_all_shards", process_then_interrupt)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            interrupted.run()
+        assert os.path.exists(interrupted._resume_manifest_path)
+
+        resumed = self._make_resume_core(model_dir, output_dir)
+        stub_preflight(resumed)
+
+        def verify_completed_shard_is_skipped():
+            assert set(resumed._resume_processed_shards) == {"model.safetensors"}
+
+        monkeypatch.setattr(resumed, "_process_all_shards", verify_completed_shard_is_skipped)
+
+        assert resumed.run() == output_dir
+        assert os.path.exists(os.path.join(output_dir, "model.safetensors"))
+        assert not os.path.exists(resumed._resume_manifest_path)
+
+
+# ===========================================================================
+#  MXFP4 / MXFP8 model-free quantization
+# ===========================================================================
+
+
+class TestModelFreeMXFP:
+    """End-to-end tests for MXFP4/MXFP8 model-free quantization.
+
+    Unit tests for _quantize_weight_mxfp and _build_mxfp_quantization_config
+    have been moved to test/unit/test_cpu/utils/test_model_free_utils.py.
+    """
+
+    @require_compressed_tensors
+    @pytest.mark.parametrize("scheme,fmt", [("MXFP4", "mxfp4-pack-quantized")])
+    def test_e2e_mxfp(self, tmp_path, scheme, fmt):
+        tensors = {
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(128, 128),
+            "model.layers.0.fc1.weight": torch.randn(512, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir, output_dir=output_dir, scheme=scheme, format="llm_compressor"
+        ).run()
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == fmt
+        assert qc["quant_method"] == "compressed-tensors"
+        assert "lm_head" in qc["ignore"]
+        keys = _read_output_keys(output_dir)
+        # MXFP4 produces weight_packed, MXFP8 produces weight
+        if scheme == "MXFP4":
+            assert "model.layers.0.fc1.weight_packed" in keys
+        else:
+            assert "model.layers.0.fc1.weight" in keys
+        assert "model.layers.0.fc1.weight_scale" in keys
+        # lm_head stays full precision
+        assert "lm_head.weight" in keys
+        assert "lm_head.weight_packed" not in keys
+
+    @require_compressed_tensors
+    def test_process_shard_mxfp(self, tmp_path):
+        shard_path = str(tmp_path / "shard.safetensors")
+        save_file({"layer.fc1.weight": torch.randn(64, 128)}, shard_path)
+        scheme = {"bits": 4, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        output, quantized, _ = _process_shard(shard_path, scheme, {}, [])
+        assert "layer.fc1" in quantized
+        assert "layer.fc1.weight_packed" in output
+        assert "layer.fc1.weight_scale" in output
+
+    # Unit tests for _build_mxfp_quantization_config moved to
+    # test/unit/test_cpu/utils/test_model_free_utils.py -> TestBuildMxfpConfig
+
+    @require_compressed_tensors
+    def test_e2e_mxfp_mixed(self, tmp_path):
+        """End-to-end: default MXFP4 with some layers overridden to MXFP8."""
+        tensors = {
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(128, 128),
+            "model.layers.0.self_attn.k_proj.weight": torch.randn(128, 128),
+            "model.layers.0.mlp.fc1.weight": torch.randn(512, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        layer_config = {
+            "model.layers.0.self_attn.q_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
+            "model.layers.0.self_attn.k_proj": {"bits": 8, "group_size": 32, "data_type": "mx_fp"},
+        }
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="MXFP4",
+            layer_config=layer_config,
+            format="llm_compressor",
+        ).run()
+
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == "mixed-precision"
+        assert qc["quant_method"] == "compressed-tensors"
+        assert len(qc["config_groups"]) == 2
+        assert "lm_head" in qc["ignore"]
+
+        keys = _read_output_keys(output_dir)
+        # MXFP8-overridden layers → .weight (float8_e4m3fn) + .weight_scale
+        assert "model.layers.0.self_attn.q_proj.weight" in keys
+        assert "model.layers.0.self_attn.q_proj.weight_scale" in keys
+        # MXFP4-default layers → .weight_packed + .weight_scale
+        assert "model.layers.0.mlp.fc1.weight_packed" in keys
+        assert "model.layers.0.mlp.fc1.weight_scale" in keys
+        # lm_head stays full precision
+        assert "lm_head.weight" in keys
+        assert "lm_head.weight_packed" not in keys
+
+
+# ===========================================================================
+#  NVFP4 source + MXFP4 scheme: convert only the NVFP4 layers of an NVFP4 source checkpoint
+# ===========================================================================
+
+_NV_ATTN = "model.layers.0.self_attn.q_proj"
+_NV_MLP = "model.layers.0.mlp.down_proj"
+_NV_MLP_UP = "model.layers.0.mlp.up_proj"
+
+
+def _nvfp4_source_tensors(prefix, out_features=32, in_features=64):
+    """compressed-tensors NVFP4 layer."""
+    return {
+        f"{prefix}.weight_packed": torch.randint(0, 256, (out_features, in_features // 2), dtype=torch.uint8),
+        f"{prefix}.weight_scale": torch.ones((out_features, in_features // 16)).to(torch.float8_e4m3fn),
+        f"{prefix}.weight_global_scale": torch.tensor([1.0], dtype=torch.float32),
+        f"{prefix}.input_global_scale": torch.tensor([1.0], dtype=torch.float32),
+    }
+
+
+def _modelopt_nvfp4_tensors(prefix, out_features=32, in_features=64, input_scale_key="input_scale"):
+    """ModelOpt NVFP4 layer (Quark uses ``input_scale_2`` instead of ``input_scale``)."""
+    return {
+        f"{prefix}.weight": torch.randint(0, 256, (out_features, in_features // 2), dtype=torch.uint8),
+        f"{prefix}.weight_scale": torch.ones((out_features, in_features // 16)).to(torch.float8_e4m3fn),
+        f"{prefix}.weight_scale_2": torch.tensor(1.0, dtype=torch.float32),
+        f"{prefix}.{input_scale_key}": torch.tensor(1.0, dtype=torch.float32),
+    }
+
+
+def _ct_fp8_tensors(prefix, out_features=64, in_features=64):
+    """compressed-tensors FP8 per-channel layer."""
+    return {
+        f"{prefix}.weight": torch.randn(out_features, in_features).to(torch.float8_e4m3fn),
+        f"{prefix}.weight_scale": torch.rand(out_features, 1, dtype=torch.float32),
+    }
+
+
+def _modelopt_fp8_tensors(prefix, out_features=64, in_features=64):
+    """ModelOpt FP8 per-tensor layer."""
+    return {
+        f"{prefix}.weight": torch.randn(out_features, in_features).to(torch.float8_e4m3fn),
+        f"{prefix}.weight_scale": torch.tensor(0.5, dtype=torch.float32),
+        f"{prefix}.input_scale": torch.tensor(0.25, dtype=torch.float32),
+    }
+
+
+# Trimmed from the config.json / hf_quant_config.json of the public checkpoints listed in the docs.
+# RedHatAI/Qwen3.6-35B-A3B-NVFP4 (compressed-tensors, NVFP4)
+_CT_NVFP4_QC = {
+    "quant_method": "compressed-tensors",
+    "format": "nvfp4-pack-quantized",
+    "quantization_status": "compressed",
+    "config_groups": {
+        "group_0": {
+            "format": "nvfp4-pack-quantized",
+            "targets": ["Linear"],
+            "weights": {
+                "num_bits": 4,
+                "type": "float",
+                "symmetric": True,
+                "strategy": "tensor_group",
+                "group_size": 16,
+            },
+            "input_activations": {
+                "num_bits": 4,
+                "type": "float",
+                "symmetric": True,
+                "strategy": "tensor_group",
+                "group_size": 16,
+                "dynamic": "local",
+            },
+        }
+    },
+    "ignore": ["lm_head", _NV_ATTN],
+    "kv_cache_scheme": None,
+}
+# RedHatAI/Qwen3.8-27B-NVFP4 (compressed-tensors, FP8 attention + NVFP4 MLP)
+_CT_FP8_GROUP = {
+    "format": "float-quantized",
+    "targets": [r"re:.*self_attn\.(q|k|v|o)_proj$"],
+    "weights": {"num_bits": 8, "type": "float", "symmetric": True, "strategy": "channel", "dynamic": False},
+    "input_activations": {"num_bits": 8, "type": "float", "symmetric": True, "strategy": "token", "dynamic": True},
+}
+_CT_KV_SCHEME = {"num_bits": 8, "type": "float", "symmetric": True, "strategy": "tensor", "dynamic": False}
+_CT_MIXED_QC = {
+    "quant_method": "compressed-tensors",
+    "format": "mixed-precision",
+    "config_groups": {
+        "group_0": _CT_FP8_GROUP,
+        "group_1": {
+            **_CT_NVFP4_QC["config_groups"]["group_0"],
+            "targets": [r"re:.*mlp\..*(gate|up|down)_proj$"],
+        },
+    },
+    "ignore": ["lm_head"],
+    "kv_cache_scheme": _CT_KV_SCHEME,
+}
+# nvidia/Qwen3.8-27B-NVFP4 hf_quant_config.json (ModelOpt, FP8 + NVFP4)
+_MODELOPT_MIXED_HF_QC = {
+    "producer": {"name": "modelopt", "version": "0.35.0"},
+    "quantization": {
+        "quant_algo": "MIXED_PRECISION",
+        "kv_cache_quant_algo": None,
+        "quantized_layers": {
+            _NV_ATTN: {"quant_algo": "FP8"},
+            _NV_MLP: {"quant_algo": "NVFP4", "group_size": 16},
+        },
+        "exclude_modules": ["lm_head", "mtp*"],
+    },
+}
+# nvidia/MiniMax-M2.7-NVFP4 config.json (ModelOpt, NVFP4 + FP8 kv cache)
+_MODELOPT_NVFP4_QC = {
+    "quant_method": "modelopt",
+    "quant_algo": "NVFP4",
+    "producer": {"name": "modelopt", "version": "0.37.0"},
+    "kv_cache_scheme": {"num_bits": 8, "type": "float", "dynamic": False},
+    "ignore": ["lm_head", "model.layers.0.self_attn*"],
+}
+# amd/MiniMax-M2.7-NVFP4 (Quark, NVFP4)
+_QUARK_FP4_SPEC = {"dtype": "fp4", "qscheme": "per_group", "group_size": 16, "is_dynamic": False}
+_QUARK_FP8_SCALE_SPEC = {"dtype": "fp8_e4m3", "qscheme": "per_tensor", "is_dynamic": False, "is_scale_quant": True}
+_QUARK_NVFP4_QC = {
+    "quant_method": "quark",
+    "global_quant_config": {
+        "weight": [_QUARK_FP4_SPEC, _QUARK_FP8_SCALE_SPEC],
+        "input_tensors": [{**_QUARK_FP4_SPEC, "is_dynamic": True}, _QUARK_FP8_SCALE_SPEC],
+    },
+    "layer_quant_config": {},
+    "layer_type_quant_config": {},
+    "exclude": [_NV_ATTN, "lm_head"],
+    "export": {"kv_cache_group": [], "pack_method": "reorder"},
+}
+
+
+def _cfg_with_qc(qc):
+    return {**_LLAMA_CFG, "quantization_config": qc}
+
+
+def _make_nvfp4_model_dir(tmp_path, config, tensors, **kwargs):
+    """Like ``_make_model_dir`` but the directory name marks the source as NVFP4."""
+    model_dir = _make_model_dir(tmp_path, config, tensors, **kwargs)
+    nvfp4_dir = os.path.join(os.path.dirname(model_dir), "Model-NVFP4")
+    os.rename(model_dir, nvfp4_dir)
+    return nvfp4_dir
+
+
+def _run_nvfp4_to_mxfp4(model_dir, output_dir, **kwargs):
+    kwargs.setdefault("format", "llm_compressor")
+    _ModelFreeCompressorCore(model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP4", **kwargs).run()
+    return _read_output_tensors(output_dir), _read_qconfig(output_dir)
+
+
+def _read_output_tensors(output_dir):
+    tensors = {}
+    for fname in os.listdir(output_dir):
+        if fname.endswith(".safetensors"):
+            with safe_open(os.path.join(output_dir, fname), framework="pt") as sf:
+                tensors.update({k: sf.get_tensor(k) for k in sf.keys()})
+    return tensors
+
+
+def _assert_mxfp4_layer(tensors, layer):
+    assert tensors[f"{layer}.weight_packed"].dtype == torch.uint8
+    assert tensors[f"{layer}.weight_scale"].dtype == torch.uint8
+    for stale in ("weight", "weight_global_scale", "input_global_scale", "weight_scale_2", "input_scale"):
+        assert f"{layer}.{stale}" not in tensors
+
+
+def _assert_unchanged(tensors, source, keys):
+    for key in keys:
+        assert tensors[key].dtype == source[key].dtype, key
+        assert torch.equal(tensors[key].reshape(-1).view(torch.uint8), source[key].reshape(-1).view(torch.uint8)), key
+
+
+def _assert_mxfp4_group(group, targets):
+    assert group["targets"] == targets
+    assert group["format"] == "mxfp4-pack-quantized"
+    assert group["weights"]["num_bits"] == 4
+    assert group["weights"]["type"] == "float"
+    assert group["weights"]["group_size"] == 32
+
+
+class TestNVFP4ToMXFP4:
+    """MXFP4 on an NVFP4 source: only NVFP4 source layers become MXFP4; everything else is kept byte-for-byte."""
+
+    def test_nvfp2mxfp_scheme_removed(self):
+        assert not is_model_free_supported_scheme("NVFP2MXFP")
+
+    @pytest.mark.parametrize(
+        "name, qc",
+        [
+            ("nvidia/MiniMax-M2.7-NVFP4", None),
+            ("/models/Qwen3-nvfp4/", None),
+            ("source_model", _CT_NVFP4_QC),
+            ("source_model", _CT_MIXED_QC),
+            ("source_model", _MODELOPT_NVFP4_QC),
+            ("source_model", {**_MODELOPT_MIXED_HF_QC["quantization"], "quant_method": "modelopt"}),
+            ("source_model", _QUARK_NVFP4_QC),
+        ],
+        ids=["hub_name", "local_name", "ct", "ct_mixed", "modelopt", "modelopt_mixed", "quark"],
+    )
+    def test_detect_nvfp4_source(self, name, qc):
+        from auto_round.utils.model_free_utils import detect_model_dtypes
+
+        assert "nvfp4" in detect_model_dtypes(name, qc)
+
+    @pytest.mark.parametrize(
+        "name, qc",
+        [
+            ("/data/nvfp4_models/Qwen3-8B", None),
+            ("Qwen/Qwen3-8B", {"quant_method": "fp8", "weight_block_size": [128, 128]}),
+            ("Qwen/Qwen3-8B", {**_CT_MIXED_QC, "config_groups": {"group_0": _CT_FP8_GROUP}}),
+        ],
+        ids=["parent_dir_only", "fp8", "ct_fp8"],
+    )
+    def test_detect_non_nvfp4_source(self, name, qc):
+        from auto_round.utils.model_free_utils import detect_model_dtypes
+
+        assert "nvfp4" not in detect_model_dtypes(name, qc)
+
+    @pytest.mark.parametrize(
+        "qc, expected",
+        [
+            ({"quant_method": "fp8", "weight_block_size": [128, 128]}, True),
+            ({"quantization_type": "fp8"}, True),
+            ({"fmt": "e4m3", "scale_fmt": "ue8m0"}, True),
+            ({"fmt": None}, False),
+            (_CT_NVFP4_QC, False),
+        ],
+        ids=["quant_method", "quantization_type", "fmt", "fmt_none", "ct_nvfp4"],
+    )
+    def test_detect_fp8_source(self, qc, expected):
+        from auto_round.utils.model_free_utils import detect_model_dtypes
+
+        assert ("fp8" in detect_model_dtypes("Qwen/Qwen3-8B", qc)) is expected
+
+    @require_compressed_tensors
+    def test_detection_warns(self, tmp_path, monkeypatch):
+        import auto_round.compressors.model_free as model_free_mod
+
+        warnings = []
+        monkeypatch.setattr(model_free_mod.logger, "warning", lambda msg, *a, **k: warnings.append(str(msg)))
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, _nvfp4_source_tensors(_NV_MLP))
+        _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+        assert any("Detected NVFP4 layers" in w and "layer_config" in w for w in warnings)
+
+    @require_compressed_tensors
+    def test_detection_from_config_without_nvfp4_name(self, tmp_path):
+        source = {**_nvfp4_source_tensors(_NV_MLP), f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16)}
+        model_dir = _make_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight"])
+
+    @require_compressed_tensors
+    def test_non_nvfp4_source_quantizes_every_layer(self, tmp_path):
+        source = {f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16)}
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, source)
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_ATTN)
+
+    @require_compressed_tensors
+    def test_layer_config_quantizes_extra_layers(self, tmp_path):
+        source = {
+            **_nvfp4_source_tensors(_NV_MLP),
+            f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16),
+            "lm_head.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), layer_config={"q_proj": "MXFP4"})
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_mxfp4_layer(tensors, _NV_ATTN)
+        _assert_unchanged(tensors, source, ["lm_head.weight"])
+        _assert_mxfp4_group(qc["config_groups"]["group_0"], ["Linear"])
+        _assert_mxfp4_group(qc["config_groups"]["group_1"], [_NV_ATTN])
+        assert qc["ignore"] == ["lm_head"]
+
+    # ------------------------------------------------------------------
+    # Tensor conversion per source layout
+    # ------------------------------------------------------------------
+
+    @require_compressed_tensors
+    def test_ct_nvfp4_only(self, tmp_path):
+        source = {
+            **_nvfp4_source_tensors(_NV_MLP),
+            f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16),
+            "lm_head.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight", "lm_head.weight"])
+        assert qc["quant_method"] == "compressed-tensors"
+        assert qc["format"] == "mxfp4-pack-quantized"
+        assert list(qc["config_groups"]) == ["group_0"]
+        _assert_mxfp4_group(qc["config_groups"]["group_0"], ["Linear"])
+        assert qc["ignore"] == ["lm_head", _NV_ATTN]
+
+    @require_compressed_tensors
+    def test_ct_fp8_and_nvfp4_mixed(self, tmp_path):
+        source = {
+            **_nvfp4_source_tensors(_NV_MLP),
+            **_nvfp4_source_tensors(_NV_MLP_UP),
+            **_ct_fp8_tensors(_NV_ATTN),
+            "model.layers.0.self_attn.k_scale": torch.tensor(0.1, dtype=torch.float32),
+            "lm_head.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_MIXED_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_mxfp4_layer(tensors, _NV_MLP_UP)
+        _assert_unchanged(
+            tensors,
+            source,
+            [f"{_NV_ATTN}.weight", f"{_NV_ATTN}.weight_scale", "model.layers.0.self_attn.k_scale", "lm_head.weight"],
+        )
+        assert qc["format"] == "mixed-precision"
+        assert qc["config_groups"]["group_0"] == _CT_FP8_GROUP
+        _assert_mxfp4_group(qc["config_groups"]["group_1"], [r"re:.*mlp\..*(gate|up|down)_proj$"])
+        assert qc["ignore"] == ["lm_head"]
+        assert _NV_ATTN not in qc["ignore"]
+        assert qc["kv_cache_scheme"] == _CT_KV_SCHEME
+
+    @require_compressed_tensors
+    def test_modelopt_fp8_and_nvfp4_from_hf_quant_config(self, tmp_path):
+        source = {
+            **_modelopt_nvfp4_tensors(_NV_MLP),
+            **_modelopt_fp8_tensors(_NV_ATTN),
+            "lm_head.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, source)
+        with open(os.path.join(model_dir, "hf_quant_config.json"), "w") as f:
+            json.dump(_MODELOPT_MIXED_HF_QC, f)
+        output_dir = str(tmp_path / "out")
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, output_dir)
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(
+            tensors,
+            source,
+            [f"{_NV_ATTN}.weight", f"{_NV_ATTN}.weight_scale", f"{_NV_ATTN}.input_scale", "lm_head.weight"],
+        )
+        assert qc["quant_method"] == "compressed-tensors"
+        assert qc["format"] == "mixed-precision"
+        groups = list(qc["config_groups"].values())
+        fp8_group = next(g for g in groups if g["weights"]["num_bits"] == 8)
+        assert fp8_group["targets"] == [_NV_ATTN]
+        assert fp8_group["format"] == "float-quantized"
+        assert fp8_group["weights"]["strategy"] == "tensor" and fp8_group["weights"]["type"] == "float"
+        assert fp8_group["input_activations"]["strategy"] == "tensor"
+        assert fp8_group["input_activations"]["dynamic"] is False
+        _assert_mxfp4_group(next(g for g in groups if g["weights"]["num_bits"] == 4), [_NV_MLP])
+        assert "lm_head" in qc["ignore"]
+        assert any(t.startswith("re:") and re.match(t[3:], "mtp.layers.0.mlp") for t in qc["ignore"])
+        # The stale ModelOpt metadata file must not survive next to the rewritten config.
+        assert not os.path.exists(os.path.join(output_dir, "hf_quant_config.json"))
+
+    @require_compressed_tensors
+    def test_modelopt_nvfp4_with_kv_cache(self, tmp_path):
+        source = {
+            **_modelopt_nvfp4_tensors(_NV_MLP),
+            f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16),
+            "model.layers.0.self_attn.k_proj.k_scale": torch.tensor(0.1, dtype=torch.float32),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_MODELOPT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight", "model.layers.0.self_attn.k_proj.k_scale"])
+        assert qc["format"] == "mxfp4-pack-quantized"
+        _assert_mxfp4_group(next(iter(qc["config_groups"].values())), [_NV_MLP])
+        assert qc["kv_cache_scheme"]["num_bits"] == 8 and qc["kv_cache_scheme"]["type"] == "float"
+        attn_ignore = [t for t in qc["ignore"] if t.startswith("re:")]
+        assert attn_ignore and re.match(attn_ignore[0][3:], _NV_ATTN)
+
+    @require_compressed_tensors
+    def test_quark_nvfp4(self, tmp_path):
+        source = {
+            **_modelopt_nvfp4_tensors(_NV_MLP, input_scale_key="input_scale_2"),
+            f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_QUARK_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        assert f"{_NV_MLP}.input_scale_2" not in tensors
+        _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight"])
+        assert qc["quant_method"] == "compressed-tensors"
+        assert qc["format"] == "mxfp4-pack-quantized"
+        _assert_mxfp4_group(next(iter(qc["config_groups"].values())), [_NV_MLP])
+        assert qc["ignore"] == [_NV_ATTN, "lm_head"]
+        assert "kv_cache_scheme" not in qc or qc["kv_cache_scheme"] is None
+
+    @require_compressed_tensors
+    def test_existing_mxfp_layers_kept(self, tmp_path):
+        mxfp4, mxfp8 = "model.layers.0.mlp.gate_proj", "model.layers.0.self_attn.o_proj"
+        source = {
+            **_nvfp4_source_tensors(_NV_MLP),
+            f"{mxfp4}.weight_packed": torch.randint(0, 256, (32, 32), dtype=torch.uint8),
+            f"{mxfp4}.weight_scale": torch.full((32, 2), 127, dtype=torch.uint8),
+            f"{mxfp8}.weight": torch.randn(64, 64).to(torch.float8_e4m3fn),
+            f"{mxfp8}.weight_scale": torch.full((64, 2), 127, dtype=torch.uint8),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, source)
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(
+            tensors,
+            source,
+            [f"{mxfp4}.weight_packed", f"{mxfp4}.weight_scale", f"{mxfp8}.weight", f"{mxfp8}.weight_scale"],
+        )
+
+    @require_compressed_tensors
+    def test_deepseek_fp8_kept_across_shards(self, tmp_path):
+        fp8 = "model.layers.0.self_attn.o_proj"
+        # _make_model_dir splits keys in half: the FP8 weight lands in shard 1, its scale_inv in shard 2.
+        source = {
+            **_nvfp4_source_tensors(_NV_MLP),
+            f"{fp8}.weight": torch.randn(128, 128).to(torch.float8_e4m3fn),
+            f"{fp8}.weight_scale_inv": torch.rand(1, 1, dtype=torch.float32),
+            "lm_head.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+            f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16),
+            "model.norm.weight": torch.ones(64, dtype=torch.bfloat16),
+            "model.embed_tokens.weight": torch.randn(128, 64, dtype=torch.bfloat16),
+        }
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, source, multi_shard=True)
+        output_dir = str(tmp_path / "out")
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, output_dir)
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(tensors, source, [f"{fp8}.weight", f"{fp8}.weight_scale_inv", f"{_NV_ATTN}.weight"])
+        with open(os.path.join(output_dir, "model.safetensors.index.json")) as f:
+            weight_map = json.load(f)["weight_map"]
+        assert set(weight_map) == set(tensors)
+
+    @require_compressed_tensors
+    def test_mxfp4_matches_nvfp4_dequant(self, tmp_path):
+        from auto_round.utils.model_free_utils import _dequant_nvfp4_tensors
+
+        source = _nvfp4_source_tensors(_NV_MLP)
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, source)
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), disable_opt_rtn=True)
+
+        ref = _dequant_nvfp4_tensors({k: v.clone() for k, v in source.items()}, [_NV_MLP])[f"{_NV_MLP}.weight"]
+        out = _dequant_mxfp_tensors(
+            {
+                f"{_NV_MLP}.weight_packed": tensors[f"{_NV_MLP}.weight_packed"],
+                f"{_NV_MLP}.weight_scale": tensors[f"{_NV_MLP}.weight_scale"],
+            }
+        )[f"{_NV_MLP}.weight"]
+        # With unit NVFP4 scales every value is an E2M1 grid point, so MXFP4 reproduces it exactly.
+        assert torch.equal(out.float(), ref.float())
+
+    # ------------------------------------------------------------------
+    # Edge cases
+    # ------------------------------------------------------------------
+
+    @require_compressed_tensors
+    def test_ignored_nvfp4_layer_is_dequantized_and_added_to_ignore(self, tmp_path):
+        source = {**_nvfp4_source_tensors(_NV_MLP), **_nvfp4_source_tensors(_NV_MLP_UP)}
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), ignore_layers="down_proj")
+
+        _assert_mxfp4_layer(tensors, _NV_MLP_UP)
+        assert tensors[f"{_NV_MLP}.weight"].dtype == torch.bfloat16
+        assert f"{_NV_MLP}.weight_packed" not in tensors
+        assert _NV_MLP in qc["ignore"]
+        assert _NV_MLP_UP not in qc["ignore"]
+
+    @require_compressed_tensors
+    def test_no_nvfp4_layers_keeps_everything(self, tmp_path):
+        source = {f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16), **_ct_fp8_tensors(_NV_MLP)}
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, source)
+        tensors, _ = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        assert set(tensors) == set(source)
+        _assert_unchanged(tensors, source, list(source))
+
+    @require_compressed_tensors
+    def test_unknown_source_config_falls_back_to_plain_mxfp4(self, tmp_path):
+        source = {**_nvfp4_source_tensors(_NV_MLP), f"{_NV_ATTN}.weight": torch.randn(64, 64, dtype=torch.bfloat16)}
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc({"quant_method": "bitsandbytes"}), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        assert qc["format"] == "mxfp4-pack-quantized"
+        assert next(iter(qc["config_groups"].values()))["targets"] == [_NV_MLP]
+        assert _NV_ATTN in qc["ignore"]
+
+    @require_compressed_tensors
+    def test_non_ct_moe_source_targets_routed_experts(self, tmp_path):
+        experts = [f"model.layers.0.block_sparse_moe.experts.{i}.w1" for i in range(2)]
+        source = {k: v for e in experts for k, v in _modelopt_nvfp4_tensors(e).items()}
+        source[f"{_NV_ATTN}.weight"] = torch.randn(64, 64, dtype=torch.bfloat16)
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_MODELOPT_NVFP4_QC), source)
+        tensors, qc = _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"))
+
+        for expert in experts:
+            _assert_mxfp4_layer(tensors, expert)
+        targets = next(iter(qc["config_groups"].values()))["targets"]
+        assert "Linear" not in targets
+        assert sorted(targets) == sorted(experts + ["RoutedExperts"])
+
+    @pytest.mark.parametrize(
+        "qc",
+        [
+            {**_QUARK_NVFP4_QC, "layer_type_quant_config": {"Linear": {"weight": _QUARK_FP4_SPEC}}},
+            {**_QUARK_NVFP4_QC, "global_quant_config": {"weight": {"dtype": "int4", "qscheme": "per_group"}}},
+            {**_MODELOPT_NVFP4_QC, "quant_algo": "W4A8_AWQ"},
+            {"quant_method": "gptq"},
+        ],
+        ids=["quark_layer_type", "quark_int4", "modelopt_awq", "gptq"],
+    )
+    def test_unsupported_source_config_is_skipped(self, qc):
+        from auto_round.utils.model_free_utils import _source_config_to_ct
+
+        assert _source_config_to_ct(qc) is None
+
+    def test_load_source_quant_config_prefers_config_json(self, tmp_path):
+        from auto_round.utils.model_free_utils import _load_source_quant_config
+
+        with open(tmp_path / "hf_quant_config.json", "w") as f:
+            json.dump(_MODELOPT_MIXED_HF_QC, f)
+        assert _load_source_quant_config(str(tmp_path), _CT_NVFP4_QC) is _CT_NVFP4_QC
+        loaded = _load_source_quant_config(str(tmp_path), {})
+        assert loaded["quant_method"] == "modelopt"
+        assert loaded["quantized_layers"] == _MODELOPT_MIXED_HF_QC["quantization"]["quantized_layers"]
+
+    # ------------------------------------------------------------------
+    # Entry points / format validation
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("fmt", ["auto_round", "auto_round:auto_gptq", "fake"])
+    def test_core_rejects_non_llm_compressor_format(self, tmp_path, fmt):
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, _nvfp4_source_tensors(_NV_MLP))
+        with pytest.raises(ValueError, match="llm_compressor"):
+            _run_nvfp4_to_mxfp4(model_dir, str(tmp_path / "out"), format=fmt)
+
+    @require_compressed_tensors
+    def test_core_accepts_auto_round_llm_compressor_alias(self, tmp_path):
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, _nvfp4_source_tensors(_NV_MLP))
+        output_dir = str(tmp_path / "out")
+        _run_nvfp4_to_mxfp4(model_dir, output_dir, format="auto_round:llm_compressor")
+        _assert_mxfp4_layer(_read_output_tensors(output_dir), _NV_MLP)
+
+    @require_compressed_tensors
+    def test_autoround_entry(self, tmp_path):
+        source = {**_nvfp4_source_tensors(_NV_MLP), **_ct_fp8_tensors(_NV_ATTN)}
+        model_dir = _make_nvfp4_model_dir(tmp_path, _cfg_with_qc(_CT_MIXED_QC), source)
+        output_dir = str(tmp_path / "out")
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True, device_map="cpu").quantize_and_save(
+            output_dir, format="llm_compressor"
+        )
+        tensors = _read_output_tensors(output_dir)
+        _assert_mxfp4_layer(tensors, _NV_MLP)
+        _assert_unchanged(tensors, source, [f"{_NV_ATTN}.weight", f"{_NV_ATTN}.weight_scale"])
+        assert _read_qconfig(output_dir)["format"] == "mixed-precision"
+
+    def test_autoround_entry_rejects_non_llm_compressor_format(self, tmp_path):
+        model_dir = _make_nvfp4_model_dir(tmp_path, _LLAMA_CFG, _nvfp4_source_tensors(_NV_MLP))
+        ar = AutoRound(model=model_dir, scheme="MXFP4", model_free=True, device_map="cpu")
+        with pytest.raises(ValueError, match="llm_compressor"):
+            ar.quantize_and_save(str(tmp_path / "out"), format="auto_round")
+
+
+# ===========================================================================
+#  deepseek_v4 MXFP-quantized source models
+# ===========================================================================
+
+_DEEPSEEK_V4_CFG = {"architectures": ["DeepseekV4ForCausalLM"], "model_type": "deepseek_v4"}
+
+
+def _make_deepseek_v4_mxfp8(out_f, in_f, block_h, block_w):
+    """Build deepseek_v4-style MXFP8 source tensors.
+
+    Returns ``(weight_fp8, scale_e8m0_coarse)``:
+
+    * ``weight_fp8``         — ``float8_e4m3fn``, shape ``[out_f, in_f]``.
+    * ``scale_e8m0_coarse``  — ``uint8`` E8M0, *coarse* 2D shape
+      ``[out_f // block_h, in_f // block_w]`` (all exponents = bias 127, i.e.
+      scale 1.0, to keep the round-trip deterministic).
+    """
+    weight_fp8 = torch.randn(out_f, in_f, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+    scale = torch.full((out_f // block_h, in_f // block_w), 127, dtype=torch.uint8)
+    return weight_fp8, scale
+
+
+# TestExpandE8M0BlockScale moved to test/unit/test_cpu/utils/test_model_free_utils.py
+# TestDeepseekV4MXFP8Source (resolve_model_type tests) moved to test/unit/test_cpu/utils/test_model_free_utils.py
+
+
+# ===========================================================================
+#  llm-compressor MXFP source models (generic, e.g. Qwen3-MXFP4-MXFP8)
+# ===========================================================================
+
+_LLMCOMPRESSOR_MXFP_CFG_FP8 = {
+    "architectures": ["Qwen3ForCausalLM"],
+    "model_type": "qwen3",
+    "quantization_config": {"quant_method": "compressed-tensors", "format": "mxfp8-quantized"},
+}
+_LLMCOMPRESSOR_MIXED_CFG = {
+    "architectures": ["Qwen3ForCausalLM"],
+    "model_type": "qwen3",
+    "quantization_config": {"quant_method": "compressed-tensors", "format": "mixed-precision"},
+}
+
+
+class TestLLMCompressorMXFPSource:
+    """llm-compressor MXFP8/MXFP4 source models (generic non-deepseek_v4 path).
+
+    Unit tests for _handle_mxfp_source_tensors and _dequant_mxfp_tensors moved to
+    test/unit/test_cpu/utils/test_model_free_utils.py -> TestHandleMXFPSourceTensors.
+    resolve_model_type tests moved to test/unit/test_cpu/utils/test_model_free_utils.py.
+    """
+
+    @require_compressed_tensors
+    def test_e2e_mxfp8_passthrough(self, tmp_path):
+        """End-to-end: MXFP8 source + MXFP8 target → passthrough, weight bytes unchanged."""
+        weight_fp8 = torch.randn(128, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        weight_scale = torch.full((128, 4), 127, dtype=torch.uint8)
+        tensors = {
+            "model.layers.0.mlp.fc1.weight": weight_fp8,
+            "model.layers.0.mlp.fc1.weight_scale": weight_scale,
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLMCOMPRESSOR_MXFP_CFG_FP8, tensors)
+        output_dir = str(tmp_path / "output")
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8", format="llm_compressor"
+        ).run()
+
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == "mxfp8-quantized"
+        assert qc["quant_method"] == "compressed-tensors"
+        assert "lm_head" in qc["ignore"]
+
+        wp = ws = None
+        for f in os.listdir(output_dir):
+            if f.endswith(".safetensors"):
+                with safe_open(os.path.join(output_dir, f), framework="pt") as sf:
+                    if "model.layers.0.mlp.fc1.weight" in sf.keys():
+                        wp = sf.get_tensor("model.layers.0.mlp.fc1.weight")
+                        ws = sf.get_tensor("model.layers.0.mlp.fc1.weight_scale")
+        assert wp.dtype == torch.float8_e4m3fn
+        assert torch.equal(wp.view(torch.uint8), weight_fp8.view(torch.uint8))
+        assert ws.dtype == torch.uint8
+
+    # Unit tests test_convert_* and test_dequant_* moved to
+    # test/unit/test_cpu/utils/test_model_free_utils.py -> TestHandleMXFPSourceTensors
+
+    @require_compressed_tensors
+    def test_e2e_passthrough_mxfp8_target(self, tmp_path):
+        """deepseek_v4 source + MXFP8 target → passthrough preserves weight bytes."""
+        weight_fp8, scale = _make_deepseek_v4_mxfp8(128, 128, block_h=32, block_w=64)
+        tensors = {
+            "model.layers.0.mlp.fc1.weight": weight_fp8,
+            "model.layers.0.mlp.fc1.scale": scale,
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _DEEPSEEK_V4_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        _ModelFreeCompressorCore(
+            model_name_or_path=model_dir, output_dir=output_dir, scheme="MXFP8", format="llm_compressor"
+        ).run()
+
+        qc = _read_qconfig(output_dir)
+        assert qc["format"] == "mxfp8-quantized"
+        assert qc["quant_method"] == "compressed-tensors"
+        assert "lm_head" in qc["ignore"]
+
+        # Read back the converted tensors and verify the weight bytes are unchanged.
+        wp = ws = None
+        for f in os.listdir(output_dir):
+            if f.endswith(".safetensors"):
+                with safe_open(os.path.join(output_dir, f), framework="pt") as sf:
+                    if "model.layers.0.mlp.fc1.weight" in sf.keys():
+                        wp = sf.get_tensor("model.layers.0.mlp.fc1.weight")
+                        ws = sf.get_tensor("model.layers.0.mlp.fc1.weight_scale")
+        assert wp.dtype == torch.float8_e4m3fn
+        assert torch.equal(wp.view(torch.uint8), weight_fp8.view(torch.uint8))
+        assert ws.dtype == torch.uint8 and ws.shape == (128, 4)
+
+    def test_e2e_dequant_int_target(self, tmp_path):
+        """deepseek_v4 source + W4A16 target → dequant then RTN requantize (qweight)."""
+        weight_fp8, scale = _make_deepseek_v4_mxfp8(128, 128, block_h=32, block_w=64)
+        tensors = {
+            "model.layers.0.mlp.fc1.weight": weight_fp8,
+            "model.layers.0.mlp.fc1.scale": scale,
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _DEEPSEEK_V4_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="W4A16", model_free=True, device_map="cpu").quantize_and_save(output_dir)
+
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "auto-round" and qc["bits"] == 4
+        keys = _read_output_keys(output_dir)
+        assert "model.layers.0.mlp.fc1.qweight" in keys
+        # the raw source tensors must not leak into the output
+        assert "model.layers.0.mlp.fc1.scale" not in keys
+        assert "model.layers.0.mlp.fc1.weight" not in keys
+
+
+# ===========================================================================
+#  Scheme validation
+# ===========================================================================
+
+
+# Keep representative presets per family to reduce redundant runtime:
+# INT symmetric (2/4/8-bit), mixed override recipe, MXFP, and BF16 passthrough.
+_SUPPORTED = ["W2A16G32", "W4A16", "W4A16_MIXED", "W8A16", "MXFP4", "BF16"]
+_UNSUPPORTED = [
+    "W3A16",
+    "FPW8A16",  # unsupported FP family
+    "MXINT4",
+    "NVFP4",  # unsupported MX/NV family
+    "FP8_BLOCK",  # unsupported FP8 route
+    "INT8_W8A8",
+]
+
+
+class TestSchemeValidation:
+    @pytest.mark.parametrize("name", _SUPPORTED)
+    def test_supported(self, tmp_path, name):
+        """Each supported preset must resolve and quantize without error.
+
+        This exercises the same scheme-resolution code (``_parse_scheme`` /
+        ``_parse_layer_config`` / ``_build_ignore_patterns``) used by the real
+        pipeline, then quantizes a shard directly via ``_process_shard`` —
+        skipping the multiprocessing shard pipeline (already covered by the
+        full end-to-end tests in ``TestModelFreeQuantize`` / ``TestModelFreeMXFP``)
+        to keep this parametrized check fast.
+        """
+        if name.startswith("MXFP"):
+            pytest.importorskip("compressed_tensors", reason="test requires compressed-tensors")
+
+        core = _ModelFreeCompressorCore(model_name_or_path="unused", output_dir=str(tmp_path), scheme=name)
+        core._parse_scheme()
+        core._parse_layer_config()
+        core._build_ignore_patterns()
+
+        shard_path = str(tmp_path / f"shard_{name}.safetensors")
+        save_file({"model.layers.0.mlp.fc1.weight": torch.randn(64, 128)}, shard_path)
+        output, quantized, _ignored = _process_shard(
+            shard_path,
+            default_scheme=core.default_scheme,
+            layer_config=core.layer_config,
+            ignore_patterns=core.ignore_patterns,
+        )
+        if name == "BF16":
+            # BF16 default: no weights quantized; the layer is kept in full precision.
+            assert len(quantized) == 0
+            assert "model.layers.0.mlp.fc1.weight" in output
+        else:
+            assert "model.layers.0.mlp.fc1" in quantized
+            if name.startswith("MXFP"):
+                assert "model.layers.0.mlp.fc1.weight_scale" in output
+            else:
+                assert "model.layers.0.mlp.fc1.qweight" in output
+
+    @pytest.mark.parametrize("name", _UNSUPPORTED)
+    def test_unsupported_raises(self, tmp_path, name):
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"layer.weight": torch.randn(64, 128)})
+        with pytest.raises(ValueError):
+            AutoRound(model=model_dir, model_free=True, scheme=name, device_map="cpu").quantize_and_save(
+                str(tmp_path / "out")
+            )
+
+    def test_is_model_free_supported_scheme(self):
+        for name in _SUPPORTED:
+            assert is_model_free_supported_scheme(name) is True
+        for name in _UNSUPPORTED:
+            assert is_model_free_supported_scheme(name) is False
+        assert is_model_free_supported_scheme("DOES_NOT_EXIST") is False
+
+
+# ===========================================================================
+#  kimi_k25 INT4 packed source models — moved to test/unit/test_cpu/utils/test_model_free_utils.py
+# ===========================================================================
+
+
+# ===========================================================================
+#  CLI auto-routing
+# ===========================================================================
+
+
+class TestCliAutoRouting:
+    def test_model_free_uses_auto_round_format_by_default(self, monkeypatch):
+        from auto_round.cli import main as cli_main
+
+        captured = {}
+        monkeypatch.setattr(cli_main, "tune", lambda args: captured.setdefault("format", args._api_format))
+
+        cli_main.start(argv=["--model", "dummy", "--model_free"])
+
+        assert captured["format"] == "auto_round"
+
+    def test_auto_routes(self, tmp_path):
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, {"layer.weight": torch.randn(64, 128)})
+        out_dir = str(tmp_path / "out")
+        from auto_round.cli.main import tune
+        from auto_round.cli.parser import build_quantize_parser
+
+        args = build_quantize_parser().parse_args(
+            [
+                "--model",
+                model_dir,
+                "--device",
+                "cpu",
+                "--scheme",
+                "W4A16",
+                "--iters",
+                "0",
+                "--disable_opt_rtn",
+                "--format",
+                "auto_round",
+                "--output_dir",
+                out_dir,
+            ]
+        )
+        tune(args)
+        assert _read_qconfig(out_dir).get("model_free") is True
+
+    def test_disable_model_free_flag(self):
+        from auto_round.cli.parser import build_quantize_parser
+
+        args = build_quantize_parser().parse_args(
+            [
+                "--model",
+                "dummy",
+                "--scheme",
+                "W4A16",
+                "--iters",
+                "0",
+                "--disable_opt_rtn",
+                "--disable_model_free",
+            ]
+        )
+        auto_route = (
+            not args.model_free
+            and not args.disable_model_free
+            and args.iters == 0
+            and args.disable_opt_rtn is True
+            and is_model_free_supported_scheme(args.scheme)
+        )
+        assert auto_route is False
+
+
+# TestPredefinedIgnoreLayers moved to test/unit/test_cpu/utils/test_model_free_utils.py
+
+
+# ===========================================================================
+#  Copy metadata & subfolder handling
+# ===========================================================================
+
+
+def _make_diffusion_model_dir(tmp_path, transformer_config, transformer_tensors):
+    """Create a minimal diffusion model directory layout.
+
+    Layout::
+
+        root/
+            model_index.json
+            transformer/
+                config.json
+                model.safetensors
+            vae/
+                config.json
+            scheduler/
+                scheduler_config.json
+            tokenizer/
+                tokenizer.json
+                nested/
+                    vocab.txt
+    """
+    root_dir = str(tmp_path / "diffusion_model")
+    os.makedirs(root_dir, exist_ok=True)
+    with open(os.path.join(root_dir, "model_index.json"), "w") as f:
+        json.dump({"_class_name": "FluxPipeline"}, f)
+
+    # transformer component with weights
+    transformer_dir = os.path.join(root_dir, "transformer")
+    os.makedirs(transformer_dir, exist_ok=True)
+    with open(os.path.join(transformer_dir, "config.json"), "w") as f:
+        json.dump(transformer_config, f)
+    save_file(transformer_tensors, os.path.join(transformer_dir, "model.safetensors"))
+
+    # vae component
+    vae_dir = os.path.join(root_dir, "vae")
+    os.makedirs(vae_dir, exist_ok=True)
+    with open(os.path.join(vae_dir, "config.json"), "w") as f:
+        json.dump({"_class_name": "AutoencoderKL"}, f)
+
+    # scheduler component
+    sched_dir = os.path.join(root_dir, "scheduler")
+    os.makedirs(sched_dir, exist_ok=True)
+    with open(os.path.join(sched_dir, "scheduler_config.json"), "w") as f:
+        json.dump({"_class_name": "FlowMatchEulerDiscreteScheduler"}, f)
+
+    # tokenizer component with nested subdir
+    tok_dir = os.path.join(root_dir, "tokenizer")
+    os.makedirs(os.path.join(tok_dir, "nested"), exist_ok=True)
+    with open(os.path.join(tok_dir, "tokenizer.json"), "w") as f:
+        json.dump({"type": "BPE"}, f)
+    with open(os.path.join(tok_dir, "nested", "vocab.txt"), "w") as f:
+        f.write("hello\nworld\n")
+
+    return root_dir
+
+
+_TRANSFORMER_CONFIG = {
+    "architectures": ["FluxTransformer2DModel"],
+    "model_type": "flux",
+    "hidden_size": 128,
+    "num_hidden_layers": 1,
+}
+
+_TRANSFORMER_TENSORS = {
+    "transformer_blocks.0.attn.to_q.weight": torch.randn(128, 128),
+    "transformer_blocks.0.attn.to_k.weight": torch.randn(128, 128),
+    "transformer_blocks.0.ff.net.0.proj.weight": torch.randn(512, 128),
+    "transformer_blocks.0.ff.net.2.weight": torch.randn(128, 512),
+}
+
+
+class TestKimiK25Int4Source:
+    """Tests for _copy_metadata_files including subdirectory handling."""
+
+    def test_non_diffusion_copies_subfolders(self, tmp_path):
+        """Non-diffusion model: subdirectories should be copied to output."""
+        model_dir = _make_model_dir(tmp_path, _SIMPLE_CONFIG, _SIMPLE_TENSORS)
+        # Add a subdirectory with files
+        tokenizer_dir = os.path.join(model_dir, "tokenizer")
+        os.makedirs(os.path.join(tokenizer_dir, "nested"), exist_ok=True)
+        with open(os.path.join(tokenizer_dir, "tokenizer.json"), "w") as f:
+            json.dump({"type": "BPE"}, f)
+        with open(os.path.join(tokenizer_dir, "nested", "vocab.txt"), "w") as f:
+            f.write("hello\nworld\n")
+
+        output_dir = str(tmp_path / "output")
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+        core.run()
+
+        assert os.path.isdir(os.path.join(output_dir, "tokenizer"))
+        assert os.path.isfile(os.path.join(output_dir, "tokenizer", "tokenizer.json"))
+        assert os.path.isdir(os.path.join(output_dir, "tokenizer", "nested"))
+        assert os.path.isfile(os.path.join(output_dir, "tokenizer", "nested", "vocab.txt"))
+
+    def test_replaces_source_quantization_metadata(self, tmp_path):
+        config = dict(_SIMPLE_CONFIG)
+        config["text_config"] = {
+            "quantization_config": {
+                "quant_method": "gptq",
+                "bits": 4,
+                "stale_source_field": True,
+            }
+        }
+        model_dir = _make_model_dir(tmp_path, config, _SIMPLE_TENSORS)
+        for filename in ("quantization_config.json", "quantize_config.json", "quant_config.json"):
+            with open(os.path.join(model_dir, filename), "w") as f:
+                json.dump({"quant_method": "gptq", "stale_source_field": True}, f)
+        with open(os.path.join(model_dir, "README.md"), "w") as f:
+            f.write("stale source quantization documentation")
+
+        output_dir = str(tmp_path / "output")
+        os.makedirs(output_dir)
+        with open(os.path.join(output_dir, "quantize_config.json"), "w") as f:
+            json.dump({"stale_output_field": True}, f)
+        with open(os.path.join(output_dir, "README.md"), "w") as f:
+            f.write("stale output quantization documentation")
+
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+        core.run()
+
+        with open(os.path.join(output_dir, "config.json")) as f:
+            output_config = json.load(f)
+        with open(os.path.join(output_dir, "quantization_config.json")) as f:
+            standalone_config = json.load(f)
+
+        assert output_config["quantization_config"] == standalone_config
+        assert standalone_config["quant_method"] == "auto-round"
+        assert "stale_source_field" not in standalone_config
+        assert core.source_quantization_config["stale_source_field"] is True
+        assert "quantization_config" not in output_config["text_config"]
+        assert not os.path.exists(os.path.join(output_dir, "quantize_config.json"))
+        assert not os.path.exists(os.path.join(output_dir, "quant_config.json"))
+        assert not os.path.exists(os.path.join(output_dir, "README.md"))
+
+    def test_diffusion_copies_subfolders(self, tmp_path):
+        """Diffusion model: non-transformer subdirectories should be copied."""
+        root_dir = _make_diffusion_model_dir(tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS)
+        output_dir = str(tmp_path / "output")
+
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=root_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+        core.run()
+
+        # Non-transformer subdirs must be present
+        assert os.path.isdir(os.path.join(output_dir, "vae"))
+        assert os.path.isfile(os.path.join(output_dir, "vae", "config.json"))
+        assert os.path.isdir(os.path.join(output_dir, "scheduler"))
+        assert os.path.isfile(os.path.join(output_dir, "scheduler", "scheduler_config.json"))
+        assert os.path.isdir(os.path.join(output_dir, "tokenizer"))
+        assert os.path.isfile(os.path.join(output_dir, "tokenizer", "tokenizer.json"))
+        assert os.path.isfile(os.path.join(output_dir, "tokenizer", "nested", "vocab.txt"))
+        # Root-level file
+        assert os.path.isfile(os.path.join(output_dir, "model_index.json"))
+        # Quantized transformer must also exist
+        assert os.path.isdir(os.path.join(output_dir, "transformer"))
+        assert os.path.isfile(os.path.join(output_dir, "transformer", "config.json"))
+
+    def test_diffusion_does_not_overwrite_quantized_transformer(self, tmp_path):
+        """Copying subfolders must not overwrite the quantized transformer."""
+        root_dir = _make_diffusion_model_dir(tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS)
+        output_dir = str(tmp_path / "output")
+
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=root_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+        )
+        core.run()
+
+        # The output transformer/ should contain quantized weights, not
+        # the original model.safetensors from the source.
+        transformer_out = os.path.join(output_dir, "transformer")
+        out_files = os.listdir(transformer_out)
+        # The original single shard would have been renamed to model.safetensors
+        # by _write_index_file; confirm it has quantized tensor names.
+        keys = set()
+        for f in out_files:
+            if f.endswith(".safetensors"):
+                with safe_open(os.path.join(transformer_out, f), framework="pt") as sf:
+                    keys.update(sf.keys())
+        assert any(
+            k.endswith(".qweight") for k in keys
+        ), f"Quantized transformer should contain .qweight tensors, got: {keys}"
+
+
+# ===========================================================================
+#  Shard parallelism — _resolve_shard_parallelism + end-to-end with non-divisible counts
+# ===========================================================================
+
+
+class TestResolveShardParallelism:
+    """Tests for the automatic and env-controlled shard parallelism policy."""
+
+    @staticmethod
+    def _core_with_n_shards(n: int) -> _ModelFreeCompressorCore:
+        core = _ModelFreeCompressorCore.__new__(_ModelFreeCompressorCore)
+        core.shard_names = [f"shard_{i:02d}.safetensors" for i in range(n)]
+        core.shard_parallelism = 1
+        return core
+
+    def test_auto_policy_formula(self, monkeypatch):
+        monkeypatch.delenv("AR_MODEL_FREE_SHARD_PARALLELISM", raising=False)
+        cases = [
+            (1, 1),  # 1 // 4 = 0 -> min 1
+            (3, 1),  # 3 // 4 = 0 -> min 1
+            (4, 1),  # 4 // 4 = 1
+            (8, 2),  # 8 // 4 = 2
+            (12, 3),  # 12 // 4 = 3
+            (40, 10),  # 40 // 4 = 10 (at cap)
+            (80, 10),  # 80 // 4 = 20 -> capped at 10
+        ]
+        for n, expected in cases:
+            core = self._core_with_n_shards(n)
+            p, src = core._resolve_shard_parallelism()
+            assert p == expected, f"n={n}: expected {expected}, got {p}"
+            assert "auto" in src
+
+    def test_env_override_respected(self, monkeypatch):
+        monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "7")
+        core = self._core_with_n_shards(25)
+        p, src = core._resolve_shard_parallelism()
+        assert p == 7
+        assert "env=7" in src
+
+    def test_env_capped_at_shard_count(self, monkeypatch):
+        monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "100")
+        core = self._core_with_n_shards(3)
+        p, _ = core._resolve_shard_parallelism()
+        assert p == 3
+
+    def test_env_below_1_falls_back_to_auto(self, monkeypatch):
+        monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "0")
+        core = self._core_with_n_shards(25)
+        p, src = core._resolve_shard_parallelism()
+        assert p == 25 // 4
+        assert "invalid" in src
+
+    def test_env_invalid_falls_back_to_auto(self, monkeypatch):
+        monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "notanumber")
+        core = self._core_with_n_shards(25)
+        p, src = core._resolve_shard_parallelism()
+        assert p == 25 // 4  # auto formula: shard_count // 4
+        assert "invalid" in src
+
+    def test_nondivisible_shard_count_all_shards_processed(self, tmp_path, monkeypatch):
+        """Parallelism that does not evenly divide the shard count must still
+        process every shard and produce correct output.
+
+        7 shards with parallelism=3 → 7 % 3 == 1 (non-divisible).
+        """
+        monkeypatch.setenv("AR_MODEL_FREE_SHARD_PARALLELISM", "3")
+
+        # Build 7 shards of simple linear weights
+        layer_names = [f"model.layers.{i}.fc.weight" for i in range(7)]
+        model_dir = str(tmp_path / "source")
+        os.makedirs(model_dir, exist_ok=True)
+        with open(os.path.join(model_dir, "config.json"), "w") as f:
+            json.dump(_SIMPLE_CONFIG, f)
+
+        weight_map = {}
+        for shard_idx, layer_name in enumerate(layer_names):
+            shard_filename = f"model-{shard_idx + 1:05d}-of-{len(layer_names):05d}.safetensors"
+            save_file({layer_name: torch.randn(128, 128)}, os.path.join(model_dir, shard_filename))
+            weight_map[layer_name] = shard_filename
+        with open(os.path.join(model_dir, "model.safetensors.index.json"), "w") as f:
+            json.dump({"metadata": {"total_size": 0}, "weight_map": weight_map}, f)
+
+        output_dir = str(tmp_path / "output")
+        core = _ModelFreeCompressorCore(
+            model_name_or_path=model_dir,
+            output_dir=output_dir,
+            scheme="W4A16",
+            quant_lm_head=True,
+        )
+        core.run()
+
+        # Every layer must appear as quantized in the output
+        out_keys = _read_output_keys(output_dir)
+        for layer_name in layer_names:
+            base = layer_name.replace(".weight", "")
+            assert f"{base}.qweight" in out_keys, (
+                f"Layer '{base}' missing from output after non-divisible shard processing. "
+                f"Output keys: {sorted(out_keys)[:20]}"
+            )
+
+        # The index must reference exactly 7 shards
+        index_path = os.path.join(output_dir, "model.safetensors.index.json")
+        with open(index_path) as f:
+            index = json.load(f)
+        unique_shards = set(index["weight_map"].values())
+        assert len(unique_shards) == 7, f"Expected 7 output shards, got {len(unique_shards)}: {unique_shards}"
+
+
+# ===========================================================================
+#  Model-free + AutoScheme (two-phase delta-loss selection + packing)
+# ===========================================================================
+
+
+class TestModelFreeAutoScheme:
+    """Model-free support for ``AutoScheme`` mixed-bit selection.
+
+    Pure unit tests for helper functions (_looks_like_auto_scheme,
+    _validate_auto_scheme_options, _convert_auto_scheme_layer_config) have been
+    moved to test/unit/test_cpu/utils/test_model_free_utils.py -> TestAutoSchemeHelpers.
+    """
+
+    def test_e2e_int_auto_scheme(self, tmp_path, tiny_opt_model_path):
+        from auto_round import AutoScheme
+
+        output_dir = str(tmp_path / "output")
+        scheme = AutoScheme(avg_bits=3.0, options=("W2A16", "W4A16", "W8A16"), nsamples=1)
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme=scheme,
+            iters=0,
+            model_free=True,
+            nsamples=1,
+            dataset=_make_local_calibration_dataset(tmp_path),
+            device_map="cpu",
+        )
+        ar.quantize_and_save(output_dir, format="auto_round")
+
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "auto-round"
+        assert qc["model_free"] is True
+        # The exact winner depends on calibration data; selection semantics are
+        # covered by the focused AutoScheme tests.  Here verify the exported
+        # per-layer config stays within the requested candidate family.
+        extra = qc.get("extra_config", {})
+        selected_bits = {qc["bits"]} | {v["bits"] for v in extra.values() if v.get("bits", 16) < 16}
+        assert selected_bits and selected_bits <= {2, 4, 8}, f"unexpected selected bit-widths: {selected_bits}"
+
+    @require_compressed_tensors
+    def test_e2e_mxfp_auto_scheme(self, tmp_path, tiny_opt_model_path):
+        from auto_round import AutoScheme
+
+        output_dir = str(tmp_path / "output")
+        scheme = AutoScheme(avg_bits=6.0, options=("MXFP4", "MXFP8"), nsamples=1)
+        ar = AutoRound(
+            model=tiny_opt_model_path,
+            scheme=scheme,
+            iters=0,
+            model_free=True,
+            nsamples=1,
+            dataset=_make_local_calibration_dataset(tmp_path),
+            device_map="cpu",
+        )
+        ar.quantize_and_save(output_dir, format="llm_compressor")
+
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "compressed-tensors"
+        assert qc["provider"] == "auto-round"
+
+
+# ===========================================================================
+#  MXFP auto-round format (packing_format=auto_round:llm_compressor)
+# ===========================================================================
+
+
+class TestMXFPAutoRoundFormat:
+    """Tests for MXFP4/MXFP8 model-free quantization with format='auto_round'.
+
+    The weight tensors on disk are identical to the llm_compressor path;
+    only the ``quantization_config`` metadata differs.
+
+    Unit tests for _build_mxfp_autoround_quantization_config and
+    _build_quantization_config routing have been moved to
+    test/unit/test_cpu/utils/test_model_free_utils.py -> TestBuildMxfpAutoRoundConfig.
+    """
+
+    # ------------------------------------------------------------------
+    # End-to-end tests via AutoRound.quantize_and_save
+    # ------------------------------------------------------------------
+
+    @require_compressed_tensors
+    def test_e2e_mxfp4_config_fields(self, tmp_path):
+        """MXFP4 + format='auto_round': quantization_config matches real AutoRound output."""
+        tensors = {
+            "model.layers.0.self_attn.q_proj.weight": torch.randn(128, 128),
+            "model.layers.0.fc1.weight": torch.randn(512, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="MXFP4", model_free=True, device_map="cpu").quantize_and_save(
+            output_dir, format="auto_round"
+        )
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "auto-round"
+        assert qc["packing_format"] == "auto_round:llm_compressor"
+        assert qc["bits"] == 4
+        assert qc["data_type"] == "mx_fp"
+        assert qc["act_bits"] == 4
+        assert qc["act_data_type"] == "mx_fp"
+        assert qc["enable_quanted_input"] is False
+        assert qc["model_free"] is True
+        # lm_head kept full-precision → extra_config entry
+        extra = qc.get("extra_config", {})
+        assert extra.get("lm_head") == {
+            "bits": 16,
+            "data_type": "float",
+            "act_bits": 16,
+            "act_data_type": "float",
+        }
+
+    @require_compressed_tensors
+    def test_e2e_mxfp8_autoround_format(self, tmp_path):
+        """MXFP8 + format='auto_round': bits=8, weight layout uses float8 .weight."""
+        tensors = {
+            "model.layers.0.fc1.weight": torch.randn(128, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(model=model_dir, scheme="MXFP8", model_free=True, device_map="cpu").quantize_and_save(
+            output_dir, format="auto_round"
+        )
+        qc = _read_qconfig(output_dir)
+        assert qc["quant_method"] == "auto-round"
+        assert qc["packing_format"] == "auto_round:llm_compressor"
+        assert qc["bits"] == 8
+        assert qc["act_bits"] == 8
+        keys = _read_output_keys(output_dir)
+        assert "model.layers.0.fc1.weight" in keys
+        assert "model.layers.0.fc1.weight_scale" in keys
+
+    @require_compressed_tensors
+    def test_e2e_mxfp4_quant_lm_head_extra_config(self, tmp_path):
+        """When lm_head is quantized, it appears in extra_config with its full scheme."""
+        tensors = {
+            "model.layers.0.fc1.weight": torch.randn(128, 128),
+            "lm_head.weight": torch.randn(1000, 128),
+        }
+        model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+        output_dir = str(tmp_path / "output")
+        AutoRound(
+            model=model_dir, scheme="MXFP4", model_free=True, quant_lm_head=True, device_map="cpu"
+        ).quantize_and_save(output_dir, format="auto_round")
+        qc = _read_qconfig(output_dir)
+        extra = qc.get("extra_config", {})
+        assert "lm_head" in extra
+        assert extra["lm_head"]["bits"] == 4
+        assert extra["lm_head"]["data_type"] == "mx_fp"
+        keys = _read_output_keys(output_dir)
+        assert "lm_head.weight_packed" in keys
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_diffusion_quantizes_both_transformers(tmp_path, monkeypatch, streaming):
+    import shutil
+
+    import auto_round.compressors.model_free as module
+
+    root = _make_diffusion_model_dir(tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS)
+    shutil.copytree(os.path.join(root, "transformer"), os.path.join(root, "transformer_2"))
+    secondary_tensors = {key: -tensor * 2 for key, tensor in _TRANSFORMER_TENSORS.items()}
+    save_file(secondary_tensors, os.path.join(root, "transformer_2", "model.safetensors"))
+    output = tmp_path / "output"
+    if streaming:
+        monkeypatch.setattr(module, "_get_model_cache_status", lambda _: (False, "test"))
+        monkeypatch.setattr(
+            "auto_round.utils.model_free_utils._list_remote_weight_shards",
+            lambda model, subfolder=None: [f"{subfolder}/model.safetensors"],
+        )
+    core = _ModelFreeCompressorCore(
+        model_name_or_path=root,
+        output_dir=str(output),
+        scheme="MXFP8",
+        device="cpu",
+        enable_torch_compile=False,
+        disable_opt_rtn=True,
+    )
+    core.run()
+    component_weights = {}
+    for name in ("transformer", "transformer_2"):
+        config = json.loads((output / name / "config.json").read_text())
+        assert config["quantization_config"]["bits"] == 8
+        tensors = {}
+        for shard in (output / name).glob("*.safetensors"):
+            with safe_open(shard, framework="pt") as f:
+                tensors.update({key: f.get_tensor(key) for key in f.keys()})
+        for key in _TRANSFORMER_TENSORS:
+            if key.endswith(".weight"):
+                assert tensors[key].dtype == torch.float8_e4m3fn
+                assert tensors[key.replace(".weight", ".weight_scale")].dtype == torch.uint8
+        from auto_round.utils.model_free_utils import _process_shard
+
+        expected, _, _ = _process_shard(
+            os.path.join(root, name, "model.safetensors"),
+            default_scheme=core.default_scheme,
+            layer_config={},
+            device="cpu",
+            model_type="flux",
+            disable_opt_rtn=True,
+        )
+        for key in expected:
+            # float8 equality is not implemented on every torch backend.
+            assert torch.equal(tensors[key].view(torch.uint8), expected[key].view(torch.uint8))
+        for key in _TRANSFORMER_TENSORS:
+            component_weights[name, key] = tensors[key].view(torch.uint8)
+    assert any(
+        not torch.equal(component_weights["transformer", key], component_weights["transformer_2", key])
+        for key in _TRANSFORMER_TENSORS
+    )
+    assert (output / "vae" / "config.json").exists()
+    assert not (output / "transformer" / ".cache" / "model_free_resume.json").exists()
+
+
+@pytest.mark.parametrize("component", ["transformer", "transformer_2"])
+def test_streaming_download_uses_transformer_subfolder(tmp_path, monkeypatch, component):
+    import auto_round.compressors.model_free as module
+
+    downloads = []
+
+    def download(repo, filename, cache_dir):
+        downloads.append((repo, filename))
+        path = tmp_path / "download" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_file({"layer.weight": torch.ones(2, 2)}, path)
+        return str(path)
+
+    monkeypatch.setattr(module, "_download_single_shard", download)
+    path = module._prefetch_shard("org/wan", "model.safetensors", str(tmp_path), "", True, component)
+    assert downloads == [("org/wan", f"{component}/model.safetensors")]
+    assert path == str(tmp_path / ".cache" / "model_free_source_shards" / "model.safetensors")
+    assert os.path.isfile(path)
+
+
+def test_streaming_subfolder_prefetch_replaces_corrupt_cached_shard(tmp_path, monkeypatch):
+    import auto_round.compressors.model_free as module
+
+    cache_dir = tmp_path / ".cache" / "model_free_source_shards"
+    cache_dir.mkdir(parents=True)
+    cached_path = cache_dir / "model.safetensors"
+    cached_path.write_bytes(b"truncated")
+    downloads = []
+
+    def download(_repo, filename, _local_dir):
+        downloads.append(filename)
+        path = tmp_path / "download" / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_file({"layer.weight": torch.ones(2, 2)}, path)
+        return str(path)
+
+    monkeypatch.setattr(module, "_download_single_shard", download)
+    result = module._prefetch_shard("org/wan", "model.safetensors", str(tmp_path), "", True, "transformer")
+
+    assert downloads == ["transformer/model.safetensors"]
+    with safe_open(result, framework="pt") as shard:
+        assert shard.keys() == ["layer.weight"]
+
+
+@pytest.mark.parametrize("component", ["transformer", "transformer_2"])
+def test_streaming_discovery_ignores_partial_quantized_output(tmp_path, monkeypatch, component):
+    output = tmp_path / component
+    output.mkdir()
+    save_file({"layer.weight": torch.randn(32, 32)}, output / "model-00001-of-00002.safetensors")
+    core = _ModelFreeCompressorCore("org/wan", str(tmp_path), enable_torch_compile=False)
+    core.is_streaming = True
+    core.is_diffusion_model = True
+    core.diffusion_component = component
+    core.work_dir = str(output)
+    calls = []
+
+    def remote(model, subfolder=None):
+        calls.append(subfolder)
+        return [f"{component}/original-a.safetensors", f"{component}/original-b.safetensors"]
+
+    monkeypatch.setattr("auto_round.utils.model_free_utils._list_remote_weight_shards", remote)
+    core._discover_shards()
+    assert calls == [component]
+    assert core.shard_names == ["original-a.safetensors", "original-b.safetensors"]
+
+
+def test_streaming_secondary_resume_uses_original_sources(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import auto_round.compressors.model_free as module
+
+    root = _make_diffusion_model_dir(tmp_path, _TRANSFORMER_CONFIG, _TRANSFORMER_TENSORS)
+    import shutil
+
+    shutil.copytree(os.path.join(root, "transformer"), os.path.join(root, "transformer_2"))
+    source = {}
+    for component in ("transformer", "transformer_2"):
+        for index, (key, tensor) in enumerate(list(_TRANSFORMER_TENSORS.items())[:2]):
+            path = tmp_path / f"{component}-source-{index}.safetensors"
+            save_file({key: tensor if component == "transformer" else -tensor}, path)
+            source[component, f"source-{index}.safetensors"] = str(path)
+
+    monkeypatch.setattr(module, "_get_model_cache_status", lambda _: (False, "test"))
+    monkeypatch.setattr(
+        "huggingface_hub.HfApi.model_info", lambda *args, **kwargs: SimpleNamespace(sha="fixed-revision")
+    )
+    original_metadata = module._download_metadata_files
+    monkeypatch.setattr(module, "_download_metadata_files", lambda model, directory: original_metadata(root, directory))
+    monkeypatch.setattr(
+        "auto_round.utils.model_free_utils._list_remote_weight_shards",
+        lambda model, subfolder=None: [f"{subfolder}/source-{index}.safetensors" for index in range(2)],
+    )
+    processed = []
+    interrupted = [False]
+
+    def process_shards(core):
+        for index, name in enumerate(core.shard_names):
+            if name in core._resume_processed_shards:
+                continue
+            if core.diffusion_component == "transformer_2" and index == 1 and not interrupted[0]:
+                interrupted[0] = True
+                raise RuntimeError("interrupted secondary")
+            tensors, quantized, ignored = _process_shard(
+                source[core.diffusion_component, name],
+                default_scheme=core.default_scheme,
+                disable_opt_rtn=core.disable_opt_rtn,
+                model_type="flux",
+            )
+            output_name = f"model-{index + 1:05d}-of-00002.safetensors"
+            os.makedirs(core._quant_output_dir, exist_ok=True)
+            save_file(tensors, os.path.join(core._quant_output_dir, output_name))
+            core.output_weight_map.update({key: output_name for key in tensors})
+            core.all_quantized_layers.extend(quantized)
+            core._mark_shard_completed(name, output_name, list(tensors), quantized, ignored)
+            processed.append((core.diffusion_component, name))
+
+    monkeypatch.setattr(module._ModelFreeCompressorCore, "_process_all_shards", process_shards)
+    output = tmp_path / "output"
+
+    def compressor():
+        return _ModelFreeCompressorCore(
+            "org/wan", str(output), scheme="MXFP8", enable_torch_compile=False, disable_opt_rtn=True
+        )
+
+    with pytest.raises(RuntimeError, match="interrupted secondary"):
+        compressor().run()
+    assert processed == [
+        ("transformer", "source-0.safetensors"),
+        ("transformer", "source-1.safetensors"),
+        ("transformer_2", "source-0.safetensors"),
+    ]
+    processed.clear()
+    compressor().run()
+    assert processed == [("transformer_2", "source-1.safetensors")]
+    for component in ("transformer", "transformer_2"):
+        config = json.loads((output / component / "config.json").read_text())
+        assert config["quantization_config"]["bits"] == 8
+        assert not (output / component / ".cache" / "model_free_resume.json").exists()
+
+
+def test_streaming_worker_receives_disable_opt_rtn(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+
+    shard = tmp_path / "source.safetensors"
+    save_file({"layer.weight": torch.randn(32, 32)}, shard)
+    core = _ModelFreeCompressorCore("org/wan", str(tmp_path), enable_torch_compile=False, disable_opt_rtn=True)
+    core.is_streaming = True
+    core.is_diffusion_model = True
+    core.diffusion_component = "transformer_2"
+    core.work_dir = str(tmp_path)
+    core.shard_names = ["source.safetensors"]
+    received = []
+    monkeypatch.setattr(
+        module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers=max_workers)
+    )
+    monkeypatch.setattr(module, "_prefetch_shard", lambda *args: str(shard))
+    monkeypatch.setattr(
+        module, "_quantize_local_shard_task", lambda *args, **kwargs: received.append(kwargs["disable_opt_rtn"])
+    )
+    monkeypatch.setattr(core, "_merge_shard_task_result", lambda result: None)
+    core._process_all_shards_streaming_pipeline()
+    assert received == [True]
+
+
+def test_streaming_pipeline_bounds_downloaded_and_queued_shards(tmp_path, monkeypatch):
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
+
+    import auto_round.compressors.model_free as module
+
+    cache_dir = tmp_path / ".cache" / "model_free_source_shards"
+    cache_dir.mkdir(parents=True)
+    core = _ModelFreeCompressorCore("org/dummy", str(tmp_path), enable_torch_compile=False)
+    core.is_streaming = True
+    core.work_dir = str(tmp_path)
+    core.shard_names = [f"shard-{index:02}.safetensors" for index in range(8)]
+    core.shard_parallelism = 2
+    cached_shard = core.shard_names[-1]
+    (cache_dir / cached_shard).write_bytes(b"cached")
+    max_cached = 0
+    cache_lock = Lock()
+    quantized = []
+    prefetched = []
+
+    def prefetch(_model, shard_name, *_args):
+        nonlocal max_cached
+        prefetched.append(shard_name)
+        path = cache_dir / shard_name
+        path.write_bytes(b"source")
+        with cache_lock:
+            max_cached = max(max_cached, len(list(cache_dir.glob("*.safetensors"))))
+        return str(path)
+
+    def quantize(_shard_idx, shard_name, *, shard_path, **_kwargs):
+        time.sleep(0.03)
+        os.remove(shard_path)
+        quantized.append(shard_name)
+        return 0, shard_name, shard_path, f"out-{shard_name}", [], [], []
+
+    monkeypatch.setattr(module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers))
+    monkeypatch.setattr(module, "_prefetch_shard", prefetch)
+    monkeypatch.setattr(module, "_quantize_local_shard_task", quantize)
+    monkeypatch.setattr(core, "_merge_shard_task_result", lambda _result: None)
+
+    core._process_all_shards_streaming_pipeline()
+
+    assert set(quantized) == set(core.shard_names)
+    assert prefetched[0] == cached_shard
+    assert max_cached <= core.shard_parallelism + module._STREAMING_LOOKAHEAD_JOBS
+
+
+def _make_fp8_donor_recipient_core(tmp_path, monkeypatch, failed_shard):
+    """Streaming core where the recipient's FP8 weight_scale_inv lives in the donor shard."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+
+    donor, recipient = "model-00002-of-00002.safetensors", "model-00001-of-00002.safetensors"
+    weight_name = "model.layers.3.mlp.experts.30.gate_proj.weight"
+    scale_name = weight_name + "_scale_inv"
+    cache_dir = tmp_path / ".cache" / "model_free_source_shards"
+    cache_dir.mkdir(parents=True)
+    save_file({weight_name: torch.full((128, 128), 448.0).to(torch.float8_e4m3fn)}, cache_dir / recipient)
+    save_file({scale_name: torch.full((1, 1), 2**-13)}, cache_dir / donor)
+    with open(tmp_path / "model.safetensors.index.json", "w") as f:
+        json.dump({"weight_map": {weight_name: recipient, scale_name: donor}}, f)
+
+    output_dir = tmp_path / "output"
+    core = _ModelFreeCompressorCore("org/ds", str(output_dir), enable_torch_compile=False, disable_opt_rtn=True)
+    core.is_streaming = True
+    core.work_dir = str(tmp_path)
+    core.shard_names = [recipient, donor]
+    core.cross_shard_deps = {recipient: {donor: [scale_name]}}
+    core.donor_shard_tensors = {donor: {scale_name}}
+    core.shard_parallelism = 2
+    core.fp8_block_size = [128, 128]
+    core.model_type = "deepseek_v32"
+    core.default_scheme = {"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2_gs"}
+    core._prepare_resume_state()
+
+    def prefetch(model, shard_name, *args):
+        return None if shard_name == failed_shard else str(cache_dir / shard_name)
+
+    quantized_shards = []
+    original_task = module._quantize_local_shard_task
+
+    def quantize(shard_idx, shard_name, **kwargs):
+        quantized_shards.append(shard_name)
+        return original_task(shard_idx, shard_name, **kwargs)
+
+    monkeypatch.setattr(
+        module, "ProcessPoolExecutor", lambda max_workers, **kwargs: ThreadPoolExecutor(max_workers=max_workers)
+    )
+    monkeypatch.setattr(module, "_prefetch_shard", prefetch)
+    monkeypatch.setattr(module, "_quantize_local_shard_task", quantize)
+    return core, output_dir, donor, recipient, quantized_shards
+
+
+def test_streaming_donor_prefetch_failure_aborts_before_recipient(tmp_path, monkeypatch):
+    """A failed donor download must not let the recipient quantize raw FP8 bytes (DeepSeek-V3.2 GS=1536 bug)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+
+    shutdown_calls = []
+
+    class TrackingThreadPoolExecutor(ThreadPoolExecutor):
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            shutdown_calls.append((wait, cancel_futures))
+            return super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    monkeypatch.setattr(module, "ThreadPoolExecutor", TrackingThreadPoolExecutor)
+    core, output_dir, donor, _, quantized_shards = _make_fp8_donor_recipient_core(
+        tmp_path, monkeypatch, failed_shard="model-00002-of-00002.safetensors"
+    )
+
+    with pytest.raises(RuntimeError, match=f"Failed to download source shard {donor}"):
+        core._process_all_shards_streaming_pipeline()
+
+    assert quantized_shards == []
+    assert not list(output_dir.glob("*.safetensors"))
+    assert core._resume_processed_shards == {}
+    assert shutdown_calls == [(True, True)]
+
+
+def test_streaming_recipient_hydrates_global_scale_from_donor(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    import auto_round.compressors.model_free as module
+
+    core, output_dir, donor, recipient, quantized_shards = _make_fp8_donor_recipient_core(
+        tmp_path, monkeypatch, failed_shard=None
+    )
+    independent = "model-00003-of-00003.safetensors"
+    independent_path = tmp_path / ".cache" / "model_free_source_shards" / independent
+    save_file({"model.layers.0.self_attn.q_proj.weight": torch.randn(32, 32)}, independent_path)
+    core.shard_names = [recipient, independent, donor]
+    submitted = []
+
+    class RecordingExecutor(ThreadPoolExecutor):
+        def __init__(self, max_workers, **_kwargs):
+            super().__init__(max_workers=max_workers)
+
+        def submit(self, fn, *args, **kwargs):
+            if fn is module._quantize_local_shard_task:
+                submitted.append(args[1])
+            return super().submit(fn, *args, **kwargs)
+
+    monkeypatch.setattr(module, "ProcessPoolExecutor", RecordingExecutor)
+
+    core._process_all_shards_streaming_pipeline()
+
+    assert submitted[0] == independent
+    assert set(quantized_shards) == {independent, donor, recipient}
+    assert not list((tmp_path / ".cache" / "model_free_source_shards").glob("*.safetensors"))
+    recipient_output = core._resume_processed_shards[recipient]["output_file"]
+    with safe_open(str(output_dir / recipient_output), framework="pt") as f:
+        global_scale = f.get_tensor("model.layers.3.mlp.experts.30.gate_proj.weight_global_scale").item()
+    # Decoded amax is 448 * 2**-13; raw FP8 bytes would give 114688 * 6 / 448 = 1536.
+    assert global_scale == pytest.approx(114688 * 6 / (448 * 2**-13), rel=1e-6)
+
+
+def test_merge_shard_task_result_raises_for_missing_shard():
+    core = _ModelFreeCompressorCore("org/ds", "unused", enable_torch_compile=False)
+
+    with pytest.raises(RuntimeError, match="model-00001.safetensors could not be loaded"):
+        core._merge_shard_task_result((0, "model-00001.safetensors", None, None, None, None, None))
+
+
+@pytest.mark.parametrize("component", ["transformer", "transformer_2"])
+@pytest.mark.parametrize(
+    "index_name",
+    ["model.safetensors.index.json", "diffusion_pytorch_model.safetensors.index.json", "pytorch_model.bin.index.json"],
+)
+def test_streaming_discovery_prefers_source_index(tmp_path, monkeypatch, component, index_name):
+    from unittest.mock import Mock
+
+    metadata = tmp_path / "metadata" / component
+    metadata.mkdir(parents=True)
+    suffix = ".bin" if index_name.endswith(".bin.index.json") else ".safetensors"
+    shards = [f"source-b{suffix}", f"source-a{suffix}"]
+    index = {"weight_map": {"blocks.1.weight": shards[0], "blocks.0.weight": shards[1], "blocks.1.bias": shards[0]}}
+    (metadata / index_name).write_text(json.dumps(index))
+    output = tmp_path / "output"
+    component_output = output / component
+    component_output.mkdir(parents=True)
+    (component_output / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"blocks.0.weight": "partial-output.safetensors"}})
+    )
+    core = _ModelFreeCompressorCore("org/wan", str(output), enable_torch_compile=False)
+    core.is_streaming = True
+    core.is_diffusion_model = True
+    core.diffusion_component = component
+    core.work_dir = str(metadata)
+    remote = Mock(return_value=[f"{component}/{name}" for name in shards] + [f"{component}/backup{suffix}"])
+    monkeypatch.setattr("auto_round.utils.model_free_utils._list_remote_weight_shards", remote)
+    core._discover_shards()
+    assert core.shard_names == shards
+    remote.assert_not_called()

@@ -19,8 +19,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.activations import ACT2FN
 
+from auto_round.modeling.fused_moe.fusion_spec import build_standard_moe_fusion_spec, register_moe_fusion_spec
 from auto_round.modeling.fused_moe.replace_modules import ReplacementModuleBase
-from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.modeling.fused_moe.utils import _update_parameter, grouped_or_sequential_moe_forward
 from auto_round.utils import clear_memory, unsupported_meta_device
 
 
@@ -56,6 +57,26 @@ class SequentialStep3p5MoeExperts(torch.nn.ModuleList):
 
         with torch.device("meta"):
             super().__init__([Step3p5ExpertMLP(hidden_size, intermediate_size, limit) for _ in range(self.num_experts)])
+        # Container-level activation + limit so the grouped experts forward can reproduce the
+        # per-expert gating (silu + the optional gate/up clamp) via ``_apply_gate`` below.
+        # Store ``act_fn`` via ``object.__setattr__`` so it is NOT registered as a child module
+        # of this ``ModuleList``; otherwise iterating ``experts`` would also yield the activation
+        # module (breaking per-expert iteration / materialization).
+        object.__setattr__(self, "act_fn", self[0].act_fn)
+        self.limit = limit
+        register_moe_fusion_spec(
+            self,
+            build_standard_moe_fusion_spec(
+                detected_projections={
+                    "gate_proj": {},
+                    "up_proj": {},
+                    "down_proj": {},
+                },
+                num_experts=self.num_experts,
+                checkpoint_transposed=False,
+                module=original,
+            ),
+        )
 
     def _materialize_weights(self, original) -> None:
         """Split fused MoELinear weights into individual expert nn.Linear weights.
@@ -74,10 +95,26 @@ class SequentialStep3p5MoeExperts(torch.nn.ModuleList):
             original.down_proj.to_empty(device="meta")
             clear_memory()
 
+    def _apply_gate(self, gate_up_out: torch.Tensor) -> torch.Tensor:
+        """Grouped-path gating that matches ``Step3p5ExpertMLP.forward``'s optional clamp.
+
+        The grouped experts forward concatenates ``[gate_out, up_out]`` and defers gating to
+        this hook, so the ``limit`` clamp (absent from the generic ``act_fn(gate) * up``) is
+        preserved -- keeping the grouped result numerically identical to the per-expert loop.
+        """
+        gate, up = gate_up_out.chunk(2, dim=-1)
+        gate = self.act_fn(gate)
+        if self.limit is not None:
+            gate = gate.clamp(max=self.limit)
+            up = up.clamp(min=-self.limit, max=self.limit)
+        return gate * up
+
 
 class LinearStep3p5MoEMLP(ReplacementModuleBase):
     """Replacement for Step3p5MoEMLP that splits fused MoELinear into
     individual nn.Linear per expert for quantization support."""
+
+    supports_gguf_fused_moe = True
 
     def __init__(self, original, config=None):
         super().__init__(original)
@@ -141,19 +178,9 @@ class LinearStep3p5MoEMLP(ReplacementModuleBase):
 
         routing_weights = routing_weights * self.routed_scaling_factor
 
-        final_hidden_states = torch.zeros(
-            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
+        final_hidden_states = grouped_or_sequential_moe_forward(
+            hidden_states, selected_experts, routing_weights, self.experts, self.num_experts
         )
-
-        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
-
-        for expert_idx in range(self.num_experts):
-            idx, top_x = torch.where(expert_mask[expert_idx])
-
-            current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
-            current_hidden_states = self.experts[expert_idx](current_state) * routing_weights[top_x, idx, None]
-
-            final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
         return final_hidden_states
 

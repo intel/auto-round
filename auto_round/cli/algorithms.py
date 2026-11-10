@@ -1,0 +1,423 @@
+# Copyright (c) 2026 Intel Corporation
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Generic CLI adapter for algorithm-owned parameter declarations."""
+
+from __future__ import annotations
+
+import argparse
+import inspect
+from collections.abc import Iterable
+from dataclasses import replace
+from typing import Any, get_args, get_origin, get_type_hints
+
+from auto_round.algorithms.config import AlgorithmConfig, AlgorithmParameterRegistry
+from auto_round.algorithms.quantization.rtn.config import RTN_VARIANT_DISABLE_OPT_RTN, validate_rtn_variant_names
+from auto_round.algorithms.registry import (
+    get_algorithm_entry,
+    iter_algorithm_entries,
+    resolve_algorithm_alias,
+    resolve_algorithm_names,
+)
+
+
+def _parameter_registry(config_cls: type) -> AlgorithmParameterRegistry:
+    if _has_custom_register_args(config_cls):
+        return config_cls.get_registered_args()
+    return _fallback_parameter_registry(config_cls)
+
+
+def _has_custom_register_args(config_cls: type) -> bool:
+    if not issubclass(config_cls, AlgorithmConfig):
+        return False
+    for cls in config_cls.__mro__:
+        if cls is AlgorithmConfig:
+            break
+        if "register_args" in cls.__dict__:
+            return True
+    return False
+
+
+def _fallback_parameter_registry(config_cls: type) -> AlgorithmParameterRegistry:
+    """Derive simple CLI arguments from a config that has no custom registration.
+
+    A config may describe its derived flags through ``cli_field_help`` (a
+    ``{constructor parameter: help text}`` mapping); otherwise the flags show up
+    in ``--help`` without a description.
+    """
+    registry = AlgorithmParameterRegistry()
+    init = config_cls.__init__
+    try:
+        type_hints = get_type_hints(init)
+    except (NameError, TypeError):
+        type_hints = {}
+    field_help = getattr(config_cls, "cli_field_help", {})
+
+    for name, parameter in inspect.signature(init).parameters.items():
+        if name in {"self", "algorithm"} or parameter.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            continue
+        annotation = type_hints.get(name, parameter.annotation)
+        default = parameter.default
+        if annotation is inspect.Parameter.empty:
+            annotation = type(default) if default is not inspect.Parameter.empty and default is not None else str
+        if annotation is bool or isinstance(default, bool):
+            action = argparse.BooleanOptionalAction
+            kwargs = {"action": action, "default": argparse.SUPPRESS}
+        else:
+            origin = get_origin(annotation)
+            args = [arg for arg in get_args(annotation) if arg is not type(None)]
+            value_type = args[0] if origin is not None and args else annotation
+            kwargs = {"type": value_type, "default": argparse.SUPPRESS}
+        if field_help.get(name):
+            kwargs["help"] = field_help[name]
+        registry.add_argument(f"--{name}", field=name, **kwargs)
+    return registry
+
+
+def _argument_compatibility_key(parameter) -> tuple:
+    kwargs = parameter.argparse_kwargs
+    return (
+        kwargs.get("action"),
+        kwargs.get("type"),
+        tuple(kwargs.get("choices", ())) if kwargs.get("choices") is not None else None,
+        kwargs.get("nargs"),
+        kwargs.get("const"),
+        kwargs.get("dest", parameter.dest),
+    )
+
+
+def _existing_action_compatibility_key(action) -> tuple:
+    return (
+        type(action),
+        action.type,
+        tuple(action.choices) if action.choices is not None else None,
+        action.nargs,
+        action.const,
+        action.dest,
+    )
+
+
+def _check_existing_parser_argument(parser, parameter, *, fallback: bool = False) -> bool:
+    """Reuse an existing common argument when its parsing semantics match."""
+    actions = [
+        parser._option_string_actions[option]
+        for option in parameter.option_strings
+        if option in parser._option_string_actions
+    ]
+    if not actions:
+        return False
+    action = actions[0]
+    parameter_key = _argument_compatibility_key(parameter)
+    action_key = _existing_action_compatibility_key(action)
+    if parameter_key[1:] != action_key[1:]:
+        if fallback:
+            return True
+        option = next(option for option in parameter.option_strings if option in parser._option_string_actions)
+        raise ValueError(f"incompatible shared CLI argument {option!r}")
+    return True
+
+
+def _merge_parameter(merged, parameter):
+    """Merge one shared CLI parameter or raise for incompatible definitions."""
+    overlapping_options = set(merged.option_strings) & set(parameter.option_strings)
+    if not overlapping_options and merged.dest != parameter.dest:
+        return None
+    if merged.dest != parameter.dest or _argument_compatibility_key(merged) != _argument_compatibility_key(parameter):
+        option = min(overlapping_options) if overlapping_options else merged.dest
+        raise ValueError(f"incompatible shared CLI argument {option!r}")
+    kwargs = dict(merged.argparse_kwargs)
+    kwargs["default"] = argparse.SUPPRESS
+    return replace(
+        merged,
+        option_strings=tuple(dict.fromkeys(merged.option_strings + parameter.option_strings)),
+        argparse_kwargs=kwargs,
+    )
+
+
+def _add_parameter(group, parameter) -> None:
+    kwargs = dict(parameter.argparse_kwargs)
+    kwargs.pop("fallback", None)
+    if kwargs.get("action") == "boolean_optional":
+        kwargs["action"] = argparse.BooleanOptionalAction
+    group.add_argument(*parameter.option_strings, **kwargs)
+
+
+def _add_registered_arguments(group, registry: AlgorithmParameterRegistry) -> None:
+    mutex_groups = {}
+    for parameter in registry.parameters:
+        target = group
+        if parameter.mutex_group is not None:
+            if parameter.mutex_group not in mutex_groups:
+                mutex_groups[parameter.mutex_group] = group.add_mutually_exclusive_group()
+            target = mutex_groups[parameter.mutex_group]
+        _add_parameter(target, parameter)
+
+
+# `auto_round_v2` is a SignRound variant: with zero tuning iterations there is
+# nothing to tune, so it degrades to RTN exactly like `auto_round`.
+_ITERS_ZERO_ALGORITHMS = {"auto_round": "rtn", "auto_round_v2": "rtn"}
+
+# RTN variants selectable by name (`RTN_VARIANT_DISABLE_OPT_RTN` in the RTN config
+# module, shared with the entry API). The name is authoritative, so a contradicting
+# flag is ignored rather than silently winning. The mapping only applies when the
+# user spells the name out: the implicit `rtn` fallback (no `--algorithm`, the
+# `auto-round-rtn` / `auto-round-opt-rtn` recipes) keeps the existing flag- and
+# heuristic-driven behaviour.
+
+
+def _find_merge_target(merged_parameters, locations, group_name, parameter) -> int | None:
+    """Find an already-declared parameter that ``parameter`` should merge into.
+
+    Option strings are matched before the destination. A mutually exclusive pair
+    (e.g. ``--enable_minmax_tuning`` / ``--no-enable_minmax_tuning``) declares two
+    actions that share one ``dest``, so matching on ``dest`` alone would report a
+    conflict between the two halves of the same pair when a second algorithm
+    redeclares it. Parameters that share only a ``dest`` are merged when their
+    parsing semantics are identical, which keeps genuinely incompatible
+    re-declarations (same option string, different semantics) an error.
+    """
+    for index, item in enumerate(merged_parameters):
+        if locations[index][0] != group_name and set(item.option_strings) & set(parameter.option_strings):
+            return index
+    for index, item in enumerate(merged_parameters):
+        if (
+            locations[index][0] != group_name
+            and item.dest == parameter.dest
+            and _argument_compatibility_key(item) == _argument_compatibility_key(parameter)
+        ):
+            return index
+    return None
+
+
+class AlgorithmHandler:
+    """Generic discovery, argparse adaptation, and config construction."""
+
+    @classmethod
+    def get(cls, name: str) -> type:
+        entry = get_algorithm_entry(name)
+        if entry.config_factory is None:
+            raise KeyError(f"No config class registered for algorithm '{name}'.")
+        return entry.config_factory if isinstance(entry.config_factory, type) else type(entry.config_factory())
+
+    @classmethod
+    def resolve_alias(cls, user_name: str) -> str | None:
+        return resolve_algorithm_alias(user_name)
+
+    @classmethod
+    def add_group(cls, name: str, group) -> None:
+        _add_registered_arguments(group, _parameter_registry(cls.get(name)))
+
+    @classmethod
+    def add_groups(cls, parser) -> None:
+        merged_parameters = []
+        parameters_by_group = {}
+        locations = []
+        for entry in iter_algorithm_entries():
+            if entry.config_factory is None:
+                continue
+            config_cls = (
+                entry.config_factory if isinstance(entry.config_factory, type) else type(entry.config_factory())
+            )
+            registry = _parameter_registry(config_cls)
+            fallback = not _has_custom_register_args(config_cls)
+            if registry.parameters:
+                group_name = f"Algorithm: {entry.name}"
+                parameters_by_group.setdefault(group_name, [])
+                for parameter in registry.parameters:
+                    if _check_existing_parser_argument(parser, parameter, fallback=fallback):
+                        continue
+                    existing_index = _find_merge_target(merged_parameters, locations, group_name, parameter)
+                    if existing_index is not None:
+                        merged = _merge_parameter(merged_parameters[existing_index], parameter)
+                        merged_parameters[existing_index] = merged
+                        existing_group, existing_position = locations[existing_index]
+                        parameters_by_group[existing_group][existing_position] = merged
+                        continue
+                    merged_parameters.append(parameter)
+                    parameters_by_group[group_name].append(parameter)
+                    locations.append((group_name, len(parameters_by_group[group_name]) - 1))
+
+        for group_name, parameters in parameters_by_group.items():
+            if not parameters:
+                # Every flag of this algorithm is already declared by an earlier
+                # group with identical semantics (e.g. `auto_round_v2` reuses the
+                # SignRound switches), so an empty group would only add a blank
+                # header to `--help`.
+                continue
+            group = parser.add_argument_group(group_name)
+            registry = AlgorithmParameterRegistry()
+            registry.parameters = parameters
+            _add_registered_arguments(group, registry)
+
+    @classmethod
+    def _has_quantizer(cls, names: Iterable[str]) -> bool:
+        """Whether any algorithm in *names* is a quantizer.
+
+        Quantization algorithms (rtn, auto_round, qad, …) already provide a
+        quantizer, so the CLI must not append a default one. Preprocessors
+        (awq, hadamard, svdquant, …) do not count.
+
+        Args:
+            names (Iterable[str]): Algorithm names or aliases to resolve in the registry.
+
+        Returns:
+            bool: Whether at least one resolved implementation subclasses BaseQuantizer.
+        """
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+        from auto_round.algorithms.registry import pipeline_member_for_config_class
+
+        for name in names:
+            try:
+                config_cls = cls.get(name)
+            except KeyError:
+                continue
+            member = pipeline_member_for_config_class(config_cls)
+            if member is not None and issubclass(member, BaseQuantizer):
+                return True
+        return False
+
+    @classmethod
+    def build_configs(cls, args, common_kwargs: dict[str, Any]) -> list:
+        raw = getattr(args, "alg_configs", None)
+        if raw is None:
+            raw = getattr(args, "algorithm", None)
+        plan = getattr(args, "_recipe_plan", None)
+        if plan is not None and raw is None:
+            from auto_round.autoround import _normalize_alg_configs
+
+            configs = []
+            explicit = args._explicit_fields
+            for stage, default_config in zip(plan.pipeline, plan.build_configs()):
+                registry = _parameter_registry(type(default_config))
+                overrides = {
+                    parameter.field: getattr(args, parameter.dest)
+                    for parameter in registry.parameters
+                    if parameter.dest in explicit and hasattr(args, parameter.dest)
+                }
+                if getattr(type(default_config), "cli_include_common_args", True):
+                    overrides.update({key: value for key, value in common_kwargs.items() if value is not None})
+                configs.append(stage.build_config(overrides))
+            direct = {"iters": args.iters} if "iters" in explicit else {}
+            if direct.get("iters") == 0:
+                rtn_cls = cls.get("rtn")
+                direct.update(
+                    {
+                        parameter.field: getattr(args, parameter.dest)
+                        for parameter in _parameter_registry(rtn_cls).parameters
+                        if parameter.dest in explicit and hasattr(args, parameter.dest)
+                    }
+                )
+            if "disable_opt_rtn" in explicit:
+                direct["disable_opt_rtn"] = args.disable_opt_rtn
+            if getattr(args, "rotation_hadamard_type", None):
+                rotation_cls = cls.get("hadamard")
+                configs.append(rotation_cls(**_parameter_registry(rotation_cls).config_kwargs(args)))
+            return _normalize_alg_configs(configs, direct)
+
+        names = [name.strip().lower() for name in (raw or "").split(",") if name.strip()]
+
+        if getattr(args, "rotation_hadamard_type", None) and "hadamard" not in names:
+            names.append("hadamard")
+
+        canonical = resolve_algorithm_names(names)
+        validate_rtn_variant_names(canonical)
+        # Names the user actually wrote. The implicit block-quantizer fallback
+        # appended below is deliberately excluded: only an explicit `rtn` /
+        # `opt-rtn` carries the plain-vs-optimized intent.
+        explicit_names = set(canonical)
+        seen = set(canonical)
+        if not cls._has_quantizer(canonical):
+            canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
+        if getattr(args, "iters", None) == 0:
+            canonical = [_ITERS_ZERO_ALGORITHMS.get(name, name) for name in canonical]
+
+        configs = []
+        built_configs = {}
+        if "awq" in canonical:
+            awq_entry = get_algorithm_entry("awq")
+            awq_cls = cls.get("awq")
+            awq_kwargs = _parameter_registry(awq_cls).config_kwargs(args)
+            if getattr(awq_cls, "cli_include_common_args", True):
+                awq_kwargs.update(common_kwargs)
+            if isinstance(awq_entry.config_factory, type):
+                awq_config = awq_entry.config_factory(**awq_kwargs)
+            elif awq_kwargs:
+                awq_config = awq_cls(**awq_kwargs)
+            else:
+                awq_config = awq_entry.config_factory()
+            explicit_opt_rtn = getattr(args, "disable_opt_rtn", None)
+            if explicit_opt_rtn is not None:
+                awq_config.disable_opt_rtn = explicit_opt_rtn
+            built_configs["awq"] = awq_config
+        awq_disable_opt_rtn = getattr(built_configs.get("awq"), "disable_opt_rtn", None)
+        for name in canonical:
+            if name in built_configs:
+                configs.append(built_configs[name])
+                continue
+            entry = get_algorithm_entry(name)
+            config_cls = cls.get(name)
+            kwargs = _parameter_registry(config_cls).config_kwargs(args)
+            if getattr(config_cls, "cli_include_common_args", True):
+                kwargs.update(common_kwargs)
+            if name in explicit_names and name in RTN_VARIANT_DISABLE_OPT_RTN:
+                # The algorithm name is authoritative: it selects the variant
+                # even when the opposite flag was passed as well.
+                kwargs["disable_opt_rtn"] = RTN_VARIANT_DISABLE_OPT_RTN[name]
+            elif name == "rtn" and getattr(args, "disable_opt_rtn", None) is None and awq_disable_opt_rtn is not None:
+                kwargs["disable_opt_rtn"] = awq_disable_opt_rtn
+            if isinstance(entry.config_factory, type):
+                config = entry.config_factory(**kwargs)
+            elif kwargs:
+                config = config_cls(**kwargs)
+            else:
+                config = entry.config_factory()
+            configs.append(config)
+        return configs
+
+    @classmethod
+    def format_listing(cls) -> str:
+        lines = []
+        for entry in iter_algorithm_entries():
+            if entry.config_factory is None:
+                continue
+            other = [alias for alias in entry.aliases if alias != entry.name]
+            alias_str = f" (aliases: {', '.join(other)})" if other else ""
+            lines.append(f"- {entry.name}{alias_str}: {entry.summary}")
+        return "\n".join(lines)
+
+    @classmethod
+    def format_detail(cls, name: str) -> str:
+        canonical = cls.resolve_alias(name)
+        if canonical is None:
+            supported = [entry.name for entry in iter_algorithm_entries() if entry.config_factory is not None]
+            raise ValueError(f"Unknown algorithm '{name}'. Supported: {', '.join(supported)}.")
+        entry = get_algorithm_entry(canonical)
+        lines = [f"{entry.name}: {entry.summary}"]
+        other = [alias for alias in entry.aliases if alias != entry.name]
+        if other:
+            lines.append(f"Aliases: {', '.join(other)}")
+        temp = argparse.ArgumentParser(add_help=False)
+        group = temp.add_argument_group(f"Flags for {entry.name}")
+        cls.add_group(canonical, group)
+        for action in group._group_actions:
+            flags = ", ".join(action.option_strings)
+            if action.default is None or action.default is argparse.SUPPRESS:
+                default = ""
+            else:
+                default = f" (default: {action.default})"
+            lines.append(f"  {flags}: {action.help or ''}{default}")
+        return "\n".join(lines)

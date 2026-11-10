@@ -12,14 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Optional, Union
+from typing import Union
 
 import torch
 
 from auto_round.auto_scheme.utils import compute_avg_bits_for_scheme
 from auto_round.compressors.utils import gguf_type_fallback
-from auto_round.export.export_to_gguf.config import GGUF_INNER_CONFIG
+from auto_round.export.formats.gguf.config import GGUF_INNER_CONFIG
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
 from auto_round.utils import get_layer_features, get_module
@@ -27,25 +28,67 @@ from auto_round.utils import get_layer_features, get_module
 
 @dataclass
 class AutoScheme:
-    avg_bits: float
-    options: Union[str, list[Union[QuantizationScheme, str]], tuple[Union[QuantizationScheme, str], ...]]
-    shared_layers: Optional[Iterable[Iterable[str]]] = None
+    avg_bits: float | list[float]
+    options: str | list[QuantizationScheme | str] | tuple[QuantizationScheme | str, ...]
+    shared_layers: Iterable[Iterable[str]] | None = None
     method: str = "default"
     ignore_scale_zp_bits: bool = False
-    batch_size: Optional[int] = None
-    nsamples: Optional[int] = None
-    seqlen: Optional[int] = None
-    dataset: Optional[str] = None  # Import Notice no comma for each item
-    device_map: Optional[Union[str, torch.device, int, dict]] = None
-    enable_torch_compile: Optional[bool] = None
-    disable_opt_rtn: bool = True
+    batch_size: int | None = None
+    nsamples: int | None = None
+    seqlen: int | None = None
+    dataset: str | None = None  # Import Notice no comma for each item
+    device_map: str | torch.device | int | dict | None = None
+    enable_torch_compile: bool | None = None
     low_gpu_mem_usage: bool = True
     low_cpu_mem_usage: bool = True
+    # Share one scheme across vLLM-fused projections (q/k/v, MLA q_a/kv_a,
+    # gate/up) by default: a fused serving kernel can only apply a single
+    # scheme, so mixed bits there are not servable. Set to False (or export
+    # AR_DISABLE_DEFAULT_SHARED_LAYERS=1) to let AutoScheme pick independently.
+    # Declared last so positional construction keeps its historical meaning.
+    default_shared_layers: bool = True
 
     def __post_init__(self):
         if isinstance(self.options, str):
             options = self.options.upper().replace(" ", "")
             self.options = options.split(",")
+        self.options = self._deduplicate_options(self.options)
+
+    @staticmethod
+    def _deduplicate_options(
+        options: list[Union["QuantizationScheme", str]],
+    ) -> list[Union["QuantizationScheme", str]]:
+        """Remove options that resolve to the same quantization scheme.
+
+        For example, GGUF:Q4_K_S and GGUF:Q4_K_M share identical quantization
+        parameters (bits, group_size, sym, data_type, super_bits, super_group_size)
+        so only the first one is kept.
+        """
+        from auto_round.schemes import QuantizationScheme, preset_name_to_scheme
+
+        seen_schemes: list[QuantizationScheme] = []
+        unique_options = []
+
+        for opt in options:
+            if isinstance(opt, str):
+                try:
+                    scheme = preset_name_to_scheme(opt.upper())
+                except KeyError:
+                    unique_options.append(opt)
+                    continue
+            elif isinstance(opt, QuantizationScheme):
+                scheme = opt
+            else:
+                unique_options.append(opt)
+                continue
+
+            if any(scheme == s for s in seen_schemes):
+                logger.info("AutoScheme: removed duplicate option '%s' (same scheme already present).", opt)
+                continue
+            seen_schemes.append(scheme)
+            unique_options.append(opt)
+
+        return unique_options
 
 
 class GenScheme:
@@ -58,13 +101,29 @@ class GenScheme:
         quant_layer_names: Iterable[str],
         fixed_layer_scheme: dict[str, dict],
         dataset: str = "pile-10k",
-        device_map: Union[str, torch.device, int, dict, None] = None,
+        device_map: str | torch.device | int | dict | None = None,
         tokenizer=None,
-        enable_torch_compile=False,
+        enable_torch_compile=True,
+        processor=None,
+        export_format: str | None = None,
     ):
         self.auto_scheme = auto_scheme
+        # Export-format context for the generation-time 8-bit-asym policy: the
+        # compressor passes the format the run actually saves with (including
+        # one supplied only to quantize_and_save). The AR_ALLOW_W8_ASYM env
+        # opt-in is read at the policy gate itself.
+        self.export_format = export_format
+        # Upstream unconditionally forced low_cpu_mem_usage=False here
+        # (commit 0c9c5b1d, "reduce memory consumption... for gguf") because of an
+        # acknowledged bug for mixed INT4/INT8 schemes under the old OffloadManager-
+        # based streaming path (see an earlier commit's "low_cpu_mem_usage: bool =
+        # False # TODO bug for INT4 INT8 mixed bug"). We don't use that old path at
+        # all -- see delta_loss.py's materialize_module/free_module-based streaming,
+        # gated on this same flag -- so the bug that motivated disabling it doesn't
+        # apply here.
         self.model = model
         self.tokenizer = tokenizer
+        self.processor = processor
         self.quant_layer_names = quant_layer_names
         self.fixed_layer_scheme = fixed_layer_scheme
         self.dataset = dataset
@@ -74,7 +133,6 @@ class GenScheme:
             if self.auto_scheme.enable_torch_compile is None
             else self.auto_scheme.enable_torch_compile
         )
-        self.disable_opt_rtn = self.auto_scheme.disable_opt_rtn
         self.min_avg_bit, self.max_avg_bit, self.min_avg_bit_scheme = self.compute_avg_bit_range()
         self._check_configs()
 
@@ -86,23 +144,41 @@ class GenScheme:
         if not isinstance(self.dataset, str):
             raise TypeError("`dataset` must be a string, got {type(self.dataset).__name__}.")
 
-        target = self.auto_scheme.avg_bits
+        targets = (
+            self.auto_scheme.avg_bits if isinstance(self.auto_scheme.avg_bits, list) else [self.auto_scheme.avg_bits]
+        )
+        if not targets:
+            raise ValueError("`avg_bits` must not be an empty list.")
+
         min_avg_bit = self.min_avg_bit
         max_avg_bit = self.max_avg_bit
-        logger.info("Average bits range: [%.3f, %.3f], target = %.3f", min_avg_bit, max_avg_bit, target)
-        if abs(target - min_avg_bit) < 1e-3 or abs(target - max_avg_bit) < 1e-3:
+        normalized_targets = []
+        for target in targets:
+            logger.info("Average bits range: [%.3f, %.3f], target = %.3f", min_avg_bit, max_avg_bit, target)
             if abs(target - min_avg_bit) < 1e-3:
                 target = min_avg_bit
-            else:
+            elif abs(target - max_avg_bit) < 1e-3:
                 target = max_avg_bit
-            self.auto_scheme.avg_bits = target
+            normalized_targets.append(target)
 
-        if not (min_avg_bit <= target <= max_avg_bit):
-            raise ValueError(
-                f"Target avg_bits={target:.3f} is outside the valid range " f"[{min_avg_bit:.3f}, {max_avg_bit:.3f}]."
-            )
+            if not (min_avg_bit <= target <= max_avg_bit):
+                details = ", ".join(f"{opt}={bits:.3f}" for opt, bits in getattr(self, "_option_avg_bits", []))
+                hint = (
+                    "Provide at least one option whose avg_bits is <= target and one whose avg_bits is >= target. "
+                    "Note that layers fixed to high-precision (e.g. lm_head/embed kept at bf16) "
+                    "inflate the lower bound; use `quant_lm_head=True`/adjust `layer_config`/`ignore_layers` if needed."
+                )
+                raise ValueError(
+                    f"Target avg_bits={target:.3f} is outside the achievable range "
+                    f"[{min_avg_bit:.3f}, {max_avg_bit:.3f}] for options={list(self.auto_scheme.options)} "
+                    f"(per-option avg_bits: {details}). {hint}"
+                )
 
-    def get_layer_config(self) -> dict[str, dict]:
+        self.auto_scheme.avg_bits = (
+            normalized_targets if isinstance(self.auto_scheme.avg_bits, list) else normalized_targets[0]
+        )
+
+    def get_layer_config(self) -> dict[str, dict] | dict[float, dict[str, dict]]:
         method_name = self.auto_scheme.method
         from auto_round import auto_scheme
 
@@ -110,6 +186,20 @@ class GenScheme:
         if self.auto_scheme.low_gpu_mem_usage:
             self.enable_torch_compile = False
 
+        target_bits = self.auto_scheme.avg_bits
+        if not isinstance(target_bits, list):
+            return self._get_layer_config(method_func)
+
+        layer_configs = {}
+        try:
+            for target_bit in target_bits:
+                self.auto_scheme.avg_bits = target_bit
+                layer_configs[target_bit] = self._get_layer_config(method_func)
+        finally:
+            self.auto_scheme.avg_bits = target_bits
+        return layer_configs
+
+    def _get_layer_config(self, method_func) -> dict[str, dict]:
         layer_config = method_func(
             self.auto_scheme,
             self.model,
@@ -119,9 +209,10 @@ class GenScheme:
             self.tokenizer,
             device_map=self.device_map,
             enable_torch_compile=self.enable_torch_compile,
-            disable_opt_rtn=self.disable_opt_rtn,
             low_gpu_mem_usage=self.auto_scheme.low_gpu_mem_usage,
             min_avg_bit_scheme=self.min_avg_bit_scheme,
+            processor=self.processor,
+            export_format=self.export_format,
         )
         layer_config = self.fallback_gguf_layer_config(layer_config)
         return layer_config
@@ -183,6 +274,10 @@ class GenScheme:
             )[0]
             for option in self.auto_scheme.options
         ]
+        # Cache per-option avg bits so log/error messages can reference them.
+        self._option_avg_bits = list(zip(list(self.auto_scheme.options), avg_bits))
+        for opt, bits in self._option_avg_bits:
+            logger.info("AutoScheme option %s -> avg_bits=%.4f", opt, bits)
         min_avg_bit, max_avg_bit = min(avg_bits), max(avg_bits)
         min_avg_bit_scheme = self.auto_scheme.options[avg_bits.index(min_avg_bit)]
         return min_avg_bit, max_avg_bit, min_avg_bit_scheme
