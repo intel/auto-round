@@ -31,7 +31,7 @@ class AutoScheme:
     avg_bits: float | list[float]
     options: str | list[QuantizationScheme | str] | tuple[QuantizationScheme | str, ...]
     shared_layers: Iterable[Iterable[str]] | None = None
-    method: str = "default"
+    method: str = "auto"
     ignore_scale_zp_bits: bool = False
     batch_size: int | None = None
     nsamples: int | None = None
@@ -53,6 +53,31 @@ class AutoScheme:
             options = self.options.upper().replace(" ", "")
             self.options = options.split(",")
         self.options = self._deduplicate_options(self.options)
+        if self.method in ("auto", "delta_abs_dot"):
+            from auto_round.schemes import preset_name_to_scheme
+
+            schemes = []
+            for option in self.options:
+                try:
+                    scheme = preset_name_to_scheme(option.upper()) if isinstance(option, str) else option
+                except KeyError:
+                    # Preserve the existing validation of unknown presets downstream.
+                    break
+                if not isinstance(scheme, QuantizationScheme):
+                    break
+                schemes.append(scheme)
+            if self.method == "delta_abs_dot":
+                if len(schemes) != len(self.options) or any(s.act_bits != 16 for s in schemes):
+                    raise ValueError("AutoScheme method='delta_abs_dot' supports only W-only/A16 options.")
+            elif (
+                schemes
+                and len(schemes) == len(self.options)
+                and any(s.bits < 16 for s in schemes)
+                and all(s.act_bits == 16 and (s.bits >= 16 or s.data_type.startswith("int")) for s in schemes)
+            ):
+                self.method = "delta_abs_dot"
+            else:
+                self.method = "default"
 
     @staticmethod
     def _deduplicate_options(

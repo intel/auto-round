@@ -287,6 +287,13 @@ def build_quantize_parser(*, prog: str = "auto_round quantize") -> argparse.Argu
     )
     rt.add_argument("--output_dir", default="./tmp_autoround", type=str, help="Directory to save quantized artifacts.")
     rt.add_argument(
+        "--auto_scheme_method",
+        default="auto",
+        choices=("auto", "default", "DeltaLoss", "delta_abs_dot"),
+        help="AutoScheme scoring: auto selects delta_abs_dot for INT/GGUF W-only/A16 options "
+        "and the legacy score otherwise. default/DeltaLoss explicitly select the legacy score.",
+    )
+    rt.add_argument(
         "--avg_bits",
         "--target_bits",
         dest="bits",
