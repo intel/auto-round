@@ -322,7 +322,6 @@ class TestGGUF:
 
         class FakeConversion:
             ModelBase = FakeModelBase
-            source = "AutoRound bundled llama.cpp conversion"
 
             @staticmethod
             def model_type(model_type):
@@ -390,7 +389,6 @@ class TestGGUF:
 
         class FakeConversion:
             ModelBase = FakeModelBase
-            source = "AutoRound bundled llama.cpp conversion"
 
             @staticmethod
             def model_type(model_type):

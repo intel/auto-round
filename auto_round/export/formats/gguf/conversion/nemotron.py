@@ -353,12 +353,12 @@ class NemotronHModel(GraniteHybridModel):
         # The NemotronH config uses pattern characters (e.g. '-') that may not
         # be supported by the installed transformers version. AutoTokenizer
         # internally calls AutoConfig which triggers this parsing failure.
-        # Remote code is only used when the user opted in via trust_remote_code.
+        # Using trust_remote_code=True to load the model's own config class.
         tokens: list[str] = []
         toktypes: list[int] = []
 
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=self.trust_remote_code)
+        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=True)
 
         # Pad vocab size (from Mamba2Model/GraniteHybridModel)
         self.hparams["pad_vocab_size_multiple"] = 8 # Setting this here since GraniteHybridModel.set_vocab() isn't being invoked now.

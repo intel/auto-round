@@ -270,7 +270,7 @@ class DeepseekV2Model(TextModel):
             pass
 
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=self.trust_remote_code)
+        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=True)
         tokpre = self.get_vocab_base_pre(tokenizer)
 
         if tokpre == "kimi-k2":

@@ -135,8 +135,6 @@ class ModelContext(BaseContext):
             self._materialize_disk_stream_non_block_params()
         check_and_mark_quantized_module(self.model)
         self.model = self.model.eval()
-        # Read by GGUF export to decide whether tokenizer custom code may run.
-        self.model._autoround_trust_remote_code = self.trust_remote_code
         self.shared_cache_keys = get_shared_keys(self.model)
 
         self.is_moe_model = is_moe_model(self.model)

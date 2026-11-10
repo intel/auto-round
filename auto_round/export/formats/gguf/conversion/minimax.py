@@ -25,7 +25,7 @@ class MiniMaxText01Model(TextModel):
         # check added tokens embeddings in embeddings tensor for zero-valued embeddings
         # they get in the way of the token sampling process and must be suppressed
 
-        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=self.trust_remote_code)
+        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=True)
         tokenizer_vocab_size = tokenizer.vocab_size
 
         with open(self.dir_model / "model.safetensors.index.json", "r", encoding="utf-8") as f:

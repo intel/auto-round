@@ -268,7 +268,7 @@ auto-round --model <model_name_or_path> --scheme "W4A16" --trust_remote_code
 ar = AutoRound("<model_name_or_path>", scheme="W4A16", trust_remote_code=True)
 ```
 
-> **Warning:** Enabling `trust_remote_code` runs arbitrary code from the model repository in your process. Only enable it for models from sources you trust and whose code you have reviewed. The legacy `--disable_trust_remote_code` flag is deprecated and has no effect. GGUF export honors this setting for the bundled and auto-updated (`AR_GGUF_AUTO_UPDATE=1`) llama.cpp converters; a custom converter set via `LLAMA_CPP_ROOT` is run as-is and may still load tokenizer code from the model repository.
+> **Warning:** Enabling `trust_remote_code` runs arbitrary code from the model repository in your process. Only enable it for models from sources you trust and whose code you have reviewed. The legacy `--disable_trust_remote_code` flag is deprecated and has no effect. GGUF export uses llama.cpp converters, which may load tokenizer code from the model repository regardless of this setting; only export trusted models to GGUF.
 
 ### Command Line Usage
 

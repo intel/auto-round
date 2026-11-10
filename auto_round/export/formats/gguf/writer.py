@@ -149,14 +149,6 @@ def create_model_class(
             small_first_shard=False,
             hparams=hparams,
         )
-        # Converters read this when loading the tokenizer; scoped to this instance only.
-        model_instance.trust_remote_code = bool(getattr(model, "_autoround_trust_remote_code", False))
-        if not model_instance.trust_remote_code and conversion.source.startswith("LLAMA_CPP_ROOT="):
-            logger.warning(
-                "Using llama.cpp converter from %s, which may load the tokenizer with trust_remote_code=True "
-                "regardless of AutoRound's setting. Only use it with trusted models.",
-                conversion.source,
-            )
         if native_nontext_export:
             logger.info("Using native llama.cpp F32 export for non-text GGUF model")
             model_instance = _set_mmproj_output_path(model_instance)

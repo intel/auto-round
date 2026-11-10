@@ -36,9 +36,6 @@ LLAMA_CPP_RAW_URL = "https://raw.githubusercontent.com/ggml-org/llama.cpp"
 LLAMA_CPP_API_URL = "https://api.github.com/repos/ggml-org/llama.cpp"
 REQUEST_TIMEOUT = 30
 
-_HARDCODED_REMOTE_CODE = "trust_remote_code=True"
-_SCOPED_REMOTE_CODE = 'trust_remote_code=getattr(self, "trust_remote_code", False)'
-
 _ACTIVE_CONVERSION_ROOT: Path | None = None
 _CONVERSION_MODULE: ModuleType | None = None
 _CONVERSION_SOURCE = ""
@@ -285,14 +282,6 @@ def _download_dynamic_conversion(model_architecture: str, model_type: AutoRoundM
     return target_root
 
 
-def _restrict_remote_code(root: Path) -> None:
-    """Make downloaded upstream converters honor the per-instance ``trust_remote_code`` opt-in."""
-    for path in (root / "conversion").rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        if _HARDCODED_REMOTE_CODE in text:
-            path.write_text(text.replace(_HARDCODED_REMOTE_CODE, _SCOPED_REMOTE_CODE), encoding="utf-8")
-
-
 def _unsupported_message(model_architecture: str) -> str:
     return (
         f"Model {model_architecture} is not supported by AutoRound's bundled llama.cpp conversion. "
@@ -324,7 +313,6 @@ def get_conversion(
 
     if model_architecture is not None and (auto_update if auto_update is not None else _auto_update_enabled()):
         root = _download_dynamic_conversion(model_architecture, model_type)
-        _restrict_remote_code(root)
         context = _import_conversion_from(root, f"cached llama.cpp conversion at {root}")
         if context.is_supported(model_architecture, model_type):
             return context

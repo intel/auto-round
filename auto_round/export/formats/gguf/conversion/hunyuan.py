@@ -23,7 +23,7 @@ class HunYuanMoEModel(TextModel):
 
     def set_vocab(self):
         from transformers import AutoTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=self.trust_remote_code)
+        tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=True)
 
         # 1. Get the pre-tokenizer identifier hash
         tokpre = self.get_vocab_base_pre(tokenizer)
@@ -202,7 +202,7 @@ class HunYuanModel(TextModel):
             self._fix_special_tokens()
         else:
             from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=self.trust_remote_code)
+            tokenizer = AutoTokenizer.from_pretrained(self.dir_model, trust_remote_code=True)
 
             # 1. Get the pre-tokenizer identifier hash
             tokpre = self.get_vocab_base_pre(tokenizer)
