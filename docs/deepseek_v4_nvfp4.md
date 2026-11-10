@@ -63,3 +63,39 @@ adapter for quantization metadata and grouped projections. Native Hub names do
 not by themselves establish serving compatibility. This change does **not**
 provide that adapter or establish native vLLM serving support. GPU kernels,
 full-model generation, and thinking accuracy have not been tested here.
+
+## AutoRound / vLLM responsibility boundary
+
+Track AutoRound-side work in PR #2606. Prefer a self-describing standard
+compressed-tensors checkpoint over a runtime checkpoint-repair adapter.
+
+| Responsibility | Owner | Status |
+|---|---|---|
+| Native Hub tensor names, including expert and grouped projection names | AutoRound export | Implemented and name-audited |
+| NVFP4 packing, group layout, scales, and packed-byte preservation | AutoRound quantization/export | CPU regressions present |
+| Compressed-tensors format, group targets and ignore metadata | AutoRound export | Export path present; full serving contract still needs validation |
+| Source FP8/FP4 dequantization and intentional full-precision exclusions | AutoRound load/export | Native loader fallback present; audit residual source-only auxiliary tensors before serving |
+| Independent scales across vLLM-fused partitions | vLLM runtime | Required unless the backend already preserves them |
+| Grouped NVFP4 `wo_a`, TP-local grouping, output RoPE/backend dispatch | vLLM runtime | Requires compatible runtime support |
+| Fused-expert scale compatibility checks | Export validation and runtime loader | Must reject unsupported independent scales, not silently merge them |
+
+The old evaluation adapter performs runtime name repair, config reconstruction,
+source-FP8 inspection/dequantization, and runtime kernel routing. It is an
+integration prototype, **not** the intended upstream interface. New exports
+should not require scanning the original checkpoint at service startup or a
+private `local_deepseek_v4_nvfp4_adapter` flag. Export-time defects belong in
+AutoRound, not in vLLM's model weight loader.
+
+Runtime operations cannot be removed by renaming checkpoint keys: preserving
+independent gate/up or other fused-partition scales and executing grouped GEMM
+are numerical/compute requirements. Do not round/requantize weights or replace
+different global scales with a shared maximum merely to avoid runtime support.
+Shared expert names in an engine's internal model may differ from native Hub
+names; the engine's normal native checkpoint loader owns that mapping.
+
+Remaining work before claiming minimal-patch serving compatibility: validate a
+fresh export's standard compressed-tensors config and all exclusions, verify no
+source-FP8 repair is required, then exercise the reduced runtime-only adapter
+through TP2 load, grouped numerical checks, semantic generation, and accuracy.
+The current CPU tests and older integration-checkpoint benchmark results do not
+prove that end-to-end migration is complete.
