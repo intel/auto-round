@@ -337,13 +337,6 @@ class TEQSmoothStrategy:
         else:
             optimizer = torch.optim.Adam([log_alpha], lr=self.owner.lr, betas=(0.9, 0.9), weight_decay=0.0)
 
-        logger.info(
-            "TEQ train '%s': optimizer=%s iters=%d lr=%.3e",
-            self.mapping.smooth_name,
-            self.owner.optimizer_name,
-            self.owner.iters,
-            self.owner.lr,
-        )
         best_loss = float("inf")
         best_alpha = alpha.detach().clone()
         calibration = self.calibration

@@ -283,6 +283,8 @@ class TEQTransform(BasePreprocessor):
         self._parent_args_cache: dict[str, list[tuple[tuple, dict]]] = {}
         self._modified_block_name: str | None = None
         self._finalized = False
+        self._summary_log_count = 0
+        self._summary_log_interval = 12
         self._qdq_tool = QDQTool(
             bits=config.bits,
             group_size=config.group_size,
@@ -767,9 +769,11 @@ class TEQTransform(BasePreprocessor):
 
     def _log_scale_summary(self, phase: str, mapping: ResolvedMapping, best_error: float, scales: torch.Tensor) -> None:
         stats = self._scale_summary(scales)
-        logger.info(
+        message = (
             "TEQ %s '%s': best_error=%.3e, alpha_min=%.6g, alpha_max=%.6g, "
-            "alpha_mean=%.6g, alpha_std=%.6g, clamp_min_pct=%.2f, clamp_max_pct=%.2f",
+            "alpha_mean=%.6g, alpha_std=%.6g, clamp_min_pct=%.2f, clamp_max_pct=%.2f"
+        )
+        args = (
             phase,
             mapping.smooth_name,
             best_error,
@@ -780,6 +784,10 @@ class TEQTransform(BasePreprocessor):
             stats["clamp_min_pct"],
             stats["clamp_max_pct"],
         )
+        logger.debug(message, *args)
+        self._summary_log_count += 1
+        if self._summary_log_count % self._summary_log_interval == 0:
+            logger.info(message, *args)
 
     @torch.no_grad()
     def _compute_parent_loss(
