@@ -42,6 +42,7 @@ from auto_round.modeling.fused_moe.grouped_experts import (
     grouped_linear_experts_forward,
 )
 from auto_round.modeling.fused_moe.utils import (
+    _opaque_to_dynamo,
     _prepare_moe_route_batches,
     _restore_moe_route_order,
     build_forced_routing,
@@ -213,6 +214,7 @@ def _install_compact_expert_repr(module: nn.Module) -> None:
         cls.__iter__ = _iter
 
 
+@_opaque_to_dynamo
 def linear_loop_experts_forward(
     self: nn.Module,
     hidden_states: torch.Tensor,

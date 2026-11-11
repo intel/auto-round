@@ -16,14 +16,11 @@
 
 Motivation
 ----------
-``linear_loop_experts_forward`` iterates ``range(num_experts)`` in Python. Only the
-experts that were actually routed to do any work -- the rest are skipped -- but *every*
-iteration still pays ``nonzero()`` + ``sample_idx.numel()``, and that ``.numel()`` on a
-data-dependent ``nonzero()`` result is a host<->device sync. For the experts that do have
-tokens it then runs an ``index_select`` gather, three small GEMMs, and -- the expensive
-part -- a separate ``weight_quant_func`` call, because each expert's ``WrapperLinear``
-fake-quantizes its own weight. Block-wise tuning pays all of that on every forward *and*
-backward of every calibration step.
+The legacy ``linear_loop_experts_forward`` iterated ``range(num_experts)`` and performed
+per-expert routing checks. The optimized sequential path sorts token-expert assignments
+once, then loops over a route plan whose expert ids and length depend on the input routing.
+That data-dependent Python control flow must remain opaque to Dynamo to avoid graph breaks
+and recompilation for changing routes. The grouped path below uses the same opaque boundary.
 
 This module keeps the math identical but restructures the layer around two independent
 wins. Measured on A100 (sm80, bf16, W4G128, 2048x768 experts, 4096 routed pairs), speedup
@@ -100,6 +97,7 @@ from torch import nn
 
 from auto_round import envs
 from auto_round.modeling.fused_moe.utils import (
+    _opaque_to_dynamo,
     build_forced_routing,
     force_all_experts_routing_enabled,
     log_moe_execution_once,
@@ -1521,30 +1519,6 @@ def _run_routes(
     result = out_per_sample.view(num_tokens, num_top_k, hidden_dim).sum(dim=1)
     log_moe_execution_once("Grouped MoE used", f"grouped routing completed successfully; plans={GROUPED_PLANS_VERSION}")
     return result
-
-
-def _opaque_to_dynamo(fn):
-    """Stop ``torch.compile`` from tracing into this function.
-
-    ``block_runner`` compiles the whole block forward, and the experts forward below is
-    deliberately full of *Python-level* data-dependent control flow: the routed expert ids
-    come back through ``.tolist()``, the number of loop iterations and fused groups follows
-    them, and experts are looked up by name. Dynamo would retrace on every distinct routing
-    -- i.e. on every calibration sample -- which is exactly the "fused MoE with
-    shape-dependent control flow" case that already forces compile off for the DeepSeek and
-    GLM-5 families (see ``special_model_handler``).
-
-    ``linear_loop_experts_forward`` does not need this because its control flow is static
-    (``for expert_idx in range(num_experts)``); only the tensor values inside vary.
-
-    Making just this call opaque keeps the rest of the block compiled, and the quantization
-    functions it calls are compiled in their own right, so nothing of value is lost.
-    """
-    disable = getattr(torch.compiler, "disable", None)
-    if disable is None:  # pragma: no cover - torch < 2.1
-        dynamo = getattr(torch, "_dynamo", None)
-        disable = getattr(dynamo, "disable", None) if dynamo is not None else None
-    return disable(fn) if disable is not None else fn
 
 
 # Config attributes various architectures store the expert count under. transformers' own

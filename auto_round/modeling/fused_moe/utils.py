@@ -98,6 +98,16 @@ def _restore_moe_route_order(
     return outputs.view(num_tokens, top_k, outputs.size(-1)).sum(dim=1)
 
 
+def _opaque_to_dynamo(fn):
+    """Keep data-dependent MoE routing outside any enclosing ``torch.compile`` graph."""
+    disable = getattr(torch.compiler, "disable", None)
+    if disable is None:  # pragma: no cover - torch < 2.1
+        dynamo = getattr(torch, "_dynamo", None)
+        disable = getattr(dynamo, "disable", None) if dynamo is not None else None
+    return disable(fn) if disable is not None else fn
+
+
+@_opaque_to_dynamo
 def sequential_moe_forward(
     hidden_states: torch.Tensor,
     top_k_index: torch.Tensor,
