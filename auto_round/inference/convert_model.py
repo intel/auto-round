@@ -44,7 +44,6 @@ from auto_round.utils import (
     get_block_names,
     get_checkpoint_conversion_mapping,
     get_module,
-    is_hpex_available,
     is_transformers_version_greater_or_equal_5,
     set_module,
 )
@@ -164,26 +163,15 @@ def get_available_devices():
     """
     Returns a list of available devices in the current environment.
 
+    Any backend PyTorch exposes (cuda/xpu/hpu/mps/npu/...) is discovered by the
+    device manager, so no per-device probing is needed here.
+
     Returns:
         List[str]: A list of device identifiers like "cuda", "hpu", "xpu", "cpu".
     """
-    devices = []
+    from auto_round.utils.device_manager import get_available_device_types
 
-    if torch.cuda.is_available():
-        devices.append("cuda")
-
-    if is_hpex_available():
-        devices.append("hpu")
-
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        devices.append("xpu")
-
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        devices.append("mps")
-
-    devices.append("cpu")  # Always available
-
-    return devices
+    return [*get_available_device_types(), "cpu"]  # CPU is always available
 
 
 def _remap_paths_for_text_model(model, quant_block_list, extra_config):
