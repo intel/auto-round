@@ -586,6 +586,7 @@ def tune(args):
         scheme = AutoScheme(
             options=scheme_options,
             avg_bits=args.bits,
+            method=getattr(args, "auto_scheme_method", "auto"),
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
             default_shared_layers=not getattr(args, "disable_default_shared_layers", False),

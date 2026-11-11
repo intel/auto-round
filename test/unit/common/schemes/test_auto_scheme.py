@@ -145,7 +145,7 @@ def test_get_layer_config_supports_avg_bits_list(monkeypatch):
     def method_func(auto_scheme, *args, **kwargs):
         return {"layer": {"bits": auto_scheme.avg_bits}}
 
-    monkeypatch.setitem(auto_scheme.AUTO_SCHEME_METHODS, "default", method_func)
+    monkeypatch.setitem(auto_scheme.AUTO_SCHEME_METHODS, scheme.method, method_func)
 
     assert generator.get_layer_config() == {
         2.5: {"layer": {"bits": 2.5}},

@@ -219,7 +219,12 @@ class BlockTuningPrefetchCache:
             ref = torch.cat([self.outputs[i] for i in indices], dim=self.runner.batch_dim)
         return inputs, others, ref
 
+    @torch.no_grad()
     def _produce(self, first):
+        # Grad mode is thread-local: the caller's no_grad context is not
+        # inherited by this worker. Calibration inputs can require gradients;
+        # tracking copies into reusable slots chains CopyBackwards across
+        # iterations and makes backward progressively slower.
         try:
             with torch.cuda.device(self.device):
                 indices = first

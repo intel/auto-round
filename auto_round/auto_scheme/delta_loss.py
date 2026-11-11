@@ -26,6 +26,7 @@ from functools import wraps
 import torch
 from accelerate import dispatch_model
 from tqdm import tqdm
+from transformers.pytorch_utils import Conv1D
 
 from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
 from auto_round.auto_scheme.register import register_scheme_methods
@@ -112,12 +113,8 @@ class _ScoreLinear(torch.autograd.Function):
             grad_out_2d = grad_out.reshape(-1, grad_out.shape[-1])
             x_2d = x.reshape(-1, x.shape[-1])
             grad_w = torch.mm(grad_out_2d.t(), x_2d)
-            weight_ref = wrapper.orig_layer.weight
-            if weight_ref.device.type == "meta":
-                weight_ref = wrapper.orig_layer.get_weight().to(x.device)
-            w_diff = weight_ref.to(x.device) - weight
-            wrapper.weight_score += torch.abs(grad_w * w_diff).sum().item()
-            wrapper.mix_score = wrapper.weight_score + wrapper.act_score
+            w_diff = wrapper._score_reference_weight_for_device(x.device) - weight
+            wrapper._accumulate_weight_score(grad_w, w_diff)
         return grad_x, None, None
 
 
@@ -220,6 +217,17 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         self._ensure_score_cache()
         return self._score_qdq_cpu.to(device)
 
+    def _score_reference_weight_for_device(self, device):
+        weight = self.orig_layer.weight
+        if weight.device.type == "meta":
+            weight = self.orig_layer.get_weight()
+        return weight.to(device)
+
+    def _accumulate_weight_score(self, grad, delta):
+        """Legacy DeltaLoss: sum elementwise absolute contributions."""
+        self.weight_score += torch.abs(grad * delta).sum().item()
+        self.mix_score = self.weight_score + self.act_score
+
     def forward(self, x):
         """In the scoring replay, run the linear through ``_ScoreLinear`` so the block's
         autograd graph saves activations only; every other phase uses the base forward."""
@@ -278,11 +286,44 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 if weight.device.type == "meta":
                     weight = self.orig_layer.get_weight().to(grad.device)
                 w_diff = weight.to(grad.device) - self._score_qdq_cpu.to(grad.device)
-                self.weight_score += torch.abs(grad.to(w_diff.device) * w_diff).sum().item()
-                self.mix_score = self.weight_score + self.act_score
+                self._accumulate_weight_score(grad.to(w_diff.device), w_diff)
 
             qdq_w.register_hook(save_grad)
         return qdq_w, 1.0, None
+
+
+class AutoSchemeWrapperLinearDeltaAbsDot(AutoSchemeWrapperLinear):
+    """QDQ-forward sensitivity: sum over batches of |<dL/dQ(W), W-Q(W)>|.
+
+    Keep the quantized forward and model-dtype gradients of DeltaLoss. Reused
+    layers accumulate signed contributions within a batch before taking abs.
+    Activation-quantized schemes retain the existing activation score.
+    """
+
+    def _score_weight_for_device(self, device):
+        weight = super()._score_weight_for_device(device)
+        return weight.t() if isinstance(self.orig_layer, Conv1D) else weight
+
+    def _score_reference_weight_for_device(self, device):
+        weight = super()._score_reference_weight_for_device(device)
+        return weight.t() if isinstance(self.orig_layer, Conv1D) else weight
+
+    def _accumulate_weight_score(self, grad, delta):
+        """Accumulate signed contributions in FP32 before taking the batch absolute value."""
+        previous = getattr(self, "_abs_dot_batch", 0.0)
+        self._abs_dot_batch = previous + (grad.to(torch.float32) * delta.to(torch.float32)).sum().item()
+        self.weight_score += abs(self._abs_dot_batch) - abs(previous)
+        self.mix_score = self.weight_score + self.act_score
+
+    def forward(self, x):
+        if self.grad_mode and torch.is_grad_enabled() and not x.requires_grad:
+            # Frozen embeddings must not suppress the explicit weight score.
+            x = x.detach().requires_grad_(True)
+        if self.enable_act_quant:
+            # The custom scoring linear is W-only: use the full QDQ forward so
+            # activation quantization and its score hooks are not bypassed.
+            return WrapperLinear.forward(self, x)
+        return super().forward(x)
 
 
 class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
@@ -448,8 +489,7 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             # TODO strange, grad could be in CPU
-            self.weight_score += torch.abs(grad.to(w_diff.device).to(torch.float32) * w_diff).sum().item()
-            self.mix_score = self.weight_score + self.act_score
+            self._accumulate_weight_score(grad.to(w_diff.device).to(torch.float32), w_diff)
 
         self.qdq_w.requires_grad_(True)
         self.orig_layer.weight.requires_grad_(False)
@@ -503,8 +543,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         def save_grad(grad):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
-            self.weight_score += torch.abs(grad.to(torch.float32) * w_diff.to(grad.device)).sum().item()
-            self.mix_score = self.weight_score + self.act_score
+            self._accumulate_weight_score(grad.to(torch.float32), w_diff.to(grad.device))
 
         self.qdq_w.requires_grad_(True)
         self.orig_layer.weight.requires_grad_(False)
@@ -552,6 +591,16 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
     def _qdq_weight(self, value, min_scale, max_scale):
         """Return the cached ``qdq_w`` computed eagerly in ``__init__`` (via ``post_init_qdqw``)."""
         return self.qdq_w, 1.0, None
+
+
+class AutoSchemeWrapperLinearGGUFKDeltaAbsDot(AutoSchemeWrapperLinearDeltaAbsDot, AutoSchemeWrapperLinearForGGUFK):
+    """Absolute-dot scoring with the existing GGUF K-quant search."""
+
+
+class AutoSchemeWrapperLinearGGUFKImatrixDeltaAbsDot(
+    AutoSchemeWrapperLinearDeltaAbsDot, AutoSchemeWrapperLinearForGGUFKImatrix
+):
+    """Absolute-dot scoring with the existing imatrix-weighted K-quant search."""
 
 
 def register_imatrix_hook(model):
@@ -664,6 +713,8 @@ def prepare_model_low_gpu(model, block_inputs: dict | None = None, pbar=None, ma
     for n, m in model.named_modules():
         if hasattr(m, "grad_mode"):
             m.grad_mode = False
+        if isinstance(m, AutoSchemeWrapperLinearDeltaAbsDot):
+            m._abs_dot_batch = 0.0
 
     block_names = get_block_names(model)[0]
 
@@ -1200,6 +1251,7 @@ def get_score_for_scheme(
     model_name: str | None = None,
     scheme_tag: str | None = None,
     disk_index=None,
+    method="default",
 ):
     """Wrap every quantizable layer in ``quant_layer_names`` with a scoring wrapper, run
     forward(+backward, unless RTN-only) calibration over ``nsamples`` examples from
@@ -1246,7 +1298,7 @@ def get_score_for_scheme(
         else:
             m.scale_dtype = torch.bfloat16
 
-        WrapperLayer = AutoSchemeWrapperLinear
+        WrapperLayer = AutoSchemeWrapperLinearDeltaAbsDot if method == "delta_abs_dot" else AutoSchemeWrapperLinear
         # if has_imatrix: # no better result
         #     WrapperLayer = AutoSchemeWrapperLinearIMatrix
         if hasattr(m, "super_group_size") and m.super_group_size is not None:
@@ -1254,6 +1306,12 @@ def get_score_for_scheme(
                 WrapperLayer = AutoSchemeWrapperLinearForGGUFKImatrix
             else:
                 WrapperLayer = AutoSchemeWrapperLinearForGGUFK
+            if method == "delta_abs_dot":
+                WrapperLayer = (
+                    AutoSchemeWrapperLinearGGUFKImatrixDeltaAbsDot
+                    if has_imatrix
+                    else AutoSchemeWrapperLinearGGUFKDeltaAbsDot
+                )
 
         with torch.no_grad():
             if low_gpu_mem_usage:
@@ -1492,6 +1550,9 @@ def get_score_for_scheme(
                 "image",
             )
             for batch_idx, data in enumerate(loader, start=1):
+                for module in model.modules():
+                    if isinstance(module, AutoSchemeWrapperLinearDeltaAbsDot):
+                        module._abs_dot_batch = 0.0
                 # Pull labels out of the batch (VLM datasets often carry them;
                 # LLM ones don't) before mllm_model_forward casts dtypes.
                 _src = data if isinstance(data, dict) else None
@@ -1890,9 +1951,10 @@ def _autoscheme_cache_config(
     force_mllm,
     low_gpu_mem_usage,
     need_weight_grad=False,
+    method="default",
 ):
     """Build the portable, implementation-independent identity of a scoring run."""
-    return {
+    config = {
         "model_id": _stable_model_id(model_name),
         "dataset": dataset,
         "nsamples": nsamples,
@@ -1905,6 +1967,9 @@ def _autoscheme_cache_config(
         "low_gpu_mem_usage": low_gpu_mem_usage,
         "need_weight_grad": need_weight_grad,
     }
+    if method == "delta_abs_dot":
+        config["metric"] = "delta_abs_dot_qdq_weight_v1"
+    return config
 
 
 def _autoscheme_cache_key(
@@ -1919,6 +1984,7 @@ def _autoscheme_cache_key(
     force_mllm,
     low_gpu_mem_usage,
     need_weight_grad=False,
+    method="default",
 ):
     """Return a 16-char hex digest that uniquely identifies a **single-scheme** scoring run.
 
@@ -1940,6 +2006,7 @@ def _autoscheme_cache_key(
         force_mllm,
         low_gpu_mem_usage,
         need_weight_grad,
+        method,
     )
     key_str = json.dumps(key_data, sort_keys=True, default=str)
     return hashlib.sha256(key_str.encode()).hexdigest()[:16]
@@ -2386,7 +2453,9 @@ def _score_scheme_worker(args):
         progress_queue,
         disk_stream_model,
         worker_cache_path,
+        *method_args,
     ) = args
+    method = method_args[0] if method_args else "default"
 
     from auto_round.auto_scheme.utils import _scheme_short_name as _short_name
     from auto_round.auto_scheme.utils import apply_quant_scheme as _apply_quant_scheme
@@ -2528,6 +2597,7 @@ def _score_scheme_worker(args):
             model_name=model_name,
             scheme_tag=f"{index + 1}/{total_schemes} {_short_name(scheme)}",
             disk_index=disk_index,
+            method=method,
         )
     except RuntimeError as exc:
         if "out of memory" not in str(exc).lower():
@@ -2948,6 +3018,7 @@ def _gen_layer_config(
                 force_mllm=force_mllm,
                 low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
                 need_weight_grad=need_weight_grad,
+                method=auto_scheme.method,
             )
             cache_key = hashlib.sha256(json.dumps(cache_config, sort_keys=True, default=str).encode()).hexdigest()[:16]
             cache_path = _autoscheme_cache_path(cache_key, index)
@@ -3126,6 +3197,7 @@ def _gen_layer_config(
                             progress_queue,
                             worker_disk_stream_model,
                             scheme_cache_meta[index][1],  # cache_path for batch checkpoints
+                            auto_scheme.method,
                         )
                         for slot, index in enumerate(uncached_indices)
                     ]
@@ -3320,6 +3392,7 @@ def _gen_layer_config(
                             model_name=model_name,
                             scheme_tag=scheme_tag,
                             disk_index=disk_index,
+                            method=auto_scheme.method,
                         )
                     memory_monitor.update()
                     memory_monitor.log_summary()
@@ -3612,7 +3685,7 @@ def _enforce_w8_symmetric_entries(layer_config: dict, allow_w8_asym: bool = Fals
 
 
 # Supports model with gradient clearing between iterations
-@register_scheme_methods(("default", "DeltaLoss"))
+@register_scheme_methods(("default", "DeltaLoss", "delta_abs_dot"))
 def gen_layer_config(
     auto_scheme: AutoScheme,
     model: str | torch.nn.Module,

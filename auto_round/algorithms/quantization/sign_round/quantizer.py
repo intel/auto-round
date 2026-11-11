@@ -296,6 +296,12 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         cache double-buffers the batches onto CUDA on a background copy stream so
         the next transfer overlaps the current forward/backward.
         """
+        from auto_round import envs
+
+        if envs.AR_DISABLE_BLOCK_TUNING_PREFETCH:
+            logger.info_once("Block tuning prefetch disabled; using synchronous batch transfers.")
+            return None, 0
+
         from auto_round.algorithms.tuning_cache import resolve_tuning_cache_cls
 
         # Shared hardware eligibility: host-parked pools, a single CUDA device,
