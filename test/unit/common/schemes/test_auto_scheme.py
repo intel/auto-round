@@ -1297,6 +1297,7 @@ def test_opt_scheme_worker_uses_low_cpu_memory_loading(monkeypatch):
         "use_auto_mapping": False,
         "use_model_replacements": True,
         "low_cpu_mem_usage": True,
+        "trust_remote_code": False,
     }
 
 
@@ -1313,7 +1314,7 @@ def test_disk_stream_scheme_worker_builds_meta_model(monkeypatch):
 
     model, tokenizer, disk_index = FakeMetaModel(), object(), object()
     expected = (model, tokenizer, disk_index)
-    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: expected)
+    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name, trust_remote_code=False: expected)
 
     assert delta_loss._load_disk_stream_scheme_worker_model("local-model") == expected
 
@@ -1334,9 +1335,13 @@ def test_disk_stream_scheme_worker_applies_model_replacements(monkeypatch):
     disk_index = object()
     calls = []
 
-    monkeypatch.setattr(disk_stream_util, "build_meta_model", lambda model_name: (model, tokenizer, disk_index))
+    monkeypatch.setattr(
+        disk_stream_util,
+        "build_meta_model",
+        lambda model_name, trust_remote_code=False: (model, tokenizer, disk_index),
+    )
 
-    def fake_update_module(input_model, formats, cleanup_original):
+    def fake_update_module(input_model, formats, cleanup_original, trust_remote_code=False):
         calls.append(("update", input_model, formats, cleanup_original))
         return updated_model
 

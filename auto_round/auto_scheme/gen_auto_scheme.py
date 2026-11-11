@@ -41,6 +41,7 @@ class AutoScheme:
     enable_torch_compile: bool | None = None
     low_gpu_mem_usage: bool = True
     low_cpu_mem_usage: bool = True
+    trust_remote_code: bool = False
     # Share one scheme across vLLM-fused projections (q/k/v, MLA q_a/kv_a,
     # gate/up) by default: a fused serving kernel can only apply a single
     # scheme, so mixed bits there are not servable. Set to False (or export

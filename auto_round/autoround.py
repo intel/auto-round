@@ -365,7 +365,7 @@ class AutoRound:
             definition,
             scheme=scheme,
             model=model,
-            trust_remote_code=direct_kwargs.get("trust_remote_code", True),
+            trust_remote_code=direct_kwargs.get("trust_remote_code", False),
         )
         if alg_configs is None:
             alg_configs = plan.build_configs()

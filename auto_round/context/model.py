@@ -67,7 +67,7 @@ class ModelContext(BaseContext):
         tokenizer: Any = None,
         platform: str = "hf",
         model_dtype: str | torch.dtype | None = None,
-        trust_remote_code: bool = True,
+        trust_remote_code: bool = False,
         config: AutoConfig | None = None,
         amp: bool = True,
         need_calib: bool = True,
@@ -170,7 +170,7 @@ class ModelContext(BaseContext):
         install_debug_layer_config_patch()
         if self.parallel_config.tp_size > 1:
             self._load_tp_model()
-        elif is_diffusion_model(self.model):
+        elif is_diffusion_model(self.model, trust_remote_code=self.trust_remote_code):
             self.is_diffusion = True
             self.preloaded_diffusion_pipeline = not isinstance(self.model, str)
             default_torch_dtype = "auto"
@@ -182,6 +182,7 @@ class ModelContext(BaseContext):
                 device="cpu",
                 model_dtype=self.model_dtype,
                 default_torch_dtype=default_torch_dtype,
+                trust_remote_code=self.trust_remote_code,
             )
         elif is_mllm_model(self.model, platform=self.platform):
             self.is_mllm = True
@@ -228,7 +229,11 @@ class ModelContext(BaseContext):
                         self._disk_stream_index = None
                 if not loaded_via_meta:
                     self.model, self.processor, self.tokenizer, self.image_processor = mllm_load_model(
-                        self.model, platform=self.platform, device="cpu", model_dtype=self.model_dtype
+                        self.model,
+                        platform=self.platform,
+                        device="cpu",
+                        model_dtype=self.model_dtype,
+                        trust_remote_code=self.trust_remote_code,
                     )
         elif isinstance(self.model, str):
             config = self.config

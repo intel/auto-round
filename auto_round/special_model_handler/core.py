@@ -260,7 +260,7 @@ def _handle_special_model(model):
 
 
 def update_module(
-    model, formats: list[OutputFormat] | None = None, trust_remote_code: bool = True, cleanup_original: bool = True
+    model, formats: list[OutputFormat] | None = None, trust_remote_code: bool = False, cleanup_original: bool = True
 ):
     # Resolve through the package namespace so tests can monkeypatch
     # ``special_model_handler.apply_replacements`` (legacy module API).

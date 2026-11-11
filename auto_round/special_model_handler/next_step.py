@@ -14,7 +14,7 @@
 import torch
 
 
-def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
+def load_next_step_diffusion(pretrained_model_name_or_path, device_str, trust_remote_code=False):
     try:
         from models.gen_pipeline import NextStepPipeline  # pylint: disable=E0401
     except ImportError:
@@ -25,9 +25,11 @@ def load_next_step_diffusion(pretrained_model_name_or_path, device_str):
     from transformers import AutoModel, AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(
-        pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True
+        pretrained_model_name_or_path, local_files_only=True, trust_remote_code=trust_remote_code
     )
-    model = AutoModel.from_pretrained(pretrained_model_name_or_path, local_files_only=True, trust_remote_code=True)
+    model = AutoModel.from_pretrained(
+        pretrained_model_name_or_path, local_files_only=True, trust_remote_code=trust_remote_code
+    )
     # The model is loaded onto the device because more than one block requires input data.
     pipe = NextStepPipeline(tokenizer=tokenizer, model=model).to(device=device_str, dtype=torch.bfloat16)
 
