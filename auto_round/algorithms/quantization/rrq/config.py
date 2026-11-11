@@ -65,13 +65,25 @@ class RRQConfig(RTNConfig):
         enable_neuqi: bool = False,
         **kwargs,
     ):
-        # Enforce fixed values (None means "not provided", use default)
-        if kwargs.get("bits") is not None and kwargs["bits"] != 2:
-            raise ValueError(f"RRQ only supports bits=2 per plane, got {kwargs['bits']}")
-        if kwargs.get("data_type") is not None and kwargs["data_type"] != "int":
-            raise ValueError(f"RRQ only supports data_type='int', got {kwargs['data_type']!r}")
-        if kwargs.get("act_bits") is not None and kwargs["act_bits"] != 16:
-            raise ValueError(f"RRQ is weight-only; act_bits must be 16, got {kwargs['act_bits']}")
+        # Scheme fields are owned by AutoRound (see #2594), not by the config.
+        # Pop them from kwargs so QuantizationConfig.reject_scheme_arguments
+        # does not raise, and store them as RRQ-specific attributes with
+        # fixed defaults.  The quantizer reads them via self.config.X.
+        bits = kwargs.pop("bits", 2)
+        data_type = kwargs.pop("data_type", "int")
+        act_bits = kwargs.pop("act_bits", 16)
+        self.group_size = kwargs.pop("group_size", 128)
+        self.sym = kwargs.pop("sym", True)
+
+        if bits != 2:
+            raise ValueError(f"RRQ only supports bits=2 per plane, got {bits}")
+        if data_type != "int":
+            raise ValueError(f"RRQ only supports data_type='int', got {data_type!r}")
+        if act_bits != 16:
+            raise ValueError(f"RRQ is weight-only; act_bits must be 16, got {act_bits}")
+        self.bits = bits
+        self.data_type = data_type
+        self.act_bits = act_bits
 
         # RRQ-tunable fields (not scheme fields). Declared as named parameters so
         # the CLI field-acceptance contract (see test_cli_usage) holds; stored
@@ -90,11 +102,6 @@ class RRQConfig(RTNConfig):
         self._rrq_dynamic_max_gap = dynamic_max_gap
         self._rrq_enable_lfq = enable_lfq
 
-        # Inject fixed values
-        kwargs.setdefault("bits", 2)
-        kwargs.setdefault("data_type", "int")
-        kwargs.setdefault("act_bits", 16)
-
         # num_residual_planes is not a scheme field
         if num_residual_planes not in (1, 3):
             raise ValueError(f"RRQ supports num_residual_planes=1 or 3, got {num_residual_planes}")
@@ -110,9 +117,11 @@ class RRQConfig(RTNConfig):
         # CLI may pass None (user didn't specify the flag), so force it to True.
         if disable_opt_rtn is None:
             disable_opt_rtn = True
-        super().__init__(disable_opt_rtn=disable_opt_rtn, enable_neuqi=enable_neuqi, **kwargs)
-
+        # Set attributes that check_config() reads before calling super().__init__(),
+        # which invokes check_config() internally.
         self.iters = int(self._rrq_iters or 0)
+        self.disable_opt_rtn = disable_opt_rtn
+        super().__init__(disable_opt_rtn=disable_opt_rtn, enable_neuqi=enable_neuqi, **kwargs)
         self.lr = self._rrq_lr
         self.minmax_lr = self._rrq_minmax_lr
         self.momentum = self._rrq_momentum
