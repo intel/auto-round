@@ -34,9 +34,9 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --algorithm auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
-# AWQ + RTN / AWQ + AutoRound / AWQ + AutoRound with algorithm extension
+# Historical AWQ + plain RTN / AWQ + AutoRound / AWQ + AutoRound with algorithm extension
 auto-round --model <model> --scheme <scheme> --format fake \
-  --algorithm awq \
+  --algorithm awq,rtn --disable_opt_rtn \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 auto-round --model <model> --scheme <scheme> --format fake \
@@ -47,6 +47,8 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --algorithm awq,auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 ```
+
+The older `AWQ_RTN` results used the previous AWQ default of plain RTN, shown explicitly as `--algorithm awq,rtn --disable_opt_rtn`. The latest `main` defaults to AWQ + opt-RTN: use `--algorithm awq` or `--algorithm awq,opt_rtn`. Rows explicitly labeled `AWQ + opt-RTN` used optimized RTN, not the old plain-RTN default. All historical measurements remain unchanged.
 
 ## Calibration Controls
 
@@ -628,13 +630,15 @@ The recipes map to the following settings:
 | Table name | Algorithm settings |
 | --- | --- |
 | AWQ + AR2 full / off / reuse | `--algorithm awq,auto_round_v2 --awq-v2-scale-search POLICY --iters 200` |
-| AWQ + opt-RTN | `--algorithm awq,rtn --enable_opt_rtn --iters 0` |
+| AWQ + opt-RTN | `--algorithm awq,opt_rtn --iters 0` |
 | Native AR2 full | `--algorithm auto_round_v2 --iters 200` |
-| Native opt-RTN | `--algorithm rtn --enable_opt_rtn --iters 0` |
+| Native opt-RTN | `--algorithm opt-rtn --iters 0` |
 | Native plain RTN | `--algorithm rtn --disable_opt_rtn --iters 0 --disable_model_free` |
 | Model-free RTN | `--algorithm rtn --disable_opt_rtn --iters 0 --model_free` |
 
 Replace `POLICY` with one of `full`, `off`, or `reuse`.
+
+Unlike the earlier `AWQ_RTN` results, the `AWQ + opt-RTN` rows below used optimized RTN.
 
 ### W4A16 INT
 
@@ -646,7 +650,7 @@ Replace `POLICY` with one of `full`, `off`, or `reuse`.
 | AWQ + AR2 reuse | 97.19 | 63.11 | 82.46 | 81.01 | 76.72 | 80.10 | 69 |
 | AWQ + opt-RTN | 96.66 | 63.59 | 82.70 | 81.07 | 76.64 | 80.13 | 60 |
 
-Quantization times are indicative; in this run, `off` saved about 26.3% of the quantization time versus `full` while losing only 0.09 average points. `reuse` is the most time-efficient AWQ+AR2 configuration, AWQ+opt-RTN is the fastest overall, and AVG remains essentially unchanged.
+Quantization times are indicative; in this run, `off` saved about 26.3% of the quantization time versus `full` while losing only 0.09 average points. `reuse` is the most time-efficient AWQ+AR2 configuration, AWQ + opt-RTN is the fastest overall, and AVG remains essentially unchanged.
 
 ### MXFP4 W4A4
 
@@ -661,7 +665,7 @@ Quantization times are indicative; in this run, `off` saved about 26.3% of the q
 | AWQ + AR2 full | 94.84 | 61.55 | 81.24 | 80.69 | 73.80 | 78.42 |
 | AWQ + opt-RTN | 95.30 | 61.73 | 80.35 | 79.00 | 75.30 | 78.34 |
 
-The best AWQ W4A4 result is AWQ + AR2 full at **78.42**, only 0.08 points above AWQ + opt-RTN. AWQ + AR2 full improves over native AR2 by 0.46 points, while AWQ + opt-RTN improves over native opt-RTN by 1.28 points.
+The best AWQ W4A4 result is AWQ + AR2 full at **78.42**, only 0.08 points above AWQ + opt-RTN. AWQ + AR2 full improves over native AR2 by 0.46 points, while AWQ + opt-RTN improves over native opt-RTN by 1.28 points. Native plain RTN and model-free RTN reach 78.14 and 78.08, respectively, providing strong baselines.
 
 ## INT8 / W8A8
 

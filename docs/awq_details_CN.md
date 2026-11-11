@@ -34,9 +34,9 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --algorithm auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
-# AWQ + RTN / AWQ + AutoRound / AWQ + 启用算法扩展的 AutoRound
+# 历史 AWQ + 普通 RTN / AWQ + AutoRound / AWQ + 启用算法扩展的 AutoRound
 auto-round --model <model> --scheme <scheme> --format fake \
-  --algorithm awq \
+  --algorithm awq,rtn --disable_opt_rtn \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 
 auto-round --model <model> --scheme <scheme> --format fake \
@@ -47,6 +47,8 @@ auto-round --model <model> --scheme <scheme> --format fake \
   --algorithm awq,auto_round_v2 \
   --tasks "mmlu,gsm8k,piqa,hellaswag,winogrande"
 ```
+
+早期 `AWQ_RTN` 结果使用当时 AWQ 默认的普通 RTN，可显式表示为 `--algorithm awq,rtn --disable_opt_rtn`。最新 `main` 默认使用 AWQ + opt-RTN，可通过 `--algorithm awq` 或 `--algorithm awq,opt_rtn` 选择。明确标为 `AWQ + opt-RTN` 的结果使用的是优化 RTN，而不是旧的普通 RTN 默认配置。所有历史测量结果保持不变。
 
 ## 标定数据选择
 
@@ -314,20 +316,21 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 - 校准：128 个样本，序列长度 2048；AWQ 最多使用 128 个样本和 512 token 校准序列。
 - W4A16：INT W4A16，`--format auto_round`，并开启确定性算法。
 - MXFP4：W4A4，`--format llm_compressor`；评测使用 `FlashInferMxFp4LinearKernel`。
-- BF16 参考 AVG：**80.09**。
 
 各 recipe 对应的配置如下：
 
 | 表中名称 | 算法参数 |
 | --- | --- |
 | AWQ + AR2 full / off / reuse | `--algorithm awq,auto_round_v2 --awq-v2-scale-search POLICY --iters 200` |
-| AWQ + opt-RTN | `--algorithm awq,rtn --enable_opt_rtn --iters 0` |
+| AWQ + opt-RTN | `--algorithm awq,opt_rtn --iters 0` |
 | Native AR2 full | `--algorithm auto_round_v2 --iters 200` |
-| Native opt-RTN | `--algorithm rtn --enable_opt_rtn --iters 0` |
+| Native opt-RTN | `--algorithm opt-rtn --iters 0` |
 | Native plain RTN | `--algorithm rtn --disable_opt_rtn --iters 0 --disable_model_free` |
 | Model-free RTN | `--algorithm rtn --disable_opt_rtn --iters 0 --model_free` |
 
 将 `POLICY` 替换为 `full`、`off` 或 `reuse`。
+
+与前面的早期 `AWQ_RTN` 结果不同，下方 `AWQ + opt-RTN` 行使用的是优化 RTN。
 
 ### W4A16 INT
 
@@ -339,7 +342,7 @@ AWQ 相关行使用默认 AWQ smoothing 流程。除非显式设置 `--awq_apply
 | AWQ + AR2 reuse | 97.19 | 63.11 | 82.46 | 81.01 | 76.72 | 80.10 | 69 |
 | AWQ + opt-RTN | 96.66 | 63.59 | 82.70 | 81.07 | 76.64 | 80.13 | 60 |
 
-量化时间为参考值；本次运行中，`off` 相比 `full` 约节省26.3%的量化时间的，AVG 仅下降 0.09 分。`reuse` 是 AWQ+AR2 中最省时的配置，AWQ+opt-RTN 整体最快，且 AVG 基本持平。
+量化时间为参考值；本次运行中，`off` 相比 `full` 约节省26.3%的量化时间，AVG 仅下降 0.09 分。`reuse` 是 AWQ+AR2 中最省时的配置，AWQ + opt-RTN 整体最快，且 AVG 基本持平。
 
 ### MXFP4 W4A4
 
