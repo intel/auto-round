@@ -6,7 +6,7 @@ import pytest
 
 from auto_round import AutoRound as NewAutoRound
 from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
-from auto_round.algorithms.composer import AlgorithmComposer, _has_nvfp4_layer
+from auto_round.algorithms.composer import AlgorithmComposer
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
@@ -14,6 +14,7 @@ from auto_round.algorithms.config_resolver import (
 )
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
+from auto_round.algorithms.utils import _has_nvfp4_layer
 from auto_round.autoround import _select_rtn_compressor_base_cls
 from auto_round.compressors.base import collect_user_scheme_overrides
 from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
@@ -108,6 +109,16 @@ def test_awq_disables_block_forward_compile():
     pipeline = AlgorithmComposer([AWQConfig(), SignRoundConfig()], _compile_orchestrator())
 
     assert not pipeline.block_forward.enable_torch_compile
+
+
+def test_nvfp4_keeps_block_forward_compile():
+    """NVFP4 used to ban block-forward compile as well as the quant kernels."""
+    orchestrator = _compile_orchestrator()
+    orchestrator.data_type = "nv_fp"
+
+    pipeline = AlgorithmComposer([SignRoundConfig()], orchestrator)
+
+    assert pipeline.block_forward.enable_torch_compile
 
 
 def test_detect_nvfp4_from_layer_config_scheme_override():

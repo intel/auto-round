@@ -43,7 +43,6 @@ from auto_round.algorithms.config_resolver import (
     resolve_shared_config_values,
     split_quantization_configs,
 )
-from auto_round.algorithms.utils import _has_nvfp4_layer
 from auto_round.logger import logger
 from auto_round.parallel.dp.engine import (
     ENGINE_CALIBRATION_STATS,
@@ -235,8 +234,16 @@ class AlgorithmComposer:
         self.active_quantizer = quantizers[-1]
         self.block_forward = None
         if orchestrator is not None:
+            # Per-layer quant-function compilation and whole-block compilation
+            # are separate decisions.  The orchestrator exposes the latter so
+            # schemes that need eager calibration hooks can still compile the
+            # per-layer quant kernels.
             user_torch_compile = bool(
-                getattr(getattr(orchestrator, "compress_context", None), "enable_torch_compile", False)
+                getattr(
+                    orchestrator,
+                    "enable_block_forward_compile",
+                    getattr(getattr(orchestrator, "compress_context", None), "enable_torch_compile", False),
+                )
             )
             rotation_configs = getattr(orchestrator, "rotation_configs", ())
             blockers = []
@@ -252,10 +259,6 @@ class AlgorithmComposer:
                     "Block-forward torch.compile is disabled because %s is incompatible.",
                     ", ".join(blockers),
                 )
-
-            if _has_nvfp4_layer(orchestrator):
-                can_compile_block_forward = False
-                logger.info("Block-forward torch.compile is disabled because at least one quantized layer uses NVFP4.")
 
             # Bind compressor-level infrastructure (set before _build_quantizer is called).
             self.block_forward = (
@@ -492,6 +495,12 @@ class AlgorithmComposer:
         """Use the active algorithm's execution policy for calibration transport."""
         return self.active_quantizer.parallel.collection_context(self, block, fp_inputs)
 
+    @staticmethod
+    def _kv_qdq_context():
+        from auto_round.experimental.kv_cache import active_kv_qdq_context
+
+        return active_kv_qdq_context()
+
     def _collect_forward_timed(self, *args, **kwargs):
         """_collect_forward with wall accumulation into self.last_collect_wall."""
         import time as _ctime
@@ -510,6 +519,7 @@ class AlgorithmComposer:
         out_dev=None,
         allow_shard: bool = True,
         hook_pass: bool = False,
+        eager: bool = False,
         merge_stats=ENGINE_CALIBRATION_STATS,
     ):
         """Collection forward: sharded across DDP mirrors when eligible.
@@ -524,6 +534,10 @@ class AlgorithmComposer:
         no cap): forward hooks
         force dynamo graph breaks, leaving the compiled runner as
         python-bound eager sections that GIL-convoy under many threads.
+
+        ``eager=True`` runs the uncompiled block forward.  It is required for
+        passes that install forward hooks, because Dynamo will not re-trace a
+        graph cached before those hooks were registered.
         """
         if self._coll_ctx is None:
             from auto_round.parallel.dp.tune_parallel import TuneParallelContext
@@ -537,6 +551,7 @@ class AlgorithmComposer:
             out_dev,
             allow_shard=allow_shard,
             hook_pass=hook_pass,
+            eager=eager,
             merge_stats=merge_stats,
         )
 
@@ -616,11 +631,11 @@ class AlgorithmComposer:
                 if pre_inputs is fp_inputs and pre_others is input_others:
                     pre_hooks.extend(hooks)
                     continue
-                block_forward_fn(block, pre_inputs, pre_others)
+                block_forward_fn(block, pre_inputs, pre_others, eager=bool(hooks))
                 for h in hooks:
                     h.remove()
             if pre_hooks:
-                block_forward_fn(block, fp_inputs, input_others)
+                block_forward_fn(block, fp_inputs, input_others, eager=True)
             for h in pre_hooks:
                 h.remove()
 
@@ -629,7 +644,12 @@ class AlgorithmComposer:
                 if hasattr(pre, "register_qinput_forward_hooks"):
                     pre_q_hooks.extend(pre.register_qinput_forward_hooks(block))
             if pre_q_hooks:
-                block_forward_fn(block, q_inputs if q_inputs is not None else fp_inputs, input_others)
+                block_forward_fn(
+                    block,
+                    q_inputs if q_inputs is not None else fp_inputs,
+                    input_others,
+                    eager=True,
+                )
             for h in pre_q_hooks:
                 h.remove()
 
@@ -662,6 +682,7 @@ class AlgorithmComposer:
                         # calibration_stats) are folded from the mirrors, so
                         # hook-carrying passes may shard
                         hook_pass=bool(quant_hooks),
+                        eager=bool(quant_hooks),
                         merge_stats=merge_stats,
                     )
                     reference_next_input = getattr(block_forward_fn, "last_output_dict", None) or reference_output
@@ -680,6 +701,7 @@ class AlgorithmComposer:
                             q_inputs if q_inputs is not None else fp_inputs,
                             input_others,
                             hook_pass=bool(q_hooks),
+                            eager=bool(q_hooks),
                             merge_stats=q_merge_stats,
                         )
                         for h in q_hooks:
@@ -769,7 +791,8 @@ class AlgorithmComposer:
             )
 
         try:
-            self._run_tuning(block, tune_block, collect_warm_start_output)
+            with self._kv_qdq_context():
+                self._run_tuning(block, tune_block, collect_warm_start_output)
 
             # Quantizer-agnostic block finalization (e.g. NVFP MoE act_max), kept
             # out of the per-algorithm tuning loop.
@@ -791,7 +814,8 @@ class AlgorithmComposer:
                 new_q_input = warm_start_outputs[0]
             elif self._active_uses_quanted_input():
                 with torch.no_grad():
-                    new_q_input = self._collect_forward_timed(block, effective_input, input_others)
+                    with self._kv_qdq_context():
+                        new_q_input = self._collect_forward_timed(block, effective_input, input_others)
                     new_q_input = getattr(block_forward_fn, "last_output_dict", None) or new_q_input
             else:
                 new_q_input = None
