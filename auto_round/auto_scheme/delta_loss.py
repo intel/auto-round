@@ -22,6 +22,7 @@ import time
 from collections.abc import Iterable
 from dataclasses import asdict
 from functools import wraps
+from pathlib import Path
 
 import torch
 from accelerate import dispatch_model
@@ -2600,6 +2601,8 @@ def _gen_layer_config(
             offload_kwargs = {"offload_dir_prefix": "autoscheme", "retain_saved_entries": True}
         offload_context = OffloadManager(enabled=True, mode=offload_mode, cache_numel=True, **offload_kwargs)
 
+    hessian_method = auto_scheme.method in ("hessian", "hessian_diag")
+    task_taylor_method = auto_scheme.method in ("task_first", "task_second", "task_first_second")
     target_bits = auto_scheme.avg_bits
     # HF gates gradient checkpointing on ``self.training`` — it's a no-op in eval mode.
     # In the non-low_gpu path we run a full forward+backward through the whole model,
@@ -2952,6 +2955,20 @@ def _gen_layer_config(
                 low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
                 need_weight_grad=need_weight_grad,
             )
+            if hessian_method or task_taylor_method:
+                from auto_round.auto_scheme.hessian import scoring_cache_identity
+
+                cache_config["input_identity"] = scoring_cache_identity(_model_id_for_cache, dataset)
+                cache_config["model_dtypes"] = sorted({str(p.dtype) for p in model.parameters()})
+                cache_config["scoring_method"] = auto_scheme.method
+                cache_config["scoring_version"] = 2
+                cache_config["background"] = "full_precision"
+                cache_config["normalization"] = "valid_tokens"
+                if task_taylor_method:
+                    source = Path(__file__).with_name("task_taylor.py")
+                    cache_config["task_taylor_source"] = hashlib.sha256(source.read_bytes()).hexdigest()
+                    cache_config["background"] = "isolated_candidate_other_layers_original"
+                    cache_config["normalization"] = "valid_token_weighted_microbatch_absolute_prediction"
             cache_key = hashlib.sha256(json.dumps(cache_config, sort_keys=True, default=str).encode()).hexdigest()[:16]
             cache_path = _autoscheme_cache_path(cache_key, index)
             cached_data = _find_compatible_autoscheme_cache(
@@ -2971,7 +2988,7 @@ def _gen_layer_config(
         ]
         worker_device_pool = [device for device in device_list if str(device).startswith("cuda:")]
         num_gpus = len(worker_device_pool)
-        parallel_enabled = _envs.AR_ENABLE_AUTO_SCHEME_PARALLEL
+        parallel_enabled = _envs.AR_ENABLE_AUTO_SCHEME_PARALLEL and not (hessian_method or task_taylor_method)
         worker_disk_stream_model = _prefer_disk_stream_scheme_worker(
             _model_id_for_cache, is_vlm, auto_scheme.low_gpu_mem_usage
         )
@@ -3302,7 +3319,20 @@ def _gen_layer_config(
                             bits, _ = compute_layer_bits(get_module(model, name), auto_scheme.ignore_scale_zp_bits)
                             per_op_scores[name] = [bits, 0.0]
                     else:
-                        per_op_scores = get_score_for_scheme(
+                        score_func = get_score_for_scheme
+                        score_kwargs = {}
+                        if hessian_method:
+                            from auto_round.auto_scheme.hessian import get_hessian_score_for_scheme
+
+                            score_func = get_hessian_score_for_scheme
+                            score_kwargs["diagonal"] = auto_scheme.method == "hessian_diag"
+                        elif task_taylor_method:
+                            from auto_round.auto_scheme.task_taylor import get_task_taylor_score_for_scheme
+
+                            score_func = get_task_taylor_score_for_scheme
+                            score_kwargs["method"] = auto_scheme.method
+                            score_kwargs["progress_steps"] = pbar_cnt // max(effective_scheme_num, 1)
+                        per_op_scores = score_func(
                             model,
                             tokenizer,
                             quant_layer_names,
@@ -3324,6 +3354,7 @@ def _gen_layer_config(
                             model_name=model_name,
                             scheme_tag=scheme_tag,
                             disk_index=disk_index,
+                            **score_kwargs,
                         )
                     memory_monitor.update()
                     memory_monitor.log_summary()
@@ -3616,7 +3647,9 @@ def _enforce_w8_symmetric_entries(layer_config: dict, allow_w8_asym: bool = Fals
 
 
 # Supports model with gradient clearing between iterations
-@register_scheme_methods(("default", "DeltaLoss"))
+@register_scheme_methods(
+    ("default", "DeltaLoss", "hessian", "hessian_diag", "task_first", "task_second", "task_first_second")
+)
 def gen_layer_config(
     auto_scheme: AutoScheme,
     model: str | torch.nn.Module,
@@ -3782,6 +3815,8 @@ def gen_layer_config(
             disk_index=disk_index,
         )
     except torch.OutOfMemoryError:
+        if auto_scheme.method in ("task_first", "task_second", "task_first_second"):
+            raise
         logger.warning(
             "Fallback to CPU for automatic scheme generation."
             " Using multiple devices is strongly recommended (e.g., --device_map 0,1,2,3)."
