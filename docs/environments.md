@@ -40,6 +40,16 @@ export AR_ENABLE_COMPILE_PACKING=1
 export AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE=0
 ```
 
+### AR_DISABLE_DEFAULT_SHARED_LAYERS
+- **Description**: Disables AutoScheme's default sharing of one quantization scheme across the projections vLLM/SGLang fuse at serving time (`q_proj`/`k_proj`/`v_proj`, MLA `q_a_proj`/`kv_a_proj_with_mqa`, `gate_proj`/`up_proj`). A fused kernel can only apply one scheme, so sharing is enabled by default. Equivalent to `AutoScheme(default_shared_layers=False)` and the CLI flag `--disable_default_shared_layers`.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"` (case-insensitive) to disable the defaults; any other value keeps them.
+- **Usage**: Only disable when targeting a runtime that does not fuse these projections, or when you deliberately want per-projection schemes.
+
+```bash
+export AR_DISABLE_DEFAULT_SHARED_LAYERS=1
+```
+
 ### AR_USE_MODELSCOPE
 - **Description**: Controls whether to use ModelScope for model downloads
 - **Default**: `False`
@@ -68,6 +78,25 @@ export AR_QUANTIZE_BAGEL_MOE_GEN=1
 
 ```bash
 export AR_WORK_SPACE=/path/to/custom/workspace
+```
+
+### AR_CACHE
+- **Description**: Overrides the persistent cache root for diffusion calibration datasets and downloaded GGUF converters.
+- **Default**: Unset (`None`); datasets use `~/.cache/auto_round`, while GGUF converters use `~/.cache/auto-round`.
+- **Usage**: Dataset caches are stored under `$AR_CACHE/datasets`, and GGUF converters under `$AR_CACHE/gguf_conversion`. This does not change `AR_WORK_SPACE`.
+
+```bash
+export AR_CACHE=/path/to/cache
+```
+
+### AR_GGUF_AUTO_UPDATE
+- **Description**: Allows downloading a newer llama.cpp converter when the bundled converter does not support a model.
+- **Default**: `False` (equivalent to `"0"`)
+- **Valid Values**: `"1"`, `"true"`, `"yes"`, or `"on"` (case-insensitive) enable it; other values disable it.
+- **Usage**: Enable to allow automatic converter downloads; downloaded files use the GGUF converter cache.
+
+```bash
+export AR_GGUF_AUTO_UPDATE=1
 ```
 
 ### AR_DISABLE_OFFLOAD

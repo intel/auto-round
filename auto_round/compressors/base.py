@@ -48,6 +48,7 @@ from auto_round.schemes import (
     QuantizationScheme,
     _handle_special_schemes,
     get_gguf_scheme,
+    needs_nvfp_global_scale,
     parse_scheme,
     preset_name_to_scheme,
     scheme_to_preset_name,
@@ -92,6 +93,14 @@ MIN_ITERS_FOR_TORCH_COMPILE = 10
 
 @dataclass
 class SerializedCompressorConfig:
+    """Fields shared by every compression run, exported into ``quantization_config``.
+
+    Algorithm-specific fields (``iters``, ``lr``, ``enable_quanted_input``, ...) do
+    not belong here: each algorithm config declares them via
+    ``AlgorithmConfig.serialized_fields`` so that only the algorithm that owns a
+    field can export it.
+    """
+
     bits: int | None = None
     act_bits: int | None = None
     data_type: str | None = None
@@ -103,14 +112,7 @@ class SerializedCompressorConfig:
     act_dynamic: bool | None = None
     amp: bool | None = None
     batch_size: int | None = None
-    enable_minmax_tuning: bool | None = True
-    enable_norm_bias_tuning: bool | None = False
-    enable_quanted_input: bool | None = True
-    gradient_accumulate_steps: int | None = None
-    iters: int | None = None
-    lr: float | None = None
     low_gpu_mem_usage: bool | None = None
-    minmax_lr: float | None = None
     nsamples: int | None = None
     quant_block_list: list[str] | None = None
     regex_config: dict[str, Any] | None = None
@@ -128,30 +130,6 @@ class SerializedCompressorConfig:
 
 
 SERIALIZATION_KEYS = tuple(field.name for field in fields(SerializedCompressorConfig))
-
-
-def collect_user_scheme_overrides(configs: list[Any]) -> dict[str, Any]:
-    scheme_fields = {f.name for f in fields(QuantizationScheme)}
-    user_scheme_overrides = {}
-    user_scheme_sources = {}
-    for config in configs:
-        for key in getattr(config, "_user_set_scheme_fields", set()):
-            if key not in scheme_fields:
-                continue
-            value = getattr(config, key, None)
-            if value is None:
-                continue
-            if key in user_scheme_overrides and value != user_scheme_overrides[key]:
-                prev_config, prev_value = user_scheme_sources[key]
-                raise ValueError(
-                    f"Conflicting shared scheme field {key!r}: "
-                    f"{type(prev_config).__name__}.{key}={prev_value!r}, "
-                    f"{type(config).__name__}.{key}={value!r}. "
-                    "Use the same value for shared fields or pass scheme arguments through Compressor."
-                )
-            user_scheme_overrides[key] = value
-            user_scheme_sources[key] = (config, value)
-    return user_scheme_overrides
 
 
 def _make_compressor_scheme_property(name):
@@ -236,9 +214,11 @@ class BaseOrchestrator:
         platform: str = "hf",
         format: str | list | None = None,
         scheme: str | dict | QuantizationScheme | AutoScheme = "W4A16",
+        scheme_overrides: dict[str, Any] | None = None,
         low_gpu_mem_usage: bool = False,
         calibration_data_device: str = "auto",
         device_map: str | torch.device | int | dict = 0,
+        parallel_config=None,
         enable_torch_compile: bool | None = None,
         seed: int = 42,
         low_cpu_mem_usage: bool = True,
@@ -258,7 +238,21 @@ class BaseOrchestrator:
         # via property forwarders.  ``_resolve_scheme`` later wires this same
         # instance onto the quantizer so the two share state.
         from auto_round.calibration.state import CalibrationContext
+        from auto_round.parallel import ParallelConfig
         from auto_round.utils.dataset_utils import CalibDataset, normalize_dataset_spec
+
+        self._user_scheme_overrides = dict(scheme_overrides or {})
+        for field in QuantizationScheme.get_attributes():
+            if field in kwargs:
+                value = kwargs.pop(field)
+                if value is not None:
+                    self._user_scheme_overrides[field] = value
+
+        self.parallel_config = ParallelConfig.from_value(parallel_config)
+        device_manager.set_tensor_parallel(self.parallel_config.tp_size > 1)
+        from auto_round.parallel.execution import ParallelExecution
+
+        self.parallel_execution = ParallelExecution(self.parallel_config)
 
         # Normalize CalibDataset objects to spec strings
         if isinstance(dataset, CalibDataset):
@@ -284,11 +278,11 @@ class BaseOrchestrator:
         self._alg_configs: list = list(_config_list)
         from auto_round.algorithms.config_resolver import split_quantization_configs
 
-        _preprocessor_configs, _block_quantizer_configs = split_quantization_configs(self._alg_configs)
-        if _block_quantizer_configs:
+        _preprocessor_configs, _quantizer_configs = split_quantization_configs(self._alg_configs)
+        if _quantizer_configs:
             # The terminal stage drives public scheme/format resolution. Stage
             # ordering and compatibility are exclusively the composer's job.
-            self.quantize_config = _block_quantizer_configs[-1]
+            self.quantize_config = _quantizer_configs[-1]
         elif _preprocessor_configs:
             from auto_round.algorithms.quantization.rtn.config import RTNConfig as _RTNConfig
 
@@ -297,15 +291,15 @@ class BaseOrchestrator:
         for _cfg in self._alg_configs:
             if isinstance(_cfg, BaseRotationConfig):
                 if hasattr(_cfg, "block_size") and _cfg.block_size is None:
-                    if "group_size" in kwargs:
-                        block_size = kwargs["group_size"]
-                    else:
-                        block_size = parse_scheme(
-                            scheme, {}, format=_formats_policy_string_of(getattr(self, "formats", None))
-                        )[2]["group_size"]
-                    _cfg.block_size = block_size  # TODO not robust
+                    block_size = parse_scheme(
+                        scheme, self._user_scheme_overrides, format=_formats_policy_string_of(format)
+                    )[2]["group_size"]
+                    _cfg.block_size = block_size
                 self.rotation_configs.append(_cfg)
         assert self.quantize_config is not None, "QuantizationConfig is required for Compressor"
+        parallel_policy = self.parallel_config.resolve_data_parallel_policy(
+            device_map, iters=max(int(getattr(cfg, "iters", 0) or 0) for cfg in self._alg_configs)
+        )
 
         # Compressor-level layer params (do not live in QuantizationConfig).
         # Calibration params (nsamples/seqlen/batch_size) are owned by
@@ -348,8 +342,6 @@ class BaseOrchestrator:
         trust_remote_code = kwargs.pop("trust_remote_code") if "trust_remote_code" in kwargs else True
         quant_nontext_module = kwargs.pop("quant_nontext_module", False)
         device = kwargs.pop("device", None)
-        if device is not None:
-            logger.warning("`device` is deprecated, please use `device_map` instead")
 
         from auto_round.experimental.utils import normalize_fp8_granularity
 
@@ -445,8 +437,9 @@ class BaseOrchestrator:
             amp=amp,
             need_calib=self.need_calib,
             formats=self.formats,
-            is_act_quantize=self.quantize_config.is_act_quantize,
+            is_act_quantize=self._preview_scheme().is_act_quantize(),
             quant_nontext_module=quant_nontext_module,
+            parallel_config=self.parallel_config,
         )
         # Reset the singleton so each new orchestrator gets a fresh CompressContext.
         # CompressContext uses AutoSkipInitMeta (singleton), so without a reset the
@@ -486,6 +479,7 @@ class BaseOrchestrator:
             static_attention_dtype=self.static_attention_dtype,
             static_kv_granularity=self.static_kv_granularity,
             static_attention_granularity=self.static_attention_granularity,
+            parallel_policy=parallel_policy,
         )
         self.shard_writer = None
         # Resumability state deferred from Orchestrator._quantize_data_driven() until
@@ -572,7 +566,7 @@ class BaseOrchestrator:
 
         _, _, final_attrs = parse_scheme(
             self.scheme,
-            {},
+            self._user_scheme_overrides,
             format=_formats_policy_string_of(getattr(self, "formats", None)),
         )
         act_bits = final_attrs["act_bits"]
@@ -740,12 +734,23 @@ class BaseOrchestrator:
 
     # ── Scheme resolution ─────────────────────────────────────────────────────
 
+    def _preview_scheme(self) -> QuantizationScheme:
+        """Read scheme state before model-dependent resolution without using algorithm configs."""
+        if self.scheme_context is not None:
+            return self.scheme_context
+        _, _, attrs = parse_scheme(
+            self.scheme,
+            self._user_scheme_overrides,
+            format=_formats_policy_string_of(getattr(self, "formats", None)),
+        )
+        return QuantizationScheme.from_dict(attrs)
+
     def resolve_scheme(
         self,
         model_context: ModelContext | None = None,
         compress_context: CompressContext | None = None,
     ) -> None:
-        """Phase-1 init: resolve scheme and bind config attrs (no model structure needed).
+        """Phase-1 init: resolve the run scheme and finalize algorithm defaults.
 
         Must be called BEFORE ``_resolve_formats()`` and BEFORE ``_scheme_post_init()``.
         Idempotent: safe to call multiple times.
@@ -758,7 +763,7 @@ class BaseOrchestrator:
         if compress_context is not None:
             self.compress_context = compress_context
 
-        user_scheme_overrides = collect_user_scheme_overrides(self._alg_configs)
+        user_scheme_overrides = self._user_scheme_overrides
         default_scheme, self.is_auto_scheme, final_attrs = parse_scheme(
             self.scheme,
             user_scheme_overrides,
@@ -766,14 +771,20 @@ class BaseOrchestrator:
         )
 
         self.scheme_context = QuantizationScheme.from_dict(final_attrs)
-        for config in self._alg_configs:
-            if hasattr(config, "scheme"):
-                config.scheme = self.scheme_context
+        # Inference consumes Hadamard metadata as a mapping, after transform
+        # defaults (including block_size) have been finalized. Other rotation
+        # algorithms serialize under their own keys.
+        from auto_round.algorithms.transforms.hadamard.config import RotationConfig
+
+        for rotation_config in self.rotation_configs:
+            if isinstance(rotation_config, RotationConfig):
+                self.scheme_context.rotation_config = rotation_config.model_dump()
+        self.scheme_context.validate()
         self.quantize_config.check_config()
         for config in self._alg_configs:
             finalize_scheme = getattr(config, "finalize_scheme", None)
             if callable(finalize_scheme):
-                finalize_scheme()
+                finalize_scheme(self.scheme_context)
 
         self.orig_scheme = copy.deepcopy(self.scheme)
         self.scheme = default_scheme
@@ -806,6 +817,10 @@ class BaseOrchestrator:
             )
             if self.to_quant_block_names is None and self.quant_block_list:
                 self.to_quant_block_names = extract_block_names_to_str(self.quant_block_list)
+
+        resolution = getattr(self, "_format_resolution", None)
+        if resolution is not None:
+            self._format_resolution = replace(resolution, quant_block_list=self.quant_block_list)
 
         self.configure_layer_config(enable_gguf_official_mixed=enable_gguf_official_mixed)
 
@@ -844,7 +859,11 @@ class BaseOrchestrator:
             all_dtypes.append(dtype)
 
         unique_dtypes = set(all_dtypes)
-        if len(unique_dtypes) > 1 and not all_gguf:
+        # BF16 (data_type="fp") mixed with integer schemes is a supported
+        # mixed-bit AutoScheme case (some layers stay full-precision).
+        # Only warn when there are multiple non-fp quantized data types.
+        non_fp_dtypes = {d for d in unique_dtypes if d != "fp"}
+        if len(non_fp_dtypes) > 1 and not all_gguf:
             logger.warning(
                 "Models with mixed data_types "
                 "cannot yet be exported to real formats except GGUF. "
@@ -955,7 +974,7 @@ class BaseOrchestrator:
 
         if (
             not self.compress_context.enable_torch_compile
-            and self.quantize_config.super_bits is None
+            and self.scheme_context.super_bits is None
             and not self.orig_scheme.low_gpu_mem_usage
         ):
             logger.warning("we strongly recommend to set `enable_torch_compile` to True for AutoScheme to save VRAM")
@@ -1208,14 +1227,14 @@ class BaseOrchestrator:
 
     def _get_torch_compile_guard_state(self) -> tuple[bool, bool]:
         """Return raw dtype state used by torch.compile guard rules."""
-        # Determine fp8 / nvfp4 intent from raw config before scheme resolution.
-        cfg = self.quantize_config
+        # Determine fp8 / nvfp4 intent independently of algorithm settings.
+        cfg = self._preview_scheme()
         raw_scheme = self.scheme if isinstance(self.scheme, str) else ""
         raw_dt = (cfg.data_type or "").lower()
         raw_adt = (cfg.act_data_type or "").lower()
         raw_scheme_upper = raw_scheme.upper()
 
-        is_raw_nv_fp = "nv_fp" in raw_dt or "nv_fp" in raw_adt or "NVFP" in raw_scheme_upper
+        is_raw_nv_fp = needs_nvfp_global_scale(raw_dt) or needs_nvfp_global_scale(raw_adt) or "NVFP" in raw_scheme_upper
         has_static_global_scale = "static_gs" in raw_adt or "NVFP4" in raw_scheme_upper
         is_valid_act_static = (cfg.act_dynamic is False or has_static_global_scale) and (
             getattr(cfg, "act_bits", 16) or 16
@@ -1223,12 +1242,31 @@ class BaseOrchestrator:
 
         return is_raw_nv_fp, is_valid_act_static
 
+    @property
+    def enable_block_forward_compile(self) -> bool:
+        """Whether the whole block forward may be compiled.
+
+        This is intentionally separate from :attr:`enable_torch_compile`, which
+        controls the per-layer quantization kernels.  Schemas such as NVFP4
+        need an eager block forward for the calibration pass that collects
+        ``act_max`` through hooks, but their quant kernels can still be
+        compiled.  Static KV/attention calibration installs hooks that run on
+        every attention forward, so those runs keep the block forward eager.
+        """
+        if not getattr(self, "enable_torch_compile", False):
+            return False
+        return not (
+            getattr(self, "static_kv_dtype", None) is not None
+            or getattr(self, "static_attention_dtype", None) is not None
+        )
+
     def _maybe_log_torch_compile_default_hint(self) -> None:
         """Log the default torch.compile hint once final config state is available."""
         is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
 
         if (
             not self.enable_torch_compile
+            and getattr(getattr(self, "parallel_config", None), "tp_size", 1) == 1
             and TORCH_VERSION_AT_LEAST_2_6
             and not is_debug_mode()
             and not is_raw_nv_fp
@@ -1306,6 +1344,10 @@ class BaseOrchestrator:
 
     def _apply_torch_compile_constraints(self, enable_torch_compile: bool) -> None:
         """Apply torch.compile disabling rules for the current compressor state."""
+        if getattr(getattr(self, "parallel_config", None), "tp_size", 1) > 1:
+            self.enable_torch_compile = False
+            self._torch_compile_off_reason = "native TP QDQ does not support torch.compile yet"
+            return
         self.enable_torch_compile = enable_torch_compile
         # Why compilation ended up off, used by ``_log_torch_compile_state``.  When the
         # incoming value is already False, keep the reason recorded by the earlier
@@ -1318,10 +1360,14 @@ class BaseOrchestrator:
                 or getattr(self, "_torch_compile_default_off_reason", None)
             )
         )
-        _, is_valid_act_static = self._get_torch_compile_guard_state()
+        is_raw_nv_fp, is_valid_act_static = self._get_torch_compile_guard_state()
 
-        # On HPU, we rely on torch.compile to speed up the model execution.
-        if self.enable_torch_compile and is_valid_act_static:
+        # Static-activation FP8 needs eager calibration hooks, so keep the old
+        # all-or-nothing behavior there.  NVFP4 also has a static global scale,
+        # but only its block-forward calibration pass needs to stay eager; the
+        # per-layer quant functions are safe to compile, and disabling them is
+        # what made NVFP4 tuning needlessly slow.
+        if self.enable_torch_compile and is_valid_act_static and not is_raw_nv_fp:
             self.enable_torch_compile = False
             self._torch_compile_off_reason = "activation is static"
             logger.warning_once("reset enable_torch_compile to `False` as activation is static")
@@ -1375,14 +1421,6 @@ class BaseOrchestrator:
         else:
             logger.info("`torch.compile` is disabled, as %s", reason)
 
-    def _get_calibration_dataset(self) -> str:
-        """Resolve calibration dataset: self.dataset > AutoScheme.dataset > default."""
-        dataset = self.calibration_context.dataset
-        if dataset is not None:
-            return dataset
-
-        return "NeelNanda/pile-10k"
-
     def post_init(self) -> None:
         """One-time initialization that requires a loaded model.
 
@@ -1407,7 +1445,7 @@ class BaseOrchestrator:
         # tensors that are still backed by safetensors' mmap, preventing
         # per-block RSS growth (~14 MB/block) when .to(device) page-faults
         # the underlying file pages into physical memory.
-        if self.quantize_config.is_act_quantize and self.model_context.amp_dtype == torch.float16:
+        if self.scheme_context.is_act_quantize() and self.model_context.amp_dtype == torch.float16:
             logger.warning("force to use bf16 for quantization tuning when enabling activation quantization")
             self.model_context.amp_dtype = torch.bfloat16
             if self.model_context.model.dtype != torch.bfloat16:
@@ -1459,13 +1497,13 @@ class BaseOrchestrator:
             and ``self.quantize_config``.
 
         Postconditions:
-          - ``self.scheme`` and ``self.quantize_config`` carry resolved scheme attrs.
+          - ``self.scheme`` and ``self.scheme_context`` carry resolved scheme attrs.
         """
         if self.to_quant_block_names is None:
             self.to_quant_block_names = getattr(self.model_context.model, "_autoround_to_quant_block_names", None)
 
         # Resolve the scheme (pure config work: sets data_type / bits / sym /
-        # scale_dtype etc. on both self and self.quantize_config).
+        # scale_dtype etc. on the shared scheme context).
         self.resolve_scheme(
             model_context=self.model_context,
             compress_context=self.compress_context,
@@ -1475,25 +1513,25 @@ class BaseOrchestrator:
         """Phase 1b – Quantizer construction and wiring.
 
         Preconditions:
-                    - :meth:`_resolve_scheme` complete: ``self.quantize_config`` carries
+                    - :meth:`_resolve_scheme` complete: ``self.scheme_context`` carries
                         resolved scheme attrs.
                     - :meth:`_resolve_formats` complete: format-driven overrides have
-                        been synced back to ``self.quantize_config``.
+                        been applied to ``self.scheme_context``.
 
         Work performed:
-          - Constructs the block_quantizer from the resolved config.
+          - Constructs the quantizers from the resolved configs.
           - Wraps it in a :class:`~auto_round.algorithms.pipeline.AlgorithmComposer`
             so that the entire compressor operates through the bundle abstraction.
           - Calls ``quantizer.bind(self)`` so the quantizer pulls
             ``model_context`` / ``compress_context`` / ``scale_dtype`` /
             ``CalibrationContext`` from this compressor.  ``quantizer.model``
             is a property that reads ``model_context.model``.
-          - Exposes ``self.alg_composer.block_quantizer`` so all quantization
-            call-sites can reach the block quantizer directly.
+          - Exposes ``self.alg_composer.active_quantizer`` so all quantization
+            call-sites can reach the current quantizer directly.
 
         Postconditions:
           - ``self.alg_composer`` is an ``AlgorithmComposer`` wrapping the block quantizer.
-          - ``self.alg_composer.block_quantizer`` is ready and shares ``CalibrationContext``
+          - ``self.alg_composer.active_quantizer`` is ready and shares ``CalibrationContext``
             with the compressor.
         """
         from auto_round.algorithms.composer import AlgorithmComposer
@@ -1508,7 +1546,7 @@ class BaseOrchestrator:
         # picked up the final ``self.scale_dtype``/``self.scheme_context`` above.
         plan = getattr(self, "compression_plan", None)
         if plan is not None:
-            block_quantizer = self._alg_composer.block_quantizer
+            active_quantizer = self._alg_composer.active_quantizer
             for quantizer in self._alg_composer.quantizers:
                 quantizer.layer_config = {name: dict(config) for name, config in plan.layer_config.items()}
                 quantizer.has_qlayer_outside_block = plan.has_qlayer_outside_block
@@ -1521,13 +1559,13 @@ class BaseOrchestrator:
 
             from auto_round.algorithms.config_resolver import sync_shared_config_from
 
-            sync_shared_config_from(block_quantizer.config, [pre.config for pre in self._alg_composer.preprocessors])
+            sync_shared_config_from(active_quantizer.config, [pre.config for pre in self._alg_composer.preprocessors])
 
             # Also sync runtime-only state to all preprocessors so they have access to
             # per-layer quant config during pre-processing (e.g. AWQ grid search uses
             # layer_config to look up bits/group_size for each layer).
             for pre in self._alg_composer.preprocessors:
-                pre.layer_config = block_quantizer.layer_config
+                pre.layer_config = active_quantizer.layer_config
 
     @property
     def alg_composer(self) -> Any:
@@ -1592,9 +1630,6 @@ class BaseOrchestrator:
             else None
         )
         self.scheme_context = scheme
-        for config in self._alg_configs:
-            if hasattr(config, "scheme"):
-                config.scheme = self.scheme_context
         # self.scheme must stay an independent object from self.scheme_context
         # (the existing invariant from resolve_scheme(), Phase 1) — never assign
         # the same reference here even though it would often "work".
@@ -1629,7 +1664,7 @@ class BaseOrchestrator:
             :class:`~auto_round.export.formats.OutputFormat` objects via
             :meth:`_resolve_format_string`, which also propagates any scheme
             correction (e.g. GGUF's ``gguf_args_check``) onto ``self.scheme``,
-            ``self.scheme_context``, the algorithm configs that share it, and
+            ``self.scheme_context`` and
             ``self.quantize_config``.
           - Initialises :class:`~auto_round.compressors.shard_writer.ShardWriter`
             when formats are present.
@@ -1695,7 +1730,7 @@ class BaseOrchestrator:
         Preconditions:
           - Phase 4 complete: ``layer_config`` is built and
             ``has_qlayer_outside_block`` is known.
-          - ``self.quantize_config.data_type`` is the final resolved value
+          - ``self.scheme_context.data_type`` is the final resolved value
             (needed by :meth:`_finalize_torch_compile`).
 
         Work performed:
@@ -1717,6 +1752,8 @@ class BaseOrchestrator:
         # Re-evaluate torch.compile eligibility now that data_type is resolved.
         self._finalize_torch_compile()
         self.compress_context.enable_torch_compile = self.enable_torch_compile
+        if self.parallel_execution.is_tp:
+            self.compress_context.low_cpu_mem_usage = False
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()
 
@@ -1732,9 +1769,7 @@ class BaseOrchestrator:
         ):
             self.inplace = False
 
-        if not hasattr(self, "formats"):
-            logger.warning("this API is deprecated, please use `quantize_and_save` instead")
-        else:
+        if hasattr(self, "formats"):
             self._adjust_immediate_packing_and_saving()
 
     # backward compatible with the legacy API
@@ -1748,14 +1783,14 @@ class BaseOrchestrator:
         if name.startswith("_"):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
-        # Delegate to block_quantizer: access _alg_composer directly from __dict__
+        # Delegate to active_quantizer: access _alg_composer directly from __dict__
         # to avoid recursion (quantizer attribute access forwards through
-        # _alg_composer.block_quantizer; going through a property inside
+        # _alg_composer.active_quantizer; going through a property inside
         # __getattr__ would re-trigger __getattr__ if _alg_composer isn't ready yet).
         _alg_composer = self.__dict__.get("_alg_composer")
         if _alg_composer is not None:
             try:
-                return object.__getattribute__(_alg_composer.block_quantizer, name)
+                return object.__getattribute__(_alg_composer.active_quantizer, name)
             except AttributeError:
                 pass
 
@@ -1814,6 +1849,10 @@ class BaseOrchestrator:
     def _adjust_immediate_packing_and_saving(self):
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
+        if getattr(getattr(self, "parallel_execution", None), "is_tp", False):
+            self.compress_context.is_immediate_packing = False
+            self.compress_context.is_immediate_saving = False
+            return
         if self.formats is None:
             return
 
@@ -1897,9 +1936,9 @@ class BaseOrchestrator:
                 self.compress_context.is_immediate_saving = False
 
         if self.compress_context.is_immediate_saving and not (
-            "int" in self.quantize_config.data_type
-            or is_nv_fp(self.quantize_config.data_type)
-            or is_mx_fp(self.quantize_config.data_type)
+            "int" in self.scheme_context.data_type
+            or is_nv_fp(self.scheme_context.data_type)
+            or is_mx_fp(self.scheme_context.data_type)
         ):
             logger.warning("immediate_saving is only supported for int/nv_fp/mx_fp quantization, set to False")
             self.compress_context.is_immediate_saving = False
@@ -1946,6 +1985,28 @@ class BaseOrchestrator:
         Returns:
             object: The compressed model object.
         """
+        from auto_round.parallel.tp.runtime import gather_for_export, is_tp_model, synchronized_export
+
+        if is_tp_model(self.model_context.model):
+            if not self.model_context.quantized:
+                raise RuntimeError("Quantize the TP model before exporting it.")
+            original = self.model_context.model
+            exported = gather_for_export(original)
+            with synchronized_export():
+                if exported is None:
+                    return (original, []) if return_folders else original
+                self.model_context.model = exported
+                try:
+                    return self.save_quantized(
+                        output_dir=output_dir,
+                        format=format,
+                        inplace=inplace,
+                        return_folders=return_folders,
+                        max_shard_size=max_shard_size,
+                        **kwargs,
+                    )
+                finally:
+                    self.model_context.model = original
         if max_shard_size is not None:
             self.max_shard_size = max_shard_size
         self.output_dir = output_dir
@@ -1982,6 +2043,9 @@ class BaseOrchestrator:
                 if value is None and calibration_context is not None:
                     value = getattr(calibration_context, key, None)
                 serialization_dict[key] = value
+            alg_composer = self.__dict__.get("_alg_composer")
+            if alg_composer is not None:
+                serialization_dict.update(alg_composer.serialized_algorithm_fields())
             from auto_round.version import __version__
 
             serialization_dict["autoround_version"] = __version__
@@ -2028,7 +2092,13 @@ class BaseOrchestrator:
                 layer_config=self.layer_config,
                 inplace=inplace,
                 tokenizer=self.model_context.tokenizer,
-                device=device_manager.device,
+                # TP export reconstructs full tensors in host RAM. Packing
+                # must not copy those tensors back onto a single accelerator.
+                device=(
+                    "cpu"
+                    if getattr(getattr(self, "parallel_config", None), "tp_size", 1) > 1
+                    else device_manager.device
+                ),
                 serialization_dict=serialization_dict,
                 **kwargs,
             )
@@ -2045,7 +2115,7 @@ class BaseOrchestrator:
         """Derive a descriptive export directory from model name and quantization config.
 
         Must be called after ``post_init()`` so that scheme-resolved attrs
-        (bits, group_size, data_type, etc.) are available on ``self.quantize_config``.
+        (bits, group_size, data_type, etc.) are available on ``self.scheme_context``.
 
         Mirrors the logic previously in ``__main__.py`` so callers only need to
         pass the base ``output_dir`` and the format string.
@@ -2057,7 +2127,7 @@ class BaseOrchestrator:
             return output_dir
 
         model_name = (getattr(self.model_context.model, "name_or_path", "") or "").rstrip("/")
-        cfg = self.quantize_config
+        cfg = self.scheme_context
         group_size = cfg.group_size
         bits = cfg.bits
         data_type = cfg.data_type or "int"
@@ -2221,7 +2291,7 @@ class BaseOrchestrator:
 
         # Save the quantized model in the specified format_list
         model, folders = self.save_quantized(output_dir, inplace=inplace, return_folders=True, **kwargs)
-        memory_monitor.log_summary()
+        device_manager.log_memory_summary()
 
         # Only now -- after the full export (packing pass, config/tokenizer
         # writes) has actually succeeded -- is it safe to drop the resume

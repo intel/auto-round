@@ -15,6 +15,7 @@
 
 import math
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -132,6 +133,13 @@ class TestGetReciprocal:
         assert r[2].item() == 0.0
         assert r[1].item() == 0.5
         assert r[3].item() == 0.25
+
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+    def test_tensor_with_zero_backward(self, dtype):
+        x = torch.tensor([0.0, 2.0, -2.0], dtype=dtype, requires_grad=True)
+        get_reciprocal(x).sum().backward()
+        torch.testing.assert_close(x.grad, torch.tensor([0.0, -0.25, -0.25], dtype=dtype))
+        assert torch.isfinite(x.grad).all()
 
     def test_float(self):
         assert get_reciprocal(2.0) == 0.5
@@ -691,10 +699,32 @@ class TestFp4V2WithGlobalScale:
         q, s, z = nvfp4_v2_with_global_scale(t, group_size=16, tensor_max=tm)
         assert q.shape == t.shape
 
+    @pytest.mark.parametrize("group_size", [16, 32])
+    @pytest.mark.parametrize("to_value", [list, np.array, torch.tensor], ids=["list", "numpy", "tensor"])
+    def test_tensor_max_vector_matches_its_scalar_maximum(self, group_size, to_value):
+        tensor = torch.ones(1, group_size)
+        q_scalar, scale_scalar, _ = nvfp4_v2_with_global_scale(
+            tensor, group_size=group_size, tensor_max=torch.tensor(2.0)
+        )
+        q_vector, scale_vector, _ = nvfp4_v2_with_global_scale(
+            tensor, group_size=group_size, tensor_max=to_value([1.0, 2.0])
+        )
+        torch.testing.assert_close(q_vector, q_scalar)
+        torch.testing.assert_close(scale_vector, scale_scalar)
+
     def test_with_max_scale(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
         q, s, z = nvfp4_v2_with_global_scale(t, group_size=16, max_scale=1.5)
         assert q.shape == t.shape
+
+    @pytest.mark.parametrize("group_size", [16, 32])
+    def test_max_scale_clips_each_group(self, group_size):
+        tensor = torch.ones(2, group_size)
+        max_scale = torch.tensor([[0.5], [0.25]])
+        q, scale, _ = nvfp4_v2_with_global_scale(tensor, group_size=group_size, max_scale=max_scale)
+        torch.testing.assert_close(q[0], torch.full_like(q[0], 0.5))
+        torch.testing.assert_close(q[1], torch.full_like(q[1], 0.25))
+        torch.testing.assert_close(scale.reshape(-1), torch.tensor([57344.0, 28672.0]))
 
     def test_float16_input(self):
         t = torch.randn(4, 32, dtype=torch.float16)

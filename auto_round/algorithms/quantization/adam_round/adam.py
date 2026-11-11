@@ -16,12 +16,12 @@ import torch
 
 from auto_round.algorithms.quantization.sign_round.config import AdamRoundConfig
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_quantizer
 from auto_round.utils import check_is_cpu, htcore, is_hpex_available
 from auto_round.utils.device_manager import device_manager
 
 
-@register_pipeline_member(AdamRoundConfig)
+@register_quantizer(AdamRoundConfig)
 class AdamRoundQuantizer(SignRoundQuantizer):
 
     def __init__(self, config: AdamRoundConfig) -> None:

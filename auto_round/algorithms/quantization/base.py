@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import traceback
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import torch
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
+    from auto_round.parallel.prepared import PreparedRun
 
 from auto_round.algorithms.base import BaseAlgorithm
 from auto_round.algorithms.quantization.config import QuantizationConfig
@@ -56,13 +58,48 @@ class BaseQuantizer(BaseAlgorithm):
     #: those passes stay serial. A quantizer without hooks needs no declaration.
     calibration_stats: dict[str, str] | None = None
 
-    def __init__(self, config: QuantizationConfig) -> None:
-        super().__init__(config)
-        # Whether to feed quantized-block outputs as inputs to the next block.
-        # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
-        # override this from their config.  Defaults to False for zero-shot algorithms
-        # (RTN) where activations are not used during weight optimization.
-        self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
+    def prepare_model_run(
+        self,
+        model: torch.nn.Module,
+        samples: Sequence[Any] | None = None,
+        device: str | torch.device | None = None,
+        *,
+        whole_model: bool = False,
+    ) -> "PreparedRun":
+        """Enter this scope to execute a custom algorithm without TP/DP branches.
+
+        Execution contract for block and whole-model algorithms:
+          1. Enter before calibration/teacher construction; use ``run.samples``.
+             Whole-model scopes restore residency and clear old dispatch hints;
+             block scopes keep the composer's placement.
+          2. Install trainable wrappers and configure checkpointing, then call
+             ``run.prepare_training(self)`` once, before student forwards.
+          3. Use ``run.forward(..., output='logits')`` (or no output selector for
+             block tensors) and ``run.next_batch(sampler)``. DTensor outputs are
+             materialized with autograd preserved; ordinary tensors must already
+             be complete activations. Weights remain sharded.
+          4. Keep custom loss/backward logic. After accumulation call
+             ``run.step(update_callback)`` instead of synchronizing gradients.
+             The callback owns optimizer/scaler/scheduler updates and any FP
+             master copies. Do not separately synchronize the same gradients.
+          5. For forward-result caches, use ``run.cache.workspace/signature`` and
+             ``run.cache.ensure(local_valid, build_callback)`` on every model-
+             parallel participant, never a rank-local branch around a forward.
+
+        This does not automatically adapt arbitrary weight math or closure-based
+        optimizers. Use the existing tensor services for shard-sensitive math.
+        Whole-model naive pipeline parallelism and unsupported topologies fail early.
+
+        Args:
+            model (torch.nn.Module): Model or block to execute inside the managed scope.
+            samples (Sequence | None): Optional input samples synchronized across TP participants on entry.
+            device (str | torch.device | None): Execution device, defaulting to the current managed device.
+            whole_model (bool): Whether entering the scope restores the entire model's residency.
+
+        Returns:
+            PreparedRun: Context manager for the algorithm's custom execution loop.
+        """
+        return self.parallel.prepare_run(model, samples, device, whole_model=whole_model)
 
     def can_compile_block_forward(self):
         return True
@@ -228,6 +265,13 @@ class BaseQuantizer(BaseAlgorithm):
         layer_name = layer.global_name
         layer = convert_module_to_hp_if_necessary(layer, self.model_context.amp_dtype, device_manager.device)
         set_module(self.model, layer_name, layer)
+        from auto_round.parallel.tp.runtime import is_dtensor
+
+        wrapper_class = WrapperLinear
+        if is_dtensor(layer.weight):
+            from auto_round.parallel.tp.qdq import tensor_parallel_wrapper
+
+            wrapper_class = tensor_parallel_wrapper(wrapper_class)
         tuning_device = layer.tuning_device if hasattr(layer, "tuning_device") else device_manager.device
         try:
             if disable_opt_rtn is None:
@@ -238,7 +282,7 @@ class BaseQuantizer(BaseAlgorithm):
                 and self.model_context.is_moe_model
                 and "expert" in layer.global_name
                 and "shared_expert" not in layer.global_name
-                and self.config.super_bits is None
+                and getattr(self.scheme, "super_bits", None) is None
             ):
                 disable_opt_rtn = True
                 logger.warning_once(
@@ -246,7 +290,7 @@ class BaseQuantizer(BaseAlgorithm):
                     "Use `--enable_opt_rtn` to force-enable it for MoE layers."
                 )
             layer = layer.to(tuning_device)
-            layer = WrapperLinear(
+            layer = wrapper_class(
                 layer,
                 device=tuning_device,
                 enable_minmax_tuning=False,
@@ -265,6 +309,8 @@ class BaseQuantizer(BaseAlgorithm):
                 return layer
             layer = layer.unwrapper({})
         except torch.OutOfMemoryError:
+            if self.parallel.is_tp:
+                raise
             from auto_round.algorithms.quantization.search_dispatch import dump_oom_tensor_census_
 
             dump_oom_tensor_census_("rtn layer search")
@@ -353,7 +399,7 @@ class BaseQuantizer(BaseAlgorithm):
         thread ranks the engine already placed each rank's shard on its device,
         so the pool stays as it is.
         """
-        from auto_round.algorithms.parallel.spmd import current_rank
+        from auto_round.parallel.dp.spmd import current_rank
 
         if current_rank() is not None:
             return pool
@@ -383,8 +429,18 @@ class BaseQuantizer(BaseAlgorithm):
         Returns the block after device placement.
         Subclasses override for multi-GPU tensor-parallel dispatch.
         """
-        block = block.to(device_manager.device)
-        return block
+        placement = self.parallel.dispatch_block(
+            block,
+            input_ids,
+            input_others,
+            tuning=getattr(self, "iters", 0) > 0,
+            is_diffusion=getattr(self.model_context, "is_diffusion", False),
+            low_gpu_mem_usage=getattr(self.compress_context, "low_gpu_mem_usage", False),
+            batch_size=getattr(self.calibration_context, "batch_size", 1),
+        )
+        self._card_0_in_high_risk = placement.primary_device_at_risk
+        self._loss_device = placement.loss_device
+        return placement.block
 
     def finalize_block(self, block: "torch.nn.Module", block_ctx: "BlockContext | None" = None) -> None:
         """Post-tuning, quantizer-agnostic finalization for a compressed block.
@@ -399,7 +455,8 @@ class BaseQuantizer(BaseAlgorithm):
         from auto_round.schemes import is_nvfp4_e5m3_gs
         from auto_round.utils import set_amax_for_all_moe_layers
 
-        if self.config.is_act_nv_fp or is_nvfp4_e5m3_gs(self.config.act_data_type or ""):
+        scheme = self.scheme
+        if scheme is not None and (scheme.is_act_nv_fp() or is_nvfp4_e5m3_gs(scheme.act_data_type or "")):
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 

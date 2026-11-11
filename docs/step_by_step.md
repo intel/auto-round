@@ -229,7 +229,7 @@ adopted within the community, **only 4-bits quantization is supported**. Please 
 
 **MLX Format**[Experimental Feature]: This format targets Apple Silicon (M1/M2/M3/...) and is loaded directly by [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (text-only LLM) or [`mlx-vlm`](https://github.com/Blaizzy/mlx-vlm) (vision/audio + language).
 - Supports **2, 3, 4, 5, 6, 8 bits** (5/6 bits are MLX-exclusive — GPTQ/AWQ have no standard packing for them).
-- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--schemes "..." --bits 3.5`);
+- Native **mixed-bit / mixed-group_size** via `layer_config` or AutoScheme (`--scheme "..." --bits 3.5`);
 - Use `--format mlx` for a native MLX checkpoint; use `--format auto_round:mlx` if you want HuggingFace `transformers` + AutoRound to load it (post-init repacks each layer into MLX `QuantLinear` on Darwin).
 - Limitation: embedding layer quantization has not supported
 #### Format and scheme support matrix
@@ -317,6 +317,8 @@ output_dir = "./tmp_autoround"
 # format= 'auto_round'(default), 'auto_gptq', 'auto_awq'
 ar.quantize_and_save(output_dir, format="auto_gptq,auto_awq,auto_round")
 ```
+
+Quantization scheme fields such as `bits`, `group_size`, `sym`, and `act_bits` belong to `AutoRound`, not algorithm configs. Use `AutoRound(model, group_size=16, sym=True, alg_configs=SignRoundConfig(iters=200))`; `SignRoundConfig(group_size=16)` and `SignRoundConfig(scheme="W4A16")` raise an error. All stages use the shared run scheme.
 
 #### Mixed Bits Usage
 AutoRound(>0.8) offers auto-scheme to generate mixed bits recipe autocially, please refer to [AutoScheme](#autoscheme) section for more details.
@@ -421,18 +423,20 @@ AWQ (Activation-Aware Weight Quantization) is available as an alternative quanti
 
 The canonical AWQ deployment path is **W4A16** served by vLLM's AWQ/Marlin CUDA kernels. **INT8** is AutoRound's W8A8 scheme and can use AWQ smoothing before RTN quantization for vLLM's compressed_tensors backend (cutlass INT8 GEMM).
 
-AWQ can also be composed with AutoRound optimization (`--algorithm awq,auto_round`). See [AWQ algorithm results](./awq_details.md) for accuracy and cost comparisons across W4A16, MXFP4, and INT8.
+AWQ can also be composed with AutoRound optimization (`--alg_configs awq,auto_round`). See [AWQ algorithm results](./awq_details.md) for accuracy and cost comparisons across W4A16, MXFP4, and INT8.
 
 #### CLI Usage
 
+The canonical algorithm selector is `--alg_configs`, matching the Python API's `alg_configs`. `--alg_config`, `--algorithm`, `--algorithms`, `--alg`, and `--algs` remain aliases.
+
 ```bash
-auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq --format "auto_round"
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --alg_configs awq --format "auto_round"
 ```
 
 AWQ can also be paired with AutoRound optimization:
 
 ```bash
-auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --algorithm awq,auto_round
+auto-round --model Qwen/Qwen3-0.6B --scheme "W4A16" --alg_configs awq,auto_round
 ```
 
 Recommended INT8/W8A8 recipe using AWQ smoothing:
@@ -441,7 +445,7 @@ Recommended INT8/W8A8 recipe using AWQ smoothing:
 auto-round \
   --model Qwen/Qwen3-0.6B \
   --scheme INT8 \
-  --algorithm awq \
+  --alg_configs awq \
   --nsamples 256 \
   --awq_seqlen 512 \
   --awq_apply_clip \
@@ -502,7 +506,7 @@ RTN (recommended starting point):
 
 ```bash
 auto-round-rtn --model /path/to/FLUX.1-dev --model_dtype bf16 \
-  --scheme MXFP4 --algorithm svdquant --device 0 \
+  --scheme MXFP4 --alg_configs svdquant --device 0 \
   --format svdquant_nunchaku \
   --output_dir ./flux-dev-mxfp4-svdquant-rtn
 ```
@@ -511,7 +515,7 @@ SignRound:
 
 ```bash
 auto-round --model /path/to/FLUX.1-dev --model_dtype bf16 \
-  --scheme MXFP4 --algorithm svdquant,auto_round \
+  --scheme MXFP4 --alg_configs svdquant,auto_round \
   --format svdquant_nunchaku \
   --dataset /path/to/captions.tsv --batch_size 1 --device 0 \
   --output_dir ./flux-dev-mxfp4-svdquant-signround
@@ -544,12 +548,12 @@ We recommend exporting to the llm_compressor format for now, as it can be easily
 - **`--iters 0`**: RTN. Fast (seconds to minutes).
 - **`--iters 200`**: Tuning-aware scheme selection. More accurate but much slower.
 
-Providing multiple `--schemes` enables AutoScheme; `--bits` is then the average target bits.
+Providing multiple candidates through `--scheme` (alias: `--schemes`) enables AutoScheme; `--bits` is then the average target bits. A single candidate selects a fixed quantization preset.
 
 ~~~bash
 auto_round \
   --model_name  $model_name \
-  --schemes "mxfp4,mxfp8" \
+  --scheme "mxfp4,mxfp8" \
   --bits 6 \
   --ignore_scale_zp_bits \
   --iters 0 \
@@ -558,20 +562,22 @@ auto_round \
 
 #### API Usage
 ~~~
-ar = AutoRound(model=model_name, schemes=("W2A16G64", "W4A16", "W8A16"), bits=3.0, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, scheme=("W2A16G64", "W4A16", "W8A16"), bits=3.0, iters=0, nsamples=1)
 ar.quantize_and_save()
 ~~~
 
 #### Hyperparameters in AutoScheme
-`bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation. Without `schemes`, `bits` is the plain weight bit width and must be an integer.
+`bits(float)` Target average bits for the whole model; only layers to be quantized will be counted in the average bits calculation. With a fixed scheme rather than an AutoScheme candidate list or tuple, `bits` is the plain weight bit width and must be an integer.
 
-`schemes(Union[str, list[Union[QuantizationScheme, str]])` the candidate quantization schemes to choose from, e.g. a string like "W4A16,W8A16", or a list of strings or QuantizationScheme objects. Providing schemes enables AutoScheme.
+`scheme(list[Union[QuantizationScheme, str]] | tuple[Union[QuantizationScheme, str], ...])` the candidate quantization schemes to choose from, e.g. `["W4A16", "W8A16"]` or `("W4A16", "W8A16")`. Pass a list or tuple of strings or QuantizationScheme objects to enable AutoScheme in Python; a single string selects a fixed preset. The Python API does not accept `schemes=`.
 
 `ignore_scale_zp_bits(bool)` Whether to ignore the bits of scale and zero point in average bits calculation. Default is False.
 
 `device_map (Optional[str,dict,torch.device])`  only supported in API now, as auto-scheme used more VRAM than auto-round tuning, so you could set a different device_map for it.
 
-`shared_layers (Optional[Iterable[Iterable[str]]])`  only supported in API now
+`shared_layers (Optional[Iterable[Iterable[str]]])`  extra groups of layers that must share one quantization scheme, on top of the built-in vLLM fusion groups (see below). Only supported in API now.
+
+`default_shared_layers (bool)` Whether to automatically share one quantization scheme across the projections vLLM/SGLang fuse at serving time: `q_proj`/`k_proj`/`v_proj` (fused into `qkv_proj`), `q_a_proj`/`kv_a_proj_with_mqa` (DeepSeek-style MLA, fused into `fused_qkv_a_proj`), and `gate_proj`/`up_proj` (fused into `gate_up_proj`). Default is `True`; set it to `False`, or export `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`, to let AutoScheme pick a scheme per projection independently. CLI: `--disable_default_shared_layers`.
 
 `batch_size (Optional[int])` could be set to 1 to reduce VRAM but increase time cost
 
@@ -579,7 +585,9 @@ ar.quantize_and_save()
 
 `calibration_data_device (str)` placement of the block calibration data in multi-GPU runs: `auto` (default) | `cpu` | `off` | `1,2` | `cuda:1,cuda:2`. CLI: `--calibration_data_device`.
 
-In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. The shared_layers option simplifies this setup by supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
+In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accelerate inference. These fused layers may require the same data type and bit configuration. `shared_layers` lets you declare such groups explicitly, supporting both regex and full-name matching. **Note that regex matching is applied in a block-wise manner.**
+
+**Fused projections are shared by default.** Because vLLM and SGLang fuse `q/k/v` into `qkv_proj` and `gate/up` into `gate_up_proj` (and DeepSeek-style MLA fuses `q_a_proj`/`kv_a_proj_with_mqa` into `fused_qkv_a_proj`), a single fused kernel can only apply one quantization scheme. AutoScheme therefore assigns one scheme per fused group out of the box, matching leaf names exactly so look-alike layers such as `q_proj_moe_gen` or `down_proj` are never pulled in. Any `shared_layers` you pass is unioned with these built-in groups. To opt out and let AutoScheme choose per projection, pass `default_shared_layers=False` or export `AR_DISABLE_DEFAULT_SHARED_LAYERS=1`.
 
 **MoE expert layers are automatically grouped per block** — all expert projections (gate/up/down across all experts) within the same transformer block are treated as a single entity during DP optimization. This means they share the same quantization scheme and their losses/numel are summed together. No manual `shared_layers` configuration is needed for expert layers.
 
@@ -587,14 +595,28 @@ In some serving frameworks, certain layers (e.g., QKV or MoE) are fused to accel
 ```python
 from auto_round import AutoRound
 
+# The vLLM fusion groups (q/k/v, MLA q_a/kv_a, gate/up) are applied automatically;
+# shared_layers only adds extra groups on top of them.
 shared_layers = [
     ["*.self_attn.k_proj", "v_proj", "q_proj", "out_proj"],
     ("model.decoder.layers.6.fc1", "model.decoder.layers.6.fc2"),
     ("fc1", "fc2"),
 ]
 model_name = "Qwen/Qwen3-0.6B"
-ar = AutoRound(model=model_name, schemes=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
+ar = AutoRound(model=model_name, scheme=("W4A16", "MXFP8"), bits=5.0, shared_layers=shared_layers, iters=0, nsamples=1)
 model, layer_config = ar.quantize()
+```
+
+To keep the pre-existing behavior (independent scheme per projection), disable the defaults:
+```python
+ar = AutoRound(
+    model=model_name,
+    scheme=("W4A16", "MXFP8"),
+    bits=5.0,
+    default_shared_layers=False,
+    iters=0,
+    nsamples=1,
+)
 ```
 
 Besides, if you want to fix the scheme for some layers, you could set it via `layer_config` in AutoRound API.
@@ -606,7 +628,7 @@ layer_config = {"lm_head": "GGUF:Q6_K"}
 
 ar = AutoRound(
     model=model_name,
-    schemes=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
+    scheme=("GGUF:Q2_K_S", "GGUF:Q4_K_S"),
     bits=3.0,
     ignore_scale_zp_bits=True,
     layer_config=layer_config,
@@ -937,35 +959,18 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A1
 There are typically two scenarios that require multi-GPU tuning: one is the calibration phase mainly for lm-head quantization, and the other is quantizing extremely large models (e.g., models larger than 100 GB).
 
 #### Parallel block tuning across GPUs
-When a tuning block fits on one GPU, `--data_parallel` uses the other GPUs of the same process for
-data-parallel tuning: the block's tuning loop runs once per GPU (a rank, one thread each) on that GPU's copy of the
-block and its share of the calibration samples, and the ranks average their gradients every iteration. This is the
-same contract as the multi-process torchrun path (`sync_gradients()`), so the algorithm's loop itself is unchanged.
+Choose `--data_parallel N` for block replicas, `--tensor_parallel N` for native
+weight sharding with automatic local worker launch, or `--pipeline_parallel N`
+for naive pipeline parallelism. Select only one mode per run.
 
 ~~~bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 auto-round --model "Qwen/Qwen3-0.6B" --scheme "W4A16" --data_parallel auto
 ~~~
 
-- `off` (default) keeps the serial loop. `N` pins the number of ranks: at least 2, at most the visible device count,
-  and a power of two when `--iters > 0` (the gradient all-reduce is a halving-doubling exchange); checked at startup.
-  `auto` takes all visible devices at `--iters 0` and the largest power of two that fits them at `--iters > 0`, and
-  announces the choice in the log.
-- The block must sit whole on one GPU: run without `--device_map` or with a single-device map. A block spread across
-  several GPUs stops with that reason; blocks larger than one GPU are not covered.
-- Every rank holds a full copy of the block plus its tuning state. Free-VRAM estimates only warn (naming the
-  device); an actual shortage surfaces as an out-of-memory error.
-- `--parallel_batch split` (default) keeps `--batch_size` as the global batch of an iteration; every rank draws
-  `batch_size / world` samples (the division must be exact). `--parallel_batch per_replica` lets every rank draw the
-  full `--batch_size`, so the global batch is `batch_size x world`.
-- A block whose sample count or batch does not split evenly over the ranks, or whose per-rank batch exceeds its
-  share of the samples, tunes serially and logs the reason. LFQ, dict-shaped (diffusion-style) calibration pools and
-  an active torchrun group are not supported.
-- The calibration forwards (reference outputs, the quantized-input chain, imatrix and activation statistics) are
-  sharded across the GPUs too, also at `--iters 0`. Quantizers declare the statistics their hooks write and how they
-  reduce (`calibration_stats`); a hook pass with undeclared statistics stays serial.
-- Each rank samples from its own share of the calibration pool, so per-iteration loss lines and tuned weights differ
-  from a serial run. Compare runs at the model level (accuracy, KL divergence against the base model).
-- To exclude devices, set the backend's visibility variable (e.g. `CUDA_VISIBLE_DEVICES`) before launch.
+See the [unified parallelism guide](./parallelism.md) for mode selection, matching
+CLI/Python interfaces, DP batch/eligibility constraints, TP launch/export behavior
+and supported combinations. PP executes pipeline stages sequentially without
+overlapping microbatch scheduling.
 
 #### Enable multiple gpus calibration in lm_head quantization
 For LM head tuning, AutoRound needs to cache the inputs to the lm-head, which requires the entire model to reside on 

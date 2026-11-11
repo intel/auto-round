@@ -190,7 +190,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         self.calibration_context.is_only_supported_bs1 = self.calibration.is_only_supported_bs1
         # Reset gradient_accumulate_steps in case batch_size was clamped to 1 for some models
         if self.calibration_context.is_only_supported_bs1:
-            compressors = self.alg_composer.block_quantizer
+            compressors = self.alg_composer.active_quantizer
             if not isinstance(compressors, (list, tuple)):
                 compressors = [compressors]
             else:
@@ -241,7 +241,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             n_chunks = _pool_chunk_count(input_ids)
             primary = str(self.compress_context.cache_device)
             mode = getattr(self.compress_context, "calibration_data_device", "auto")
-            _iters = int(getattr(getattr(self.alg_composer, "block_quantizer", None), "iters", 0) or 0)
+            _iters = int(getattr(getattr(self.alg_composer, "active_quantizer", None), "iters", 0) or 0)
             # iters>0 lane: the tune loop consumes outputs on the block's LOSS
             # device (card_0_in_high_risk deflects it off the cache primary on
             # multi-GPU MoE lanes; set per block by dispatch_block) -- prefer
@@ -250,7 +250,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             # The runner's own .device is NOT it: BlockForwardRunner is built
             # once at orchestrator init with device_manager.device, so it always
             # equals the primary on this lane and the retarget would never fire.
-            _loss_dev = getattr(getattr(self.alg_composer, "block_quantizer", None), "_loss_device", None)
+            _loss_dev = getattr(getattr(self.alg_composer, "active_quantizer", None), "_loss_device", None)
             _consumer = str(_loss_dev) if _loss_dev is not None else str(getattr(runner, "device", primary))
             _consumer = (
                 _consumer
@@ -530,11 +530,11 @@ class CompressionOrchestrator(BaseOrchestrator):
                             _immediate_pack(module_name, _layer_cfg)
                 _perf.tick("mv")
 
-                mv_module_from_gpu(m)
+                self.parallel_execution.offload_block(m)
                 _perf.tick("clear")
                 clear_memory(device_list=device_manager.device_list)
                 _perf.tick("monitor")
-                memory_monitor.log_summary()
+                device_manager.log_memory_summary()
                 _perf.tick("write")
 
                 input_ids = next_input_ids
@@ -606,7 +606,7 @@ class CompressionOrchestrator(BaseOrchestrator):
                         f"write={_perf.get('monitor') + _perf.get('write'):.2f}s",
                     ]
                     try:
-                        from auto_round.export.export_to_autoround.export import PACK_PHASES as _pp
+                        from auto_round.export.formats.autoround.integer import PACK_PHASES as _pp
 
                         # the pack sub-note is no longer printed (pack is stable at
                         # ~1.2s; the sub-phases were the layer_config-hunt probes);
@@ -664,16 +664,27 @@ class CompressionOrchestrator(BaseOrchestrator):
         if not self.need_calib:
             if len(self.alg_composer.quantizers) > 1:
                 raise NotImplementedError("Multiple zero-shot quantizer stages are not supported yet.")
-            return self._quantize_zero_shot()
-
-        return self._quantize_data_driven()
+            result = self._quantize_zero_shot()
+        else:
+            result = self._quantize_data_driven()
+        if device_manager.is_tensor_parallel:
+            device_manager.log_memory_summary()
+        return result
 
     @torch.no_grad()
     def _quantize_zero_shot(self) -> tuple[torch.nn.Module, dict[str, Any]]:
+        """Run zero-shot quantization under the same stage policies as tuning."""
+        with self.alg_composer.active_stage():
+            return self._run_zero_shot_stage()
+
+    def _run_zero_shot_stage(self) -> tuple[torch.nn.Module, dict[str, Any]]:
         """Zero-shot (RTN) quantization path — no calibration data needed.
 
         This replaces the standalone ``ZeroShotCompressor.quantize()`` method.
         Block-wise RTN quantization without any input data.
+
+        Returns:
+            tuple[torch.nn.Module, dict[str, Any]]: Quantized model and its layer configuration.
         """
         from auto_round.algorithms.composer import BlockContext
 
@@ -691,7 +702,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         # an explicit --data_parallel N cannot engage here (no
         # calibration forward for the data-parallel lane to shard): one INFO
         # line, no refusal -- weights-only RTN has nothing to parallelize
-        from auto_round.algorithms.parallel.data_parallel import log_zero_shot_parallel_noop_
+        from auto_round.parallel.dp.engine import log_zero_shot_parallel_noop_
 
         log_zero_shot_parallel_noop_(getattr(self.compress_context, "parallel_policy", None))
 
@@ -780,16 +791,13 @@ class CompressionOrchestrator(BaseOrchestrator):
                     self.shard_writer.write(name=block_name)
                     block.to("meta")
                 else:
-                    mv_module_from_gpu(block)
+                    self.parallel_execution.offload_block(block)
                     if self.compress_context.low_cpu_mem_usage:
                         self._offloader(self.model, block_name)
 
                 clear_memory()
-                memory_monitor.log_summary()
+                device_manager.log_memory_summary()
                 pbar.update(1)
-
-        # ── Pipeline lifecycle: model-level teardown (also finalizes rotation) ─
-        self.alg_composer.finalize_run()
 
         remain_layer_names = []
         block_name_set = {name for block in all_blocks for name in block}
@@ -908,7 +916,7 @@ class CompressionOrchestrator(BaseOrchestrator):
             accelerate.hooks.remove_hook_from_submodules(self.model_context.model)
         self.model_context.model = mv_module_from_gpu(self.model_context.model)
         clear_memory(device_list=device_manager.device_list)
-        memory_monitor.log_summary()
+        device_manager.log_memory_summary()
         logger.info("caching done")
         if self.compress_context.low_cpu_mem_usage:
             if self.model_context.is_model_patched and not self.compress_context.is_immediate_saving:

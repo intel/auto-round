@@ -318,7 +318,7 @@ class QuantLinearMLX(nn.Module):
         # GPTQ: w = scale * (w_int - zero)
         # MLX:  w = mlx_scale * w_int + mlx_bias
         #   => mlx_scale = scale, mlx_bias = -scale * zero
-        from auto_round.export.export_to_mlx.export import _pack_weight_mlx
+        from auto_round.export.formats.mlx.packing import _pack_weight_mlx
 
         weight_int_t = weight_int.t().contiguous().to(torch.int32)
         scales_mlx = scales_gptq.t().contiguous().to(torch.float16)

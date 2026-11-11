@@ -29,7 +29,7 @@ from auto_round.algorithms.registry import register_algorithm
 
 
 class QATConfig(QADConfig):
-    """Configuration for the QAT (quantization-aware training) algorithm.
+    """Configuration for the experimental QAT (quantization-aware training) algorithm.
 
     Equivalent to ``QADConfig(qad_kd_weight=0, qad_ce_weight=1)`` but exposed as a
     first-class algorithm: it forces the pure hard-label objective and never

@@ -14,9 +14,9 @@ from auto_round.data_type.nvfp import (
 )
 from auto_round.data_type.utils import get_quant_func
 from auto_round.experimental import qmodules as ar_qmodules
-from auto_round.export.export_to_autoround.qlinear_fp import QuantLinear as _FPLinear
-from auto_round.export.export_to_llmcompressor.config import initialize_nvfp4_e5m3_quantization
 from auto_round.export.formats import BackendDataType
+from auto_round.export.formats.autoround.qlinear_fp import QuantLinear as _FPLinear
+from auto_round.export.formats.compressed_tensors.config import initialize_nvfp4_e5m3_quantization
 from auto_round.schemes import PRESET_SCHEMES
 
 QMODULE_MAPPING = {

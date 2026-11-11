@@ -108,10 +108,10 @@ def test_explicit_pipeline_replaces_recipe_but_inherits_calibration(capture_entr
     assert not hasattr(rtn.configs[0], "iters")
 
 
-def test_legacy_entry_selectors_override_recipe(capture_entry):
+def test_entry_selectors_override_recipe(capture_entry):
     assert isinstance(AutoRound("dummy", iters=0).configs[0], RTNConfig)
-    awq = AutoRound("dummy", recipe="ar-best", algorithm="awq")
-    assert [type(config).__name__ for config in awq.configs] == ["AWQConfig", "RTNConfig"]
+    awq = AutoRound("dummy", recipe="ar-best", alg_configs="awq")
+    assert [type(config).__name__ for config in awq.configs] == ["AWQConfig", "OptimizedRTNConfig"]
     assert awq.nsamples == 512
 
 
@@ -360,7 +360,7 @@ def test_alias_factory_defaults_survive_recipe_and_cli_overrides(monkeypatch):
     configs = AlgorithmHandler.build_configs(captured["args"], {"bits": 4})
     assert configs[0].hadamard_type == "random_hadamard"
     assert configs[0].block_size == 64
-    assert configs[1].bits == 4
+    assert not hasattr(configs[1], "bits")
 
 
 def test_cli_recipe_respects_stage_common_argument_opt_out(monkeypatch):
@@ -394,8 +394,10 @@ def test_cli_recipe_respects_stage_common_argument_opt_out(monkeypatch):
     main.start(argv=["dummy", "--recipe", "strict-pipeline", "--bits", "4", "--group_size", "32"])
     configs = AlgorithmHandler.build_configs(captured["args"], {"bits": 4, "group_size": 32})
     assert isinstance(configs[0], StrictRotationConfig)
-    assert configs[1].bits == 4
-    assert configs[1].group_size == 32
+    assert not hasattr(configs[1], "bits")
+    assert not hasattr(configs[1], "group_size")
+    assert captured["args"].bits == 4
+    assert captured["args"].group_size == 32
 
 
 def test_direct_tune_applies_recipe_before_building_configs(monkeypatch):

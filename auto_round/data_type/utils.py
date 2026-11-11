@@ -28,6 +28,12 @@ from auto_round.schemes import needs_nvfp_global_scale
 from auto_round.utils import check_to_quantized, logger
 
 
+def calculate_fp8_e4m3_scale(amax: torch.Tensor) -> torch.Tensor:
+    """Calculate the FP8 E4M3 scale using the vLLM-compatible lower bound."""
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+    return torch.clamp(amax.to(torch.float32) / fp8_max, min=float(1.0 / (fp8_max * 512.0)))
+
+
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int | list, val: float = 0.0):
     """Reshapes and pads the tensor to ensure that it can be quantized in groups of `group_size`.
 
@@ -532,11 +538,15 @@ def register_act_max_hooks(block: Module, act_data_type=None) -> list:
     The caller owns the returned handles and must remove them after calibration.
     """
     from auto_round.compressors.utils import check_need_act_calibration
+    from auto_round.parallel.tp.runtime import is_dtensor
     from auto_round.utils import SUPPORTED_LAYER_TYPES
 
     @torch.no_grad()
     def collect_act_max(module, inputs, output):
         inputs = inputs[0] if isinstance(inputs, (tuple, list)) else inputs
+
+        if is_dtensor(inputs):
+            inputs = inputs.to_local()
         if inputs.numel() == 0:
             return
         module_dtype = getattr(module, "act_data_type", None) or getattr(module, "data_type", None) or act_data_type

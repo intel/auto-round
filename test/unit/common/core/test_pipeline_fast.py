@@ -6,7 +6,7 @@ import pytest
 
 from auto_round import AutoRound as NewAutoRound
 from auto_round import AWQConfig, OptimizedRTNConfig, RotationConfig, RTNConfig, SignRoundConfig, SpinQuantConfig
-from auto_round.algorithms.composer import AlgorithmComposer, _has_nvfp4_layer
+from auto_round.algorithms.composer import AlgorithmComposer
 from auto_round.algorithms.config_resolver import (
     get_algorithm_class,
     resolve_shared_config_values,
@@ -14,8 +14,8 @@ from auto_round.algorithms.config_resolver import (
 )
 from auto_round.algorithms.quantization import registry as _r
 from auto_round.algorithms.quantization.rtn.quantizer import RTNQuantizer
-from auto_round.autoround import _select_rtn_compressor_base_cls
-from auto_round.compressors.base import collect_user_scheme_overrides
+from auto_round.algorithms.utils import _has_nvfp4_layer
+from auto_round.compressors.builder import _resolve_rtn_config
 from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme
@@ -55,7 +55,7 @@ def test_split_awq_plus_rtn():
 def test_pipeline_preprocessor_only_auto_appends_rtn():
     pipeline = AlgorithmComposer([AWQConfig()])
     assert type(pipeline.preprocessors[0]).__name__ == "AWQTransform"
-    assert isinstance(pipeline.block_quantizer, RTNQuantizer)
+    assert isinstance(pipeline.active_quantizer, RTNQuantizer)
 
 
 def test_pipeline_duplicate_preprocessor_rejected():
@@ -63,12 +63,12 @@ def test_pipeline_duplicate_preprocessor_rejected():
         AlgorithmComposer([AWQConfig(), AWQConfig()])
 
 
-def test_pipeline_multiple_block_quantizers_keep_config_order():
+def test_pipeline_multiple_quantizers_keep_config_order():
     pipeline = AlgorithmComposer([RTNConfig(), SignRoundConfig()])
     assert len(pipeline.quantizers) == 2
     assert isinstance(pipeline.quantizers[0], RTNQuantizer)
-    assert pipeline.block_quantizer is pipeline.quantizers[-1]
-    assert isinstance(pipeline.block_quantizer.config, SignRoundConfig)
+    assert pipeline.active_quantizer is pipeline.quantizers[-1]
+    assert isinstance(pipeline.active_quantizer.config, SignRoundConfig)
 
 
 @pytest.mark.parametrize(
@@ -78,7 +78,7 @@ def test_pipeline_multiple_block_quantizers_keep_config_order():
         [RotationConfig(), RTNConfig(disable_opt_rtn=True)],
     ],
 )
-def test_block_quantizer_is_terminal_regardless_of_config_order(configs):
+def test_active_quantizer_is_terminal_regardless_of_config_order(configs):
     """The config list position must not move the terminal block quantizer."""
     pipeline = AlgorithmComposer(configs)
 
@@ -87,7 +87,7 @@ def test_block_quantizer_is_terminal_regardless_of_config_order(configs):
     # Preprocessors always lead the pipeline; rotation members (added by
     # RotationConfig) may sit between them and the terminal block quantizer.
     assert members[: len(pipeline.preprocessors)] == pipeline.preprocessors
-    assert members[-1] is pipeline.block_quantizer
+    assert members[-1] is pipeline.active_quantizer
     assert isinstance(members[-1], RTNQuantizer)
 
 
@@ -108,6 +108,16 @@ def test_awq_disables_block_forward_compile():
     pipeline = AlgorithmComposer([AWQConfig(), SignRoundConfig()], _compile_orchestrator())
 
     assert not pipeline.block_forward.enable_torch_compile
+
+
+def test_nvfp4_keeps_block_forward_compile():
+    """NVFP4 used to ban block-forward compile as well as the quant kernels."""
+    orchestrator = _compile_orchestrator()
+    orchestrator.data_type = "nv_fp"
+
+    pipeline = AlgorithmComposer([SignRoundConfig()], orchestrator)
+
+    assert pipeline.block_forward.enable_torch_compile
 
 
 def test_detect_nvfp4_from_layer_config_scheme_override():
@@ -134,6 +144,7 @@ def test_needs_calibration_data_when_layer_config_overrides_to_nvfp4():
     compressor = _DummyCompressor()
     compressor._alg_configs = []
     compressor.scheme = "MXFP8"
+    compressor._user_scheme_overrides = {}
     compressor.layer_config = {"mlp.experts": {"scheme": "NVFP4"}}
     compressor.static_kv_dtype = None
     compressor.static_attention_dtype = None
@@ -267,21 +278,14 @@ def test_shared_config_values_reject_conflicts():
 #     assert not hasattr(no_clip_target, "weight_clip_ratio")
 
 
-def test_user_scheme_overrides_merge_across_all_configs():
-    awq = AWQConfig(bits=8)
+def test_shared_algorithm_values_do_not_introduce_scheme_fields():
+    awq = AWQConfig()
     rtn = RTNConfig()
-    assert collect_user_scheme_overrides([awq, rtn])["bits"] == 8
-
     resolve_shared_config_values([awq, rtn])
-
-    assert rtn.bits == 8
-
-
-def test_user_scheme_overrides_reject_explicit_conflicts():
-    with pytest.raises(ValueError, match="Conflicting shared scheme field 'bits'"):
-        collect_user_scheme_overrides([AWQConfig(bits=8), RTNConfig(bits=4)])
-    with pytest.raises(ValueError, match="Conflicting shared scheme field 'bits'"):
-        resolve_shared_config_values([AWQConfig(bits=8), RTNConfig(bits=4)])
+    for config in (awq, rtn):
+        assert not hasattr(config, "bits")
+        assert not hasattr(config, "group_size")
+        assert not hasattr(config, "scheme")
 
 
 # ===========================================================================
@@ -304,14 +308,14 @@ def test_user_scheme_overrides_reject_explicit_conflicts():
 )
 def test_rtn_routing_disable_opt_rtn_from_resolved_scheme(scheme, expect_disable_opt_rtn):
     config = RTNConfig()
-    _select_rtn_compressor_base_cls(config, scheme, "auto_round", {})
+    _resolve_rtn_config(config, scheme, "auto_round", {})
     assert config.disable_opt_rtn is expect_disable_opt_rtn
 
 
 def test_rtn_routing_respects_explicit_enable_opt_rtn():
     """An explicit user choice must not be clobbered by the W8A16/W8A8 heuristic."""
     config = RTNConfig(enable_opt_rtn=True)
-    _select_rtn_compressor_base_cls(config, "W8A16", "auto_round", {})
+    _resolve_rtn_config(config, "W8A16", "auto_round", {})
     assert config.disable_opt_rtn is False
 
 
@@ -321,14 +325,12 @@ def test_sign_round_finalize_scheme_lr_heuristic(bits, expected_lr):
     even though it was unset (None) at construction time (e.g. `scheme=` alone,
     no explicit `bits=`)."""
     config = SignRoundConfig(iters=1000)
-    config.scheme = QuantizationScheme(bits=bits, act_bits=16, data_type="int")
-    config.finalize_scheme()
+    config.finalize_scheme(QuantizationScheme(bits=bits, act_bits=16, data_type="int"))
     assert config.lr == expected_lr
 
 
 def test_sign_round_finalize_scheme_respects_explicit_lr():
     config = SignRoundConfig(iters=1000, lr=0.01, minmax_lr=0.05)
-    config.scheme = QuantizationScheme(bits=2, act_bits=16, data_type="int")
-    config.finalize_scheme()
+    config.finalize_scheme(QuantizationScheme(bits=2, act_bits=16, data_type="int"))
     assert config.lr == 0.01
     assert config.minmax_lr == 0.05

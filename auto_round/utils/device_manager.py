@@ -946,6 +946,7 @@ class DeviceManager:
             self._device_map = None
             self._device_list: list | None = None
             self._major_device: str | None = None
+            self._tensor_parallel = False
             self._initialized = True
         if device_map is not None:
             self.configure(device_map)
@@ -1026,6 +1027,59 @@ class DeviceManager:
     def is_multi_device(self) -> bool:
         """Whether more than one concrete device is selected."""
         return len(self.device_list) > 1
+
+    @property
+    def is_tensor_parallel(self) -> bool:
+        """bool: Whether the current run uses tensor-parallel device ownership."""
+        return self._tensor_parallel
+
+    def set_tensor_parallel(self, enabled: bool) -> None:
+        """Set reporting topology explicitly; a process group alone need not be TP.
+
+        Args:
+            enabled (bool): Whether memory reporting should coordinate tensor-parallel ranks.
+        """
+        self._tensor_parallel = enabled
+
+    def log_memory_summary(self, msg: str = "", level: str = "info") -> str | None:
+        """Report peaks at a successful boundary reached by every TP rank.
+
+        Unlike ordinary MemoryMonitor logging, this performs a collective in TP
+        mode. Never call it from rank-local cleanup or writer-only export hooks.
+        Merged reports must not overwrite local allocator statistics.
+
+        Args:
+            msg (str): Optional prefix included in the memory summary.
+            level (str): Logging level used to emit the summary.
+        """
+        from auto_round.utils.device import memory_monitor
+
+        if not self.is_tensor_parallel:
+            return memory_monitor.log_summary(msg, level)
+
+        import torch.distributed as dist
+
+        if not dist.is_initialized() or dist.get_world_size() < 2:
+            return memory_monitor.log_summary(msg, level, peak_vram=dict(memory_monitor.peak_vram))
+        report = {}
+        if torch.cuda.is_available():
+            index = torch.cuda.current_device()
+            memory_monitor.update(device_list=[f"cuda:{index}"])
+            report[str(index)] = max(
+                memory_monitor.peak_vram.get(str(index), 0.0),
+                torch.cuda.max_memory_reserved(index) / 1024**3,
+            )
+        else:
+            memory_monitor.update_cpu()
+        reports: list[dict[str, float]] = [{} for _ in range(dist.get_world_size())]
+        dist.all_gather_object(reports, report)
+        if dist.get_rank() != 0:
+            return None
+        merged = {}
+        for peer in reports:
+            for device, peak in peer.items():
+                merged[device] = max(merged.get(device, 0.0), peak)
+        return memory_monitor.log_summary(msg, level, peak_vram=merged)
 
     # -- registration -------------------------------------------------------
     def register(self, device_cls: type[ARDevice]) -> None:
