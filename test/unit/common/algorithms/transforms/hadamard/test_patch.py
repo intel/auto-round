@@ -396,34 +396,56 @@ class TestPatchQuantLinearIdempotency:
         """Patched pack should register a hadamard_matrix buffer on the QuantLinear."""
         from auto_round.algorithms.transforms.hadamard.patch import patch_quantlinear
 
-        # Use a transform with a known weight value
-        w_transform = nn.Linear(8, 8, bias=False)
+        w_transform = nn.Linear(32, 32, bias=False)
         with torch.no_grad():
-            w_transform.weight.copy_(torch.eye(8) * 0.5)
+            w_transform.weight.copy_(torch.eye(32) * 0.5)
         patch_quantlinear(w_transform)
 
-        # Create a QuantLinear and call pack with a mock linear.
-        # We use mx_fp / bits=4, infeatures divisible by 32.
-        try:
-            qlinear = QuantLinear(bits=4, group_size=32, infeatures=32, outfeatures=8, bias=False)
-        except (NotImplementedError, TypeError) as e:
-            pytest.skip(f"Could not construct QuantLinear: {e}")
-
+        qlinear = QuantLinear(bits=4, group_size=32, infeatures=32, outfeatures=8, bias=False)
         linear = nn.Linear(32, 8, bias=False)
+        set_teq_equivalent_transforms(linear, weight=w_transform, input=w_transform)
         scales = torch.zeros(8, 1, dtype=torch.float16)
 
-        # Run the patched pack
-        try:
-            qlinear.pack(linear, scales)
-        except Exception as e:
-            # Pack may still fail due to dependencies — we just want to confirm
-            # the hadamard_matrix buffer was registered before the failure.
-            pass
-
-        # The patch always registers hadamard_matrix regardless of mid-failure.
+        qlinear.pack(linear, scales, device="cpu")
         assert hasattr(qlinear, "hadamard_matrix")
-        # And the matrix should match the transform weight
         assert torch.equal(qlinear.hadamard_matrix.cpu(), w_transform.weight.detach().cpu())
+
+    def test_pack_uses_each_layers_random_matrix(self):
+        from auto_round.algorithms.transforms.hadamard.patch import patch_quantlinear
+        from auto_round.algorithms.transforms.hadamard.transforms import build_hadamard_transform
+
+        matrices = []
+        for seed in (17, 29):
+            transform = build_hadamard_transform("random_hadamard", block_size=32, location="weight", seed=seed)
+            patch_quantlinear(transform)
+            linear = nn.Linear(32, 8, bias=False)
+            set_teq_equivalent_transforms(linear, weight=transform, input=transform)
+            qlinear = QuantLinear(bits=4, group_size=32, infeatures=32, outfeatures=8, bias=False)
+            qlinear.pack(linear, torch.zeros(8, 1), device="cpu")
+            torch.testing.assert_close(qlinear.state_dict()["hadamard_matrix"], transform.weight)
+            matrices.append(qlinear.hadamard_matrix)
+        assert not torch.equal(*matrices)
+
+    @pytest.mark.parametrize("protocol_kind", ["missing", "callable", "non_tensor"])
+    def test_pack_rejects_missing_per_layer_matrix(self, protocol_kind):
+        from auto_round.algorithms.transforms.hadamard.patch import patch_quantlinear
+
+        patch_quantlinear(_IdentityTransform(n=32))
+        linear = nn.Linear(32, 8, bias=False)
+        if protocol_kind != "missing":
+
+            def transform(value):
+                return value
+
+            if protocol_kind == "non_tensor":
+                transform.weight = "not a matrix"
+            set_teq_equivalent_transforms(linear, weight=transform, input=transform)
+        qlinear = QuantLinear(bits=4, group_size=32, infeatures=32, outfeatures=8, bias=False)
+        original_weight = qlinear.weight_packed.clone()
+        with pytest.raises(ValueError, match="per-layer matrix-backed"):
+            qlinear.pack(linear, torch.zeros(8, 1), device="cpu")
+        torch.testing.assert_close(qlinear.weight_packed, original_weight)
+        assert not hasattr(qlinear, "hadamard_matrix")
 
     def test_pack_handles_conv2d_layer(self):
         """Patched pack should flatten Conv2d weights."""
@@ -439,6 +461,7 @@ class TestPatchQuantLinearIdempotency:
 
         # Use a Conv2d layer
         conv = nn.Conv2d(32, 4, kernel_size=3, bias=False)
+        set_teq_equivalent_transforms(conv, weight=w_transform, input=w_transform)
         scales = torch.zeros(4, 1, dtype=torch.float16)
 
         # This may still fail in the middle, but the conv2d branch should be exercised.
@@ -463,6 +486,7 @@ class TestPatchQuantLinearIdempotency:
 
         # Use a Conv1D layer
         conv1d = transformers.pytorch_utils.Conv1D(32, 4)
+        set_teq_equivalent_transforms(conv1d, weight=w_transform, input=w_transform)
         scales = torch.zeros(4, 1, dtype=torch.float16)
 
         try:

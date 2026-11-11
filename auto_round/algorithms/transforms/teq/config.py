@@ -217,8 +217,8 @@ class TEQConfig(QuantizationConfig):
             experimental: Required opt-in for non-staged research modes.
             mappings: Optional explicit smooth/balance mappings. The format is
                 compatible with ``AWQConfig.mappings``.
-            **kwargs: Common quantization arguments used to mirror the target
-                block quantizer during TEQ's fake quantization loss.
+            **kwargs: Algorithm-local calibration settings. Quantization scheme
+                arguments belong to AutoRound, not TEQConfig.
         """
         super().__init__(**kwargs)
         if iters < 0:
@@ -281,8 +281,8 @@ class TEQConfig(QuantizationConfig):
         return (
             f"TEQConfig(iters={self.teq_iters}, lr={self.teq_lr}, optimizer={self.teq_optimizer!r}, "
             f"min_scale={self.teq_min_scale}, "
-            f"max_scale={self.teq_max_scale}, bits={self.bits}, group_size={self.group_size}, "
-            f"sym={self.sym}, awq_init={self.teq_awq_init}, awq_init_n_grid={self.teq_awq_init_n_grid}, "
+            f"max_scale={self.teq_max_scale}, "
+            f"awq_init={self.teq_awq_init}, awq_init_n_grid={self.teq_awq_init_n_grid}, "
             f"nsamples={self.teq_nsamples}, batch_size={self.teq_batch_size}, "
             f"sample_seqlen={self.teq_sample_seqlen}, skip_moe={self.teq_skip_moe}, "
             f"optimization_mode={self.teq_optimization_mode!r}, refine_iters={self.teq_refine_iters}, "

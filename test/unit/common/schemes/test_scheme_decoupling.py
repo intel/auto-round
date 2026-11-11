@@ -96,18 +96,11 @@ def test_is_dynamic_wint8aint8_requires_int8_shape_option_a():
     assert not _scheme(data_type="fp", act_data_type="fp", act_dynamic=True, bits=8, act_bits=8).is_dynamic_wint8aint8()
 
 
-def test_quantization_config_predicates_delegate_to_scheme_option_a():
-    # config.py properties must delegate to the scheme's single-authority predicates.
-    assert (
-        QuantizationConfig(
-            bits=8, data_type="fp", act_bits=8, act_data_type="fp", act_dynamic=True
-        ).is_dynamic_wint8aint8
-        is False
-    )
-    assert (
-        QuantizationConfig(bits=8, data_type="fp", act_bits=8, act_data_type="fp", act_dynamic=False).is_act_static
-        is True
-    )
+def test_quantization_config_does_not_expose_scheme_predicates():
+    config = QuantizationConfig()
+    assert not hasattr(config, "scheme")
+    assert not hasattr(config, "is_dynamic_wint8aint8")
+    assert not hasattr(config, "is_act_static")
 
 
 # --- D4: GGUF scheme facts pushed down into schemes.py ---

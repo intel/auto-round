@@ -313,7 +313,8 @@ def test_task_api_offline_quantize_and_save(tmp_path):
     folders = quantize_and_save(
         str(checkpoint),
         str(tmp_path / "quantized"),
-        alg_configs=RTNConfig(group_size=8, disable_opt_rtn=True),
+        alg_configs=RTNConfig(disable_opt_rtn=True),
+        group_size=8,
         device_map="cpu",
         low_cpu_mem_usage=False,
         disable_model_free=True,

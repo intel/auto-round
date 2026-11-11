@@ -14,6 +14,8 @@
 
 """CPU tests for TEQ transform integration."""
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.nn as nn
@@ -35,12 +37,47 @@ from auto_round.algorithms.transforms.teq.smooth import (
     truncate_forward_value,
 )
 from auto_round.data_type.utils import compute_optimized_init_scale, get_quant_func
+from auto_round.schemes import QuantizationScheme
 from auto_round.wrapper import WrapperLinear
+
+
+def _make_awq_transform():
+    from auto_round.algorithms.transforms.awq.base import AWQTransform
+    from auto_round.algorithms.transforms.awq.qdq import QDQTool
+
+    scheme = QuantizationScheme(bits=16, group_size=32, sym=True, data_type="int")
+    transform = AWQTransform(AWQConfig(n_grid=2, duo_scaling=False))
+    transform.bind(SimpleNamespace(model_context=None, compress_context=None, scheme_context=scheme))
+    transform._qdq_tool = QDQTool(
+        bits=scheme.bits, group_size=scheme.group_size, sym=scheme.sym, data_type=scheme.data_type
+    )
+    return transform
 
 
 def test_teq_algorithm_registry():
     assert resolve_algorithm_names("teq,auto_round") == ["teq", "auto_round"]
     assert isinstance(resolve_alg_config("teq"), TEQConfig)
+
+
+def test_teq_uses_run_scheme_with_layer_overrides():
+    config = TEQConfig()
+    assert "TEQConfig(" in repr(config)
+    with pytest.raises(TypeError, match="AutoRound"):
+        TEQConfig(bits=4)
+    scheme = QuantizationScheme(bits=8, group_size=32, sym=False, data_type="int", act_bits=16)
+    transform = TEQTransform(config)
+    transform.bind(SimpleNamespace(model_context=None, compress_context=None, scheme_context=scheme))
+    layer = nn.Linear(32, 4)
+    layer.global_name = "proj"
+    params = transform._resolve_params(layer)
+    for field in ("bits", "group_size", "sym", "data_type", "act_bits"):
+        assert params[field] == getattr(scheme, field)
+        assert not hasattr(config, field)
+    transform.layer_config = {"proj": {"bits": 4, "group_size": 16}}
+    params = transform._resolve_params(layer)
+    assert params["bits"] == 4
+    assert params["group_size"] == 16
+    assert params["sym"] is False
 
 
 def test_teq_default_recipe_is_cross_size_candidate():
@@ -414,7 +451,6 @@ def test_committed_rotation_weight_installs_exactly_one_input_hook():
 
 def test_awq_grid_search_uses_rotation_aware_candidate_path():
     """AWQ must score ``QDQ(rotate(W * s))`` with ``rotate(x / s)``."""
-    from auto_round.algorithms.transforms.awq.base import AWQTransform
     from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
 
     class Parent(nn.Module):
@@ -441,7 +477,7 @@ def test_awq_grid_search_uses_rotation_aware_candidate_path():
         weight=build_hadamard_transform("hadamard", block_size=32, location="weight"),
         input=build_hadamard_transform("hadamard", block_size=32, location="input", inverse=True),
     )
-    transform = AWQTransform(AWQConfig(bits=16, group_size=32, sym=True, data_type="int", n_grid=2, duo_scaling=False))
+    transform = _make_awq_transform()
     mapping = ResolvedMapping(
         smooth_name="smooth",
         smooth_layer=parent.balance,
@@ -482,10 +518,13 @@ def test_awq_grid_search_uses_rotation_aware_candidate_path():
 
 
 def test_teq_static_activation_training_is_rejected():
-    config = TEQConfig(bits=4, group_size=32, data_type="int", act_bits=8, act_data_type="int", act_dynamic=False)
+    scheme = QuantizationScheme(
+        bits=4, group_size=32, data_type="int", act_bits=8, act_data_type="int", act_dynamic=False
+    )
     from auto_round.algorithms.transforms.teq.base import TEQTransform
 
-    transform = TEQTransform(config)
+    transform = TEQTransform(TEQConfig())
+    transform.bind(SimpleNamespace(model_context=None, compress_context=None, scheme_context=scheme))
     layer = torch.nn.Linear(4, 3, bias=False)
     layer.global_name = "layer"
 
@@ -727,7 +766,6 @@ def test_awq_grid_search_drops_imatrix_for_rotation_aware_candidates(rotation_aw
     transform, and a non-diagonal Hadamard does not preserve a diagonal
     importance vector, so reusing it would weight the wrong channels.
     """
-    from auto_round.algorithms.transforms.awq.base import AWQTransform
     from auto_round.algorithms.transforms.awq.mappings import ResolvedMapping
 
     torch.manual_seed(11)
@@ -743,7 +781,7 @@ def test_awq_grid_search_drops_imatrix_for_rotation_aware_candidates(rotation_aw
             input=build_hadamard_transform("hadamard", block_size=32, location="input", inverse=True),
         )
 
-    transform = AWQTransform(AWQConfig(bits=16, group_size=32, sym=True, data_type="int", n_grid=2, duo_scaling=False))
+    transform = _make_awq_transform()
     mapping = ResolvedMapping(
         smooth_name="smooth",
         smooth_layer=balance,

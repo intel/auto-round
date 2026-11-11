@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any, Union
 
 import torch
 
+from auto_round.logger import logger
+
 GGUF_SCHEME_FACTS: dict[str, dict] = {
     "gguf:q4_0": {
         "bits": 4,
@@ -140,7 +142,6 @@ GGUF_PRESET_ALIASES: dict[str, str] = {
     "gguf:q8_0": "gguf:q8_0",
 }
 
-from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_DTYPES, contain_any_mm_keys, infer_bits_by_data_type
 
 __all__ = [
@@ -223,6 +224,84 @@ class QuantizationScheme:
     super_bits: int | None = None
     super_group_size: int | None = None
     rotation_config: dict | None = None
+
+    @staticmethod
+    def _is_valid_group_size(gs) -> bool:
+        """Return True if gs is a valid group_size value.
+
+        Accepts -1 (per-channel), 0 (per-tensor), a positive integer,
+        or a tuple/list of such values (e.g. (128, 128) for block-wise FP8).
+        """
+        if isinstance(gs, (tuple, list)):
+            return all(QuantizationScheme._is_valid_group_size(g) for g in gs)
+        return gs == -1 or gs >= 0
+
+    def validate(self) -> None:
+        """Checks if the configurations are valid.
+
+        Raises:
+        ValueError, TypeError: If any of the configurations are invalid.
+        """
+        if self.bits is not None and self.bits <= 0:
+            raise ValueError("`bits` must be positive")
+        if self.act_bits is not None and self.act_bits <= 0:
+            raise ValueError("`act_bits` must be positive")
+        if self.group_size is not None and not self._is_valid_group_size(self.group_size):
+            raise ValueError(
+                "`group_size` must be -1 (per channel), 0 (per-tensor), a positive integer, "
+                "or a tuple thereof (e.g. (128, 128) for block-wise quantization)"
+            )
+        if isinstance(self.act_group_size, (tuple, list)):
+            raise ValueError(
+                "`act_group_size` must be -1 (per channel), 0 (per-tensor), or a positive integer, not a tuple."
+            )
+        if self.act_group_size is not None and not self._is_valid_group_size(self.act_group_size):
+            raise ValueError(
+                "`act_group_size` must be -1 (per channel), 0 (per-tensor), a positive integer, " "or a tuple thereof"
+            )
+        # Block-wise (tuple group_size) is only valid for fp8 weight quantization
+        if isinstance(self.group_size, (tuple, list)):
+            if not (self.data_type.startswith("fp") and self.bits == 8):
+                raise ValueError(
+                    "Block-wise quantization (tuple group_size) only supports fp8 weight quantization, "
+                    f"but got data_type='{self.data_type}', bits={self.bits}."
+                )
+            if not (self.act_dynamic and self.act_data_type.startswith("fp") and self.act_bits == 8):
+                raise NotImplementedError(
+                    "Block-wise fp8 weight quantization only supports dynamic fp8 activation quantization. "
+                    f"Got act_dynamic={self.act_dynamic}, act_data_type='{self.act_data_type}', "
+                    f"act_bits={self.act_bits}."
+                )
+        # Reset the default value of super_bits and super_group_size
+        if self.data_type is not None and self.bits is not None and self.data_type.endswith("_dq"):
+            from auto_round.export.formats.gguf.config import GGUF_INNER_CONFIG
+
+            gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
+            self.super_bits = gguf_config.get("super_bits", None) if self.super_bits is None else self.super_bits
+            self.super_group_size = (
+                gguf_config.get("super_group_size", None) if self.super_group_size is None else self.super_group_size
+            )
+
+        if (
+            self.data_type is not None
+            and self.act_data_type is not None
+            and self.is_act_quantize()
+            and (not self.is_act_nv_fp() or "static_gs" not in self.act_data_type)
+            and not is_nvfp4_e5m3_family(self.act_data_type or "")
+            and not self.is_act_mx_fp()
+            and not self.is_dynamic_wint8aint8()
+            and not self.is_static_afp8()
+        ):
+            logger.warning_once(
+                "activation quantization is an experimental feature with limited support and a complex API. "
+                "And please save the quantized model to fake format as real deployment is not supported currently"
+            )
+        # For block-wise group_size (tuple), skip the scalar-only warnings
+        scalar_gs = self.group_size if not isinstance(self.group_size, (tuple, list)) else None
+        if self.is_mx_fp() and scalar_gs != 32:
+            logger.warning_once("dtype mx_fp should only support group_size of 32 in real deployment")
+        if self.is_nv_fp() and scalar_gs != 16:
+            logger.warning_once("dtype nv_fp should only support group_size of 16 in real deployment")
 
     @classmethod
     def empty(cls):

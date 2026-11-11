@@ -102,6 +102,8 @@ def patch_quantlinear(w_transform) -> None:
 
     Only needed for ``random_hadamard`` where the rotation matrix must be
     serialised alongside the quantised weights for correct inference.
+    The argument is retained for compatibility; packing requires each layer's
+    own matrix-backed protocol transform.
     Idempotent via ``_pack_patched`` guard.
     """
     if getattr(QuantLinear, "_pack_patched", False):
@@ -125,6 +127,13 @@ def patch_quantlinear(w_transform) -> None:
         device=None,
     ):
         device = get_packing_device(device)
+        transform = get_teq_equivalent_transforms(linear).get("weight")
+        transform_matrix = getattr(transform, "weight", None)
+        if not isinstance(transform_matrix, torch.Tensor):
+            raise ValueError(
+                "Random Hadamard export requires a per-layer matrix-backed weight transform "
+                "with a tensor `.weight` attribute."
+            )
         if getattr(linear, "bias", None) is not None:
             self.bias = linear.bias.detach().to(torch.float16)
 
@@ -163,14 +172,6 @@ def patch_quantlinear(w_transform) -> None:
         if input_global_scale is not None:
             self.input_global_scale = input_global_scale.to(torch.float32).to(device).reshape([1])
 
-        transform = get_teq_equivalent_transforms(linear).get("weight")
-        transform_matrix = getattr(transform, "weight", None)
-        if transform_matrix is None:
-            transform_matrix = getattr(w_transform, "weight", None)
-        if transform_matrix is None:
-            raise ValueError(
-                "Random Hadamard export requires a matrix-backed weight transform with a `.weight` attribute."
-            )
         self.register_buffer("hadamard_matrix", transform_matrix.to(device))
 
     QuantLinear.pack = _pack_patched

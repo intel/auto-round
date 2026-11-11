@@ -285,12 +285,7 @@ class TEQTransform(BasePreprocessor):
         self._finalized = False
         self._summary_log_count = 0
         self._summary_log_interval = 12
-        self._qdq_tool = QDQTool(
-            bits=config.bits,
-            group_size=config.group_size,
-            sym=config.sym,
-            data_type=config.data_type,
-        )
+        self._qdq_tool = None
 
     def bind(self, compressor) -> None:
         super().bind(compressor)
@@ -305,6 +300,12 @@ class TEQTransform(BasePreprocessor):
 
     def prepare_run(self, composer: AlgorithmComposer = None) -> None:
         self._composer = composer
+        self._qdq_tool = QDQTool(
+            bits=self.scheme.bits,
+            group_size=self.scheme.group_size,
+            sym=self.scheme.sym,
+            data_type=self.scheme.data_type,
+        )
         self._qdq_tool.configure(composer)
         if self.optimization_mode != "staged":
             from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
@@ -614,15 +615,15 @@ class TEQTransform(BasePreprocessor):
     def _resolve_params(self, layer: torch.nn.Module) -> dict:
         cfg = self._layer_config_for(layer)
         return {
-            "bits": cfg.get("bits", self.config.bits),
-            "group_size": cfg.get("group_size", self.config.group_size),
-            "sym": cfg.get("sym", self.config.sym),
-            "data_type": cfg.get("data_type", self.config.data_type),
-            "act_bits": cfg.get("act_bits", self.config.act_bits),
-            "act_group_size": cfg.get("act_group_size", self.config.act_group_size),
-            "act_sym": cfg.get("act_sym", self.config.act_sym),
-            "act_data_type": cfg.get("act_data_type", self.config.act_data_type),
-            "act_dynamic": cfg.get("act_dynamic", self.config.act_dynamic),
+            "bits": cfg.get("bits", self.scheme.bits),
+            "group_size": cfg.get("group_size", self.scheme.group_size),
+            "sym": cfg.get("sym", self.scheme.sym),
+            "data_type": cfg.get("data_type", self.scheme.data_type),
+            "act_bits": cfg.get("act_bits", self.scheme.act_bits),
+            "act_group_size": cfg.get("act_group_size", self.scheme.act_group_size),
+            "act_sym": cfg.get("act_sym", self.scheme.act_sym),
+            "act_data_type": cfg.get("act_data_type", self.scheme.act_data_type),
+            "act_dynamic": cfg.get("act_dynamic", self.scheme.act_dynamic),
             "disable_opt_rtn": cfg.get("disable_opt_rtn", False),
             "super_bits": cfg.get("super_bits", None),
             "super_group_size": cfg.get("super_group_size", None),
