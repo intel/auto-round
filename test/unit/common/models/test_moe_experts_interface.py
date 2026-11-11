@@ -215,14 +215,32 @@ def test_linear_loop_forward():
     top_k_index = torch.randint(0, num_experts, (num_tokens, top_k))
     top_k_weights = torch.softmax(torch.randn(num_tokens, top_k), dim=-1)
 
-    # Run forward
-    output = linear_loop_experts_forward(module, hidden_states, top_k_index, top_k_weights)
+    # Run forward; routing must not issue a per-expert nonzero/sync.
+    original_nonzero = torch.nonzero
+
+    def fail_nonzero(*args, **kwargs):
+        raise AssertionError("sorted MoE routing must not call torch.nonzero")
+
+    torch.nonzero = fail_nonzero
+    try:
+        output = linear_loop_experts_forward(module, hidden_states, top_k_index, top_k_weights)
+    finally:
+        torch.nonzero = original_nonzero
 
     # Verify output shape
     assert output.shape == hidden_states.shape, f"Output shape mismatch: {output.shape} vs {hidden_states.shape}"
 
     # Verify output is not all zeros (sanity check)
     assert not torch.allclose(output, torch.zeros_like(output)), "Output is all zeros"
+
+    ref = torch.zeros_like(hidden_states)
+    for t in range(num_tokens):
+        for k in range(top_k):
+            expert = getattr(module, str(int(top_k_index[t, k])))
+            x = hidden_states[t : t + 1]
+            y = expert.down_proj(module.act_fn(expert.gate_proj(x)) * expert.up_proj(x))
+            ref[t] += top_k_weights[t, k] * y[0]
+    assert torch.allclose(output, ref, atol=1e-3, rtol=1e-4)
 
 
 def test_linear_loop_force_routing_preserves_original_output(monkeypatch):
