@@ -19,8 +19,9 @@ using recursive RTN.  Each plane is independently quantized in the weight
 domain, so the accumulated representation at any prefix is the best
 achievable within that bit budget.
 
-Phase 1: RTN only (no sign-SGD tuning).
-Phase 3: per-plane sign-SGD tuning with a frozen prefix.
+Supports both pure RTN (``iters=0``) and per-plane sign-SGD tuning
+(``iters>0``) with a frozen prefix, as well as incremental residual
+generation from an existing base model.
 """
 
 from auto_round.algorithms.quantization.rrq.config import RRQConfig

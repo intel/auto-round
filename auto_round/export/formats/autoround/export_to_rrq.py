@@ -13,7 +13,7 @@
 # limitations under the License.
 """RRQ residual model export: save the 3 residual planes to ``auto_round:rrq``.
 
-Storage strategy (Phase 1, packed INT2):
+Storage strategy (packed INT2):
     The three residual planes (k = 1..K-1) are each stored in the *standard*
     single-plane INT2 AutoRound layout, packed into a single ``auto_round:rrq``
     artifact -- i.e. three INT2 AutoRound planes stored together::
@@ -419,7 +419,7 @@ def save_rrq_model(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 2: Generate residual from existing base model + FP weights
+# Generate residual from existing base model + FP weights
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -511,8 +511,8 @@ def generate_rrq_residual(
 ):
     """Generate an RRQ residual model from an existing INT2 base model + FP weights.
 
-    This is the Phase 2 entry point: for users who already have an INT2 quantized
-    model, generate the 3 residual planes without re-quantizing the base.
+    Entry point for users who already have an INT2 quantized
+    model: generates the 3 residual planes without re-quantizing the base.
 
     For each eligible layer:
         1. Dequantize the base plane: ``W_dequant_base`` (from packed ``qweight``/``scales``/``qzeros``)

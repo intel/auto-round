@@ -13,9 +13,10 @@
 # limitations under the License.
 """RRQ Quantizer: recursive multi-plane quantization for INT2.
 
-Phase 1: pure RTN (no sign-SGD tuning).
-Phase 3: per-plane sign-SGD tuning (OPT) -- each plane is optimized against
-the block calibration loss while the already-quantized prefix is held fixed.
+Supports two modes:
+- Pure RTN (``iters=0``): each plane is quantized with round-to-nearest.
+- Per-plane sign-SGD tuning (``iters>0``): each plane is optimized against
+  the block calibration loss while the already-quantized prefix is held fixed.
 
 For each layer, performs K rounds of quantization where each round quantizes
 the residual of the previous round.  The result is K independent INT2 planes
@@ -201,7 +202,8 @@ class RRQRTNQuantizer(BaseQuantizer):
         4. Quantize E_3 -> plane_3 (final residual)
 
     All planes share the same group_size and sym setting.
-    Phase 1 uses pure RTN (no sign-SGD tuning).
+    The base class uses pure RTN (no sign-SGD tuning); the SignRound
+    subclass adds per-plane tuning on top.
 
     Storage:
         - plane 0 (base) is stored as the *dequantized float* weight in
@@ -217,7 +219,7 @@ class RRQRTNQuantizer(BaseQuantizer):
 
     def __init__(self, config: RRQConfig) -> None:
         super().__init__(config)
-        self.num_planes = config.total_planes  # 4 for Phase 1 (1 base + 3 residual)
+        self.num_planes = config.total_planes  # 4 by default (1 base + 3 residual)
         # RTN is zero-shot per-layer quantization; it never consumes cascaded
         # quantized activations, so disable the quantized-input propagation the
         # composer would otherwise run with empty inputs. The SignRound subclass
@@ -482,7 +484,7 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
     """RRQ quantizer with per-plane AutoRound sign-SGD tuning.
 
     The registered RRQ implementation dispatches on ``config.iters``:
-    ``iters == 0`` retains the Phase 1 RTN path, while ``iters > 0`` runs
+    ``iters == 0`` uses the pure RTN path, while ``iters > 0`` runs
     four independent tuning rounds with the completed prefix frozen.
     """
 
@@ -663,7 +665,7 @@ class RRQSignRoundQuantizer(RRQRTNQuantizer):
 
     @torch.no_grad()
     def _store_rrq_planes(self, layer, planes):
-        """Write tuned planes using the exact Phase 1 export layout."""
+        """Write tuned planes using the standard RRQ export layout."""
         for plane_idx, (dequant, scale, zp) in enumerate(planes):
             scale_n, zp_n = self._normalize_scale_zp(scale, zp, dequant.shape[0])
             if plane_idx == 0:

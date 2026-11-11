@@ -13,7 +13,7 @@
 # limitations under the License.
 """Combined RRQ loading: base model + residual model -> RRQ-enabled model.
 
-Phase 1 entry point :func:`load_rrq_model` combines an already-exported INT2
+:func:`load_rrq_model` combines an already-exported INT2
 base model (standard ``auto_round`` format) with its ``auto_round:rrq``
 residual model (three packed INT2 planes stored together) into a single model
 whose eligible linear layers are replaced with

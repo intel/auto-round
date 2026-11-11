@@ -13,7 +13,7 @@
 # limitations under the License.
 """RRQ inference module: multi-plane INT2 linear layer with dynamic precision.
 
-Phase-1 reference implementation.  Each plane is stored as its *dequantized*
+Reference implementation.  Each plane is stored as its *dequantized*
 float weight of shape ``(out_features, in_features)``.  ``forward`` accumulates
 the first ``active_planes`` planes and runs a single linear op:
 
@@ -23,7 +23,7 @@ the first ``active_planes`` planes and runs a single linear op:
 - active_planes=4: 8-bit (base + 3 residuals)
 
 This is a correctness reference implementation, not a performance kernel.
-Packed-INT2 storage and fused kernels are a follow-up concern (Phase 2+).
+Packed-INT2 storage and fused kernels are a follow-up concern.
 """
 
 import torch

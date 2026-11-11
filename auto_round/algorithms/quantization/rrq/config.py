@@ -140,7 +140,7 @@ class RRQConfig(RTNConfig):
 
     @classmethod
     def register_args(cls, registry):
-        """Register CLI args for RRQ (Phase 1 common args + optional tuning)."""
+        """Register CLI args for RRQ (common args + optional tuning)."""
         super().register_args(registry)
         registry.add_argument(
             "--iters",
