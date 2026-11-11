@@ -722,7 +722,9 @@ class QADQuantizer(SignRoundQuantizer):
         from auto_round.data_type.utils import register_act_max_hooks, update_block_global_scale_if_needed
         from auto_round.utils import set_amax_for_all_moe_layers
 
-        handles = register_act_max_hooks(model, self.config.act_data_type)
+        # Direct quantizer callers may supply only per-layer scheme metadata.
+        scheme = self.scheme
+        handles = register_act_max_hooks(model, getattr(scheme, "act_data_type", None))
         was_training = model.training
         try:
             if handles:
@@ -738,7 +740,9 @@ class QADQuantizer(SignRoundQuantizer):
 
         if handles:
             set_amax_for_all_moe_layers(model, attr_name="act_max")
-        update_block_global_scale_if_needed(model, self.config.data_type or "int", self.config.group_size or -1)
+        update_block_global_scale_if_needed(
+            model, getattr(scheme, "data_type", None) or "int", getattr(scheme, "group_size", None) or -1
+        )
 
     def quantize_model(self, model, token_ids, device=None) -> dict:
         """Tune jointly, releasing the teacher workspace even if setup fails."""

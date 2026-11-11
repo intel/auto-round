@@ -185,12 +185,18 @@ def list_registered_algorithms() -> list[str]:
     return sorted(_ALIAS_TO_NAME.keys())
 
 
-def register_pipeline_member(config_cls: type):
+def register_algorithm_impl(config_cls: type):
+    """Register a runtime algorithm implementation for a configuration class."""
+
     def _decorator(member_cls: type[BaseAlgorithm]) -> type[BaseAlgorithm]:
         _CONFIG_IMPL_REGISTRY[config_cls] = member_cls
         return member_cls
 
     return _decorator
+
+
+# Keep existing extension imports working; new implementations use the clearer name.
+register_pipeline_member = register_algorithm_impl
 
 
 def register_preprocessor(config_cls: type) -> Callable[[type[_PreprocessorT]], type[_PreprocessorT]]:
@@ -205,7 +211,7 @@ def register_preprocessor(config_cls: type) -> Callable[[type[_PreprocessorT]], 
 
         if not issubclass(preprocessor_cls, BasePreprocessor):
             raise TypeError("register_preprocessor requires a BasePreprocessor subclass")
-        register_pipeline_member(config_cls)(preprocessor_cls)
+        register_algorithm_impl(config_cls)(preprocessor_cls)
         return preprocessor_cls
 
     return _decorator
@@ -216,7 +222,7 @@ def register_quantizer(config_cls: type) -> Callable[[type[_QuantizerT]], type[_
 
     Unlike ``register_algorithm`` (names, aliases and config factories), this
     decorator maps a config class to its runtime quantizer. Preprocessors use
-    ``register_preprocessor``; legacy plugins can still use ``register_pipeline_member``.
+    ``register_preprocessor``; both delegate to ``register_algorithm_impl``.
 
     Args:
         config_cls: Configuration class handled by the quantizer.
@@ -233,7 +239,7 @@ def register_quantizer(config_cls: type) -> Callable[[type[_QuantizerT]], type[_
 
         if not issubclass(quantizer_cls, BaseQuantizer):
             raise TypeError("register_quantizer requires a BaseQuantizer subclass")
-        register_pipeline_member(config_cls)(quantizer_cls)
+        register_algorithm_impl(config_cls)(quantizer_cls)
         return quantizer_cls
 
     return _decorator
@@ -268,10 +274,7 @@ def coerce_config_class(config: object, target_cls: type) -> object:
     if type(config) is target_cls:
         return config
     new_config = copy.copy(config)
-    if hasattr(config, "scheme") and getattr(config, "scheme", None) is not None:
-        new_config.scheme = config.scheme.copy()
-    if hasattr(config, "_user_set_scheme_fields"):
-        new_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
+
     new_config.__class__ = target_cls
     return new_config
 

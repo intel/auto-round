@@ -147,7 +147,7 @@ def test_direct_and_algorithm_config_entries_build_equivalent_plans(tiny_opt_mod
         "low_cpu_mem_usage": False,
     }
     direct = AutoRound(bits=4, group_size=128, **common)
-    configured = AutoRound(alg_configs=SignRoundConfig(bits=4, group_size=128, iters=0), **common)
+    configured = AutoRound(alg_configs=SignRoundConfig(iters=0), bits=4, group_size=128, **common)
 
     direct.post_init()
     configured.post_init()

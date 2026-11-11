@@ -360,7 +360,7 @@ def test_alias_factory_defaults_survive_recipe_and_cli_overrides(monkeypatch):
     configs = AlgorithmHandler.build_configs(captured["args"], {"bits": 4})
     assert configs[0].hadamard_type == "random_hadamard"
     assert configs[0].block_size == 64
-    assert configs[1].bits == 4
+    assert not hasattr(configs[1], "bits")
 
 
 def test_cli_recipe_respects_stage_common_argument_opt_out(monkeypatch):
@@ -394,8 +394,10 @@ def test_cli_recipe_respects_stage_common_argument_opt_out(monkeypatch):
     main.start(argv=["dummy", "--recipe", "strict-pipeline", "--bits", "4", "--group_size", "32"])
     configs = AlgorithmHandler.build_configs(captured["args"], {"bits": 4, "group_size": 32})
     assert isinstance(configs[0], StrictRotationConfig)
-    assert configs[1].bits == 4
-    assert configs[1].group_size == 32
+    assert not hasattr(configs[1], "bits")
+    assert not hasattr(configs[1], "group_size")
+    assert captured["args"].bits == 4
+    assert captured["args"].group_size == 32
 
 
 def test_direct_tune_applies_recipe_before_building_configs(monkeypatch):
