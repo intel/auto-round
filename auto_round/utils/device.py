@@ -36,13 +36,13 @@ from auto_round.utils.device_manager import (
     ARDevice,
     clear_memory,
     detect_device_count,
+    device_manager,
     get_ar_device,
     get_available_device_types,
     get_current_device_manager,
     get_current_device_type,
     get_device_memory,
     get_major_device,
-    get_primary_device_type,
 )
 from auto_round.utils.model import check_to_quantized, get_block_names, get_layer_features, get_module
 
@@ -1510,10 +1510,10 @@ def parse_available_devices(device_map: str | torch.device | int | dict | None =
 
     # === Step 2. Parse different input formats ===
     if device_map is None:
-        # Automatically detect one available device.  ``get_primary_device_type``
+        # Automatically detect one available device.  ``device_manager.primary_type``
         # applies the ``auto_select_by_default`` policy (MPS opts out), so this
         # agrees with ``normalize_default_device_map`` / ``get_major_device``.
-        primary = get_primary_device_type(device_types)
+        primary = device_manager.primary_type(device_types)
         return ["cpu"] if primary == "cpu" else [f"{primary}:0"]
 
     if isinstance(device_map, torch.device):
@@ -1528,7 +1528,7 @@ def parse_available_devices(device_map: str | torch.device | int | dict | None =
 
     if isinstance(device_map, int):
         # Integer input → use the primary (default) available device type
-        device_type = get_primary_device_type(device_types)
+        device_type = device_manager.primary_type(device_types)
         return [f"{device_type}:{device_map}"] if device_type != "cpu" else ["cpu"]
 
     # ---- dict-like string ----
@@ -1540,7 +1540,7 @@ def parse_available_devices(device_map: str | torch.device | int | dict | None =
                 _, *value_parts = pair.split(":")
                 value = ":".join(value_parts).strip()
                 if value.isdigit():
-                    primary = get_primary_device_type(device_types)
+                    primary = device_manager.primary_type(device_types)
                     if primary != "cpu":
                         value = primary + ":" + value
                 devices.append(value)
@@ -1554,7 +1554,7 @@ def parse_available_devices(device_map: str | torch.device | int | dict | None =
         if device_map.lower() == "cpu":
             return ["cpu"]
         if device_map.lower() == "auto":
-            primary = get_primary_device_type(device_types)
+            primary = device_manager.primary_type(device_types)
             if primary == "cpu":
                 return ["cpu"]
             return [f"{primary}:{i}" for i in range(detect_device_count())]
@@ -1564,7 +1564,7 @@ def parse_available_devices(device_map: str | torch.device | int | dict | None =
         for p in parts:
             if p.isdigit():
                 # Numeric → assign to the primary (default) device type
-                device_type = get_primary_device_type(device_types)
+                device_type = device_manager.primary_type(device_types)
                 parsed.append(f"{device_type}:{p}" if device_type != "cpu" else "cpu")
             elif p in device_types and ":" not in p:
                 # Bare device type string (e.g., "cuda", "xpu") → normalize to "type:0".

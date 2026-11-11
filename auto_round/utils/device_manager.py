@@ -54,6 +54,24 @@ Typical usage::
         free, total = dev.mem_get_info(0)
 
     cuda = get_ar_device("cuda")    # a specific backend
+
+Which discovery helper should I use?
+------------------------------------
+Three different questions, three different answers -- pick by the question, not
+by the name that sounds closest::
+
+    # 1. Which backend is this process running on?      -> one type string
+    get_current_device_type()        # "cuda" / "xpu" / "hpu" / "mps" / "cpu"
+
+    # 2. Which backends are usable at all?               -> priority ordered list
+    get_available_device_types()     # ["cuda"], ["xpu", "cuda"], [] on CPU-only
+
+    # 3. Which backend should an *unspecified* request pick?  -> one type string
+    device_manager.primary_type()    # same rule everywhere, honours opts-out
+
+(1) and (2) are property queries answered by discovery; (3) is a *policy*
+decision and therefore lives on the manager, which is also the object that owns
+the per-backend handles.
 """
 
 from __future__ import annotations
@@ -86,7 +104,6 @@ __all__ = [
     "get_device_memory",
     "get_major_device",
     "get_packing_device",
-    "get_primary_device_type",
     "is_auto_device_mapping",
     "is_device_available",
     "normalize_default_device_map",
@@ -123,7 +140,7 @@ def normalize_default_device_map(device_map: None | str | int | torch.device | d
     is available, the default ``0`` / ``"0"`` / ``None`` / ``"auto"`` selection
     falls back to CPU unless the caller asked for it explicitly.
 
-    The decision itself lives in :func:`get_primary_device_type`, which
+    The policy itself lives in :meth:`DeviceManager.primary_type`, which
     :func:`auto_round.utils.device.parse_available_devices` and
     :func:`get_major_device` use as well, so every default-resolution path
     agrees.
@@ -134,7 +151,7 @@ def normalize_default_device_map(device_map: None | str | int | torch.device | d
     available = get_available_device_types()
     if not available:
         return device_map
-    if get_primary_device_type(available) != "cpu":
+    if device_manager.primary_type(available) != "cpu":
         return device_map
 
     # Every available backend opts out of implicit selection; keep the
@@ -294,39 +311,13 @@ def _normalize_device_type(device: None | str | int | torch.device) -> str | Non
     raise ValueError(f"Device type not recognized: {device!r} (type {type(device).__name__})")
 
 
-@functools.lru_cache(None)
-def get_current_device_type() -> str:
-    """Return the active device backend type, or "cpu" if CPU-only.
-
-    Discovery order:
-      1. Intel Gaudi ("hpu") -- out-of-tree, may not register with torch.accelerator.
-      2. ``torch.accelerator`` -- the canonical API, covers cuda/xpu/mps/npu/...
-      3. Generic probing of :func:`_candidate_backend_types` for older PyTorch
-         releases and vendor backends.
-    """
-    # "hpu" first: it may not be registered with torch.accelerator.
-    if _hpu_available():
-        return "hpu"
-
-    accel_type = _torch_accelerator_type()
-    if accel_type is not None:
-        return accel_type
-
-    # PyTorch < 2.6 / vendor backends: probe every discovered candidate.
-    for device_type in _candidate_backend_types():
-        if _backend_available(device_type):
-            return device_type
-
-    return "cpu"
-
-
-def is_device_available() -> bool:
-    """Whether a device backend (CPU included) could be resolved."""
-    return get_current_device_type() is not None
-
-
 def get_available_device_types() -> list[str]:
-    """Return all available (non-CPU) backend types, in preferred order.
+    """Return *every* usable accelerator backend, most preferred first.
+
+    This is the single discovery implementation in this module:
+    :func:`get_current_device_type` returns its head and
+    :meth:`DeviceManager.primary_type` applies the default-selection policy to
+    it, so discovery order can never drift between the three entry points.
 
     Every candidate reported by :func:`_candidate_backend_types` is probed
     through the uniform ``is_available()`` contract, so backends registered with
@@ -334,10 +325,9 @@ def get_available_device_types() -> list[str]:
     automatically, without callers ever touching ``torch.cuda`` / ``torch.xpu``
     by hand.
 
-    The result is a *priority-ordered* list, not a single choice: the first
-    entry is the most preferred backend, but it may still be one that must not
-    be picked implicitly.  Use :func:`get_primary_device_type` when the caller
-    did not request a specific device.
+    ``"cpu"`` is deliberately *not* included: it is always usable, so callers
+    add it explicitly when they need it.  An empty list therefore means "no
+    accelerator available".
     """
     available: list[str] = []
     # Out-of-tree hpu first (may not be registered with torch.accelerator).
@@ -354,38 +344,30 @@ def get_available_device_types() -> list[str]:
     return available
 
 
-def get_primary_device_type(available: list[str] | None = None) -> str:
-    """Backend to use when the caller did not request a specific device.
+@functools.lru_cache(None)
+def get_current_device_type() -> str:
+    """Return the accelerator backend this process runs on (``"cpu"`` if none).
 
-    :func:`get_available_device_types` returns *every* usable backend in
-    preference order; picking the first one is not the same decision as picking
-    the *default* one, because a backend may declare
-    ``auto_select_by_default = False`` (Apple Silicon / MPS: unified memory OOMs
-    on larger models).  Centralising the rule here keeps
-    :func:`auto_round.utils.device.parse_available_devices`,
-    :func:`get_major_device` and :func:`normalize_default_device_map` from
-    disagreeing about what "default" means.
+    This answers "which device am I using right now" and is the only discovery
+    call most code needs.  For the full list use
+    :func:`get_available_device_types`; for the pick to use when the user did
+    not specify a device use :meth:`DeviceManager.primary_type`.
 
-    Args:
-        available: Already-detected backend types.  Callers that have resolved
-            the list themselves (and may have monkeypatched the discovery
-            helper) pass it in; otherwise it is looked up.
-
-    Returns:
-        ``"cpu"`` when an available backend opts out of implicit selection (the
-        historical behaviour, kept so every entry point agrees), otherwise the
-        most preferred available backend, or ``"cpu"`` when nothing is
-        available.
+    Never returns ``None`` -- a CPU-only build reports ``"cpu"``.
     """
-    if available is None:
-        available = get_available_device_types()
-    for device_type in available:
-        try:
-            if not get_ar_device(device_type).auto_select_by_default:
-                return "cpu"
-        except Exception:
-            continue
+    available = get_available_device_types()
     return available[0] if available else "cpu"
+
+
+def is_device_available() -> bool:
+    """Whether a device backend (CPU included) could be resolved.
+
+    Kept for backwards compatibility; because :func:`get_current_device_type`
+    never returns ``None`` this is effectively always ``True``. Use
+    ``get_available_device_types()`` when you need to know whether a real
+    accelerator (as opposed to CPU) is present.
+    """
+    return get_current_device_type() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1039,11 +1021,44 @@ class DeviceManager:
         return self.get_ar_device(get_current_device_type())
 
     def current_type(self) -> str:
+        """Backend this process runs on (same answer as :func:`get_current_device_type`)."""
         return get_current_device_type()
+
+    def primary_type(self, available: list[str] | None = None) -> str:
+        """Backend to pick when the caller did not request a specific device.
+
+        Distinct from :meth:`current_type` (the backend in use) and
+        :meth:`available_types` (everything usable): a usable backend may still
+        opt out of implicit selection (``ARDevice.auto_select_by_default``,
+        e.g. MPS), in which case the default is CPU.  Every default-resolution
+        path -- :func:`normalize_default_device_map`, :func:`get_major_device`
+        and ``parse_available_devices`` -- asks this method, so they can never
+        disagree about what "default" means.
+
+        Args:
+            available: Already-detected backend types.  Callers that resolved
+                the list themselves (e.g. to reuse one discovery result) pass
+                it in; otherwise it is looked up.
+
+        Returns:
+            ``"cpu"`` when an available backend opts out of implicit selection
+            (the historical behaviour, kept so every entry point agrees),
+            otherwise the most preferred available backend, or ``"cpu"`` when
+            nothing is available.
+        """
+        if available is None:
+            available = self.available_types()
+        for device_type in available:
+            try:
+                if not self.get_ar_device(device_type).auto_select_by_default:
+                    return "cpu"
+            except Exception:
+                continue
+        return available[0] if available else "cpu"
 
     # -- multi-card / multi-backend ----------------------------------------
     def available_types(self) -> list[str]:
-        """All available (non-CPU) backend types, in preferred order."""
+        """All usable (non-CPU) backend types, in preferred order."""
         return get_available_device_types()
 
     def available_devices(self) -> list[ARDevice]:
@@ -1246,11 +1261,11 @@ def get_major_device(device_map: None | str | torch.device | int | dict = None) 
             dev_idx = device_list[0] if device_list else None
             device = "auto"
         if device is None or device == "auto":
-            # ``get_primary_device_type`` applies the ``auto_select_by_default``
-            # policy (MPS opts out), so a default request never resolves to a
-            # backend that must not be picked implicitly.
-            device_type = get_primary_device_type()
-            device = torch.device(device_type) if device_type is not None else torch.device("cpu")
+            # ``primary_type`` applies the ``auto_select_by_default`` policy
+            # (MPS opts out), so a default request never resolves to a backend
+            # that must not be picked implicitly.
+            device_type = device_manager.primary_type()
+            device = torch.device(device_type)
             if dev_idx is not None and str(device) != "cpu":
                 device = str(device) + f":{dev_idx}"
             return str(device)
@@ -1259,7 +1274,7 @@ def get_major_device(device_map: None | str | torch.device | int | dict = None) 
         elif isinstance(device, str):  ## for cuda:0
             if device == "tp":  # pragma: no cover
                 # should not specify card, e.g., cuda:0
-                device = get_current_device_type() or "cpu"
+                device = get_current_device_type()
         return device
 
     if isinstance(device_map, dict) and device_map:

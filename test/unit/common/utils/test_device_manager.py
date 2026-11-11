@@ -982,27 +982,29 @@ class TestNewBackendSupport:
         from auto_round.utils.device import parse_available_devices
         from auto_round.utils.device_manager import get_major_device, normalize_default_device_map
 
+        # ``mps`` is registered with ``auto_select_by_default = False``, so the
+        # real registry is enough -- no handle needs to be faked.  Both the
+        # manager module and ``utils.device`` (which imports the helper by name)
+        # must report the same list.
         with (
             patch("auto_round.utils.device_manager.get_available_device_types", return_value=["mps"]),
-            patch("auto_round.utils.device_manager.get_ar_device") as fake_get,
+            patch("auto_round.utils.device.get_available_device_types", return_value=["mps"]),
         ):
-            fake_get.return_value.auto_select_by_default = False
-            fake_get.return_value.is_available.return_value = True
             assert normalize_default_device_map(0) == "cpu"
             assert get_major_device(0) == "cpu"
             assert parse_available_devices(None) == ["cpu"]
             assert parse_available_devices(0) == ["cpu"]
             assert parse_available_devices("auto") == ["cpu"]
 
-    def test_get_primary_device_type_prefers_first_selectable(self):
-        from auto_round.utils.device_manager import get_primary_device_type
+    def test_primary_type_prefers_first_selectable(self):
+        """``MpsARDevice`` opts out of implicit selection; the rest do not."""
+        from auto_round.utils.device_manager import device_manager
 
-        assert get_primary_device_type(["cuda", "xpu"]) == "cuda"
-        assert get_primary_device_type(["xpu", "cuda"]) == "xpu"
-        assert get_primary_device_type([]) == "cpu"
-        with patch("auto_round.utils.device_manager.get_ar_device") as fake_get:
-            fake_get.return_value.auto_select_by_default = False
-            assert get_primary_device_type(["mps"]) == "cpu"
+        assert device_manager.primary_type(["cuda", "xpu"]) == "cuda"
+        assert device_manager.primary_type(["xpu", "cuda"]) == "xpu"
+        assert device_manager.primary_type([]) == "cpu"
+        # mps is registered with ``auto_select_by_default = False``.
+        assert device_manager.primary_type(["mps"]) == "cpu"
 
     def test_backend_available_uses_custom_is_available_override(self):
         """A vendor handle's ``is_available`` override drives discovery.
