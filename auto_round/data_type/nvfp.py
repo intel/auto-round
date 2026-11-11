@@ -148,28 +148,17 @@ def float_to_e5m3_frexp(x: torch.Tensor) -> torch.Tensor:
 def e5m3_to_float_tensor(e5m3: torch.Tensor) -> torch.Tensor:
     assert e5m3.dtype == torch.uint8
 
-    x = torch.zeros_like(e5m3, dtype=torch.float32)
-    mask_nonzero = e5m3 != 0
-    e = ((e5m3[mask_nonzero] >> 3) & 0x1F).to(torch.int32)
-    m = (e5m3[mask_nonzero] & 0x07).to(torch.int32)
+    bits = e5m3.to(torch.int32)
+    e = (bits >> 3) & 0x1F
+    m = (bits & 0x07).to(torch.float32)
 
     is_nan = (e == 31) & (m == 7)
-    is_subnormal = e == 0
-    is_normal = (e > 0) & (~is_nan)
-
-    out = torch.zeros_like(e, dtype=torch.float32)
-
-    # subnormal: exponent = -14, no implicit leading 1
-    out[is_subnormal] = (m[is_subnormal].float() / 8.0) * (2**-14)
-
-    # normal: exponent = e - 15, implicit leading 1
-    mant = 1.0 + m[is_normal].float() / 8.0
-    exp = e[is_normal] - 15
-    out[is_normal] = torch.ldexp(mant, exp)
-
-    out[is_nan] = float("nan")
-    x[mask_nonzero] = out
-    return x
+    # subnormal (e == 0): exponent -14, no implicit leading 1; zero encodes as m == 0
+    subnormal = (m / 8.0) * (2**-14)
+    # normal: exponent e - 15, implicit leading 1
+    normal = torch.ldexp(1.0 + m / 8.0, e - 15)
+    out = torch.where(e == 0, subnormal, normal)
+    return torch.where(is_nan, torch.full_like(out, float("nan")), out)
 
 
 def cast_to_ue5m3(tensor):
@@ -373,10 +362,81 @@ def ref_nvfp4_quant_inplace(
     return out.reshape(m, n), scale
 
 
+def _nvfp4_e4m3_block_scale(vec_amax, multiplier, global_scale):
+    """FP8 E4M3 block scale that ``nv_fp4_rtn`` produces for per-group amax and multiplier."""
+    scale = global_scale * ((vec_amax * multiplier) * get_reciprocal(FLOAT4_E2M1_MAX))
+    scale = scale.clamp(min=FLOAT8_E4M3_MIN, max=FLOAT8_E4M3_MAX)
+    return to_float8_e4m3fn(scale)
+
+
+def _nvfp4_e4m3_qdq(x, block_scale, global_scale):
+    """FP4 QDQ of grouped ``x`` [G, 16] with FP8 E4M3 block scales [G]; mirrors ``ref_nvfp4_quant_inplace``."""
+    output_scale = get_reciprocal(block_scale * get_reciprocal(global_scale)).unsqueeze(-1)
+    scaled = (x * output_scale).clamp(-6.0, 6.0)
+    return cast_to_fp4(scaled) * get_reciprocal(output_scale)
+
+
+_NVFP4_E4M3_MULTIPLIERS = [scale_value / 100.0 for scale_value in range(50, 152) if scale_value != 100]
+
+
+def _search_nvfp4_e4m3_multiplier(x, weight):
+    """Search per-group amax multipliers in [0.5, 1.51] for the NVFP4 E4M3 block scale.
+
+    Equivalent to re-running ``nv_fp4_rtn`` on the full tensor for every candidate with a strict ``<`` update in
+    ascending order, but only groups whose FP8 block scale changed since the previous candidate are re-quantized.
+    An unchanged scale yields the same loss as the previous candidate, which is never strictly better than the
+    current best, so skipping it does not change the result.
+
+    Args:
+        x: float32 tensor of shape [G, 16].
+        weight: float32 importance weights broadcastable to ``x``.
+
+    Returns:
+        float32 tensor of shape [G] holding the best multiplier per group.
+    """
+    amax = x.abs().amax(dim=-1)
+    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(x.abs().max())
+
+    base_scale = _nvfp4_e4m3_block_scale(amax, torch.ones((), device=x.device), global_scale)
+    diff = _nvfp4_e4m3_qdq(x, base_scale, global_scale) - x
+    best_loss = (diff * diff * weight).sum(dim=-1)
+    best_mult = torch.ones_like(best_loss)
+
+    multipliers = torch.tensor(_NVFP4_E4M3_MULTIPLIERS, dtype=torch.float32, device=x.device)
+    prev_scale = base_scale
+    for mult in multipliers.unbind(0):
+        scale = _nvfp4_e4m3_block_scale(amax, mult, global_scale)
+        idx = torch.nonzero(scale != prev_scale).squeeze(-1)
+        prev_scale = scale
+        if idx.numel() == 0:
+            continue
+        xs = x.index_select(0, idx)
+        d = _nvfp4_e4m3_qdq(xs, scale.index_select(0, idx), global_scale) - xs
+        loss = (d * d * weight.index_select(0, idx)).sum(dim=-1)
+        old_loss = best_loss.index_select(0, idx)
+        better = loss < old_loss
+        best_loss.index_copy_(0, idx, torch.where(better, loss, old_loss))
+        best_mult.index_copy_(0, idx, torch.where(better, mult, best_mult.index_select(0, idx)))
+    return best_mult
+
+
 def search_nvfp4_scale(tensor, bits=4, qw=None, quant_func=None, group_size=16):
+    """Search the per-group block-scale multiplier in [0.5, 1.51] for NVFP4 (E4M3 block scale).
+
+    With ``quant_func=None`` the changed-only search is used. Passing ``quant_func`` selects the exhaustive
+    reference implementation, which re-quantizes the full tensor for every candidate.
+    """
+    if quant_func is None:
+        if qw is None:
+            raise TypeError("search_nvfp4_scale requires `qw` (importance weights)")
+        x = tensor.float().reshape(-1, group_size)
+        weight = torch.as_tensor(qw, dtype=torch.float32, device=x.device)
+        weight = weight.reshape_as(x) if weight.numel() == x.numel() else weight.expand_as(x)
+        return _search_nvfp4_e4m3_multiplier(x, weight).unsqueeze(-1)
+
     tensor_fp32 = tensor.float()
-    baseline_func = nv_fp4 if quant_func is None else quant_func
-    candidate_func = nv_fp4_rtn if quant_func is None else quant_func
+    baseline_func = quant_func
+    candidate_func = quant_func
 
     qdq_t, scale, _ = baseline_func(
         tensor_fp32,
@@ -430,16 +490,110 @@ def search_nvfp4_scale(tensor, bits=4, qw=None, quant_func=None, group_size=16):
 
         mask = loss < best_loss
 
-        best_loss[mask] = loss[mask]
-        best_scale[mask] = test_scale[mask]
+        best_loss = torch.where(mask, loss, best_loss)
+        best_scale = torch.where(mask.unsqueeze(-1), test_scale, best_scale)
 
     return best_scale
 
 
-def search_nvfp4_v2_scale(tensor, bits=4, qw=None):
+def _nvfp4_e5m3_block_scale(vec_amax, multiplier, global_scale=1.0):
+    """UE5M3 block scale that ``ref_fp4_quant`` produces for per-group amax and multiplier."""
+    scale = global_scale * ((vec_amax * multiplier) * get_reciprocal(FLOAT4_E2M1_MAX))
+    scale = torch.clip(scale, 0, FLOAT8_UE5M3_MAX)
+    return cast_to_ue5m3_ste(scale).to(torch.float32)
+
+
+def _nvfp4_e5m3_qdq(x, block_scale, global_scale=1.0):
+    """FP4 QDQ of grouped ``x`` (shape [G, 16]) with per-group UE5M3 block scales (shape [G])."""
+    dequant_scale = block_scale.unsqueeze(-1) * get_reciprocal(global_scale)
+    scaled_x = torch.where(dequant_scale == 0, torch.zeros_like(x), x / dequant_scale)
+    clipped = torch.clamp(scaled_x, -6.0, 6.0)
+    return cast_to_fp4(clipped) * dequant_scale
+
+
+_NVFP4_SEARCH_CHUNK_MAX_ELEMS = 2**24  # candidates x elements per compiled call; caps eager-fallback temporaries
+
+
+def _nvfp4_e5m3_search_chunk(x, amax, weight, global_scale, mults, best_loss, best_mult):
+    """Evaluate a chunk of amax multipliers and keep the first best one per group if it strictly improves."""
+    block_scale = _nvfp4_e5m3_block_scale(amax, mults.unsqueeze(-1), global_scale)
+    diff = _nvfp4_e5m3_qdq(x, block_scale, global_scale) - x
+    loss = (diff * diff * weight).sum(dim=-1)
+    chunk_loss, idx = loss.min(dim=0)
+    chunk_mult = mults[idx]
+    better = chunk_loss < best_loss
+    return torch.where(better, chunk_loss, best_loss), torch.where(better, chunk_mult, best_mult)
+
+
+_NVFP4_E5M3_SEARCH_CHUNK_CACHE = {}
+
+
+def _get_nvfp4_e5m3_search_chunk(device):
+    key = str(device)
+    if key not in _NVFP4_E5M3_SEARCH_CHUNK_CACHE:
+        from auto_round.utils.device import compile_func
+
+        _NVFP4_E5M3_SEARCH_CHUNK_CACHE[key] = compile_func(_nvfp4_e5m3_search_chunk, device)
+    return _NVFP4_E5M3_SEARCH_CHUNK_CACHE[key]
+
+
+def _search_nvfp4_e5m3_multiplier(tensor, qw=None, global_scale=None, enable_torch_compile=False):
+    """Search per-group amax multipliers in [0.5, 1.51] for the NVFP4 E5M3 block scale.
+
+    With ``enable_torch_compile`` the candidates run as fixed-shape compiled chunks over the full tensor
+    (chunk size bounded by ``_NVFP4_SEARCH_CHUNK_MAX_ELEMS``; the last chunk repeats the final candidate,
+    which never wins under the strict ``<`` update). Eagerly, only groups whose UE5M3 scale changed from
+    the previous candidate are re-evaluated, since an unchanged scale cannot strictly improve the loss.
+    """
+    x = tensor.float()
+    gs = 1.0 if global_scale is None else _to_global_scale_tensor(global_scale, x.device)
+    amax = x.abs().amax(dim=-1)
+    weight = (
+        torch.ones_like(x) if qw is None else torch.as_tensor(qw, dtype=torch.float32, device=x.device).expand_as(x)
+    )
+
+    base_scale = _nvfp4_e5m3_block_scale(amax, torch.tensor(1.0, device=x.device), gs)
+    diff = _nvfp4_e5m3_qdq(x, base_scale, gs) - x
+    best_loss = (diff * diff * weight).sum(dim=-1)
+    best_mult = torch.ones_like(best_loss)
+
+    multipliers = torch.tensor(
+        [scale_value / 100.0 for scale_value in range(50, 152) if scale_value != 100],
+        dtype=torch.float32,
+        device=x.device,
+    )
+
+    if not enable_torch_compile:
+        prev_scale = base_scale
+        for mult in multipliers.unbind(0):
+            scale = _nvfp4_e5m3_block_scale(amax, mult, gs)
+            idx = torch.nonzero(scale != prev_scale).squeeze(-1)
+            prev_scale = scale
+            if idx.numel() == 0:
+                continue
+            xs = x.index_select(0, idx)
+            d = _nvfp4_e5m3_qdq(xs, scale.index_select(0, idx), gs) - xs
+            loss = (d * d * weight.index_select(0, idx)).sum(dim=-1)
+            old_loss = best_loss.index_select(0, idx)
+            better = loss < old_loss
+            best_loss.index_copy_(0, idx, torch.where(better, loss, old_loss))
+            best_mult.index_copy_(0, idx, torch.where(better, mult, best_mult.index_select(0, idx)))
+        return best_mult
+
+    chunk = min(max(1, _NVFP4_SEARCH_CHUNK_MAX_ELEMS // x.numel()), multipliers.numel())
+    pad = -multipliers.numel() % chunk
+    multipliers = torch.cat([multipliers, multipliers[-1:].expand(pad)]).view(-1, chunk)
+
+    step = _get_nvfp4_e5m3_search_chunk(x.device)
+    for mults in multipliers.unbind(0):
+        best_loss, best_mult = step(x, amax, weight, gs, mults, best_loss, best_mult)
+
+    return best_mult
+
+
+def search_nvfp4_v2_scale(tensor, bits=4, qw=None, enable_torch_compile=False):
     """Search per-group scales for the legacy-registry NVFP4 E5M3 quantizer."""
-    qw = 1.0 if qw is None else qw
-    return search_nvfp4_scale(tensor, bits, qw, quant_func=nvfp4_v2, group_size=tensor.shape[-1]).squeeze(-1)
+    return _search_nvfp4_e5m3_multiplier(tensor, qw, enable_torch_compile=enable_torch_compile)
 
 
 @register_dtype("opt_rtn_nv_fp4")
@@ -470,7 +624,17 @@ def opt_rtn_fast_nvfp4(
 
 
 @register_dtype("opt_rtn_nvfp4_v2_gs")
-def opt_rtn_nvfp4_v2_gs(tensor, bits=4, group_size=16, v=0, global_scale=None, max_scale=1.0, imatrix=1.0, **kwargs):
+def opt_rtn_nvfp4_v2_gs(
+    tensor,
+    bits=4,
+    group_size=16,
+    v=0,
+    global_scale=None,
+    max_scale=1.0,
+    imatrix=1.0,
+    enable_torch_compile=False,
+    **kwargs,
+):
     grouped, _, _ = reshape_pad_tensor_by_group_size(tensor, group_size)
     if not isinstance(imatrix, torch.Tensor):
         qw = 1.0
@@ -483,12 +647,7 @@ def opt_rtn_nvfp4_v2_gs(tensor, bits=4, group_size=16, v=0, global_scale=None, m
     if global_scale is None:
         global_scale = calculate_gparam_e5m3(grouped, group_size)
 
-    def _candidate(t, bits=4, group_size=16, v=0, max_scale=1.0):
-        if isinstance(max_scale, torch.Tensor):
-            max_scale = max_scale.reshape(-1)
-        return nvfp4_v2_gs(t, bits, group_size, v, global_scale=global_scale, max_scale=max_scale)
-
-    init_scale = search_nvfp4_scale(grouped, bits, qw, quant_func=_candidate, group_size=group_size).reshape(-1)
+    init_scale = _search_nvfp4_e5m3_multiplier(grouped, qw, global_scale, enable_torch_compile)
     if isinstance(max_scale, torch.Tensor):
         init_scale = init_scale * max_scale.reshape(-1).to(init_scale.device)
     else:
