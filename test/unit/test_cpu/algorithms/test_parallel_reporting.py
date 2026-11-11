@@ -22,7 +22,7 @@ import torch
 import torch.distributed as dist
 
 from auto_round import ParallelConfig
-from auto_round.autoround import _prepare_entry_kwargs
+from auto_round.algorithms.config_resolver import _prepare_entry_kwargs
 from auto_round.cli.main import _build_parallel_config
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.logger import RankZeroFilter, logger
@@ -228,9 +228,8 @@ def test_non_tp_summary_retains_single_device_format(monkeypatch):
     ],
 )
 def test_supported_direct_options_do_not_emit_recommendation_warnings(algorithm, options):
-    with patch("auto_round.autoround.logger.warning") as warning:
-        configs, _ = _prepare_entry_kwargs(algorithm, options)
+    with patch("auto_round.algorithms.config_resolver.logger.warning") as warning:
+        configs, runtime = _prepare_entry_kwargs(algorithm, options)
     warning.assert_not_called()
-    assert configs[0].group_size == 32
-    assert configs[0].bits == 4
-    assert configs[0].sym is True
+    assert runtime["scheme_overrides"] == {"bits": 4, "group_size": 32, "sym": True}
+    assert not hasattr(configs[0], "bits")

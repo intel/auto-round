@@ -203,8 +203,6 @@ class AWQTransform(BasePreprocessor):
         if execution.is_tp:
             if config.apply_clip or config.clip_as_init:
                 raise NotImplementedError("AWQ TP clipping has not implemented the shard-local clipping contract yet.")
-            if config.data_type not in (None, "int"):
-                raise NotImplementedError("AWQ TP currently supports INT weight-only smoothing.")
 
     def __init__(self, config: AWQConfig) -> None:
         super().__init__(config)
@@ -230,12 +228,7 @@ class AWQTransform(BasePreprocessor):
         # Single source of truth for "QDQ a candidate weight under the target
         # block-quantizer scheme", used as AWQ's grid-search / clip loss. AWQ
         # composes this instead of re-implementing block-quantizer dispatch;
-        self._qdq_tool = QDQTool(
-            bits=config.bits,
-            group_size=config.group_size,
-            sym=config.sym,
-            data_type=config.data_type,
-        )
+        self._qdq_tool = None
 
         self._user_mappings: list[dict] | None = config.mappings
         self._skip_moe: bool = getattr(config, "skip_moe", False)
@@ -274,9 +267,22 @@ class AWQTransform(BasePreprocessor):
         """AWQ installs per-block calibration hooks that trigger Dynamo recompiles."""
         return False
 
+    @classmethod
+    def validate_parallel_scheme(cls, scheme, execution) -> None:
+        """Reject unsupported AWQ tensor-parallel schemes before loading a model."""
+        if execution.is_tp and scheme.data_type != "int":
+            raise NotImplementedError("AWQ TP currently supports INT weight-only smoothing.")
+
     def prepare_run(self, composer: AlgorithmComposer = None) -> None:
         """Resolve model-wide mappings and group them by transformer block."""
         model = self.model
+        self._qdq_tool = QDQTool(
+            bits=self.scheme.bits,
+            group_size=self.scheme.group_size,
+            sym=self.scheme.sym,
+            data_type=self.scheme.data_type,
+        )
+        type(self).validate_parallel_scheme(self.scheme, self.parallel)
 
         # ── Resolve all model-level mappings (name-only, no module caching) ──
         self._resolved_mappings = resolve_mappings(model, self._user_mappings, skip_moe=self._skip_moe)
