@@ -9,6 +9,7 @@ from auto_round.cli.main import _to_autoround_kwargs
 from auto_round.cli.parser import build_quantize_parser
 from auto_round.compressors.base import MIN_ITERS_FOR_TORCH_COMPILE, BaseOrchestrator
 from auto_round.logger import logger
+from auto_round.recipes.recipe import UNSET
 from auto_round.utils.device_manager import default_enable_torch_compile
 
 
@@ -18,7 +19,7 @@ def test_torch_compile_platform_default_is_deferred():
 
 
 def test_dataset_default_is_deferred():
-    assert inspect.signature(AutoRound.__new__).parameters["dataset"].default is None
+    assert inspect.signature(AutoRound.__new__).parameters["dataset"].default is UNSET
     assert inspect.signature(BaseOrchestrator.__init__).parameters["dataset"].default is None
 
 
@@ -109,7 +110,19 @@ def test_torch_compile_runtime_defaults(tiny_opt_model_path):
     assert not ar.enable_torch_compile
 
     ar = AutoRound(model=tiny_opt_model_path, scheme="NVFP4", iters=200, nsamples=1)
+    # NVFP4 keeps per-layer quant kernels compilable; calibration hooks run eagerly.
     assert ar.enable_torch_compile == default_enable_torch_compile(ar.device)
+
+
+def test_static_kv_keeps_block_forward_eager():
+    compressor = object.__new__(BaseOrchestrator)
+    compressor.enable_torch_compile = True
+    compressor.static_kv_dtype = "fp8_e4m3"
+    compressor.static_attention_dtype = None
+    assert not compressor.enable_block_forward_compile
+
+    compressor.static_kv_dtype = None
+    assert compressor.enable_block_forward_compile
 
 
 def test_hf_model_id_sets_resolved_checkpoint_on_compressor_offloader(tiny_opt_model_path, monkeypatch):
@@ -247,3 +260,16 @@ def test_torch_compile_windows_defaults(monkeypatch, caplog, tiny_opt_model_path
         enable_torch_compile=False,
     )
     assert not ar.enable_torch_compile
+
+
+@pytest.mark.parametrize("scheme,static", [("W4A16", False), ("NVFP4", False), ("FP8_STATIC", True)])
+def test_torch_compile_static_activation_guard_before_scheme_resolution(scheme, static):
+    compressor = BaseOrchestrator.__new__(BaseOrchestrator)
+    compressor.scheme = scheme
+    compressor.scheme_context = None
+    compressor._user_scheme_overrides = {}
+    compressor._torch_compile_user_specified = True
+    compressor._apply_torch_compile_constraints(True)
+    assert compressor.enable_torch_compile is (not static)
+    if static:
+        assert compressor._torch_compile_off_reason == "activation is static"

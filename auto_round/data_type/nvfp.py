@@ -41,7 +41,9 @@ def cast_to_fp4(x):
 
 def get_reciprocal(x):
     if isinstance(x, torch.Tensor):
-        return torch.where(x == 0, torch.zeros_like(x, dtype=x.dtype), 1.0 / x)
+        is_zero = x == 0
+        denominator = torch.where(is_zero, torch.ones_like(x), x)
+        return torch.where(is_zero, torch.zeros_like(x, dtype=x.dtype), 1.0 / denominator)
     elif isinstance(x, (float, int)):
         return 0.0 if x == 0 else 1.0 / x
     else:
@@ -212,13 +214,17 @@ def nvfp4_v2_with_global_scale(tensor, bits=4, group_size=16, v=0, tensor_max=No
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     if tensor_max is None:
         tensor_max = tensor.to(torch.float32).abs().max()
-    elif tensor_max is not None:
+    else:
         if not isinstance(tensor_max, torch.Tensor):
             tensor_max = torch.tensor(tensor_max, device=tensor.device, dtype=torch.float32)
+        else:
+            tensor_max = tensor_max.to(device=tensor.device, dtype=torch.float32)
         if tensor_max.numel() != 1:
-            tensor_max = tensor.to(torch.float32).abs().max()
+            tensor_max = tensor_max.abs().max()
     global_scale = FLOAT8_UE5M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(tensor_max)
-    qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v)
+    if isinstance(max_scale, torch.Tensor):
+        max_scale = max_scale.reshape(-1).to(tensor.device)
+    qdq_res, scale = ref_fp4_quant(tensor, global_scale, group_size, v, max_scale)
     qdq_res = revert_tensor_by_pad(qdq_res, orig_shape=orig_shape, pad_len=pad_len)
     return qdq_res.to(orig_dtype), scale, None
 

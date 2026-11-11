@@ -16,6 +16,7 @@ from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.registry import register_algorithm
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 
 
 def _unique_opt_rtn_value(values) -> bool | None:
@@ -70,14 +71,10 @@ class AWQConfig(QuantizationConfig):
     AWQ is a **pre-processing** algorithm (``role="preprocess"``).  It
     protects salient weight channels by analyzing activation patterns and
     applying channel-wise scaling to reduce quantization error.  After
-    smoothing, a separate ``block_quantizer`` (RTN, SignRound, …) performs
+    smoothing, a separate ``active_quantizer`` (RTN, SignRound, …) performs
     the actual weight compression.
 
-    The quantization parameters (``bits``, ``group_size``, ``sym``,
-    ``data_type``, …) on this config are used *only* for the internal grid
-    search loss calculation (quantize-dequantize during scale selection).
-    The definitive quantization parameters for the final weight compression
-    step come from the pipeline's ``block_quantizer`` config.
+    AWQ uses the resolved AutoRound scheme for its internal grid-search loss.
     """
 
     @staticmethod
@@ -191,7 +188,7 @@ class AWQConfig(QuantizationConfig):
         awq_seqlen: int | None = None,
         smooth_batch_size: int | None = None,
         v2_scale_search: str = "auto",
-        disable_opt_rtn: bool | None = True,
+        disable_opt_rtn: bool | None = False,
         skip_moe: bool = True,
         mappings: list[dict] | None = None,
         **kwargs,
@@ -277,10 +274,13 @@ class AWQConfig(QuantizationConfig):
                 once for each balance layer before the AWQ grid and reuses that
                 scale.
             disable_opt_rtn: Whether AWQ's internal weight QDQ should use the
-                plain RTN path. Defaults to True because AWQ calibration has not
-                shown accuracy or cost benefits from optimized RTN in benchmarks.
-                ``enable_opt_rtn=True`` may also be passed to force the
-                optimized path.
+                plain RTN path. Defaults to False (optimized RTN) because
+                AWQ + plain RTN has shown significant accuracy fluctuations on
+                large/complex models and sensitive eval tasks (e.g. GSM8K
+                under W4A4 MXFP4), where AWQ's smoothing-scale search can
+                shift error onto channels that plain RTN then rounds badly.
+                ``disable_opt_rtn=True`` may still be passed to force the
+                plain RTN path for speed, at the cost of robustness.
             skip_moe: Whether to exclude routed MoE experts from AWQ smoothing.
                 When True, balance layers belonging to routed experts (module
                 names matching ``.experts.<N>.``) are dropped from the resolved
@@ -292,9 +292,7 @@ class AWQConfig(QuantizationConfig):
                 item should contain ``smooth_layer`` and
                 ``balance_layers`` entries. If None, mappings are inferred
                 automatically from the model structure.
-            **kwargs: Common quantization arguments forwarded to
-                QuantizationConfig, such as bits, group_size, sym,
-                data_type, and activation quantization fields.
+            **kwargs: Algorithm-local calibration arguments forwarded to QuantizationConfig.
         """
         enable_opt_rtn = kwargs.pop("enable_opt_rtn", None)
         if enable_opt_rtn:
@@ -359,9 +357,9 @@ class AWQConfig(QuantizationConfig):
     def disable_opt_rtn(self, value: bool | None) -> None:
         self._disable_opt_rtn = value
 
-    def finalize_scheme(self) -> None:
+    def finalize_scheme(self, scheme: QuantizationScheme) -> None:
         """Adjust AWQ state that depends on the resolved run scheme."""
-        data_type = self.data_type
+        data_type = scheme.data_type
         is_gguf_double_quant = bool(data_type) and data_type.endswith(("_dq", "float_zp"))
         if self.apply_clip and is_gguf_double_quant:
             logger.warning(
@@ -381,7 +379,6 @@ class AWQConfig(QuantizationConfig):
             f"v2_scale_search={self.v2_scale_search!r}, "
             f"disable_opt_rtn={self.disable_opt_rtn}, "
             f"skip_moe={self.skip_moe}, "
-            f"bits={self.bits}, group_size={self.group_size}, sym={self.sym}, "
             f"mappings={'<explicit>' if self.mappings else 'auto'})"
         )
 

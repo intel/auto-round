@@ -374,7 +374,7 @@ def get_layer_config(model, quantization_config):
 
     # Expand GPTQ 'dynamic' config (regex-based)
     dynamic_config = getattr(quantization_config, "dynamic", None)
-    from auto_round.export.export_to_autogptq.export import convert_from_autogptq_dynamic
+    from auto_round.export.formats.gptq.config import convert_from_autogptq_dynamic
 
     if dynamic_config and isinstance(dynamic_config, dict):
         extra_config = _expand_regex_config(

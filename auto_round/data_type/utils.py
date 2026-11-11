@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import math
 from collections.abc import Callable
 from functools import lru_cache
@@ -25,6 +26,12 @@ from auto_round import envs
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.schemes import needs_nvfp_global_scale
 from auto_round.utils import check_to_quantized, logger
+
+
+def calculate_fp8_e4m3_scale(amax: torch.Tensor) -> torch.Tensor:
+    """Calculate the FP8 E4M3 scale using the vLLM-compatible lower bound."""
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
+    return torch.clamp(amax.to(torch.float32) / fp8_max, min=float(1.0 / (fp8_max * 512.0)))
 
 
 def reshape_pad_tensor_by_group_size(data: torch.Tensor, group_size: int | list, val: float = 0.0):
@@ -199,7 +206,6 @@ def _int_search_with_thresh(search_scales: Any, q_scale_thresh: float) -> "Calla
     per-call closure, so resolved callables compare equal across calls and can
     safely key same-shape search batches.
     """
-    import functools
 
     def _clamped(
         weight_reshape: torch.Tensor, bits: int, imatrix: "torch.Tensor | None", *, _thresh: float
@@ -372,10 +378,12 @@ def reshape_imatrix_for_weight(imatrix, weight_reshape: torch.Tensor, group_size
     """
     if imatrix is None or not isinstance(imatrix, torch.Tensor):
         return torch.ones_like(weight_reshape)
-    imatrix = imatrix.reshape(1, -1)
+    # relocate the RAW column first: moving the expanded copy after the fact
+    # would pay a weight-sized cross-device transfer for sharded placements
+    imatrix = imatrix.reshape(1, -1).to(weight_reshape.device)
     imatrix = reshape_pad_tensor_by_group_size(imatrix, group_size, val=1e-5)[0].view(1, -1)
     imatrix = imatrix.expand(weight_reshape.numel() // imatrix.numel(), -1)
-    return imatrix.reshape(weight_reshape.shape).to(weight_reshape.device)
+    return imatrix.reshape(weight_reshape.shape)
 
 
 def compute_optimized_init_scale(
@@ -522,6 +530,65 @@ def get_gaudi_fp8_ste_func():
         fn = float8_e4m3fn_ste
         logger.warning_once("Using CUDA/CPU STE for FP8")
     return fn
+
+
+def register_act_max_hooks(block: Module, act_data_type=None) -> list:
+    """Collect static activation maxima, including NVFP's per-tensor global maximum.
+
+    The caller owns the returned handles and must remove them after calibration.
+    """
+    from auto_round.compressors.utils import check_need_act_calibration
+    from auto_round.parallel.tp.runtime import is_dtensor
+    from auto_round.utils import SUPPORTED_LAYER_TYPES
+
+    @torch.no_grad()
+    def collect_act_max(module, inputs, output):
+        inputs = inputs[0] if isinstance(inputs, (tuple, list)) else inputs
+
+        if is_dtensor(inputs):
+            inputs = inputs.to_local()
+        if inputs.numel() == 0:
+            return
+        module_dtype = getattr(module, "act_data_type", None) or getattr(module, "data_type", None) or act_data_type
+        is_nvfp = needs_nvfp_global_scale(module_dtype or "")
+        inputs, _, _ = reshape_pad_tensor_by_group_size(inputs, module.act_group_size)
+        act_max = inputs.abs().amax(dim=-1)
+        if is_nvfp:
+            act_max = act_max.amax().reshape(1)
+        previous = getattr(module, "act_max", None)
+        if previous is not None and previous.numel():
+            act_max = act_max.to(previous.device)
+            if is_nvfp:
+                previous = previous.amax().reshape(1)
+            act_max = torch.maximum(act_max, previous)
+        module.act_max = act_max
+
+    def should_collect(module):
+        if isinstance(module, tuple(SUPPORTED_LAYER_TYPES)):
+            return (
+                hasattr(module, "act_dynamic")
+                and check_need_act_calibration(module.act_dynamic, module.act_data_type, module.act_bits)
+                and check_to_quantized(module)
+            )
+        if hasattr(module, "bits"):
+            return (
+                module.bits <= 8
+                and check_need_act_calibration(
+                    getattr(module, "act_dynamic", True),
+                    getattr(module, "act_data_type", None),
+                    getattr(module, "act_bits", 16),
+                )
+                and check_to_quantized(module)
+            )
+        return False
+
+    if should_collect(block):
+        return [block.register_forward_hook(collect_act_max)]
+    return [
+        module.register_forward_hook(collect_act_max)
+        for name, module in block.named_modules()
+        if name and should_collect(module)
+    ]
 
 
 # please refer from https://github.com/vllm-project/llm-compressor/blob/

@@ -5,12 +5,19 @@ from __future__ import annotations
 
 import copy
 import importlib
+import importlib.util
+import pkgutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from auto_round.algorithms.base import BaseAlgorithm
+    from auto_round.algorithms.quantization.base import BaseQuantizer
+    from auto_round.algorithms.transforms.base import BasePreprocessor
+
+_QuantizerT = TypeVar("_QuantizerT", bound="BaseQuantizer")
+_PreprocessorT = TypeVar("_PreprocessorT", bound="BasePreprocessor")
 
 
 @dataclass
@@ -38,12 +45,23 @@ def _ensure_builtin_algorithms_registered() -> None:
     for module_name in (
         "auto_round.algorithms.quantization.rtn.config",
         "auto_round.algorithms.quantization.sign_round.config",
+        "auto_round.algorithms.quantization.qad.config",
+        "auto_round.algorithms.quantization.qat.config",
         "auto_round.algorithms.transforms.awq.config",
         "auto_round.algorithms.transforms.svdquant.config",
         "auto_round.algorithms.transforms.hadamard.config",
         "auto_round.algorithms.transforms.spinquant.preprocessor",
     ):
         importlib.import_module(module_name)
+
+    # Optional quantizers own their registration and CLI parameters. Removing
+    # an experimental package must not require changes to the shared registry.
+    package = importlib.import_module("auto_round.algorithms.quantization")
+    for module in pkgutil.iter_modules(package.__path__, package.__name__ + "."):
+        if module.ispkg:
+            config_module = module.name + ".config"
+            if importlib.util.find_spec(config_module) is not None:
+                importlib.import_module(config_module)
 
     _builtin_algorithms_registered = True
 
@@ -56,6 +74,8 @@ def _ensure_pipeline_members_registered() -> None:
         "auto_round.algorithms.quantization.rtn.quantizer",
         "auto_round.algorithms.quantization.sign_round.quantizer",
         "auto_round.algorithms.quantization.sign_roundv2.quantizer",
+        "auto_round.algorithms.quantization.qad.quantizer",
+        "auto_round.algorithms.quantization.qat.quantizer",
         "auto_round.algorithms.quantization.adam_round.adam",
         "auto_round.algorithms.transforms.awq.base",
         "auto_round.algorithms.transforms.svdquant.apply",
@@ -165,10 +185,62 @@ def list_registered_algorithms() -> list[str]:
     return sorted(_ALIAS_TO_NAME.keys())
 
 
-def register_pipeline_member(config_cls: type):
+def register_algorithm_impl(config_cls: type):
+    """Register a runtime algorithm implementation for a configuration class."""
+
     def _decorator(member_cls: type[BaseAlgorithm]) -> type[BaseAlgorithm]:
         _CONFIG_IMPL_REGISTRY[config_cls] = member_cls
         return member_cls
+
+    return _decorator
+
+
+# Keep existing extension imports working; new implementations use the clearer name.
+register_pipeline_member = register_algorithm_impl
+
+
+def register_preprocessor(config_cls: type) -> Callable[[type[_PreprocessorT]], type[_PreprocessorT]]:
+    """Register a BasePreprocessor using the shared, legacy-compatible implementation registry.
+
+    This names the runtime role without changing config resolution, ordering,
+    or the registration API used by existing pipeline extensions.
+    """
+
+    def _decorator(preprocessor_cls: type[_PreprocessorT]) -> type[_PreprocessorT]:
+        from auto_round.algorithms.transforms.base import BasePreprocessor
+
+        if not issubclass(preprocessor_cls, BasePreprocessor):
+            raise TypeError("register_preprocessor requires a BasePreprocessor subclass")
+        register_algorithm_impl(config_cls)(preprocessor_cls)
+        return preprocessor_cls
+
+    return _decorator
+
+
+def register_quantizer(config_cls: type) -> Callable[[type[_QuantizerT]], type[_QuantizerT]]:
+    """Register a quantizer implementation for a configuration class.
+
+    Unlike ``register_algorithm`` (names, aliases and config factories), this
+    decorator maps a config class to its runtime quantizer. Preprocessors use
+    ``register_preprocessor``; both delegate to ``register_algorithm_impl``.
+
+    Args:
+        config_cls: Configuration class handled by the quantizer.
+
+    Returns:
+        A decorator that registers and returns the original quantizer class.
+
+    Raises:
+        TypeError: The decorated class does not inherit from BaseQuantizer.
+    """
+
+    def _decorator(quantizer_cls: type[_QuantizerT]) -> type[_QuantizerT]:
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+
+        if not issubclass(quantizer_cls, BaseQuantizer):
+            raise TypeError("register_quantizer requires a BaseQuantizer subclass")
+        register_algorithm_impl(config_cls)(quantizer_cls)
+        return quantizer_cls
 
     return _decorator
 
@@ -183,22 +255,46 @@ def resolve_pipeline_member(config: object) -> type[BaseAlgorithm]:
     raise ValueError(f"Unknown algorithm config type {config_cls.__name__!r}.")
 
 
+def pipeline_member_for_config_class(config_cls: type):
+    """Return the pipeline member class for a config *class* (or ``None``).
+
+    Class-level counterpart of :func:`resolve_pipeline_member` (which needs an
+    instance). Used by the CLI to tell whether an algorithm is a terminal block
+    quantizer without constructing its config.
+    """
+    _ensure_pipeline_members_registered()
+    for cls in config_cls.__mro__:
+        member_cls = _CONFIG_IMPL_REGISTRY.get(cls)
+        if member_cls is not None:
+            return member_cls
+    return None
+
+
 def coerce_config_class(config: object, target_cls: type) -> object:
     if type(config) is target_cls:
         return config
     new_config = copy.copy(config)
-    if hasattr(config, "scheme") and getattr(config, "scheme", None) is not None:
-        new_config.scheme = config.scheme.copy()
-    if hasattr(config, "_user_set_scheme_fields"):
-        new_config._user_set_scheme_fields = set(getattr(config, "_user_set_scheme_fields", set()))
+
     new_config.__class__ = target_cls
     return new_config
 
 
 def normalize_algorithm_config(config: object) -> object:
+    from auto_round.algorithms.quantization.qad.config import QADConfig
     from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
     from auto_round.algorithms.quantization.sign_round.config import AdamRoundConfig, SignRoundConfig, SignRoundV2Config
 
+    if type(config) in (SignRoundConfig, SignRoundV2Config, AdamRoundConfig) and getattr(config, "enable_qad", False):
+        defaults = QADConfig(
+            topk=getattr(config, "lfq_top_k", 32),
+            qad_optimizer="adamw" if getattr(config, "enable_adam", False) else getattr(config, "optimizer", None),
+        )
+        normalized = coerce_config_class(config, QADConfig)
+        for key, value in vars(defaults).items():
+            if not hasattr(normalized, key):
+                setattr(normalized, key, value)
+        normalized.optimizer = defaults.optimizer
+        return normalized
     if type(config) is OptimizedRTNConfig and getattr(config, "disable_opt_rtn", False):
         return coerce_config_class(config, RTNConfig)
     if type(config) is RTNConfig and not getattr(config, "disable_opt_rtn", False):

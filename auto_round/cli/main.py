@@ -1,7 +1,7 @@
 # # Copyright (C) 2026 Intel Corporation
 # # SPDX-License-Identifier: Apache-2.0
 
-"""CLI entry points: command routing, RECIPES, tune, eval, list.
+"""CLI entry points: command routing, recipes, tune, eval, list.
 
 This module is the single place that wires together:
     parser.py     - argparse construction (all flag declarations here)
@@ -14,10 +14,14 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
 import sys
+from collections.abc import Sequence
+from contextlib import nullcontext
 
 from auto_round.cli.algorithms import AlgorithmHandler
 from auto_round.cli.parser import (
+    ALGORITHM_FLAGS,
     add_common_quantization_arguments,
     build_eval_parser,
     build_list_parser,
@@ -26,6 +30,7 @@ from auto_round.cli.parser import (
 )
 from auto_round.compressors.config_resolution import ConfigResolutionError
 from auto_round.logger import logger
+from auto_round.recipes import get_recipe, list_recipes, resolve_recipe
 
 # Flags surfaced by `auto_round --help`. Entries are (dest, shown option strings):
 # the overview is a curated subset, so a few flags list only their primary name
@@ -34,7 +39,7 @@ _OVERVIEW_ARGUMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("model", ()),
     ("model_name", ("--model",)),
     ("scheme", ("--scheme",)),
-    ("algorithm", ("--algorithm",)),
+    ("alg_configs", ("--alg_configs",)),
     ("bits", ("--bits",)),
     ("group_size", ("--group_size",)),
     ("iters", ("--iters",)),
@@ -42,6 +47,9 @@ _OVERVIEW_ARGUMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("seqlen", ("--seqlen",)),
     ("batch_size", ("--batch_size",)),
     ("device_map", ("--device_map",)),
+    ("tp_size", ("--tensor_parallel",)),
+    ("pp_size", ("--pipeline_parallel",)),
+    ("data_parallel", ("--data_parallel",)),
     ("format", ("--format",)),
     ("output_dir", ("--output_dir",)),
     ("asym", ("--asym",)),
@@ -61,9 +69,9 @@ commands:
 
 examples:
   auto_round --model facebook/opt-125m --bits 4 --group_size 128
-  auto_round --model Qwen/Qwen3-0.6B --algorithm auto_round_v2 --iters 200
-  auto_round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round_v2
-  auto_round --model <model> --schemes W2A16,W4A16 --bits 3 --ignore_scale_zp_bits
+  auto_round --model Qwen/Qwen3-0.6B --alg_configs auto_round_v2 --iters 200
+  auto_round --model Qwen/Qwen3-0.6B --alg_configs awq,auto_round_v2
+  auto_round --model <model> --scheme W2A16,W4A16 --bits 3 --ignore_scale_zp_bits
   auto_round eval --model <quantized_model> --tasks lambada_openai
   auto_round list alg
 
@@ -73,7 +81,7 @@ This is only the commonly used subset of the quantize arguments.
 _OVERVIEW_EPILOG = """\
 see also:
   auto_round quantize --help            every quantize argument
-  auto_round --algorithm <name> --help  the flags of one algorithm
+  auto_round --alg_configs <name> --help  the flags of one algorithm
   auto_round list alg                   the supported algorithms
   auto_round list format                the supported output formats
 """
@@ -142,7 +150,7 @@ def _requests_overview_help(argv: list[str]) -> bool:
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
-    """Map parsed CLI args back to QuantizationConfig constructor kwargs.
+    """Collect scheme overrides from parsed CLI arguments.
 
     Handles inverted flags: --asym -> sym, --act_asym -> act_sym,
     --disable_act_dynamic -> act_dynamic.
@@ -164,15 +172,42 @@ def _extract_common_quantization_kwargs(args) -> dict:
 
 
 def _normalize_scheme_list(raw) -> str | None:
-    """Normalize --schemes/--options into a comma-joined scheme list.
+    """Normalize --scheme and its aliases into a comma-joined scheme list.
 
     Accepts both space-separated (nargs="+" list) and comma-separated forms,
     e.g. 'W4A16 W8A16' or 'W4A16,W8A16' -> 'W4A16,W8A16'.
     """
     if raw is None:
         return None
+    if isinstance(raw, str):
+        raw = [raw]
     flat = ",".join(raw)  # handles list; each element may itself contain commas
     return ",".join(p.strip() for p in flat.split(",") if p.strip())
+
+
+def _build_parallel_config(args: argparse.Namespace) -> dict[str, int | str]:
+    """Resolve launcher topology once for both entry validation and construction.
+
+    Args:
+        args (argparse.Namespace): Parsed CLI options, optionally omitting parallel fields.
+
+    Returns:
+        dict[str, int | str]: Parallel degrees and replica/batch policies for ParallelConfig.
+    """
+    tp_size = getattr(args, "tp_size", None)
+    if tp_size is None:
+        # Infer a single TP axis only; do not silently create hybrid parallelism.
+        tp_size = 1
+        if getattr(args, "pp_size", 1) == 1 and str(getattr(args, "data_parallel", "off")) in ("off", "1"):
+            tp_size = int(os.environ.get("WORLD_SIZE", "1"))
+        if tp_size > 1:
+            logger.info("Inferred tp_size=%s from torchrun WORLD_SIZE.", tp_size)
+    return {
+        "tp_size": tp_size,
+        "pp_size": getattr(args, "pp_size", 1),
+        "data_parallel": getattr(args, "data_parallel", "off"),
+        "parallel_batch": getattr(args, "parallel_batch", "split"),
+    }
 
 
 def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer_config) -> dict:
@@ -187,6 +222,7 @@ def _build_entry_base_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, l
         "calibration_data_device": args.calibration_data_device,
         "low_cpu_mem_usage": low_cpu_mem_usage,
         "device_map": args.device_map,
+        "parallel_config": _build_parallel_config(args),
         "enable_torch_compile": enable_torch_compile,
         "enable_deterministic_algorithms": args.enable_deterministic_algorithms,
         "seed": args.seed,
@@ -243,32 +279,6 @@ def _to_autoround_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer
     return kwargs
 
 
-RECIPES = {
-    "default": {
-        "batch_size": 8,
-        "iters": 200,
-        "seqlen": 2048,
-        "nsamples": 128,
-        "lr": None,
-    },
-    "best": {
-        "batch_size": 8,
-        "iters": 1000,
-        "seqlen": 2048,
-        "nsamples": 512,
-        "lr": None,
-    },
-    "light": {
-        "batch_size": 8,
-        "iters": 50,
-        "seqlen": 2048,
-        "nsamples": 128,
-        "lr": 5e-3,
-    },
-    "rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 1, "lr": None, "disable_opt_rtn": True},
-    "opt_rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 128, "lr": None, "disable_opt_rtn": False},
-}
-
 # ============================================================================
 # list subcommand
 # ============================================================================
@@ -287,7 +297,15 @@ def list_item(argv=None):
         else:
             print("AutoRound supported algorithms:")
             print(AlgorithmHandler.format_listing())
-            print("\nUse `auto_round list alg <name>` or `auto_round --algorithm <name> --help` for details.")
+            print("\nUse `auto_round list alg <name>` or `auto_round --alg_configs <name> --help` for details.")
+    elif args.item in {"recipe", "recipes"}:
+        for name in [args.name] if args.name else list_recipes():
+            definition = get_recipe(name)
+            print(f"{definition.name}: {definition.description}")
+            if args.name:
+                plan = resolve_recipe(definition)
+                print("Pipeline: " + " -> ".join(f"{stage.algorithm}({stage.params})" for stage in plan.pipeline))
+                print(f"Calibration: {plan.calibration}")
     else:
         raise ValueError(f"Unsupported list target: {args.item}")
 
@@ -298,16 +316,16 @@ def list_item(argv=None):
 
 
 def _print_algorithm_help(argv: list[str]) -> bool:
-    """If --algorithm <name> --help is present, print algorithm-focused help and return True."""
+    """If --alg_configs (or an alias) and --help are present, print algorithm-focused help."""
     if not any(flag in argv for flag in ("-h", "--help")):
         return False
 
-    # Pre-parse just --algorithm
+    # Pre-parse the same algorithm selector and aliases as the quantize parser.
 
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--algorithm", default=None)
+    pre.add_argument(*ALGORITHM_FLAGS, dest="alg_configs", default=None)
     known, _ = pre.parse_known_args(argv)
-    names = [n.strip().lower() for n in (known.algorithm or "").split(",") if n.strip()]
+    names = [n.strip().lower() for n in (known.alg_configs or "").split(",") if n.strip()]
     if not names:
         return False
 
@@ -337,7 +355,7 @@ def _print_algorithm_help(argv: list[str]) -> bool:
         return False
 
     mini = argparse.ArgumentParser(
-        prog=f"auto_round --algorithm {','.join(canonical_names)}",
+        prog=f"auto_round --alg_configs {','.join(canonical_names)}",
         description=f"Flags for algorithm(s): {', '.join(canonical_names)}. "
         "Use `auto_round --help` for the full argument list.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -351,11 +369,21 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     return True
 
 
-def start(recipe="default", argv=None):
+def _start_worker(recipe: str, argv: Sequence[str]) -> None:
+    """Run the CLI recipe inside a locally launched TP worker.
+
+    Args:
+        recipe (str): Registered recipe name passed to the CLI entry point.
+        argv (Sequence[str]): Command-line arguments replayed in the worker.
+
+    """
+    return start(recipe, argv=argv)
+
+
+def start(recipe="auto-round", argv=None):
     from auto_round.utils.oom import install_oom_census_hook
 
     install_oom_census_hook()  # last-resort tensor census for uncaught CUDA OOMs
-    recipe_defaults = RECIPES[recipe]
     argv = list(sys.argv[1:] if argv is None else argv)
     format_was_explicit = any(
         arg in {"--format", "--formats"} or arg.startswith(("--format=", "--formats=")) for arg in argv
@@ -368,17 +396,57 @@ def start(recipe="default", argv=None):
     args = parser.parse_args(argv)
     args._api_format = args.format if format_was_explicit or args.model_free else None
 
-    # Apply recipe defaults for fields the user didn't set
-    for key, value in recipe_defaults.items():
-        if getattr(args, key, None) is None:
-            setattr(args, key, value)
-    if args.model_free:
-        args.iters = 0
+    from auto_round.parallel import ParallelConfig
+    from auto_round.parallel.tp.launcher import launch, needs_local_launch
 
+    parallel = ParallelConfig.from_value(_build_parallel_config(args))
+    # Validate before launching workers or loading any model. In particular DP
+    # must not silently run independently on each rank of an external launcher.
+    if parallel.data_parallel != "off" and int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        raise NotImplementedError("--data_parallel is single-process; do not launch it with torchrun.")
+    if needs_local_launch(parallel):
+        return launch(parallel, _start_worker, recipe, argv)
+
+    _apply_recipe_defaults(args, recipe)
     tune(args)
 
 
+def _apply_recipe_defaults(args, recipe="auto-round"):
+    """Normalize recommendations for both command entry points and direct tune calls."""
+    if getattr(args, "_recipe_plan", None) is not None:
+        return
+    if not hasattr(args, "_explicit_fields"):
+        # Namespaces built outside the quantize parser: treat every set value as explicit.
+        args._explicit_fields = {key for key, value in vars(args).items() if value is not None}
+    args.recipe = get_recipe(args.recipe or recipe).name
+    definition = get_recipe(args.recipe)
+    args._recipe_plan = resolve_recipe(
+        definition,
+        model=args.model or args.model_name,
+        scheme=args.scheme,
+        trust_remote_code=not args.disable_trust_remote_code,
+    )
+
+    for key, value in args._recipe_plan.calibration.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, value)
+    # Keep effective legacy attributes available to integrations inspecting tune(args).
+    if getattr(args, "alg_configs", None) is None and getattr(args, "algorithm", None) is None:
+        configs = args._recipe_plan.build_configs()
+        for config in configs:
+            for key in ("iters", "lr", "disable_opt_rtn"):
+                if key not in args._explicit_fields and hasattr(config, key):
+                    setattr(args, key, getattr(config, key))
+        if all(not hasattr(config, "iters") for config in configs):
+            if "iters" not in args._explicit_fields:
+                args.iters = 0
+    if args.model_free:
+        args.iters = 0
+        args._explicit_fields.add("iters")
+
+
 def tune(args):
+    _apply_recipe_defaults(args)
     assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
     if args.model is None:
         args.model = args.model_name
@@ -402,18 +470,6 @@ def tune(args):
 
     from auto_round.utils import logger
 
-    if args.low_cpu_mem_usage:
-        logger.warning(
-            "`low_cpu_mem_usage` is deprecated and is now enabled by default. "
-            "To disable it, use `--disable_low_cpu_mem_usage`."
-        )
-
-    if getattr(args, "enable_alg_ext", False):
-        logger.warning(
-            "`--enable_alg_ext` is deprecated; use `--algorithm auto_round_v2` instead. "
-            "Both select the same algorithm and remain equivalent."
-        )
-
     if args.format is None:
         args.format = "auto_round"
 
@@ -425,7 +481,7 @@ def tune(args):
             raise ValueError(f"{fmt} is not supported, we only support {SUPPORTED_FORMATS}")
 
     if any("llm_compressor" in fmt for fmt in formats):
-        from auto_round.export.export_to_llmcompressor import check_compressed_tensors_supported
+        from auto_round.export.formats.compressed_tensors import check_compressed_tensors_supported
 
         try:
             check_compressed_tensors_supported(raise_error=True)
@@ -469,11 +525,12 @@ def tune(args):
                 )
 
     enable_torch_compile = args.enable_torch_compile
-    scheme = args.scheme.upper()
+    scheme = _normalize_scheme_list(args.scheme).upper()
+    scheme_options = scheme if "," in scheme else None
 
     from auto_round.schemes import PRESET_SCHEMES
 
-    if scheme not in PRESET_SCHEMES:
+    if scheme_options is None and scheme not in PRESET_SCHEMES:
         raise ValueError(f"{scheme} is not supported. only {PRESET_SCHEMES.keys()} are supported ")
 
     from auto_round.utils import parse_layer_config_arg
@@ -489,16 +546,8 @@ def tune(args):
 
     from auto_round.auto_scheme import AutoScheme
 
-    # Supplying multiple schemes enables AutoScheme: the schemes are the
-    # candidate options and --bits is the average target bits.
-    # --options/--avg_bits/--target_bits are deprecated aliases that argparse
-    # merges into --schemes/--bits (see _LegacyAliasAction in parser.py); they
-    # stay functional but are hidden from --help.
-    scheme_options = None
-    if args.schemes is not None:
-        if args.scheme.upper() != "W4A16":
-            raise ValueError("`--scheme` and `--schemes` cannot be used together, please use only `--schemes`")
-        scheme_options = _normalize_scheme_list(args.schemes)
+    # Multiple --scheme candidates enable AutoScheme; --schemes is an alias.
+    # Legacy --options/--avg_bits/--target_bits remain hidden compatibility aliases.
 
     # Normalize --shared_layers: supports three forms per invocation:
     #   - all bare tokens (no commas): treated as one group
@@ -539,6 +588,7 @@ def tune(args):
             avg_bits=args.bits,
             shared_layers=args.shared_layers,
             ignore_scale_zp_bits=args.ignore_scale_zp_bits,
+            default_shared_layers=not getattr(args, "disable_default_shared_layers", False),
             low_gpu_mem_usage=True,
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
@@ -549,7 +599,7 @@ def tune(args):
         # the candidate options carry their own bit widths.
         common_kwargs.pop("bits", None)
     else:
-        # Without --schemes, `--bits` is a plain weight bit width and must be an integer.
+        # With one scheme, `--bits` is a plain weight bit width and must be an integer.
         bits = common_kwargs.get("bits")
         if bits is not None:
             if float(bits).is_integer():
@@ -557,7 +607,7 @@ def tune(args):
             else:
                 raise ValueError(
                     "`--bits` must be an integer for weight quantization; "
-                    "use `--schemes` to set a fractional AutoScheme average target"
+                    "use multiple `--scheme` candidates to set a fractional AutoScheme average target"
                 )
     alg_configs = AlgorithmHandler.build_configs(args, common_kwargs)
 
@@ -566,7 +616,9 @@ def tune(args):
     autoround: BaseCompressor = AutoRound(
         model_name,
         scheme=scheme,
+        recipe=args._recipe_plan,
         alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
+        **{key: value for key, value in common_kwargs.items() if value is not None},
         **_to_autoround_kwargs(
             args,
             low_cpu_mem_usage=low_cpu_mem_usage,
@@ -580,12 +632,26 @@ def tune(args):
         format=getattr(args, "_api_format", args.format),
         max_shard_size=args.max_shard_size,
     )
-    tokenizer = autoround.tokenizer  # pylint: disable=no-member
-    clear_memory()
+    evaluation_context = nullcontext(True)
+    parallel_config = getattr(autoround, "parallel_config", None)
+    if parallel_config is not None and parallel_config.tp_size > 1:
+        from auto_round.parallel.execution import ParallelExecution
+        from auto_round.parallel.tp.evaluation import rank_zero_evaluation
 
-    from auto_round.eval.evaluation import run_model_evaluation
+        # Whole-model QAD/QAT leaves native shards resident. The returned model
+        # is a separate CPU export; retain it for fake-model evaluation.
+        ParallelExecution.move_block(autoround.model_context.model, "cpu")
+        clear_memory()
+        evaluation_context = rank_zero_evaluation()
+    with evaluation_context as should_evaluate:
+        if not should_evaluate:
+            return
+        tokenizer = autoround.tokenizer  # pylint: disable=no-member
+        clear_memory()
 
-    run_model_evaluation(model, tokenizer, autoround, folders, formats, args)
+        from auto_round.eval.evaluation import run_model_evaluation
+
+        run_model_evaluation(model, tokenizer, autoround, folders, formats, args)
 
 
 # ============================================================================
