@@ -44,10 +44,11 @@ def _compressor(outside_block_layers, rtncfg=True, tail_only=True, outside_names
         output_dir="/tmp/does-not-matter",
         shard_writer=None,
         _ensure_shard_writer=lambda self_=None: None,
-        quantize_config=RTNConfig(data_type="int") if rtncfg else _SignRoundCfg(),
+        quantize_config=RTNConfig() if rtncfg else _SignRoundCfg(),
         _alg_configs=[],
         layer_config={"lm_head": {"bits": 4}} if tail_only else {"model.embed_tokens": {"bits": 8}},
         model_context=SimpleNamespace(model=model, is_mllm=False),
+        scheme_context=SimpleNamespace(data_type="int"),
         compress_context=SimpleNamespace(
             is_immediate_packing=True,
             is_immediate_saving=True,
