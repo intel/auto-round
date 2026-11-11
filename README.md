@@ -53,6 +53,19 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 * [WIP] For quantization at 4 bits and above, we currently recommend mixing 75% UltraChat with 25% OpenCode to improve reasoning capabilities and agent compatibility. With the default `nsamples=128`, use `--dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"`. See the [doc](./docs/calibration_acc.md) for details. We will update the default calibration dataset after the evaluation is complete.
 
+* [2026/11] We experimentally support **Recurrent Residual Quantization (RRQ)**. A single checkpoint serves 2/4/6/8-bit — and per-layer mixed precision — selectable at load time without re-quantizing: [*Paper*](https://arxiv.org/abs/2608.04048).
+  ```bash
+  # Quantize: produces both base/ and residual/ in the output dir
+  python -m auto_round.cli.main \
+      --model Qwen/Qwen3-0.6B --scheme W2A16 \
+      --backend_format auto_round:rrq --dump_config
+
+  # Load with 4-bit active (first residual plane on top of the base)
+  from auto_round import load_rrq_model
+  model = load_rrq_model("./out/Qwen/Qwen3-0.6B/8bit", active_bits=4)
+  ```
+  Note: this is an experimental feature and production-level deployments are not yet supported.
+
 * [2026/10] We now show that **W2A16** accuracy improves steadily as more tuning cost is invested. See the [W2A16 accuracy results](./docs/alg_202508.md).
 
 * [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.

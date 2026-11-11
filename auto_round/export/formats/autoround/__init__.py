@@ -11,3 +11,4 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from .export_to_rrq import generate_rrq_residual, save_quantized_rrq, save_rrq_base_model, save_rrq_model

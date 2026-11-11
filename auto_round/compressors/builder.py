@@ -140,9 +140,18 @@ def _build_model_type_ctor_kwargs(model, base_kwargs, mllm_kwargs, diffusion_kwa
 
 def _resolve_rtn_config(quant_config: RTNConfig, scheme, format, base_kwargs, scheme_overrides=None) -> RTNConfig:
     """Adjust RTN calibration requirements while preserving the existing config instance."""
+    from auto_round.algorithms.quantization.rrq.config import RRQConfig
     from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
     from auto_round.auto_scheme.gen_auto_scheme import AutoScheme
     from auto_round.compressors.utils import check_need_act_calibration
+
+    # RRQConfig inherits RTNConfig but must not be coerced to OptimizedRTNConfig
+    # or downgraded to plain RTNConfig: both would silently drop the residual
+    # planes.  RRQ enforces disable_opt_rtn=True in its own check_config() and
+    # runs the regular calibrated path (see the model-free guard in
+    # _CompressorBuilder.__new__), so there is nothing to adjust here.
+    if isinstance(quant_config, RRQConfig):
+        return quant_config
 
     enable_imatrix = False
     disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", False)
@@ -266,6 +275,7 @@ class _CompressorBuilder:
         scheme_overrides: dict | None = None,
         **kwargs,
     ) -> BaseCompressor:
+        from auto_round.algorithms.quantization.rrq.config import RRQConfig
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
         from auto_round.algorithms.registry import normalize_algorithm_config
         from auto_round.compressors.orchestrator import CompressionOrchestrator as Compressor
@@ -281,7 +291,12 @@ class _CompressorBuilder:
             dataset = normalize_dataset_spec(dataset)
 
         if alg_configs is None:
-            alg_configs = "signround"
+            fmt_list = format if isinstance(format, list) else [format] if format else []
+            if any(f == "auto_round:rrq" for f in fmt_list):
+                # Auto-select RRQ when the output format is auto_round:rrq.
+                alg_configs = "rrq"
+            else:
+                alg_configs = "signround"
         device_map = normalize_default_device_map(device_map)
         split_kwargs = _split_entry_kwargs(kwargs, strict=bool(kwargs.get("model_free", False)))
         route_kwargs = dict(split_kwargs["route"])
@@ -333,6 +348,25 @@ class _CompressorBuilder:
         if is_svdquant and "svdquant_omni" not in {name.strip().lower() for name in (format or "").split(",")}:
             format = "svdquant_nunchaku"
 
+        # Validate format/algorithm compatibility for RRQ.
+        is_rrq = isinstance(quant_config, RRQConfig)
+        fmt_list = format if isinstance(format, list) else [format] if format else []
+        has_rrq_fmt = any(f == "auto_round:rrq" for f in fmt_list)
+        if is_rrq and not has_rrq_fmt:
+            if format is None:
+                # Auto-set the format so the user doesn't have to specify it.
+                format = "auto_round:rrq"
+            else:
+                raise ValueError(
+                    "RRQ requires --format auto_round:rrq. " "Use: auto-round --model <model> --format auto_round:rrq"
+                )
+        elif not is_rrq and has_rrq_fmt:
+            raise ValueError(
+                "--format auto_round:rrq requires the RRQ algorithm. "
+                "The algorithm is auto-selected when format is auto_round:rrq. "
+                "Do not pass a conflicting --alg."
+            )
+
         # Any preprocessor that requires calibration data (e.g. AWQ, SVDQuant
         # smoothing) must run on the regular model-loaded path; model-free RTN
         # cannot replay their calibration.
@@ -350,6 +384,35 @@ class _CompressorBuilder:
         # Model-free routing is now supported directly by the new entry path.
         model_free_iters = 0 if isinstance(quant_config, RTNConfig) else getattr(quant_config, "iters", None)
         model_free_disable_opt_rtn = getattr(quant_config, "disable_opt_rtn", None)
+        # RRQConfig inherits RTNConfig but must use the regular calibrated
+        # path: the model-free RTN path only emits a single base plane and
+        # would silently drop every residual plane.  Two guard cases:
+        #
+        # (a) explicit ``model_free=True``: raises ValueError because
+        #     ``is_model_free_route`` checks explicit before
+        #     ``disable_model_free`` — there is no way to "undo" an
+        #     explicit request via ``disable_model_free``.
+        # (b) auto-routing (no explicit flag): set ``disable_model_free``
+        #     so the regular calibrated path is taken.  Without this,
+        #     ``is_model_free_route`` would auto-route when model is a
+        #     string + iters==0 + disable_opt_rtn=True.
+        if isinstance(quant_config, RRQConfig):
+            if bool(route_kwargs.get("model_free", base_kwargs.get("model_free", False))):
+                # (a) explicit model_free=True — cannot be overridden
+                raise ValueError(
+                    "RRQ requires the regular calibrated path (model_free=False). "
+                    "The model-free RTN path emits only a single base plane and would "
+                    "silently drop the residual planes. Pass a loaded model (not a model "
+                    "path) or set model_free=False / omit it. "
+                    "Note: disable_model_free only suppresses the automatic route and "
+                    "cannot override an explicit model_free=True."
+                )
+            else:
+                # (b) auto-route guard: force regular path.
+                # ``route_kwargs`` wins over ``base_kwargs`` in the
+                # ``route_decision_kwargs`` merge, so this alone is enough
+                # to make ``is_model_free_route`` return False.
+                route_kwargs["disable_model_free"] = True
         # Model-free eligibility also depends on base-level options such as
         # static KV/attention quantization. Keep those options visible to the
         # route predicate; otherwise the fast path silently drops them and
