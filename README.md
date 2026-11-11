@@ -50,6 +50,10 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 ## 🆕 What's New
 
+* [WIP] For quantization at 4 bits and above, we currently recommend mixing 75% UltraChat with 25% OpenCode to improve reasoning capabilities and agent compatibility. With the default `nsamples=128`, use `--dataset "HuggingFaceH4/ultrachat_200k:num=96,nvidia/OpenCodeInstruct:num=32"`. See the [doc](./docs/calibration_acc.md) for details. We will update the default calibration dataset after the evaluation is complete.
+
+* [2026/10] We now show that **W2A16** accuracy improves steadily as more tuning cost is invested. See the [W2A16 accuracy results](./docs/alg_202508.md).
+
 * [2026/09] We improved MoE tuning speed by more than 3× and significantly reduced RAM usage. See the [doc](./docs/moe.md) for detailed results. Please note that this optimization may introduce some regressions or issues.
 
 * [2026/09] We now support 5/6/7-bit WOQ models in vLLM and Transformers on CUDA devices, thanks to Humming Kernel.
@@ -64,11 +68,11 @@ It integrates with popular ecosystems including Transformers, vLLM, and SGLang, 
 
 * [2026/05] We provide **free** devices for quantization; please visit [Intel Low Bit Open LLM Leaderboard](https://huggingface.co/spaces/Intel/low_bit_open_llm_leaderboard) for more details.
 
-* [2025/12] The **SignRoundV2** paper is available. Turn on  `enable_alg_ext` and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
+* [2025/12] The **SignRoundV2** paper is available. Turn on the algorithm extension (`--algorithm auto_round_v2`, formerly `enable_alg_ext`) and use the **AutoScheme** API for mixed-precision quantization to reproduce the results: [*Paper*](http://arxiv.org/abs/2512.04746), [*Notes for evaluating LLaMA models*](./docs/alg_202508.md).
 
 * [2025/10] AutoScheme is available to generate mixed-bit recipes in minutes: [*Usage*](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#autoscheme),  [*Accuracy*](./docs/auto_scheme_acc.md).
 
-* [2025/08] An **improved INT2** algorithm is available via `--enable_alg_ext`: [*Accuracy*](./docs/alg_202508.md)
+* [2025/08] An **improved INT2** algorithm is available via the algorithm extension (`--algorithm auto_round_v2`, formerly `--enable_alg_ext`): [*Accuracy*](./docs/alg_202508.md)
   
 * [2025/09] **MXFP4** and **NVFP4** dtypes is available: [*Accuracy*](./docs/mxnv_acc.md).
 
@@ -103,6 +107,8 @@ Out-of-the-box quantization for 10+ vision-language models [example models](http
 
 ✅ **Multiple Recipes**
 Choose from `auto-round-best`, `auto-round`, `auto-round-light`, `auto-round-opt-rtn` (optimized RTN) and `auto-round-rtn` (pure RTN, fastest baseline) to suit your needs. Details are shown in [quantization recipes](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#recipe-recommendation)
+
+Use the same plans in Python with `AutoRound(..., recipe="auto-round-best")` or in the CLI with `--recipe auto-round-best`. Omitting the recipe selects `auto-round`; legacy commands remain shortcuts. See [built-in recipes and overrides](./docs/recipes.md).
 
 ✅ Advanced Utilities
 Includes [multiple gpus quantization](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#devicemulti-gpu-setting-in-quantization), [multiple calibration datasets](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#default-dataset) and support for [10+ runtime backends](https://github.com/intel/auto-round/blob/main/docs/step_by_step.md#specify-inference-backend).
@@ -211,8 +217,11 @@ auto-round-fast \
 
 </details>
 
-In conclusion, we recommend using **auto-round for W4A16 and auto-round-best with `enable_alg_ext` for W2A16**. However, you may adjust the
+In conclusion, we recommend using **auto-round for W4A16 and auto-round-best with `--algorithm auto_round_v2` for W2A16**. However, you may adjust the
 configuration to suit your specific requirements and available resources.
+
+> [!TIP]
+> For **INT2 (W2A16)**, accuracy improves steadily as you invest more tuning cost. Increasing knobs such as `--iters` (e.g. 1000 → 2000), `--nsamples`, and `--seqlen`, or switching to the `auto-round-best` recipe with `--enable_alg_ext`, trades additional tuning time for consistently higher accuracy. As you scale up the calibration data (larger `--nsamples`/`--seqlen`), raising the learning rate to `4.0/iters` (e.g. `4e-3` at `--iters 1000`) often helps. See the [W2A16 accuracy results](./docs/alg_202508.md) for details.
 
 ### API Usage
 
@@ -247,10 +256,10 @@ ar.quantize_and_save(output_dir="./qmodel", format="auto_round")
 - **`layer_config` (dict)**: Configuration for layer_wise scheme (default is `None`), mainly for customized mixed schemes.
 
 ##### Algorithm Settings
-- **`enable_alg_ext` (bool)**: [Experimental Feature] Only for `iters>0`. Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
-- **`alg_configs` (str|Config|list)**: Select one or more algorithms, such as `"awq"`, `"auto_round"`, or `['auto_round', 'quarot']`. Preprocessors run in list order and the block quantizer always runs last. Algorithm-specific options can be passed through their config objects, for example `SignRoundConfig(iters=50)`.
+- **`enable_alg_ext` (bool)**: [Deprecated] Use the `auto_round_v2` algorithm instead. [Experimental Feature] Only for `iters>0`. Enable algorithm variants for specific schemes (e.g., MXFP4/W2A16) that could bring notable improvements. Default is `False`.
+- **`alg_configs` (str|Config|list)**: Select one or more algorithms, such as `"awq"`, `"auto_round"`, `"auto_round_v2"`, `"rtn"`, `"opt-rtn"`, or `['auto_round', 'quarot']`. Preprocessors run in list order and the block quantizer always runs last. Algorithm-specific options can be passed through their config objects, for example `SignRoundConfig(iters=50)`.
 
-- **`disable_opt_rtn` (bool|None)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `None`. If None, it defaults to `False` in most cases to improve accuracy, but may be set to `True` due to known issues.
+- **`disable_opt_rtn` (bool|None)**: Use pure RTN mode for specific schemes (e.g., GGUF and WOQ). Default is `None`. If None, it defaults to `False` in most cases to improve accuracy, but may be set to `True` due to known issues. The algorithm name `rtn` selects pure RTN and `opt-rtn` selects the optimized path, on both the CLI (`--algorithm rtn`) and the Python API (`alg_configs="rtn"`); the name wins over the flag.
 
 ##### Tuning Process Parameters
 - **`iters` (int)**: Number of tuning iterations (default is `200`). Common values: 0 (RTN mode), 50 (with lr=5e-3 recommended), 1000. Higher values increase accuracy but slow down tuning.

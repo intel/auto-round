@@ -1,7 +1,7 @@
 # # Copyright (C) 2026 Intel Corporation
 # # SPDX-License-Identifier: Apache-2.0
 
-"""CLI entry points: command routing, RECIPES, tune, eval, list.
+"""CLI entry points: command routing, recipes, tune, eval, list.
 
 This module is the single place that wires together:
     parser.py     - argparse construction (all flag declarations here)
@@ -26,6 +26,120 @@ from auto_round.cli.parser import (
 )
 from auto_round.compressors.config_resolution import ConfigResolutionError
 from auto_round.logger import logger
+from auto_round.recipes import get_recipe, list_recipes, resolve_recipe
+
+# Flags surfaced by `auto_round --help`. Entries are (dest, shown option strings):
+# the overview is a curated subset, so a few flags list only their primary name
+# instead of every alias. The full list stays behind `auto_round quantize --help`.
+_OVERVIEW_ARGUMENTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("model", ()),
+    ("model_name", ("--model",)),
+    ("scheme", ("--scheme",)),
+    ("algorithm", ("--algorithm",)),
+    ("bits", ("--bits",)),
+    ("group_size", ("--group_size",)),
+    ("iters", ("--iters",)),
+    ("nsamples", ("--nsamples",)),
+    ("seqlen", ("--seqlen",)),
+    ("batch_size", ("--batch_size",)),
+    ("device_map", ("--device_map",)),
+    ("format", ("--format",)),
+    ("output_dir", ("--output_dir",)),
+    ("asym", ("--asym",)),
+    ("ignore_layers", ("--ignore_layers",)),
+    ("tasks", ("--tasks",)),
+)
+
+_OVERVIEW_DESCRIPTION = """\
+AutoRound command line interface: quantize, evaluate and inspect models.
+
+commands:
+  quantize      Quantize a model. This is the default command, so
+                `auto_round --model <path> ...` works without naming it.
+  list          List the supported quantization schemes/formats or algorithms.
+  eval          Evaluate a quantized or original model.
+  help [topic]  Show this overview, or the help of `quantize`/`list`/`eval`.
+
+examples:
+  auto_round --model facebook/opt-125m --bits 4 --group_size 128
+  auto_round --model Qwen/Qwen3-0.6B --algorithm auto_round_v2 --iters 200
+  auto_round --model Qwen/Qwen3-0.6B --algorithm awq,auto_round_v2
+  auto_round --model <model> --schemes W2A16,W4A16 --bits 3 --ignore_scale_zp_bits
+  auto_round eval --model <quantized_model> --tasks lambada_openai
+  auto_round list alg
+
+This is only the commonly used subset of the quantize arguments.
+"""
+
+_OVERVIEW_EPILOG = """\
+see also:
+  auto_round quantize --help            every quantize argument
+  auto_round --algorithm <name> --help  the flags of one algorithm
+  auto_round list alg                   the supported algorithms
+  auto_round list format                the supported output formats
+"""
+
+
+def _overview_parser(prog: str = "auto_round") -> argparse.ArgumentParser:
+    """Build the display-only parser behind the `auto_round --help` overview.
+
+    The curated flags are redeclared from the real quantize parser rather than
+    hard-coded, so the overview cannot drift from the actual help strings and
+    defaults. Only rendering matters here: this parser never parses anything.
+    """
+    full = build_quantize_parser(prog=prog)
+    by_dest: dict[str, argparse.Action] = {}
+    for action in full._actions:
+        if action.help is argparse.SUPPRESS:
+            # Hidden legacy aliases (e.g. --avg_bits, which also has dest="bits")
+            # must not shadow the documented flag they alias.
+            continue
+        by_dest.setdefault(action.dest, action)
+
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        add_help=False,
+        usage="auto_round [<command>] [options]",
+        description=_OVERVIEW_DESCRIPTION,
+        epilog=_OVERVIEW_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    group = parser.add_argument_group("common arguments")
+    for dest, shown_options in _OVERVIEW_ARGUMENTS:
+        action = by_dest.get(dest)
+        if action is None:
+            continue
+        if not action.option_strings:
+            group.add_argument(dest, nargs="?", help=action.help)
+            continue
+        options = list(shown_options or action.option_strings)
+        kwargs = {"help": action.help, "dest": action.dest}
+        if action.nargs == 0:
+            # A boolean switch: render it as one instead of as a value-taking flag.
+            if isinstance(action, argparse.BooleanOptionalAction):
+                group.add_argument(*options[:1], action=argparse.BooleanOptionalAction, **kwargs)
+            else:
+                group.add_argument(*options, action="store_true", default=argparse.SUPPRESS, **kwargs)
+        else:
+            kwargs["default"] = argparse.SUPPRESS
+            if action.metavar is not None:
+                kwargs["metavar"] = action.metavar
+            if action.nargs is not None:
+                kwargs["nargs"] = action.nargs
+            if action.choices is not None:
+                kwargs["choices"] = action.choices
+            group.add_argument(*options, **kwargs)
+    return parser
+
+
+def _print_overview_help() -> None:
+    """Print the concise top-level `auto_round --help` overview."""
+    _overview_parser().print_help()
+
+
+def _requests_overview_help(argv: list[str]) -> bool:
+    """True for a bare `auto_round --help`/`-h` that names no subcommand or topic."""
+    return bool(argv) and all(token in ("-h", "--help") for token in argv)
 
 
 def _extract_common_quantization_kwargs(args) -> dict:
@@ -130,32 +244,6 @@ def _to_autoround_kwargs(args, *, low_cpu_mem_usage, enable_torch_compile, layer
     return kwargs
 
 
-RECIPES = {
-    "default": {
-        "batch_size": 8,
-        "iters": 200,
-        "seqlen": 2048,
-        "nsamples": 128,
-        "lr": None,
-    },
-    "best": {
-        "batch_size": 8,
-        "iters": 1000,
-        "seqlen": 2048,
-        "nsamples": 512,
-        "lr": None,
-    },
-    "light": {
-        "batch_size": 8,
-        "iters": 50,
-        "seqlen": 2048,
-        "nsamples": 128,
-        "lr": 5e-3,
-    },
-    "rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 1, "lr": None, "disable_opt_rtn": True},
-    "opt_rtn": {"batch_size": 8, "iters": 0, "seqlen": 2048, "nsamples": 128, "lr": None, "disable_opt_rtn": False},
-}
-
 # ============================================================================
 # list subcommand
 # ============================================================================
@@ -175,6 +263,14 @@ def list_item(argv=None):
             print("AutoRound supported algorithms:")
             print(AlgorithmHandler.format_listing())
             print("\nUse `auto_round list alg <name>` or `auto_round --algorithm <name> --help` for details.")
+    elif args.item in {"recipe", "recipes"}:
+        for name in [args.name] if args.name else list_recipes():
+            definition = get_recipe(name)
+            print(f"{definition.name}: {definition.description}")
+            if args.name:
+                plan = resolve_recipe(definition)
+                print("Pipeline: " + " -> ".join(f"{stage.algorithm}({stage.params})" for stage in plan.pipeline))
+                print(f"Calibration: {plan.calibration}")
     else:
         raise ValueError(f"Unsupported list target: {args.item}")
 
@@ -238,11 +334,10 @@ def _print_algorithm_help(argv: list[str]) -> bool:
     return True
 
 
-def start(recipe="default", argv=None):
+def start(recipe="auto-round", argv=None):
     from auto_round.utils.oom import install_oom_census_hook
 
     install_oom_census_hook()  # last-resort tensor census for uncaught CUDA OOMs
-    recipe_defaults = RECIPES[recipe]
     argv = list(sys.argv[1:] if argv is None else argv)
     format_was_explicit = any(
         arg in {"--format", "--formats"} or arg.startswith(("--format=", "--formats=")) for arg in argv
@@ -254,18 +349,46 @@ def start(recipe="default", argv=None):
     parser = build_quantize_parser(prog="auto_round quantize")
     args = parser.parse_args(argv)
     args._api_format = args.format if format_was_explicit or args.model_free else None
-
-    # Apply recipe defaults for fields the user didn't set
-    for key, value in recipe_defaults.items():
-        if getattr(args, key, None) is None:
-            setattr(args, key, value)
-    if args.model_free:
-        args.iters = 0
-
+    _apply_recipe_defaults(args, recipe)
     tune(args)
 
 
+def _apply_recipe_defaults(args, recipe="auto-round"):
+    """Normalize recommendations for both command entry points and direct tune calls."""
+    if getattr(args, "_recipe_plan", None) is not None:
+        return
+    if not hasattr(args, "_explicit_fields"):
+        # Namespaces built outside the quantize parser: treat every set value as explicit.
+        args._explicit_fields = {key for key, value in vars(args).items() if value is not None}
+    args.recipe = get_recipe(args.recipe or recipe).name
+    definition = get_recipe(args.recipe)
+    args._recipe_plan = resolve_recipe(
+        definition,
+        model=args.model or args.model_name,
+        scheme=args.scheme,
+        trust_remote_code=not args.disable_trust_remote_code,
+    )
+
+    for key, value in args._recipe_plan.calibration.items():
+        if getattr(args, key, None) is None:
+            setattr(args, key, value)
+    # Keep effective legacy attributes available to integrations inspecting tune(args).
+    if args.algorithm is None:
+        configs = args._recipe_plan.build_configs()
+        for config in configs:
+            for key in ("iters", "lr", "disable_opt_rtn"):
+                if key not in args._explicit_fields and hasattr(config, key):
+                    setattr(args, key, getattr(config, key))
+        if all(not hasattr(config, "iters") for config in configs):
+            if "iters" not in args._explicit_fields:
+                args.iters = 0
+    if args.model_free:
+        args.iters = 0
+        args._explicit_fields.add("iters")
+
+
 def tune(args):
+    _apply_recipe_defaults(args)
     assert args.model or args.model_name, "[model] or --model MODEL_NAME should be set."
     if args.model is None:
         args.model = args.model_name
@@ -293,6 +416,12 @@ def tune(args):
         logger.warning(
             "`low_cpu_mem_usage` is deprecated and is now enabled by default. "
             "To disable it, use `--disable_low_cpu_mem_usage`."
+        )
+
+    if getattr(args, "enable_alg_ext", False):
+        logger.warning(
+            "`--enable_alg_ext` is deprecated; use `--algorithm auto_round_v2` instead. "
+            "Both select the same algorithm and remain equivalent."
         )
 
     if args.format is None:
@@ -326,6 +455,45 @@ def tune(args):
     from auto_round.utils import get_device_and_parallelism
 
     device_str, use_auto_mapping = get_device_and_parallelism(args.device_map)
+
+    _parallel = str(getattr(args, "data_parallel", "off") or "off").strip().lower()
+    _parallel_policy = None
+    if _parallel != "off":
+        import torch
+
+        from auto_round import envs as _envs
+        from auto_round.algorithms.parallel.data_parallel import (
+            ParallelPolicy,
+            resolve_parallel_world,
+        )
+
+        _n = torch.cuda.device_count()
+        _iters_cli = int(getattr(args, "iters", 0) or 0)
+        _world = resolve_parallel_world(_parallel, _n, iters=_iters_cli)
+        # early eligibility: a multi-device --device_map cannot host the
+        # data-parallel lane at iters > 0 (blocks shard across GPUs in a
+        # pipeline-style placement) -- stop here, before the model loads,
+        # with the same message the runtime resolver raises at block 0
+        from auto_round.algorithms.parallel.data_parallel import check_parallel_device_map_compat_
+
+        check_parallel_device_map_compat_(_world, args.device_map, _iters_cli)
+        _parallel_policy = ParallelPolicy(
+            world=_world,
+            source="auto" if _parallel == "auto" else "explicit",
+            collect_forward_cap=int(getattr(_envs, "AR_TUNE_DDP_MAX_COLLECT_FORWARD_DEVICES", 0) or 0),
+            batch_mode=str(getattr(args, "parallel_batch", "split") or "split").strip().lower(),
+        )
+        if _parallel == "auto" and _world < _n:
+            # only `auto` adds information here (the reduction from the
+            # visible count); an explicit N either validates silently or
+            # raises, and the engagement line reports the resolved plan
+            logger.info(
+                "[tune-ddp] --data_parallel auto -> world=%d (largest power of two <= %d visible "
+                "devices; %d unused)",
+                _world,
+                _n,
+                _n - _world,
+            )
 
     if args.enable_torch_compile is False:
         logger.info("`torch.compile` is explicitly disabled with `--disable_torch_compile`.")
@@ -447,6 +615,7 @@ def tune(args):
     autoround: BaseCompressor = AutoRound(
         model_name,
         scheme=scheme,
+        recipe=args._recipe_plan,
         alg_configs=alg_configs if len(alg_configs) > 1 else alg_configs[0],
         **_to_autoround_kwargs(
             args,
@@ -455,6 +624,11 @@ def tune(args):
             layer_config=layer_config,
         ),
     )
+
+    if _parallel_policy is not None:
+        # the resolved --data_parallel policy is set on the compress
+        # context; the data-parallel engine reads it from there
+        autoround.compress_context.parallel_policy = _parallel_policy
 
     model, folders = autoround.quantize_and_save(  # pylint: disable=no-member
         args.output_dir,
@@ -545,12 +719,15 @@ def _print_help(topic=None):
     if topic == "eval":
         build_eval_parser(prog="auto_round eval").print_help()
         return
-    build_root_parser().print_help()
+    _print_overview_help()
 
 
 def run():
     try:
         argv = list(sys.argv[1:])
+        if _requests_overview_help(argv):
+            _print_overview_help()
+            return
         command, command_argv = _normalize_cli_invocation(argv)
 
         if command == "help":

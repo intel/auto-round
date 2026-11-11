@@ -6,6 +6,8 @@ breaks the pipeline.
 
 With ``--hide`` the script instead minimizes the marker comment as OUTDATED,
 used when a rerun passes so the stale failure report collapses automatically.
+If a later run fails again, the hidden comment is left collapsed: its marker is
+retired and a fresh comment carrying the active marker is posted instead.
 """
 
 import argparse
@@ -40,11 +42,6 @@ def _api(url: str, token: str, method: str = "GET", payload: "dict | None" = Non
     with urlopen(req, timeout=20) as resp:
         body = resp.read().decode("utf-8")
     return json.loads(body) if body else {}
-
-
-def _find_existing(repo: str, pr: int, token: str, marker: str) -> "int | None":
-    c = _find_existing_comment(repo, pr, token, marker)
-    return c.get("id") if c else None
 
 
 def _find_existing_comment(repo: str, pr: int, token: str, marker: str) -> "dict | None":
@@ -87,6 +84,33 @@ def _minimize_comment(node_id: str, token: str, classifier: str = "OUTDATED") ->
         print(f"Warning: could not hide comment ({result['errors']}); non-blocking.", file=sys.stderr)
         return False
     return bool(result.get("data", {}).get("minimizeComment", {}).get("minimizedComment", {}).get("isMinimized"))
+
+
+def _is_minimized(node_id: str, token: str) -> bool:
+    """Return True if the comment is currently minimized (REST does not expose this)."""
+    query = "query($id: ID!) { node(id: $id) { ... on Minimizable { isMinimized } } }"
+    result = _graphql(token, query, {"id": node_id})
+    return bool(((result.get("data") or {}).get("node") or {}).get("isMinimized"))
+
+
+def _retired_marker(marker: str) -> str:
+    """Return a marker variant that no longer matches ``marker`` (used for superseded comments)."""
+    return marker.replace("ai-failure-analysis", "ai-failure-analysis-retired", 1)
+
+
+def _retire_comment(repo: str, comment: dict, token: str, marker: str) -> None:
+    """Swap the hidden marker on an old comment so future runs no longer match it.
+
+    Only the invisible HTML marker changes; the visible report stays as-is.
+    """
+    body = (comment.get("body") or "").replace(marker, _retired_marker(marker))
+    _api(
+        f"https://api.github.com/repos/{repo}/issues/comments/{comment['id']}",
+        token,
+        method="PATCH",
+        payload={"body": body},
+    )
+    print(f"Retired marker on minimized PR comment {comment['id']}.", file=sys.stderr)
 
 
 def _hide(repo: str, pr: int, token: str, marker: str) -> None:
@@ -156,7 +180,19 @@ def main():
 
     pr = int(args.pr)
     try:
-        existing = _find_existing(args.repo, pr, token, marker)
+        existing_comment = _find_existing_comment(args.repo, pr, token, marker)
+        existing = existing_comment.get("id") if existing_comment else None
+        # A comment hidden as OUTDATED by an earlier passing run may be buried deep in a
+        # long PR history; leave it collapsed and post a fresh comment instead.
+        if existing is not None and existing_comment.get("node_id"):
+            try:
+                minimized = _is_minimized(existing_comment["node_id"], token)
+            except (HTTPError, URLError, ValueError) as e:
+                print(f"Warning: could not check comment visibility ({e}); updating in place.", file=sys.stderr)
+                minimized = False
+            if minimized:
+                _retire_comment(args.repo, existing_comment, token, marker)
+                existing = None
         if existing is not None:
             _api(
                 f"https://api.github.com/repos/{args.repo}/issues/comments/{existing}",

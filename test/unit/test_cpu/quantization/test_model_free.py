@@ -77,6 +77,7 @@ from auto_round.utils.model_free_utils import (
     _process_shard,
     _quantize_weight_mxfp,
     _quantize_weight_nvfp4_e5m3,
+    _quantize_weight_nvfp4_e5m3_gs,
     _validate_auto_scheme_options,
     is_model_free_supported_scheme,
 )
@@ -705,6 +706,59 @@ def test_nvfp4_e5m3_model_free_llm_compressor(tmp_path):
     assert quantization_config["provider"] == "auto-round"
     assert group["weights"]["group_size"] == 16
     assert group["input_activations"]["dynamic"] == "local"
+
+
+def test_nvfp4_e5m3_gs_model_free_fake_quantization():
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3, nvfp4_v2_gs
+
+    weight = torch.randn(8, 32)
+    output = _quantize_weight_nvfp4_e5m3_gs(weight, "layer.fc", group_size=16, disable_opt_rtn=True)
+
+    expected, _, _ = nvfp4_v2_gs(weight, group_size=16, global_scale=calculate_gparam_e5m3(weight))
+    assert set(output) == {"layer.fc.weight", "layer.fc.input_global_scale"}
+    torch.testing.assert_close(output["layer.fc.weight"], expected)
+    assert torch.equal(output["layer.fc.input_global_scale"], torch.ones(1))
+    assert is_model_free_supported_scheme("NVFP4_E5M3_GS")
+
+
+@pytest.mark.parametrize("fmt", ["auto_round", "llm_compressor"])
+def test_nvfp4_e5m3_gs_model_free_end_to_end(tmp_path, fmt):
+    from safetensors import safe_open
+
+    from auto_round.data_type.nvfp import calculate_gparam_e5m3
+
+    prefix = "model.layers.0.self_attn.q_proj"
+    weight = torch.randn(32, 32)
+    tensors = {f"{prefix}.weight": weight, "lm_head.weight": torch.randn(64, 32)}
+    model_dir = _make_model_dir(tmp_path, _LLAMA_CFG, tensors)
+    output_dir = str(tmp_path / "output")
+
+    compressor = _ModelFreeCompressorCore(
+        model_name_or_path=model_dir, output_dir=output_dir, scheme="NVFP4_E5M3_GS", format=fmt
+    )
+    compressor.run()
+
+    output_keys = _read_output_keys(output_dir)
+    for suffix in ("weight_packed", "weight_scale", "weight_global_scale", "input_global_scale"):
+        assert f"{prefix}.{suffix}" in output_keys
+    assert f"{prefix}.weight" not in output_keys
+    saved = {}
+    for file_name in os.listdir(output_dir):
+        if file_name.endswith(".safetensors"):
+            with safe_open(os.path.join(output_dir, file_name), framework="pt") as f:
+                saved.update({k: f.get_tensor(k) for k in f.keys() if k.startswith(prefix)})
+    assert torch.equal(saved[f"{prefix}.input_global_scale"], torch.ones(1))
+    torch.testing.assert_close(saved[f"{prefix}.weight_global_scale"], calculate_gparam_e5m3(weight).reshape(1))
+    assert saved[f"{prefix}.weight_scale"].dtype == torch.uint8
+
+    quantization_config = _read_qconfig(output_dir)
+    if fmt == "auto_round":
+        assert quantization_config["packing_format"] == "auto_round:llm_compressor_nvfp4_e5m3_gs"
+        assert quantization_config["data_type"] == "nvfp4_v2_gs"
+        assert quantization_config["act_data_type"] == "nvfp4_v2_with_static_gs"
+    else:
+        assert quantization_config["format"] == "nvfp4-e5m3-gs-pack-quantized"
+        assert quantization_config["quant_method"] == "compressed-tensors"
 
 
 def test_model_free_legacy_nvfp4_is_normalized_and_passthrough(tmp_path):

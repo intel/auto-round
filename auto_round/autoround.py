@@ -21,6 +21,9 @@ from typing import TYPE_CHECKING, Any, Optional, Union
 import torch
 
 from auto_round.logger import deprecated, logger
+from auto_round.recipes import Recipe, get_recipe, resolve_recipe
+from auto_round.recipes.recipe import UNSET
+from auto_round.recipes.resolver import merge_layer_defaults
 from auto_round.scheme_entry import (
     collect_config_scheme_overrides,
     eager_validate_scheme,
@@ -85,13 +88,10 @@ def _resolve_quant_config_for_routing(alg_configs) -> tuple[list, list, Quantiza
         from auto_round.algorithms.quantization.rtn.config import RTNConfig as _RTNConfig
 
         return preprocessor_configs, block_quant_configs, _RTNConfig()
-    if len(block_quant_configs) > 1:
-        raise ValueError(
-            f"Only one block-quantization config is allowed, but got {len(block_quant_configs)}: "
-            f"{[type(c).__name__ for c in block_quant_configs]}"
-        )
-    if len(block_quant_configs) == 1:
-        return preprocessor_configs, block_quant_configs, block_quant_configs[0]
+    if block_quant_configs:
+        # Stage ordering belongs to the composer. The last quantizer drives
+        # public scheme/format resolution, independently of algorithm identity.
+        return preprocessor_configs, block_quant_configs, block_quant_configs[-1]
     raise ValueError(
         "At least one quantization algorithm config is required. "
         "Pass a block quantizer such as RTNConfig or SignRoundConfig, "
@@ -341,7 +341,11 @@ def _owning_algorithm_names(field_name: str) -> list[str]:
 def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
     from auto_round.algorithms.config_resolver import split_quantization_configs
     from auto_round.algorithms.quantization.config import QuantizationConfig
-    from auto_round.algorithms.quantization.rtn.config import RTNConfig
+    from auto_round.algorithms.quantization.rtn.config import (
+        RTN_VARIANT_DISABLE_OPT_RTN,
+        RTNConfig,
+        validate_rtn_variant_names,
+    )
     from auto_round.algorithms.registry import normalize_algorithm_config, resolve_alg_config, resolve_algorithm_names
     from auto_round.algorithms.transforms import normalize_rotation_config
     from auto_round.algorithms.transforms.awq.config import (
@@ -390,6 +394,18 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
                     seen_names.add(canonical_name)
     else:
         raw_configs = [alg_configs]
+
+    validate_rtn_variant_names(raw_configs)
+
+    # An `rtn` / `opt-rtn` the caller actually named selects the RTN variant, the
+    # same way `--algorithm rtn` / `--algorithm opt-rtn` does on the CLI. When
+    # `alg_configs` is None the RTN config below is an implicit fallback, so it
+    # must keep the existing flag/heuristic behaviour.
+    named_rtn_variants = (
+        [name for name in raw_configs if isinstance(name, str) and name in RTN_VARIANT_DISABLE_OPT_RTN]
+        if alg_configs is not None
+        else []
+    )
 
     configs = []
     pending_rtn_indices = []
@@ -508,6 +524,18 @@ def _normalize_alg_configs(alg_configs, direct_kwargs=None, *, strict=False):
             recommended_config_name,
         )
     sync_rtn_opt_rtn_from_awq(configs)
+    if named_rtn_variants:
+        # Applied last, on RTN configs only (AWQ keeps its own policy), so the
+        # algorithm name is not overridden by the AWQ inheritance above or by a
+        # contradicting `disable_opt_rtn` argument. `orig_disable_opt_rtn` marks
+        # it as user policy, which is what stops the W8A16/W8A8 efficiency
+        # heuristic from silently switching the variant back.
+        forced_disable_opt_rtn = RTN_VARIANT_DISABLE_OPT_RTN[named_rtn_variants[0]]
+        for config in configs:
+            if isinstance(config, RTNConfig):
+                config.disable_opt_rtn = forced_disable_opt_rtn
+                if hasattr(config, "orig_disable_opt_rtn"):
+                    config.orig_disable_opt_rtn = forced_disable_opt_rtn
     return [normalize_algorithm_config(config) for config in configs]
 
 
@@ -592,7 +620,7 @@ class _CompressorBuilder:
         else:
             alg_configs = normalize_algorithm_config(alg_configs)
         configs_for_routing = alg_configs if isinstance(alg_configs, list) else [alg_configs]
-        preprocessor_configs, _, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
+        preprocessor_configs, quantizer_configs, quant_config = _resolve_quant_config_for_routing(configs_for_routing)
         is_svdquant = any(type(config).__name__ == "SVDQuantConfig" for config in preprocessor_configs)
         if is_svdquant and "svdquant_omni" not in {name.strip().lower() for name in (format or "").split(",")}:
             format = "svdquant_nunchaku"
@@ -619,6 +647,10 @@ class _CompressorBuilder:
         # route predicate; otherwise the fast path silently drops them and
         # cannot emit the required export metadata.
         route_decision_kwargs = dict(base_kwargs, **route_kwargs, format=format)
+        if len(quantizer_configs) > 1:
+            if route_kwargs.get("model_free", False):
+                raise ValueError("model_free=True is not supported with multiple quantizer stages.")
+            route_decision_kwargs["disable_model_free"] = True
         is_svdquant_rtn = type(quant_config) is RTNConfig and is_svdquant
         if is_svdquant_rtn and not route_kwargs.get("model_free", False):
             # SVDQuant must run before plain RTN on the regular blockwise path.
@@ -695,7 +727,7 @@ class _CompressorBuilder:
         # block_forward_hooks -> pre_quantize_block -> post_quantize_block)
         # actually runs; the pipeline auto-appends RTN when no block_quantizer
         # is supplied. SignRound is itself data-driven and shares the same host.
-        if preprocessor_configs or isinstance(quant_config, SignRoundConfig):
+        if preprocessor_configs or len(quantizer_configs) > 1 or not isinstance(quant_config, RTNConfig):
             return _get_compressor_class(model_type, Compressor)(alg_configs, **local_args, **ctor_kwargs)
         elif isinstance(quant_config, RTNConfig):
             base_cls = _select_rtn_compressor_base_cls(quant_config, scheme, format, base_kwargs)
@@ -727,6 +759,8 @@ class AutoRound:
         alg_configs: Algorithm alias, config instance, or sequence of either.
             Use config instances to provide algorithm-specific options, such
             as ``SignRoundConfig(iters=50)`` or ``AWQConfig(apply_clip=True)``.
+        recipe: Recommended quantization plan, defaulting to ``"auto-round"``.
+            Explicit alg_configs replaces its pipeline while inheriting calibration defaults.
         layer_config: Optional per-layer quantization overrides.
         dataset: Calibration dataset name, samples, dataloader, or a
             :class:`~auto_round.utils.dataset_utils.CalibDataset` object.
@@ -759,11 +793,11 @@ class AutoRound:
         schemes: str | list | tuple | None = None,
         bits: float | None = None,
         layer_config: dict[str, str | dict | QuantizationScheme] | None = None,
-        dataset: str | list | tuple | torch.utils.data.DataLoader | None = None,
+        dataset: str | list | tuple | torch.utils.data.DataLoader | None = UNSET,
         iters: int | None = None,
-        seqlen: int = 2048,
-        nsamples: int = 128,
-        batch_size: int = 8,
+        seqlen: int = UNSET,
+        nsamples: int = UNSET,
+        batch_size: int = UNSET,
         gradient_accumulate_steps: int | None = None,
         low_gpu_mem_usage: bool = False,
         calibration_data_device: str = "auto",
@@ -773,6 +807,7 @@ class AutoRound:
         low_cpu_mem_usage: bool = True,
         alg_configs=None,
         algorithm: str | None = None,
+        recipe: str | Recipe = "auto-round",
         **kwargs,
     ) -> BaseCompressor:
         direct_kwargs = dict(kwargs)
@@ -792,10 +827,27 @@ class AutoRound:
             direct_kwargs["bits"] = bits
         scheme, direct_kwargs = resolve_entry_scheme(scheme, schemes, direct_kwargs)
 
+        definition = get_recipe(recipe) if isinstance(recipe, str) else recipe
+        plan = resolve_recipe(
+            definition,
+            scheme=scheme,
+            model=model,
+            trust_remote_code=direct_kwargs.get("trust_remote_code", True),
+        )
+        if alg_configs is None and algorithm is None:
+            alg_configs = plan.build_configs()
+        calibration = plan.calibration
+        dataset = calibration.get("dataset") if dataset is UNSET else dataset
+        seqlen = calibration["seqlen"] if seqlen is UNSET else seqlen
+        nsamples = calibration["nsamples"] if nsamples is UNSET else nsamples
+        batch_size = calibration["batch_size"] if batch_size is UNSET else batch_size
+        if plan.layer_config:
+            layer_config = merge_layer_defaults(plan.layer_config, layer_config)
+
         configs, runtime_kwargs = _prepare_entry_kwargs(alg_configs, direct_kwargs, strict=strict_model_free)
         runtime_kwargs["batch_size"] = batch_size
 
-        return _CompressorBuilder(
+        compressor = _CompressorBuilder(
             model,
             scheme,
             configs,
@@ -815,6 +867,8 @@ class AutoRound:
             seqlen=seqlen,
             **runtime_kwargs,
         )
+        compressor.resolved_recipe = plan
+        return compressor
 
 
 # Keep legacy entry points available for downstream integrations such as
