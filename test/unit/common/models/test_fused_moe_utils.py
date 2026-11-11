@@ -133,6 +133,63 @@ def test_sequential_moe_forward_batches_routes_without_nonzero(monkeypatch):
     assert empty.shape == (0, 8)
 
 
+@pytest.mark.enable_torch_compile
+@pytest.mark.parametrize("route_impl", ["sequential", "linear_loop"])
+def test_moe_route_changes_do_not_recompile_block(route_impl):
+    """Different data-dependent route plans must not recompile an enclosing block."""
+    from auto_round.modeling.fused_moe.moe_experts_interface import linear_loop_experts_forward
+
+    class Expert(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_proj = nn.Linear(4, 8)
+            self.up_proj = nn.Linear(4, 8)
+            self.down_proj = nn.Linear(8, 4)
+
+        def forward(self, hidden_states):
+            gated = torch.nn.functional.silu(self.gate_proj(hidden_states)) * self.up_proj(hidden_states)
+            return self.down_proj(gated)
+
+    class LinearExperts(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.num_experts = 4
+            self.act_fn = nn.SiLU()
+            for expert_idx in range(self.num_experts):
+                self.add_module(str(expert_idx), Expert())
+
+    experts = nn.ModuleList([Expert() for _ in range(4)]) if route_impl == "sequential" else LinearExperts()
+    compiled_graphs = []
+
+    def backend(graph_module, _example_inputs):
+        compiled_graphs.append(graph_module)
+        return graph_module.forward
+
+    def block(hidden_states, route_indices, route_weights):
+        block_input = hidden_states.sin()
+        if route_impl == "sequential":
+            output = sequential_moe_forward(block_input, route_indices, route_weights, experts, 4)
+        else:
+            output = linear_loop_experts_forward(experts, block_input, route_indices, route_weights)
+        return output.cos()
+
+    compiled_block = torch.compile(block, backend=backend)
+    hidden_states = torch.randn(3, 4)
+    route_weights = torch.full((3, 2), 0.5)
+    route_plans = (
+        torch.tensor([[0, 1], [1, 2], [2, 3]]),
+        torch.tensor([[0, 3], [0, 2], [1, 3]]),
+        torch.tensor([[1, 1], [2, 2], [3, 3]]),
+    )
+
+    compiled_block(hidden_states, route_plans[0], route_weights)
+    initial_graph_count = len(compiled_graphs)
+    assert initial_graph_count > 0
+    for route_indices in route_plans[1:]:
+        compiled_block(hidden_states, route_indices, route_weights)
+    assert len(compiled_graphs) == initial_graph_count
+
+
 # ---------------------------------------------------------------------------
 # fused_moe.replace_modules
 # ---------------------------------------------------------------------------
