@@ -62,8 +62,8 @@ from auto_round.special_model_handler.deepseek_vl import (
     _get_deepseek_vl2_multimodal_block,
 )
 from auto_round.special_model_handler.qwen_omni import (
+    _get_omni_thinker_layer_info,
     _get_qwen2_5_omni_multimodal_block,
-    _get_qwen3_omni_thinker_layer_info,
     _get_qwen3_omni_moe_multimodal_block,
     _qwen2_5_omni_forward,
     _qwen3_omni_moe_forward,
@@ -133,9 +133,9 @@ __all__ = [
     "_get_gemma4_shared_kv_states_global",
     "_get_glm_image_multimodal_block",
     "_get_mimo_audio_multimodal_block",
+    "_get_omni_thinker_layer_info",
     "_get_qwen2_5_omni_multimodal_block",
     "_get_qwen3_omni_moe_multimodal_block",
-    "_get_qwen3_omni_thinker_layer_info",
     "_get_qwen3_tts_multimodal_block",
     "_handle_special_model",
     "_mimo_audio_forward",

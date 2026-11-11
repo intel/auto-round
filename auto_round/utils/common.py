@@ -1546,6 +1546,21 @@ def preserve_original_visual_block_name(original_name: str | None, reverted_name
         elif original_part.startswith("model.language_model.") and reverted_part.startswith("model.layers"):
             preserved_parts.append(original_part)
             preserved_parts.append(reverted_part)
+        elif original_part.startswith("thinker.model.language_model.") and reverted_part.startswith(
+            "thinker.model.layers"
+        ):
+            # Qwen-Omni checkpoints use ``thinker.model.layers`` while newer
+            # Transformers exposes them as ``thinker.model.language_model.layers``.
+            # Keep both so runtimes can match either layout.
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
+        elif original_part.startswith("thinker.model.") and reverted_part == original_part.replace(
+            "thinker.model.", "thinker.", 1
+        ):
+            # Vision/audio towers move between ``thinker.<tower>`` and
+            # ``thinker.model.<tower>`` across Transformers releases.
+            preserved_parts.append(original_part)
+            preserved_parts.append(reverted_part)
         else:
             preserved_parts.append(reverted_part)
 
