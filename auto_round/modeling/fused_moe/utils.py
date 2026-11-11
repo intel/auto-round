@@ -63,6 +63,51 @@ def is_linearized_layout(original: torch.nn.Module) -> bool:
     return all(hasattr(first_expert, attr) for attr in ("gate_proj", "up_proj", "down_proj"))
 
 
+def _prepare_moe_route_batches(
+    hidden_states: torch.Tensor,
+    top_k_index: torch.Tensor,
+    top_k_weights: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[list[int]]]:
+    """Sort token-expert pairs by expert once and return ``[expert_id, count]`` for each active expert."""
+    num_tokens = hidden_states.size(0)
+    top_k = top_k_index.size(-1)
+    token_idx = torch.arange(num_tokens, device=hidden_states.device).unsqueeze(1).expand(-1, top_k).reshape(-1)
+    sample_weights = top_k_weights.reshape(-1).to(hidden_states.dtype)
+    sorted_expert_ids, permutation = torch.sort(top_k_index.reshape(-1))
+    if sorted_expert_ids.numel() == 0:
+        return hidden_states.new_empty((0, hidden_states.size(-1))), sample_weights, permutation, []
+
+    active_experts, counts = torch.unique_consecutive(sorted_expert_ids, return_counts=True)
+    # The only host sync of the routing step.
+    route_plan = torch.stack((active_experts.to(torch.int64), counts.to(torch.int64)), dim=1).tolist()
+    sorted_hidden_states = hidden_states.index_select(0, token_idx.index_select(0, permutation))
+    sorted_weights = sample_weights.index_select(0, permutation)
+    return sorted_hidden_states, sorted_weights, permutation, route_plan
+
+
+def _restore_moe_route_order(
+    sorted_outputs: torch.Tensor,
+    permutation: torch.Tensor,
+    num_tokens: int,
+    top_k: int,
+) -> torch.Tensor:
+    """Scatter sorted outputs back to ``(token, top_k)`` order and reduce over ``top_k``."""
+    outputs = torch.zeros_like(sorted_outputs)
+    outputs.index_copy_(0, permutation, sorted_outputs)
+    # reshape+sum instead of index_add_: index_add_ with duplicate indices is non-deterministic on CUDA.
+    return outputs.view(num_tokens, top_k, outputs.size(-1)).sum(dim=1)
+
+
+def _opaque_to_dynamo(fn):
+    """Keep data-dependent MoE routing outside any enclosing ``torch.compile`` graph."""
+    disable = getattr(torch.compiler, "disable", None)
+    if disable is None:  # pragma: no cover - torch < 2.1
+        dynamo = getattr(torch, "_dynamo", None)
+        disable = getattr(dynamo, "disable", None) if dynamo is not None else None
+    return disable(fn) if disable is not None else fn
+
+
+@_opaque_to_dynamo
 def sequential_moe_forward(
     hidden_states: torch.Tensor,
     top_k_index: torch.Tensor,
@@ -73,6 +118,10 @@ def sequential_moe_forward(
     _log_execution: bool = True,
 ) -> torch.Tensor:
     """Sequential per-expert MoE forward using a single sort to group tokens by expert.
+
+    Only active experts are visited, and the routing step costs a single host sync
+    (instead of one ``nonzero()`` + ``.numel()`` sync per expert, which dominated
+    decode latency on many-expert MoEs such as Qwen3-30B-A3B).
 
     Repeatedly issuing dynamic-shape gather kernels (``nonzero()``,
     ``index_select()`` or boolean-mask indexing) once per expert in a Python
@@ -105,34 +154,27 @@ def sequential_moe_forward(
                 "this architecture invokes the sequential expert implementation directly",
                 suggest_issue=True,
             )
-    hidden_dim = hidden_states.size(-1)
     num_tokens = hidden_states.size(0)
     top_k = top_k_index.size(-1)
-    device = hidden_states.device
+    sorted_hidden_states, sorted_weights, permutation, route_plan = _prepare_moe_route_batches(
+        hidden_states, top_k_index, top_k_weights
+    )
+    output_batches = []
+    offset = 0
+    for expert_idx, count in route_plan:
+        expert_input = sorted_hidden_states[offset : offset + count]
+        if 0 <= expert_idx < num_experts:
+            output_batches.append(experts[expert_idx](expert_input).to(hidden_states.dtype))
+        else:
+            # Out-of-range ids (e.g. masked / non-local experts) contribute nothing.
+            output_batches.append(torch.zeros_like(expert_input))
+        offset += count
 
-    token_idx = torch.arange(num_tokens, device=device).unsqueeze(1).expand(-1, top_k).reshape(-1)  # (S,)
-    sample_weights = top_k_weights.reshape(-1).to(hidden_states.dtype)  # (S,)
-    expert_ids = top_k_index.reshape(-1)  # (S,)
-
-    selected_hidden_states = hidden_states[token_idx]  # (S, hidden_dim)
-
-    out_per_sample = torch.zeros_like(selected_hidden_states)
-    for expert_idx in range(num_experts):
-        sample_idx = torch.nonzero(expert_ids == expert_idx, as_tuple=False).squeeze(-1)
-        if sample_idx.numel() == 0:
-            continue
-        expert_input = selected_hidden_states.index_select(0, sample_idx)
-        expert_out = experts[expert_idx](expert_input).to(out_per_sample.dtype)
-        out_per_sample.index_copy_(0, sample_idx, expert_out)
-
-    # Apply routing weights
-    out_per_sample = out_per_sample * sample_weights.unsqueeze(-1)  # (S, hidden_dim)
-
-    # Accumulate results using deterministic reshape+sum instead of index_add_
-    # (index_add_ with duplicate indices is non-deterministic on CUDA due to atomicAdd)
-    final_hidden_states = out_per_sample.view(num_tokens, top_k, hidden_dim).sum(dim=1)
-
-    return final_hidden_states
+    if output_batches:
+        sorted_outputs = torch.cat(output_batches, dim=0) * sorted_weights.unsqueeze(-1)
+    else:
+        sorted_outputs = sorted_hidden_states
+    return _restore_moe_route_order(sorted_outputs, permutation, num_tokens, top_k)
 
 
 def grouped_or_sequential_moe_forward(
