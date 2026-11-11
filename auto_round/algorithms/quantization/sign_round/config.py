@@ -18,6 +18,7 @@ from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.registry import register_algorithm
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 
 
 class SignRoundConfig(QuantizationConfig):
@@ -331,9 +332,7 @@ class SignRoundConfig(QuantizationConfig):
                 during tuning (the two-stage symmetric scale search for sym
                 layers). The search grid sizes are tunable via
                 ``AR_NEUQI_COARSE`` and ``AR_NEUQI_FINE``.
-            **kwargs: Common quantization arguments forwarded to
-                QuantizationConfig, such as bits, group_size, sym,
-                data_type, and activation quantization fields.
+            **kwargs: Algorithm-local calibration arguments forwarded to QuantizationConfig.
         """
         super().__init__(**kwargs)
         self._validate_lora_settings(lora_rank, lora_alpha)
@@ -346,8 +345,7 @@ class SignRoundConfig(QuantizationConfig):
             logger.warning("`iters` must be non-negative, reset it to 200")
             self.iters = 200
 
-        # lr/minmax_lr depend on `bits`, which may still be unresolved here
-        # (e.g. only `scheme=` was given) -- finalize_scheme() fills them in.
+        # The entry builder supplies the resolved run scheme to finalize_scheme().
         self.lr = lr
         self.minmax_lr = minmax_lr
         # Whether lr/minmax_lr are auto-derived; set properly in finalize_scheme().
@@ -463,7 +461,7 @@ class SignRoundConfig(QuantizationConfig):
         # minmax_lr falls back to lr when not explicitly set
         return self.compute_lr(bits)
 
-    def finalize_scheme(self) -> None:
+    def finalize_scheme(self, scheme: QuantizationScheme) -> None:
         """Resolve lr/minmax_lr once `bits` is known (low-bit schemes use a higher lr).
 
         The scalar ``lr``/``minmax_lr`` values resolved here are derived from the
@@ -475,7 +473,7 @@ class SignRoundConfig(QuantizationConfig):
         self.lr_is_auto = self.lr is None and self.iters > 0
         self.minmax_lr_is_auto = self.minmax_lr is None
         if self.lr_is_auto:
-            self.lr = self._lr_for_bits(self.bits)
+            self.lr = self._lr_for_bits(scheme.bits)
         self.minmax_lr = self.minmax_lr or self.lr
 
     def check_configs(self) -> None:

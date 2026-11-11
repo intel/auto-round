@@ -392,7 +392,7 @@ class AlgorithmComposer:
         """
         from auto_round.data_type.utils import register_act_max_hooks
 
-        return register_act_max_hooks(block, getattr(self.active_quantizer.config, "act_data_type", None))
+        return register_act_max_hooks(block, getattr(self.scheme, "act_data_type", None))
 
     def _get_fp_act_hooks(self, block: torch.nn.Module) -> tuple[list, dict[str, str] | None]:
         """Register FP-input act_max + quantizer forward hooks.
@@ -973,7 +973,7 @@ class AlgorithmComposer:
         if self.scheme is not None and getattr(self.scheme, "data_type", None):
             return self.scheme.data_type
         if self.active_quantizer is not None:
-            return getattr(self.active_quantizer.config, "data_type", "mx_fp")
+            return getattr(self.scheme, "data_type", "mx_fp")
         return "mx_fp"
 
     def apply_model_transforms(self, model: torch.nn.Module) -> torch.nn.Module:

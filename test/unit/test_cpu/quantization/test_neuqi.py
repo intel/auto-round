@@ -20,6 +20,7 @@ from auto_round.data_type.int import quant_tensor_asym
 from auto_round.data_type.neuqi import _log_search_engaged, neuqi_search_scale_zero, quant_tensor_opt_rtn_asym
 from auto_round.data_type.register import QUANT_FUNC_WITH_DTYPE
 from auto_round.data_type.utils import get_quant_func
+from auto_round.schemes import QuantizationScheme
 
 
 def _heavy_tailed_data(n_groups=64, group_size=128, seed=0):
@@ -479,22 +480,22 @@ class TestEnableNeuqiAPI:
         """enable_neuqi defaults off and accepts True on both symmetry classes."""
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
-        assert RTNConfig(bits=4, group_size=32, sym=False).enable_neuqi is False
-        on = RTNConfig(bits=4, group_size=32, sym=False, disable_opt_rtn=False, enable_neuqi=True)
+        assert RTNConfig().enable_neuqi is False
+        on = RTNConfig(disable_opt_rtn=False, enable_neuqi=True)
         assert on.enable_neuqi is True
-        sym_on = RTNConfig(bits=4, group_size=32, sym=True, disable_opt_rtn=False, enable_neuqi=True)
+        sym_on = RTNConfig(disable_opt_rtn=False, enable_neuqi=True)
         assert sym_on.enable_neuqi is True  # engages the two-stage symmetric search
 
     def test_neuqi_with_opt_rtn_disabled_raises(self):
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
         with pytest.raises(ValueError, match="--enable_neuqi requires the optimized-RTN path"):
-            RTNConfig(bits=4, group_size=32, sym=False, disable_opt_rtn=True, enable_neuqi=True)
+            RTNConfig(disable_opt_rtn=True, enable_neuqi=True)
 
     def test_default_is_off(self):
         from auto_round.algorithms.quantization.rtn.config import RTNConfig
 
-        cfg = RTNConfig(bits=4, group_size=32, sym=False)
+        cfg = RTNConfig()
         assert cfg.enable_neuqi is False
 
 
@@ -1527,8 +1528,8 @@ class TestSignRoundEnableNeuqi:
     def test_config_flag(self):
         from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig
 
-        assert SignRoundConfig(bits=4, group_size=32).enable_neuqi is False
-        assert SignRoundConfig(bits=4, group_size=32, sym=False, enable_neuqi=True).enable_neuqi is True
+        assert SignRoundConfig().enable_neuqi is False
+        assert SignRoundConfig(enable_neuqi=True).enable_neuqi is True
 
 
 class TestNeuqiBatchedSearch:
@@ -1662,7 +1663,14 @@ class TestNeuqiBatchedSearch:
 
         ctx = SimpleNamespace(is_moe_model=True, amp_dtype=torch.float32, model=model, enable_torch_compile=False)
         q = object.__new__(OptimizedRTNQuantizer)
-        q.config = OptimizedRTNConfig(bits=4, group_size=32, sym=False, enable_neuqi=True)
+        q.config = OptimizedRTNConfig(enable_neuqi=True)
+        q.bind(
+            SimpleNamespace(
+                model_context=ctx,
+                compress_context=ctx,
+                scheme_context=QuantizationScheme(bits=4, group_size=32, sym=False, data_type="int"),
+            )
+        )
         q.config.disable_opt_rtn = False
         q.config.orig_disable_opt_rtn = None  # user left the flag unset
         try:
@@ -1693,14 +1701,26 @@ class TestImatrixAutoRule:
 
     def test_rule(self):
         from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
-        from auto_round.autoround import _select_rtn_compressor_base_cls
+        from auto_round.compressors.builder import _resolve_rtn_config
 
-        cfg = RTNConfig(bits=4, group_size=128, sym=False, enable_neuqi=True)
-        _select_rtn_compressor_base_cls(cfg, scheme=None, format="auto_round", base_kwargs={})
+        cfg = RTNConfig(enable_neuqi=True)
+        _resolve_rtn_config(
+            cfg,
+            scheme=None,
+            format="auto_round",
+            base_kwargs={},
+            scheme_overrides={"bits": 4, "group_size": 128, "sym": False},
+        )
         assert cfg.enable_imatrix is True and isinstance(cfg, OptimizedRTNConfig)
 
-        cfg = RTNConfig(bits=4, group_size=128, sym=False, enable_neuqi=False)
-        _select_rtn_compressor_base_cls(cfg, scheme=None, format="auto_round", base_kwargs={})
+        cfg = RTNConfig(enable_neuqi=False)
+        _resolve_rtn_config(
+            cfg,
+            scheme=None,
+            format="auto_round",
+            base_kwargs={},
+            scheme_overrides={"bits": 4, "group_size": 128, "sym": False},
+        )
         assert cfg.enable_imatrix is False
 
 

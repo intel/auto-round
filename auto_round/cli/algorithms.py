@@ -297,7 +297,7 @@ class AlgorithmHandler:
             raw = getattr(args, "algorithm", None)
         plan = getattr(args, "_recipe_plan", None)
         if plan is not None and raw is None:
-            from auto_round.autoround import _normalize_alg_configs
+            from auto_round.algorithms.config_resolver import _normalize_alg_configs
 
             configs = []
             explicit = args._explicit_fields
@@ -308,8 +308,6 @@ class AlgorithmHandler:
                     for parameter in registry.parameters
                     if parameter.dest in explicit and hasattr(args, parameter.dest)
                 }
-                if getattr(type(default_config), "cli_include_common_args", True):
-                    overrides.update({key: value for key, value in common_kwargs.items() if value is not None})
                 configs.append(stage.build_config(overrides))
             direct = {"iters": args.iters} if "iters" in explicit else {}
             if direct.get("iters") == 0:
@@ -351,8 +349,6 @@ class AlgorithmHandler:
             awq_entry = get_algorithm_entry("awq")
             awq_cls = cls.get("awq")
             awq_kwargs = _parameter_registry(awq_cls).config_kwargs(args)
-            if getattr(awq_cls, "cli_include_common_args", True):
-                awq_kwargs.update(common_kwargs)
             if isinstance(awq_entry.config_factory, type):
                 awq_config = awq_entry.config_factory(**awq_kwargs)
             elif awq_kwargs:
@@ -371,8 +367,6 @@ class AlgorithmHandler:
             entry = get_algorithm_entry(name)
             config_cls = cls.get(name)
             kwargs = _parameter_registry(config_cls).config_kwargs(args)
-            if getattr(config_cls, "cli_include_common_args", True):
-                kwargs.update(common_kwargs)
             if name in explicit_names and name in RTN_VARIANT_DISABLE_OPT_RTN:
                 # The algorithm name is authoritative: it selects the variant
                 # even when the opposite flag was passed as well.
