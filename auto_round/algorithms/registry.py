@@ -48,6 +48,7 @@ def _ensure_builtin_algorithms_registered() -> None:
         "auto_round.algorithms.quantization.qad.config",
         "auto_round.algorithms.quantization.qat.config",
         "auto_round.algorithms.transforms.awq.config",
+        "auto_round.algorithms.transforms.teq.config",
         "auto_round.algorithms.transforms.svdquant.config",
         "auto_round.algorithms.transforms.hadamard.config",
         "auto_round.algorithms.transforms.spinquant.preprocessor",
@@ -78,6 +79,7 @@ def _ensure_pipeline_members_registered() -> None:
         "auto_round.algorithms.quantization.qat.quantizer",
         "auto_round.algorithms.quantization.adam_round.adam",
         "auto_round.algorithms.transforms.awq.base",
+        "auto_round.algorithms.transforms.teq.base",
         "auto_round.algorithms.transforms.svdquant.apply",
     ):
         importlib.import_module(module_name)

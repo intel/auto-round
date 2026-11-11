@@ -339,7 +339,7 @@ class AlgorithmHandler:
         explicit_names = set(canonical)
         seen = set(canonical)
         if not cls._has_quantizer(canonical):
-            canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
+            canonical.append("rtn" if {"awq", "teq"} & seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
             canonical = [_ITERS_ZERO_ALGORITHMS.get(name, name) for name in canonical]
 
