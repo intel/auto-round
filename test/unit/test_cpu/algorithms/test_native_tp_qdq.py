@@ -597,14 +597,14 @@ def _check_qad_lifecycle(
         checkpoint,
         scheme={"mx_fp": "MXFP4", "nv_fp": "NVFP4"}.get(fp4, "W4A16"),
         parallel_config=ParallelConfig(tp_size=2),
+        bits=4,
+        group_size=group_size,
+        act_bits=4 if activation else 16,
+        act_data_type=({"mx_fp": "mx_fp", "nv_fp": "nv_fp4_with_static_gs"}[fp4] if activation else "float"),
         alg_configs=[
             *block_stages,
             config_cls(
                 iters=2,
-                bits=4,
-                group_size=group_size,
-                act_bits=4 if activation else 16,
-                act_data_type=({"mx_fp": "mx_fp", "nv_fp": "nv_fp4_with_static_gs"}[fp4] if activation else "float"),
                 nsamples=2,
                 topk=8,
                 gradient_checkpointing=True,
@@ -812,7 +812,7 @@ def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_check
             checkpoint,
             workspace + "_staged",
             "qad",
-            block_stages=[SignRoundConfig(iters=2, group_size=8, lora_rank=2)],
+            block_stages=[SignRoundConfig(iters=2, lora_rank=2)],
             lora_rank=2,
             round_tuning=False,
         )
@@ -821,7 +821,7 @@ def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_check
             qwen_checkpoint,
             workspace + "_v2_staged",
             "qat",
-            block_stages=[SignRoundV2Config(iters=2, group_size=8, lora_rank=2)],
+            block_stages=[SignRoundV2Config(iters=2, lora_rank=2)],
             lora_rank=2,
         )
         _check_qad_lifecycle(
@@ -829,7 +829,7 @@ def _distributed_worker(rank, rendezvous, checkpoint, qwen_checkpoint, moe_check
             checkpoint,
             workspace + "_three_stages",
             "qad",
-            block_stages=[SignRoundV2Config(iters=2, group_size=8), SignRoundConfig(iters=2, group_size=8)],
+            block_stages=[SignRoundV2Config(iters=2), SignRoundConfig(iters=2)],
         )
         _check_qad_lifecycle(rank, checkpoint, workspace + "_mx", "qad", fp4="mx_fp", lora_rank=2)
         _check_qad_lifecycle(rank, qwen_checkpoint, workspace + "_nv", "qat", fp4="nv_fp", lora_rank=2)

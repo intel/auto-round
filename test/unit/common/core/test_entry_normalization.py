@@ -4,11 +4,12 @@ from types import SimpleNamespace
 import pytest
 
 from auto_round import autoround
+from auto_round.algorithms import config_resolver
+from auto_round.algorithms.config_resolver import _normalize_alg_configs, _split_entry_kwargs
 from auto_round.algorithms.quantization.rtn.config import RTNConfig
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.hadamard.config import RotationConfig
-from auto_round.autoround import _normalize_alg_configs, _split_entry_kwargs
 
 
 def _types(configs):
@@ -59,7 +60,7 @@ def test_split_entry_kwargs_partitions_owned_fields():
 
 def test_split_entry_kwargs_ignores_unknown_fields(monkeypatch):
     warnings = []
-    monkeypatch.setattr(autoround.logger, "warning_once", lambda message, *args: warnings.append(message % args))
+    monkeypatch.setattr(config_resolver.logger, "warning_once", lambda message, *args: warnings.append(message % args))
 
     grouped = _split_entry_kwargs({"unknown_option": 1}, context="test entry")
 
@@ -153,7 +154,7 @@ def test_constructor_documents_all_runtime_kwargs():
 
     doc = inspect.getdoc(autoround.AutoRound.__new__)
     documented = set(re.findall(r"^\s+(\w+)(?:\s+\([^\n]*\))?:", doc, flags=re.MULTILINE))
-    runtime_keys = set(autoround._ENTRY_KWARG_OWNERS)
+    runtime_keys = set(config_resolver._ENTRY_KWARG_OWNERS)
     consumed_keys = {
         "iters",
         "seqlen",
@@ -169,7 +170,7 @@ def test_constructor_documents_all_runtime_kwargs():
         "ignore_scale_zp_bits",
     }
     assert not (runtime_keys | consumed_keys) - documented
-    assert all(f"``{key}``" in doc for key in autoround._SCHEME_FIELDS)
+    assert all(f"``{key}``" in doc for key in config_resolver._SCHEME_FIELDS)
 
 
 @pytest.mark.parametrize("overrides,expected", [({}, 5), ({"iters": None}, 5), ({"iters": 11}, 11)])
@@ -292,9 +293,13 @@ def test_awq_rtn_uses_regular_model_loaded_route(monkeypatch):
     def fail_model_free(*args, **kwargs):
         raise AssertionError("AWQ pipelines must not auto-route to model-free quantization.")
 
-    monkeypatch.setattr("auto_round.autoround._build_model_free_compressor", fail_model_free)
-    monkeypatch.setattr("auto_round.autoround._build_model_type_ctor_kwargs", lambda *args, **kwargs: ("llm", {}))
-    monkeypatch.setattr("auto_round.autoround._get_compressor_class", lambda model_type, base_cls: FakeCompressor)
+    monkeypatch.setattr("auto_round.compressors.builder._build_model_free_compressor", fail_model_free)
+    monkeypatch.setattr(
+        "auto_round.compressors.builder._build_model_type_ctor_kwargs", lambda *args, **kwargs: ("llm", {})
+    )
+    monkeypatch.setattr(
+        "auto_round.compressors.builder._get_compressor_class", lambda model_type, base_cls: FakeCompressor
+    )
 
     ar = AutoRound(
         "dummy-model",
@@ -316,9 +321,12 @@ def test_awq_rtn_uses_regular_model_loaded_route(monkeypatch):
 
 def test_direct_signround_kwargs_apply_without_warning(monkeypatch):
     warnings = []
-    monkeypatch.setattr("auto_round.autoround.logger.warning", lambda message, *args: warnings.append(message % args))
     monkeypatch.setattr(
-        "auto_round.autoround.logger.warning_once", lambda message, *args: warnings.append(message % args)
+        "auto_round.algorithms.config_resolver.logger.warning", lambda message, *args: warnings.append(message % args)
+    )
+    monkeypatch.setattr(
+        "auto_round.algorithms.config_resolver.logger.warning_once",
+        lambda message, *args: warnings.append(message % args),
     )
 
     configs = _normalize_alg_configs(None, direct_kwargs={"iters": 7, "lr": 0.2})
@@ -553,7 +561,9 @@ def test_rotation_backend_must_be_nested_in_rotation_config():
 
 def test_awq_kwargs_without_awq_error_and_are_ignored(monkeypatch):
     errors = []
-    monkeypatch.setattr("auto_round.autoround.logger.error", lambda message, *args: errors.append(message % args))
+    monkeypatch.setattr(
+        "auto_round.algorithms.config_resolver.logger.error", lambda message, *args: errors.append(message % args)
+    )
 
     configs = _normalize_alg_configs(None, direct_kwargs={"n_grid": 7, "apply_clip": True})
 

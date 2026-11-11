@@ -325,12 +325,14 @@ def test_tiny_model_block_to_model_tuning_without_downloads(monkeypatch, block_s
     )
     tokens = torch.randint(3, 32, (3, 8))
     dataset = torch.utils.data.DataLoader(tokens, batch_size=1)
-    algorithms = [SignRoundConfig(iters=1, bits=4, group_size=8) for _ in range(block_stages)]
-    algorithms.append(QATConfig(iters=1, bits=4, group_size=8, nsamples=3, gradient_checkpointing=False))
+    algorithms = [SignRoundConfig(iters=1) for _ in range(block_stages)]
+    algorithms.append(QATConfig(iters=1, nsamples=3, gradient_checkpointing=False))
     compressor = AutoRound(
         model,
         tokenizer=tokenizer,
         alg_configs=algorithms,
+        bits=4,
+        group_size=8,
         dataset=dataset,
         nsamples=2,
         seqlen=8,
