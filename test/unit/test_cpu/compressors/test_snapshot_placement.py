@@ -170,9 +170,17 @@ class TestBestParamsReleaseBeforeReclone:
         from auto_round.algorithms.quantization.sign_round import quantizer as qmod
 
         src = inspect.getsource(qmod.SignRoundQuantizer.quantize_block)
-        releases = [m.start() for m in _re.finditer(r"best_params = None", src)]
+        # word-boundary: teq stages initialize sibling snapshots
+        # (refine_best_params / second_ar_best_params) whose ``= None`` lines
+        # would otherwise count as releases of the weight-sized best_params
+        releases = [m.start() for m in _re.finditer(r"(?<![A-Za-z_])best_params = None", src)]
         clones = [m.start() for m in _re.finditer(r"snapshot_best_params\(", src)]
         assert len(releases) == 2  # improving-iteration site + last-iteration site
-        assert len(clones) == 2
-        for c in clones:
-            assert any(r < c for r in releases)  # a release precedes every clone
+        assert len(clones) >= 2  # teq stages carry additional (separate) snapshots
+        r0, r1 = releases
+        # each release must precede the next clone it guards: the improving-
+        # iteration clone and the last-iteration clone
+        c0 = min(c for c in clones if c > r0)
+        c1 = min(c for c in clones if c > r1)
+        assert r0 < c0
+        assert r1 < c1
