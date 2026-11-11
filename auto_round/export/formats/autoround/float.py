@@ -34,6 +34,7 @@ from auto_round.export.common.serialization import (
 )
 from auto_round.export.formats.autoround.utils import check_neq_config
 from auto_round.logger import logger
+from auto_round.modeling.grouped_linear import is_grouped_linear, validate_grouped_nvfp4
 from auto_round.schemes import QuantizationScheme, needs_nvfp_global_scale
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -47,6 +48,7 @@ from auto_round.utils import (
 )
 from auto_round.wrapper import WrapperWALayer
 
+from .qlinear_fp import GroupedQuantLinear
 from .qlinear_fp import QuantLinear as FpQuantLinear
 from .qlinear_int import QuantLinear as IntQuantLinear
 
@@ -86,7 +88,10 @@ def pack_layer(name, model, backend, device=None):
             layer.input_global_scale = input_global_scale
             delattr(layer, "act_max")
 
-    if type(layer) == nn.Linear:
+    grouped = is_grouped_linear(layer)
+    if grouped:
+        validate_grouped_nvfp4(layer, bits, group_size, data_type)
+    if type(layer) == nn.Linear or grouped:
         in_features = layer.in_features
         out_features = layer.out_features
     elif type(layer) == nn.Conv2d:
@@ -99,6 +104,9 @@ def pack_layer(name, model, backend, device=None):
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
     linear_func = FpQuantLinear if "fp" in data_type else IntQuantLinear
+    grouped_kwargs = {"n_groups": layer.n_groups, "act_group_size": layer.act_group_size} if grouped else {}
+    if grouped:
+        linear_func = GroupedQuantLinear
     qlayer = linear_func(  ##pylint: disable=E1123
         bits,
         group_size,
@@ -110,6 +118,7 @@ def pack_layer(name, model, backend, device=None):
         data_type=data_type,
         act_bits=act_bits,
         act_data_type=act_data_type,
+        **grouped_kwargs,
     )
 
     qlayer.device = orig_device

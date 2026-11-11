@@ -609,7 +609,8 @@ class LLMCalibrator(Calibrator):
 
             for key, value in kwargs.items():
                 value = self.parallel.replicated(value)
-                if isinstance(value, (torch.Tensor, list, tuple)):
+                # DeepSeek V4 supplies a dictionary of RoPE tuples.
+                if isinstance(value, (torch.Tensor, list, tuple, dict)):
                     if (
                         self.has_variable_block_shape
                         and name not in self.blocks_requiring_input_ids

@@ -25,6 +25,7 @@ import torch
 from auto_round.compressors.config_resolution import ResolvedQuantizationConfig, ResolvedScheme
 from auto_round.compressors.config_resolution.contracts import LayerConfig, freeze_mapping
 from auto_round.logger import logger
+from auto_round.modeling.grouped_linear import is_grouped_linear, validate_grouped_nvfp4
 from auto_round.schemes import QuantizationScheme, get_gguf_scheme, is_mx_fp, is_nv_fp
 from auto_round.utils import (
     INNER_SUPPORTED_LAYER_TYPES,
@@ -106,6 +107,10 @@ def apply_layer_config_special_cases(
         layer_config[name]["in_blocks"] = True
 
     has_qlayer_outside_block = False
+    for name, cfg in layer_config.items():
+        layer = get_module(model, name)
+        if is_grouped_linear(layer) and check_to_quantized(cfg):
+            validate_grouped_nvfp4(layer, cfg["bits"], cfg["group_size"], cfg["data_type"])
     for cfg in layer_config.values():
         if "in_blocks" not in cfg:
             cfg["in_blocks"] = False

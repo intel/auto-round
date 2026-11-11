@@ -367,6 +367,22 @@ class ModelContext(BaseContext):
         keeps the ordinary load path. ``AR_DISK_STREAM_MODEL=1`` forces this on for any
         model; ``AR_DISABLE_META_LOAD=1`` turns the automatic choice off.
         """
+        # Native V4 mixes FP8/packed FP4 and checkpoint-to-model renames. The
+        # generic materializer cannot run its dequantization converters, even
+        # when disk streaming was explicitly requested.
+        if getattr(config, "model_type", None) == "deepseek_v4":
+            quant_config = getattr(config, "quantization_config", None)
+            quant_method = (
+                quant_config.get("quant_method")
+                if isinstance(quant_config, dict)
+                else getattr(quant_config, "quant_method", None)
+            )
+            if quant_method == "fp8":
+                logger.info(
+                    "Native DeepSeek V4 FP8/FP4 checkpoint: using the Transformers "
+                    "dequantizing loader instead of the generic meta loader (uses more CPU RAM)."
+                )
+                return False
         if envs.AR_DISK_STREAM_MODEL:
             return True
         if envs.AR_DISABLE_META_LOAD:

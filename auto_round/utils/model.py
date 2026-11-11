@@ -294,7 +294,7 @@ def _check_accelerate_version():
 
 
 _MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
-_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32"}
+_FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32", "deepseek_v4"}
 
 
 def _is_mxfp4_model(model_path, trust_remote_code=True):

@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import copy
+import inspect
 import json
 import os
 import shutil
@@ -19,6 +21,7 @@ import torch
 import torch.nn as nn
 
 import auto_round.envs as envs
+from auto_round.modeling.deepseek_v4 import checkpoint_name, checkpoint_state_dict, is_deepseek_v4
 from auto_round.utils import (
     copy_missing_tensors_from_source,
     copy_python_files_from_model_cache,
@@ -455,12 +458,27 @@ def save_model(
     """
     os.makedirs(save_dir, exist_ok=True)
 
+    native_v4 = is_deepseek_v4(model)
     if immediate_saving:
         logger.info("Immediate saving mode: weights already saved by ShardWriter, saving configs only.")
         _save_model_configs(model, save_dir)
     else:
         export_state_dict = _get_state_dict_for_export_dtype(model, dtype)
+        if native_v4:
+            export_state_dict = checkpoint_state_dict(
+                model.state_dict() if export_state_dict is None else export_state_dict
+            )
         save_kwargs = {} if export_state_dict is None else {"state_dict": export_state_dict}
+        # Packed buffers are already in final format. Do not let Transformers
+        # reverse stale FP8 source-loading conversions and change their bytes.
+        has_packed_weights = any(name.endswith("weight_packed") for name, _ in model.named_parameters()) or any(
+            name.endswith("weight_packed") for name, _ in model.named_buffers()
+        )
+        if (has_packed_weights or native_v4) and "save_original_format" in inspect.signature(
+            model.save_pretrained
+        ).parameters:
+            save_kwargs["save_original_format"] = False
+            logger.info("Saving packed checkpoint without reversing source weight conversions.")
         try:
             model.save_pretrained(
                 save_dir, max_shard_size=max_shard_size, safe_serialization=safe_serialization, **save_kwargs
@@ -492,8 +510,31 @@ def save_model(
 
     config_file = "quantization_config.json"
     if hasattr(model, "config") and hasattr(model.config, "quantization_config"):
+        quantization_config = model.config.quantization_config
+        if native_v4:
+            # Keep in-memory configuration in the loaded-model namespace. Both
+            # serialized config files must describe the names actually saved.
+            from auto_round.export.formats.compressed_tensors.utils import revert_quantization_config_names
+
+            quantization_config = revert_quantization_config_names(copy.deepcopy(quantization_config), checkpoint_name)
+            if "extra_config" in quantization_config:
+                quantization_config["extra_config"] = {
+                    checkpoint_name(name): value for name, value in quantization_config["extra_config"].items()
+                }
+            for key in ("block_name_to_quantize", "to_quant_block_names"):
+                value = quantization_config.get(key)
+                if isinstance(value, str):
+                    quantization_config[key] = ",".join(checkpoint_name(n) for n in value.split(","))
+                elif isinstance(value, list):
+                    quantization_config[key] = [checkpoint_name(n) for n in value]
+            if os.path.exists(config_path):
+                with open(config_path, encoding="utf-8") as f:
+                    saved_config = json.load(f)
+                saved_config["quantization_config"] = quantization_config
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(saved_config, f, indent=2)
         with open(os.path.join(save_dir, config_file), "w", encoding="utf-8") as f:
-            json.dump(model.config.quantization_config, f, indent=2)
+            json.dump(quantization_config, f, indent=2)
 
 
 def filter_quantization_config(quantization_config):

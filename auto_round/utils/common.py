@@ -753,6 +753,12 @@ if importlib.util.find_spec("deepspeed"):  # check if deepspeed is installed
 SUPPORTED_DTYPES = ("int", "mx_fp", "fp", "nv_fp", "mx_int")
 SUPPORTED_FORMATS = SupportedFormats()
 SUPPORTED_LAYER_TYPES = (torch.nn.Linear, transformers.pytorch_utils.Conv1D)
+try:
+    from transformers.models.deepseek_v4.modeling_deepseek_v4 import DeepseekV4GroupedLinear
+except ImportError:
+    DeepseekV4GroupedLinear = None
+if DeepseekV4GroupedLinear is not None:
+    SUPPORTED_LAYER_TYPES += (DeepseekV4GroupedLinear,)
 # Changed to str as it relies on triton or others lib to load this
 INNER_SUPPORTED_LAYER_TYPES = ("FP8Linear", "CompressedLinear")
 # transformers.integrations.finegrained_fp8.FP8Linear

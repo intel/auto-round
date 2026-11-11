@@ -62,6 +62,10 @@ def _update_inputs(inputs: dict, q_inputs: dict) -> tuple[dict, torch.Tensor]:
         raise RuntimeError(
             "hidden_states arg mismatch error," "please raise an issue in https://github.com/intel/auto-round/issues"
         )
+    # Preserve real token IDs for hash-based MoE routing before assigning the
+    # historical input_ids alias to the block's hidden states.
+    if "input_ids" in inputs:
+        inputs["_ar_router_input_ids"] = inputs.pop("input_ids")
     inputs["input_ids"] = inputs.pop(input_id_str[0], None)
     if q_inputs is not None:
         q_inputs = q_inputs.pop(input_id_str[0], None)

@@ -31,7 +31,7 @@ from auto_round.export.common.serialization import (
     is_immediate_saving_mode,
     save_model,
 )
-from auto_round.export.formats.autoround.qlinear_fp import QuantLinear
+from auto_round.export.formats.autoround.qlinear_fp import GroupedQuantLinear, QuantLinear
 from auto_round.export.formats.compressed_tensors.config import initialize_quantization
 from auto_round.export.formats.compressed_tensors.utils import (
     add_autoround_config,
@@ -40,6 +40,7 @@ from auto_round.export.formats.compressed_tensors.utils import (
     generate_ignore_regex_list,
 )
 from auto_round.logger import logger
+from auto_round.modeling.grouped_linear import is_grouped_linear, validate_grouped_nvfp4
 from auto_round.schemes import is_nvfp4_e5m3_family, is_nvfp4_e5m3_gs, needs_nvfp_global_scale
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -103,7 +104,10 @@ def pack_layer(name, model, device=None):
 
     # QuantLinear = get_fp_qlinear(backend, bits, group_size, sym)
 
-    if type(layer) == nn.Linear:
+    grouped = is_grouped_linear(layer)
+    if grouped:
+        validate_grouped_nvfp4(layer, bits, group_size, data_type)
+    if type(layer) == nn.Linear or grouped:
         in_features = layer.in_features
         out_features = layer.out_features
     elif type(layer) == nn.Conv2d:
@@ -115,7 +119,9 @@ def pack_layer(name, model, device=None):
 
     bias = layer.bias is not None
     ##bias = True  ## if using the above, llama3 lambada RTN will be NAN , TODO why?
-    qlayer = QuantLinear(  ##pylint: disable=E1123
+    linear_cls = GroupedQuantLinear if grouped else QuantLinear
+    grouped_kwargs = {"n_groups": layer.n_groups, "act_group_size": layer.act_group_size} if grouped else {}
+    qlayer = linear_cls(  ##pylint: disable=E1123
         bits,
         group_size,
         in_features,
@@ -126,6 +132,7 @@ def pack_layer(name, model, device=None):
         data_type=data_type,
         act_bits=act_bits,
         act_data_type=act_data_type,
+        **grouped_kwargs,
     )
 
     qlayer.device = orig_device

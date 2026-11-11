@@ -20,6 +20,12 @@ from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_
 from auto_round.experimental.qmodules.base import QModuleBase
 from auto_round.experimental.qmodules.fp4_utils import unpack_fp4_from_uint8
 from auto_round.logger import logger
+from auto_round.modeling.grouped_linear import (
+    grouped_linear_forward,
+    is_grouped_linear,
+    validate_grouped_activation,
+    validate_grouped_nvfp4,
+)
 from auto_round.schemes import QuantizationScheme
 
 __all__ = ["NVFP4QuantLinear"]
@@ -190,9 +196,11 @@ class NVFP4QuantLinear(QModuleBase):
 
     @torch.inference_mode()
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        qdq_input = self.qdq_input(input)
+        qdq_input = input if hasattr(self, "n_groups") and self.config.act_bits > 8 else self.qdq_input(input)
         qdq_weight = self.dequant_weight_online()
         qdq_weight = qdq_weight.to(qdq_input.dtype)
+        if hasattr(self, "n_groups"):
+            return grouped_linear_forward(qdq_input, qdq_weight, self.n_groups)
         out = torch.nn.functional.linear(qdq_input, qdq_weight, self.bias)
         return out
 
@@ -202,6 +210,9 @@ class NVFP4QuantLinear(QModuleBase):
         Create an `NVFPQuantLinear` layer from an original linear layer.
         """
         logger.warning_once("NVFP4 quantization is still in experimental stage, the inference speed might be slow.")
+        if is_grouped_linear(original_layer):
+            validate_grouped_nvfp4(original_layer, config.bits, config.group_size, config.data_type)
+            validate_grouped_activation(config)
         qdq_linear = cls(
             in_features=original_layer.in_features,
             out_features=original_layer.out_features,
@@ -209,6 +220,12 @@ class NVFP4QuantLinear(QModuleBase):
             bias=original_layer.bias,
             dtype=original_layer.weight.dtype,
         )
+        if is_grouped_linear(original_layer):
+            qdq_linear.n_groups = original_layer.n_groups
+            if config.act_bits > 8:
+                # Weight-only exports have no input scale. Keep strict reloads
+                # compatible with that state dict rather than requiring a dummy.
+                del qdq_linear.input_global_scale
         return qdq_linear
 
     def unpack_data(self, packed_data: torch.Tensor) -> torch.Tensor:

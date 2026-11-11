@@ -23,6 +23,7 @@ from torch.functional import F
 import auto_round.envs as envs
 from auto_round.data_type import get_quant_func, reshape_pad_tensor_by_group_size
 from auto_round.logger import logger
+from auto_round.modeling.grouped_linear import grouped_linear_forward, is_grouped_linear
 from auto_round.schemes import needs_nvfp_global_scale
 from auto_round.utils import (
     SUPPORTED_LAYER_TYPES,
@@ -152,7 +153,10 @@ class WrapperLinear(torch.nn.Module):
         # consumed here so subclasses never see it in **kwargs; forwarded to the
         # search init (staging for batched same-shape wrap searches)
         self._init_tuning_params_and_quant_func(defer_search=bool(kwargs.pop("defer_search", False)))
-        if deepspeed_exists:
+        if is_grouped_linear(self.orig_layer):
+            self.n_groups = self.orig_layer.n_groups
+            self.orig_forward = self.grouped_forward
+        elif deepspeed_exists:
             if type(self.orig_layer) in (torch.nn.Linear, LinearLayer):
                 self.orig_forward = self.linear_forward
             elif type(self.orig_layer) == LinearAllreduce:
@@ -362,6 +366,12 @@ class WrapperLinear(torch.nn.Module):
                 disable_opt_rtn=True,
                 iters=orig_layer.iters,
             )
+            if is_grouped_linear(orig_layer) and self.act_data_type == "rtn_nv_fp4_with_static_gs":
+                # The RTN helper ignores an explicit global_scale. Grouped
+                # replay and export must use the same calibrated scale.
+                from auto_round.data_type.nvfp import nv_fp4_with_static_gs
+
+                self.act_quant_func = nv_fp4_with_static_gs
             if self.enable_torch_compile:
                 self.act_quant_func = compile_func(self.act_quant_func, self.device)
             self._init_params(
@@ -763,6 +773,9 @@ class WrapperLinear(torch.nn.Module):
         """
         return F.linear(x, weight, bias)  # pylint: disable=E1102
 
+    def grouped_forward(self, x, weight, bias):
+        return grouped_linear_forward(x, weight, self.n_groups)
+
     def all_reduce_linear_forward(self, x, weight, bias):
         """Performs the forward pass for a linear layer.
 
@@ -854,6 +867,8 @@ class WrapperWALayer(torch.nn.Module):
         super().__init__()
         self.orig_layer = orig_layer
         self.enable_torch_compile = enable_torch_compile
+        if is_grouped_linear(orig_layer):
+            self.n_groups = orig_layer.n_groups
         self.device = device
         self.data_type = orig_layer.data_type if hasattr(orig_layer, "data_type") else None
         self.act_data_type = orig_layer.act_data_type if hasattr(orig_layer, "act_data_type") else None

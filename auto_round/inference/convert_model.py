@@ -32,6 +32,7 @@ from auto_round.inference.backend import (
 )
 from auto_round.inference.utils import _expand_regex_config
 from auto_round.logger import logger
+from auto_round.modeling.grouped_linear import is_grouped_linear, validate_grouped_nvfp4
 from auto_round.modeling.unfused_moe import apply_modeling_patch
 from auto_round.schemes import QuantizationScheme
 from auto_round.special_model_handler import update_module
@@ -441,15 +442,20 @@ def _replace_by_quant_layers(
             continue  # Skip unsupported layer types
         scheme_key = "_".join(f"{k}={v}" for k, v in config.items())
         key = f"{scheme_key}_{in_features}_{out_features}"
-        if key in backend_cache:
+        if is_grouped_linear(layer):
+            # Dense kernels (including the CPU fake backend) flatten groups.
+            # Do not reuse a same-shaped dense layer's cached backend here.
+            layer_backend = "auto_round:torch_nvfp4" if backend == "auto" else backend
+        elif key in backend_cache:
             layer_backend = backend_cache[key]
         else:
             # Determine backend
             layer_backend = get_layer_backend(target_device, backend, packing_format, config, in_features, out_features)
             logger.trace(f"Got backend {layer_backend} for {layer_name}.")
             backend_cache[key] = layer_backend
-            if layer_backend not in used_backends:
-                used_backends.append(layer_backend)
+
+        if layer_backend and layer_backend not in used_backends:
+            used_backends.append(layer_backend)
 
         if not layer_backend:
             if backend != "auto":
@@ -477,7 +483,7 @@ def _replace_by_quant_layers(
 
 def _get_layer_features(layer):
     """Extracts input and output feature dimensions for supported layers."""
-    if type(layer) == nn.Linear:
+    if type(layer) == nn.Linear or is_grouped_linear(layer):
         return layer.in_features, layer.out_features
     elif type(layer) == Conv1D:  # TODO: Verify correctness
         return layer.weight.shape[0], layer.weight.shape[1]
@@ -498,6 +504,14 @@ def _import_exllamav2_kernels():
 
 def _create_quant_layer(layer, layer_backend, config, in_features, out_features, packing_format=None):
     """Creates a quantized layer using the appropriate class."""
+    if is_grouped_linear(layer):
+        validate_grouped_nvfp4(layer, config["bits"], config["group_size"], config["data_type"])
+        if layer_backend != "auto_round:torch_nvfp4":
+            raise ValueError("DeepseekV4GroupedLinear requires the auto_round:torch_nvfp4 grouped reference backend")
+        from auto_round.experimental.qmodules.nvfp4 import NVFP4QuantLinear
+
+        scheme = QuantizationScheme(**{k: v for k, v in config.items() if k in QuantizationScheme.__dataclass_fields__})
+        return NVFP4QuantLinear.from_original(scheme, layer)
     QuantLinear = dynamic_import_inference_linear(layer_backend, config, packing_format=packing_format)
     bias = layer.bias is not None
 
