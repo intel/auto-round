@@ -58,14 +58,6 @@ class BaseQuantizer(BaseAlgorithm):
     #: those passes stay serial. A quantizer without hooks needs no declaration.
     calibration_stats: dict[str, str] | None = None
 
-    def __init__(self, config: QuantizationConfig) -> None:
-        super().__init__(config)
-        # Whether to feed quantized-block outputs as inputs to the next block.
-        # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
-        # override this from their config.  Defaults to False for zero-shot algorithms
-        # (RTN) where activations are not used during weight optimization.
-        self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
-
     def prepare_model_run(
         self,
         model: torch.nn.Module,

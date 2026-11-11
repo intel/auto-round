@@ -334,7 +334,7 @@ def quantize_block_on_ranks(
 
     if int(getattr(quantizer, "iters", 0) or 0) <= 0:
         return False, None
-    enable_q = q_inputs is not None and getattr(quantizer, "enable_quanted_input", True)
+    enable_q = q_inputs is not None and getattr(quantizer, "enable_quanted_input", False)
     active_inputs = q_inputs if enable_q else fp_inputs
     if not isinstance(active_inputs, list) or not isinstance(fp_outputs, list):
         return False, None

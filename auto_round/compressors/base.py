@@ -93,6 +93,14 @@ MIN_ITERS_FOR_TORCH_COMPILE = 10
 
 @dataclass
 class SerializedCompressorConfig:
+    """Fields shared by every compression run, exported into ``quantization_config``.
+
+    Algorithm-specific fields (``iters``, ``lr``, ``enable_quanted_input``, ...) do
+    not belong here: each algorithm config declares them via
+    ``AlgorithmConfig.serialized_fields`` so that only the algorithm that owns a
+    field can export it.
+    """
+
     bits: int | None = None
     act_bits: int | None = None
     data_type: str | None = None
@@ -104,14 +112,7 @@ class SerializedCompressorConfig:
     act_dynamic: bool | None = None
     amp: bool | None = None
     batch_size: int | None = None
-    enable_minmax_tuning: bool | None = True
-    enable_norm_bias_tuning: bool | None = False
-    enable_quanted_input: bool | None = True
-    gradient_accumulate_steps: int | None = None
-    iters: int | None = None
-    lr: float | None = None
     low_gpu_mem_usage: bool | None = None
-    minmax_lr: float | None = None
     nsamples: int | None = None
     quant_block_list: list[str] | None = None
     regex_config: dict[str, Any] | None = None
@@ -2042,6 +2043,9 @@ class BaseOrchestrator:
                 if value is None and calibration_context is not None:
                     value = getattr(calibration_context, key, None)
                 serialization_dict[key] = value
+            alg_composer = self.__dict__.get("_alg_composer")
+            if alg_composer is not None:
+                serialization_dict.update(alg_composer.serialized_algorithm_fields())
             from auto_round.version import __version__
 
             serialization_dict["autoround_version"] = __version__
