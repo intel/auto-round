@@ -143,7 +143,7 @@ def get_quant_func(
     if not disable_opt_rtn and iters == 0:
         rtn_data_type = "opt_rtn_" + dtype
         data_types = [rtn_data_type, pad_bits(rtn_data_type), pad_sym(rtn_data_type), pad_sym(pad_bits(rtn_data_type))]
-        if not enable_neuqi and not sym and dtype != "exp_nvint4":
+        if not enable_neuqi and not sym and dtype != "exp_nvint4_zp":
             # the joint NeUQI search is opt-in: without it the asymmetric
             # optimized path has no search (the integer zero point breaks the
             # scale-only grid) and resolves to the plain min/max function
@@ -239,8 +239,13 @@ def _resolve_optimized_dtype_funcs(data_type: str, q_scale_thresh: float = 1e-5)
         return _int_search_with_thresh(search_scales, q_scale_thresh), quant_tensor_exp_nvsint4
     if dt == "exp_nvint4":
         from auto_round.data_type.exp import quant_tensor_exp_nvint4
+        from auto_round.data_type.int import search_scales
 
-        return None, quant_tensor_exp_nvint4
+        return _int_search_with_thresh(search_scales, q_scale_thresh), quant_tensor_exp_nvint4
+    if dt == "exp_nvint4_zp":
+        from auto_round.data_type.exp import quant_tensor_exp_nvint4_zp
+
+        return None, quant_tensor_exp_nvint4_zp
     if dt == "nvfp4_v2":
         from auto_round.data_type.nvfp import nvfp4_v2, search_nvfp4_v2_scale
 
@@ -312,12 +317,12 @@ def resolve_optimized_init_scale_zero_fn(
     incompatible with the stacked single-tensor write-back.
     """
     dt = str(data_type)
-    if dt == "exp_nvint4":
+    if dt == "exp_nvint4_zp":
         import functools
 
-        from auto_round.data_type.exp import search_exp_nvint4_scale_zero
+        from auto_round.data_type.exp import search_exp_nvint4_zp_scale_zero
 
-        return functools.partial(search_exp_nvint4_scale_zero, q_scale_thresh=q_scale_thresh)
+        return functools.partial(search_exp_nvint4_zp_scale_zero, q_scale_thresh=q_scale_thresh)
     # Only the exact ``int_asym`` type uses the NeUQI integer (scale, zero-point)
     # search. Other asymmetric int variants keep a different zero-point contract
     # (e.g. ``int_asym_float_zp`` uses a floating zero point), so they must not be

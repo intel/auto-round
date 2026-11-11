@@ -15,7 +15,7 @@
 import pytest
 import torch
 
-from auto_round.data_type.exp import quant_tensor_exp_nvint4, quant_tensor_exp_nvsint4
+from auto_round.data_type.exp import quant_tensor_exp_nvint4, quant_tensor_exp_nvint4_zp, quant_tensor_exp_nvsint4
 from auto_round.data_type.utils import (
     get_optimized_quant_func,
     get_quant_func,
@@ -30,7 +30,8 @@ from auto_round.schemes import preset_name_to_scheme
     [
         ("EXP-FP4", "nvfp4_v2", True),
         ("EXP-NVSINT4", "exp_nvsint4", True),
-        ("EXP-NVINT4", "exp_nvint4", False),
+        ("EXP-NVINT4", "exp_nvint4", True),
+        ("EXP-NVINT4-ZP", "exp_nvint4_zp", False),
     ],
 )
 def test_exp_scheme_presets(name, expected_dtype, expected_sym):
@@ -46,6 +47,7 @@ def test_exp_scheme_presets(name, expected_dtype, expected_sym):
     [
         ("exp_nvsint4", quant_tensor_exp_nvsint4),
         ("exp_nvint4", quant_tensor_exp_nvint4),
+        ("exp_nvint4_zp", quant_tensor_exp_nvint4_zp),
     ],
 )
 def test_exp_int4_qdq_scale_format_and_gradient(data_type, quant_func):
@@ -53,13 +55,11 @@ def test_exp_int4_qdq_scale_format_and_gradient(data_type, quant_func):
     tensor = torch.randn(4, 16, requires_grad=True)
     scale_coeff = torch.ones(4, requires_grad=True)
     kwargs = {}
-    if data_type == "exp_nvsint4":
-        kwargs["init_scale"] = torch.ones(4, 1)
-    else:
-        kwargs["init_scale"] = torch.ones(4, 1)
+    kwargs["init_scale"] = torch.ones(4, 1)
+    if data_type == "exp_nvint4_zp":
         kwargs["init_zp"] = torch.full((4, 1), 8.0)
 
-    qdq, scale, _ = quant_func(
+    qdq, scale, zero = quant_func(
         tensor,
         bits=4,
         group_size=16,
@@ -71,6 +71,10 @@ def test_exp_int4_qdq_scale_format_and_gradient(data_type, quant_func):
     assert scale.shape == (4, 1)
     assert torch.isfinite(qdq).all()
     assert torch.isfinite(scale).all()
+    if data_type == "exp_nvint4_zp":
+        assert zero.shape == (4, 1)
+    else:
+        assert zero == 8
     if data_type == "exp_nvsint4":
         assert torch.equal(scale, scale.to(torch.float8_e4m3fn).float())
     else:
@@ -89,10 +93,11 @@ def test_exp_int4_qdq_scale_format_and_gradient(data_type, quant_func):
     [
         ("exp_nvsint4", quant_tensor_exp_nvsint4),
         ("exp_nvint4", quant_tensor_exp_nvint4),
+        ("exp_nvint4_zp", quant_tensor_exp_nvint4_zp),
     ],
 )
 def test_exp_int4_rtn_dispatch_and_group_size(data_type, quant_func):
-    selected, selected_name = get_quant_func(data_type, bits=4, sym=data_type.endswith("nvsint4"), iters=1)
+    selected, selected_name = get_quant_func(data_type, bits=4, sym=data_type != "exp_nvint4_zp", iters=1)
     assert selected is quant_func
     assert selected_name == data_type
 
@@ -103,19 +108,21 @@ def test_exp_int4_rtn_dispatch_and_group_size(data_type, quant_func):
 def test_exp_int4_optimized_tuning_dispatch():
     assert resolve_optimized_init_scale_fn("exp_nvsint4") is not None
     assert get_optimized_quant_func("exp_nvsint4") is quant_tensor_exp_nvsint4
-    assert resolve_optimized_init_scale_zero_fn("exp_nvint4") is not None
+    assert resolve_optimized_init_scale_fn("exp_nvint4") is not None
     assert get_optimized_quant_func("exp_nvint4") is quant_tensor_exp_nvint4
+    assert resolve_optimized_init_scale_zero_fn("exp_nvint4_zp") is not None
+    assert get_optimized_quant_func("exp_nvint4_zp") is quant_tensor_exp_nvint4_zp
 
 
-def test_exp_nvint4_opt_rtn_does_not_use_neuqi(monkeypatch):
-    from auto_round.data_type.exp import search_exp_nvint4_scale_zero
+def test_exp_nvint4_zp_opt_rtn_does_not_use_neuqi(monkeypatch):
+    from auto_round.data_type.exp import search_exp_nvint4_zp_scale_zero
 
     def fail_if_called(*args, **kwargs):
-        raise AssertionError("NeUQI must remain opt-in for exp_nvint4")
+        raise AssertionError("NeUQI must remain opt-in for exp_nvint4_zp")
 
     monkeypatch.setattr("auto_round.data_type.neuqi.neuqi_search_scale_zero", fail_if_called)
     weight = torch.randn(4, 16)
-    scale, zp = search_exp_nvint4_scale_zero(weight, bits=4)
+    scale, zp = search_exp_nvint4_zp_scale_zero(weight, bits=4)
 
     assert scale.shape == (4, 1)
     assert zp.shape == (4, 1)
@@ -123,12 +130,49 @@ def test_exp_nvint4_opt_rtn_does_not_use_neuqi(monkeypatch):
     assert ((zp >= 0) & (zp <= 15)).all()
 
 
+def test_exp_nvint4_opt_rtn_accepts_wrapper_kwargs():
+    from auto_round.data_type.exp import opt_rtn_exp_nvint4
+
+    qdq, scale, zero = opt_rtn_exp_nvint4(
+        torch.randn(4, 16),
+        bits=4,
+        group_size=16,
+        init_scale=None,
+        min_scale=torch.tensor(1.0),
+        max_scale=torch.tensor(1.0),
+    )
+
+    assert qdq.shape == (4, 16)
+    assert scale.shape == (4, 1)
+    assert (scale > 1e-3).all()
+    assert zero == 8
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_exp_nvint4_opt_rtn_moves_wrapper_scale_to_weight_device():
+    from auto_round.data_type.exp import opt_rtn_exp_nvint4
+
+    qdq, scale, zero = opt_rtn_exp_nvint4(
+        torch.randn(4, 16, device="cuda"),
+        bits=4,
+        group_size=16,
+        init_scale=None,
+        min_scale=torch.tensor(1.0),
+        max_scale=torch.tensor(1.0),
+    )
+
+    assert qdq.is_cuda and scale.is_cuda
+    assert (scale > 1e-3).all()
+    assert zero == 8
+
+
 @pytest.mark.parametrize(
     ("data_type", "sym", "rtn_name", "opt_rtn_name", "quant_func"),
     [
         ("nvfp4_v2", True, "rtn_nvfp4_v2", "opt_rtn_nvfp4_v2", None),
         ("exp_nvsint4", True, "rtn_exp_nvsint4", "opt_rtn_exp_nvsint4", quant_tensor_exp_nvsint4),
-        ("exp_nvint4", False, "rtn_exp_nvint4", "opt_rtn_exp_nvint4", quant_tensor_exp_nvint4),
+        ("exp_nvint4", True, "rtn_exp_nvint4", "opt_rtn_exp_nvint4", quant_tensor_exp_nvint4),
+        ("exp_nvint4_zp", False, "rtn_exp_nvint4_zp", "opt_rtn_exp_nvint4_zp", quant_tensor_exp_nvint4_zp),
     ],
 )
 def test_exp_schemes_support_rtn_opt_rtn_and_tuning(data_type, sym, rtn_name, opt_rtn_name, quant_func):

@@ -815,10 +815,51 @@ EXP_NVINT4 = QuantizationScheme.from_dict(
         "bits": 4,
         "group_size": 16,
         "data_type": "exp_nvint4",
+        "sym": True,
+        "act_bits": 16,
+    }
+)
+
+EXP_NVINT4_ZP = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 16,
+        "data_type": "exp_nvint4_zp",
         "sym": False,
         "act_bits": 16,
     }
 )
+
+
+def _make_exp_scale_scheme(kind: str, scale: str) -> QuantizationScheme:
+    is_fp4 = kind == "FP4"
+    data_type_kind = kind.lower().replace("-", "_")
+    has_zero_point = kind == "INT4-ZP"
+    return QuantizationScheme.from_dict(
+        {
+            "bits": 4,
+            "group_size": 16,
+            "data_type": f"exp_{data_type_kind}_{scale.lower()}s",
+            "sym": not has_zero_point,
+            "act_bits": 4 if is_fp4 else 16,
+            **(
+                {
+                    "act_group_size": 16,
+                    "act_data_type": "nvfp4_v2",
+                    "act_sym": True,
+                }
+                if is_fp4
+                else {}
+            ),
+        }
+    )
+
+
+EXP_SCALE_SCHEMES = {
+    f"EXP-{kind}-{scale}S": _make_exp_scale_scheme(kind, scale)
+    for kind in ("FP4", "INT4", "INT4-ZP", "SINT4")
+    for scale in ("BF16", "FP16")
+}
 
 NVFP4_E5M3_GS = QuantizationScheme.from_dict(
     {
@@ -946,6 +987,8 @@ PRESET_SCHEMES = {
     "EXP-FP4": NVFP4_E5M3,
     "EXP-NVSINT4": EXP_NVSINT4,
     "EXP-NVINT4": EXP_NVINT4,
+    "EXP-NVINT4-ZP": EXP_NVINT4_ZP,
+    **EXP_SCALE_SCHEMES,
     "NVFP4_E5M3_GS": NVFP4_E5M3_GS,
     "FPW8A16": FPW8A16,
     # Group-size variants for the 2-8 bit int presets: the bare presets default

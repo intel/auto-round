@@ -8,9 +8,15 @@ This note records the reproducible Llama-3.1-8B-Instruct HellaSwag comparison fo
 | --- | --- | --- |
 | `exp-fp4` | FP4 | Uses the `NVFP4_E5M3` preset |
 | `exp-nvsint4` | INT4 | Signed INT4 with E4M3 scale |
-| `exp-nvint4` | INT4 | Unsigned INT4 with E5M3 scale |
+| `exp-nvint4` | INT4 | Signed INT4 without zero-point, with E5M3 scale |
+| `exp-nvint4-zp` | INT4-ZP | Legacy asymmetric INT4 with per-group zero-points and E5M3 scale |
+| `EXP-FP4-BF16S` / `EXP-FP4-FP16S` | FP4 | FP4 with BF16 / FP16 weight scales |
+| `EXP-INT4-BF16S` / `EXP-INT4-FP16S` | INT4 | Symmetric, zero-point-free INT4 (`[-7, 7]`) with BF16 / FP16 weight scales |
+| `EXP-INT4-ZP-BF16S` / `EXP-INT4-ZP-FP16S` | INT4-ZP | Asymmetric INT4 with zero-point and BF16 / FP16 weight scales; preserves results from the earlier EXP-INT4 implementation |
+| `EXP-SINT4-BF16S` / `EXP-SINT4-FP16S` | INT4 | Signed INT4 with BF16 / FP16 weight scales |
 
-Use these `exp-*` names for this experiment. They are distinct from the older `exp-sint4` and `exp-int4` names in earlier notes.
+The six scale variants use independent quantizers; only weight scale precision changes. They are intended for fake-format experiments and model accuracy comparisons.
+Use the lowercase `exp-*` names above for the existing FP8-scale baselines. They are distinct from the older `exp-sint4` and `exp-int4` names in earlier notes.
 
 ## Run
 
@@ -73,7 +79,7 @@ Llama-3.1-8B-Instruct, HellaSwag:
 | --- | ---: | ---: | ---: |
 | `exp-fp4` | 58.48% / 77.67% | 58.70% / 78.13% | 58.11% / 77.33% |
 | `exp-nvsint4` | 58.40% / 77.79% | 58.44% / 77.56% | 58.33% / 77.81% |
-| `exp-nvint4` | 59.34% / 78.99% | 59.31% / 78.90% | 59.23% / 78.92% |
+| `exp-nvint4-zp` | 59.34% / 78.99% | 59.31% / 78.90% | 59.23% / 78.92% |
 
 In this run, tuned did not consistently outperform RTN or opt-RTN. The small differences should be interpreted in light of the evaluation uncertainty; this single run is not sufficient to establish a reliable ranking.
 

@@ -8,9 +8,15 @@
 | --- | --- | --- |
 | `exp-fp4` | FP4 | 使用 `NVFP4_E5M3` preset |
 | `exp-nvsint4` | INT4 | 有符号 INT4，scale 使用 E4M3 |
-| `exp-nvint4` | INT4 | 无符号 INT4，scale 使用 E5M3 |
+| `exp-nvint4` | INT4 | 有符号 INT4，不使用 zero-point，scale 使用 E5M3 |
+| `exp-nvint4-zp` | INT4-ZP | 旧版非对称 INT4，使用逐组 zero-point 和 E5M3 scale |
+| `EXP-FP4-BF16S` / `EXP-FP4-FP16S` | FP4 | FP4 权重 scale 使用 BF16 / FP16 |
+| `EXP-INT4-BF16S` / `EXP-INT4-FP16S` | INT4 | 无 zero-point 的对称 INT4（`[-7, 7]`），权重 scale 使用 BF16 / FP16 |
+| `EXP-INT4-ZP-BF16S` / `EXP-INT4-ZP-FP16S` | INT4-ZP | 带 zero-point 的非对称 INT4，权重 scale 使用 BF16 / FP16；用于保留早期 EXP-INT4 实验结果 |
+| `EXP-SINT4-BF16S` / `EXP-SINT4-FP16S` | INT4 | 有符号 INT4 权重 scale 使用 BF16 / FP16 |
 
-本实验使用上述 `exp-*` 名称；它们不同于早期笔记中的 `exp-sint4` 和 `exp-int4`。
+六个 scale 变体使用独立量化器，只改变权重 scale 精度，供 fake 格式实验和模型精度对比使用。
+现有 FP8 scale 基线继续使用上面的 `exp-*` 名称；它们不同于早期笔记中的 `exp-sint4` 和 `exp-int4`。
 
 ## 运行
 
@@ -73,7 +79,7 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -m auto_round "${MODEL_PATH}" \
 | --- | ---: | ---: | ---: |
 | `exp-fp4` | 58.48% / 77.67% | 58.70% / 78.13% | 58.11% / 77.33% |
 | `exp-nvsint4` | 58.40% / 77.79% | 58.44% / 77.56% | 58.33% / 77.81% |
-| `exp-nvint4` | 59.34% / 78.99% | 59.31% / 78.90% | 59.23% / 78.92% |
+| `exp-nvint4-zp` | 59.34% / 78.99% | 59.31% / 78.90% | 59.23% / 78.92% |
 
 在这次实验中，tuned 没有稳定优于 RTN 或 opt-RTN。考虑到评测误差，这些小幅差异不应过度解读；仅凭单次实验不足以确定可靠的排序。
 

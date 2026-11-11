@@ -129,12 +129,55 @@ def quant_tensor_exp_nvint4(
     tensor_max=None,
     q_scale_thresh=1e-5,
     init_scale=None,
+    **kwargs,
+):
+    """Symmetric signed INT4 QDQ with unsigned E5M3 per-group scales."""
+    if group_size != 16:
+        raise ValueError(f"exp_nvint4 only supports group_size=16, got {group_size}")
+    tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
+    maxq = int(2.0 ** (bits - 1))
+
+    if init_scale is not None:
+        if isinstance(max_scale, torch.Tensor):
+            max_scale = max_scale.to(device=init_scale.device, dtype=init_scale.dtype)
+            max_scale = max_scale.unsqueeze(-1)
+        scale = init_scale * max_scale
+    else:
+        if tensor_min is None or tensor_max is None:
+            wmin = torch.clamp(tensor.min(-1)[0], max=0)
+            wmax = torch.clamp(tensor.max(-1)[0], min=0)
+        else:
+            wmin = tensor_min.to(tensor.device) if isinstance(tensor_min, torch.Tensor) else tensor_min
+            wmax = tensor_max.to(tensor.device) if isinstance(tensor_max, torch.Tensor) else tensor_max
+        max_v = torch.maximum(-(wmin * min_scale), wmax * max_scale)
+        scale = max_v / maxq
+
+    scale = _cast_scale(scale, signed=False, q_scale_thresh=q_scale_thresh)
+    scale = scale.unsqueeze(-1) if scale.ndim == tensor.ndim - 1 else scale
+    quantized = round_ste(tensor / scale + v).clamp(-maxq, maxq - 1)
+    qdq = (scale * quantized).to(tensor.dtype)
+    qdq = revert_tensor_by_pad(qdq, orig_shape=orig_shape, pad_len=pad_len)
+    return qdq, scale, maxq
+
+
+@register_dtype("exp_nvint4_zp")
+def quant_tensor_exp_nvint4_zp(
+    tensor,
+    bits=4,
+    group_size=16,
+    v=0,
+    min_scale=1.0,
+    max_scale=1.0,
+    tensor_min=None,
+    tensor_max=None,
+    q_scale_thresh=1e-5,
+    init_scale=None,
     init_zp=None,
     **kwargs,
 ):
-    """Asymmetric INT4 QDQ with unsigned E5M3 per-group scales."""
+    """Asymmetric INT4 QDQ with unsigned E5M3 scales and per-group zero points."""
     if group_size != 16:
-        raise ValueError(f"exp_nvint4 only supports group_size=16, got {group_size}")
+        raise ValueError(f"exp_nvint4_zp only supports group_size=16, got {group_size}")
     tensor, orig_shape, pad_len = reshape_pad_tensor_by_group_size(tensor, group_size)
     maxq = int(2.0**bits) - 1
 
@@ -168,7 +211,26 @@ def rtn_exp_nvint4(tensor, **kwargs):
     return quant_tensor_exp_nvint4(tensor, **kwargs)
 
 
-def search_exp_nvint4_scale_zero(weight_reshape, bits, imatrix=None, q_scale_thresh=1e-5):
+@register_dtype("opt_rtn_exp_nvint4")
+def opt_rtn_exp_nvint4(tensor, bits=4, group_size=16, v=0, imatrix=None, q_scale_thresh=1e-5, **kwargs):
+    if group_size != 16:
+        raise ValueError(f"exp_nvint4 only supports group_size=16, got {group_size}")
+    kwargs.pop("init_scale", None)
+    grouped, _, _ = reshape_pad_tensor_by_group_size(tensor, group_size)
+    qw = _reshape_imatrix(imatrix, grouped, group_size, bits)
+    init_scale = search_scales(grouped, bits, qw=qw).abs().clamp(min=q_scale_thresh)
+    return quant_tensor_exp_nvint4(
+        tensor,
+        bits=bits,
+        group_size=group_size,
+        v=v,
+        init_scale=init_scale,
+        q_scale_thresh=q_scale_thresh,
+        **kwargs,
+    )
+
+
+def search_exp_nvint4_zp_scale_zero(weight_reshape, bits, imatrix=None, q_scale_thresh=1e-5):
     qw = _reshape_imatrix(imatrix, weight_reshape, 16, bits)
     maxq = 2**bits - 1
     weight = weight_reshape.to(torch.float32)
@@ -187,13 +249,18 @@ def search_exp_nvint4_scale_zero(weight_reshape, bits, imatrix=None, q_scale_thr
     return scale, best_zp.to(weight_reshape.dtype)
 
 
-@register_dtype("opt_rtn_exp_nvint4")
-def opt_rtn_exp_nvint4(tensor, bits=4, group_size=16, v=0, imatrix=None, q_scale_thresh=1e-5, **kwargs):
+@register_dtype("rtn_exp_nvint4_zp")
+def rtn_exp_nvint4_zp(tensor, **kwargs):
+    return quant_tensor_exp_nvint4_zp(tensor, **kwargs)
+
+
+@register_dtype("opt_rtn_exp_nvint4_zp")
+def opt_rtn_exp_nvint4_zp(tensor, bits=4, group_size=16, v=0, imatrix=None, q_scale_thresh=1e-5, **kwargs):
     if group_size != 16:
-        raise ValueError(f"exp_nvint4 only supports group_size=16, got {group_size}")
+        raise ValueError(f"exp_nvint4_zp only supports group_size=16, got {group_size}")
     grouped, _, _ = reshape_pad_tensor_by_group_size(tensor, group_size)
-    init_scale, init_zp = search_exp_nvint4_scale_zero(grouped, bits, imatrix, q_scale_thresh)
-    return quant_tensor_exp_nvint4(
+    init_scale, init_zp = search_exp_nvint4_zp_scale_zero(grouped, bits, imatrix, q_scale_thresh)
+    return quant_tensor_exp_nvint4_zp(
         tensor,
         bits=bits,
         group_size=group_size,
