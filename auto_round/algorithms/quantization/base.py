@@ -58,14 +58,6 @@ class BaseQuantizer(BaseAlgorithm):
     #: those passes stay serial. A quantizer without hooks needs no declaration.
     calibration_stats: dict[str, str] | None = None
 
-    def __init__(self, config: QuantizationConfig) -> None:
-        super().__init__(config)
-        # Whether to feed quantized-block outputs as inputs to the next block.
-        # Subclasses that support cascaded quantized-input (e.g. SignRoundQuantizer)
-        # override this from their config.  Defaults to False for zero-shot algorithms
-        # (RTN) where activations are not used during weight optimization.
-        self.enable_quanted_input = getattr(config, "enable_quanted_input", False)
-
     def prepare_model_run(
         self,
         model: torch.nn.Module,
@@ -290,7 +282,7 @@ class BaseQuantizer(BaseAlgorithm):
                 and self.model_context.is_moe_model
                 and "expert" in layer.global_name
                 and "shared_expert" not in layer.global_name
-                and self.config.super_bits is None
+                and getattr(self.scheme, "super_bits", None) is None
             ):
                 disable_opt_rtn = True
                 logger.warning_once(
@@ -463,7 +455,8 @@ class BaseQuantizer(BaseAlgorithm):
         from auto_round.schemes import is_nvfp4_e5m3_gs
         from auto_round.utils import set_amax_for_all_moe_layers
 
-        if self.config.is_act_nv_fp or is_nvfp4_e5m3_gs(self.config.act_data_type or ""):
+        scheme = self.scheme
+        if scheme is not None and (scheme.is_act_nv_fp() or is_nvfp4_e5m3_gs(scheme.act_data_type or "")):
             # enable moe experts act_max automatic generation for WrapperWALayer
             set_amax_for_all_moe_layers(block, attr_name="orig_layer.act_max")
 
