@@ -14,6 +14,7 @@
 
 """Tests for auto_round/special_model_handler.py"""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -695,8 +696,6 @@ class TestGetQwen25OmniMultimodalBlock:
     """Test _get_qwen2_5_omni_multimodal_block function."""
 
     def test_returns_thinker_layers(self):
-        from types import SimpleNamespace
-
         from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
 
         model = SimpleNamespace(thinker=SimpleNamespace(model=SimpleNamespace(layers=[MagicMock() for _ in range(8)])))
@@ -704,8 +703,6 @@ class TestGetQwen25OmniMultimodalBlock:
         assert block_names == [[f"thinker.model.layers.{i}" for i in range(8)]]
 
     def test_with_quant_vision_true(self):
-        from types import SimpleNamespace
-
         from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
 
         model = SimpleNamespace(
@@ -716,15 +713,14 @@ class TestGetQwen25OmniMultimodalBlock:
             )
         )
         block_names = _get_qwen2_5_omni_multimodal_block(model, quant_vision=True)
+        # The audio tower is intentionally skipped: calibration data has no audio
+        # samples, so those blocks would never receive cached inputs.
         assert block_names == [
             [f"thinker.visual.blocks.{i}" for i in range(5)],
-            [f"thinker.audio_tower.layers.{i}" for i in range(3)],
             [f"thinker.model.layers.{i}" for i in range(8)],
         ]
 
     def test_nested_layout_without_quant_vision(self):
-        from types import SimpleNamespace
-
         from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
 
         model = SimpleNamespace(
@@ -740,8 +736,6 @@ class TestGetQwen25OmniMultimodalBlock:
         assert block_names == [[f"thinker.model.language_model.layers.{i}" for i in range(4)]]
 
     def test_empty_towers_are_skipped(self):
-        from types import SimpleNamespace
-
         from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
 
         model = SimpleNamespace(
@@ -758,8 +752,6 @@ class TestGetQwen25OmniMultimodalBlock:
 
     def test_nested_language_model_layout(self):
         """Newer Transformers wraps the decoder and towers under ``thinker.model``."""
-        from types import SimpleNamespace
-
         from auto_round.special_model_handler import _get_qwen2_5_omni_multimodal_block
 
         model = SimpleNamespace(
@@ -774,11 +766,6 @@ class TestGetQwen25OmniMultimodalBlock:
         block_names = _get_qwen2_5_omni_multimodal_block(model, quant_vision=True)
         assert block_names == [
             ["thinker.model.visual.blocks.0", "thinker.model.visual.blocks.1"],
-            [
-                "thinker.model.audio_tower.layers.0",
-                "thinker.model.audio_tower.layers.1",
-                "thinker.model.audio_tower.layers.2",
-            ],
             [
                 "thinker.model.language_model.layers.0",
                 "thinker.model.language_model.layers.1",
@@ -798,9 +785,7 @@ class TestGetQwen25OmniMultimodalBlock:
 class TestGetQwen3OmniMoeMultimodalBlock:
     """Test _get_qwen3_omni_moe_multimodal_block function."""
 
-    def test_with_nested_vision_and_audio_towers(self):
-        from types import SimpleNamespace
-
+    def test_with_nested_vision_tower(self):
         from auto_round.special_model_handler import _get_qwen3_omni_moe_multimodal_block
 
         model = SimpleNamespace(
@@ -813,13 +798,9 @@ class TestGetQwen3OmniMoeMultimodalBlock:
             )
         )
         block_names = _get_qwen3_omni_moe_multimodal_block(model, quant_vision=True)
+        # Audio-tower blocks are skipped: calibration data is text/image only.
         assert block_names == [
             ["thinker.model.visual.blocks.0", "thinker.model.visual.blocks.1"],
-            [
-                "thinker.model.audio_tower.layers.0",
-                "thinker.model.audio_tower.layers.1",
-                "thinker.model.audio_tower.layers.2",
-            ],
             [
                 "thinker.model.language_model.layers.0",
                 "thinker.model.language_model.layers.1",
@@ -845,7 +826,11 @@ class TestGetQwen3OmniMoeMultimodalBlock:
         mock_model.thinker.audio_tower.layers = [MagicMock() for _ in range(3)]
         mock_model.thinker.model.layers = [MagicMock() for _ in range(8)]
         block_names = _get_qwen3_omni_moe_multimodal_block(mock_model, quant_vision=True)
-        assert len(block_names) == 3
+        # visual tower + text decoder; the audio tower is skipped because
+        # calibration data contains no audio samples.
+        assert len(block_names) == 2
+        assert len(block_names[0]) == 5  # visual blocks
+        assert len(block_names[1]) == 8  # thinker model layers
 
 
 class TestGetGlmImageMultimodalBlock:
@@ -1084,8 +1069,6 @@ class TestGetPredefinedIgnoreLayers:
         assert layers == []
 
     def test_generic_moe_ignores_router_and_shared_expert_gates(self):
-        from types import SimpleNamespace
-
         from auto_round.special_model_handler import get_predefined_ignore_layers
 
         mock_model = MagicMock()
@@ -1112,8 +1095,6 @@ class TestTorchCompileOff:
     """
 
     def _cfg(self, model_type="", architectures=None):
-        from types import SimpleNamespace
-
         return SimpleNamespace(config=SimpleNamespace(model_type=model_type, architectures=architectures or []))
 
     def _expected_off(self):

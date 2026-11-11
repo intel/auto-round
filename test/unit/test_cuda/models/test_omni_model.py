@@ -127,7 +127,10 @@ class TestQwen2_5OmniQuantization:
         inp = torch.randint(0, 100, (1, 64)).to("cuda")
         with torch.inference_mode():
             output = loaded_model.thinker(input_ids=inp)
-        assert torch.isfinite(output.logits).all(), "Reloaded model produced non-finite logits"
+        # ``thinker`` returns a ModelOutput with ``logits`` by default, but may
+        # return a tuple when ``return_dict=False`` is configured.
+        logits = output.logits if hasattr(output, "logits") else output[0]
+        assert torch.isfinite(logits).all(), "Reloaded model produced non-finite logits"
 
 
 # ========================= Qwen3-Omni-MoE Integration Tests ================

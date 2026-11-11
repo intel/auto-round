@@ -26,7 +26,12 @@ def _get_qwen2_5_omni_multimodal_block(model, quant_vision=False):
 
     For quantization, we focus on:
     - thinker text decoder layers - main LLM layers
-    - Optionally: visual encoder blocks, audio encoder layers
+    - Optionally: visual encoder blocks
+
+    The audio tower is never emitted: calibration datasets only contain text /
+    image samples, so audio-tower blocks never observe a forward pass and the
+    block loop would fail on their missing cached inputs (same policy as the
+    generic VLM walker's ``ignore_audio=True``).
 
     talker is excluded by default because quantizing it has been observed to
     degrade audio quality in long-form generation.
@@ -35,10 +40,9 @@ def _get_qwen2_5_omni_multimodal_block(model, quant_vision=False):
 
     # Quantize visual encoder blocks if quant_vision is enabled
     if quant_vision:
-        for tower, child in (("visual", "blocks"), ("audio_tower", "layers")):
-            prefix, items = _get_omni_tower_blocks(model, tower, child)
-            if items is not None:
-                block_names.append([f"{prefix}.{i}" for i in range(len(items))])
+        prefix, items = _get_omni_tower_blocks(model, "visual", "blocks")
+        if items is not None:
+            block_names.append([f"{prefix}.{i}" for i in range(len(items))])
 
     # Thinker text model layers (main LLM decoder)
     layer_prefix, layers = _get_omni_thinker_layer_info(model)
@@ -53,7 +57,9 @@ def _get_omni_thinker_layer_info(model):
 
     Transformers historically exposed ``thinker.model.layers``. Newer
     Qwen-Omni builds nest the decoder under
-    ``thinker.model.language_model.layers``. Resolve either layout.
+    ``thinker.model.language_model.layers``. Resolve either layout; the direct
+    ``thinker.model.layers`` attribute wins when it exists and is non-empty,
+    otherwise the nested decoder is used.
     """
     thinker_model = getattr(getattr(model, "thinker", None), "model", None)
     if thinker_model is None:
@@ -74,7 +80,9 @@ def _get_omni_tower_blocks(model, tower, child):
     """Return (prefix, items) for ``thinker[.model].<tower>.<child>``, skipping empty or missing towers.
 
     Current Transformers nests vision/audio under ``thinker.model``; older
-    layouts exposed them directly on ``thinker``. Prefer the nested path.
+    layouts exposed them directly on ``thinker``. The nested path wins only
+    when it is non-empty, so a ``None``/empty placeholder falls back to the
+    legacy attribute on ``thinker``.
     """
     thinker = getattr(model, "thinker", None)
     for owner, owner_prefix in ((getattr(thinker, "model", None), "thinker.model"), (thinker, "thinker")):
@@ -95,7 +103,10 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
 
     For quantization, we focus on:
     - thinker.model.language_model.layers (or thinker.model.layers) - main LLM
-    - Optionally: visual encoder blocks, audio encoder layers
+    - Optionally: visual encoder blocks
+
+    The audio tower is skipped for the same reason as Qwen2.5-Omni: calibration
+    data is text/image only, so audio-tower blocks would have no cached inputs.
 
     talker is excluded by default because quantizing it has been observed to
     degrade audio quality in long-form generation.
@@ -104,10 +115,9 @@ def _get_qwen3_omni_moe_multimodal_block(model, quant_vision=False):
 
     # Quantize visual encoder blocks if quant_vision is enabled
     if quant_vision:
-        for tower, child in (("visual", "blocks"), ("audio_tower", "layers")):
-            prefix, items = _get_omni_tower_blocks(model, tower, child)
-            if items is not None:
-                block_names.append([f"{prefix}.{i}" for i in range(len(items))])
+        prefix, items = _get_omni_tower_blocks(model, "visual", "blocks")
+        if items is not None:
+            block_names.append([f"{prefix}.{i}" for i in range(len(items))])
 
     # Thinker text model layers (main LLM decoder)
     layer_prefix, layers = _get_omni_thinker_layer_info(model)
