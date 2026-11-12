@@ -1105,18 +1105,23 @@ def estimate_tuning_block_mem(
 
     for name, module in block.named_modules():
         if check_to_quantized(module):
-            # V2 wrappers keep bits/act_bits on orig_layer (check_to_quantized
-            # reads them there); reading them off the wrapper itself raises
-            enable_act_quant = (
-                getattr(getattr(module, "orig_layer", module), "act_bits", getattr(module, "act_bits", 16)) <= 8
-            )
+            # read through the wrapper like check_to_quantized does: tuning
+            # wrappers carry the stamps, weight, and feature dims on
+            # orig_layer, not themselves
+            src_module = getattr(module, "orig_layer", module)
+            enable_act_quant = getattr(src_module, "act_bits", 16) <= 8
             layer_name = name
-            param_size = module.weight.nbytes
+            weight = getattr(module, "weight", None)
+            if weight is None:
+                weight = getattr(src_module, "weight", None)
+            if weight is None:
+                continue
+            param_size = weight.nbytes
             param_memory_gb = param_size / 1024**3
             param_memory_gb *= 2  # considering the v tensor for weight rounding
 
             # Estimate output memory based on input_features and out_features
-            in_features, out_features = get_layer_features(module)
+            in_features, out_features = get_layer_features(src_module)
             if in_features is not None and out_features is not None:
                 # Output tensor size: batch_size * seq_len * out_features * element_size
                 output_size = batch_size * seq_len * out_features * element_size

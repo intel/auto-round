@@ -66,6 +66,7 @@ from auto_round.utils import (
     extract_block_names_to_str,
     find_matching_blocks,
     get_block_names,
+    get_lm_head_name,
     get_reverse_checkpoint_conversion_mapping,
     get_reverse_weight_transforms,
     is_debug_mode,
@@ -1725,6 +1726,63 @@ class BaseOrchestrator:
         # (AutoScheme path) runs delta-loss forward+backward passes.
         self._scheme_post_init()
 
+    def _has_gguf_format(self) -> bool:
+        """Whether any resolved output format is GGUF."""
+        formats = getattr(self, "formats", None)
+        return isinstance(formats, list) and any(fmt.is_gguf() for fmt in formats)
+
+    def _quantized_outside_block_layer_names(self) -> list[str]:
+        """Quantized supported layers outside the quantized blocks (lm_head, embeddings, ...)."""
+        from auto_round.compressors.utils import _get_quantized_layer_names_outside_blocks
+
+        return _get_quantized_layer_names_outside_blocks(
+            model=self.model_context.model,
+            layer_config=self.layer_config,
+            supported_types=SUPPORTED_LAYER_TYPES,
+            quant_block_list=self.quant_block_list,
+        )
+
+    def _tail_fed_lm_head_name(self, outside_names: list[str] | None = None) -> str | None:
+        """The outside-block layer the chain-tail lane may feed, or ``None``.
+
+        Single source of truth for both consumers: the post_init relaxations
+        (:meth:`_outside_block_quantized_tail_only`) and the orchestrator's
+        lane decision (``_decide_tail_fed_lane``). The candidate is the
+        model's resolved LM head (``get_lm_head_name``: the
+        ``get_output_embeddings()`` declaration first) when it is a quantized
+        outside-block layer. GGUF and super-group (k-quant) runs resolve
+        outside-block layers differently and never use the lane. The init-time
+        smoke gate can still decline the candidate; the orchestrator then
+        reverts the relaxations.
+        """
+        if self._has_gguf_format() or getattr(self, "super_group_size", None) is not None:
+            return None
+        if outside_names is None:
+            outside_names = self._quantized_outside_block_layer_names()
+        head = get_lm_head_name(self.model_context.model)
+        return head if head is not None and head in outside_names else None
+
+    def _outside_block_quantized_tail_only(self) -> bool:
+        """Whether the only outside-block quantized layer is the tail-fed LM head.
+
+        The tail-fed head gets its inputs from the calibration chain (no
+        post-block model walk), so it does not force the in-place /
+        immediate-packing restrictions; any other outside-block quantized
+        layer still runs the capture path through the model and does."""
+        outside = self._quantized_outside_block_layer_names()
+        head = self._tail_fed_lm_head_name(outside)
+        if head is None:
+            return False
+        if outside == [head]:
+            return True
+        logger.warning_once(
+            "outside-block layers %s: only %s is tail-fed; the remaining layers keep "
+            "the in-place/immediate-packing restrictions",
+            tuple(outside),  # warning_once caches on its (hashable) arguments
+            head,
+        )
+        return False
+
     def _hardware_setup(self) -> None:
         """Phase 5 – Hardware and compile configuration.
 
@@ -1739,8 +1797,9 @@ class BaseOrchestrator:
           - Re-evaluates ``torch.compile`` eligibility now that ``data_type`` is
             resolved and writes the result back to ``compress_context``.
           - Resets the offload manager when ``low_cpu_mem_usage`` is active.
-          - Disables ``self.inplace`` when quantized layers live outside
-            transformer blocks (incompatible with in-place rewriting).
+          - Restores the in-place/immediate-packing restrictions when outside-block
+            quantized layers exist that the chain-tail lane does not cover
+            (lm_head-class layers are covered and exempt).
           - Calls :meth:`_adjust_immediate_packing_and_saving` to decide whether
             layers should be packed / written immediately after each block.
 
@@ -1758,11 +1817,19 @@ class BaseOrchestrator:
         if self.compress_context.low_cpu_mem_usage:
             self._offloader.reset()
 
-        # Disable inplace when quantized layers live outside transformer blocks.
-        # gguf lm-head used rtn in version>=0.13
+        # Quantized layers outside transformer blocks used to force inplace
+        # False here ("gguf lm-head used rtn in version>=0.13"), which starved
+        # the immediate-packing condition in _adjust_immediate_packing_and_saving
+        # for every non-GGUF format. The chain-tail lane feeds lm_head-class
+        # outside-block layers from the calibration chain (no post-block model
+        # walk), so THOSE no longer need the restriction and blocks pack and
+        # stream progressively. Any OTHER outside-block quantized layer (e.g. a
+        # pinned embed_tokens) still runs the legacy capture path through the
+        # model - for that class the old restrictions stand.
         if (
             self.has_qlayer_outside_block
             and self.need_calib
+            and not self._outside_block_quantized_tail_only()
             and (
                 self.compress_context.formats is None
                 or "gguf" not in self.compress_context.formats[0].__class__.__name__.lower()
@@ -1889,8 +1956,16 @@ class BaseOrchestrator:
         ):
             self.compress_context.is_immediate_packing = True
 
+        # lm_head-class outside-block layers no longer disable immediate
+        # packing: the chain-tail lane feeds them from the calibration chain
+        # (no post-block model walk through packed blocks), and each such
+        # layer is packed right after it is tuned (see
+        # _quantize_layers_outside_blocks). Other outside-block quantized
+        # layers still run the legacy capture walk - for those the old
+        # restriction stands. GGUF has always bypassed this concern.
         if self.has_qlayer_outside_block and self.need_calib and not has_single_gguf_format:
-            self.compress_context.is_immediate_packing = False
+            if not self._outside_block_quantized_tail_only():
+                self.compress_context.is_immediate_packing = False
         if not ("causallm" in self.model_context.model.__class__.__name__.lower() and not self.model_context.is_mllm):
             # TODO For tied keys, there may some issues, we haven't not verified this
             tied_weight_keys = getattr(self.model_context.model, "_tied_weight_keys", {})
@@ -1927,14 +2002,12 @@ class BaseOrchestrator:
                     "Keeping `low_cpu_mem_usage` enabled in RTN mode (iters=0): "
                     "RTN path uses blockwise quantization and supports per-block offloading."
                 )
-            elif self.has_qlayer_outside_block and not isinstance(self.quantize_config, RTNConfig):
-                logger.warning(
-                    "`low_cpu_mem_usage` is not fully supported "
-                    "when there are quantized layers outside blocks and optimized RTN is disabled. "
-                    "Setting low_cpu_mem_usage to False."
-                )
-                self.compress_context.low_cpu_mem_usage = False
-                self.compress_context.is_immediate_saving = False
+        # Historical note: the third branch here used to force
+        # low_cpu_mem_usage/is_immediate_saving to False for non-RTN runs with
+        # quantized layers outside blocks (the capture path materialized the
+        # whole model, which low_cpu could not host). The tail lane removed
+        # that walk, so SignRound runs keep progressive packing and saving
+        # too.
 
         if self.compress_context.is_immediate_saving and not (
             "int" in self.scheme_context.data_type
