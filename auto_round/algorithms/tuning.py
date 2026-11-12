@@ -89,15 +89,10 @@ class BlockTuningSession:
             and (self.loss_device is None or torch.device(self.loss_device) == torch.device(self.device))
         ):
             return None, 0
-        if getattr(model_context, "is_diffusion", False):
-            budget = getattr(model_context, "diffusion_tuning_cache_size", 0)
-            if budget != "auto" and budget <= 0:
-                return None, 0
-        else:
-            if not (isinstance(self.inputs, list) and self.runner is not None) or lfq_last_block:
-                return None, 0
-            budget = "auto"
-        return resolve_tuning_cache_cls(model_context), budget
+        cache_cls = resolve_tuning_cache_cls(model_context)
+        return cache_cls.resolve_plan(
+            model_context=model_context, inputs=self.inputs, runner=self.runner, lfq_last_block=lfq_last_block
+        )
 
     def pull_pools(self, pull_tuning_pool, batch_size):
         """Apply hot-pool placement without moving prefetch references off host."""

@@ -24,9 +24,10 @@ from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQua
 from auto_round.algorithms.tuning import BlockTuningSession
 from auto_round.algorithms.tuning_cache import BlockTuningPrefetchCache, DiffusionTuningCache
 from auto_round.compressors.utils import IndexSampler, snapshot_best_params
+from auto_round.schemes import QuantizationScheme
 from auto_round.utils.device_manager import device_manager
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="test requires CUDA")
+requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="test requires CUDA")
 
 
 class TuningBlock(torch.nn.Module):
@@ -63,6 +64,7 @@ def tuning_args(monkeypatch):
 
 
 @pytest.mark.parametrize("budget", [0, 1e-12, 0.01, "auto"])
+@requires_cuda
 def test_real_staging_matches_legacy_loss_gradients_and_sampling(tuning_args, monkeypatch, budget):
     caches = []
     create = DiffusionTuningCache.create
@@ -127,6 +129,7 @@ def test_real_staging_matches_legacy_loss_gradients_and_sampling(tuning_args, mo
 
 
 @pytest.mark.parametrize("exit_kind", ["early", "forward", "backward", "optimizer", "producer"])
+@requires_cuda
 def test_real_staging_cleans_up_on_early_exit_and_errors(tuning_args, monkeypatch, exit_kind):
     block = TuningBlock()
     tuning_args["model_context"].diffusion_tuning_cache_size = 0.01
@@ -183,37 +186,30 @@ def test_real_staging_cleans_up_on_early_exit_and_errors(tuning_args, monkeypatc
     assert not caches[0].thread.is_alive() and not caches[0].slots
 
 
-@pytest.mark.parametrize("is_diffusion,budget", [(True, 0), (True, 0.01), (True, "auto"), (False, "auto")])
-def test_signround_quantize_block_uses_shared_session(monkeypatch, is_diffusion, budget):
-    """Exercise real wrappers, optimizer and unwrapping without model downloads."""
+@pytest.fixture
+def quantize_setup(monkeypatch):
+    """Build the same real integration on CPU before any CUDA-only skip."""
     previous_device_map = device_manager.device_map
     random_state = random.getstate()
     torch_state = torch.random.get_rng_state()
-    device_manager.configure("cuda:0")
-    caches = []
-    cache_cls = DiffusionTuningCache if is_diffusion else BlockTuningPrefetchCache
-    create = cache_cls.create
 
-    def capture(*args, **kwargs):
-        cache = create(*args, **kwargs)
-        caches.append(cache)
-        return cache
-
-    monkeypatch.setattr(cache_cls, "create", capture)
-    try:
-        config = SignRoundConfig(
-            iters=3, lr=0.01, minmax_lr=0.01, bits=4, group_size=4, sym=True, data_type="int", act_bits=16
-        )
-        block = torch.nn.Sequential(torch.nn.Linear(4, 4, bias=False)).to("cuda:0")
+    def build(device="cpu", is_diffusion=False, budget="auto", **config_kwargs):
+        if device == "cpu":
+            monkeypatch.setattr(torch.cuda, "_lazy_init", lambda: pytest.fail("CPU integration initialized CUDA"))
+        device_manager.configure(device)
+        config = SignRoundConfig(iters=3, lr=0.01, minmax_lr=0.01, **config_kwargs)
+        scheme = QuantizationScheme(bits=4, group_size=4, sym=True, data_type="int", act_bits=16)
+        config.finalize_scheme(scheme)
+        block = torch.nn.Sequential(torch.nn.Linear(4, 4, bias=False)).to(device)
         layer = block[0]
-        for name, value in vars(config.scheme).items():
+        for name, value in vars(scheme).items():
             setattr(layer, name, value)
         layer.scale_dtype = torch.float32
         layer.global_name = "blocks.0.0"
         inputs = [torch.ones(1, 2, 4) * (i + 1) for i in range(3)]
         runner = BlockForwardRunner(
             batch_size=1,
-            device="cuda:0",
+            device=device,
             cache_device="cpu",
             amp=False,
             is_diffusion=is_diffusion,
@@ -231,28 +227,195 @@ def test_signround_quantize_block_uses_shared_session(monkeypatch, is_diffusion,
                     cache_device="cpu", low_gpu_mem_usage=True, enable_torch_compile=False, clear_memory=lambda: None
                 ),
                 calibration_context=SimpleNamespace(batch_size=1, batch_dim=0),
-                scheme_context=config.scheme,
+                scheme_context=scheme,
             )
         )
         quantizer.bind_block_forward_runner(runner)
-        snapshots = quantizer.quantize_block(
+        return quantizer, block, inputs, outputs
+
+    try:
+        yield build
+    finally:
+        device_manager.configure(previous_device_map)
+        random.setstate(random_state)
+        torch.random.set_rng_state(torch_state)
+
+
+def quantize(quantizer, block, inputs, outputs):
+    return quantizer.quantize_block(
+        block, inputs, {}, outputs, None, SimpleNamespace(block_index=0, block_cnt=1, block_name="blocks.0")
+    )
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda:0", marks=requires_cuda)])
+@pytest.mark.parametrize("is_diffusion,budget", [(True, 0), (True, 0.01), (True, "auto"), (False, "auto")])
+def test_signround_quantize_block_uses_shared_session(monkeypatch, quantize_setup, device, is_diffusion, budget):
+    """Exercise identical scheme binding, real wrappers and optimizer on CPU and CUDA."""
+    quantizer, block, inputs, outputs = quantize_setup(device, is_diffusion, budget)
+    caches = []
+    sessions = []
+    cache_cls = DiffusionTuningCache if is_diffusion else BlockTuningPrefetchCache
+    create = cache_cls.create
+    factory = quantizer.tuning_session
+
+    def capture(*args, **kwargs):
+        cache = create(*args, **kwargs)
+        caches.append(cache)
+        return cache
+
+    def capture_session(*args, **kwargs):
+        session = factory(*args, **kwargs)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(cache_cls, "create", capture)
+    monkeypatch.setattr(quantizer, "tuning_session", capture_session)
+    snapshots = quantize(quantizer, block, inputs, outputs)
+    assert snapshots
+    assert len(sessions) == 1 and sessions[0]._state == "closed"
+    # The composer, not quantize_block(), owns final unwrapping.
+    assert hasattr(block[0], "orig_layer")
+    assert torch.isfinite(block[0].weight).all()
+    if device != "cpu" and (not is_diffusion or budget):
+        assert len(caches) == 1 and caches[0] is not None
+        assert not caches[0].thread.is_alive() and not caches[0].slots
+    else:
+        assert not caches
+
+
+@pytest.mark.parametrize("mode", ["joint", "frozen_ar_refine", "staged_refine"])
+@pytest.mark.parametrize("not_use_best_mse", [False, True])
+def test_teq_session_schedule_and_fixed_selection(monkeypatch, quantize_setup, mode, not_use_best_mse):
+    quantizer, block, inputs, outputs = quantize_setup(not_use_best_mse=not_use_best_mse)
+    log_alpha = torch.nn.Parameter(torch.zeros(4))
+    block[0]._teq_input_context = {
+        "log_alpha": log_alpha,
+        "min_log": -10.0,
+        "max_log": 10.0,
+        "apply_input_transform": True,
+        "wrappers": [],
+    }
+    quantizer.teq_refinement_mode = mode
+    quantizer.teq_joint_lr = 0.001
+    quantizer.teq_refine_iters = 2
+    quantizer.teq_ar_first_iters = 1
+    sessions, sampled, forwarded, snapshots, selection = [], [], [], [], []
+    factory = quantizer.tuning_session
+    runner_forward = quantizer.block_forward.forward
+
+    def capture_forward(*args, **kwargs):
+        if sessions and sessions[0]._state == "closed":
+            selection.append(list(args[3]))
+        return runner_forward(*args, **kwargs)
+
+    monkeypatch.setattr(quantizer.block_forward, "forward", capture_forward)
+
+    def capture_session(*args, **kwargs):
+        assert kwargs["iters"] == 6
+        assert kwargs["prefetch"] is (mode != "staged_refine")
+        session = factory(*args, **kwargs)
+        sessions.append(session)
+        next_batch, forward, collect = session.next_batch, session.forward, session.collect_best_params
+
+        def sample():
+            indices = next_batch()
+            sampled.append(list(indices))
+            return indices
+
+        def run(indices):
+            forwarded.append(list(indices))
+            return forward(indices)
+
+        def snapshot():
+            snapshots.append(len(forwarded))
+            return collect()
+
+        monkeypatch.setattr(session, "next_batch", sample)
+        monkeypatch.setattr(session, "forward", run)
+        monkeypatch.setattr(session, "collect_best_params", snapshot)
+        return session
+
+    monkeypatch.setattr(quantizer, "tuning_session", capture_session)
+    result = quantize(quantizer, block, inputs, outputs)
+    assert result and sessions[0]._state == "closed"
+    assert len(forwarded) == 6
+    assert len(sampled) == (3 if mode == "staged_refine" else 6)
+    if mode == "staged_refine":
+        assert forwarded[1:4] == [[0], [0], [0]]
+        assert sessions[0]._cache_factory is None
+        if not not_use_best_mse:
+            assert "selected_loss" in quantizer.teq_last_refinement
+            assert selection == [[0], [0]]
+    if mode != "staged_refine" or not_use_best_mse:
+        assert not selection
+    if not_use_best_mse:
+        assert snapshots[-1] == 6
+
+
+@pytest.mark.parametrize("not_use_best_mse", [False, True])
+def test_previous_best_snapshot_released_before_allocating(monkeypatch, quantize_setup, not_use_best_mse):
+    import inspect
+
+    quantizer, block, inputs, outputs = quantize_setup(not_use_best_mse=not_use_best_mse)
+    collect = BlockTuningSession.collect_best_params
+    snapshots = []
+
+    def check_release(session):
+        caller = inspect.currentframe().f_back
+        assert caller.f_locals["best_params"] is None
+        del caller
+        snapshots.append(collect(session))
+        return snapshots[-1]
+
+    monkeypatch.setattr(BlockTuningSession, "collect_best_params", check_release)
+    assert quantize(quantizer, block, inputs, outputs)
+    assert snapshots
+
+
+@pytest.mark.parametrize("exit_kind", ["normal", "forward", "backward", "optimizer", "pull"])
+def test_quantize_block_closes_staging_before_lfq_downstream(monkeypatch, quantize_setup, exit_kind):
+    quantizer, block, inputs, outputs = quantize_setup()
+    events = []
+    downstream = [torch.nn.Identity(), torch.nn.Identity()]
+    cache = SimpleNamespace(best=None, get=lambda indices: None, close=lambda: events.append("cache"))
+    monkeypatch.setattr(BlockTuningSession, "_resolve_tuning_cache_plan", lambda *args: (DiffusionTuningCache, 1))
+    monkeypatch.setattr(DiffusionTuningCache, "create", lambda *args, **kwargs: cache)
+    monkeypatch.setattr(quantizer, "_compute_valid_token_mask", lambda ids: None)
+    monkeypatch.setattr(quantizer, "_lfq_is_kd_block", lambda ctx: True)
+    monkeypatch.setattr(quantizer, "_get_lfq_downstream_blocks", lambda ctx, device: downstream)
+    monkeypatch.setattr(quantizer, "_forward_lfq_downstream", lambda pred, *args: pred)
+    monkeypatch.setattr(quantizer, "lfq_loss", lambda pred, *args, **kwargs: pred.square().mean())
+    monkeypatch.setattr(
+        "auto_round.algorithms.quantization.sign_round.quantizer.mv_module_from_gpu",
+        lambda module: events.append(next(i for i, item in enumerate(downstream) if item is module)),
+    )
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected integration failure")
+
+    if exit_kind == "forward":
+        monkeypatch.setattr(quantizer.block_forward, "forward", fail)
+    elif exit_kind == "backward":
+        monkeypatch.setattr(quantizer, "_scale_loss_and_backward", fail)
+    elif exit_kind == "optimizer":
+        monkeypatch.setattr(quantizer, "_step", fail)
+    elif exit_kind == "pull":
+        monkeypatch.setattr(quantizer, "pull_tuning_pool", fail)
+
+    def run():
+        return quantizer.quantize_block(
             block,
             inputs,
             {},
             outputs,
             None,
             SimpleNamespace(block_index=0, block_cnt=1, block_name="blocks.0"),
+            input_ids=[torch.ones(1, 2, dtype=torch.long) for _ in inputs],
         )
-        assert snapshots
-        # The composer, not quantize_block(), now owns final unwrapping.
-        assert hasattr(block[0], "orig_layer")
-        assert torch.isfinite(block[0].weight).all()
-        if not is_diffusion or budget:
-            assert len(caches) == 1 and caches[0] is not None
-            assert not caches[0].thread.is_alive() and not caches[0].slots
-        else:
-            assert not caches
-    finally:
-        device_manager.configure(previous_device_map)
-        random.setstate(random_state)
-        torch.random.set_rng_state(torch_state)
+
+    if exit_kind == "normal":
+        assert run()
+    else:
+        with pytest.raises(RuntimeError, match="injected integration failure"):
+            run()
+    assert events == ([0, 1] if exit_kind == "pull" else ["cache", 0, 1])

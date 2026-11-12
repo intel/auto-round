@@ -303,6 +303,45 @@ class SignRoundQuantizer(LFQMixin, BaseQuantizer):
         else:
             return inputs.shape[self.calibration_context.batch_dim]
 
+    def tuning_session(
+        self,
+        block,
+        inputs,
+        others,
+        outputs,
+        *,
+        nsamples,
+        global_batch_size,
+        iters,
+        loss_device,
+        lfq_last_block=False,
+        prefetch=True,
+    ):
+        """Build SignRound's context-managed block data interface.
+
+        Staged TEQ selection replays a fixed slice and restores checkpoints,
+        so its caller disables speculative prefetch for the whole session.
+        """
+        from auto_round.algorithms.tuning import BlockTuningSession
+
+        return BlockTuningSession(
+            block,
+            self.block_forward,
+            inputs,
+            others,
+            outputs,
+            nsamples=nsamples,
+            global_batch_size=global_batch_size,
+            iters=iters,
+            device=device_manager.device,
+            loss_device=loss_device,
+            model_context=self.model_context,
+            compress_context=self.compress_context,
+            parallel=self.parallel,
+            lfq_last_block=lfq_last_block,
+            prefetch=prefetch,
+        )
+
     def quantize_block(
         self,
         block,

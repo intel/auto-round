@@ -25,6 +25,7 @@ import torch
 
 from auto_round.algorithms.block_runner import BlockForwardRunner
 from auto_round.algorithms.quantization.base import BaseQuantizer
+from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
 from auto_round.algorithms.tuning import BlockTuningSession
 from auto_round.algorithms.tuning_cache import BlockTuningPrefetchCache, DiffusionTuningCache
 from auto_round.compressors.utils import IndexSampler
@@ -348,8 +349,11 @@ def test_close_failure_still_marks_session_closed(session_args, backend):
         session.next_batch()
 
 
-def test_base_quantizer_creates_usable_session(session_args, monkeypatch):
-    monkeypatch.setattr("auto_round.algorithms.quantization.base.device_manager", SimpleNamespace(device="cpu"))
+def test_signround_quantizer_creates_usable_session(session_args, monkeypatch):
+    assert not hasattr(BaseQuantizer, "tuning_session")
+    monkeypatch.setattr(
+        "auto_round.algorithms.quantization.sign_round.quantizer.device_manager", SimpleNamespace(device="cpu")
+    )
     quantizer = SimpleNamespace(
         block_forward=session_args["runner"],
         model_context=session_args["model_context"],
@@ -357,7 +361,7 @@ def test_base_quantizer_creates_usable_session(session_args, monkeypatch):
         parallel=ParallelExecution(),
     )
     kwargs = {key: session_args[key] for key in ("nsamples", "global_batch_size", "iters", "loss_device")}
-    with BaseQuantizer.tuning_session(
+    with SignRoundQuantizer.tuning_session(
         quantizer,
         session_args["block"],
         session_args["inputs"],
@@ -461,3 +465,43 @@ def test_synchronous_reference_uses_cross_device_gather(session_args, monkeypatc
     assert selected[0] is session_args["outputs"][1]
     assert selected[1] is session_args["outputs"][3]
     assert target == "cpu"
+
+
+def test_prefetch_opt_out_does_not_consult_or_create_backend(session_args, backend):
+    with BlockTuningSession(**session_args, prefetch=False) as session:
+        assert list(session.iterations()) == [0, 1, 2]
+        session.forward(session.next_batch())
+    backend.plan.assert_not_called()
+    backend.create.assert_not_called()
+
+
+@pytest.mark.parametrize("cache_cls", [BlockTuningPrefetchCache, DiffusionTuningCache])
+@pytest.mark.parametrize("budget", [0, -1, 0.01, "auto"])
+@pytest.mark.parametrize("eligible_inputs", [False, True])
+@pytest.mark.parametrize("lfq_last_block", [False, True])
+def test_cache_classes_own_exact_model_policy(cache_cls, budget, eligible_inputs, lfq_last_block):
+    plan = cache_cls.resolve_plan(
+        model_context=SimpleNamespace(diffusion_tuning_cache_size=budget),
+        inputs=[] if eligible_inputs else {},
+        runner=object() if eligible_inputs else None,
+        lfq_last_block=lfq_last_block,
+    )
+    if cache_cls is DiffusionTuningCache:
+        expected = (cache_cls, budget) if budget == "auto" or budget > 0 else (None, 0)
+    else:
+        expected = (cache_cls, "auto") if eligible_inputs and not lfq_last_block else (None, 0)
+    assert plan == expected
+
+
+def test_session_delegates_to_selected_cache_class(session_args, monkeypatch):
+    monkeypatch.setattr("auto_round.algorithms.tuning.device_manager", SimpleNamespace(device_list=["cuda:0"]))
+    custom_cache = SimpleNamespace(resolve_plan=Mock(return_value=(None, 0)))
+    monkeypatch.setattr("auto_round.algorithms.tuning.resolve_tuning_cache_cls", lambda model: custom_cache)
+    session_args.update(device="cuda:0", loss_device="cuda:0")
+    BlockTuningSession(**session_args, lfq_last_block=True)
+    custom_cache.resolve_plan.assert_called_once_with(
+        model_context=session_args["model_context"],
+        inputs=session_args["inputs"],
+        runner=session_args["runner"],
+        lfq_last_block=True,
+    )

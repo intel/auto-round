@@ -104,35 +104,6 @@ class BaseQuantizer(BaseAlgorithm):
     def can_compile_block_forward(self):
         return True
 
-    def tuning_session(
-        self, block, inputs, others, outputs, *, nsamples, global_batch_size, iters, loss_device, lfq_last_block=False,
-        prefetch=True,
-    ):
-        """Create a context-managed batch interface for block optimization.
-
-        Data placement, optional prefetch, fallback and resource cleanup are
-        shared infrastructure; algorithm implementations need not manage them.
-        """
-        from auto_round.algorithms.tuning import BlockTuningSession
-
-        return BlockTuningSession(
-            block,
-            self.block_forward,
-            inputs,
-            others,
-            outputs,
-            nsamples=nsamples,
-            global_batch_size=global_batch_size,
-            iters=iters,
-            device=device_manager.device,
-            loss_device=loss_device,
-            model_context=self.model_context,
-            compress_context=self.compress_context,
-            parallel=self.parallel,
-            lfq_last_block=lfq_last_block,
-            prefetch=prefetch,
-        )
-
     # ── Calibration hook registration ─────────────────────────────────────────
     def register_fp_input_forward_hooks(self, block: torch.nn.Module) -> list:
         """Register hooks that fire during the reference (FP-input) block forward.

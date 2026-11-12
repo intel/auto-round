@@ -131,6 +131,13 @@ class BlockTuningPrefetchCache:
     _summary_logged = False
 
     @classmethod
+    def resolve_plan(cls, *, model_context, inputs, runner, lfq_last_block):
+        """Choose generic reconstruction eligibility and its automatic budget."""
+        if not (isinstance(inputs, list) and runner is not None) or lfq_last_block:
+            return None, 0
+        return cls, "auto"
+
+    @classmethod
     def create(cls, block, runner, inputs, others, outputs, sampler, iters, budget_gib, device):
         # Single-output blocks (e.g. Wan) pass a tensor list to the next block.
         if isinstance(inputs, list):
@@ -325,6 +332,14 @@ class DiffusionTuningCache(BlockTuningPrefetchCache):
     LABEL = "Diffusion tuning"
     _require_batch_size_one = True
 
+    @classmethod
+    def resolve_plan(cls, *, model_context, inputs, runner, lfq_last_block):
+        """Keep diffusion's explicit opt-in budget, independent of input shape."""
+        budget = getattr(model_context, "diffusion_tuning_cache_size", 0)
+        if budget != "auto" and budget <= 0:
+            return None, 0
+        return cls, budget
+
 
 def resolve_tuning_cache_cls(model_context) -> type[BlockTuningPrefetchCache]:
     """Return the prefetch-cache class for the active model type.
@@ -332,9 +347,8 @@ def resolve_tuning_cache_cls(model_context) -> type[BlockTuningPrefetchCache]:
     This is the single place that knows about cache variants, so the SignRound
     tuning loop never branches on model type: it asks for a class and gets the
     diffusion specialization for diffusion pipelines, otherwise the generic
-    LLM/VLM cache. New variants are added here (or by overriding the session's
-    ``_resolve_tuning_cache_plan`` hook) instead of threading ``if is_diffusion``
-    checks through the algorithm.
+    LLM/VLM cache. Each selected class owns its eligibility and budget through
+    ``resolve_plan``; the session only checks model-independent hardware gates.
     """
     if getattr(model_context, "is_diffusion", False):
         return DiffusionTuningCache
