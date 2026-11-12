@@ -802,6 +802,22 @@ def test_nvfp4_e5m3_model_free_honors_opt_rtn_toggle(monkeypatch):
     search_mock.assert_not_called()
 
 
+@pytest.mark.parametrize("enable_torch_compile", [False, True])
+def test_nvfp4_e5m3_model_free_forwards_torch_compile_flag(monkeypatch, enable_torch_compile):
+    from auto_round.data_type import nvfp
+
+    search_mock = Mock(return_value=torch.ones(8))
+    monkeypatch.setattr(nvfp, "search_nvfp4_v2_scale", search_mock)
+    matcher = _matcher(
+        default={"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2", "_output_format": "fake"}
+    )
+
+    _quantize_single_tensor(
+        "layer.weight", torch.randn(4, 32), matcher, disable_opt_rtn=False, enable_torch_compile=enable_torch_compile
+    )
+    assert search_mock.call_args.kwargs["enable_torch_compile"] is enable_torch_compile
+
+
 # ===========================================================================
 #  _build_mxfp_quantization_config (non-MoE, structural tests)
 # ===========================================================================
