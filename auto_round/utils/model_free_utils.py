@@ -2619,6 +2619,10 @@ def _process_shard(
         hydrate_only=matcher.nvfp_source_only,
     )
     raw_tensors.update(preserved_tensors)
+    # The Engram table is predefined-skipped and preserved above, so it does not
+    # flow through preprocess_model_type_source_tensors(); apply the U8 scale
+    # bitcast here as well for the actual shard path.
+    _bitcast_deepseek_engram_scales_to_u8(raw_tensors)
     # ``raw_tensors`` now owns these; drop the duplicate references.
     preserved_tensors.clear()
 
@@ -4574,6 +4578,24 @@ def _expand_e8m0_block_scale(
     )
 
 
+# Name fragment identifying the DeepSeek-V4.1 Engram n-gram lookup table. Its
+# ``.weight`` stays float8_e4m3fn and its ``.scale`` is bitcast to uint8 (the
+# compressed-tensors E8M0 container) under the source key; see
+# ``preprocess_model_type_source_tensors``.
+_DEEPSEEK_ENGRAM_TABLE = ".engram.embed."
+
+
+def _bitcast_deepseek_engram_scales_to_u8(raw_tensors: dict[str, torch.Tensor]) -> None:
+    """Store DeepSeek-V4.1 Engram E8M0 scales in the compressed-tensors uint8 container.
+
+    The conversion is a bitcast: the E8M0 exponent bytes are preserved verbatim.
+    ``.to(torch.uint8)`` would convert the float values numerically and destroy them.
+    """
+    for name, tensor in list(raw_tensors.items()):
+        if _DEEPSEEK_ENGRAM_TABLE in name and name.endswith(".scale") and tensor.dtype == torch.float8_e8m0fnu:
+            raw_tensors[name] = tensor.contiguous().view(torch.uint8)
+
+
 def preprocess_model_type_source_tensors(
     raw_tensors: dict[str, torch.Tensor],
     model_type: str | None,
@@ -4583,13 +4605,24 @@ def preprocess_model_type_source_tensors(
 ) -> tuple[dict[str, torch.Tensor], dict[str, int]]:
     """Apply model-type-specific source tensor normalization."""
     model_type = (model_type or "").lower()
-    is_deepseek_v4 = model_type == "deepseek_v4"
+    is_deepseek_v4 = model_type in ("deepseek_v4", "deepseek_v41")
     if not is_deepseek_v4:
         return raw_tensors, {}
+
+    _bitcast_deepseek_engram_scales_to_u8(raw_tensors)
 
     entries: list[tuple[str, str, bool]] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
+            continue
+        if _DEEPSEEK_ENGRAM_TABLE in name:
+            # Engram conditional memory (deepseek_v41) stores its n-gram lookup table as
+            # ``.weight`` (float8_e4m3fn) + ``.scale`` (ue8m0). That pair is not a Linear:
+            # the table has hundreds of millions of rows, so neither renaming nor
+            # dequantizing is an option. Keep the source key and float8 weight, and store
+            # the E8M0 scale in the compressed-tensors uint8 container via the bitcast
+            # helper above (the bytes are preserved). ``engram.wkv`` and the other Engram
+            # projections are ordinary Linears and must flow through the regular path.
             continue
         layer_name = name[: -len(".weight")]
         scale_name = f"{layer_name}.scale"
