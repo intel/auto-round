@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -39,8 +39,27 @@ class BasePreprocessor(BaseAlgorithm):
     """
 
     def pre_quantize_block(self, ctx) -> None:
-        """Called after the reference forward, before block quantization."""
+        """Apply this transform before reference collection and block quantization."""
         return
+
+    def invalidates_reference_output(self, ctx) -> bool:
+        """Whether this block's pre-computed reference must be collected again.
+
+        Preprocessors that mutate the floating-point block during
+        :meth:`pre_quantize_block` must override this method. This prevents a
+        caller-provided reference, collected before the transform, from being
+        used as the quantizer target or propagated to the next block.
+        """
+        return False
+
+    def select_calibration_samples(self, fp_inputs, input_others):
+        """Return the calibration inputs this preprocessor should observe.
+
+        The default keeps the full shared cache. Algorithms with an independent
+        calibration budget, such as AWQ, may return a sample subset without
+        changing the terminal quantizer's inputs.
+        """
+        return fp_inputs, input_others
 
     def post_quantize_block(self, ctx) -> None:
         """Called after the block quantizer completes."""
@@ -97,7 +116,7 @@ class BaseRotation(ABC):
     """
 
     # Registry populated by subclasses via ``BaseRotation.register``.
-    _REGISTRY: dict[str, type["BaseRotation"]] = {}
+    _REGISTRY: dict[str, type[BaseRotation]] = {}
 
     def __init__(self, config: BaseRotationConfig) -> None:
         self.config = config
@@ -144,7 +163,7 @@ class BaseRotation(ABC):
         model: torch.nn.Module,
         data_type: str = "mx_fp",
         **kwargs: Any,
-    ) -> "BaseRotation":
+    ) -> BaseRotation:
         """Prepare for layer-wise rotation without modifying model weights.
 
         Called once when the rotation config has ``layerwise=True``.
@@ -205,7 +224,6 @@ class BaseRotation(ABC):
         Args:
             model: The fully-rotated model.
         """
-        pass
 
     # ------------------------------------------------------------------
     # Factory
@@ -229,7 +247,7 @@ class BaseRotation(ABC):
         return _decorator
 
     @classmethod
-    def from_config(cls, config: BaseRotationConfig) -> "BaseRotation":
+    def from_config(cls, config: BaseRotationConfig) -> BaseRotation:
         """Instantiate the correct ``BaseRotation`` subclass for *config*.
 
         The algorithm is looked up by ``config.algorithm`` in the registry.

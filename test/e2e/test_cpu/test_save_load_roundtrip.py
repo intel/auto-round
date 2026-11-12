@@ -46,7 +46,6 @@ from test.e2e.test_cpu.conftest import (  # noqa: E402
     assert_non_garbage_output,
     record,
 )
-from typing import List, Optional
 
 import pytest
 import torch
@@ -117,7 +116,7 @@ def _reload_and_generate_gguf(saved_dir: str) -> str:
     """Reload a GGUF checkpoint via llama.cpp and run a short generation."""
     from llama_cpp import Llama
 
-    matches: List[str] = []
+    matches: list[str] = []
     for root, _, files in os.walk(saved_dir):
         for name in files:
             if name.endswith(".gguf"):

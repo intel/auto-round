@@ -613,11 +613,11 @@ def neuqi_search_scale_zero(data, bits, qw=None, q_scale_thresh=1e-5, coarse_n=N
     if coarse_n is None:
         coarse_n = envs.AR_NEUQI_COARSE or d_coarse
         if coarse_n < 2:
-            raise ValueError("AR_NEUQI_COARSE=%d is too small; need at least 2 candidates." % coarse_n)
+            raise ValueError(f"AR_NEUQI_COARSE={coarse_n} is too small; need at least 2 candidates.")
     if fine_n is None:
         fine_n = envs.AR_NEUQI_FINE or d_fine
         if fine_n < 2:
-            raise ValueError("AR_NEUQI_FINE=%d is too small; need at least 2 candidates." % fine_n)
+            raise ValueError(f"AR_NEUQI_FINE={fine_n} is too small; need at least 2 candidates.")
     _log_search_engaged(coarse_n, fine_n)
     if torch.is_tensor(data):
         ensure_sweep_warmup(data.device)
@@ -1000,6 +1000,7 @@ def _sym_search_eval(data, qw, scales, nmax):
 _sym_chunk_compiled = None
 _sym_compile_failed = False
 _sym_compile_logged: set = set()
+_sym_core_lock = threading.Lock()
 
 
 @torch.compiler.disable  # logging side effect: graph-break instead of tracing
@@ -1023,18 +1024,29 @@ def _sym_loss_chunk_eval(data, qw, scales, nmax):
     if _sym_compile_failed or backend not in ("auto", "compile", "triton"):
         return _sym_loss_chunk(data, qw, scales, nmax)
     if _sym_chunk_compiled is None:
-        try:
-            _sym_chunk_compiled = torch.compile(_sym_loss_chunk)
-        except Exception:  # pragma: no cover - compilation unavailable in this environment
-            _sym_compile_failed = True
-            return _sym_loss_chunk(data, qw, scales, nmax)
-        _log_sym_compile_engaged(backend)
+        # batched searches call this from one worker thread per device; the
+        # lazy compile must happen exactly once or concurrent first calls race
+        # on dynamo's per-code-object state and the loser latches the whole
+        # process down to eager
+        with _sym_core_lock:
+            if _sym_chunk_compiled is None and not _sym_compile_failed:
+                try:
+                    _sym_chunk_compiled = torch.compile(_sym_loss_chunk)
+                except Exception as e:  # pragma: no cover - compilation unavailable in this environment
+                    logger.warning(
+                        "[neuqi] sym-chunk compile unavailable (%s); chunk core stays eager for the rest of the run", e
+                    )
+                    _sym_compile_failed = True
+                else:
+                    _log_sym_compile_engaged(backend)
+    if _sym_chunk_compiled is None:
+        return _sym_loss_chunk(data, qw, scales, nmax)
     try:
         return _sym_chunk_compiled(data, qw, scales, nmax)
-    except Exception:
+    except Exception as exc:
         _sym_chunk_compiled = None
         _sym_compile_failed = True
-        logger.warning("[NeUQI] sym compiled chunk core failed; using eager for the rest of this process.")
+        logger.warning("[NeUQI] sym compiled chunk core failed (%r); using eager for the rest of this process.", exc)
         return _sym_loss_chunk(data, qw, scales, nmax)
 
 
@@ -1197,11 +1209,11 @@ def neuqi_search_scale_sym(data, bits, qw=None, q_scale_thresh=1e-5, coarse_n=No
         # default is backend-aware (wide only on the accelerated lanes)
         coarse_n = envs.AR_NEUQI_COARSE or d_coarse
         if coarse_n < 2:
-            raise ValueError("AR_NEUQI_COARSE=%d is too small; need at least 2 candidates." % coarse_n)
+            raise ValueError(f"AR_NEUQI_COARSE={coarse_n} is too small; need at least 2 candidates.")
     if fine_n is None:
         fine_n = envs.AR_NEUQI_FINE or d_fine
         if fine_n < 2:
-            raise ValueError("AR_NEUQI_FINE=%d is too small; need at least 2 candidates." % fine_n)
+            raise ValueError(f"AR_NEUQI_FINE={fine_n} is too small; need at least 2 candidates.")
     _log_sym_search_engaged(coarse_n, fine_n)
     ensure_sym_search_warmup(data.device)
 

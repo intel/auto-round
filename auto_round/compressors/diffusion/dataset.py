@@ -18,7 +18,6 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from pathlib import Path
-from typing import Dict, Optional
 
 import pandas as pd
 import torch
@@ -27,7 +26,7 @@ from transformers import set_seed
 
 from auto_round.utils import download_audiocaps_csv, logger
 
-DIFFUSION_DATASET: Dict[str, Dataset] = {}
+DIFFUSION_DATASET: dict[str, Dataset] = {}
 
 
 COCO_URL = {
@@ -52,9 +51,7 @@ def _get_coco_cache_dir() -> Path:
     """Return the persistent cache directory for COCO calibration data."""
     from auto_round import envs as _envs
 
-    cache_root = (
-        Path(_envs.AUTO_ROUND_CACHE).expanduser() if _envs.AUTO_ROUND_CACHE else Path.home() / ".cache" / "auto_round"
-    )
+    cache_root = Path(_envs.AR_CACHE).expanduser() if _envs.AR_CACHE else Path.home() / ".cache" / "auto_round"
     return cache_root / "datasets" / "coco2014"
 
 
@@ -62,9 +59,7 @@ def _get_opens2v_cache_dir() -> Path:
     """Return the persistent cache directory for OpenS2V calibration data."""
     from auto_round import envs as _envs
 
-    cache_root = (
-        Path(_envs.AUTO_ROUND_CACHE).expanduser() if _envs.AUTO_ROUND_CACHE else Path.home() / ".cache" / "auto_round"
-    )
+    cache_root = Path(_envs.AR_CACHE).expanduser() if _envs.AR_CACHE else Path.home() / ".cache" / "auto_round"
     return cache_root / "datasets" / "opens2v"
 
 
@@ -228,7 +223,7 @@ class Text2ImgDataset(Dataset):
         self,
         dataset_path: str,
         nsamples: int = 128,
-        dataframe: Optional[pd.DataFrame] = None,
+        dataframe: pd.DataFrame | None = None,
     ) -> None:
         super().__init__()
         self.captions = []
@@ -272,7 +267,7 @@ class Text2ImgDataset(Dataset):
     def __len__(self):
         return len(self.captions)
 
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, i) -> dict[str, torch.Tensor]:
         if self.image_paths is not None:
             return self.caption_ids[i], self.captions[i], self.image_paths[i]
         return self.caption_ids[i], self.captions[i]
@@ -312,7 +307,7 @@ class AudioCapsDataset(Dataset):
     def __len__(self):
         return len(self.captions)
 
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, i) -> dict[str, torch.Tensor]:
         return self.caption_ids[i], self.captions[i]
 
 

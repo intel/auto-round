@@ -17,7 +17,7 @@
 # Adapted from vllm
 # at https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/quantization/gptq_marlin.py
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import numpy as np
 import torch
@@ -72,7 +72,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
 
     def set_weight_attrs(
         weight: torch.Tensor,
-        weight_attrs: Optional[Dict[str, Any]],
+        weight_attrs: dict[str, Any] | None,
     ):
         """Set attributes on a weight tensor.
 
@@ -109,7 +109,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         sms = torch.cuda.get_device_properties(device).multi_processor_count
         return torch.zeros(sms * max_blocks_per_sm, dtype=torch.int, device=device, requires_grad=False)
 
-    def marlin_sort_g_idx(g_idx: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def marlin_sort_g_idx(g_idx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         g_idx_sort_indices = torch.argsort(g_idx).to(torch.int)
         return g_idx[g_idx_sort_indices], g_idx_sort_indices
 
@@ -137,10 +137,10 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
         return s
 
     def get_scale_perms():
-        scale_perm: List[int] = []
+        scale_perm: list[int] = []
         for i in range(8):
             scale_perm.extend([i + 8 * j for j in range(8)])
-        scale_perm_single: List[int] = []
+        scale_perm_single: list[int] = []
         for i in range(4):
             scale_perm_single.extend([2 * i + j for j in [0, 1, 8, 9, 16, 17, 24, 25]])
         return scale_perm, scale_perm_single
@@ -316,7 +316,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
                 )
 
             # toggle fp32 mode depending on MARLIN or MARLIN_FP16 backend
-            self.fp32 = True if self.backend in [BACKEND.MARLIN, BACKEND.AUTO] else False
+            self.fp32 = self.backend in [BACKEND.MARLIN, BACKEND.AUTO]
 
             if not self.fp32:
                 logger.warning_once(
@@ -501,7 +501,7 @@ def get_marlin_layer():  ##use an ugly wrapper to  import gptqmodel on demand
 
             super().post_init()
 
-        def list_buffers(self) -> List:
+        def list_buffers(self) -> list:
             buf = super().list_buffers()
             if hasattr(self, "workspace") and self.workspace is not None:
                 buf.append(self.workspace)

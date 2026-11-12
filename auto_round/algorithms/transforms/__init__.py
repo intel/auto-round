@@ -61,7 +61,7 @@ from auto_round.algorithms.transforms.hadamard import (
     RotationConfig,
 )
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     # Base interfaces
     "BasePreprocessor",
     "BaseWeightTransformer",  # backward-compat alias
@@ -73,6 +73,8 @@ __all__ = [
     # Config
     "RotationConfig",
     "HadamardRotation",
+    "TEQConfig",
+    "TEQTransform",
     "apply_rotation_transform",
     # Unified entry — preprocessing
     "apply_rotation",
@@ -96,6 +98,14 @@ def __getattr__(name):
         from auto_round.algorithms.transforms.awq.base import AWQTransform
 
         return AWQTransform
+    if name == "TEQConfig":
+        from auto_round.algorithms.transforms.teq.config import TEQConfig
+
+        return TEQConfig
+    if name == "TEQTransform":
+        from auto_round.algorithms.transforms.teq.base import TEQTransform
+
+        return TEQTransform
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

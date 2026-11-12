@@ -94,6 +94,33 @@ def test_nvfp4_e5m3_autoround_uses_llm_compressor_packing_and_torch_fallback():
     )
 
 
+def test_nvfp4_e5m3_gs_autoround_uses_llm_compressor_packing_and_torch_fallback():
+    scheme = _resolved_scheme("NVFP4_E5M3_GS")
+    resolution = resolve_formats(
+        ResolvedScheme.from_scheme(scheme), format="auto_round", model=nn.Sequential(nn.Linear(16, 16))
+    )
+
+    assert resolution.formats[0].get_backend_name() == "auto_round:nvfp4_v2_gs"
+    assert BackendInfos["auto_round:torch_nvfp4_e5m3_gs"].packing_format == ["auto_round:llm_compressor_nvfp4_e5m3_gs"]
+    assert dynamic_import_inference_linear("auto_round:torch_nvfp4_e5m3_gs", scheme) is (
+        ar_qmodules.NVFP4E5M3GSQuantLinear
+    )
+    assert dynamic_import_inference_linear("auto_round:cute_nvfp4_e5m3_gs", scheme) is (
+        ar_qmodules.CuteNVFP4E5M3GSQuantLinear
+    )
+    assert (
+        get_layer_backend(
+            "cpu",
+            "auto",
+            "auto_round:llm_compressor_nvfp4_e5m3_gs",
+            scheme,
+            in_features=16,
+            out_features=16,
+        )
+        == "auto_round:torch_nvfp4_e5m3_gs"
+    )
+
+
 def test_gguf_correction_propagates_to_scheme_and_quantize_config(monkeypatch):
     # W4A16's plain int-woq fields don't match every field gguf_args_check enforces
     # for a GGUF target; after resolving "gguf:q4_k_m" the scheme-bearing objects
@@ -103,8 +130,8 @@ def test_gguf_correction_propagates_to_scheme_and_quantize_config(monkeypatch):
 
     original_scheme = _resolved_scheme("W4A16")
     corrected_scheme = _resolved_scheme("GGUF:Q4_K_M")
-    quantize_config = QuantizationConfig(scheme=original_scheme.copy())
-    alg_config = QuantizationConfig(scheme=original_scheme.copy())
+    quantize_config = QuantizationConfig()
+    alg_config = QuantizationConfig()
     resolved_format = SimpleNamespace(
         is_gguf=lambda: True,
         output_format="gguf",
@@ -146,11 +173,11 @@ def test_gguf_correction_propagates_to_scheme_and_quantize_config(monkeypatch):
     assert ar.scheme.lower() == "gguf:q4_k_m"
     assert get_gguf_scheme(ar.scheme) == ar.scheme  # short-circuit preserved
     assert ar.scheme_context == corrected_scheme
-    assert alg_config.scheme is ar.scheme_context
-    assert quantize_config.scheme is ar.scheme_context
-    assert ar.scheme_context.bits == ar.quantize_config.bits
-    assert ar.scheme_context.data_type == ar.quantize_config.data_type
-    assert ar.scheme_context.sym == ar.quantize_config.sym
+    assert not hasattr(alg_config, "scheme")
+    assert not hasattr(quantize_config, "scheme")
+    assert ar.scheme_context.bits == corrected_scheme.bits
+    assert ar.scheme_context.data_type == corrected_scheme.data_type
+    assert ar.scheme_context.sym == corrected_scheme.sym
     assert ar.layer_config == {"layer": {"bits": 4}}
     assert ar.scale_dtype is torch.float32
     assert ar.quant_block_list == [["model.layers.0"]]

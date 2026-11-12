@@ -15,6 +15,7 @@ import argparse
 import importlib.util
 import os
 import time
+from pathlib import Path
 
 import torch
 from transformers.utils.versions import require_version
@@ -28,6 +29,46 @@ from auto_round.utils import (
     is_diffusion_model,
     set_cuda_visible_devices,
 )
+
+
+def _has_eval_model_artifacts(model_dir: str) -> bool:
+    if not os.path.isdir(model_dir):
+        return False
+    artifact_names = {"config.json", "model_index.json", "modular_model_index.json"}
+    for name in artifact_names:
+        if os.path.isfile(os.path.join(model_dir, name)):
+            return True
+    return any(name.endswith(".gguf") for name in os.listdir(model_dir))
+
+
+def _resolve_exported_model_path(model_path):
+    """Resolve wrapper output directories to the actual exported model folder.
+
+    Some helper scripts pass a parent output directory (for example
+    ``outputs/aware_topk_tune_shared``) while the export itself lives in a
+    single nested subdirectory derived from model name and quantization scheme.
+    When there is exactly one child directory containing loadable model
+    artifacts, prefer that child automatically.
+    """
+    from auto_round.utils import logger
+
+    if not isinstance(model_path, str) or not os.path.isdir(model_path):
+        return model_path
+
+    if _has_eval_model_artifacts(model_path):
+        return model_path
+
+    candidate_dirs = []
+    for entry in os.listdir(model_path):
+        candidate = os.path.join(model_path, entry)
+        if os.path.isdir(candidate) and _has_eval_model_artifacts(candidate):
+            candidate_dirs.append(candidate)
+
+    if len(candidate_dirs) == 1:
+        resolved = candidate_dirs[0]
+        logger.info("Resolved evaluation model path '%s' to exported artifact '%s'.", model_path, resolved)
+        return resolved
+    return model_path
 
 
 class EvalArgumentParser(argparse.ArgumentParser):
@@ -72,11 +113,18 @@ class EvalArgumentParser(argparse.ArgumentParser):
             "Specify specific tasks like 'mmlu,wikitext' for custom evaluation.",
         )
         self.add_argument(
-            "--disable_trust_remote_code",
-            action="store_true",
-            help="Disable trusting remote code when loading models. "
-            "Use for security if you don't trust the model source.",
+            "--trust_remote_code",
+            dest="disable_trust_remote_code",
+            action="store_false",
+            help="Allow executing custom code shipped with the model repo. Only use for trusted models.",
         )
+        self.add_argument(
+            "--disable_trust_remote_code",
+            dest="disable_trust_remote_code",
+            action="store_true",
+            help="Deprecated: remote code is disabled by default.",
+        )
+        self.set_defaults(disable_trust_remote_code=True)
         self.add_argument("--seed", default=42, type=int, help="Random seed for reproducibility.")
         self.add_argument(
             "--eval_bs", "--bs", "--batch_size", default=None, type=int, help="The batch size for evaluation"
@@ -200,11 +248,13 @@ def eval(args):
         "lm_eval>=0.4.2", "lm-eval is required for evaluation, please install it with `pip install 'lm-eval>=0.4.2'`"
     )
 
-    if is_diffusion_model(args.model_name):
+    args.model_name = _resolve_exported_model_path(args.model_name)
+
+    if is_diffusion_model(args.model_name, trust_remote_code=not args.disable_trust_remote_code):
         from auto_round.eval.evaluation import evaluate_diffusion_model
         from auto_round.utils import diffusion_load_model
 
-        pipe, _ = diffusion_load_model(args.model_name)
+        pipe, _ = diffusion_load_model(args.model_name, trust_remote_code=not args.disable_trust_remote_code)
         evaluate_diffusion_model(args, pipe=pipe)
         return
     if args.eval_backend == "vllm":
@@ -241,7 +291,7 @@ def eval(args):
             add_bos_token=args.add_bos_token,
         )
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
     else:
         st = time.time()
         if "auto" in str(batch_size) and args.mllm:
@@ -262,10 +312,13 @@ def eval(args):
         from lm_eval.utils import make_table  # pylint: disable=E0401
 
         print(make_table(res))
-        print("evaluation running time=%ds" % (time.time() - st))
+        print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def eval_with_vllm(args):
+    # set vllm worker method
+    os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
     import time
 
     from lm_eval import evaluator  # pylint: disable=E0401
@@ -339,6 +392,7 @@ def eval_with_vllm(args):
         vllm_lm = VLLM_VLM(**vllm_kwargs)
     else:
         vllm_lm = VLLM(**vllm_kwargs)
+    task_manager = _get_lm_eval_task_manager(tasks)
     res = evaluator.simple_evaluate(
         model=vllm_lm,
         tasks=tasks,
@@ -346,10 +400,11 @@ def eval_with_vllm(args):
         num_fewshot=getattr(args, "num_fewshot", None),
         gen_kwargs=getattr(args, "eval_gen_kwargs", None),
         fewshot_as_multiturn=getattr(args, "fewshot_as_multiturn", False),
+        task_manager=task_manager,
     )
 
     print(make_table(res))
-    print("evaluation running time=%ds" % (time.time() - st))
+    print(f"evaluation running time={int(time.time() - st)}s")
 
 
 def eval_task_by_task(
@@ -360,7 +415,7 @@ def eval_task_by_task(
     batch_size=None,
     limit=None,
     max_batch_size=64,
-    trust_remote_code=True,
+    trust_remote_code=False,
     eval_model_dtype=None,
     retry_times=3,
     mllm=False,
@@ -503,16 +558,21 @@ def _get_lm_eval_task_manager(tasks: list[str]) -> object | None:
     except ImportError:
         return None
 
-    tasks_root = os.path.join(os.path.dirname(lm_eval.__file__), "tasks")
+    tasks_root = Path(lm_eval.__file__).parent / "tasks"
     task_paths = []
     for task in tasks:
-        task_path = os.path.join(tasks_root, task)
-        if not os.path.isdir(task_path):
+        task_path = tasks_root / task
+        if task_path.is_dir():
+            task_paths.append(str(task_path))
+            continue
+
+        task_configs = list(tasks_root.rglob(f"{task}.yaml"))
+        if not task_configs:
             return None
-        task_paths.append(task_path)
+        task_paths.extend(str(task_config.parent) for task_config in task_configs)
 
     try:
-        return TaskManager(include_defaults=False, include_path=task_paths)
+        return TaskManager(include_defaults=False, include_path=list(dict.fromkeys(task_paths)))
     except TypeError:
         return None
 

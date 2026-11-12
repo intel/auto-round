@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for the small helpers in ``auto_round/export/export_to_gguf/gguf_dtype.py``."""
+"""Tests for the small helpers in ``auto_round/export/formats/gguf/gguf_dtype.py``."""
 
 import gguf  # provided by the optional dep we just installed
 import pytest
@@ -22,7 +22,7 @@ import pytest
 # ---------------------------------------------------------------------------
 class TestMappings:
     def test_values_unique(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import _GGUF_TYPE_TO_QTYPE_NAME
+        from auto_round.export.formats.gguf.gguf_dtype import _GGUF_TYPE_TO_QTYPE_NAME
 
         qtype_names = list(_GGUF_TYPE_TO_QTYPE_NAME.values())
         # F16 appears twice (under f16 and fp16); rest are unique
@@ -33,7 +33,7 @@ class TestMappings:
     def test_qtype_name_to_gguf_type_set(self):
         """For each entry in the forward map, the reverse must agree on F16
         (since F16 has two aliases)."""
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             _GGUF_TYPE_TO_QTYPE_NAME,
             _QTYPE_NAME_TO_GGUF_TYPE,
         )
@@ -49,7 +49,7 @@ class TestMappings:
 
     def test_fp16_canonical(self):
         """F16's reverse mapping should be the canonical 'gguf:fp16'."""
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             _QTYPE_NAME_TO_GGUF_TYPE,
         )
 
@@ -57,7 +57,7 @@ class TestMappings:
 
     def test_fp16_aliasing(self):
         """`gguf:fp16` and `gguf:f16` both map to F16."""
-        from auto_round.export.export_to_gguf.gguf_dtype import _GGUF_TYPE_TO_QTYPE_NAME
+        from auto_round.export.formats.gguf.gguf_dtype import _GGUF_TYPE_TO_QTYPE_NAME
 
         assert _GGUF_TYPE_TO_QTYPE_NAME["gguf:fp16"] == "F16"
         assert _GGUF_TYPE_TO_QTYPE_NAME["gguf:f16"] == "F16"
@@ -68,18 +68,18 @@ class TestMappings:
 # ---------------------------------------------------------------------------
 class TestTensorCategory:
     def test_values_are_strings(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import TensorCategory
+        from auto_round.export.formats.gguf.gguf_dtype import TensorCategory
 
         for c in TensorCategory:
             assert isinstance(c.value, str)
 
     def test_token_embd_value(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import TensorCategory
+        from auto_round.export.formats.gguf.gguf_dtype import TensorCategory
 
         assert TensorCategory.TOKEN_EMBD.value == "token_embd"
 
     def test_per_layer_token_embd_value(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import TensorCategory
+        from auto_round.export.formats.gguf.gguf_dtype import TensorCategory
 
         assert TensorCategory.TOKEN_EMBD.value == "token_embd"
         # _tensor_category recognizes the per-layer prefix, so verify behavior below.
@@ -90,7 +90,7 @@ class TestTensorCategory:
 # ---------------------------------------------------------------------------
 class TestTensorCategoryFunction:
     def test_output_weight(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             TensorCategory,
             _tensor_category,
         )
@@ -98,7 +98,7 @@ class TestTensorCategoryFunction:
         assert _tensor_category("output.weight") == TensorCategory.OUTPUT
 
     def test_token_embd(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             TensorCategory,
             _tensor_category,
         )
@@ -107,7 +107,7 @@ class TestTensorCategoryFunction:
         assert _tensor_category("per_layer_token_embd.weight") == TensorCategory.TOKEN_EMBD
 
     def test_attn_qkv(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             TensorCategory,
             _tensor_category,
         )
@@ -115,7 +115,7 @@ class TestTensorCategoryFunction:
         assert _tensor_category("blk.0.attn_qkv.weight") == TensorCategory.ATTENTION_QKV
 
     def test_attn_kv_b(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             TensorCategory,
             _tensor_category,
         )
@@ -123,7 +123,7 @@ class TestTensorCategoryFunction:
         assert _tensor_category("blk.0.attn_kv_b.weight") == TensorCategory.ATTENTION_KV_B
 
     def test_attn_q_k_v(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             TensorCategory,
             _tensor_category,
         )
@@ -133,7 +133,7 @@ class TestTensorCategoryFunction:
         assert _tensor_category("blk.0.attn_v.weight") == TensorCategory.ATTENTION_V
 
     def test_attn_output(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             TensorCategory,
             _tensor_category,
         )
@@ -141,7 +141,7 @@ class TestTensorCategoryFunction:
         assert _tensor_category("blk.0.attn_output.weight") == TensorCategory.ATTENTION_OUTPUT
 
     def test_ffn_up_gate_down(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             TensorCategory,
             _tensor_category,
         )
@@ -151,7 +151,7 @@ class TestTensorCategoryFunction:
         assert _tensor_category("blk.0.ffn_down.weight") == TensorCategory.FFN_DOWN
 
     def test_other(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             TensorCategory,
             _tensor_category,
         )
@@ -165,7 +165,7 @@ class TestTensorCategoryFunction:
 # ---------------------------------------------------------------------------
 class TestIsAttnVLike:
     def test_true_for_v_qkv_kv_b(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             TensorCategory,
             _is_attn_v_like,
         )
@@ -175,7 +175,7 @@ class TestIsAttnVLike:
         assert _is_attn_v_like(TensorCategory.ATTENTION_KV_B) is True
 
     def test_false_for_others(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import (
+        from auto_round.export.formats.gguf.gguf_dtype import (
             TensorCategory,
             _is_attn_v_like,
         )
@@ -192,15 +192,15 @@ class TestIsAttnVLike:
 class TestUseMoreBits:
     def test_first_eighth(self):
         """First 1/8 of layers should use more bits."""
-        from auto_round.export.export_to_gguf.gguf_dtype import _use_more_bits
+        from auto_round.export.formats.gguf.gguf_dtype import _use_more_bits
 
         # 8 layers: first 8/8=1 layer uses more bits
-        for i in range(0, 1):
+        for i in range(1):
             assert _use_more_bits(i, 8) is True
 
     def test_last_eighth(self):
         """Last 1/8 of layers should use more bits."""
-        from auto_round.export.export_to_gguf.gguf_dtype import _use_more_bits
+        from auto_round.export.formats.gguf.gguf_dtype import _use_more_bits
 
         # Last 1 of 8 layers
         assert _use_more_bits(7, 8) is True
@@ -213,14 +213,14 @@ class TestUseMoreBits:
           i=0 -> first eighth
           i=8 -> (8-2)%3=0 -> False
         """
-        from auto_round.export.export_to_gguf.gguf_dtype import _use_more_bits
+        from auto_round.export.formats.gguf.gguf_dtype import _use_more_bits
 
         # 16 layers, index 8 -> (8-2)%3 == 0
         assert _use_more_bits(8, 16) is False
 
     def test_use_more_bits_periodic(self):
         """``(i - n//8) % 3 == 2`` produces a periodic True pattern."""
-        from auto_round.export.export_to_gguf.gguf_dtype import _use_more_bits
+        from auto_round.export.formats.gguf.gguf_dtype import _use_more_bits
 
         # For n=24, n//8=3; check the predicate directly via formula
         # i=5 -> (5-3)%3 = 2 -> True
@@ -232,28 +232,28 @@ class TestUseMoreBits:
 # ---------------------------------------------------------------------------
 class TestGetLayerId:
     def test_blk_prefix_digits(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import _get_layer_id
+        from auto_round.export.formats.gguf.gguf_dtype import _get_layer_id
 
         assert _get_layer_id("blk.5.attn_q.weight", fallback=99) == 5
 
     def test_no_blk_prefix_returns_fallback(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import _get_layer_id
+        from auto_round.export.formats.gguf.gguf_dtype import _get_layer_id
 
         assert _get_layer_id("some.other.weight", fallback=42) == 42
 
     def test_single_segment_returns_fallback(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import _get_layer_id
+        from auto_round.export.formats.gguf.gguf_dtype import _get_layer_id
 
         assert _get_layer_id("weight", fallback=10) == 10
 
     def test_blk_zero(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import _get_layer_id
+        from auto_round.export.formats.gguf.gguf_dtype import _get_layer_id
 
         assert _get_layer_id("blk.0.attn_q.weight", fallback=99) == 0
 
     def test_blk_with_negative(self):
         """blk.-1 is not a digit-only part -> fallback."""
-        from auto_round.export.export_to_gguf.gguf_dtype import _get_layer_id
+        from auto_round.export.formats.gguf.gguf_dtype import _get_layer_id
 
         assert _get_layer_id("blk.-1.attn_q.weight", fallback=99) == 99
 
@@ -280,19 +280,19 @@ class TestGgufFormatToFtype:
         ],
     )
     def test_known_formats(self, format_name, expected_name):
-        from auto_round.export.export_to_gguf.gguf_dtype import gguf_format_to_ftype
+        from auto_round.export.formats.gguf.gguf_dtype import gguf_format_to_ftype
 
         ftype = gguf_format_to_ftype(format_name)
         assert ftype.name == expected_name
 
     def test_q2_k_mixed_renames(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import gguf_format_to_ftype
+        from auto_round.export.formats.gguf.gguf_dtype import gguf_format_to_ftype
 
         ftype = gguf_format_to_ftype("gguf:q2_k_mixed")
         assert ftype.name == "MOSTLY_Q2_K_S"
 
     def test_unknown_raises(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import gguf_format_to_ftype
+        from auto_round.export.formats.gguf.gguf_dtype import gguf_format_to_ftype
 
         with pytest.raises(ValueError):
             gguf_format_to_ftype("gguf:not_a_real_format")
@@ -303,7 +303,7 @@ class TestGgufFormatToFtype:
 # ---------------------------------------------------------------------------
 class TestGGUFDTypeSelector:
     def test_construction_stores_args(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector
+        from auto_round.export.formats.gguf.gguf_dtype import GGUFDTypeSelector
 
         hparams = {"num_hidden_layers": 24, "num_attention_heads": 8, "num_key_value_heads": 4}
         ftype = gguf.LlamaFileType.MOSTLY_Q4_K_M
@@ -314,7 +314,7 @@ class TestGGUFDTypeSelector:
         assert sel.i_ffn_down == 0
 
     def test_q2_k_s_uses_q4_k_for_first_eighth_ffn_down(self):
-        from auto_round.export.export_to_gguf.gguf_dtype import GGUFDTypeSelector
+        from auto_round.export.formats.gguf.gguf_dtype import GGUFDTypeSelector
 
         selector = GGUFDTypeSelector(
             {"num_hidden_layers": 8},
@@ -322,3 +322,44 @@ class TestGGUFDTypeSelector:
         )
 
         assert selector.select_qtype("blk.0.ffn_down.weight", n_dims=2) == gguf.GGMLQuantizationType.Q4_K
+
+
+class TestGGUFDTypeSelectorLLMType70B:
+    """llama.cpp gives attn_v of LLM_TYPE_70B models Q5_K instead of Q3_K/Q4_K."""
+
+    @staticmethod
+    def _attn_v_qtypes(model_arch, hparams, gguf_format):
+        from auto_round.export.formats.gguf.gguf_dtype import GGUFDTypeSelector, gguf_format_to_ftype
+
+        selector = GGUFDTypeSelector(hparams, gguf_format_to_ftype(gguf_format), model_arch)
+        n_layer = hparams["num_hidden_layers"]
+        return [selector.select_qtype(f"blk.{i}.attn_v.weight", n_dims=2) for i in range(n_layer)]
+
+    def test_llama_70b_attn_v_uses_q5_k(self):
+        hparams = {"num_hidden_layers": 80, "num_attention_heads": 64, "num_key_value_heads": 8}
+        qtypes = self._attn_v_qtypes(gguf.MODEL_ARCH.LLAMA, hparams, "gguf:q4_k_m")
+        # use_more_bits layers stay Q6_K, every other layer is bumped from Q4_K to Q5_K
+        assert set(qtypes) == {gguf.GGMLQuantizationType.Q5_K, gguf.GGMLQuantizationType.Q6_K}
+        assert gguf.GGMLQuantizationType.Q5_K in qtypes
+
+        qtypes = self._attn_v_qtypes(gguf.MODEL_ARCH.LLAMA, hparams, "gguf:q3_k_s")
+        assert set(qtypes) == {gguf.GGMLQuantizationType.Q5_K}
+
+    def test_qwen2_80_layers_attn_v_uses_q5_k(self):
+        hparams = {"num_hidden_layers": 80, "num_attention_heads": 64, "num_key_value_heads": 8}
+        qtypes = self._attn_v_qtypes(gguf.MODEL_ARCH.QWEN2, hparams, "gguf:q4_k_s")
+        assert set(qtypes) == {gguf.GGMLQuantizationType.Q5_K}
+
+    @pytest.mark.parametrize(
+        "model_arch, hparams",
+        [
+            # 80-layer LLaMA without GQA is LLM_TYPE_65B in llama.cpp
+            (gguf.MODEL_ARCH.LLAMA, {"num_hidden_layers": 80, "num_attention_heads": 64, "num_key_value_heads": 64}),
+            (gguf.MODEL_ARCH.LLAMA, {"num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8}),
+            (None, {"num_hidden_layers": 80, "num_attention_heads": 64, "num_key_value_heads": 8}),
+        ],
+    )
+    def test_other_models_keep_q4_k(self, model_arch, hparams):
+        qtypes = self._attn_v_qtypes(model_arch, hparams, "gguf:q4_k_s")
+        assert gguf.GGMLQuantizationType.Q4_K in qtypes
+        assert gguf.GGMLQuantizationType.Q5_K not in qtypes[4:]

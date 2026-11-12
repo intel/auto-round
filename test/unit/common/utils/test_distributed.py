@@ -5,7 +5,7 @@
 # You may obtain a copy of the License at
 #
 #    http://www.apache.org/licenses/LICENSE-2.0
-"""Unit tests for ``auto_round.utils.distributed``."""
+"""Unit tests for ``auto_round.parallel.distributed``."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -14,7 +14,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from auto_round.utils.distributed import (
+from auto_round.parallel.distributed import (
     _all_reduce_model_grads,
     _move_block_to_device,
     _noop_sync,
@@ -27,26 +27,32 @@ class TestIsDistributed:
     """Test is_distributed with mocked torch.distributed."""
 
     def test_not_initialized(self):
-        with patch("auto_round.utils.distributed.is_distributed", return_value=False):
-            with patch("torch.distributed.is_initialized", return_value=False):
-                # Clear cache to ensure fresh evaluation
-                is_distributed.cache_clear()
-                result = is_distributed()
-                assert result is False
+        with (
+            patch("auto_round.parallel.distributed.is_distributed", return_value=False),
+            patch("torch.distributed.is_initialized", return_value=False),
+        ):
+            # Clear cache to ensure fresh evaluation
+            is_distributed.cache_clear()
+            result = is_distributed()
+            assert result is False
 
     def test_initialized_single_device(self):
-        with patch("torch.distributed.is_initialized", return_value=True):
-            with patch("torch.distributed.get_world_size", return_value=1):
-                is_distributed.cache_clear()
-                result = is_distributed()
-                assert result is False
+        with (
+            patch("torch.distributed.is_initialized", return_value=True),
+            patch("torch.distributed.get_world_size", return_value=1),
+        ):
+            is_distributed.cache_clear()
+            result = is_distributed()
+            assert result is False
 
     def test_initialized_multi_device(self):
-        with patch("torch.distributed.is_initialized", return_value=True):
-            with patch("torch.distributed.get_world_size", return_value=4):
-                is_distributed.cache_clear()
-                result = is_distributed()
-                assert result is True
+        with (
+            patch("torch.distributed.is_initialized", return_value=True),
+            patch("torch.distributed.get_world_size", return_value=4),
+        ):
+            is_distributed.cache_clear()
+            result = is_distributed()
+            assert result is True
 
     def test_dist_not_initialized(self):
         with patch("torch.distributed.is_initialized", return_value=False):
@@ -55,18 +61,22 @@ class TestIsDistributed:
             is_distributed.cache_clear()
 
     def test_dist_initialized_single_world(self):
-        with patch("torch.distributed.is_initialized", return_value=True):
-            with patch("torch.distributed.get_world_size", return_value=1):
-                is_distributed.cache_clear()
-                assert is_distributed() is False
-                is_distributed.cache_clear()
+        with (
+            patch("torch.distributed.is_initialized", return_value=True),
+            patch("torch.distributed.get_world_size", return_value=1),
+        ):
+            is_distributed.cache_clear()
+            assert is_distributed() is False
+            is_distributed.cache_clear()
 
     def test_dist_initialized_multi_world(self):
-        with patch("torch.distributed.is_initialized", return_value=True):
-            with patch("torch.distributed.get_world_size", return_value=2):
-                is_distributed.cache_clear()
-                assert is_distributed() is True
-                is_distributed.cache_clear()
+        with (
+            patch("torch.distributed.is_initialized", return_value=True),
+            patch("torch.distributed.get_world_size", return_value=2),
+        ):
+            is_distributed.cache_clear()
+            assert is_distributed() is True
+            is_distributed.cache_clear()
 
 
 class TestNoopSync:
@@ -144,7 +154,7 @@ class TestSetupDdpIfNeeded:
     def test_non_distributed_returns_block_noop(self):
         model = nn.Linear(4, 4)
         ar = SimpleNamespace()
-        with patch("auto_round.utils.distributed.is_distributed", return_value=False):
+        with patch("auto_round.parallel.distributed.is_distributed", return_value=False):
             block, sync_fn = setup_ddp_if_needed_(ar, model, [0])
             assert block is model
             assert sync_fn is _noop_sync
@@ -153,7 +163,7 @@ class TestSetupDdpIfNeeded:
         """Device list is passed but distributed is off, so DDP not used."""
         model = nn.Linear(4, 4)
         ar = SimpleNamespace()
-        with patch("auto_round.utils.distributed.is_distributed", return_value=False):
+        with patch("auto_round.parallel.distributed.is_distributed", return_value=False):
             block, sync_fn = setup_ddp_if_needed_(ar, model, [0, 1])
             assert block is model
             assert sync_fn is _noop_sync
@@ -164,17 +174,19 @@ class TestSetupDdpIfNeeded:
             pytest.skip("CUDA not available")
         model = nn.Linear(4, 4).to("cpu")
 
-        with patch("torch.distributed.is_initialized", return_value=True):
-            with patch("torch.distributed.get_world_size", return_value=2):
-                with patch("torch.distributed.get_rank", return_value=0):
-                    with patch("torch.nn.parallel.DistributedDataParallel"):
-                        ar = SimpleNamespace()
-                        block, sync_fn = setup_ddp_if_needed_(ar, model, [0])
-                        assert sync_fn is _noop_sync
+        with (
+            patch("torch.distributed.is_initialized", return_value=True),
+            patch("torch.distributed.get_world_size", return_value=2),
+            patch("torch.distributed.get_rank", return_value=0),
+            patch("torch.nn.parallel.DistributedDataParallel"),
+        ):
+            ar = SimpleNamespace()
+            block, sync_fn = setup_ddp_if_needed_(ar, model, [0])
+            assert sync_fn is _noop_sync
 
     def test_single_device_returns_noop_when_distributed(self):
         """Test the multi-GPU case which doesn't need to move to GPU device."""
-        with patch("auto_round.utils.distributed.is_distributed", return_value=True):
+        with patch("auto_round.parallel.distributed.is_distributed", return_value=True):
             block = nn.Linear(4, 4)
             with patch("torch.distributed.get_rank", return_value=0):
                 # Use multi-device path which doesn't actually move to GPU
@@ -183,14 +195,14 @@ class TestSetupDdpIfNeeded:
             assert sync_fn is not _noop_sync
 
     def test_multi_device_uses_manual_reduce(self):
-        with patch("auto_round.utils.distributed.is_distributed", return_value=True):
+        with patch("auto_round.parallel.distributed.is_distributed", return_value=True):
             block = nn.Linear(4, 4)
             with patch("torch.distributed.get_rank", return_value=0):
                 block, sync_fn = setup_ddp_if_needed_(None, block, [0, 1])
             # Should return a custom sync function
             assert sync_fn is not _noop_sync
             # Calling sync_fn should call _all_reduce_model_grads
-            with patch("auto_round.utils.distributed._all_reduce_model_grads") as mock_reduce:
+            with patch("auto_round.parallel.distributed._all_reduce_model_grads") as mock_reduce:
                 sync_fn()
                 mock_reduce.assert_called_once()
 
@@ -201,12 +213,14 @@ class TestSetupDdpIfNeeded:
 
         model = nn.Linear(4, 4)
 
-        with patch("torch.distributed.is_initialized", return_value=True):
-            with patch("torch.distributed.get_world_size", return_value=4):
-                with patch("torch.distributed.get_rank", return_value=0):
-                    ar = SimpleNamespace()
-                    block, sync_fn = setup_ddp_if_needed_(ar, model, [0, 1])
-                    # Should not be the noop
-                    assert sync_fn is not _noop_sync
-                    # Calling it should not raise
-                    sync_fn()
+        with (
+            patch("torch.distributed.is_initialized", return_value=True),
+            patch("torch.distributed.get_world_size", return_value=4),
+            patch("torch.distributed.get_rank", return_value=0),
+        ):
+            ar = SimpleNamespace()
+            block, sync_fn = setup_ddp_if_needed_(ar, model, [0, 1])
+            # Should not be the noop
+            assert sync_fn is not _noop_sync
+            # Calling it should not raise
+            sync_fn()

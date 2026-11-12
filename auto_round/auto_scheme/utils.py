@@ -14,13 +14,14 @@
 import logging
 import math
 import re
+from collections.abc import Iterable
 from dataclasses import asdict, fields
-from typing import Iterable, Optional, Union
 
 import torch
 from accelerate import dispatch_model, infer_auto_device_map
 from accelerate.utils import get_balanced_memory
 
+from auto_round import envs
 from auto_round.logger import logger
 from auto_round.schemes import QuantizationScheme, preset_name_to_scheme, scheme_to_preset_name
 from auto_round.utils import (
@@ -39,12 +40,30 @@ from auto_round.utils import (
 _EXPERT_ID_PATTERN = re.compile(r"^(.*?\.experts\.\d+)(?:\.|$)")
 _ZERO_EPS = 1e-12
 
+# Projections that vLLM (and SGLang) fuse into a single kernel at serving time.
+# A fused kernel can only consume one quantization scheme, so every projection
+# inside a group below must be assigned identical bits/group_size/data_type.
+# AutoScheme applies these groups by default (see ``resolve_shared_layers``);
+# set ``AR_DISABLE_DEFAULT_SHARED_LAYERS=1`` or pass
+# ``AutoScheme(default_shared_layers=False)`` to opt out.
+VLLM_FUSED_SHARED_LAYERS: tuple[tuple[str, ...], ...] = (
+    # Attention: fused into ``qkv_proj``. Matching is by exact leaf name, so a
+    # checkpoint that already stores a fused ``kv_proj`` (k and v in one leaf)
+    # has no ``k_proj``/``v_proj`` leaves and simply forms no qkv group here;
+    # use ``shared_layers`` to align ``q_proj`` with such a ``kv_proj``.
+    ("q_proj", "k_proj", "v_proj"),
+    # DeepSeek-style MLA: fused into ``fused_qkv_a_proj``.
+    ("q_a_proj", "kv_a_proj_with_mqa"),
+    # MLP (dense and shared experts): fused into ``gate_up_proj``.
+    ("gate_proj", "up_proj"),
+)
+
 
 def apply_quant_scheme(
     model: torch.nn.Module,
     quant_layer_names: Iterable[str],
     fixed_layer_scheme: dict[str, dict],
-    scheme: Union[str, dict],  # TODO add scale_dtype
+    scheme: str | dict,  # TODO add scale_dtype
 ) -> None:
     """Apply a quantization scheme to each quantized layer.
 
@@ -91,7 +110,7 @@ def compute_avg_bits_for_scheme(
     model: torch.nn.Module,
     quant_layer_names: Iterable[str],
     fixed_layer_scheme: dict[str, dict],
-    scheme: Union[str, dict, None] = None,
+    scheme: str | dict | None = None,
     ignore_scale_zp_bits: bool = False,
     clean_scheme: bool = True,
 ) -> tuple[float, float]:
@@ -266,16 +285,17 @@ def merge_lists_unionfind(list_of_lists):
     return list(groups.values())
 
 
-def parse_shared_layers(model: torch.nn.Module, shared_patterns: Iterable[Iterable[str]]) -> list[list[str]]:
+def parse_shared_layers(model: torch.nn.Module, shared_patterns: Iterable[Iterable[str]] | None) -> list[list[str]]:
     """
     Parse shared layer groups based on regex or substring matches.
 
     Args:
         model (torch.nn.Module): The model whose modules will be analyzed.
-        shared_patterns (Iterable[Iterable[str]]):
+        shared_patterns (Iterable[Iterable[str]] | None):
             Each inner iterable defines one shared group. Each element can be:
               - a string: checked by full-name or substring match
               - a regex pattern: checked by re.fullmatch or re.search
+            ``None`` or an empty iterable yields no groups.
 
     Returns:
         list[list[str]]: A list of matched shared layer groups.
@@ -341,7 +361,77 @@ def parse_shared_layers(model: torch.nn.Module, shared_patterns: Iterable[Iterab
     return matched_groups
 
 
-def _expert_key_from_layer_name(layer_name: str) -> Optional[str]:
+def build_default_shared_layers(model: torch.nn.Module) -> list[list[str]]:
+    """Group the projections vLLM/SGLang fuse at serving time, per parent module.
+
+    Matching is done on the **exact leaf name** (never a substring), so a layer
+    such as ``q_proj_moe_gen`` or ``down_proj`` is never swept into a ``q_proj``
+    group. Grouping is per parent module, which naturally makes it block-local:
+    each ``self_attn`` gets its own q/k/v group and each ``mlp`` its own
+    gate/up group.
+
+    Returns:
+        list[list[str]]: Groups with more than one member, sorted for stability.
+    """
+    parent_to_leaf: dict[str, dict[str, str]] = {}
+    for name, module in model.named_modules():
+        if type(module) not in SUPPORTED_LAYER_TYPES:
+            continue
+        parent, _, leaf = name.rpartition(".")
+        parent_to_leaf.setdefault(parent, {})[leaf] = name
+
+    groups = []
+    for parent in sorted(parent_to_leaf):
+        leaves = parent_to_leaf[parent]
+        for fused_group in VLLM_FUSED_SHARED_LAYERS:
+            members = sorted(leaves[leaf] for leaf in fused_group if leaf in leaves)
+            if len(members) > 1:
+                groups.append(members)
+    return groups
+
+
+def resolve_shared_layers(
+    model: torch.nn.Module,
+    shared_patterns: Iterable[Iterable[str]] | None,
+    default_shared_layers: bool = True,
+) -> list[list[str]]:
+    """Resolve the effective ``shared_layers`` groups for AutoScheme.
+
+    Serving engines such as vLLM fuse ``q/k/v`` into ``qkv_proj`` and
+    ``gate/up`` into ``gate_up_proj``; a fused kernel can only apply one
+    quantization scheme, so those projections must share one scheme. Because
+    that is the deployment target for essentially every AutoScheme run, the
+    vLLM fusion groups (:data:`VLLM_FUSED_SHARED_LAYERS`, matched by exact leaf
+    name) are applied by default and unioned with any user-supplied
+    ``shared_patterns``.
+
+    Args:
+        model: The model whose modules will be analyzed.
+        shared_patterns: User-supplied groups (regex / full name), or ``None``.
+        default_shared_layers: Whether the built-in vLLM groups are enabled.
+            ``AR_DISABLE_DEFAULT_SHARED_LAYERS=1`` overrides this to ``False``
+            and acts as a global escape hatch.
+
+    Returns:
+        list[list[str]]: Disjoint groups of fully-qualified layer names.
+    """
+    use_default = default_shared_layers and not envs.AR_DISABLE_DEFAULT_SHARED_LAYERS
+    default_groups = build_default_shared_layers(model) if use_default else []
+
+    user_groups = parse_shared_layers(model, shared_patterns)
+    groups = merge_lists_unionfind(default_groups + user_groups) if user_groups else default_groups
+
+    if default_groups:
+        logger.info_once(
+            "AutoScheme: sharing one quantization scheme across vLLM-fused projections "
+            "(q/k/v, MLA q_a/kv_a, gate/up) by default. Set "
+            "AR_DISABLE_DEFAULT_SHARED_LAYERS=1 or "
+            "AutoScheme(default_shared_layers=False) to disable."
+        )
+    return groups
+
+
+def _expert_key_from_layer_name(layer_name: str) -> str | None:
     """Map one MoE-related linear layer to a unique expert key.
 
     Gate/up/down projections belonging to the same expert should map to one key.
@@ -489,7 +579,7 @@ def _fill_inactive_expert_scores(scores_dict: dict[str, list[float]], block_name
         if not active_expert_avg_losses:
             continue
         fill_value = sum(active_expert_avg_losses) / len(active_expert_avg_losses)
-        for _, expert_stats in expert_stats_map.items():
+        for expert_stats in expert_stats_map.values():
             if expert_stats["has_active"]:
                 continue
             for layer_name in expert_stats["layers"]:
@@ -500,8 +590,8 @@ def _log_score_summary_by_block_and_nonblock(
     scores_dict: dict[str, list[float]],
     block_names: list[str],
     model=None,
-    scheme_tag: Optional[str] = None,
-    summary_stage: Optional[str] = None,
+    scheme_tag: str | None = None,
+    summary_stage: str | None = None,
 ):
     """Log a per-block (and non-block) breakdown of ``scores_dict`` losses at debug level."""
     if not scores_dict:

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for ``auto_round/export/export_to_awq/utils.py``."""
+"""Tests for ``auto_round/export/formats/awq/utils.py``."""
 
 import pytest
 import torch
@@ -23,7 +23,7 @@ import torch.nn as nn
 # ---------------------------------------------------------------------------
 class TestUnpackAwq:
     def test_unpack_4bit_basic(self):
-        from auto_round.export.export_to_awq.utils import unpack_awq
+        from auto_round.export.formats.awq.utils import unpack_awq
 
         # 0x5B = 91 = 0b01011011.
         # Right-shifts by [0, 4, 8, 12, 16, 20, 24, 28] produce 8 successive
@@ -41,7 +41,7 @@ class TestUnpackAwq:
 
     def test_unpack_qzeros_none_raises(self):
         """If qzeros is None, the implementation requires a device for shifts."""
-        from auto_round.export.export_to_awq.utils import unpack_awq
+        from auto_round.export.formats.awq.utils import unpack_awq
 
         packed = torch.zeros((2, 1, 1), dtype=torch.int32)
         with pytest.raises(AttributeError):
@@ -53,7 +53,7 @@ class TestUnpackAwq:
 # ---------------------------------------------------------------------------
 class TestReverseAwqOrder:
     def test_reverse_identity(self):
-        from auto_round.export.export_to_awq.utils import reverse_awq_order
+        from auto_round.export.formats.awq.utils import reverse_awq_order
 
         iw = torch.arange(8, dtype=torch.int32).view(1, 8)
         int_zeros = torch.zeros(1, 8, dtype=torch.int32)
@@ -68,7 +68,7 @@ class TestReverseAwqOrder:
 # ---------------------------------------------------------------------------
 class TestDequantizeGemm:
     def test_zero_pack_zero_scale_returns_zeros(self):
-        from auto_round.export.export_to_awq.utils import dequantize_gemm
+        from auto_round.export.formats.awq.utils import dequantize_gemm
 
         # Pack all zeros, no quantization -> output should be 0 (zero - 0) * 1 = 0
         in_f, out_f, group_size = 8, 8, 8
@@ -85,7 +85,7 @@ class TestDequantizeGemm:
 # ---------------------------------------------------------------------------
 class TestWQLinearGEMM:
     def test_construction(self):
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+        from auto_round.export.formats.awq.utils import WQLinear_GEMM
 
         layer = WQLinear_GEMM(
             w_bit=4,
@@ -102,7 +102,7 @@ class TestWQLinearGEMM:
         assert layer.bias is not None
 
     def test_construction_no_bias(self):
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+        from auto_round.export.formats.awq.utils import WQLinear_GEMM
 
         layer = WQLinear_GEMM(
             w_bit=4,
@@ -116,7 +116,7 @@ class TestWQLinearGEMM:
 
     def test_construction_neg1_group(self):
         """group_size=-1 should be replaced with in_features."""
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+        from auto_round.export.formats.awq.utils import WQLinear_GEMM
 
         layer = WQLinear_GEMM(
             w_bit=4,
@@ -129,19 +129,19 @@ class TestWQLinearGEMM:
         assert layer.group_size == 8
 
     def test_invalid_w_bit_raises(self):
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+        from auto_round.export.formats.awq.utils import WQLinear_GEMM
 
         with pytest.raises(NotImplementedError):
             WQLinear_GEMM(w_bit=8, group_size=4, in_features=8, out_features=8, bias=False, dev="cpu")
 
     def test_infeatures_not_divisible_raises(self):
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+        from auto_round.export.formats.awq.utils import WQLinear_GEMM
 
         with pytest.raises(ValueError):
             WQLinear_GEMM(w_bit=4, group_size=4, in_features=9, out_features=8, bias=False, dev="cpu")
 
     def test_outfeatures_not_aligned_raises(self):
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+        from auto_round.export.formats.awq.utils import WQLinear_GEMM
 
         # out_features must be divisible by (32 // w_bit) = 8
         with pytest.raises(ValueError):
@@ -150,7 +150,7 @@ class TestWQLinearGEMM:
     def test_from_linear_init_only(self):
         from torch.nn import Linear
 
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+        from auto_round.export.formats.awq.utils import WQLinear_GEMM
 
         linear = Linear(8, 8, bias=True)
         layer = WQLinear_GEMM.from_linear(linear, w_bit=4, group_size=4, init_only=True)
@@ -162,7 +162,7 @@ class TestWQLinearGEMM:
     def test_from_linear_requires_scales_and_zeros(self):
         from torch.nn import Linear
 
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+        from auto_round.export.formats.awq.utils import WQLinear_GEMM
 
         linear = Linear(8, 8, bias=True)
         with pytest.raises(ValueError, match="scales"):
@@ -174,7 +174,7 @@ class TestWQLinearGEMM:
 # ---------------------------------------------------------------------------
 class TestModuleConstants:
     def test_reverse_order_table(self):
-        from auto_round.export.export_to_awq.utils import AWQ_REVERSE_ORDER
+        from auto_round.export.formats.awq.utils import AWQ_REVERSE_ORDER
 
         assert len(AWQ_REVERSE_ORDER) == 8
         # Permutation of 0..7
@@ -186,7 +186,7 @@ class TestModuleConstants:
 # ---------------------------------------------------------------------------
 class TestWQLinearMMFunction:
     def test_forward_shape(self):
-        from auto_round.export.export_to_awq.utils import WQLinearMMFunction
+        from auto_round.export.formats.awq.utils import WQLinearMMFunction
 
         in_f, out_f, group_size = 8, 8, 8
         qweight = torch.zeros((in_f, out_f // 8), dtype=torch.int32)

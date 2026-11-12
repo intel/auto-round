@@ -13,6 +13,7 @@
 # limitations under the License.
 from auto_round.autoround import AutoRound, AutoRoundAdam, AutoRoundDiffusion, AutoRoundLLM, AutoRoundMLLM
 from auto_round.algorithms.quantization.rtn.config import OptimizedRTNConfig, RTNConfig
+from auto_round.algorithms.quantization.rrq.config import RRQConfig
 from auto_round.algorithms.quantization.sign_round.config import (
     AdamRoundConfig,
     SignRoundConfig,
@@ -21,8 +22,11 @@ from auto_round.algorithms.quantization.sign_round.config import (
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.hadamard.config import RotationConfig
 from auto_round.algorithms.transforms.spinquant.preprocessor import SpinQuantConfig
+from auto_round.algorithms.transforms.teq.config import TEQConfig
 from auto_round.schemes import QuantizationScheme
 from auto_round.auto_scheme import AutoScheme
+from auto_round.parallel import ParallelConfig
+from auto_round.parallel.tp.launcher import quantize_and_save
 from auto_round.utils import LazyImport
 from auto_round.utils import monkey_patch
 
@@ -31,20 +35,44 @@ monkey_patch()
 from .version import __version__
 
 __all__ = [
-    "__version__",
+    "AWQConfig",
+    "AdamRoundConfig",
     "AutoRound",
-    "AutoRoundLLM",
-    "AutoRoundMLLM",
     "AutoRoundAdam",
     "AutoRoundDiffusion",
+    "AutoRoundLLM",
+    "AutoRoundMLLM",
     "AutoScheme",
-    "QuantizationScheme",
-    "RTNConfig",
     "OptimizedRTNConfig",
-    "SignRoundConfig",
-    "AdamRoundConfig",
-    "SignRoundV2Config",
-    "AWQConfig",
+    "ParallelConfig",
+    "QuantizationScheme",
+    "RRQConfig",
+    "RTNConfig",
     "RotationConfig",
+    "SignRoundConfig",
+    "SignRoundV2Config",
     "SpinQuantConfig",
+    "TEQConfig",
+    "__version__",
+    "generate_rrq_residual",
+    "load_rrq_model",
+    "quantize_and_save",
 ]
+
+
+def __getattr__(name):
+    """Lazy import for heavy submodules to avoid import cycles / slow startup.
+
+    Currently exposes ``load_rrq_model`` (combined base + residual RRQ loading)
+    and ``generate_rrq_residual`` (build residual from an existing base), both
+    of which live in the inference/export paths and pull in heavy imports.
+    """
+    if name == "load_rrq_model":
+        from auto_round.inference.rrq_model import load_rrq_model
+
+        return load_rrq_model
+    if name == "generate_rrq_residual":
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
+
+        return generate_rrq_residual
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

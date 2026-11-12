@@ -72,16 +72,16 @@ def get_formats(format: str, ar):
 
 __all__ = [
     "AutoAWQFormat",
-    "AutoRoundExportFormat",
     "AutoGPTQFormat",
+    "AutoRoundExportFormat",
     "AutoRoundFormat",
     "BackendDataType",
-    "FakeFormat",
     "FP8Format",
+    "FakeFormat",
     "GGUFFormat",
     "LLMCompressorFormat",
     "MLXFormat",
     "OutputFormat",
-    "resolve_formats",
     "get_formats",
+    "resolve_formats",
 ]

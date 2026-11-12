@@ -228,6 +228,35 @@ class TestToStandardRegex:
         # Must not raise when compiled
         _re.compile(to_standard_regex("plain_text"))
 
+    @pytest.mark.parametrize(
+        "pattern, matching, nonmatching",
+        [
+            ("layers.{3}mlp", "layers.3.mlp", "layers.33.mlp"),
+            ("layers.{2,3}mlp", "layers.3.mlp", "layers.333.mlp"),
+            ("layers.{3,}mlp", "layers.33.mlp", "layers3mlp"),
+            ("layer*s", "layerrs", "layexs"),
+        ],
+    )
+    def test_unanchored_quantifiers(self, pattern, matching, nonmatching):
+        import re as _re
+
+        from auto_round.utils.common import to_standard_regex
+
+        regex = to_standard_regex(pattern)
+        assert _re.search(regex, matching)
+        assert not _re.search(regex, nonmatching)
+
+    def test_regex_tokens_and_escapes_kept(self):
+        import re as _re
+
+        from auto_round.utils.common import to_standard_regex
+
+        name = "model.layers.3.mlp.gate"
+        for pattern in ("layers.+mlp", r"layers\.[0-9]+\.mlp", r"model\.layers\.3"):
+            assert _re.search(to_standard_regex(pattern), name), pattern
+        # Bare dots are still literal.
+        assert not _re.search(to_standard_regex("mlp.gate"), "mlpXgate")
+
 
 # ---------------------------------------------------------------------------
 # matches_any_regex
@@ -336,6 +365,12 @@ class TestParseLayerConfigArg:
         result = parse_layer_config_arg('{"bits": 4, "group_size": 128}')
         assert result == {"bits": 4, "group_size": 128}
 
+    def test_regex_key_with_json_invalid_escapes(self):
+        from auto_round.utils.common import parse_layer_config_arg
+
+        result = parse_layer_config_arg(r'{"layers\.\d{1,2}\.mlp": {"bits": 8, "group_size": 64}}')
+        assert result == {r"layers\.\d{1,2}\.mlp": {"bits": 8, "group_size": 64}}
+
     def test_cli_friendly_dict_syntax(self):
         from auto_round.utils.common import parse_layer_config_arg
 
@@ -375,7 +410,7 @@ class TestParseLayerConfigArg:
     def test_invalid_input_raises(self):
         from auto_round.utils.common import parse_layer_config_arg
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             parse_layer_config_arg("")
 
     def test_multi_key_unquoted_dict(self):

@@ -34,7 +34,7 @@ Two implementation backends share this one schema (method B):
 
 from __future__ import annotations
 
-from typing import Any, ClassVar, Optional
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -46,9 +46,9 @@ from auto_round.utils import logger
 
 __all__ = [
     "RotationConfig",
+    "dump_group_size_to_rotation_config",
     "normalize_rotation_config",
     "to_dict_rotation_config",
-    "dump_group_size_to_rotation_config",
 ]
 
 # Supported Hadamard transform types (also used by HadamardTransform registry).
@@ -75,7 +75,7 @@ class RotationConfig(AlgorithmConfig, BaseModel, BaseRotationConfig):
 
     # ---- shared ----
     backend: str = Field(default="auto")
-    block_size: Optional[int] = Field(default=None)
+    block_size: int | None = Field(default=None)
     hadamard_type: str = Field(default="hadamard")
     # Apply the Hadamard rotation per decoder block, in lock-step with block-wise
     # quantization, instead of rotating the whole model up-front. Honoured by the
@@ -84,7 +84,7 @@ class RotationConfig(AlgorithmConfig, BaseModel, BaseRotationConfig):
     layerwise: bool = Field(default=False)
 
     # ---- inplace-only ----
-    fuse_online_to_weight: Optional[bool] = Field(default=None)
+    fuse_online_to_weight: bool | None = Field(default=None)
     allow_online_rotation: bool = Field(default=True)
 
     # for random hadamard (transform path)
@@ -156,6 +156,9 @@ class RotationConfig(AlgorithmConfig, BaseModel, BaseRotationConfig):
             random_seed: Internal flag used by random Hadamard paths.
             **data: Additional Pydantic field values forwarded to BaseModel.
         """
+        from auto_round.algorithms.quantization.config import QuantizationConfig
+
+        QuantizationConfig.reject_scheme_arguments(data)
         super().__init__(**data)
 
     def can_compile_block_forward(self) -> bool:

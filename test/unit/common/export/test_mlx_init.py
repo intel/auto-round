@@ -5,22 +5,14 @@
 # You may obtain a copy of the License at
 #
 #    http://www.apache.org/licenses/LICENSE-2.0
-"""Unit tests for ``auto_round.export.export_to_mlx.__init__``."""
+"""MLX is exposed through the same interface as every output format."""
 
-from auto_round.export.export_to_mlx import __all__, pack_layer, save_quantized_as_mlx
+from auto_round.export.base import OutputFormat
+from auto_round.export.formats.mlx.format import MLXFormat
 
 
-class TestMlxInitExports:
-    """Verify __all__ and lazy import surface."""
-
-    def test_pack_layer_in_all(self):
-        assert "pack_layer" in __all__
-
-    def test_save_quantized_as_mlx_in_all(self):
-        assert "save_quantized_as_mlx" in __all__
-
-    def test_pack_layer_callable(self):
-        assert callable(pack_layer)
-
-    def test_save_quantized_as_mlx_callable(self):
-        assert callable(save_quantized_as_mlx)
+def test_mlx_implements_unified_interface():
+    assert issubclass(MLXFormat, OutputFormat)
+    assert callable(MLXFormat.pack_layer)
+    assert callable(MLXFormat.save_quantized)
+    assert not MLXFormat.__abstractmethods__

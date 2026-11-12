@@ -48,20 +48,18 @@ Only the block size (32 values) is required to divide the packed dimension;
 there is no ``32 % bits == 0`` constraint.
 """
 
-from typing import Optional
-
 import torch
 
 __all__ = [
     "AWQ_PACK_ORDER",
     "AWQ_REVERSE_ORDER",
     "SUPPORTED_PACKING_BITS",
-    "awq_reverse_reorder",
     "awq_reorder",
+    "awq_reverse_reorder",
     "pack_bitstream",
-    "unpack_bitstream",
     "packed_dim_size",
     "requires_generic_bit_packing",
+    "unpack_bitstream",
 ]
 
 # Weight bit-widths that ``pack_bitstream`` / ``unpack_bitstream`` handle.
@@ -240,7 +238,7 @@ def pack_scalar_zero(value: int, bits: int, num_words: int, shape, device=None) 
     return row.reshape(*(1,) * (len(shape) - 1), num_words).expand(*shape).contiguous()
 
 
-def infer_packed_bits(num_values: int, num_words: int) -> Optional[int]:
+def infer_packed_bits(num_values: int, num_words: int) -> int | None:
     """Best-effort recovery of ``bits`` from packed/unpacked dimension sizes."""
     if num_values <= 0 or num_words <= 0:
         return None

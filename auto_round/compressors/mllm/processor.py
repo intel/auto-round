@@ -565,8 +565,9 @@ class Mistral3Processor(BasicProcessor):
             file_path = hf_hub_download(repo_id=repo_id_or_path, filename=filename)
         with open(file_path, "r") as file:
             system_prompt = file.read()
-        today = datetime.today().strftime("%Y-%m-%d")
-        yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        now = datetime.now().astimezone()
+        today = now.strftime("%Y-%m-%d")
+        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         model_name = repo_id_or_path.split("/")[-1]
         return system_prompt.format(name=model_name, today=today, yesterday=yesterday)
 

@@ -38,7 +38,18 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
 
     QUANT_TYPE = "torch"
 
-    def __init__(self, bits, group_size, infeatures, outfeatures, bias, trainable=False, g_idx=False, **kwargs):
+    def __init__(
+        self,
+        bits,
+        group_size,
+        infeatures,
+        outfeatures,
+        bias,
+        trainable=False,
+        g_idx=False,
+        scale_dtype=torch.float16,
+        **kwargs,
+    ):
         super().__init__()
         if bits not in SUPPORTED_BITS:
             raise NotImplementedError(f"Only {','.join(map(str, SUPPORTED_BITS))} bits are supported.")
@@ -47,6 +58,7 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
         self.bits = bits
         self.group_size = group_size if group_size != -1 else infeatures
         self.maxq = 2**self.bits - 1
+        self.scale_dtype = scale_dtype
 
         self.register_buffer(
             "qweight",
@@ -71,7 +83,7 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
             "scales",
             torch.zeros(
                 (math.ceil(infeatures / self.group_size), outfeatures),
-                dtype=torch.float16,
+                dtype=self.scale_dtype,
             ),
         )
         if bias:
@@ -104,7 +116,7 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
-        self.scales = scales_t.clone().half()
+        self.scales = scales_t.clone().to(self.scales.dtype)
 
         W = linear.weight.data.to(device).clone()
         if type(linear) == nn.Conv2d:
@@ -165,7 +177,7 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
             zeros = int(min(max(zeros - 1, 0), self.maxq))
             shape = scales_t.shape
             value = 0
-            for j in range(0, (32 // self.bits)):
+            for j in range(32 // self.bits):
                 value |= zeros << (self.bits * j)
             qzeros = torch.ones((shape[0], shape[1] // 32 * self.bits), dtype=torch.int32) * value
             self.qzeros = qzeros.cpu()
@@ -175,7 +187,7 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
         scales_t = scales.t().contiguous()
         if linear.bias is not None:
             self.bias = linear.bias.clone().half()
-        self.scales = scales_t.clone().half()
+        self.scales = scales_t.clone().to(self.scales.dtype)
 
         W = linear.weight.data.to(device).clone()
         if type(linear) == nn.Conv2d:
@@ -303,11 +315,16 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
         else:
             raise ValueError(f"Only {','.join(map(str, SUPPORTED_BITS))} bits are supported.")
 
-    def forward(self, x):
-        out_shape = x.shape[:-1] + (self.outfeatures,)
-        x = x.reshape(-1, x.shape[-1])
-        x_dtype = x.dtype
+    def _dequantize(self) -> torch.Tensor:
+        """Dequantize the packed weights into a full ``(in, out)`` weight matrix.
 
+        Shared by :meth:`forward` and by multi-plane layers (e.g. RRQ) that need
+        the plain dequantized weights. The result is returned in float and the
+        caller casts it to the desired dtype before the matmul.
+
+        Symmetric convention: the stored ``qzeros`` is GPTQ's ``zp - 1`` grid, so
+        the unpacked value is offset by ``+1`` before the dequant math.
+        """
         if self.use_generic_bit_packing:
             # Generic bit-stream layout: unpack straight into 2-D tensors.
             zeros = unpack_bitstream(self.qzeros, self.bits, dim=1).reshape(self.scales.shape)
@@ -357,7 +374,7 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
         if weight.dim() == 3:
             weight = weight.reshape(weight.shape[0] * weight.shape[1], weight.shape[2])
         if hasattr(self, "g_idx"):
-            num_itr = self.g_idx.shape[0] // x.shape[-1]
+            num_itr = self.g_idx.shape[0] // self.infeatures
             num_dim = self.g_idx.shape[0] // num_itr
             weights = []
             for i in range(num_itr):
@@ -371,8 +388,14 @@ class QuantLinear(GenericBitPackingMixin, nn.Module):
             repeat_scales = self.scales.repeat_interleave(self.group_size, dim=0)
             repeat_zeros = zeros.repeat_interleave(self.group_size, dim=0)
             weights = repeat_scales * (weight - repeat_zeros)
+        return weights
 
-        weights = weights.to(x_dtype)
+    def forward(self, x):
+        out_shape = x.shape[:-1] + (self.outfeatures,)
+        x = x.reshape(-1, x.shape[-1])
+        x_dtype = x.dtype
+
+        weights = self._dequantize().to(x_dtype)
         out = torch.matmul(x, weights)
         out = out.to(x_dtype)
         out = out.reshape(out_shape)

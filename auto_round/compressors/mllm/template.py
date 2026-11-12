@@ -16,13 +16,12 @@ import json
 import os
 from dataclasses import dataclass
 from enum import Enum, unique
-from typing import Dict, List, Optional
 
 from auto_round.logger import logger
 
 from .processor import PROCESSORS, BasicProcessor
 
-TEMPLATES: Dict[str, "Template"] = {}
+TEMPLATES: dict[str, "Template"] = {}
 
 
 def fill_content(target, **kwargs):
@@ -50,7 +49,7 @@ class Template:
     format_observation: str
     format_separator: str
     default_system: str
-    replace_tokens: List[tuple]
+    replace_tokens: list[tuple]
     extra_encode: bool
     default_dataset: str
     processor: "BasicProcessor"
@@ -80,16 +79,16 @@ class Template:
 
 def _register_template(
     model_type: str,
-    format_user: Optional[str] = None,
-    format_assistant: Optional[str] = None,
-    format_system: Optional[str] = None,
-    format_function: Optional[str] = None,
-    format_observation: Optional[str] = None,
-    format_separator: Optional[str] = None,
+    format_user: str | None = None,
+    format_assistant: str | None = None,
+    format_system: str | None = None,
+    format_function: str | None = None,
+    format_observation: str | None = None,
+    format_separator: str | None = None,
     default_system: str = "",
-    replace_tokens: List[tuple] = None,
-    extra_encode: Optional[bool] = False,
-    default_dataset: Optional[bool] = "NeelNanda/pile-10k",
+    replace_tokens: list[tuple] | None = None,
+    extra_encode: bool | None = False,
+    default_dataset: bool | None = "NeelNanda/pile-10k",
     processor: "BasicProcessor" = PROCESSORS["basic"],
 ):
     """Registers a chat template."""

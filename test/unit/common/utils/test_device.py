@@ -81,8 +81,9 @@ class TestUseHpuCompileMode:
         from auto_round.utils.device import _use_hpu_compile_mode
 
         # Mock both is_hpu_lazy_mode and TORCH_VERSION_AT_LEAST_2_4 (imported inside function)
-        with patch("auto_round.utils.device.is_hpu_lazy_mode", return_value=False), patch.dict(
-            "sys.modules", {"auto_round.utils.common": MagicMock(TORCH_VERSION_AT_LEAST_2_4=True)}
+        with (
+            patch("auto_round.utils.device.is_hpu_lazy_mode", return_value=False),
+            patch.dict("sys.modules", {"auto_round.utils.common": MagicMock(TORCH_VERSION_AT_LEAST_2_4=True)}),
         ):
             result = _use_hpu_compile_mode()
             assert result is True
@@ -98,8 +99,9 @@ class TestUseHpuCompileMode:
         """Test compile mode False when torch < 2.4."""
         from auto_round.utils.device import _use_hpu_compile_mode
 
-        with patch("auto_round.utils.device.is_hpu_lazy_mode", return_value=False), patch.dict(
-            "sys.modules", {"auto_round.utils.common": MagicMock(TORCH_VERSION_AT_LEAST_2_4=False)}
+        with (
+            patch("auto_round.utils.device.is_hpu_lazy_mode", return_value=False),
+            patch.dict("sys.modules", {"auto_round.utils.common": MagicMock(TORCH_VERSION_AT_LEAST_2_4=False)}),
         ):
             result = _use_hpu_compile_mode()
             assert result is False
@@ -118,11 +120,13 @@ class TestBumpDynamoCacheLimit:
         mock_config.accumulated_cache_size_limit = 8
         mock_config.recompile_limit = 8
 
-        with patch.dict("sys.modules", {"torch._dynamo.config": mock_config}):
-            with patch("torch._dynamo.config", mock_config):
-                _bump_dynamo_cache_limit(min_size=32)
-                # Function should attempt to set values >= 32
-                # Best effort - it may or may not raise depending on imports
+        with (
+            patch.dict("sys.modules", {"torch._dynamo.config": mock_config}),
+            patch("torch._dynamo.config", mock_config),
+        ):
+            _bump_dynamo_cache_limit(min_size=32)
+            # Function should attempt to set values >= 32
+            # Best effort - it may or may not raise depending on imports
 
     def test_bump_without_value_uses_default(self):
         """Test _bump_dynamo_cache_limit without min_size uses env default."""
@@ -143,6 +147,60 @@ class TestBumpDynamoCacheLimit:
         finally:
             if original_dynamo is not None:
                 sys.modules["torch._dynamo"] = original_dynamo
+
+
+class TestEngagedCacheLimit:
+    """Test the engaged-device scaling of the dynamo cache limit."""
+
+    def test_limit_scales_with_engaged_devices(self, monkeypatch):
+        """Multi-device runs scale the cache limit; single-device keeps the plain default."""
+        dm = sys.modules["auto_round.utils.device_manager"]
+
+        monkeypatch.setenv("AR_DYNAMO_CACHE_SIZE_LIMIT", "16")
+        saved = dm.device_manager._device_list
+        try:
+            dm.device_manager._device_list = ["cuda:0", "cuda:1"]
+            assert dm._engaged_cache_limit() == 32
+            dm.device_manager._device_list = [f"cuda:{i}" for i in range(8)]
+            assert dm._engaged_cache_limit() == 128
+            dm.device_manager._device_list = ["cpu"]
+            assert dm._engaged_cache_limit() == 16
+            dm.device_manager._device_list = []
+            assert dm._engaged_cache_limit() == 16
+        finally:
+            dm.device_manager._device_list = saved
+
+    def test_compile_func_bumps_by_engaged_count(self, monkeypatch):
+        """ARDevice.compile_func bumps the dynamo limit through the scaled target."""
+        import torch as _torch
+
+        dm = sys.modules["auto_round.utils.device_manager"]
+
+        calls = []
+        saved_list = dm.device_manager._device_list
+        try:
+            monkeypatch.setenv("AR_DYNAMO_CACHE_SIZE_LIMIT", "10")
+            dm.device_manager._device_list = ["cuda:0", "cuda:1", "cuda:2"]
+
+            class _FakeDev:
+                type = "cuda"
+
+                @staticmethod
+                def is_torch_compile_supported():
+                    return True
+
+            fake = _FakeDev()
+            fake.compile_func = dm.ARDevice.compile_func.__get__(fake)
+            with (
+                patch("auto_round.utils.device._bump_dynamo_cache_limit") as bump,
+                patch.object(_torch, "compile", return_value=lambda *a, **k: None),
+            ):
+                fake.compile_func(lambda x: x)
+            calls.append(bump.call_args)
+            assert bump.call_args is not None
+            assert bump.call_args.args[0] == 30
+        finally:
+            dm.device_manager._device_list = saved_list
 
 
 class TestNumbaAndTbb:
@@ -765,9 +823,9 @@ class TestEstimateTuningBlockMem:
         input_ids = [torch.randn(1, 5)]
 
         result = estimate_tuning_block_mem(block, input_ids, 1)
-        assert (
-            len(result) == 4
-        )  # layer_memory_dict, layer_activation_memory, block_input_output_memory, additional_memory
+        assert len(result) == 6
+        # layer_memory_dict, layer_activation_memory, block_input_output_memory,
+        # additional_memory, per_device_activation, per_device_experts
 
 
 class TestIsGaudi2:
@@ -1125,17 +1183,19 @@ class TestDispatchModelBlockWise:
         # Multi-device path: provide 2 "cpu" entries so ``len(devices) > 1``.
         # After the inner loop dedupes, ``device == "cpu"`` is used to index
         # the mocked max_memory dict.
-        with patch(
-            "auto_round.utils.device.parse_available_devices",
-            return_value=["cpu", "cpu"],
-        ), patch(
-            "auto_round.utils.device.get_max_memory", return_value={"cpu": 1024}
-        ), patch("auto_round.utils.device.get_balanced_memory", return_value={"cpu": 512}), patch(
-            "auto_round.utils.device.infer_auto_device_map",
-            return_value={"0": "cpu"},
-        ) as mock_infer, patch(
-            "auto_round.utils.device.dispatch_model", return_value="MOCKED"
-        ) as mock_dispatch:
+        with (
+            patch(
+                "auto_round.utils.device.parse_available_devices",
+                return_value=["cpu", "cpu"],
+            ),
+            patch("auto_round.utils.device.get_max_memory", return_value={"cpu": 1024}),
+            patch("auto_round.utils.device.get_balanced_memory", return_value={"cpu": 512}),
+            patch(
+                "auto_round.utils.device.infer_auto_device_map",
+                return_value={"0": "cpu"},
+            ) as mock_infer,
+            patch("auto_round.utils.device.dispatch_model", return_value="MOCKED") as mock_dispatch,
+        ):
             result = dispatch_model_block_wise(model, device_map="cpu,cpu", max_mem_ratio=0.5)
             assert mock_infer.called
             assert mock_dispatch.called
@@ -1164,9 +1224,11 @@ class TestDispatchModelByAllAvailableDevices:
         from auto_round.utils.device import dispatch_model_by_all_available_devices
 
         model = MagicMock(spec=nn.Module)
-        with patch("auto_round.utils.device.get_balanced_memory", return_value={0: 1024}) as balanced, patch(
-            "auto_round.utils.device.infer_auto_device_map", return_value={"0": "cpu"}
-        ), patch("auto_round.utils.device.dispatch_model", return_value="AUTO_MODEL"):
+        with (
+            patch("auto_round.utils.device.get_balanced_memory", return_value={0: 1024}) as balanced,
+            patch("auto_round.utils.device.infer_auto_device_map", return_value={"0": "cpu"}),
+            patch("auto_round.utils.device.dispatch_model", return_value="AUTO_MODEL"),
+        ):
             with patch(
                 "auto_round.utils.device.parse_available_devices",
                 return_value=["cpu"],
@@ -1455,9 +1517,11 @@ class TestDumpMemoryUsageCtx:
     def test_context_manager_with_warning_level(self):
         from auto_round.utils.device import dump_memory_usage_ctx
 
-        with patch("auto_round.utils.device.logger.warning") as warn:
-            with dump_memory_usage_ctx(msg="warn-ctx", log_level="warning"):
-                pass
+        with (
+            patch("auto_round.utils.device.logger.warning") as warn,
+            dump_memory_usage_ctx(msg="warn-ctx", log_level="warning"),
+        ):
+            pass
         assert warn.called
 
     def test_decorator_runs_function(self):
@@ -1649,6 +1713,128 @@ class TestSetCudaVisibleDevicesExtra:
                 os.environ.pop("CUDA_VISIBLE_DEVICES", None)
 
 
+class TestSetVisibleDevicesBackendAgnostic:
+    """Backend-agnostic branches of ``set_visible_devices``.
+
+    A new backend only declares ``visible_devices_env_var``, so every branch
+    below (explicit backend, inferred backend, missing env var, non-numeric
+    specs, out-of-range index) is shared by all devices and must stay stable.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_env(self):
+        original = {k: os.environ.get(k) for k in ("CUDA_VISIBLE_DEVICES", "ZE_AFFINITY_MASK")}
+        try:
+            yield
+        finally:
+            for key, value in original.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_none_is_a_no_op(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        set_visible_devices(None)
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+    def test_empty_and_auto_are_no_ops(self):
+        from auto_round.utils.device import set_visible_devices
+
+        for device in ("", "auto", " ", "  auto  "):
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            set_visible_devices(device)
+            assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+    def test_explicit_backend_writes_its_own_env_var(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("ZE_AFFINITY_MASK", None)
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        set_visible_devices("0,1", device_type="xpu")
+        assert os.environ.get("ZE_AFFINITY_MASK") == "0,1"
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+    def test_backend_is_inferred_from_a_typed_spec(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("ZE_AFFINITY_MASK", None)
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        set_visible_devices("xpu:2")
+        assert os.environ.get("ZE_AFFINITY_MASK") == "2"
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+    def test_bare_backend_name_selects_index_zero(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        set_visible_devices("cuda")
+        assert os.environ.get("CUDA_VISIBLE_DEVICES") == "0"
+
+    def test_bare_numeric_falls_back_to_current_device(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        with patch(
+            "auto_round.utils.device.get_current_device_type",
+            return_value="cuda",
+        ):
+            set_visible_devices("3")
+        assert os.environ.get("CUDA_VISIBLE_DEVICES") == "3"
+
+    def test_backend_without_env_var_is_ignored(self):
+        """``cpu`` declares no ``visible_devices_env_var`` -> silent no-op."""
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        set_visible_devices("0", device_type="cpu")
+        assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+    def test_remaps_indices_through_existing_env_var(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6"
+        with patch("auto_round.utils.device.get_current_device_type", return_value="cuda"):
+            set_visible_devices("0,2")
+        assert os.environ.get("CUDA_VISIBLE_DEVICES") == "4,6"
+
+    def test_out_of_range_index_raises(self):
+        from auto_round.utils.device import set_visible_devices
+
+        os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"
+        with (
+            patch("auto_round.utils.device.get_current_device_type", return_value="cuda"),
+            pytest.raises(ValueError, match="smaller than the number of available devices"),
+        ):
+            set_visible_devices("0,5")
+
+    def test_alias_delegates_to_the_generic_helper(self):
+        from auto_round.utils import device as device_mod
+
+        with patch.object(device_mod, "set_visible_devices") as mock_set:
+            device_mod.set_cuda_visible_devices("0,1")
+            mock_set.assert_called_once_with("0,1", device_type="cuda")
+
+    def test_alias_stays_cuda_bound_off_cuda_hosts(self):
+        """The alias must target ``CUDA_VISIBLE_DEVICES`` on an XPU/HPU host.
+
+        Regression test: delegating without ``device_type`` inferred the active
+        backend, so on an XPU/HPU runner the alias silently wrote
+        ``ZE_AFFINITY_MASK`` / ``HABANA_VISIBLE_MODULES`` (or became a no-op on
+        CPU-only hosts) instead of ``CUDA_VISIBLE_DEVICES``.
+        """
+        from auto_round.utils.device import set_cuda_visible_devices
+
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        os.environ.pop("ZE_AFFINITY_MASK", None)
+        with patch("auto_round.utils.device.get_current_device_type", return_value="xpu"):
+            set_cuda_visible_devices("0")
+        assert os.environ.get("CUDA_VISIBLE_DEVICES") == "0"
+        assert "ZE_AFFINITY_MASK" not in os.environ
+
+
 # ===========================================================================
 # patch_xpu_sdpa_drop_causal_mask - more coverage
 # ===========================================================================
@@ -1720,12 +1906,13 @@ class TestFakeCudaForHpuExtra:
         from auto_round.utils.device import fake_cuda_for_hpu
 
         original = MagicMock(return_value=True)
-        with patch("auto_round.utils.device.is_hpex_available", return_value=True), patch(
-            "torch.cuda.is_available", original
+        with (
+            patch("auto_round.utils.device.is_hpex_available", return_value=True),
+            patch("torch.cuda.is_available", original),
+            fake_cuda_for_hpu(),
         ):
-            with fake_cuda_for_hpu():
-                # Should be temporarily faked.
-                pass
+            # Should be temporarily faked.
+            pass
             # After exit, original is restored.
             # We can't strictly assert identity due to dynamic restoration,
             # but should at least have called __exit__ without raising.
@@ -1738,13 +1925,15 @@ class TestFakeTritonForHpuExtra:
         from auto_round.utils.device import fake_triton_for_hpu
 
         # Create a fake triton module
-        with patch.dict(
-            sys.modules,
-            {"triton": MagicMock(), "triton.language": MagicMock()},
+        with (
+            patch.dict(
+                sys.modules,
+                {"triton": MagicMock(), "triton.language": MagicMock()},
+            ),
+            patch("auto_round.utils.device.is_hpex_available", return_value=True),
+            fake_triton_for_hpu(),
         ):
-            with patch("auto_round.utils.device.is_hpex_available", return_value=True):
-                with fake_triton_for_hpu():
-                    pass
+            pass
 
 
 # ===========================================================================
@@ -1753,10 +1942,21 @@ class TestFakeTritonForHpuExtra:
 class TestDeviceEnvironVariableMappingExtra:
     """Additional ``DEVICE_ENVIRON_VARIABLE_MAPPING`` tests."""
 
-    def test_is_dict(self):
+    def test_is_mapping(self):
+        from collections.abc import Mapping
+
         from auto_round.utils.device import DEVICE_ENVIRON_VARIABLE_MAPPING
 
-        assert isinstance(DEVICE_ENVIRON_VARIABLE_MAPPING, dict)
+        assert isinstance(DEVICE_ENVIRON_VARIABLE_MAPPING, Mapping)
+        assert "cuda" in DEVICE_ENVIRON_VARIABLE_MAPPING
+        assert DEVICE_ENVIRON_VARIABLE_MAPPING["cuda"] == "CUDA_VISIBLE_DEVICES"
+
+    def test_unknown_backend_raises_key_error(self):
+        from auto_round.utils.device import DEVICE_ENVIRON_VARIABLE_MAPPING
+
+        assert "not_a_backend" not in DEVICE_ENVIRON_VARIABLE_MAPPING
+        with pytest.raises(KeyError):
+            DEVICE_ENVIRON_VARIABLE_MAPPING["not_a_backend"]
 
     def test_mapping_values_nonempty(self):
         from auto_round.utils.device import DEVICE_ENVIRON_VARIABLE_MAPPING
@@ -1853,9 +2053,10 @@ class TestMallocTrimCounter:
         from auto_round.utils import device as device_mod
 
         device_mod._malloc_trim_counter = 0
-        with patch.dict(os.environ, {"AR_ENABLE_MALLOC_TRIM": "1"}, clear=False), patch(
-            "auto_round.utils.device.ctypes.CDLL"
-        ) as mock_cdll:
+        with (
+            patch.dict(os.environ, {"AR_ENABLE_MALLOC_TRIM": "1"}, clear=False),
+            patch("auto_round.utils.device.ctypes.CDLL") as mock_cdll,
+        ):
             mock_libc = MagicMock()
             mock_cdll.return_value = mock_libc
             from auto_round.utils.device import _maybe_trim_malloc
@@ -1870,11 +2071,14 @@ class TestMallocTrimCounter:
     def test_invalid_every_falls_back_to_default(self):
         from auto_round.utils.device import _maybe_trim_malloc
 
-        with patch.dict(
-            os.environ,
-            {"AR_ENABLE_MALLOC_TRIM": "1", "AR_MALLOC_TRIM_EVERY": "notanumber"},
-            clear=False,
-        ), patch("auto_round.utils.device.ctypes.CDLL") as mock_cdll:
+        with (
+            patch.dict(
+                os.environ,
+                {"AR_ENABLE_MALLOC_TRIM": "1", "AR_MALLOC_TRIM_EVERY": "notanumber"},
+                clear=False,
+            ),
+            patch("auto_round.utils.device.ctypes.CDLL") as mock_cdll,
+        ):
             mock_libc = MagicMock()
             mock_cdll.return_value = mock_libc
             _maybe_trim_malloc()
@@ -1885,11 +2089,14 @@ class TestMallocTrimCounter:
         from auto_round.utils import device as device_mod
         from auto_round.utils.device import _maybe_trim_malloc
 
-        with patch.dict(
-            os.environ,
-            {"AR_ENABLE_MALLOC_TRIM": "1", "AR_MALLOC_TRIM_EVERY": "0"},
-            clear=False,
-        ), patch("auto_round.utils.device.ctypes.CDLL") as mock_cdll:
+        with (
+            patch.dict(
+                os.environ,
+                {"AR_ENABLE_MALLOC_TRIM": "1", "AR_MALLOC_TRIM_EVERY": "0"},
+                clear=False,
+            ),
+            patch("auto_round.utils.device.ctypes.CDLL") as mock_cdll,
+        ):
             mock_libc = MagicMock()
             mock_cdll.return_value = mock_libc
 

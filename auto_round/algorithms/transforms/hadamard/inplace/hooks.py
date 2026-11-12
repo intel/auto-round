@@ -9,7 +9,6 @@ provides the hooks and a helper to register them on the model.
 """
 
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -23,19 +22,17 @@ except ImportError:
 def _resolve_compute_device(compute_device) -> torch.device:
     """Return *compute_device* if explicitly given, otherwise auto-detect GPU.
 
-    When ``compute_device`` is ``None`` the function checks for CUDA / XPU
-    availability and returns the first accelerator it finds so that heavy
-    matrix operations are offloaded to GPU even when the model weights live
-    on CPU.  Falls back to ``torch.device("cpu")`` when no accelerator is
-    present.
+    When ``compute_device`` is ``None`` the active accelerator reported by the
+    device manager is used, so heavy matrix operations are offloaded to it even
+    when the model weights live on CPU.  Backends excluded from implicit
+    selection (see ``ARDevice.auto_select_by_default``) and CPU-only hosts fall
+    back to ``torch.device("cpu")``.
     """
     if compute_device is not None:
         return torch.device(compute_device) if not isinstance(compute_device, torch.device) else compute_device
-    if torch.cuda.is_available():
-        return torch.device("cuda:0")
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        return torch.device("xpu:0")
-    return torch.device("cpu")
+    from auto_round.utils.device_manager import get_active_device
+
+    return get_active_device()
 
 
 BUILTIN_ROTATION_PRESETS = {"quarot_hadamard", "hadamard", "random_hadamard"}
@@ -156,11 +153,11 @@ class FullOnlineHadamardHook(nn.Module):
 
     def __init__(
         self,
-        had_K: Optional[torch.Tensor],
-        K: Optional[int],
+        had_K: torch.Tensor | None,
+        K: int | None,
         fp32_had: bool = False,
         use_fast_had: bool = True,
-        had_matrix: Optional[torch.Tensor] = None,
+        had_matrix: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.custom_had = had_matrix is not None
@@ -219,12 +216,12 @@ class CrossHeadOnlineHadamardHook(nn.Module):
 
     def __init__(
         self,
-        had_K: Optional[torch.Tensor],
-        K: Optional[int],
+        had_K: torch.Tensor | None,
+        K: int | None,
         head_dim: int,
         fp32_had: bool = False,
         use_fast_had: bool = True,
-        had_matrix: Optional[torch.Tensor] = None,
+        had_matrix: torch.Tensor | None = None,
     ) -> None:
         """
         Args:
@@ -613,7 +610,7 @@ class GroupOnlineHadamardHook(nn.Module):
         group_size: int,
         fp32_had: bool = False,
         use_fast_had: bool = True,
-        had_matrix: Optional[torch.Tensor] = None,
+        had_matrix: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.group_size = group_size
@@ -788,15 +785,7 @@ def register_online_had_hooks_grouped(model, mapping, group_size, fp32_had=False
 
     handles = []
     for name, module in model.named_modules():
-        if name.endswith(mlp_out_suffix) and isinstance(module, nn.Linear):
-            hook = GroupOnlineHadamardHook(
-                group_size=group_size,
-                fp32_had=fp32_had,
-                use_fast_had=use_fast_had,
-            )
-            h = module.register_forward_pre_hook(hook)
-            handles.append(h)
-        elif name.endswith(attn_o_suffix) and isinstance(module, nn.Linear):
+        if isinstance(module, nn.Linear) and name.endswith((mlp_out_suffix, attn_o_suffix)):
             hook = GroupOnlineHadamardHook(
                 group_size=group_size,
                 fp32_had=fp32_had,

@@ -29,7 +29,7 @@ def _is_nvfp4_value(value: Any) -> bool:
     return "nv_fp" in value or "nvfp4" in value
 
 
-def _has_nvfp4_layer(orchestrator: "BaseOrchestrator") -> bool:
+def _has_nvfp4_layer(orchestrator: BaseOrchestrator) -> bool:
     """Whether global or per-layer config enables any NVFP4 quantization."""
     if _is_nvfp4_value(getattr(orchestrator, "data_type", "")):
         return True

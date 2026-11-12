@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+from collections.abc import Callable
 from contextlib import nullcontext
 from functools import partial
-from typing import TYPE_CHECKING, Callable, Union
+from typing import TYPE_CHECKING
 
 import torch
 import transformers
@@ -22,10 +24,14 @@ from torch import autocast
 
 from auto_round.algorithms.quantization.sign_round.config import SignRoundConfig, SignRoundV2Config
 from auto_round.algorithms.quantization.sign_round.quantizer import SignRoundQuantizer
+from auto_round.algorithms.transforms.teq.protocol import apply_teq_equivalent_input_transform
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer
-from auto_round.algorithms.registry import register_pipeline_member
+    from auto_round.parallel.execution import ParallelCapabilities
+
+from auto_round import envs
+from auto_round.algorithms.registry import register_quantizer
 from auto_round.data_type.gguf import (
     double_quant_tensor_sym_rtn,
     quant_tensor_gguf_asym_dq,
@@ -38,6 +44,7 @@ from auto_round.data_type.utils import (
     get_optimized_quant_func,
     reshape_imatrix_for_weight,
     reshape_pad_tensor_by_group_size,
+    resolve_optimized_init_scale_fn,
     revert_tensor_by_pad,
     round_ste,
     search_optimized_init_scale,
@@ -62,7 +69,7 @@ def _dq_asym_qdq(tensor, scale, wmin, bits, group_size, v=0):
 
 def _dq_sym_qdq(tensor, scale, bits, v=0):
     """Pure sym double-quant qdq math given precomputed scale (compilable)."""
-    from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
+    from auto_round.export.formats.gguf.config import GGML_QUANT_SIZES, QK_K
 
     group_size = 16
     super_group_size = 16
@@ -99,31 +106,137 @@ def _dq_asym_group_size(bits: int) -> int:
 
 
 class SignRoundOptimizedWrapperLinear(WrapperLinear):
-    minmax_scale_bound = (0.0, 2.0)
+    supports_tensor_parallel = True
+    minmax_scale_bound = (0.1, 10.0)  # TODO widened from 2.0 for low-bit QAD; verify correctness
+    # Opt-in protocol for wrapper_block: the init-scale search is weight-local
+    # and row-independent, so same-shape modules can be searched as one stacked
+    # batch (bit-identical per module, far fewer python/launch round-trips).
+    supports_batched_search = True
 
-    def _init_tuning_params_and_quant_func(self):
-        super()._init_tuning_params_and_quant_func()
+    def _init_tuning_params_and_quant_func(self, defer_search: bool = False) -> None:
+        super()._init_tuning_params_and_quant_func(defer_search=defer_search)
+
+        # Log/geometric min-max tuning (opt-in): re-anchor the tunable min/max
+        # scale coefficients to log space so each SignSGD step is a symmetric
+        # multiplicative move. Only engages when the coefficients are actually
+        # trainable (``nn.Parameter``); constant/frozen coefficients keep the
+        # plain linear path (a constant 1.0 must not be passed through exp()).
+        self._use_log_minmax = False
+        _min_tunable = isinstance(getattr(self, "min_scale", None), torch.nn.Parameter)
+        _max_tunable = isinstance(getattr(self, "max_scale", None), torch.nn.Parameter)
+        if envs.AR_ENABLE_LOG_MINMAX and _min_tunable and _max_tunable:
+            self._use_log_minmax = True
+        warm_start = getattr(self.orig_layer, "_ar_warm_start", None) or {}
+        saved_log = warm_start.get("minmax_parameterization") == "log"
+        with torch.no_grad():
+            for key in ("min_scale", "max_scale"):
+                param = getattr(self, key)
+                if not isinstance(param, torch.nn.Parameter):
+                    continue
+                saved = warm_start.get(key)
+                compatible = saved is not None and saved.shape == param.shape
+                if self._use_log_minmax:
+                    if not compatible:
+                        # theta = 0 <-> coeff = exp(0) = 1.0
+                        param.zero_()
+                    elif not saved_log:
+                        param.clamp_min_(torch.finfo(param.dtype).tiny).log_()
+                elif compatible and saved_log:
+                    param.exp_()
 
         layer = self.orig_layer
         data_type = layer.data_type
-        weight_reshape = self._prepare_init_scale_weight()
-        imatrix = reshape_imatrix_for_weight(getattr(layer, "imatrix", None), weight_reshape, layer.group_size)
 
-        self.init_scale = search_optimized_init_scale(
-            weight_reshape, data_type, layer.bits, imatrix, self.q_scale_thresh
-        )
+        # Warm-start reuse: a prior pass (SignRound -> QAD chaining) may have
+        # stashed the searched ``init_scale`` on this layer. Reuse it verbatim so
+        # the second pass tunes on the exact same scale grid (re-searching here
+        # would differ because the imatrix was consumed/deleted in the first pass).
+        warm_start = getattr(layer, "_ar_warm_start", None)
+        warm_init_scale = warm_start.get("init_scale") if warm_start else None
+
+        weight_reshape = self._prepare_init_scale_weight()
+        # staged deferral keeps only the RAW column imatrix (or None): the
+        # expanded full-size copy would be pinned per module for the whole
+        # wrap phase -- N x weight bytes -- while the batched call needs it
+        # only transiently per chunk (bounded by the batch cap)
+        imatrix_raw = getattr(layer, "imatrix", None)
+        # The imatrix hook records the activation after the complete input
+        # equivalence transform, so no channel-wise correction belongs here.
+        imatrix = None if defer_search else reshape_imatrix_for_weight(imatrix_raw, weight_reshape, layer.group_size)
+
         self.weight_quant_func = get_optimized_quant_func(data_type)
-        if self.init_scale is None or self.weight_quant_func is None:
+        search_fn = resolve_optimized_init_scale_fn(data_type, self.q_scale_thresh)
+        if search_fn is None or self.weight_quant_func is None:
             raise ValueError(
                 f"SignRound optimized path does not support data_type={data_type!r}; "
                 "expected a symmetric int / mx / nv type."
             )
-
         self.data_type = data_type
+        self.init_scale = None
+        self._deferred_search_inputs = None
+        if warm_init_scale is not None:
+            # Warm-started from a prior pass: reuse the exact scale, skip any search.
+            self.init_scale = warm_init_scale.to(self.device)
+        elif defer_search:
+            # staged for run_batched_wrap_search: the exact callable the
+            # per-module path would invoke travels with the module
+            self._deferred_search_inputs = (
+                weight_reshape,
+                data_type,
+                layer.bits,
+                imatrix_raw,
+                self.q_scale_thresh,
+                search_fn,
+            )
+        else:
+            self.init_scale = search_fn(weight_reshape, layer.bits, imatrix)
+
         if hasattr(layer, "imatrix"):
             del layer.imatrix
+        self.weight_quant_func_eager = self.weight_quant_func
         if self.enable_torch_compile:
             self.weight_quant_func = compile_func(self.weight_quant_func, self.device)
+
+    def _prepare_minmax_scale(self, min_scale, max_scale):
+        """Return the multiplicative coefficients the quant func consumes.
+
+        In log mode the stored parameters are ``theta`` (SignSGD tunes them with
+        symmetric fixed steps); clamp them to the symmetric log bound and return
+        ``exp(theta)`` so the quant function still receives plain multiplicative
+        coefficients, while ``+lr``/``-lr`` steps become ``xe^lr``/``/e^lr``.
+        Gradients flow back through ``exp`` to the ``theta`` parameters.
+        """
+        if not getattr(self, "_use_log_minmax", False):
+            return super()._prepare_minmax_scale(min_scale, max_scale)
+        # The shared ``minmax_scale_bound`` is defined in Euclidean (coefficient)
+        # space; convert it to the log/theta clamp range here so both the linear
+        # and log paths read from one bound. ``log`` is undefined at <= 0, so when
+        # the linear bound starts at 0 fall back to a multiplicatively symmetric
+        # lower end (the reciprocal of the upper coefficient), keeping shrink/expand
+        # equidistant from the identity.
+        coeff_low, coeff_high = self.minmax_scale_bound
+        if coeff_low <= 0.0:
+            coeff_low = 1.0 / coeff_high
+        low, high = math.log(coeff_low), math.log(coeff_high)
+        min_scale.data.clamp_(low, high)
+        max_scale.data.clamp_(low, high)
+        return torch.exp(min_scale), torch.exp(max_scale)
+
+    def _run_deferred_search_now(self) -> None:
+        """Run the staged search per-module (fallback when batching is off)."""
+        # Warm-started wrappers (QAD chaining) resolve ``init_scale`` directly and
+        # stage no search inputs; there is nothing to run for them.
+        if self._deferred_search_inputs is None:
+            return
+        weight, _data_type, bits, imatrix_raw, _thresh, search_fn = self._deferred_search_inputs
+        imatrix = reshape_imatrix_for_weight(imatrix_raw, weight, self.orig_layer.group_size)
+        self.init_scale = search_fn(weight, bits, imatrix)
+        self._deferred_search_inputs = None
+
+    def finalize_batched_search(self, init_scale: "torch.Tensor | list[torch.Tensor]") -> None:
+        """Adopt a search result computed on a stacked same-shape batch."""
+        self.init_scale = init_scale
+        self._deferred_search_inputs = None
 
     def _prepare_init_scale_weight(self) -> torch.Tensor:
         """Return the group-reshaped weight that seeds the init-scale search.
@@ -139,6 +252,8 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
         weight = layer.get_weight() if hasattr(layer, "get_weight") else layer.weight
         if isinstance(layer, transformers.pytorch_utils.Conv1D):
             weight = weight.t()
+        weight = self._apply_teq_weight(weight)
+        weight = self._apply_equivalent_weight_transform(weight)
         weight_reshape, _, _ = reshape_pad_tensor_by_group_size(weight.data, layer.group_size)
 
         clip_min = getattr(layer, "awq_clip_min", None)
@@ -154,11 +269,71 @@ class SignRoundOptimizedWrapperLinear(WrapperLinear):
                 weight_reshape = torch.clamp(weight_reshape, clip_min, clip_max)
             else:
                 logger.warning_once(
-                    "SignRoundV2: ignoring AWQ clip range with shapes %s/%s incompatible with "
-                    "grouped weight shape %s."
-                    % (tuple(clip_min.shape), tuple(clip_max.shape), tuple(weight_reshape.shape))
+                    f"SignRoundV2: ignoring AWQ clip range with shapes {tuple(clip_min.shape)}/{tuple(clip_max.shape)} "
+                    f"incompatible with grouped weight shape {tuple(weight_reshape.shape)}."
                 )
         return weight_reshape
+
+
+class SignRoundOptimizedAsymWrapperLinear(SignRoundOptimizedWrapperLinear):
+    """Algorithm-extension wrapper for asymmetric INT weights.
+
+    The plain asym path seeds the grid from the raw per-group min/max
+    (``scale=(max-min)/maxq``, ``zp=round(-min/scale)``), which at low bit-widths
+    is a poor init: the step is too coarse for bell-shaped groups and the integer
+    zero-point rounding clips one side. This wrapper instead anchors the grid to an
+    imatrix-weighted joint ``(scale, zp)`` search (NeUQI), expressed as per-group
+    ``(tensor_min, tensor_max)`` margins that ``quant_tensor_asym`` reproduces
+    exactly, and -- unlike ``--enable_neuqi`` on the plain path -- keeps
+    ``min_scale``/``max_scale`` tunable around that anchor (both shrink and expand).
+    """
+
+    supports_tensor_parallel = True
+    minmax_scale_bound = (0.5, 1.5)
+    # The asymmetric anchor search runs inline and does not stage init-scale inputs.
+    supports_batched_search = False
+
+    def _init_tuning_params_and_quant_func(self, defer_search: bool = False):
+        layer = self.orig_layer
+        # Let the anchor below own the NeUQI search: disable the base wrapper's
+        # frozen-margin NeUQI branch so margins stay tunable and the search runs once.
+        enable_neuqi = self.enable_neuqi
+        self.enable_neuqi = False
+        try:
+            WrapperLinear._init_tuning_params_and_quant_func(self, defer_search=defer_search)
+        finally:
+            self.enable_neuqi = enable_neuqi
+        self.init_scale = None
+        self._asym_anchor = False
+
+        if self.weight_min is None or layer.bits >= 16 or isinstance(layer.group_size, tuple):
+            return
+
+        warm_start = getattr(layer, "_ar_warm_start", None)
+        if warm_start and warm_start.get("anchor_min") is not None and warm_start.get("anchor_max") is not None:
+            wmin = warm_start["anchor_min"].to(self.device, torch.float32)
+            wmax = warm_start["anchor_max"].to(self.device, torch.float32)
+        else:
+            from auto_round.data_type.neuqi import neuqi_anchor_margins
+
+            weight_reshape = self._prepare_init_scale_weight()
+            wmin, wmax = neuqi_anchor_margins(
+                weight_reshape,
+                layer.bits,
+                layer.group_size,
+                getattr(layer, "imatrix", None),
+                self.device,
+                sym=False,
+            )
+        if wmin.numel() != self.weight_min.numel() or wmax.numel() != self.weight_max.numel():
+            logger.warning_once("SignRoundV2 asym: anchor shape mismatch, falling back to min/max init.")
+            return
+        # Keep the anchor in fp32 so quant_tensor_asym re-derives the searched zp exactly.
+        self.weight_min = wmin.reshape(self.weight_min.shape).to(self.device, torch.float32)
+        self.weight_max = wmax.reshape(self.weight_max.shape).to(self.device, torch.float32)
+        self._asym_anchor = True
+        if hasattr(layer, "imatrix"):
+            del layer.imatrix
 
 
 class SignRoundDQWrapperLinear(WrapperLinear):
@@ -174,7 +349,9 @@ class SignRoundDQWrapperLinear(WrapperLinear):
         self.prev_d_scale = None
         self.prev_d_wmin = None
 
-    def _init_tuning_params_and_quant_func(self):
+    def _init_tuning_params_and_quant_func(self, defer_search: bool = False):
+        # the DQ scale search stays inline; the parameter keeps the base-class
+        # call signature uniform (staged batching applies to the optimized path)
         super()._init_tuning_params_and_quant_func()
         # The double-quant search path is data-dependent and kept un-compiled,
         # while ``weight_quant_func`` is the compilable pure-math half.
@@ -210,7 +387,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
 
     @torch.no_grad()
     def _run_search(self, weight, v):
-        from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES, QK_K
+        from auto_round.export.formats.gguf.config import GGML_QUANT_SIZES, QK_K
 
         bits = self.orig_layer.bits
         scale_dtype = self.orig_layer.scale_dtype
@@ -261,7 +438,7 @@ class SignRoundDQWrapperLinear(WrapperLinear):
             return super()._qdq_weight(value, min_scale, max_scale)
 
         if self.orig_layer.bits >= 16:
-            return self.orig_layer.weight, None, None
+            return super()._qdq_weight(value, min_scale, max_scale)
         min_bound, max_bound = self.minmax_scale_bound
         min_scale.data.clamp_(min_bound, max_bound)
         max_scale.data.clamp_(min_bound, max_bound)
@@ -270,6 +447,8 @@ class SignRoundDQWrapperLinear(WrapperLinear):
             weight = self.orig_layer.get_weight().to(self.device)
         if isinstance(self.orig_layer, transformers.pytorch_utils.Conv1D):
             weight = weight.t()
+        weight = self._apply_teq_weight(weight)
+        weight = self._apply_equivalent_weight_transform(weight)
 
         iter_v = getattr(self, "cur_iter", 0)
         need_search = (iter_v == 0) or (iter_v == -1) or (self.prev_scale is None)
@@ -318,9 +497,20 @@ class SignRoundDQWrapperLinear(WrapperLinear):
         return weight_q, scale_out, zp_out
 
 
-@register_pipeline_member(SignRoundV2Config)
+@register_quantizer(SignRoundV2Config)
 class SignRoundV2Quantizer(SignRoundQuantizer):
+    @classmethod
+    def parallel_capabilities(cls) -> "ParallelCapabilities":
+        """Retain SignRound's parallel contract for the V2 quantizer.
+
+        Returns:
+            ParallelCapabilities: The parallel capabilities inherited from SignRound.
+        """
+        return super().parallel_capabilities()
+
     """SignRound variant using the open algorithm-extension path in the new architecture."""
+
+    calibration_stats = {"imatrix": "sum"}
 
     def __init__(self, config: SignRoundConfig) -> None:
         super().__init__(config)
@@ -352,12 +542,25 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
             else:
                 self._use_outlier_suppressed_loss = False
             self.wrapper_block = _named_wrapper_block(SignRoundOptimizedWrapperLinear, "wrapper_block")
+        elif (
+            not self.scheme.sym
+            and self.scheme.super_group_size is None
+            and self.scheme.data_type == "int"
+            and self.scheme.bits < 16
+        ):
+            # Asym INT: searched (scale, zp) anchor + tunable margins, and the same
+            # outlier-suppressed block loss the sym path uses at low bits.
+            self._use_outlier_suppressed_loss = self.scheme.act_bits <= 4 or self.scheme.bits < 4
+            self.wrapper_block = _named_wrapper_block(SignRoundOptimizedAsymWrapperLinear, "wrapper_block")
 
         if self.scheme.data_type.endswith("dq"):
             self.wrapper_block = _named_wrapper_block(SignRoundDQWrapperLinear, "dq_wrapper_block")
 
     def can_compile_block_forward(self):
-        return False
+        # torch.compile on the whole block forward is only reliable on torch >= 2.13
+        from packaging.version import Version
+
+        return Version(torch.__version__.split("+")[0]) >= Version("2.13")
 
     def _get_loss(
         self,
@@ -365,7 +568,7 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
         ref_output: torch.Tensor,
         indices: torch.Tensor,
         mse_loss: Callable,
-        device: Union[str, torch.device] = "cpu",
+        device: str | torch.device = "cpu",
         valid_token_mask: list[torch.Tensor] | None = None,
     ):
         if self._use_outlier_suppressed_loss:
@@ -413,6 +616,10 @@ class SignRoundV2Quantizer(SignRoundQuantizer):
     def _register_imatrix_hooks(self, model):
         def collect_imatrix(module, input, output):
             input = input[0] if isinstance(input, (tuple, list)) else input
+            input = self.parallel.replicated(input)
+            # Match the final optimized QDQ activation basis without changing
+            # the FP block reference: rotate after x / alpha, never before it.
+            input = apply_teq_equivalent_input_transform(module, input)
             flattened = input.reshape(-1, input.shape[-1]).to(torch.float32)
             squared = torch.sum(torch.pow(flattened, 2), dim=0).to(torch.float32)
 

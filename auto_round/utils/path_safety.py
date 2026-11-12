@@ -38,12 +38,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path, PureWindowsPath
-from typing import Any, Dict
+from typing import Any
 
 __all__ = [
     "UnsafeCheckpointPathError",
-    "sanitize_shard_name",
     "resolve_within_directory",
+    "sanitize_shard_name",
     "validate_weight_map",
 ]
 
@@ -129,7 +129,7 @@ def validate_weight_map(
     base_dir: str | os.PathLike,
     *,
     index_path: str | os.PathLike | None = None,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Validate every shard reference in an artifact-provided ``weight_map``.
 
     Returns a new dict with the same keys and the same relative shard names, so it
@@ -144,7 +144,7 @@ def validate_weight_map(
             f"{label}: 'weight_map' must be a JSON object mapping tensor names to shards, "
             f"got {type(weight_map).__name__}"
         )
-    validated: Dict[str, str] = {}
+    validated: dict[str, str] = {}
     for tensor_name, shard_name in weight_map.items():
         resolve_within_directory(base_dir, shard_name, origin=f"{label}[{tensor_name}]")
         validated[tensor_name] = shard_name

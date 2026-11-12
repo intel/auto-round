@@ -82,7 +82,7 @@ class TestAutoSchemeW8AsymPolicy:
         return AutoScheme(options=["W8A16", "W4A16"], avg_bits=6.0)
 
     def _w8_option(self, scheme):
-        return [o for o in scheme.options if getattr(o, "bits", None) == 8][0]
+        return next(o for o in scheme.options if getattr(o, "bits", None) == 8)
 
     @pytest.mark.parametrize(
         "fmt,opt_in,expect_sym",

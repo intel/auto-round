@@ -18,6 +18,7 @@ import torch
 
 from auto_round.algorithms.transforms.hadamard import HADAMARDS, RotationConfig
 from auto_round.compressors.utils import is_mx_fp, is_nv_fp
+from auto_round.data_type.utils import calculate_fp8_e4m3_scale
 from auto_round.utils import logger
 
 SUPPORTED_QUANTIZATION_SCHEMES = ["MXFP8", "MXFP4", "NVFP4"]
@@ -67,7 +68,7 @@ def per_head_fp8_qdq(tensor: torch.Tensor, tensor_max: None | torch.Tensor = Non
     else:
         max_tensor = tensor_max.to(tensor.device, dtype=torch.float32)
 
-    scale = torch.clip(max_tensor / info.max, min=float(1.0 / (info.max * 512.0)))
+    scale = calculate_fp8_e4m3_scale(max_tensor)
     qdq_scale = scale.view(1, -1, 1, 1)
     fp8_res = torch.clip(tensor / qdq_scale, info.min, info.max)
     fp8_res = fp8_res.to(torch.float8_e4m3fn)
@@ -107,7 +108,7 @@ def update_parameter_data(module: torch.nn.Module, new_val: torch.Tensor, name: 
             module.register_parameter(name, torch.nn.Parameter(new_val))
     else:
         logger.warning_once(
-            "Parameter %s not found in module %s, creating new parameter." % (name, module.__class__.__name__)
+            f"Parameter {name} not found in module {module.__class__.__name__}, creating new parameter."
         )
         module.register_parameter(name, torch.nn.Parameter(new_val))
 

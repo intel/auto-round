@@ -13,7 +13,6 @@ linear-algebra helpers.
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -58,7 +57,7 @@ def is_pow2(n: int) -> bool:
     return n > 0 and (n & (n - 1)) == 0
 
 
-def get_hadamard_K(n: int) -> Tuple[torch.Tensor, int]:
+def get_hadamard_K(n: int) -> tuple[torch.Tensor, int]:
     """Get the Hadamard matrix and block dimension K for a given input size.
 
     For power-of-2 sizes, K=1 (full Walsh-Hadamard via butterfly).
@@ -98,7 +97,7 @@ def get_hadamard_K(n: int) -> Tuple[torch.Tensor, int]:
         )
 
 
-def matmul_hadU(X: torch.Tensor, hadamard_K: Optional[torch.Tensor] = None, K: Optional[int] = None) -> torch.Tensor:
+def matmul_hadU(X: torch.Tensor, hadamard_K: torch.Tensor | None = None, K: int | None = None) -> torch.Tensor:
     """Apply normalized Hadamard transform to the last dimension of X.
 
     Uses the efficient butterfly algorithm for power-of-2 dimensions,
@@ -171,19 +170,19 @@ except ImportError:
 
 
 __all__ = [
+    "InputRotationWrapperHadamard",
+    "apply_hadamard_to_linear",
+    "create_block_diag_from_head_matrix",
+    "deterministic_hadamard_matrix",
+    "fuse_rmsnorm_in_model",
+    "get_hadamard_K",
+    "get_model_arch_info",
+    "is_pow2",
+    "matmul_hadU",
+    "random_hadamard_matrix",
     "rotate_in_channels_",
     "rotate_out_channels_",
-    "fuse_rmsnorm_in_model",
     "untie_word_embeddings_if_needed",
-    "deterministic_hadamard_matrix",
-    "random_hadamard_matrix",
-    "is_pow2",
-    "get_hadamard_K",
-    "matmul_hadU",
-    "create_block_diag_from_head_matrix",
-    "apply_hadamard_to_linear",
-    "get_model_arch_info",
-    "InputRotationWrapperHadamard",
 ]
 
 
@@ -235,8 +234,8 @@ class InputRotationWrapperHadamard(nn.Module):
         self,
         original_module: nn.Linear,
         rotation_size: int,
-        hadamard_K: Optional[torch.Tensor] = None,
-        K: Optional[int] = None,
+        hadamard_K: torch.Tensor | None = None,
+        K: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -331,9 +330,9 @@ class InputRotationWrapperHadamard(nn.Module):
 
 def rotate_in_channels_(
     layer: nn.Linear,
-    rotation_matrix: Optional[torch.Tensor] = None,
-    R_in: Optional[torch.Tensor] = None,
-    rotated_modules: Optional[set] = None,
+    rotation_matrix: torch.Tensor | None = None,
+    R_in: torch.Tensor | None = None,
+    rotated_modules: set | None = None,
 ) -> None:
     """Fuse an input-side rotation into a linear layer's weight.
 
@@ -387,9 +386,9 @@ def rotate_in_channels_(
 
 def rotate_out_channels_(
     layer: nn.Linear,
-    rotation_matrix: Optional[torch.Tensor] = None,
-    R_out: Optional[torch.Tensor] = None,
-    rotated_modules: Optional[set] = None,
+    rotation_matrix: torch.Tensor | None = None,
+    R_out: torch.Tensor | None = None,
+    rotated_modules: set | None = None,
 ) -> None:
     """Fuse an output-side rotation into a linear layer's weight.
 

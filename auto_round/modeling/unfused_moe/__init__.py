@@ -143,11 +143,11 @@ def get_file_path_via_model_name(model_or_path: str, file_name):
     return index_path
 
 
-def pre_check_config(model_name: str | torch.nn.Module, trust_remote_code: bool = True):
+def pre_check_config(model_name: str | torch.nn.Module, trust_remote_code: bool = False):
     if isinstance(model_name, str):
         try:
             config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
-        except (OSError, EnvironmentError, ValueError):
+        except (OSError, ValueError):
             return False
     elif isinstance(model_name, torch.nn.Module):
         config = getattr(model_name, "config", None)
@@ -184,13 +184,13 @@ def pre_check_config(model_name: str | torch.nn.Module, trust_remote_code: bool 
 
 
 # This is for model checkpoint with linear definition
-def apply_model_monkey_patches(model_name: str, trust_remote_code: bool = True) -> bool:
+def apply_model_monkey_patches(model_name: str, trust_remote_code: bool = False) -> bool:
     res = pre_check_config(model_name, trust_remote_code=trust_remote_code)
     if not res:
         return False
     # patch blocks
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=trust_remote_code)
-    model_type = getattr(config, "model_type")
+    model_type = config.model_type
 
     cfg = MODEL_CONFIG[model_type]
     for orig_path, custom_path in cfg.get("block_patch", []):
@@ -226,7 +226,7 @@ def apply_modeling_patch(model: torch.nn.Module) -> bool:
     res = pre_check_config(model)
     if not res:
         return False
-    model_type = getattr(model.config, "model_type")
+    model_type = model.config.model_type
     cfg = MODEL_CONFIG[model_type]
     # patch blocks
     for orig_path, custom_path in cfg.get("block_patch", []):

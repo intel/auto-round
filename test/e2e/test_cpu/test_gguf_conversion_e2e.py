@@ -43,7 +43,6 @@ from test.e2e.test_cpu.conftest import (  # noqa: E402
     assert_non_garbage_output,
     record,
 )
-from typing import List, Optional
 
 import pytest
 
@@ -88,7 +87,7 @@ def _case_id(gguf_type: str) -> str:
 
 
 def _find_gguf(save_dir: str) -> str:
-    matches: List[str] = []
+    matches: list[str] = []
     for root, _, files in os.walk(save_dir):
         for name in files:
             if name.endswith(".gguf"):

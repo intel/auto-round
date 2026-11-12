@@ -186,7 +186,7 @@ def quant_matmul_248_kernel(
     zeros_shifter = (offs_bn % infearure_per_bits) * bits
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
-    for k in range(0, num_pid_k):
+    for k in range(num_pid_k):
         g_idx = tl.load(g_ptrs)
 
         # Fetch scales and zeros; these are per-outfeature and thus reused in the inner loop
@@ -348,7 +348,7 @@ def transpose_quant_matmul_248_kernel(
     zeros_shifter = (offs_n % infearure_per_bits) * bits
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_K), dtype=tl.float32)
 
-    for k in range(0, num_pid_n):
+    for k in range(num_pid_n):
         # Fetch scales and zeros; these are per-outfeature and thus reused in the inner loop
         scales = tl.load(scales_ptrs)  # (BLOCK_SIZE_K, BLOCK_SIZE_N,)
         zeros = tl.load(zeros_ptrs)  # (BLOCK_SIZE_K, BLOCK_SIZE_N,)

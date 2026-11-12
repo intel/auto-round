@@ -1,9 +1,11 @@
 # 1.5.1<accelerate<1.10.0 may cause potentially high RAM usage; versions 1.10.0 or above are recommended.
 accelerate
 datasets
+filelock
 numpy
 py-cpuinfo
 torch
 tqdm
 transformers>=4.38
 pydantic
+requests

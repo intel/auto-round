@@ -82,7 +82,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
         super().__init__(config)
 
     @classmethod
-    def from_config(cls, config: dict | RotationConfig) -> "HadamardRotation":
+    def from_config(cls, config: dict | RotationConfig) -> HadamardRotation:
         """Build a :class:`HadamardRotation` from a raw dict or :class:`RotationConfig`."""
         if isinstance(config, dict):
             config = RotationConfig.model_validate(config)
@@ -143,7 +143,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
                 fuse_online_to_weight=fuse_online_to_weight,
                 compute_device=compute_device,
             )
-            setattr(model, "_rotation_config", cfg)
+            model._rotation_config = cfg
             return model
 
         # backend == "transform": original per-Linear triton-fused path.
@@ -159,7 +159,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
             _apply_to_module(model, module, cfg, location, data_type)
 
         # Store config on model for serialisation / downstream inspection.
-        setattr(model, "_rotation_config", cfg)
+        model._rotation_config = cfg
         return model
 
     # ------------------------------------------------------------------
@@ -188,9 +188,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
         cfg = self.config
         backend = getattr(cfg, "backend", "auto")
         hadamard_type = getattr(cfg, "hadamard_type", "") or ""
-        if backend == "inplace" or "inplace" in hadamard_type:
-            return False
-        return True
+        return not (backend == "inplace" or "inplace" in hadamard_type)
 
     def prepare_layerwise(
         self,
@@ -198,7 +196,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
         data_type: str = "mx_fp",
         location: str = "weight",
         **kwargs: Any,
-    ) -> "HadamardRotation":
+    ) -> HadamardRotation:
         """Prepare for per-block Hadamard rotation without touching weights.
 
         The per-Linear Hadamard needs no global pre-computation — matrices are
@@ -219,7 +217,7 @@ class HadamardRotation(BaseRotation, SerializerMixin):
             )
         self._layerwise_location = location
         self._layerwise_data_type = data_type
-        setattr(model, "_rotation_config", self.config)
+        model._rotation_config = self.config
         return self
 
     def rotate_layer(
@@ -391,6 +389,7 @@ def _apply_weight_transform(
         patch_wrapperlinear_to_apply_transform,
         patch_wrapperwalayer_forward_to_apply_transform,
     )
+    from auto_round.algorithms.transforms.teq.protocol import set_teq_equivalent_transforms
 
     assert hasattr(module, "weight"), "Weight transform requires module to have a 'weight' attribute"
 
@@ -404,7 +403,10 @@ def _apply_weight_transform(
     if config.hadamard_type == "random_hadamard":
         from auto_round.algorithms.transforms.hadamard.patch import patch_quantlinear as _patch_ql
 
-        _patch_ql(w_transform)
+        # ``patch_quantlinear`` reads the per-layer protocol when packing, so
+        # registration can happen after both transform sides are published.
+        # Do not capture this first layer's random matrix in a class-level
+        # closure: each layer needs its own matrix.
 
     # Patch WrapperLinear and WrapperWALayer so the transform is applied
     # during calibration tuning.
@@ -416,8 +418,16 @@ def _apply_weight_transform(
         precision=module.weight.dtype,
     )
 
+    # The final AutoRound wrapper and TEQ's temporary fake-QDQ wrapper must
+    # see the identical per-layer rotation pair.  This is metadata rather than
+    # a registered submodule, so it neither changes model topology nor leaks
+    # calibration-only transform tensors into exported state dicts.
+    set_teq_equivalent_transforms(module, weight=w_transform, input=inp_transform)
+
     patch_wrapperlinear_to_apply_transform(w_transform, inp_transform)
     patch_wrapperwalayer_forward_to_apply_transform(inp_transform)
+    if config.hadamard_type == "random_hadamard":
+        _patch_ql(w_transform)
 
 
 # ---------------------------------------------------------------------------

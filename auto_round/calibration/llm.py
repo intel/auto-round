@@ -18,9 +18,10 @@ Implements ``try_cache_inter_data_gpucpu`` / ``cache_inter_data`` /
 ``self.compressor.X``.
 """
 
+import sys
 import traceback
+from collections.abc import Callable
 from functools import partial
-from typing import Callable
 
 import accelerate
 import torch
@@ -46,7 +47,7 @@ from auto_round.utils import (
     to_dtype,
 )
 from auto_round.utils.device import parse_available_devices
-from auto_round.utils.device_manager import device_manager
+from auto_round.utils.device_manager import device_manager, get_ar_device
 
 
 @register_calibrator("llm")
@@ -72,6 +73,12 @@ class LLMCalibrator(Calibrator):
         block_names = flatten_list(block_names)
         self.blocks_requiring_input_ids = [data if isinstance(data, str) else data[0] for data in block_names]
 
+        if self.parallel.is_tp:
+            from auto_round.utils.model import get_block_names
+
+            with self.parallel.streamed_model(self.model, get_block_names(self.model)):
+                return self.cache_inter_data(block_names, nsamples, layer_names, last_cache_name)
+
         calibrate_on_cpu = False
         cannot_calibrate_on_cpu = False
         if self.low_gpu_mem_usage or (
@@ -90,7 +97,7 @@ class LLMCalibrator(Calibrator):
                 if "flash_attn::" in error_msg and "CPU" in error_msg:
                     cannot_calibrate_on_cpu = True
                 else:
-                    raise error
+                    raise
 
         if not calibrate_on_cpu or cannot_calibrate_on_cpu:
             try:
@@ -100,7 +107,10 @@ class LLMCalibrator(Calibrator):
                 if hasattr(self.model, "hf_device_map") and len(self.model.hf_device_map) > 1:
                     dispatch_model(self.model, device_map=self.model.hf_device_map)
                 else:
-                    if str(self.model.device) == "cpu" and (not device_manager.device.startswith("hpu")):
+                    if (
+                        str(self.model.device) == "cpu"
+                        and get_ar_device(device_manager.device).supports_device_map_dispatch
+                    ):
                         no_split_modules = list(getattr(self.model, "_no_split_modules", []))
                         devices = parse_available_devices(device_manager.device_map)
 
@@ -178,7 +188,7 @@ class LLMCalibrator(Calibrator):
 
             except torch.OutOfMemoryError as e:
                 if cannot_calibrate_on_cpu:
-                    raise e
+                    raise
                 cuda_error_msg = traceback.format_exc()
                 try:
                     logger.info("switch to cpu to cache block inputs")
@@ -280,6 +290,119 @@ class LLMCalibrator(Calibrator):
             hook_handle.remove()
         self.hook_handles = []
 
+    def _mask_ids_for_loss(self, input_ids: torch.Tensor, attention_mask=None) -> torch.Tensor:
+        """Return a copy of ``input_ids`` with loss-ignored positions set to ``-100``.
+
+        Only padding is ignored. Causal losses shift these labels themselves,
+        so the final non-padding token must remain a supervision target.
+        """
+        ids_to_cache = input_ids.clone()
+        if ids_to_cache.dim() == 1:
+            ids_to_cache = ids_to_cache.unsqueeze(0)
+        if attention_mask is not None:
+            ids_to_cache.masked_fill_(attention_mask.to(ids_to_cache.device) == 0, -100)
+        elif self.tokenizer is not None and getattr(self.tokenizer, "pad_token_id", None) is not None:
+            # With a shared PAD/EOS id only an explicit mask can distinguish
+            # padding from real separators or the final EOS target.
+            if self.tokenizer.pad_token_id != getattr(self.tokenizer, "eos_token_id", None):
+                ids_to_cache[ids_to_cache == self.tokenizer.pad_token_id] = -100
+        else:
+            # Heuristic: trailing repeated tokens are treated as padding.
+            for b in range(ids_to_cache.shape[0]):
+                last_token = ids_to_cache[b, -1].item()
+                j = ids_to_cache.shape[1] - 2
+                while j >= 0 and input_ids.reshape(ids_to_cache.shape)[b, j] == last_token:
+                    ids_to_cache[b, j + 1] = -100
+                    j -= 1
+        return ids_to_cache
+
+    def _model_input_samples(self, input_ids, attention_mask=None):
+        """Keep forward inputs separate from labels, including internal EOS tokens."""
+        input_ids = input_ids.detach().to("cpu", copy=True)
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
+            pad = getattr(self.tokenizer, "pad_token_id", None)
+            eos = getattr(self.tokenizer, "eos_token_id", None)
+            if pad is not None and pad != eos:
+                attention_mask = (input_ids != pad).long()
+        else:
+            attention_mask = attention_mask.detach().to("cpu", copy=True).reshape(input_ids.shape)
+        labels = self._mask_ids_for_loss(input_ids, attention_mask)
+        return [
+            {"input_ids": ids, "attention_mask": mask, "labels": target}
+            for ids, mask, target in zip(input_ids.split(1), attention_mask.split(1), labels.split(1))
+        ]
+
+    @torch.no_grad()
+    def collect_token_ids(self, nsamples: int, *, include_model_inputs=False) -> list:
+        """Collect ``nsamples`` raw calibration token-id samples WITHOUT running the model.
+
+        Used by whole-model algorithms (e.g. QAD) that only need token ids and
+        may want a different sample count than the block-wise calibration
+        (e.g. ``sign_round,qad`` with ``qad_nsamples != nsamples``). The ids are
+        masked with ``-100`` exactly like the ``input_ids`` cached by :meth:`calib`.
+        With ``include_model_inputs=True``, return original ``input_ids``,
+        ``attention_mask`` and separate ``labels`` for whole-model forwards.
+        """
+        from auto_round.calib_dataset import get_dataloader
+        from auto_round.utils.dataset_utils import strip_dataset_spec_whitespace
+
+        if isinstance(self.dataset, str):
+            dataloader = get_dataloader(
+                self.tokenizer,
+                self.seqlen,
+                strip_dataset_spec_whitespace(self.dataset),
+                self.seed,
+                self.batch_size,
+                nsamples,
+                trust_remote_code=self.trust_remote_code,
+            )
+        else:
+            dataloader = self.dataset
+        if dataloader.__class__.__name__ == "BatchEncoding":
+            dataloader = [dataloader.data]
+
+        token_ids: list = []
+        for data in dataloader:
+            if data.__class__.__name__ == "BatchEncoding":
+                data = data.data
+            if data is None:
+                continue
+            attention_mask = None
+            if isinstance(data, torch.Tensor):
+                input_ids = data
+            elif isinstance(data, str):
+                if self.tokenizer is None:
+                    raise ValueError("please provide tokenizer for string input")
+                encoded = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt")
+                input_ids = encoded["input_ids"]
+                attention_mask = encoded.get("attention_mask")
+            elif isinstance(data, (tuple, list)):
+                input_ids = data[0]
+            else:
+                input_ids = data["input_ids"]
+                attention_mask = data.get("attention_mask")
+            if input_ids.dim() == 1:
+                input_ids = input_ids.unsqueeze(0)
+            if input_ids.shape[-1] < self.seqlen:
+                continue
+            if include_model_inputs:
+                token_ids.extend(self._model_input_samples(input_ids, attention_mask))
+            else:
+                ids = self._mask_ids_for_loss(input_ids.to("cpu"), attention_mask)
+                token_ids.extend(list(torch.split(ids, 1, dim=0)))
+            if len(token_ids) >= nsamples:
+                break
+        token_ids = token_ids[:nsamples]
+        if len(token_ids) < nsamples:
+            logger.warning_once(
+                f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
+                f"Target samples count is {nsamples}, while valid samples count is {len(token_ids)}"
+            )
+        return token_ids
+
     @torch.no_grad()
     def calib(self, nsamples: int, bs: int) -> None:
         """Drive the model with text data so block hooks fire.
@@ -287,11 +410,14 @@ class LLMCalibrator(Calibrator):
         Verbatim port of the legacy ``Compressor.calib`` (LLM path only).
         """
         from auto_round.calib_dataset import get_dataloader
+        from auto_round.utils.dataset_utils import strip_dataset_spec_whitespace
 
         need_attention_mask = True
         if isinstance(self.dataset, str):
             need_attention_mask = False  # all supported datasets do not use pad
-            dataset = self.dataset.replace(" ", "")  # remove all whitespaces
+            # Strip only cosmetic whitespace; spaces inside option values
+            # (e.g. separator / template / system_prompt) are preserved.
+            dataset = strip_dataset_spec_whitespace(self.dataset)
 
             # slow here
             self.dataloader = get_dataloader(
@@ -301,10 +427,12 @@ class LLMCalibrator(Calibrator):
                 self.seed,
                 bs,
                 nsamples,
+                trust_remote_code=self.trust_remote_code,
             )
         else:
             self.dataloader = self.dataset
         total_cnt = 0
+        self.model_input_samples = []
         if self.dataloader.__class__.__name__ == "BatchEncoding":
             self.dataloader = [self.dataloader.data]
 
@@ -319,13 +447,13 @@ class LLMCalibrator(Calibrator):
             elif isinstance(data, str):
                 if self.tokenizer is None:
                     logger.error("please provide tokenizer for string input")
-                    exit(-1)
+                    sys.exit(-1)
                 data = self.tokenizer(data, truncation=True, max_length=self.seqlen, return_tensors="pt").data
                 data_new = {}
                 for key in data.keys():
                     data_new[key] = data[key].to(self.model.device)
                 input_ids = data_new["input_ids"]
-            elif isinstance(data, tuple) or isinstance(data, list):
+            elif isinstance(data, (tuple, list)):
                 data_new = to_device(data, self.model.device)
                 input_ids = data_new[0]
             else:
@@ -337,27 +465,13 @@ class LLMCalibrator(Calibrator):
                 input_ids = data_new["input_ids"]
             if input_ids.shape[-1] < self.seqlen:
                 continue
-            # Cache raw token IDs for quantize_block.  Positions that should be
-            # excluded from the loss are marked with -100 (PyTorch's standard
-            # ignore index):
-            #   • actual pad tokens (matched via pad_token_id when available, or
-            #     detected as trailing repeated tokens otherwise)
-            #   • the last token of every sample (no next-token target)
+            # Block losses use masked labels; whole-model forwards need the
+            # original tokens and attention mask, not reconstructed labels.
+            attention_mask = data_new.get("attention_mask") if isinstance(data_new, dict) else None
+            self.model_input_samples.extend(self._model_input_samples(input_ids, attention_mask))
             if "input_ids" not in self.inputs:
                 self.inputs["input_ids"] = []
-            ids_to_cache = input_ids.clone()
-            if self.tokenizer is not None and getattr(self.tokenizer, "pad_token_id", None) is not None:
-                ids_to_cache[ids_to_cache == self.tokenizer.pad_token_id] = -100
-            else:
-                # Heuristic: trailing repeated tokens are treated as padding.
-                for b in range(ids_to_cache.shape[0]):
-                    last_token = ids_to_cache[b, -1]
-                    j = ids_to_cache.shape[1] - 2
-                    while j >= 0 and ids_to_cache[b, j] == last_token:
-                        ids_to_cache[b, j] = -100
-                        j -= 1
-            # Always exclude the last position (no supervision target).
-            ids_to_cache[:, -1] = -100
+            ids_to_cache = self._mask_ids_for_loss(input_ids, attention_mask)
             self.inputs["input_ids"].extend(list(torch.split(ids_to_cache.to("cpu"), 1, dim=0)))
             if need_attention_mask:
                 if (
@@ -365,7 +479,8 @@ class LLMCalibrator(Calibrator):
                     and "attention_mask" in data_new
                     and data_new["attention_mask"] is not None
                 ):
-                    new_attention_mask = data_new["attention_mask"]
+                    new_attention_mask = data_new["attention_mask"].clone()
+                    data_new["attention_mask"] = new_attention_mask
                 elif (
                     self.tokenizer is not None
                     and hasattr(self.tokenizer, "pad_token")
@@ -406,7 +521,7 @@ class LLMCalibrator(Calibrator):
 
                 if isinstance(data_new, torch.Tensor):
                     self.model(data_new, **kwargs)
-                elif isinstance(data_new, tuple) or isinstance(data_new, list):
+                elif isinstance(data_new, (tuple, list)):
                     self.model(*data_new, **kwargs)
                 else:
                     self.model(**data_new, **kwargs)
@@ -428,9 +543,9 @@ class LLMCalibrator(Calibrator):
                     "When quantization encounters tensor shape mismatch error, "
                     "you can try to avoid it with batch_size=1"
                 )
-                raise error
+                raise
             except Exception as error:
-                raise error
+                raise
 
             total_cnt += input_ids.shape[0] if len(input_ids.shape) > 1 else 1
             if total_cnt >= nsamples:
@@ -440,7 +555,7 @@ class LLMCalibrator(Calibrator):
                 f"no data has been cached, please provide more data with sequence length "
                 f">={self.seqlen} in the dataset or decease the sequence length"
             )
-            exit(-1)
+            sys.exit(-1)
         elif total_cnt < nsamples:
             logger.warning_once(
                 f"An insufficient number of samples likely reduces the accuracy of the quantized model. "
@@ -473,7 +588,7 @@ class LLMCalibrator(Calibrator):
         def forward_capture(m, hidden_states=None, *positional_inputs, **kwargs):
             if name not in self.inputs:
                 self.inputs[name] = {}
-                init_cache(positional_inputs, self.inputs[name])
+                init_cache(self.parallel.replicated(positional_inputs), self.inputs[name])
 
             if self.batch_dim is None:
                 self.batch_dim = 0
@@ -487,17 +602,14 @@ class LLMCalibrator(Calibrator):
                                 " or try to set the `batch_size` to 1 and "
                                 "`gradient_accumulate_steps` to your current batch size."
                             )
-                            exit(-1)
+                            sys.exit(-1)
 
             if hidden_states is not None:
                 kwargs["hidden_states"] = hidden_states
 
-            for key in kwargs.keys():
-                if (
-                    isinstance(kwargs[key], torch.Tensor)
-                    or isinstance(kwargs[key], list)
-                    or isinstance(kwargs[key], tuple)
-                ):
+            for key, value in kwargs.items():
+                value = self.parallel.replicated(value)
+                if isinstance(value, (torch.Tensor, list, tuple)):
                     if (
                         self.has_variable_block_shape
                         and name not in self.blocks_requiring_input_ids
@@ -505,7 +617,7 @@ class LLMCalibrator(Calibrator):
                     ):
                         continue
                     if key not in self.inputs[name].keys():  # initialization
-                        data = to_device(kwargs[key], device=torch.device("cpu"))
+                        data = to_device(value, device=torch.device("cpu"))
                         if data is None or key in self.shared_cache_keys:
                             self.inputs[name][key] = data
                             continue
@@ -518,7 +630,7 @@ class LLMCalibrator(Calibrator):
                             else:
                                 self.inputs[name][key] = [data]
                     else:  # append cache inputs
-                        new_data = post_process_cache_data(self.batch_size, kwargs[key], key)
+                        new_data = post_process_cache_data(self.batch_size, value, key)
                         if new_data is None:  # shareable args or NoneType
                             if key in self.shared_cache_keys:
                                 # Shared keys are normally the same across samples.  However
@@ -526,7 +638,7 @@ class LLMCalibrator(Calibrator):
                                 # varies per image because each image has a different patch count.
                                 # Upgrade from shared (raw value) to per-sample list storage so
                                 # each sample gets its own positional embeddings.
-                                raw_new = to_device(kwargs[key], device=torch.device("cpu"))
+                                raw_new = to_device(value, device=torch.device("cpu"))
                                 stored = self.inputs[name].get(key)
                                 if isinstance(stored, list):
                                     stored.append(raw_new)
@@ -544,9 +656,9 @@ class LLMCalibrator(Calibrator):
                                 self.inputs[name][key].extend(list(torch.split(new_data, 1, dim=self.batch_dim)))
                             else:
                                 self.inputs[name][key].append(new_data)
-                elif isinstance(kwargs[key], (str, bool, type(None))):
+                elif isinstance(value, (str, bool, type(None))):
                     if key not in self.inputs[name].keys():
-                        self.inputs[name][key] = kwargs[key]
+                        self.inputs[name][key] = value
                 else:
                     # Parameters not to be cached
                     if check_skippable_keywords(key):
@@ -561,7 +673,7 @@ class LLMCalibrator(Calibrator):
                 if hidden_states is not None:
                     kwargs.pop("hidden_states", None)
                     if positional_inputs:
-                        return m.orig_forward(hidden_states=hidden_states, *positional_inputs, **kwargs)
+                        return m.orig_forward(*positional_inputs, hidden_states=hidden_states, **kwargs)
                     else:
                         return m.orig_forward(hidden_states, **kwargs)
                 else:

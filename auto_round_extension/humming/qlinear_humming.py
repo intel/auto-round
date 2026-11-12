@@ -226,9 +226,9 @@ class QuantLinearAWQ(QuantLinear):
 
 
 __all__ = [
+    "SUPPORTED_BITS",
     "QuantLinear",
     "QuantLinearAWQ",
     "QuantLinearGPTQ",
-    "SUPPORTED_BITS",
     "is_humming_available",
 ]
