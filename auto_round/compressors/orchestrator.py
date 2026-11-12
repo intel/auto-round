@@ -69,6 +69,31 @@ if TYPE_CHECKING:
     from auto_round.utils.resume import ResumeState
 
 
+def _summarize_quantized_layers(model, layer_config=None):
+    quantized_layers = []
+    unquantized_layers = []
+    modules = dict(model.named_modules())
+    if layer_config is not None:
+        for name, config in layer_config.items():
+            if name not in modules:
+                continue
+            if check_to_quantized(config):
+                quantized_layers.append(name)
+            else:
+                unquantized_layers.append(name)
+        return quantized_layers, unquantized_layers
+
+    for name, module in model.named_modules():
+        if isinstance(module, tuple(SUPPORTED_LAYER_TYPES)):
+            if check_to_quantized(module):
+                quantized_layers.append(name)
+            else:
+                unquantized_layers.append(name)
+        elif any(hasattr(module, attr) for attr in ("scales", "scale", "weight_scale")):
+            quantized_layers.append(name)
+    return quantized_layers, unquantized_layers
+
+
 # TODO wenhuach align all the API args
 
 
@@ -1050,16 +1075,7 @@ class CompressionOrchestrator(BaseOrchestrator):
         logger.info(f"quantization tuning time {cost_time}")
 
         # Dump a summary
-        quantized_layers = []
-        unquantized_layers = []
-        for n, m in self.model_context.model.named_modules():
-            if isinstance(m, tuple(SUPPORTED_LAYER_TYPES)):
-                if check_to_quantized(m):
-                    quantized_layers.append(n)
-                else:
-                    unquantized_layers.append(n)
-            elif hasattr(m, "scales") or hasattr(m, "scale"):  # packing_immediately
-                quantized_layers.append(n)
+        quantized_layers, unquantized_layers = _summarize_quantized_layers(self.model_context.model, self.layer_config)
         summary_info = (
             f"Summary: quantized {len(quantized_layers)}/{len(quantized_layers) + len(unquantized_layers)} in the model"
         )
