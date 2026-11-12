@@ -3813,9 +3813,25 @@ def _expand_e8m0_block_scale(
 
 
 # Name fragment identifying the DeepSeek-V4.1 Engram n-gram lookup table. Its
-# ``.weight``/``.scale`` pair must be exported under the source key and dtype; see
+# ``.weight`` stays float8_e4m3fn and its ``.scale`` is bitcast to uint8 (the
+# compressed-tensors E8M0 container) under the source key; see
 # ``preprocess_model_type_source_tensors``.
 _DEEPSEEK_ENGRAM_TABLE = ".engram.embed."
+
+
+def _bitcast_deepseek_engram_scales_to_u8(raw_tensors: dict[str, torch.Tensor]) -> None:
+    """Store DeepSeek-V4.1 Engram E8M0 scales in the compressed-tensors uint8 container.
+
+    The conversion is a bitcast: the E8M0 exponent bytes are preserved verbatim.
+    ``.to(torch.uint8)`` would convert the float values numerically and destroy them.
+    """
+    for name, tensor in list(raw_tensors.items()):
+        if (
+            _DEEPSEEK_ENGRAM_TABLE in name
+            and name.endswith(".scale")
+            and tensor.dtype == torch.float8_e8m0fnu
+        ):
+            raw_tensors[name] = tensor.contiguous().view(torch.uint8)
 
 
 def preprocess_model_type_source_tensors(
@@ -3838,6 +3854,8 @@ def preprocess_model_type_source_tensors(
     if not is_deepseek_v4 and not is_deepseek_v32_ue8m0:
         return raw_tensors, {}
 
+    _bitcast_deepseek_engram_scales_to_u8(raw_tensors)
+
     entries: list[tuple[str, str, bool]] = []
     for name, tensor in raw_tensors.items():
         if not name.endswith(".weight"):
@@ -3845,9 +3863,10 @@ def preprocess_model_type_source_tensors(
         if _DEEPSEEK_ENGRAM_TABLE in name:
             # Engram conditional memory (deepseek_v41) stores its n-gram lookup table as
             # ``.weight`` (float8_e4m3fn) + ``.scale`` (ue8m0). That pair is not a Linear:
-            # inference engines read it in the source representation, and the table has
-            # hundreds of millions of rows, so neither renaming nor dequantizing is an
-            # option -- keep key and value verbatim. ``engram.wkv`` and the other Engram
+            # the table has hundreds of millions of rows, so neither renaming nor
+            # dequantizing is an option. Keep the source key and float8 weight, and store
+            # the E8M0 scale in the compressed-tensors uint8 container via the bitcast
+            # helper above (the bytes are preserved). ``engram.wkv`` and the other Engram
             # projections are ordinary Linears and must flow through the regular path.
             continue
         layer_name = name[: -len(".weight")]

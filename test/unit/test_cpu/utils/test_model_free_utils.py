@@ -959,11 +959,12 @@ class TestMXFPDequantization:
 class TestDeepseekV41EngramSourceTensors:
     """DeepSeek-V4.1 Engram handling in the model-free source chain.
 
-    The FP8 n-gram lookup table must reach the output checkpoint under its source key
-    and dtype (inference engines read it as float8 weights plus raw ue8m0 bytes), while
-    ``engram.wkv`` is an ordinary Linear: being in the ignore list, it has to be exported
-    in full precision. Leaving a float8 ``.weight`` + ``.scale`` pair under an ignored
-    Linear produces a checkpoint whose scale has no parameter to load into.
+    The FP8 n-gram lookup table must reach the output checkpoint under its source key:
+    the weight stays ``float8_e4m3fn`` and the E8M0 scale is bitcast to ``uint8`` (the
+    compressed-tensors container, bytes preserved), while ``engram.wkv`` is an ordinary
+    Linear: being in the ignore list, it has to be exported in full precision. Leaving a
+    float8 ``.weight`` + ``.scale`` pair under an ignored Linear produces a checkpoint
+    whose scale has no parameter to load into.
     """
 
     @staticmethod
@@ -997,10 +998,14 @@ class TestDeepseekV41EngramSourceTensors:
         _, state, _ = self._run()
         assert state == {"layers.1.attn.wkv": 8, "layers.1.engram.wkv": 8}
 
-    def test_engram_table_keeps_source_key_and_dtype(self):
+    def test_engram_table_keeps_source_key_and_u8_scale(self):
         tensors, _, _ = self._run()
         assert tensors["layers.1.engram.embed.weight"].dtype == torch.float8_e4m3fn
-        assert tensors["layers.1.engram.embed.scale"].dtype == torch.float8_e8m0fnu
+        assert tensors["layers.1.engram.embed.scale"].dtype == torch.uint8
+        assert torch.equal(
+            tensors["layers.1.engram.embed.scale"],
+            torch.full((1000, 1), 127, dtype=torch.uint8),
+        )
         assert "layers.1.engram.embed.weight_scale" not in tensors
 
     def test_ignored_engram_linear_is_exported_in_bfloat16(self):
@@ -1028,7 +1033,11 @@ class TestDeepseekV41EngramSourceTensors:
         tensors, state, layers = self._run(ignore=())
         assert layers == ["layers.1.attn.wkv", "layers.1.engram.wkv"]
         assert state["layers.1.engram.wkv"] == 8
-        assert tensors["layers.1.engram.embed.scale"].dtype == torch.float8_e8m0fnu
+        assert tensors["layers.1.engram.embed.scale"].dtype == torch.uint8
+        assert torch.equal(
+            tensors["layers.1.engram.embed.scale"],
+            torch.full((1000, 1), 127, dtype=torch.uint8),
+        )
 
 
 # ===========================================================================
