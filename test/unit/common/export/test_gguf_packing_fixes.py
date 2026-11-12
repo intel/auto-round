@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Regression tests for bugs fixed in ``auto_round/export/export_to_gguf/packing.py``."""
+"""Regression tests for bugs fixed in ``auto_round/export/formats/gguf/packing.py``."""
 
 import numpy as np
 import pytest
@@ -21,8 +21,8 @@ gguf_quants = pytest.importorskip("gguf.quants")
 
 from gguf import GGMLQuantizationType  # noqa: E402
 
-from auto_round.export.export_to_gguf.config import GGML_QUANT_SIZES  # noqa: E402
-from auto_round.export.export_to_gguf.packing import (  # noqa: E402
+from auto_round.export.formats.gguf.config import GGML_QUANT_SIZES  # noqa: E402
+from auto_round.export.formats.gguf.packing import (  # noqa: E402
     ggml_quant,
     make_qx_quants,
     make_qx_quants_chunk,
