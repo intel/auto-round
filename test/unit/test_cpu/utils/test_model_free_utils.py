@@ -1190,6 +1190,45 @@ class TestDeepseekV41EngramSourceTensors:
             torch.full((1000, 1), 127, dtype=torch.uint8),
         )
 
+    def test_full_process_shard_keeps_engram_table_unquantized(self, tmp_path):
+        scheme = {"bits": 8, "group_size": 32, "sym": True, "data_type": "mx_fp"}
+        shard_path = tmp_path / "model.safetensors"
+        weight = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        scale = torch.full((2, 2), 120, dtype=torch.uint8).view(torch.float8_e8m0fnu)
+        table = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        table_scale = torch.full((64, 4), 127, dtype=torch.uint8).view(torch.float8_e8m0fnu)
+        save_file(
+            {
+                "layers.1.attn.wkv.weight": weight,
+                "layers.1.attn.wkv.scale": scale,
+                "layers.1.engram.embed.weight": table,
+                "layers.1.engram.embed.scale": table_scale,
+            },
+            str(shard_path),
+        )
+
+        output, quantized, ignored = _process_shard(
+            str(shard_path),
+            scheme,
+            {},
+            [],
+            device="cpu",
+            fp8_block_size=None,
+            model_type="deepseek_v41",
+            matcher=_matcher(default=scheme),
+        )
+
+        assert "layers.1.attn.wkv" in quantized
+        assert "layers.1.engram.embed" in ignored
+        assert output["layers.1.engram.embed.weight"].dtype == torch.float8_e4m3fn
+        assert output["layers.1.engram.embed.scale"].dtype == torch.uint8
+        assert torch.equal(
+            output["layers.1.engram.embed.scale"],
+            torch.full((64, 4), 127, dtype=torch.uint8),
+        )
+        assert "layers.1.engram.embed.weight_scale" not in output
+        assert "layers.1.engram.embed.weight_packed" not in output
+
 
 # ===========================================================================
 #  AutoScheme helpers

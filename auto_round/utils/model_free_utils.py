@@ -2619,6 +2619,10 @@ def _process_shard(
         hydrate_only=matcher.nvfp_source_only,
     )
     raw_tensors.update(preserved_tensors)
+    # The Engram table is predefined-skipped and preserved above, so it does not
+    # flow through preprocess_model_type_source_tensors(); apply the U8 scale
+    # bitcast here as well for the actual shard path.
+    _bitcast_deepseek_engram_scales_to_u8(raw_tensors)
     # ``raw_tensors`` now owns these; drop the duplicate references.
     preserved_tensors.clear()
 
