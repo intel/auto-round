@@ -182,7 +182,9 @@ def test_whole_model_activation_calibration(tmp_path, scheme, teacher_cache):
 
             # The NVFP exporter can now derive its required static input scale.
             original = layer.orig_layer
-            scale = calculate_gparam_by_dtype(original.act_max, original.act_data_type, original.act_group_size)
+            scale = calculate_gparam_by_dtype(
+                original.act_max, original.act_data_type, original.act_group_size, activation=True
+            )
             assert torch.isfinite(scale).all() and (scale > 0).all()
 
     if scheme.startswith("NVFP4"):
@@ -191,14 +193,15 @@ def test_whole_model_activation_calibration(tmp_path, scheme, teacher_cache):
         for name in ("first", "second"):
             original = getattr(model, name).orig_layer
             expected_scale = calculate_gparam_by_dtype(
-                original.act_max, original.act_data_type, original.act_group_size
+                original.act_max, original.act_data_type, original.act_group_size, activation=True
             )
             pack_layer(name, model, backend=None, device="cpu")
             torch.testing.assert_close(getattr(model, name).input_global_scale.reshape(-1), expected_scale.reshape(-1))
 
 
 def test_calibration_prepares_fused_nvfp_scales(tmp_path, monkeypatch):
-    monkeypatch.setattr(envs, "AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", True)
+    # Use setenv (not setattr on the envs module): setattr shadows the lazy envs lookup and leaks into later tests.
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
     model = torch.nn.Module()
     for name in ("q_proj", "k_proj", "v_proj"):
         setattr(model, name, _linear("NVFP4"))

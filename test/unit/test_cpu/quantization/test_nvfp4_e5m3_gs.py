@@ -119,5 +119,6 @@ def test_nvfp4_e5m3_gs_weight_global_scale_uses_ue5m3_range(tiny_opt_model_path,
     model, _ = autoround.quantize()
     layer = model.model.decoder.layers[0].fc2
     layer = getattr(layer, "orig_layer", layer)
+    # Weight-side global scale: alpha=1
     expected = FLOAT8_UE5M3_MAX * FLOAT4_E2M1_MAX / orig_weight.float().abs().max()
     torch.testing.assert_close(layer.weight_global_scale.float().reshape(()), expected, rtol=1e-6, atol=0)

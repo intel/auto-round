@@ -825,7 +825,8 @@ class TestFp4V2WithGlobalScale:
         q, scale, _ = nvfp4_v2_with_global_scale(tensor, group_size=group_size, max_scale=max_scale)
         torch.testing.assert_close(q[0], torch.full_like(q[0], 0.5))
         torch.testing.assert_close(q[1], torch.full_like(q[1], 0.25))
-        torch.testing.assert_close(scale.reshape(-1), torch.tensor([57344.0, 28672.0]))
+        # global_scale = 114688 * 6 / (8 * amax) with amax=1 -> block scale = 86016 * vec_max / 6
+        torch.testing.assert_close(scale.reshape(-1), torch.tensor([7168.0, 3584.0]))
 
     def test_float16_input(self):
         t = torch.randn(4, 32, dtype=torch.float16)

@@ -992,7 +992,12 @@ def _fused_eval_nvfp_activation(layers: list[nn.Module], counts: list[int], x: t
     Returns:
         torch.Tensor | None: Batched QDQ activations, or None when fusion is unsupported.
     """
-    from auto_round.data_type.nvfp import FLOAT4_E2M1_MAX, FLOAT8_E4M3_MAX, get_reciprocal, nv_fp4_with_static_gs
+    from auto_round.data_type.nvfp import (
+        FLOAT8_E4M3_MAX,
+        get_nvfp_gs_alpha,
+        nv_fp4_with_static_gs,
+        nvfp_global_scale,
+    )
 
     if not _eval_activation_batch_is_supported(layers, counts, x):
         return None
@@ -1022,7 +1027,7 @@ def _fused_eval_nvfp_activation(layers: list[nn.Module], counts: list[int], x: t
                 maximum = torch.as_tensor(maximum, device=x.device, dtype=torch.float32)
                 if maximum.numel() != 1:
                     maximum = maximum.abs().max()
-            scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX * get_reciprocal(maximum)
+            scale = nvfp_global_scale(maximum, FLOAT8_E4M3_MAX, get_nvfp_gs_alpha(e5m3=False))
         scale = torch.as_tensor(scale, device=x.device, dtype=torch.float32)
         if scale.numel() != 1:
             return None  # nonstandard scale layout: preserve the wrapper's own call

@@ -97,7 +97,9 @@ def pack_layer(name, model, device=None):
             assert hasattr(layer, "act_max")
             from auto_round.data_type.nvfp import calculate_gparam_by_dtype
 
-            input_global_scale = calculate_gparam_by_dtype(layer.act_max, act_data_type, layer.group_size)
+            input_global_scale = calculate_gparam_by_dtype(
+                layer.act_max, act_data_type, layer.group_size, activation=True
+            )
             layer.input_global_scale = input_global_scale
             delattr(layer, "act_max")
 

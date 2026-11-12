@@ -176,9 +176,9 @@ class TensorParallelActivationQuantizer:
                     maximum = _GlobalAmax.apply(local, self.mesh.get_group())
                 else:
                     maximum = local.float().abs().amax() if local.numel() else local.new_zeros((), dtype=torch.float32)
-            kwargs["global_scale"] = calculate_gparam_by_dtype(maximum, data_type, kwargs["group_size"]).to(
-                local.device
-            )
+            kwargs["global_scale"] = calculate_gparam_by_dtype(
+                maximum, data_type, kwargs["group_size"], activation=True
+            ).to(local.device)
         if local.numel() == 0:
             # Traverse the same QDQ graph as nonempty peers, but contribute zero
             # gradients. Returning x directly drops scale/amax backward reductions.
