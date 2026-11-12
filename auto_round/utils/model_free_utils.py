@@ -4588,11 +4588,7 @@ def _bitcast_deepseek_engram_scales_to_u8(raw_tensors: dict[str, torch.Tensor]) 
     ``.to(torch.uint8)`` would convert the float values numerically and destroy them.
     """
     for name, tensor in list(raw_tensors.items()):
-        if (
-            _DEEPSEEK_ENGRAM_TABLE in name
-            and name.endswith(".scale")
-            and tensor.dtype == torch.float8_e8m0fnu
-        ):
+        if _DEEPSEEK_ENGRAM_TABLE in name and name.endswith(".scale") and tensor.dtype == torch.float8_e8m0fnu:
             raw_tensors[name] = tensor.contiguous().view(torch.uint8)
 
 
