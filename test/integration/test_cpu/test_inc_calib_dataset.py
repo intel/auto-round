@@ -72,7 +72,8 @@ class TestLocalCalibDataset:
     def teardown_class(self):
         shutil.rmtree("runs", ignore_errors=True)
 
-    def test_json(self, tiny_opt_model_path):
+    @pytest.mark.parametrize("concat", ["", ":concat"])
+    def test_json(self, tiny_opt_model_path, concat):
         bits, group_size, sym = 4, 128, True
         autoround = AutoRound(
             tiny_opt_model_path,
@@ -81,7 +82,7 @@ class TestLocalCalibDataset:
             sym=sym,
             iters=2,
             seqlen=5,
-            dataset=self.json_file,
+            dataset=self.json_file + concat,
         )
         autoround.quantize()
 

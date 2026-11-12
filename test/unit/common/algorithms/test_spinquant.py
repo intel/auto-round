@@ -100,6 +100,7 @@ from auto_round.algorithms.transforms.spinquant.training import (
     run_training_loop,
     spinquant_loss_fn,
 )
+from auto_round.utils.device_manager import get_major_device
 
 # =============================================================================
 # TestSpinQuantConfig — validation, defaults, serialization
@@ -130,7 +131,7 @@ class TestSpinQuantConfig:
         assert cfg.fuse_rmsnorm is True
         assert cfg.untie_embeddings is True
         assert cfg.dtype == torch.float32
-        assert cfg.device in ("cuda", "cpu")
+        assert cfg.device == get_major_device()
 
     def test_custom_values_stored(self):
         cfg = SpinQuantConfig(
@@ -1818,9 +1819,14 @@ class TestRotationTrainerConfig:
         assert cfg.eval_interval == 0
         assert cfg.save_interval == 0
 
-    def test_device_auto_detects_cuda(self):
+    def test_device_auto_detects_available_backend(self):
+        """The default device is whatever the device manager picks.
+
+        It used to be hardcoded to CUDA, so an XPU/HPU host resolved to ``cpu``;
+        assert against ``get_major_device()`` instead of a fixed pair.
+        """
         cfg = RotationTrainerConfig()
-        assert cfg.device in ("cuda", "cpu")
+        assert cfg.device == get_major_device()
 
 
 class TestRotationTrainer:

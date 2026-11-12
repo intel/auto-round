@@ -12,32 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from auto_round.export.formats.backends import (
-    AutoAWQFormat,
-    AutoGPTQFormat,
-    AutoRoundFormat,
-    FakeFormat,
-    FP8Format,
-    GGUFFormat,
-    LLMCompressorFormat,
-    MLXFormat,
-)
-from auto_round.export.formats.base import (
-    BackendDataType,
-    OutputFormat,
-)
-from auto_round.export.formats.resolver import resolve_formats
+"""Format-owned implementations; configuration submodules can be imported independently."""
 
-__all__ = [
-    "AutoAWQFormat",
-    "AutoGPTQFormat",
-    "AutoRoundFormat",
-    "BackendDataType",
-    "FP8Format",
-    "FakeFormat",
-    "GGUFFormat",
-    "LLMCompressorFormat",
-    "MLXFormat",
-    "OutputFormat",
-    "resolve_formats",
-]
+
+def __getattr__(name):
+    if name in {"OutputFormat", "BackendDataType", "resolve_formats"}:
+        import auto_round.export as export
+
+        return getattr(export, name)
+    from auto_round.export.registry import FORMAT_REGISTRY, load_builtin_formats
+
+    load_builtin_formats()
+    for format_class in FORMAT_REGISTRY.values():
+        if format_class.__name__ == name:
+            return format_class
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

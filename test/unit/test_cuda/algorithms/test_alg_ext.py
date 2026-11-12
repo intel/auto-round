@@ -58,7 +58,7 @@ class TestAlgExt:
     #     # post_init() runs the full pipeline (resolve_scheme → resolve_formats →
     #     # create_quantizer → ...).  quantizer only exists afterwards.
     #     ar.post_init()
-    #     quantizer = ar.alg_composer.block_quantizer
+    #     quantizer = ar.alg_composer.active_quantizer
     #
     #     assert quantizer.wrapper_block.keywords["wrapper_cls"] is SignRoundDQWrapperLinear, (
     #         f"Expected wrapper_block to use '{SignRoundDQWrapperLinear.__name__}', "
@@ -84,7 +84,7 @@ class TestAlgExt:
             enable_quanted_input=False,
         )
         ar.post_init()
-        quantizer = ar.alg_composer.block_quantizer
+        quantizer = ar.alg_composer.active_quantizer
 
         assert quantizer.scheme.bits == 2
         assert quantizer.scheme.group_size == 64
@@ -142,13 +142,13 @@ class TestAlgExt:
         python_path = sys.executable
 
         res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --disable_minmax_tuning --disable_quanted_input --bits 2 --schemes=W2A16,W4A16 --ignore_scale_zp_bits --nsamples 1 --seqlen 32"
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --disable_minmax_tuning --disable_quanted_input --bits 2 --scheme=W2A16,W4A16 --ignore_scale_zp_bits --nsamples 1 --seqlen 32"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"
 
         res = os.system(
-            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --bits 5.5 --schemes=mxfp4,mxfp8 --ignore_scale_zp_bits --enable_torch_compile --nsamples 1 --seqlen 32"
+            f"PYTHONPATH='{AUTO_ROUND_PATH}:$PYTHONPATH' CUDA_VISIBLE_DEVICES=0 {python_path} -m auto_round --model {tiny_opt_model_path} --iters 1 --device auto --enable_alg_ext --bits 5.5 --scheme=mxfp4,mxfp8 --ignore_scale_zp_bits --enable_torch_compile --nsamples 1 --seqlen 32"
         )
         if res > 0 or res == -1:
             assert False, "cmd line test fail, please have a check"

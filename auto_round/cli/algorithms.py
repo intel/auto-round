@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import inspect
+from collections.abc import Iterable
 from dataclasses import replace
 from typing import Any, get_args, get_origin, get_type_hints
 
@@ -29,6 +30,12 @@ from auto_round.algorithms.registry import (
     resolve_algorithm_alias,
     resolve_algorithm_names,
 )
+
+
+def _is_rrq_format(args) -> bool:
+    """Check whether the requested output format is RRQ."""
+    fmt = getattr(args, "format", None) or getattr(args, "_api_format", None) or ""
+    return "auto_round:rrq" in fmt.lower()
 
 
 def _parameter_registry(config_cls: type) -> AlgorithmParameterRegistry:
@@ -166,10 +173,6 @@ def _add_registered_arguments(group, registry: AlgorithmParameterRegistry) -> No
         _add_parameter(target, parameter)
 
 
-# Algorithms that supply the block-quantization tuning step themselves. Selecting
-# any of them must not append the implicit `auto_round` fallback below.
-_BLOCK_QUANTIZER_ALGORITHMS = frozenset({"rtn", "opt-rtn", "auto_round", "auto_round_v2"})
-
 # `auto_round_v2` is a SignRound variant: with zero tuning iterations there is
 # nothing to tune, so it degrades to RTN exactly like `auto_round`.
 _ITERS_ZERO_ALGORITHMS = {"auto_round": "rtn", "auto_round_v2": "rtn"}
@@ -230,7 +233,7 @@ class AlgorithmHandler:
         parameters_by_group = {}
         locations = []
         for entry in iter_algorithm_entries():
-            if entry.config_factory is None:
+            if entry.config_factory is None or entry.hidden:
                 continue
             config_cls = (
                 entry.config_factory if isinstance(entry.config_factory, type) else type(entry.config_factory())
@@ -267,12 +270,77 @@ class AlgorithmHandler:
             _add_registered_arguments(group, registry)
 
     @classmethod
+    def _has_quantizer(cls, names: Iterable[str]) -> bool:
+        """Whether any algorithm in *names* is a quantizer.
+
+        Quantization algorithms (rtn, auto_round, qad, …) already provide a
+        quantizer, so the CLI must not append a default one. Preprocessors
+        (awq, hadamard, svdquant, …) do not count.
+
+        Args:
+            names (Iterable[str]): Algorithm names or aliases to resolve in the registry.
+
+        Returns:
+            bool: Whether at least one resolved implementation subclasses BaseQuantizer.
+        """
+        from auto_round.algorithms.quantization.base import BaseQuantizer
+        from auto_round.algorithms.registry import pipeline_member_for_config_class
+
+        for name in names:
+            try:
+                config_cls = cls.get(name)
+            except KeyError:
+                continue
+            member = pipeline_member_for_config_class(config_cls)
+            if member is not None and issubclass(member, BaseQuantizer):
+                return True
+        return False
+
+    @classmethod
     def build_configs(cls, args, common_kwargs: dict[str, Any]) -> list:
-        raw = getattr(args, "algorithm", None) or ""
-        names = [name.strip().lower() for name in raw.split(",") if name.strip()]
+        raw = getattr(args, "alg_configs", None)
+        if raw is None:
+            raw = getattr(args, "algorithm", None)
+        plan = getattr(args, "_recipe_plan", None)
+        if plan is not None and raw is None:
+            from auto_round.algorithms.config_resolver import _normalize_alg_configs
+
+            configs = []
+            explicit = args._explicit_fields
+            for stage, default_config in zip(plan.pipeline, plan.build_configs()):
+                registry = _parameter_registry(type(default_config))
+                overrides = {
+                    parameter.field: getattr(args, parameter.dest)
+                    for parameter in registry.parameters
+                    if parameter.dest in explicit and hasattr(args, parameter.dest)
+                }
+                configs.append(stage.build_config(overrides))
+            direct = {"iters": args.iters} if "iters" in explicit else {}
+            if direct.get("iters") == 0:
+                rtn_cls = cls.get("rtn")
+                direct.update(
+                    {
+                        parameter.field: getattr(args, parameter.dest)
+                        for parameter in _parameter_registry(rtn_cls).parameters
+                        if parameter.dest in explicit and hasattr(args, parameter.dest)
+                    }
+                )
+            if "disable_opt_rtn" in explicit:
+                direct["disable_opt_rtn"] = args.disable_opt_rtn
+            if getattr(args, "rotation_hadamard_type", None):
+                rotation_cls = cls.get("hadamard")
+                configs.append(rotation_cls(**_parameter_registry(rotation_cls).config_kwargs(args)))
+            return _normalize_alg_configs(configs, direct)
+
+        names = [name.strip().lower() for name in (raw or "").split(",") if name.strip()]
 
         if getattr(args, "rotation_hadamard_type", None) and "hadamard" not in names:
             names.append("hadamard")
+
+        # Auto-select RRQ when the output format is auto_round:rrq and the user
+        # did not explicitly choose an algorithm.
+        if not names and _is_rrq_format(args):
+            names = ["rrq"]
 
         canonical = resolve_algorithm_names(names)
         validate_rtn_variant_names(canonical)
@@ -281,8 +349,8 @@ class AlgorithmHandler:
         # `opt-rtn` carries the plain-vs-optimized intent.
         explicit_names = set(canonical)
         seen = set(canonical)
-        if not (_BLOCK_QUANTIZER_ALGORITHMS & seen):
-            canonical.append("rtn" if "awq" in seen or getattr(args, "iters", 0) == 0 else "auto_round")
+        if not cls._has_quantizer(canonical):
+            canonical.append("rtn" if {"awq", "teq"} & seen or getattr(args, "iters", 0) == 0 else "auto_round")
         if getattr(args, "iters", None) == 0:
             canonical = [_ITERS_ZERO_ALGORITHMS.get(name, name) for name in canonical]
 
@@ -292,8 +360,6 @@ class AlgorithmHandler:
             awq_entry = get_algorithm_entry("awq")
             awq_cls = cls.get("awq")
             awq_kwargs = _parameter_registry(awq_cls).config_kwargs(args)
-            if getattr(awq_cls, "cli_include_common_args", True):
-                awq_kwargs.update(common_kwargs)
             if isinstance(awq_entry.config_factory, type):
                 awq_config = awq_entry.config_factory(**awq_kwargs)
             elif awq_kwargs:
@@ -312,8 +378,6 @@ class AlgorithmHandler:
             entry = get_algorithm_entry(name)
             config_cls = cls.get(name)
             kwargs = _parameter_registry(config_cls).config_kwargs(args)
-            if getattr(config_cls, "cli_include_common_args", True):
-                kwargs.update(common_kwargs)
             if name in explicit_names and name in RTN_VARIANT_DISABLE_OPT_RTN:
                 # The algorithm name is authoritative: it selects the variant
                 # even when the opposite flag was passed as well.
@@ -333,7 +397,7 @@ class AlgorithmHandler:
     def format_listing(cls) -> str:
         lines = []
         for entry in iter_algorithm_entries():
-            if entry.config_factory is None:
+            if entry.config_factory is None or entry.hidden:
                 continue
             other = [alias for alias in entry.aliases if alias != entry.name]
             alias_str = f" (aliases: {', '.join(other)})" if other else ""
@@ -344,7 +408,11 @@ class AlgorithmHandler:
     def format_detail(cls, name: str) -> str:
         canonical = cls.resolve_alias(name)
         if canonical is None:
-            supported = [entry.name for entry in iter_algorithm_entries() if entry.config_factory is not None]
+            supported = [
+                entry.name
+                for entry in iter_algorithm_entries()
+                if entry.config_factory is not None and not entry.hidden
+            ]
             raise ValueError(f"Unknown algorithm '{name}'. Supported: {', '.join(supported)}.")
         entry = get_algorithm_entry(canonical)
         lines = [f"{entry.name}: {entry.summary}"]

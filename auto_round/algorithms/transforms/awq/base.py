@@ -20,7 +20,7 @@ Algorithm:
 3. Apply the best channel-wise scaling:
    - balance_layer.weight *= scales
    - smooth_layer.weight /= scales (or smooth_layer.bias /= scales if 1-D)
-4. Weight compression is delegated to the pipeline's block_quantizer.
+4. Weight compression is delegated to the pipeline's active_quantizer.
 
 Reference implementations:
   - AutoAWQ: https://github.com/casper-hansen/AutoAWQ
@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from auto_round.algorithms.registry import register_pipeline_member
+from auto_round.algorithms.registry import register_preprocessor
 from auto_round.algorithms.transforms.awq.config import AWQConfig
 from auto_round.algorithms.transforms.awq.mappings import (
     AWQ_DYNAMIC_MAPPING_REGISTRY,
@@ -49,6 +49,7 @@ from auto_round.algorithms.transforms.awq.smooth import (
     compute_layer_means,
     fold_scales_into_smooth_layer,
     get_grid_search_params,
+    has_teq_equivalent_transforms,
     smooth_group_from_mapping,
 )
 from auto_round.algorithms.transforms.base import BasePreprocessor
@@ -59,6 +60,7 @@ from auto_round.utils.model import move_to_device
 
 if TYPE_CHECKING:
     from auto_round.algorithms.composer import AlgorithmComposer, BlockContext
+    from auto_round.parallel.execution import ParallelCapabilities, ParallelExecution
 
 
 def _slice_seq_tensor(v: Any, actual_seq: int, seqlen: int) -> Any:
@@ -168,20 +170,47 @@ def _iter_block_names_for_mapping(model: torch.nn.Module) -> list[str]:
     return sorted((name for name in flatten_list(get_block_names(model)) if name), key=len, reverse=True)
 
 
-@register_pipeline_member(AWQConfig)
+@register_preprocessor(AWQConfig)
 class AWQTransform(BasePreprocessor):
     """AWQ transform: activation-aware weight smoothing pre-processor.
 
     Inherits :class:`~auto_round.algorithms.transforms.base.BasePreprocessor`.
     It smooths block weights in-place; actual weight compression (RTN /
-    SignRound) is performed by the pipeline's ``block_quantizer``.
+    SignRound) is performed by the pipeline's ``active_quantizer``.
     """
+
+    @classmethod
+    def parallel_capabilities(cls) -> ParallelCapabilities:
+        """Declare support for shard-aware AWQ smoothing.
+
+        Returns:
+            ParallelCapabilities: Capabilities enabling TP and pipeline placement.
+        """
+        from auto_round.parallel.execution import ParallelCapabilities
+
+        return ParallelCapabilities(tensor_parallel=True)
+
+    @classmethod
+    def validate_parallel_config(cls, config: AWQConfig, execution: ParallelExecution) -> None:
+        """Reject AWQ options that do not satisfy the shard-local TP contract.
+
+        Args:
+            config (AWQConfig): Smoothing and clipping configuration to validate.
+            execution (ParallelExecution): Execution service defining the active topology.
+
+        Raises:
+            NotImplementedError: TP requests clipping or a non-INT weight data type.
+        """
+        if execution.is_tp:
+            if config.apply_clip or config.clip_as_init:
+                raise NotImplementedError("AWQ TP clipping has not implemented the shard-local clipping contract yet.")
 
     def __init__(self, config: AWQConfig) -> None:
         super().__init__(config)
         self.duo_scaling: bool | str = config.duo_scaling
         self.n_grid: int = config.n_grid
         self.smooth_iters: int = getattr(config, "smooth_iters", 1)
+        self._awq_nsamples: int = config.awq_nsamples
 
         # AWQ weight-clip options (search + hard-clamp after smoothing).
         self.apply_clip: bool = getattr(config, "apply_clip", False)
@@ -200,12 +229,7 @@ class AWQTransform(BasePreprocessor):
         # Single source of truth for "QDQ a candidate weight under the target
         # block-quantizer scheme", used as AWQ's grid-search / clip loss. AWQ
         # composes this instead of re-implementing block-quantizer dispatch;
-        self._qdq_tool = QDQTool(
-            bits=config.bits,
-            group_size=config.group_size,
-            sym=config.sym,
-            data_type=config.data_type,
-        )
+        self._qdq_tool = None
 
         self._user_mappings: list[dict] | None = config.mappings
         self._skip_moe: bool = getattr(config, "skip_moe", False)
@@ -223,6 +247,9 @@ class AWQTransform(BasePreprocessor):
         self._clip_input_feat: dict[str, torch.Tensor] = {}
 
         self._finalized: bool = False
+        self._sample_indices: torch.Tensor | None = None
+        self._sample_population: int | None = None
+        self._modified_block_name: str | None = None
 
     # ── Algorithm Fusion: lifecycle hook implementations ──────────────────────
 
@@ -241,9 +268,22 @@ class AWQTransform(BasePreprocessor):
         """AWQ installs per-block calibration hooks that trigger Dynamo recompiles."""
         return False
 
+    @classmethod
+    def validate_parallel_scheme(cls, scheme, execution) -> None:
+        """Reject unsupported AWQ tensor-parallel schemes before loading a model."""
+        if execution.is_tp and scheme.data_type != "int":
+            raise NotImplementedError("AWQ TP currently supports INT weight-only smoothing.")
+
     def prepare_run(self, composer: AlgorithmComposer = None) -> None:
         """Resolve model-wide mappings and group them by transformer block."""
         model = self.model
+        self._qdq_tool = QDQTool(
+            bits=self.scheme.bits,
+            group_size=self.scheme.group_size,
+            sym=self.scheme.sym,
+            data_type=self.scheme.data_type,
+        )
+        type(self).validate_parallel_scheme(self.scheme, self.parallel)
 
         # ── Resolve all model-level mappings (name-only, no module caching) ──
         self._resolved_mappings = resolve_mappings(model, self._user_mappings, skip_moe=self._skip_moe)
@@ -284,6 +324,10 @@ class AWQTransform(BasePreprocessor):
         if composer is not None:
             self._qdq_tool.configure(composer, awq_config=self.config)
 
+        self._sample_indices = None
+        self._sample_population = None
+        self._modified_block_name = None
+
         logger.info(
             "AWQ: resolved %d mappings across %d blocks.",
             len(self._resolved_mappings),
@@ -304,15 +348,37 @@ class AWQTransform(BasePreprocessor):
             return self._register_awq_hooks(self.model_context.model, block, block_name)
         return []
 
+    def select_calibration_samples(self, fp_inputs, input_others):
+        """Select one deterministic random AWQ subset shared by every block.
+
+        The global calibration cache remains unchanged for the downstream
+        quantizer. Only AWQ's activation statistics, smoothing replay, and clip
+        features use this subset.
+        """
+        if self.block_forward is None:
+            return fp_inputs, input_others
+        num_samples = self.block_forward.count_samples(fp_inputs)
+        if num_samples <= self._awq_nsamples:
+            return fp_inputs, input_others
+        if self._sample_indices is None or self._sample_population != num_samples:
+            generator = torch.Generator(device="cpu")
+            generator.manual_seed(42)
+            self._sample_indices = torch.randperm(num_samples, generator=generator)[: self._awq_nsamples]
+            self._sample_indices, _ = torch.sort(self._sample_indices)
+            self._sample_population = num_samples
+            logger.info("AWQ: randomly selected %d/%d calibration samples.", self._awq_nsamples, num_samples)
+        return self.block_forward.select_batch(fp_inputs, input_others, self._sample_indices)
+
     def pre_quantize_block(self, ctx: BlockContext) -> None:
         """Apply AWQ smoothing for this block and mark modified params.
 
-        Called after the reference forward (activation stats collected) and
-        before the block quantizer runs.
+        Called after activation-stat collection and before the authoritative
+        reference forward and block quantizer run.
         """
         if len(ctx.block_names) != 1:
             raise ValueError(f"AWQ requires nblocks=1, got {len(ctx.block_names)} blocks: {ctx.block_names}.")
         block_name = ctx.block_names[0]
+        self._modified_block_name = None
         block_mappings = self._block_mappings.get(block_name, [])
         if not block_mappings:
             logger.debug("AWQ: no mappings for block '%s', skipping.", block_name)
@@ -331,13 +397,28 @@ class AWQTransform(BasePreprocessor):
             )
         if not active_mappings:
             return
-        self._smooth_block(block_name, active_mappings)
+        if self.config.apply_smooth:
+            self._smooth_block(block_name, active_mappings)
         if self.apply_clip:
             self._clip_block(block_name, active_mappings)
+        if self.config.apply_smooth or (self.apply_clip and not self.clip_as_init):
+            self._modified_block_name = block_name
         modified = []
         for mapping in active_mappings:
             modified.extend(mapping.balance_names)
             modified.append(mapping.smooth_name)
+
+    def invalidates_reference_output(self, ctx: BlockContext) -> bool:
+        """Return whether AWQ changes this block before reference collection.
+
+        Smoothing mutates weights even though its inverse scale folding should
+        preserve the FP function. Hard clipping intentionally changes the FP
+        function. In both cases the authoritative reference and next-block FP
+        input must be produced by a new forward through the transformed block.
+        ``clip_as_init`` only records bounds and therefore does not invalidate
+        an otherwise current reference.
+        """
+        return self._modified_block_name == ctx.block_name
 
     def post_quantize_block(self, ctx: BlockContext) -> None:
         """Release per-block AWQ caches to free memory."""
@@ -368,6 +449,9 @@ class AWQTransform(BasePreprocessor):
         self._activation_stats.clear()
         self._parent_args_cache.clear()
         self._clip_input_feat.clear()
+        self._sample_indices = None
+        self._sample_population = None
+        self._modified_block_name = None
         self._finalized = True
         logger.debug("AWQ: finalize_quantization complete.")
 
@@ -423,6 +507,7 @@ class AWQTransform(BasePreprocessor):
 
                 def hook_fn(mod, args):
                     x = args[0] if isinstance(args, tuple) else args
+                    x = self.parallel.tensor_ops.input_activation(mod, x)
                     if x is None or not isinstance(x, torch.Tensor) or x.numel() == 0:
                         return
 
@@ -483,7 +568,7 @@ class AWQTransform(BasePreprocessor):
                         if hasattr(v, "key_cache"):
                             return None
                         if isinstance(v, torch.Tensor):
-                            v = v.detach()
+                            v = self.parallel.replicated(v).detach()
                             if w_dtype and v.is_floating_point() and v.dtype != w_dtype:
                                 v = v.to(w_dtype)
                             return v.to("cpu", non_blocking=False)
@@ -667,8 +752,10 @@ class AWQTransform(BasePreprocessor):
     def _normalize_parent_output(out: Any) -> torch.Tensor:
         """Extract the tensor output used by AWQ parent-output loss."""
         if isinstance(out, tuple):
-            return out[0]
-        return out
+            out = out[0]
+        from auto_round.parallel.execution import ParallelExecution
+
+        return ParallelExecution.replicated(out)
 
     @torch.no_grad()
     def _run_parent_samples(
@@ -756,7 +843,7 @@ class AWQTransform(BasePreprocessor):
         shifted off the balance weights.
         """
         for bl in mapping.balance_layers:
-            bl.weight.data.mul_(scales.to(bl.weight.device).view(1, -1))
+            self.parallel.tensor_ops.scale_inputs(bl, scales)
 
         self._fold_scales_into_smooth_layer(mapping.smooth_layer, scales)
 
@@ -813,6 +900,13 @@ class AWQTransform(BasePreprocessor):
                 )
                 continue
             for bl, name in zip(mapping.balance_layers, mapping.balance_names):
+                if has_teq_equivalent_transforms(bl):
+                    logger.warning_once(
+                        "AWQ clipping is skipped for rotation-aware layer '%s': raw-space clip thresholds "
+                        "do not describe QDQ(rotate(weight)).",
+                        name,
+                    )
+                    continue
                 if self._should_skip_clip(name):
                     logger.debug("AWQ: skip clip for '%s' (avoid-clipping layer).", name)
                     continue

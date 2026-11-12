@@ -15,6 +15,7 @@
 
 import math
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -24,6 +25,8 @@ from auto_round.data_type.nvfp import (
     FLOAT8_E4M3_MAX,
     FLOAT8_E4M3_MIN,
     FLOAT8_UE5M3_MAX,
+    _nvfp4_e5m3_search_chunk,
+    _search_nvfp4_e5m3_multiplier,
     calculate_gparam,
     calculate_gparam_by_dtype,
     calculate_gparam_e5m3,
@@ -34,6 +37,7 @@ from auto_round.data_type.nvfp import (
     float_to_e5m3_frexp,
     get_reciprocal,
     nv_fp4,
+    nv_fp4_rtn,
     nv_fp4_with_static_gs,
     nvfp4_v2,
     nvfp4_v2_gs,
@@ -132,6 +136,13 @@ class TestGetReciprocal:
         assert r[2].item() == 0.0
         assert r[1].item() == 0.5
         assert r[3].item() == 0.25
+
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+    def test_tensor_with_zero_backward(self, dtype):
+        x = torch.tensor([0.0, 2.0, -2.0], dtype=dtype, requires_grad=True)
+        get_reciprocal(x).sum().backward()
+        torch.testing.assert_close(x.grad, torch.tensor([0.0, -0.25, -0.25], dtype=dtype))
+        assert torch.isfinite(x.grad).all()
 
     def test_float(self):
         assert get_reciprocal(2.0) == 0.5
@@ -311,6 +322,25 @@ class TestSearchNvfp4Scale:
         with pytest.raises(TypeError):
             search_nvfp4_scale(tensor, qw=None)
 
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_fast_search_matches_exhaustive(self, seed):
+        """The changed-only search must reach the same weighted loss as the exhaustive reference."""
+        torch.manual_seed(seed)
+        tensor = torch.randn(512, 16, dtype=torch.float32) * torch.rand(512, 1) * 3
+        qw = torch.rand_like(tensor) + 0.1
+
+        fast = search_nvfp4_scale(tensor, qw=qw)
+        ref = search_nvfp4_scale(tensor, qw=qw, quant_func=nv_fp4_rtn)
+        assert fast.shape == ref.shape == (512, 1)
+
+        def weighted_loss(scale):
+            qdq, _, _ = nv_fp4_rtn(tensor, max_scale=scale.view(-1))
+            return ((qdq - tensor) ** 2 * qw).sum(dim=-1)
+
+        # Near-ties may pick different multipliers, but the achieved loss must match per group.
+        torch.testing.assert_close(weighted_loss(fast), weighted_loss(ref), rtol=1e-5, atol=1e-6)
+        assert (fast == ref).float().mean() > 0.95
+
 
 class TestSearchNvfp4V2Scale:
     def test_search_does_not_increase_weighted_mse(self):
@@ -328,6 +358,85 @@ class TestSearchNvfp4V2Scale:
         assert torch.all(scales >= 0.5)
         assert torch.all(scales <= 1.51)
         assert optimized_loss <= baseline_loss
+
+
+def _exhaustive_multipliers(grouped, qw, baseline, candidate):
+    """Reference: evaluate all 101 multipliers for every group, keep the first strictly-better one."""
+    best_loss = ((baseline(grouped) - grouped).square() * qw).sum(-1)
+    best = torch.ones_like(best_loss)
+    for value in range(50, 152):
+        if value == 100:
+            continue
+        mult = torch.full((grouped.shape[0],), value / 100.0, dtype=torch.float32)
+        loss = ((candidate(grouped, mult) - grouped).square() * qw).sum(-1)
+        better = loss < best_loss
+        best_loss = torch.where(better, loss, best_loss)
+        best = torch.where(better, mult, best)
+    return best
+
+
+class TestNvfp4E5m3SearchMatchesExhaustive:
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_v2_matches_exhaustive(self, seed):
+        torch.manual_seed(seed)
+        grouped = torch.randn(192, 16) * torch.logspace(-3, 1, 192).unsqueeze(-1)
+        grouped[5] = 0.0
+        qw = torch.rand_like(grouped) + 0.1
+
+        expected = _exhaustive_multipliers(
+            grouped,
+            qw,
+            baseline=lambda x: nvfp4_v2(x, group_size=16)[0],
+            candidate=lambda x, m: nvfp4_v2(x, group_size=16, max_scale=m)[0],
+        )
+        torch.testing.assert_close(search_nvfp4_v2_scale(grouped, qw=qw), expected, rtol=0, atol=0)
+
+    @pytest.mark.parametrize("seed", [0, 1])
+    def test_gs_matches_exhaustive(self, seed):
+        torch.manual_seed(seed)
+        grouped = torch.randn(192, 16) * torch.logspace(-2, 1, 192).unsqueeze(-1)
+        qw = torch.rand_like(grouped) + 0.1
+        gs = calculate_gparam_e5m3(grouped, 16).reshape(1)
+
+        expected = _exhaustive_multipliers(
+            grouped,
+            qw,
+            baseline=lambda x: nvfp4_v2_gs(x, group_size=16, global_scale=gs)[0],
+            candidate=lambda x, m: nvfp4_v2_gs(x, group_size=16, global_scale=gs, max_scale=m)[0],
+        )
+        torch.testing.assert_close(_search_nvfp4_e5m3_multiplier(grouped, qw, gs), expected, rtol=0, atol=0)
+
+    @pytest.mark.parametrize("chunk", [1, 7, 101])
+    def test_chunked_search_matches_exhaustive(self, monkeypatch, chunk):
+        torch.manual_seed(0)
+        grouped = torch.randn(64, 16) * torch.logspace(-3, 1, 64).unsqueeze(-1)
+        qw = torch.rand_like(grouped) + 0.1
+        monkeypatch.setattr("auto_round.data_type.nvfp._NVFP4_SEARCH_CHUNK_MAX_ELEMS", chunk * grouped.numel())
+        monkeypatch.setattr(
+            "auto_round.data_type.nvfp._get_nvfp4_e5m3_search_chunk", lambda device: _nvfp4_e5m3_search_chunk
+        )
+
+        expected = _exhaustive_multipliers(
+            grouped,
+            qw,
+            baseline=lambda x: nvfp4_v2(x, group_size=16)[0],
+            candidate=lambda x, m: nvfp4_v2(x, group_size=16, max_scale=m)[0],
+        )
+        result = search_nvfp4_v2_scale(grouped, qw=qw, enable_torch_compile=True)
+        torch.testing.assert_close(result, expected, rtol=0, atol=0)
+
+
+def test_e5m3_to_float_tensor_matches_reference_for_all_codes():
+    codes = torch.arange(256, dtype=torch.uint8)
+    decoded = e5m3_to_float_tensor(codes)
+    for code, value in enumerate(decoded.tolist()):
+        e, m = (code >> 3) & 0x1F, code & 0x07
+        if e == 31 and m == 7:
+            assert math.isnan(value)
+        elif e == 0:
+            assert value == pytest.approx(m / 8.0 * 2**-14, abs=0)
+        else:
+            assert value == pytest.approx((1.0 + m / 8.0) * 2.0 ** (e - 15), abs=0)
 
 
 # ---------------------------------------------------------------------------
@@ -691,10 +800,32 @@ class TestFp4V2WithGlobalScale:
         q, s, z = nvfp4_v2_with_global_scale(t, group_size=16, tensor_max=tm)
         assert q.shape == t.shape
 
+    @pytest.mark.parametrize("group_size", [16, 32])
+    @pytest.mark.parametrize("to_value", [list, np.array, torch.tensor], ids=["list", "numpy", "tensor"])
+    def test_tensor_max_vector_matches_its_scalar_maximum(self, group_size, to_value):
+        tensor = torch.ones(1, group_size)
+        q_scalar, scale_scalar, _ = nvfp4_v2_with_global_scale(
+            tensor, group_size=group_size, tensor_max=torch.tensor(2.0)
+        )
+        q_vector, scale_vector, _ = nvfp4_v2_with_global_scale(
+            tensor, group_size=group_size, tensor_max=to_value([1.0, 2.0])
+        )
+        torch.testing.assert_close(q_vector, q_scalar)
+        torch.testing.assert_close(scale_vector, scale_scalar)
+
     def test_with_max_scale(self):
         t = torch.randn(4, 32, dtype=torch.bfloat16)
         q, s, z = nvfp4_v2_with_global_scale(t, group_size=16, max_scale=1.5)
         assert q.shape == t.shape
+
+    @pytest.mark.parametrize("group_size", [16, 32])
+    def test_max_scale_clips_each_group(self, group_size):
+        tensor = torch.ones(2, group_size)
+        max_scale = torch.tensor([[0.5], [0.25]])
+        q, scale, _ = nvfp4_v2_with_global_scale(tensor, group_size=group_size, max_scale=max_scale)
+        torch.testing.assert_close(q[0], torch.full_like(q[0], 0.5))
+        torch.testing.assert_close(q[1], torch.full_like(q[1], 0.25))
+        torch.testing.assert_close(scale.reshape(-1), torch.tensor([57344.0, 28672.0]))
 
     def test_float16_input(self):
         t = torch.randn(4, 32, dtype=torch.float16)

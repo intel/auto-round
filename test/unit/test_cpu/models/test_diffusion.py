@@ -49,7 +49,7 @@ def test_diffusion_load_preserves_declared_fp32_modules(tmp_path):
             self.components = {"transformer": model}
 
         @classmethod
-        def from_pretrained(cls, path, torch_dtype):
+        def from_pretrained(cls, path, torch_dtype, trust_remote_code=False):
             transformer_dtype = torch_dtype["transformer"] if isinstance(torch_dtype, dict) else torch_dtype
             model = WanTransformer3DModel.from_pretrained(
                 os.path.join(path, "transformer"), torch_dtype=transformer_dtype
