@@ -121,6 +121,7 @@ def resolve_entry_scheme(scheme, direct_kwargs):
         raise TypeError("`schemes` is not supported; pass candidate schemes through `scheme` instead.")
     legacy_options = direct_kwargs.pop("options", None)
     legacy_avg_bits = direct_kwargs.pop("avg_bits", None)
+    weight_score_mode = direct_kwargs.pop("weight_score_mode", None)
 
     if legacy_options is not None:
         if scheme is not None and (not isinstance(scheme, str) or scheme.upper() != "W4A16"):
@@ -144,6 +145,10 @@ def resolve_entry_scheme(scheme, direct_kwargs):
                     "`%s` only takes effect with candidate schemes (AutoScheme); ignoring it for this run.", key
                 )
                 direct_kwargs.pop(key)
+        if weight_score_mode is not None:
+            logger.warning_once(
+                "`weight_score_mode` only takes effect with candidate schemes (AutoScheme); ignoring it for this run."
+            )
         return scheme, direct_kwargs
 
     auto_scheme_kwargs = {}
@@ -153,6 +158,8 @@ def resolve_entry_scheme(scheme, direct_kwargs):
     for key in ("shared_layers", "ignore_scale_zp_bits", "default_shared_layers"):
         if direct_kwargs.get(key) is not None:
             auto_scheme_kwargs[key] = direct_kwargs.pop(key)
+    if weight_score_mode is not None:
+        auto_scheme_kwargs["weight_score_mode"] = weight_score_mode
     if isinstance(scheme, AutoScheme):
         resolved = replace(scheme, **auto_scheme_kwargs) if auto_scheme_kwargs else scheme
     else:

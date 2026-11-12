@@ -84,6 +84,21 @@ from auto_round.wrapper import WrapperLinear
 __all__ = ["gen_layer_config"]
 
 
+def _weight_score_value(grad, w_diff, mode):
+    """Return the additive weight score for one scoring step.
+
+    ``w*g`` is the first-order delta loss ``|grad * (w - qdq_w)|``. ``weight``
+    keeps only the quantization error ``|w - qdq_w|`` and ``grad`` keeps only
+    the gradient magnitude ``|grad|``, which are useful ablations of the loss
+    formulation. Unknown/legacy values fall back to ``w*g``.
+    """
+    if mode in ("weight", "w"):
+        return torch.abs(w_diff).sum().item()
+    if mode in ("grad", "g"):
+        return torch.abs(grad.to(w_diff.device)).sum().item()
+    return torch.abs(grad.to(w_diff.device) * w_diff).sum().item()
+
+
 class _ScoreLinear(torch.autograd.Function):
     """Linear for scoring passes whose weight lives in the wrapper's CPU cache.
 
@@ -109,14 +124,18 @@ class _ScoreLinear(torch.autograd.Function):
         if ctx.needs_input_grad[0]:
             grad_x = torch.matmul(grad_out, weight)
         if wrapper.grad_mode and wrapper.need_weight_grad:
-            grad_out_2d = grad_out.reshape(-1, grad_out.shape[-1])
-            x_2d = x.reshape(-1, x.shape[-1])
-            grad_w = torch.mm(grad_out_2d.t(), x_2d)
             weight_ref = wrapper.orig_layer.weight
             if weight_ref.device.type == "meta":
                 weight_ref = wrapper.orig_layer.get_weight().to(x.device)
             w_diff = weight_ref.to(x.device) - weight
-            wrapper.weight_score += torch.abs(grad_w * w_diff).sum().item()
+            mode = getattr(wrapper, "weight_score_mode", "w*g")
+            if mode in ("weight", "w"):
+                wrapper.weight_score += torch.abs(w_diff).sum().item()
+            else:
+                grad_out_2d = grad_out.reshape(-1, grad_out.shape[-1])
+                x_2d = x.reshape(-1, x.shape[-1])
+                grad_w = torch.mm(grad_out_2d.t(), x_2d)
+                wrapper.weight_score += _weight_score_value(grad_w, w_diff, mode)
             wrapper.mix_score = wrapper.weight_score + wrapper.act_score
         return grad_x, None, None
 
@@ -131,6 +150,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         device="cpu",
         enable_round_tuning=True,
         need_weight_grad=False,
+        weight_score_mode="w*g",
         enable_torch_compile=True,
         **kwargs,
     ):
@@ -155,6 +175,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
         self.act_qdq_func = super()._qdq_act
         self.max_act_value = 0
         self.need_weight_grad = need_weight_grad
+        self.weight_score_mode = weight_score_mode
         self.grad_mode = False
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
@@ -278,7 +299,7 @@ class AutoSchemeWrapperLinear(WrapperLinear):
                 if weight.device.type == "meta":
                     weight = self.orig_layer.get_weight().to(grad.device)
                 w_diff = weight.to(grad.device) - self._score_qdq_cpu.to(grad.device)
-                self.weight_score += torch.abs(grad.to(w_diff.device) * w_diff).sum().item()
+                self.weight_score += _weight_score_value(grad, w_diff, self.weight_score_mode)
                 self.mix_score = self.weight_score + self.act_score
 
             qdq_w.register_hook(save_grad)
@@ -296,6 +317,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         device="cpu",
         enable_round_tuning=True,
         need_weight_grad=False,
+        weight_score_mode="w*g",
         enable_torch_compile=True,
         **kwargs,
     ):
@@ -318,6 +340,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         self.act_qdq_func = super()._qdq_act
         self.max_act_value = 0
         self.need_weight_grad = need_weight_grad
+        self.weight_score_mode = weight_score_mode
         self.grad_mode = False
         if self.need_weight_grad:
             self.orig_layer.weight.requires_grad = True
@@ -356,7 +379,7 @@ class AutoSchemeWrapperLinearIMatrix(WrapperLinear):
         def save_grad(grad):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
-            self.weight_score += torch.abs(grad.to(torch.float32) * w_diff.to(grad.device)).sum().item()
+            self.weight_score += _weight_score_value(grad.to(torch.float32), w_diff, self.weight_score_mode)
             self.mix_score = self.weight_score + self.act_score
 
         self.qdq_w.requires_grad_(True)
@@ -419,6 +442,7 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
         device="cpu",
         enable_round_tuning=True,
         need_weight_grad=False,
+        weight_score_mode="w*g",
         **kwargs,
     ):
         """Wrap ``orig_layer`` and eagerly run the GGUF K-quant search to build ``qdq_w``."""
@@ -429,6 +453,7 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             device,
             enable_round_tuning,
             need_weight_grad,
+            weight_score_mode,
             **kwargs,
         )
         self._custom_score_forward = False
@@ -448,7 +473,9 @@ class AutoSchemeWrapperLinearForGGUFK(AutoSchemeWrapperLinear):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
             # TODO strange, grad could be in CPU
-            self.weight_score += torch.abs(grad.to(w_diff.device).to(torch.float32) * w_diff).sum().item()
+            self.weight_score += _weight_score_value(
+                grad.to(w_diff.device).to(torch.float32), w_diff, self.weight_score_mode
+            )
             self.mix_score = self.weight_score + self.act_score
 
         self.qdq_w.requires_grad_(True)
@@ -473,6 +500,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         device="cpu",
         enable_round_tuning=True,
         need_weight_grad=False,
+        weight_score_mode="w*g",
         enable_torch_compile=True,
         **kwargs,
     ):
@@ -486,6 +514,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
             device,
             enable_round_tuning,
             need_weight_grad,
+            weight_score_mode,
             enable_torch_compile=enable_torch_compile,
             **kwargs,
         )
@@ -503,7 +532,7 @@ class AutoSchemeWrapperLinearForGGUFKImatrix(AutoSchemeWrapperLinear):
         def save_grad(grad):
             """Backward hook: accumulate weight score from grad * (weight - qdq_w)."""
             w_diff = self.orig_layer.weight - self.qdq_w.to(self.orig_layer.weight.device)
-            self.weight_score += torch.abs(grad.to(torch.float32) * w_diff.to(grad.device)).sum().item()
+            self.weight_score += _weight_score_value(grad.to(torch.float32), w_diff, self.weight_score_mode)
             self.mix_score = self.weight_score + self.act_score
 
         self.qdq_w.requires_grad_(True)
@@ -1189,6 +1218,7 @@ def get_score_for_scheme(
     pbar=None,
     shared_layers=None,
     need_weight_grad=False,
+    weight_score_mode="w*g",
     enable_torch_compile=True,
     low_gpu_mem_usage=True,
     major_device="cpu",
@@ -1274,6 +1304,7 @@ def get_score_for_scheme(
                 enable_norm_bias_tuning=False,
                 enable_round_tuning=False,
                 need_weight_grad=need_weight_grad,
+                weight_score_mode=weight_score_mode,
                 enable_torch_compile=enable_torch_compile,
             )
             set_module(model, name, new_m)
@@ -1890,6 +1921,7 @@ def _autoscheme_cache_config(
     force_mllm,
     low_gpu_mem_usage,
     need_weight_grad=False,
+    weight_score_mode="w*g",
 ):
     """Build the portable, implementation-independent identity of a scoring run."""
     return {
@@ -1904,6 +1936,7 @@ def _autoscheme_cache_config(
         "force_mllm": force_mllm,
         "low_gpu_mem_usage": low_gpu_mem_usage,
         "need_weight_grad": need_weight_grad,
+        "weight_score_mode": weight_score_mode,
     }
 
 
@@ -1919,6 +1952,7 @@ def _autoscheme_cache_key(
     force_mllm,
     low_gpu_mem_usage,
     need_weight_grad=False,
+    weight_score_mode="w*g",
 ):
     """Return a 16-char hex digest that uniquely identifies a **single-scheme** scoring run.
 
@@ -1940,6 +1974,7 @@ def _autoscheme_cache_key(
         force_mllm,
         low_gpu_mem_usage,
         need_weight_grad,
+        weight_score_mode,
     )
     key_str = json.dumps(key_data, sort_keys=True, default=str)
     return hashlib.sha256(key_str.encode()).hexdigest()[:16]
@@ -2376,6 +2411,7 @@ def _score_scheme_worker(args):
         seqlen,
         batch_size,
         need_weight_grad,
+        weight_score_mode,
         enable_torch_compile,
         low_cpu_mem_usage,
         low_gpu_mem_usage,
@@ -2520,6 +2556,7 @@ def _score_scheme_worker(args):
             skip_batches=skip_batches,
             batch_checkpoint=batch_checkpoint,
             need_weight_grad=need_weight_grad,
+            weight_score_mode=weight_score_mode,
             enable_torch_compile=enable_torch_compile,
             low_gpu_mem_usage=low_gpu_mem_usage,
             major_device=worker_device,
@@ -2735,6 +2772,7 @@ def _gen_layer_config(
 
     pbar_cnt = 0
     need_weight_grad = False
+    weight_score_mode = getattr(auto_scheme, "weight_score_mode", "w*g")
     need_imatrix = False  # only trigger it for gguf q-k quant
     effective_scheme_num = 0
     block_num = len(block_name)
@@ -2951,6 +2989,7 @@ def _gen_layer_config(
                 force_mllm=force_mllm,
                 low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
                 need_weight_grad=need_weight_grad,
+                weight_score_mode=weight_score_mode,
             )
             cache_key = hashlib.sha256(json.dumps(cache_config, sort_keys=True, default=str).encode()).hexdigest()[:16]
             cache_path = _autoscheme_cache_path(cache_key, index)
@@ -3118,6 +3157,7 @@ def _gen_layer_config(
                             seqlen,
                             batch_size,
                             need_weight_grad,
+                            weight_score_mode,
                             enable_torch_compile,
                             auto_scheme.low_cpu_mem_usage,
                             auto_scheme.low_gpu_mem_usage,
@@ -3313,6 +3353,7 @@ def _gen_layer_config(
                             nsamples=nsamples,
                             seqlen=seqlen,
                             need_weight_grad=need_weight_grad,
+                            weight_score_mode=weight_score_mode,
                             enable_torch_compile=enable_torch_compile,
                             low_gpu_mem_usage=auto_scheme.low_gpu_mem_usage,
                             major_device=major_device,

@@ -48,8 +48,22 @@ class AutoScheme:
     # AR_DISABLE_DEFAULT_SHARED_LAYERS=1) to let AutoScheme pick independently.
     # Declared last so positional construction keeps its historical meaning.
     default_shared_layers: bool = True
+    # Weight-loss formulation used by delta-loss scoring. ``w*g`` (default) is
+    # the first-order loss ``|grad * (w - qdq_w)|``; ``weight`` keeps only
+    # ``|w - qdq_w|`` and ``grad`` keeps only ``|grad|``. Aliases ``mix``,
+    # ``w`` and ``g`` are accepted and normalized in ``__post_init__``.
+    weight_score_mode: str = "w*g"
 
     def __post_init__(self):
+        aliases = {"mix": "w*g", "w": "weight", "g": "grad"}
+        mode = str(self.weight_score_mode).strip().lower()
+        mode = aliases.get(mode, mode)
+        if mode not in ("w*g", "weight", "grad"):
+            raise ValueError(
+                f"Unsupported weight_score_mode={self.weight_score_mode!r}; "
+                "expected one of 'w*g', 'weight', 'grad' (aliases: 'mix', 'w', 'g')."
+            )
+        self.weight_score_mode = mode
         if isinstance(self.options, str):
             options = self.options.upper().replace(" ", "")
             self.options = options.split(",")
