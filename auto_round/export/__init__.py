@@ -11,3 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Unified output-format API, loaded lazily to keep configuration imports light."""
+
+__all__ = ["BackendDataType", "OutputFormat", "generate_rrq_residual", "register_format", "resolve_formats"]
+
+
+def __getattr__(name):
+    if name in {"OutputFormat", "BackendDataType"}:
+        from auto_round.export import base
+
+        return getattr(base, name)
+    if name == "register_format":
+        from auto_round.export.registry import register_format
+
+        return register_format
+    if name == "resolve_formats":
+        from auto_round.export.resolver import resolve_formats
+
+        return resolve_formats
+    if name == "generate_rrq_residual":
+        from auto_round.export.formats.autoround.export_to_rrq import generate_rrq_residual
+
+        return generate_rrq_residual
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

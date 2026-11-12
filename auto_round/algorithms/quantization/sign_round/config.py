@@ -11,16 +11,32 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
 from collections.abc import Callable
 
 from auto_round.algorithms.config import AlgorithmParameterRegistry
 from auto_round.algorithms.quantization.config import QuantizationConfig
 from auto_round.algorithms.registry import register_algorithm
 from auto_round.logger import logger
+from auto_round.schemes import QuantizationScheme
 
 
 class SignRoundConfig(QuantizationConfig):
     """Configuration for SignRound-style block quantization."""
+
+    # Whether to emit the generic `enable_qad` experimental warning (subclasses
+    # with their own warning, e.g. QADConfig, disable it).
+    _warn_enable_qad = True
+
+    serialized_fields = (
+        "iters",
+        "lr",
+        "minmax_lr",
+        "enable_minmax_tuning",
+        "enable_norm_bias_tuning",
+        "enable_quanted_input",
+        "gradient_accumulate_steps",
+    )
 
     @classmethod
     def register_args(cls, registry: AlgorithmParameterRegistry) -> None:
@@ -37,6 +53,29 @@ class SignRoundConfig(QuantizationConfig):
         )
         registry.add_argument(
             "--minmax_lr", field="minmax_lr", default=None, type=float, help="Learning rate for min-max tuning."
+        )
+        registry.add_argument(
+            "--lora_rank",
+            "--signround_lora_rank",
+            field="lora_rank",
+            default=0,
+            type=int,
+            help=(
+                "Replace dense rounding tuning with low-rank B @ A parameters; 0 disables LoRA. "
+                "Rank is per local weight shard under TP. FP weights and inference stay unchanged."
+            ),
+        )
+        registry.add_argument(
+            "--lora_alpha",
+            "--signround_lora_alpha",
+            field="lora_alpha",
+            default=None,
+            type=float,
+            help=(
+                "Scale rounding LoRA by alpha/rank. When omitted, SignSGD with the default linear scheduler "
+                "uses a rank-, initialization-, and learning-rate-budget-based scale to bound the new "
+                "rounding offset within [-4, 4]; other optimizers/schedulers use unit scaling."
+            ),
         )
         registry.add_argument(
             "--momentum", field="momentum", default=0.0, type=float, help="Momentum factor for the optimizer."
@@ -80,7 +119,8 @@ class SignRoundConfig(QuantizationConfig):
             field="enable_alg_ext",
             default=False,
             action="boolean_optional",
-            help="Enable experimental SignRound extension.",
+            help="(Deprecated) Enable the experimental SignRound algorithm extension. "
+            "Use `--algorithm auto_round_v2` instead.",
         )
         registry.add_argument(
             "--not_use_best_mse",
@@ -121,6 +161,70 @@ class SignRoundConfig(QuantizationConfig):
             help="Enable last-block LM cross-entropy (LFQ) loss for the final transformer block (experimental).",
         )
         registry.add_argument(
+            "--lfq_loss",
+            field="lfq_loss",
+            default="tk",
+            choices=["ce", "dtk", "rkl", "tk"],
+            help=(
+                "LFQ loss type for the final transformer block. 'ce' uses next-token cross-entropy "
+                "against the ground-truth labels; 'dtk' uses the Decoupled Tempered Top-K forward-KL "
+                "knowledge distillation loss (KL(p_T || p_S)); 'rkl' uses the same decoupled Top-K "
+                "objective with the reverse KL (KL(p_S || p_T)); 'tk' only aligns the Top-K-normalized "
+                "conditional distributions (tempered conditional KL within the teacher Top-K, without "
+                "the binary mass term). 'dtk'/'rkl'/'tk' distill the FP (teacher) block output into the "
+                "quantized (student) block output (experimental)."
+            ),
+        )
+        registry.add_argument(
+            "--lfq_top_k",
+            field="lfq_top_k",
+            default=32,
+            type=int,
+            help="Number of top teacher logits used by the 'dtk' LFQ loss.",
+        )
+        registry.add_argument(
+            "--lfq_temperature",
+            field="lfq_temperature",
+            default=1.0,
+            type=float,
+            help="Temperature applied to the within-Top-K conditional KL term of the 'dtk' LFQ loss.",
+        )
+        registry.add_argument(
+            "--lfq_num_blocks",
+            field="lfq_num_blocks",
+            default=1,
+            type=int,
+            help=(
+                "Number of final text-decoder blocks the LFQ loss is applied to (default 1 = last "
+                "block only). Increase to propagate the logit-aware signal to deeper blocks."
+            ),
+        )
+        registry.add_argument(
+            "--lfq_mse_weight",
+            field="lfq_mse_weight",
+            default=0.0,
+            type=float,
+            help=(
+                "Weight of the MSE block-reconstruction term added to the LFQ (KD) loss: "
+                "loss = kd_loss + lfq_mse_weight * mse_loss. 0.0 (default) replaces the MSE loss "
+                "entirely with the KD loss (original behavior); >0 combines both so the block keeps "
+                "its reconstruction fidelity while adding logit alignment."
+            ),
+        )
+        registry.add_argument(
+            "--enable_qad",
+            field="enable_qad",
+            default=False,
+            action="boolean_optional",
+            help=(
+                "Enable QAD (quantization-aware distillation): fuse all text-decoder blocks into a "
+                "single jointly-optimized group (whole-network training, not block-by-block) and tune "
+                "them against the final-output LM loss (`--lfq_loss`, default 'ce'). No intermediate "
+                "block MSE is used. Implies --enable_lfq. Set --nblocks N to train in joint chunks of "
+                "N blocks instead of the whole network at once (experimental)."
+            ),
+        )
+        registry.add_argument(
             "--enable_neuqi",
             field="enable_neuqi",
             action="store_true",
@@ -137,6 +241,8 @@ class SignRoundConfig(QuantizationConfig):
         iters: int = 200,
         lr: float | None = None,
         minmax_lr: float | None = None,
+        lora_rank: int = 0,
+        lora_alpha: float | None = None,
         lr_scheduler: Callable | None = None,
         momentum: float = 0.0,
         nblocks: int = 1,
@@ -150,6 +256,12 @@ class SignRoundConfig(QuantizationConfig):
         optimizer: str | None = None,  # TODO later wenhuach delete this
         enable_adam: bool = False,  # TODO later  wenhuach delete this
         enable_lfq: bool = False,
+        lfq_loss: str = "tk",
+        lfq_top_k: int = 32,
+        lfq_temperature: float = 1.0,
+        lfq_num_blocks: int = 1,
+        lfq_mse_weight: float = 0.0,
+        enable_qad: bool = False,
         enable_neuqi: bool = False,
         **kwargs,
     ) -> None:
@@ -162,6 +274,12 @@ class SignRoundConfig(QuantizationConfig):
                 If None, a heuristic based on ``iters`` is used.
             minmax_lr: Learning rate used by min-max tuning. If None, it
                 falls back to ``lr``.
+            lora_rank: Low-rank rounding rank per local weight shard. Zero
+                retains dense rounding tuning.
+            lora_alpha: Optional alpha/rank scaling. When omitted, SignSGD with
+                the default linear scheduler bounds the new rounding offset
+                within [-4, 4] using the initialization and learning-rate budget.
+                Other optimizers or custom schedulers retain unit scaling.
             lr_scheduler: Optional learning-rate scheduler name or
                 scheduler object used by the optimizer.
             momentum: Momentum factor used by the optimizer.
@@ -171,8 +289,11 @@ class SignRoundConfig(QuantizationConfig):
                 bias terms.
             gradient_accumulate_steps: Number of gradient accumulation
                 steps used per optimization update.
-            enable_alg_ext: Whether to enable the experimental SignRound
-                extension implementation.
+            enable_alg_ext: Deprecated. Whether to enable the experimental
+                SignRound extension implementation. Selecting the
+                ``auto_round_v2`` algorithm is the supported way to turn it on;
+                this switch is kept for backward compatibility and is
+                normalized to :class:`SignRoundV2Config`.
             not_use_best_mse: Whether to skip restoring the best-MSE
                 checkpoint during tuning.
             dynamic_max_gap: Maximum dynamic gap used by adaptive tuning
@@ -181,17 +302,42 @@ class SignRoundConfig(QuantizationConfig):
                 quantized output of previous blocks during calibration.
             optimizer: Optional optimizer name override.
             enable_adam: Whether to use the Adam-based SignRound variant.
+            enable_lfq: Enable the last-block LM loss (LFQ) for the final
+                transformer block (experimental).
+            lfq_loss: LFQ loss type, ``"ce"`` (next-token cross-entropy),
+                ``"dtk"`` (Decoupled Tempered Top-K forward-KL distillation,
+                ``KL(p_T || p_S)``), ``"rkl"`` (same decoupled Top-K objective
+                with the reverse KL ``KL(p_S || p_T)``) or ``"tk"`` (only align
+                the Top-K-normalized conditional distributions, without the
+                binary mass term). ``"dtk"``/``"rkl"``/``"tk"`` distill the FP
+                teacher block output into the quantized student.
+            lfq_top_k: Number of top teacher logits used by the ``"dtk"`` LFQ loss.
+            lfq_temperature: Temperature applied to the within-Top-K conditional
+                KL term of the ``"dtk"`` LFQ loss.
+            lfq_num_blocks: Number of final text-decoder blocks the LFQ loss is
+                applied to (default 1 = last block only).
+            lfq_mse_weight: Weight of the MSE block-reconstruction term added to
+                the KD loss (``loss = kd_loss + lfq_mse_weight * mse_loss``). 0.0
+                replaces MSE with the KD loss (original behavior); >0 combines
+                both.
+            enable_qad: Enable QAD (quantization-aware distillation): fuse all
+                text-decoder blocks into a single jointly-optimized group and
+                tune them against the final-output LM loss (``lfq_loss``, default
+                ``"ce"``), with no intermediate block MSE. Implies
+                ``enable_lfq``. ``nblocks`` > 1 trains in joint chunks instead of
+                the whole network at once.
             enable_neuqi: Opt into the NeUQI grid search (arXiv 2505.17595):
                 the joint (scale, integer zero-point) search runs once at
                 layer init and anchors the tuning grid to the winner, frozen
                 during tuning (the two-stage symmetric scale search for sym
                 layers). The search grid sizes are tunable via
                 ``AR_NEUQI_COARSE`` and ``AR_NEUQI_FINE``.
-            **kwargs: Common quantization arguments forwarded to
-                QuantizationConfig, such as bits, group_size, sym,
-                data_type, and activation quantization fields.
+            **kwargs: Algorithm-local calibration arguments forwarded to QuantizationConfig.
         """
         super().__init__(**kwargs)
+        self._validate_lora_settings(lora_rank, lora_alpha)
+        self.lora_rank = lora_rank
+        self.lora_alpha = lora_alpha
         self.enable_neuqi = enable_neuqi
         self.gradient_accumulate_steps = gradient_accumulate_steps
         self.iters = iters
@@ -199,8 +345,7 @@ class SignRoundConfig(QuantizationConfig):
             logger.warning("`iters` must be non-negative, reset it to 200")
             self.iters = 200
 
-        # lr/minmax_lr depend on `bits`, which may still be unresolved here
-        # (e.g. only `scheme=` was given) -- finalize_scheme() fills them in.
+        # The entry builder supplies the resolved run scheme to finalize_scheme().
         self.lr = lr
         self.minmax_lr = minmax_lr
         # Whether lr/minmax_lr are auto-derived; set properly in finalize_scheme().
@@ -224,7 +369,65 @@ class SignRoundConfig(QuantizationConfig):
         self.enable_adam = enable_adam
         self.enable_lfq = enable_lfq
         if self.enable_lfq:
-            logger.warning("the `enable_lfq` feature is experimental and currently has limited model support.")
+            logger.warning_once("the `enable_lfq` feature is experimental and currently has limited model support.")
+        self.lfq_loss = lfq_loss
+        if self.lfq_loss not in ("ce", "dtk", "rkl", "tk"):
+            raise ValueError(f"`lfq_loss` must be one of 'ce', 'dtk', 'rkl' or 'tk', got {self.lfq_loss!r}")
+        self.lfq_top_k = lfq_top_k
+        if self.lfq_top_k <= 0:
+            raise ValueError("`lfq_top_k` must be positive")
+        self.lfq_temperature = lfq_temperature
+        if self.lfq_temperature <= 0:
+            raise ValueError("`lfq_temperature` must be positive")
+        self.lfq_num_blocks = lfq_num_blocks
+        if self.lfq_num_blocks <= 0:
+            raise ValueError("`lfq_num_blocks` must be positive")
+        self.lfq_mse_weight = lfq_mse_weight
+        if self.lfq_mse_weight < 0:
+            raise ValueError("`lfq_mse_weight` must be non-negative")
+        # Legacy QAD flag: configuration normalization routes this to QADConfig
+        # and its whole-model quantizer, independently of block-wise nblocks.
+        self.enable_qad = enable_qad
+        if self.enable_qad:
+            self.enable_lfq = True
+        # QADConfig emits its own (more specific) warning, so skip the generic one there.
+        if self.enable_qad and self._warn_enable_qad:
+            logger.warning_once(
+                "the `enable_qad` (quantization-aware distillation) mode is experimental: all "
+                "text-decoder blocks are tuned jointly with a whole-model forward."
+            )
+
+    @staticmethod
+    def _validate_lora_settings(rank: int, alpha: float | None, prefix: str = "lora") -> None:
+        """Validate a LoRA rank and optional scaling coefficient.
+
+        Args:
+            rank (int): Non-negative factorization rank; zero disables LoRA.
+            alpha (float | None): Finite positive scaling coefficient, or None for automatic scaling.
+            prefix (str): Option-name prefix included in validation errors.
+
+        Raises:
+            ValueError: The rank is invalid or alpha is not finite and positive.
+        """
+        if isinstance(rank, bool) or not isinstance(rank, int) or rank < 0:
+            raise ValueError(f"`{prefix}_rank` must be a non-negative integer")
+        if alpha is not None:
+            try:
+                valid_alpha = not isinstance(alpha, bool) and math.isfinite(alpha) and alpha > 0
+            except (TypeError, ValueError, OverflowError):
+                valid_alpha = False
+            if not valid_alpha:
+                raise ValueError(f"`{prefix}_alpha` must be finite and positive")
+
+    def validate_lora_config(self) -> None:
+        """Validate effective settings, including overrides applied after construction.
+
+        Raises:
+            ValueError: Shared or QAD-specific LoRA rank or alpha settings are invalid.
+        """
+        self._validate_lora_settings(self.lora_rank, self.lora_alpha)
+        if hasattr(self, "qad_lora_rank"):
+            self._validate_lora_settings(self.qad_lora_rank, self.qad_lora_alpha, "qad_lora")
 
     def _lr_for_bits(self, bits: int | None) -> float | None:
         """Return the auto lr heuristic for a given bit-width.
@@ -258,7 +461,7 @@ class SignRoundConfig(QuantizationConfig):
         # minmax_lr falls back to lr when not explicitly set
         return self.compute_lr(bits)
 
-    def finalize_scheme(self) -> None:
+    def finalize_scheme(self, scheme: QuantizationScheme) -> None:
         """Resolve lr/minmax_lr once `bits` is known (low-bit schemes use a higher lr).
 
         The scalar ``lr``/``minmax_lr`` values resolved here are derived from the
@@ -270,7 +473,7 @@ class SignRoundConfig(QuantizationConfig):
         self.lr_is_auto = self.lr is None and self.iters > 0
         self.minmax_lr_is_auto = self.minmax_lr is None
         if self.lr_is_auto:
-            self.lr = self._lr_for_bits(self.bits)
+            self.lr = self._lr_for_bits(scheme.bits)
         self.minmax_lr = self.minmax_lr or self.lr
 
     def check_configs(self) -> None:
@@ -294,7 +497,33 @@ class AdamRoundConfig(SignRoundConfig):
 
 
 class SignRoundV2Config(SignRoundConfig):
-    pass
+    """SignRound with the algorithm extension (the former ``enable_alg_ext``) enabled.
+
+    The extension is intrinsic to this config, so ``enable_alg_ext`` reads as
+    ``True`` no matter how the config was built — including the ``__class__``
+    rewrite performed by :func:`normalize_algorithm_config` and direct attribute
+    assignment, both of which bypass ``__init__``. Select this config with
+    ``--algorithm auto_round_v2`` (CLI) or ``alg_configs="auto_round_v2"``
+    (Python API); the deprecated ``--enable_alg_ext`` switch is not redeclared
+    for it on the CLI.
+    """
+
+    @classmethod
+    def get_registered_args(cls) -> AlgorithmParameterRegistry:
+        """Declare the SignRound flags, minus the deprecated ``--enable_alg_ext`` switch."""
+        registry = super().get_registered_args()
+        registry.parameters = [parameter for parameter in registry.parameters if parameter.field != "enable_alg_ext"]
+        return registry
+
+    @property
+    def enable_alg_ext(self) -> bool:
+        """Always ``True``: the algorithm extension cannot be disabled for this config."""
+        return True
+
+    @enable_alg_ext.setter
+    def enable_alg_ext(self, value: bool) -> None:
+        # The extension is not optional here, so the assigned value is dropped.
+        pass
 
 
 register_algorithm(
@@ -302,4 +531,12 @@ register_algorithm(
     aliases=("auto_round", "autoround", "sign_round", "signround"),
     config_factory=SignRoundConfig,
     summary="SignRound-style iterative block quantization.",
+)
+
+
+register_algorithm(
+    "auto_round_v2",
+    aliases=("auto_round_v2", "auto_roundv2", "sign_round_v2", "signroundv2"),
+    config_factory=SignRoundV2Config,
+    summary="SignRound with the algorithm extension (the former `enable_alg_ext`) enabled.",
 )

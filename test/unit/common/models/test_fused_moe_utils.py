@@ -38,7 +38,7 @@ from auto_round.modeling.fused_moe.replace_modules import (
     _apply_custom_replacements,
     is_custom_model,
 )
-from auto_round.modeling.fused_moe.utils import _update_parameter
+from auto_round.modeling.fused_moe.utils import _update_parameter, sequential_moe_forward
 
 # ---------------------------------------------------------------------------
 # fused_moe.utils._update_parameter
@@ -85,6 +85,109 @@ def test_update_parameter_with_custom_attr():
     new_data = torch.full((4,), 3.14)
     _update_parameter(mod, "e_score_correction_bias", new_data)
     assert torch.allclose(mod.e_score_correction_bias, new_data)
+
+
+def test_sequential_moe_forward_batches_routes_without_nonzero(monkeypatch):
+    """Sorted routing matches the per-expert reference (forward + grads) without per-expert ``nonzero``."""
+    torch.manual_seed(17)
+    experts = nn.ModuleList([nn.Linear(8, 8) for _ in range(5)])
+    hidden_states = torch.randn(7, 8, requires_grad=True)
+    # Expert 2 is never hit; id 5 is out of range and must contribute zeros.
+    top_k_index = torch.tensor([[0, 3], [3, 1], [1, 0], [3, 4], [0, 5], [4, 3], [1, 0]])
+    top_k_weights = torch.softmax(torch.randn(7, 2), dim=-1).requires_grad_()
+
+    flat_ids = top_k_index.reshape(-1)
+    token_idx = torch.arange(7).unsqueeze(1).expand_as(top_k_index).reshape(-1)
+    pairs = []
+    for pair, expert_idx in enumerate(flat_ids.tolist()):
+        if expert_idx < len(experts):
+            out = experts[expert_idx](hidden_states[token_idx[pair]]) * top_k_weights.reshape(-1)[pair]
+        else:
+            out = hidden_states.new_zeros(8)
+        pairs.append(out)
+    expected = torch.stack(pairs).view(7, 2, 8).sum(dim=1)
+    expected.square().sum().backward()
+    ref_grads = [hidden_states.grad.clone(), top_k_weights.grad.clone()]
+    ref_grads += [p.grad.clone() if p.grad is not None else None for p in experts.parameters()]
+
+    hidden_states.grad = None
+    top_k_weights.grad = None
+    experts.zero_grad(set_to_none=True)
+
+    def fail_nonzero(*args, **kwargs):
+        raise AssertionError("sorted MoE routing must not call torch.nonzero")
+
+    monkeypatch.setattr(torch, "nonzero", fail_nonzero)
+    actual = sequential_moe_forward(hidden_states, top_k_index, top_k_weights, experts, len(experts))
+    actual.square().sum().backward()
+    grads = [hidden_states.grad, top_k_weights.grad] + [p.grad for p in experts.parameters()]
+
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-5)
+    for grad, ref in zip(grads, ref_grads):
+        if ref is None:
+            assert grad is None
+        else:
+            assert torch.allclose(grad, ref, atol=1e-6, rtol=1e-5)
+
+    empty = sequential_moe_forward(hidden_states[:0], top_k_index[:0], top_k_weights[:0], experts, len(experts))
+    assert empty.shape == (0, 8)
+
+
+@pytest.mark.enable_torch_compile
+@pytest.mark.parametrize("route_impl", ["sequential", "linear_loop"])
+def test_moe_route_changes_do_not_recompile_block(route_impl):
+    """Different data-dependent route plans must not recompile an enclosing block."""
+    from auto_round.modeling.fused_moe.moe_experts_interface import linear_loop_experts_forward
+
+    class Expert(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gate_proj = nn.Linear(4, 8)
+            self.up_proj = nn.Linear(4, 8)
+            self.down_proj = nn.Linear(8, 4)
+
+        def forward(self, hidden_states):
+            gated = torch.nn.functional.silu(self.gate_proj(hidden_states)) * self.up_proj(hidden_states)
+            return self.down_proj(gated)
+
+    class LinearExperts(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.num_experts = 4
+            self.act_fn = nn.SiLU()
+            for expert_idx in range(self.num_experts):
+                self.add_module(str(expert_idx), Expert())
+
+    experts = nn.ModuleList([Expert() for _ in range(4)]) if route_impl == "sequential" else LinearExperts()
+    compiled_graphs = []
+
+    def backend(graph_module, _example_inputs):
+        compiled_graphs.append(graph_module)
+        return graph_module.forward
+
+    def block(hidden_states, route_indices, route_weights):
+        block_input = hidden_states.sin()
+        if route_impl == "sequential":
+            output = sequential_moe_forward(block_input, route_indices, route_weights, experts, 4)
+        else:
+            output = linear_loop_experts_forward(experts, block_input, route_indices, route_weights)
+        return output.cos()
+
+    compiled_block = torch.compile(block, backend=backend)
+    hidden_states = torch.randn(3, 4)
+    route_weights = torch.full((3, 2), 0.5)
+    route_plans = (
+        torch.tensor([[0, 1], [1, 2], [2, 3]]),
+        torch.tensor([[0, 3], [0, 2], [1, 3]]),
+        torch.tensor([[1, 1], [2, 2], [3, 3]]),
+    )
+
+    compiled_block(hidden_states, route_plans[0], route_weights)
+    initial_graph_count = len(compiled_graphs)
+    assert initial_graph_count > 0
+    for route_indices in route_plans[1:]:
+        compiled_block(hidden_states, route_indices, route_weights)
+    assert len(compiled_graphs) == initial_graph_count
 
 
 # ---------------------------------------------------------------------------

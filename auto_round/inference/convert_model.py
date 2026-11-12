@@ -44,7 +44,6 @@ from auto_round.utils import (
     get_block_names,
     get_checkpoint_conversion_mapping,
     get_module,
-    is_hpex_available,
     is_transformers_version_greater_or_equal_5,
     set_module,
 )
@@ -164,26 +163,15 @@ def get_available_devices():
     """
     Returns a list of available devices in the current environment.
 
+    Any backend PyTorch exposes (cuda/xpu/hpu/mps/npu/...) is discovered by the
+    device manager, so no per-device probing is needed here.
+
     Returns:
         List[str]: A list of device identifiers like "cuda", "hpu", "xpu", "cpu".
     """
-    devices = []
+    from auto_round.utils.device_manager import get_available_device_types
 
-    if torch.cuda.is_available():
-        devices.append("cuda")
-
-    if is_hpex_available():
-        devices.append("hpu")
-
-    if hasattr(torch, "xpu") and torch.xpu.is_available():
-        devices.append("xpu")
-
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        devices.append("mps")
-
-    devices.append("cpu")  # Always available
-
-    return devices
+    return [*get_available_device_types(), "cpu"]  # CPU is always available
 
 
 def _remap_paths_for_text_model(model, quant_block_list, extra_config):
@@ -374,7 +362,7 @@ def get_layer_config(model, quantization_config):
 
     # Expand GPTQ 'dynamic' config (regex-based)
     dynamic_config = getattr(quantization_config, "dynamic", None)
-    from auto_round.export.export_to_autogptq.export import convert_from_autogptq_dynamic
+    from auto_round.export.formats.gptq.config import convert_from_autogptq_dynamic
 
     if dynamic_config and isinstance(dynamic_config, dict):
         extra_config = _expand_regex_config(
@@ -586,6 +574,8 @@ def _create_quant_layer(layer, layer_backend, config, in_features, out_features,
         or BackendDataType.MXINT4.value in layer_backend
         or layer_backend == "auto_round:torch_nvfp4_e5m3"
         or layer_backend == "auto_round:cute_nvfp4_e5m3"
+        or layer_backend == "auto_round:torch_nvfp4_e5m3_gs"
+        or layer_backend == "auto_round:cute_nvfp4_e5m3_gs"
         or layer_backend == "auto_round:fake"
     ):
         return QuantLinear.from_original(config, layer)
@@ -870,21 +860,26 @@ def convert_hf_model(model: nn.Module, target_device: str = "cpu") -> tuple[nn.M
         if isinstance(quantization_config, dict)
         else getattr(quantization_config, "format", None)
     )
-    if config_format == "nvfp4-e5m3-pack-quantized":
+    if config_format in ("nvfp4-e5m3-pack-quantized", "nvfp4-e5m3-gs-pack-quantized"):
+        with_global_scale = config_format == "nvfp4-e5m3-gs-pack-quantized"
         config_dict = quantization_config if isinstance(quantization_config, dict) else quantization_config.to_dict()
         ignored = config_dict.get("ignore") or []
         # TODO: For experimental purpose, will delete when it's not necessary.
         quantization_config = SimpleNamespace(
             quant_method="auto-round",
-            packing_format="auto_round:llm_compressor_nvfp4_e5m3",
+            packing_format=(
+                "auto_round:llm_compressor_nvfp4_e5m3_gs"
+                if with_global_scale
+                else "auto_round:llm_compressor_nvfp4_e5m3"
+            ),
             bits=4,
             group_size=16,
             sym=True,
-            data_type="nvfp4_v2",
+            data_type="nvfp4_v2_gs" if with_global_scale else "nvfp4_v2",
             act_bits=4,
             act_group_size=16,
             act_sym=True,
-            act_data_type="nvfp4_v2",
+            act_data_type="nvfp4_v2_with_static_gs" if with_global_scale else "nvfp4_v2",
             act_dynamic=True,
             extra_config={name: {"bits": 16, "act_bits": 16} for name in ignored},
         )

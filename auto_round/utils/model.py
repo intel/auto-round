@@ -28,7 +28,7 @@ import transformers
 from packaging import version
 
 from auto_round import envs
-from auto_round.export.export_to_gguf.config import ModelType
+from auto_round.export.formats.gguf.config import ModelType
 from auto_round.logger import logger
 from auto_round.utils.common import AUDIO_MM_KEYS, VISION_MM_KEYS, monkey_patch_model
 from auto_round.utils.path_safety import UnsafeCheckpointPathError
@@ -297,7 +297,7 @@ _MXFP4_SUPPORTED_MODEL_TYPES = {"gpt_oss"}
 _FP8_SUPPORTED_MODEL_TYPES = {"deepseek_v32"}
 
 
-def _is_mxfp4_model(model_path, trust_remote_code=True):
+def _is_mxfp4_model(model_path, trust_remote_code=False):
     """Check if a model is an MXFP4 quantized model supported for direct loading.
 
     Only checks when transformers >= 5.0.0. Returns False immediately for older versions,
@@ -326,7 +326,7 @@ def _is_mxfp4_model(model_path, trust_remote_code=True):
     return quant_method == "mxfp4" and model_type in _MXFP4_SUPPORTED_MODEL_TYPES
 
 
-def _is_fp8_model(model_path, trust_remote_code=True):
+def _is_fp8_model(model_path, trust_remote_code=False):
     """Check if a model is an FP8 quantized model supported for direct loading.
 
     Only checks when transformers >= 4.56.0. Returns False immediately for older versions,
@@ -447,7 +447,7 @@ def install_debug_layer_config_patch() -> None:
 def llm_load_model(
     pretrained_model_name_or_path: str,
     platform: str = "hf",
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     model_dtype: str | None = None,
     device: str = "cpu",
     **kwargs,
@@ -543,7 +543,7 @@ def llm_load_model(
 
     model_cls = AutoModel if is_glm else AutoModelForCausalLM
     if "deepseek" in pretrained_model_name_or_path.lower() and trust_remote_code:
-        logger.warning("trust_remote_code is enabled by default, please ensure its correctness.")
+        logger.warning("trust_remote_code is explicitly enabled, please ensure the model source is trusted.")
 
     if is_hpex_available():
         # For loading FP8 model on HPU
@@ -670,7 +670,7 @@ def mllm_load_model(
     device: str = "cpu",
     torch_dtype: str = "auto",
     use_auto_mapping: bool = True,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     model_dtype: str | None = None,
     **kwargs,
 ):
@@ -997,7 +997,7 @@ def diffusion_load_model(
     device: str | torch.device = "cpu",
     torch_dtype: str | torch.dtype = "auto",
     use_auto_mapping: bool = False,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     model_dtype: str | None = None,
     default_torch_dtype: str | torch.dtype = "auto",
     **kwargs,
@@ -1032,7 +1032,7 @@ def diffusion_load_model(
     if model_type == "nextstep":
         from auto_round.special_model_handler import load_next_step_diffusion
 
-        pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str)
+        pipe, model = load_next_step_diffusion(pretrained_model_name_or_path, device_str, trust_remote_code)
         return pipe, pipe.model
 
     # A special case for Cosmos3: model_index.json _class_name may not match
@@ -1079,7 +1079,7 @@ def diffusion_load_model(
                     torch_dtype[k] = component_dtype
 
         pipe = pipelines.pipeline_utils.DiffusionPipeline.from_pretrained(
-            pretrained_model_name_or_path, torch_dtype=torch_dtype
+            pretrained_model_name_or_path, torch_dtype=torch_dtype, trust_remote_code=trust_remote_code
         )
         pipe_config = pipe.load_config(pretrained_model_name_or_path)
 
@@ -1152,7 +1152,7 @@ def load_model(
     pretrained_model_name_or_path: str | torch.nn.Module,
     platform: str = "hf",
     model_dtype: str | None = None,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
     device: str = "cpu",
     use_auto_mapping: bool | None = None,
     use_model_replacements: bool = False,
@@ -1484,7 +1484,7 @@ def _get_modular_pipeline_class():
         return None
 
 
-def is_diffusion_model(model_or_path: str | object, trust_remote_code: bool = True) -> bool:
+def is_diffusion_model(model_or_path: str | object, trust_remote_code: bool = False) -> bool:
     from auto_round.utils.common import LazyImport
 
     # Then check if model_index.json exists for diffusion pipeline,
@@ -1628,6 +1628,27 @@ def get_block_names(model, quant_vision=False):
 
 
 def get_lm_head_name(model):
+    """Resolve the name of the LM head module (e.g. ``lm_head``).
+
+    Prefers the model's own ``get_output_embeddings()`` declaration — the
+    transformers-native source of truth, overridden per family — and
+    reverse-maps the returned module to its registered name. Falls back to the
+    last-leaf walk for objects without the method, raising getters, or
+    unregistered heads (trust-remote-code, diffusers, plain ``nn.Module``).
+    Weight tying shares parameters while module objects stay distinct, so the
+    identity mapping stays unambiguous for tied models.
+    """
+    getter = getattr(model, "get_output_embeddings", None)
+    if callable(getter):
+        try:
+            head = getter()
+        except Exception:  # family-specific failures fall back to the walk
+            head = None
+        if head is not None:
+            for name, module in model.named_modules():
+                if module is head:
+                    return name
+            # an unregistered head: fall through to the last-leaf walk
     block_names = get_block_names(model, True)
     last_name = None
     for n, m in model.named_modules():
@@ -1747,7 +1768,7 @@ def get_nested_attr(module, attr_name: str):
 
 
 def get_gguf_architecture(dir_model, model_type=ModelType.TEXT):
-    from auto_round.export.export_to_gguf.llama_cpp_conversion import get_conversion
+    from auto_round.export.formats.gguf.llama_cpp_conversion import get_conversion
 
     is_mistral_format = False
     if isinstance(dir_model, str):
@@ -2853,17 +2874,11 @@ def move_to_device_preserving_cpu_pinned(module: torch.nn.Module, device) -> tor
     """
     if module_pinned_execution_device(module) is not None or _module_manages_own_device(module):
         return module
-    # Materialize the iterators before mutating: reassigning ``param.data`` can trigger
-    # changes to the module's internal ``_parameters``/``_buffers`` dicts (e.g. on HPU lazy
-    # mode), which would raise ``RuntimeError: dictionary keys changed during iteration``.
-    for _, param in list(module.named_parameters(recurse=False)):
-        if param.device.type != "meta":
-            param.data = param.data.to(device)
-            if param.grad is not None:
-                param.grad.data = param.grad.data.to(device)
-    for _, buf in list(module.named_buffers(recurse=False)):
-        if buf.device.type != "meta":
-            buf.data = buf.data.to(device)
+    # Use the same conversion machinery as Module.to(): cross-backend transfers
+    # (notably CPU <-> HPU lazy) may require replacing a Parameter rather than
+    # assigning incompatible tensor types to its .data. _apply also moves gradients
+    # and replaces buffers. Recurse manually so pinned children remain untouched.
+    module._apply(lambda tensor: tensor if tensor.device.type == "meta" else tensor.to(device), recurse=False)
     for child in list(module.children()):
         move_to_device_preserving_cpu_pinned(child, device)
     return module
@@ -3310,8 +3325,8 @@ def find_layers_from_config(model_dir: str, class_names: list[str] | None = None
     for prefix, config_dir in dirs:
         try:
             with torch.device("meta"):
-                config = AutoConfig.from_pretrained(config_dir, trust_remote_code=True)
-                model = AutoModel.from_config(config, trust_remote_code=True)
+                config = AutoConfig.from_pretrained(config_dir, trust_remote_code=False)
+                model = AutoModel.from_config(config, trust_remote_code=False)
         except Exception as e:
             logger.warning(f"Failed to load model from {config_dir} for layer detection. Skipping. Warning: {e}")
             continue  # skip silently

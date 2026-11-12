@@ -106,7 +106,7 @@ class TestDiskStreamWorkerModelPrep:
         seen = {}
         sentinel_model, sentinel_tokenizer, sentinel_index = object(), object(), object()
 
-        def _fake_build_meta_model(model_name):
+        def _fake_build_meta_model(model_name, trust_remote_code=False):
             return sentinel_model, sentinel_tokenizer, sentinel_index
 
         def _fake_handle_moe(model):

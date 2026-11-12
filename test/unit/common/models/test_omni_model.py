@@ -36,11 +36,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _qwen3_omni_thinker_layers(model):
-    from auto_round.special_model_handler import _get_qwen3_omni_thinker_layer_info
+def _omni_thinker_layers(model):
+    from auto_round.special_model_handler import _get_omni_thinker_layer_info
 
-    layer_prefix, layers = _get_qwen3_omni_thinker_layer_info(model)
-    assert layers is not None
+    layer_prefix, layers = _get_omni_thinker_layer_info(model)
+    assert layers is not None, "Qwen-Omni thinker layers not found under known layouts"
     return layer_prefix, layers
 
 
@@ -65,10 +65,11 @@ class TestQwen2_5Omni:
         from auto_round.utils import get_block_names
 
         block_names = get_block_names(self.model, quant_vision=False)
-        # Should have thinker.model.layers but not talker.model.layers
+        # Should have thinker text layers but not talker.model.layers
+        layer_prefix, _ = _omni_thinker_layers(self.model)
         assert any(
-            "thinker.model.layers" in str(b) for b in block_names
-        ), f"Expected thinker.model.layers in block_names, got: {block_names}"
+            layer_prefix in str(b) for b in block_names
+        ), f"Expected {layer_prefix} in block_names, got: {block_names}"
         assert not any(
             "talker.model.layers" in str(b) for b in block_names
         ), f"Did not expect talker.model.layers by default, got: {block_names}"
@@ -96,7 +97,8 @@ class TestQwen2_5Omni:
         from auto_round.utils.model import is_moe_layer
 
         # Thinker uses dense MLP, not MoE
-        thinker_mlp = self.model.thinker.model.layers[0].mlp
+        _, thinker_layers = _omni_thinker_layers(self.model)
+        thinker_mlp = thinker_layers[0].mlp
         assert not is_moe_layer(thinker_mlp), "Qwen2.5-Omni should not be detected as MoE"
 
     def test_not_custom_model(self):
@@ -149,8 +151,8 @@ class TestQwen3OmniMoeBlockNames:
         config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
+        layer_prefix, _ = _omni_thinker_layers(model)
         block_names = get_block_names(model, quant_vision=False)
-        layer_prefix, _ = _qwen3_omni_thinker_layers(model)
         assert any(layer_prefix in str(b) for b in block_names), f"Expected {layer_prefix}, got: {block_names}"
         assert not any(
             "talker.model.layers" in str(b) for b in block_names
@@ -223,7 +225,7 @@ class TestQwen3OmniMoeReplacement:
         model = apply_replacements(model)
 
         # Check that thinker MoE was custom-replaced
-        _, thinker_layers = _qwen3_omni_thinker_layers(model)
+        _, thinker_layers = _omni_thinker_layers(model)
         thinker_mlp = thinker_layers[0].mlp
         assert (
             "LinearQwen3OmniThinker" in thinker_mlp.__class__.__name__
@@ -257,19 +259,19 @@ class TestQwen3OmniMoeReplacement:
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
         # Save original fused thinker weights
-        _, thinker_layers = _qwen3_omni_thinker_layers(model)
+        _, thinker_layers = _omni_thinker_layers(model)
         thinker_gate_up = thinker_layers[0].mlp.experts.gate_up_proj.data.clone()
         thinker_down = thinker_layers[0].mlp.experts.down_proj.data.clone()
 
         model = apply_replacements(model)
         materialize_model_(model)
+        _, thinker_layers = _omni_thinker_layers(model)
 
         intermediate = 32  # moe_intermediate_size
         # Verify thinker expert weights
         # Use equal_nan=True because fused expert parameters may contain
         # uninitialized memory with NaN bit patterns, and NaN != NaN in IEEE 754.
         for i in range(4):
-            _, thinker_layers = _qwen3_omni_thinker_layers(model)
             expert = thinker_layers[0].mlp.experts[i]
             assert_same_weights(expert.gate_proj.weight.data, thinker_gate_up[i, :intermediate, :])
             assert_same_weights(expert.up_proj.weight.data, thinker_gate_up[i, intermediate:, :])
@@ -285,15 +287,14 @@ class TestQwen3OmniMoeReplacement:
         torch.manual_seed(0)
         config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
-        _, thinker_layers = _qwen3_omni_thinker_layers(model)
-
+        _, thinker_layers = _omni_thinker_layers(model)
         x = torch.randn(1, 4, 64) * 0.1
         with torch.no_grad():
             orig_thinker_out = thinker_layers[0].mlp(x)
 
         model = apply_replacements(model)
         materialize_model_(model)
-        _, thinker_layers = _qwen3_omni_thinker_layers(model)
+        _, thinker_layers = _omni_thinker_layers(model)
 
         with torch.no_grad():
             new_thinker_out = thinker_layers[0].mlp(x)
@@ -331,7 +332,7 @@ class TestQwen3OmniMoeUtils:
 
         config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
-        _, thinker_layers = _qwen3_omni_thinker_layers(model)
+        _, thinker_layers = _omni_thinker_layers(model)
         moe_block = thinker_layers[0].mlp
         assert is_moe_layer(moe_block), f"Thinker MoE block ({moe_block.__class__.__name__}) should be detected as MoE"
 
@@ -348,8 +349,8 @@ class TestQwen3OmniMoeUtils:
 
         config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
+        _, thinker_layers = _omni_thinker_layers(model)
 
-        _, thinker_layers = _qwen3_omni_thinker_layers(model)
         thinker_mlp = thinker_layers[0].mlp
         names = get_expert_linear_names(thinker_mlp)
         assert set(names) == {"gate_proj", "down_proj", "up_proj"}
@@ -363,8 +364,8 @@ class TestQwen3OmniMoeUtils:
 
         config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
+        _, thinker_layers = _omni_thinker_layers(model)
 
-        _, thinker_layers = _qwen3_omni_thinker_layers(model)
         thinker_mlp = thinker_layers[0].mlp
         names = get_expert_input_proj_names(thinker_mlp)
         assert set(names) == {"gate_proj", "up_proj"}
@@ -375,7 +376,7 @@ class TestQwen3OmniMoeUtils:
         config = make_tiny_qwen3_omni_moe_config()
         model = Qwen3OmniMoeForConditionalGeneration(config)
 
-        layer_prefix, _ = _qwen3_omni_thinker_layers(model)
+        layer_prefix, _ = _omni_thinker_layers(model)
         ignore_layers = get_predefined_ignore_layers(model)
         assert ignore_layers == [
             f"{layer_prefix}.0.mlp.gate",

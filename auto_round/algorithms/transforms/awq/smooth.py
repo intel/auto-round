@@ -20,7 +20,17 @@ from typing import TYPE_CHECKING
 import torch
 
 from auto_round.algorithms.transforms.smoothing.groups import SmoothGroup
-from auto_round.data_type.utils import reshape_pad_tensor_by_group_size, revert_tensor_by_pad
+from auto_round.algorithms.transforms.teq.protocol import (
+    apply_teq_equivalent_input_transform,
+    apply_teq_equivalent_weight_transform,
+    get_teq_equivalent_transforms,
+    is_teq_equivalent_input_hook,
+)
+from auto_round.data_type.utils import (
+    compute_optimized_init_scale,
+    reshape_pad_tensor_by_group_size,
+    revert_tensor_by_pad,
+)
 
 if TYPE_CHECKING:
     from auto_round.algorithms.transforms.awq.base import AWQTransform
@@ -86,6 +96,11 @@ def smooth_group_from_mapping(mapping: ResolvedMapping) -> SmoothGroup:
     )
 
 
+def has_teq_equivalent_transforms(module: torch.nn.Module) -> bool:
+    """Return whether a layer publishes an equivalent transform pair."""
+    return bool(get_teq_equivalent_transforms(module))
+
+
 class AWQSmoothStrategy:
     """AWQ statistics, ratio candidates, QDQ loss and scale folding policy."""
 
@@ -98,6 +113,7 @@ class AWQSmoothStrategy:
     def prepare(self, group: SmoothGroup, x_mean: torch.Tensor) -> None:
         mapping = self.mapping
         owner = self.owner
+        tensor_ops = owner.parallel.tensor_ops
         device = mapping.balance_layers[0].weight.device
         x_mean = x_mean.to(device)
 
@@ -118,15 +134,64 @@ class AWQSmoothStrategy:
             if not fp16_outputs or all(f.numel() == 0 for f in fp16_outputs):
                 use_parent_forward = False
 
-        orig_state = {bl: bl.weight.data.clone() for bl in mapping.balance_layers}
+        orig_state = {bl: tensor_ops.local(bl.weight).detach().clone() for bl in mapping.balance_layers}
         if not use_parent_forward:
             orig_weights = orig_state  # same reference is fine
+        rotation_aware = any(has_teq_equivalent_transforms(bl) for bl in mapping.balance_layers)
 
         # Resolve each balance layer's quant functions once, then reuse them in
         # the grid-search loop. Normal AWQ flow requires one mapping to have
         # compatible quant params, but keeping this per-layer avoids hidden
         # coupling to the first layer and makes direct calls robust.
         bl_quant_funcs = {bl: owner._qdq_tool.resolve_quant_funcs(bl_params[bl]) for bl in mapping.balance_layers}
+
+        def local_imatrix(layer: torch.nn.Module) -> torch.Tensor | None:
+            """Select importance statistics for the layer's local input channels.
+
+            Args:
+                layer (torch.nn.Module): Projection with optional input-importance statistics.
+
+            Returns:
+                torch.Tensor | None: Local channel statistics, or None when unavailable.
+            """
+            imatrix = getattr(layer, "imatrix", None)
+            if imatrix is not None:
+                imatrix = owner.parallel.replicated(imatrix)
+                imatrix = tensor_ops.channel_scale(layer.weight, imatrix, 1)
+            return imatrix
+
+        def candidate_imatrix(layer: torch.nn.Module) -> torch.Tensor | None:
+            """Importance statistics valid in the basis the candidate is quantized in.
+
+            ``imatrix`` is a diagonal per-input-channel vector collected in the
+            original basis. A rotation-aware candidate is quantized after the
+            equivalent weight transform, and a non-diagonal transform does not
+            preserve a diagonal importance vector, so reusing it there would
+            weight the wrong channels. Fall back to unweighted quantization
+            instead of ranking candidates with mismatched statistics.
+            """
+            return None if rotation_aware else local_imatrix(layer)
+
+        reused_init_scales = {}
+        # Reusing an init scale searched on the unrotated weight is invalid once
+        # the candidate is quantized in the transformed basis, for the same
+        # reason as ``candidate_imatrix`` above.
+        if owner._qdq_tool.v2_scale_search == "reuse" and not rotation_aware:
+            for bl in mapping.balance_layers:
+                _, opt_quant_func = bl_quant_funcs[bl]
+                if opt_quant_func is None:
+                    continue
+                # Reuse the scale found for the original balance-layer weight.
+                # This deliberately avoids rerunning the optimized search for
+                # every AWQ smoothing candidate; the final V2 quantizer still
+                # performs its normal scale search on the transformed weight.
+                reused_init_scales[bl] = compute_optimized_init_scale(
+                    orig_state[bl],
+                    bl_params[bl]["data_type"],
+                    bl_params[bl]["bits"],
+                    bl_params[bl]["group_size"],
+                    imatrix=local_imatrix(bl),
+                )
 
         def candidates():
             for ratio, use_duo in owner._get_grid_search_params():
@@ -141,38 +206,108 @@ class AWQSmoothStrategy:
 
         def score(candidate):
             _, scales = candidate
-            scales_view = scales.view(1, -1).to(device)
-            if use_parent_forward:
-                # Quantize each balance layer's smoothed weight and write the
-                # de-smoothed result back, so the parent forward below sees the
-                # weights the layer would actually compute with.
-                for bl in mapping.balance_layers:
-                    quant_func, opt_quant_func = bl_quant_funcs[bl]
-                    w_qdq = owner._qdq_tool.qdq(
-                        orig_state[bl] * scales_view,
-                        bl_params[bl],
-                        quant_func=quant_func,
-                        opt_quant_func=opt_quant_func,
-                        imatrix=getattr(bl, "imatrix", None),
-                    )
-                    bl.weight.data = (w_qdq / scales_view).to(bl.weight.dtype)
 
-                total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
-                for bl in mapping.balance_layers:
-                    bl.weight.data.copy_(orig_state[bl])
+            def scaled_input(layer: torch.nn.Module) -> torch.Tensor:
+                """Shape candidate scales for the layer's local weight columns.
+
+                Args:
+                    layer (torch.nn.Module): Projection whose shard layout selects the scales.
+
+                Returns:
+                    torch.Tensor: Local input-channel scales with shape ``(1, channels)``.
+                """
+                return tensor_ops.channel_scale(layer.weight, scales, 1).view(1, -1)
+
+            if use_parent_forward:
+                if not rotation_aware:
+                    # Quantize each balance layer's smoothed weight and write the
+                    # de-smoothed result back, so the parent forward below sees the
+                    # weights the layer would actually compute with.
+                    for bl in mapping.balance_layers:
+                        scales_view = scaled_input(bl)
+                        quant_func, opt_quant_func = bl_quant_funcs[bl]
+                        w_qdq = owner._qdq_tool.qdq(
+                            orig_state[bl] * scales_view,
+                            bl_params[bl],
+                            quant_func=quant_func,
+                            opt_quant_func=opt_quant_func,
+                            imatrix=candidate_imatrix(bl),
+                            init_scale=reused_init_scales.get(bl),
+                        )
+                        tensor_ops.copy_weight(bl, (w_qdq / scales_view).to(bl.weight.dtype))
+                    try:
+                        total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
+                    finally:
+                        for bl in mapping.balance_layers:
+                            tensor_ops.copy_weight(bl, orig_state[bl])
+                else:
+                    # Score the deployed form QDQ(T_w(W * s)) with an
+                    # input-side T_i(x / s). This is required for rotations
+                    # whose matrices do not commute with diagonal scales.
+                    handles = []
+                    try:
+                        for bl in mapping.balance_layers:
+                            scales_view = scaled_input(bl)
+                            quant_func, opt_quant_func = bl_quant_funcs[bl]
+                            candidate_weight = apply_teq_equivalent_weight_transform(bl, orig_state[bl] * scales_view)
+                            w_qdq = owner._qdq_tool.qdq(
+                                candidate_weight,
+                                bl_params[bl],
+                                quant_func=quant_func,
+                                opt_quant_func=opt_quant_func,
+                                imatrix=candidate_imatrix(bl),
+                                init_scale=reused_init_scales.get(bl),
+                            )
+                            tensor_ops.copy_weight(bl, w_qdq.to(bl.weight.dtype))
+                            layer_scales = scales_view.detach().view(-1)
+                            has_teq_input_hook = any(
+                                is_teq_equivalent_input_hook(hook) for hook in bl._forward_pre_hooks.values()
+                            )
+
+                            def _candidate_input_hook(
+                                layer, args, scales=layer_scales, owns_transform=not has_teq_input_hook
+                            ):
+                                if not args:
+                                    return None
+                                value = args[0]
+                                scale = scales.to(device=value.device, dtype=value.dtype)
+                                value = value / scale.view((1,) * (value.ndim - 1) + (-1,))
+                                if owns_transform:
+                                    value = apply_teq_equivalent_input_transform(layer, value)
+                                return (value, *args[1:])
+
+                            # A committed layer's TEQ hook runs after this
+                            # prepended scale hook, applying T_i(x / s) exactly
+                            # once without rewriting private hook storage.
+                            handles.append(bl.register_forward_pre_hook(_candidate_input_hook, prepend=True))
+                        total_loss = owner._compute_parent_loss(mapping.parent, parent_kwargs_list, fp16_outputs)
+                    finally:
+                        for handle in handles:
+                            handle.remove()
+                        for bl in mapping.balance_layers:
+                            tensor_ops.copy_weight(bl, orig_state[bl])
             else:
                 total_loss = 0.0
                 for bl in mapping.balance_layers:
+                    scales_view = scaled_input(bl)
                     quant_func, opt_quant_func = bl_quant_funcs[bl]
                     w_orig = orig_weights[bl].to(device)
+                    candidate_weight = apply_teq_equivalent_weight_transform(bl, w_orig * scales_view)
                     w_qdq = owner._qdq_tool.qdq(
-                        w_orig * scales_view,
+                        candidate_weight,
                         bl_params[bl],
                         quant_func=quant_func,
                         opt_quant_func=opt_quant_func,
-                        imatrix=getattr(bl, "imatrix", None),
+                        imatrix=candidate_imatrix(bl),
+                        init_scale=reused_init_scales.get(bl),
                     )
-                    total_loss += (w_orig - w_qdq / scales_view).pow(2).sum().item()
+                    if rotation_aware:
+                        # Without replay activations, compare in the deployed
+                        # quantizer basis rather than the incorrect raw basis.
+                        error = (candidate_weight - w_qdq).pow(2).sum()
+                    else:
+                        error = (w_orig - w_qdq / scales_view).pow(2).sum()
+                    total_loss += tensor_ops.weight_sum(bl.weight, error).item()
 
             return total_loss
 
@@ -213,6 +348,12 @@ def get_grid_search_params(n_grid: int, duo_scaling: bool | str) -> list[tuple[f
 
 def compute_layer_means(layers: list[torch.nn.Module], group_size: int) -> torch.Tensor:
     """Per-channel mean of normalised weights across all balance layers."""
+    from auto_round.parallel.tp.runtime import is_dtensor
+
+    if any(is_dtensor(layer.weight) for layer in layers):
+        from auto_round.parallel.tp.tensor_ops import ParallelTensorOps
+
+        return ParallelTensorOps.input_channel_means(layers, group_size)
     weight = torch.cat([m.weight.detach().float() for m in layers], dim=0)
     org_shape = weight.shape
     gs = group_size if group_size is not None and group_size > 0 else org_shape[1]
@@ -235,6 +376,13 @@ def fold_scales_into_smooth_layer(smooth: torch.nn.Module, scales: torch.Tensor)
 
     Any bias is always divided by ``s``.
     """
+    from auto_round.parallel.tp.runtime import is_dtensor
+
+    if is_dtensor(smooth.weight):
+        from auto_round.parallel.tp.tensor_ops import ParallelTensorOps
+
+        ParallelTensorOps.divide_outputs(smooth, scales, unit_offset=_rmsnorm_has_unit_offset(smooth))
+        return
     s = scales.to(smooth.weight.device)
     weight = smooth.weight.data
     if weight.ndim == 1:

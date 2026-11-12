@@ -63,7 +63,7 @@ exclude = [
     "node_modules",
     "site-packages",
     "venv",
-    "auto_round/export/export_to_gguf/conversion",
+    "auto_round/export/formats/gguf/conversion",
 ]
 
 # Same as Black.

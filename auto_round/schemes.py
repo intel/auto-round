@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, Any, Union
 
 import torch
 
+from auto_round.logger import logger
+
 GGUF_SCHEME_FACTS: dict[str, dict] = {
     "gguf:q4_0": {
         "bits": 4,
@@ -140,7 +142,6 @@ GGUF_PRESET_ALIASES: dict[str, str] = {
     "gguf:q8_0": "gguf:q8_0",
 }
 
-from auto_round.logger import logger
 from auto_round.utils import SUPPORTED_DTYPES, contain_any_mm_keys, infer_bits_by_data_type
 
 __all__ = [
@@ -189,6 +190,21 @@ def is_mx_int(backend: str) -> bool:
     return BackendDataType.MX_INT in backend.lower()
 
 
+def is_nvfp4_e5m3_gs(backend: str) -> bool:
+    """NVFP4 E5M3 with per-tensor global scale (``nvfp4_v2_gs`` / ``nvfp4_v2_with_static_gs``)."""
+    backend = backend.lower()
+    return "nvfp4_v2" in backend and backend.endswith("_gs")
+
+
+def is_nvfp4_e5m3_family(backend: str) -> bool:
+    return "nvfp4_v2" in backend.lower()
+
+
+def needs_nvfp_global_scale(backend: str) -> bool:
+    """Whether the data type uses NVFP-style per-tensor weight/input global scales."""
+    return is_nv_fp(backend) or is_nvfp4_e5m3_gs(backend)
+
+
 def is_standard_fp(backend: str) -> bool:
     backend = backend.lower()
     return BackendDataType.STANDARD_FP in backend and not is_mx_fp(backend) and not is_nv_fp(backend)
@@ -208,6 +224,84 @@ class QuantizationScheme:
     super_bits: int | None = None
     super_group_size: int | None = None
     rotation_config: dict | None = None
+
+    @staticmethod
+    def _is_valid_group_size(gs) -> bool:
+        """Return True if gs is a valid group_size value.
+
+        Accepts -1 (per-channel), 0 (per-tensor), a positive integer,
+        or a tuple/list of such values (e.g. (128, 128) for block-wise FP8).
+        """
+        if isinstance(gs, (tuple, list)):
+            return all(QuantizationScheme._is_valid_group_size(g) for g in gs)
+        return gs == -1 or gs >= 0
+
+    def validate(self) -> None:
+        """Checks if the configurations are valid.
+
+        Raises:
+        ValueError, TypeError: If any of the configurations are invalid.
+        """
+        if self.bits is not None and self.bits <= 0:
+            raise ValueError("`bits` must be positive")
+        if self.act_bits is not None and self.act_bits <= 0:
+            raise ValueError("`act_bits` must be positive")
+        if self.group_size is not None and not self._is_valid_group_size(self.group_size):
+            raise ValueError(
+                "`group_size` must be -1 (per channel), 0 (per-tensor), a positive integer, "
+                "or a tuple thereof (e.g. (128, 128) for block-wise quantization)"
+            )
+        if isinstance(self.act_group_size, (tuple, list)):
+            raise ValueError(
+                "`act_group_size` must be -1 (per channel), 0 (per-tensor), or a positive integer, not a tuple."
+            )
+        if self.act_group_size is not None and not self._is_valid_group_size(self.act_group_size):
+            raise ValueError(
+                "`act_group_size` must be -1 (per channel), 0 (per-tensor), a positive integer, " "or a tuple thereof"
+            )
+        # Block-wise (tuple group_size) is only valid for fp8 weight quantization
+        if isinstance(self.group_size, (tuple, list)):
+            if not (self.data_type.startswith("fp") and self.bits == 8):
+                raise ValueError(
+                    "Block-wise quantization (tuple group_size) only supports fp8 weight quantization, "
+                    f"but got data_type='{self.data_type}', bits={self.bits}."
+                )
+            if not (self.act_dynamic and self.act_data_type.startswith("fp") and self.act_bits == 8):
+                raise NotImplementedError(
+                    "Block-wise fp8 weight quantization only supports dynamic fp8 activation quantization. "
+                    f"Got act_dynamic={self.act_dynamic}, act_data_type='{self.act_data_type}', "
+                    f"act_bits={self.act_bits}."
+                )
+        # Reset the default value of super_bits and super_group_size
+        if self.data_type is not None and self.bits is not None and self.data_type.endswith("_dq"):
+            from auto_round.export.formats.gguf.config import GGUF_INNER_CONFIG
+
+            gguf_config = GGUF_INNER_CONFIG[f"gguf:q{self.bits}_k"]
+            self.super_bits = gguf_config.get("super_bits", None) if self.super_bits is None else self.super_bits
+            self.super_group_size = (
+                gguf_config.get("super_group_size", None) if self.super_group_size is None else self.super_group_size
+            )
+
+        if (
+            self.data_type is not None
+            and self.act_data_type is not None
+            and self.is_act_quantize()
+            and (not self.is_act_nv_fp() or "static_gs" not in self.act_data_type)
+            and not is_nvfp4_e5m3_family(self.act_data_type or "")
+            and not self.is_act_mx_fp()
+            and not self.is_dynamic_wint8aint8()
+            and not self.is_static_afp8()
+        ):
+            logger.warning_once(
+                "activation quantization is an experimental feature with limited support and a complex API. "
+                "And please save the quantized model to fake format as real deployment is not supported currently"
+            )
+        # For block-wise group_size (tuple), skip the scalar-only warnings
+        scalar_gs = self.group_size if not isinstance(self.group_size, (tuple, list)) else None
+        if self.is_mx_fp() and scalar_gs != 32:
+            logger.warning_once("dtype mx_fp should only support group_size of 32 in real deployment")
+        if self.is_nv_fp() and scalar_gs != 16:
+            logger.warning_once("dtype nv_fp should only support group_size of 16 in real deployment")
 
     @classmethod
     def empty(cls):
@@ -364,12 +458,6 @@ def preset_name_to_scheme(name: str) -> QuantizationScheme:
 
     if name not in PRESET_SCHEMES:
         raise KeyError(f"Unknown preset scheme name {name}, " f"available names: {list(PRESET_SCHEMES.keys())}")
-
-    if name == "INT8_W8A8":
-        logger.warning_once(
-            "The 'INT8_W8A8' scheme name is deprecated and will be removed in a future release. "
-            "Please use 'INT8' instead."
-        )
 
     scheme_args = deepcopy(PRESET_SCHEMES[name])
     return scheme_args
@@ -785,6 +873,19 @@ NVFP4_E5M3 = QuantizationScheme.from_dict(
     }
 )
 
+NVFP4_E5M3_GS = QuantizationScheme.from_dict(
+    {
+        "bits": 4,
+        "group_size": 16,
+        "data_type": "nvfp4_v2_gs",
+        "act_bits": 4,
+        "act_data_type": "nvfp4_v2_with_static_gs",
+        "act_group_size": 16,
+        "act_sym": True,
+        "act_dynamic": True,
+    }
+)
+
 FPW8A16 = QuantizationScheme.from_dict(
     {
         "bits": 8,
@@ -895,6 +996,7 @@ PRESET_SCHEMES = {
     "MXFP8_RCEIL": MXFP8_RCEIL,
     "NVFP4": NVFP4,
     "NVFP4_E5M3": NVFP4_E5M3,
+    "NVFP4_E5M3_GS": NVFP4_E5M3_GS,
     "FPW8A16": FPW8A16,
     # Group-size variants for the 2-8 bit int presets: the bare presets default
     # to group_size 128; these finer-group variants allow per-layer group-size

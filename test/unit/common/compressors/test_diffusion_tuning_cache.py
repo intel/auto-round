@@ -18,7 +18,7 @@ import pytest
 import torch
 
 from auto_round.algorithms.block_runner import BlockForwardRunner
-from auto_round.compressors.diffusion.tuning_cache import DiffusionTuningCache, _batch_plan
+from auto_round.algorithms.tuning_cache import DiffusionTuningCache, _batch_plan
 from auto_round.compressors.utils import IndexSampler
 
 

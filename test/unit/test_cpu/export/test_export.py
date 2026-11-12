@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 from test.helpers import forbid_threaded_packing, get_model_path, opt_name_or_path, transformers_version
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -10,11 +11,116 @@ from transformers import AutoModelForCausalLM, AutoRoundConfig, AutoTokenizer
 
 from auto_round import AutoRound
 from auto_round.compressors.config_resolution import ResolvedScheme
-from auto_round.export.export_to_autogptq import export as autogptq_export
-from auto_round.export.export_to_autoround import export as autoround_export
-from auto_round.export.export_to_autoround import export_to_fp8 as autoround_fp8_export
-from auto_round.export.export_to_awq import export as awq_export
 from auto_round.export.formats import resolve_formats
+from auto_round.export.formats.autoround import fp8 as autoround_fp8_export
+from auto_round.export.formats.autoround import integer as autoround_export
+from auto_round.export.formats.awq import packing as awq_export
+from auto_round.export.formats.gptq import packing as autogptq_export
+
+
+@pytest.mark.parametrize("data_type", ["fp", "block_fp8", "fp8"])
+def test_int_backend_packs_fp8_block_override(data_type, monkeypatch):
+    fp8_dtype = getattr(torch, "float8_e4m3fn", None)
+    if fp8_dtype is None:
+        pytest.skip("PyTorch does not provide float8_e4m3fn")
+    try:
+        torch.ones(1).to(fp8_dtype).float()
+    except (RuntimeError, NotImplementedError) as error:
+        pytest.skip(f"CPU Float8 conversion is unavailable: {error}")
+
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias=False))
+    model.dtype = torch.float32
+    layer = model[0]
+    layer.bits = 8
+    layer.data_type = data_type
+    layer.group_size = (128, 128)
+    layer.act_bits = 8
+    layer.sym = True
+    layer.scale = torch.ones(1, 1)
+    layer.zp = None
+    with torch.no_grad():
+        layer.weight.fill_(1)
+
+    def reject_integer_packer(*args, **kwargs):
+        pytest.fail("FP8 layers must not use the integer activation packer")
+
+    monkeypatch.setattr(autoround_export, "pack_qact_layer", reject_integer_packer)
+    autoround_export.pack_layer("0", model, "auto_round:auto_gptq", device="cpu")
+
+    assert isinstance(model[0], autoround_fp8_export.FP8BlockQLinear)
+    assert model[0].weight.dtype == torch.float8_e4m3fn
+    assert model[0].weight_scale_inv.shape == (1, 1)
+    torch.testing.assert_close(model[0].weight.float(), torch.ones(128, 128))
+
+
+def test_integer_activation_packing_is_unchanged(monkeypatch):
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias=False))
+    model[0].data_type = "int"
+    model[0].bits = 8
+    model[0].act_bits = 8
+    calls = []
+    monkeypatch.setattr(autoround_export, "pack_qact_layer", lambda *args: calls.append(args))
+    autoround_export.pack_layer("0", model, "auto_round:auto_gptq", device="cpu")
+    assert calls == [("0", model)]
+
+
+@pytest.mark.parametrize("packing_fails", [False, True])
+def test_fp8_override_pack_phase_accounting(monkeypatch, packing_fails):
+    model = torch.nn.Sequential(torch.nn.Linear(128, 128, bias=False))
+    model[0].data_type = "fp"
+    model[0].bits = 8
+    phases = dict.fromkeys(autoround_export.PACK_PHASES, 0)
+    monkeypatch.setattr(autoround_export, "PACK_PHASES", phases)
+    ticks = iter([0.0, 1.0, 2.0, 3.0])
+    monkeypatch.setattr(autoround_export, "time", SimpleNamespace(perf_counter=lambda: next(ticks)))
+
+    def pack_fp8(*args, **kwargs):
+        if packing_fails:
+            raise RuntimeError("packing failed")
+
+    monkeypatch.setattr(autoround_fp8_export, "pack_layer", pack_fp8)
+    if packing_fails:
+        with pytest.raises(RuntimeError, match="packing failed"):
+            autoround_export.pack_layer("0", model, "auto_round:auto_gptq", device="cpu")
+    else:
+        autoround_export.pack_layer("0", model, "auto_round:auto_gptq", device="cpu")
+    assert phases["count"] == 1
+    assert phases["lookup"] == 1.0
+    assert phases["pack"] == 1.0
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_autoround_fp8_override_packing_metadata(monkeypatch, mixed):
+    model = torch.nn.Sequential(*(torch.nn.Linear(128, 128, bias=False) for _ in range(3)))
+    model.config = SimpleNamespace()
+    default_scheme = {"bits": 4, "group_size": 128, "sym": True, "data_type": "int", "act_bits": 16}
+    layer_config = {str(i): {**default_scheme, "in_blocks": True} for i in range(3)}
+    layer_config["1"]["bits"] = 8  # An integer override must not acquire FP8 packing metadata.
+    if mixed:
+        layer_config["0"].update(bits=8, group_size=(128, 128), data_type="fp", act_bits=8)
+    serialization = {**default_scheme, "regex_config": None}
+    # Isolate serialization from kernel dispatch; real FP8 packing is tested above.
+    monkeypatch.setattr(autoround_export, "pack_layer", lambda *args, **kwargs: None)
+
+    saved = autoround_export.save_checkpoint(
+        output_dir=None,
+        model=model,
+        layer_config=layer_config,
+        serialization_dict=serialization,
+        backend="auto_round:auto_gptq",
+    )
+
+    config = json.loads(json.dumps(saved.config.quantization_config))
+    assert config["packing_format"] == "auto_round:auto_gptq"
+    overrides = config["extra_config"]
+    if mixed:
+        assert overrides["0"]["packing_format"] == "auto_round:fp8"
+        assert overrides["0"]["bits"] == 8
+        assert overrides["0"]["data_type"] == "fp"
+    else:
+        assert "0" not in overrides
+    assert "packing_format" not in overrides["1"]
+    assert "2" not in overrides
 
 
 def _get_folder_size(path: str) -> float:
@@ -424,7 +530,7 @@ class TestAutoRound:
         quantized_model_path = self.save_dir
         compressed_model, _ = autoround.quantize_and_save(output_dir=quantized_model_path, format="auto_awq")
         lm_head = compressed_model.lm_head
-        from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+        from auto_round.export.formats.awq.utils import WQLinear_GEMM
 
         assert isinstance(lm_head, WQLinear_GEMM), "Illegal AWQ quantization for lm_head layer"
 
@@ -791,7 +897,7 @@ def test_save_model_writes_diffusers_config(tmp_path):
     """A diffusers config is a FrozenDict with no save_pretrained; the export must still write it."""
     diffusers = pytest.importorskip("diffusers")
 
-    from auto_round.export.utils import save_model
+    from auto_round.export.common.serialization import save_model
 
     model = diffusers.SD3Transformer2DModel(
         sample_size=8,
@@ -819,7 +925,7 @@ def test_save_model_writes_diffusers_config(tmp_path):
 
 def test_awq_gemm_kernel_supported():
     """AWQ GEMM kernel divisibility contract (IC/OC % group_size, OC % 64)."""
-    from auto_round.export.export_to_awq.utils import awq_gemm_kernel_supported
+    from auto_round.export.formats.awq.utils import awq_gemm_kernel_supported
 
     # Canonical servable shapes
     assert awq_gemm_kernel_supported(2048, 2048, 4, 128)
@@ -846,7 +952,7 @@ def test_awq_format_excludes_unservable_layers():
 
     import torch.nn as nn
 
-    from auto_round.export.formats.backends.auto_awq import AutoAWQFormat
+    from auto_round.export.formats.awq.format import AutoAWQFormat
     from auto_round.schemes import preset_name_to_scheme
 
     class ToyModel(nn.Module):
@@ -887,7 +993,7 @@ def test_awq_format_honors_explicit_layer_config():
 
     import torch.nn as nn
 
-    from auto_round.export.formats.backends.auto_awq import AutoAWQFormat
+    from auto_round.export.formats.awq.format import AutoAWQFormat
     from auto_round.schemes import preset_name_to_scheme
 
     class ToyModel(nn.Module):
@@ -919,7 +1025,7 @@ def test_awq_pack_layer_skips_unservable_layer():
     """pack_layer must not AWQ-pack a layer whose shape the GEMM kernel cannot serve."""
     import torch.nn as nn
 
-    from auto_round.export.export_to_awq.export import pack_layer
+    from auto_round.export.formats.awq.packing import pack_layer
     from auto_round.utils import get_module
 
     class ToyModel(nn.Module):
@@ -949,9 +1055,14 @@ def test_awq_export_lists_unservable_layers(tmp_path):
     Covers the split quantize() -> save_quantized(format="auto_awq") flow where
     the layer was already quantized before the format check ran.
     """
+    from types import SimpleNamespace
+
     import torch.nn as nn
 
-    from auto_round.export.export_to_awq.export import save_quantized_as_autoawq
+    from auto_round.compressors.config_resolution import resolve_scheme_value
+    from auto_round.export.formats.awq.format import AutoAWQFormat
+
+    fmt = AutoAWQFormat("auto_awq", resolve_scheme_value("W4A16", {}).value, SimpleNamespace(mllm=False))
     from auto_round.utils import get_module
 
     class ToyModel(nn.Module):
@@ -977,7 +1088,7 @@ def test_awq_export_lists_unservable_layers(tmp_path):
     }
     serialization_dict = {"bits": 4, "group_size": 128, "sym": True}
 
-    save_quantized_as_autoawq(
+    fmt.save_quantized(
         str(tmp_path),
         model=model,
         layer_config=layer_config,
@@ -996,10 +1107,15 @@ def test_awq_export_packs_user_forced_layer(tmp_path):
     """A layer_config entry the user explicitly set for quantization is honored:
     the unservable layer is packed anyway and does not land in
     modules_to_not_convert."""
+    from types import SimpleNamespace
+
     import torch.nn as nn
 
-    from auto_round.export.export_to_awq.export import save_quantized_as_autoawq
-    from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+    from auto_round.compressors.config_resolution import resolve_scheme_value
+    from auto_round.export.formats.awq.format import AutoAWQFormat
+
+    fmt = AutoAWQFormat("auto_awq", resolve_scheme_value("W4A16", {}).value, SimpleNamespace(mllm=False))
+    from auto_round.export.formats.awq.utils import WQLinear_GEMM
     from auto_round.utils import get_module
 
     class ToyModel(nn.Module):
@@ -1026,7 +1142,7 @@ def test_awq_export_packs_user_forced_layer(tmp_path):
     }
     serialization_dict = {"bits": 4, "group_size": 128, "sym": True}
 
-    save_quantized_as_autoawq(
+    fmt.save_quantized(
         str(tmp_path),
         model=model,
         layer_config=layer_config,
@@ -1048,8 +1164,8 @@ def test_awq_unservable_lm_head_via_quant_lm_head_is_packed():
 
     from auto_round.compressors.config_resolution import ResolvedScheme
     from auto_round.compressors.layer_config_resolver import resolve_layer_config
-    from auto_round.export.export_to_awq.export import pack_layer
-    from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+    from auto_round.export.formats.awq.packing import pack_layer
+    from auto_round.export.formats.awq.utils import WQLinear_GEMM
     from auto_round.schemes import preset_name_to_scheme
     from auto_round.utils import get_module
 
@@ -1130,8 +1246,8 @@ def test_awq_pack_layer_packs_user_forced_layer():
     apply_plan_to_model)."""
     import torch.nn as nn
 
-    from auto_round.export.export_to_awq.export import pack_layer
-    from auto_round.export.export_to_awq.utils import WQLinear_GEMM
+    from auto_round.export.formats.awq.packing import pack_layer
+    from auto_round.export.formats.awq.utils import WQLinear_GEMM
     from auto_round.utils import get_module
 
     class ToyModel(nn.Module):

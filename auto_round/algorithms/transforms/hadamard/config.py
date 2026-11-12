@@ -156,6 +156,9 @@ class RotationConfig(AlgorithmConfig, BaseModel, BaseRotationConfig):
             random_seed: Internal flag used by random Hadamard paths.
             **data: Additional Pydantic field values forwarded to BaseModel.
         """
+        from auto_round.algorithms.quantization.config import QuantizationConfig
+
+        QuantizationConfig.reject_scheme_arguments(data)
         super().__init__(**data)
 
     def can_compile_block_forward(self) -> bool:

@@ -42,6 +42,8 @@ from auto_round.utils.model_free_utils import (
     _dequant_inkling_nvfp4_tensors,
     _dequant_mxfp_tensors,
     _expand_e8m0_block_scale,
+    _fused_nvfp4_global_scale_overrides,
+    _fused_nvfp4_projection_groups,
     _handle_mxfp_source_tensors,
     _handle_nvfp4_source_tensors,
     _hydrate_and_clean_inkling_nvfp4_aux,
@@ -205,6 +207,43 @@ def test_inkling_nvfp4_dequantizes_fused_3d_weight():
 
 def _matcher(ignore=None, layer_config=None, default=None):
     return _PatternMatcher(ignore or [], layer_config or {}, default or {})
+
+
+def test_fused_nvfp4_projection_groups_support_diffusers_self_attention(monkeypatch):
+    monkeypatch.setenv("AR_NVFP4_FUSED_LAYER_GLOBAL_SCALE", "1")
+    matcher = _matcher(default={"bits": 4, "group_size": 16, "data_type": "nvfp4_v2_gs"})
+    weight_map = {
+        f"transformer_blocks.0.attn.{projection}.weight": "model.safetensors" for projection in ("to_q", "to_k", "to_v")
+    }
+    weight_map.update(
+        {
+            f"down_blocks.0.attentions.0.transformer_blocks.0.attn2.{projection}.weight": "model.safetensors"
+            for projection in ("to_q", "to_k", "to_v")
+        }
+    )
+
+    groups = _fused_nvfp4_projection_groups(weight_map, matcher)
+
+    assert groups == [
+        ("transformer_blocks.0.attn.to_q", "transformer_blocks.0.attn.to_k", "transformer_blocks.0.attn.to_v")
+    ]
+
+    raw_tensors = {
+        f"transformer_blocks.0.attn.{projection}.weight": torch.full((16, 16), value)
+        for projection, value in zip(("to_q", "to_k", "to_v"), (0.1, 0.2, 0.3))
+    }
+    raw_tensors.update(
+        {
+            f"down_blocks.0.attentions.0.transformer_blocks.0.attn2.{projection}.weight": torch.full((16, 16), value)
+            for projection, value in zip(("to_q", "to_k", "to_v"), (1.0, 2.0, 3.0))
+        }
+    )
+    overrides = _fused_nvfp4_global_scale_overrides(raw_tensors, matcher)
+
+    assert set(overrides) == {
+        f"transformer_blocks.0.attn.{projection}.weight" for projection in ("to_q", "to_k", "to_v")
+    }
+    assert overrides["transformer_blocks.0.attn.to_q.weight"] == overrides["transformer_blocks.0.attn.to_v.weight"]
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +800,22 @@ def test_nvfp4_e5m3_model_free_honors_opt_rtn_toggle(monkeypatch):
     search_mock.reset_mock()
     _quantize_single_tensor("layer.weight", weight, matcher, disable_opt_rtn=True)
     search_mock.assert_not_called()
+
+
+@pytest.mark.parametrize("enable_torch_compile", [False, True])
+def test_nvfp4_e5m3_model_free_forwards_torch_compile_flag(monkeypatch, enable_torch_compile):
+    from auto_round.data_type import nvfp
+
+    search_mock = Mock(return_value=torch.ones(8))
+    monkeypatch.setattr(nvfp, "search_nvfp4_v2_scale", search_mock)
+    matcher = _matcher(
+        default={"bits": 4, "group_size": 16, "sym": True, "data_type": "nvfp4_v2", "_output_format": "fake"}
+    )
+
+    _quantize_single_tensor(
+        "layer.weight", torch.randn(4, 32), matcher, disable_opt_rtn=False, enable_torch_compile=enable_torch_compile
+    )
+    assert search_mock.call_args.kwargs["enable_torch_compile"] is enable_torch_compile
 
 
 # ===========================================================================
@@ -1589,6 +1644,51 @@ class TestFP8Source:
         raw = {"layer.weight": w, "layer.weight_scale_inv": torch.tensor(0.5), "layer.bias": torch.randn(64)}
         result = _dequant_fp8_tensors(raw, block_size=None)
         assert result["layer.weight"].dtype == torch.float32 and "layer.weight_scale_inv" not in result
+
+    def test_deepseek_v32_uses_numeric_weight_scale_inv(self):
+        weight = torch.full((128, 128), 2.0, dtype=torch.float8_e4m3fn)
+        scale = torch.full((1, 1), 0.3, dtype=torch.float32)
+        raw = {"layer.weight": weight, "layer.weight_scale_inv": scale}
+        quantization_config = {"quant_method": "fp8", "fmt": "e4m3", "scale_fmt": "ue8m0"}
+
+        raw, source_state = _preprocess_model_type_source_tensors(
+            raw, model_type="deepseek_v32", group_size=32, quantization_config=quantization_config
+        )
+        result = _dequant_fp8_tensors(raw, block_size=[128, 128])
+
+        assert source_state == {}
+        assert torch.equal(result["layer.weight"], weight.float() * scale.item())
+        assert "layer.weight_scale_inv" not in result
+
+    @pytest.mark.parametrize("hydrate_only", [False, True])
+    def test_fp8_weight_without_scale_raises(self, hydrate_only):
+        raw = {"layer.weight": torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)}
+
+        with pytest.raises(ValueError, match="layer.weight"):
+            _dequant_fp8_tensors(raw, block_size=None, hydrate_only=hydrate_only)
+
+    def test_hydrate_only_keeps_mxfp8_weight_scale(self):
+        weight = torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        scale = torch.ones(64, 1, dtype=torch.float8_e8m0fnu)
+        raw = {"layer.weight": weight, "layer.weight_scale": scale}
+
+        result = _dequant_fp8_tensors(raw, block_size=None, hydrate_only=True)
+
+        assert result is raw
+        assert result["layer.weight"].dtype == torch.float8_e4m3fn
+        assert result["layer.weight_scale"] is scale
+
+    def test_warns_when_fp8_dequant_is_skipped(self, caplog):
+        raw = {
+            "layer.weight": torch.randn(64, 128, dtype=torch.bfloat16).to(torch.float8_e4m3fn),
+            "layer.weight_scale_inv": torch.tensor(0.5),
+        }
+
+        with caplog.at_level("WARNING"):
+            result = _dequant_fp8_tensors(raw, block_size=None, hydrate_only=True)
+
+        assert result["layer.weight"].dtype == torch.float8_e4m3fn
+        assert "low-precision source weight tensor(s) were not dequantized" in caplog.text
 
     def test_no_fp8_noop(self):
         raw = {"layer.weight": torch.randn(64, 128)}
